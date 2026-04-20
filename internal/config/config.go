@@ -32,7 +32,7 @@ type Config struct {
 	Modeline            string `toml:"modeline"`
 	InterlaceFieldOrder string `toml:"interlace_field_order"` // "tff" | "bff"
 	AspectMode          string `toml:"aspect_mode"`           // "letterbox" | "zoom" | "auto"
-	RGBMode             string `toml:"rgb_mode"`              // "rgb888" | "rgba8888" | "rgb565"
+	RGBMode             string `toml:"rgb_mode"`              // v1: "rgb888" only (rgba8888 / rgb565 reserved for v2)
 	LZ4Enabled          bool   `toml:"lz4_enabled"`
 
 	// Audio
