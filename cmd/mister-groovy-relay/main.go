@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -40,6 +41,13 @@ func main() {
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
+		var created *config.ErrConfigCreated
+		if errors.As(err, &created) {
+			fmt.Fprintf(os.Stderr,
+				"No config found. Wrote defaults to %s.\nEdit it (set mister_host) and restart.\n",
+				created.Path)
+			os.Exit(2)
+		}
 		slog.Error("load config", "err", err)
 		os.Exit(1)
 	}

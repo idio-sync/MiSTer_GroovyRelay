@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -65,10 +66,20 @@ func defaults() *Config {
 	}
 }
 
+// Load reads the TOML at path on top of defaults() and validates the
+// result. If the file is missing, Load writes the embedded example to
+// that path and returns *ErrConfigCreated — this turns first-run into
+// "start once, edit, start again" instead of "hand-copy an example."
 func Load(path string) (*Config, error) {
 	cfg := defaults()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if wErr := writeDefaultConfig(path); wErr != nil {
+				return nil, wErr
+			}
+			return nil, &ErrConfigCreated{Path: path}
+		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	if len(data) > 0 {

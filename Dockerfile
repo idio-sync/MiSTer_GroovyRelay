@@ -26,7 +26,9 @@ RUN CGO_ENABLED=0 go build -o /out/mister-groovy-relay ./cmd/mister-groovy-relay
 FROM alpine:3.20
 RUN apk add --no-cache ffmpeg ca-certificates tzdata
 COPY --from=build /out/mister-groovy-relay /usr/local/bin/mister-groovy-relay
-COPY config.example.toml /config/config.example.toml
+# /config/config.toml is auto-created from the embedded example on first
+# run when missing — no COPY here. A COPY into /config would be shadowed
+# by the operator's bind mount anyway.
 VOLUME /config
 EXPOSE 32500/tcp
 EXPOSE 32412/udp

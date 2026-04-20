@@ -1,5 +1,6 @@
-# MiSTer_GroovyRelay example configuration.
-# Copy to /config/config.toml and edit before running.
+# MiSTer_GroovyRelay configuration.
+# The bridge writes this file into data_dir on first run if it's missing.
+# Edit mister_host at minimum, then restart the bridge.
 
 # --- Device identity ---
 device_name = "MiSTer"         # Shown in Plex cast-target list

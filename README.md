@@ -26,27 +26,22 @@ one FFmpeg worker per active cast.
 ## Quick start (Docker)
 
 ```bash
-# 1. Create a config directory and drop in an edited copy of the example.
+# 1. Create a config directory and do a throwaway first run.
+#    The bridge sees no config.toml, writes a default one into your
+#    mounted /config, and exits 2. Edit that file to point at your MiSTer.
 mkdir -p /opt/mister-groovy-relay
 docker run --rm --network=host \
   -v /opt/mister-groovy-relay:/config \
-  idiosync000/mister-groovy-relay:latest \
-  --config /config/config.example.toml --help || true
-
-# 2. Copy the example out, edit to point at your MiSTer.
-docker run --rm -v /opt/mister-groovy-relay:/config \
-  idiosync000/mister-groovy-relay:latest \
-  sh -c 'cp /config/config.example.toml /config/config.toml' \
-  2>/dev/null || cp config.example.toml /opt/mister-groovy-relay/config.toml
+  idiosync000/mister-groovy-relay:latest
 $EDITOR /opt/mister-groovy-relay/config.toml
 
-# 3. First run: link to your plex.tv account (interactive).
+# 2. Link to your plex.tv account (interactive).
 docker run --rm -it --network=host \
   -v /opt/mister-groovy-relay:/config \
   idiosync000/mister-groovy-relay:latest --link
 # → prints a 4-char code; open https://plex.tv/link and paste it.
 
-# 4. Long-run: detach and let it broadcast.
+# 3. Long-run: detach and let it broadcast.
 docker run -d --name mister-groovy-relay --restart unless-stopped \
   --network=host \
   -v /opt/mister-groovy-relay:/config \
@@ -61,7 +56,11 @@ every restart — neither is workable.
 
 ## Configuration reference
 
-Everything is in `config.toml` (copied from `config.example.toml`).
+Everything is in `config.toml`. The bridge writes a fully-commented
+default at `<data_dir>/config.toml` on first run if the file is missing,
+then exits so you can edit it. The canonical copy lives at
+[`internal/config/example.toml`](internal/config/example.toml) if you'd
+rather read it without starting the container.
 
 | Key                      | Default              | Meaning                                                                          |
 | ------------------------ | -------------------- | -------------------------------------------------------------------------------- |
@@ -86,9 +85,10 @@ Everything is in `config.toml` (copied from `config.example.toml`).
 
 1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
    or `go build ./cmd/mister-groovy-relay` if you want a native binary.
-2. **Configure.** Copy `config.example.toml` to your `data_dir` as
-   `config.toml`. The only mandatory edit is `mister_host` — point it at
-   your MiSTer's IP.
+2. **Configure.** Start the bridge once with no config present — it writes
+   a default `config.toml` into `data_dir` (default `/config`) and exits
+   with code 2. Edit that file; the only mandatory change is
+   `mister_host` — point it at your MiSTer's IP.
 3. **Link.** Run with `--link`. The bridge prints a 4-character code
    and the plex.tv link URL; paste the code at `https://plex.tv/link`
    while signed in to the Plex account that owns your PMS. The returned
