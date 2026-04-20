@@ -96,3 +96,34 @@ func (s *Sender) SendPayload(payload []byte) error {
 // Close tears down the underlying UDP socket. After Close any in-flight
 // reader (e.g. the Drainer goroutine) returns with a net.OpError.
 func (s *Sender) Close() error { return s.conn.Close() }
+
+// SendInitAwaitACK sends INIT, then blocks up to timeout waiting for the
+// 13-byte status reply. Returns the parsed ACK or an error (including the
+// timeout case). Callers must NOT have a Drainer goroutine reading the same
+// socket at this point — the Drainer is started AFTER the handshake
+// succeeds, otherwise it will consume the ACK first.
+//
+// Reference: groovy_mister.md — "Sender getACK(60) with 60 ms timeout,
+// failure = tear down." INIT is the ONE ack-gated handshake; every other
+// command is fire-and-forget.
+func (s *Sender) SendInitAwaitACK(initPacket []byte, timeout time.Duration) (groovy.ACK, error) {
+	if len(initPacket) == 0 || initPacket[0] != groovy.CmdInit {
+		return groovy.ACK{}, fmt.Errorf("not an INIT packet")
+	}
+	if err := s.Send(initPacket); err != nil {
+		return groovy.ACK{}, err
+	}
+	if err := s.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return groovy.ACK{}, err
+	}
+	defer s.conn.SetReadDeadline(time.Time{})
+	buf := make([]byte, groovy.ACKPacketSize*2)
+	n, _, err := s.conn.ReadFromUDP(buf)
+	if err != nil {
+		return groovy.ACK{}, fmt.Errorf("INIT ack timeout: %w", err)
+	}
+	if n != groovy.ACKPacketSize {
+		return groovy.ACK{}, fmt.Errorf("INIT ack wrong size: %d", n)
+	}
+	return groovy.ParseACK(buf[:n])
+}

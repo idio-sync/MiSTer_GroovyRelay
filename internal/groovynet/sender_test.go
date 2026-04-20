@@ -49,3 +49,71 @@ func TestSender_StableSourcePort(t *testing.T) {
 		t.Errorf("source port = %d, want 32199", s.SourcePort())
 	}
 }
+
+func TestSender_InitACKHandshakeSuccess(t *testing.T) {
+	l, err := fakemister.NewListener(":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	// Stub: fake-mister replies with a 13-byte ACK when it sees INIT.
+	// We read directly from the Listener's socket (bypassing the Run loop)
+	// so the reply path doesn't race the Listener's decoder goroutine.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		n, src, err := l.Conn().ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		if n >= 1 && buf[0] == groovy.CmdInit {
+			reply := make([]byte, groovy.ACKPacketSize)
+			reply[12] = 1 << 6 // audio-ready
+			_, _ = l.Conn().WriteToUDP(reply, src)
+		}
+	}()
+
+	addr := l.Addr().(*net.UDPAddr)
+	s, err := NewSender("127.0.0.1", addr.Port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	ack, err := s.SendInitAwaitACK(
+		groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888),
+		200*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("INIT ACK: %v", err)
+	}
+	if !ack.AudioReady() {
+		t.Error("expected audio-ready in ACK")
+	}
+	<-done
+}
+
+func TestSender_InitACKTimeout(t *testing.T) {
+	// Bind a local "black hole" socket so the destination port exists but
+	// never replies. Using a random bound socket (held open) guarantees the
+	// OS won't send ICMP Port Unreachable that would race our timeout.
+	bh, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bh.Close()
+
+	s, err := NewSender("127.0.0.1", bh.LocalAddr().(*net.UDPAddr).Port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, err = s.SendInitAwaitACK(
+		groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888),
+		60*time.Millisecond,
+	)
+	if err == nil {
+		t.Error("expected timeout error")
+	}
+}

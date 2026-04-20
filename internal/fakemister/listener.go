@@ -33,6 +33,12 @@ func NewListener(addr string) (*Listener, error) {
 // Addr returns the local UDP address the listener is bound to.
 func (l *Listener) Addr() net.Addr { return l.conn.LocalAddr() }
 
+// Conn exposes the underlying UDP socket. Used by test helpers and
+// integration harnesses that want to read/write directly (for example a
+// stub that replies with an INIT ACK to the sender under test). Not for use
+// while a Run or RunWithFields loop is actively consuming the socket.
+func (l *Listener) Conn() *net.UDPConn { return l.conn }
+
 // Close releases the underlying socket. Any in-flight Run/RunWithFields loop
 // will exit promptly after Close.
 func (l *Listener) Close() error { return l.conn.Close() }
