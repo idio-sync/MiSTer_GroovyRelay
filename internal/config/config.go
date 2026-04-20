@@ -83,10 +83,14 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("aspect_mode must be letterbox, zoom, or auto, got %q", c.AspectMode)
 	}
-	switch c.RGBMode {
-	case "rgb888", "rgba8888", "rgb565":
-	default:
-		return fmt.Errorf("rgb_mode must be rgb888, rgba8888, or rgb565, got %q", c.RGBMode)
+	// v1 scope: only rgb888 is wired through the FFmpeg pipeline. The Groovy
+	// protocol supports rgba8888 and rgb565 and the constants exist in
+	// internal/groovy and internal/core for future use, but the FFmpeg
+	// command in internal/ffmpeg/pipeline.go hardcodes -pix_fmt rgb24.
+	// Selecting a non-rgb888 mode before those wires are complete produces
+	// a torn raster. Revisit when v2+ extends the pipeline.
+	if c.RGBMode != "rgb888" {
+		return fmt.Errorf("rgb_mode: only rgb888 is supported in v1 (got %q; rgba8888/rgb565 reserved for future work)", c.RGBMode)
 	}
 	return nil
 }

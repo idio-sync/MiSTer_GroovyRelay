@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +75,28 @@ func TestValidateBadAspectMode(t *testing.T) {
 	cfg := &Config{InterlaceFieldOrder: "tff", AspectMode: "stretch"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for bad aspect mode")
+	}
+}
+
+func TestValidate_RejectsNonRGB888(t *testing.T) {
+	for _, mode := range []string{"rgba8888", "rgb565", "rgb16"} {
+		c := defaults()
+		c.RGBMode = mode
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("rgb_mode=%q: expected validation error, got nil", mode)
+			continue
+		}
+		if !strings.Contains(err.Error(), "rgb888") {
+			t.Errorf("rgb_mode=%q: error %q should mention 'rgb888'", mode, err)
+		}
+	}
+}
+
+func TestValidate_AcceptsRGB888(t *testing.T) {
+	c := defaults()
+	c.RGBMode = "rgb888"
+	if err := c.Validate(); err != nil {
+		t.Errorf("rgb_mode=rgb888: expected OK, got %v", err)
 	}
 }
