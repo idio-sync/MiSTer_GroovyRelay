@@ -1,6 +1,7 @@
 package fakemister
 
 import (
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -89,6 +90,47 @@ func TestListener_AudioHeaderThenPayload(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout")
+	}
+}
+
+func TestRunWithFields_ReassemblesAudioPayload(t *testing.T) {
+	l, err := NewListener("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	cmds := make(chan Command, 8)
+	fields := make(chan FieldEvent, 8)
+	audios := make(chan AudioEvent, 8)
+	fieldSizeFn := func() uint32 { return 720 * 240 * 3 }
+	go l.RunWithFields(cmds, fields, audios, fieldSizeFn)
+
+	addr := l.Addr().(*net.UDPAddr)
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Send a 3-byte AUDIO header declaring 8 bytes of PCM.
+	pcm := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	hdr := groovy.BuildAudioHeader(uint16(len(pcm)))
+	if _, err := conn.Write(hdr); err != nil {
+		t.Fatal(err)
+	}
+	// Send the PCM in one datagram (well under MTU).
+	if _, err := conn.Write(pcm); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev := <-audios:
+		if !bytes.Equal(ev.PCM, pcm) {
+			t.Errorf("PCM mismatch: got %x, want %x", ev.PCM, pcm)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for AudioEvent")
 	}
 }
 

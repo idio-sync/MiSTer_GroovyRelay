@@ -48,17 +48,40 @@ func newScenarioHarness(t *testing.T) *scenarioHarness {
 	l.EnableACKs(true)
 
 	events := make(chan fakemister.Command, 4096)
+	fieldsCh := make(chan fakemister.FieldEvent, 4096)
+	audios := make(chan fakemister.AudioEvent, 4096)
 	rec := fakemister.NewRecorder()
 	recDone := make(chan struct{})
 	runDone := make(chan struct{})
+	drainDone := make(chan struct{})
+	audioFanDone := make(chan struct{})
+
 	go func() {
 		for c := range events {
 			rec.Record(c)
 		}
 		close(recDone)
 	}()
+	// Drain fields — scenario assertions only count BLIT headers (via Command records),
+	// not reassembled field payloads.
 	go func() {
-		l.Run(events)
+		for range fieldsCh {
+		}
+		close(drainDone)
+	}()
+	// Fan AudioEvents into synthetic Commands with AudioPayload so Recorder.audioBytes increments.
+	go func() {
+		for ev := range audios {
+			events <- fakemister.Command{
+				Type:         groovy.CmdAudio,
+				AudioPayload: &fakemister.AudioPayload{PCM: ev.PCM},
+			}
+		}
+		close(audioFanDone)
+	}()
+	fieldSizeFn := func() uint32 { return 720 * 240 * 3 } // RAW BLIT fallback size
+	go func() {
+		l.RunWithFields(events, fieldsCh, audios, fieldSizeFn)
 		close(runDone)
 	}()
 
@@ -96,6 +119,13 @@ func newScenarioHarness(t *testing.T) *scenarioHarness {
 		sender.Close()
 		l.Close()
 		<-runDone
+		// Listener has exited; close the downstream channels so the fan-in
+		// and drain goroutines terminate, then close events and wait for
+		// the recorder goroutine.
+		close(fieldsCh)
+		close(audios)
+		<-drainDone
+		<-audioFanDone
 		close(events)
 		<-recDone
 	}
