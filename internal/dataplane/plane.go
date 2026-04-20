@@ -119,9 +119,14 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 
 	// 3. Start drainer for subsequent ACKs (frame echo, audio-ready updates).
+	//    Stop it on return so a preempting session's SendInitAwaitACK gets
+	//    uncontested access to the socket — the sender is shared across
+	//    sessions for stable source port, so the drainer MUST be explicitly
+	//    stopped; closing the socket isn't an option.
 	ackCh := make(chan groovy.ACK, 32)
 	drainer := groovynet.NewDrainer(p.cfg.Sender, ackCh)
 	go drainer.Run()
+	defer drainer.Stop()
 
 	// 4. Readers + timer.
 	videoCh := make(chan []byte, 4)

@@ -43,14 +43,40 @@ func TestPlane_StreamsFieldsToFake(t *testing.T) {
 	}
 	addr := l.Addr().(*net.UDPAddr)
 	events := make(chan fakemister.Command, 4096)
+	fieldsCh := make(chan fakemister.FieldEvent, 4096)
+	audios := make(chan fakemister.AudioEvent, 4096)
 	rec := fakemister.NewRecorder()
 	recDone := make(chan struct{})
+	drainDone := make(chan struct{})
+	audioFanDone := make(chan struct{})
 	go func() {
 		for c := range events {
 			rec.Record(c)
 		}
 		close(recDone)
 	}()
+	// Drain reassembled field payloads — this test counts BLIT headers via
+	// Command records on `events`, not FieldEvents.
+	go func() {
+		for range fieldsCh {
+		}
+		close(drainDone)
+	}()
+	// Fan AudioEvents into synthetic Commands so Recorder.audioBytes counts
+	// PCM bytes correctly. RunWithFields reassembles audio payload datagrams
+	// (which the stateless Run would not — some would even false-positive
+	// as spurious SWITCHRES commands because payload bytes occasionally
+	// start with 0x03).
+	go func() {
+		for ev := range audios {
+			events <- fakemister.Command{
+				Type:         groovy.CmdAudio,
+				AudioPayload: &fakemister.AudioPayload{PCM: ev.PCM},
+			}
+		}
+		close(audioFanDone)
+	}()
+	fieldSizeFn := func() uint32 { return 720 * 240 * 3 }
 
 	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
 	if err != nil {
@@ -90,7 +116,7 @@ func TestPlane_StreamsFieldsToFake(t *testing.T) {
 	runDone := make(chan struct{})
 	go func() {
 		<-ackDone
-		l.Run(events)
+		l.RunWithFields(events, fieldsCh, audios, fieldSizeFn)
 		close(runDone)
 	}()
 
@@ -98,6 +124,10 @@ func TestPlane_StreamsFieldsToFake(t *testing.T) {
 		sender.Close()
 		l.Close()
 		<-runDone
+		close(fieldsCh)
+		close(audios)
+		<-drainDone
+		<-audioFanDone
 		close(events)
 		<-recDone
 	})
