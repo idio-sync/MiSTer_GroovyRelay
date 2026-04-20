@@ -1,0 +1,98 @@
+// Package groovynet provides the UDP transport for the Groovy protocol:
+// a Sender that binds a stable source port, slices payloads at MTU, and a
+// Drainer (see drainer.go) that non-blockingly collects ACKs from the MiSTer.
+//
+// INIT is the ONE ack-gated handshake (60 ms timeout); every other command
+// is fire-and-forget at the transport level. Callers MUST call
+// SendInitAwaitACK before starting the Drainer on the same socket —
+// otherwise the Drainer will race the handshake read and swallow the ACK.
+package groovynet
+
+import (
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+)
+
+// Sender owns a single UDP4 socket bound to srcPort (ephemeral if srcPort=0)
+// and addresses every write at dstAddr. A Sender is safe for concurrent use:
+// Send, SendPayload, MarkBlitSent, and WaitForCongestion serialise through mu.
+// The Drainer reads on the same socket AFTER SendInitAwaitACK has completed.
+type Sender struct {
+	conn    *net.UDPConn
+	dstAddr *net.UDPAddr
+	srcPort int
+
+	mu           sync.Mutex // serialises Writes + Mark*
+	lastBlitSize int
+	lastBlitTime time.Time
+}
+
+// NewSender binds a UDP4 socket on srcPort (0 = OS-assigned ephemeral) and
+// targets dstHost:dstPort for every Write. SO_REUSEADDR is set via the
+// platform-specific controlSocket so a rapid restart does not hit TIME_WAIT.
+// Returns the bound Sender or a wrapping error.
+func NewSender(dstHost string, dstPort, srcPort int) (*Sender, error) {
+	dst, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", dstHost, dstPort))
+	if err != nil {
+		return nil, err
+	}
+	lc := &net.ListenConfig{Control: controlSocket}
+	addr := fmt.Sprintf(":%d", srcPort)
+	pc, err := lc.ListenPacket(nil, "udp4", addr)
+	if err != nil {
+		return nil, fmt.Errorf("bind source %d: %w", srcPort, err)
+	}
+	conn := pc.(*net.UDPConn)
+
+	// Reference sender sets SO_SNDBUF >= 2 MB to absorb 518 KB field bursts.
+	_ = conn.SetWriteBuffer(2 * 1024 * 1024)
+	_ = conn.SetReadBuffer(256 * 1024)
+
+	actual := conn.LocalAddr().(*net.UDPAddr).Port
+	return &Sender{conn: conn, dstAddr: dst, srcPort: actual}, nil
+}
+
+// SourcePort returns the actual bound source port (resolved after bind even
+// when srcPort=0 was requested).
+func (s *Sender) SourcePort() int { return s.srcPort }
+
+// Conn exposes the underlying UDPConn for co-located components (Drainer).
+// Cross-package access beyond groovynet is not supported.
+func (s *Sender) Conn() *net.UDPConn { return s.conn }
+
+// Send writes a single packet (typically a command header like INIT,
+// SWITCHRES, CLOSE, BLIT_FIELD_VSYNC, or AUDIO header). Does not enter the
+// congestion window.
+func (s *Sender) Send(pkt []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.conn.WriteToUDP(pkt, s.dstAddr)
+	return err
+}
+
+// SendPayload slices large payloads into MTU-sized datagrams
+// (groovy.MaxDatagram = 1472). Used for BLIT field bytes and AUDIO PCM,
+// which stream as a pure byte sequence on the same socket with no
+// per-chunk framing.
+func (s *Sender) SendPayload(payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := 0; i < len(payload); i += groovy.MaxDatagram {
+		end := i + groovy.MaxDatagram
+		if end > len(payload) {
+			end = len(payload)
+		}
+		if _, err := s.conn.WriteToUDP(payload[i:end], s.dstAddr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close tears down the underlying UDP socket. After Close any in-flight
+// reader (e.g. the Drainer goroutine) returns with a net.OpError.
+func (s *Sender) Close() error { return s.conn.Close() }
