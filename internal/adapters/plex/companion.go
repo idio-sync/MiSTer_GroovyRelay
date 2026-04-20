@@ -11,6 +11,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -247,15 +248,64 @@ func (c *Companion) handleMirrorDetails(w http.ResponseWriter, r *http.Request) 
 	writeOKResponse(w)
 }
 
-// Timeline handlers are wired in Task 7.5.
+// handleTimelineSubscribe registers a controller for 1 Hz timeline pushes.
+// The protocol/port/clientID come from query params; the host is derived from
+// the request's RemoteAddr (minus port) since Plex controllers don't
+// advertise their own IP in the subscribe request.
 func (c *Companion) handleTimelineSubscribe(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	if c.timeline == nil {
+		http.Error(w, "timeline not wired", 503)
+		return
+	}
+	q := r.URL.Query()
+	// r.RemoteAddr is "ip:port" (or "[::1]:port" for IPv6); strip the port.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	c.timeline.Subscribe(
+		q.Get("X-Plex-Client-Identifier"),
+		host,
+		q.Get("port"),
+		q.Get("protocol"),
+		atoiDefault(q.Get("commandID"), 0),
+	)
+	writeOKResponse(w)
 }
+
 func (c *Companion) handleTimelineUnsubscribe(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	if c.timeline == nil {
+		http.Error(w, "timeline not wired", 503)
+		return
+	}
+	c.timeline.Unsubscribe(r.URL.Query().Get("X-Plex-Client-Identifier"))
+	writeOKResponse(w)
 }
+
+// handleTimelinePoll is the long-poll fallback used by Plexamp. v1 returns
+// the current timeline XML immediately (no wait=1 blocking semantics); the
+// broadcast loop still pushes updates to subscribed controllers.
 func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	if c.timeline == nil {
+		http.Error(w, "timeline not wired", 503)
+		return
+	}
+	st := core.SessionStatus{}
+	if c.core != nil {
+		st = c.core.Status()
+	}
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(c.timeline.buildTimelineXML(st)))
+}
+
+// atoiDefault parses an int, returning d on failure. Used for Plex query
+// params that may be missing or malformed.
+func atoiDefault(s string, d int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return d
+	}
+	return n
 }
 
 // rememberPlaySession stores the last playMedia request so the timeline
