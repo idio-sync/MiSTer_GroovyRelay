@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jedivoodoo/mister-groovy-relay/internal/adapters/plex"
 	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
@@ -129,11 +130,28 @@ func outboundIP() string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// runLinkFlow is filled in by Task 11.2. For Task 11.1 it's a stub so the
-// --link verb is wired at the CLI layer without requiring the plex.tv
-// client calls to be usable yet.
+// runLinkFlow drives the plex.tv PIN pairing dance: request a PIN, print
+// it to stdout for the operator to enter at plex.tv/link, poll until the
+// user completes the claim, then persist the returned auth token. Writes
+// the code to stdout (not stderr) so the operator can pipe it to a QR
+// generator or `tee` file. Exits non-zero on any failure; the caller can
+// re-run `--link` to retry.
 func runLinkFlow(cfg *config.Config, store *plex.StoredData) {
-	// See Task 11.2.
-	_ = cfg
-	_ = store
+	pin, err := plex.RequestPIN(cfg.DeviceUUID, cfg.DeviceName)
+	if err != nil {
+		slog.Error("pin request", "err", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Open https://plex.tv/link and enter this code: %s\n", pin.Code)
+	token, err := plex.PollPIN(pin.ID, cfg.DeviceUUID, 5*time.Minute)
+	if err != nil {
+		slog.Error("pin poll", "err", err)
+		os.Exit(1)
+	}
+	store.AuthToken = token
+	if err := plex.SaveStoredData(cfg.DataDir, store); err != nil {
+		slog.Error("save token", "err", err)
+		os.Exit(1)
+	}
+	fmt.Println("Linked successfully.")
 }
