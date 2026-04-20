@@ -1,7 +1,9 @@
 package fakemister
 
 import (
+	"net"
 	"testing"
+	"time"
 
 	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
 )
@@ -36,5 +38,34 @@ func TestParseCommand_UnknownType(t *testing.T) {
 	_, err := ParseCommand([]byte{99, 0, 0})
 	if err == nil {
 		t.Error("expected error")
+	}
+}
+
+func TestListener_ReceivesInit(t *testing.T) {
+	l, err := NewListener(":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	events := make(chan Command, 8)
+	go l.Run(events)
+
+	// Send an INIT to the listener's port.
+	addr := l.Addr()
+	conn, err := net.Dial("udp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.Write(groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888))
+
+	select {
+	case cmd := <-events:
+		if cmd.Type != groovy.CmdInit {
+			t.Errorf("got cmd %d", cmd.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for command")
 	}
 }

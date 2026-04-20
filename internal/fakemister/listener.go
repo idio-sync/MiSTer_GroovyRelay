@@ -3,10 +3,60 @@ package fakemister
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"math"
+	"net"
 
 	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
 )
+
+// Listener wraps a UDP socket and decodes incoming datagrams into typed
+// Commands. The zero-value is not usable; construct via NewListener.
+type Listener struct {
+	conn *net.UDPConn
+}
+
+// NewListener binds a UDP socket at addr (e.g. ":32100" or ":0" for an
+// ephemeral port) and returns a ready-to-Run listener.
+func NewListener(addr string) (*Listener, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &Listener{conn: conn}, nil
+}
+
+// Addr returns the local UDP address the listener is bound to.
+func (l *Listener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+// Close releases the underlying socket. Any in-flight Run/RunWithFields loop
+// will exit promptly after Close.
+func (l *Listener) Close() error { return l.conn.Close() }
+
+// Run reads datagrams and sends parsed Commands into events. Unknown packets
+// are logged but not fatal. Exits when the connection is closed.
+//
+// NOTE: Run treats every datagram as an independent command. It does NOT
+// understand BLIT/AUDIO payload datagrams — use RunWithFields for that.
+func (l *Listener) Run(events chan<- Command) {
+	buf := make([]byte, groovy.MaxDatagram*2)
+	for {
+		n, _, err := l.conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		cmd, err := ParseCommand(buf[:n])
+		if err != nil {
+			slog.Debug("fakemister parse error", "err", err, "n", n)
+			continue
+		}
+		events <- cmd
+	}
+}
 
 // InitPayload carries the five INIT bytes the receiver uses to set up the
 // session. NO width/height/interlace here — those come from SWITCHRES.
