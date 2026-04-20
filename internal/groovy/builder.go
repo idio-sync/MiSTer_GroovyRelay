@@ -120,6 +120,12 @@ var NTSC480i60 = func() Modeline {
 // reconstructs the 525-line frame from two 262/263-line fields. Verify the
 // exact vertical porches against a working GroovyMAME pcap before shipping.
 
+// BuildClose returns the 1-byte CLOSE command. Sender tears down the socket
+// after; receiver resets session state on next INIT. No ACK.
+func BuildClose() []byte {
+	return []byte{CmdClose}
+}
+
 // BlitOpts controls the variant of the BLIT_FIELD_VSYNC header produced by
 // BuildBlitHeader. See BuildBlitHeader for the header-length-to-variant map.
 type BlitOpts struct {

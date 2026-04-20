@@ -152,3 +152,13 @@ func TestBuildBlitHeader_LZ4Delta(t *testing.T) {
 		t.Errorf("delta marker at [12] = 0x%x, want 0x%x", h[12], BlitFlagDelta)
 	}
 }
+
+func TestBuildClose(t *testing.T) {
+	got := BuildClose()
+	if len(got) != 1 {
+		t.Fatalf("CLOSE must be 1 byte, got %d", len(got))
+	}
+	if got[0] != CmdClose {
+		t.Errorf("cmd = %d, want %d", got[0], CmdClose)
+	}
+}
