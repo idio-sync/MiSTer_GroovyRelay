@@ -43,7 +43,9 @@ type PinResponse struct {
 // plex.tv/link. AuthToken will be empty until the PIN is claimed.
 func RequestPIN(clientID, deviceName string) (*PinResponse, error) {
 	form := url.Values{}
-	form.Set("strong", "true")
+	// Do NOT set strong=true. "Strong" PINs are ~25-char opaque tokens
+	// meant for machine auth flows; plex.tv/link only accepts the short
+	// 4-character human Code returned when strong is omitted/false.
 	form.Set("X-Plex-Client-Identifier", clientID)
 	form.Set("X-Plex-Device-Name", deviceName)
 	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")

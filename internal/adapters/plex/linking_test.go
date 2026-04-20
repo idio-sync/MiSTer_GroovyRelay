@@ -15,7 +15,8 @@ import (
 // hits the documented endpoint, sets the required X-Plex-Client-Identifier
 // form field, and decodes the JSON body into PinResponse.
 func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
-	var gotPath, gotClientID, gotDeviceName, gotContentType string
+	var gotPath, gotClientID, gotDeviceName, gotContentType, gotStrong string
+	var strongWasSet bool
 	var gotMethod string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
@@ -24,6 +25,8 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 		_ = r.ParseForm()
 		gotClientID = r.PostForm.Get("X-Plex-Client-Identifier")
 		gotDeviceName = r.PostForm.Get("X-Plex-Device-Name")
+		_, strongWasSet = r.PostForm["strong"]
+		gotStrong = r.PostForm.Get("strong")
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":42,"code":"ABCD","authToken":""}`)
 	}))
@@ -51,6 +54,12 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	}
 	if gotDeviceName != "MiSTer-Test" {
 		t.Errorf("wrong device name: %q", gotDeviceName)
+	}
+	// Regression guard: strong=true makes plex.tv return a ~25-char opaque
+	// token, which plex.tv/link refuses. The flow must request the default
+	// short (4-char) human code — so strong must be unset or explicitly false.
+	if strongWasSet && gotStrong != "false" {
+		t.Errorf("strong form field must be unset or false for plex.tv/link flow, got %q", gotStrong)
 	}
 	if pr.ID != 42 || pr.Code != "ABCD" {
 		t.Errorf("unexpected PinResponse: %+v", pr)
