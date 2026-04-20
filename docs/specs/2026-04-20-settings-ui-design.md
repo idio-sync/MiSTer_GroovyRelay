@@ -75,7 +75,27 @@ adapters.
   its own Plex account (which overwrites the owner's token and starts
   sending their library to the owner's CRT), rebind ports, or disable
   adapters. README gains an explicit line: *"The settings UI has no
-  authentication. Only expose the `http_port` on networks you trust."*
+  authentication. Only expose the `http_port` on networks you trust; if
+  stronger isolation is needed, put it behind a reverse proxy with
+  basic auth or restrict access with host firewall rules."*
+- **CSRF defense-in-depth.** Even on a trusted LAN, a drive-by tab in
+  the operator's browser can POST cross-origin to the bridge
+  (`http://bridge.lan:32500/ui/...`). Same-origin policy does not stop
+  form POSTs; without a token mechanism, a hostile page could re-pair
+  Plex without the user noticing. v1 mitigation is a small middleware
+  that rejects all state-changing methods (POST/PUT/DELETE) unless
+  either `Sec-Fetch-Site: same-origin` is present or the `Origin`
+  header matches the request `Host`. Modern browsers always emit
+  `Sec-Fetch-Site`; curl / scripted same-machine use can set `Origin`
+  explicitly if needed. ~10 lines of middleware, applies uniformly to
+  `/ui/*` and Plex Companion routes. Does not require any UI changes.
+- **Bind address is all-interfaces by design.** `--network=host` is
+  required for GDM multicast (the bridge cannot work without it).
+  Under host networking, binding the HTTP listener to `127.0.0.1`
+  would make the UI unreachable from the operator's laptop, which is
+  its intended client. The listener binds all interfaces on the
+  configured port; reachability is controlled at the network
+  layer (LAN topology, firewall) rather than the bind.
 - **No build pipeline.** No `npm`, no bundler. Templates are
   `html/template`; one vendored `htmx.min.js` (~14 KB) + three bundled
   woff2 fonts (~180 KB total) is the only client asset cost.
@@ -218,7 +238,16 @@ enabled = false
 type Config struct {
     Bridge   BridgeConfig              `toml:"bridge"`
     Adapters map[string]toml.Primitive `toml:"adapters"`
+
+    // meta is the TOML decoder metadata captured during Load().
+    // Required by toml.PrimitiveDecode() when adapters hydrate their
+    // own Primitives into concrete structs. Exposed via
+    // Config.MetaData() so adapters don't take a dependency on the
+    // internal field name.
+    meta toml.MetaData
 }
+
+func (c *Config) MetaData() toml.MetaData { return c.meta }
 
 type BridgeConfig struct {
     DataDir string       `toml:"data_dir"`
@@ -233,27 +262,51 @@ type BridgeConfig struct {
 Each adapter package owns its own `Config` struct, defaults, and
 `Validate()`. The core `Load()` uses `toml.Primitive` to defer decoding
 of `[adapters.*]`; each adapter decodes its own slice during
-registration. This keeps the core unaware of adapter field details.
+registration using `toml.PrimitiveDecode(raw, &out)` with the meta
+captured at load time. This keeps the core unaware of adapter field
+details and preserves TOML-native types (dates, times) across the
+deferred decode boundary.
 
 ### 5.4 One-shot migration
 
 On `Load()`:
 
 1. Read `config.toml`.
-2. If the top-level has any known legacy flat key (e.g., `mister_host`)
-   and the `[bridge]` table is absent, treat as legacy.
-3. Back up the original to `config.toml.pre-ui-migration` (mode 0644).
-4. Build the new sectioned struct from the legacy values, filling in
+2. Scan for the presence of two disjoint signal sets:
+   - **Legacy signal:** any known flat top-level key (e.g.,
+     `mister_host`, `device_name`, `interlace_field_order`, ...). A
+     static list of the 17 legacy keys in §5.2 is baked into the
+     loader.
+   - **Sectioned signal:** the `[bridge]` table is present.
+3. Branch:
+   - **Legacy only (sectioned signal absent):** run migration (steps
+     4–7 below).
+   - **Sectioned only (no legacy keys):** no-op, proceed to decode as
+     sectioned.
+   - **Both present (partially-migrated / hand-edited):** abort
+     startup with a clear error listing the residual top-level keys:
+     *"Your config.toml appears partially migrated: it contains both
+     a `[bridge]` section and legacy top-level keys (`mister_host`,
+     `audio_channels`). Either remove the top-level keys (the
+     `[bridge]` section is authoritative) or delete the `[bridge]`
+     section to re-migrate from the flat format."* This is the
+     safest default — silent-ignore would have the user editing
+     unreachable fields.
+   - **Neither present (fresh install, no keys):** proceed with
+     defaults.
+4. Back up the original to `config.toml.pre-ui-migration` (mode 0644).
+5. Build the new sectioned struct from the legacy values, filling in
    defaults for anything missing.
-5. Write the sectioned TOML atomically (tempfile + rename + fsync).
-6. Log at INFO: *"Migrated legacy flat config to sectioned format;
+6. Write the sectioned TOML atomically (tempfile + rename + fsync).
+7. Log at INFO: *"Migrated legacy flat config to sectioned format;
    backup at config.toml.pre-ui-migration"*.
-7. Continue startup against the in-memory sectioned config.
+8. Continue startup against the in-memory sectioned config.
 
-Detection is by presence of the `[bridge]` table — once it exists,
-migration is never attempted again. Migration is one-shot and
-idempotent; if re-run against an already-migrated file, it does
-nothing.
+Migration is one-shot and idempotent; if re-run against an
+already-migrated file with no residual legacy keys, it does nothing.
+The partial-migration branch exists to protect users who hand-edit
+their config between releases — a real failure mode on homelab
+deployments.
 
 ### 5.5 Atomic writes
 
@@ -287,9 +340,18 @@ type Adapter interface {
     // Fields declares the UI form schema, in render order.
     Fields() []FieldDef
 
-    // DecodeConfig parses this adapter's TOML section. Called at
-    // startup and after every UI save.
-    DecodeConfig(raw json.RawMessage) error
+    // DecodeConfig parses this adapter's TOML section. Takes a
+    // toml.Primitive directly (not JSON) so TOML-native types
+    // (datetime, local date) survive decode. Called at startup and
+    // after every UI save.
+    DecodeConfig(raw toml.Primitive, meta toml.MetaData) error
+
+    // IsEnabled reports whether this adapter should be running.
+    // Persisted as [adapters.<name>].enabled in TOML. The registry
+    // consults this at startup (only enabled adapters are Start'd)
+    // and after every save (transitions between enabled/disabled are
+    // the toggle endpoint's trigger for Start/Stop).
+    IsEnabled() bool
 
     // Start begins serving. Idempotent; must respect ctx cancellation.
     Start(ctx context.Context) error
@@ -302,7 +364,7 @@ type Adapter interface {
 
     // ApplyConfig receives a validated new config and decides what
     // scope of change is needed. Returns what scope was used.
-    ApplyConfig(new json.RawMessage) (ApplyScope, error)
+    ApplyConfig(raw toml.Primitive, meta toml.MetaData) (ApplyScope, error)
 }
 
 type Status struct {
@@ -349,6 +411,17 @@ Hand-written `Fields()` per adapter (not struct-tag reflection) —
 ~50 total entries across 5 adapters, and hand-written lets each field
 carry real human help text and correct `ApplyScope` metadata.
 
+**`HealthCheck()` is explicitly not in v1.** Future adapters
+(Jellyfin, URL with basic-auth) will want a "test connection" button
+that is distinct from lifecycle `Status()` — a synchronous,
+user-initiated reachability probe. v1 covers this on the Plex adapter
+through `Status().State == Error` (plex.tv heartbeat failures
+already surface as ERR). When the second adapter lands, the
+interface grows a `HealthCheck(ctx) error` method and a
+corresponding `/ui/adapter/{name}/healthcheck` POST route. Adding
+it now is premature; adding it then is a contained change to the
+interface and three adapter packages. Noted in §14.
+
 ### 6.3 Registry
 
 ```go
@@ -371,11 +444,17 @@ reg.Register(plex.New(bridgeCfg, logger))
 // future: reg.Register(jellyfin.New(...))
 
 for _, a := range reg.List() {
-    raw := cfg.Adapters[a.Name()]
-    if err := a.DecodeConfig(raw); err != nil { /* fatal */ }
+    raw := cfg.Adapters[a.Name()]     // toml.Primitive
+    if err := a.DecodeConfig(raw, cfg.MetaData); err != nil { /* fatal */ }
     if a.IsEnabled() { go a.Start(ctx) }
 }
 ```
+
+The `toml.MetaData` is the second return value from `toml.Decode`
+/ `toml.Unmarshal` — it carries type info needed by `PrimitiveDecode`
+to hydrate a `toml.Primitive` into a concrete struct. `config.Load()`
+captures it alongside the `*Config` and exposes it for adapter
+decode.
 
 ### 6.4 Plex adapter refactor
 
@@ -391,27 +470,33 @@ for _, a := range reg.List() {
 
 ### 7.1 Path allocation
 
-| Prefix                         | Owner                     |
-|--------------------------------|---------------------------|
-| `/resources`                   | Plex Companion (existing) |
-| `/player/*`                    | Plex Companion (existing) |
-| `/timeline/*`                  | Plex Companion (existing) |
-| `/`                            | UI (redirects to `/ui/`)  |
-| `/ui/`                         | UI shell                  |
-| `/ui/static/*`                 | embedded CSS, fonts, htmx |
-| `/ui/bridge`                   | GET bridge panel          |
-| `/ui/bridge/save`              | POST bridge save          |
-| `/ui/adapter/{name}`           | GET adapter panel         |
-| `/ui/adapter/{name}/save`      | POST adapter save         |
-| `/ui/adapter/{name}/toggle`    | POST enable/disable       |
-| `/ui/adapter/{name}/status`    | GET status fragment       |
-| `/ui/sidebar/status`           | GET full sidebar status   |
-| `/ui/plex/link/start`          | POST begin PIN flow       |
-| `/ui/plex/link/status`         | GET poll for token        |
-| `/ui/plex/unlink`              | POST clear token          |
+| Prefix                                 | Owner                     |
+|----------------------------------------|---------------------------|
+| `/resources`                           | Plex Companion (existing) |
+| `/player/*`                            | Plex Companion (existing) |
+| `/timeline/*`                          | Plex Companion (existing) |
+| `/`                                    | UI (redirects to `/ui/`)  |
+| `/ui/`                                 | UI shell                  |
+| `/ui/static/*`                         | embedded CSS, fonts, htmx |
+| `/ui/bridge`                           | GET bridge panel          |
+| `/ui/bridge/save`                      | POST bridge save          |
+| `/ui/sidebar/status`                   | GET full sidebar status   |
+| `/ui/adapter/{name}`                   | GET adapter panel         |
+| `/ui/adapter/{name}/save`              | POST adapter save         |
+| `/ui/adapter/{name}/toggle`            | POST enable/disable       |
+| `/ui/adapter/{name}/status`            | GET status fragment       |
+| `/ui/adapter/plex/link/start`          | POST begin PIN flow       |
+| `/ui/adapter/plex/link/status`         | GET poll for token        |
+| `/ui/adapter/plex/unlink`              | POST clear token          |
 
-Future adapters add their own `/ui/{name}/*` setup routes (Jellyfin
-will need e.g. `/ui/jellyfin/test-connection`).
+**Route-naming convention.** Non-adapter shell routes live under
+`/ui/` (sidebar, bridge, static). Anything an adapter owns lives
+under `/ui/adapter/{name}/*`, including adapter-specific setup
+flows. Jellyfin's future test-connection is
+`/ui/adapter/jellyfin/test-connection`; a URL adapter's bookmark
+list would be `/ui/adapter/url/bookmarks`. This keeps the route
+surface predictable and preserves the invariant that every
+adapter-owned URL is discoverable from the adapter's name.
 
 ### 7.2 Server
 
@@ -554,8 +639,13 @@ for CRT-adjacent feel without being a glowing-phosphor pastiche.
 ### 8.5 Motion
 
 - **Panel swap on sidebar click** — 180ms `ease-out-quart`, opacity
-  0→1 + translateY(4px→0) via the CSS view-transitions API and htmx's
-  `transition:true` swap modifier.
+  0→1 + translateY(4px→0). htmx's `transition:true` swap modifier is
+  the trigger: when the browser supports the CSS view-transitions API
+  (Chrome 111+, Safari 18+, Firefox behind a flag), htmx wraps the
+  swap in `document.startViewTransition()` and the CSS
+  `::view-transition-*` pseudo-elements apply the animation. When the
+  API is absent, the swap happens instantly — this is progressive
+  enhancement, not a fallback; the motion is decoration.
 - **Toast entrance** — 240ms ease-out, translateY(-8px→0) + opacity,
   auto-dismiss after 4s with 120ms fade out (persistent toasts skip
   auto-dismiss).
@@ -643,9 +733,9 @@ with the new values.
 ### 9.4 Dispatcher
 
 ```go
-func (a *Adapter) ApplyConfig(raw json.RawMessage) (ApplyScope, error) {
+func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (ApplyScope, error) {
     var new plex.Config
-    if err := json.Unmarshal(raw, &new); err != nil { return 0, err }
+    if err := meta.PrimitiveDecode(raw, &new); err != nil { return 0, err }
     if err := new.Validate(); err != nil { return 0, err }
 
     diff := a.cfg.Diff(&new)
@@ -680,22 +770,47 @@ Command is selectable + copy-icon. No auto-restart: orphaning a
 running Plex cast without warning is user-hostile, and Docker
 orchestration is the operator's responsibility.
 
+**Special case — `http_port` changed.** The UI itself is bound to the
+old port; after restart the user will need to re-navigate. The toast
+in this case adds a line:
+
+```
+Saved. Restart the container to apply.
+    docker restart mister-groovy-relay
+
+After restart, the settings UI will be at:
+    http://<your-host>:32501/
+```
+
+`<your-host>` is filled in from the request's `Host` header (stripped
+of port). Prevents the user from being left guessing where the UI
+moved. Paired with the pre-flight probe in §11.3.1, this is the full
+mitigation for the "port-change lockout" failure mode.
+
 ## 10. Plex linking flow
 
 ### 10.1 State machine
 
 ```
-UNLINKED ──(POST /ui/plex/link/start)──► REQUESTED
-                                             │
+UNLINKED ──(POST /ui/adapter/plex/link/start)──► REQUESTED
+                                             │ ◄─── (re-click: abandon
+                                             │       prior PIN, start
+                                             │       new one)
                                              │ (server polls plex.tv every 2s)
                                              │
                                              ▼
                                          LINKED
                                              │
-                                             │ (POST /ui/plex/unlink)
+                                             │ (POST /ui/adapter/plex/unlink)
                                              │
                                              ▼
                                          UNLINKED
+
+self-loop from REQUESTED:
+  - user clicks "Link" again while one is pending → prior PendingLink
+    is discarded (its polling goroutine sees ctx.Done and exits),
+    a new PIN is requested. plex.tv times out the old PIN on their
+    side within 15 min.
 
 error branches from REQUESTED:
   - PIN expired (15 min)  → UNLINKED  (toast: code expired)
@@ -711,9 +826,9 @@ state across restarts (the flow is ~30 seconds; start over is fine).
 
 | Method | Path                    | Returns                                                           |
 |--------|-------------------------|-------------------------------------------------------------------|
-| POST   | `/ui/plex/link/start`   | 200 + fragment with code + poll attribute. Starts polling goroutine. |
-| GET    | `/ui/plex/link/status`  | 202 + retry fragment (pending) / 200 + linked fragment / 410 + try-again fragment. |
-| POST   | `/ui/plex/unlink`       | 200 + unlinked fragment. Stops adapter, renames `plex.json` → `.plex.json.unlinked-<ts>`, restarts adapter. |
+| POST   | `/ui/adapter/plex/link/start`   | 200 + fragment with code + poll attribute. Starts polling goroutine. |
+| GET    | `/ui/adapter/plex/link/status`  | 202 + retry fragment (pending) / 200 + linked fragment / 410 + try-again fragment. |
+| POST   | `/ui/adapter/plex/unlink`       | 200 + unlinked fragment. Stops adapter, renames `plex.json` → `.plex.json.unlinked-<ts>`, restarts adapter. |
 
 ### 10.3 Fragment UX
 
@@ -737,7 +852,7 @@ fragment:
      ── Cancel
 ```
 
-Fragment has `hx-get="/ui/plex/link/status" hx-trigger="every 2s"
+Fragment has `hx-get="/ui/adapter/plex/link/status" hx-trigger="every 2s"
 hx-target="closest section"`. Each poll refreshes the countdown or
 transitions to linked/expired. Server-rendered countdown; no JS timer.
 
@@ -783,12 +898,17 @@ Save handler:
 
 1. Parse form → candidate `Config`.
 2. `candidate.Validate()`. If errors: re-render form with errors, stop.
-3. Serialize full config → `WriteAtomic(path)`.
-4. Call `adapter.ApplyConfig(candidate)`.
-5. If apply fails: persistent toast *"Save persisted but apply failed:
+3. **Pre-flight probes** (see §11.3.1 below). If any probe fails,
+   re-render form with the failure bound to the offending field.
+   Nothing is persisted.
+4. Serialize full config → `WriteAtomic(path)`.
+5. Call `adapter.ApplyConfig(candidate)` (or, for bridge-scope
+   restart-cast, call `DropActiveCast()` on every enabled adapter —
+   see §11.3.2 for partial-failure rules).
+6. If apply fails: persistent toast *"Save persisted but apply failed:
    <err>. Running state is unchanged; on-disk config reflects your
    change. Fix and re-save."* Status badge goes `ERR`.
-6. Re-render panel with the new values.
+7. Re-render panel with the new values.
 
 **File wins.** A crash between write and apply leaves the file
 correct for the next startup to pick up. The alternative
@@ -799,6 +919,55 @@ restart` or a fixing-save.
 No rollback on apply failure (Option A in brainstorming). Rollback is
 tempting but introduces races with concurrent saves and worse failure
 modes when disk/permissions are the underlying problem.
+
+#### 11.3.1 Pre-flight probes for bindable fields
+
+The one failure mode that the write-before-apply model handles badly
+is *"save succeeds, container restart fails because the new config is
+unbootable."* The prime example: the user changes `bridge.ui.http_port`
+to a port another container is already bound to. `WriteAtomic`
+succeeds; the running bridge is unaffected (we never rebind); but on
+the next `docker restart` the bridge exits with a bind error before
+the UI comes up, leaving the user unable to reach the settings page
+to fix the problem.
+
+Mitigation is a pre-flight probe for bindable restart-bridge fields
+*before* `WriteAtomic`:
+
+- `bridge.ui.http_port` — open a listener on the new port, immediately
+  close it. If the bind fails, re-render the form with a field-level
+  error on `http_port`: *"Port 32501 is already in use. Choose a
+  different port or free the port before saving."*
+- `bridge.mister.source_port` — same probe on a UDP bind.
+- `bridge.mister.host` / `.port` — no probe (we cannot verify the
+  remote MiSTer is reachable without sending a packet it may not
+  understand; user sees a cast failure downstream).
+- `bridge.data_dir` — filesystem probe: directory exists and is
+  writable.
+
+Probes are best-effort, not guarantees — a port that's free at
+pre-flight could be taken by the next moment. But catching the 99%
+case of "I meant 32500, typed 32100" is worth the ~20 lines of probe
+code.
+
+#### 11.3.2 Partial-failure semantics for bridge-scope changes
+
+Some bridge-scope saves cascade to every enabled adapter (e.g.,
+`bridge.audio.sample_rate` — the shared ffmpeg pipeline is
+adapter-agnostic, so every adapter's active cast must be dropped).
+The handler iterates the registry and calls `DropActiveCast()` on
+each. If one adapter succeeds and another fails:
+
+- The file is already written (write-before-apply).
+- Collect per-adapter results into a map `{adapterName: error|nil}`.
+- Toast surfaces the aggregate: *"Saved. Dropped Plex cast. Jellyfin
+  failed to drop: <err> — adapter went to ERR."*
+- Each failing adapter's status badge goes `ERR` with its own
+  message; each succeeding adapter's state is as expected.
+- The save is **never partially rolled back** on the file — file
+  still wins. User fixes the error (typically by toggling the
+  failing adapter off and on) or restarts the container, at which
+  point the file-correct state is loaded cleanly.
 
 ### 11.4 Concurrent edits
 
@@ -816,6 +985,12 @@ the linking flow, not edited in the form). For future adapters
 - Rendered as `<input type="password">` with empty value + help text
   *"Leave empty to keep existing"*.
 - On save, empty means unchanged; clearing requires a `── Clear` button.
+- Clearing a `Required: true` secret is rejected by
+  `Config.Validate()` — the field-level error reads *"This field is
+  required. To change the value, type a new one; to remove it
+  entirely, disable the adapter."* This keeps the
+  clear/required-secret interaction explicit rather than leaving the
+  adapter half-configured.
 - Stored plaintext in `config.toml` (matches today's `plex.json`
   posture). File-system permissions are the only protection — same
   as the existing token file. Revisit if v2 needs stronger.
@@ -970,6 +1145,20 @@ volume. Existing `plex.json` token file is unaffected. The CLI
 - **Secrets split to a separate file** with mode 0600, if any future
   adapter needs higher secret confidentiality than "config file
   permissions."
+- **`HealthCheck(ctx) error` interface method.** v1 relies on
+  `Status().State == Error` for lifecycle-level health reporting.
+  When the second adapter lands (Jellyfin being the likely first
+  non-Plex), a user-initiated "Test Connection" button becomes
+  useful — it needs a synchronous probe distinct from passive
+  state. Add `HealthCheck()` to the `Adapter` interface then;
+  wire `/ui/adapter/{name}/healthcheck` as a POST route that
+  returns a toast fragment with the result. Retrofit to all
+  adapters at that time (small; Plex's is "ping
+  plex.tv/api/v2/user with the stored token").
+- **OKLCH `rgb()` fallbacks** for older browsers. Current v1 target
+  is Chrome 120+ / Firefox 120+ / Safari 17+ (§3) where `oklch()`
+  works. Consider fallbacks if homelab users on older Firefox ESR
+  builds complain.
 
 ## 15. Glossary
 
