@@ -43,12 +43,12 @@ type PlaneConfig struct {
 //  6. Pump loop: one BLIT per tick, AUDIO when ACK bit 6 is set.
 //  7. CLOSE on ctx cancel or ffmpeg exit.
 type Plane struct {
-	cfg        PlaneConfig
-	proc       *ffmpeg.Process
-	positionMs atomic.Int64
-	audioReady atomic.Bool
-	fpgaFrame  atomic.Uint32
-	done       chan struct{}
+	cfg            PlaneConfig
+	proc           *ffmpeg.Process
+	positionFields atomic.Int64 // fields emitted since session start; Position() derives ms
+	audioReady     atomic.Bool
+	fpgaFrame      atomic.Uint32
+	done           chan struct{}
 }
 
 // NewPlane constructs a Plane that is ready to Run. The Sender inside cfg
@@ -59,10 +59,26 @@ func NewPlane(cfg PlaneConfig) *Plane {
 }
 
 // Position returns the current playback offset since start. Seeded with
-// cfg.SeekOffsetMs, advances by one field period (~16 ms) per tick.
-// The timeline broadcaster (Phase 8) queries this every second.
+// cfg.SeekOffsetMs; advanced by one NTSC field period (1001/60 ms, exact)
+// per tick. The timeline broadcaster (plex adapter) queries this every
+// second; exact integer math prevents drift relative to PMS's timestamps.
 func (p *Plane) Position() time.Duration {
-	return time.Duration(p.positionMs.Load()) * time.Millisecond
+	fields := p.positionFields.Load()
+	ms := fields*1001/60 + int64(p.cfg.SeekOffsetMs)
+	return time.Duration(ms) * time.Millisecond
+}
+
+// resetPosition clears the field counter. Called at the start of Run before
+// the pump loop begins — ensures each session starts at exactly the seek
+// offset.
+func (p *Plane) resetPosition() {
+	p.positionFields.Store(0)
+}
+
+// advancePosition increments the field counter by one. Called once per field
+// tick after a successful BLIT (or BLIT-dup) send.
+func (p *Plane) advancePosition() {
+	p.positionFields.Add(1)
 }
 
 // Done returns a channel closed when Run exits (EOF, ctx cancel, or error).
@@ -115,10 +131,8 @@ func (p *Plane) Run(ctx context.Context) error {
 	go ReadAudioFromPipe(proc.AudioPipe(), p.cfg.AudioRate, p.cfg.AudioChans, audioCh)
 	go RunFieldTimer(ctx, 59.94, ticks)
 
-	// 5. Position bookkeeping — one tick = 1/59.94 s ≈ 16.683 ms.
-	//    Integer approximation is adequate for the timeline broadcast.
-	const fieldPeriodMs = int64(16)
-	p.positionMs.Store(int64(p.cfg.SeekOffsetMs))
+	// 5. Position bookkeeping — one tick = one NTSC field (1001/60 ms, exact).
+	p.resetPosition()
 
 	var (
 		frameNum  uint32 // increments once per interlaced frame (every 2 fields)
@@ -168,7 +182,7 @@ func (p *Plane) Run(ctx context.Context) error {
 				}
 			}
 			// Advance reported position by one field period.
-			p.positionMs.Add(fieldPeriodMs)
+			p.advancePosition()
 		}
 	}
 }

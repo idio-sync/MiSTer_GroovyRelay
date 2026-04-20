@@ -49,9 +49,11 @@ func TestNewPlane_PreservesConfig(t *testing.T) {
 	if p.cfg.FieldWidth != 720 || p.cfg.FieldHeight != 240 {
 		t.Errorf("config not preserved: %+v", p.cfg)
 	}
-	// Position is 0 until Run starts and seeds from cfg.SeekOffsetMs.
-	if p.Position() != 0 {
-		t.Errorf("pre-Run Position = %v, want 0", p.Position())
+	// Position reflects cfg.SeekOffsetMs from construction (field counter
+	// is 0, so Position == baseOffset). Run doesn't re-seed it.
+	wantStart := time.Duration(cfg.SeekOffsetMs) * time.Millisecond
+	if p.Position() != wantStart {
+		t.Errorf("pre-Run Position = %v, want %v", p.Position(), wantStart)
 	}
 	select {
 	case <-p.Done():
@@ -118,5 +120,36 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 	}
 	if hdr[0] != groovy.CmdBlitFieldVSync {
 		t.Errorf("header[0] = %#x, want CmdBlitFieldVSync %#x", hdr[0], groovy.CmdBlitFieldVSync)
+	}
+}
+
+// TestPosition_IntegerExactFieldCount verifies that after N ticks Position()
+// returns exactly N*1001/60 ms plus the base offset. Regression harness for
+// I4 — the old code added 16 ms/tick and drifted ~0.68 ms low per field.
+func TestPosition_IntegerExactFieldCount(t *testing.T) {
+	cases := []struct {
+		ticks        int64
+		baseOffsetMs int
+		wantPosMs    int64
+	}{
+		{3600, 0, 60_060},              // 60.06 s of playback at 59.94 Hz
+		{60_000, 0, 1_001_000},         // ~16.68 min
+		{600, 5_000, 5_000 + 10_010},   // 10 s of playback, resumed at 5 s
+	}
+	for _, tc := range cases {
+		t.Run("", func(t *testing.T) {
+			p := &Plane{}
+			p.cfg.SeekOffsetMs = tc.baseOffsetMs
+			p.resetPosition()
+			for i := int64(0); i < tc.ticks; i++ {
+				p.advancePosition()
+			}
+			got := p.Position()
+			wantDur := time.Duration(tc.wantPosMs) * time.Millisecond
+			if got != wantDur {
+				t.Errorf("ticks=%d offset=%d: Position=%v, want %v",
+					tc.ticks, tc.baseOffsetMs, got, wantDur)
+			}
+		})
 	}
 }
