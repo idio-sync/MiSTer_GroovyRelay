@@ -428,10 +428,10 @@ that README renders cleanly.
 conventional-commit style (verified against
 `git log --oneline`):
 
-1. `test(fakemister): Listener records AUDIO payload bytes` — C2
+1. `test(integration): scenario harness records AUDIO payload bytes` — C2
 2. `feat(ffmpeg): filter chain normalizes any source rate to 59.94 fields/sec` — C1
 3. `fix(groovy): LZ4 returns ok=false on incompressible input; Plane emits RAW BLIT` — C3
-4. `fix(dataplane): Position uses fractional ns accumulator` — I4
+4. `fix(dataplane): Position uses integer-exact field-count accumulator` — I4
 5. `fix(dataplane): audio chunk size from integer-exact fraction` — I5
 6. `refactor(core): Probe/ProbeCrop run outside Manager.mu with bounded context` — I8
 7. `fix(ffmpeg): fetch subtitle track to temp file before libass reads it` — I6
