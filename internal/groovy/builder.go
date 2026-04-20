@@ -1,6 +1,10 @@
 package groovy
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
+	"math"
+)
 
 // BuildInit returns the 5-byte INIT command packet.
 // Wire layout (groovy_mister.md:41-49, mistercast.md:28-34):
@@ -34,3 +38,84 @@ func BuildInit(lz4Frames, soundRate, soundChan, rgbMode byte) []byte {
 	}
 	return []byte{CmdInit, lz4Frames, soundRate, soundChan, rgbMode}
 }
+
+// Modeline holds the SWITCHRES wire values directly. Fields are the
+// cumulative VESA offsets (hBegin = hActive+hFrontPorch, hEnd = hBegin+hSync,
+// hTotal = hEnd+hBackPorch). Use ModelineFromPorches() to convert from the
+// conventional (hFrontPorch, hSync, hBackPorch) triple.
+type Modeline struct {
+	PClock    float64 // MHz
+	HActive   uint16
+	HBegin    uint16
+	HEnd      uint16
+	HTotal    uint16
+	VActive   uint16 // per-field when Interlace > 0
+	VBegin    uint16
+	VEnd      uint16
+	VTotal    uint16
+	Interlace uint8 // 0=progressive, 1=interlaced, 2=interlaced-force-field-fb
+}
+
+// ModelineFromPorches builds a Modeline from the conventional porch triple,
+// computing the cumulative offsets the wire format expects.
+func ModelineFromPorches(pClock float64,
+	hActive, hFrontPorch, hSync, hBackPorch,
+	vActive, vFrontPorch, vSync, vBackPorch uint16,
+	interlace uint8) Modeline {
+	hBegin := hActive + hFrontPorch
+	hEnd := hBegin + hSync
+	hTotal := hEnd + hBackPorch
+	vBegin := vActive + vFrontPorch
+	vEnd := vBegin + vSync
+	vTotal := vEnd + vBackPorch
+	return Modeline{
+		PClock:  pClock,
+		HActive: hActive, HBegin: hBegin, HEnd: hEnd, HTotal: hTotal,
+		VActive: vActive, VBegin: vBegin, VEnd: vEnd, VTotal: vTotal,
+		Interlace: interlace,
+	}
+}
+
+// BuildSwitchres returns the 26-byte SWITCHRES packet.
+// Wire layout: groovy_mister.md:51-65, mistercast.md:36-51.
+func BuildSwitchres(ml Modeline) []byte {
+	buf := make([]byte, 26)
+	buf[0] = CmdSwitchres
+	binary.LittleEndian.PutUint64(buf[1:9], math.Float64bits(ml.PClock))
+	binary.LittleEndian.PutUint16(buf[9:11], ml.HActive)
+	binary.LittleEndian.PutUint16(buf[11:13], ml.HBegin)
+	binary.LittleEndian.PutUint16(buf[13:15], ml.HEnd)
+	binary.LittleEndian.PutUint16(buf[15:17], ml.HTotal)
+	binary.LittleEndian.PutUint16(buf[17:19], ml.VActive)
+	binary.LittleEndian.PutUint16(buf[19:21], ml.VBegin)
+	binary.LittleEndian.PutUint16(buf[21:23], ml.VEnd)
+	binary.LittleEndian.PutUint16(buf[23:25], ml.VTotal)
+	buf[25] = ml.Interlace
+	return buf
+}
+
+// NTSC480i60 matches the canonical psakhis/Groovy_MiSTer NTSC 480i entry
+// (mistercast.md:138: pClock=13.5, hTotal=858, vTotal=525, interlace=1).
+// VActive is per-field (240 lines per field; interlace=1 means the receiver
+// alternates field 0 / field 1 across consecutive BLIT_FIELD_VSYNC packets).
+// If your CRT prefers different timing, override in config.
+var NTSC480i60 = func() Modeline {
+	ml := ModelineFromPorches(
+		13.5,            // pClock MHz
+		720, 16, 62, 60, // hActive, hFrontPorch, hSync, hBackPorch  → hTotal=858
+		240, 3, 3, 19, // vActive per-field, vFrontPorch, vSync, vBackPorch
+		1, // interlaced
+	)
+	// Override vTotal to the full-frame value the receiver expects on the wire.
+	// mistercast.md:51 shows `m_frameTime = widthTime*vTotal >> interlace`,
+	// which requires the wire vTotal be 525 (then right-shifted by 1 for
+	// interlace=1). The per-field porch triple above computes 265 locally.
+	ml.VTotal = 525
+	return ml
+}()
+
+// Note: per-field vTotal computed above is 265; vTotal for interlaced NTSC is
+// 525 across both fields. Receiver expects per-field values (see
+// groovy_mister.md:112 "vActive is already halved per field"); the FPGA
+// reconstructs the 525-line frame from two 262/263-line fields. Verify the
+// exact vertical porches against a working GroovyMAME pcap before shipping.
