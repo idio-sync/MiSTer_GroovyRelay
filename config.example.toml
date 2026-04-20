@@ -1,0 +1,30 @@
+# MiSTer_GroovyRelay example configuration.
+# Copy to /config/config.toml and edit before running.
+
+# --- Device identity ---
+device_name = "MiSTer"         # Shown in Plex cast-target list
+# device_uuid = ""             # Auto-generated on first run; persisted
+
+# --- Network ---
+mister_host = "192.168.1.50"   # MiSTer IP or hostname (required)
+mister_port = 32100            # Groovy UDP port on the MiSTer (default 32100)
+source_port = 32101            # Our stable source UDP port (kept across casts)
+http_port   = 32500            # Plex Companion HTTP port (we serve on this)
+
+# --- Video output ---
+modeline               = "NTSC_480i"  # v1 supports "NTSC_480i" only
+interlace_field_order  = "tff"        # "tff" | "bff" — flip if you see shimmer on CRT
+aspect_mode            = "auto"       # "letterbox" | "zoom" | "auto"
+rgb_mode               = "rgb888"     # "rgb888" | "rgba8888" | "rgb565"
+lz4_enabled            = true         # LZ4 block compression (recommended)
+
+# --- Audio ---
+audio_sample_rate = 48000
+audio_channels    = 2
+
+# --- Plex ---
+plex_profile_name = "Plex Home Theater"
+# plex_server_url = ""   # Optional override; otherwise auto-discovered
+
+# --- Paths ---
+data_dir = "/config"  # Where device UUID + plex.tv auth token are stored
