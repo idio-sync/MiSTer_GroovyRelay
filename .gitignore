@@ -10,6 +10,7 @@
 *.test
 coverage.txt
 /testdata/dumps/
+tests/integration/testdata/*.mp4
 
 # OS
 .DS_Store
