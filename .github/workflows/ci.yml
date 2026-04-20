@@ -1,7 +1,7 @@
 # CI pipeline for MiSTer_GroovyRelay.
 #
 # test job:
-#   - Runs on every push to main, every PR, and every tag push.
+#   - Runs on every push to main/dev, every PR, and every tag push.
 #   - Installs ffmpeg (required by integration tests — the sample-clip
 #     generator and live Plane scenarios both shell out).
 #   - go vet + go test (unit) + go test -tags=integration across the
@@ -10,17 +10,22 @@
 #     another package also runs.
 #
 # build-image job:
-#   - Gated on refs/tags/v* — ships an image only on a semver tag push.
+#   - Runs on any push (main, dev, v* tag). Skipped on pull_request
+#     because Docker Hub credentials are not exposed to fork PRs.
 #   - Uses the Docker Hub credentials configured as repo secrets:
 #       DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
-#     (set these at Settings → Secrets and variables → Actions).
-#   - Publishes two tags per release: the literal tag (v0.1.0) and the
-#     floating latest tag.
+#   - Publishes multi-arch images (linux/amd64 + linux/arm64) under a
+#     single manifest per tag. Tag set is computed by metadata-action:
+#       main push  -> :main, :main-<short-sha>
+#       dev push   -> :dev,  :dev-<short-sha>
+#       v* tag     -> :vX.Y.Z, :latest
+#   - GitHub Actions cache (type=gha, mode=max) amortizes the ARM
+#     emulation cost across runs.
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   pull_request:
 
@@ -41,18 +46,29 @@ jobs:
   build-image:
     runs-on: ubuntu-latest
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: jedivoodoo/mister-groovy-relay
+          tags: |
+            type=ref,event=branch
+            type=ref,event=branch,suffix=-{{sha}}
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            jedivoodoo/mister-groovy-relay:${{ github.ref_name }}
-            jedivoodoo/mister-groovy-relay:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
