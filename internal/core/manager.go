@@ -1,0 +1,311 @@
+// Package core is the adapter-agnostic control-plane root. It owns the
+// session state machine and the FFmpeg → Groovy data-plane lifecycle.
+// Adapters (Plex, URL-input, Jellyfin, ...) live under internal/adapters/
+// and translate protocol-specific requests into core.SessionRequest before
+// calling Manager.StartSession. Per spec §4.5, core imports no adapter
+// package and no SourceAdapter interface is defined in v1/v2.
+package core
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
+	"github.com/jedivoodoo/mister-groovy-relay/internal/dataplane"
+	"github.com/jedivoodoo/mister-groovy-relay/internal/ffmpeg"
+	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+)
+
+// Manager is the adapter-agnostic session orchestrator. One Manager per
+// process; all adapters share it. Thread-safe.
+type Manager struct {
+	cfg    *config.Config
+	sender *groovynet.Sender
+	fsm    *StateMachine
+
+	mu       sync.Mutex
+	cancelFn context.CancelFunc
+	plane    *dataplane.Plane // nil when idle
+	active   *activeSession
+}
+
+// activeSession is the manager's private per-session context. Adapter-
+// specific state (subscribers, media keys, etc.) stays in the adapter.
+type activeSession struct {
+	req            SessionRequest
+	startedAt      time.Time
+	baseOffsetMs   int           // offset the plane was spawned with
+	pausedPosition time.Duration // snapshot from plane at Pause
+	duration       time.Duration
+}
+
+// NewManager constructs a Manager. The Sender must already be bound to the
+// MiSTer's address; Manager does not own its lifecycle (the sender is shared
+// across the process lifetime so its source UDP port remains stable).
+func NewManager(cfg *config.Config, sender *groovynet.Sender) *Manager {
+	return &Manager{cfg: cfg, sender: sender, fsm: New()}
+}
+
+// startPlaneLocked spawns a new data plane. Caller MUST hold m.mu. Preempts
+// any existing plane and waits for its goroutine to exit before returning,
+// ensuring the Sender is never shared between two planes (two planes on one
+// sender would interleave packets and corrupt the MiSTer's session identity).
+func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int) error {
+	// 1. Preempt and await prior plane. Drop the lock while awaiting Done()
+	//    so the plane's exit goroutine (which re-acquires m.mu to clear
+	//    m.plane) is free to run.
+	if m.cancelFn != nil {
+		prev := m.plane
+		m.cancelFn()
+		m.cancelFn = nil
+		if prev != nil {
+			m.mu.Unlock()
+			<-prev.Done()
+			m.mu.Lock()
+		}
+	}
+
+	probeURL := req.StreamURL
+	probe, err := ffmpeg.Probe(context.Background(), probeURL)
+	if err != nil {
+		return fmt.Errorf("probe source: %w", err)
+	}
+
+	// Resolve the SWITCHRES modeline from config (falls back to NTSC 480i60).
+	modeline, err := resolveModeline(m.cfg.Modeline)
+	if err != nil {
+		return err
+	}
+	rgbMode, err := resolveRGBMode(m.cfg.RGBMode)
+	if err != nil {
+		return err
+	}
+
+	// Per-field vActive for interlaced modes; full height otherwise.
+	fieldH := int(modeline.VActive)
+	bpp := bytesPerPixel(rgbMode)
+
+	// Optional auto-crop probe (runs once per session when aspect_mode=auto).
+	var cropRect *ffmpeg.CropRect
+	if m.cfg.AspectMode == "auto" {
+		cropRect, _ = ffmpeg.ProbeCrop(context.Background(), probeURL, req.InputHeaders, 2*time.Second)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFn = cancel
+
+	spec := ffmpeg.PipelineSpec{
+		InputURL:        req.StreamURL,
+		InputHeaders:    req.InputHeaders,
+		SeekSeconds:     float64(offsetMs) / 1000.0,
+		UseSSSeek:       req.DirectPlay,
+		SourceProbe:     probe,
+		OutputWidth:     int(modeline.HActive),
+		OutputHeight:    fieldH * 2,
+		FieldOrder:      m.cfg.InterlaceFieldOrder,
+		AspectMode:      m.cfg.AspectMode,
+		CropRect:        cropRect,
+		SubtitleURL:     req.SubtitleURL,
+		SubtitleIndex:   req.SubtitleIndex,
+		AudioSampleRate: m.cfg.AudioSampleRate,
+		AudioChannels:   m.cfg.AudioChannels,
+	}
+
+	plane := dataplane.NewPlane(dataplane.PlaneConfig{
+		Sender:        m.sender,
+		SpawnSpec:     spec,
+		Modeline:      modeline,
+		FieldWidth:    int(modeline.HActive),
+		FieldHeight:   fieldH,
+		BytesPerPixel: bpp,
+		RGBMode:       rgbMode,
+		LZ4Enabled:    m.cfg.LZ4Enabled,
+		AudioRate:     m.cfg.AudioSampleRate,
+		AudioChans:    m.cfg.AudioChannels,
+		SeekOffsetMs:  offsetMs,
+	})
+	m.plane = plane
+	m.active = &activeSession{req: req, startedAt: time.Now(), baseOffsetMs: offsetMs}
+
+	go func() {
+		runErr := plane.Run(ctx)
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			slog.Warn("data plane exited", "err", runErr)
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		// Only clear the plane pointer if it's still the one we spawned —
+		// a concurrent StartSession (preempt) may have already swapped it.
+		if m.plane != plane {
+			return
+		}
+		m.plane = nil
+		// Fire EvEOF ONLY on natural exit. When the caller
+		// (Pause/Stop/preempt) cancelled ctx, they drive the FSM themselves;
+		// firing EvEOF here would race them to Idle and clobber the
+		// intended transition (Playing → Paused, etc.).
+		if runErr == nil {
+			_ = m.fsm.Transition(EvEOF)
+		}
+	}()
+	return nil
+}
+
+// StartSession is the adapter-agnostic entry point. Adapters translate their
+// protocol-specific requests into a SessionRequest and call this. Any
+// existing session is preempted and the prior goroutine awaited.
+func (m *Manager) StartSession(req SessionRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs); err != nil {
+		return err
+	}
+	return m.fsm.Transition(EvPlayMedia)
+}
+
+// Pause stops the data plane and transitions the FSM to Paused. The current
+// plane position is snapshotted so Play can resume from it. Returns an error
+// if there is no active session or the adapter does not advertise CanPause.
+func (m *Manager) Pause() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil {
+		return fmt.Errorf("no session to pause")
+	}
+	if !m.active.req.Capabilities.CanPause {
+		return fmt.Errorf("adapter does not support pause")
+	}
+	// Snapshot current plane position so Play() can resume from it.
+	if m.plane != nil {
+		m.active.pausedPosition = m.plane.Position()
+	}
+	if m.cancelFn != nil {
+		prev := m.plane
+		m.cancelFn()
+		m.cancelFn = nil
+		if prev != nil {
+			m.mu.Unlock()
+			<-prev.Done()
+			m.mu.Lock()
+		}
+	}
+	return m.fsm.Transition(EvPause)
+}
+
+// Play resumes a paused session by respawning the data plane at the
+// snapshotted pause position.
+func (m *Manager) Play() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a := m.active
+	if a == nil {
+		return fmt.Errorf("no session to resume")
+	}
+	resumeMs := int(a.pausedPosition / time.Millisecond)
+	if resumeMs <= 0 {
+		resumeMs = a.baseOffsetMs
+	}
+	if err := m.startPlaneLocked(a.req, resumeMs); err != nil {
+		return err
+	}
+	return m.fsm.Transition(EvPlay)
+}
+
+// Stop tears down any active session. Idempotent — calling Stop when already
+// idle is a no-op that leaves the FSM in Idle.
+func (m *Manager) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cancelFn != nil {
+		prev := m.plane
+		m.cancelFn()
+		m.cancelFn = nil
+		if prev != nil {
+			m.mu.Unlock()
+			<-prev.Done()
+			m.mu.Lock()
+		}
+	}
+	m.active = nil
+	return m.fsm.Transition(EvStop)
+}
+
+// SeekTo tears down the active plane and respawns it at offsetMs. The FSM
+// stays in Playing (or Paused) per the Seek semantics; only the data plane
+// changes. Requires an active session whose adapter advertises CanSeek.
+func (m *Manager) SeekTo(offsetMs int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a := m.active
+	if a == nil {
+		return fmt.Errorf("no session")
+	}
+	if !a.req.Capabilities.CanSeek {
+		return fmt.Errorf("adapter does not support seek")
+	}
+	if err := m.startPlaneLocked(a.req, offsetMs); err != nil {
+		return err
+	}
+	// Seek keeps state=playing; FSM's Seek event is a no-op transition.
+	return m.fsm.Transition(EvSeek)
+}
+
+// Status returns the live session status, including the running plane's
+// current playback position (for timeline broadcasts). Safe to call from
+// any goroutine; the adapter's timeline loop typically polls this at 1 Hz.
+func (m *Manager) Status() SessionStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := SessionStatus{State: m.fsm.State()}
+	if m.active != nil {
+		st.AdapterRef = m.active.req.AdapterRef
+		st.StartedAt = m.active.startedAt
+		st.Duration = m.active.duration
+		if m.plane != nil {
+			st.Position = m.plane.Position()
+		} else {
+			st.Position = m.active.pausedPosition
+		}
+	}
+	return st
+}
+
+// resolveModeline maps config's `modeline` string to a groovy.Modeline.
+// v1 supports "NTSC_480i" only; future values extend this switch.
+func resolveModeline(name string) (groovy.Modeline, error) {
+	switch name {
+	case "", "NTSC_480i":
+		return groovy.NTSC480i60, nil
+	}
+	return groovy.Modeline{}, fmt.Errorf("unknown modeline %q (v1 supports NTSC_480i)", name)
+}
+
+// resolveRGBMode maps config's `rgb_mode` string to the Groovy wire byte.
+func resolveRGBMode(name string) (byte, error) {
+	switch name {
+	case "", "rgb888":
+		return groovy.RGBMode888, nil
+	case "rgba8888":
+		return groovy.RGBMode8888, nil
+	case "rgb565":
+		return groovy.RGBMode565, nil
+	}
+	return 0, fmt.Errorf("unknown rgb_mode %q", name)
+}
+
+// bytesPerPixel returns the raw-video byte stride per pixel for a given RGB
+// mode. RGB888 → 3, RGBA8888 → 4, RGB565 → 2.
+func bytesPerPixel(rgbMode byte) int {
+	switch rgbMode {
+	case groovy.RGBMode8888:
+		return 4
+	case groovy.RGBMode565:
+		return 2
+	}
+	return 3
+}
