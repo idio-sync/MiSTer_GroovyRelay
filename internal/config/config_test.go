@@ -100,3 +100,34 @@ func TestValidate_AcceptsRGB888(t *testing.T) {
 		t.Errorf("rgb_mode=rgb888: expected OK, got %v", err)
 	}
 }
+
+func TestLoad_HostIPRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := []byte(`mister_host = "192.168.1.50"` + "\n" + `host_ip = "192.168.1.20"` + "\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HostIP != "192.168.1.20" {
+		t.Errorf("host_ip = %q, want %q", cfg.HostIP, "192.168.1.20")
+	}
+}
+
+func TestLoad_HostIPDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(`mister_host = "192.168.1.50"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HostIP != "" {
+		t.Errorf("host_ip default = %q, want empty", cfg.HostIP)
+	}
+}

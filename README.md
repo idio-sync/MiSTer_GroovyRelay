@@ -99,6 +99,46 @@ Everything is in `config.toml` (copied from `config.example.toml`).
    tap the cast icon, and select your `device_name` from the list.
    Playback should start on the CRT within 1–2 seconds.
 
+## Operational notes
+
+### Multi-NIC Unraid hosts
+
+The bridge advertises its own LAN address to Plex (in the `/resources` response
+and in the plex.tv device registration PUT). By default it auto-detects that
+address by asking the kernel which interface it would use to reach 8.8.8.8 — a
+trick that works when the default route points at the LAN.
+
+On Unraid hosts with multiple network interfaces — typical combinations are
+LAN + WireGuard, LAN + Docker bridge, or LAN + secondary subnet — the default
+route may not be the Plex-facing one. Symptoms: the cast target shows up in
+the Plex picker but "commands never arrive" — the controller is trying to
+reach the bridge on an unreachable NIC.
+
+Fix: set `host_ip` explicitly to the LAN IP the Plex controller can reach.
+Find it with `ip -4 addr show | grep inet` on the host; the `br0` or `eth0`
+interface IP on the same subnet as your Plex Media Server is what you want.
+
+```toml
+host_ip = "192.168.1.20"
+```
+
+Restart the bridge. Check the startup log for the `host_ip not set` warning —
+if it's gone, your override took effect.
+
+### CPU contention under Docker
+
+The data plane pushes fields at 59.94 Hz regardless of scheduling pressure.
+Under heavy CPU contention (Unraid parity check, mover, a co-tenant container
+spiking CPU) the FFmpeg decoder can fall behind; the bridge covers with
+duplicate-field BLITs, which the FPGA rescans — so the symptom is visible
+motion glitches, not A/V drift. (This is by design — the clock-push architecture
+trades a graceful fallback against a hard drift bug.)
+
+If you see glitches during parity checks, cap container CPU with
+`docker run --cpus=2 ...` or the Unraid template's CPU-pinning option so the
+bridge has dedicated cores that aren't preempted. 2 cores is typically
+sufficient for a single 480p transcode plus Groovy packet framing.
+
 ## Troubleshooting
 
 **"The target didn't show up in Plex's cast menu."**

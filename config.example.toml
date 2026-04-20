@@ -10,6 +10,10 @@ mister_host = "192.168.1.50"   # MiSTer IP or hostname (required)
 mister_port = 32100            # Groovy UDP port on the MiSTer (default 32100)
 source_port = 32101            # Our stable source UDP port (kept across casts)
 http_port   = 32500            # Plex Companion HTTP port (we serve on this)
+# host_ip = "192.168.1.20"     # LAN IP this bridge advertises to Plex (/resources, plex.tv register).
+                                # Leave commented to auto-detect; set explicitly on multi-NIC Unraid
+                                # hosts where the Plex-facing NIC is not the default route.
+                                # See README "Multi-NIC Unraid hosts".
 
 # --- Video output ---
 modeline               = "NTSC_480i"  # v1 supports "NTSC_480i" only

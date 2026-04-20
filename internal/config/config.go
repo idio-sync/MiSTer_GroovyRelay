@@ -17,6 +17,15 @@ type Config struct {
 	MisterPort int    `toml:"mister_port"`
 	SourcePort int    `toml:"source_port"`
 	HTTPPort   int    `toml:"http_port"`
+	// HostIP is the LAN IP address the bridge advertises in /resources and
+	// plex.tv RegisterDevice. If empty, the bridge falls back to a route-based
+	// auto-detection which routes a UDP packet to 8.8.8.8 and reads the
+	// local address. On multi-NIC hosts (Unraid with both LAN and WireGuard
+	// interfaces is the common case), the auto-detected IP may be the WG
+	// interface, not the LAN — and the Plex controller cannot reach the
+	// WG-only address. Set host_ip explicitly when the default route is not
+	// the Plex-facing NIC. See README "Multi-NIC Unraid hosts".
+	HostIP string `toml:"host_ip"`
 
 	// Video output
 	Modeline            string `toml:"modeline"`

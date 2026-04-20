@@ -76,11 +76,17 @@ func main() {
 	// + timeline broadcaster + HTTP server lifecycle. Takes core.Manager
 	// as its session backend. Future adapters (URL-input, Jellyfin) plug
 	// in the same way — see spec §4.5.
+	hostIP := cfg.HostIP
+	if hostIP == "" {
+		hostIP = outboundIP()
+		slog.Warn("host_ip not set; auto-detected via default route — override in config for multi-NIC hosts",
+			"detected", hostIP)
+	}
 	plexAdapter, err := plex.NewAdapter(plex.AdapterConfig{
 		Cfg:        cfg,
 		Core:       coreMgr,
 		TokenStore: store,
-		HostIP:     outboundIP(),
+		HostIP:     hostIP,
 		Version:    version,
 	})
 	if err != nil {
