@@ -81,3 +81,25 @@ func TestBuildSwitchres_Progressive(t *testing.T) {
 		t.Error("interlace flag should be 0 for progressive modeline")
 	}
 }
+
+func TestBuildAudioHeader(t *testing.T) {
+	got := BuildAudioHeader(3200)
+	if len(got) != AudioHeaderSize {
+		t.Fatalf("len = %d, want %d", len(got), AudioHeaderSize)
+	}
+	if got[0] != CmdAudio {
+		t.Errorf("cmd = %d, want %d", got[0], CmdAudio)
+	}
+	if v := binary.LittleEndian.Uint16(got[1:3]); v != 3200 {
+		t.Errorf("soundSize = %d, want 3200", v)
+	}
+}
+
+func TestBuildAudioHeader_ZeroOK(t *testing.T) {
+	// Zero-length audio is valid (no-op between blits when audio enabled but
+	// no samples produced this tick).
+	got := BuildAudioHeader(0)
+	if got[0] != CmdAudio || got[1] != 0 || got[2] != 0 {
+		t.Errorf("zero-size audio header = %v", got)
+	}
+}

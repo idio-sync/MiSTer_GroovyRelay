@@ -119,3 +119,18 @@ var NTSC480i60 = func() Modeline {
 // groovy_mister.md:112 "vActive is already halved per field"); the FPGA
 // reconstructs the 525-line frame from two 262/263-line fields. Verify the
 // exact vertical porches against a working GroovyMAME pcap before shipping.
+
+// BuildAudioHeader returns the 3-byte AUDIO command header. The caller MUST
+// send the `soundSize` PCM bytes immediately after, using the MTU-slicing
+// sender (e.g. Sender.SendPayload). NEVER inline PCM into the header datagram
+// — PCM fields can reach ~3.2 KB/tick and IP_DONTFRAGMENT will drop
+// oversized datagrams.
+//
+// Sample rate and channel count are session-level state established in INIT.
+// Audio is only valid to send while the last ACK's bit 6 (fpga.audio) == 1.
+func BuildAudioHeader(soundSize uint16) []byte {
+	buf := make([]byte, AudioHeaderSize)
+	buf[0] = CmdAudio
+	binary.LittleEndian.PutUint16(buf[1:3], soundSize)
+	return buf
+}
