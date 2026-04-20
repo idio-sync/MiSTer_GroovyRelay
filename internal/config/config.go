@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -100,6 +101,13 @@ func (c *Config) Validate() error {
 	// a torn raster. Revisit when v2+ extends the pipeline.
 	if c.RGBMode != "rgb888" {
 		return fmt.Errorf("rgb_mode: only rgb888 is supported in v1 (got %q; rgba8888/rgb565 reserved for future work)", c.RGBMode)
+	}
+	// host_ip is optional (empty → auto-detect in main.go). When set, it must
+	// parse as a valid IP address. Catches fat-fingered CIDR (/24 suffix),
+	// URL-style values ("http://..."), and outright typos before the bridge
+	// silently fails at the first plex.tv registration tick.
+	if c.HostIP != "" && net.ParseIP(c.HostIP) == nil {
+		return fmt.Errorf("host_ip must be a valid IP address, got %q", c.HostIP)
 	}
 	return nil
 }

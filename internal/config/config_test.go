@@ -131,3 +131,48 @@ func TestLoad_HostIPDefaultsEmpty(t *testing.T) {
 		t.Errorf("host_ip default = %q, want empty", cfg.HostIP)
 	}
 }
+
+func TestValidate_RejectsMalformedHostIP(t *testing.T) {
+	bad := []string{
+		"not-an-ip",
+		"192.168.1.20/24",     // CIDR typo
+		"http://192.168.1.20", // URL typo
+		"192.168.1",           // truncated
+		"256.0.0.1",           // invalid octet
+		"192.168.1.20:32500",  // with port
+	}
+	for _, v := range bad {
+		t.Run(v, func(t *testing.T) {
+			c := defaults()
+			c.HostIP = v
+			err := c.Validate()
+			if err == nil {
+				t.Errorf("host_ip=%q: expected validation error, got nil", v)
+				return
+			}
+			if !strings.Contains(err.Error(), "host_ip") {
+				t.Errorf("error should mention host_ip: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_AcceptsValidHostIP(t *testing.T) {
+	for _, v := range []string{"192.168.1.20", "10.0.0.1", "::1", "fe80::1"} {
+		t.Run(v, func(t *testing.T) {
+			c := defaults()
+			c.HostIP = v
+			if err := c.Validate(); err != nil {
+				t.Errorf("host_ip=%q: expected OK, got %v", v, err)
+			}
+		})
+	}
+}
+
+func TestValidate_AcceptsEmptyHostIP(t *testing.T) {
+	c := defaults()
+	c.HostIP = ""
+	if err := c.Validate(); err != nil {
+		t.Errorf("empty host_ip (auto-detect fallback): expected OK, got %v", err)
+	}
+}
