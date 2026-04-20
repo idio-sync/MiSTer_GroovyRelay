@@ -1,13 +1,23 @@
 package plex
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
+
+// plexHTTPClient is the shared HTTP client for PMS + plex.tv requests.
+// 10 s timeout bounds every network call; the bridge must never wait on a
+// hung remote under a caller that holds a mutex or drives a ticker.
+// Declared as a var so tests can swap in a faster client.
+var plexHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // TranscodeRequest carries the inputs to BuildTranscodeURL. OffsetMs is the
 // seek start in milliseconds; PMS accepts whole seconds so we divide by 1000.
@@ -105,4 +115,48 @@ func SubtitleURLFor(serverURL, mediaKey, streamID, token string) (string, error)
 		}
 	}
 	return "", fmt.Errorf("subtitle stream %q not found under %s", streamID, mediaKey)
+}
+
+// FetchSubtitleToFile downloads the subtitle resource at srtURL (the token-
+// bearing URL returned by SubtitleURLFor) to a file under
+// <dataDir>/subtitles/<sessionID>.<ext>. The extension is derived from the
+// HTTP Content-Type header: `text/x-ssa` or `text/x-ass` → `.ass`,
+// everything else → `.srt` (SubRip is the format PMS defaults to).
+//
+// Returns the absolute file path. The caller is responsible for removing
+// the file when the session ends.
+//
+// Uses the 10 s-timeout HTTP client so a stuck PMS doesn't wedge session
+// start.
+func FetchSubtitleToFile(ctx context.Context, srtURL, dataDir, sessionID string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srtURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := plexHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("subtitle fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("subtitle fetch: %s", resp.Status)
+	}
+	ext := ".srt"
+	switch ct := resp.Header.Get("Content-Type"); {
+	case strings.HasPrefix(ct, "text/x-ssa"), strings.HasPrefix(ct, "text/x-ass"):
+		ext = ".ass"
+	}
+	dir := filepath.Join(dataDir, "subtitles")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, sessionID+ext)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }

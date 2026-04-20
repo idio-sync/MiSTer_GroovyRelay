@@ -72,7 +72,7 @@ func TestBuildFilterChain_SubtitleBeforeInterlace(t *testing.T) {
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 24, Interlaced: false},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
-		SubtitleURL: "http://pms/subtitle.srt", SubtitleIndex: 0,
+		SubtitlePath: "/tmp/subtitle.srt", SubtitleIndex: 0,
 	}
 	chain := buildFilterChain(spec)
 	subIdx := strings.Index(chain, "subtitles=")

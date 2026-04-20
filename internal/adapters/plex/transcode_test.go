@@ -1,10 +1,16 @@
 package plex
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
@@ -71,5 +77,41 @@ func TestSubtitleURLFor_NoMatch(t *testing.T) {
 	_, err := SubtitleURLFor(ts.URL, "/library/metadata/42", "999", "tok")
 	if err == nil {
 		t.Error("expected error for missing stream id")
+	}
+}
+
+func TestFetchSubtitleToFile_WritesLocalPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-subrip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("1\n00:00:00,000 --> 00:00:02,000\nhello\n"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	path, err := FetchSubtitleToFile(ctx, srv.URL+"/sub.srt", dir, "session-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != "session-xyz.srt" {
+		t.Errorf("unexpected filename: %s", path)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte("hello")) {
+		t.Errorf("subtitle body not written: %q", body)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("file perms = %o, want 0600", info.Mode().Perm())
+		}
 	}
 }

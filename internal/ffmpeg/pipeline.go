@@ -30,7 +30,8 @@ type PipelineSpec struct {
 	AspectMode   string // "letterbox" | "zoom" | "auto"
 	CropRect     *CropRect
 
-	SubtitleURL   string // empty = no subs
+	SubtitleURL   string // deprecated; libass cannot fetch URLs. Use SubtitlePath.
+	SubtitlePath  string // local filesystem path the filter graph passes to libass
 	SubtitleIndex int
 
 	AudioSampleRate int
@@ -112,10 +113,11 @@ func buildFilterChain(s PipelineSpec) string {
 		)
 	}
 
-	// 4. Subtitle burn-in BEFORE interlacing.
-	if s.SubtitleURL != "" {
+	// 4. Subtitle burn-in BEFORE interlacing. Only filesystem paths work for
+	//    libass; URL-sourced captions must be downloaded by the adapter first.
+	if s.SubtitlePath != "" {
 		filters = append(filters,
-			fmt.Sprintf("subtitles=filename='%s':si=%d", s.SubtitleURL, s.SubtitleIndex))
+			fmt.Sprintf("subtitles=filename='%s':si=%d", s.SubtitlePath, s.SubtitleIndex))
 	}
 
 	// 5. Build interlaced frame (29.97i at OutputWidth×OutputHeight) —

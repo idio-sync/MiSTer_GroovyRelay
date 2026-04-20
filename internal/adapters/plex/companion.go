@@ -8,6 +8,7 @@
 package plex
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
 )
@@ -25,6 +27,9 @@ type CompanionConfig struct {
 	DeviceName string
 	DeviceUUID string
 	Version    string
+	// DataDir is the application data directory used to store downloaded
+	// subtitle files under <DataDir>/subtitles/. Populated from config.Config.
+	DataDir string
 }
 
 // Companion is the Plex Companion HTTP adapter. One per process. Thread-safe.
@@ -181,18 +186,31 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		AdapterRef:   p.MediaKey,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 	}
-	// Subtitle lookup is best-effort: we log and continue without burn-in on
-	// failure so the user still gets video playback. SubtitleURLFor lives in
-	// transcode.go.
+	// Resolve subtitle: if the controller asked for a stream and PMS has
+	// one, download to a temp file so libass can read it. On any error
+	// (PMS miss, network hiccup, transient 5xx), fall back to no burn-in
+	// rather than failing the whole cast — callers can retry by issuing
+	// playMedia again.
+	var subtitlePath string
+	var subtitleIndex int
 	if p.SubtitleStreamID != "" {
 		subURL, err := SubtitleURLFor(serverURL, p.MediaKey, p.SubtitleStreamID, p.PlexToken)
 		if err != nil {
-			slog.Warn("subtitle lookup failed; continuing without burn-in",
-				"streamID", p.SubtitleStreamID, "err", err)
+			slog.Warn("subtitle lookup", "err", err, "streamID", p.SubtitleStreamID)
 		} else {
-			req.SubtitleURL = subURL
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			subtitlePath, err = FetchSubtitleToFile(ctx, subURL, c.cfg.DataDir, p.SessionID)
+			cancel()
+			if err != nil {
+				slog.Warn("subtitle download", "err", err)
+				subtitlePath = ""
+			} else {
+				subtitleIndex = 0
+			}
 		}
 	}
+	req.SubtitlePath = subtitlePath
+	req.SubtitleIndex = subtitleIndex
 
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)

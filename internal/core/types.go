@@ -24,7 +24,15 @@ type SessionRequest struct {
 
 	// SubtitleURL is a URL to an external subtitle track to burn in.
 	// Empty = no subtitles.
-	SubtitleURL   string
+	SubtitleURL string
+
+	// SubtitlePath is a local filesystem path to a subtitle file (SRT or ASS)
+	// that the data plane hands to libass via the ffmpeg `subtitles=filename=`
+	// filter. Mutually exclusive with SubtitleURL; adapters prefer SubtitlePath
+	// and set SubtitleURL only during migration. Libass cannot fetch URLs, so
+	// adapters that source captions from the network MUST download to a file
+	// first and pass the path here.
+	SubtitlePath  string
 	SubtitleIndex int
 
 	// Capabilities describe what the adapter's control surface supports.
