@@ -103,3 +103,52 @@ func TestBuildAudioHeader_ZeroOK(t *testing.T) {
 		t.Errorf("zero-size audio header = %v", got)
 	}
 }
+
+func TestBuildBlitHeader_RawFull(t *testing.T) {
+	h := BuildBlitHeader(BlitOpts{Frame: 42, Field: 1, VSync: 0})
+	if h[0] != CmdBlitFieldVSync {
+		t.Fatalf("cmd = %d, want %d", h[0], CmdBlitFieldVSync)
+	}
+	if len(h) != BlitHeaderRaw {
+		t.Errorf("raw header len = %d, want %d", len(h), BlitHeaderRaw)
+	}
+	if v := binary.LittleEndian.Uint32(h[1:5]); v != 42 {
+		t.Errorf("frame = %d, want 42", v)
+	}
+	if h[5] != 1 {
+		t.Errorf("field = %d, want 1", h[5])
+	}
+	if v := binary.LittleEndian.Uint16(h[6:8]); v != 0 {
+		t.Errorf("vSync = %d, want 0", v)
+	}
+}
+
+func TestBuildBlitHeader_Duplicate(t *testing.T) {
+	h := BuildBlitHeader(BlitOpts{Frame: 43, Field: 0, Duplicate: true})
+	if len(h) != BlitHeaderRawDup {
+		t.Fatalf("dup header len = %d, want %d", len(h), BlitHeaderRawDup)
+	}
+	if h[8] != BlitFlagDup {
+		t.Errorf("dup marker = 0x%x, want 0x%x", h[8], BlitFlagDup)
+	}
+}
+
+func TestBuildBlitHeader_LZ4Full(t *testing.T) {
+	h := BuildBlitHeader(BlitOpts{Frame: 44, Field: 0, CompressedSize: 120000, Compressed: true})
+	if len(h) != BlitHeaderLZ4 {
+		t.Fatalf("lz4 header len = %d, want %d", len(h), BlitHeaderLZ4)
+	}
+	if v := binary.LittleEndian.Uint32(h[8:12]); v != 120000 {
+		t.Errorf("cSize = %d, want 120000", v)
+	}
+}
+
+func TestBuildBlitHeader_LZ4Delta(t *testing.T) {
+	h := BuildBlitHeader(BlitOpts{Frame: 45, Field: 1, CompressedSize: 90000, Compressed: true, Delta: true})
+	if len(h) != BlitHeaderLZ4Delta {
+		t.Fatalf("lz4 delta header len = %d, want %d", len(h), BlitHeaderLZ4Delta)
+	}
+	if h[12] != BlitFlagDelta {
+		t.Errorf("delta marker at [12] = 0x%x, want 0x%x", h[12], BlitFlagDelta)
+	}
+}

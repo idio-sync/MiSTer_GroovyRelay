@@ -120,6 +120,58 @@ var NTSC480i60 = func() Modeline {
 // reconstructs the 525-line frame from two 262/263-line fields. Verify the
 // exact vertical porches against a working GroovyMAME pcap before shipping.
 
+// BlitOpts controls the variant of the BLIT_FIELD_VSYNC header produced by
+// BuildBlitHeader. See BuildBlitHeader for the header-length-to-variant map.
+type BlitOpts struct {
+	Frame          uint32 // monotonic frame counter
+	Field          uint8  // 0 = top/progressive, 1 = bottom
+	VSync          uint16 // target raster line; 0 = FPGA chooses
+	CompressedSize uint32 // only used when Compressed == true
+	Compressed     bool
+	Delta          bool
+	Duplicate      bool
+}
+
+// BuildBlitHeader returns the BLIT_FIELD_VSYNC header bytes. Payload bytes
+// (when present) follow the header and MUST be sliced into MaxDatagram-sized
+// UDP datagrams with no per-chunk framing. See groovy_mister.md:74-89,
+// mistercast.md:59-75 for authoritative byte layout.
+//
+// Header length encodes the variant:
+//
+//	 8 bytes — raw uncompressed, full field
+//	 9 bytes — duplicate-of-previous (no payload follows)
+//	12 bytes — LZ4, full field
+//	13 bytes — LZ4 delta (XOR vs previous)
+func BuildBlitHeader(o BlitOpts) []byte {
+	var length int
+	switch {
+	case o.Duplicate:
+		length = BlitHeaderRawDup
+	case o.Compressed && o.Delta:
+		length = BlitHeaderLZ4Delta
+	case o.Compressed:
+		length = BlitHeaderLZ4
+	default:
+		length = BlitHeaderRaw
+	}
+	h := make([]byte, length)
+	h[0] = CmdBlitFieldVSync
+	binary.LittleEndian.PutUint32(h[1:5], o.Frame)
+	h[5] = o.Field
+	binary.LittleEndian.PutUint16(h[6:8], o.VSync)
+	switch {
+	case o.Duplicate:
+		h[8] = BlitFlagDup
+	case o.Compressed:
+		binary.LittleEndian.PutUint32(h[8:12], o.CompressedSize)
+		if o.Delta {
+			h[12] = BlitFlagDelta
+		}
+	}
+	return h
+}
+
 // BuildAudioHeader returns the 3-byte AUDIO command header. The caller MUST
 // send the `soundSize` PCM bytes immediately after, using the MTU-slicing
 // sender (e.g. Sender.SendPayload). NEVER inline PCM into the header datagram
