@@ -58,6 +58,39 @@ func (l *Listener) Run(events chan<- Command) {
 	}
 }
 
+// FieldEvent is emitted by RunWithFields after a BLIT_FIELD_VSYNC header and
+// its payload datagrams have been reassembled into a contiguous byte buffer.
+// Payload is compressed iff Header.Compressed — callers must LZ4-decompress
+// before pixel interpretation.
+type FieldEvent struct {
+	Header  BlitHeader
+	Payload []byte
+}
+
+// AudioEvent is emitted by RunWithFields after an AUDIO header and its PCM
+// datagrams have been reassembled. PCM is 16-bit signed LE, interleaved LRLR
+// for stereo, per INIT's sampleRate+channels.
+type AudioEvent struct {
+	PCM []byte
+}
+
+// RunWithFields is a stub in this commit; Task 3.7 fills in the state
+// machine. Declared now so cmd/fake-mister can be wired against the final
+// API. Blocks by returning immediately (caller selects on the channels and
+// will simply never receive).
+func (l *Listener) RunWithFields(
+	cmds chan<- Command,
+	fields chan<- FieldEvent,
+	audios chan<- AudioEvent,
+	fieldSizeFn func() uint32,
+) {
+	// Intentionally empty — implemented in Task 3.7.
+	_ = cmds
+	_ = fields
+	_ = audios
+	_ = fieldSizeFn
+}
+
 // InitPayload carries the five INIT bytes the receiver uses to set up the
 // session. NO width/height/interlace here — those come from SWITCHRES.
 type InitPayload struct {
