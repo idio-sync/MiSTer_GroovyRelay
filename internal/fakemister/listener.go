@@ -14,6 +14,18 @@ import (
 // Commands. The zero-value is not usable; construct via NewListener.
 type Listener struct {
 	conn *net.UDPConn
+
+	// ackOnInit, when true, makes Run / RunWithFields emit a 13-byte ACK
+	// back to the sender after every INIT datagram. Integration scenarios
+	// that drive the real sender's SendInitAwaitACK path toggle this on so
+	// the handshake completes; unit-style tests that poke raw bytes leave
+	// it off. audioReadyBit is stamped into the ACK's status byte so a
+	// scenario can choose whether the Plane proceeds to send AUDIO
+	// (bit 6 = 1) or stays video-only (bit 6 = 0). See §8.2 of the design
+	// doc — fake-mister "emits 13-byte ACK packets back to the sender so
+	// the sender's drift-correction path exercises realistically."
+	ackOnInit     bool
+	audioReadyBit bool
 }
 
 // NewListener binds a UDP socket at addr (e.g. ":32100" or ":0" for an
@@ -43,6 +55,33 @@ func (l *Listener) Conn() *net.UDPConn { return l.conn }
 // will exit promptly after Close.
 func (l *Listener) Close() error { return l.conn.Close() }
 
+// EnableACKs makes the listener reply to every INIT datagram with a 13-byte
+// ACK packet, mirroring the real MiSTer's handshake. audioReady toggles
+// status bit 6 so a scenario can exercise the Plane's audio-gated pump
+// path. Must be called BEFORE Run / RunWithFields starts; the flag is read
+// without locking inside the loop. Safe no-op outside integration use.
+func (l *Listener) EnableACKs(audioReady bool) {
+	l.ackOnInit = true
+	l.audioReadyBit = audioReady
+}
+
+// emitInitACK writes a synthesized ACK back to src. Echo fields are zero —
+// the sender does not key any behavior on them across repeated INITs in v1.
+// status carries the audio-ready bit 6 when the listener was configured
+// with EnableACKs(true).
+func (l *Listener) emitInitACK(src *net.UDPAddr) {
+	ack := make([]byte, groovy.ACKPacketSize)
+	// [0:4]  frameEcho  = 0
+	// [4:6]  vCountEcho = 0
+	// [6:10] fpgaFrame  = 0
+	// [10:12] fpgaVCount = 0
+	// [12]   status
+	if l.audioReadyBit {
+		ack[12] = 1 << 6
+	}
+	_, _ = l.conn.WriteToUDP(ack, src)
+}
+
 // Run reads datagrams and sends parsed Commands into events. Unknown packets
 // are logged but not fatal. Exits when the connection is closed.
 //
@@ -51,7 +90,7 @@ func (l *Listener) Close() error { return l.conn.Close() }
 func (l *Listener) Run(events chan<- Command) {
 	buf := make([]byte, groovy.MaxDatagram*2)
 	for {
-		n, _, err := l.conn.ReadFromUDP(buf)
+		n, src, err := l.conn.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
@@ -59,6 +98,9 @@ func (l *Listener) Run(events chan<- Command) {
 		if err != nil {
 			slog.Debug("fakemister parse error", "err", err, "n", n)
 			continue
+		}
+		if l.ackOnInit && cmd.Type == groovy.CmdInit {
+			l.emitInitACK(src)
 		}
 		events <- cmd
 	}
@@ -110,7 +152,7 @@ func (l *Listener) RunWithFields(
 		blitHeader BlitHeader
 	)
 	for {
-		n, _, err := l.conn.ReadFromUDP(buf)
+		n, src, err := l.conn.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
@@ -122,6 +164,9 @@ func (l *Listener) RunWithFields(
 			if err != nil {
 				slog.Debug("fakemister parse error", "err", err, "n", n)
 				continue
+			}
+			if l.ackOnInit && cmd.Type == groovy.CmdInit {
+				l.emitInitACK(src)
 			}
 			cmds <- cmd
 			switch cmd.Type {
