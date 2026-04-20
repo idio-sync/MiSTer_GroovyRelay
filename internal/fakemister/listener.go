@@ -74,21 +74,86 @@ type AudioEvent struct {
 	PCM []byte
 }
 
-// RunWithFields is a stub in this commit; Task 3.7 fills in the state
-// machine. Declared now so cmd/fake-mister can be wired against the final
-// API. Blocks by returning immediately (caller selects on the channels and
-// will simply never receive).
+type payloadMode int
+
+const (
+	modeCommand payloadMode = iota
+	modeBlit
+	modeAudio
+)
+
+// RunWithFields is the full listener loop. After a BLIT_FIELD_VSYNC header
+// it reassembles the next N bytes (where N = fieldSizeFn() for RAW, or cSize
+// from the LZ4 header) into a FieldEvent. After an AUDIO header it
+// reassembles the next soundSize bytes into an AudioEvent. Non-BLIT /
+// non-AUDIO commands (INIT, SWITCHRES, CLOSE) go straight to the cmds
+// channel — callers use them to update session state.
+//
+// fieldSizeFn is invoked only for RAW-full BLIT headers (8-byte variant);
+// LZ4 headers carry their size at [8..11] and dup headers have no payload.
 func (l *Listener) RunWithFields(
 	cmds chan<- Command,
 	fields chan<- FieldEvent,
 	audios chan<- AudioEvent,
 	fieldSizeFn func() uint32,
 ) {
-	// Intentionally empty — implemented in Task 3.7.
-	_ = cmds
-	_ = fields
-	_ = audios
-	_ = fieldSizeFn
+	buf := make([]byte, groovy.MaxDatagram*2)
+	var (
+		mode       payloadMode
+		reass      *Reassembler
+		blitHeader BlitHeader
+	)
+	for {
+		n, _, err := l.conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		switch mode {
+		case modeCommand:
+			cmd, err := ParseCommand(data)
+			if err != nil {
+				slog.Debug("fakemister parse error", "err", err, "n", n)
+				continue
+			}
+			cmds <- cmd
+			switch cmd.Type {
+			case groovy.CmdBlitFieldVSync:
+				if cmd.Blit == nil || cmd.Blit.Duplicate {
+					continue // no payload
+				}
+				size := cmd.Blit.CompressedSize
+				if !cmd.Blit.Compressed {
+					size = fieldSizeFn()
+				}
+				if size == 0 {
+					continue
+				}
+				blitHeader = *cmd.Blit
+				reass = NewReassembler(size)
+				mode = modeBlit
+			case groovy.CmdAudio:
+				if cmd.Audio == nil || cmd.Audio.SoundSize == 0 {
+					continue
+				}
+				reass = NewReassembler(uint32(cmd.Audio.SoundSize))
+				mode = modeAudio
+			}
+		case modeBlit:
+			if reass.Write(data) {
+				fields <- FieldEvent{Header: blitHeader, Payload: reass.Bytes()}
+				reass = nil
+				mode = modeCommand
+			}
+		case modeAudio:
+			if reass.Write(data) {
+				audios <- AudioEvent{PCM: reass.Bytes()}
+				reass = nil
+				mode = modeCommand
+			}
+		}
+	}
 }
 
 // InitPayload carries the five INIT bytes the receiver uses to set up the
