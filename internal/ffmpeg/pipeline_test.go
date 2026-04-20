@@ -18,13 +18,17 @@ func TestBuildFilterChain_Progressive24p(t *testing.T) {
 		FieldOrder: "tff", AspectMode: "letterbox",
 	}
 	chain := buildFilterChain(spec)
-	for _, need := range []string{"telecine", "interlace=scan=tff", "separatefields", "pad="} {
+	for _, need := range []string{"telecine", "separatefields", "pad="} {
 		if !strings.Contains(chain, need) {
 			t.Errorf("chain missing %q: %s", need, chain)
 		}
 	}
 	if strings.Contains(chain, "yadif") {
 		t.Errorf("progressive source should not yadif: %s", chain)
+	}
+	// telecine path must NOT include a second interlace step.
+	if strings.Contains(chain, "interlace=scan=") {
+		t.Errorf("telecine path must not include downstream interlace: %s", chain)
 	}
 	// separatefields must be the final filter in the chain.
 	if !strings.HasSuffix(chain, "separatefields") {
@@ -211,22 +215,25 @@ func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	}
 }
 
-// TestBuildFilterChain_SourceRateProducesCorrectNormalizer validates that the
-// rate-normalization filter chosen for each source rate either produces a
-// 59.94 progressive intermediate (fps=60000/1001) or leaves the output at
-// 29.97i via telecine (which separatefields then doubles to 59.94 fields).
+// TestBuildFilterChain_SourceRateProducesCorrectNormalizer validates the
+// rate-normalization filter chosen for each source rate. Two shapes:
+//   - 23.976p: telecine=pattern=23 → 29.97i directly. The chain must NOT
+//     include a second interlace step (telecine already interlaced) and
+//     must end with separatefields (→ 59.94 fields/sec at the 3:2 cadence).
+//   - Every other rate: fps=60000/1001 → 59.94p → interlace → separatefields.
 func TestBuildFilterChain_SourceRateProducesCorrectNormalizer(t *testing.T) {
 	cases := []struct {
-		name      string
-		frameRate float64
-		want      string // normalizer filter that MUST appear before `interlace=`
+		name           string
+		frameRate      float64
+		wantNormalizer string // filter that MUST appear
+		wantInterlace  bool   // whether interlace=scan=... must appear
 	}{
-		{"film 23.976p", 23.976, "telecine=pattern=23"},
-		{"film 24p", 24.0, "fps=60000/1001"},
-		{"tv 29.97p", 29.97, "fps=60000/1001"},
-		{"tv 30p", 30.0, "fps=60000/1001"},
-		{"sports 59.94p", 59.94, "fps=60000/1001"},
-		{"sports 60p", 60.0, "fps=60000/1001"},
+		{"film 23.976p", 23.976, "telecine=pattern=23", false},
+		{"film 24p", 24.0, "fps=60000/1001", true},
+		{"tv 29.97p", 29.97, "fps=60000/1001", true},
+		{"tv 30p", 30.0, "fps=60000/1001", true},
+		{"sports 59.94p", 59.94, "fps=60000/1001", true},
+		{"sports 60p", 60.0, "fps=60000/1001", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -238,12 +245,13 @@ func TestBuildFilterChain_SourceRateProducesCorrectNormalizer(t *testing.T) {
 				AspectMode:   "letterbox",
 			}
 			chain := buildFilterChain(spec)
-			if !strings.Contains(chain, tc.want) {
-				t.Errorf("rate %.3f: chain missing %q\nchain=%s", tc.frameRate, tc.want, chain)
+			if !strings.Contains(chain, tc.wantNormalizer) {
+				t.Errorf("rate %.3f: chain missing %q\nchain=%s", tc.frameRate, tc.wantNormalizer, chain)
 			}
-			// Every chain must still terminate in interlace + separatefields.
-			if !strings.Contains(chain, "interlace=scan=tff:lowpass=0") {
-				t.Errorf("rate %.3f: chain missing interlace filter", tc.frameRate)
+			hasInterlace := strings.Contains(chain, "interlace=scan=tff:lowpass=0")
+			if hasInterlace != tc.wantInterlace {
+				t.Errorf("rate %.3f: interlace filter present=%v, want=%v\nchain=%s",
+					tc.frameRate, hasInterlace, tc.wantInterlace, chain)
 			}
 			if !strings.HasSuffix(chain, "separatefields") {
 				t.Errorf("rate %.3f: chain must end with separatefields, got %s", tc.frameRate, chain)

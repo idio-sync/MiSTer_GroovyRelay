@@ -49,10 +49,10 @@ type PipelineSpec struct {
 //
 // Order is load-bearing:
 //  1. yadif (only if interlaced source) → one progressive frame per input frame.
-//  2. fps=60000/1001 → normalise to 59.94p (or telecine=pattern=23 for 23.976p).
+//  2. fps=60000/1001 → normalise to 59.94p, OR telecine=pattern=23 for 23.976p (3:2 pulldown → 29.97i directly).
 //  3. crop/scale/pad for aspect mode.
 //  4. subtitle burn-in BEFORE interlacing.
-//  5. interlace=scan=tff|bff:lowpass=0 → halves rate to 29.97i.
+//  5. interlace=scan=tff|bff:lowpass=0 → halves rate to 29.97i. SKIPPED when step 2 used telecine.
 //  6. separatefields → 59.94 fields/sec at OutputWidth×(OutputHeight/2).
 func buildFilterChain(s PipelineSpec) string {
 	var filters []string
@@ -63,17 +63,29 @@ func buildFilterChain(s PipelineSpec) string {
 		filters = append(filters, "yadif=mode=send_frame")
 	}
 
-	// 2. Normalise to 59.94p.
-	//    For 23.976p film sources, use telecine=pattern=23 so the 2:3
-	//    cadence lands on the fields correctly (film-accurate). Everything
-	//    else is rate-converted to 59.94p via fps=60000/1001. The downstream
-	//    interlace filter halves the rate to 29.97i; separatefields then
-	//    doubles it back to 59.94 fields/sec.
+	// 2. Normalise to 59.94p OR 29.97i-via-telecine.
+	//    For 23.976p film sources, telecine=pattern=23 applies the 3:2
+	//    pulldown directly — output is 29.97 INTERLACED frames/sec, which
+	//    separatefields (step 6) splits into 59.94 fields/sec while
+	//    preserving the film cadence. Note: when this branch fires we MUST
+	//    skip the downstream `interlace` filter (step 5) — telecine has
+	//    already produced interlaced frames, and re-weaving them via
+	//    `interlace` both destroys the 3:2 cadence and halves the frame
+	//    rate (interlace expects progressive input).
+	//
+	//    Every other rate (24p/29.97p/30p/59.94p/60p/60i-via-yadif) gets
+	//    fps=60000/1001 → 59.94 progressive frames/sec. `interlace` then
+	//    halves to 29.97i and separatefields doubles back to 59.94 fields.
+	//    Note on 60p: fps=60000/1001 decimates ~0.1% of genuinely-60.000Hz
+	//    frames (one drop per 1001) — harmless for human perception but
+	//    not lossless.
+	telecined := false
 	if s.SourceProbe != nil {
 		fr := s.SourceProbe.FrameRate
 		switch {
 		case fr >= 23.0 && fr < 24.0:
 			filters = append(filters, "telecine=pattern=23")
+			telecined = true
 		default:
 			filters = append(filters, "fps=60000/1001")
 		}
@@ -106,12 +118,15 @@ func buildFilterChain(s PipelineSpec) string {
 			fmt.Sprintf("subtitles=filename='%s':si=%d", s.SubtitleURL, s.SubtitleIndex))
 	}
 
-	// 5. Build interlaced frame (OutputWidth×OutputHeight at 29.97i).
-	scan := "tff"
-	if s.FieldOrder == "bff" {
-		scan = "bff"
+	// 5. Build interlaced frame (29.97i at OutputWidth×OutputHeight) —
+	//    UNLESS the telecine branch already produced interlaced output.
+	if !telecined {
+		scan := "tff"
+		if s.FieldOrder == "bff" {
+			scan = "bff"
+		}
+		filters = append(filters, fmt.Sprintf("interlace=scan=%s:lowpass=0", scan))
 	}
-	filters = append(filters, fmt.Sprintf("interlace=scan=%s:lowpass=0", scan))
 
 	// 6. Split into fields: 29.97i → 59.94p, halving the height.
 	filters = append(filters, "separatefields")
