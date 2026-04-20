@@ -84,6 +84,15 @@ type AudioHeader struct {
 	SoundSize uint16
 }
 
+// AudioPayload carries reassembled PCM bytes from AudioEvent after the
+// payload-mode listener has collected all soundSize bytes across datagrams.
+// Distinct from AudioHeader, which only carries the header's soundSize
+// metadata before payload collection. The recorder uses AudioPayload.PCM
+// for byte accounting.
+type AudioPayload struct {
+	PCM []byte
+}
+
 // BlitHeader carries the fields decoded from a BLIT_FIELD_VSYNC header
 // datagram. The RGB (or compressed) payload arrives in subsequent datagrams.
 type BlitHeader struct {
@@ -100,12 +109,13 @@ type BlitHeader struct {
 // Init/Switchres/Audio/Blit will be non-nil for command types that carry a
 // payload; CLOSE carries neither.
 type Command struct {
-	Type      byte
-	Init      *InitPayload
-	Switchres *SwitchresPayload
-	Audio     *AudioHeader
-	Blit      *BlitHeader
-	Raw       []byte
+	Type         byte
+	Init         *InitPayload
+	Switchres    *SwitchresPayload
+	Audio        *AudioHeader  // set by ParseCommand from a 3-byte AUDIO header
+	AudioPayload *AudioPayload // set downstream (AudioEvent) for reassembled PCM
+	Blit         *BlitHeader
+	Raw          []byte
 }
 
 // ParseCommand decodes a single datagram into a typed Command. It handles all
