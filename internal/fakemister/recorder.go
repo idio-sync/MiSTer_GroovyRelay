@@ -46,7 +46,14 @@ func NewRecorder() *Recorder {
 func (r *Recorder) Record(c Command) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
+	// Prefer the listener's wire-arrival stamp so downstream processing stalls
+	// (e.g. the PNG dumper in the variance test) can't corrupt inter-field
+	// timing measurements. Fall back to time.Now() for synthesized commands
+	// that never passed through the listener.
+	now := c.ReceivedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
 	if r.firstSeen.IsZero() {
 		r.firstSeen = now
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
@@ -94,11 +95,13 @@ func (l *Listener) Run(events chan<- Command) {
 		if err != nil {
 			return
 		}
+		recvAt := time.Now()
 		cmd, err := ParseCommand(buf[:n])
 		if err != nil {
 			slog.Debug("fakemister parse error", "err", err, "n", n)
 			continue
 		}
+		cmd.ReceivedAt = recvAt
 		if l.ackOnInit && cmd.Type == groovy.CmdInit {
 			l.emitInitACK(src)
 		}
@@ -156,6 +159,7 @@ func (l *Listener) RunWithFields(
 		if err != nil {
 			return
 		}
+		recvAt := time.Now()
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		switch mode {
@@ -165,6 +169,7 @@ func (l *Listener) RunWithFields(
 				slog.Debug("fakemister parse error", "err", err, "n", n)
 				continue
 			}
+			cmd.ReceivedAt = recvAt
 			if l.ackOnInit && cmd.Type == groovy.CmdInit {
 				l.emitInitACK(src)
 			}
@@ -257,6 +262,13 @@ type BlitHeader struct {
 // Command is the parsed form of a single command datagram. Exactly one of
 // Init/Switchres/Audio/Blit will be non-nil for command types that carry a
 // payload; CLOSE carries neither.
+//
+// ReceivedAt is stamped by Run/RunWithFields immediately after the UDP read
+// returns, before the command is enqueued onto the events channel. Callers
+// that care about true wire-arrival time (e.g. Recorder's per-field timing
+// assertion) should read it instead of calling time.Now() after dequeue —
+// downstream processing stalls would otherwise corrupt the measurement.
+// Zero when a Command is synthesized outside the listener path.
 type Command struct {
 	Type         byte
 	Init         *InitPayload
@@ -265,6 +277,7 @@ type Command struct {
 	AudioPayload *AudioPayload // set downstream (AudioEvent) for reassembled PCM
 	Blit         *BlitHeader
 	Raw          []byte
+	ReceivedAt   time.Time
 }
 
 // ParseCommand decodes a single datagram into a typed Command. It handles all
