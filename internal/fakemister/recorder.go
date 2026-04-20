@@ -3,6 +3,8 @@ package fakemister
 import (
 	"sync"
 	"time"
+
+	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
 )
 
 // RecorderSnapshot is an immutable copy of a Recorder's counters at a moment
@@ -13,18 +15,24 @@ type RecorderSnapshot struct {
 	FirstSeen  time.Time
 	LastSeen   time.Time
 	Sequence   []byte // command type sequence
+	// FieldTimestamps records the arrival time of each BLIT_FIELD_VSYNC
+	// command (one entry per BLIT, in arrival order). Used by integration
+	// tests to assert the inter-field gap stays within the ~17 ms band
+	// implied by 59.94 Hz — see tests/integration's assertInterFieldTiming.
+	FieldTimestamps []time.Time
 }
 
 // Recorder tracks per-command-type counts, reassembled-audio byte totals, and
 // the full command-type arrival sequence. Safe for concurrent Record calls
 // from the listener goroutine plus Snapshot calls from test/assertion code.
 type Recorder struct {
-	mu         sync.Mutex
-	counts     map[byte]int
-	audioBytes int
-	firstSeen  time.Time
-	lastSeen   time.Time
-	sequence   []byte
+	mu              sync.Mutex
+	counts          map[byte]int
+	audioBytes      int
+	firstSeen       time.Time
+	lastSeen        time.Time
+	sequence        []byte
+	fieldTimestamps []time.Time
 }
 
 // NewRecorder returns a zero-state Recorder with the counts map pre-allocated.
@@ -45,6 +53,9 @@ func (r *Recorder) Record(c Command) {
 	r.lastSeen = now
 	r.counts[c.Type]++
 	r.sequence = append(r.sequence, c.Type)
+	if c.Type == groovy.CmdBlitFieldVSync {
+		r.fieldTimestamps = append(r.fieldTimestamps, now)
+	}
 	if c.AudioPayload != nil {
 		r.audioBytes += len(c.AudioPayload.PCM)
 	}
@@ -61,11 +72,14 @@ func (r *Recorder) Snapshot() RecorderSnapshot {
 	}
 	seq := make([]byte, len(r.sequence))
 	copy(seq, r.sequence)
+	ts := make([]time.Time, len(r.fieldTimestamps))
+	copy(ts, r.fieldTimestamps)
 	return RecorderSnapshot{
-		Counts:     counts,
-		AudioBytes: r.audioBytes,
-		FirstSeen:  r.firstSeen,
-		LastSeen:   r.lastSeen,
-		Sequence:   seq,
+		Counts:          counts,
+		AudioBytes:      r.audioBytes,
+		FirstSeen:       r.firstSeen,
+		LastSeen:        r.lastSeen,
+		Sequence:        seq,
+		FieldTimestamps: ts,
 	}
 }

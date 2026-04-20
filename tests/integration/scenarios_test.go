@@ -169,6 +169,11 @@ func TestScenario_Cast(t *testing.T) {
 	if snap.AudioBytes < 200_000 {
 		t.Errorf("cast: audio byte count low (%d); expected >= 200_000", snap.AudioBytes)
 	}
+
+	// Inter-field timing: the Plane drives the pump at 59.94 Hz, so
+	// consecutive BLIT arrivals on loopback should land roughly one field
+	// period apart. See assertInterFieldTiming for the acceptance band.
+	assertInterFieldTiming(t, snap.FieldTimestamps)
 }
 
 // TestScenario_Seek kicks off a long clip, waits for the plane to ramp up,
