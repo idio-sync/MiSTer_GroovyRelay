@@ -51,11 +51,30 @@ func NewManager(cfg *config.Config, sender *groovynet.Sender) *Manager {
 	return &Manager{cfg: cfg, sender: sender, fsm: New()}
 }
 
-// startPlaneLocked spawns a new data plane. Caller MUST hold m.mu. Preempts
-// any existing plane and waits for its goroutine to exit before returning,
-// ensuring the Sender is never shared between two planes (two planes on one
-// sender would interleave packets and corrupt the MiSTer's session identity).
-func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int) error {
+// probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
+// context so a stuck PMS cannot deadlock the control plane. Called by
+// StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
+// never held during network I/O.
+func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpeg.CropRect, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	probe, err := ffmpeg.Probe(ctx, req.StreamURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("probe source: %w", err)
+	}
+	var cropRect *ffmpeg.CropRect
+	if m.cfg.AspectMode == "auto" {
+		// ProbeCrop failures degrade gracefully to letterbox — ignore the error.
+		cropRect, _ = ffmpeg.ProbeCrop(ctx, req.StreamURL, req.InputHeaders, 2*time.Second)
+	}
+	return probe, cropRect, nil
+}
+
+// startPlaneLocked spawns a new data plane. Caller MUST hold m.mu AND have
+// already run Probe/ProbeCrop (passed in as probe + cropRect) — this
+// function must not perform network I/O while the mutex is held.
+func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
+	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect) error {
 	// 1. Preempt and await prior plane. Drop the lock while awaiting Done()
 	//    so the plane's exit goroutine (which re-acquires m.mu to clear
 	//    m.plane) is free to run.
@@ -68,12 +87,6 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int) error {
 			<-prev.Done()
 			m.mu.Lock()
 		}
-	}
-
-	probeURL := req.StreamURL
-	probe, err := ffmpeg.Probe(context.Background(), probeURL)
-	if err != nil {
-		return fmt.Errorf("probe source: %w", err)
 	}
 
 	// Resolve the SWITCHRES modeline from config (falls back to NTSC 480i60).
@@ -89,12 +102,6 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int) error {
 	// Per-field vActive for interlaced modes; full height otherwise.
 	fieldH := int(modeline.VActive)
 	bpp := bytesPerPixel(rgbMode)
-
-	// Optional auto-crop probe (runs once per session when aspect_mode=auto).
-	var cropRect *ffmpeg.CropRect
-	if m.cfg.AspectMode == "auto" {
-		cropRect, _ = ffmpeg.ProbeCrop(context.Background(), probeURL, req.InputHeaders, 2*time.Second)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelFn = cancel
@@ -139,16 +146,10 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int) error {
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		// Only clear the plane pointer if it's still the one we spawned —
-		// a concurrent StartSession (preempt) may have already swapped it.
 		if m.plane != plane {
 			return
 		}
 		m.plane = nil
-		// Fire EvEOF ONLY on natural exit. When the caller
-		// (Pause/Stop/preempt) cancelled ctx, they drive the FSM themselves;
-		// firing EvEOF here would race them to Idle and clobber the
-		// intended transition (Playing → Paused, etc.).
 		if runErr == nil {
 			_ = m.fsm.Transition(EvEOF)
 		}
@@ -160,9 +161,13 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int) error {
 // protocol-specific requests into a SessionRequest and call this. Any
 // existing session is preempted and the prior goroutine awaited.
 func (m *Manager) StartSession(req SessionRequest) error {
+	probe, cropRect, err := m.probeForStart(req)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.startPlaneLocked(req, req.SeekOffsetMs); err != nil {
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect); err != nil {
 		return err
 	}
 	return m.fsm.Transition(EvPlayMedia)
@@ -200,17 +205,29 @@ func (m *Manager) Pause() error {
 // Play resumes a paused session by respawning the data plane at the
 // snapshotted pause position.
 func (m *Manager) Play() error {
+	// Capture the active request outside the lock so we can probe against
+	// the same URL without holding the mutex.
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	a := m.active
 	if a == nil {
+		m.mu.Unlock()
 		return fmt.Errorf("no session to resume")
 	}
+	req := a.req
 	resumeMs := int(a.pausedPosition / time.Millisecond)
 	if resumeMs <= 0 {
 		resumeMs = a.baseOffsetMs
 	}
-	if err := m.startPlaneLocked(a.req, resumeMs); err != nil {
+	m.mu.Unlock()
+
+	probe, cropRect, err := m.probeForStart(req)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect); err != nil {
 		return err
 	}
 	return m.fsm.Transition(EvPlay)
@@ -240,15 +257,26 @@ func (m *Manager) Stop() error {
 // changes. Requires an active session whose adapter advertises CanSeek.
 func (m *Manager) SeekTo(offsetMs int) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	a := m.active
 	if a == nil {
+		m.mu.Unlock()
 		return fmt.Errorf("no session")
 	}
 	if !a.req.Capabilities.CanSeek {
+		m.mu.Unlock()
 		return fmt.Errorf("adapter does not support seek")
 	}
-	if err := m.startPlaneLocked(a.req, offsetMs); err != nil {
+	req := a.req
+	m.mu.Unlock()
+
+	probe, cropRect, err := m.probeForStart(req)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect); err != nil {
 		return err
 	}
 	// Seek keeps state=playing; FSM's Seek event is a no-op transition.

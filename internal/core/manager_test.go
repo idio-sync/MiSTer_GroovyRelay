@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -234,5 +235,76 @@ func TestManager_PauseFSMRaceSafety(t *testing.T) {
 	}
 	if m.Status().State != StateIdle {
 		t.Errorf("final state = %s, want Idle", m.Status().State)
+	}
+}
+
+// TestProbeTimeout_DoesNotDeadlockManager exercises I8: a slow/unreachable
+// StreamURL must not hold Manager.mu. We fire StartSession against a URL
+// that never responds; concurrently call Stop; assert Stop returns quickly
+// regardless of whether Probe is still in flight.
+func TestProbeTimeout_DoesNotDeadlockManager(t *testing.T) {
+	// A TCP listener that accepts but never writes: ffprobe will hang
+	// waiting for response headers, hitting our 10 s timeout.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Park the connection; never reply.
+			_ = c
+		}
+	}()
+	url := "http://" + ln.Addr().String() + "/never.mp4"
+
+	sender, err := groovynet.NewSender("127.0.0.1", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+
+	cfg := &config.Config{
+		Modeline:            "NTSC_480i",
+		InterlaceFieldOrder: "tff",
+		AspectMode:          "letterbox",
+		RGBMode:             "rgb888",
+		AudioSampleRate:     48000,
+		AudioChannels:       2,
+	}
+	m := NewManager(cfg, sender)
+
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- m.StartSession(SessionRequest{
+			StreamURL:  url,
+			DirectPlay: true,
+		})
+	}()
+
+	// Stop must not block even though Probe is in flight.
+	stopDone := make(chan struct{})
+	go func() {
+		_ = m.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Stop blocked on in-flight Probe — mutex discipline regressed")
+	}
+
+	// StartSession eventually returns (ffprobe either hits timeout or errors).
+	select {
+	case err := <-startErr:
+		if err == nil {
+			t.Errorf("StartSession returned nil for unreachable URL; expected an error")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("StartSession never returned — probe timeout not enforced")
 	}
 }
