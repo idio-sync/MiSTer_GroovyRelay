@@ -1,0 +1,9 @@
+.git
+.github
+.claude
+tests
+docs
+/mister-groovy-relay
+/fake-mister
+*.test
+*.exe
