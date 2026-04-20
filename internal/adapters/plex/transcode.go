@@ -157,6 +157,12 @@ func sanitizeSessionID(s string) (string, error) {
 // Uses the 10 s-timeout HTTP client so a stuck PMS doesn't wedge session
 // start.
 func FetchSubtitleToFile(ctx context.Context, srtURL, dataDir, sessionID string) (string, error) {
+	// Fail-fast: validate sessionID BEFORE any network I/O or filesystem
+	// work so malformed/malicious inputs do not trigger a PMS round-trip.
+	safeID, err := sanitizeSessionID(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("subtitle fetch: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srtURL, nil)
 	if err != nil {
 		return "", err
@@ -177,10 +183,6 @@ func FetchSubtitleToFile(ctx context.Context, srtURL, dataDir, sessionID string)
 	dir := filepath.Join(dataDir, "subtitles")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
-	}
-	safeID, err := sanitizeSessionID(sessionID)
-	if err != nil {
-		return "", fmt.Errorf("subtitle fetch: %w", err)
 	}
 	path := filepath.Join(dir, safeID+ext)
 	body, err := io.ReadAll(resp.Body)
