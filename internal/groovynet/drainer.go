@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // Drainer reads ACK packets from the Sender's socket and delivers them on a

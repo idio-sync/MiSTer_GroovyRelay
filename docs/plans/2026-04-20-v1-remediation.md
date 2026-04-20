@@ -349,8 +349,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // TestFilterRate_FieldsPerSecondMatchesTarget runs the full FFmpeg pipeline

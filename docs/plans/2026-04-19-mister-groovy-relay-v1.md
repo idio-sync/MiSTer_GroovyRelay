@@ -155,10 +155,10 @@ mister-groovy-relay/
 
 ```bash
 cd /c/Users/Jake/Git/MiSTer_GroovyRelay
-go mod init github.com/jedivoodoo/mister-groovy-relay
+go mod init github.com/idio-sync/MiSTer_GroovyRelay
 ```
 
-Expected: `go.mod` created with `module github.com/jedivoodoo/mister-groovy-relay` and a Go version line.
+Expected: `go.mod` created with `module github.com/idio-sync/MiSTer_GroovyRelay` and a Go version line.
 
 - [ ] **Step 2: Create `.gitignore`**
 
@@ -1395,7 +1395,7 @@ package fakemister
 import (
 	"testing"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func TestParseCommand_Init(t *testing.T) {
@@ -1442,7 +1442,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // InitPayload carries the five INIT bytes the receiver uses to set up the
@@ -2018,8 +2018,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func main() {
@@ -2356,8 +2356,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func TestSender_DeliversInit(t *testing.T) {
@@ -2411,7 +2411,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 type Sender struct {
@@ -2748,7 +2748,7 @@ package groovynet
 import (
 	"log/slog"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // Drainer reads ACK packets from the Sender's socket and delivers them on a
@@ -2815,8 +2815,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 type Harness struct {
@@ -2867,7 +2867,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func TestBasic_InitSwitchresClose(t *testing.T) {
@@ -3685,9 +3685,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/ffmpeg"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 type PlaneConfig struct {
@@ -3978,7 +3978,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 type CompanionConfig struct {
@@ -4592,7 +4592,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // TimelineConfig carries the X-Plex-* identity headers the broker sends on
@@ -5378,11 +5378,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/dataplane"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/ffmpeg"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 type Manager struct {
@@ -5708,11 +5708,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/adapters/plex"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/logging"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 )
 
 func main() {
@@ -6044,8 +6044,8 @@ jobs:
           context: .
           push: true
           tags: |
-            jedivoodoo/mister-groovy-relay:${{ github.ref_name }}
-            jedivoodoo/mister-groovy-relay:latest
+            idiosync000/mister-groovy-relay:${{ github.ref_name }}
+            idiosync000/mister-groovy-relay:latest
 ```
 
 - [ ] **Step 2: Commit**

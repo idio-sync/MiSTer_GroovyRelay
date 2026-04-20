@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func TestSender_DeliversInit(t *testing.T) {

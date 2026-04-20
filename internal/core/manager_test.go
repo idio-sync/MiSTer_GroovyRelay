@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 // newTestManager returns a Manager with a Sender bound to a free local port.

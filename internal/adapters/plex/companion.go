@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // CompanionConfig carries the identity of this device as advertised to Plex

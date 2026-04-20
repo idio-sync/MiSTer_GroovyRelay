@@ -1,4 +1,4 @@
-module github.com/jedivoodoo/mister-groovy-relay
+module github.com/idio-sync/MiSTer_GroovyRelay
 
 go 1.26.2
 

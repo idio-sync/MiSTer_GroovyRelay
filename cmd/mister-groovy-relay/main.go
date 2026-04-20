@@ -18,11 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/adapters/plex"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/logging"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 )
 
 // version is spliced into the Plex Companion /resources response and

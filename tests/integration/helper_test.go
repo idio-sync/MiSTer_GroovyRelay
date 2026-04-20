@@ -11,8 +11,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 // Harness bundles the loopback pair and the accumulating Recorder a test

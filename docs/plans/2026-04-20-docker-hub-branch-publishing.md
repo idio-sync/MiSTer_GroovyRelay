@@ -180,7 +180,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: jedivoodoo/mister-groovy-relay
+          images: idiosync000/mister-groovy-relay
           tags: |
             type=ref,event=branch
             type=ref,event=branch,suffix=-{{sha}}
@@ -273,7 +273,7 @@ If `build-image` is skipped on the push to `main`, the `if:` condition is exclud
 
 - [ ] **Step 3: Verify Docker Hub tags**
 
-At `https://hub.docker.com/r/jedivoodoo/mister-groovy-relay/tags`, confirm:
+At `https://hub.docker.com/r/idiosync000/mister-groovy-relay/tags`, confirm:
 
 - `:main` exists, updated minutes ago.
 - `:main-<short-sha>` exists, where `<short-sha>` is the first 7 chars of the merge commit SHA.
@@ -285,7 +285,7 @@ If `:latest` moved on the `main` push, the metadata rule `type=raw,value=latest,
 
 From any Docker host with `buildx`:
 ```bash
-docker buildx imagetools inspect jedivoodoo/mister-groovy-relay:main
+docker buildx imagetools inspect idiosync000/mister-groovy-relay:main
 ```
 
 Expected: output lists two platforms in the manifest:

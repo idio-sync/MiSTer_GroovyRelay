@@ -76,7 +76,7 @@ Rather than hand-assembling tag strings per trigger, use the standard
 - uses: docker/metadata-action@v5
   id: meta
   with:
-    images: jedivoodoo/mister-groovy-relay
+    images: idiosync000/mister-groovy-relay
     tags: |
       type=ref,event=branch
       type=ref,event=branch,suffix=-{{sha}}
@@ -123,7 +123,7 @@ action's tag output directly.
 ```
 
 Both platforms are published under a single manifest per tag. A user on
-an arm64 host running `docker pull jedivoodoo/mister-groovy-relay:main`
+an arm64 host running `docker pull idiosync000/mister-groovy-relay:main`
 gets the arm64 layer automatically; the same command on amd64 gets the
 amd64 layer.
 
@@ -179,7 +179,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: jedivoodoo/mister-groovy-relay
+          images: idiosync000/mister-groovy-relay
           tags: |
             type=ref,event=branch
             type=ref,event=branch,suffix=-{{sha}}

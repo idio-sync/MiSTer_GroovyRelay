@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/dataplane"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/ffmpeg"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 // TestPlane_StreamsFieldsToFake exercises the full Plane pipeline end-to-end:

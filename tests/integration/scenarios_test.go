@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/fakemister"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 // scenarioHarness wires core.Manager into an in-process fake-mister so the

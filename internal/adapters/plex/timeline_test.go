@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func newTestBroker(t *testing.T, status core.SessionStatus) *TimelineBroker {

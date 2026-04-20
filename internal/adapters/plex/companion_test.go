@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestCompanion_RootReturns200(t *testing.T) {

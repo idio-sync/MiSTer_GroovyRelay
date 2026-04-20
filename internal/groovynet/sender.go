@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // Sender owns a single UDP4 socket bound to srcPort (ephemeral if srcPort=0)

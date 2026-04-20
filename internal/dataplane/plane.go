@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/ffmpeg"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 // PlaneConfig is the full knob set Plane.Run needs to stream one session.

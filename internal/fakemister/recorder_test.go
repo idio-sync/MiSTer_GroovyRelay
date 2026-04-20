@@ -3,7 +3,7 @@ package fakemister
 import (
 	"testing"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func TestRecorder_Counts(t *testing.T) {

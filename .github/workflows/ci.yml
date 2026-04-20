@@ -59,7 +59,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: jedivoodoo/mister-groovy-relay
+          images: idiosync000/mister-groovy-relay
           tags: |
             type=ref,event=branch
             type=ref,event=branch,suffix=-{{sha}}

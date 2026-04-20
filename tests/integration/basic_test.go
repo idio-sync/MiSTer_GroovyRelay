@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // TestBasic_InitSwitchresClose is the first true end-to-end smoke test:

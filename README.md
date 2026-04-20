@@ -30,12 +30,12 @@ one FFmpeg worker per active cast.
 mkdir -p /opt/mister-groovy-relay
 docker run --rm --network=host \
   -v /opt/mister-groovy-relay:/config \
-  jedivoodoo/mister-groovy-relay:latest \
+  idiosync000/mister-groovy-relay:latest \
   --config /config/config.example.toml --help || true
 
 # 2. Copy the example out, edit to point at your MiSTer.
 docker run --rm -v /opt/mister-groovy-relay:/config \
-  jedivoodoo/mister-groovy-relay:latest \
+  idiosync000/mister-groovy-relay:latest \
   sh -c 'cp /config/config.example.toml /config/config.toml' \
   2>/dev/null || cp config.example.toml /opt/mister-groovy-relay/config.toml
 $EDITOR /opt/mister-groovy-relay/config.toml
@@ -43,14 +43,14 @@ $EDITOR /opt/mister-groovy-relay/config.toml
 # 3. First run: link to your plex.tv account (interactive).
 docker run --rm -it --network=host \
   -v /opt/mister-groovy-relay:/config \
-  jedivoodoo/mister-groovy-relay:latest --link
+  idiosync000/mister-groovy-relay:latest --link
 # → prints a 4-char code; open https://plex.tv/link and paste it.
 
 # 4. Long-run: detach and let it broadcast.
 docker run -d --name mister-groovy-relay --restart unless-stopped \
   --network=host \
   -v /opt/mister-groovy-relay:/config \
-  jedivoodoo/mister-groovy-relay:latest
+  idiosync000/mister-groovy-relay:latest
 ```
 
 `--network=host` is required. The bridge needs a stable source UDP port
@@ -84,7 +84,7 @@ Everything is in `config.toml` (copied from `config.example.toml`).
 
 ## First-time setup walkthrough
 
-1. **Install.** Pull the image (`docker pull jedivoodoo/mister-groovy-relay:latest`)
+1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
    or `go build ./cmd/mister-groovy-relay` if you want a native binary.
 2. **Configure.** Copy `config.example.toml` to your `data_dir` as
    `config.toml`. The only mandatory edit is `mister_host` — point it at

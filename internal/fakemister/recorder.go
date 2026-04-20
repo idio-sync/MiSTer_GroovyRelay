@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // RecorderSnapshot is an immutable copy of a Recorder's counters at a moment

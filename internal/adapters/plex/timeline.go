@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // defaultSubscriberTTL is the Plex-mpv-shim canonical idle window. Subscribers

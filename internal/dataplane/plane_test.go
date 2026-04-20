@@ -7,8 +7,8 @@ import (
 
 	cryptorand "crypto/rand"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
-	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
 // TestRateCodeForHz locks the integer→wire-enum mapping the INIT handshake

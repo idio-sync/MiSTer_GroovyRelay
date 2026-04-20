@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedivoodoo/mister-groovy-relay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 // AdapterConfig bundles everything the Plex adapter needs to stand up the
