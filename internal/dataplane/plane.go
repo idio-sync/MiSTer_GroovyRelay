@@ -176,17 +176,23 @@ func (p *Plane) Run(ctx context.Context) error {
 // sendField sends one BLIT_FIELD_VSYNC header + payload. Applies congestion
 // backoff before the header and records the payload size afterwards so the
 // next call can honor the reference ~11 ms wait after any >500 KB blit.
+//
+// Compression policy: if LZ4 is enabled AND the field is compressible
+// (LZ4Compress returns ok=true), the LZ4 BLIT variant is emitted. Otherwise
+// — either LZ4 is disabled in config, OR the field is incompressible (e.g.
+// random-noise content, encrypted stream payload) — a RAW BLIT variant is
+// emitted with the uncompressed bytes. Emitting an LZ4 header with
+// CompressedSize=0 would desync the receiver.
 func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
 	if p.cfg.LZ4Enabled {
-		compressed, err := groovy.LZ4Compress(raw)
-		if err != nil {
-			slog.Warn("lz4 compress failed; sending raw", "err", err)
-		} else {
+		if compressed, ok := groovy.LZ4Compress(raw); ok {
 			payload = compressed
 			opts.Compressed = true
 			opts.CompressedSize = uint32(len(compressed))
+		} else {
+			slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", "size", len(raw))
 		}
 	}
 	p.cfg.Sender.WaitForCongestion()
