@@ -4,43 +4,77 @@ import (
 	"io"
 )
 
-// fieldsPerSecond is the NTSC 59.94 Hz field cadence (3 × 30000/1001).
-// Kept local to the package so AudioChunkSize stays a pure int function.
-const fieldsPerSecond = 59.94
-
 // bytesPerSample is the s16le output format the FFmpeg audio pipe produces
 // (see BuildCommand: `-f s16le`). 16-bit little-endian = 2 bytes per sample
 // per channel.
 const bytesPerSample = 2
 
-// AudioChunkSize returns the integer PCM byte count the data plane reads per
-// 59.94 Hz field tick. For the canonical 48 kHz stereo path:
-//
-//	48000 * 2 channels * 2 bytes/sample / 59.94 ≈ 3203 bytes/field.
-//
-// Integer truncation is fine — FFmpeg produces audio at the real rate and
-// brief divergence is absorbed by the audio-ready ACK gate and the FPGA's
-// downstream resampler.
-func AudioChunkSize(sampleRate, channels int) int {
-	return int(float64(sampleRate*channels*bytesPerSample) / fieldsPerSecond)
+// AudioPipeReader computes per-field PCM chunk sizes using integer-exact
+// arithmetic against the NTSC 60000/1001 Hz field rate, so no rounding
+// drift accumulates between the FFmpeg pipe and the field pump. One reader
+// per session; caller iterates by calling NextChunkSize, reading that many
+// bytes from the pipe, then Advance to account for the bytes actually read.
+type AudioPipeReader struct {
+	sampleRate int
+	channels   int
+	fieldsRead int64
+	bytesRead  int64
+	lastSize   int // size returned by the most recent NextChunkSize call
 }
 
-// ReadAudioFromPipe reads fixed-size PCM chunks (one per 59.94 Hz field) from
-// r (the FFmpeg audio stdout / fd-4 pipe) and sends each chunk on out.
-// Closes out on EOF or any read error (including a truncated tail).
+// NewAudioPipeReader returns a reader seeded at field 0, bytes 0.
+func NewAudioPipeReader(sampleRate, channels int) *AudioPipeReader {
+	return &AudioPipeReader{sampleRate: sampleRate, channels: channels}
+}
+
+// NextChunkSize returns the exact number of bytes the caller should read from
+// the audio pipe for the NEXT field tick. Derived from the integer formula
+// (fieldsRead+1) * sampleRate * channels * 2 * 1001 / 60000 - bytesRead.
+// Never returns negative; if sampleRate*channels is zero (misconfigured),
+// returns 0 so the caller can treat it as "no audio".
+func (r *AudioPipeReader) NextChunkSize() int {
+	per := int64(r.sampleRate) * int64(r.channels) * int64(bytesPerSample)
+	if per <= 0 {
+		r.lastSize = 0
+		return 0
+	}
+	expected := (r.fieldsRead + 1) * per * 1001 / 60000
+	n := int(expected - r.bytesRead)
+	if n < 0 {
+		n = 0
+	}
+	r.lastSize = n
+	return n
+}
+
+// Advance records that `got` bytes were actually read in response to the
+// most recent NextChunkSize call, and increments the field counter. `got`
+// may be less than lastSize on a short read (EOF); the next call to
+// NextChunkSize will compensate automatically.
+func (r *AudioPipeReader) Advance(got int) {
+	r.bytesRead += int64(got)
+	r.fieldsRead++
+}
+
+// ReadAudioFromPipe reads PCM chunks sized by AudioPipeReader from r and
+// sends each on out. Closes out on EOF or any read error (including a
+// truncated tail).
 //
-// Chunk size is AudioChunkSize(sampleRate, channels). The caller is expected
-// to forward at most one chunk per field tick; a full channel simply applies
-// backpressure onto the reader (the pipe buffers in FFmpeg / kernel).
+// Chunk size averages to sampleRate*channels*2 / 59.94 but varies by ±1
+// byte between ticks to keep cumulative consumption integer-exact against
+// the 60000/1001 Hz field rate.
 func ReadAudioFromPipe(r io.Reader, sampleRate, channels int, out chan<- []byte) {
 	defer close(out)
-	size := AudioChunkSize(sampleRate, channels)
-	if size <= 0 {
-		return
-	}
+	reader := NewAudioPipeReader(sampleRate, channels)
 	for {
+		size := reader.NextChunkSize()
+		if size <= 0 {
+			return
+		}
 		buf := make([]byte, size)
-		if _, err := io.ReadFull(r, buf); err != nil {
+		n, err := io.ReadFull(r, buf)
+		reader.Advance(n)
+		if err != nil {
 			return
 		}
 		out <- buf
