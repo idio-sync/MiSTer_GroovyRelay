@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -129,5 +130,84 @@ func TestPollPIN_TimesOut(t *testing.T) {
 
 	if _, err := PollPIN(42, "cid", 100*time.Millisecond); err == nil {
 		t.Fatal("expected timeout error, got nil")
+	}
+}
+
+// TestRegisterDevice_PutsConnectionURI verifies the PUT path, token query
+// parameter, and form body used to refresh the plex.tv device record.
+func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
+	var gotMethod, gotPath, gotToken, gotContentType, gotURI string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotToken = r.URL.Query().Get("X-Plex-Token")
+		gotContentType = r.Header.Get("Content-Type")
+		_ = r.ParseForm()
+		gotURI = r.PostForm.Get("Connection[][uri]")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	restore := PlexAPIBase
+	PlexAPIBase = srv.URL
+	t.Cleanup(func() { PlexAPIBase = restore })
+
+	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500); err != nil {
+		t.Fatalf("RegisterDevice: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("expected PUT, got %s", gotMethod)
+	}
+	if gotPath != "/devices/uuid-xyz" {
+		t.Errorf("expected /devices/uuid-xyz, got %s", gotPath)
+	}
+	if gotToken != "tok-123" {
+		t.Errorf("expected token tok-123, got %s", gotToken)
+	}
+	if gotContentType != "application/x-www-form-urlencoded" {
+		t.Errorf("wrong content-type: %q", gotContentType)
+	}
+	if gotURI != "http://10.0.0.5:32500" {
+		t.Errorf("wrong connection uri: %q", gotURI)
+	}
+}
+
+// TestRunRegistrationLoop_FiresImmediatelyAndOnTick verifies both the eager
+// first call and the ticker-driven refresh. The registerInterval package
+// var is shortened so we don't wait the production 60s cadence.
+func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	restoreBase := PlexAPIBase
+	PlexAPIBase = srv.URL
+	t.Cleanup(func() { PlexAPIBase = restoreBase })
+
+	restoreInterval := registerInterval
+	registerInterval = 100 * time.Millisecond
+	t.Cleanup(func() { registerInterval = restoreInterval })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500)
+		close(done)
+	}()
+
+	// Give the loop time for immediate call + >=1 ticker fire.
+	time.Sleep(350 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunRegistrationLoop did not return after context cancel")
+	}
+
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Errorf("expected >=2 register calls, got %d", got)
 	}
 }

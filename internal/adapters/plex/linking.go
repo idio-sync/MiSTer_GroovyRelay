@@ -1,8 +1,10 @@
 package plex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +20,12 @@ var PlexAPIBase = "https://plex.tv"
 // pollInterval is how long PollPIN waits between poll attempts. Exposed as
 // a var for tests to shorten.
 var pollInterval = 2 * time.Second
+
+// registerInterval is the plex.tv device refresh cadence. plex.tv will mark
+// the device offline if we stop registering for too long; 60s is well under
+// the documented timeout. Exposed as a var so tests don't have to wait a
+// full minute for the ticker to fire.
+var registerInterval = 60 * time.Second
 
 // PinResponse matches the JSON returned by the plex.tv PIN endpoints. When
 // the PIN has not yet been claimed AuthToken is the empty string; once the
@@ -90,4 +98,48 @@ func PollPIN(id int, clientID string, timeout time.Duration) (string, error) {
 		time.Sleep(pollInterval)
 	}
 	return "", fmt.Errorf("pin expired without auth token")
+}
+
+// RegisterDevice PUTs the bridge's LAN URI to plex.tv/devices/{uuid}. This
+// is how the device shows up in the Plex mobile/web cast picker when the
+// controller is on cellular data (outside the LAN). Requires a valid auth
+// token; a one-shot call, intended to be driven by RunRegistrationLoop.
+func RegisterDevice(uuid, token, hostIP string, httpPort int) error {
+	form := url.Values{}
+	form.Set("Connection[][uri]", fmt.Sprintf("http://%s:%d", hostIP, httpPort))
+	req, err := http.NewRequest(http.MethodPut,
+		fmt.Sprintf("%s/devices/%s?X-Plex-Token=%s", PlexAPIBase, uuid, token),
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// RunRegistrationLoop performs an immediate RegisterDevice and then keeps it
+// refreshed on the registerInterval cadence until ctx is cancelled. Errors
+// from the periodic refresh are logged at WARN but do not stop the loop —
+// transient plex.tv hiccups should self-heal on the next tick.
+func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPort int) {
+	tick := time.NewTicker(registerInterval)
+	defer tick.Stop()
+	if err := RegisterDevice(uuid, token, hostIP, httpPort); err != nil {
+		slog.Warn("plex.tv register failed", "err", err)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			if err := RegisterDevice(uuid, token, hostIP, httpPort); err != nil {
+				slog.Warn("plex.tv register failed", "err", err)
+			}
+		}
+	}
 }
