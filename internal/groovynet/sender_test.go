@@ -94,6 +94,41 @@ func TestSender_InitACKHandshakeSuccess(t *testing.T) {
 	<-done
 }
 
+func TestSender_CongestionBackoff(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 12345, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	s.MarkBlitSent(600 * 1024)
+	// Should block for ~11ms on the next call.
+	start := time.Now()
+	s.WaitForCongestion()
+	elapsed := time.Since(start)
+	// Windows timer granularity is ~15.6 ms; loosen lower bound to 5ms
+	// while still proving a stall actually happened.
+	if elapsed < 5*time.Millisecond {
+		t.Errorf("congestion wait elapsed=%v, expected >=5ms", elapsed)
+	}
+}
+
+func TestSender_CongestionNoBackoffUnderThreshold(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 12345, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	s.MarkBlitSent(100 * 1024) // below CongestionSize
+	start := time.Now()
+	s.WaitForCongestion()
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Millisecond {
+		t.Errorf("congestion wait elapsed=%v for sub-threshold payload, expected ~0", elapsed)
+	}
+}
+
 func TestSender_InitACKTimeout(t *testing.T) {
 	// Bind a local "black hole" socket so the destination port exists but
 	// never replies. Using a random bound socket (held open) guarantees the

@@ -97,6 +97,36 @@ func (s *Sender) SendPayload(payload []byte) error {
 // reader (e.g. the Drainer goroutine) returns with a net.OpError.
 func (s *Sender) Close() error { return s.conn.Close() }
 
+// MarkBlitSent records the size and time of the last BLIT field sent so
+// WaitForCongestion can enforce the back-off window. Per reference
+// (K_CONGESTION_SIZE=500000, K_CONGESTION_TIME~=11 ms): applies to the
+// total payload bytes of the last blit, not the header.
+func (s *Sender) MarkBlitSent(size int) {
+	s.mu.Lock()
+	s.lastBlitSize = size
+	s.lastBlitTime = time.Now()
+	s.mu.Unlock()
+}
+
+// WaitForCongestion blocks until the minimum inter-blit interval has elapsed
+// if the previous blit exceeded the congestion threshold. Safe to call once
+// per tick from the data-plane pump loop; returns immediately when the last
+// payload was under groovy.CongestionSize or the wait has already elapsed.
+func (s *Sender) WaitForCongestion() {
+	s.mu.Lock()
+	size := s.lastBlitSize
+	last := s.lastBlitTime
+	s.mu.Unlock()
+	if size <= groovy.CongestionSize {
+		return
+	}
+	elapsed := time.Since(last)
+	remaining := time.Duration(groovy.CongestionWait)*time.Millisecond - elapsed
+	if remaining > 0 {
+		time.Sleep(remaining)
+	}
+}
+
 // SendInitAwaitACK sends INIT, then blocks up to timeout waiting for the
 // 13-byte status reply. Returns the parsed ACK or an error (including the
 // timeout case). Callers must NOT have a Drainer goroutine reading the same
