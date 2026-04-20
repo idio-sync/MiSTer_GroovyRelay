@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +71,58 @@ func ensureSampleMP4(t *testing.T, name string, durationSec int) string {
 		"-preset", "ultrafast",
 		"-c:a", "aac",
 		"-t", itoa(durationSec),
+		path,
+	)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("generate %s: %v", path, err)
+	}
+	generated[path] = true
+	return path
+}
+
+// ensureSampleMP4Rate generates a silent/colour-bar MP4 at a specific frame
+// rate. Used by filter-chain rate tests that need to exercise both film
+// (23.976) and sports (60) sources end-to-end.
+func ensureSampleMP4Rate(t *testing.T, name string, seconds int, rate string) string {
+	t.Helper()
+
+	absDir, err := filepath.Abs(testdataDir)
+	if err != nil {
+		t.Fatalf("abs testdata dir: %v", err)
+	}
+	if err := os.MkdirAll(absDir, 0o755); err != nil {
+		t.Fatalf("mkdir testdata: %v", err)
+	}
+	path := filepath.Join(absDir, name)
+
+	generateOnce.Lock()
+	defer generateOnce.Unlock()
+
+	if generated[path] {
+		return path
+	}
+	if _, err := os.Stat(path); err == nil {
+		generated[path] = true
+		return path
+	}
+
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skipf("ffmpeg not on PATH: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-y",
+		"-f", "lavfi",
+		"-i", fmt.Sprintf("testsrc=size=720x480:rate=%s:duration=%d", rate, seconds),
+		"-f", "lavfi",
+		"-i", fmt.Sprintf("sine=frequency=440:duration=%d", seconds),
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+		"-c:a", "aac",
+		"-shortest",
 		path,
 	)
 	cmd.Stderr = os.Stderr

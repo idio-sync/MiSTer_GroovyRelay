@@ -48,11 +48,11 @@ type PipelineSpec struct {
 // BLIT_FIELD_VSYNC alternating field=0/field=1.
 //
 // Order is load-bearing:
-//  1. yadif (only if interlaced source) → produces one progressive frame per input frame.
-//  2. telecine (23.976p) or fps=30000/1001 (everything else) → normalise to 29.97p.
+//  1. yadif (only if interlaced source) → one progressive frame per input frame.
+//  2. fps=60000/1001 → normalise to 59.94p (or telecine=pattern=23 for 23.976p).
 //  3. crop/scale/pad for aspect mode.
-//  4. subtitle burn-in BEFORE interlacing, so captions composite on the progressive raster.
-//  5. interlace=scan=tff|bff:lowpass=0 → 29.97i at OutputWidth×OutputHeight.
+//  4. subtitle burn-in BEFORE interlacing.
+//  5. interlace=scan=tff|bff:lowpass=0 → halves rate to 29.97i.
 //  6. separatefields → 59.94 fields/sec at OutputWidth×(OutputHeight/2).
 func buildFilterChain(s PipelineSpec) string {
 	var filters []string
@@ -63,15 +63,19 @@ func buildFilterChain(s PipelineSpec) string {
 		filters = append(filters, "yadif=mode=send_frame")
 	}
 
-	// 2. Normalise to 29.97p. telecine applies 2:3 pulldown to 23.976 sources;
-	//    everything else is rate-converted with fps=30000/1001.
+	// 2. Normalise to 59.94p.
+	//    For 23.976p film sources, use telecine=pattern=23 so the 2:3
+	//    cadence lands on the fields correctly (film-accurate). Everything
+	//    else is rate-converted to 59.94p via fps=60000/1001. The downstream
+	//    interlace filter halves the rate to 29.97i; separatefields then
+	//    doubles it back to 59.94 fields/sec.
 	if s.SourceProbe != nil {
 		fr := s.SourceProbe.FrameRate
 		switch {
 		case fr >= 23.0 && fr < 24.0:
 			filters = append(filters, "telecine=pattern=23")
 		default:
-			filters = append(filters, "fps=30000/1001")
+			filters = append(filters, "fps=60000/1001")
 		}
 	}
 
