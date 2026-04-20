@@ -1,8 +1,12 @@
 package plex
 
 import (
+	"encoding/xml"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
+	"strings"
 )
 
 // TranscodeRequest carries the inputs to BuildTranscodeURL. OffsetMs is the
@@ -45,4 +49,60 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("X-Plex-Client-Profile-Extra", BuildProfileExtra())
 	q.Set("X-Plex-Token", r.Token)
 	return r.PlexServerURL + "/video/:/transcode/universal/start.m3u8?" + q.Encode()
+}
+
+// pmsMediaContainer is the narrow slice of PMS's /library/metadata response
+// that we decode to find subtitle streams. We match by Stream id (streamType
+// is the Plex convention for subtitles: 3, but we match by ID per the plan).
+type pmsMediaContainer struct {
+	Video []struct {
+		Media []struct {
+			Part []struct {
+				Stream []struct {
+					ID         string `xml:"id,attr"`
+					StreamType string `xml:"streamType,attr"`
+					Key        string `xml:"key,attr"`
+				} `xml:"Stream"`
+			} `xml:"Part"`
+		} `xml:"Media"`
+	} `xml:"Video"`
+}
+
+// SubtitleURLFor queries PMS metadata for mediaKey and returns a URL to the
+// subtitle stream whose id matches streamID, token-appended so FFmpeg can
+// fetch it directly. Returns an error if the stream isn't found so callers
+// can log-and-continue without burn-in.
+func SubtitleURLFor(serverURL, mediaKey, streamID, token string) (string, error) {
+	u := fmt.Sprintf("%s%s?X-Plex-Token=%s",
+		strings.TrimRight(serverURL, "/"),
+		mediaKey,
+		url.QueryEscape(token))
+	resp, err := http.Get(u)
+	if err != nil {
+		return "", fmt.Errorf("metadata fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	var mc pmsMediaContainer
+	if err := xml.Unmarshal(body, &mc); err != nil {
+		return "", fmt.Errorf("parse metadata: %w", err)
+	}
+	for _, v := range mc.Video {
+		for _, media := range v.Media {
+			for _, part := range media.Part {
+				for _, s := range part.Stream {
+					if s.ID == streamID && s.Key != "" {
+						return fmt.Sprintf("%s%s?X-Plex-Token=%s",
+							strings.TrimRight(serverURL, "/"),
+							s.Key,
+							url.QueryEscape(token)), nil
+					}
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("subtitle stream %q not found under %s", streamID, mediaKey)
 }

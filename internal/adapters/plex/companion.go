@@ -10,6 +10,7 @@ package plex
 import (
 	"encoding/xml"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -180,10 +181,16 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 	}
 	// Subtitle lookup is best-effort: we log and continue without burn-in on
-	// failure so the user still gets video playback. Task 7.4b provides the
-	// SubtitleURLFor implementation.
+	// failure so the user still gets video playback. SubtitleURLFor lives in
+	// transcode.go.
 	if p.SubtitleStreamID != "" {
-		req.SubtitleURL = ""
+		subURL, err := SubtitleURLFor(serverURL, p.MediaKey, p.SubtitleStreamID, p.PlexToken)
+		if err != nil {
+			slog.Warn("subtitle lookup failed; continuing without burn-in",
+				"streamID", p.SubtitleStreamID, "err", err)
+		} else {
+			req.SubtitleURL = subURL
+		}
 	}
 
 	if err := c.core.StartSession(req); err != nil {
