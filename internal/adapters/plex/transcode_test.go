@@ -115,3 +115,43 @@ func TestFetchSubtitleToFile_WritesLocalPath(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchSubtitleToFile_RejectsPathTraversal(t *testing.T) {
+	// httptest returning a valid subtitle body — the server never matters
+	// because sanitization should reject the request before the HTTP call.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-subrip")
+		_, _ = w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	bad := []string{
+		"../escaped",
+		"..\\escaped",
+		"/abs/path",
+		"C:\\abs\\path",
+		"with spaces",
+		"semi;colon",
+		"", // empty
+		strings.Repeat("a", 129), // too long
+	}
+	ctx := context.Background()
+	for _, sid := range bad {
+		t.Run(sid, func(t *testing.T) {
+			_, err := FetchSubtitleToFile(ctx, srv.URL+"/sub.srt", dir, sid)
+			if err == nil {
+				t.Errorf("sessionID=%q: expected error, got nil", sid)
+			}
+		})
+	}
+
+	// And confirm a clean ID still works.
+	path, err := FetchSubtitleToFile(ctx, srv.URL+"/sub.srt", dir, "abc-123_xyz.v2")
+	if err != nil {
+		t.Fatalf("valid sessionID rejected: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("valid session file not written: %v", err)
+	}
+}

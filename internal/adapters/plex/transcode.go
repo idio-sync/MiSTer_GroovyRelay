@@ -117,6 +117,34 @@ func SubtitleURLFor(serverURL, mediaKey, streamID, token string) (string, error)
 	return "", fmt.Errorf("subtitle stream %q not found under %s", streamID, mediaKey)
 }
 
+// sanitizeSessionID restricts the input to characters safe for use as a
+// filename component — [A-Za-z0-9._-], non-empty, length <= 128. Plex
+// controllers generate session IDs using these characters in practice,
+// but the HTTP endpoint is unauthenticated so the SessionID parameter is
+// attacker-controlled. Rejecting anything outside the safe set prevents
+// path-traversal (../, absolute paths) and command-line injection via
+// the FFmpeg filtergraph.
+func sanitizeSessionID(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("sessionID: empty")
+	}
+	if len(s) > 128 {
+		return "", fmt.Errorf("sessionID: too long (%d > 128)", len(s))
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			// ok
+		default:
+			return "", fmt.Errorf("sessionID: invalid character %q", r)
+		}
+	}
+	return s, nil
+}
+
 // FetchSubtitleToFile downloads the subtitle resource at srtURL (the token-
 // bearing URL returned by SubtitleURLFor) to a file under
 // <dataDir>/subtitles/<sessionID>.<ext>. The extension is derived from the
@@ -150,7 +178,11 @@ func FetchSubtitleToFile(ctx context.Context, srtURL, dataDir, sessionID string)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, sessionID+ext)
+	safeID, err := sanitizeSessionID(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("subtitle fetch: %w", err)
+	}
+	path := filepath.Join(dir, safeID+ext)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -20,6 +21,19 @@ import (
 	"github.com/jedivoodoo/mister-groovy-relay/internal/groovy"
 	"github.com/jedivoodoo/mister-groovy-relay/internal/groovynet"
 )
+
+// removeSubtitleFile deletes the file at path if path is non-empty.
+// Errors (including "file not found") are logged at debug and otherwise
+// ignored — the bridge cannot block session teardown on subtitle-file
+// cleanup, and a missing file just means a parallel cleanup already ran.
+func removeSubtitleFile(path string) {
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Debug("subtitle file cleanup", "path", path, "err", err)
+	}
+}
 
 // Manager is the adapter-agnostic session orchestrator. One Manager per
 // process; all adapters share it. Thread-safe.
@@ -78,6 +92,16 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	// 1. Preempt and await prior plane. Drop the lock while awaiting Done()
 	//    so the plane's exit goroutine (which re-acquires m.mu to clear
 	//    m.plane) is free to run.
+	//
+	//    On preempt, clean up the previous session's subtitle file IF the
+	//    incoming request brought a DIFFERENT path (or no path). Play and
+	//    SeekTo both pass the same req as m.active, so their SubtitlePath
+	//    will match and cleanup is correctly skipped — the resumed plane
+	//    still needs the file.
+	var oldSubtitle string
+	if m.active != nil && m.active.req.SubtitlePath != req.SubtitlePath {
+		oldSubtitle = m.active.req.SubtitlePath
+	}
 	if m.cancelFn != nil {
 		prev := m.plane
 		m.cancelFn()
@@ -88,6 +112,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 			m.mu.Lock()
 		}
 	}
+	removeSubtitleFile(oldSubtitle)
 
 	// Resolve the SWITCHRES modeline from config (falls back to NTSC 480i60).
 	modeline, err := resolveModeline(m.cfg.Modeline)
@@ -239,6 +264,10 @@ func (m *Manager) Play() error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var subtitlePath string
+	if m.active != nil {
+		subtitlePath = m.active.req.SubtitlePath
+	}
 	if m.cancelFn != nil {
 		prev := m.plane
 		m.cancelFn()
@@ -250,6 +279,7 @@ func (m *Manager) Stop() error {
 		}
 	}
 	m.active = nil
+	removeSubtitleFile(subtitlePath)
 	return m.fsm.Transition(EvStop)
 }
 
