@@ -1,0 +1,58 @@
+# CI pipeline for MiSTer_GroovyRelay.
+#
+# test job:
+#   - Runs on every push to main, every PR, and every tag push.
+#   - Installs ffmpeg (required by integration tests — the sample-clip
+#     generator and live Plane scenarios both shell out).
+#   - go vet + go test (unit) + go test -tags=integration across the
+#     whole module. The integration glob is ./... (not just
+#     tests/integration/...) so any //go:build integration test in
+#     another package also runs.
+#
+# build-image job:
+#   - Gated on refs/tags/v* — ships an image only on a semver tag push.
+#   - Uses the Docker Hub credentials configured as repo secrets:
+#       DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+#     (set these at Settings → Secrets and variables → Actions).
+#   - Publishes two tags per release: the literal tag (v0.1.0) and the
+#     floating latest tag.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go test -tags=integration ./...
+
+  build-image:
+    runs-on: ubuntu-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            jedivoodoo/mister-groovy-relay:${{ github.ref_name }}
+            jedivoodoo/mister-groovy-relay:latest
