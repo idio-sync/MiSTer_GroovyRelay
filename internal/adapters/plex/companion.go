@@ -9,7 +9,10 @@ package plex
 
 import (
 	"encoding/xml"
+	"fmt"
 	"net/http"
+	"strconv"
+	"sync"
 
 	"github.com/jedivoodoo/mister-groovy-relay/internal/core"
 )
@@ -27,6 +30,9 @@ type Companion struct {
 	cfg      CompanionConfig
 	core     SessionManager // adapter-agnostic core.Manager
 	timeline *TimelineBroker
+
+	sessMu   sync.Mutex
+	lastPlay PlayMediaRequest
 }
 
 // SessionManager is the adapter's narrow view of core.Manager. Declared as
@@ -117,28 +123,124 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 	_ = xml.NewEncoder(w).Encode(mc)
 }
 
-// Handlers below are stubs filled in by later tasks in this phase (7.4, 7.5).
+// PlayMediaRequest is the adapter-local view of a Plex Companion /playMedia
+// query. Stored on the Companion (rememberPlaySession) so the timeline broker
+// can attribute status updates back to the Plex media entity (core.
+// SessionStatus.AdapterRef only carries the media key).
+type PlayMediaRequest struct {
+	PlexServerAddress string
+	PlexServerPort    string
+	PlexServerScheme  string
+	MediaKey          string
+	OffsetMs          int
+	SessionID         string
+	ClientID          string
+	PlexToken         string
+	SubtitleStreamID  string
+	AudioStreamID     string
+	CommandID         string
+}
+
+// handlePlayMedia parses the Plex Companion playMedia query, builds a stream
+// URL via BuildTranscodeURL, translates into core.SessionRequest, and
+// delegates to core. On error we return 400; the controller retries.
 func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	q := r.URL.Query()
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	p := PlayMediaRequest{
+		PlexServerAddress: q.Get("address"),
+		PlexServerPort:    q.Get("port"),
+		PlexServerScheme:  q.Get("protocol"),
+		MediaKey:          q.Get("key"),
+		OffsetMs:          offset,
+		SessionID:         q.Get("X-Plex-Session-Identifier"),
+		ClientID:          q.Get("X-Plex-Client-Identifier"),
+		PlexToken:         q.Get("X-Plex-Token"),
+		SubtitleStreamID:  q.Get("subtitleStreamID"),
+		AudioStreamID:     q.Get("audioStreamID"),
+		CommandID:         q.Get("commandID"),
+	}
+
+	// Translate Plex Companion request → generic core.SessionRequest.
+	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	streamURL := BuildTranscodeURL(TranscodeRequest{
+		PlexServerURL: serverURL,
+		MediaPath:     p.MediaKey,
+		Token:         p.PlexToken,
+		OffsetMs:      p.OffsetMs,
+		OutputWidth:   720,
+		OutputHeight:  480,
+		SessionID:     p.SessionID,
+		ClientID:      p.ClientID,
+	})
+	req := core.SessionRequest{
+		StreamURL:    streamURL,
+		SeekOffsetMs: p.OffsetMs,
+		AdapterRef:   p.MediaKey,
+		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
+	}
+	// Subtitle lookup is best-effort: we log and continue without burn-in on
+	// failure so the user still gets video playback. Task 7.4b provides the
+	// SubtitleURLFor implementation.
+	if p.SubtitleStreamID != "" {
+		req.SubtitleURL = ""
+	}
+
+	if err := c.core.StartSession(req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	c.rememberPlaySession(p)
+	writeOKResponse(w)
 }
+
 func (c *Companion) handlePause(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	if err := c.core.Pause(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeOKResponse(w)
 }
+
 func (c *Companion) handlePlay(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	if err := c.core.Play(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeOKResponse(w)
 }
+
 func (c *Companion) handleStop(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	if err := c.core.Stop(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeOKResponse(w)
 }
+
 func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if err := c.core.SeekTo(offset); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeOKResponse(w)
 }
+
+// Stubs filled in later. setParameters/setStreams aren't wired in v1 — Plex
+// controllers send them but we acknowledge without acting so the controller
+// UI doesn't stall.
 func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	writeOKResponse(w)
 }
 func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+	writeOKResponse(w)
 }
+func (c *Companion) handleMirrorDetails(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+
+// Timeline handlers are wired in Task 7.5.
 func (c *Companion) handleTimelineSubscribe(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", 501)
 }
@@ -148,6 +250,25 @@ func (c *Companion) handleTimelineUnsubscribe(w http.ResponseWriter, r *http.Req
 func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", 501)
 }
-func (c *Companion) handleMirrorDetails(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", 501)
+
+// rememberPlaySession stores the last playMedia request so the timeline
+// broker (Task 7.5) can attribute status updates to the right Plex media
+// entity. Thread-safe; getter returns a copy.
+func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	c.lastPlay = p
+}
+
+// lastPlaySession returns a copy of the last remembered playMedia request.
+func (c *Companion) lastPlaySession() PlayMediaRequest {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	return c.lastPlay
+}
+
+// writeOKResponse writes the canonical Plex Companion 200 OK XML reply.
+func writeOKResponse(w http.ResponseWriter) {
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(`<?xml version="1.0"?><Response code="200" status="OK"/>`))
 }
