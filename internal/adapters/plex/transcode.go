@@ -79,19 +79,26 @@ type pmsMediaContainer struct {
 }
 
 // SubtitleURLFor queries PMS metadata for mediaKey and returns a URL to the
-// subtitle stream whose id matches streamID, token-appended so FFmpeg can
-// fetch it directly. Returns an error if the stream isn't found so callers
-// can log-and-continue without burn-in.
-func SubtitleURLFor(serverURL, mediaKey, streamID, token string) (string, error) {
+// subtitle stream whose id matches streamID, token-appended so FetchSubtitleToFile
+// can download it. ctx bounds the metadata fetch; callers should pass a
+// context with a bounded deadline (10 s is idiomatic for PMS calls).
+func SubtitleURLFor(ctx context.Context, serverURL, mediaKey, streamID, token string) (string, error) {
 	u := fmt.Sprintf("%s%s?X-Plex-Token=%s",
 		strings.TrimRight(serverURL, "/"),
 		mediaKey,
 		url.QueryEscape(token))
-	resp, err := http.Get(u)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := plexHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("metadata fetch: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("metadata fetch: %s", resp.Status)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err

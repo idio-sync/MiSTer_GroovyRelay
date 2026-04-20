@@ -194,7 +194,9 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	var subtitlePath string
 	var subtitleIndex int
 	if p.SubtitleStreamID != "" {
-		subURL, err := SubtitleURLFor(serverURL, p.MediaKey, p.SubtitleStreamID, p.PlexToken)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		subURL, err := SubtitleURLFor(ctx, serverURL, p.MediaKey, p.SubtitleStreamID, p.PlexToken)
+		cancel()
 		if err != nil {
 			slog.Warn("subtitle lookup", "err", err, "streamID", p.SubtitleStreamID)
 		} else {

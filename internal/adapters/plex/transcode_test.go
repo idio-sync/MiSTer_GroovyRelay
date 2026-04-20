@@ -56,7 +56,7 @@ func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	url, err := SubtitleURLFor(ts.URL, "/library/metadata/42", "202", "tok")
+	url, err := SubtitleURLFor(context.Background(), ts.URL, "/library/metadata/42", "202", "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestSubtitleURLFor_NoMatch(t *testing.T) {
 		_, _ = w.Write([]byte(xmlBody))
 	}))
 	defer ts.Close()
-	_, err := SubtitleURLFor(ts.URL, "/library/metadata/42", "999", "tok")
+	_, err := SubtitleURLFor(context.Background(), ts.URL, "/library/metadata/42", "999", "tok")
 	if err == nil {
 		t.Error("expected error for missing stream id")
 	}
@@ -153,5 +153,28 @@ func TestFetchSubtitleToFile_RejectsPathTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("valid session file not written: %v", err)
+	}
+}
+
+// TestSubtitleURLFor_ContextCancelled verifies a slow PMS metadata server
+// does not block SubtitleURLFor beyond the caller's context deadline.
+// Regression harness for I10.
+func TestSubtitleURLFor_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // block until client cancels
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := SubtitleURLFor(ctx, srv.URL, "/library/metadata/42", "3", "token")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected error from cancelled context; got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("context cancel did not short-circuit request: took %v", elapsed)
 	}
 }
