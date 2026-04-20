@@ -1,0 +1,21 @@
+# Binaries
+/mister-groovy-relay
+/fake-mister
+/cmd/*/mister-groovy-relay
+/cmd/*/fake-mister
+*.exe
+
+# Test output
+*.out
+*.test
+coverage.txt
+/testdata/dumps/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
