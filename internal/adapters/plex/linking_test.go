@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -209,5 +210,39 @@ func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
 
 	if got := atomic.LoadInt32(&calls); got < 2 {
 		t.Errorf("expected >=2 register calls, got %d", got)
+	}
+}
+
+// TestRegisterDevice_Returns4xxAsError verifies I9: a plex.tv 401 (expired
+// token) surfaces as an error so the caller / ticker loop can log it,
+// instead of being silently dropped.
+func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	oldBase := PlexAPIBase
+	PlexAPIBase = srv.URL
+	t.Cleanup(func() { PlexAPIBase = oldBase })
+
+	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500)
+	if err == nil {
+		t.Fatal("expected error from 401 response; got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should mention 401: %v", err)
+	}
+}
+
+// TestPlexHTTPClient_HasTimeout verifies the shared client is configured
+// with a bounded timeout so a hanging plex.tv call cannot wedge a ticker
+// or caller.
+func TestPlexHTTPClient_HasTimeout(t *testing.T) {
+	if plexHTTPClient.Timeout <= 0 {
+		t.Errorf("plexHTTPClient.Timeout = %v; must be > 0", plexHTTPClient.Timeout)
+	}
+	if plexHTTPClient.Timeout > 30*time.Second {
+		t.Errorf("plexHTTPClient.Timeout = %v; too generous", plexHTTPClient.Timeout)
 	}
 }

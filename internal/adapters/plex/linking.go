@@ -55,7 +55,7 @@ func RequestPIN(clientID, deviceName string) (*PinResponse, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := plexHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +84,7 @@ func PollPIN(id int, clientID string, timeout time.Duration) (string, error) {
 			return "", err
 		}
 		req.Header.Set("Accept", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := plexHTTPClient.Do(req)
 		if err != nil {
 			time.Sleep(pollInterval)
 			continue
@@ -114,11 +114,14 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := plexHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("plex.tv register: %s", resp.Status)
+	}
 	return nil
 }
 
