@@ -16,13 +16,19 @@
 - **Existing patterns:** Tests alongside source (`internal/<pkg>/*_test.go`); integration tests in `tests/integration/`; CI runs `go test -race ./...`.
 - **Module:** `github.com/idio-sync/MiSTer_GroovyRelay`
 
+### Windows dev caveat
+
+Production targets Linux (Docker + MiSTer). Windows is a supported dev platform. Where Linux-only syscalls don't have Windows equivalents — starting with directory `fsync` in Task 1.1 — use `_unix.go` / `_windows.go` build-tag splits so tests pass on both platforms. The guarantee on Linux (strict fsync or error) is preserved; on Windows the no-op is acceptable because Windows NTFS provides rename durability without a separate dir-fsync call. If a later task hits the same seam, call it out in the task and follow the same split pattern.
+
 ## File Structure
 
 Phase 1 — config refactor (data-loss risk; ships first):
 - Modify: `internal/config/config.go` — sectioned `Config` + `BridgeConfig` + subtypes, `MetaData()` accessor.
 - Create: `internal/config/migration.go` — legacy-flat → sectioned detection + rewrite.
 - Create: `internal/config/migration_test.go`.
-- Create: `internal/config/atomic.go` — `WriteAtomic(path, bytes)`.
+- Create: `internal/config/atomic.go` — `WriteAtomic(path, bytes)` (OS-agnostic shell).
+- Create: `internal/config/atomic_unix.go` — `fsyncDir` using `os.File.Sync` (build tag: `!windows`).
+- Create: `internal/config/atomic_windows.go` — `fsyncDir` no-op (build tag: `windows`).
 - Create: `internal/config/atomic_test.go`.
 - Modify: `internal/config/config_test.go` — rewrite legacy tests against sectioned shape.
 - Modify: `config.example.toml` — update to sectioned shape.
@@ -103,7 +109,11 @@ Why first: migration is the highest-consequence piece of the whole project (data
 
 **Files:**
 - Create: `internal/config/atomic.go`
+- Create: `internal/config/atomic_unix.go`
+- Create: `internal/config/atomic_windows.go`
 - Create: `internal/config/atomic_test.go`
+
+Directory `fsync` has no portable equivalent on Windows (`os.File.Sync` returns `"Access is denied"` on a directory handle). Keep the Linux durability contract strict — "fsync or fail" — via a `_unix.go` file, and provide a Windows no-op via `_windows.go`. Both share the `fsyncDir(dir string) error` signature called from `WriteAtomic`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -195,6 +205,10 @@ import (
 // The tempfile suffix uses a random hex string to prevent collisions
 // when two writes race (though callers should serialize via the
 // per-adapter mutex in internal/ui).
+//
+// Directory fsync is delegated to fsyncDir, which has an OS-specific
+// implementation: strict on Unix, no-op on Windows (NTFS provides
+// rename durability without a separate dir-fsync call).
 func WriteAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 
@@ -229,15 +243,48 @@ func WriteAtomic(path string, data []byte) error {
 		return fmt.Errorf("atomic: rename: %w", err)
 	}
 
-	// fsync the parent directory so the rename is durable.
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("atomic: open dir for fsync: %w", err)
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
+	if err := fsyncDir(dir); err != nil {
 		return fmt.Errorf("atomic: fsync dir: %w", err)
 	}
+	return nil
+}
+```
+
+Create `internal/config/atomic_unix.go`:
+
+```go
+//go:build !windows
+
+package config
+
+import "os"
+
+// fsyncDir flushes directory metadata so the preceding rename is durable
+// across a crash. On Unix/Linux (and MiSTer), strict: returns any error.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+```
+
+Create `internal/config/atomic_windows.go`:
+
+```go
+//go:build windows
+
+package config
+
+// fsyncDir is a no-op on Windows. NTFS does not expose directory fsync
+// via os.File.Sync (it returns "Access is denied" on a directory handle).
+// Rename durability on NTFS is provided by the filesystem itself after
+// the preceding file fsync, so the WriteAtomic guarantee still holds:
+// a crash leaves either the old or new contents intact, never torn.
+func fsyncDir(dir string) error {
+	_ = dir
 	return nil
 }
 ```
@@ -245,17 +292,22 @@ func WriteAtomic(path string, data []byte) error {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/config/ -run TestWriteAtomic -v`
-Expected: 3 tests PASS.
+Expected: 3 tests PASS (on both Linux and Windows).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/config/atomic.go internal/config/atomic_test.go
+git add internal/config/atomic.go internal/config/atomic_unix.go internal/config/atomic_windows.go internal/config/atomic_test.go
 git commit -m "feat(config): add WriteAtomic(path, bytes) helper
 
 Standard tempfile + rename + fsync sequence. Caller-visible guarantee:
 a crash leaves either old or new contents intact, never a torn file.
-Used by all subsequent config writes (migration, UI save path)."
+Used by all subsequent config writes (migration, UI save path).
+
+Directory fsync is split via build tags: strict on Unix (os.File.Sync
+on a dir handle), no-op on Windows (NTFS handles rename durability
+without a dir fsync, and os.File.Sync on a Windows dir returns
+\"Access is denied\")."
 ```
 
 ### Task 1.2: Introduce sectioned `Config` struct alongside legacy
