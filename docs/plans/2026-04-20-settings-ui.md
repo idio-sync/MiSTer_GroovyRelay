@@ -3534,7 +3534,30 @@ func (a *Adapter) MountRoutes(mux *http.ServeMux) {
 
 Remove the HTTP-server construction from `Start()`. The adapter no longer owns the listener. The goroutine block for `ListenAndServe` is deleted. `timeline.RunBroadcastLoop` and `disco.Run` goroutines stay; `regCancel` stays.
 
-Also remove `httpSrv` and `srvWG` fields from the struct.
+Also remove `httpSrv` and `srvWG` fields from the struct (they no longer own the listener), and ADD a `finalizeOnce sync.Once` field so `ensureFinalized` is single-shot regardless of whether it's called from MountRoutes or Start:
+
+```go
+type Adapter struct {
+	cfg     AdapterConfig
+	plexCfg Config
+
+	stateMu    sync.Mutex
+	state      adapters.State
+	lastErr    string
+	stateSince time.Time
+
+	finalizeOnce sync.Once  // guards companion + timeline construction
+
+	companion *Companion
+	timeline  *TimelineBroker
+
+	disco     *Discovery
+	regCancel context.CancelFunc
+	discoDone chan struct{}
+
+	pending *pendingLink // Phase 6 — in-flight linking PIN flow
+}
+```
 
 Remove the `Shutdown` call from `Stop()` since the adapter no longer owns the server:
 
@@ -3627,21 +3650,25 @@ func (a *Adapter) Start(ctx context.Context) error {
 	return nil
 }
 
+// ensureFinalized lazily constructs companion + timeline after
+// DecodeConfig has populated plexCfg. Called from both MountRoutes
+// (main-goroutine startup) and Start (which may re-run after a UI
+// toggle disables/re-enables the adapter) — the sync.Once makes the
+// construction single-shot regardless of call order.
 func (a *Adapter) ensureFinalized() {
-	if a.companion != nil {
-		return
-	}
-	a.companion = NewCompanion(CompanionConfig{
-		DeviceName: a.plexCfg.DeviceName,
-		DeviceUUID: a.cfg.TokenStore.DeviceUUID,
-		Version:    a.cfg.Version,
-		DataDir:    a.cfg.Bridge.DataDir,
-	}, a.cfg.Core)
-	a.timeline = NewTimelineBroker(
-		TimelineConfig{DeviceUUID: a.cfg.TokenStore.DeviceUUID, DeviceName: a.plexCfg.DeviceName},
-		a.cfg.Core.Status,
-	)
-	a.companion.SetTimeline(a.timeline)
+	a.finalizeOnce.Do(func() {
+		a.companion = NewCompanion(CompanionConfig{
+			DeviceName: a.plexCfg.DeviceName,
+			DeviceUUID: a.cfg.TokenStore.DeviceUUID,
+			Version:    a.cfg.Version,
+			DataDir:    a.cfg.Bridge.DataDir,
+		}, a.cfg.Core)
+		a.timeline = NewTimelineBroker(
+			TimelineConfig{DeviceUUID: a.cfg.TokenStore.DeviceUUID, DeviceName: a.plexCfg.DeviceName},
+			a.cfg.Core.Status,
+		)
+		a.companion.SetTimeline(a.timeline)
+	})
 }
 ```
 
@@ -4190,58 +4217,9 @@ Create `internal/ui/templates/toast.html`:
 
 - [ ] **Step 2: Write the bridge-panel template**
 
+The template consumes a pre-flattened "rendered field row" struct (built in Step 5's handler), with `.Kind` as a string ("text"/"int"/"bool"/"enum") so the comparisons read obviously. No int-valued FieldKind comparisons in the template; no helper func lookups — all shaping happens in Go.
+
 Create `internal/ui/templates/bridge-panel.html`:
-
-```html
-{{define "bridge-panel"}}
-<div id="toast-slot"></div>
-{{template "toast" .Toast}}
-
-<h1>Bridge</h1>
-<p class="subtitle">Shared settings for every adapter: network destination, video pipeline, audio, and the HTTP listener.</p>
-
-<form hx-post="/ui/bridge/save" hx-target="#panel" hx-swap="innerHTML">
-	{{range $i, $section := .Sections}}
-	<div class="section">
-		<h3><span class="num">{{printf "%02d" (inc $i)}} —</span> {{$section.Name}}</h3>
-		{{range $section.Fields}}
-		<div class="field">
-			<label for="f-{{.Key}}">{{.Label}}</label>
-			<div>
-				{{if eq .Kind 3}}
-					{{/* KindEnum (value 3 in FieldKind) */}}
-					<select name="{{.Key}}" id="f-{{.Key}}">
-						{{range .Enum}}
-						<option value="{{.}}" {{if eq . $.SelectedValue}}selected{{end}}>{{.}}</option>
-						{{end}}
-					</select>
-				{{else if eq .Kind 2}}
-					{{/* KindBool */}}
-					<input type="checkbox" name="{{.Key}}" id="f-{{.Key}}" value="true" {{if eq $.SelectedValue "true"}}checked{{end}}>
-				{{else}}
-					<input type="{{fieldHTMLType .Kind}}" name="{{.Key}}" id="f-{{.Key}}"
-						value="{{$.SelectedValue}}"
-						{{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
-						{{if .Required}}required{{end}}>
-				{{end}}
-				{{if .Help}}<div class="help">{{.Help}}</div>{{end}}
-				{{with $.FieldError}}<div class="err">{{.}}</div>{{end}}
-			</div>
-		</div>
-		{{end}}
-	</div>
-	{{end}}
-
-	<div style="margin-top: 24px; text-align: right;">
-		<button type="submit" class="btn">Save Bridge ▸</button>
-	</div>
-</form>
-{{end}}
-```
-
-Note: the `{{template "bridge-panel"}}` block uses a custom template context (`.SelectedValue`, `.FieldError`) that the handler constructs per-field. We'll use a pre-flattened "rendered field" struct instead for clarity — simpler than reaching up through scopes. Refactor the template to take a slice of pre-populated field rows:
-
-Replace the template body with:
 
 ```html
 {{define "bridge-panel"}}
@@ -4431,17 +4409,11 @@ func New(cfg Config) (*Server, error) {
 }
 ```
 
-Add a `templateFuncs` map at package level:
+Add a `templateFuncs` map at package level (only `inc` — the template reads `.InputType` directly from the pre-flattened row struct, no helper lookup needed):
 
 ```go
 var templateFuncs = template.FuncMap{
 	"inc": func(i int) int { return i + 1 },
-	"fieldHTMLType": func(k string) string {
-		if k == "int" {
-			return "number"
-		}
-		return "text"
-	},
 }
 ```
 
@@ -6061,7 +6033,17 @@ func (r *runtimeAdapterSaver) Save(name string, rawTOMLSection []byte) error {
 // section inside doc. Uses a line-level scan — avoids the round-trip
 // risk of re-encoding the entire TOML document through BurntSushi's
 // encoder, which does not round-trip toml.Primitive values faithfully.
+//
+// Normalizes section to end with exactly one newline before splicing
+// so repeated saves don't accumulate blank lines or run adjacent
+// lines together.
 func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
+	// Normalize section: trim trailing whitespace, ensure exactly one
+	// terminating newline. Prevents "KeyA=1KeyB=2" line concatenation
+	// on splice if section lacks a trailing \n.
+	section = bytes.TrimRight(section, "\r\n\t ")
+	section = append(section, '\n')
+
 	header := fmt.Sprintf("[adapters.%s]", name)
 	lines := strings.Split(string(doc), "\n")
 
@@ -6075,12 +6057,10 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 	}
 
 	if start < 0 {
-		// Not present — append.
-		out := string(doc)
-		if !strings.HasSuffix(out, "\n") {
-			out += "\n"
-		}
-		out += "\n" + header + "\n" + string(section)
+		// Not present — append. Ensure doc ends with \n before
+		// concatenating.
+		out := strings.TrimRight(string(doc), "\r\n\t ") + "\n\n"
+		out += header + "\n" + string(section)
 		return []byte(out)
 	}
 
@@ -6095,8 +6075,11 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 	}
 
 	newLines := append([]string{}, lines[:start+1]...)
-	for _, ln := range strings.Split(string(section), "\n") {
-		newLines = append(newLines, ln)
+	sectionLines := strings.Split(strings.TrimRight(string(section), "\n"), "\n")
+	newLines = append(newLines, sectionLines...)
+	// Ensure a blank line separator before the next section/tail.
+	if end < len(lines) {
+		newLines = append(newLines, "")
 	}
 	newLines = append(newLines, lines[end:]...)
 	return []byte(strings.Join(newLines, "\n"))
@@ -7419,16 +7402,22 @@ Edit `internal/core/manager.go`. Add a method that threads through to `videopipe
 ```go
 // SetInterlaceFieldOrder changes the interlace polarity live.
 // Called by the UI bridge save for the hot-swap field.
+//
+// Always writes m.bridge.Video.InterlaceFieldOrder so CurrentInterlaceOrder()
+// reflects the new value regardless of cast state. If a videopipe is
+// active, ALSO delegates to videopipe.SetFieldOrder so the currently-
+// emitting frames flip polarity. Without this dual-write, mid-cast
+// changes would keep m.bridge stale and a subsequent cast-session
+// rebuild (or CurrentInterlaceOrder() getter) would report the wrong
+// value.
 func (m *Manager) SetInterlaceFieldOrder(order string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.videopipe == nil {
-		// No active cast — stash on the Manager so the next session
-		// builds with the new value.
-		m.bridge.Video.InterlaceFieldOrder = order
-		return nil
+	m.bridge.Video.InterlaceFieldOrder = order
+	if m.videopipe != nil {
+		return m.videopipe.SetFieldOrder(order)
 	}
-	return m.videopipe.SetFieldOrder(order)
+	return nil
 }
 ```
 
@@ -7554,6 +7543,28 @@ func marshalBridgeSection(sec *config.Sectioned, path string) ([]byte, error) {
 
 // stripBridgeSections removes every line from the first "[bridge"
 // header through the next non-bridge header (or EOF).
+//
+// Side effect worth knowing: because marshalBridgeSection strips and
+// then APPENDS the freshly-encoded [bridge] block, a config that
+// initially had ordering
+//
+//     [bridge]
+//     ...
+//     [adapters.plex]
+//     ...
+//
+// will after the first UI save become
+//
+//     [adapters.plex]
+//     ...
+//     [bridge]
+//     ...
+//
+// TOML is order-insensitive so the bridge still reads it correctly,
+// but users inspecting the file will notice. v2 fix: splice the new
+// [bridge] block at the original position instead of appending.
+// Keeping the simpler "append" semantics for v1 because it's robust
+// against arbitrary adapter-section interleaving.
 func stripBridgeSections(doc []byte) []byte {
 	lines := strings.Split(string(doc), "\n")
 	out := make([]string, 0, len(lines))
@@ -8144,13 +8155,28 @@ func testBridgeFormBody(interlaceOrder string) string {
 		interlaceOrder)
 }
 
-// testSender is a minimal groovynet.Sender stub that does nothing.
-// Declared here so the tests compile without pulling real UDP gear.
+// testSender is a no-op groovynet.Sender for integration tests.
+// IMPLEMENTATION NOTE: before running the tests, open
+// internal/groovynet/sender.go and enumerate every method on the
+// Sender interface — stub each one to return a zero value (nil
+// error, empty slice, etc.). The stub must implement the full
+// interface or the test file won't compile.
+//
+// Representative methods that exist as of 2026-04-20 (verify
+// against the current file — the interface may have grown):
+//   - Send([]byte) error
+//   - Close() error
+//   - and any SendFrame / SendBlit / SetDestination style methods
+//
+// If the real Sender is defined as a concrete struct (not an
+// interface), extract an interface in a preparatory commit and
+// have core.Manager accept that interface. Then testSender can
+// satisfy the extracted interface.
 type testSender struct{}
 
 func (t *testSender) Send(p []byte) error { return nil }
 func (t *testSender) Close() error        { return nil }
-// ...additional no-op methods to match groovynet.Sender's interface.
+// Add stubs here for every remaining method on groovynet.Sender.
 
 // newTestBridgeSaver mirrors main.go's runtimeBridgeSaver for tests.
 // Kept package-private because integration tests live outside main.
@@ -8262,11 +8288,50 @@ func (r *integrationBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.Appl
 }
 
 func diffBridgeForTest(old, new config.BridgeConfig) []string {
-	// Same logic as diffBridgeConfig in main.go — copy here.
-	// (When the duplication bites, factor runtimeBridgeSaver into
-	// an internal/uiserver package.)
-	// ... (inline the same diff logic)
-	return nil // placeholder — copy from main.go implementation
+	// Mirror of diffBridgeConfig in cmd/mister-groovy-relay/main.go.
+	// Kept in lock-step with that function; factor to
+	// internal/uiserver in v2 to remove the duplication.
+	var keys []string
+	if old.DataDir != new.DataDir {
+		keys = append(keys, "data_dir")
+	}
+	if old.HostIP != new.HostIP {
+		keys = append(keys, "host_ip")
+	}
+	if old.Video.Modeline != new.Video.Modeline {
+		keys = append(keys, "video.modeline")
+	}
+	if old.Video.InterlaceFieldOrder != new.Video.InterlaceFieldOrder {
+		keys = append(keys, "video.interlace_field_order")
+	}
+	if old.Video.AspectMode != new.Video.AspectMode {
+		keys = append(keys, "video.aspect_mode")
+	}
+	if old.Video.RGBMode != new.Video.RGBMode {
+		keys = append(keys, "video.rgb_mode")
+	}
+	if old.Video.LZ4Enabled != new.Video.LZ4Enabled {
+		keys = append(keys, "video.lz4_enabled")
+	}
+	if old.Audio.SampleRate != new.Audio.SampleRate {
+		keys = append(keys, "audio.sample_rate")
+	}
+	if old.Audio.Channels != new.Audio.Channels {
+		keys = append(keys, "audio.channels")
+	}
+	if old.MiSTer.Host != new.MiSTer.Host {
+		keys = append(keys, "mister.host")
+	}
+	if old.MiSTer.Port != new.MiSTer.Port {
+		keys = append(keys, "mister.port")
+	}
+	if old.MiSTer.SourcePort != new.MiSTer.SourcePort {
+		keys = append(keys, "mister.source_port")
+	}
+	if old.UI.HTTPPort != new.UI.HTTPPort {
+		keys = append(keys, "ui.http_port")
+	}
+	return keys
 }
 
 func scopeForBridgeTestField(key string) adapters.ApplyScope {
