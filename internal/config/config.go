@@ -122,3 +122,56 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// ---- Sectioned schema (design §5.3) ----
+
+// BridgeConfig groups adapter-agnostic fields: shared data-plane
+// pipeline settings, MiSTer destination, bridge-level HTTP port,
+// data directory. Every adapter shares these.
+type BridgeConfig struct {
+	DataDir string       `toml:"data_dir"`
+	HostIP  string       `toml:"host_ip"`
+	Video   VideoConfig  `toml:"video"`
+	Audio   AudioConfig  `toml:"audio"`
+	MiSTer  MisterConfig `toml:"mister"`
+	UI      UIConfig     `toml:"ui"`
+}
+
+type VideoConfig struct {
+	Modeline            string `toml:"modeline"`
+	InterlaceFieldOrder string `toml:"interlace_field_order"`
+	AspectMode          string `toml:"aspect_mode"`
+	RGBMode             string `toml:"rgb_mode"`
+	LZ4Enabled          bool   `toml:"lz4_enabled"`
+}
+
+type AudioConfig struct {
+	SampleRate int `toml:"sample_rate"`
+	Channels   int `toml:"channels"`
+}
+
+type MisterConfig struct {
+	Host       string `toml:"host"`
+	Port       int    `toml:"port"`
+	SourcePort int    `toml:"source_port"`
+}
+
+type UIConfig struct {
+	HTTPPort int `toml:"http_port"`
+}
+
+// Sectioned is the post-migration config envelope. Adapter sections
+// live as toml.Primitive so each adapter can decode its own subtree
+// with preserved TOML-native types (dates, times, etc.). The meta
+// field carries toml.MetaData needed by toml.PrimitiveDecode.
+type Sectioned struct {
+	Bridge   BridgeConfig              `toml:"bridge"`
+	Adapters map[string]toml.Primitive `toml:"adapters"`
+
+	meta toml.MetaData
+}
+
+// MetaData exposes the decoder metadata captured at Load time.
+// Adapters pass this to toml.PrimitiveDecode to hydrate their
+// Primitive section.
+func (s *Sectioned) MetaData() toml.MetaData { return s.meta }
