@@ -2,6 +2,7 @@ package fakemister
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,5 +20,18 @@ func TestDumpFieldPNG(t *testing.T) {
 	pngs, _ := filepath.Glob(filepath.Join(dir, "field_*.png"))
 	if len(pngs) == 0 {
 		t.Fatal("no PNG files written")
+	}
+}
+
+func TestDumpFieldPNGRejectsWrongPayloadSize(t *testing.T) {
+	dir := t.TempDir()
+	d := NewDumper(dir, 1)
+
+	err := d.MaybeDumpField(0, 720, 480, make([]byte, 720*240*3))
+	if err == nil {
+		t.Fatal("expected payload size mismatch error")
+	}
+	if !strings.Contains(err.Error(), "invalid field payload size") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

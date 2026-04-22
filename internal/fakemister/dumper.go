@@ -2,6 +2,7 @@ package fakemister
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -35,6 +36,13 @@ func NewDumper(dir string, sampleEvery int) *Dumper {
 func (d *Dumper) MaybeDumpField(frame uint32, width, height int, bgr24 []byte) error {
 	if d.sampleEvery <= 0 || int(frame)%d.sampleEvery != 0 {
 		return nil
+	}
+	if width <= 0 || height <= 0 {
+		return errors.New("invalid field dimensions")
+	}
+	want := width * height * 3
+	if len(bgr24) != want {
+		return fmt.Errorf("invalid field payload size: got %d bytes, want %d (%dx%dx3)", len(bgr24), want, width, height)
 	}
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := 0; y < height; y++ {

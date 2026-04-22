@@ -3,10 +3,19 @@
 A WIP Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
 Server; it advertises itself as a Plex cast target on the LAN, and when
 you pick it from the Plex client's "Cast" menu it transcodes the
-selected title through FFmpeg and streams raw RGB fields + PCM audio
+Plex output through FFmpeg and streams raw RGB fields + PCM audio
 over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol
 into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly,
 giving you genuine 480i NTSC video for Plex content. Other sources are planned but Plex is the only current target until I work out the full video pipeline.
+
+## Future Plans
+- Support for more relay sources:
+  - Jellyfin
+  - Youtube/Archive.org/general URLs (Via yt-dlp and browser extension maybe?)
+  - DLNA
+  - IPTV/M3U playlists
+  - Directly from .mkv/.mp4 files (long term)
+- WebUI for configuring settings and relay sources
 
 ## Hardware requirements
 
