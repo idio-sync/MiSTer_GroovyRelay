@@ -50,6 +50,10 @@ func RequestPIN(clientID, deviceName string) (*PinResponse, error) {
 	form.Set("X-Plex-Device-Name", deviceName)
 	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")
 	form.Set("X-Plex-Version", "1.0")
+	// X-Plex-Provides=player is baked into the plex.tv device record at link
+	// time. Without it the device is registered but not classified as a
+	// player, so controllers refuse to cast media to it.
+	form.Set("X-Plex-Provides", "player")
 
 	req, err := http.NewRequest(http.MethodPost, PlexAPIBase+"/api/v2/pins", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -109,6 +113,11 @@ func PollPIN(id int, clientID string, timeout time.Duration) (string, error) {
 func RegisterDevice(uuid, token, hostIP string, httpPort int) error {
 	form := url.Values{}
 	form.Set("Connection[][uri]", fmt.Sprintf("http://%s:%d", hostIP, httpPort))
+	// Re-assert provides=player on every refresh so the device record stays
+	// classified as a player even if a prior link created it without the flag.
+	form.Set("X-Plex-Provides", "player")
+	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")
+	form.Set("X-Plex-Version", "1.0")
 	req, err := http.NewRequest(http.MethodPut,
 		fmt.Sprintf("%s/devices/%s?X-Plex-Token=%s", PlexAPIBase, uuid, token),
 		strings.NewReader(form.Encode()))

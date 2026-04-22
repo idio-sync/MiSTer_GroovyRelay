@@ -107,6 +107,11 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 		Product              string `xml:"product,attr"`
 		Platform             string `xml:"platform,attr"`
 		PlatformVersion      string `xml:"platformVersion,attr"`
+		// provides="player" tells Plex controllers this device is a valid
+		// cast target for media playback. Without it, controllers show the
+		// target in the picker but refuse to cast, with "This content is
+		// not currently supported when connected to this remote player."
+		Provides string `xml:"provides,attr"`
 	}
 	type MediaContainer struct {
 		XMLName xml.Name `xml:"MediaContainer"`
@@ -124,6 +129,7 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 			Product:              "MiSTer_GroovyRelay",
 			Platform:             "Linux",
 			PlatformVersion:      c.cfg.Version,
+			Provides:             "player",
 		},
 	}
 	w.WriteHeader(200)
