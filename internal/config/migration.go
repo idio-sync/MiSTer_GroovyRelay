@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ const (
 	FormatLegacy                   // flat keys, no [bridge] table
 	FormatSectioned                // [bridge] present, no flat keys
 	FormatPartial                  // both — hand-edited mid-migration, abort
+	FormatInvalid                  // syntactically invalid TOML, abort
 )
 
 // legacyKeys is the set of top-level keys that existed in the pre-UI
@@ -43,19 +45,22 @@ var legacyKeys = []string{
 	"data_dir",
 }
 
-// Detect classifies raw config bytes into one of four Format values.
+// Detect classifies raw config bytes into one of the Format values.
 // The classification drives the Load flow: Empty → proceed with
-// defaults; Legacy → migrate; Sectioned → decode; Partial → abort.
+// defaults; Legacy → migrate; Sectioned → decode; Partial/Invalid → abort.
 func Detect(raw []byte) Format {
+	format, _ := detectFormat(raw)
+	return format
+}
+
+func detectFormat(raw []byte) (Format, error) {
 	// legacyProbe: undecoded into map to check presence of top-level
 	// flat keys. We decode into a generic map rather than the Config
 	// struct so unknown sections (e.g., [bridge]) don't cause a parse
 	// failure.
 	var probe map[string]any
 	if err := toml.Unmarshal(raw, &probe); err != nil {
-		// Malformed TOML — treat as empty; Load's subsequent parse
-		// pass will surface the real error.
-		return FormatEmpty
+		return FormatInvalid, fmt.Errorf("parse config: %w", err)
 	}
 
 	hasLegacy := false
@@ -69,13 +74,13 @@ func Detect(raw []byte) Format {
 
 	switch {
 	case hasLegacy && hasBridge:
-		return FormatPartial
+		return FormatPartial, nil
 	case hasLegacy:
-		return FormatLegacy
+		return FormatLegacy, nil
 	case hasBridge:
-		return FormatSectioned
+		return FormatSectioned, nil
 	default:
-		return FormatEmpty
+		return FormatEmpty, nil
 	}
 }
 
@@ -155,10 +160,21 @@ func Migrate(legacy []byte) ([]byte, error) {
 func LoadSectioned(path string) (*Sectioned, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if wErr := writeDefaultSectionedConfig(path); wErr != nil {
+				return nil, wErr
+			}
+			return nil, &ErrConfigCreated{Path: path}
+		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	switch Detect(data) {
+	format, err := detectFormat(data)
+	if err != nil {
+		return nil, err
+	}
+
+	switch format {
 	case FormatPartial:
 		residuals := listResidualKeys(data)
 		return nil, fmt.Errorf(
@@ -185,7 +201,7 @@ func LoadSectioned(path string) (*Sectioned, error) {
 		// fall through to sectioned-decode path
 
 	case FormatEmpty:
-		// Fresh install, nothing to decode. Caller handles defaults.
+		// Existing but empty/blank file: decode nothing and layer defaults.
 		s := &Sectioned{
 			Bridge:   defaultBridge(),
 			Adapters: map[string]toml.Primitive{},

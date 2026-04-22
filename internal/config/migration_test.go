@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,11 @@ enabled = true
 device_name = "MiSTer"
 `
 
+const invalidTOML = `
+[bridge
+http_port = 32500
+`
+
 func TestDetect_LegacyOnly(t *testing.T) {
 	got := Detect([]byte(legacyTOML))
 	if got != FormatLegacy {
@@ -82,6 +88,13 @@ func TestDetect_Empty(t *testing.T) {
 	got := Detect([]byte(""))
 	if got != FormatEmpty {
 		t.Errorf("Detect(empty) = %v, want FormatEmpty", got)
+	}
+}
+
+func TestDetect_Invalid(t *testing.T) {
+	got := Detect([]byte(invalidTOML))
+	if got != FormatInvalid {
+		t.Errorf("Detect(invalid) = %v, want FormatInvalid", got)
 	}
 }
 
@@ -173,6 +186,58 @@ func TestLoad_AbortsPartiallyMigrated(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "partially migrated") {
 		t.Errorf("error should mention 'partially migrated': %v", err)
+	}
+}
+
+func TestLoad_InvalidTOMLFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(invalidTOML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadSectioned(path)
+	if err == nil {
+		t.Fatal("want error on invalid TOML")
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Errorf("error should mention parse config: %v", err)
+	}
+}
+
+func TestLoad_MissingWritesSectionedDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "subdir", "config.toml")
+
+	_, err := LoadSectioned(path)
+	var created *ErrConfigCreated
+	if !errors.As(err, &created) {
+		t.Fatalf("first LoadSectioned: want *ErrConfigCreated, got %v", err)
+	}
+	if created.Path != path {
+		t.Errorf("ErrConfigCreated.Path = %q, want %q", created.Path, path)
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("seed file not written: %v", readErr)
+	}
+	if string(data) != string(SectionedExampleTOML()) {
+		t.Error("seed file does not match embedded sectioned example")
+	}
+	if got := Detect(data); got != FormatSectioned {
+		t.Errorf("seeded format = %v, want FormatSectioned", got)
+	}
+
+	s, err := LoadSectioned(path)
+	if err != nil {
+		t.Fatalf("second LoadSectioned (file now exists): %v", err)
+	}
+	if s.Bridge.MiSTer.Host != "192.168.1.50" {
+		t.Errorf("bridge.mister.host = %q, want %q", s.Bridge.MiSTer.Host, "192.168.1.50")
+	}
+	if len(s.Adapters) == 0 {
+		t.Error("expected seeded adapters to decode")
 	}
 }
 

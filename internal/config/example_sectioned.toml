@@ -1,0 +1,36 @@
+# MiSTer_GroovyRelay configuration.
+# The bridge writes this file into data_dir on first run if it's missing.
+# Edit bridge.mister.host at minimum, then restart the bridge.
+
+[bridge]
+data_dir = "/config" # Where device UUID + plex.tv auth token are stored
+
+[bridge.video]
+modeline = "NTSC_480i"            # v1 supports "NTSC_480i" only
+interlace_field_order = "tff"     # "tff" | "bff" — flip if you see shimmer on CRT
+aspect_mode = "auto"              # "letterbox" | "zoom" | "auto"
+rgb_mode = "rgb888"               # v1: rgb888 only (rgba8888 / rgb565 reserved for v2+)
+lz4_enabled = true                # LZ4 block compression (recommended)
+
+[bridge.audio]
+sample_rate = 48000
+channels = 2
+
+[bridge.mister]
+host = "192.168.1.50"             # MiSTer IP or hostname (required)
+port = 32100                      # Groovy UDP port on the MiSTer (default 32100)
+source_port = 32101               # Our stable source UDP port (kept across casts)
+
+[bridge.ui]
+http_port = 32500                 # Bridge/UI HTTP port
+
+# bridge.host_ip is the LAN IP this bridge advertises to Plex (/resources, plex.tv register).
+# Leave it absent to auto-detect; set it explicitly on multi-NIC hosts where the
+# Plex-facing NIC is not the default route.
+
+[adapters.plex]
+enabled = true
+device_name = "MiSTer"            # Shown in Plex cast-target list
+# device_uuid = ""                # Auto-generated on first run; persisted
+profile_name = "Plex Home Theater"
+# server_url = ""                 # Optional override; otherwise auto-discovered
