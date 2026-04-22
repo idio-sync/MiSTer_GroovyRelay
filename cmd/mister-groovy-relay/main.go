@@ -39,16 +39,26 @@ func main() {
 
 	slog.SetDefault(logging.New(*logLevel))
 
-	cfg, err := config.Load(*cfgPath)
+	sec, err := config.LoadSectioned(*cfgPath)
 	if err != nil {
 		var created *config.ErrConfigCreated
 		if errors.As(err, &created) {
 			fmt.Fprintf(os.Stderr,
-				"No config found. Wrote defaults to %s.\nEdit it (set mister_host) and restart.\n",
+				"No config found. Wrote defaults to %s.\nEdit it (set bridge.mister.host) and restart.\n",
 				created.Path)
 			os.Exit(2)
 		}
 		slog.Error("load config", "err", err)
+		os.Exit(1)
+	}
+
+	// Flatten the sectioned config into the pre-UI flat shape the data
+	// plane and Plex adapter currently read. Phase 2 (adapter interface)
+	// removes this shim when the Plex adapter takes a typed plex.Config
+	// directly.
+	cfg := sec.ToLegacy()
+	if err := cfg.Validate(); err != nil {
+		slog.Error("validate config", "err", err)
 		os.Exit(1)
 	}
 

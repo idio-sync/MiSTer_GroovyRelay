@@ -161,7 +161,7 @@ func LoadSectioned(path string) (*Sectioned, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if wErr := writeDefaultSectionedConfig(path); wErr != nil {
+			if wErr := writeDefaultConfig(path); wErr != nil {
 				return nil, wErr
 			}
 			return nil, &ErrConfigCreated{Path: path}

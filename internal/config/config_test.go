@@ -1,69 +1,9 @@
 package config
 
 import (
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestLoadDefaults(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.DeviceName != "MiSTer" {
-		t.Errorf("DeviceName default = %q, want %q", cfg.DeviceName, "MiSTer")
-	}
-	if cfg.MisterPort != 32100 {
-		t.Errorf("MisterPort default = %d, want 32100", cfg.MisterPort)
-	}
-	if !cfg.LZ4Enabled {
-		t.Error("LZ4Enabled default should be true")
-	}
-	if cfg.InterlaceFieldOrder != "tff" {
-		t.Errorf("InterlaceFieldOrder default = %q, want tff", cfg.InterlaceFieldOrder)
-	}
-	if cfg.AspectMode != "auto" {
-		t.Errorf("AspectMode default = %q, want auto", cfg.AspectMode)
-	}
-}
-
-func TestLoadOverride(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	content := `
-device_name = "LivingRoomMiSTer"
-mister_host = "192.168.1.42"
-lz4_enabled = false
-interlace_field_order = "bff"
-`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.DeviceName != "LivingRoomMiSTer" {
-		t.Errorf("DeviceName = %q, want LivingRoomMiSTer", cfg.DeviceName)
-	}
-	if cfg.MisterHost != "192.168.1.42" {
-		t.Errorf("MisterHost = %q", cfg.MisterHost)
-	}
-	if cfg.LZ4Enabled {
-		t.Error("LZ4Enabled should be false")
-	}
-	if cfg.InterlaceFieldOrder != "bff" {
-		t.Errorf("InterlaceFieldOrder = %q, want bff", cfg.InterlaceFieldOrder)
-	}
-}
 
 func TestValidateBadFieldOrder(t *testing.T) {
 	cfg := &Config{InterlaceFieldOrder: "diagonal", AspectMode: "auto"}
@@ -99,37 +39,6 @@ func TestValidate_AcceptsRGB888(t *testing.T) {
 	c.RGBMode = "rgb888"
 	if err := c.Validate(); err != nil {
 		t.Errorf("rgb_mode=rgb888: expected OK, got %v", err)
-	}
-}
-
-func TestLoad_HostIPRoundTrips(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	content := []byte(`mister_host = "192.168.1.50"` + "\n" + `host_ip = "192.168.1.20"` + "\n")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.HostIP != "192.168.1.20" {
-		t.Errorf("host_ip = %q, want %q", cfg.HostIP, "192.168.1.20")
-	}
-}
-
-func TestLoad_HostIPDefaultsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(path, []byte(`mister_host = "192.168.1.50"`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.HostIP != "" {
-		t.Errorf("host_ip default = %q, want empty", cfg.HostIP)
 	}
 }
 
@@ -175,41 +84,5 @@ func TestValidate_AcceptsEmptyHostIP(t *testing.T) {
 	c.HostIP = ""
 	if err := c.Validate(); err != nil {
 		t.Errorf("empty host_ip (auto-detect fallback): expected OK, got %v", err)
-	}
-}
-
-// TestLoad_MissingWritesDefault verifies the first-run auto-seed: Load on
-// a missing path writes the embedded example, returns *ErrConfigCreated,
-// and the next Load against the same path succeeds without re-writing.
-func TestLoad_MissingWritesDefault(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "subdir", "config.toml")
-
-	_, err := Load(path)
-	var created *ErrConfigCreated
-	if !errors.As(err, &created) {
-		t.Fatalf("first Load: want *ErrConfigCreated, got %v", err)
-	}
-	if created.Path != path {
-		t.Errorf("ErrConfigCreated.Path = %q, want %q", created.Path, path)
-	}
-
-	data, readErr := os.ReadFile(path)
-	if readErr != nil {
-		t.Fatalf("seed file not written: %v", readErr)
-	}
-	if len(data) == 0 {
-		t.Fatal("seed file is empty")
-	}
-	if string(data) != string(exampleTOML) {
-		t.Error("seed file does not match embedded example")
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("second Load (file now exists): %v", err)
-	}
-	if cfg.DeviceName != "MiSTer" {
-		t.Errorf("second Load DeviceName = %q, want MiSTer", cfg.DeviceName)
 	}
 }

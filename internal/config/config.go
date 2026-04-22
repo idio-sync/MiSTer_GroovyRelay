@@ -1,10 +1,8 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net"
-	"os"
 
 	"github.com/BurntSushi/toml"
 )
@@ -64,33 +62,6 @@ func defaults() *Config {
 		PlexProfileName:     "Plex Home Theater",
 		DataDir:             "/config",
 	}
-}
-
-// Load reads the TOML at path on top of defaults() and validates the
-// result. If the file is missing, Load writes the embedded example to
-// that path and returns *ErrConfigCreated — this turns first-run into
-// "start once, edit, start again" instead of "hand-copy an example."
-func Load(path string) (*Config, error) {
-	cfg := defaults()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if wErr := writeDefaultConfig(path); wErr != nil {
-				return nil, wErr
-			}
-			return nil, &ErrConfigCreated{Path: path}
-		}
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-	if len(data) > 0 {
-		if err := toml.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("parse config: %w", err)
-		}
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return cfg, nil
 }
 
 func (c *Config) Validate() error {
@@ -175,3 +146,49 @@ type Sectioned struct {
 // Adapters pass this to toml.PrimitiveDecode to hydrate their
 // Primitive section.
 func (s *Sectioned) MetaData() toml.MetaData { return s.meta }
+
+// ToLegacy flattens a Sectioned config into the pre-UI flat Config
+// shape. Exists only as a Phase-1 transitional shim so main.go can
+// keep driving core.Manager + plex.NewAdapter against the legacy
+// struct while the adapter interface is under construction. Phase 2
+// (adapter refactor) removes this method.
+func (s *Sectioned) ToLegacy() *Config {
+	c := defaults()
+	c.DataDir = s.Bridge.DataDir
+	c.HostIP = s.Bridge.HostIP
+	c.Modeline = s.Bridge.Video.Modeline
+	c.InterlaceFieldOrder = s.Bridge.Video.InterlaceFieldOrder
+	c.AspectMode = s.Bridge.Video.AspectMode
+	c.RGBMode = s.Bridge.Video.RGBMode
+	c.LZ4Enabled = s.Bridge.Video.LZ4Enabled
+	c.AudioSampleRate = s.Bridge.Audio.SampleRate
+	c.AudioChannels = s.Bridge.Audio.Channels
+	c.MisterHost = s.Bridge.MiSTer.Host
+	c.MisterPort = s.Bridge.MiSTer.Port
+	c.SourcePort = s.Bridge.MiSTer.SourcePort
+	c.HTTPPort = s.Bridge.UI.HTTPPort
+
+	// Decode the Plex adapter section (if present) so device_name /
+	// profile_name / server_url flow through to the legacy struct.
+	// PrimitiveDecode is a no-op on a zero Primitive, but we gate on
+	// map presence to avoid clobbering defaults when the adapter
+	// section is absent entirely.
+	if raw, ok := s.Adapters["plex"]; ok {
+		var plexRaw struct {
+			DeviceName  string `toml:"device_name"`
+			DeviceUUID  string `toml:"device_uuid"`
+			ProfileName string `toml:"profile_name"`
+			ServerURL   string `toml:"server_url"`
+		}
+		_ = s.meta.PrimitiveDecode(raw, &plexRaw)
+		if plexRaw.DeviceName != "" {
+			c.DeviceName = plexRaw.DeviceName
+		}
+		c.DeviceUUID = plexRaw.DeviceUUID
+		if plexRaw.ProfileName != "" {
+			c.PlexProfileName = plexRaw.ProfileName
+		}
+		c.PlexServerURL = plexRaw.ServerURL
+	}
+	return c
+}

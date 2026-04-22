@@ -222,8 +222,8 @@ func TestLoad_MissingWritesSectionedDefault(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("seed file not written: %v", readErr)
 	}
-	if string(data) != string(SectionedExampleTOML()) {
-		t.Error("seed file does not match embedded sectioned example")
+	if string(data) != string(ExampleTOML()) {
+		t.Error("seed file does not match embedded example")
 	}
 	if got := Detect(data); got != FormatSectioned {
 		t.Errorf("seeded format = %v, want FormatSectioned", got)
