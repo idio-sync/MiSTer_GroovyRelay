@@ -103,7 +103,7 @@ func (f *fakeCore) Status() core.SessionStatus {
 
 func TestPlayMedia_ParsesFields(t *testing.T) {
 	fc := &fakeCore{}
-	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer"}, fc)
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", ProfileName: "Custom Profile"}, fc)
 	ts := httptest.NewServer(c.Handler())
 	defer ts.Close()
 
@@ -133,6 +133,9 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Token=tok") {
 		t.Errorf("stream URL missing plex token: %s", fc.lastReq.StreamURL)
 	}
+	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Client-Profile-Name=Custom+Profile") {
+		t.Errorf("stream URL missing plex profile name: %s", fc.lastReq.StreamURL)
+	}
 	if !fc.lastReq.Capabilities.CanPause || !fc.lastReq.Capabilities.CanSeek {
 		t.Errorf("expected CanPause+CanSeek capabilities, got %+v", fc.lastReq.Capabilities)
 	}
@@ -159,6 +162,31 @@ func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
 	}
 	if fc.lastReq.AdapterRef != "/library/metadata/99" {
 		t.Errorf("AdapterRef = %q, want /library/metadata/99", fc.lastReq.AdapterRef)
+	}
+}
+
+func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
+	c := NewCompanion(CompanionConfig{}, &fakeCore{})
+	ts := httptest.NewServer(c.Handler())
+	defer ts.Close()
+
+	routes := []string{
+		"/player/playback/refreshPlayQueue",
+		"/player/playback/skipTo",
+		"/player/playback/skipNext",
+		"/player/playback/skipPrevious",
+	}
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + route)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				t.Errorf("status = %d", resp.StatusCode)
+			}
+		})
 	}
 }
 

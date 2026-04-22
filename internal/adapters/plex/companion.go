@@ -27,6 +27,9 @@ type CompanionConfig struct {
 	DeviceName string
 	DeviceUUID string
 	Version    string
+	// ProfileName is the Plex client profile name advertised back to PMS when
+	// requesting a transcode start URL.
+	ProfileName string
 	// DataDir is the application data directory used to store downloaded
 	// subtitle files under <DataDir>/subtitles/. Populated from config.Config.
 	DataDir string
@@ -75,13 +78,32 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/playback/play", c.handlePlay)
 	mux.HandleFunc("/player/playback/stop", c.handleStop)
 	mux.HandleFunc("/player/playback/seekTo", c.handleSeekTo)
+	mux.HandleFunc("/player/playback/refreshPlayQueue", c.handleRefreshPlayQueue)
+	mux.HandleFunc("/player/playback/skipTo", c.handleSkipTo)
+	mux.HandleFunc("/player/playback/skipNext", c.handleSkipNext)
+	mux.HandleFunc("/player/playback/skipPrevious", c.handleSkipPrevious)
 	mux.HandleFunc("/player/playback/setParameters", c.handleSetParameters)
 	mux.HandleFunc("/player/playback/setStreams", c.handleSetStreams)
 	mux.HandleFunc("/player/timeline/subscribe", c.handleTimelineSubscribe)
 	mux.HandleFunc("/player/timeline/unsubscribe", c.handleTimelineUnsubscribe)
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
-	return withHeaders(mux)
+	return withHeaders(c.withSubscriberTouch(mux))
+}
+
+// withSubscriberTouch refreshes the controller's timeline subscription TTL on
+// any request that carries an X-Plex-Client-Identifier. Plex clients keep
+// talking to us after subscribe/poll/playback calls; touching here prevents
+// active controllers from being pruned after 90s.
+func (c *Companion) withSubscriberTouch(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c.timeline != nil {
+			if clientID := queryOrHeader(r, "X-Plex-Client-Identifier"); clientID != "" {
+				c.timeline.TouchSubscriberCommand(clientID, atoiDefault(queryOrHeader(r, "commandID"), 0))
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // withHeaders injects the CORS + default XML Content-Type headers that all
@@ -154,7 +176,9 @@ type PlayMediaRequest struct {
 	PlexServerAddress string
 	PlexServerPort    string
 	PlexServerScheme  string
+	PlexMachineID     string
 	MediaKey          string
+	ContainerKey      string
 	OffsetMs          int
 	SessionID         string
 	ClientID          string
@@ -173,7 +197,9 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		PlexServerAddress: queryOrHeader(r, "address"),
 		PlexServerPort:    queryOrHeader(r, "port"),
 		PlexServerScheme:  queryOrHeader(r, "protocol"),
+		PlexMachineID:     queryOrHeader(r, "machineIdentifier"),
 		MediaKey:          queryOrHeader(r, "key"),
+		ContainerKey:      queryOrHeader(r, "containerKey"),
 		OffsetMs:          offset,
 		SessionID:         queryOrHeader(r, "X-Plex-Session-Identifier"),
 		ClientID:          queryOrHeader(r, "X-Plex-Client-Identifier"),
@@ -198,6 +224,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		OutputHeight:  480,
 		SessionID:     p.SessionID,
 		ClientID:      p.ClientID,
+		ProfileName:   c.cfg.ProfileName,
 	})
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
@@ -274,9 +301,21 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
 }
 
-// Stubs filled in later. setParameters/setStreams aren't wired in v1 — Plex
-// controllers send them but we acknowledge without acting so the controller
-// UI doesn't stall.
+// Stubs filled in later. We currently acknowledge the fuller Plex Companion
+// surface without acting so compatible controllers don't fail on 404 while
+// queue/navigation semantics are still out of scope for the bridge.
+func (c *Companion) handleRefreshPlayQueue(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+func (c *Companion) handleSkipTo(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+func (c *Companion) handleSkipNext(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+func (c *Companion) handleSkipPrevious(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
 func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
 }
@@ -309,6 +348,9 @@ func (c *Companion) handleTimelineSubscribe(w http.ResponseWriter, r *http.Reque
 		q.Get("protocol"),
 		atoiDefault(q.Get("commandID"), 0),
 	)
+	// Plex controllers typically expect an immediate first timeline after
+	// subscribe rather than waiting for the next 1 Hz tick.
+	c.timeline.broadcastOnce()
 	writeOKResponse(w)
 }
 
@@ -334,7 +376,10 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 		st = c.core.Status()
 	}
 	w.WriteHeader(200)
-	_, _ = w.Write([]byte(c.timeline.buildTimelineXML(st)))
+	_, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
+		st,
+		atoiDefault(queryOrHeader(r, "commandID"), 0),
+	)))
 }
 
 // atoiDefault parses an int, returning d on failure. Used for Plex query

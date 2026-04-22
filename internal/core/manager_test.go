@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
@@ -61,6 +62,20 @@ func TestManager_InitialStatusIdle(t *testing.T) {
 	}
 	if !st.StartedAt.IsZero() {
 		t.Errorf("StartedAt = %v, want zero", st.StartedAt)
+	}
+}
+
+func TestProbeDuration_ConvertsSecondsToDuration(t *testing.T) {
+	got := probeDuration(&ffmpeg.ProbeResult{Duration: 12.345})
+	want := 12345 * time.Millisecond
+	if got != want {
+		t.Errorf("probeDuration = %v, want %v", got, want)
+	}
+	if probeDuration(nil) != 0 {
+		t.Error("probeDuration(nil) should be zero")
+	}
+	if probeDuration(&ffmpeg.ProbeResult{Duration: -1}) != 0 {
+		t.Error("probeDuration(negative) should be zero")
 	}
 }
 

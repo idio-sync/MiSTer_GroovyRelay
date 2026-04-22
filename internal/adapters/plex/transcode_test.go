@@ -27,6 +27,7 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 	for _, substr := range []string{
 		"directPlay=0", "directStream=0", "copyts=1",
 		"videoResolution=720x480", "X-Plex-Token=xyz",
+		"X-Plex-Client-Profile-Name=Plex+Home+Theater",
 	} {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)

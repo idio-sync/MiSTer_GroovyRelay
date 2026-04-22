@@ -82,12 +82,14 @@ func NewAdapter(cfg AdapterConfig) (*Adapter, error) {
 		DeviceName: cfg.Cfg.DeviceName,
 		DeviceUUID: cfg.Cfg.DeviceUUID,
 		Version:    cfg.Version,
+		ProfileName: cfg.Cfg.PlexProfileName,
 		DataDir:    cfg.Cfg.DataDir,
 	}, cfg.Core)
 	timeline := NewTimelineBroker(
 		TimelineConfig{DeviceUUID: cfg.Cfg.DeviceUUID, DeviceName: cfg.Cfg.DeviceName},
 		cfg.Core.Status,
 	)
+	timeline.SetPlayContextProvider(companion.lastPlaySession)
 	companion.SetTimeline(timeline)
 	return &Adapter{cfg: cfg, companion: companion, timeline: timeline}, nil
 }

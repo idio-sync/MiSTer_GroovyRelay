@@ -31,6 +31,7 @@ type TranscodeRequest struct {
 	OutputHeight  int
 	SessionID     string
 	ClientID      string
+	ProfileName   string
 	MaxBitrate    int
 }
 
@@ -41,6 +42,9 @@ type TranscodeRequest struct {
 func BuildTranscodeURL(r TranscodeRequest) string {
 	if r.MaxBitrate == 0 {
 		r.MaxBitrate = 2000
+	}
+	if r.ProfileName == "" {
+		r.ProfileName = "Plex Home Theater"
 	}
 	q := url.Values{}
 	q.Set("path", r.MediaPath)
@@ -56,6 +60,7 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("offset", fmt.Sprintf("%d", r.OffsetMs/1000))
 	q.Set("X-Plex-Session-Identifier", r.SessionID)
 	q.Set("X-Plex-Client-Identifier", r.ClientID)
+	q.Set("X-Plex-Client-Profile-Name", r.ProfileName)
 	q.Set("X-Plex-Client-Profile-Extra", BuildProfileExtra())
 	q.Set("X-Plex-Client-Capabilities", BuildClientCapabilities())
 	q.Set("X-Plex-Token", r.Token)

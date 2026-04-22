@@ -70,4 +70,7 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	if !strings.Contains(resp, "Content-Type: plex/media-player") {
 		t.Errorf("missing plex content-type header; got: %q", resp)
 	}
+	if !strings.Contains(resp, "Protocol: plex") {
+		t.Errorf("missing protocol header; got: %q", resp)
+	}
 }

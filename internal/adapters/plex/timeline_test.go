@@ -93,6 +93,47 @@ func TestTimeline_BuildXML_StatePlaying(t *testing.T) {
 	}
 }
 
+func TestTimeline_BuildXML_IncludesPlexMetadata(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			PlexServerAddress: "192.168.1.10",
+			PlexServerPort:    "32400",
+			PlexServerScheme:  "http",
+			PlexMachineID:     "server-uuid",
+			MediaKey:          "/library/metadata/42",
+			ContainerKey:      "/playQueues/99?own=1",
+			AudioStreamID:     "11",
+			SubtitleStreamID:  "22",
+			CommandID:         "7",
+		}
+	})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 12345 * time.Millisecond,
+		Duration: 60000 * time.Millisecond,
+	})
+	for _, want := range []string{
+		`commandID="7"`,
+		`location="fullScreenVideo"`,
+		`ratingKey="42"`,
+		`key="/library/metadata/42"`,
+		`containerKey="/playQueues/99?own=1"`,
+		`address="192.168.1.10"`,
+		`port="32400"`,
+		`protocol="http"`,
+		`machineIdentifier="server-uuid"`,
+		`seekRange="0-60000"`,
+		`audioStreamID="11"`,
+		`subtitleStreamID="22"`,
+		`controllable="playPause,stop,seekTo"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("xml missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestTimeline_BuildXML_StateMapping(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	cases := []struct {
@@ -180,6 +221,9 @@ func TestTimeline_BroadcastPushesToSubscribers(t *testing.T) {
 		t.Errorf("X-Plex-Target-Client-Identifier = %q, want client-xyz",
 			h.headers.Get("X-Plex-Target-Client-Identifier"))
 	}
+	if !strings.Contains(h.body, `commandID="7"`) {
+		t.Errorf("body missing commandID=7: %s", h.body)
+	}
 	if !strings.Contains(h.body, `state="playing"`) {
 		t.Errorf("body missing state=playing: %s", h.body)
 	}
@@ -220,6 +264,35 @@ func TestCompanion_TimelineSubscribeWiresBroker(t *testing.T) {
 	defer resp2.Body.Close()
 	if b.subscriberCount() != 0 {
 		t.Errorf("subscriberCount after unsub = %d, want 0", b.subscriberCount())
+	}
+}
+
+func TestCompanion_RequestTouchesSubscriberTTL(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceUUID: "uuid-1"}, fc)
+	b := NewTimelineBroker(TimelineConfig{DeviceUUID: "uuid-1"}, fc.Status)
+	base := time.Now()
+	now := base
+	b.now = func() time.Time { return now }
+	b.TTL = 100 * time.Millisecond
+	c.SetTimeline(b)
+
+	b.Subscribe("client-A", "127.0.0.1", "32500", "http", 1)
+
+	ts := httptest.NewServer(c.Handler())
+	defer ts.Close()
+
+	now = base.Add(50 * time.Millisecond)
+	resp, err := http.Get(ts.URL + "/player/timeline/poll?X-Plex-Client-Identifier=client-A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	now = base.Add(120 * time.Millisecond)
+	b.broadcastOnce()
+	if got := b.subscriberCount(); got != 1 {
+		t.Errorf("subscriberCount after touched poll = %d, want 1", got)
 	}
 }
 

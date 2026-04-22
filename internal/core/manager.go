@@ -163,7 +163,12 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		SeekOffsetMs:  offsetMs,
 	})
 	m.plane = plane
-	m.active = &activeSession{req: req, startedAt: time.Now(), baseOffsetMs: offsetMs}
+	m.active = &activeSession{
+		req:          req,
+		startedAt:    time.Now(),
+		baseOffsetMs: offsetMs,
+		duration:     probeDuration(probe),
+	}
 
 	go func() {
 		runErr := plane.Run(ctx)
@@ -332,6 +337,16 @@ func (m *Manager) Status() SessionStatus {
 		}
 	}
 	return st
+}
+
+// probeDuration turns ffprobe's floating-point seconds into a time.Duration.
+// Unknown/invalid durations collapse to zero so live streams and malformed
+// sources don't advertise nonsense to Plex timelines.
+func probeDuration(probe *ffmpeg.ProbeResult) time.Duration {
+	if probe == nil || probe.Duration <= 0 {
+		return 0
+	}
+	return time.Duration(probe.Duration * float64(time.Second))
 }
 
 // resolveModeline maps config's `modeline` string to a groovy.Modeline.
