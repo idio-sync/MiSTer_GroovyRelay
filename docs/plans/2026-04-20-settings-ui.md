@@ -93,6 +93,21 @@ Phase 8 — first-run hint, polish, README, integration tests:
 
 ---
 
+## 2026-04-21 Review Corrections
+
+These corrections override any conflicting instructions later in the plan.
+
+- **Task 1.3 / Task 1.4 — config-load contract:** malformed TOML must produce an explicit error (`FormatInvalid` or equivalent), never collapse to `FormatEmpty`. Missing-config behavior should remain compatible with legacy `Load`: write a sectioned default config/example and return `*ErrConfigCreated` (or a clearly-equivalent sectioned variant) so Phase 1 preserves current first-run semantics instead of silently booting from defaults.
+- **Task 3.4 / Task 7.4 — Plex runtime lifecycle:** do not rely on a single-shot `sync.Once` finalization model for components that must survive disable/enable cycles. `TimelineBroker.Stop()` is one-shot; any stop/start path must recreate restartable runtime pieces (timeline, discovery, registration loop) or make them explicitly restart-safe.
+- **Task 5.3 — adapter toggle:** toggle-on/off must persist the `enabled` bit to disk via the adapter save path; a runtime-only `SetEnabled` mutation is insufficient because it reverts on restart. Any long-lived restart/re-enable flow must use a process/adapter lifetime context, not `r.Context()`.
+- **Task 5.4 — adapter save validation:** syntactic and semantic validation must happen before writing the adapter section to disk. "Write-before-apply" is still correct for runtime side effects, but invalid adapter config (e.g. empty `device_name`, malformed `server_url`) must leave the file untouched.
+- **Task 6.1 / Task 6.2 — Plex PIN + token-store wiring:** `pendingLink.pinID` must match the actual `RequestPIN` / `PollPIN` types (currently `int`). Do not hardcode `plex.json`; use the real token-store filename/path (`data.json` today) or centralize it behind a helper/constant so unlink and UI copy stay aligned with the implementation.
+- **Task 6.2 — unlink/re-enable context:** any adapter restart triggered from an HTTP handler must not inherit the request-scoped context. Use the adapter/process lifetime context that `main.go` owns so background registration survives past request completion.
+- **Task 7.4 — Plex `device_name` scope:** `device_name` is not a true hot-swap unless the plan also lands live identity propagation for Companion `/resources`, timeline headers, discovery replies, and plex.tv registration payloads. Safe v1 default: reclassify `device_name` to `ScopeRestartBridge` (or add a new explicit restart-adapter scope if you want finer granularity).
+- **Task 7.5 — bridge restart-cast semantics:** restart-cast bridge fields must update the in-memory `core.Manager` bridge config before dropping the active cast. Otherwise the next session rebuilds from stale runtime config and the save appears ineffective until a full bridge restart.
+
+---
+
 ## Phase 1 — Config Schema Refactor + Migration
 
 **Gate:** After Phase 1 completes, the bridge still starts and runs exactly as before, but now against a sectioned `config.toml`. A user upgrading from the flat format finds their config auto-migrated with a `config.toml.pre-ui-migration` backup. The `cmd/mister-groovy-relay` binary, data plane, and Plex adapter work unchanged; only the shape of `cfg` fields changed.
@@ -351,6 +366,11 @@ main.go. Migration wire-up and legacy removal follow in 1.3 / 1.4."
 **Files:**
 - Create: `internal/config/migration.go`
 - Create: `internal/config/migration_test.go`
+
+Revision note: this task owns two behavior contracts that later phases depend on.
+
+- Malformed TOML must be classified explicitly and surfaced as an error from `LoadSectioned`; do not treat it as `FormatEmpty`.
+- Missing config should preserve the legacy first-run UX: write a sectioned default/example file and return `*ErrConfigCreated` (or an equivalent sectioned-first-run error), not a silent in-memory defaults object.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1089,17 +1109,24 @@ func (s *Sectioned) ToLegacy() *Config {
 }
 ```
 
-- [ ] **Step 4: Remove the auto-seeding `Load()` path**
+- [ ] **Step 4: Keep the auto-seeding first-run path**
 
-The old `Load()` auto-wrote `config.example.toml` on missing. `LoadSectioned` (Task 1.3) handles missing differently — it returns defaults. That's fine for the new world. Delete the old `Load` function and `ErrConfigCreated`, plus their `//go:embed` of `config.example.toml`. Edit `internal/config/config.go` — find and delete:
+Do NOT remove first-run config creation semantics. Phase 1's gate says the bridge still behaves exactly as before apart from the sectioned shape, so `LoadSectioned` should preserve the old "write defaults, tell the operator to edit, exit" contract.
+
+Replace the old flat-format seeding with a sectioned equivalent:
+
+- Keep `ErrConfigCreated` (or a clearly-named sectioned equivalent) as the startup signal.
+- Update the embedded/default-written config content to the new sectioned shape.
+- Update `main.go` to keep the existing "No config found. Wrote defaults to ..." UX when `LoadSectioned` returns that signal.
+
+After the sectioned first-run path exists, delete the obsolete flat-format-only helpers and references. Edit `internal/config/config.go` (or sibling files) and remove:
 
 - The `Load(path string) (*Config, error)` function.
-- The `ErrConfigCreated` type and any references.
-- The `//go:embed config.example.toml` directive and its `exampleTOML` var (if they live in `config.go` — otherwise they're in a separate file; delete that file).
+- Any flat-format-only embed/write helpers whose output no longer matches the sectioned example.
 
 Keep the `Config` struct and `defaults()` function — they're used by `ToLegacy()` and existing tests.
 
-Run: `grep -n 'Load\|ErrConfigCreated\|exampleTOML' internal/config/*.go` to confirm only test files still reference these symbols, then remove those too.
+Run: `grep -n 'Load\|ErrConfigCreated\|exampleTOML' internal/config/*.go` and confirm the remaining references point at the new sectioned-first-run path rather than the removed flat loader.
 
 - [ ] **Step 5: Prune legacy-only tests**
 
@@ -3510,6 +3537,8 @@ etc.) get protection uniformly."
 
 The current Plex adapter owns the HTTP listener on `cfg.Bridge.UI.HTTPPort`. For the UI + Plex Companion to share the same port, we need to combine them behind a single `http.ServeMux`. Approach: Plex adapter exposes its Companion handlers as a *mounter* (not a server), main.go owns the single listener + mux.
 
+Revision note: the shared-listener refactor must not make adapter runtime pieces single-shot. A `sync.Once`-guarded `ensureFinalized()` is only safe for long-lived immutable handler state. Anything that `Stop()` closes permanently (notably `TimelineBroker`) must either be recreated on every `Start()` or refactored to be restart-safe. Also, any future UI-driven re-enable path must use a process-owned lifetime context, not `r.Context()`.
+
 - [ ] **Step 1: Refactor Plex adapter to expose its handlers without owning a server**
 
 Edit `internal/adapters/plex/adapter.go`. Add a new method:
@@ -5507,6 +5536,8 @@ section)."
 - Modify: `internal/ui/adapter_test.go`
 - Modify: `internal/ui/server.go`
 
+Revision note: the toggle path must persist the `enabled` field, not just mutate runtime state. The implementation for this task should route through the same serialized adapter-save machinery used by Task 5.4 (or a small dedicated helper that writes the `[adapters.<name>]` section atomically) so enable/disable survives process restart. Any runtime start triggered here must use an adapter/process lifetime context rather than `r.Context()`.
+
 - [ ] **Step 1: Write the failing tests**
 
 Append to `internal/ui/adapter_test.go`:
@@ -5747,6 +5778,8 @@ panel header's own hx-poll when the adapter's panel is open."
 **Files:**
 - Modify: `internal/ui/adapter.go`
 - Modify: `internal/ui/adapter_test.go`
+
+Revision note: keep "write-before-apply" only for runtime side effects. Semantic config validation still happens before any disk write. Concretely: parse form → decode into the adapter's typed config → run `Validate()` / field-error mapping → if valid, persist → then perform runtime apply. Invalid adapter config must leave the file untouched, matching the Bridge panel contract.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -6140,6 +6173,8 @@ toml.Primitive serialization gaps."
 - Create: `internal/adapters/plex/link_state.go`
 - Create: `internal/adapters/plex/link_state_test.go`
 
+Revision note: `pendingLink.pinID` must use the same type as the real linking API (`RequestPIN` / `PollPIN` currently use an integer ID). Do not introduce an incompatible string-only state type here unless you first refactor the linking API and every call-site consistently.
+
 - [ ] **Step 1: Write the failing tests**
 
 Create `internal/adapters/plex/link_state_test.go`:
@@ -6326,6 +6361,8 @@ redo than to persist."
 - Create: `internal/adapters/plex/link_ui_test.go`
 - Create: `internal/ui/templates/plex-link.html` (served via adapter's ExtraPanelHTML)
 - Modify: `internal/adapters/plex/adapter.go` — expose pendingLink storage + UIRoutes
+
+Revision note: this task must not hardcode `plex.json`. Use the real stored-data filename/path (`data.json` today) or centralize it behind a helper so UI copy, unlink/rename, and token persistence all reference the same location. Any stop/start performed from `handleUnlink` must run on the adapter/process lifetime context rather than `r.Context()`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7139,6 +7176,8 @@ being taken afterwards; 99% case is typos like 'meant 32500, typed
 - Modify: `internal/adapters/plex/adapter.go`
 - Modify: `internal/adapters/plex/adapter_interface_test.go`
 
+Revision note: `device_name` is not a safe hot-swap with the current architecture because Companion `/resources`, timeline push headers, discovery replies, and plex.tv registration all copy identity into long-lived structs. For v1, the conservative plan is to classify `device_name` as restart-required unless you explicitly add live identity setters and tests for every surface. Also ensure any disable/re-enable or restart path recreates runtime pieces that `Stop()` permanently closes.
+
 - [ ] **Step 1: Write the failing tests**
 
 Append to `internal/adapters/plex/adapter_interface_test.go`:
@@ -7394,6 +7433,8 @@ Also lands SetEnabled (EnableSetter) and CurrentValues
 - Modify: `internal/core/manager.go` (expose a hot-swap setter path for interlace)
 
 The `runtimeBridgeSaver.Save` from Phase 4 currently returns `ScopeRestartBridge` unconditionally. This task replaces that stub with real diff logic + pre-flight + partial-failure aggregation.
+
+Revision note: the restart-cast branch must update the in-memory runtime bridge config held by `core.Manager` before dropping the active cast. Otherwise the next session respawns with stale `aspect_mode` / audio / modeline values and the save appears ineffective until a full bridge restart. `SetInterlaceFieldOrder` remains the hot-swap path for the one truly live bridge field.
 
 - [ ] **Step 1: Expose a `SetInterlaceFieldOrder` on `core.Manager`**
 
@@ -8863,4 +8904,3 @@ review. Faster start but keeps all context in one window; risks
 long-conversation drift.
 
 **Which approach?**
-

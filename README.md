@@ -4,23 +4,21 @@ A Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
 Server; it advertises itself as a Plex cast target on the LAN, and when
 you pick it from the Plex client's "Cast" menu it transcodes the
 selected title through FFmpeg and streams raw RGB fields + PCM audio
-over the [GroovyMiSTer](docs/references/groovy_mister.md) UDP protocol
+over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol
 into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly,
-giving you genuine 480i NTSC video for Plex content — no HDMI-to-CRT
-scaler, no tearing, correct interlace motion.
+giving you genuine 480i NTSC video for Plex content.
 
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board (or equivalent) wired to a
   15 kHz-capable CRT (consumer, PVM, arcade, etc.)
+  - GroovyMiSTer installed on your MiSTer
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a
   Raspberry Pi 4/5 — anything with a few spare CPU cycles and
   gigabit-class networking)
 - A Plex Media Server reachable from that host
-- A GroovyMiSTer-capable MiSTer core running (e.g., `Groovy`, `MARS`,
-  or any other receiver that speaks the same protocol)
 
-The bridge itself is stateless and light — a few hundred MB of RAM and
+The bridge itself is stateless and light, just a few hundred MB of RAM and
 one FFmpeg worker per active cast.
 
 ## Quick start (Docker)
@@ -92,7 +90,7 @@ rather read it without starting the container.
 3. **Link.** Run with `--link`. The bridge prints a 4-character code
    and the plex.tv link URL; paste the code at `https://plex.tv/link`
    while signed in to the Plex account that owns your PMS. The returned
-   auth token is persisted to `data_dir/plex.json` (mode 0600) so you
+   auth token is persisted to `data_dir/data.json` (mode 0600) so you
    only do this once.
 4. **First cast.** Drop the `--link` flag and start the bridge
    normally. Open Plex on your phone (or web client), pick a video,
@@ -105,13 +103,12 @@ rather read it without starting the container.
 
 The bridge advertises its own LAN address to Plex (in the `/resources` response
 and in the plex.tv device registration PUT). By default it auto-detects that
-address by asking the kernel which interface it would use to reach 8.8.8.8 — a
-trick that works when the default route points at the LAN.
+address by asking the kernel which interface it would use to reach 8.8.8.8.
 
-On Unraid hosts with multiple network interfaces — typical combinations are
-LAN + WireGuard, LAN + Docker bridge, or LAN + secondary subnet — the default
+On hosts with multiple network interfaces (typical combinations are
+LAN + WireGuard, LAN + Docker bridge, or LAN + secondary subnet) the default
 route may not be the Plex-facing one. Symptoms: the cast target shows up in
-the Plex picker but "commands never arrive" — the controller is trying to
+the Plex picker but "commands never arrive." The controller is trying to
 reach the bridge on an unreachable NIC.
 
 Fix: set `host_ip` explicitly to the LAN IP the Plex controller can reach.
@@ -128,16 +125,12 @@ if it's gone, your override took effect.
 ### CPU contention under Docker
 
 The data plane pushes fields at 59.94 Hz regardless of scheduling pressure.
-Under heavy CPU contention (Unraid parity check, mover, a co-tenant container
-spiking CPU) the FFmpeg decoder can fall behind; the bridge covers with
-duplicate-field BLITs, which the FPGA rescans — so the symptom is visible
-motion glitches, not A/V drift. (This is by design — the clock-push architecture
+Under heavy CPU contention the FFmpeg decoder can fall behind; the bridge covers with duplicate-field BLITs, which the FPGA rescans, so the symptom is visible
+motion glitches, not A/V drift. (This is by design, the clock-push architecture
 trades a graceful fallback against a hard drift bug.)
 
-If you see glitches during parity checks, cap container CPU with
-`docker run --cpus=2 ...` or the Unraid template's CPU-pinning option so the
-bridge has dedicated cores that aren't preempted. 2 cores is typically
-sufficient for a single 480p transcode plus Groovy packet framing.
+If you see glitches cap container CPU with
+`docker run --cpus=2 ...` so the bridge has dedicated cores that aren't preempted. 2 cores is typically sufficient for a single 480p transcode plus Groovy packet framing.
 
 ## Troubleshooting
 
@@ -148,7 +141,7 @@ between client and server; you linked successfully (`--link`); and the
 bridge process is running (`docker logs mister-groovy-relay`).
 
 **"No video on the CRT."**
-Check the MiSTer is running a Groovy-capable core and is listening on
+Check the MiSTer is running the Groovy_MiSTer core and is listening on
 the configured `mister_port` (default 32100). Try `fake-mister` locally
 to confirm the bridge is sending packets at all:
 `go run ./cmd/fake-mister -addr :32100` on the same host as the

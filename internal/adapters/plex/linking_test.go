@@ -146,7 +146,7 @@ func TestPollPIN_TimesOut(t *testing.T) {
 // TestRegisterDevice_PutsConnectionURI verifies the PUT path, token query
 // parameter, and form body used to refresh the plex.tv device record.
 func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
-	var gotMethod, gotPath, gotToken, gotContentType, gotURI string
+	var gotMethod, gotPath, gotToken, gotContentType, gotURI, gotDeviceName string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
@@ -154,6 +154,7 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 		gotContentType = r.Header.Get("Content-Type")
 		_ = r.ParseForm()
 		gotURI = r.PostForm.Get("Connection[][uri]")
+		gotDeviceName = r.PostForm.Get("X-Plex-Device-Name")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -162,7 +163,7 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = restore })
 
-	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500); err != nil {
+	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500, "MiSTer"); err != nil {
 		t.Fatalf("RegisterDevice: %v", err)
 	}
 	if gotMethod != http.MethodPut {
@@ -179,6 +180,9 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	}
 	if gotURI != "http://10.0.0.5:32500" {
 		t.Errorf("wrong connection uri: %q", gotURI)
+	}
+	if gotDeviceName != "MiSTer" {
+		t.Errorf("wrong device name: %q", gotDeviceName)
 	}
 }
 
@@ -204,7 +208,7 @@ func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500)
+		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500, "MiSTer")
 		close(done)
 	}()
 
@@ -235,7 +239,7 @@ func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = oldBase })
 
-	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500)
+	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500, "MiSTer")
 	if err == nil {
 		t.Fatal("expected error from 401 response; got nil")
 	}
