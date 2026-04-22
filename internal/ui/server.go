@@ -44,14 +44,27 @@ func New(cfg Config) (*Server, error) {
 // on. The /ui/ prefix keeps the two sets disjoint.
 func (s *Server) Mount(mux *http.ServeMux) {
 	// Static assets served out of embedded FS under /ui/static/.
+	// GETs don't pass through csrfMiddleware — reads have no side
+	// effects, and the middleware short-circuits on GET anyway.
 	staticSub, _ := fs.Sub(staticFS, "static")
 	staticSrv := http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub)))
-	mux.Handle("GET /ui/static/", s.csrfGet(staticSrv))
+	mux.Handle("GET /ui/static/", staticSrv)
 
 	// Root + shell.
 	mux.HandleFunc("GET /", s.handleRoot)
 	mux.HandleFunc("GET /ui/", s.handleShell)
 	mux.HandleFunc("GET /ui", s.handleShell) // no trailing slash
+
+	// Future POST endpoints (Task 4.x onward) register via mountPOST
+	// so each write handler is wrapped in csrfMiddleware uniformly.
+}
+
+// mountPOST is the canonical way to register a POST handler on the UI
+// mux. Wraps the handler in csrfMiddleware so every write endpoint
+// (bridge/save, adapter/save, plex/link/start, etc.) gets the same
+// cross-origin protection without each handler having to think about it.
+func (s *Server) mountPOST(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	mux.Handle("POST "+pattern, csrfMiddleware(handler))
 }
 
 // handleRoot redirects / to /ui/. Any other path slips through to the
@@ -134,10 +147,3 @@ func dotClass(s adapters.State) string {
 	}
 }
 
-// csrfGet is a pass-through for GET requests; CSRF protection only
-// applies to state-changing methods. A dedicated wrapper exists so
-// the Mount method reads uniformly and Task 3.3 can slot in the real
-// POST-side CSRF gate without disturbing the static-assets line.
-func (s *Server) csrfGet(h http.Handler) http.Handler {
-	return h
-}
