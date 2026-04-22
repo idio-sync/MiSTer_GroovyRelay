@@ -21,8 +21,8 @@ type PipelineSpec struct {
 	InputURL     string
 	InputHeaders map[string]string // for Plex transcode URL tokens
 	SeekSeconds  float64
-	UseSSSeek    bool // true on direct-play (pass -ss); false on transcode (offset is in URL)
-	SourceProbe  *ProbeResult
+	UseSSSeek    bool         // true on direct-play (pass -ss); false on transcode (offset is in URL)
+	SourceProbe  *ProbeResult // includes first audio stream presence/rate when available
 
 	OutputWidth  int
 	OutputHeight int
@@ -39,6 +39,20 @@ type PipelineSpec struct {
 
 	VideoPipePath string // "pipe:3", a named pipe path, or "-" for stdout
 	AudioPipePath string // "pipe:4", etc.
+}
+
+// audioOutputEnabled reports whether the ffmpeg command should emit the s16le
+// audio output. Production callers always provide SourceProbe, so clips with
+// no audio stream naturally degrade to video-only instead of failing on
+// `-map 0:a:0`.
+func audioOutputEnabled(s PipelineSpec) bool {
+	if s.AudioSampleRate <= 0 || s.AudioChannels <= 0 {
+		return false
+	}
+	if s.SourceProbe != nil && s.SourceProbe.AudioRate <= 0 {
+		return false
+	}
+	return true
 }
 
 // buildFilterChain assembles the comma-delimited ffmpeg `-vf` expression.
@@ -183,14 +197,18 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 		s.VideoPipePath,
 	)
 
-	// Audio output: s16le PCM to the audio pipe.
-	args = append(args,
-		"-map", "0:a:0",
-		"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
-		"-ac", fmt.Sprintf("%d", s.AudioChannels),
-		"-f", "s16le",
-		s.AudioPipePath,
-	)
+	// Audio output: s16le PCM to the audio pipe. Omitted entirely when the
+	// probe says the source has no audio stream; otherwise ffmpeg would fail
+	// the session before any video is emitted.
+	if audioOutputEnabled(s) {
+		args = append(args,
+			"-map", "0:a:0",
+			"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
+			"-ac", fmt.Sprintf("%d", s.AudioChannels),
+			"-f", "s16le",
+			s.AudioPipePath,
+		)
+	}
 
 	return exec.CommandContext(ctx, "ffmpeg", args...)
 }

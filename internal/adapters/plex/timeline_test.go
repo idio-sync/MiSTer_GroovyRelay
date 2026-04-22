@@ -3,7 +3,6 @@ package plex
 import (
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -175,7 +174,7 @@ func TestTimeline_BroadcastPushesToSubscribers(t *testing.T) {
 	var mu sync.Mutex
 	var hits []received
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/:/timeline" {
 			http.Error(w, "unexpected path", 404)
 			return
@@ -241,7 +240,7 @@ func TestCompanion_TimelineSubscribeWiresBroker(t *testing.T) {
 	b := NewTimelineBroker(TimelineConfig{DeviceUUID: "uuid-1"}, fc.Status)
 	c.SetTimeline(b)
 
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/player/timeline/subscribe?" +
@@ -279,7 +278,7 @@ func TestCompanion_RequestTouchesSubscriberTTL(t *testing.T) {
 
 	b.Subscribe("client-A", "127.0.0.1", "32500", "http", 1)
 
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	now = base.Add(50 * time.Millisecond)
@@ -302,7 +301,7 @@ func TestCompanion_TimelinePollReturnsXML(t *testing.T) {
 	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
 	c.SetTimeline(b)
 
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/player/timeline/poll")

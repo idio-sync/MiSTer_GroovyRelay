@@ -104,7 +104,7 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 
 func TestBuildCommand_TranscodeSkipsSSSeek(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL: "http://pms/video.m3u8",
+		InputURL:    "http://pms/video.m3u8",
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
@@ -124,7 +124,7 @@ func TestBuildCommand_TranscodeSkipsSSSeek(t *testing.T) {
 
 func TestBuildCommand_DirectPlayPassesSSSeek(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL: "file:///media/sample.mkv",
+		InputURL:    "file:///media/sample.mkv",
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
@@ -152,8 +152,8 @@ func TestBuildCommand_HeadersCombinedIntoOneArg(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL: "http://pms/video.m3u8",
 		InputHeaders: map[string]string{
-			"X-Plex-Token":      "abc123",
-			"X-Plex-Product":    "groovyrelay",
+			"X-Plex-Token":   "abc123",
+			"X-Plex-Product": "groovyrelay",
 		},
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
 		OutputWidth: 720, OutputHeight: 480,
@@ -189,8 +189,8 @@ func TestBuildCommand_HeadersCombinedIntoOneArg(t *testing.T) {
 
 func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL: "http://pms/video.m3u8",
-		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		InputURL:    "http://pms/video.m3u8",
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, AudioRate: 48000},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
 		AudioSampleRate: 48000, AudioChannels: 2,
@@ -212,6 +212,27 @@ func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in argv: %s", want, joined)
 		}
+	}
+}
+
+func TestBuildCommand_OmitsAudioOutputWhenSourceHasNoAudio(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/video.m3u8",
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, AudioRate: 0},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	joined := strings.Join(cmd.Args, " ")
+	for _, unwanted := range []string{"-map 0:a:0", "-ar 48000", "-ac 2", "pipe:4"} {
+		if strings.Contains(joined, unwanted) {
+			t.Errorf("unexpected %q in argv for video-only source: %s", unwanted, joined)
+		}
+	}
+	if !strings.Contains(joined, "-map 0:v:0") || !strings.Contains(joined, "pipe:3") {
+		t.Errorf("video output missing from argv: %s", joined)
 	}
 }
 

@@ -113,6 +113,16 @@ func (c *Config) Validate() error {
 	if c.RGBMode != "rgb888" {
 		return fmt.Errorf("rgb_mode: only rgb888 is supported in v1 (got %q; rgba8888/rgb565 reserved for future work)", c.RGBMode)
 	}
+	switch c.AudioSampleRate {
+	case 22050, 44100, 48000:
+	default:
+		return fmt.Errorf("audio_sample_rate must be 22050, 44100, or 48000, got %d", c.AudioSampleRate)
+	}
+	switch c.AudioChannels {
+	case 1, 2:
+	default:
+		return fmt.Errorf("audio_channels must be 1 or 2, got %d", c.AudioChannels)
+	}
 	// host_ip is optional (empty → auto-detect in main.go). When set, it must
 	// parse as a valid IP address. Catches fat-fingered CIDR (/24 suffix),
 	// URL-style values ("http://..."), and outright typos before the bridge

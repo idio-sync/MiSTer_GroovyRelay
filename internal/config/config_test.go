@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,62 @@ func TestValidateBadAspectMode(t *testing.T) {
 	cfg := &Config{InterlaceFieldOrder: "tff", AspectMode: "stretch"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for bad aspect mode")
+	}
+}
+
+func TestValidate_RejectsBadAudioSampleRate(t *testing.T) {
+	for _, rate := range []int{0, 16000, 96000} {
+		t.Run(fmt.Sprintf("%d", rate), func(t *testing.T) {
+			c := defaults()
+			c.AudioSampleRate = rate
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("audio_sample_rate=%d: expected validation error, got nil", rate)
+			}
+			if !strings.Contains(err.Error(), "audio_sample_rate") {
+				t.Errorf("audio_sample_rate=%d: error %q should mention audio_sample_rate", rate, err)
+			}
+		})
+	}
+}
+
+func TestValidate_AcceptsSupportedAudioSampleRates(t *testing.T) {
+	for _, rate := range []int{22050, 44100, 48000} {
+		t.Run(fmt.Sprintf("%d", rate), func(t *testing.T) {
+			c := defaults()
+			c.AudioSampleRate = rate
+			if err := c.Validate(); err != nil {
+				t.Errorf("audio_sample_rate=%d: expected OK, got %v", rate, err)
+			}
+		})
+	}
+}
+
+func TestValidate_RejectsBadAudioChannels(t *testing.T) {
+	for _, chans := range []int{0, 3, 99} {
+		t.Run(fmt.Sprintf("%d", chans), func(t *testing.T) {
+			c := defaults()
+			c.AudioChannels = chans
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("audio_channels=%d: expected validation error, got nil", chans)
+			}
+			if !strings.Contains(err.Error(), "audio_channels") {
+				t.Errorf("audio_channels=%d: error %q should mention audio_channels", chans, err)
+			}
+		})
+	}
+}
+
+func TestValidate_AcceptsSupportedAudioChannels(t *testing.T) {
+	for _, chans := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d", chans), func(t *testing.T) {
+			c := defaults()
+			c.AudioChannels = chans
+			if err := c.Validate(); err != nil {
+				t.Errorf("audio_channels=%d: expected OK, got %v", chans, err)
+			}
+		})
 	}
 }
 

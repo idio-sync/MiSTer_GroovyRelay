@@ -22,11 +22,11 @@ type PlaneConfig struct {
 	FieldWidth    int             // hActive
 	FieldHeight   int             // per-field vActive (e.g. 240 for 480i)
 	BytesPerPixel int
-	RGBMode       byte   // groovy.RGBMode888 etc.
+	RGBMode       byte // groovy.RGBMode888 etc.
 	LZ4Enabled    bool
-	AudioRate     int    // Go-side integer (48000)
-	AudioChans    int    // 2 for stereo
-	SeekOffsetMs  int    // reported as session start position
+	AudioRate     int // Go-side integer (48000)
+	AudioChans    int // 2 for stereo
+	SeekOffsetMs  int // reported as session start position
 }
 
 // Plane streams one FFmpeg session to the MiSTer. One BLIT_FIELD_VSYNC per
@@ -97,20 +97,23 @@ func (p *Plane) Run(ctx context.Context) error {
 	p.proc = proc
 	defer proc.Stop()
 
+	audioRate, audioChans := p.effectiveAudioConfig()
+	audioEnabled := audioRate > 0 && audioChans > 0
+
 	// 1. INIT handshake (ACK-gated; 60 ms timeout). Must happen BEFORE the
 	//    Drainer goroutine starts reading from the socket — otherwise it
 	//    swallows the ACK.
-	soundRate := rateCodeForHz(p.cfg.AudioRate)
+	soundRate := rateCodeForHz(audioRate)
 	lz4Mode := groovy.LZ4ModeOff
 	if p.cfg.LZ4Enabled {
 		lz4Mode = groovy.LZ4ModeDefault
 	}
-	initPkt := groovy.BuildInit(lz4Mode, soundRate, byte(p.cfg.AudioChans), p.cfg.RGBMode)
+	initPkt := groovy.BuildInit(lz4Mode, soundRate, byte(audioChans), p.cfg.RGBMode)
 	ack, err := p.cfg.Sender.SendInitAwaitACK(initPkt, 60*time.Millisecond)
 	if err != nil {
 		return fmt.Errorf("init handshake: %w", err)
 	}
-	p.audioReady.Store(ack.AudioReady())
+	p.audioReady.Store(audioEnabled && ack.AudioReady())
 	p.fpgaFrame.Store(ack.FPGAFrame)
 
 	// 2. SWITCHRES (fire-and-forget).
@@ -130,10 +133,13 @@ func (p *Plane) Run(ctx context.Context) error {
 
 	// 4. Readers + timer.
 	videoCh := make(chan []byte, 4)
-	audioCh := make(chan []byte, 16)
+	var audioCh chan []byte
 	ticks := make(chan time.Time, 4)
 	go ReadFieldsFromPipe(proc.VideoPipe(), p.cfg.FieldWidth, p.cfg.FieldHeight, p.cfg.BytesPerPixel, videoCh)
-	go ReadAudioFromPipe(proc.AudioPipe(), p.cfg.AudioRate, p.cfg.AudioChans, audioCh)
+	if audioEnabled {
+		audioCh = make(chan []byte, 16)
+		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
+	}
 	go RunFieldTimer(ctx, 59.94, ticks)
 
 	// 5. Position bookkeeping — one tick = one NTSC field (1001/60 ms, exact).
@@ -153,7 +159,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			_ = p.cfg.Sender.Send(groovy.BuildClose())
 			return nil
 		case a := <-ackCh:
-			p.audioReady.Store(a.AudioReady())
+			p.audioReady.Store(audioEnabled && a.AudioReady())
 			p.fpgaFrame.Store(a.FPGAFrame)
 		case <-ticks:
 			// One field per tick. Frame number increments when the field we
@@ -177,7 +183,7 @@ func (p *Plane) Run(ctx context.Context) error {
 
 			// Audio: only send while ACK bit 6 (fpga.audio) is set AND we
 			// have PCM ready. Never block the pump loop on audio.
-			if p.audioReady.Load() {
+			if audioEnabled && p.audioReady.Load() {
 				select {
 				case pcm, ok := <-audioCh:
 					if ok && len(pcm) > 0 {
@@ -190,6 +196,20 @@ func (p *Plane) Run(ctx context.Context) error {
 			p.advancePosition()
 		}
 	}
+}
+
+// effectiveAudioConfig returns the session-level audio settings that should be
+// advertised to the MiSTer and used for FFmpeg pipe reads. Sources with no
+// audio stream are treated as video-only even when the global config requests
+// audio, so the relay doesn't advertise PCM it can never send.
+func (p *Plane) effectiveAudioConfig() (rate, chans int) {
+	if p.cfg.AudioRate <= 0 || p.cfg.AudioChans <= 0 {
+		return 0, 0
+	}
+	if probe := p.cfg.SpawnSpec.SourceProbe; probe != nil && probe.AudioRate <= 0 {
+		return 0, 0
+	}
+	return p.cfg.AudioRate, p.cfg.AudioChans
 }
 
 // sendField sends one BLIT_FIELD_VSYNC header + payload. Applies congestion

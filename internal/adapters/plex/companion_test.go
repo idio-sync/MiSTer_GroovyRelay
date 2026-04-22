@@ -1,14 +1,34 @@
 package plex
 
 import (
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+func newLoopbackServer(t *testing.T, h http.Handler) *httptest.Server {
+	t.Helper()
+
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Skipf("TCP listeners unavailable in this environment: %v", err)
+		}
+		t.Fatalf("listen loopback server: %v", err)
+	}
+
+	ts := httptest.NewUnstartedServer(h)
+	ts.Listener = l
+	ts.Start()
+	return ts
+}
 
 func TestCompanion_RootReturns200(t *testing.T) {
 	// Task 7.1 sanity: /resources must return 200 even without a wired-in
@@ -16,7 +36,7 @@ func TestCompanion_RootReturns200(t *testing.T) {
 	// not call into core. We pass nil here; other handlers (playMedia, etc.)
 	// get a fakeCore in their own tests.
 	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "abc-123"}, nil)
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/resources")
@@ -31,7 +51,7 @@ func TestCompanion_RootReturns200(t *testing.T) {
 
 func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
 	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "abc-123"}, nil)
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	req, _ := http.NewRequest(http.MethodOptions, ts.URL+"/player/playback/playMedia", nil)
@@ -55,14 +75,14 @@ func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
 // fakeCore is a SessionManager test double: records the last StartSession
 // request, tracks pause/play/stop/seek calls, and can be queried for Status.
 type fakeCore struct {
-	mu        sync.Mutex
-	lastReq   core.SessionRequest
-	paused    bool
-	played    bool
-	stopped   bool
-	lastSeek  int
-	status    core.SessionStatus
-	startErr  error
+	mu       sync.Mutex
+	lastReq  core.SessionRequest
+	paused   bool
+	played   bool
+	stopped  bool
+	lastSeek int
+	status   core.SessionStatus
+	startErr error
 }
 
 func (f *fakeCore) StartSession(r core.SessionRequest) error {
@@ -104,7 +124,7 @@ func (f *fakeCore) Status() core.SessionStatus {
 func TestPlayMedia_ParsesFields(t *testing.T) {
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", ProfileName: "Custom Profile"}, fc)
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	url := ts.URL + "/player/playback/playMedia?" +
@@ -144,7 +164,7 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer"}, fc)
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	url := ts.URL + "/player/application/playMedia?" +
@@ -167,7 +187,7 @@ func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
 
 func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
 	c := NewCompanion(CompanionConfig{}, &fakeCore{})
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	routes := []string{
@@ -193,7 +213,7 @@ func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
 func TestPause_DelegatesToCore(t *testing.T) {
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{}, fc)
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/player/playback/pause")
@@ -212,7 +232,7 @@ func TestPause_DelegatesToCore(t *testing.T) {
 func TestSeekTo_ParsesOffset(t *testing.T) {
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{}, fc)
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/player/playback/seekTo?offset=12345")
