@@ -167,41 +167,42 @@ func TestPosition_IntegerExactFieldCount(t *testing.T) {
 func TestEffectiveAudioConfig(t *testing.T) {
 	tests := []struct {
 		name  string
-		plane Plane
+		cfg   PlaneConfig
 		rate  int
 		chans int
 	}{
 		{
 			name: "audio source keeps configured session audio",
-			plane: Plane{cfg: PlaneConfig{
+			cfg: PlaneConfig{
 				SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
 				AudioRate:  48000,
 				AudioChans: 2,
-			}},
+			},
 			rate:  48000,
 			chans: 2,
 		},
 		{
 			name: "video-only source disables audio",
-			plane: Plane{cfg: PlaneConfig{
+			cfg: PlaneConfig{
 				SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 0}},
 				AudioRate:  48000,
 				AudioChans: 2,
-			}},
+			},
 		},
 		{
 			name: "non-positive audio config disables audio",
-			plane: Plane{cfg: PlaneConfig{
+			cfg: PlaneConfig{
 				SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
 				AudioRate:  0,
 				AudioChans: 2,
-			}},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rate, chans := tt.plane.effectiveAudioConfig()
+			p := &Plane{cfg: tt.cfg}
+			rate, chans := p.effectiveAudioConfig()
 			if rate != tt.rate || chans != tt.chans {
 				t.Errorf("effectiveAudioConfig() = (%d, %d), want (%d, %d)",
 					rate, chans, tt.rate, tt.chans)
