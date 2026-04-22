@@ -147,6 +147,60 @@ type Sectioned struct {
 // Primitive section.
 func (s *Sectioned) MetaData() toml.MetaData { return s.meta }
 
+// Validate checks bridge-level fields. Adapter sections validate
+// themselves inside each adapter's DecodeConfig. Returns the first
+// error found; callers expecting UI-surface multi-error output use
+// the FieldError taxonomy in internal/adapters.
+func (s *Sectioned) Validate() error {
+	b := &s.Bridge
+
+	if b.MiSTer.Host == "" {
+		return fmt.Errorf("bridge.mister.host is required")
+	}
+	if err := validPort(b.MiSTer.Port, "bridge.mister.port"); err != nil {
+		return err
+	}
+	if err := validPort(b.MiSTer.SourcePort, "bridge.mister.source_port"); err != nil {
+		return err
+	}
+	if err := validPort(b.UI.HTTPPort, "bridge.ui.http_port"); err != nil {
+		return err
+	}
+
+	switch b.Video.InterlaceFieldOrder {
+	case "tff", "bff":
+	default:
+		return fmt.Errorf("bridge.video.interlace_field_order must be tff or bff, got %q", b.Video.InterlaceFieldOrder)
+	}
+	switch b.Video.AspectMode {
+	case "letterbox", "zoom", "auto":
+	default:
+		return fmt.Errorf("bridge.video.aspect_mode must be letterbox, zoom, or auto, got %q", b.Video.AspectMode)
+	}
+	if b.Video.RGBMode != "rgb888" {
+		return fmt.Errorf("bridge.video.rgb_mode: only rgb888 is supported (got %q)", b.Video.RGBMode)
+	}
+	switch b.Audio.SampleRate {
+	case 22050, 44100, 48000:
+	default:
+		return fmt.Errorf("bridge.audio.sample_rate must be 22050, 44100, or 48000, got %d", b.Audio.SampleRate)
+	}
+	if b.Audio.Channels != 1 && b.Audio.Channels != 2 {
+		return fmt.Errorf("bridge.audio.channels must be 1 or 2, got %d", b.Audio.Channels)
+	}
+	if b.HostIP != "" && net.ParseIP(b.HostIP) == nil {
+		return fmt.Errorf("bridge.host_ip must be a valid IP address, got %q", b.HostIP)
+	}
+	return nil
+}
+
+func validPort(p int, label string) error {
+	if p < 1 || p > 65535 {
+		return fmt.Errorf("%s must be in 1..65535, got %d", label, p)
+	}
+	return nil
+}
+
 // ToLegacy flattens a Sectioned config into the pre-UI flat Config
 // shape. Exists only as a Phase-1 transitional shim so main.go can
 // keep driving core.Manager + plex.NewAdapter against the legacy

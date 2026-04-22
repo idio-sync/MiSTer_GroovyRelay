@@ -53,14 +53,10 @@ func main() {
 	}
 
 	// Flatten the sectioned config into the pre-UI flat shape the data
-	// plane and Plex adapter currently read. Phase 2 (adapter interface)
-	// removes this shim when the Plex adapter takes a typed plex.Config
-	// directly.
+	// plane and Plex adapter currently read. LoadSectioned has already
+	// validated bridge-level fields; Phase 2 (adapter interface) removes
+	// this shim when the Plex adapter takes a typed plex.Config directly.
 	cfg := sec.ToLegacy()
-	if err := cfg.Validate(); err != nil {
-		slog.Error("validate config", "err", err)
-		os.Exit(1)
-	}
 
 	// Load or create device UUID + auth token. Token storage lives in the
 	// Plex adapter package because v1 only has one adapter that needs

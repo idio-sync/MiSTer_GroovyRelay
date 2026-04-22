@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,4 +249,46 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestSectioned_Validate_HappyPath(t *testing.T) {
+	s := &Sectioned{Bridge: defaultBridge()}
+	s.Bridge.MiSTer.Host = "192.168.1.42" // required
+	if err := s.Validate(); err != nil {
+		t.Errorf("unexpected validation error: %v", err)
+	}
+}
+
+func TestSectioned_Validate_MissingMisterHost(t *testing.T) {
+	s := &Sectioned{Bridge: defaultBridge()}
+	// host deliberately empty
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("want validation error for empty mister host")
+	}
+	if !strings.Contains(err.Error(), "bridge.mister.host") {
+		t.Errorf("error should mention bridge.mister.host: %v", err)
+	}
+}
+
+func TestSectioned_Validate_BadPort(t *testing.T) {
+	for _, bad := range []int{0, -1, 65536, 99999} {
+		t.Run(fmt.Sprintf("port=%d", bad), func(t *testing.T) {
+			s := &Sectioned{Bridge: defaultBridge()}
+			s.Bridge.MiSTer.Host = "192.168.1.42"
+			s.Bridge.UI.HTTPPort = bad
+			if err := s.Validate(); err == nil {
+				t.Error("want validation error for bad port")
+			}
+		})
+	}
+}
+
+func TestSectioned_Validate_BadInterlaceOrder(t *testing.T) {
+	s := &Sectioned{Bridge: defaultBridge()}
+	s.Bridge.MiSTer.Host = "192.168.1.42"
+	s.Bridge.Video.InterlaceFieldOrder = "sideways"
+	if err := s.Validate(); err == nil {
+		t.Error("want validation error for bad interlace order")
+	}
 }

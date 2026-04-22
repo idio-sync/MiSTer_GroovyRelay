@@ -214,6 +214,9 @@ func LoadSectioned(path string) (*Sectioned, error) {
 		return nil, err
 	}
 	s.meta = meta
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("config invalid: %w", err)
+	}
 	return s, nil
 }
 
