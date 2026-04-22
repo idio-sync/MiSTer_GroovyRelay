@@ -65,6 +65,23 @@ func NewManager(cfg *config.Config, sender *groovynet.Sender) *Manager {
 	return &Manager{cfg: cfg, sender: sender, fsm: New()}
 }
 
+func (m *Manager) logPlaneExit(runErr error) {
+	if runErr == nil || errors.Is(runErr, context.Canceled) {
+		return
+	}
+	if groovynet.IsInitACKTimeout(runErr) {
+		slog.Warn(
+			"MiSTer did not acknowledge INIT; it may be powered off, unreachable, or not listening on the configured port",
+			"mister_host", m.cfg.MisterHost,
+			"mister_port", m.cfg.MisterPort,
+			"source_port", m.sender.SourcePort(),
+			"err", runErr,
+		)
+		return
+	}
+	slog.Warn("data plane exited", "err", runErr)
+}
+
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
 // context so a stuck PMS cannot deadlock the control plane. Called by
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
@@ -172,9 +189,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 
 	go func() {
 		runErr := plane.Run(ctx)
-		if runErr != nil && !errors.Is(runErr, context.Canceled) {
-			slog.Warn("data plane exited", "err", runErr)
-		}
+		m.logPlaneExit(runErr)
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.plane != plane {

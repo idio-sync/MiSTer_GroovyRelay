@@ -9,6 +9,7 @@
 package groovynet
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -29,6 +30,33 @@ type Sender struct {
 	mu           sync.Mutex // serialises Writes + Mark*
 	lastBlitSize int
 	lastBlitTime time.Time
+}
+
+// InitACKTimeoutError reports that the MiSTer never acknowledged the INIT
+// handshake before the caller's deadline elapsed.
+type InitACKTimeoutError struct {
+	Timeout time.Duration
+	Err     error
+}
+
+func (e *InitACKTimeoutError) Error() string {
+	if e == nil {
+		return "INIT ack timeout"
+	}
+	return fmt.Sprintf("INIT ack timeout after %s: %v", e.Timeout, e.Err)
+}
+
+func (e *InitACKTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// IsInitACKTimeout reports whether err wraps an InitACKTimeoutError.
+func IsInitACKTimeout(err error) bool {
+	var target *InitACKTimeoutError
+	return errors.As(err, &target)
 }
 
 // NewSender binds a UDP4 socket on srcPort (0 = OS-assigned ephemeral) and
@@ -150,7 +178,10 @@ func (s *Sender) SendInitAwaitACK(initPacket []byte, timeout time.Duration) (gro
 	buf := make([]byte, groovy.ACKPacketSize*2)
 	n, _, err := s.conn.ReadFromUDP(buf)
 	if err != nil {
-		return groovy.ACK{}, fmt.Errorf("INIT ack timeout: %w", err)
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return groovy.ACK{}, &InitACKTimeoutError{Timeout: timeout, Err: err}
+		}
+		return groovy.ACK{}, fmt.Errorf("read INIT ack: %w", err)
 	}
 	if n != groovy.ACKPacketSize {
 		return groovy.ACK{}, fmt.Errorf("INIT ack wrong size: %d", n)

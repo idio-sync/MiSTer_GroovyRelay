@@ -1,6 +1,7 @@
 package groovynet
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -150,5 +151,15 @@ func TestSender_InitACKTimeout(t *testing.T) {
 	)
 	if err == nil {
 		t.Error("expected timeout error")
+	}
+	if !IsInitACKTimeout(err) {
+		t.Fatalf("expected InitACKTimeoutError, got %T (%v)", err, err)
+	}
+	var ackErr *InitACKTimeoutError
+	if !errors.As(err, &ackErr) {
+		t.Fatalf("errors.As failed for InitACKTimeoutError: %v", err)
+	}
+	if ackErr.Timeout != 60*time.Millisecond {
+		t.Errorf("timeout = %v, want %v", ackErr.Timeout, 60*time.Millisecond)
 	}
 }
