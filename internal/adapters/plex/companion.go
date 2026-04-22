@@ -70,6 +70,7 @@ func (c *Companion) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/resources", c.handleResources)
 	mux.HandleFunc("/player/playback/playMedia", c.handlePlayMedia)
+	mux.HandleFunc("/player/application/playMedia", c.handlePlayMedia)
 	mux.HandleFunc("/player/playback/pause", c.handlePause)
 	mux.HandleFunc("/player/playback/play", c.handlePlay)
 	mux.HandleFunc("/player/playback/stop", c.handleStop)
@@ -89,7 +90,16 @@ func (c *Companion) Handler() http.Handler {
 func withHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier")
+		if clientID := r.Header.Get("X-Plex-Client-Identifier"); clientID != "" {
+			w.Header().Set("X-Plex-Client-Identifier", clientID)
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		w.Header().Set("Content-Type", "text/xml")
 		h.ServeHTTP(w, r)
 	})
@@ -158,20 +168,23 @@ type PlayMediaRequest struct {
 // URL via BuildTranscodeURL, translates into core.SessionRequest, and
 // delegates to core. On error we return 400; the controller retries.
 func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	offset, _ := strconv.Atoi(q.Get("offset"))
+	offset, _ := strconv.Atoi(queryOrHeader(r, "offset"))
 	p := PlayMediaRequest{
-		PlexServerAddress: q.Get("address"),
-		PlexServerPort:    q.Get("port"),
-		PlexServerScheme:  q.Get("protocol"),
-		MediaKey:          q.Get("key"),
+		PlexServerAddress: queryOrHeader(r, "address"),
+		PlexServerPort:    queryOrHeader(r, "port"),
+		PlexServerScheme:  queryOrHeader(r, "protocol"),
+		MediaKey:          queryOrHeader(r, "key"),
 		OffsetMs:          offset,
-		SessionID:         q.Get("X-Plex-Session-Identifier"),
-		ClientID:          q.Get("X-Plex-Client-Identifier"),
-		PlexToken:         q.Get("X-Plex-Token"),
-		SubtitleStreamID:  q.Get("subtitleStreamID"),
-		AudioStreamID:     q.Get("audioStreamID"),
-		CommandID:         q.Get("commandID"),
+		SessionID:         queryOrHeader(r, "X-Plex-Session-Identifier"),
+		ClientID:          queryOrHeader(r, "X-Plex-Client-Identifier"),
+		// Plex controllers commonly send `token` on playMedia (per the repo
+		// references), while some tooling and older tests still use
+		// `X-Plex-Token`. Accept both from query or headers so playback works
+		// across web/mobile/controller variants.
+		PlexToken:        queryOrHeader(r, "token", "X-Plex-Token"),
+		SubtitleStreamID: queryOrHeader(r, "subtitleStreamID"),
+		AudioStreamID:    queryOrHeader(r, "audioStreamID"),
+		CommandID:        queryOrHeader(r, "commandID"),
 	}
 
 	// Translate Plex Companion request → generic core.SessionRequest.
@@ -332,6 +345,25 @@ func atoiDefault(s string, d int) int {
 		return d
 	}
 	return n
+}
+
+// queryOrHeader returns the first non-empty value found under any of the
+// given names, checking query parameters first and then HTTP headers. Plex
+// Companion clients vary here: e.g. playMedia commonly sends `token` in the
+// query string while other callers/tests use `X-Plex-Token`.
+func queryOrHeader(r *http.Request, names ...string) string {
+	q := r.URL.Query()
+	for _, name := range names {
+		if v := q.Get(name); v != "" {
+			return v
+		}
+	}
+	for _, name := range names {
+		if v := r.Header.Get(name); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // rememberPlaySession stores the last playMedia request so the timeline

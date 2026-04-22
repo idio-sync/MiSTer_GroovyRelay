@@ -29,6 +29,29 @@ func TestCompanion_RootReturns200(t *testing.T) {
 	}
 }
 
+func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "abc-123"}, nil)
+	ts := httptest.NewServer(c.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodOptions, ts.URL+"/player/playback/playMedia", nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if got := resp.Header.Get("X-Plex-Client-Identifier"); got != "client-1" {
+		t.Errorf("X-Plex-Client-Identifier = %q, want client-1", got)
+	}
+}
+
 // fakeCore is a SessionManager test double: records the last StartSession
 // request, tracks pause/play/stop/seek calls, and can be queried for Status.
 type fakeCore struct {
@@ -87,8 +110,9 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
 		"key=%2Flibrary%2Fmetadata%2F42&offset=0&" +
-		"X-Plex-Client-Identifier=client-1&X-Plex-Token=tok"
+		"token=tok"
 	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-1")
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -111,6 +135,30 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	}
 	if !fc.lastReq.Capabilities.CanPause || !fc.lastReq.Capabilities.CanSeek {
 		t.Errorf("expected CanPause+CanSeek capabilities, got %+v", fc.lastReq.Capabilities)
+	}
+}
+
+func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer"}, fc)
+	ts := httptest.NewServer(c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/application/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F99&offset=0&token=tok"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-2")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d", resp.StatusCode)
+	}
+	if fc.lastReq.AdapterRef != "/library/metadata/99" {
+		t.Errorf("AdapterRef = %q, want /library/metadata/99", fc.lastReq.AdapterRef)
 	}
 }
 
