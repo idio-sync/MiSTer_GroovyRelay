@@ -41,9 +41,11 @@ type AdapterConfig struct {
 	Version string
 }
 
-// Adapter owns the lifecycle of every Plex subsystem: the Companion
-// HTTP server, the GDM multicast responder, the timeline broadcaster,
-// and the plex.tv registration loop. Satisfies adapters.Adapter.
+// Adapter owns the Plex Companion handlers, the GDM multicast
+// responder, the timeline broadcaster, and the plex.tv registration
+// loop. It does NOT own the HTTP listener anymore — main.go binds a
+// single :http_port socket that both this adapter and the Settings
+// UI attach to (design §7.1). Satisfies adapters.Adapter.
 type Adapter struct {
 	cfg     AdapterConfig
 	plexCfg Config // typed [adapters.plex] section, populated by DecodeConfig
@@ -53,16 +55,25 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 
+	// finalizeOnce guards lazy construction of companion + timeline.
+	// Either MountRoutes (called before the shared listener starts)
+	// or Start (background work) may trigger finalization — Once
+	// keeps it single-shot regardless of call order.
+	//
+	// NOTE: this makes the initial companion/timeline pair immutable.
+	// A future UI-driven re-enable flow that calls Stop() then Start()
+	// will NOT get a fresh TimelineBroker (TimelineBroker.Stop is
+	// one-shot). Phase 5's toggle work must recreate restartable
+	// pieces or refactor them to be restart-safe.
+	finalizeOnce sync.Once
+
 	companion *Companion
 	timeline  *TimelineBroker
 
-	// disco is nil if GDM init fails (e.g. port 32412 already bound by
-	// another Plex player on the host). We log and continue — out-of-LAN
-	// registration still works if a token is configured.
+	// disco is nil if GDM init fails (e.g. port 32412 already bound
+	// by another Plex player on the host). We log and continue —
+	// out-of-LAN registration still works if a token is configured.
 	disco *Discovery
-
-	httpSrv *http.Server
-	srvWG   sync.WaitGroup
 
 	// regCancel cancels the plex.tv registration loop; nil when no
 	// loop was started (missing token / host IP).
@@ -75,7 +86,8 @@ type Adapter struct {
 
 // NewAdapter constructs a ready-to-Start Adapter. Companion + timeline
 // are NOT built here: they depend on plexCfg.DeviceName, which isn't
-// populated until DecodeConfig runs. Construction defers to Start.
+// populated until DecodeConfig runs. Lazy construction happens inside
+// ensureFinalized (called from MountRoutes or Start).
 func NewAdapter(cfg AdapterConfig) (*Adapter, error) {
 	if cfg.Core == nil {
 		return nil, errors.New("plex.NewAdapter: AdapterConfig.Core is required")
@@ -83,51 +95,31 @@ func NewAdapter(cfg AdapterConfig) (*Adapter, error) {
 	return &Adapter{cfg: cfg}, nil
 }
 
-// Start brings the Plex adapter online. Order: HTTP server first (so
-// any immediate discovery reply lands on a live port), then timeline
-// broadcaster, then GDM discovery, then optional plex.tv registration.
+// MountRoutes mounts the Plex Companion routes on the provided mux.
+// Called by main.go before the shared listener starts. The concrete
+// paths are matched as catch-all prefixes — the companion's inner mux
+// does the real sub-path routing to playMedia/pause/play/etc.
+func (a *Adapter) MountRoutes(mux *http.ServeMux) {
+	a.ensureFinalized()
+	h := a.companion.Handler()
+	mux.Handle("/resources", h)
+	mux.Handle("/player/", h)
+}
+
+// Start brings the Plex adapter's background work online (timeline
+// broadcaster, GDM discovery, plex.tv registration). The HTTP
+// Companion handlers are mounted separately via MountRoutes; by the
+// time Start runs the shared listener is already accepting requests.
 // Returns quickly; background goroutines run until Stop.
 func (a *Adapter) Start(ctx context.Context) error {
+	a.ensureFinalized()
 	a.setState(adapters.StateStarting, "")
 
-	// Construct companion + timeline now that config is decoded. The
-	// DeviceUUID comes from the token store (populated at first boot)
-	// rather than plexCfg — it's the bridge's identity, not a user-
-	// editable field.
-	a.companion = NewCompanion(CompanionConfig{
-		DeviceName: a.plexCfg.DeviceName,
-		DeviceUUID: a.cfg.TokenStore.DeviceUUID,
-		Version:    a.cfg.Version,
-		DataDir:    a.cfg.Bridge.DataDir,
-	}, a.cfg.Core)
-	a.timeline = NewTimelineBroker(
-		TimelineConfig{DeviceUUID: a.cfg.TokenStore.DeviceUUID, DeviceName: a.plexCfg.DeviceName},
-		a.cfg.Core.Status,
-	)
-	a.companion.SetTimeline(a.timeline)
-
-	// 1. HTTP server for Plex Companion endpoints.
-	addr := fmt.Sprintf(":%d", a.cfg.Bridge.UI.HTTPPort)
-	a.httpSrv = &http.Server{
-		Addr:              addr,
-		Handler:           a.companion.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	a.srvWG.Add(1)
-	go func() {
-		defer a.srvWG.Done()
-		if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("plex HTTP server exited", "err", err)
-			a.setState(adapters.StateError, err.Error())
-		}
-	}()
-	slog.Info("plex Companion listening", "addr", addr)
-
-	// 2. Timeline broadcaster (1 Hz push loop). Runs until Stop closes
+	// Timeline broadcaster (1 Hz push loop). Runs until Stop closes
 	// the broker's stop channel.
 	go a.timeline.RunBroadcastLoop()
 
-	// 3. GDM multicast discovery. Best-effort: port conflicts shouldn't
+	// GDM multicast discovery. Best-effort: port conflicts shouldn't
 	// take down the adapter — out-of-LAN registration may still succeed.
 	disco, err := NewDiscovery(DiscoveryConfig{
 		DeviceName: a.plexCfg.DeviceName,
@@ -146,9 +138,9 @@ func (a *Adapter) Start(ctx context.Context) error {
 		slog.Info("GDM discovery active", "port", 32412)
 	}
 
-	// 4. plex.tv device registration loop. Requires a linked auth
-	// token and an outbound IP to advertise; otherwise we log and
-	// skip so the user knows to run `--link`.
+	// plex.tv device registration loop. Requires a linked auth token
+	// and an outbound IP to advertise; otherwise we log and skip so
+	// the user knows to run `--link`.
 	if a.cfg.TokenStore != nil && a.cfg.TokenStore.AuthToken != "" && a.cfg.HostIP != "" {
 		regCtx, cancel := context.WithCancel(ctx)
 		a.regCancel = cancel
@@ -167,10 +159,9 @@ func (a *Adapter) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop tears everything down in reverse-dependency order and blocks
-// until every background goroutine has exited. Returns nil on clean
-// shutdown (interface contract); the error return is reserved for
-// future adapters that need to surface cleanup failures.
+// Stop tears down background work in reverse-dependency order. The
+// HTTP listener is owned by main.go and shut down separately. Returns
+// nil on clean shutdown (interface contract).
 func (a *Adapter) Stop() error {
 	if a.regCancel != nil {
 		a.regCancel()
@@ -184,14 +175,29 @@ func (a *Adapter) Stop() error {
 	if a.timeline != nil {
 		a.timeline.Stop()
 	}
-	if a.httpSrv != nil {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = a.httpSrv.Shutdown(shutCtx)
-		a.srvWG.Wait()
-	}
 	a.setState(adapters.StateStopped, "")
 	return nil
+}
+
+// ensureFinalized lazily constructs companion + timeline after
+// DecodeConfig has populated plexCfg. Called from both MountRoutes
+// (main-goroutine startup) and Start — sync.Once guarantees the
+// construction runs exactly once. DeviceUUID comes from the token
+// store (the bridge's identity, not a user-editable field).
+func (a *Adapter) ensureFinalized() {
+	a.finalizeOnce.Do(func() {
+		a.companion = NewCompanion(CompanionConfig{
+			DeviceName: a.plexCfg.DeviceName,
+			DeviceUUID: a.cfg.TokenStore.DeviceUUID,
+			Version:    a.cfg.Version,
+			DataDir:    a.cfg.Bridge.DataDir,
+		}, a.cfg.Core)
+		a.timeline = NewTimelineBroker(
+			TimelineConfig{DeviceUUID: a.cfg.TokenStore.DeviceUUID, DeviceName: a.plexCfg.DeviceName},
+			a.cfg.Core.Status,
+		)
+		a.companion.SetTimeline(a.timeline)
+	})
 }
 
 // ---- adapters.Adapter interface implementation ----
@@ -243,8 +249,8 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 }
 
 // DecodeConfig hydrates a.plexCfg from the TOML primitive. Called by
-// main.go (registry wiring) between parse and Start so Start can see
-// a fully-populated plexCfg.
+// main.go (registry wiring) between parse and MountRoutes/Start so
+// downstream paths see a fully-populated plexCfg.
 func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	cfg := DefaultConfig()
 	if err := meta.PrimitiveDecode(raw, &cfg); err != nil {

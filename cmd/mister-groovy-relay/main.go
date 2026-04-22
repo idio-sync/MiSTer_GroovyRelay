@@ -1,9 +1,11 @@
 // Command mister-groovy-relay is the MiSTer GroovyMiSTer adapter bridge.
 // It parses the sectioned config, constructs the GroovyMiSTer UDP sender,
 // builds the adapter-agnostic core.Manager, populates the adapter
-// registry, decodes per-adapter config, and starts every enabled adapter.
-// Shutdown on SIGINT/SIGTERM iterates the registry in the same order.
-// The --link flag runs the plex.tv PIN pairing flow and exits.
+// registry, decodes per-adapter config, binds one HTTP listener on
+// bridge.ui.http_port that both the Plex Companion API and the Settings
+// UI share, and starts every enabled adapter. Shutdown on SIGINT/SIGTERM
+// drains the HTTP server and then iterates the registry in registration
+// order. The --link flag runs the plex.tv PIN pairing flow and exits.
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +28,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
 
 // version is spliced into the Plex Companion /resources response and
@@ -117,9 +121,39 @@ func main() {
 		}
 	}
 
+	// Shared HTTP mux: Plex Companion handlers + Settings UI. One
+	// listener, one port (bridge.ui.http_port), disjoint path prefixes
+	// (design §7.1). Plex adapter mounts /resources + /player/* ;
+	// ui.Server mounts /ui/* and the root redirect.
+	mux := http.NewServeMux()
+	plexAdapter.MountRoutes(mux)
+
+	uiSrv, err := ui.New(ui.Config{Registry: reg})
+	if err != nil {
+		slog.Error("ui init", "err", err)
+		os.Exit(1)
+	}
+	uiSrv.Mount(mux)
+
+	addr := fmt.Sprintf(":%d", sec.Bridge.UI.HTTPPort)
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go func() {
+		slog.Info("listening", "addr", addr)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("http listener", "err", err)
+		}
+	}()
+
+	// Start each enabled adapter's background work (timeline, GDM,
+	// plex.tv registration). HTTP handlers were already mounted above.
 	for _, a := range reg.List() {
 		if !a.IsEnabled() {
 			slog.Info("adapter disabled", "name", a.Name())
@@ -132,6 +166,9 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("shutting down")
+	shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(shutCtx)
 	for _, a := range reg.List() {
 		if err := a.Stop(); err != nil {
 			slog.Warn("adapter stop", "name", a.Name(), "err", err)

@@ -50,10 +50,14 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	staticSrv := http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub)))
 	mux.Handle("GET /ui/static/", staticSrv)
 
-	// Root + shell.
-	mux.HandleFunc("GET /", s.handleRoot)
-	mux.HandleFunc("GET /ui/", s.handleShell)
-	mux.HandleFunc("GET /ui", s.handleShell) // no trailing slash
+	// Root + shell. Use {$} to match "/" exactly — a bare "GET /"
+	// would be a catch-all that conflicts with adapter-owned prefix
+	// routes (e.g., Plex Companion's "/player/") under Go 1.22's
+	// method-aware mux.
+	mux.HandleFunc("GET /{$}", s.handleRoot)
+	mux.HandleFunc("GET /ui/{$}", s.handleShell)
+	mux.HandleFunc("GET /ui/", s.handleShell) // subpaths fall through to shell
+	mux.HandleFunc("GET /ui", s.handleShell)  // no trailing slash
 
 	// Future POST endpoints (Task 4.x onward) register via mountPOST
 	// so each write handler is wrapped in csrfMiddleware uniformly.
