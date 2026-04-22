@@ -57,6 +57,7 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("X-Plex-Session-Identifier", r.SessionID)
 	q.Set("X-Plex-Client-Identifier", r.ClientID)
 	q.Set("X-Plex-Client-Profile-Extra", BuildProfileExtra())
+	q.Set("X-Plex-Client-Capabilities", BuildClientCapabilities())
 	q.Set("X-Plex-Token", r.Token)
 	return r.PlexServerURL + "/video/:/transcode/universal/start.m3u8?" + q.Encode()
 }
