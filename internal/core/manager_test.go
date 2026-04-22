@@ -23,19 +23,25 @@ func newTestManager(t *testing.T) *Manager {
 		t.Fatalf("new sender: %v", err)
 	}
 	t.Cleanup(func() { _ = sender.Close() })
-	cfg := &config.Config{
-		MisterHost:          "127.0.0.1",
-		MisterPort:          32100,
-		SourcePort:          0,
-		Modeline:            "NTSC_480i",
-		InterlaceFieldOrder: "tff",
-		AspectMode:          "letterbox",
-		RGBMode:             "rgb888",
-		LZ4Enabled:          false,
-		AudioSampleRate:     48000,
-		AudioChannels:       2,
+	bridge := config.BridgeConfig{
+		MiSTer: config.MisterConfig{
+			Host:       "127.0.0.1",
+			Port:       32100,
+			SourcePort: 0,
+		},
+		Video: config.VideoConfig{
+			Modeline:            "NTSC_480i",
+			InterlaceFieldOrder: "tff",
+			AspectMode:          "letterbox",
+			RGBMode:             "rgb888",
+			LZ4Enabled:          false,
+		},
+		Audio: config.AudioConfig{
+			SampleRate: 48000,
+			Channels:   2,
+		},
 	}
-	return NewManager(cfg, sender)
+	return NewManager(bridge, sender)
 }
 
 // bogusRequest builds a SessionRequest whose StreamURL reliably fails ffprobe
@@ -138,7 +144,7 @@ func TestManager_SeekRequiresActiveSession(t *testing.T) {
 
 func TestManager_BogusModelineRejected(t *testing.T) {
 	m := newTestManager(t)
-	m.cfg.Modeline = "bogus_modeline"
+	m.bridge.Video.Modeline = "bogus_modeline"
 	err := m.StartSession(bogusRequest())
 	if err == nil {
 		t.Fatal("expected error for unknown modeline")
@@ -270,15 +276,16 @@ func TestProbeTimeout_DoesNotDeadlockManager(t *testing.T) {
 	}
 	defer sender.Close()
 
-	cfg := &config.Config{
-		Modeline:            "NTSC_480i",
-		InterlaceFieldOrder: "tff",
-		AspectMode:          "letterbox",
-		RGBMode:             "rgb888",
-		AudioSampleRate:     48000,
-		AudioChannels:       2,
+	bridge := config.BridgeConfig{
+		Video: config.VideoConfig{
+			Modeline:            "NTSC_480i",
+			InterlaceFieldOrder: "tff",
+			AspectMode:          "letterbox",
+			RGBMode:             "rgb888",
+		},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}
-	m := NewManager(cfg, sender)
+	m := NewManager(bridge, sender)
 
 	startErr := make(chan error, 1)
 	go func() {
@@ -328,15 +335,16 @@ func TestStop_RemovesSubtitleFile(t *testing.T) {
 	}
 	defer sender.Close()
 
-	cfg := &config.Config{
-		Modeline:            "NTSC_480i",
-		InterlaceFieldOrder: "tff",
-		AspectMode:          "letterbox",
-		RGBMode:             "rgb888",
-		AudioSampleRate:     48000,
-		AudioChannels:       2,
+	bridge := config.BridgeConfig{
+		Video: config.VideoConfig{
+			Modeline:            "NTSC_480i",
+			InterlaceFieldOrder: "tff",
+			AspectMode:          "letterbox",
+			RGBMode:             "rgb888",
+		},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}
-	m := NewManager(cfg, sender)
+	m := NewManager(bridge, sender)
 	m.active = &activeSession{
 		req: SessionRequest{SubtitlePath: subPath},
 	}

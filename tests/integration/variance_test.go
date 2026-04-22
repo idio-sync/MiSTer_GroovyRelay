@@ -134,19 +134,22 @@ func TestScenario_PixelVariance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{
-		MisterHost:          "127.0.0.1",
-		MisterPort:          addr.Port,
-		SourcePort:          0,
-		Modeline:            "NTSC_480i",
-		InterlaceFieldOrder: "tff",
-		AspectMode:          "letterbox",
-		RGBMode:             "rgb888",
-		LZ4Enabled:          true,
-		AudioSampleRate:     48000,
-		AudioChannels:       2,
+	bridge := config.BridgeConfig{
+		MiSTer: config.MisterConfig{
+			Host:       "127.0.0.1",
+			Port:       addr.Port,
+			SourcePort: 0,
+		},
+		Video: config.VideoConfig{
+			Modeline:            "NTSC_480i",
+			InterlaceFieldOrder: "tff",
+			AspectMode:          "letterbox",
+			RGBMode:             "rgb888",
+			LZ4Enabled:          true,
+		},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}
-	mgr := core.NewManager(cfg, sender)
+	mgr := core.NewManager(bridge, sender)
 	t.Cleanup(func() {
 		_ = mgr.Stop()
 		sender.Close()

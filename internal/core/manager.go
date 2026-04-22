@@ -38,7 +38,7 @@ func removeSubtitleFile(path string) {
 // Manager is the adapter-agnostic session orchestrator. One Manager per
 // process; all adapters share it. Thread-safe.
 type Manager struct {
-	cfg    *config.Config
+	bridge config.BridgeConfig
 	sender *groovynet.Sender
 	fsm    *StateMachine
 
@@ -61,8 +61,8 @@ type activeSession struct {
 // NewManager constructs a Manager. The Sender must already be bound to the
 // MiSTer's address; Manager does not own its lifecycle (the sender is shared
 // across the process lifetime so its source UDP port remains stable).
-func NewManager(cfg *config.Config, sender *groovynet.Sender) *Manager {
-	return &Manager{cfg: cfg, sender: sender, fsm: New()}
+func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender) *Manager {
+	return &Manager{bridge: bridge, sender: sender, fsm: New()}
 }
 
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
@@ -77,7 +77,7 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		return nil, nil, fmt.Errorf("probe source: %w", err)
 	}
 	var cropRect *ffmpeg.CropRect
-	if m.cfg.AspectMode == "auto" {
+	if m.bridge.Video.AspectMode == "auto" {
 		// ProbeCrop failures degrade gracefully to letterbox — ignore the error.
 		cropRect, _ = ffmpeg.ProbeCrop(ctx, req.StreamURL, req.InputHeaders, 2*time.Second)
 	}
@@ -115,11 +115,11 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	removeSubtitleFile(oldSubtitle)
 
 	// Resolve the SWITCHRES modeline from config (falls back to NTSC 480i60).
-	modeline, err := resolveModeline(m.cfg.Modeline)
+	modeline, err := resolveModeline(m.bridge.Video.Modeline)
 	if err != nil {
 		return err
 	}
-	rgbMode, err := resolveRGBMode(m.cfg.RGBMode)
+	rgbMode, err := resolveRGBMode(m.bridge.Video.RGBMode)
 	if err != nil {
 		return err
 	}
@@ -139,14 +139,14 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		SourceProbe:     probe,
 		OutputWidth:     int(modeline.HActive),
 		OutputHeight:    fieldH * 2,
-		FieldOrder:      m.cfg.InterlaceFieldOrder,
-		AspectMode:      m.cfg.AspectMode,
+		FieldOrder:      m.bridge.Video.InterlaceFieldOrder,
+		AspectMode:      m.bridge.Video.AspectMode,
 		CropRect:        cropRect,
 		SubtitleURL:     req.SubtitleURL,
 		SubtitlePath:    req.SubtitlePath,
 		SubtitleIndex:   req.SubtitleIndex,
-		AudioSampleRate: m.cfg.AudioSampleRate,
-		AudioChannels:   m.cfg.AudioChannels,
+		AudioSampleRate: m.bridge.Audio.SampleRate,
+		AudioChannels:   m.bridge.Audio.Channels,
 	}
 
 	plane := dataplane.NewPlane(dataplane.PlaneConfig{
@@ -157,9 +157,9 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		FieldHeight:   fieldH,
 		BytesPerPixel: bpp,
 		RGBMode:       rgbMode,
-		LZ4Enabled:    m.cfg.LZ4Enabled,
-		AudioRate:     m.cfg.AudioSampleRate,
-		AudioChans:    m.cfg.AudioChannels,
+		LZ4Enabled:    m.bridge.Video.LZ4Enabled,
+		AudioRate:     m.bridge.Audio.SampleRate,
+		AudioChans:    m.bridge.Audio.Channels,
 		SeekOffsetMs:  offsetMs,
 	})
 	m.plane = plane

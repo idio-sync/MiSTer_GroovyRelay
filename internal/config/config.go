@@ -201,48 +201,9 @@ func validPort(p int, label string) error {
 	return nil
 }
 
-// ToLegacy flattens a Sectioned config into the pre-UI flat Config
-// shape. Exists only as a Phase-1 transitional shim so main.go can
-// keep driving core.Manager + plex.NewAdapter against the legacy
-// struct while the adapter interface is under construction. Phase 2
-// (adapter refactor) removes this method.
-func (s *Sectioned) ToLegacy() *Config {
-	c := defaults()
-	c.DataDir = s.Bridge.DataDir
-	c.HostIP = s.Bridge.HostIP
-	c.Modeline = s.Bridge.Video.Modeline
-	c.InterlaceFieldOrder = s.Bridge.Video.InterlaceFieldOrder
-	c.AspectMode = s.Bridge.Video.AspectMode
-	c.RGBMode = s.Bridge.Video.RGBMode
-	c.LZ4Enabled = s.Bridge.Video.LZ4Enabled
-	c.AudioSampleRate = s.Bridge.Audio.SampleRate
-	c.AudioChannels = s.Bridge.Audio.Channels
-	c.MisterHost = s.Bridge.MiSTer.Host
-	c.MisterPort = s.Bridge.MiSTer.Port
-	c.SourcePort = s.Bridge.MiSTer.SourcePort
-	c.HTTPPort = s.Bridge.UI.HTTPPort
-
-	// Decode the Plex adapter section (if present) so device_name /
-	// profile_name / server_url flow through to the legacy struct.
-	// PrimitiveDecode is a no-op on a zero Primitive, but we gate on
-	// map presence to avoid clobbering defaults when the adapter
-	// section is absent entirely.
-	if raw, ok := s.Adapters["plex"]; ok {
-		var plexRaw struct {
-			DeviceName  string `toml:"device_name"`
-			DeviceUUID  string `toml:"device_uuid"`
-			ProfileName string `toml:"profile_name"`
-			ServerURL   string `toml:"server_url"`
-		}
-		_ = s.meta.PrimitiveDecode(raw, &plexRaw)
-		if plexRaw.DeviceName != "" {
-			c.DeviceName = plexRaw.DeviceName
-		}
-		c.DeviceUUID = plexRaw.DeviceUUID
-		if plexRaw.ProfileName != "" {
-			c.PlexProfileName = plexRaw.ProfileName
-		}
-		c.PlexServerURL = plexRaw.ServerURL
-	}
-	return c
-}
+// NOTE: The legacy flat `Config` type + `defaults()` remain inside
+// this package as the migration source shape (migration.go decodes
+// legacy flat TOML into a *Config before reshaping to Sectioned).
+// Nothing outside internal/config reads them — the registry-based
+// lifecycle hands BridgeConfig to core.Manager and per-adapter
+// toml.Primitive sections to each adapter's DecodeConfig.

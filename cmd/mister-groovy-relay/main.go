@@ -1,9 +1,9 @@
-// Command mister-groovy-relay is the MiSTer GroovyMiSTer Plex adapter bridge.
-// It parses config, sets up the GroovyMiSTer UDP sender, constructs the
-// adapter-agnostic core.Manager, wires the Plex adapter (Companion HTTP +
-// GDM discovery + plex.tv linking + 1 Hz timeline broadcaster), and runs
-// until SIGINT/SIGTERM. The --link flag runs the plex.tv PIN pairing flow
-// and exits; --config points at the TOML config file.
+// Command mister-groovy-relay is the MiSTer GroovyMiSTer adapter bridge.
+// It parses the sectioned config, constructs the GroovyMiSTer UDP sender,
+// builds the adapter-agnostic core.Manager, populates the adapter
+// registry, decodes per-adapter config, and starts every enabled adapter.
+// Shutdown on SIGINT/SIGTERM iterates the registry in the same order.
+// The --link flag runs the plex.tv PIN pairing flow and exits.
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -52,52 +53,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Flatten the sectioned config into the pre-UI flat shape the data
-	// plane and Plex adapter currently read. LoadSectioned has already
-	// validated bridge-level fields; Phase 2 (adapter interface) removes
-	// this shim when the Plex adapter takes a typed plex.Config directly.
-	cfg := sec.ToLegacy()
-
-	// Load or create device UUID + auth token. Token storage lives in the
-	// Plex adapter package because v1 only has one adapter that needs
-	// persistent auth; future adapters get their own stores.
-	store, err := plex.LoadStoredData(cfg.DataDir)
+	// Token storage lives in the Plex adapter package because v1 only
+	// has one adapter that needs persistent auth; future adapters get
+	// their own stores. The DeviceUUID survives restarts so Plex
+	// controllers don't treat the bridge as a new device each boot.
+	store, err := plex.LoadStoredData(sec.Bridge.DataDir)
 	if err != nil || store.DeviceUUID == "" {
 		store = &plex.StoredData{DeviceUUID: newUUID()}
-		if err := plex.SaveStoredData(cfg.DataDir, store); err != nil {
+		if err := plex.SaveStoredData(sec.Bridge.DataDir, store); err != nil {
 			slog.Error("save stored data", "err", err)
 			os.Exit(1)
 		}
 	}
-	cfg.DeviceUUID = store.DeviceUUID
 
 	if *linkFlag {
-		runLinkFlow(cfg, store)
+		runLinkFlow(sec, store)
 		return
 	}
 
-	sender, err := groovynet.NewSender(cfg.MisterHost, cfg.MisterPort, cfg.SourcePort)
+	sender, err := groovynet.NewSender(sec.Bridge.MiSTer.Host, sec.Bridge.MiSTer.Port, sec.Bridge.MiSTer.SourcePort)
 	if err != nil {
 		slog.Error("sender init", "err", err)
 		os.Exit(1)
 	}
 	defer sender.Close()
 
-	// Core: adapter-agnostic session manager. Imports no adapters.
-	coreMgr := core.NewManager(cfg, sender)
+	coreMgr := core.NewManager(sec.Bridge, sender)
 
-	// Plex adapter: wraps Companion HTTP + GDM discovery + plex.tv linking
-	// + timeline broadcaster + HTTP server lifecycle. Takes core.Manager
-	// as its session backend. Future adapters (URL-input, Jellyfin) plug
-	// in the same way — see spec §4.5.
-	hostIP := cfg.HostIP
+	hostIP := sec.Bridge.HostIP
 	if hostIP == "" {
 		hostIP = outboundIP()
 		slog.Warn("host_ip not set; auto-detected via default route — override in config for multi-NIC hosts",
 			"detected", hostIP)
 	}
+
+	// Build the registry. Future adapters (URL-input, Jellyfin) plug in
+	// here with the same shape: construct + Register. DecodeConfig runs
+	// in a second pass so Register order (which determines sidebar
+	// order) is independent of decode ordering.
+	reg := adapters.NewRegistry()
+
 	plexAdapter, err := plex.NewAdapter(plex.AdapterConfig{
-		Cfg:        cfg,
+		Bridge:     sec.Bridge,
 		Core:       coreMgr,
 		TokenStore: store,
 		HostIP:     hostIP,
@@ -107,18 +104,39 @@ func main() {
 		slog.Error("plex adapter init", "err", err)
 		os.Exit(1)
 	}
+	if err := reg.Register(plexAdapter); err != nil {
+		slog.Error("registry register plex", "err", err)
+		os.Exit(1)
+	}
+
+	for _, a := range reg.List() {
+		raw := sec.Adapters[a.Name()]
+		if err := a.DecodeConfig(raw, sec.MetaData()); err != nil {
+			slog.Error("adapter DecodeConfig", "name", a.Name(), "err", err)
+			os.Exit(1)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := plexAdapter.Start(ctx); err != nil {
-		slog.Error("plex adapter start", "err", err)
-		os.Exit(1)
+	for _, a := range reg.List() {
+		if !a.IsEnabled() {
+			slog.Info("adapter disabled", "name", a.Name())
+			continue
+		}
+		if err := a.Start(ctx); err != nil {
+			slog.Error("adapter start", "name", a.Name(), "err", err)
+		}
 	}
 
 	<-ctx.Done()
 	slog.Info("shutting down")
-	plexAdapter.Stop()
+	for _, a := range reg.List() {
+		if err := a.Stop(); err != nil {
+			slog.Warn("adapter stop", "name", a.Name(), "err", err)
+		}
+	}
 }
 
 // newUUID returns a crypto/rand-based UUID v4 string. Panics on rand
@@ -150,26 +168,37 @@ func outboundIP() string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// runLinkFlow drives the plex.tv PIN pairing dance: request a PIN, print
-// it to stdout for the operator to enter at plex.tv/link, poll until the
-// user completes the claim, then persist the returned auth token. Writes
-// the code to stdout (not stderr) so the operator can pipe it to a QR
-// generator or `tee` file. Exits non-zero on any failure; the caller can
-// re-run `--link` to retry.
-func runLinkFlow(cfg *config.Config, store *plex.StoredData) {
-	pin, err := plex.RequestPIN(cfg.DeviceUUID, cfg.DeviceName)
+// runLinkFlow drives the plex.tv PIN pairing dance: request a PIN,
+// print it to stdout for the operator to enter at plex.tv/link, poll
+// until the user completes the claim, then persist the returned auth
+// token. The device name surfaced to plex.tv comes from the
+// [adapters.plex] section (falls back to "MiSTer" if unset). Writes
+// the code to stdout so it can be piped to `tee` or a QR generator.
+// Exits non-zero on any failure; the caller can re-run `--link` to
+// retry.
+func runLinkFlow(sec *config.Sectioned, store *plex.StoredData) {
+	var plexCfg plex.Config
+	if raw, ok := sec.Adapters["plex"]; ok {
+		meta := sec.MetaData()
+		_ = meta.PrimitiveDecode(raw, &plexCfg)
+	}
+	if plexCfg.DeviceName == "" {
+		plexCfg.DeviceName = "MiSTer"
+	}
+
+	pin, err := plex.RequestPIN(store.DeviceUUID, plexCfg.DeviceName)
 	if err != nil {
 		slog.Error("pin request", "err", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Open https://plex.tv/link and enter this code: %s\n", pin.Code)
-	token, err := plex.PollPIN(pin.ID, cfg.DeviceUUID, 5*time.Minute)
+	token, err := plex.PollPIN(pin.ID, store.DeviceUUID, 5*time.Minute)
 	if err != nil {
 		slog.Error("pin poll", "err", err)
 		os.Exit(1)
 	}
 	store.AuthToken = token
-	if err := plex.SaveStoredData(cfg.DataDir, store); err != nil {
+	if err := plex.SaveStoredData(sec.Bridge.DataDir, store); err != nil {
 		slog.Error("save token", "err", err)
 		os.Exit(1)
 	}
