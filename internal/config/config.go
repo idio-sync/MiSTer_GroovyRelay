@@ -107,7 +107,7 @@ func (c *Config) Validate() error {
 	// v1 scope: only rgb888 is wired through the FFmpeg pipeline. The Groovy
 	// protocol supports rgba8888 and rgb565 and the constants exist in
 	// internal/groovy and internal/core for future use, but the FFmpeg
-	// command in internal/ffmpeg/pipeline.go hardcodes -pix_fmt rgb24.
+	// command in internal/ffmpeg/pipeline.go hardcodes -pix_fmt bgr24.
 	// Selecting a non-rgb888 mode before those wires are complete produces
 	// a torn raster. Revisit when v2+ extends the pipeline.
 	if c.RGBMode != "rgb888" {

@@ -118,7 +118,7 @@ func (p *Process) logWaitResult(err error) {
 }
 
 // VideoPipe returns the read-end of the video stream. Yields one
-// OutputWidth × (OutputHeight/2) RGB24 field per read (59.94 Hz) once the
+// OutputWidth × (OutputHeight/2) BGR24 field per read (59.94 Hz) once the
 // filter chain produces output.
 func (p *Process) VideoPipe() io.Reader { return p.videoPipe }
 

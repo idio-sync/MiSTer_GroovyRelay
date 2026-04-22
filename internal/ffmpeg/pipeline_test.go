@@ -200,7 +200,7 @@ func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	joined := strings.Join(cmd.Args, " ")
 	for _, want := range []string{
 		"-map 0:v:0",
-		"-pix_fmt rgb24",
+		"-pix_fmt bgr24",
 		"-f rawvideo",
 		"pipe:3",
 		"-map 0:a:0",

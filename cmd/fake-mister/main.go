@@ -36,7 +36,8 @@ func main() {
 	defer cancel()
 
 	// Session state carried across events. INIT fixes RGB mode + audio config;
-	// SWITCHRES fixes the per-field dimensions.
+	// SWITCHRES fixes the full-frame modeline, from which one-field payload
+	// dimensions are derived.
 	var (
 		initPayload *fakemister.InitPayload
 		modeline    *fakemister.SwitchresPayload
@@ -98,7 +99,7 @@ func main() {
 }
 
 // fieldSize returns the expected reassembled bytes for one BLIT field payload,
-// derived from INIT rgbMode and SWITCHRES hActive × per-field vActive.
+// derived from INIT rgbMode and SWITCHRES hActive × one-field vActive.
 func fieldSize(ml *fakemister.SwitchresPayload, init *fakemister.InitPayload) uint32 {
 	if ml == nil {
 		return 0
@@ -112,14 +113,14 @@ func fieldSize(ml *fakemister.SwitchresPayload, init *fakemister.InitPayload) ui
 			bpp = 2
 		}
 	}
-	return uint32(int(ml.HActive) * int(ml.VActive) * bpp)
+	return uint32(groovy.FieldPayloadBytes(ml.HActive, ml.VActive, ml.Interlace, bpp))
 }
 
 func fieldDims(ml *fakemister.SwitchresPayload) (w, h int, ok bool) {
 	if ml == nil {
 		return 0, 0, false
 	}
-	return int(ml.HActive), int(ml.VActive), true
+	return int(ml.HActive), groovy.FieldLines(ml.VActive, ml.Interlace), true
 }
 
 func sampleRateFromCode(code byte) int {

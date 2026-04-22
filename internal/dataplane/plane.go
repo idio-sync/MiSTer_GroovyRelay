@@ -140,7 +140,11 @@ func (p *Plane) Run(ctx context.Context) error {
 		audioCh = make(chan []byte, 16)
 		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
 	}
-	go RunFieldTimer(ctx, 59.94, ticks)
+	fieldRate := p.cfg.Modeline.FieldRate()
+	if fieldRate <= 0 {
+		fieldRate = 59.94
+	}
+	go RunFieldTimer(ctx, fieldRate, ticks)
 
 	// 5. Position bookkeeping — one tick = one NTSC field (1001/60 ms, exact).
 	p.resetPosition()

@@ -79,7 +79,7 @@ func TestScenario_PixelVariance(t *testing.T) {
 				bpp = 2
 			}
 		}
-		return uint32(int(ml.HActive) * int(ml.VActive) * bpp)
+		return uint32(groovy.FieldPayloadBytes(ml.HActive, ml.VActive, ml.Interlace, bpp))
 	}
 
 	pumpDone := make(chan struct{})

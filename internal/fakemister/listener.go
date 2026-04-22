@@ -222,7 +222,8 @@ type InitPayload struct {
 }
 
 // SwitchresPayload carries the modeline the receiver uses to program video.
-// Per-field VActive for interlaced modes.
+// Groovy SWITCHRES keeps full-frame VActive/VTotal on the wire even for
+// interlaced modes; field payload size derives from Interlace separately.
 type SwitchresPayload struct {
 	PClock    float64
 	HActive   uint16

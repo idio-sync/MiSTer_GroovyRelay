@@ -141,8 +141,9 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		return err
 	}
 
-	// Per-field vActive for interlaced modes; full height otherwise.
-	fieldH := int(modeline.VActive)
+	// Groovy SWITCHRES carries full-frame vActive even for interlaced modes;
+	// the sender transmits one field at a time, so fieldH is half-height there.
+	fieldH := modeline.FieldHeight()
 	bpp := bytesPerPixel(rgbMode)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -155,7 +156,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		UseSSSeek:       req.DirectPlay,
 		SourceProbe:     probe,
 		OutputWidth:     int(modeline.HActive),
-		OutputHeight:    fieldH * 2,
+		OutputHeight:    int(modeline.VActive),
 		FieldOrder:      m.cfg.InterlaceFieldOrder,
 		AspectMode:      m.cfg.AspectMode,
 		CropRect:        cropRect,

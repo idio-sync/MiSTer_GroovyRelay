@@ -42,8 +42,8 @@ func TestBuildInit_PanicsOnInvalidSoundRate(t *testing.T) {
 }
 
 func TestBuildSwitchres_NTSC480i60_Canonical(t *testing.T) {
-	// Canonical NTSC 480i60 per mistercast.md:138:
-	// pClock=13.5, hTotal=858, vTotal=525, interlace=1.
+	// Canonical 720x480i NTSC per MiSTerCast/Mistglow modelines.dat:
+	// pClock=13.846, hTotal=880, vActive=480, vTotal=525, interlace=1.
 	got := BuildSwitchres(NTSC480i60)
 
 	if got[0] != CmdSwitchres {
@@ -53,17 +53,29 @@ func TestBuildSwitchres_NTSC480i60_Canonical(t *testing.T) {
 		t.Fatalf("SWITCHRES must be 26 bytes, got %d", len(got))
 	}
 	gotPClock := math.Float64frombits(binary.LittleEndian.Uint64(got[1:9]))
-	if gotPClock != 13.5 {
-		t.Errorf("pClock = %f, want 13.5", gotPClock)
+	if gotPClock != 13.846 {
+		t.Errorf("pClock = %f, want 13.846", gotPClock)
 	}
 	if v := binary.LittleEndian.Uint16(got[9:11]); v != 720 {
 		t.Errorf("hActive = %d, want 720", v)
 	}
-	if v := binary.LittleEndian.Uint16(got[15:17]); v != 858 {
-		t.Errorf("hTotal = %d, want 858", v)
+	if v := binary.LittleEndian.Uint16(got[11:13]); v != 744 {
+		t.Errorf("hBegin = %d, want 744", v)
 	}
-	if v := binary.LittleEndian.Uint16(got[17:19]); v != 240 {
-		t.Errorf("vActive (per field) = %d, want 240", v)
+	if v := binary.LittleEndian.Uint16(got[13:15]); v != 809 {
+		t.Errorf("hEnd = %d, want 809", v)
+	}
+	if v := binary.LittleEndian.Uint16(got[15:17]); v != 880 {
+		t.Errorf("hTotal = %d, want 880", v)
+	}
+	if v := binary.LittleEndian.Uint16(got[17:19]); v != 480 {
+		t.Errorf("vActive = %d, want 480", v)
+	}
+	if v := binary.LittleEndian.Uint16(got[19:21]); v != 488 {
+		t.Errorf("vBegin = %d, want 488", v)
+	}
+	if v := binary.LittleEndian.Uint16(got[21:23]); v != 494 {
+		t.Errorf("vEnd = %d, want 494", v)
 	}
 	if v := binary.LittleEndian.Uint16(got[23:25]); v != 525 {
 		t.Errorf("vTotal = %d, want 525", v)
@@ -79,6 +91,22 @@ func TestBuildSwitchres_Progressive(t *testing.T) {
 	got := BuildSwitchres(ml)
 	if got[25] != 0 {
 		t.Error("interlace flag should be 0 for progressive modeline")
+	}
+}
+
+func TestModelineFieldHeight(t *testing.T) {
+	if got := NTSC480i60.FieldHeight(); got != 240 {
+		t.Errorf("interlaced field height = %d, want 240", got)
+	}
+	if got := (Modeline{VActive: 240, Interlace: 0}).FieldHeight(); got != 240 {
+		t.Errorf("progressive field height = %d, want 240", got)
+	}
+}
+
+func TestFieldPayloadBytes(t *testing.T) {
+	got := FieldPayloadBytes(NTSC480i60.HActive, NTSC480i60.VActive, NTSC480i60.Interlace, 3)
+	if got != 720*240*3 {
+		t.Errorf("field payload bytes = %d, want %d", got, 720*240*3)
 	}
 }
 

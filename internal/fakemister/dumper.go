@@ -29,10 +29,10 @@ func NewDumper(dir string, sampleEvery int) *Dumper {
 	return &Dumper{dir: dir, sampleEvery: sampleEvery}
 }
 
-// MaybeDumpField writes a PNG of the given RGB888 payload to the dump dir if
+// MaybeDumpField writes a PNG of the given BGR24 payload to the dump dir if
 // frame is a multiple of sampleEvery. The file is named field_NNNNNNNN.png.
-// rgb888 must be width*height*3 bytes, R,G,B, row-major, no padding.
-func (d *Dumper) MaybeDumpField(frame uint32, width, height int, rgb888 []byte) error {
+// bgr24 must be width*height*3 bytes, B,G,R, row-major, no padding.
+func (d *Dumper) MaybeDumpField(frame uint32, width, height int, bgr24 []byte) error {
 	if d.sampleEvery <= 0 || int(frame)%d.sampleEvery != 0 {
 		return nil
 	}
@@ -40,7 +40,7 @@ func (d *Dumper) MaybeDumpField(frame uint32, width, height int, rgb888 []byte) 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			i := (y*width + x) * 3
-			img.Set(x, y, color.RGBA{R: rgb888[i], G: rgb888[i+1], B: rgb888[i+2], A: 255})
+			img.Set(x, y, color.RGBA{R: bgr24[i+2], G: bgr24[i+1], B: bgr24[i], A: 255})
 		}
 	}
 	path := filepath.Join(d.dir, fmt.Sprintf("field_%08d.png", frame))

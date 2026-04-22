@@ -58,7 +58,7 @@ func audioOutputEnabled(s PipelineSpec) bool {
 // buildFilterChain assembles the comma-delimited ffmpeg `-vf` expression.
 //
 // Contract: the chain ALWAYS terminates in `separatefields`, so the caller's
-// rawvideo output yields one 720×240 RGB24 field per read at 59.94 Hz. The
+// rawvideo output yields one 720×240 BGR24 field per read at 59.94 Hz. The
 // data plane reads hActive*vActive*3 bytes per tick and sends one
 // BLIT_FIELD_VSYNC alternating field=0/field=1.
 //
@@ -188,11 +188,13 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	}
 	args = append(args, "-i", s.InputURL)
 
-	// Video output: raw rgb24 fields to the video pipe.
+	// Video output: raw bgr24 fields to the video pipe. This matches the
+	// working MiSTerCast/Mistglow senders' de facto wire byte order for
+	// Groovy mode 0 ("rgb888"), despite the historical name.
 	args = append(args,
 		"-map", "0:v:0",
 		"-vf", buildFilterChain(s),
-		"-pix_fmt", "rgb24",
+		"-pix_fmt", "bgr24",
 		"-f", "rawvideo",
 		s.VideoPipePath,
 	)

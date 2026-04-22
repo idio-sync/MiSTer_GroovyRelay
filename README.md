@@ -1,21 +1,21 @@
 # MiSTer_GroovyRelay
 
-A Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
+A WIP Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
 Server; it advertises itself as a Plex cast target on the LAN, and when
 you pick it from the Plex client's "Cast" menu it transcodes the
 selected title through FFmpeg and streams raw RGB fields + PCM audio
 over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol
 into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly,
-giving you genuine 480i NTSC video for Plex content.
+giving you genuine 480i NTSC video for Plex content. Other sources are planned but Plex is the only current target until I work out the full video pipeline.
 
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board (or equivalent) wired to a
   15 kHz-capable CRT (consumer, PVM, arcade, etc.)
-  - GroovyMiSTer installed on your MiSTer
+- Groovy_MiSTer installed on your MiSTer
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a
-  Raspberry Pi 4/5 — anything with a few spare CPU cycles and
-  gigabit-class networking)
+  Raspberry Pi 4/5), anything with a few spare CPU cycles and
+  gigabit-class networking.
 - A Plex Media Server reachable from that host
 
 The bridge itself is stateless and light, just a few hundred MB of RAM and
@@ -83,10 +83,10 @@ rather read it without starting the container.
 
 1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
    or `go build ./cmd/mister-groovy-relay` if you want a native binary.
-2. **Configure.** Start the bridge once with no config present — it writes
+2. **Configure.** Start the bridge once with no config present. It writes
    a default `config.toml` into `data_dir` (default `/config`) and exits
    with code 2. Edit that file; the only mandatory change is
-   `mister_host` — point it at your MiSTer's IP.
+   `mister_host` which needs to be pointed at your MiSTer's IP.
 3. **Link.** Run with `--link`. The bridge prints a 4-character code
    and the plex.tv link URL; paste the code at `https://plex.tv/link`
    while signed in to the Plex account that owns your PMS. The returned
@@ -153,8 +153,7 @@ or a Groovy core config issue, not the bridge.
 **"Audio drifts over long playback."**
 This bridge uses a single FFmpeg process with shared A/V timestamps, so
 long-term drift is structurally mitigated. Short-term offsets usually
-indicate host CPU contention — check for parity checks, scrubs, or
-co-tenant transcodes competing with the ffmpeg worker.
+indicate host CPU contention.
 
 **"The picture shimmers / fields look wrong."**
 Flip `interlace_field_order` between `tff` and `bff`. The "correct"
@@ -162,7 +161,7 @@ value depends on your MiSTer core + cable path; once you pick the right
 one it stays right.
 
 **"Plex says the target is offline moments after casting."**
-Almost always a `source_port` regression — if the bridge restarted and
+Almost always a `source_port` regression. If the bridge restarted and
 bound a different ephemeral port, the MiSTer's session key no longer
 matches. Make sure `source_port` is set to a fixed number in
 `config.toml` and that nothing else on the host is using it.
