@@ -285,6 +285,15 @@ func (m *Manager) SetInterlaceFieldOrder(order string) error {
 	return nil
 }
 
+// CurrentInterlaceOrder returns the in-memory interlace field order.
+// Integration tests use this to assert that a UI save reached the
+// manager; production runtime reads it directly via bridge fields.
+func (m *Manager) CurrentInterlaceOrder() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bridge.Video.InterlaceFieldOrder
+}
+
 // UpdateBridge replaces the manager's in-memory bridge config. Used
 // by the UI save path for restart-cast fields: the updated bridge
 // must be visible to the next session-rebuild path, so we stash it
