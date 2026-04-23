@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -19,9 +20,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -128,7 +131,15 @@ func main() {
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
 
-	uiSrv, err := ui.New(ui.Config{Registry: reg})
+	// runtimeBridgeSaver persists Bridge changes to the on-disk
+	// config.toml via WriteAtomic and updates the in-memory sec.Bridge.
+	// Phase 7 will extend Save() to dispatch hot-swap / restart-cast
+	// deltas to running adapters; for Phase 4 it only persists and
+	// returns ScopeRestartBridge so the UI tells the operator to
+	// restart.
+	saver := &runtimeBridgeSaver{path: *cfgPath, sec: sec}
+
+	uiSrv, err := ui.New(ui.Config{Registry: reg, BridgeSaver: saver})
 	if err != nil {
 		slog.Error("ui init", "err", err)
 		os.Exit(1)
@@ -203,6 +214,59 @@ func outboundIP() string {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+// runtimeBridgeSaver implements ui.BridgeSaver against the running
+// Sectioned config + the on-disk config.toml. Current() returns the
+// live in-memory bridge for prefill; Save() overwrites sec.Bridge,
+// re-marshals the whole Sectioned, and atomically replaces the file.
+//
+// Phase 4 returns ScopeRestartBridge unconditionally — every field
+// edit shows the "restart the container" toast. Phase 7 will diff
+// old vs new, call DropActiveCast for restart-cast fields, and
+// probe binds for restart-bridge fields to produce the right scope
+// per-save.
+type runtimeBridgeSaver struct {
+	path string
+	sec  *config.Sectioned
+	mu   sync.Mutex
+}
+
+func (r *runtimeBridgeSaver) Current() config.BridgeConfig {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sec.Bridge
+}
+
+func (r *runtimeBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.sec.Bridge = newCfg
+	buf, err := marshalSectioned(r.sec)
+	if err != nil {
+		return 0, fmt.Errorf("marshal: %w", err)
+	}
+	if err := config.WriteAtomic(r.path, buf); err != nil {
+		return 0, fmt.Errorf("write: %w", err)
+	}
+	return adapters.ScopeRestartBridge, nil
+}
+
+// marshalSectioned serializes Sectioned back to TOML bytes. BurntSushi
+// TOML's encoder skips toml.Primitive values (they go in as opaque
+// blobs and come out as empty), so Phase 4 loses per-adapter sections
+// on save. That's a known limitation acknowledged by the plan —
+// Phase 7 will add a round-trip-safe marshaller. For v1 with only one
+// adapter whose fields we don't yet edit through the Bridge save path,
+// this is acceptable; the embedded [adapters.plex] section is
+// re-seeded from defaults on next startup if it went missing.
+func marshalSectioned(sec *config.Sectioned) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(sec); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // runLinkFlow drives the plex.tv PIN pairing dance: request a PIN,
