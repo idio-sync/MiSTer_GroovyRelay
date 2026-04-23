@@ -88,7 +88,9 @@ func (s *Server) Mount(mux *http.ServeMux) {
 
 	// Adapter panel.
 	mux.HandleFunc("GET /ui/adapter/{name}", s.handleAdapterGET)
-	// POST /ui/adapter/{name}/save and /toggle land in Task 5.3.
+	mux.HandleFunc("GET /ui/adapter/{name}/status", s.handleAdapterStatus)
+	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
+	// POST /ui/adapter/{name}/save lands in Task 5.4.
 }
 
 // handleSidebarStatus renders the <aside> fragment swapped in every

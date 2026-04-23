@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -153,6 +154,89 @@ func adapterRowFor(fd adapters.FieldDef, vals map[string]any, errs FormErrors) b
 		r.Placeholder = "Leave empty to keep existing"
 	}
 	return r
+}
+
+// EnableSetter is the adapter-side mutator for the enabled flag.
+// The toggle handler type-asserts for this and calls it in sync with
+// Start/Stop so the in-memory enabled bit tracks the runtime state.
+// Task 5.4 will extend the toggle path to also persist the new value
+// to disk via AdapterSaver so the toggle survives process restart.
+type EnableSetter interface {
+	SetEnabled(bool)
+}
+
+// handleAdapterToggle flips the enabled flag + starts or stops the
+// adapter as needed. Re-renders the panel with a success/error toast.
+//
+// Uses context.Background() for the Start call rather than
+// r.Context() — the Start goroutines must outlive the HTTP request
+// that triggered the toggle. The registration loop and other
+// background workers belong to the adapter's own lifetime, not the
+// handler's.
+//
+// Caveat: Phase 5.3 only mutates in-memory state; a process restart
+// reverts the toggle to whatever the config file says. Phase 5.4
+// (AdapterSaver) closes this persistence gap.
+func (s *Server) handleAdapterToggle(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	a, ok := s.cfg.Registry.Get(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	want := parseBoolField(r.Form, "enabled")
+
+	setter, canSet := a.(EnableSetter)
+	if !canSet {
+		http.Error(w, "adapter does not implement EnableSetter", http.StatusInternalServerError)
+		return
+	}
+	setter.SetEnabled(want)
+
+	var toast *toastData
+	if want && a.Status().State != adapters.StateRunning {
+		if err := a.Start(context.Background()); err != nil {
+			toast = &toastData{Class: "err", Message: fmt.Sprintf("Start failed: %v", err)}
+		} else {
+			toast = &toastData{Message: "Adapter enabled."}
+		}
+	} else if !want && a.Status().State == adapters.StateRunning {
+		if err := a.Stop(); err != nil {
+			toast = &toastData{Class: "err", Message: fmt.Sprintf("Stop failed: %v", err)}
+		} else {
+			toast = &toastData{Message: "Adapter disabled."}
+		}
+	}
+
+	data := s.buildAdapterPanelData(a, toast, nil)
+	s.renderPanel(w, "adapter-panel", data)
+}
+
+// handleAdapterStatus returns just the status-line fragment used by
+// the panel header's own hx-poll when the adapter's panel is open.
+// The sidebar polls /ui/sidebar/status instead.
+func (s *Server) handleAdapterStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	a, ok := s.cfg.Registry.Get(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	st := a.Status()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	detail := ""
+	switch st.State {
+	case adapters.StateRunning:
+		detail = " · since " + st.Since.Format("15:04:05")
+	case adapters.StateError:
+		detail = " · " + st.LastError
+	}
+	fmt.Fprintf(w, `<div class="status-line %s">%s%s</div>`,
+		dotClass(st.State), st.State.String(), detail)
 }
 
 // adapterSubtitle returns a short descriptor shown under the heading.

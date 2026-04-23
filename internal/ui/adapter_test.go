@@ -85,3 +85,88 @@ func TestHandleAdapter_GET_UnknownAdapter(t *testing.T) {
 		t.Errorf("status = %d, want 404", rw.Code)
 	}
 }
+
+// SetEnabled satisfies EnableSetter so the toggle handler can mutate
+// the stub's in-memory enabled flag.
+func (a *richStub) SetEnabled(v bool) { a.enabled = v }
+
+// toggleStub adds Start/Stop call counting on top of richStub so the
+// toggle handler's side-effect dispatch is observable.
+type toggleStub struct {
+	richStub
+	startCalls int
+	stopCalls  int
+}
+
+func (t *toggleStub) Start(ctx context.Context) error { t.startCalls++; return nil }
+func (t *toggleStub) Stop() error                     { t.stopCalls++; return nil }
+
+func TestHandleAdapter_Toggle_StartsWhenEnabling(t *testing.T) {
+	stub := &toggleStub{richStub: richStub{name: "stub", enabled: false, state: adapters.StateStopped}}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	s, _ := New(Config{Registry: reg})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/adapter/stub/toggle", strings.NewReader("enabled=true"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if stub.startCalls != 1 {
+		t.Errorf("want 1 Start call, got %d", stub.startCalls)
+	}
+	if !stub.IsEnabled() {
+		t.Error("stub IsEnabled should be true after toggle-on")
+	}
+}
+
+func TestHandleAdapter_Toggle_StopsWhenDisabling(t *testing.T) {
+	stub := &toggleStub{richStub: richStub{name: "stub", enabled: true, state: adapters.StateRunning}}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	s, _ := New(Config{Registry: reg})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/adapter/stub/toggle", strings.NewReader("enabled=false"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	if stub.stopCalls != 1 {
+		t.Errorf("want 1 Stop call, got %d", stub.stopCalls)
+	}
+	if stub.IsEnabled() {
+		t.Error("stub IsEnabled should be false after toggle-off")
+	}
+}
+
+func TestHandleAdapter_StatusFragment(t *testing.T) {
+	stub := &richStub{name: "stub", state: adapters.StateRunning}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	s, _ := New(Config{Registry: reg})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("GET", "/ui/adapter/stub/status", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "RUN") {
+		t.Errorf("fragment missing RUN: %s", body)
+	}
+}
