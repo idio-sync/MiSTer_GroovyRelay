@@ -9,7 +9,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -20,13 +19,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -34,6 +29,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
 // version is spliced into the Plex Companion /resources response and
@@ -133,25 +129,12 @@ func main() {
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
 
-	// runtimeBridgeSaver persists Bridge changes to the on-disk
-	// config.toml, updates the in-memory sec.Bridge + core.Manager's
-	// bridge copy, and dispatches per-field scope (hot-swap for
-	// interlace_field_order, restart-cast for video/audio pipeline
-	// fields, restart-bridge for port/path fields with pre-flight
-	// probes).
-	saver := &runtimeBridgeSaver{
-		path:     *cfgPath,
-		sec:      sec,
-		core:     coreMgr,
-		registry: reg,
-	}
-
-	// runtimeAdapterSaver rewrites the [adapters.<name>] section of
-	// the on-disk config.toml via a line-level splice (not a full
-	// re-encode). Shares the bridge mutex so bridge + adapter saves
-	// serialize against each other — both paths read then write the
-	// same file.
-	adapterSaver := &runtimeAdapterSaver{path: *cfgPath, mu: &saver.mu}
+	// Bridge + adapter savers live in internal/uiserver so integration
+	// tests exercise the same code path the operator hits (review fix
+	// C3). Both share one mutex so bridge + adapter saves serialize
+	// against each other — both paths read-modify-write the same file.
+	saver := uiserver.NewBridgeSaver(*cfgPath, sec, coreMgr, reg)
+	adapterSaver := uiserver.NewAdapterSaver(*cfgPath, saver.Mu())
 
 	uiSrv, err := ui.New(ui.Config{Registry: reg, BridgeSaver: saver, AdapterSaver: adapterSaver})
 	if err != nil {
@@ -228,310 +211,6 @@ func outboundIP() string {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
-}
-
-// runtimeBridgeSaver implements ui.BridgeSaver with real per-field
-// scope dispatch (design §9). Current() returns the live in-memory
-// bridge for prefill; Save() diffs old vs new, runs pre-flight
-// probes for bindable restart-bridge fields, persists to disk via
-// a bridge-only rewrite (preserves adapter sections), and dispatches
-// the runtime side effects: hot-swap interlace, drop cast for
-// restart-cast, no-op for restart-bridge (user restarts the
-// container; toast surfaces the command).
-type runtimeBridgeSaver struct {
-	path     string
-	sec      *config.Sectioned
-	core     *core.Manager
-	registry *adapters.Registry
-	mu       sync.Mutex
-}
-
-func (r *runtimeBridgeSaver) Current() config.BridgeConfig {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.sec.Bridge
-}
-
-// firstRunMarker is the dot-prefixed sentinel file placed in data_dir
-// once the operator dismisses the first-run banner. Missing = banner
-// still shows; present = banner hidden. Filesystem-based so dismissal
-// survives process restart without mutating config.toml.
-const firstRunMarker = ".first-run-complete"
-
-// IsFirstRun implements ui.FirstRunAware. True until DismissFirstRun
-// runs for the first time.
-func (r *runtimeBridgeSaver) IsFirstRun() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	_, err := os.Stat(filepath.Join(r.sec.Bridge.DataDir, firstRunMarker))
-	return os.IsNotExist(err)
-}
-
-// DismissFirstRun implements ui.FirstRunAware. Writes the sentinel
-// file so subsequent page loads skip the quick-start banner.
-func (r *runtimeBridgeSaver) DismissFirstRun() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	path := filepath.Join(r.sec.Bridge.DataDir, firstRunMarker)
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
-func (r *runtimeBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	old := r.sec.Bridge
-	changed := diffBridgeConfig(old, newCfg)
-
-	scope := adapters.ScopeHotSwap
-	for _, k := range changed {
-		scope = adapters.MaxScope(scope, scopeForBridgeField(k))
-	}
-
-	// Pre-flight probes for bindable restart-bridge fields. Fails
-	// the whole save — the file is untouched, matches the "validate
-	// before write" contract from the bridge panel.
-	if scope == adapters.ScopeRestartBridge {
-		if containsStr(changed, "ui.http_port") && newCfg.UI.HTTPPort != old.UI.HTTPPort {
-			if err := config.ProbeTCPPort(newCfg.UI.HTTPPort); err != nil {
-				return 0, fmt.Errorf("ui.http_port pre-flight failed: %w", err)
-			}
-		}
-		if containsStr(changed, "mister.source_port") && newCfg.MiSTer.SourcePort != old.MiSTer.SourcePort {
-			if err := config.ProbeUDPPort(newCfg.MiSTer.SourcePort); err != nil {
-				return 0, fmt.Errorf("mister.source_port pre-flight failed: %w", err)
-			}
-		}
-		if containsStr(changed, "data_dir") && newCfg.DataDir != old.DataDir {
-			if err := config.ProbeDirWritable(newCfg.DataDir); err != nil {
-				return 0, fmt.Errorf("data_dir pre-flight failed: %w", err)
-			}
-		}
-	}
-
-	// Persist to disk (write-before-apply).
-	r.sec.Bridge = newCfg
-	r.core.UpdateBridge(newCfg)
-	buf, err := marshalBridgeSection(r.sec, r.path)
-	if err != nil {
-		return 0, fmt.Errorf("marshal: %w", err)
-	}
-	if err := config.WriteAtomic(r.path, buf); err != nil {
-		return 0, fmt.Errorf("write: %w", err)
-	}
-
-	// Apply per scope.
-	switch scope {
-	case adapters.ScopeHotSwap:
-		if containsStr(changed, "video.interlace_field_order") {
-			if err := r.core.SetInterlaceFieldOrder(newCfg.Video.InterlaceFieldOrder); err != nil {
-				return 0, fmt.Errorf("interlace hot-swap: %w", err)
-			}
-		}
-
-	case adapters.ScopeRestartCast:
-		// UpdateBridge already ran above so the next session picks
-		// up the new aspect_mode / audio settings. Now drop the
-		// active cast so the pipeline rebuilds.
-		if err := r.core.DropActiveCast("bridge config change"); err != nil {
-			return scope, fmt.Errorf("drop-cast: %w", err)
-		}
-
-	case adapters.ScopeRestartBridge:
-		// Nothing to do at runtime; file is persisted, UI flashes
-		// restart-required toast with the docker command.
-	}
-
-	return scope, nil
-}
-
-func containsStr(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// marshalBridgeSection rewrites only the [bridge*] tables of the
-// TOML file, preserving [adapters.*] sections intact. Avoids
-// round-tripping toml.Primitive values through the encoder. Side
-// effect: the new [bridge] block always lands at EOF regardless of
-// where it was originally — TOML is order-insensitive so the bridge
-// still reads it correctly, but users inspecting the file will see
-// the re-ordering after first save. v2: splice at original position.
-func marshalBridgeSection(sec *config.Sectioned, path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	without := stripBridgeSections(data)
-
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(struct {
-		Bridge config.BridgeConfig `toml:"bridge"`
-	}{sec.Bridge}); err != nil {
-		return nil, err
-	}
-	return append(append(without, []byte("\n")...), buf.Bytes()...), nil
-}
-
-// stripBridgeSections removes every line from the first "[bridge"
-// header through the next non-bridge header (or EOF).
-func stripBridgeSections(doc []byte) []byte {
-	lines := strings.Split(string(doc), "\n")
-	out := make([]string, 0, len(lines))
-	skipping := false
-	for _, ln := range lines {
-		tr := strings.TrimSpace(ln)
-		if strings.HasPrefix(tr, "[bridge") {
-			skipping = true
-			continue
-		}
-		if skipping && strings.HasPrefix(tr, "[") && strings.HasSuffix(tr, "]") {
-			skipping = false
-		}
-		if !skipping {
-			out = append(out, ln)
-		}
-	}
-	return []byte(strings.Join(out, "\n"))
-}
-
-func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
-	var keys []string
-	if oldCfg.DataDir != newCfg.DataDir {
-		keys = append(keys, "data_dir")
-	}
-	if oldCfg.HostIP != newCfg.HostIP {
-		keys = append(keys, "host_ip")
-	}
-	if oldCfg.Video.Modeline != newCfg.Video.Modeline {
-		keys = append(keys, "video.modeline")
-	}
-	if oldCfg.Video.InterlaceFieldOrder != newCfg.Video.InterlaceFieldOrder {
-		keys = append(keys, "video.interlace_field_order")
-	}
-	if oldCfg.Video.AspectMode != newCfg.Video.AspectMode {
-		keys = append(keys, "video.aspect_mode")
-	}
-	if oldCfg.Video.RGBMode != newCfg.Video.RGBMode {
-		keys = append(keys, "video.rgb_mode")
-	}
-	if oldCfg.Video.LZ4Enabled != newCfg.Video.LZ4Enabled {
-		keys = append(keys, "video.lz4_enabled")
-	}
-	if oldCfg.Audio.SampleRate != newCfg.Audio.SampleRate {
-		keys = append(keys, "audio.sample_rate")
-	}
-	if oldCfg.Audio.Channels != newCfg.Audio.Channels {
-		keys = append(keys, "audio.channels")
-	}
-	if oldCfg.MiSTer.Host != newCfg.MiSTer.Host {
-		keys = append(keys, "mister.host")
-	}
-	if oldCfg.MiSTer.Port != newCfg.MiSTer.Port {
-		keys = append(keys, "mister.port")
-	}
-	if oldCfg.MiSTer.SourcePort != newCfg.MiSTer.SourcePort {
-		keys = append(keys, "mister.source_port")
-	}
-	if oldCfg.UI.HTTPPort != newCfg.UI.HTTPPort {
-		keys = append(keys, "ui.http_port")
-	}
-	return keys
-}
-
-func scopeForBridgeField(key string) adapters.ApplyScope {
-	switch key {
-	case "video.interlace_field_order":
-		return adapters.ScopeHotSwap
-	case "video.modeline",
-		"video.aspect_mode",
-		"video.rgb_mode",
-		"video.lz4_enabled",
-		"audio.sample_rate",
-		"audio.channels":
-		return adapters.ScopeRestartCast
-	default:
-		// mister.*, host_ip, data_dir, ui.http_port — all restart-bridge.
-		return adapters.ScopeRestartBridge
-	}
-}
-
-// runtimeAdapterSaver replaces the [adapters.<name>] section of the
-// on-disk config.toml with a new TOML snippet. Uses a line-level
-// rewrite (replaceAdapterSection) rather than re-encoding the whole
-// Sectioned — BurntSushi's encoder doesn't round-trip toml.Primitive
-// values faithfully, so a full re-encode would lose adapter sections
-// the UI doesn't currently touch.
-type runtimeAdapterSaver struct {
-	path string
-	mu   *sync.Mutex // shared with runtimeBridgeSaver
-}
-
-func (r *runtimeAdapterSaver) Save(name string, rawTOMLSection []byte) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	data, err := os.ReadFile(r.path)
-	if err != nil {
-		return fmt.Errorf("read: %w", err)
-	}
-	updated := replaceAdapterSection(data, name, rawTOMLSection)
-	return config.WriteAtomic(r.path, updated)
-}
-
-// replaceAdapterSection rewrites (or appends) the [adapters.<name>]
-// block inside doc. The section is matched by exact header line; its
-// body extends to the next [header] line or EOF. The replacement
-// section is normalized to end with exactly one newline before
-// splicing so repeated saves don't accumulate blank lines or run
-// adjacent lines together.
-func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
-	section = bytes.TrimRight(section, "\r\n\t ")
-	section = append(section, '\n')
-
-	header := fmt.Sprintf("[adapters.%s]", name)
-	lines := strings.Split(string(doc), "\n")
-
-	start := -1
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) == header {
-			start = i
-			break
-		}
-	}
-
-	if start < 0 {
-		// Append. Ensure doc ends with a newline before concatenating.
-		out := strings.TrimRight(string(doc), "\r\n\t ") + "\n\n"
-		out += header + "\n" + string(section)
-		return []byte(out)
-	}
-
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		tr := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(tr, "[") && strings.HasSuffix(tr, "]") {
-			end = i
-			break
-		}
-	}
-
-	newLines := append([]string{}, lines[:start+1]...)
-	sectionLines := strings.Split(strings.TrimRight(string(section), "\n"), "\n")
-	newLines = append(newLines, sectionLines...)
-	if end < len(lines) {
-		newLines = append(newLines, "")
-	}
-	newLines = append(newLines, lines[end:]...)
-	return []byte(strings.Join(newLines, "\n"))
 }
 
 // runLinkFlow drives the plex.tv PIN pairing dance: request a PIN,

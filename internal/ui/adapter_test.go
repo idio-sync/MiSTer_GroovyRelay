@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,6 +84,52 @@ func TestHandleAdapter_GET_UnknownAdapter(t *testing.T) {
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rw.Code)
+	}
+}
+
+// extraStub implements ExtraHTMLProvider so the adapter panel
+// emits the returned markup below the form.
+type extraStub struct {
+	richStub
+	extra template.HTML
+}
+
+func (a *extraStub) ExtraPanelHTML() template.HTML { return a.extra }
+
+// TestHandleAdapter_GET_ExtraHTMLRenderedUnescaped is the regression
+// guard for review fix C1. When ExtraHTML was typed as string the
+// adapter panel emitted it HTML-escaped, so the entire Plex linking
+// flow rendered as literal `<button>` tags the operator could read
+// but not click. This test fails if someone flips the type back.
+func TestHandleAdapter_GET_ExtraHTMLRenderedUnescaped(t *testing.T) {
+	stub := &extraStub{
+		richStub: richStub{name: "stub", enabled: true, state: adapters.StateRunning},
+		extra:    template.HTML(`<button id="stub-link">Click me</button>`),
+	}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	s, err := New(Config{Registry: reg})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("GET", "/ui/adapter/stub", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	body := rw.Body.String()
+
+	// Markup must land verbatim — not escaped to &lt;button&gt;.
+	if !strings.Contains(body, `<button id="stub-link">Click me</button>`) {
+		t.Errorf("ExtraHTML rendered escaped or missing; body:\n%s", body)
+	}
+	if strings.Contains(body, "&lt;button") {
+		t.Errorf("ExtraHTML was HTML-escaped (regression of C1); body:\n%s", body)
 	}
 }
 

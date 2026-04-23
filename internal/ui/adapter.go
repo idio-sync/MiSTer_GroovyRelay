@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,8 +26,14 @@ type ValueProvider interface {
 // ExtraHTMLProvider is an optional interface an adapter implements
 // to append adapter-specific markup below the standard form. Used by
 // Plex to render the linking section (Phase 6).
+//
+// Returns template.HTML (review fix C1) so the adapter-panel template
+// emits the fragment as markup, not escaped text. The contract with
+// implementers: everything you return is TRUSTED HTML and will be
+// rendered without further escaping. Escape per-value interpolations
+// yourself (e.g. via html/template) before returning.
 type ExtraHTMLProvider interface {
-	ExtraPanelHTML() string
+	ExtraPanelHTML() template.HTML
 }
 
 // adapterPanelData is the template root for the Adapter panel.
@@ -41,7 +48,7 @@ type adapterPanelData struct {
 	StatusDetail string // "since 14:22:07" / last error / ""
 	Sections     []bridgeSection
 	Toast        *toastData
-	ExtraHTML    string
+	ExtraHTML    template.HTML
 }
 
 // handleAdapterGET renders the named adapter's panel. Unknown names

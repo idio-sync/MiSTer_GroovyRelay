@@ -46,14 +46,33 @@ type AdapterConfig struct {
 // loop. It does NOT own the HTTP listener anymore — main.go binds a
 // single :http_port socket that both this adapter and the Settings
 // UI attach to (design §7.1). Satisfies adapters.Adapter.
+//
+// Locking discipline (review fix C2):
+//
+//	mu guards plexCfg, state/lastErr/stateSince, pending, regCancel,
+//	and the in-memory auth-token field on cfg.TokenStore. Hold mu for
+//	short critical sections only — never across network I/O. Snapshot
+//	helpers (snapshotCfg, snapshotPending) copy the fields out so
+//	callers can render/compare without the lock held.
+//
+// companion/timeline/disco/discoDone are assigned once (during
+// ensureFinalized / Start) from a single goroutine and read-only
+// thereafter, so they don't need mu.
 type Adapter struct {
-	cfg     AdapterConfig
-	plexCfg Config // typed [adapters.plex] section, populated by DecodeConfig
+	cfg AdapterConfig
 
-	stateMu    sync.Mutex
+	mu         sync.Mutex
+	plexCfg    Config // typed [adapters.plex] section, populated by DecodeConfig
 	state      adapters.State
 	lastErr    string
 	stateSince time.Time
+	regCancel  context.CancelFunc // cancels the plex.tv registration loop; nil when inactive
+	pending    *pendingLink       // in-flight PIN flow; nil between flows
+
+	// linkStartMu serializes handleLinkStart so two rapid clicks can't
+	// interleave RequestPIN calls. Separate from mu because RequestPIN
+	// is a network RTT and we don't want to block sidebar polls.
+	linkStartMu sync.Mutex
 
 	// finalizeOnce guards lazy construction of companion + timeline.
 	// Either MountRoutes (called before the shared listener starts)
@@ -75,27 +94,54 @@ type Adapter struct {
 	// out-of-LAN registration still works if a token is configured.
 	disco *Discovery
 
-	// regCancel cancels the plex.tv registration loop; nil when no
-	// loop was started (missing token / host IP).
-	regCancel context.CancelFunc
-
 	// discoDone is closed when Discovery.Run exits so Stop can wait
 	// for the goroutine cleanly. Nil when GDM discovery isn't running.
 	discoDone chan struct{}
+}
 
-	// pending tracks an in-flight UI-driven plex.tv PIN flow. nil
-	// between flows. In-memory only — bridge restart mid-flow forces
-	// the user to start over (design §10.1).
-	pending *pendingLink
+// snapshotCfg returns a copy of plexCfg taken under mu. Callers render
+// or compare against the snapshot without holding the lock.
+func (a *Adapter) snapshotCfg() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.plexCfg
+}
+
+// snapshotToken returns the current in-memory AuthToken under mu.
+// Empty string when TokenStore is nil or unlinked.
+func (a *Adapter) snapshotToken() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg.TokenStore == nil {
+		return ""
+	}
+	return a.cfg.TokenStore.AuthToken
+}
+
+// snapshotPending returns the current pendingLink pointer under mu.
+// The returned pointer may be nil. pendingLink has its own mutex so
+// callers can read its state without holding a.mu.
+func (a *Adapter) snapshotPending() *pendingLink {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pending
 }
 
 // NewAdapter constructs a ready-to-Start Adapter. Companion + timeline
 // are NOT built here: they depend on plexCfg.DeviceName, which isn't
 // populated until DecodeConfig runs. Lazy construction happens inside
 // ensureFinalized (called from MountRoutes or Start).
+//
+// TokenStore is required (review fix I3): the linking handlers and
+// ensureFinalized both dereference it, and a nil store would surface
+// as a runtime panic the first time an operator clicks "Link Plex
+// Account". Fail fast here instead.
 func NewAdapter(cfg AdapterConfig) (*Adapter, error) {
 	if cfg.Core == nil {
 		return nil, errors.New("plex.NewAdapter: AdapterConfig.Core is required")
+	}
+	if cfg.TokenStore == nil {
+		return nil, errors.New("plex.NewAdapter: AdapterConfig.TokenStore is required")
 	}
 	return &Adapter{cfg: cfg}, nil
 }
@@ -120,6 +166,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 	a.ensureFinalized()
 	a.setState(adapters.StateStarting, "")
 
+	// Snapshot the fields we need under mu so we don't hold the lock
+	// across network construction or goroutine launches.
+	cfgSnap := a.snapshotCfg()
+	deviceUUID := a.cfg.TokenStore.DeviceUUID // TokenStore guaranteed non-nil by NewAdapter
+	authToken := a.snapshotToken()
+
 	// Timeline broadcaster (1 Hz push loop). Runs until Stop closes
 	// the broker's stop channel.
 	go a.timeline.RunBroadcastLoop()
@@ -127,8 +179,8 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// GDM multicast discovery. Best-effort: port conflicts shouldn't
 	// take down the adapter — out-of-LAN registration may still succeed.
 	disco, err := NewDiscovery(DiscoveryConfig{
-		DeviceName: a.plexCfg.DeviceName,
-		DeviceUUID: a.cfg.TokenStore.DeviceUUID,
+		DeviceName: cfgSnap.DeviceName,
+		DeviceUUID: deviceUUID,
 		HTTPPort:   a.cfg.Bridge.UI.HTTPPort,
 	})
 	if err != nil {
@@ -146,12 +198,14 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// plex.tv device registration loop. Requires a linked auth token
 	// and an outbound IP to advertise; otherwise we log and skip so
 	// the user knows to run `--link`.
-	if a.cfg.TokenStore != nil && a.cfg.TokenStore.AuthToken != "" && a.cfg.HostIP != "" {
+	if authToken != "" && a.cfg.HostIP != "" {
 		regCtx, cancel := context.WithCancel(ctx)
+		a.mu.Lock()
 		a.regCancel = cancel
+		a.mu.Unlock()
 		go RunRegistrationLoop(regCtx,
-			a.cfg.TokenStore.DeviceUUID,
-			a.cfg.TokenStore.AuthToken,
+			deviceUUID,
+			authToken,
 			a.cfg.HostIP,
 			a.cfg.Bridge.UI.HTTPPort,
 		)
@@ -168,8 +222,18 @@ func (a *Adapter) Start(ctx context.Context) error {
 // HTTP listener is owned by main.go and shut down separately. Returns
 // nil on clean shutdown (interface contract).
 func (a *Adapter) Stop() error {
-	if a.regCancel != nil {
-		a.regCancel()
+	a.mu.Lock()
+	cancel := a.regCancel
+	a.regCancel = nil
+	pending := a.pending
+	a.pending = nil
+	a.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if pending != nil {
+		pending.abandon()
 	}
 	if a.disco != nil {
 		_ = a.disco.Close()
@@ -191,14 +255,16 @@ func (a *Adapter) Stop() error {
 // store (the bridge's identity, not a user-editable field).
 func (a *Adapter) ensureFinalized() {
 	a.finalizeOnce.Do(func() {
+		cfgSnap := a.snapshotCfg()
+		deviceUUID := a.cfg.TokenStore.DeviceUUID
 		a.companion = NewCompanion(CompanionConfig{
-			DeviceName: a.plexCfg.DeviceName,
-			DeviceUUID: a.cfg.TokenStore.DeviceUUID,
+			DeviceName: cfgSnap.DeviceName,
+			DeviceUUID: deviceUUID,
 			Version:    a.cfg.Version,
 			DataDir:    a.cfg.Bridge.DataDir,
 		}, a.cfg.Core)
 		a.timeline = NewTimelineBroker(
-			TimelineConfig{DeviceUUID: a.cfg.TokenStore.DeviceUUID, DeviceName: a.plexCfg.DeviceName},
+			TimelineConfig{DeviceUUID: deviceUUID, DeviceName: cfgSnap.DeviceName},
 			a.cfg.Core.Status,
 		)
 		a.companion.SetTimeline(a.timeline)
@@ -266,7 +332,9 @@ func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	a.mu.Lock()
 	a.plexCfg = cfg
+	a.mu.Unlock()
 	return nil
 }
 
@@ -282,11 +350,15 @@ func (a *Adapter) Validate(raw toml.Primitive, meta toml.MetaData) error {
 	return cfg.Validate()
 }
 
-func (a *Adapter) IsEnabled() bool { return a.plexCfg.Enabled }
+func (a *Adapter) IsEnabled() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.plexCfg.Enabled
+}
 
 func (a *Adapter) Status() adapters.Status {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return adapters.Status{
 		State:     a.state,
 		LastError: a.lastErr,
@@ -295,8 +367,8 @@ func (a *Adapter) Status() adapters.Status {
 }
 
 func (a *Adapter) setState(s adapters.State, errMsg string) {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.state = s
 	a.stateSince = time.Now()
 	a.lastErr = errMsg
@@ -324,22 +396,19 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		return 0, err
 	}
 
+	a.mu.Lock()
 	changed := diffPlexConfig(a.plexCfg, newCfg)
-
 	scope := adapters.ScopeHotSwap
 	for _, key := range changed {
 		scope = adapters.MaxScope(scope, scopeForPlexField(key))
 	}
+	a.plexCfg = newCfg
+	a.mu.Unlock()
 
-	switch scope {
-	case adapters.ScopeRestartCast:
-		if a.cfg.Core != nil {
-			_ = a.cfg.Core.DropActiveCast("plex config change")
-		}
-		a.plexCfg = newCfg
-	default:
-		// Hot-swap and restart-bridge both just mutate plexCfg.
-		a.plexCfg = newCfg
+	// Side effects outside the lock: DropActiveCast can block on
+	// session teardown, and we don't want sidebar polls waiting on it.
+	if scope == adapters.ScopeRestartCast && a.cfg.Core != nil {
+		_ = a.cfg.Core.DropActiveCast("plex config change")
 	}
 	return scope, nil
 }
@@ -395,16 +464,19 @@ func scopeForPlexField(key string) adapters.ApplyScope {
 // SetEnabled mutates the plexCfg.Enabled flag. Called by the UI
 // toggle endpoint via the EnableSetter optional interface.
 func (a *Adapter) SetEnabled(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.plexCfg.Enabled = v
 }
 
 // CurrentValues exposes the current plexCfg values to the UI for
 // form prefill. Implements ui.ValueProvider via duck-typing.
 func (a *Adapter) CurrentValues() map[string]any {
+	cfg := a.snapshotCfg()
 	return map[string]any{
-		"enabled":      a.plexCfg.Enabled,
-		"device_name":  a.plexCfg.DeviceName,
-		"profile_name": a.plexCfg.ProfileName,
-		"server_url":   a.plexCfg.ServerURL,
+		"enabled":      cfg.Enabled,
+		"device_name":  cfg.DeviceName,
+		"profile_name": cfg.ProfileName,
+		"server_url":   cfg.ServerURL,
 	}
 }

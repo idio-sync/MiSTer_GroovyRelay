@@ -4,28 +4,32 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
-// TestIntegration_Save_InterlaceFlip_LiveApply exercises the
-// Phase-7 hero path through the real HTTP stack: load sectioned
-// config, stand up a core.Manager + UI server, POST a bridge save
-// that flips interlace_field_order, and verify both the in-memory
-// manager state and the on-disk config moved.
+// TestIntegration_Save_InterlaceFlip_LiveApply exercises the Phase-7
+// hero path through the real HTTP stack AND the real save code path:
+// load sectioned config, stand up a core.Manager + UI server wired to
+// uiserver.BridgeSaver (the same type cmd/mister-groovy-relay uses),
+// POST a bridge save that flips interlace_field_order, and verify
+// both the in-memory manager state and the on-disk config moved.
+//
+// Reusing uiserver.NewBridgeSaver here (rather than a test-local
+// reimplementation) closes the review C3 gap: any regression in the
+// production save path — pre-flight probes, diff, marshal, ordering —
+// is now caught by this test.
 //
 // Skips the Plex adapter entirely so we don't fight for port 32500;
 // the interlace path doesn't involve the adapter registry.
@@ -52,9 +56,7 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	coreMgr := core.NewManager(sec.Bridge, sender)
 	reg := adapters.NewRegistry()
 
-	saver := &integrationBridgeSaver{
-		path: cfgPath, sec: sec, core: coreMgr, registry: reg,
-	}
+	saver := uiserver.NewBridgeSaver(cfgPath, sec, coreMgr, reg)
 	uiSrv, err := ui.New(ui.Config{Registry: reg, BridgeSaver: saver})
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +95,16 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	data, _ := os.ReadFile(cfgPath)
 	if !strings.Contains(string(data), `interlace_field_order = "bff"`) {
 		t.Errorf("on-disk config did not update:\n%s", data)
+	}
+
+	// The [adapters.plex] section must survive the bridge-only
+	// rewrite — this is the "preserve adapter sections intact"
+	// invariant the production saver relies on.
+	if !strings.Contains(string(data), "[adapters.plex]") {
+		t.Errorf("bridge save dropped the [adapters.plex] section:\n%s", data)
+	}
+	if !strings.Contains(string(data), `device_name = "TestBridge"`) {
+		t.Errorf("bridge save dropped the plex device_name:\n%s", data)
 	}
 }
 
@@ -141,123 +153,3 @@ func testBridgeFormBody(interlaceOrder string) string {
 			"&data_dir=.",
 		interlaceOrder)
 }
-
-// integrationBridgeSaver mirrors cmd/mister-groovy-relay's
-// runtimeBridgeSaver inline here rather than extracting into a
-// shared package. If Phase 8+ adds more integration tests that need
-// this, factor into internal/uiserver/.
-type integrationBridgeSaver struct {
-	mu       sync.Mutex
-	path     string
-	sec      *config.Sectioned
-	core     *core.Manager
-	registry *adapters.Registry
-}
-
-func (r *integrationBridgeSaver) Current() config.BridgeConfig {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.sec.Bridge
-}
-
-func (r *integrationBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	old := r.sec.Bridge
-	changed := integrationDiffBridge(old, newCfg)
-	scope := adapters.ScopeHotSwap
-	for _, k := range changed {
-		scope = adapters.MaxScope(scope, integrationScopeFor(k))
-	}
-
-	r.sec.Bridge = newCfg
-	r.core.UpdateBridge(newCfg)
-
-	// Bridge-only rewrite preserves the [adapters.plex] section.
-	data, err := os.ReadFile(r.path)
-	if err != nil {
-		return 0, err
-	}
-	without := integrationStripBridge(data)
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(struct {
-		Bridge config.BridgeConfig `toml:"bridge"`
-	}{newCfg}); err != nil {
-		return 0, err
-	}
-	out := append(append(without, '\n'), buf.Bytes()...)
-	if err := config.WriteAtomic(r.path, out); err != nil {
-		return 0, err
-	}
-
-	if scope == adapters.ScopeHotSwap && integrationContains(changed, "video.interlace_field_order") {
-		if err := r.core.SetInterlaceFieldOrder(newCfg.Video.InterlaceFieldOrder); err != nil {
-			return 0, err
-		}
-	}
-	return scope, nil
-}
-
-func integrationDiffBridge(oldCfg, newCfg config.BridgeConfig) []string {
-	var keys []string
-	if oldCfg.Video.InterlaceFieldOrder != newCfg.Video.InterlaceFieldOrder {
-		keys = append(keys, "video.interlace_field_order")
-	}
-	if oldCfg.Video.AspectMode != newCfg.Video.AspectMode {
-		keys = append(keys, "video.aspect_mode")
-	}
-	if oldCfg.MiSTer.Host != newCfg.MiSTer.Host {
-		keys = append(keys, "mister.host")
-	}
-	if oldCfg.UI.HTTPPort != newCfg.UI.HTTPPort {
-		keys = append(keys, "ui.http_port")
-	}
-	// Integration test only exercises a handful of fields; full diff
-	// is in cmd/mister-groovy-relay/main.go.
-	return keys
-}
-
-func integrationScopeFor(key string) adapters.ApplyScope {
-	switch key {
-	case "video.interlace_field_order":
-		return adapters.ScopeHotSwap
-	case "video.aspect_mode":
-		return adapters.ScopeRestartCast
-	default:
-		return adapters.ScopeRestartBridge
-	}
-}
-
-func integrationContains(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-func integrationStripBridge(doc []byte) []byte {
-	lines := strings.Split(string(doc), "\n")
-	out := make([]string, 0, len(lines))
-	skipping := false
-	for _, ln := range lines {
-		tr := strings.TrimSpace(ln)
-		if strings.HasPrefix(tr, "[bridge") {
-			skipping = true
-			continue
-		}
-		if skipping && strings.HasPrefix(tr, "[") && strings.HasSuffix(tr, "]") {
-			skipping = false
-		}
-		if !skipping {
-			out = append(out, ln)
-		}
-	}
-	return []byte(strings.Join(out, "\n"))
-}
-
-// Ensure net import is referenced even when unused in this file's
-// future variations — integration tests often grow network helpers.
-var _ = net.IPv4zero

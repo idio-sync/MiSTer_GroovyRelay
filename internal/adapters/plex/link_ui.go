@@ -91,22 +91,29 @@ func tokenFilePath(dataDir string) string {
 }
 
 // ExtraPanelHTML is called by the UI when rendering the Plex adapter
-// panel. Returns the current linking section HTML as a string.
-// Satisfies ui.ExtraHTMLProvider via duck-typing.
-func (a *Adapter) ExtraPanelHTML() string {
-	if a.cfg.TokenStore != nil && a.cfg.TokenStore.AuthToken != "" {
+// panel. Returns the current linking section HTML as a template.HTML
+// so the adapter-panel template renders it as markup, not escaped
+// text (review fix C1). Satisfies ui.ExtraHTMLProvider via duck-typing.
+//
+// Reads TokenStore.AuthToken + pending under a.mu so concurrent
+// handleLinkStart / handleUnlink goroutines don't race (review fix C2).
+func (a *Adapter) ExtraPanelHTML() template.HTML {
+	token := a.snapshotToken()
+	pending := a.snapshotPending()
+
+	if token != "" {
 		var buf strings.Builder
 		_ = linkTemplate.ExecuteTemplate(&buf, "linked", struct {
 			TokenPath string
 		}{TokenPath: tokenFilePath(a.cfg.Bridge.DataDir)})
-		return buf.String()
+		return template.HTML(buf.String())
 	}
-	if a.pending != nil && !a.pending.Done() && !a.pending.Expired() {
-		return renderPending(a.pending)
+	if pending != nil && !pending.Done() && !pending.Expired() {
+		return template.HTML(renderPending(pending))
 	}
 	var buf strings.Builder
 	_ = linkTemplate.ExecuteTemplate(&buf, "unlinked", nil)
-	return buf.String()
+	return template.HTML(buf.String())
 }
 
 func renderPending(p *pendingLink) string {
@@ -136,12 +143,26 @@ func (a *Adapter) UIRoutes() []adapters.Route {
 // handleLinkStart asks plex.tv for a fresh PIN, stores a pendingLink,
 // spawns a background poller, and returns the "pending" fragment with
 // the 4-char code. Re-clicks abandon the prior flow first.
+//
+// Serialization (review fix I2): linkStartMu is held across RequestPIN
+// so two rapid clicks can't interleave — the second call waits for the
+// first to return before proceeding, and the stale goroutine's token
+// write is rejected by the "pending-identity check" below because
+// a.pending has moved on. mu is held only for short writes to pending
+// and TokenStore.AuthToken.
 func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
-	if a.pending != nil && !a.pending.Done() {
-		a.pending.abandon()
+	a.linkStartMu.Lock()
+	defer a.linkStartMu.Unlock()
+
+	// Abandon any in-flight prior flow before starting a new one.
+	if old := a.snapshotPending(); old != nil && !old.Done() {
+		old.abandon()
 	}
 
-	pin, err := RequestPIN(a.cfg.TokenStore.DeviceUUID, a.plexCfg.DeviceName)
+	deviceUUID := a.cfg.TokenStore.DeviceUUID // TokenStore non-nil (NewAdapter)
+	deviceName := a.snapshotCfg().DeviceName
+
+	pin, err := RequestPIN(deviceUUID, deviceName)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("plex.tv unreachable: %v", err), http.StatusServiceUnavailable)
 		return
@@ -149,24 +170,49 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 
 	// plex.tv PINs expire 15 minutes after creation.
 	pl := newPendingLink(pin.Code, pin.ID, time.Now().Add(15*time.Minute))
-	a.pending = pl
 
-	go func() {
-		token, err := pollForTokenCtx(pl.ctx, pin.ID, a.cfg.TokenStore.DeviceUUID, 15*time.Minute)
-		if err != nil {
-			pl.complete("", err.Error())
-			return
-		}
-		a.cfg.TokenStore.AuthToken = token
-		if err := SaveStoredData(a.cfg.Bridge.DataDir, a.cfg.TokenStore); err != nil {
-			pl.complete("", fmt.Sprintf("token received but save failed: %v", err))
-			return
-		}
-		pl.complete(token, "")
-	}()
+	a.mu.Lock()
+	a.pending = pl
+	a.mu.Unlock()
+
+	go a.pollPendingLink(pl, pin.ID, deviceUUID)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(renderPending(pl)))
+}
+
+// pollPendingLink runs PollPIN for one in-flight link flow. On
+// success it writes the token to TokenStore under a.mu AND checks
+// that a.pending still points at this flow. If the user clicked
+// "Link" again in the meantime (abandoning this pendingLink), we
+// drop the token on the floor rather than persist a stale auth
+// token — that's the I2 "rapid re-click" race fix.
+func (a *Adapter) pollPendingLink(pl *pendingLink, pinID int, deviceUUID string) {
+	token, err := pollForTokenCtx(pl.ctx, pinID, deviceUUID, 15*time.Minute)
+	if err != nil {
+		pl.complete("", err.Error())
+		return
+	}
+
+	a.mu.Lock()
+	if a.pending != pl {
+		// Abandoned by a newer flow; don't clobber its state.
+		a.mu.Unlock()
+		pl.complete("", "abandoned")
+		return
+	}
+	a.cfg.TokenStore.AuthToken = token
+	dataDir := a.cfg.Bridge.DataDir
+	store := a.cfg.TokenStore
+	a.mu.Unlock()
+
+	// SaveStoredData is disk I/O; run outside a.mu so sidebar polls
+	// and other handlers don't block on fsync.
+	if err := SaveStoredData(dataDir, store); err != nil {
+		pl.complete("", fmt.Sprintf("token received but save failed: %v", err))
+		return
+	}
+	pl.complete(token, "")
 }
 
 // handleLinkStatus returns the Account-section fragment for the
@@ -177,7 +223,10 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 func (a *Adapter) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	if a.cfg.TokenStore != nil && a.cfg.TokenStore.AuthToken != "" {
+	token := a.snapshotToken()
+	pending := a.snapshotPending()
+
+	if token != "" {
 		w.WriteHeader(http.StatusOK)
 		_ = linkTemplate.ExecuteTemplate(w, "linked", struct{ TokenPath string }{
 			TokenPath: tokenFilePath(a.cfg.Bridge.DataDir),
@@ -185,18 +234,18 @@ func (a *Adapter) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.pending == nil {
+	if pending == nil {
 		w.WriteHeader(http.StatusOK)
 		_ = linkTemplate.ExecuteTemplate(w, "unlinked", nil)
 		return
 	}
-	if a.pending.Expired() {
+	if pending.Expired() {
 		w.WriteHeader(http.StatusGone)
 		_ = linkTemplate.ExecuteTemplate(w, "expired", nil)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(renderPending(a.pending)))
+	_, _ = w.Write([]byte(renderPending(pending)))
 }
 
 // handleUnlink rotates the on-disk token file aside and clears the
@@ -216,12 +265,17 @@ func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf(".%s.unlinked-%d", storedDataFilename, time.Now().Unix()))
 	_ = os.Rename(src, dst) // best-effort; a missing file is fine
 
+	// Clear in-memory token + steal regCancel under mu so concurrent
+	// handleLinkStart / Stop / ExtraPanelHTML see a consistent view.
+	a.mu.Lock()
 	a.cfg.TokenStore.AuthToken = ""
+	cancel := a.regCancel
+	a.regCancel = nil
+	a.mu.Unlock()
 
 	// Stop the plex.tv registration loop. GDM + Companion keep running.
-	if a.regCancel != nil {
-		a.regCancel()
-		a.regCancel = nil
+	if cancel != nil {
+		cancel()
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
