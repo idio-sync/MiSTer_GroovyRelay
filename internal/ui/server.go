@@ -24,13 +24,26 @@ type BridgeSaver interface {
 	Save(new config.BridgeConfig) (adapters.ApplyScope, error)
 }
 
+// AdapterSaver persists an adapter's [adapters.<name>] TOML section
+// to disk. The UI package does not know how to marshal back; main.go
+// wires a closure that rewrites the section + writes atomically.
+// Per-adapter serialization (concurrent saves on the same adapter)
+// happens inside the UI package via a small lock map, so
+// implementations don't need to coordinate beyond their own file
+// I/O.
+type AdapterSaver interface {
+	Save(name string, rawTOMLSection []byte) error
+}
+
 // Config is the dependencies bundle passed to New. Registry is
-// required; BridgeSaver is required before any /ui/bridge route
-// handler runs (nil surfaces as a 500 at request time so unit tests
-// that only exercise the shell can construct Server without one).
+// required; BridgeSaver and AdapterSaver are required only for the
+// handlers that write state (nil surfaces as a 500 at request time
+// so unit tests that only exercise read paths can construct Server
+// without them).
 type Config struct {
-	Registry    *adapters.Registry
-	BridgeSaver BridgeSaver
+	Registry     *adapters.Registry
+	BridgeSaver  BridgeSaver
+	AdapterSaver AdapterSaver
 }
 
 // templateFuncs supplies the tiny set of helpers our templates need.
@@ -90,7 +103,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/adapter/{name}", s.handleAdapterGET)
 	mux.HandleFunc("GET /ui/adapter/{name}/status", s.handleAdapterStatus)
 	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
-	// POST /ui/adapter/{name}/save lands in Task 5.4.
+	s.mountPOST(mux, "/ui/adapter/{name}/save", s.handleAdapterSave)
 }
 
 // handleSidebarStatus renders the <aside> fragment swapped in every

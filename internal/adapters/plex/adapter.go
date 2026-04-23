@@ -263,6 +263,18 @@ func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	return nil
 }
 
+// Validate is the pure-check path used by the UI save handler
+// BEFORE it persists a candidate config to disk. Decodes raw into
+// a throwaway Config and runs plex.Config.Validate without touching
+// a.plexCfg. Satisfies adapters.Validator.
+func (a *Adapter) Validate(raw toml.Primitive, meta toml.MetaData) error {
+	cfg := DefaultConfig()
+	if err := meta.PrimitiveDecode(raw, &cfg); err != nil {
+		return fmt.Errorf("plex: decode config: %w", err)
+	}
+	return cfg.Validate()
+}
+
 func (a *Adapter) IsEnabled() bool { return a.plexCfg.Enabled }
 
 func (a *Adapter) Status() adapters.Status {

@@ -1,10 +1,15 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
+	"sync"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
@@ -237,6 +242,177 @@ func (s *Server) handleAdapterStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprintf(w, `<div class="status-line %s">%s%s</div>`,
 		dotClass(st.State), st.State.String(), detail)
+}
+
+// adapterLockMap serializes save + toggle on the same adapter.
+// Concurrent saves on *different* adapters proceed in parallel —
+// one lock per adapter name, lazily created under muMu.
+type adapterLockMap struct {
+	muMu  sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+var adapterLocks = &adapterLockMap{locks: map[string]*sync.Mutex{}}
+
+func (m *adapterLockMap) forName(name string) *sync.Mutex {
+	m.muMu.Lock()
+	defer m.muMu.Unlock()
+	l, ok := m.locks[name]
+	if !ok {
+		l = &sync.Mutex{}
+		m.locks[name] = l
+	}
+	return l
+}
+
+// handleAdapterSave parses the form, re-serializes as TOML using the
+// adapter's Fields() schema for type dispatch, validates (via the
+// optional adapters.Validator interface so invalid config leaves the
+// on-disk file untouched, matching the Bridge panel's contract),
+// persists via AdapterSaver, decodes the new section back into a
+// toml.Primitive, and calls ApplyConfig to trigger runtime side
+// effects.
+func (s *Server) handleAdapterSave(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	a, ok := s.cfg.Registry.Get(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if s.cfg.AdapterSaver == nil {
+		http.Error(w, "adapter saver not wired", http.StatusInternalServerError)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	lock := adapterLocks.forName(name)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// 1. Form → TOML snippet. Type dispatch via FieldDef.Kind; parse
+	// failures (bad int, required missing) return inline FormErrors.
+	tomlBytes, ferrs := formToAdapterTOML(r.Form, a.Fields())
+	if len(ferrs) > 0 {
+		data := s.buildAdapterPanelData(a, nil, ferrs)
+		s.renderPanel(w, "adapter-panel", data)
+		return
+	}
+
+	// 2. Decode snippet → Primitive + MetaData so Validate/ApplyConfig
+	// can consume it.
+	raw, meta, decodeErr := decodeAdapterSection(tomlBytes, name)
+	if decodeErr != nil {
+		data := s.buildAdapterPanelData(a, &toastData{
+			Class:   "err",
+			Message: fmt.Sprintf("Re-decode failed: %v", decodeErr),
+		}, nil)
+		s.renderPanel(w, "adapter-panel", data)
+		return
+	}
+
+	// 3. Pure semantic validation BEFORE disk write (revision
+	// correction §5.4). Adapters without a Validator skip this step
+	// and fall back to ApplyConfig's own validation; the disk write
+	// may then reflect semantically-invalid state, but that's a
+	// conscious fallback, not an oversight.
+	if v, ok := a.(adapters.Validator); ok {
+		if err := v.Validate(raw, meta); err != nil {
+			data := s.buildAdapterPanelData(a, &toastData{
+				Class:   "err",
+				Message: err.Error(),
+			}, nil)
+			s.renderPanel(w, "adapter-panel", data)
+			return
+		}
+	}
+
+	// 4. Persist (write-before-apply for runtime side effects).
+	if err := s.cfg.AdapterSaver.Save(name, tomlBytes); err != nil {
+		data := s.buildAdapterPanelData(a, &toastData{
+			Class:   "err",
+			Message: fmt.Sprintf("Save failed: %v", err),
+		}, nil)
+		s.renderPanel(w, "adapter-panel", data)
+		return
+	}
+
+	// 5. Apply — runtime dispatch. ApplyConfig is a stub in Phase 5
+	// (returns ScopeHotSwap unconditionally); Phase 7 implements real
+	// diff + per-field scope aggregation.
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		data := s.buildAdapterPanelData(a, &toastData{
+			Class:   "err",
+			Message: fmt.Sprintf("Saved to disk but apply failed: %v", err),
+		}, nil)
+		s.renderPanel(w, "adapter-panel", data)
+		return
+	}
+
+	data := s.buildAdapterPanelData(a, scopeToast(scope), nil)
+	s.renderPanel(w, "adapter-panel", data)
+}
+
+// formToAdapterTOML serializes url.Values into a TOML snippet matching
+// the adapter's [adapters.<name>] section. Uses the Fields() schema
+// to decide whether each value is int/bool/string. Required-missing
+// and bad-int parses return per-field errors without writing.
+func formToAdapterTOML(form url.Values, fields []adapters.FieldDef) ([]byte, FormErrors) {
+	errs := FormErrors{}
+	var buf bytes.Buffer
+	for _, fd := range fields {
+		raw := form.Get(fd.Key)
+		switch fd.Kind {
+		case adapters.KindText, adapters.KindSecret:
+			fmt.Fprintf(&buf, "%s = %q\n", fd.Key, raw)
+		case adapters.KindInt:
+			if raw == "" {
+				if fd.Required {
+					errs[fd.Key] = "required"
+				}
+				continue
+			}
+			n, err := strconv.Atoi(raw)
+			if err != nil {
+				errs[fd.Key] = fmt.Sprintf("not an integer: %q", raw)
+				continue
+			}
+			fmt.Fprintf(&buf, "%s = %d\n", fd.Key, n)
+		case adapters.KindBool:
+			fmt.Fprintf(&buf, "%s = %t\n", fd.Key, parseBoolField(form, fd.Key))
+		case adapters.KindEnum:
+			if raw == "" {
+				errs[fd.Key] = "required"
+				continue
+			}
+			// Enum values always serialize as strings on the wire —
+			// downstream adapters decode "48000" into int fields via
+			// BurntSushi's string→int coercion.
+			fmt.Fprintf(&buf, "%s = %q\n", fd.Key, raw)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	return buf.Bytes(), nil
+}
+
+// decodeAdapterSection wraps a bare k=v TOML snippet in an
+// [adapters.<name>] header and decodes it into a toml.Primitive +
+// MetaData handle so ApplyConfig / Validate can consume it.
+func decodeAdapterSection(section []byte, name string) (toml.Primitive, toml.MetaData, error) {
+	wrapper := fmt.Sprintf("[adapters.%s]\n%s", name, section)
+	var envelope struct {
+		Adapters map[string]toml.Primitive `toml:"adapters"`
+	}
+	meta, err := toml.Decode(wrapper, &envelope)
+	if err != nil {
+		return toml.Primitive{}, toml.MetaData{}, err
+	}
+	return envelope.Adapters[name], meta, nil
 }
 
 // adapterSubtitle returns a short descriptor shown under the heading.

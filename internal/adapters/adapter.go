@@ -180,6 +180,17 @@ type RouteProvider interface {
 	UIRoutes() []Route
 }
 
+// Validator is an optional interface an adapter implements to allow
+// pure validation of a candidate TOML section without mutating its
+// runtime config. The save path uses it to enforce "validate before
+// disk write" — invalid config must leave the on-disk file untouched
+// (matching the Bridge panel's contract). Adapters that don't
+// implement Validator fall back to ApplyConfig acting as both
+// validator and applier.
+type Validator interface {
+	Validate(raw toml.Primitive, meta toml.MetaData) error
+}
+
 // Handler is the handler signature adapter routes register with. An
 // alias for http.HandlerFunc's underlying type so adapters don't need
 // to import net/http types just to satisfy the Route struct.
