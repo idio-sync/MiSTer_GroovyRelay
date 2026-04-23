@@ -82,6 +82,24 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// Bridge panel.
 	mux.HandleFunc("GET /ui/bridge", s.handleBridgeGET)
 	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
+
+	// Sidebar status fragment (polled every 3s by the shell).
+	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)
+}
+
+// handleSidebarStatus renders the <aside> fragment swapped in every
+// 3 s by the shell's hx-trigger. Returns the entire <aside> (not
+// just the inner dots) so the outer hx-get + hx-trigger attributes
+// survive the outerHTML swap — the sidebar re-registers its own
+// polling on every refresh.
+func (s *Server) handleSidebarStatus(w http.ResponseWriter, r *http.Request) {
+	data := s.shellData()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := w.Write([]byte(`<aside class="sidebar" id="sidebar" hx-get="/ui/sidebar/status" hx-trigger="every 3s" hx-swap="outerHTML">`)); err != nil {
+		return
+	}
+	_ = s.tmpl.ExecuteTemplate(w, "sidebar-body", data)
+	_, _ = w.Write([]byte(`</aside>`))
 }
 
 // mountPOST is the canonical way to register a POST handler on the UI
