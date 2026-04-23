@@ -10,16 +10,16 @@ import (
 const bytesPerSample = 2
 
 // AudioPipeReader computes per-field PCM chunk sizes using integer-exact
-// arithmetic against the NTSC 60000/1001 Hz field rate, so no rounding
-// drift accumulates between the FFmpeg pipe and the field pump. One reader
-// per session; caller iterates by calling NextChunkSize, reading that many
-// bytes from the pipe, then Advance to account for the bytes actually read.
+// arithmetic against the NTSC 60000/1001 Hz field rate, while preserving
+// whole PCM sample frames. One reader per session; caller iterates by
+// calling NextChunkSize, reading that many bytes from the pipe, then Advance
+// to account for the bytes actually read.
 type AudioPipeReader struct {
-	sampleRate int
-	channels   int
-	fieldsRead int64
-	bytesRead  int64
-	lastSize   int // size returned by the most recent NextChunkSize call
+	sampleRate       int
+	channels         int
+	fieldsRead       int64
+	sampleFramesRead int64
+	lastSize         int // size returned by the most recent NextChunkSize call
 }
 
 // NewAudioPipeReader returns a reader seeded at field 0, bytes 0.
@@ -28,23 +28,25 @@ func NewAudioPipeReader(sampleRate, channels int) *AudioPipeReader {
 }
 
 // NextChunkSize returns the exact number of bytes the caller should read from
-// the audio pipe for the NEXT field tick. Derived from the integer formula
-// (fieldsRead+1) * sampleRate * channels * 2 * 1001 / 60000 - bytesRead.
-// Never returns negative; if sampleRate*channels is zero (misconfigured),
-// returns 0 so the caller can treat it as "no audio".
+// the audio pipe for the NEXT field tick, preserving whole PCM sample frames.
+// Derived from the integer formula:
+// floor((fieldsRead+1) * sampleRate * 1001 / 60000) - sampleFramesRead
+// and then scaled by channels * 2 bytes-per-sample. Never returns negative;
+// if sampleRate*channels is zero (misconfigured), returns 0 so the caller can
+// treat it as "no audio".
 func (r *AudioPipeReader) NextChunkSize() int {
-	per := int64(r.sampleRate) * int64(r.channels) * int64(bytesPerSample)
-	if per <= 0 {
+	bytesPerFrame := int64(r.channels) * int64(bytesPerSample)
+	if r.sampleRate <= 0 || bytesPerFrame <= 0 {
 		r.lastSize = 0
 		return 0
 	}
-	expected := (r.fieldsRead + 1) * per * 1001 / 60000
-	n := int(expected - r.bytesRead)
-	if n < 0 {
-		n = 0
+	expectedFrames := (r.fieldsRead + 1) * int64(r.sampleRate) * 1001 / 60000
+	frames := expectedFrames - r.sampleFramesRead
+	if frames < 0 {
+		frames = 0
 	}
-	r.lastSize = n
-	return n
+	r.lastSize = int(frames * bytesPerFrame)
+	return r.lastSize
 }
 
 // Advance records that `got` bytes were actually read in response to the
@@ -52,7 +54,10 @@ func (r *AudioPipeReader) NextChunkSize() int {
 // may be less than lastSize on a short read (EOF); the next call to
 // NextChunkSize will compensate automatically.
 func (r *AudioPipeReader) Advance(got int) {
-	r.bytesRead += int64(got)
+	bytesPerFrame := r.channels * bytesPerSample
+	if bytesPerFrame > 0 {
+		r.sampleFramesRead += int64(got / bytesPerFrame)
+	}
 	r.fieldsRead++
 }
 
@@ -60,9 +65,9 @@ func (r *AudioPipeReader) Advance(got int) {
 // sends each on out. Closes out on EOF or any read error (including a
 // truncated tail).
 //
-// Chunk size averages to sampleRate*channels*2 / 59.94 but varies by ±1
-// byte between ticks to keep cumulative consumption integer-exact against
-// the 60000/1001 Hz field rate.
+// Chunk size averages to sampleRate*channels*2 / 59.94 but varies by one
+// whole sample frame between ticks to keep cumulative consumption aligned
+// against the 60000/1001 Hz field rate.
 func ReadAudioFromPipe(r io.Reader, sampleRate, channels int, out chan<- []byte) {
 	defer close(out)
 	reader := NewAudioPipeReader(sampleRate, channels)
