@@ -2,6 +2,7 @@ package plex
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ func TestCompanion_RootReturns200(t *testing.T) {
 }
 
 func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
-	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "abc-123"}, nil)
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "bridge-uuid", Version: "1.2.3"}, nil)
 	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
@@ -67,8 +68,47 @@ func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
 	}
-	if got := resp.Header.Get("X-Plex-Client-Identifier"); got != "client-1" {
-		t.Errorf("X-Plex-Client-Identifier = %q, want client-1", got)
+	if got := resp.Header.Get("X-Plex-Client-Identifier"); got != "bridge-uuid" {
+		t.Errorf("X-Plex-Client-Identifier = %q, want bridge-uuid", got)
+	}
+	if got := resp.Header.Get("X-Plex-Device-Name"); got != "MiSTer" {
+		t.Errorf("X-Plex-Device-Name = %q, want MiSTer", got)
+	}
+	if got := resp.Header.Get("X-Plex-Product"); got != companionProduct {
+		t.Errorf("X-Plex-Product = %q, want %s", got, companionProduct)
+	}
+}
+
+func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "bridge-uuid", Version: "1.2.3"}, nil)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/resources", nil)
+	req.Header.Set("X-Plex-Client-Identifier", "controller-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Plex-Client-Identifier"); got != "bridge-uuid" {
+		t.Errorf("X-Plex-Client-Identifier = %q, want bridge-uuid", got)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		`machineIdentifier="bridge-uuid"`,
+		`protocol="plex"`,
+		`product="MiSTer_GroovyRelay"`,
+		`version="1.2.3"`,
+		`device="MiSTer"`,
+		`model="MiSTer"`,
+		`provides="player"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("resources missing %q: %s", want, body)
+		}
 	}
 }
 
@@ -123,7 +163,11 @@ func (f *fakeCore) Status() core.SessionStatus {
 
 func TestPlayMedia_ParsesFields(t *testing.T) {
 	fc := &fakeCore{}
-	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", ProfileName: "Custom Profile"}, fc)
+	c := NewCompanion(CompanionConfig{
+		DeviceName:  "MiSTer",
+		DeviceUUID:  "our-uuid",
+		ProfileName: "Custom Profile",
+	}, fc)
 	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
@@ -226,6 +270,25 @@ func TestPause_DelegatesToCore(t *testing.T) {
 	}
 	if !fc.paused {
 		t.Error("core.Pause was not called")
+	}
+}
+
+func TestPause_TargetedAtAnotherClientIsRejected(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceUUID: "bridge-uuid"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/pause?X-Plex-Target-Client-Identifier=ps4-uuid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusPreconditionFailed)
+	}
+	if fc.paused {
+		t.Error("core.Pause should not run for another target client identifier")
 	}
 }
 

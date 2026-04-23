@@ -21,6 +21,15 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
+const (
+	companionProduct  = "MiSTer_GroovyRelay"
+	companionPlatform = "Linux"
+	companionDevice   = "MiSTer"
+	companionModel    = "MiSTer"
+	companionProvides = "player"
+	companionProtocol = "1.0"
+)
+
 // CompanionConfig carries the identity of this device as advertised to Plex
 // controllers via /resources and timeline headers.
 type CompanionConfig struct {
@@ -88,7 +97,7 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/timeline/unsubscribe", c.handleTimelineUnsubscribe)
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
-	return withHeaders(c.withSubscriberTouch(mux))
+	return c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux)))
 }
 
 // withSubscriberTouch refreshes the controller's timeline subscription TTL on
@@ -106,18 +115,41 @@ func (c *Companion) withSubscriberTouch(h http.Handler) http.Handler {
 	})
 }
 
+// withTargetValidation ensures control-plane requests that explicitly target
+// a different Plex client identifier do not mutate this bridge's session or
+// subscriber state. Discovery (/resources) is intentionally exempt because
+// controllers probe it before they know whether this is the device they want.
+func (c *Companion) withTargetValidation(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions || r.URL.Path == "/resources" {
+			h.ServeHTTP(w, r)
+			return
+		}
+		if targetID := queryOrHeader(r, "X-Plex-Target-Client-Identifier"); c.cfg.DeviceUUID != "" && targetID != "" && targetID != c.cfg.DeviceUUID {
+			http.Error(w, "target client mismatch", http.StatusPreconditionFailed)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // withHeaders injects the CORS + default XML Content-Type headers that all
 // Plex Companion responses share. Handlers that emit a non-XML body must
 // override Content-Type before writing.
-func withHeaders(h http.Handler) http.Handler {
+func (c *Companion) withHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier")
-		if clientID := r.Header.Get("X-Plex-Client-Identifier"); clientID != "" {
-			w.Header().Set("X-Plex-Client-Identifier", clientID)
-		}
+		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol")
+		w.Header().Set("X-Plex-Client-Identifier", c.cfg.DeviceUUID)
+		w.Header().Set("X-Plex-Device-Name", c.cfg.DeviceName)
+		w.Header().Set("X-Plex-Product", companionProduct)
+		w.Header().Set("X-Plex-Version", c.cfg.Version)
+		w.Header().Set("X-Plex-Platform", companionPlatform)
+		w.Header().Set("X-Plex-Platform-Version", c.cfg.Version)
+		w.Header().Set("X-Plex-Provides", companionProvides)
+		w.Header().Set("X-Plex-Protocol", companionProtocol)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -133,10 +165,14 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 	type Player struct {
 		Title                string `xml:"title,attr"`
 		MachineIdentifier    string `xml:"machineIdentifier,attr"`
+		Protocol             string `xml:"protocol,attr"`
 		ProtocolVersion      string `xml:"protocolVersion,attr"`
 		ProtocolCapabilities string `xml:"protocolCapabilities,attr"`
 		DeviceClass          string `xml:"deviceClass,attr"`
+		Device               string `xml:"device,attr"`
+		Model                string `xml:"model,attr"`
 		Product              string `xml:"product,attr"`
+		Version              string `xml:"version,attr"`
 		Platform             string `xml:"platform,attr"`
 		PlatformVersion      string `xml:"platformVersion,attr"`
 		// provides="player" tells Plex controllers this device is a valid
@@ -155,13 +191,17 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 		Player: Player{
 			Title:                c.cfg.DeviceName,
 			MachineIdentifier:    c.cfg.DeviceUUID,
+			Protocol:             "plex",
 			ProtocolVersion:      "1",
 			ProtocolCapabilities: "timeline,playback,playqueues",
 			DeviceClass:          "stb",
-			Product:              "MiSTer_GroovyRelay",
-			Platform:             "Linux",
+			Device:               companionDevice,
+			Model:                companionModel,
+			Product:              companionProduct,
+			Version:              c.cfg.Version,
+			Platform:             companionPlatform,
 			PlatformVersion:      c.cfg.Version,
-			Provides:             "player",
+			Provides:             companionProvides,
 		},
 	}
 	w.WriteHeader(200)
