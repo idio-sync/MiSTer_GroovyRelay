@@ -1,0 +1,8 @@
+{{define "toast"}}
+{{if .}}
+<div class="toast {{.Class}}" id="toast" hx-swap-oob="innerHTML:#toast-slot">
+	<div>{{.Message}}</div>
+	{{if .Command}}<pre>{{.Command}}</pre>{{end}}
+</div>
+{{end}}
+{{end}}

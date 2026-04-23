@@ -11,13 +11,33 @@ import (
 	"net/http"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
-// Config is the dependencies bundle passed to New. All fields are
-// required except where noted.
+// BridgeSaver abstracts the bridge-level save operation so the UI
+// package doesn't depend on main.go's wiring. Current() returns the
+// live in-memory BridgeConfig for prefill; Save(new) writes to disk
+// and (Phase 7) applies the delta to running adapters, returning
+// the scope used.
+type BridgeSaver interface {
+	Current() config.BridgeConfig
+	Save(new config.BridgeConfig) (adapters.ApplyScope, error)
+}
+
+// Config is the dependencies bundle passed to New. Registry is
+// required; BridgeSaver is required before any /ui/bridge route
+// handler runs (nil surfaces as a 500 at request time so unit tests
+// that only exercise the shell can construct Server without one).
 type Config struct {
-	Registry *adapters.Registry
-	// Future: Bridge config accessor + saver, link-flow adapter, etc.
+	Registry    *adapters.Registry
+	BridgeSaver BridgeSaver
+}
+
+// templateFuncs supplies the tiny set of helpers our templates need.
+// Keep this list small — business logic belongs in Go, not templates.
+// inc is used by the Bridge panel to render 1-indexed section numbers.
+var templateFuncs = template.FuncMap{
+	"inc": func(i int) int { return i + 1 },
 }
 
 // Server owns the parsed templates + embedded static assets + a
@@ -32,7 +52,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Registry == nil {
 		return nil, fmt.Errorf("ui: Config.Registry is required")
 	}
-	tmpl, err := template.New("ui").ParseFS(templatesFS, "templates/*.html")
+	tmpl, err := template.New("ui").Funcs(templateFuncs).ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("ui: parse templates: %w", err)
 	}
@@ -59,8 +79,9 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/", s.handleShell) // subpaths fall through to shell
 	mux.HandleFunc("GET /ui", s.handleShell)  // no trailing slash
 
-	// Future POST endpoints (Task 4.x onward) register via mountPOST
-	// so each write handler is wrapped in csrfMiddleware uniformly.
+	// Bridge panel.
+	mux.HandleFunc("GET /ui/bridge", s.handleBridgeGET)
+	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
 }
 
 // mountPOST is the canonical way to register a POST handler on the UI
