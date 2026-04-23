@@ -7,6 +7,7 @@ import (
 
 	cryptorand "crypto/rand"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
@@ -151,5 +152,41 @@ func TestPosition_IntegerExactFieldCount(t *testing.T) {
 					tc.ticks, tc.baseOffsetMs, got, wantDur)
 			}
 		})
+	}
+}
+
+func TestPlane_SetFieldOrder_FlipsAtomic(t *testing.T) {
+	p := &Plane{}
+	if got := p.fieldOrderFlip.Load(); got {
+		t.Fatal("initial flip should be false (TFF)")
+	}
+	if err := p.SetFieldOrder("bff"); err != nil {
+		t.Fatalf("SetFieldOrder(bff): %v", err)
+	}
+	if !p.fieldOrderFlip.Load() {
+		t.Error("after SetFieldOrder(bff), flip should be true")
+	}
+	if err := p.SetFieldOrder("tff"); err != nil {
+		t.Fatalf("SetFieldOrder(tff): %v", err)
+	}
+	if p.fieldOrderFlip.Load() {
+		t.Error("after SetFieldOrder(tff), flip should be false")
+	}
+}
+
+func TestPlane_SetFieldOrder_RejectsUnknown(t *testing.T) {
+	p := &Plane{}
+	if err := p.SetFieldOrder("diagonal"); err == nil {
+		t.Error("want error on unknown order")
+	}
+}
+
+func TestNewPlane_SeedsFlipFromBFF(t *testing.T) {
+	// BFF SpawnSpec → flip starts true (so ffmpeg's bff-ordered output
+	// gets the bottom-label-first wire-format labeling).
+	cfg := PlaneConfig{SpawnSpec: ffmpeg.PipelineSpec{FieldOrder: "bff"}}
+	p := NewPlane(cfg)
+	if !p.fieldOrderFlip.Load() {
+		t.Error("NewPlane with bff spec should set flip=true")
 	}
 }

@@ -49,13 +49,45 @@ type Plane struct {
 	audioReady     atomic.Bool
 	fpgaFrame      atomic.Uint32
 	done           chan struct{}
+
+	// fieldOrderFlip is the live TFF↔BFF hot-swap. When true, each
+	// field's polarity byte is inverted before BLIT_FIELD_VSYNC send.
+	// Effect: a 1-raster-line phase shift on the CRT, which is exactly
+	// what the operator flips via the UI to fix shimmer without
+	// restarting the ffmpeg pipeline.
+	fieldOrderFlip atomic.Bool
 }
 
 // NewPlane constructs a Plane that is ready to Run. The Sender inside cfg
 // must already be bound to the MiSTer's address; Plane does not own the
 // sender's lifecycle (the control plane may reuse it across sessions).
+// Seeds the field-order flip from cfg.SpawnSpec.FieldOrder: "bff" inverts
+// the label, "tff" (or empty) leaves it as-is.
 func NewPlane(cfg PlaneConfig) *Plane {
-	return &Plane{cfg: cfg, done: make(chan struct{})}
+	p := &Plane{cfg: cfg, done: make(chan struct{})}
+	if cfg.SpawnSpec.FieldOrder == "bff" {
+		p.fieldOrderFlip.Store(true)
+	}
+	return p
+}
+
+// SetFieldOrder changes the interlace field polarity for subsequent
+// BLIT_FIELD_VSYNC packets. Safe to call concurrently with Run —
+// the pump loop reads fieldOrderFlip atomically per field. Inverting
+// the byte without restarting ffmpeg yields a 1-raster-line phase
+// shift, which is the "hot-swap" the UI's ScopeHotSwap tier is
+// designed around. Only "tff" and "bff" are valid.
+func (p *Plane) SetFieldOrder(order string) error {
+	switch order {
+	case "tff":
+		p.fieldOrderFlip.Store(false)
+		return nil
+	case "bff":
+		p.fieldOrderFlip.Store(true)
+		return nil
+	default:
+		return fmt.Errorf("plane: invalid field order %q (want tff or bff)", order)
+	}
 }
 
 // Position returns the current playback offset since start. Seeded with
@@ -159,16 +191,22 @@ func (p *Plane) Run(ctx context.Context) error {
 			// One field per tick. Frame number increments when the field we
 			// just sent was the bottom field (field==1), so the NEXT tick
 			// starts a new interlaced frame at field=0.
+			// Read the current field-order flip. Inverted when the
+			// operator has swapped TFF↔BFF via the UI since Run started.
+			emitField := nextField
+			if p.fieldOrderFlip.Load() {
+				emitField ^= 1
+			}
 			select {
 			case field, ok := <-videoCh:
 				if !ok {
 					_ = p.cfg.Sender.Send(groovy.BuildClose())
 					return nil
 				}
-				p.sendField(frameNum, nextField, field)
+				p.sendField(frameNum, emitField, field)
 			default:
 				// Under-run — send a duplicate field to hold the raster.
-				p.sendDuplicate(frameNum, nextField)
+				p.sendDuplicate(frameNum, emitField)
 			}
 			if nextField == 1 {
 				frameNum++
