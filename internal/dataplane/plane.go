@@ -134,7 +134,6 @@ func (p *Plane) Run(ctx context.Context) error {
 	// 4. Readers + timer.
 	videoCh := make(chan []byte, 4)
 	var audioCh chan []byte
-	ticks := make(chan time.Time, 4)
 	videoHeight := p.cfg.SpawnSpec.OutputHeight
 	if videoHeight <= 0 {
 		videoHeight = p.cfg.FieldHeight
@@ -151,13 +150,19 @@ func (p *Plane) Run(ctx context.Context) error {
 	if fieldRate <= 0 {
 		fieldRate = 59.94
 	}
-	go RunFieldTimer(ctx, fieldRate, ticks)
+	fieldPeriod := time.Duration(float64(time.Second) / fieldRate)
+	timer := time.NewTimer(fieldPeriod)
+	defer timer.Stop()
+	lastTick := time.Now()
+	linePeriod := rasterLinePeriod(p.cfg.Modeline)
+	latestACK := ack
+	lastCorrectedEcho := ack.FrameEcho
 
 	// 5. Position bookkeeping — one tick = one NTSC field (1001/60 ms, exact).
 	p.resetPosition()
 
 	var (
-		frameNum  uint32 // increments once per interlaced frame (every 2 fields)
+		frameNum  uint32 // increments once per BLIT_FIELD_VSYNC
 		nextField uint8
 	)
 	if p.cfg.Modeline.Interlaced() {
@@ -175,7 +180,14 @@ func (p *Plane) Run(ctx context.Context) error {
 		case a := <-ackCh:
 			p.audioReady.Store(audioEnabled && a.AudioReady())
 			p.fpgaFrame.Store(a.FPGAFrame)
-		case <-ticks:
+			latestACK = a
+			if correction, ok := rasterCorrection(a, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
+				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
+				lastCorrectedEcho = a.FrameEcho
+			}
+		case <-timer.C:
+			lastTick = time.Now()
+			frameNum++
 			// The FFmpeg pipeline emits full-height progressive frames at the
 			// field cadence. Keep the BLIT header field bit aligned to the local
 			// row-stripe order here; deriving parity from live vgaF1 feedback
@@ -197,12 +209,8 @@ func (p *Plane) Run(ctx context.Context) error {
 				p.sendDuplicate(frameNum, nextField)
 			}
 			if p.cfg.Modeline.Interlaced() {
-				if nextField == terminalFieldForOrder(p.cfg.SpawnSpec.FieldOrder) {
-					frameNum++
-				}
 				nextField ^= 1
 			} else {
-				frameNum++
 				nextField = 0
 			}
 
@@ -219,6 +227,12 @@ func (p *Plane) Run(ctx context.Context) error {
 			}
 			// Advance reported position by one field period.
 			p.advancePosition()
+			if correction, ok := rasterCorrection(latestACK, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
+				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
+				lastCorrectedEcho = latestACK.FrameEcho
+			} else {
+				resetTimer(timer, fieldPeriod)
+			}
 		}
 	}
 }
@@ -235,6 +249,54 @@ func terminalFieldForOrder(order string) uint8 {
 		return 0
 	}
 	return 1
+}
+
+func rasterLinePeriod(ml groovy.Modeline) time.Duration {
+	if ml.PClock <= 0 || ml.HTotal == 0 {
+		return 0
+	}
+	seconds := float64(ml.HTotal) / (ml.PClock * 1_000_000)
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func rasterCorrection(ack groovy.ACK, ml groovy.Modeline, linePeriod, fieldPeriod time.Duration, lastEcho uint32) (time.Duration, bool) {
+	if linePeriod <= 0 || ack.FrameEcho == 0 || ack.FrameEcho == lastEcho || ml.VTotal == 0 {
+		return 0, false
+	}
+	vCount1 := (uint64(ack.FrameEcho-1) * uint64(ml.VTotal)) + uint64(ack.VCountEcho)
+	vCount2 := (uint64(ack.FPGAFrame) * uint64(ml.VTotal)) + uint64(ack.FPGAVCount)
+	if ml.Interlaced() {
+		vCount1 >>= 1
+		vCount2 >>= 1
+	}
+	diffLines := int64(vCount1) - int64(vCount2)
+	diffLines /= 2 // upstream sender applies half the measured correction.
+	correction := time.Duration(diffLines) * linePeriod
+	if correction > fieldPeriod/2 {
+		correction = fieldPeriod / 2
+	}
+	if correction < -fieldPeriod/2 {
+		correction = -fieldPeriod / 2
+	}
+	return correction, true
+}
+
+func nextTickDelay(lastTick time.Time, fieldPeriod, correction time.Duration) time.Duration {
+	delay := fieldPeriod - time.Since(lastTick) + correction
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
 }
 
 // effectiveAudioConfig returns the session-level audio settings that should be
