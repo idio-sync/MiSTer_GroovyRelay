@@ -108,7 +108,7 @@ rather read it without starting the container.
 
 ## Operational notes
 
-### Multi-NIC Unraid hosts
+### Multi-NIC hosts
 
 The bridge advertises its own LAN address to Plex (in the `/resources` response
 and in the plex.tv device registration PUT). By default it auto-detects that
@@ -181,13 +181,3 @@ matches. Make sure `source_port` is set to a fixed number in
 notes for why: this project stands on the shoulders of several GPL-3
 references (plexdlnaplayer, plex-mpv-shim, Groovy_MiSTer) and carries
 that license forward.
-
-## Further reading
-
-- [Design spec](docs/specs/2026-04-19-mister-groovy-relay-design.md) —
-  architecture, packet-level flow, testing strategy.
-- [Implementation plan](docs/plans/2026-04-19-mister-groovy-relay-v1.md) —
-  phased build plan that produced the current binary.
-- [References](docs/references/) — upstream projects studied during
-  design: `groovy_mister.md`, `mistercast.md`, `plex-mpv-shim.md`,
-  `plexdlnaplayer.md`, `mistglow.md`, `mister_plex.md`.

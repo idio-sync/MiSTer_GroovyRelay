@@ -19,6 +19,7 @@ type Dumper struct {
 	dir         string
 	sampleEvery int
 	mu          sync.Mutex
+	fieldCount  int
 	audioFile   *os.File
 	audioBytes  int
 }
@@ -30,11 +31,18 @@ func NewDumper(dir string, sampleEvery int) *Dumper {
 	return &Dumper{dir: dir, sampleEvery: sampleEvery}
 }
 
-// MaybeDumpField writes a PNG of the given BGR24 payload to the dump dir if
-// frame is a multiple of sampleEvery. The file is named field_NNNNNNNN.png.
+// MaybeDumpField writes a PNG of the given BGR24 payload to the dump dir every
+// sampleEvery decoded fields. Sampling on decoded-field count, rather than the
+// transport frame id, keeps dumps stable across sender implementations that
+// number interlaced fields differently or emit duplicate headers. The file is
+// named field_NNNNNNNN.png using the caller-supplied frame number.
 // bgr24 must be width*height*3 bytes, B,G,R, row-major, no padding.
 func (d *Dumper) MaybeDumpField(frame uint32, width, height int, bgr24 []byte) error {
-	if d.sampleEvery <= 0 || int(frame)%d.sampleEvery != 0 {
+	d.mu.Lock()
+	d.fieldCount++
+	shouldDump := d.sampleEvery > 0 && d.fieldCount%d.sampleEvery == 0
+	d.mu.Unlock()
+	if !shouldDump {
 		return nil
 	}
 	if width <= 0 || height <= 0 {
