@@ -48,6 +48,7 @@ type Plane struct {
 	positionFields atomic.Int64 // fields emitted since session start; Position() derives ms
 	audioReady     atomic.Bool
 	fpgaFrame      atomic.Uint32
+	vgaField       atomic.Bool
 	done           chan struct{}
 }
 
@@ -115,6 +116,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	p.audioReady.Store(audioEnabled && ack.AudioReady())
 	p.fpgaFrame.Store(ack.FPGAFrame)
+	p.vgaField.Store(ack.VGAField())
 
 	// 2. SWITCHRES (fire-and-forget).
 	if err := p.cfg.Sender.Send(groovy.BuildSwitchres(p.cfg.Modeline)); err != nil {
@@ -150,8 +152,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	p.resetPosition()
 
 	var (
-		frameNum  uint32 // increments once per interlaced frame (every 2 fields)
-		nextField uint8  // 0 = top, 1 = bottom
+		// Reference senders increment the frame counter once per BLIT_FIELD_VSYNC
+		// submission, even in interlaced modes. The field bit is then derived
+		// from the FPGA's latest reported field to stay phase-aligned.
+		frameNum = p.fpgaFrame.Load()
 	)
 
 	for {
@@ -165,10 +169,9 @@ func (p *Plane) Run(ctx context.Context) error {
 		case a := <-ackCh:
 			p.audioReady.Store(audioEnabled && a.AudioReady())
 			p.fpgaFrame.Store(a.FPGAFrame)
+			p.vgaField.Store(a.VGAField())
 		case <-ticks:
-			// One field per tick. Frame number increments when the field we
-			// just sent was the bottom field (field==1), so the NEXT tick
-			// starts a new interlaced frame at field=0.
+			frameNum, nextField := p.nextBlitState(frameNum)
 			select {
 			case field, ok := <-videoCh:
 				if !ok {
@@ -180,10 +183,6 @@ func (p *Plane) Run(ctx context.Context) error {
 				// Under-run — send a duplicate field to hold the raster.
 				p.sendDuplicate(frameNum, nextField)
 			}
-			if nextField == 1 {
-				frameNum++
-			}
-			nextField ^= 1
 
 			// Audio: only send while ACK bit 6 (fpga.audio) is set AND we
 			// have PCM ready. Never block the pump loop on audio.
@@ -200,6 +199,26 @@ func (p *Plane) Run(ctx context.Context) error {
 			p.advancePosition()
 		}
 	}
+}
+
+// nextBlitState mirrors the upstream Groovy sender's interlace logic.
+// The frame counter advances once per BLIT, catches up if the FPGA reports
+// it is already ahead, and for interlaced modes the field bit is derived
+// from the latest vgaF1 status so we do not drift into the wrong parity.
+func (p *Plane) nextBlitState(prevFrame uint32) (frame uint32, field uint8) {
+	fpgaFrame := p.fpgaFrame.Load()
+	frame = prevFrame + 1
+	if fpgaFrame > frame {
+		frame = fpgaFrame + 1
+	}
+	if !p.cfg.Modeline.Interlaced() {
+		return frame, 0
+	}
+	field = uint8((frame - fpgaFrame) & 1)
+	if !p.vgaField.Load() {
+		field ^= 1
+	}
+	return frame, field
 }
 
 // effectiveAudioConfig returns the session-level audio settings that should be
