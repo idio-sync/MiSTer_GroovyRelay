@@ -82,6 +82,11 @@ type Adapter struct {
 	// discoDone is closed when Discovery.Run exits so Stop can wait
 	// for the goroutine cleanly. Nil when GDM discovery isn't running.
 	discoDone chan struct{}
+
+	// pending tracks an in-flight UI-driven plex.tv PIN flow. nil
+	// between flows. In-memory only — bridge restart mid-flow forces
+	// the user to start over (design §10.1).
+	pending *pendingLink
 }
 
 // NewAdapter constructs a ready-to-Start Adapter. Companion + timeline

@@ -104,6 +104,27 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/adapter/{name}/status", s.handleAdapterStatus)
 	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
 	s.mountPOST(mux, "/ui/adapter/{name}/save", s.handleAdapterSave)
+
+	// Per-adapter routes contributed via RouteProvider (e.g., Plex's
+	// link/start, link/status, unlink). Mounted under
+	// /ui/adapter/<name>/<route.Path>; POSTs are wrapped in
+	// csrfMiddleware uniformly.
+	for _, a := range s.cfg.Registry.List() {
+		rp, ok := a.(adapters.RouteProvider)
+		if !ok {
+			continue
+		}
+		for _, route := range rp.UIRoutes() {
+			pattern := fmt.Sprintf("/ui/adapter/%s/%s", a.Name(), route.Path)
+			handler := http.HandlerFunc(route.Handler)
+			switch route.Method {
+			case "GET":
+				mux.Handle("GET "+pattern, handler)
+			case "POST":
+				mux.Handle("POST "+pattern, csrfMiddleware(handler))
+			}
+		}
+	}
 }
 
 // handleSidebarStatus renders the <aside> fragment swapped in every
