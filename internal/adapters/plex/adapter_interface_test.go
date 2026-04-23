@@ -96,3 +96,105 @@ func TestAdapter_StatusInitial(t *testing.T) {
 		t.Error("initial state should be StateStopped")
 	}
 }
+
+// sectionPrimitive wraps a [adapters.plex] block around body and
+// decodes it, returning the Primitive + meta ApplyConfig needs.
+func sectionPrimitive(t *testing.T, body string) (toml.Primitive, toml.MetaData) {
+	t.Helper()
+	wrapper := "[adapters.plex]\n" + body
+	var envelope struct {
+		Adapters map[string]toml.Primitive `toml:"adapters"`
+	}
+	meta, err := toml.Decode(wrapper, &envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Adapters["plex"], meta
+}
+
+// TestApplyConfig_DeviceNameRestartBridge covers the 7.4 review
+// correction: device_name is NOT a hot-swap because identity is
+// snapshotted at startup into Companion /resources, GDM replies,
+// timeline headers, and plex.tv registration. Until live identity
+// propagation lands, the conservative choice is restart-required.
+func TestApplyConfig_DeviceNameRestartBridge(t *testing.T) {
+	a := &Adapter{plexCfg: Config{
+		Enabled: true, DeviceName: "MiSTer", ProfileName: "Plex Home Theater",
+	}}
+	raw, meta := sectionPrimitive(t, `
+device_name = "NewName"
+enabled = true
+profile_name = "Plex Home Theater"
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeRestartBridge {
+		t.Errorf("scope = %v, want RestartBridge", scope)
+	}
+	if a.plexCfg.DeviceName != "NewName" {
+		t.Errorf("DeviceName not applied: %q", a.plexCfg.DeviceName)
+	}
+}
+
+func TestApplyConfig_ProfileNameRestartCast(t *testing.T) {
+	a := &Adapter{plexCfg: Config{
+		Enabled: true, DeviceName: "MiSTer", ProfileName: "Plex Home Theater",
+	}}
+	raw, meta := sectionPrimitive(t, `
+device_name = "MiSTer"
+enabled = true
+profile_name = "Plex Web Client"
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Errorf("scope = %v, want RestartCast", scope)
+	}
+}
+
+// TestApplyConfig_MaxScopeWins verifies max-scope-wins aggregation
+// (design §9.1). Changing device_name (restart-bridge) AND
+// profile_name (restart-cast) together → restart-bridge wins.
+func TestApplyConfig_MaxScopeWins(t *testing.T) {
+	a := &Adapter{plexCfg: Config{
+		Enabled: true, DeviceName: "MiSTer", ProfileName: "Plex Home Theater",
+	}}
+	raw, meta := sectionPrimitive(t, `
+device_name = "NewName"
+enabled = true
+profile_name = "Plex Web Client"
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeRestartBridge {
+		t.Errorf("scope = %v, want RestartBridge (max-wins)", scope)
+	}
+}
+
+// TestApplyConfig_InvalidRejected confirms the state-untouched
+// guarantee: a validation failure must leave plexCfg unchanged so
+// the write-before-apply contract stays honest (disk already has
+// the candidate; if we apply fails later, the running process
+// sticks with the known-good old values).
+func TestApplyConfig_InvalidRejected(t *testing.T) {
+	before := Config{Enabled: true, DeviceName: "MiSTer", ProfileName: "Plex Home Theater"}
+	a := &Adapter{plexCfg: before}
+	raw, meta := sectionPrimitive(t, `
+device_name = ""
+enabled = true
+profile_name = "Plex Home Theater"
+`)
+	_, err := a.ApplyConfig(raw, meta)
+	if err == nil {
+		t.Fatal("want validation error")
+	}
+	if a.plexCfg.DeviceName != before.DeviceName {
+		t.Errorf("plexCfg mutated despite validation failure: %q", a.plexCfg.DeviceName)
+	}
+}

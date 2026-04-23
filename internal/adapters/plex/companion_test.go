@@ -77,6 +77,12 @@ func (f *fakeCore) Status() core.SessionStatus {
 	defer f.mu.Unlock()
 	return f.status
 }
+func (f *fakeCore) DropActiveCast(reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = true
+	return nil
+}
 
 func TestPlayMedia_ParsesFields(t *testing.T) {
 	fc := &fakeCore{}

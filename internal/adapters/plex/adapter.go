@@ -222,13 +222,15 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeHotSwap,
 		},
 		{
-			Key:        "device_name",
-			Label:      "Device Name",
-			Help:       "Shown in the Plex cast-target list.",
+			Key:   "device_name",
+			Label: "Device Name",
+			Help: "Shown in the Plex cast-target list. Requires a bridge restart" +
+				" (Companion /resources, GDM, timeline headers, and plex.tv registration" +
+				" all snapshot this at startup).",
 			Kind:       adapters.KindText,
 			Required:   true,
 			Default:    "MiSTer",
-			ApplyScope: adapters.ScopeHotSwap,
+			ApplyScope: adapters.ScopeRestartBridge,
 			Section:    "Identity",
 		},
 		{
@@ -300,17 +302,109 @@ func (a *Adapter) setState(s adapters.State, errMsg string) {
 	a.lastErr = errMsg
 }
 
-// ApplyConfig is stubbed here — Phase 7 implements real diff + per-
-// field dispatch. For now a successful decode + validate is taken as
-// a ScopeHotSwap change.
+// ApplyConfig diffs the candidate config against the live plexCfg,
+// looks up each changed field's ApplyScope in scopeForPlexField,
+// aggregates via max-scope-wins (design §9.1), and enacts the scope:
+//
+//   - ScopeHotSwap: mutate plexCfg; running goroutines re-read it.
+//   - ScopeRestartCast: DropActiveCast on core so the next play
+//     rebuilds the ffmpeg pipeline with the new settings.
+//   - ScopeRestartBridge: mutate plexCfg for UI prefill, but the
+//     running process keeps old values until the operator restarts
+//     the container (the UI toast surfaces the restart command).
+//
+// On validation failure plexCfg is NOT mutated — the disk-side
+// write-before-apply contract depends on this.
 func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
 	newCfg := DefaultConfig()
 	if err := meta.PrimitiveDecode(raw, &newCfg); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("plex: decode apply config: %w", err)
 	}
 	if err := newCfg.Validate(); err != nil {
 		return 0, err
 	}
-	a.plexCfg = newCfg
-	return adapters.ScopeHotSwap, nil
+
+	changed := diffPlexConfig(a.plexCfg, newCfg)
+
+	scope := adapters.ScopeHotSwap
+	for _, key := range changed {
+		scope = adapters.MaxScope(scope, scopeForPlexField(key))
+	}
+
+	switch scope {
+	case adapters.ScopeRestartCast:
+		if a.cfg.Core != nil {
+			_ = a.cfg.Core.DropActiveCast("plex config change")
+		}
+		a.plexCfg = newCfg
+	default:
+		// Hot-swap and restart-bridge both just mutate plexCfg.
+		a.plexCfg = newCfg
+	}
+	return scope, nil
+}
+
+// diffPlexConfig returns the set of field keys that differ between
+// old and new. Key strings match the Fields() schema.
+func diffPlexConfig(oldCfg, newCfg Config) []string {
+	var changed []string
+	if oldCfg.Enabled != newCfg.Enabled {
+		changed = append(changed, "enabled")
+	}
+	if oldCfg.DeviceName != newCfg.DeviceName {
+		changed = append(changed, "device_name")
+	}
+	if oldCfg.DeviceUUID != newCfg.DeviceUUID {
+		changed = append(changed, "device_uuid")
+	}
+	if oldCfg.ProfileName != newCfg.ProfileName {
+		changed = append(changed, "profile_name")
+	}
+	if oldCfg.ServerURL != newCfg.ServerURL {
+		changed = append(changed, "server_url")
+	}
+	return changed
+}
+
+// scopeForPlexField returns the ApplyScope for a given field key.
+//
+// device_name is ScopeRestartBridge per the 7.4 review correction:
+// Companion /resources, timeline push headers, GDM replies, and
+// plex.tv registration all snapshot the identity at startup into
+// long-lived structs. Live identity propagation requires coordinated
+// updates across every one of those surfaces; until that lands, the
+// conservative choice is restart-required.
+//
+// profile_name / server_url force a cast drop so the next play's
+// pipeline sees the new settings. device_uuid is restart-required
+// (GDM + plex.tv use it as stable device identity — mid-flight flips
+// look like a new device and confuse controllers).
+func scopeForPlexField(key string) adapters.ApplyScope {
+	switch key {
+	case "enabled":
+		return adapters.ScopeHotSwap // handled out-of-band by the toggle endpoint
+	case "device_name", "device_uuid":
+		return adapters.ScopeRestartBridge
+	case "profile_name", "server_url":
+		return adapters.ScopeRestartCast
+	default:
+		return adapters.ScopeHotSwap
+	}
+}
+
+// SetEnabled mutates the plexCfg.Enabled flag. Called by the UI
+// toggle endpoint via the EnableSetter optional interface.
+func (a *Adapter) SetEnabled(v bool) {
+	a.plexCfg.Enabled = v
+}
+
+// CurrentValues exposes the current plexCfg values to the UI for
+// form prefill. Implements ui.ValueProvider via duck-typing.
+func (a *Adapter) CurrentValues() map[string]any {
+	return map[string]any{
+		"enabled":      a.plexCfg.Enabled,
+		"device_name":  a.plexCfg.DeviceName,
+		"profile_name": a.plexCfg.ProfileName,
+		"server_url":   a.plexCfg.ServerURL,
+	}
 }

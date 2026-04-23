@@ -52,6 +52,10 @@ type SessionManager interface {
 	Stop() error
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
+	// DropActiveCast tears down any in-flight session with the given
+	// reason logged. Invoked by Plex ApplyConfig for restart-cast
+	// field changes.
+	DropActiveCast(reason string) error
 }
 
 // NewCompanion constructs a Companion. core may be nil for tests that only
