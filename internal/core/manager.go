@@ -259,6 +259,44 @@ func (m *Manager) Play() error {
 	return m.fsm.Transition(EvPlay)
 }
 
+// SetInterlaceFieldOrder changes the interlace polarity live —
+// both the in-memory bridge config and, if a cast is active, the
+// running Plane's SetFieldOrder. Dual-write so the setting sticks
+// across cast-restart boundaries:
+//
+//   - Future sessions see m.bridge.Video.InterlaceFieldOrder.
+//   - The currently-emitting session sees the new polarity on the
+//     next field tick via Plane.fieldOrderFlip.
+//
+// Without the dual-write, a mid-cast flip would be forgotten when
+// the session naturally ends + a new one starts.
+func (m *Manager) SetInterlaceFieldOrder(order string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch order {
+	case "tff", "bff":
+	default:
+		return fmt.Errorf("interlace_field_order must be tff or bff, got %q", order)
+	}
+	m.bridge.Video.InterlaceFieldOrder = order
+	if m.plane != nil {
+		return m.plane.SetFieldOrder(order)
+	}
+	return nil
+}
+
+// UpdateBridge replaces the manager's in-memory bridge config. Used
+// by the UI save path for restart-cast fields: the updated bridge
+// must be visible to the next session-rebuild path, so we stash it
+// here rather than relying on main.go's copy. Does NOT drop the
+// active cast — callers do that via DropActiveCast as part of the
+// restart-cast dispatch sequence.
+func (m *Manager) UpdateBridge(b config.BridgeConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bridge = b
+}
+
 // DropActiveCast terminates the current cast session (if any) with the
 // given reason logged. Idempotent — returns nil when no session is
 // active. Called by the UI save path for restart-cast field changes:

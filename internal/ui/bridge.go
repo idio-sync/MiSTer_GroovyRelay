@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -42,11 +43,13 @@ type bridgeRow struct {
 // toastData is rendered by templates/toast.html. Class is "" for
 // green/OK and "err" for red; Command is optional and shown inside
 // a <pre> when a restart-bridge save wants to surface the exact
-// docker command.
+// docker command. NewURL is populated on http_port changes so the
+// operator knows where to reconnect after restart.
 type toastData struct {
 	Class   string
 	Message string
 	Command string
+	NewURL  string
 }
 
 // handleBridgeGET renders the bridge panel with current values.
@@ -97,6 +100,7 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	old := s.cfg.BridgeSaver.Current()
 	scope, err := s.cfg.BridgeSaver.Save(candidate)
 	if err != nil {
 		data := bridgePanelData{
@@ -108,8 +112,18 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Success — re-render with updated values + scope-appropriate toast.
+	toast := scopeToast(scope)
+	if scope == adapters.ScopeRestartBridge && candidate.UI.HTTPPort != old.UI.HTTPPort {
+		// Spell out the reconnect URL so the operator doesn't have to
+		// guess which port to hit after the container restart.
+		host := r.Host
+		if idx := strings.Index(host, ":"); idx >= 0 {
+			host = host[:idx]
+		}
+		toast.NewURL = fmt.Sprintf("http://%s:%d/", host, candidate.UI.HTTPPort)
+	}
 	data := bridgePanelData{
-		Toast:    scopeToast(scope),
+		Toast:    toast,
 		Sections: buildBridgeSections(s.cfg.BridgeSaver.Current(), nil),
 	}
 	s.renderPanel(w, "bridge-panel", data)

@@ -133,12 +133,17 @@ func main() {
 	plexAdapter.MountRoutes(mux)
 
 	// runtimeBridgeSaver persists Bridge changes to the on-disk
-	// config.toml via WriteAtomic and updates the in-memory sec.Bridge.
-	// Phase 7 will extend Save() to dispatch hot-swap / restart-cast
-	// deltas to running adapters; for Phase 4 it only persists and
-	// returns ScopeRestartBridge so the UI tells the operator to
-	// restart.
-	saver := &runtimeBridgeSaver{path: *cfgPath, sec: sec}
+	// config.toml, updates the in-memory sec.Bridge + core.Manager's
+	// bridge copy, and dispatches per-field scope (hot-swap for
+	// interlace_field_order, restart-cast for video/audio pipeline
+	// fields, restart-bridge for port/path fields with pre-flight
+	// probes).
+	saver := &runtimeBridgeSaver{
+		path:     *cfgPath,
+		sec:      sec,
+		core:     coreMgr,
+		registry: reg,
+	}
 
 	// runtimeAdapterSaver rewrites the [adapters.<name>] section of
 	// the on-disk config.toml via a line-level splice (not a full
@@ -224,20 +229,20 @@ func outboundIP() string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// runtimeBridgeSaver implements ui.BridgeSaver against the running
-// Sectioned config + the on-disk config.toml. Current() returns the
-// live in-memory bridge for prefill; Save() overwrites sec.Bridge,
-// re-marshals the whole Sectioned, and atomically replaces the file.
-//
-// Phase 4 returns ScopeRestartBridge unconditionally — every field
-// edit shows the "restart the container" toast. Phase 7 will diff
-// old vs new, call DropActiveCast for restart-cast fields, and
-// probe binds for restart-bridge fields to produce the right scope
-// per-save.
+// runtimeBridgeSaver implements ui.BridgeSaver with real per-field
+// scope dispatch (design §9). Current() returns the live in-memory
+// bridge for prefill; Save() diffs old vs new, runs pre-flight
+// probes for bindable restart-bridge fields, persists to disk via
+// a bridge-only rewrite (preserves adapter sections), and dispatches
+// the runtime side effects: hot-swap interlace, drop cast for
+// restart-cast, no-op for restart-bridge (user restarts the
+// container; toast surfaces the command).
 type runtimeBridgeSaver struct {
-	path string
-	sec  *config.Sectioned
-	mu   sync.Mutex
+	path     string
+	sec      *config.Sectioned
+	core     *core.Manager
+	registry *adapters.Registry
+	mu       sync.Mutex
 }
 
 func (r *runtimeBridgeSaver) Current() config.BridgeConfig {
@@ -250,15 +255,184 @@ func (r *runtimeBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplySco
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	old := r.sec.Bridge
+	changed := diffBridgeConfig(old, newCfg)
+
+	scope := adapters.ScopeHotSwap
+	for _, k := range changed {
+		scope = adapters.MaxScope(scope, scopeForBridgeField(k))
+	}
+
+	// Pre-flight probes for bindable restart-bridge fields. Fails
+	// the whole save — the file is untouched, matches the "validate
+	// before write" contract from the bridge panel.
+	if scope == adapters.ScopeRestartBridge {
+		if containsStr(changed, "ui.http_port") && newCfg.UI.HTTPPort != old.UI.HTTPPort {
+			if err := config.ProbeTCPPort(newCfg.UI.HTTPPort); err != nil {
+				return 0, fmt.Errorf("ui.http_port pre-flight failed: %w", err)
+			}
+		}
+		if containsStr(changed, "mister.source_port") && newCfg.MiSTer.SourcePort != old.MiSTer.SourcePort {
+			if err := config.ProbeUDPPort(newCfg.MiSTer.SourcePort); err != nil {
+				return 0, fmt.Errorf("mister.source_port pre-flight failed: %w", err)
+			}
+		}
+		if containsStr(changed, "data_dir") && newCfg.DataDir != old.DataDir {
+			if err := config.ProbeDirWritable(newCfg.DataDir); err != nil {
+				return 0, fmt.Errorf("data_dir pre-flight failed: %w", err)
+			}
+		}
+	}
+
+	// Persist to disk (write-before-apply).
 	r.sec.Bridge = newCfg
-	buf, err := marshalSectioned(r.sec)
+	r.core.UpdateBridge(newCfg)
+	buf, err := marshalBridgeSection(r.sec, r.path)
 	if err != nil {
 		return 0, fmt.Errorf("marshal: %w", err)
 	}
 	if err := config.WriteAtomic(r.path, buf); err != nil {
 		return 0, fmt.Errorf("write: %w", err)
 	}
-	return adapters.ScopeRestartBridge, nil
+
+	// Apply per scope.
+	switch scope {
+	case adapters.ScopeHotSwap:
+		if containsStr(changed, "video.interlace_field_order") {
+			if err := r.core.SetInterlaceFieldOrder(newCfg.Video.InterlaceFieldOrder); err != nil {
+				return 0, fmt.Errorf("interlace hot-swap: %w", err)
+			}
+		}
+
+	case adapters.ScopeRestartCast:
+		// UpdateBridge already ran above so the next session picks
+		// up the new aspect_mode / audio settings. Now drop the
+		// active cast so the pipeline rebuilds.
+		if err := r.core.DropActiveCast("bridge config change"); err != nil {
+			return scope, fmt.Errorf("drop-cast: %w", err)
+		}
+
+	case adapters.ScopeRestartBridge:
+		// Nothing to do at runtime; file is persisted, UI flashes
+		// restart-required toast with the docker command.
+	}
+
+	return scope, nil
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// marshalBridgeSection rewrites only the [bridge*] tables of the
+// TOML file, preserving [adapters.*] sections intact. Avoids
+// round-tripping toml.Primitive values through the encoder. Side
+// effect: the new [bridge] block always lands at EOF regardless of
+// where it was originally — TOML is order-insensitive so the bridge
+// still reads it correctly, but users inspecting the file will see
+// the re-ordering after first save. v2: splice at original position.
+func marshalBridgeSection(sec *config.Sectioned, path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	without := stripBridgeSections(data)
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(struct {
+		Bridge config.BridgeConfig `toml:"bridge"`
+	}{sec.Bridge}); err != nil {
+		return nil, err
+	}
+	return append(append(without, []byte("\n")...), buf.Bytes()...), nil
+}
+
+// stripBridgeSections removes every line from the first "[bridge"
+// header through the next non-bridge header (or EOF).
+func stripBridgeSections(doc []byte) []byte {
+	lines := strings.Split(string(doc), "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+	for _, ln := range lines {
+		tr := strings.TrimSpace(ln)
+		if strings.HasPrefix(tr, "[bridge") {
+			skipping = true
+			continue
+		}
+		if skipping && strings.HasPrefix(tr, "[") && strings.HasSuffix(tr, "]") {
+			skipping = false
+		}
+		if !skipping {
+			out = append(out, ln)
+		}
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
+	var keys []string
+	if oldCfg.DataDir != newCfg.DataDir {
+		keys = append(keys, "data_dir")
+	}
+	if oldCfg.HostIP != newCfg.HostIP {
+		keys = append(keys, "host_ip")
+	}
+	if oldCfg.Video.Modeline != newCfg.Video.Modeline {
+		keys = append(keys, "video.modeline")
+	}
+	if oldCfg.Video.InterlaceFieldOrder != newCfg.Video.InterlaceFieldOrder {
+		keys = append(keys, "video.interlace_field_order")
+	}
+	if oldCfg.Video.AspectMode != newCfg.Video.AspectMode {
+		keys = append(keys, "video.aspect_mode")
+	}
+	if oldCfg.Video.RGBMode != newCfg.Video.RGBMode {
+		keys = append(keys, "video.rgb_mode")
+	}
+	if oldCfg.Video.LZ4Enabled != newCfg.Video.LZ4Enabled {
+		keys = append(keys, "video.lz4_enabled")
+	}
+	if oldCfg.Audio.SampleRate != newCfg.Audio.SampleRate {
+		keys = append(keys, "audio.sample_rate")
+	}
+	if oldCfg.Audio.Channels != newCfg.Audio.Channels {
+		keys = append(keys, "audio.channels")
+	}
+	if oldCfg.MiSTer.Host != newCfg.MiSTer.Host {
+		keys = append(keys, "mister.host")
+	}
+	if oldCfg.MiSTer.Port != newCfg.MiSTer.Port {
+		keys = append(keys, "mister.port")
+	}
+	if oldCfg.MiSTer.SourcePort != newCfg.MiSTer.SourcePort {
+		keys = append(keys, "mister.source_port")
+	}
+	if oldCfg.UI.HTTPPort != newCfg.UI.HTTPPort {
+		keys = append(keys, "ui.http_port")
+	}
+	return keys
+}
+
+func scopeForBridgeField(key string) adapters.ApplyScope {
+	switch key {
+	case "video.interlace_field_order":
+		return adapters.ScopeHotSwap
+	case "video.modeline",
+		"video.aspect_mode",
+		"video.rgb_mode",
+		"video.lz4_enabled",
+		"audio.sample_rate",
+		"audio.channels":
+		return adapters.ScopeRestartCast
+	default:
+		// mister.*, host_ip, data_dir, ui.http_port — all restart-bridge.
+		return adapters.ScopeRestartBridge
+	}
 }
 
 // runtimeAdapterSaver replaces the [adapters.<name>] section of the
@@ -329,22 +503,6 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 	}
 	newLines = append(newLines, lines[end:]...)
 	return []byte(strings.Join(newLines, "\n"))
-}
-
-// marshalSectioned serializes Sectioned back to TOML bytes. BurntSushi
-// TOML's encoder skips toml.Primitive values (they go in as opaque
-// blobs and come out as empty), so Phase 4 loses per-adapter sections
-// on save. That's a known limitation acknowledged by the plan —
-// Phase 7 will add a round-trip-safe marshaller. For v1 with only one
-// adapter whose fields we don't yet edit through the Bridge save path,
-// this is acceptable; the embedded [adapters.plex] section is
-// re-seeded from defaults on next startup if it went missing.
-func marshalSectioned(sec *config.Sectioned) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(sec); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 // runLinkFlow drives the plex.tv PIN pairing dance: request a PIN,
