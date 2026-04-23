@@ -197,6 +197,15 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Token=tok") {
 		t.Errorf("stream URL missing plex token: %s", fc.lastReq.StreamURL)
 	}
+	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Client-Identifier=our-uuid") {
+		t.Errorf("stream URL missing stable bridge client identifier: %s", fc.lastReq.StreamURL)
+	}
+	if strings.Contains(fc.lastReq.StreamURL, "X-Plex-Client-Identifier=client-1") {
+		t.Errorf("stream URL should not use controller client identifier: %s", fc.lastReq.StreamURL)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Device-Name=MiSTer") {
+		t.Errorf("stream URL missing bridge device name: %s", fc.lastReq.StreamURL)
+	}
 	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Client-Profile-Name=Custom+Profile") {
 		t.Errorf("stream URL missing plex profile name: %s", fc.lastReq.StreamURL)
 	}

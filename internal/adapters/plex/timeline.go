@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,9 @@ type TimelineBroker struct {
 	playContext func() PlayMediaRequest
 	mu          sync.Mutex
 	subscribers map[string]*subscriber
+	lastPMSURL  string
+	lastPMSBody string
+	lastPMSToken string
 	stop        chan struct{}
 	stopOnce    sync.Once
 
@@ -112,8 +116,46 @@ func (t *TimelineBroker) timeNow() time.Time {
 	return time.Now()
 }
 
+// postTimeline sends one timeline payload to either a subscribed controller
+// or PMS. targetClientID is only set for controller pushes. token, when
+// present, is appended both as a query param and header for PMS auth.
+func (t *TimelineBroker) postTimeline(client *http.Client, urlStr, xmlBody, targetClientID, token string) error {
+	reqURL, err := url.Parse(urlStr)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		q := reqURL.Query()
+		q.Set("X-Plex-Token", token)
+		reqURL.RawQuery = q.Encode()
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, reqURL.String(),
+		strings.NewReader(xmlBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/xml")
+	req.Header.Set("Accept", "application/xml")
+	req.Header.Set("X-Plex-Protocol", "1.0")
+	req.Header.Set("X-Plex-Client-Identifier", t.cfg.DeviceUUID)
+	req.Header.Set("X-Plex-Device-Name", t.cfg.DeviceName)
+	if token != "" {
+		req.Header.Set("X-Plex-Token", token)
+	}
+	if targetClientID != "" {
+		req.Header.Set("X-Plex-Target-Client-Identifier", targetClientID)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // broadcastOnce prunes stale subscribers, then pushes the current timeline
-// XML to each live one. Isolated for test access.
+// XML to each live subscriber and the source PMS when known. Isolated for test
+// access.
 func (t *TimelineBroker) broadcastOnce() {
 	t.mu.Lock()
 	now := t.timeNow()
@@ -129,39 +171,48 @@ func (t *TimelineBroker) broadcastOnce() {
 		}
 		subs = append(subs, *s)
 	}
-	cfg := t.cfg
 	client := t.httpClient
 	t.mu.Unlock()
 
-	if len(subs) == 0 {
-		return
+	st := t.status()
+	play := PlayMediaRequest{}
+	if t.playContext != nil {
+		play = t.playContext()
 	}
 
 	for _, s := range subs {
-		st := t.status()
 		xmlBody := t.buildTimelineXMLWithCommandID(st, s.commandID)
 		protocol := s.protocol
 		if protocol == "" {
 			protocol = "http"
 		}
 		url := fmt.Sprintf("%s://%s:%s/:/timeline", protocol, s.host, s.port)
-		req, err := http.NewRequestWithContext(context.Background(), "POST", url,
-			strings.NewReader(xmlBody))
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "application/xml")
-		req.Header.Set("X-Plex-Protocol", "1.0")
-		req.Header.Set("X-Plex-Client-Identifier", cfg.DeviceUUID)
-		req.Header.Set("X-Plex-Device-Name", cfg.DeviceName)
-		req.Header.Set("X-Plex-Target-Client-Identifier", s.clientID)
-		resp, err := client.Do(req)
-		if err != nil {
+		if err := t.postTimeline(client, url, xmlBody, s.clientID, ""); err != nil {
 			slog.Debug("timeline push failed", "sub", s.clientID, "err", err)
 			continue
 		}
-		resp.Body.Close()
 	}
+
+	if play.PlexServerAddress == "" || play.PlexServerPort == "" || play.PlexServerScheme == "" {
+		return
+	}
+	pmsURL := fmt.Sprintf("%s://%s:%s/:/timeline", play.PlexServerScheme, play.PlexServerAddress, play.PlexServerPort)
+	pmsBody := t.buildTimelineXML(st)
+	t.mu.Lock()
+	duplicatePMS := t.lastPMSURL == pmsURL && t.lastPMSBody == pmsBody && t.lastPMSToken == play.PlexToken
+	t.mu.Unlock()
+	if duplicatePMS {
+		return
+	}
+	if err := t.postTimeline(client, pmsURL, pmsBody, "", play.PlexToken); err != nil {
+		slog.Debug("timeline push failed", "target", "pms", "err", err)
+		return
+	}
+	t.mu.Lock()
+	t.lastPMSURL = pmsURL
+	t.lastPMSBody = pmsBody
+	t.lastPMSToken = play.PlexToken
+	t.mu.Unlock()
 }
 
 // buildTimelineXML renders the three-<Timeline> MediaContainer Plex expects:

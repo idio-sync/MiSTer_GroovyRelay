@@ -228,6 +228,91 @@ func TestTimeline_BroadcastPushesToSubscribers(t *testing.T) {
 	}
 }
 
+func TestTimeline_BroadcastPushesToPMSWithoutSubscribers(t *testing.T) {
+	type received struct {
+		headers http.Header
+		body    string
+		query   url.Values
+	}
+	var mu sync.Mutex
+	var hits []received
+
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/:/timeline" {
+			http.Error(w, "unexpected path", 404)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		hits = append(hits, received{
+			headers: r.Header.Clone(),
+			body:    string(body),
+			query:   r.URL.Query(),
+		})
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewTimelineBroker(
+		TimelineConfig{DeviceUUID: "uuid-1", DeviceName: "MiSTer"},
+		func() core.SessionStatus {
+			return core.SessionStatus{
+				State:    core.StatePlaying,
+				Position: 7000 * time.Millisecond,
+				Duration: 12000 * time.Millisecond,
+			}
+		},
+	)
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			PlexServerAddress: u.Hostname(),
+			PlexServerPort:    u.Port(),
+			PlexServerScheme:  "http",
+			PlexMachineID:     "server-uuid",
+			MediaKey:          "/library/metadata/42",
+			PlexToken:         "tok-123",
+			CommandID:         "9",
+		}
+	})
+	b.broadcastOnce()
+	b.broadcastOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits) != 1 {
+		t.Fatalf("PMS received %d POSTs, want 1 (duplicate idle/unchanged payloads should be suppressed)", len(hits))
+	}
+	h := hits[0]
+	if h.headers.Get("X-Plex-Client-Identifier") != "uuid-1" {
+		t.Errorf("X-Plex-Client-Identifier = %q, want uuid-1", h.headers.Get("X-Plex-Client-Identifier"))
+	}
+	if h.headers.Get("X-Plex-Device-Name") != "MiSTer" {
+		t.Errorf("X-Plex-Device-Name = %q, want MiSTer", h.headers.Get("X-Plex-Device-Name"))
+	}
+	if h.headers.Get("X-Plex-Token") != "tok-123" {
+		t.Errorf("X-Plex-Token = %q, want tok-123", h.headers.Get("X-Plex-Token"))
+	}
+	if h.query.Get("X-Plex-Token") != "tok-123" {
+		t.Errorf("query X-Plex-Token = %q, want tok-123", h.query.Get("X-Plex-Token"))
+	}
+	for _, want := range []string{
+		`commandID="9"`,
+		`state="playing"`,
+		`key="/library/metadata/42"`,
+		`machineIdentifier="server-uuid"`,
+	} {
+		if !strings.Contains(h.body, want) {
+			t.Errorf("PMS body missing %q: %s", want, h.body)
+		}
+	}
+}
+
 func TestTimeline_StopIsIdempotent(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	b.Stop()

@@ -76,6 +76,12 @@ func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 // because Phase 11's NewAdapter instantiates both and cross-links them.
 func (c *Companion) SetTimeline(t *TimelineBroker) { c.timeline = t }
 
+func (c *Companion) notifyTimeline() {
+	if c.timeline != nil {
+		go c.timeline.broadcastOnce()
+	}
+}
+
 // Handler returns the HTTP mux wrapped in the CORS/XML middleware. Mount
 // this on the net.Listener returned from Phase 8's discovery code.
 func (c *Companion) Handler() http.Handler {
@@ -255,6 +261,10 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 
 	// Translate Plex Companion request → generic core.SessionRequest.
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	streamClientID := c.cfg.DeviceUUID
+	if streamClientID == "" {
+		streamClientID = p.ClientID
+	}
 	streamURL := BuildTranscodeURL(TranscodeRequest{
 		PlexServerURL: serverURL,
 		MediaPath:     p.MediaKey,
@@ -263,8 +273,13 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		OutputWidth:   720,
 		OutputHeight:  480,
 		SessionID:     p.SessionID,
-		ClientID:      p.ClientID,
+		ClientID:      streamClientID,
+		DeviceName:    c.cfg.DeviceName,
 		ProfileName:   c.cfg.ProfileName,
+		Product:       companionProduct,
+		Platform:      companionPlatform,
+		Version:       c.cfg.Version,
+		Provides:      companionProvides,
 	})
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
@@ -305,6 +320,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.rememberPlaySession(p)
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -313,6 +329,7 @@ func (c *Companion) handlePause(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -321,6 +338,7 @@ func (c *Companion) handlePlay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -329,6 +347,7 @@ func (c *Companion) handleStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -338,6 +357,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
