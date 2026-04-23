@@ -56,6 +56,16 @@ func bogusRequest() SessionRequest {
 	}
 }
 
+func TestManager_DropActiveCast_NoSession(t *testing.T) {
+	m := newTestManager(t)
+	if err := m.DropActiveCast("unit test"); err != nil {
+		t.Errorf("DropActiveCast with no session: %v", err)
+	}
+	if m.Status().State != StateIdle {
+		t.Errorf("state should remain Idle after no-op drop")
+	}
+}
+
 func TestManager_InitialStatusIdle(t *testing.T) {
 	m := newTestManager(t)
 	st := m.Status()

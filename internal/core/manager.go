@@ -259,6 +259,23 @@ func (m *Manager) Play() error {
 	return m.fsm.Transition(EvPlay)
 }
 
+// DropActiveCast terminates the current cast session (if any) with the
+// given reason logged. Idempotent — returns nil when no session is
+// active. Called by the UI save path for restart-cast field changes:
+// the ffmpeg pipeline can't reconfigure mid-cast, so we drop and let
+// the next play request rebuild with the new settings. Returns the
+// FSM transition error if any.
+func (m *Manager) DropActiveCast(reason string) error {
+	m.mu.Lock()
+	if m.active == nil && m.plane == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+	slog.Info("dropping active cast", "reason", reason)
+	return m.Stop()
+}
+
 // Stop tears down any active session. Idempotent — calling Stop when already
 // idle is a no-op that leaves the FSM in Idle.
 func (m *Manager) Stop() error {
