@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -249,6 +250,34 @@ func (r *runtimeBridgeSaver) Current() config.BridgeConfig {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.sec.Bridge
+}
+
+// firstRunMarker is the dot-prefixed sentinel file placed in data_dir
+// once the operator dismisses the first-run banner. Missing = banner
+// still shows; present = banner hidden. Filesystem-based so dismissal
+// survives process restart without mutating config.toml.
+const firstRunMarker = ".first-run-complete"
+
+// IsFirstRun implements ui.FirstRunAware. True until DismissFirstRun
+// runs for the first time.
+func (r *runtimeBridgeSaver) IsFirstRun() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := os.Stat(filepath.Join(r.sec.Bridge.DataDir, firstRunMarker))
+	return os.IsNotExist(err)
+}
+
+// DismissFirstRun implements ui.FirstRunAware. Writes the sentinel
+// file so subsequent page loads skip the quick-start banner.
+func (r *runtimeBridgeSaver) DismissFirstRun() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	path := filepath.Join(r.sec.Bridge.DataDir, firstRunMarker)
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func (r *runtimeBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {

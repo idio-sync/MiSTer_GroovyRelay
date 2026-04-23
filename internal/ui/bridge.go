@@ -11,10 +11,12 @@ import (
 
 // bridgePanelData is the template root for the Bridge panel render.
 // Toast is optional (nil = no toast); Sections is always populated
-// in the order Network → Video → Audio → Server.
+// in the order Network → Video → Audio → Server. FirstRun drives
+// the quick-start banner when the bridge hasn't been configured yet.
 type bridgePanelData struct {
 	Toast    *toastData
 	Sections []bridgeSection
+	FirstRun bool
 }
 
 type bridgeSection struct {
@@ -60,7 +62,27 @@ func (s *Server) handleBridgeGET(w http.ResponseWriter, r *http.Request) {
 	}
 	cur := s.cfg.BridgeSaver.Current()
 	data := bridgePanelData{Sections: buildBridgeSections(cur, nil)}
+	if fra, ok := s.cfg.BridgeSaver.(FirstRunAware); ok {
+		data.FirstRun = fra.IsFirstRun()
+	}
 	s.renderPanel(w, "bridge-panel", data)
+}
+
+// handleBridgeDismissFirstRun persists the first-run dismissal and
+// re-renders the panel. 501 if the saver doesn't implement
+// FirstRunAware — shouldn't happen in production (main.go wires it)
+// but keeps tests that use a bare BridgeSaver stable.
+func (s *Server) handleBridgeDismissFirstRun(w http.ResponseWriter, r *http.Request) {
+	fra, ok := s.cfg.BridgeSaver.(FirstRunAware)
+	if !ok {
+		http.Error(w, "first-run not supported", http.StatusNotImplemented)
+		return
+	}
+	if err := fra.DismissFirstRun(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.handleBridgeGET(w, r)
 }
 
 // handleBridgePOST validates the form, persists via BridgeSaver, and

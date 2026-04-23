@@ -5,6 +5,16 @@
 <h1>Bridge</h1>
 <p class="subtitle">Shared settings for every adapter: network destination, video pipeline, audio, and the HTTP listener.</p>
 
+{{if .FirstRun}}
+<div class="toast" style="position: static; margin: 0 0 24px; border-left-color: var(--accent);">
+	<strong>Quick start:</strong> (1) set your MiSTer's IP below, (2) save, (3) go to Plex and link your account.
+	<button class="btn ghost" style="margin-left: 12px;"
+		hx-post="/ui/bridge/dismiss-first-run"
+		hx-target="#panel" hx-swap="innerHTML"
+		hx-headers='{"Sec-Fetch-Site":"same-origin"}'>Dismiss</button>
+</div>
+{{end}}
+
 <form hx-post="/ui/bridge/save" hx-target="#panel" hx-swap="innerHTML">
 	{{range $i, $section := .Sections}}
 	<div class="section">

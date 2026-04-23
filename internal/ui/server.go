@@ -24,6 +24,16 @@ type BridgeSaver interface {
 	Save(new config.BridgeConfig) (adapters.ApplyScope, error)
 }
 
+// FirstRunAware is an optional extension of BridgeSaver — implement
+// it to drive the first-run banner in the Bridge panel. IsFirstRun
+// returns true when the dismissal marker is missing (fresh install);
+// DismissFirstRun persists the dismissal so subsequent page loads
+// hide the banner. Filesystem-based so dismissal survives restart.
+type FirstRunAware interface {
+	IsFirstRun() bool
+	DismissFirstRun() error
+}
+
 // AdapterSaver persists an adapter's [adapters.<name>] TOML section
 // to disk. The UI package does not know how to marshal back; main.go
 // wires a closure that rewrites the section + writes atomically.
@@ -95,6 +105,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// Bridge panel.
 	mux.HandleFunc("GET /ui/bridge", s.handleBridgeGET)
 	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
+	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
 
 	// Sidebar status fragment (polled every 3s by the shell).
 	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)

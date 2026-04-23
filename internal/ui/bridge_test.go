@@ -177,3 +177,64 @@ func TestHandleBridge_POST_CSRFRejected(t *testing.T) {
 		t.Errorf("status = %d, want 403", rw.Code)
 	}
 }
+
+// firstRunSaver embeds fakeBridgeSaver + FirstRunAware methods.
+type firstRunSaver struct {
+	fakeBridgeSaver
+	firstRun bool
+}
+
+func (f *firstRunSaver) IsFirstRun() bool         { return f.firstRun }
+func (f *firstRunSaver) DismissFirstRun() error   { f.firstRun = false; return nil }
+
+func TestHandleBridge_GET_FirstRunBannerShown(t *testing.T) {
+	saver := &firstRunSaver{firstRun: true}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if !strings.Contains(rw.Body.String(), "Quick start") {
+		t.Error("first-run banner missing")
+	}
+}
+
+func TestHandleBridge_GET_FirstRunBannerHidden(t *testing.T) {
+	saver := &firstRunSaver{firstRun: false}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if strings.Contains(rw.Body.String(), "Quick start") {
+		t.Error("first-run banner should be hidden after dismissal")
+	}
+}
+
+func TestHandleBridge_DismissFirstRun(t *testing.T) {
+	saver := &firstRunSaver{firstRun: true}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/dismiss-first-run", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	if saver.firstRun {
+		t.Error("firstRun should be false after dismiss")
+	}
+}
