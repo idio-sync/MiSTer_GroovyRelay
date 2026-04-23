@@ -85,6 +85,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 
 	// Sidebar status fragment (polled every 3s by the shell).
 	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)
+
+	// Adapter panel.
+	mux.HandleFunc("GET /ui/adapter/{name}", s.handleAdapterGET)
+	// POST /ui/adapter/{name}/save and /toggle land in Task 5.3.
 }
 
 // handleSidebarStatus renders the <aside> fragment swapped in every

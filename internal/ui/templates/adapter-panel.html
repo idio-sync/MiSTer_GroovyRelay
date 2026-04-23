@@ -1,0 +1,54 @@
+{{define "adapter-panel"}}
+<div id="toast-slot"></div>
+{{template "toast" .Toast}}
+
+<h1>{{.DisplayName}}</h1>
+<p class="subtitle">{{.Subtitle}}</p>
+
+<div class="section">
+	<h3><span class="num">01 —</span> Status</h3>
+	<div class="status-line {{.StatusClass}}">
+		{{.StatusCode}}{{if .StatusDetail}} · {{.StatusDetail}}{{end}}
+	</div>
+</div>
+
+<form hx-post="/ui/adapter/{{.Name}}/save" hx-target="#panel" hx-swap="innerHTML">
+	{{range $i, $section := .Sections}}
+	<div class="section">
+		<h3><span class="num">{{printf "%02d" (inc (inc $i))}} —</span> {{$section.Name}}</h3>
+		{{range $section.Rows}}
+		<div class="field">
+			<label for="f-{{.Key}}">{{.Label}}</label>
+			<div>
+				{{if eq .Kind "enum"}}
+					<select name="{{.Key}}" id="f-{{.Key}}">
+						{{$current := .StringValue}}
+						{{range .Enum}}
+						<option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+						{{end}}
+					</select>
+				{{else if eq .Kind "bool"}}
+					<input type="checkbox" name="{{.Key}}" id="f-{{.Key}}" value="true" {{if .BoolValue}}checked{{end}}>
+				{{else}}
+					<input type="{{.InputType}}" name="{{.Key}}" id="f-{{.Key}}"
+						value="{{.StringValue}}"
+						{{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
+						{{if .Required}}required{{end}}>
+				{{end}}
+				{{if .Help}}<div class="help">{{.Help}}</div>{{end}}
+				{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+			</div>
+		</div>
+		{{end}}
+	</div>
+	{{end}}
+
+	<div style="margin-top: 24px; text-align: right;">
+		<button type="submit" class="btn">Save {{.DisplayName}} ▸</button>
+	</div>
+</form>
+
+{{if .ExtraHTML}}
+<div class="adapter-extras">{{.ExtraHTML}}</div>
+{{end}}
+{{end}}
