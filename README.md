@@ -26,26 +26,33 @@ one FFmpeg worker per active cast.
 ## Quick start (Docker)
 
 ```bash
-# 1. Create a config directory and do a throwaway first run.
-#    The bridge sees no config.toml, writes a default one into your
-#    mounted /config, and exits 2. Edit that file to point at your MiSTer.
+# 1. Start the bridge. It auto-creates a default config.toml on first
+#    run if the file is missing, then exits. Edit that file to point at
+#    your MiSTer.
 mkdir -p /opt/mister-groovy-relay
 docker run --rm --network=host \
   -v /opt/mister-groovy-relay:/config \
   idiosync000/mister-groovy-relay:latest
-$EDITOR /opt/mister-groovy-relay/config.toml
+$EDITOR /opt/mister-groovy-relay/config.toml   # set bridge.mister.host
 
-# 2. Link to your plex.tv account (interactive).
-docker run --rm -it --network=host \
-  -v /opt/mister-groovy-relay:/config \
-  idiosync000/mister-groovy-relay:latest --link
-# → prints a 4-char code; open https://plex.tv/link and paste it.
-
-# 3. Long-run: detach and let it broadcast.
+# 2. Long-run: detach and let it broadcast.
 docker run -d --name mister-groovy-relay --restart unless-stopped \
   --network=host \
   -v /opt/mister-groovy-relay:/config \
   idiosync000/mister-groovy-relay:latest
+
+# 3. Link Plex in your browser. Open http://<host>:32500/, click Plex
+#    in the sidebar, click Link Plex Account, enter the 4-character code
+#    at plex.tv/link. Done. The token persists in data.json inside
+#    data_dir so you only link once.
+```
+
+The CLI `--link` flow still works for headless / automation setups:
+
+```bash
+docker run --rm -it --network=host \
+  -v /opt/mister-groovy-relay:/config \
+  idiosync000/mister-groovy-relay:latest --link
 ```
 
 `--network=host` is required. The bridge needs a stable source UDP port
@@ -62,42 +69,105 @@ then exits so you can edit it. The canonical copy lives at
 [`internal/config/example.toml`](internal/config/example.toml) if you'd
 rather read it without starting the container.
 
-| Key                      | Default              | Meaning                                                                          |
-| ------------------------ | -------------------- | -------------------------------------------------------------------------------- |
-| `device_name`            | `"MiSTer"`           | Name shown in the Plex cast-target list.                                         |
-| `device_uuid`            | auto                 | Stable identifier; auto-generated on first run and persisted to `data_dir`.      |
-| `mister_host`            | *(required)*         | IP or hostname of your MiSTer on the LAN.                                        |
-| `mister_port`            | `32100`              | UDP port the MiSTer's Groovy core is listening on.                               |
-| `source_port`            | `32101`              | Our stable source UDP port. MUST stay the same across restarts.                  |
-| `http_port`              | `32500`              | Port the bridge serves the Plex Companion HTTP API on.                           |
-| `modeline`               | `"NTSC_480i"`        | Video mode. v1 supports `NTSC_480i` only.                                        |
-| `interlace_field_order`  | `"tff"`              | `tff` or `bff`. Flip if you see field-order shimmer on the CRT.                  |
-| `aspect_mode`            | `"auto"`             | `letterbox`, `zoom`, or `auto` (ffmpeg cropdetect probe).                        |
-| `rgb_mode`               | `"rgb888"`           | Wire pixel format. `rgb888`, `rgba8888`, or `rgb565`.                            |
-| `lz4_enabled`            | `true`               | LZ4-compress BLIT payloads. Strongly recommended.                                |
-| `audio_sample_rate`      | `48000`              | PCM sample rate. `22050`, `44100`, or `48000`.                                   |
-| `audio_channels`         | `2`                  | `1` (mono) or `2` (stereo).                                                      |
-| `plex_profile_name`      | `"Plex Home Theater"`| Client-capability profile name advertised to PMS.                                |
-| `plex_server_url`        | auto-discover        | Optional: pin a specific PMS (`http://host:32400`) instead of GDM discovery.     |
-| `data_dir`               | `/config`            | Where the device UUID and plex.tv auth token live.                               |
+Config is sectioned into a `[bridge]` block (shared by every adapter)
+and per-adapter `[adapters.<name>]` blocks. Legacy flat-format configs
+are migrated on first load — the original is preserved at
+`config.toml.pre-ui-migration`.
+
+| Key                                    | Default              | Meaning                                                                     |
+| -------------------------------------- | -------------------- | --------------------------------------------------------------------------- |
+| `bridge.data_dir`                      | `/config`            | Where the device UUID and plex.tv auth token live.                          |
+| `bridge.host_ip`                       | auto-detect          | LAN IP advertised to Plex. Override on multi-NIC hosts (see below).         |
+| `bridge.video.modeline`                | `"NTSC_480i"`        | Video mode. v1 supports `NTSC_480i` only.                                   |
+| `bridge.video.interlace_field_order`   | `"tff"`              | `tff` or `bff`. Flip if you see field-order shimmer on the CRT.             |
+| `bridge.video.aspect_mode`             | `"auto"`             | `letterbox`, `zoom`, or `auto` (ffmpeg cropdetect probe).                   |
+| `bridge.video.rgb_mode`                | `"rgb888"`           | Wire pixel format. v1: `rgb888` only.                                       |
+| `bridge.video.lz4_enabled`             | `true`               | LZ4-compress BLIT payloads. Strongly recommended.                           |
+| `bridge.audio.sample_rate`             | `48000`              | PCM sample rate. `22050`, `44100`, or `48000`.                              |
+| `bridge.audio.channels`                | `2`                  | `1` (mono) or `2` (stereo).                                                 |
+| `bridge.mister.host`                   | *(required)*         | IP or hostname of your MiSTer on the LAN.                                   |
+| `bridge.mister.port`                   | `32100`              | UDP port the MiSTer's Groovy core is listening on.                          |
+| `bridge.mister.source_port`            | `32101`              | Our stable source UDP port. MUST stay the same across restarts.             |
+| `bridge.ui.http_port`                  | `32500`              | Port the bridge serves the Plex Companion HTTP API + Settings UI on.        |
+| `adapters.plex.enabled`                | `true`               | Toggle the Plex adapter on or off.                                          |
+| `adapters.plex.device_name`            | `"MiSTer"`           | Name shown in the Plex cast-target list.                                    |
+| `adapters.plex.device_uuid`            | auto                 | Stable identifier; auto-generated on first run and persisted to `data_dir`. |
+| `adapters.plex.profile_name`           | `"Plex Home Theater"`| Client-capability profile name advertised to PMS.                           |
+| `adapters.plex.server_url`             | auto-discover        | Optional: pin a specific PMS (`http://host:32400`) instead of GDM discovery.|
+
+## Settings UI
+
+Once the bridge is running, point a browser at `http://<host>:32500/`
+(or whatever `bridge.ui.http_port` is set to). The settings page lets
+you:
+
+- Edit every field in `config.toml` with inline help and validation.
+- Flip `interlace_field_order` live — no cast drop, no restart. Flip,
+  look at the CRT, flip back. Four-click workflow per guess.
+- Link your Plex account in-browser — no more `docker run … --link`
+  terminal step. Click **Link Plex Account**, enter the 4-character
+  code at plex.tv/link, done.
+- Enable or disable adapters with a toggle (v1 ships Plex; Jellyfin,
+  DLNA, URL arrive via the same interface in v2+).
+- See at a glance which adapters are running (green dot), stopped
+  (grey), or erroring (red + last error as tooltip).
+
+Changes are written to `config.toml` atomically (`os.Rename` semantics,
+no torn writes). Each field is tagged with an apply scope so the UI
+tells you what it just did: *applied live* (hot-swap), *cast
+restarted* (next play rebuilds the pipeline), or *restart the
+container* (for bindable/identity fields where live propagation would
+produce split-brain state).
+
+### Authentication and LAN exposure
+
+The settings UI has **no authentication**. Only expose the
+`http_port` on networks you trust. The Plex Companion API (which
+runs on the same port and predates the UI) has the same posture —
+nothing has regressed, but the attack surface is larger now that
+config is writable over HTTP.
+
+If stronger isolation is needed:
+
+- Put the bridge behind a reverse proxy (nginx, Caddy) with basic
+  auth, and keep `http_port` bound LAN-only.
+- Restrict access with host firewall rules (iptables / nftables /
+  Unraid's Bridge Network Access setting).
+- Use a WireGuard tunnel for out-of-LAN administration.
+
+The bridge requires `--network=host` for GDM multicast discovery, so
+binding to `127.0.0.1` would make the UI unreachable from other LAN
+devices — which is almost certainly where you want to access it
+from. LAN-layer isolation is the v1 answer.
 
 ## First-time setup walkthrough
 
 1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
-   or `go build ./cmd/mister-groovy-relay` if you want a native binary.
-2. **Configure.** Start the bridge once with no config present — it writes
-   a default `config.toml` into `data_dir` (default `/config`) and exits
-   with code 2. Edit that file; the only mandatory change is
-   `mister_host` — point it at your MiSTer's IP.
-3. **Link.** Run with `--link`. The bridge prints a 4-character code
-   and the plex.tv link URL; paste the code at `https://plex.tv/link`
-   while signed in to the Plex account that owns your PMS. The returned
-   auth token is persisted to `data_dir/plex.json` (mode 0600) so you
-   only do this once.
-4. **First cast.** Drop the `--link` flag and start the bridge
-   normally. Open Plex on your phone (or web client), pick a video,
-   tap the cast icon, and select your `device_name` from the list.
-   Playback should start on the CRT within 1–2 seconds.
+   or `go build ./cmd/mister-groovy-relay` for a native binary.
+
+2. **Mount a config dir.** `docker run -v /opt/mister-groovy-relay:/config …`.
+   The bridge auto-creates `config.toml` from defaults on first start
+   if the file is missing.
+
+3. **Open the UI.** Browse to `http://<docker-host>:32500/`. You'll
+   land on the Bridge panel with a quick-start banner. Fill in your
+   MiSTer's IP under **Network → MiSTer Host**, click **Save Bridge**.
+   Because `bridge.mister.host` is a restart-bridge field (the UDP
+   sender is bound at startup), the UI tells you to restart the
+   container. `docker restart mister-groovy-relay` and reload.
+
+4. **Link Plex.** Click **Plex** in the sidebar → **Link Plex
+   Account**. Copy the 4-character code, open `plex.tv/link` in a new
+   tab, paste, click **Allow**. The UI transitions to *Linked · RUN*
+   within ~2 seconds.
+
+5. **First cast.** Open Plex on your phone, pick a video, tap the
+   cast icon, pick your bridge from the target list. The CRT lights
+   up in 1–2 seconds.
+
+If you prefer the terminal, `docker run --rm -it … --link` still
+prints the code to stdout (the CLI flag is retained for headless /
+automation use).
 
 ## Operational notes
 
