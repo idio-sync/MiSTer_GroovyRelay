@@ -1,5 +1,7 @@
 # MiSTer_GroovyRelay
 
+Note: this is not actually functional yet.
+
 A WIP Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
 Server; it advertises itself as a Plex cast target on the LAN, and when
 you pick it from the Plex client's "Cast" menu it transcodes the
