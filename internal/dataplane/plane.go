@@ -48,7 +48,6 @@ type Plane struct {
 	positionFields atomic.Int64 // fields emitted since session start; Position() derives ms
 	audioReady     atomic.Bool
 	fpgaFrame      atomic.Uint32
-	vgaField       atomic.Bool
 	done           chan struct{}
 }
 
@@ -116,7 +115,6 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	p.audioReady.Store(audioEnabled && ack.AudioReady())
 	p.fpgaFrame.Store(ack.FPGAFrame)
-	p.vgaField.Store(ack.VGAField())
 
 	// 2. SWITCHRES (fire-and-forget).
 	if err := p.cfg.Sender.Send(groovy.BuildSwitchres(p.cfg.Modeline)); err != nil {
@@ -137,7 +135,14 @@ func (p *Plane) Run(ctx context.Context) error {
 	videoCh := make(chan []byte, 4)
 	var audioCh chan []byte
 	ticks := make(chan time.Time, 4)
-	go ReadFieldsFromPipe(proc.VideoPipe(), p.cfg.FieldWidth, p.cfg.FieldHeight, p.cfg.BytesPerPixel, videoCh)
+	videoHeight := p.cfg.SpawnSpec.OutputHeight
+	if videoHeight <= 0 {
+		videoHeight = p.cfg.FieldHeight
+		if p.cfg.Modeline.Interlaced() {
+			videoHeight *= 2
+		}
+	}
+	go ReadFramesFromPipe(proc.VideoPipe(), p.cfg.FieldWidth, videoHeight, p.cfg.BytesPerPixel, videoCh)
 	if audioEnabled {
 		audioCh = make(chan []byte, 16)
 		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
@@ -152,11 +157,12 @@ func (p *Plane) Run(ctx context.Context) error {
 	p.resetPosition()
 
 	var (
-		// Reference senders increment the frame counter once per BLIT_FIELD_VSYNC
-		// submission, even in interlaced modes. The field bit is then derived
-		// from the FPGA's latest reported field to stay phase-aligned.
-		frameNum = p.fpgaFrame.Load()
+		frameNum  uint32 // increments once per interlaced frame (every 2 fields)
+		nextField uint8
 	)
+	if p.cfg.Modeline.Interlaced() {
+		nextField = initialFieldForOrder(p.cfg.SpawnSpec.FieldOrder)
+	}
 
 	for {
 		select {
@@ -169,19 +175,35 @@ func (p *Plane) Run(ctx context.Context) error {
 		case a := <-ackCh:
 			p.audioReady.Store(audioEnabled && a.AudioReady())
 			p.fpgaFrame.Store(a.FPGAFrame)
-			p.vgaField.Store(a.VGAField())
 		case <-ticks:
-			frameNum, nextField := p.nextBlitState(frameNum)
+			// The FFmpeg pipeline emits full-height progressive frames at the
+			// field cadence. Keep the BLIT header field bit aligned to the local
+			// row-stripe order here; deriving parity from live vgaF1 feedback
+			// would risk tagging a top-field payload as bottom-field (or vice
+			// versa).
 			select {
-			case field, ok := <-videoCh:
+			case frame, ok := <-videoCh:
 				if !ok {
 					_ = p.cfg.Sender.Send(groovy.BuildClose())
 					return nil
 				}
-				p.sendField(frameNum, nextField, field)
+				payload := frame
+				if p.cfg.Modeline.Interlaced() {
+					payload = ExtractFieldFromFrame(frame, p.cfg.FieldWidth, videoHeight, p.cfg.BytesPerPixel, nextField)
+				}
+				p.sendField(frameNum, nextField, payload)
 			default:
 				// Under-run — send a duplicate field to hold the raster.
 				p.sendDuplicate(frameNum, nextField)
+			}
+			if p.cfg.Modeline.Interlaced() {
+				if nextField == terminalFieldForOrder(p.cfg.SpawnSpec.FieldOrder) {
+					frameNum++
+				}
+				nextField ^= 1
+			} else {
+				frameNum++
+				nextField = 0
 			}
 
 			// Audio: only send while ACK bit 6 (fpga.audio) is set AND we
@@ -201,24 +223,18 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 }
 
-// nextBlitState mirrors the upstream Groovy sender's interlace logic.
-// The frame counter advances once per BLIT, catches up if the FPGA reports
-// it is already ahead, and for interlaced modes the field bit is derived
-// from the latest vgaF1 status so we do not drift into the wrong parity.
-func (p *Plane) nextBlitState(prevFrame uint32) (frame uint32, field uint8) {
-	fpgaFrame := p.fpgaFrame.Load()
-	frame = prevFrame + 1
-	if fpgaFrame > frame {
-		frame = fpgaFrame + 1
+func initialFieldForOrder(order string) uint8 {
+	if order == "bff" {
+		return 1
 	}
-	if !p.cfg.Modeline.Interlaced() {
-		return frame, 0
+	return 0
+}
+
+func terminalFieldForOrder(order string) uint8 {
+	if order == "bff" {
+		return 0
 	}
-	field = uint8((frame - fpgaFrame) & 1)
-	if !p.vgaField.Load() {
-		field ^= 1
-	}
-	return frame, field
+	return 1
 }
 
 // effectiveAudioConfig returns the session-level audio settings that should be
