@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +26,7 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 	for _, substr := range []string{
 		"directPlay=0", "directStream=0", "copyts=1",
 		"videoResolution=720x480", "X-Plex-Token=xyz",
+		"X-Plex-Client-Profile-Name=Plex+Home+Theater",
 	} {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)
@@ -46,7 +46,7 @@ func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 		</Media>
 	</Video>
 </MediaContainer>`
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/library/metadata/42" {
 			http.Error(w, "not found", 404)
 			return
@@ -70,7 +70,7 @@ func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 
 func TestSubtitleURLFor_NoMatch(t *testing.T) {
 	xmlBody := `<MediaContainer><Video><Media><Part/></Media></Video></MediaContainer>`
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(xmlBody))
 	}))
 	defer ts.Close()
@@ -81,7 +81,7 @@ func TestSubtitleURLFor_NoMatch(t *testing.T) {
 }
 
 func TestFetchSubtitleToFile_WritesLocalPath(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-subrip")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("1\n00:00:00,000 --> 00:00:02,000\nhello\n"))
@@ -119,7 +119,7 @@ func TestFetchSubtitleToFile_WritesLocalPath(t *testing.T) {
 func TestFetchSubtitleToFile_RejectsPathTraversal(t *testing.T) {
 	// httptest returning a valid subtitle body — the server never matters
 	// because sanitization should reject the request before the HTTP call.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-subrip")
 		_, _ = w.Write([]byte("hello"))
 	}))
@@ -133,7 +133,7 @@ func TestFetchSubtitleToFile_RejectsPathTraversal(t *testing.T) {
 		"C:\\abs\\path",
 		"with spaces",
 		"semi;colon",
-		"", // empty
+		"",                       // empty
 		strings.Repeat("a", 129), // too long
 	}
 	ctx := context.Background()
@@ -160,7 +160,7 @@ func TestFetchSubtitleToFile_RejectsPathTraversal(t *testing.T) {
 // does not block SubtitleURLFor beyond the caller's context deadline.
 // Regression harness for I10.
 func TestSubtitleURLFor_ContextCancelled(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done() // block until client cancels
 	}))
 	defer srv.Close()

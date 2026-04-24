@@ -2,6 +2,7 @@ package fakemister
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -18,6 +19,7 @@ type Dumper struct {
 	dir         string
 	sampleEvery int
 	mu          sync.Mutex
+	fieldCount  int
 	audioFile   *os.File
 	audioBytes  int
 }
@@ -29,18 +31,32 @@ func NewDumper(dir string, sampleEvery int) *Dumper {
 	return &Dumper{dir: dir, sampleEvery: sampleEvery}
 }
 
-// MaybeDumpField writes a PNG of the given RGB888 payload to the dump dir if
-// frame is a multiple of sampleEvery. The file is named field_NNNNNNNN.png.
-// rgb888 must be width*height*3 bytes, R,G,B, row-major, no padding.
-func (d *Dumper) MaybeDumpField(frame uint32, width, height int, rgb888 []byte) error {
-	if d.sampleEvery <= 0 || int(frame)%d.sampleEvery != 0 {
+// MaybeDumpField writes a PNG of the given BGR24 payload to the dump dir every
+// sampleEvery decoded fields. Sampling on decoded-field count, rather than the
+// transport frame id, keeps dumps stable across sender implementations that
+// number interlaced fields differently or emit duplicate headers. The file is
+// named field_NNNNNNNN.png using the caller-supplied frame number.
+// bgr24 must be width*height*3 bytes, B,G,R, row-major, no padding.
+func (d *Dumper) MaybeDumpField(frame uint32, width, height int, bgr24 []byte) error {
+	d.mu.Lock()
+	d.fieldCount++
+	shouldDump := d.sampleEvery > 0 && d.fieldCount%d.sampleEvery == 0
+	d.mu.Unlock()
+	if !shouldDump {
 		return nil
+	}
+	if width <= 0 || height <= 0 {
+		return errors.New("invalid field dimensions")
+	}
+	want := width * height * 3
+	if len(bgr24) != want {
+		return fmt.Errorf("invalid field payload size: got %d bytes, want %d (%dx%dx3)", len(bgr24), want, width, height)
 	}
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			i := (y*width + x) * 3
-			img.Set(x, y, color.RGBA{R: rgb888[i], G: rgb888[i+1], B: rgb888[i+2], A: 255})
+			img.Set(x, y, color.RGBA{R: bgr24[i+2], G: bgr24[i+1], B: bgr24[i], A: 255})
 		}
 	}
 	path := filepath.Join(d.dir, fmt.Sprintf("field_%08d.png", frame))

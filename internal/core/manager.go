@@ -65,6 +65,23 @@ func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender) *Manager {
 	return &Manager{bridge: bridge, sender: sender, fsm: New()}
 }
 
+func (m *Manager) logPlaneExit(runErr error) {
+	if runErr == nil || errors.Is(runErr, context.Canceled) {
+		return
+	}
+	if groovynet.IsInitACKTimeout(runErr) {
+		slog.Warn(
+			"MiSTer did not acknowledge INIT; it may be powered off, unreachable, or not listening on the configured port",
+			"mister_host", m.bridge.MiSTer.Host,
+			"mister_port", m.bridge.MiSTer.Port,
+			"source_port", m.sender.SourcePort(),
+			"err", runErr,
+		)
+		return
+	}
+	slog.Warn("data plane exited", "err", runErr)
+}
+
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
 // context so a stuck PMS cannot deadlock the control plane. Called by
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
@@ -124,8 +141,9 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		return err
 	}
 
-	// Per-field vActive for interlaced modes; full height otherwise.
-	fieldH := int(modeline.VActive)
+	// Groovy SWITCHRES carries full-frame vActive even for interlaced modes;
+	// the sender transmits one field at a time, so fieldH is half-height there.
+	fieldH := modeline.FieldHeight()
 	bpp := bytesPerPixel(rgbMode)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,7 +156,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		UseSSSeek:       req.DirectPlay,
 		SourceProbe:     probe,
 		OutputWidth:     int(modeline.HActive),
-		OutputHeight:    fieldH * 2,
+		OutputHeight:    int(modeline.VActive),
 		FieldOrder:      m.bridge.Video.InterlaceFieldOrder,
 		AspectMode:      m.bridge.Video.AspectMode,
 		CropRect:        cropRect,
@@ -163,13 +181,16 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		SeekOffsetMs:  offsetMs,
 	})
 	m.plane = plane
-	m.active = &activeSession{req: req, startedAt: time.Now(), baseOffsetMs: offsetMs}
+	m.active = &activeSession{
+		req:          req,
+		startedAt:    time.Now(),
+		baseOffsetMs: offsetMs,
+		duration:     probeDuration(probe),
+	}
 
 	go func() {
 		runErr := plane.Run(ctx)
-		if runErr != nil && !errors.Is(runErr, context.Canceled) {
-			slog.Warn("data plane exited", "err", runErr)
-		}
+		m.logPlaneExit(runErr)
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.plane != plane {
@@ -396,6 +417,16 @@ func (m *Manager) Status() SessionStatus {
 		}
 	}
 	return st
+}
+
+// probeDuration turns ffprobe's floating-point seconds into a time.Duration.
+// Unknown/invalid durations collapse to zero so live streams and malformed
+// sources don't advertise nonsense to Plex timelines.
+func probeDuration(probe *ffmpeg.ProbeResult) time.Duration {
+	if probe == nil || probe.Duration <= 0 {
+		return 0
+	}
+	return time.Duration(probe.Duration * float64(time.Second))
 }
 
 // resolveModeline maps config's `modeline` string to a groovy.Modeline.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
 
 // Process wraps a running ffmpeg invocation plus its video/audio read pipes.
@@ -21,7 +22,8 @@ type Process struct {
 	wg      sync.WaitGroup
 	stopped chan struct{}
 
-	stopOnce sync.Once
+	stopOnce      sync.Once
+	stopRequested atomic.Bool
 }
 
 // Spawn starts an ffmpeg subprocess running the pipeline described by spec.
@@ -99,16 +101,25 @@ func (p *Process) launchWaiter() {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		if err := p.cmd.Wait(); err != nil {
-			slog.Warn("ffmpeg exited", "err", err)
-		}
+		p.logWaitResult(p.cmd.Wait())
 		close(p.stopped)
 	}()
 }
 
+func (p *Process) logWaitResult(err error) {
+	if err == nil {
+		return
+	}
+	if p.stopRequested.Load() {
+		slog.Debug("ffmpeg stopped during session teardown", "err", err)
+		return
+	}
+	slog.Warn("ffmpeg exited", "err", err)
+}
+
 // VideoPipe returns the read-end of the video stream. Yields one
-// OutputWidth × (OutputHeight/2) RGB24 field per read (59.94 Hz) once the
-// filter chain produces output.
+// OutputWidth × OutputHeight BGR24 progressive frame per read (59.94 Hz)
+// once the filter chain produces output.
 func (p *Process) VideoPipe() io.Reader { return p.videoPipe }
 
 // AudioPipe returns the read-end of the audio stream (s16le PCM).
@@ -120,8 +131,13 @@ func (p *Process) AudioPipe() io.Reader { return p.audioPipe }
 func (p *Process) Stop() {
 	p.stopOnce.Do(func() {
 		if p.cmd != nil && p.cmd.Process != nil {
-			// Ignore errors — the process may already be gone.
-			_ = p.cmd.Process.Kill()
+			select {
+			case <-p.stopped:
+			default:
+				p.stopRequested.Store(true)
+				// Ignore errors — the process may already be gone.
+				_ = p.cmd.Process.Kill()
+			}
 		}
 		p.wg.Wait()
 		if p.videoPipe != nil {

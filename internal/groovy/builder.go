@@ -49,11 +49,51 @@ type Modeline struct {
 	HBegin    uint16
 	HEnd      uint16
 	HTotal    uint16
-	VActive   uint16 // per-field when Interlace > 0
+	VActive   uint16 // full-frame active lines; interlaced modes halve per field on the receiver
 	VBegin    uint16
 	VEnd      uint16
 	VTotal    uint16
 	Interlace uint8 // 0=progressive, 1=interlaced, 2=interlaced-force-field-fb
+}
+
+// Interlaced reports whether the modeline is one of Groovy's interlaced wire
+// modes. The upstream sender treats both 1 and 2 as "halve the payload per
+// field"; the distinction only affects how the core programs its framebuffer.
+func (m Modeline) Interlaced() bool { return m.Interlace != 0 }
+
+// FieldHeight returns the number of active lines in one transmitted field.
+// Groovy SWITCHRES carries full-frame vActive even for interlaced modes; the
+// sender/receiver both divide it by two when computing one BLIT payload.
+func (m Modeline) FieldHeight() int {
+	return FieldLines(m.VActive, m.Interlace)
+}
+
+// FieldRate returns the wire BLIT cadence derived from the modeline. The
+// upstream sender free-runs at the modeline's frame rate, doubled for
+// interlaced output because one BLIT_FIELD_VSYNC carries one field.
+func (m Modeline) FieldRate() float64 {
+	if m.PClock <= 0 || m.HTotal == 0 || m.VTotal == 0 {
+		return 0
+	}
+	rate := m.PClock * 1_000_000 / (float64(m.HTotal) * float64(m.VTotal))
+	if m.Interlaced() {
+		rate *= 2
+	}
+	return rate
+}
+
+// FieldLines returns the active lines in one transmitted field for the given
+// SWITCHRES values.
+func FieldLines(vActive uint16, interlace uint8) int {
+	if interlace != 0 {
+		return int(vActive) / 2
+	}
+	return int(vActive)
+}
+
+// FieldPayloadBytes returns the raw BLIT payload size for one field.
+func FieldPayloadBytes(hActive, vActive uint16, interlace uint8, bytesPerPixel int) int {
+	return int(hActive) * FieldLines(vActive, interlace) * bytesPerPixel
 }
 
 // ModelineFromPorches builds a Modeline from the conventional porch triple,
@@ -94,31 +134,21 @@ func BuildSwitchres(ml Modeline) []byte {
 	return buf
 }
 
-// NTSC480i60 matches the canonical psakhis/Groovy_MiSTer NTSC 480i entry
-// (mistercast.md:138: pClock=13.5, hTotal=858, vTotal=525, interlace=1).
-// VActive is per-field (240 lines per field; interlace=1 means the receiver
-// alternates field 0 / field 1 across consecutive BLIT_FIELD_VSYNC packets).
-// If your CRT prefers different timing, override in config.
-var NTSC480i60 = func() Modeline {
-	ml := ModelineFromPorches(
-		13.5,            // pClock MHz
-		720, 16, 62, 60, // hActive, hFrontPorch, hSync, hBackPorch  → hTotal=858
-		240, 3, 3, 19, // vActive per-field, vFrontPorch, vSync, vBackPorch
-		1, // interlaced
-	)
-	// Override vTotal to the full-frame value the receiver expects on the wire.
-	// mistercast.md:51 shows `m_frameTime = widthTime*vTotal >> interlace`,
-	// which requires the wire vTotal be 525 (then right-shifted by 1 for
-	// interlace=1). The per-field porch triple above computes 265 locally.
-	ml.VTotal = 525
-	return ml
-}()
-
-// Note: per-field vTotal computed above is 265; vTotal for interlaced NTSC is
-// 525 across both fields. Receiver expects per-field values (see
-// groovy_mister.md:112 "vActive is already halved per field"); the FPGA
-// reconstructs the 525-line frame from two 262/263-line fields. Verify the
-// exact vertical porches against a working GroovyMAME pcap before shipping.
+// NTSC480i60 matches the 720x480i NTSC preset shipped by both MiSTerCast and
+// Mistglow (`modelines.dat`). Interlaced modelines carry full-frame vertical
+// timings on the wire; the core halves payload height internally per field.
+var NTSC480i60 = Modeline{
+	PClock:    13.846,
+	HActive:   720,
+	HBegin:    744,
+	HEnd:      809,
+	HTotal:    880,
+	VActive:   480,
+	VBegin:    488,
+	VEnd:      494,
+	VTotal:    525,
+	Interlace: 1,
+}
 
 // BuildClose returns the 1-byte CLOSE command. Sender tears down the socket
 // after; receiver resets session state on next INIT. No ACK.

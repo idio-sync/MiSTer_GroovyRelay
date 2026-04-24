@@ -1,7 +1,9 @@
 package dataplane
 
 import (
+	"errors"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -11,6 +13,17 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
+
+func requireUDPSockets(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skipf("UDP sockets unavailable in this environment: %v", err)
+	}
+	t.Fatal(err)
+}
 
 // TestRateCodeForHz locks the integer→wire-enum mapping the INIT handshake
 // depends on. Unknown rates fall through to AudioRateOff — callers are
@@ -71,16 +84,12 @@ func TestNewPlane_PreservesConfig(t *testing.T) {
 func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 	// Stand up a loopback UDP listener as the "MiSTer"; capture datagrams.
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireUDPSockets(t, err)
 	defer conn.Close()
 	addr := conn.LocalAddr().(*net.UDPAddr)
 
 	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireUDPSockets(t, err)
 	defer sender.Close()
 
 	p := &Plane{cfg: PlaneConfig{Sender: sender, LZ4Enabled: true}}
@@ -133,9 +142,9 @@ func TestPosition_IntegerExactFieldCount(t *testing.T) {
 		baseOffsetMs int
 		wantPosMs    int64
 	}{
-		{3600, 0, 60_060},              // 60.06 s of playback at 59.94 Hz
-		{60_000, 0, 1_001_000},         // ~16.68 min
-		{600, 5_000, 5_000 + 10_010},   // 10 s of playback, resumed at 5 s
+		{3600, 0, 60_060},            // 60.06 s of playback at 59.94 Hz
+		{60_000, 0, 1_001_000},       // ~16.68 min
+		{600, 5_000, 5_000 + 10_010}, // 10 s of playback, resumed at 5 s
 	}
 	for _, tc := range cases {
 		t.Run("", func(t *testing.T) {
@@ -188,5 +197,52 @@ func TestNewPlane_SeedsFlipFromBFF(t *testing.T) {
 	p := NewPlane(cfg)
 	if !p.fieldOrderFlip.Load() {
 		t.Error("NewPlane with bff spec should set flip=true")
+	}
+}
+
+func TestEffectiveAudioConfig(t *testing.T) {
+	tests := []struct {
+		name  string
+		cfg   PlaneConfig
+		rate  int
+		chans int
+	}{
+		{
+			name: "audio source keeps configured session audio",
+			cfg: PlaneConfig{
+				SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
+				AudioRate:  48000,
+				AudioChans: 2,
+			},
+			rate:  48000,
+			chans: 2,
+		},
+		{
+			name: "video-only source disables audio",
+			cfg: PlaneConfig{
+				SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 0}},
+				AudioRate:  48000,
+				AudioChans: 2,
+			},
+		},
+		{
+			name: "non-positive audio config disables audio",
+			cfg: PlaneConfig{
+				SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
+				AudioRate:  0,
+				AudioChans: 2,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Plane{cfg: tt.cfg}
+			rate, chans := p.effectiveAudioConfig()
+			if rate != tt.rate || chans != tt.chans {
+				t.Errorf("effectiveAudioConfig() = (%d, %d), want (%d, %d)",
+					rate, chans, tt.rate, tt.chans)
+			}
+		})
 	}
 }

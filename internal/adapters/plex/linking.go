@@ -50,6 +50,10 @@ func RequestPIN(clientID, deviceName string) (*PinResponse, error) {
 	form.Set("X-Plex-Device-Name", deviceName)
 	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")
 	form.Set("X-Plex-Version", "1.0")
+	// X-Plex-Provides=player is baked into the plex.tv device record at link
+	// time. Without it the device is registered but not classified as a
+	// player, so controllers refuse to cast media to it.
+	form.Set("X-Plex-Provides", "player")
 
 	req, err := http.NewRequest(http.MethodPost, PlexAPIBase+"/api/v2/pins", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -104,11 +108,20 @@ func PollPIN(id int, clientID string, timeout time.Duration) (string, error) {
 
 // RegisterDevice PUTs the bridge's LAN URI to plex.tv/devices/{uuid}. This
 // is how the device shows up in the Plex mobile/web cast picker when the
-// controller is on cellular data (outside the LAN). Requires a valid auth
-// token; a one-shot call, intended to be driven by RunRegistrationLoop.
-func RegisterDevice(uuid, token, hostIP string, httpPort int) error {
+// controller is on cellular data (outside the LAN). We re-assert the human
+// device name on every refresh so a stale plex.tv device record doesn't keep
+// showing an old label after the operator renames the bridge or reuses a
+// previous UUID/token pair. Requires a valid auth token; a one-shot call,
+// intended to be driven by RunRegistrationLoop.
+func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName string) error {
 	form := url.Values{}
 	form.Set("Connection[][uri]", fmt.Sprintf("http://%s:%d", hostIP, httpPort))
+	// Re-assert provides=player on every refresh so the device record stays
+	// classified as a player even if a prior link created it without the flag.
+	form.Set("X-Plex-Provides", "player")
+	form.Set("X-Plex-Device-Name", deviceName)
+	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")
+	form.Set("X-Plex-Version", "1.0")
 	req, err := http.NewRequest(http.MethodPut,
 		fmt.Sprintf("%s/devices/%s?X-Plex-Token=%s", PlexAPIBase, uuid, token),
 		strings.NewReader(form.Encode()))
@@ -131,10 +144,10 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int) error {
 // refreshed on the registerInterval cadence until ctx is cancelled. Errors
 // from the periodic refresh are logged at WARN but do not stop the loop —
 // transient plex.tv hiccups should self-heal on the next tick.
-func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPort int) {
+func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPort int, deviceName string) {
 	tick := time.NewTicker(registerInterval)
 	defer tick.Stop()
-	if err := RegisterDevice(uuid, token, hostIP, httpPort); err != nil {
+	if err := RegisterDevice(uuid, token, hostIP, httpPort, deviceName); err != nil {
 		slog.Warn("plex.tv register failed", "err", err)
 	}
 	for {
@@ -142,7 +155,7 @@ func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPo
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if err := RegisterDevice(uuid, token, hostIP, httpPort); err != nil {
+			if err := RegisterDevice(uuid, token, hostIP, httpPort, deviceName); err != nil {
 				slog.Warn("plex.tv register failed", "err", err)
 			}
 		}

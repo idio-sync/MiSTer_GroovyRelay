@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,7 +17,7 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	var gotPath, gotClientID, gotDeviceName, gotContentType, gotStrong string
 	var strongWasSet bool
 	var gotMethod string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotContentType = r.Header.Get("Content-Type")
@@ -69,7 +68,7 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 // TestRequestPIN_HTTPErrorSurfacesError ensures non-2xx responses produce an
 // error rather than a zero-value PinResponse.
 func TestRequestPIN_HTTPErrorSurfacesError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
@@ -88,7 +87,7 @@ func TestRequestPIN_HTTPErrorSurfacesError(t *testing.T) {
 // that PollPIN retries until the token materializes.
 func TestPollPIN_ReturnsTokenOnSecondPoll(t *testing.T) {
 	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
 		if n < 2 {
@@ -124,7 +123,7 @@ func TestPollPIN_ReturnsTokenOnSecondPoll(t *testing.T) {
 // TestPollPIN_TimesOut confirms the deadline path returns an error when the
 // token never arrives.
 func TestPollPIN_TimesOut(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":42,"code":"ABCD","authToken":""}`)
 	}))
@@ -146,14 +145,15 @@ func TestPollPIN_TimesOut(t *testing.T) {
 // TestRegisterDevice_PutsConnectionURI verifies the PUT path, token query
 // parameter, and form body used to refresh the plex.tv device record.
 func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
-	var gotMethod, gotPath, gotToken, gotContentType, gotURI string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var gotMethod, gotPath, gotToken, gotContentType, gotURI, gotDeviceName string
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotToken = r.URL.Query().Get("X-Plex-Token")
 		gotContentType = r.Header.Get("Content-Type")
 		_ = r.ParseForm()
 		gotURI = r.PostForm.Get("Connection[][uri]")
+		gotDeviceName = r.PostForm.Get("X-Plex-Device-Name")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -162,7 +162,7 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = restore })
 
-	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500); err != nil {
+	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500, "MiSTer"); err != nil {
 		t.Fatalf("RegisterDevice: %v", err)
 	}
 	if gotMethod != http.MethodPut {
@@ -180,6 +180,9 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	if gotURI != "http://10.0.0.5:32500" {
 		t.Errorf("wrong connection uri: %q", gotURI)
 	}
+	if gotDeviceName != "MiSTer" {
+		t.Errorf("wrong device name: %q", gotDeviceName)
+	}
 }
 
 // TestRunRegistrationLoop_FiresImmediatelyAndOnTick verifies both the eager
@@ -187,7 +190,7 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 // var is shortened so we don't wait the production 60s cadence.
 func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
 	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -204,7 +207,7 @@ func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500)
+		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500, "MiSTer")
 		close(done)
 	}()
 
@@ -226,7 +229,7 @@ func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
 // token) surfaces as an error so the caller / ticker loop can log it,
 // instead of being silently dropped.
 func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
 	defer srv.Close()
@@ -235,7 +238,7 @@ func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = oldBase })
 
-	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500)
+	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500, "MiSTer")
 	if err == nil {
 		t.Fatal("expected error from 401 response; got nil")
 	}

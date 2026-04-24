@@ -12,26 +12,28 @@ import (
 // Uses NextChunkSize to get the exact integer size the implementation computes.
 func TestAudioPipeReader_EmitsPerFieldChunks(t *testing.T) {
 	r := NewAudioPipeReader(48000, 2)
-	chunk := r.NextChunkSize()
-	if chunk <= 0 {
-		t.Fatalf("unexpected chunk size %d", chunk)
-	}
-	// 3 chunks worth of distinct byte patterns.
 	buf := &bytes.Buffer{}
+	var chunks []int
 	for i := 0; i < 3; i++ {
+		chunk := r.NextChunkSize()
+		if chunk <= 0 {
+			t.Fatalf("unexpected chunk size %d", chunk)
+		}
+		chunks = append(chunks, chunk)
 		c := make([]byte, chunk)
 		for j := range c {
 			c[j] = byte(i + 1)
 		}
 		buf.Write(c)
+		r.Advance(chunk)
 	}
 	ch := make(chan []byte, 4)
 	go ReadAudioFromPipe(buf, 48000, 2, ch)
 	for i := 0; i < 3; i++ {
 		select {
 		case c := <-ch:
-			if len(c) < chunk-1 || len(c) > chunk+1 {
-				t.Errorf("chunk %d size = %d, want ~%d", i, len(c), chunk)
+			if len(c) != chunks[i] {
+				t.Errorf("chunk %d size = %d, want %d", i, len(c), chunks[i])
 			}
 			if c[0] != byte(i+1) {
 				t.Errorf("chunk %d first byte = %d, want %d", i, c[0], i+1)
@@ -43,14 +45,22 @@ func TestAudioPipeReader_EmitsPerFieldChunks(t *testing.T) {
 }
 
 // TestAudioPipeReader_ChunkSize48kStereo locks the expected PCM chunk size
-// for the canonical 48 kHz s16le stereo path. Uses integer-exact formula:
-// sampleRate * channels * bytesPerSample * 1001 / 60000 per field.
+// for the canonical 48 kHz s16le stereo path. Chunks must stay aligned to
+// 16-bit stereo sample frames, so the sequence alternates 3200/3204 bytes
+// instead of producing odd byte counts like 3203.
 func TestAudioPipeReader_ChunkSize48kStereo(t *testing.T) {
 	r := NewAudioPipeReader(48000, 2)
-	got := r.NextChunkSize()
-	// 48000 * 2 * 2 * 1001 / 60000 = 3203 bytes for field 1.
-	if got < 3190 || got > 3220 {
-		t.Errorf("48kHz stereo chunk = %d, want ~3203", got)
+	got1 := r.NextChunkSize()
+	r.Advance(got1)
+	got2 := r.NextChunkSize()
+	if got1 != 3200 {
+		t.Errorf("field 1 chunk = %d, want 3200", got1)
+	}
+	if got2 != 3204 {
+		t.Errorf("field 2 chunk = %d, want 3204", got2)
+	}
+	if got1%4 != 0 || got2%4 != 0 {
+		t.Errorf("stereo chunks must stay sample-frame aligned: got %d and %d", got1, got2)
 	}
 }
 
@@ -101,10 +111,10 @@ func TestAudioPipeReader_ShortTailClosesClean(t *testing.T) {
 	<-done
 }
 
-// TestAudioPipeReader_IntegerExactCumulative verifies the reader consumes
-// exactly sampleRate * channels * 2 bytes per second (no drift) by integer
-// math. Regression harness for I5 — old code rounded 3203.2 → 3203 and
-// drifted ~53 B/sec.
+// TestAudioPipeReader_IntegerExactCumulative verifies the reader consumes an
+// integer-exact number of PCM sample frames against the NTSC field cadence.
+// Regression harness for the old byte-based chunker, which emitted odd-sized
+// bursts and could split 16-bit stereo sample frames across AUDIO commands.
 func TestAudioPipeReader_IntegerExactCumulative(t *testing.T) {
 	cases := []struct {
 		sampleRate int
@@ -119,11 +129,17 @@ func TestAudioPipeReader_IntegerExactCumulative(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			r := NewAudioPipeReader(tc.sampleRate, tc.channels)
 			var total int64
+			bytesPerFrame := int64(tc.channels * bytesPerSample)
 			for i := int64(0); i < tc.fields; i++ {
-				total += int64(r.NextChunkSize())
-				r.Advance(r.lastSize)
+				chunk := r.NextChunkSize()
+				if chunk%int(bytesPerFrame) != 0 {
+					t.Fatalf("chunk %d not sample-frame aligned: %d", i, chunk)
+				}
+				total += int64(chunk)
+				r.Advance(chunk)
 			}
-			want := tc.fields * int64(tc.sampleRate*tc.channels*2) * 1001 / 60000
+			wantFrames := tc.fields * int64(tc.sampleRate) * 1001 / 60000
+			want := wantFrames * bytesPerFrame
 			if total != want {
 				t.Errorf("sampleRate=%d channels=%d fields=%d: got cumulative=%d want=%d",
 					tc.sampleRate, tc.channels, tc.fields, total, want)

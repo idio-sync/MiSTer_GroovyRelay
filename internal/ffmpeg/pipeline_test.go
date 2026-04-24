@@ -18,7 +18,7 @@ func TestBuildFilterChain_Progressive24p(t *testing.T) {
 		FieldOrder: "tff", AspectMode: "letterbox",
 	}
 	chain := buildFilterChain(spec)
-	for _, need := range []string{"telecine", "separatefields", "pad="} {
+	for _, need := range []string{"fps=60000/1001", "pad="} {
 		if !strings.Contains(chain, need) {
 			t.Errorf("chain missing %q: %s", need, chain)
 		}
@@ -26,13 +26,10 @@ func TestBuildFilterChain_Progressive24p(t *testing.T) {
 	if strings.Contains(chain, "yadif") {
 		t.Errorf("progressive source should not yadif: %s", chain)
 	}
-	// telecine path must NOT include a second interlace step.
-	if strings.Contains(chain, "interlace=scan=") {
-		t.Errorf("telecine path must not include downstream interlace: %s", chain)
-	}
-	// separatefields must be the final filter in the chain.
-	if !strings.HasSuffix(chain, "separatefields") {
-		t.Errorf("separatefields must terminate chain: %s", chain)
+	for _, unwanted := range []string{"telecine", "interlace=scan=", "separatefields"} {
+		if strings.Contains(chain, unwanted) {
+			t.Errorf("progressive frame pipeline must not include %q: %s", unwanted, chain)
+		}
 	}
 }
 
@@ -46,8 +43,8 @@ func TestBuildFilterChain_Interlaced30i(t *testing.T) {
 	if !strings.Contains(chain, "yadif") {
 		t.Errorf("expected yadif for interlaced source: %s", chain)
 	}
-	if !strings.Contains(chain, "separatefields") {
-		t.Errorf("expected separatefields to produce 59.94 field output: %s", chain)
+	if !strings.Contains(chain, "fps=60000/1001") {
+		t.Errorf("expected fps normalizer for interlaced source: %s", chain)
 	}
 	// yadif must be the very first filter (before any rate conversion).
 	if !strings.HasPrefix(chain, "yadif") {
@@ -55,19 +52,19 @@ func TestBuildFilterChain_Interlaced30i(t *testing.T) {
 	}
 }
 
-func TestBuildFilterChain_BffScan(t *testing.T) {
+func TestBuildFilterChain_FieldOrderHandledOutsideFFmpeg(t *testing.T) {
 	spec := PipelineSpec{
 		SourceProbe: &ProbeResult{Width: 720, Height: 480, FrameRate: 29.97},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "bff", AspectMode: "letterbox",
 	}
 	chain := buildFilterChain(spec)
-	if !strings.Contains(chain, "interlace=scan=bff") {
-		t.Errorf("expected bff scan: %s", chain)
+	if strings.Contains(chain, "interlace=scan=") {
+		t.Errorf("field order should no longer be encoded in the ffmpeg chain: %s", chain)
 	}
 }
 
-func TestBuildFilterChain_SubtitleBeforeInterlace(t *testing.T) {
+func TestBuildFilterChain_SubtitleAfterRateNormalize(t *testing.T) {
 	spec := PipelineSpec{
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 24, Interlaced: false},
 		OutputWidth: 720, OutputHeight: 480,
@@ -76,9 +73,9 @@ func TestBuildFilterChain_SubtitleBeforeInterlace(t *testing.T) {
 	}
 	chain := buildFilterChain(spec)
 	subIdx := strings.Index(chain, "subtitles=")
-	intIdx := strings.Index(chain, "interlace=")
-	if subIdx < 0 || intIdx < 0 || subIdx >= intIdx {
-		t.Errorf("subtitles must precede interlace: %s", chain)
+	fpsIdx := strings.Index(chain, "fps=60000/1001")
+	if subIdx < 0 || fpsIdx < 0 || subIdx <= fpsIdx {
+		t.Errorf("subtitles must follow the fps normalizer: %s", chain)
 	}
 }
 
@@ -104,7 +101,7 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 
 func TestBuildCommand_TranscodeSkipsSSSeek(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL: "http://pms/video.m3u8",
+		InputURL:    "http://pms/video.m3u8",
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
@@ -124,7 +121,7 @@ func TestBuildCommand_TranscodeSkipsSSSeek(t *testing.T) {
 
 func TestBuildCommand_DirectPlayPassesSSSeek(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL: "file:///media/sample.mkv",
+		InputURL:    "file:///media/sample.mkv",
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
@@ -152,8 +149,8 @@ func TestBuildCommand_HeadersCombinedIntoOneArg(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL: "http://pms/video.m3u8",
 		InputHeaders: map[string]string{
-			"X-Plex-Token":      "abc123",
-			"X-Plex-Product":    "groovyrelay",
+			"X-Plex-Token":   "abc123",
+			"X-Plex-Product": "groovyrelay",
 		},
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
 		OutputWidth: 720, OutputHeight: 480,
@@ -189,8 +186,8 @@ func TestBuildCommand_HeadersCombinedIntoOneArg(t *testing.T) {
 
 func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL: "http://pms/video.m3u8",
-		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		InputURL:    "http://pms/video.m3u8",
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, AudioRate: 48000},
 		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
 		AudioSampleRate: 48000, AudioChannels: 2,
@@ -200,7 +197,7 @@ func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	joined := strings.Join(cmd.Args, " ")
 	for _, want := range []string{
 		"-map 0:v:0",
-		"-pix_fmt rgb24",
+		"-pix_fmt bgr24",
 		"-f rawvideo",
 		"pipe:3",
 		"-map 0:a:0",
@@ -215,25 +212,42 @@ func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	}
 }
 
-// TestBuildFilterChain_SourceRateProducesCorrectNormalizer validates the
-// rate-normalization filter chosen for each source rate. Two shapes:
-//   - 23.976p: telecine=pattern=23 → 29.97i directly. The chain must NOT
-//     include a second interlace step (telecine already interlaced) and
-//     must end with separatefields (→ 59.94 fields/sec at the 3:2 cadence).
-//   - Every other rate: fps=60000/1001 → 59.94p → interlace → separatefields.
+func TestBuildCommand_OmitsAudioOutputWhenSourceHasNoAudio(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/video.m3u8",
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, AudioRate: 0},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	joined := strings.Join(cmd.Args, " ")
+	for _, unwanted := range []string{"-map 0:a:0", "-ar 48000", "-ac 2", "pipe:4"} {
+		if strings.Contains(joined, unwanted) {
+			t.Errorf("unexpected %q in argv for video-only source: %s", unwanted, joined)
+		}
+	}
+	if !strings.Contains(joined, "-map 0:v:0") || !strings.Contains(joined, "pipe:3") {
+		t.Errorf("video output missing from argv: %s", joined)
+	}
+}
+
+// TestBuildFilterChain_SourceRateProducesCorrectNormalizer validates that
+// every source rate is normalized to 59.94 progressive output for the
+// row-stripe data plane.
 func TestBuildFilterChain_SourceRateProducesCorrectNormalizer(t *testing.T) {
 	cases := []struct {
 		name           string
 		frameRate      float64
 		wantNormalizer string // filter that MUST appear
-		wantInterlace  bool   // whether interlace=scan=... must appear
 	}{
-		{"film 23.976p", 23.976, "telecine=pattern=23", false},
-		{"film 24p", 24.0, "fps=60000/1001", true},
-		{"tv 29.97p", 29.97, "fps=60000/1001", true},
-		{"tv 30p", 30.0, "fps=60000/1001", true},
-		{"sports 59.94p", 59.94, "fps=60000/1001", true},
-		{"sports 60p", 60.0, "fps=60000/1001", true},
+		{"film 23.976p", 23.976, "fps=60000/1001"},
+		{"film 24p", 24.0, "fps=60000/1001"},
+		{"tv 29.97p", 29.97, "fps=60000/1001"},
+		{"tv 30p", 30.0, "fps=60000/1001"},
+		{"sports 59.94p", 59.94, "fps=60000/1001"},
+		{"sports 60p", 60.0, "fps=60000/1001"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,13 +262,10 @@ func TestBuildFilterChain_SourceRateProducesCorrectNormalizer(t *testing.T) {
 			if !strings.Contains(chain, tc.wantNormalizer) {
 				t.Errorf("rate %.3f: chain missing %q\nchain=%s", tc.frameRate, tc.wantNormalizer, chain)
 			}
-			hasInterlace := strings.Contains(chain, "interlace=scan=tff:lowpass=0")
-			if hasInterlace != tc.wantInterlace {
-				t.Errorf("rate %.3f: interlace filter present=%v, want=%v\nchain=%s",
-					tc.frameRate, hasInterlace, tc.wantInterlace, chain)
-			}
-			if !strings.HasSuffix(chain, "separatefields") {
-				t.Errorf("rate %.3f: chain must end with separatefields, got %s", tc.frameRate, chain)
+			for _, unwanted := range []string{"telecine", "interlace=scan=", "separatefields"} {
+				if strings.Contains(chain, unwanted) {
+					t.Errorf("rate %.3f: chain must not contain %q, got %s", tc.frameRate, unwanted, chain)
+				}
 			}
 		})
 	}

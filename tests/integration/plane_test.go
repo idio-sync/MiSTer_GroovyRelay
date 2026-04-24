@@ -76,7 +76,14 @@ func TestPlane_StreamsFieldsToFake(t *testing.T) {
 		}
 		close(audioFanDone)
 	}()
-	fieldSizeFn := func() uint32 { return 720 * 240 * 3 }
+	fieldSizeFn := func() uint32 {
+		return uint32(groovy.FieldPayloadBytes(
+			groovy.NTSC480i60.HActive,
+			groovy.NTSC480i60.VActive,
+			groovy.NTSC480i60.Interlace,
+			3,
+		))
+	}
 
 	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
 	if err != nil {

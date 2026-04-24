@@ -1,14 +1,60 @@
 package ffmpeg
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestProcess_LogWaitResultUsesDebugForIntentionalStop(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	p := &Process{}
+	p.stopRequested.Store(true)
+	p.logWaitResult(errors.New("signal: killed"))
+
+	got := buf.String()
+	if !strings.Contains(got, "level=DEBUG") {
+		t.Fatalf("expected debug log, got %q", got)
+	}
+	if !strings.Contains(got, "ffmpeg stopped during session teardown") {
+		t.Fatalf("expected teardown message, got %q", got)
+	}
+	if strings.Contains(got, "ffmpeg exited") {
+		t.Fatalf("unexpected ffmpeg exited warning: %q", got)
+	}
+}
+
+func TestProcess_LogWaitResultWarnsOnUnexpectedExit(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	p := &Process{}
+	p.logWaitResult(errors.New("boom"))
+
+	got := buf.String()
+	if !strings.Contains(got, "level=WARN") {
+		t.Fatalf("expected warn log, got %q", got)
+	}
+	if !strings.Contains(got, "ffmpeg exited") {
+		t.Fatalf("expected ffmpeg exited warning, got %q", got)
+	}
+}
 
 // TestProcess_BasicLifecycle drives Spawn's lifecycle wiring without relying
 // on ffmpeg or on ExtraFiles (which is a Linux/Unix-only feature — cmd.Start

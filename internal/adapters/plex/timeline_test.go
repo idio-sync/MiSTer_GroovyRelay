@@ -3,7 +3,6 @@ package plex
 import (
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -93,6 +92,47 @@ func TestTimeline_BuildXML_StatePlaying(t *testing.T) {
 	}
 }
 
+func TestTimeline_BuildXML_IncludesPlexMetadata(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			PlexServerAddress: "192.168.1.10",
+			PlexServerPort:    "32400",
+			PlexServerScheme:  "http",
+			PlexMachineID:     "server-uuid",
+			MediaKey:          "/library/metadata/42",
+			ContainerKey:      "/playQueues/99?own=1",
+			AudioStreamID:     "11",
+			SubtitleStreamID:  "22",
+			CommandID:         "7",
+		}
+	})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 12345 * time.Millisecond,
+		Duration: 60000 * time.Millisecond,
+	})
+	for _, want := range []string{
+		`commandID="7"`,
+		`location="fullScreenVideo"`,
+		`ratingKey="42"`,
+		`key="/library/metadata/42"`,
+		`containerKey="/playQueues/99?own=1"`,
+		`address="192.168.1.10"`,
+		`port="32400"`,
+		`protocol="http"`,
+		`machineIdentifier="server-uuid"`,
+		`seekRange="0-60000"`,
+		`audioStreamID="11"`,
+		`subtitleStreamID="22"`,
+		`controllable="playPause,stop,seekTo"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("xml missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestTimeline_BuildXML_StateMapping(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	cases := []struct {
@@ -134,7 +174,7 @@ func TestTimeline_BroadcastPushesToSubscribers(t *testing.T) {
 	var mu sync.Mutex
 	var hits []received
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/:/timeline" {
 			http.Error(w, "unexpected path", 404)
 			return
@@ -180,8 +220,96 @@ func TestTimeline_BroadcastPushesToSubscribers(t *testing.T) {
 		t.Errorf("X-Plex-Target-Client-Identifier = %q, want client-xyz",
 			h.headers.Get("X-Plex-Target-Client-Identifier"))
 	}
+	if !strings.Contains(h.body, `commandID="7"`) {
+		t.Errorf("body missing commandID=7: %s", h.body)
+	}
 	if !strings.Contains(h.body, `state="playing"`) {
 		t.Errorf("body missing state=playing: %s", h.body)
+	}
+}
+
+func TestTimeline_BroadcastPushesToPMSWithoutSubscribers(t *testing.T) {
+	type received struct {
+		headers http.Header
+		body    string
+		query   url.Values
+	}
+	var mu sync.Mutex
+	var hits []received
+
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/:/timeline" {
+			http.Error(w, "unexpected path", 404)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		hits = append(hits, received{
+			headers: r.Header.Clone(),
+			body:    string(body),
+			query:   r.URL.Query(),
+		})
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewTimelineBroker(
+		TimelineConfig{DeviceUUID: "uuid-1", DeviceName: "MiSTer"},
+		func() core.SessionStatus {
+			return core.SessionStatus{
+				State:    core.StatePlaying,
+				Position: 7000 * time.Millisecond,
+				Duration: 12000 * time.Millisecond,
+			}
+		},
+	)
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			PlexServerAddress: u.Hostname(),
+			PlexServerPort:    u.Port(),
+			PlexServerScheme:  "http",
+			PlexMachineID:     "server-uuid",
+			MediaKey:          "/library/metadata/42",
+			PlexToken:         "tok-123",
+			CommandID:         "9",
+		}
+	})
+	b.broadcastOnce()
+	b.broadcastOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits) != 1 {
+		t.Fatalf("PMS received %d POSTs, want 1 (duplicate idle/unchanged payloads should be suppressed)", len(hits))
+	}
+	h := hits[0]
+	if h.headers.Get("X-Plex-Client-Identifier") != "uuid-1" {
+		t.Errorf("X-Plex-Client-Identifier = %q, want uuid-1", h.headers.Get("X-Plex-Client-Identifier"))
+	}
+	if h.headers.Get("X-Plex-Device-Name") != "MiSTer" {
+		t.Errorf("X-Plex-Device-Name = %q, want MiSTer", h.headers.Get("X-Plex-Device-Name"))
+	}
+	if h.headers.Get("X-Plex-Token") != "tok-123" {
+		t.Errorf("X-Plex-Token = %q, want tok-123", h.headers.Get("X-Plex-Token"))
+	}
+	if h.query.Get("X-Plex-Token") != "tok-123" {
+		t.Errorf("query X-Plex-Token = %q, want tok-123", h.query.Get("X-Plex-Token"))
+	}
+	for _, want := range []string{
+		`commandID="9"`,
+		`state="playing"`,
+		`key="/library/metadata/42"`,
+		`machineIdentifier="server-uuid"`,
+	} {
+		if !strings.Contains(h.body, want) {
+			t.Errorf("PMS body missing %q: %s", want, h.body)
+		}
 	}
 }
 
@@ -197,7 +325,7 @@ func TestCompanion_TimelineSubscribeWiresBroker(t *testing.T) {
 	b := NewTimelineBroker(TimelineConfig{DeviceUUID: "uuid-1"}, fc.Status)
 	c.SetTimeline(b)
 
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/player/timeline/subscribe?" +
@@ -223,13 +351,42 @@ func TestCompanion_TimelineSubscribeWiresBroker(t *testing.T) {
 	}
 }
 
+func TestCompanion_RequestTouchesSubscriberTTL(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceUUID: "uuid-1"}, fc)
+	b := NewTimelineBroker(TimelineConfig{DeviceUUID: "uuid-1"}, fc.Status)
+	base := time.Now()
+	now := base
+	b.now = func() time.Time { return now }
+	b.TTL = 100 * time.Millisecond
+	c.SetTimeline(b)
+
+	b.Subscribe("client-A", "127.0.0.1", "32500", "http", 1)
+
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	now = base.Add(50 * time.Millisecond)
+	resp, err := http.Get(ts.URL + "/player/timeline/poll?X-Plex-Client-Identifier=client-A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	now = base.Add(120 * time.Millisecond)
+	b.broadcastOnce()
+	if got := b.subscriberCount(); got != 1 {
+		t.Errorf("subscriberCount after touched poll = %d, want 1", got)
+	}
+}
+
 func TestCompanion_TimelinePollReturnsXML(t *testing.T) {
 	fc := &fakeCore{status: core.SessionStatus{State: core.StatePlaying}}
 	c := NewCompanion(CompanionConfig{}, fc)
 	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
 	c.SetTimeline(b)
 
-	ts := httptest.NewServer(c.Handler())
+	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/player/timeline/poll")

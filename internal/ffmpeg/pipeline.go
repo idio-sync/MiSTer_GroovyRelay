@@ -21,8 +21,8 @@ type PipelineSpec struct {
 	InputURL     string
 	InputHeaders map[string]string // for Plex transcode URL tokens
 	SeekSeconds  float64
-	UseSSSeek    bool // true on direct-play (pass -ss); false on transcode (offset is in URL)
-	SourceProbe  *ProbeResult
+	UseSSSeek    bool         // true on direct-play (pass -ss); false on transcode (offset is in URL)
+	SourceProbe  *ProbeResult // includes first audio stream presence/rate when available
 
 	OutputWidth  int
 	OutputHeight int
@@ -41,20 +41,33 @@ type PipelineSpec struct {
 	AudioPipePath string // "pipe:4", etc.
 }
 
+// audioOutputEnabled reports whether the ffmpeg command should emit the s16le
+// audio output. Production callers always provide SourceProbe, so clips with
+// no audio stream naturally degrade to video-only instead of failing on
+// `-map 0:a:0`.
+func audioOutputEnabled(s PipelineSpec) bool {
+	if s.AudioSampleRate <= 0 || s.AudioChannels <= 0 {
+		return false
+	}
+	if s.SourceProbe != nil && s.SourceProbe.AudioRate <= 0 {
+		return false
+	}
+	return true
+}
+
 // buildFilterChain assembles the comma-delimited ffmpeg `-vf` expression.
 //
-// Contract: the chain ALWAYS terminates in `separatefields`, so the caller's
-// rawvideo output yields one 720×240 RGB24 field per read at 59.94 Hz. The
-// data plane reads hActive*vActive*3 bytes per tick and sends one
-// BLIT_FIELD_VSYNC alternating field=0/field=1.
+// Contract: the chain emits full-height progressive BGR24 frames at 59.94 Hz.
+// For interlaced output modes the data plane row-stripes those frames into one
+// 720x240 field per tick, mirroring the approach used by working MiSTerCast /
+// Mistglow senders. We intentionally avoid ffmpeg's interlace/separatefields
+// path here because it has proven less interoperable with the Groovy receiver.
 //
 // Order is load-bearing:
 //  1. yadif (only if interlaced source) → one progressive frame per input frame.
-//  2. fps=60000/1001 → normalise to 59.94p, OR telecine=pattern=23 for 23.976p (3:2 pulldown → 29.97i directly).
+//  2. fps=60000/1001 → normalize every source to the 59.94 Hz field cadence.
 //  3. crop/scale/pad for aspect mode.
-//  4. subtitle burn-in BEFORE interlacing.
-//  5. interlace=scan=tff|bff:lowpass=0 → halves rate to 29.97i. SKIPPED when step 2 used telecine.
-//  6. separatefields → 59.94 fields/sec at OutputWidth×(OutputHeight/2).
+//  4. subtitle burn-in on the full progressive frame.
 func buildFilterChain(s PipelineSpec) string {
 	var filters []string
 
@@ -64,33 +77,11 @@ func buildFilterChain(s PipelineSpec) string {
 		filters = append(filters, "yadif=mode=send_frame")
 	}
 
-	// 2. Normalise to 59.94p OR 29.97i-via-telecine.
-	//    For 23.976p film sources, telecine=pattern=23 applies the 3:2
-	//    pulldown directly — output is 29.97 INTERLACED frames/sec, which
-	//    separatefields (step 6) splits into 59.94 fields/sec while
-	//    preserving the film cadence. Note: when this branch fires we MUST
-	//    skip the downstream `interlace` filter (step 5) — telecine has
-	//    already produced interlaced frames, and re-weaving them via
-	//    `interlace` both destroys the 3:2 cadence and halves the frame
-	//    rate (interlace expects progressive input).
-	//
-	//    Every other rate (24p/29.97p/30p/59.94p/60p/60i-via-yadif) gets
-	//    fps=60000/1001 → 59.94 progressive frames/sec. `interlace` then
-	//    halves to 29.97i and separatefields doubles back to 59.94 fields.
-	//    Note on 60p: fps=60000/1001 decimates ~0.1% of genuinely-60.000Hz
-	//    frames (one drop per 1001) — harmless for human perception but
-	//    not lossless.
-	telecined := false
-	if s.SourceProbe != nil {
-		fr := s.SourceProbe.FrameRate
-		switch {
-		case fr >= 23.0 && fr < 24.0:
-			filters = append(filters, "telecine=pattern=23")
-			telecined = true
-		default:
-			filters = append(filters, "fps=60000/1001")
-		}
-	}
+	// 2. Normalize every source to 59.94 progressive frames/sec. The data
+	//    plane treats each output frame as the source for exactly one field
+	//    tick, extracting either the even or odd rows depending on the
+	//    outgoing field parity.
+	filters = append(filters, "fps=60000/1001")
 
 	// 3. Aspect / crop.
 	switch {
@@ -113,25 +104,13 @@ func buildFilterChain(s PipelineSpec) string {
 		)
 	}
 
-	// 4. Subtitle burn-in BEFORE interlacing. Only filesystem paths work for
-	//    libass; URL-sourced captions must be downloaded by the adapter first.
+	// 4. Subtitle burn-in on the full progressive frame. Only filesystem
+	//    paths work for libass; URL-sourced captions must be downloaded by
+	//    the adapter first.
 	if s.SubtitlePath != "" {
 		filters = append(filters,
 			fmt.Sprintf("subtitles=filename='%s':si=%d", s.SubtitlePath, s.SubtitleIndex))
 	}
-
-	// 5. Build interlaced frame (29.97i at OutputWidth×OutputHeight) —
-	//    UNLESS the telecine branch already produced interlaced output.
-	if !telecined {
-		scan := "tff"
-		if s.FieldOrder == "bff" {
-			scan = "bff"
-		}
-		filters = append(filters, fmt.Sprintf("interlace=scan=%s:lowpass=0", scan))
-	}
-
-	// 6. Split into fields: 29.97i → 59.94p, halving the height.
-	filters = append(filters, "separatefields")
 
 	return strings.Join(filters, ",")
 }
@@ -174,23 +153,31 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	}
 	args = append(args, "-i", s.InputURL)
 
-	// Video output: raw rgb24 fields to the video pipe.
+	// Video output: raw full-height bgr24 progressive frames to the video
+	// pipe. The data plane row-stripes these into interlaced fields when the
+	// active modeline is interlaced. This matches the working MiSTerCast /
+	// Mistglow senders' de facto wire byte order for Groovy mode 0
+	// ("rgb888"), despite the historical name.
 	args = append(args,
 		"-map", "0:v:0",
 		"-vf", buildFilterChain(s),
-		"-pix_fmt", "rgb24",
+		"-pix_fmt", "bgr24",
 		"-f", "rawvideo",
 		s.VideoPipePath,
 	)
 
-	// Audio output: s16le PCM to the audio pipe.
-	args = append(args,
-		"-map", "0:a:0",
-		"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
-		"-ac", fmt.Sprintf("%d", s.AudioChannels),
-		"-f", "s16le",
-		s.AudioPipePath,
-	)
+	// Audio output: s16le PCM to the audio pipe. Omitted entirely when the
+	// probe says the source has no audio stream; otherwise ffmpeg would fail
+	// the session before any video is emitted.
+	if audioOutputEnabled(s) {
+		args = append(args,
+			"-map", "0:a:0",
+			"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
+			"-ac", fmt.Sprintf("%d", s.AudioChannels),
+			"-f", "s16le",
+			s.AudioPipePath,
+		)
+	}
 
 	return exec.CommandContext(ctx, "ffmpeg", args...)
 }

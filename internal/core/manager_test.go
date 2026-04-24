@@ -1,6 +1,9 @@
 package core
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
@@ -77,6 +81,46 @@ func TestManager_InitialStatusIdle(t *testing.T) {
 	}
 	if !st.StartedAt.IsZero() {
 		t.Errorf("StartedAt = %v, want zero", st.StartedAt)
+	}
+}
+
+func TestProbeDuration_ConvertsSecondsToDuration(t *testing.T) {
+	got := probeDuration(&ffmpeg.ProbeResult{Duration: 12.345})
+	want := 12345 * time.Millisecond
+	if got != want {
+		t.Errorf("probeDuration = %v, want %v", got, want)
+	}
+	if probeDuration(nil) != 0 {
+		t.Error("probeDuration(nil) should be zero")
+	}
+	if probeDuration(&ffmpeg.ProbeResult{Duration: -1}) != 0 {
+		t.Error("probeDuration(negative) should be zero")
+	}
+}
+
+func TestManager_LogPlaneExit_InitACKTimeoutIsClear(t *testing.T) {
+	m := newTestManager(t)
+
+	var buf bytes.Buffer
+	old := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	m.logPlaneExit(fmt.Errorf("init handshake: %w", &groovynet.InitACKTimeoutError{
+		Timeout: 60 * time.Millisecond,
+		Err:     os.ErrDeadlineExceeded,
+	}))
+
+	got := buf.String()
+	if !strings.Contains(got, "MiSTer did not acknowledge INIT") {
+		t.Fatalf("expected friendly INIT warning, got %q", got)
+	}
+	if !strings.Contains(got, "mister_host=127.0.0.1") {
+		t.Fatalf("expected mister_host in log, got %q", got)
+	}
+	if !strings.Contains(got, "mister_port=32100") {
+		t.Fatalf("expected mister_port in log, got %q", got)
 	}
 }
 

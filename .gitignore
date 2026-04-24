@@ -21,5 +21,10 @@ Thumbs.db
 .idea/
 *.swp
 
+# AI tooling
+/.claude/
+/.codex
+/.serena/
+
 # Git worktrees
 .worktrees/

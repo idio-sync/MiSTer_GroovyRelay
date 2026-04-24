@@ -208,6 +208,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 			authToken,
 			a.cfg.HostIP,
 			a.cfg.Bridge.UI.HTTPPort,
+			cfgSnap.DeviceName,
 		)
 		slog.Info("plex.tv device registration loop started", "hostIP", a.cfg.HostIP)
 	} else {
@@ -258,15 +259,22 @@ func (a *Adapter) ensureFinalized() {
 		cfgSnap := a.snapshotCfg()
 		deviceUUID := a.cfg.TokenStore.DeviceUUID
 		a.companion = NewCompanion(CompanionConfig{
-			DeviceName: cfgSnap.DeviceName,
-			DeviceUUID: deviceUUID,
-			Version:    a.cfg.Version,
-			DataDir:    a.cfg.Bridge.DataDir,
+			DeviceName:  cfgSnap.DeviceName,
+			DeviceUUID:  deviceUUID,
+			Version:     a.cfg.Version,
+			ProfileName: cfgSnap.ProfileName,
+			DataDir:     a.cfg.Bridge.DataDir,
 		}, a.cfg.Core)
 		a.timeline = NewTimelineBroker(
 			TimelineConfig{DeviceUUID: deviceUUID, DeviceName: cfgSnap.DeviceName},
 			a.cfg.Core.Status,
 		)
+		// SetPlayContextProvider (added on main) gives the timeline
+		// broker access to the last remembered playMedia request so
+		// its 1 Hz push can surface media/session metadata. Must be
+		// wired BEFORE SetTimeline so the companion sees a fully-
+		// configured broker.
+		a.timeline.SetPlayContextProvider(a.companion.lastPlaySession)
 		a.companion.SetTimeline(a.timeline)
 	})
 }

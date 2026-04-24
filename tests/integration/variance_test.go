@@ -79,12 +79,13 @@ func TestScenario_PixelVariance(t *testing.T) {
 				bpp = 2
 			}
 		}
-		return uint32(int(ml.HActive) * int(ml.VActive) * bpp)
+		return uint32(groovy.FieldPayloadBytes(ml.HActive, ml.VActive, ml.Interlace, bpp))
 	}
 
 	pumpDone := make(chan struct{})
 	runDone := make(chan struct{})
 	stop := make(chan struct{})
+	dumpErrs := make(chan error, 1)
 
 	// Recorder + state-sink fan-in goroutine. Exits when stop is closed.
 	// Closing the RunWithFields channels from this side is unsafe (the
@@ -114,8 +115,14 @@ func TestScenario_PixelVariance(t *testing.T) {
 					payload = raw
 				}
 				if ml := modelinePtr.Load(); ml != nil {
-					_ = dumper.MaybeDumpField(fe.Header.Frame,
-						int(ml.HActive), int(ml.VActive), payload)
+					fieldHeight := groovy.FieldLines(ml.VActive, ml.Interlace)
+					if err := dumper.MaybeDumpField(fe.Header.Frame,
+						int(ml.HActive), fieldHeight, payload); err != nil {
+						select {
+						case dumpErrs <- err:
+						default:
+						}
+					}
 				}
 			case ae := <-audioEvents:
 				_ = dumper.WriteAudio(ae.PCM)
@@ -177,6 +184,11 @@ func TestScenario_PixelVariance(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	time.Sleep(300 * time.Millisecond)
+	select {
+	case err := <-dumpErrs:
+		t.Fatalf("dump field: %v", err)
+	default:
+	}
 
 	// Collect PNGs dumped by the helper. With sampleEvery=30 and ~600
 	// BLITs (5 s × ~60 Hz × 2 field passes per frame, counted as distinct

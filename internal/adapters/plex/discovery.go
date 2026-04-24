@@ -85,6 +85,7 @@ func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 		"Product: MiSTer_GroovyRelay\r\n"+
 		"Version: 1.0\r\n"+
 		"Content-Type: plex/media-player\r\n"+
+		"Protocol: plex\r\n"+
 		"Protocol-Capabilities: timeline,playback,playqueues\r\n"+
 		"Device-Class: stb\r\n"+
 		"Protocol-Version: 1\r\n\r\n",

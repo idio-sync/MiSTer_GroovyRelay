@@ -79,7 +79,14 @@ func newScenarioHarness(t *testing.T) *scenarioHarness {
 		}
 		close(audioFanDone)
 	}()
-	fieldSizeFn := func() uint32 { return 720 * 240 * 3 } // RAW BLIT fallback size
+	fieldSizeFn := func() uint32 {
+		return uint32(groovy.FieldPayloadBytes(
+			groovy.NTSC480i60.HActive,
+			groovy.NTSC480i60.VActive,
+			groovy.NTSC480i60.Interlace,
+			3,
+		))
+	} // RAW BLIT fallback size
 	go func() {
 		l.RunWithFields(events, fieldsCh, audios, fieldSizeFn)
 		close(runDone)

@@ -21,12 +21,24 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
+const (
+	companionProduct  = "MiSTer_GroovyRelay"
+	companionPlatform = "Linux"
+	companionDevice   = "MiSTer"
+	companionModel    = "MiSTer"
+	companionProvides = "player"
+	companionProtocol = "1.0"
+)
+
 // CompanionConfig carries the identity of this device as advertised to Plex
 // controllers via /resources and timeline headers.
 type CompanionConfig struct {
 	DeviceName string
 	DeviceUUID string
 	Version    string
+	// ProfileName is the Plex client profile name advertised back to PMS when
+	// requesting a transcode start URL.
+	ProfileName string
 	// DataDir is the application data directory used to store downloaded
 	// subtitle files under <DataDir>/subtitles/. Populated from config.Config.
 	DataDir string
@@ -68,32 +80,90 @@ func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 // because Phase 11's NewAdapter instantiates both and cross-links them.
 func (c *Companion) SetTimeline(t *TimelineBroker) { c.timeline = t }
 
+func (c *Companion) notifyTimeline() {
+	if c.timeline != nil {
+		go c.timeline.broadcastOnce()
+	}
+}
+
 // Handler returns the HTTP mux wrapped in the CORS/XML middleware. Mount
 // this on the net.Listener returned from Phase 8's discovery code.
 func (c *Companion) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/resources", c.handleResources)
 	mux.HandleFunc("/player/playback/playMedia", c.handlePlayMedia)
+	mux.HandleFunc("/player/application/playMedia", c.handlePlayMedia)
 	mux.HandleFunc("/player/playback/pause", c.handlePause)
 	mux.HandleFunc("/player/playback/play", c.handlePlay)
 	mux.HandleFunc("/player/playback/stop", c.handleStop)
 	mux.HandleFunc("/player/playback/seekTo", c.handleSeekTo)
+	mux.HandleFunc("/player/playback/refreshPlayQueue", c.handleRefreshPlayQueue)
+	mux.HandleFunc("/player/playback/skipTo", c.handleSkipTo)
+	mux.HandleFunc("/player/playback/skipNext", c.handleSkipNext)
+	mux.HandleFunc("/player/playback/skipPrevious", c.handleSkipPrevious)
 	mux.HandleFunc("/player/playback/setParameters", c.handleSetParameters)
 	mux.HandleFunc("/player/playback/setStreams", c.handleSetStreams)
 	mux.HandleFunc("/player/timeline/subscribe", c.handleTimelineSubscribe)
 	mux.HandleFunc("/player/timeline/unsubscribe", c.handleTimelineUnsubscribe)
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
-	return withHeaders(mux)
+	return c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux)))
+}
+
+// withSubscriberTouch refreshes the controller's timeline subscription TTL on
+// any request that carries an X-Plex-Client-Identifier. Plex clients keep
+// talking to us after subscribe/poll/playback calls; touching here prevents
+// active controllers from being pruned after 90s.
+func (c *Companion) withSubscriberTouch(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c.timeline != nil {
+			if clientID := queryOrHeader(r, "X-Plex-Client-Identifier"); clientID != "" {
+				c.timeline.TouchSubscriberCommand(clientID, atoiDefault(queryOrHeader(r, "commandID"), 0))
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// withTargetValidation ensures control-plane requests that explicitly target
+// a different Plex client identifier do not mutate this bridge's session or
+// subscriber state. Discovery (/resources) is intentionally exempt because
+// controllers probe it before they know whether this is the device they want.
+func (c *Companion) withTargetValidation(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions || r.URL.Path == "/resources" {
+			h.ServeHTTP(w, r)
+			return
+		}
+		if targetID := queryOrHeader(r, "X-Plex-Target-Client-Identifier"); c.cfg.DeviceUUID != "" && targetID != "" && targetID != c.cfg.DeviceUUID {
+			http.Error(w, "target client mismatch", http.StatusPreconditionFailed)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // withHeaders injects the CORS + default XML Content-Type headers that all
 // Plex Companion responses share. Handlers that emit a non-XML body must
 // override Content-Type before writing.
-func withHeaders(h http.Handler) http.Handler {
+func (c *Companion) withHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol")
+		w.Header().Set("X-Plex-Client-Identifier", c.cfg.DeviceUUID)
+		w.Header().Set("X-Plex-Device-Name", c.cfg.DeviceName)
+		w.Header().Set("X-Plex-Product", companionProduct)
+		w.Header().Set("X-Plex-Version", c.cfg.Version)
+		w.Header().Set("X-Plex-Platform", companionPlatform)
+		w.Header().Set("X-Plex-Platform-Version", c.cfg.Version)
+		w.Header().Set("X-Plex-Provides", companionProvides)
+		w.Header().Set("X-Plex-Protocol", companionProtocol)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		w.Header().Set("Content-Type", "text/xml")
 		h.ServeHTTP(w, r)
 	})
@@ -105,12 +175,21 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 	type Player struct {
 		Title                string `xml:"title,attr"`
 		MachineIdentifier    string `xml:"machineIdentifier,attr"`
+		Protocol             string `xml:"protocol,attr"`
 		ProtocolVersion      string `xml:"protocolVersion,attr"`
 		ProtocolCapabilities string `xml:"protocolCapabilities,attr"`
 		DeviceClass          string `xml:"deviceClass,attr"`
+		Device               string `xml:"device,attr"`
+		Model                string `xml:"model,attr"`
 		Product              string `xml:"product,attr"`
+		Version              string `xml:"version,attr"`
 		Platform             string `xml:"platform,attr"`
 		PlatformVersion      string `xml:"platformVersion,attr"`
+		// provides="player" tells Plex controllers this device is a valid
+		// cast target for media playback. Without it, controllers show the
+		// target in the picker but refuse to cast, with "This content is
+		// not currently supported when connected to this remote player."
+		Provides string `xml:"provides,attr"`
 	}
 	type MediaContainer struct {
 		XMLName xml.Name `xml:"MediaContainer"`
@@ -122,12 +201,17 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 		Player: Player{
 			Title:                c.cfg.DeviceName,
 			MachineIdentifier:    c.cfg.DeviceUUID,
+			Protocol:             "plex",
 			ProtocolVersion:      "1",
 			ProtocolCapabilities: "timeline,playback,playqueues",
 			DeviceClass:          "stb",
-			Product:              "MiSTer_GroovyRelay",
-			Platform:             "Linux",
+			Device:               companionDevice,
+			Model:                companionModel,
+			Product:              companionProduct,
+			Version:              c.cfg.Version,
+			Platform:             companionPlatform,
 			PlatformVersion:      c.cfg.Version,
+			Provides:             companionProvides,
 		},
 	}
 	w.WriteHeader(200)
@@ -142,7 +226,9 @@ type PlayMediaRequest struct {
 	PlexServerAddress string
 	PlexServerPort    string
 	PlexServerScheme  string
+	PlexMachineID     string
 	MediaKey          string
+	ContainerKey      string
 	OffsetMs          int
 	SessionID         string
 	ClientID          string
@@ -156,24 +242,33 @@ type PlayMediaRequest struct {
 // URL via BuildTranscodeURL, translates into core.SessionRequest, and
 // delegates to core. On error we return 400; the controller retries.
 func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	offset, _ := strconv.Atoi(q.Get("offset"))
+	offset, _ := strconv.Atoi(queryOrHeader(r, "offset"))
 	p := PlayMediaRequest{
-		PlexServerAddress: q.Get("address"),
-		PlexServerPort:    q.Get("port"),
-		PlexServerScheme:  q.Get("protocol"),
-		MediaKey:          q.Get("key"),
+		PlexServerAddress: queryOrHeader(r, "address"),
+		PlexServerPort:    queryOrHeader(r, "port"),
+		PlexServerScheme:  queryOrHeader(r, "protocol"),
+		PlexMachineID:     queryOrHeader(r, "machineIdentifier"),
+		MediaKey:          queryOrHeader(r, "key"),
+		ContainerKey:      queryOrHeader(r, "containerKey"),
 		OffsetMs:          offset,
-		SessionID:         q.Get("X-Plex-Session-Identifier"),
-		ClientID:          q.Get("X-Plex-Client-Identifier"),
-		PlexToken:         q.Get("X-Plex-Token"),
-		SubtitleStreamID:  q.Get("subtitleStreamID"),
-		AudioStreamID:     q.Get("audioStreamID"),
-		CommandID:         q.Get("commandID"),
+		SessionID:         queryOrHeader(r, "X-Plex-Session-Identifier"),
+		ClientID:          queryOrHeader(r, "X-Plex-Client-Identifier"),
+		// Plex controllers commonly send `token` on playMedia (per the repo
+		// references), while some tooling and older tests still use
+		// `X-Plex-Token`. Accept both from query or headers so playback works
+		// across web/mobile/controller variants.
+		PlexToken:        queryOrHeader(r, "token", "X-Plex-Token"),
+		SubtitleStreamID: queryOrHeader(r, "subtitleStreamID"),
+		AudioStreamID:    queryOrHeader(r, "audioStreamID"),
+		CommandID:        queryOrHeader(r, "commandID"),
 	}
 
 	// Translate Plex Companion request → generic core.SessionRequest.
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	streamClientID := c.cfg.DeviceUUID
+	if streamClientID == "" {
+		streamClientID = p.ClientID
+	}
 	streamURL := BuildTranscodeURL(TranscodeRequest{
 		PlexServerURL: serverURL,
 		MediaPath:     p.MediaKey,
@@ -182,7 +277,13 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		OutputWidth:   720,
 		OutputHeight:  480,
 		SessionID:     p.SessionID,
-		ClientID:      p.ClientID,
+		ClientID:      streamClientID,
+		DeviceName:    c.cfg.DeviceName,
+		ProfileName:   c.cfg.ProfileName,
+		Product:       companionProduct,
+		Platform:      companionPlatform,
+		Version:       c.cfg.Version,
+		Provides:      companionProvides,
 	})
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
@@ -223,6 +324,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.rememberPlaySession(p)
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -231,6 +333,7 @@ func (c *Companion) handlePause(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -239,6 +342,7 @@ func (c *Companion) handlePlay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -247,6 +351,7 @@ func (c *Companion) handleStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
@@ -256,12 +361,25 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 
-// Stubs filled in later. setParameters/setStreams aren't wired in v1 — Plex
-// controllers send them but we acknowledge without acting so the controller
-// UI doesn't stall.
+// Stubs filled in later. We currently acknowledge the fuller Plex Companion
+// surface without acting so compatible controllers don't fail on 404 while
+// queue/navigation semantics are still out of scope for the bridge.
+func (c *Companion) handleRefreshPlayQueue(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+func (c *Companion) handleSkipTo(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+func (c *Companion) handleSkipNext(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+func (c *Companion) handleSkipPrevious(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
 func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
 }
@@ -294,6 +412,9 @@ func (c *Companion) handleTimelineSubscribe(w http.ResponseWriter, r *http.Reque
 		q.Get("protocol"),
 		atoiDefault(q.Get("commandID"), 0),
 	)
+	// Plex controllers typically expect an immediate first timeline after
+	// subscribe rather than waiting for the next 1 Hz tick.
+	c.timeline.broadcastOnce()
 	writeOKResponse(w)
 }
 
@@ -319,7 +440,10 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 		st = c.core.Status()
 	}
 	w.WriteHeader(200)
-	_, _ = w.Write([]byte(c.timeline.buildTimelineXML(st)))
+	_, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
+		st,
+		atoiDefault(queryOrHeader(r, "commandID"), 0),
+	)))
 }
 
 // atoiDefault parses an int, returning d on failure. Used for Plex query
@@ -330,6 +454,25 @@ func atoiDefault(s string, d int) int {
 		return d
 	}
 	return n
+}
+
+// queryOrHeader returns the first non-empty value found under any of the
+// given names, checking query parameters first and then HTTP headers. Plex
+// Companion clients vary here: e.g. playMedia commonly sends `token` in the
+// query string while other callers/tests use `X-Plex-Token`.
+func queryOrHeader(r *http.Request, names ...string) string {
+	q := r.URL.Query()
+	for _, name := range names {
+		if v := q.Get(name); v != "" {
+			return v
+		}
+	}
+	for _, name := range names {
+		if v := r.Header.Get(name); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // rememberPlaySession stores the last playMedia request so the timeline

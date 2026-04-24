@@ -1,26 +1,35 @@
 # MiSTer_GroovyRelay
 
-A Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
+Note: this is not actually functional yet.
+
+A WIP Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
 Server; it advertises itself as a Plex cast target on the LAN, and when
 you pick it from the Plex client's "Cast" menu it transcodes the
-selected title through FFmpeg and streams raw RGB fields + PCM audio
-over the [GroovyMiSTer](docs/references/groovy_mister.md) UDP protocol
+Plex output through FFmpeg and streams raw RGB fields + PCM audio
+over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol
 into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly,
-giving you genuine 480i NTSC video for Plex content — no HDMI-to-CRT
-scaler, no tearing, correct interlace motion.
+giving you genuine 480i NTSC video for Plex content. Other sources are planned but Plex is the only current target until I work out the full video pipeline.
+
+## Future Plans
+- Support for more relay sources:
+  - Jellyfin
+  - Youtube/Archive.org/general URLs (Via yt-dlp and browser extension maybe?)
+  - DLNA
+  - IPTV/M3U playlists
+  - Directly from .mkv/.mp4 files (long term)
+- WebUI for configuring settings and relay sources
 
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board (or equivalent) wired to a
   15 kHz-capable CRT (consumer, PVM, arcade, etc.)
+- Groovy_MiSTer installed on your MiSTer
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a
-  Raspberry Pi 4/5 — anything with a few spare CPU cycles and
-  gigabit-class networking)
+  Raspberry Pi 4/5), anything with a few spare CPU cycles and
+  gigabit-class networking.
 - A Plex Media Server reachable from that host
-- A GroovyMiSTer-capable MiSTer core running (e.g., `Groovy`, `MARS`,
-  or any other receiver that speaks the same protocol)
 
-The bridge itself is stateless and light — a few hundred MB of RAM and
+The bridge itself is stateless and light, just a few hundred MB of RAM and
 one FFmpeg worker per active cast.
 
 ## Quick start (Docker)
@@ -171,17 +180,16 @@ automation use).
 
 ## Operational notes
 
-### Multi-NIC Unraid hosts
+### Multi-NIC hosts
 
 The bridge advertises its own LAN address to Plex (in the `/resources` response
 and in the plex.tv device registration PUT). By default it auto-detects that
-address by asking the kernel which interface it would use to reach 8.8.8.8 — a
-trick that works when the default route points at the LAN.
+address by asking the kernel which interface it would use to reach 8.8.8.8.
 
-On Unraid hosts with multiple network interfaces — typical combinations are
-LAN + WireGuard, LAN + Docker bridge, or LAN + secondary subnet — the default
+On hosts with multiple network interfaces (typical combinations are
+LAN + WireGuard, LAN + Docker bridge, or LAN + secondary subnet) the default
 route may not be the Plex-facing one. Symptoms: the cast target shows up in
-the Plex picker but "commands never arrive" — the controller is trying to
+the Plex picker but "commands never arrive." The controller is trying to
 reach the bridge on an unreachable NIC.
 
 Fix: set `host_ip` explicitly to the LAN IP the Plex controller can reach.
@@ -198,16 +206,12 @@ if it's gone, your override took effect.
 ### CPU contention under Docker
 
 The data plane pushes fields at 59.94 Hz regardless of scheduling pressure.
-Under heavy CPU contention (Unraid parity check, mover, a co-tenant container
-spiking CPU) the FFmpeg decoder can fall behind; the bridge covers with
-duplicate-field BLITs, which the FPGA rescans — so the symptom is visible
-motion glitches, not A/V drift. (This is by design — the clock-push architecture
+Under heavy CPU contention the FFmpeg decoder can fall behind; the bridge covers with duplicate-field BLITs, which the FPGA rescans, so the symptom is visible
+motion glitches, not A/V drift. (This is by design, the clock-push architecture
 trades a graceful fallback against a hard drift bug.)
 
-If you see glitches during parity checks, cap container CPU with
-`docker run --cpus=2 ...` or the Unraid template's CPU-pinning option so the
-bridge has dedicated cores that aren't preempted. 2 cores is typically
-sufficient for a single 480p transcode plus Groovy packet framing.
+If you see glitches cap container CPU with
+`docker run --cpus=2 ...` so the bridge has dedicated cores that aren't preempted. 2 cores is typically sufficient for a single 480p transcode plus Groovy packet framing.
 
 ## Troubleshooting
 
@@ -218,7 +222,7 @@ between client and server; you linked successfully (`--link`); and the
 bridge process is running (`docker logs mister-groovy-relay`).
 
 **"No video on the CRT."**
-Check the MiSTer is running a Groovy-capable core and is listening on
+Check the MiSTer is running the Groovy_MiSTer core and is listening on
 the configured `mister_port` (default 32100). Try `fake-mister` locally
 to confirm the bridge is sending packets at all:
 `go run ./cmd/fake-mister -addr :32100` on the same host as the
@@ -230,8 +234,7 @@ or a Groovy core config issue, not the bridge.
 **"Audio drifts over long playback."**
 This bridge uses a single FFmpeg process with shared A/V timestamps, so
 long-term drift is structurally mitigated. Short-term offsets usually
-indicate host CPU contention — check for parity checks, scrubs, or
-co-tenant transcodes competing with the ffmpeg worker.
+indicate host CPU contention.
 
 **"The picture shimmers / fields look wrong."**
 Flip `interlace_field_order` between `tff` and `bff`. The "correct"
@@ -239,7 +242,7 @@ value depends on your MiSTer core + cable path; once you pick the right
 one it stays right.
 
 **"Plex says the target is offline moments after casting."**
-Almost always a `source_port` regression — if the bridge restarted and
+Almost always a `source_port` regression. If the bridge restarted and
 bound a different ephemeral port, the MiSTer's session key no longer
 matches. Make sure `source_port` is set to a fixed number in
 `config.toml` and that nothing else on the host is using it.
@@ -250,13 +253,3 @@ matches. Make sure `source_port` is set to a fixed number in
 notes for why: this project stands on the shoulders of several GPL-3
 references (plexdlnaplayer, plex-mpv-shim, Groovy_MiSTer) and carries
 that license forward.
-
-## Further reading
-
-- [Design spec](docs/specs/2026-04-19-mister-groovy-relay-design.md) —
-  architecture, packet-level flow, testing strategy.
-- [Implementation plan](docs/plans/2026-04-19-mister-groovy-relay-v1.md) —
-  phased build plan that produced the current binary.
-- [References](docs/references/) — upstream projects studied during
-  design: `groovy_mister.md`, `mistercast.md`, `plex-mpv-shim.md`,
-  `plexdlnaplayer.md`, `mistglow.md`, `mister_plex.md`.
