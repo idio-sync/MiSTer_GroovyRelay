@@ -25,12 +25,27 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 	u := BuildTranscodeURL(req)
 	for _, substr := range []string{
 		"directPlay=0", "directStream=0", "copyts=1",
-		"videoResolution=720x480", "X-Plex-Token=xyz",
+		"videoResolution=720x480", "protocol=hls", "X-Plex-Token=xyz",
 		"X-Plex-Client-Profile-Name=Plex+Home+Theater",
 	} {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)
 		}
+	}
+}
+
+func TestBuildTranscodeURL_DefaultMaxBitrateIsStableLowMotionFriendlyValue(t *testing.T) {
+	req := TranscodeRequest{
+		PlexServerURL: "http://192.168.1.10:32400",
+		MediaPath:     "/library/metadata/42",
+		Token:         "xyz",
+		OutputWidth:   720,
+		OutputHeight:  480,
+		ClientID:      "client-id-abc",
+	}
+	u := BuildTranscodeURL(req)
+	if !strings.Contains(u, "maxVideoBitrate=1500") {
+		t.Errorf("url missing lowered default bitrate: %s", u)
 	}
 }
 

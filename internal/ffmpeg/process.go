@@ -71,6 +71,7 @@ func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
 	audioW.Close()
 
 	p := newProcess(cmd, videoR, audioR)
+	p.watchContext(ctx)
 	p.launchWaiter()
 	return p, nil
 }
@@ -115,6 +116,23 @@ func (p *Process) logWaitResult(err error) {
 		return
 	}
 	slog.Warn("ffmpeg exited", "err", err)
+}
+
+// watchContext marks the process stop as expected when the parent session
+// context is canceled. exec.CommandContext will SIGKILL the child on ctx.Done;
+// without this side-band the waiter logs that intentional kill as an
+// unexpected "ffmpeg exited" warning.
+func (p *Process) watchContext(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			p.stopRequested.Store(true)
+		case <-p.stopped:
+		}
+	}()
 }
 
 // VideoPipe returns the read-end of the video stream. Yields one

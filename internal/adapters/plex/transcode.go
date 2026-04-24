@@ -21,7 +21,9 @@ var plexHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // TranscodeRequest carries the inputs to BuildTranscodeURL. OffsetMs is the
 // seek start in milliseconds; PMS accepts whole seconds so we divide by 1000.
-// MaxBitrate is in kbps; defaults to 2000 when zero.
+// MaxBitrate is in kbps; defaults to 1500 when zero. The lower default gives
+// PMS less room to preserve high-motion detail that later turns into large,
+// poorly-compressible raw fields on the MiSTer side.
 type TranscodeRequest struct {
 	PlexServerURL string
 	MediaPath     string
@@ -46,7 +48,7 @@ type TranscodeRequest struct {
 // is what FFmpeg consumes as its -i input.
 func BuildTranscodeURL(r TranscodeRequest) string {
 	if r.MaxBitrate == 0 {
-		r.MaxBitrate = 2000
+		r.MaxBitrate = 1500
 	}
 	if r.ProfileName == "" {
 		r.ProfileName = "Plex Home Theater"
@@ -64,7 +66,7 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("path", r.MediaPath)
 	q.Set("mediaIndex", "0")
 	q.Set("partIndex", "0")
-	q.Set("protocol", "http")
+	q.Set("protocol", "hls")
 	q.Set("fastSeek", "1")
 	q.Set("directPlay", "0")
 	q.Set("directStream", "0")

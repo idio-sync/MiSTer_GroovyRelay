@@ -5,13 +5,18 @@ package plex
 // conditions. See docs/references/plex-mpv-shim.md §"Device Capability
 // Profile" for the syntax.
 //
-// This is a conservative profile that forces PMS to transcode everything
-// to H.264 Main@L3.1 at <=720x480 progressive, AAC 2-channel, <=30 fps.
+// This is a conservative streaming profile that forces PMS onto one stable
+// shape: HLS transport, H.264 video at <=720x480 progressive, AAC stereo,
+// <=30 fps. Keeping the server-side output predictable avoids source-to-source
+// variance where PMS might otherwise choose a different container/codec path
+// for media that is "already close enough" to our target.
+//
 // 480 is the tallest dimension the MiSTer's NTSC 480i modeline can display;
 // forcing a transcode also lets us subtitle-burn-in server-side when needed.
 func BuildProfileExtra() string {
 	return "" +
-		"add-transcode-target(type=videoProfile&protocol=http&container=mp4&codec=h264&videoCodec=h264&audioCodec=aac);" +
+		"add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac);" +
+		"add-transcode-target-audio-codec(type=videoProfile&context=streaming&protocol=hls&audioCodec=aac);" +
 		"add-transcode-target-settings(type=videoProfile&context=streaming&CopyInternalSubs=true&BurnSubtitles=true);" +
 		"add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.width&value=720&isRequired=true);" +
 		"add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.height&value=480&isRequired=true);" +
@@ -21,9 +26,11 @@ func BuildProfileExtra() string {
 
 // BuildClientCapabilities returns the X-Plex-Client-Capabilities value we
 // announce to PMS when requesting a transcoded stream. Kept terse; PMS uses
-// it as a hint when choosing protocol/container.
+// it as a hint when choosing protocol/container. Advertise only the HLS/H.264/
+// AAC stereo shape we actually want so PMS does not optimize into a different
+// "compatible" path on already-low-resolution sources.
 func BuildClientCapabilities() string {
-	return "protocols=http-video,http-mp4-video,http-hls,http-streaming-video,http-streaming-video-720p;" +
-		"videoDecoders=h264{profile:baseline,main,high;resolution:480;level:41};" +
-		"audioDecoders=aac"
+	return "protocols=http-live-streaming,http-hls,http-streaming-video;" +
+		"videoDecoders=h264{profile:baseline,main,high;resolution:720x480;level:31};" +
+		"audioDecoders=aac{channels:2}"
 }

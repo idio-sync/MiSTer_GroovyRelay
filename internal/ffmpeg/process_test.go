@@ -37,6 +37,37 @@ func TestProcess_LogWaitResultUsesDebugForIntentionalStop(t *testing.T) {
 	}
 }
 
+func TestProcess_WatchContextMarksContextCancelAsIntentionalStop(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &Process{stopped: make(chan struct{})}
+	p.watchContext(ctx)
+	cancel()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for !p.stopRequested.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !p.stopRequested.Load() {
+		t.Fatal("context cancel did not mark stopRequested")
+	}
+
+	p.logWaitResult(errors.New("signal: killed"))
+
+	got := buf.String()
+	if !strings.Contains(got, "level=DEBUG") {
+		t.Fatalf("expected debug log, got %q", got)
+	}
+	if strings.Contains(got, "ffmpeg exited") {
+		t.Fatalf("unexpected ffmpeg exited warning: %q", got)
+	}
+}
+
 func TestProcess_LogWaitResultWarnsOnUnexpectedExit(t *testing.T) {
 	var buf bytes.Buffer
 	old := slog.Default()

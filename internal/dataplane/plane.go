@@ -194,8 +194,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	p.resetPosition()
 
 	var (
-		frameNum  uint32 // increments once per BLIT_FIELD_VSYNC
-		nextField uint8
+		frameNum                uint32 // increments once per BLIT_FIELD_VSYNC
+		nextField               uint8
+		consecutiveUnderruns    int
+		consecutiveUnderrunFrom time.Time
 	)
 	if p.cfg.Modeline.Interlaced() {
 		nextField = initialFieldForOrder(p.cfg.SpawnSpec.FieldOrder)
@@ -241,12 +243,29 @@ func (p *Plane) Run(ctx context.Context) error {
 					_ = p.cfg.Sender.Send(groovy.BuildClose())
 					return nil
 				}
+				if consecutiveUnderruns >= 30 {
+					slog.Debug("video pipe recovered after duplicate-field underrun",
+						"fields", consecutiveUnderruns,
+						"duration_ms", time.Since(consecutiveUnderrunFrom).Milliseconds())
+				}
+				consecutiveUnderruns = 0
+				consecutiveUnderrunFrom = time.Time{}
 				payload := frame
 				if p.cfg.Modeline.Interlaced() {
 					payload = ExtractFieldFromFrame(frame, p.cfg.FieldWidth, videoHeight, p.cfg.BytesPerPixel, emitField)
 				}
 				p.sendField(frameNum, emitField, payload)
 			default:
+				if consecutiveUnderruns == 0 {
+					consecutiveUnderrunFrom = time.Now()
+				}
+				consecutiveUnderruns++
+				if consecutiveUnderruns == 30 || consecutiveUnderruns%120 == 0 {
+					slog.Warn("video pipe underrun; duplicating fields to hold raster",
+						"fields", consecutiveUnderruns,
+						"duration_ms", time.Since(consecutiveUnderrunFrom).Milliseconds(),
+						"audio_ready", p.audioReady.Load())
+				}
 				// Under-run — send a duplicate field to hold the raster.
 				p.sendDuplicate(frameNum, emitField)
 			}
