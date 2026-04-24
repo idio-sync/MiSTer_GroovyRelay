@@ -65,7 +65,11 @@ func (s *Server) handleBridgeGET(w http.ResponseWriter, r *http.Request) {
 	if fra, ok := s.cfg.BridgeSaver.(FirstRunAware); ok {
 		data.FirstRun = fra.IsFirstRun()
 	}
-	s.renderPanel(w, "bridge-panel", data)
+	if isHTMXRequest(r) {
+		s.renderPanel(w, "bridge-panel", data)
+		return
+	}
+	s.renderShellWithPanel(w, "bridge-panel", data)
 }
 
 // handleBridgeDismissFirstRun persists the first-run dismissal and

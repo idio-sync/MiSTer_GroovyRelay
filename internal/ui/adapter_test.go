@@ -75,6 +75,12 @@ func TestHandleAdapter_GET_RendersFields(t *testing.T) {
 	if !strings.Contains(body, "RUN") {
 		t.Error("status code RUN missing")
 	}
+	if !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("direct /ui/adapter load should render the full shell document")
+	}
+	if !strings.Contains(body, "htmx.min.js") {
+		t.Error("direct /ui/adapter load should include shell assets")
+	}
 }
 
 func TestHandleAdapter_GET_UnknownAdapter(t *testing.T) {
@@ -130,6 +136,21 @@ func TestHandleAdapter_GET_ExtraHTMLRenderedUnescaped(t *testing.T) {
 	}
 	if strings.Contains(body, "&lt;button") {
 		t.Errorf("ExtraHTML was HTML-escaped (regression of C1); body:\n%s", body)
+	}
+}
+
+func TestHandleAdapter_GET_HTMXReturnsFragment(t *testing.T) {
+	mux := newAdapterTestServer(t, &richStub{name: "stub", enabled: true, state: adapters.StateRunning})
+	req := httptest.NewRequest("GET", "/ui/adapter/stub", nil)
+	req.Header.Set("HX-Request", "true")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	if strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("htmx adapter request should return a panel fragment, not a full document")
+	}
+	if !strings.Contains(body, "StubDisplay") {
+		t.Error("adapter fragment missing display name")
 	}
 }
 

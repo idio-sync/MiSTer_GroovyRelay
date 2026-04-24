@@ -74,6 +74,12 @@ func TestHandleBridge_GET_RendersAllFields(t *testing.T) {
 			t.Errorf("missing %q in body", w)
 		}
 	}
+	if !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("direct /ui/bridge load should render the full shell document")
+	}
+	if !strings.Contains(body, "htmx.min.js") {
+		t.Error("direct /ui/bridge load should include shell assets")
+	}
 }
 
 func TestHandleBridge_GET_CurrentValuesPrefill(t *testing.T) {
@@ -89,6 +95,21 @@ func TestHandleBridge_GET_CurrentValuesPrefill(t *testing.T) {
 	// interlace_field_order "tff" must be the <option selected>.
 	if !strings.Contains(body, `<option value="tff" selected`) {
 		t.Error("interlace tff option not marked selected")
+	}
+}
+
+func TestHandleBridge_GET_HTMXReturnsFragment(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req.Header.Set("HX-Request", "true")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	if strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("htmx bridge request should return a panel fragment, not a full document")
+	}
+	if !strings.Contains(body, "<h1>Bridge</h1>") {
+		t.Error("bridge fragment missing heading")
 	}
 }
 
@@ -184,8 +205,8 @@ type firstRunSaver struct {
 	firstRun bool
 }
 
-func (f *firstRunSaver) IsFirstRun() bool         { return f.firstRun }
-func (f *firstRunSaver) DismissFirstRun() error   { f.firstRun = false; return nil }
+func (f *firstRunSaver) IsFirstRun() bool       { return f.firstRun }
+func (f *firstRunSaver) DismissFirstRun() error { f.firstRun = false; return nil }
 
 func TestHandleBridge_GET_FirstRunBannerShown(t *testing.T) {
 	saver := &firstRunSaver{firstRun: true}

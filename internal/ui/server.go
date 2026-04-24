@@ -5,6 +5,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -183,6 +184,31 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// renderShellWithPanel renders the full shell page around a panel
+// fragment so pushed URLs like /ui/bridge survive refresh/bookmark as
+// proper document loads instead of returning a bare fragment.
+func (s *Server) renderShellWithPanel(w http.ResponseWriter, panelName string, panelData any) {
+	panelHTML, err := s.renderTemplateHTML(panelName, panelData)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data := s.shellData()
+	data.PanelHTML = panelHTML
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderTemplateHTML(name string, data any) (template.HTML, error) {
+	var buf bytes.Buffer
+	if err := s.tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+		return "", err
+	}
+	return template.HTML(buf.String()), nil
+}
+
 // shellData builds the template data for the shell page: sidebar
 // entries (one per registered adapter) + status-dot classes.
 func (s *Server) shellData() shellTemplateData {
@@ -200,7 +226,8 @@ func (s *Server) shellData() shellTemplateData {
 }
 
 type shellTemplateData struct {
-	Adapters []sidebarAdapter
+	Adapters  []sidebarAdapter
+	PanelHTML template.HTML
 }
 
 type sidebarAdapter struct {
@@ -241,3 +268,6 @@ func dotClass(s adapters.State) string {
 	}
 }
 
+func isHTMXRequest(r *http.Request) bool {
+	return r.Header.Get("HX-Request") == "true"
+}

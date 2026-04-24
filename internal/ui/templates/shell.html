@@ -16,7 +16,7 @@
 			{{template "sidebar-body" .}}
 		</aside>
 		<main class="panel" id="panel">
-			{{template "panel-body" .}}
+			{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
 		</main>
 	</div>
 </body>

@@ -62,7 +62,11 @@ func (s *Server) handleAdapterGET(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := s.buildAdapterPanelData(a, nil, nil)
-	s.renderPanel(w, "adapter-panel", data)
+	if isHTMXRequest(r) {
+		s.renderPanel(w, "adapter-panel", data)
+		return
+	}
+	s.renderShellWithPanel(w, "adapter-panel", data)
 }
 
 // buildAdapterPanelData assembles the template data: status line,
