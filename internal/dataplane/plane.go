@@ -308,8 +308,19 @@ func (p *Plane) Run(ctx context.Context) error {
 		// "video freezes, audio continues" symptom.
 		lastEcho            uint32
 		ticksSinceEchoMoved int
+
+		// Rolling 5-second stats. Reset each statsTicker fire. Gives the
+		// operator a "grep dataplane stats" view of the session evolving
+		// without waiting for threshold-triggered warns.
+		statTicks          uint64
+		statFieldsSent     uint64
+		statDuplicates     uint64
+		statMaxFieldNs     int64
+		statMaxFramesAhead uint32
 	)
 	lastEcho = ack.FrameEcho
+	statsTicker := time.NewTicker(5 * time.Second)
+	defer statsTicker.Stop()
 	if p.cfg.Modeline.Interlaced() {
 		nextField = initialFieldForOrder(p.cfg.SpawnSpec.FieldOrder)
 	}
@@ -334,10 +345,35 @@ func (p *Plane) Run(ctx context.Context) error {
 				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
 				lastCorrectedEcho = a.FrameEcho
 			}
+		case <-statsTicker.C:
+			// One-line rolling snapshot of the session. Reset counters
+			// each interval so values represent "the last 5 seconds."
+			currentFramesAhead := uint32(0)
+			if frameNum > lastEcho {
+				currentFramesAhead = frameNum - lastEcho
+			}
+			slog.Info("dataplane stats",
+				"window_s", 5,
+				"ticks", statTicks,
+				"fields_sent", statFieldsSent,
+				"duplicates", statDuplicates,
+				"max_field_ms", time.Duration(statMaxFieldNs).Milliseconds(),
+				"max_frames_ahead", statMaxFramesAhead,
+				"current_frames_ahead", currentFramesAhead,
+				"enobuf_total", p.cfg.Sender.ENOBUFCount(),
+				"position_s", p.Position().Seconds(),
+				"audio_ready", p.audioReady.Load())
+			statTicks, statFieldsSent, statDuplicates = 0, 0, 0
+			statMaxFieldNs = 0
+			statMaxFramesAhead = 0
 		case <-timer.C:
 			lastTick = time.Now()
 			frameNum++
 			ticksSinceEchoMoved++
+			statTicks++
+			if framesAhead := frameNum - lastEcho; frameNum > lastEcho && framesAhead > statMaxFramesAhead {
+				statMaxFramesAhead = framesAhead
+			}
 			// FPGA-frame-echo watchdog: if our frameNum keeps advancing but
 			// the echo hasn't moved, the receiver is stuck (usually a torn
 			// LZ4 field). Log at first sign (60 ticks ≈ 1 sec) and every
@@ -386,7 +422,11 @@ func (p *Plane) Run(ctx context.Context) error {
 				} else {
 					payload = fb.Data[:fb.N]
 				}
-				p.sendField(frameNum, emitField, payload)
+				fieldElapsed := p.sendField(frameNum, emitField, payload)
+				statFieldsSent++
+				if ns := fieldElapsed.Nanoseconds(); ns > statMaxFieldNs {
+					statMaxFieldNs = ns
+				}
 				// Trailing Put — invariant (2): sendField does not return
 				// errors out of Run, so unconditional Put after sendField
 				// is safe. defer is reserved for panic-prone code paths.
@@ -403,6 +443,7 @@ func (p *Plane) Run(ctx context.Context) error {
 						"audio_ready", p.audioReady.Load())
 				}
 				p.sendDuplicate(frameNum, emitField)
+				statDuplicates++
 			}
 			if p.cfg.Modeline.Interlaced() {
 				nextField ^= 1
@@ -522,7 +563,7 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 // incompressible — a RAW BLIT variant is emitted with the uncompressed
 // bytes. Emitting an LZ4 header with CompressedSize=0 would desync the
 // receiver.
-func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
+func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	fieldStart := time.Now()
 	var lz4Elapsed, congestionElapsed, sendElapsed time.Duration
 	var compressedLen int
@@ -550,11 +591,11 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
 	if err := p.cfg.Sender.Send(header); err != nil {
 		slog.Warn("blit header send", "err", err)
-		return
+		return time.Since(fieldStart)
 	}
 	if err := p.cfg.Sender.SendPayload(payload); err != nil {
 		slog.Warn("blit payload send", "err", err)
-		return
+		return time.Since(fieldStart)
 	}
 	p.cfg.Sender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
@@ -574,6 +615,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 			"compressed_bytes", compressedLen,
 			"lz4_enabled", p.cfg.LZ4Enabled)
 	}
+	return fieldElapsed
 }
 
 // sendDuplicate emits a 9-byte dup-BLIT header with no payload. Used on pipe
