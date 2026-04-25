@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,26 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/pierrec/lz4/v4"
 )
+
+// processHandle is the narrow set of methods Plane.Run consumes from the
+// FFmpeg child process. *ffmpeg.Process satisfies it, and tests can inject
+// stubs (in-memory pipe readers, deterministic exit signals) without
+// requiring ffmpeg-on-PATH or Unix-only ExtraFiles wiring. This is the
+// seam used by TestPlane_AllocationBudget to drive Plane.Run end-to-end
+// without spawning a real child.
+type processHandle interface {
+	VideoPipe() io.Reader
+	AudioPipe() io.Reader
+	Done() <-chan struct{}
+	Stop()
+}
+
+// spawnProcess is the indirection Run uses to obtain its processHandle.
+// Default points at the production ffmpeg.Spawn; tests swap it for a stub
+// constructor. It is not part of the package's public API.
+var spawnProcess = func(ctx context.Context, spec ffmpeg.PipelineSpec) (processHandle, error) {
+	return ffmpeg.Spawn(ctx, spec)
+}
 
 // PlaneConfig is the full knob set Plane.Run needs to stream one session.
 // Built by the control plane (core.Manager in Phase 7+) from a SessionRequest
@@ -54,7 +75,7 @@ const (
 //  7. CLOSE on ctx cancel or ffmpeg exit.
 type Plane struct {
 	cfg            PlaneConfig
-	proc           *ffmpeg.Process
+	proc           processHandle
 	positionFields atomic.Int64 // fields emitted since session start; Position() derives ms
 	audioReady     atomic.Bool
 	fpgaFrame      atomic.Uint32
@@ -190,7 +211,7 @@ func (p *Plane) Done() <-chan struct{} { return p.done }
 func (p *Plane) Run(ctx context.Context) error {
 	defer close(p.done)
 
-	proc, err := ffmpeg.Spawn(ctx, p.cfg.SpawnSpec)
+	proc, err := spawnProcess(ctx, p.cfg.SpawnSpec)
 	if err != nil {
 		return fmt.Errorf("ffmpeg spawn: %w", err)
 	}
