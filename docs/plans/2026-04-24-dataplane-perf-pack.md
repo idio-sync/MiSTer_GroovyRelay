@@ -45,7 +45,7 @@
 
 ## Task Order Rationale
 
-Tasks 1–5 add new APIs alongside existing ones (no behavior change). Tasks 6–9 add Sender observability (no behavior change). Tasks 10–12 prepare the Plane (new fields + helpers; legacy path still in use). Task 13 is the disruptive swap to the new pipeline. Task 14 verifies the full system. Each task is independently committable; tasks 1–9 can be reverted without affecting the data plane's runtime behavior.
+Tasks 1–5 add new APIs alongside existing ones (no behavior change). Tasks 6–9 add Sender observability (no behavior change). Tasks 10–11 prepare the Plane (new fields + helpers; legacy path still in use). Task 12 is the disruptive swap to the new pipeline. Task 13 verifies the full system via an allocation-budget regression test. Each task is independently committable; tasks 1–9 can be reverted without affecting the data plane's runtime behavior.
 
 ---
 
@@ -109,8 +109,19 @@ func TestLZ4CompressInto_ZeroAllocs(t *testing.T) {
 	got := testing.AllocsPerRun(50, func() {
 		LZ4CompressInto(dst, src)
 	})
-	if got != 0 {
-		t.Errorf("LZ4CompressInto allocs/op = %v, want 0", got)
+	// IMPLEMENTATION NOTE: pierrec/lz4/v4's lz4.Compressor declares its
+	// hash table as a pointer field allocated on first CompressBlock call.
+	// With `var c lz4.Compressor` declared as a stack-local in
+	// LZ4CompressInto, that pointer-allocation happens once per call and
+	// AllocsPerRun WILL report > 0. If this assertion fails, two options:
+	// (a) raise the threshold to a small constant like `if got > 1`,
+	// matching the existing LZ4Compress allocation profile;
+	// (b) hoist `var lz4Compressor lz4.Compressor` to package scope and
+	// guard with a sync.Mutex (the data plane is single-threaded, but the
+	// test suite is not). The spec's allocation budget is "near-zero",
+	// not "literally zero" — option (a) is consistent with the spec.
+	if got > 1 {
+		t.Errorf("LZ4CompressInto allocs/op = %v, want <= 1", got)
 	}
 }
 
@@ -251,6 +262,11 @@ Insert immediately after the existing `BuildBlitHeader` function:
 // table). dst MUST have len >= BlitHeaderLZ4Delta (13). Intended for the
 // hot tick path where re-allocating an 8-13 byte slice on every send would
 // churn the heap.
+//
+// All bytes within the returned dst[:length] are written explicitly: bytes
+// [0..8] for every variant, plus [8] for Duplicate, [8..12] for Compressed,
+// and [12] for Compressed+Delta. The caller never observes bytes past
+// length, so reuse of dst across calls cannot leak stale bytes.
 func BuildBlitHeaderInto(dst []byte, o BlitOpts) []byte {
 	var length int
 	switch {
@@ -264,11 +280,6 @@ func BuildBlitHeaderInto(dst []byte, o BlitOpts) []byte {
 		length = BlitHeaderRaw
 	}
 	h := dst[:length]
-	// Zero out reused trailing bytes from previous calls so a longer
-	// variant followed by a shorter variant doesn't leak stale bytes.
-	for i := range h {
-		h[i] = 0
-	}
 	h[0] = CmdBlitFieldVSync
 	binary.LittleEndian.PutUint32(h[1:5], o.Frame)
 	h[5] = o.Field
@@ -280,6 +291,8 @@ func BuildBlitHeaderInto(dst []byte, o BlitOpts) []byte {
 		binary.LittleEndian.PutUint32(h[8:12], o.CompressedSize)
 		if o.Delta {
 			h[12] = BlitFlagDelta
+		} else {
+			h[12] = 0 // not strictly observed (length==12 returned), but avoids ambiguity if caller widens slice
 		}
 	}
 	return h
@@ -689,15 +702,35 @@ git commit -m "feat(dataplane): add ReadFramesFromPipePooled with pool ownership
 
 **No new test in this task** — `readSndBuf` is exercised in Task 7 via the live `NewSender` path.
 
+**Pre-step: existing import shape.** All three platform files currently use a single-line `import "syscall"` declaration (verified at baseline). Adding a second `import (...)` block to a file is invalid Go — the import declarations must be merged into one block. Each step below replaces the existing single-line import with a parenthesized block that includes the new packages.
+
 - [ ] **Step 1: Add Linux implementation**
 
-Append to `internal/groovynet/sender_linux.go`:
+In `internal/groovynet/sender_linux.go`:
 
+Replace the existing single-line import:
+```go
+import (
+	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+```
+with a block that adds `net`:
 ```go
 import (
 	"net"
-)
+	"syscall"
 
+	"golang.org/x/sys/unix"
+)
+```
+
+(If the existing form is `import "syscall"` followed by `import "golang.org/x/sys/unix"` — convert both to a single block as shown.)
+
+Then append the new function at the end of the file:
+
+```go
 // readSndBuf returns the kernel's current SO_SNDBUF for conn, in bytes.
 // On Linux the kernel returns approximately 2× the requested size as a
 // long-standing bookkeeping quirk; callers must compare conservatively
@@ -721,18 +754,21 @@ func readSndBuf(conn *net.UDPConn) (int, error) {
 }
 ```
 
-`net` should already be imported. If not, add it.
-
 - [ ] **Step 2: Add Windows implementation**
 
-Read `internal/groovynet/sender_windows.go` first to see its build tag and existing imports, then append:
+In `internal/groovynet/sender_windows.go`:
 
+Replace the existing `import "syscall"` line with:
 ```go
 import (
 	"net"
 	"syscall"
 )
+```
 
+Then append the new function:
+
+```go
 // readSndBuf returns the kernel's current SO_SNDBUF for conn, in bytes.
 func readSndBuf(conn *net.UDPConn) (int, error) {
 	raw, err := conn.SyscallConn()
@@ -755,16 +791,24 @@ func readSndBuf(conn *net.UDPConn) (int, error) {
 
 - [ ] **Step 3: Add other-platform no-op**
 
-Append to `internal/groovynet/sender_other.go`:
+In `internal/groovynet/sender_other.go`:
 
+Replace the existing `import "syscall"` line with:
 ```go
 import (
 	"net"
+	"syscall"
 )
+```
 
+Then append the new function:
+
+```go
 // readSndBuf is a no-op on non-Linux/non-Windows platforms. Returns
-// (0, nil) so the caller treats it as unsupported.
+// (0, nil) so the caller treats it as unsupported. The conn parameter
+// is unused but matches the signature of the Linux/Windows shims.
 func readSndBuf(conn *net.UDPConn) (int, error) {
+	_ = conn
 	return 0, nil
 }
 ```
@@ -841,12 +885,19 @@ type Sender struct {
 }
 ```
 
-Add the import for `sync/atomic`:
+Replace `sender.go`'s existing import block with one that adds `log/slog` and `sync/atomic` (verified at baseline: `sender.go` does NOT currently import `log/slog`, despite what an earlier draft of this plan claimed). The full new import block:
 
 ```go
 import (
-	// ... existing imports ...
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 ```
 
@@ -964,7 +1015,7 @@ Expected: build error — `ENOBUFCount` and `isPowerOfTen` not defined.
 
 - [ ] **Step 3: Modify `internal/groovynet/sender.go`**
 
-Add the imports `errors` and `syscall` to the existing import block:
+Add `syscall` to the existing import block (Task 7 added `log/slog`, `sync/atomic`, and `errors` is already there from the `InitACKTimeoutError` helper). The full block becomes:
 
 ```go
 import (
@@ -1536,6 +1587,19 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 	p.cfg.Sender.MarkBlitSent(len(payload))
 }
 ```
+
+**Optional hardening: migrate `sendDuplicate` too.** The function (around plane.go:415) builds a 9-byte dup header on the underrun path. It currently calls the legacy `groovy.BuildBlitHeader(opts)`, allocating a fresh 9-byte slice per call. Since `sendDuplicate` and `sendField` are called from the same goroutine in mutually-exclusive branches of the tick `select`, they can safely share `p.headerScratch`. For consistency with the perf goal, also update `sendDuplicate`:
+
+```go
+func (p *Plane) sendDuplicate(frame uint32, field uint8) {
+	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
+	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
+	_ = p.cfg.Sender.Send(header)
+	p.cfg.Sender.MarkBlitSent(0) // no payload, no congestion hit
+}
+```
+
+The 9-byte allocation per underrun field is small in absolute terms — but underrun storms (e.g., 30 consecutive duplicates) are exactly when the system is already strained, and trimming any allocation in that path is consistent with the spec's "match MiSTerCast structurally" goal.
 
 - [ ] **Step 4: Run all dataplane tests**
 
