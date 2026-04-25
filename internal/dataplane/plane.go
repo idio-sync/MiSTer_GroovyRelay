@@ -102,6 +102,11 @@ type Plane struct {
 	// invokes either from a different goroutine must add a separate scratch
 	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
+
+	// lastBudgetWarn throttles the per-tick budget-overrun WARN to at most
+	// once per second. Owned by the tick goroutine; not safe for concurrent
+	// access (which never happens by construction).
+	lastBudgetWarn time.Time
 }
 
 // NewPlane constructs a Plane that is ready to Run. The Sender inside cfg
@@ -294,7 +299,17 @@ func (p *Plane) Run(ctx context.Context) error {
 		nextField               uint8
 		consecutiveUnderruns    int
 		consecutiveUnderrunFrom time.Time
+
+		// FPGA-frame-echo watchdog. The receiver echoes the most recent
+		// successfully-decoded frame in every ACK. If our outgoing frameNum
+		// keeps advancing but echo stalls, the FPGA is stuck — usually a
+		// torn LZ4 field where chunks were dropped mid-payload. Audio
+		// continues to play (independent path) which is exactly the
+		// "video freezes, audio continues" symptom.
+		lastEcho            uint32
+		ticksSinceEchoMoved int
 	)
+	lastEcho = ack.FrameEcho
 	if p.cfg.Modeline.Interlaced() {
 		nextField = initialFieldForOrder(p.cfg.SpawnSpec.FieldOrder)
 	}
@@ -311,6 +326,10 @@ func (p *Plane) Run(ctx context.Context) error {
 			p.audioReady.Store(audioEnabled && a.AudioReady())
 			p.fpgaFrame.Store(a.FPGAFrame)
 			latestACK = a
+			if a.FrameEcho != lastEcho {
+				lastEcho = a.FrameEcho
+				ticksSinceEchoMoved = 0
+			}
 			if correction, ok := rasterCorrection(a, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
 				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
 				lastCorrectedEcho = a.FrameEcho
@@ -318,6 +337,19 @@ func (p *Plane) Run(ctx context.Context) error {
 		case <-timer.C:
 			lastTick = time.Now()
 			frameNum++
+			ticksSinceEchoMoved++
+			// FPGA-frame-echo watchdog: if our frameNum keeps advancing but
+			// the echo hasn't moved, the receiver is stuck (usually a torn
+			// LZ4 field). Log at first sign (60 ticks ≈ 1 sec) and every
+			// 5 sec after, so the operator can see the freeze in real time.
+			if ticksSinceEchoMoved == 60 || (ticksSinceEchoMoved > 60 && ticksSinceEchoMoved%300 == 0) {
+				slog.Warn("FPGA frame echo stalled; sender ahead of receiver",
+					"frame_sent", frameNum,
+					"frame_echo", lastEcho,
+					"frames_ahead", frameNum-lastEcho,
+					"ticks_since_echo_moved", ticksSinceEchoMoved,
+					"audio_ready", p.audioReady.Load())
+			}
 			// The FFmpeg pipeline emits full-height progressive frames at the
 			// field cadence. Keep the BLIT header field bit aligned to the local
 			// row-stripe order here; deriving parity from live vgaF1 feedback
@@ -491,18 +523,30 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 // bytes. Emitting an LZ4 header with CompressedSize=0 would desync the
 // receiver.
 func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
+	fieldStart := time.Now()
+	var lz4Elapsed, congestionElapsed, sendElapsed time.Duration
+	var compressedLen int
+
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
 	if p.cfg.LZ4Enabled {
+		t := time.Now()
 		if n, ok := groovy.LZ4CompressInto(p.lz4Scratch, raw); ok {
 			payload = p.lz4Scratch[:n]
 			opts.Compressed = true
 			opts.CompressedSize = uint32(n)
+			compressedLen = n
 		} else {
 			slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", "size", len(raw))
 		}
+		lz4Elapsed = time.Since(t)
 	}
+
+	t := time.Now()
 	p.cfg.Sender.WaitForCongestion()
+	congestionElapsed = time.Since(t)
+
+	t = time.Now()
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
 	if err := p.cfg.Sender.Send(header); err != nil {
 		slog.Warn("blit header send", "err", err)
@@ -513,6 +557,23 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 		return
 	}
 	p.cfg.Sender.MarkBlitSent(len(payload))
+	sendElapsed = time.Since(t)
+
+	// Throttled budget-overrun warn. The NTSC field period is ~16.683 ms;
+	// 14 ms is 84% of that. If sendField regularly hits this threshold the
+	// tick is consistently late and lag will accumulate against PMS.
+	fieldElapsed := time.Since(fieldStart)
+	if fieldElapsed > 14*time.Millisecond && time.Since(p.lastBudgetWarn) > time.Second {
+		p.lastBudgetWarn = time.Now()
+		slog.Warn("sendField exceeded 14 ms (84% of NTSC field period)",
+			"total_ms", fieldElapsed.Milliseconds(),
+			"lz4_ms", lz4Elapsed.Milliseconds(),
+			"congestion_ms", congestionElapsed.Milliseconds(),
+			"send_ms", sendElapsed.Milliseconds(),
+			"raw_bytes", len(raw),
+			"compressed_bytes", compressedLen,
+			"lz4_enabled", p.cfg.LZ4Enabled)
+	}
 }
 
 // sendDuplicate emits a 9-byte dup-BLIT header with no payload. Used on pipe
