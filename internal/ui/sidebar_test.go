@@ -68,3 +68,37 @@ func TestHandleSidebarStatus_ReflectsErrorState(t *testing.T) {
 		t.Errorf("missing err dot: %s", rw.Body.String())
 	}
 }
+
+// Sidebar links must override the inherited hx-swap from <aside>. The
+// aside polls itself with hx-swap="outerHTML"; htmx 2.x inherits that
+// down the tree, so without an explicit hx-swap on the link a click on
+// "Bridge" or an adapter would do an outerHTML swap on #panel and
+// destroy the <main class="panel"> wrapper. Subsequent clicks would
+// then fire htmx:targetError because #panel no longer exists, and the
+// panel content would reflow into the sidebar's grid column.
+func TestHandleSidebarStatus_LinksOverrideInheritedSwap(t *testing.T) {
+	reg := adapters.NewRegistry()
+	_ = reg.Register(&uiStubAdapter{name: "plex", state: adapters.StateRunning})
+	s, _ := New(Config{Registry: reg})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("GET", "/ui/sidebar/status", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	for _, link := range []string{`href="/ui/bridge"`, `href="/ui/adapter/plex"`} {
+		idx := strings.Index(body, link)
+		if idx < 0 {
+			t.Fatalf("link %s not found in body", link)
+		}
+		// Look only at the opening <a> tag for this link.
+		end := strings.Index(body[idx:], ">")
+		if end < 0 {
+			t.Fatalf("malformed <a> for %s", link)
+		}
+		tag := body[idx : idx+end]
+		if !strings.Contains(tag, `hx-swap="innerHTML"`) {
+			t.Errorf("link %s missing hx-swap=\"innerHTML\" override (would inherit outerHTML from <aside>): %s", link, tag)
+		}
+	}
+}
