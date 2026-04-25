@@ -40,3 +40,21 @@ func ExtractFieldFromFrame(frame []byte, width, height, bytesPerPixel int, field
 	}
 	return out
 }
+
+// ExtractFieldFromFrameInto row-stripes a full-height frame into dst.
+// dst MUST have len >= width*(height/2)*bytesPerPixel; the function
+// overwrites that prefix and ignores any trailing bytes. field=0 extracts
+// even rows (top), field=1 extracts odd rows (bottom). Same row-extraction
+// math as ExtractFieldFromFrame; differs only in the caller-supplied dst.
+func ExtractFieldFromFrameInto(dst, frame []byte, width, height, bytesPerPixel int, field uint8) {
+	rowSize := width * bytesPerPixel
+	fieldHeight := height / 2
+	srcRow := int(field & 1)
+	for dstRow := 0; dstRow < fieldHeight; dstRow++ {
+		srcStart := srcRow * rowSize
+		srcEnd := srcStart + rowSize
+		dstStart := dstRow * rowSize
+		copy(dst[dstStart:dstStart+rowSize], frame[srcStart:srcEnd])
+		srcRow += 2
+	}
+}

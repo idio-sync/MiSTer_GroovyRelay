@@ -112,3 +112,32 @@ func TestExtractFieldFromFrame_RowStripesEvenAndOddRows(t *testing.T) {
 		t.Fatalf("bottom field rows = %v, want %v", got, want)
 	}
 }
+
+func TestExtractFieldFromFrameInto_MatchesLegacy(t *testing.T) {
+	const w, h, bpp = 16, 8, 3
+	frame := make([]byte, w*h*bpp)
+	for i := range frame {
+		frame[i] = byte(i)
+	}
+	for _, field := range []uint8{0, 1} {
+		legacy := ExtractFieldFromFrame(frame, w, h, bpp, field)
+		dst := make([]byte, w*(h/2)*bpp)
+		ExtractFieldFromFrameInto(dst, frame, w, h, bpp, field)
+		if !bytes.Equal(legacy, dst) {
+			t.Errorf("field %d mismatch:\n  legacy: % x\n  new:    % x", field, legacy, dst)
+		}
+	}
+}
+
+func TestExtractFieldFromFrameInto_ZeroAllocs(t *testing.T) {
+	const w, h, bpp = 720, 480, 3
+	frame := make([]byte, w*h*bpp)
+	dst := make([]byte, w*(h/2)*bpp)
+	ExtractFieldFromFrameInto(dst, frame, w, h, bpp, 0) // warmup
+	got := testing.AllocsPerRun(50, func() {
+		ExtractFieldFromFrameInto(dst, frame, w, h, bpp, 0)
+	})
+	if got != 0 {
+		t.Errorf("ExtractFieldFromFrameInto allocs/op = %v, want 0", got)
+	}
+}
