@@ -150,6 +150,7 @@ func TestValidate_AcceptsEmptyHostIP(t *testing.T) {
 // either drifts in a future refactor.
 func TestSectioned_RoundTripSSHFields(t *testing.T) {
 	const input = `
+[bridge]
 [bridge.mister]
 host = "192.168.1.42"
 port = 32100
