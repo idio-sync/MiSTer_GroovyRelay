@@ -10,6 +10,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/pierrec/lz4/v4"
 )
 
 // PlaneConfig is the full knob set Plane.Run needs to stream one session.
@@ -28,6 +29,15 @@ type PlaneConfig struct {
 	AudioChans    int // 2 for stereo
 	SeekOffsetMs  int // reported as session start position
 }
+
+// framePoolSlots is the depth of the free queue. Sized to videoChCap + 2
+// to cover (1 reader in-progress + videoChCap in-channel + 1 tick
+// in-progress) given the invariant that ReadFramesFromPipePooled holds
+// at most one *FrameBuf outside the pool at any time.
+const (
+	videoChCap     = 8
+	framePoolSlots = videoChCap + 2
+)
 
 // Plane streams one FFmpeg session to the MiSTer. One BLIT_FIELD_VSYNC per
 // 59.94 Hz tick, audio gated on the latest ACK's audio-ready bit, and a
@@ -56,6 +66,16 @@ type Plane struct {
 	// what the operator flips via the UI to fix shimmer without
 	// restarting the ffmpeg pipeline.
 	fieldOrderFlip atomic.Bool
+
+	// Pre-allocated session-lifetime buffers (perf pack). Owned by the
+	// tick loop's goroutine; do not access concurrently. The framePool's
+	// buffer count and frameBytes size are determined at NewPlane time
+	// from PlaneConfig and held constant for the session lifetime —
+	// mid-session resolution changes are not supported.
+	framePool     *FramePool
+	fieldScratch  []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
+	lz4Scratch    []byte // len == lz4.CompressBlockBound(fieldBytes)
+	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 }
 
 // NewPlane constructs a Plane that is ready to Run. The Sender inside cfg
@@ -64,7 +84,18 @@ type Plane struct {
 // Seeds the field-order flip from cfg.SpawnSpec.FieldOrder: "bff" inverts
 // the label, "tff" (or empty) leaves it as-is.
 func NewPlane(cfg PlaneConfig) *Plane {
-	p := &Plane{cfg: cfg, done: make(chan struct{})}
+	videoHeight := cfg.resolveVideoHeight()
+	frameBytes := cfg.FieldWidth * videoHeight * cfg.BytesPerPixel
+	fieldBytes := cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
+
+	p := &Plane{
+		cfg:           cfg,
+		done:          make(chan struct{}),
+		framePool:     NewFramePool(framePoolSlots, frameBytes),
+		fieldScratch:  make([]byte, fieldBytes),
+		lz4Scratch:    make([]byte, lz4.CompressBlockBound(fieldBytes)),
+		headerScratch: make([]byte, groovy.BlitHeaderLZ4Delta),
+	}
 	if cfg.SpawnSpec.FieldOrder == "bff" {
 		p.fieldOrderFlip.Store(true)
 	}
