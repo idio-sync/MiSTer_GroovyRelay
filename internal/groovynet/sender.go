@@ -38,6 +38,19 @@ type Sender struct {
 
 	sndBufActual int           // populated by readSndBuf at NewSender; 0 on unsupported platforms
 	enobufCount  atomic.Uint64 // populated in Task 8
+
+	// paceInterval is an optional inter-chunk delay applied between
+	// consecutive WriteToUDP calls inside SendPayload. Defaults to 0
+	// (no pacing — chunks are sent back-to-back at line rate, matching
+	// MiSTerCast's behavior). Setting this to a small positive value
+	// (e.g., 10 µs) spreads the field's burst over a few ms, giving the
+	// MiSTer's UDP receive buffer time to drain. Recommended on
+	// Wi-Fi / power-line / less-capable receivers; unnecessary on a
+	// dedicated wired link to the MiSTer.
+	//
+	// Read under the same mu that serializes SendPayload, so changes
+	// take effect on the next field.
+	paceInterval time.Duration
 }
 
 // InitACKTimeoutError reports that the MiSTer never acknowledged the INIT
@@ -150,6 +163,7 @@ func (s *Sender) SendPayload(payload []byte) error {
 	defer s.mu.Unlock()
 	totalChunks := (len(payload) + groovy.MaxDatagram - 1) / groovy.MaxDatagram
 	chunkIdx := 0
+	pace := s.paceInterval
 	for i := 0; i < len(payload); i += groovy.MaxDatagram {
 		end := i + groovy.MaxDatagram
 		if end > len(payload) {
@@ -171,8 +185,33 @@ func (s *Sender) SendPayload(payload []byte) error {
 			return err
 		}
 		chunkIdx++
+		// Per-chunk pacing: spread the field's burst over time so the
+		// MiSTer's UDP receive buffer has time to drain. Skip after the
+		// final chunk — pacing the tail adds latency without benefit.
+		if pace > 0 && i+groovy.MaxDatagram < len(payload) {
+			time.Sleep(pace)
+		}
 	}
 	return nil
+}
+
+// SetPacingInterval configures the per-chunk delay applied inside
+// SendPayload. Pass 0 to disable pacing entirely (default — chunks
+// blast back-to-back at line rate). Typical values: 5-20 µs, picked
+// empirically based on whether the receiver shows tail-of-field
+// corruption.
+func (s *Sender) SetPacingInterval(d time.Duration) {
+	s.mu.Lock()
+	s.paceInterval = d
+	s.mu.Unlock()
+}
+
+// PacingInterval returns the current per-chunk pacing delay.
+func (s *Sender) PacingInterval() time.Duration {
+	s.mu.Lock()
+	d := s.paceInterval
+	s.mu.Unlock()
+	return d
 }
 
 // ENOBUFCount returns the monotonic count of ENOBUFS events observed since

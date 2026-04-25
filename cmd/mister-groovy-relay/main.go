@@ -83,6 +83,20 @@ func main() {
 	}
 	defer sender.Close()
 
+	// Optional per-chunk pacing for SendPayload. Set GROOVY_PACING_US to
+	// a positive integer to spread each field's UDP burst over time and
+	// give the MiSTer's receive buffer time to drain. Recommended on
+	// Wi-Fi / power-line / less-capable receivers; unnecessary on a
+	// dedicated wired link. Typical values: 5-20 µs.
+	if v := os.Getenv("GROOVY_PACING_US"); v != "" {
+		if us, parseErr := time.ParseDuration(v + "us"); parseErr == nil && us > 0 {
+			sender.SetPacingInterval(us)
+			slog.Info("SendPayload pacing enabled", "interval_us", us.Microseconds())
+		} else {
+			slog.Warn("invalid GROOVY_PACING_US; pacing disabled", "value", v, "err", parseErr)
+		}
+	}
+
 	coreMgr := core.NewManager(sec.Bridge, sender)
 
 	hostIP := sec.Bridge.HostIP
