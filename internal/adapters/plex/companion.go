@@ -890,6 +890,7 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	_, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
 		st,
+		c.lastPlaySession(),
 		atoiDefault(queryOrHeader(r, "commandID"), 0),
 	)))
 }
