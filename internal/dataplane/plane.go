@@ -113,6 +113,43 @@ func (p *Plane) advancePosition() {
 	p.positionFields.Add(1)
 }
 
+// resolveVideoHeight is the single source of truth for the full
+// progressive frame height the FFmpeg pipeline emits. Used by both
+// NewPlane (to size frame buffers) and Run (to spawn the reader). MUST
+// NOT be duplicated — keeping the resolution in one place prevents the
+// frame-pool sizing from drifting away from the reader's expected
+// width*height*bpp.
+func (cfg PlaneConfig) resolveVideoHeight() int {
+	if cfg.SpawnSpec.OutputHeight > 0 {
+		return cfg.SpawnSpec.OutputHeight
+	}
+	h := cfg.FieldHeight
+	if cfg.Modeline.Interlaced() {
+		h *= 2
+	}
+	return h
+}
+
+// fieldPeriodFromModeline returns one field's wall-clock duration as
+// integer nanoseconds. Same semantics as
+// time.Duration(float64(time.Second) / ml.FieldRate()) but without the
+// sub-µs truncation of float division. Matches the integer-exact
+// position math at Position(). Returns 0 on a zero/invalid modeline.
+func fieldPeriodFromModeline(ml groovy.Modeline) time.Duration {
+	if ml.PClock <= 0 || ml.HTotal == 0 || ml.VTotal == 0 {
+		return 0
+	}
+	pixelsPerField := uint64(ml.HTotal) * uint64(ml.VTotal)
+	if ml.Interlaced() {
+		pixelsPerField /= 2
+	}
+	pclockMicroHz := uint64(ml.PClock * 1_000_000)
+	if pclockMicroHz == 0 {
+		return 0
+	}
+	return time.Duration((pixelsPerField * 1_000_000_000) / pclockMicroHz)
+}
+
 // Done returns a channel closed when Run exits (EOF, ctx cancel, or error).
 func (p *Plane) Done() <-chan struct{} { return p.done }
 

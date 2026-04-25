@@ -246,3 +246,61 @@ func TestEffectiveAudioConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestPlaneConfig_ResolveVideoHeight(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  PlaneConfig
+		want int
+	}{
+		{
+			name: "explicit OutputHeight wins",
+			cfg: PlaneConfig{
+				FieldHeight: 240,
+				Modeline:    groovy.Modeline{Interlace: 1},
+				SpawnSpec:   ffmpeg.PipelineSpec{OutputHeight: 720},
+			},
+			want: 720,
+		},
+		{
+			name: "interlaced doubles FieldHeight",
+			cfg: PlaneConfig{
+				FieldHeight: 240,
+				Modeline:    groovy.Modeline{Interlace: 1},
+			},
+			want: 480,
+		},
+		{
+			name: "progressive uses FieldHeight",
+			cfg: PlaneConfig{
+				FieldHeight: 480,
+				Modeline:    groovy.Modeline{Interlace: 0},
+			},
+			want: 480,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.cfg.resolveVideoHeight(); got != c.want {
+				t.Errorf("got %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+func TestFieldPeriodFromModeline_NTSC480i(t *testing.T) {
+	period := fieldPeriodFromModeline(groovy.NTSC480i60)
+	// 480i field period = 1001/60 ms ≈ 16.683 ms = 16,683,333 ns.
+	// Allow ±1µs jitter from integer rounding in the formula.
+	want := 16683333 * time.Nanosecond
+	delta := period - want
+	if delta < -time.Microsecond || delta > time.Microsecond {
+		t.Errorf("period = %v, want %v ± 1µs", period, want)
+	}
+}
+
+func TestFieldPeriodFromModeline_ZeroOnInvalid(t *testing.T) {
+	if got := fieldPeriodFromModeline(groovy.Modeline{}); got != 0 {
+		t.Errorf("zero modeline period = %v, want 0", got)
+	}
+}
