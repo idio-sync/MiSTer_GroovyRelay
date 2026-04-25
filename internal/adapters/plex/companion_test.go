@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -489,6 +490,96 @@ func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 	}
 	if got.CommandID != "14" {
 		t.Errorf("remembered CommandID = %q, want 14", got.CommandID)
+	}
+}
+
+func TestDebugSession_ReportsLocalAndPMSChecks(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("X-Plex-Token") != "tok" {
+			t.Errorf("missing PMS token on %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.URL.Path {
+		case "/status/sessions":
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<Video key="/library/metadata/42" ratingKey="42">
+					<Player machineIdentifier="our-uuid"/>
+				</Video>
+			</MediaContainer>`))
+		case "/transcode/sessions":
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<TranscodeSession key="/transcode/sessions/transcode-1" transcodeSessionId="transcode-1"/>
+			</MediaContainer>`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{
+		status: core.SessionStatus{
+			State:    core.StatePlaying,
+			Position: 12000 * time.Millisecond,
+			Duration: 90000 * time.Millisecond,
+		},
+	}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ContainerKey:       "/playQueues/99?own=1",
+		PlexToken:          "tok",
+		PlayQueueItemID:    "item-42",
+		TranscodeSessionID: "transcode-1",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/debug/plex/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "tok") {
+		t.Fatalf("debug response leaked Plex token: %s", body)
+	}
+	var got debugSessionReport
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Local.State != core.StatePlaying {
+		t.Errorf("state = %q, want playing", got.Local.State)
+	}
+	if got.Local.PositionMs != 12000 {
+		t.Errorf("positionMs = %d, want 12000", got.Local.PositionMs)
+	}
+	if !got.Local.HasToken {
+		t.Error("HasToken = false, want true")
+	}
+	if got.Local.MediaKey != "/library/metadata/42" {
+		t.Errorf("MediaKey = %q, want /library/metadata/42", got.Local.MediaKey)
+	}
+	if !got.PMS.StatusSessions.OK || !got.PMS.StatusSessions.Matched || got.PMS.StatusSessions.Count != 1 {
+		t.Errorf("status session check = %+v, want OK matched count=1", got.PMS.StatusSessions)
+	}
+	if !got.PMS.TranscodeSessions.OK || !got.PMS.TranscodeSessions.Matched || got.PMS.TranscodeSessions.Count != 1 {
+		t.Errorf("transcode session check = %+v, want OK matched count=1", got.PMS.TranscodeSessions)
+	}
+	if strings.Contains(got.PMS.StatusSessions.URL, "X-Plex-Token") {
+		t.Errorf("status sessions debug URL leaked token: %s", got.PMS.StatusSessions.URL)
 	}
 }
 

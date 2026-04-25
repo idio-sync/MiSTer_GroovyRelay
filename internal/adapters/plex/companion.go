@@ -9,13 +9,16 @@ package plex
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -279,6 +282,7 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/timeline/unsubscribe", c.handleTimelineUnsubscribe)
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
+	mux.HandleFunc("/debug/plex/session", c.handleDebugSession)
 	return c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux)))
 }
 
@@ -616,6 +620,168 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 }
 func (c *Companion) handleMirrorDetails(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
+}
+
+type debugPMSCheck struct {
+	URL        string `json:"url"`
+	OK         bool   `json:"ok"`
+	StatusCode int    `json:"statusCode,omitempty"`
+	Count      int    `json:"count"`
+	Matched    bool   `json:"matched"`
+	Error      string `json:"error,omitempty"`
+}
+
+type debugSessionReport struct {
+	DeviceUUID string `json:"deviceUUID"`
+	DeviceName string `json:"deviceName"`
+	Local      struct {
+		State              core.State `json:"state"`
+		PositionMs         int64      `json:"positionMs"`
+		DurationMs         int64      `json:"durationMs"`
+		MediaKey           string     `json:"mediaKey,omitempty"`
+		RatingKey          string     `json:"ratingKey,omitempty"`
+		ContainerKey       string     `json:"containerKey,omitempty"`
+		PlayQueueItemID    string     `json:"playQueueItemID,omitempty"`
+		AudioStreamID      string     `json:"audioStreamID,omitempty"`
+		SubtitleStreamID   string     `json:"subtitleStreamID,omitempty"`
+		TranscodeSessionID string     `json:"transcodeSessionId,omitempty"`
+		PlexSessionID      string     `json:"plexSessionId,omitempty"`
+		PlexServer         string     `json:"plexServer,omitempty"`
+		HasToken           bool       `json:"hasToken"`
+	} `json:"local"`
+	PMS struct {
+		StatusSessions    debugPMSCheck `json:"statusSessions"`
+		TranscodeSessions debugPMSCheck `json:"transcodeSessions"`
+	} `json:"pms"`
+}
+
+func (c *Companion) handleDebugSession(w http.ResponseWriter, r *http.Request) {
+	play := c.lastPlaySession()
+	st := core.SessionStatus{}
+	if c.core != nil {
+		st = c.core.Status()
+	}
+	report := debugSessionReport{
+		DeviceUUID: c.cfg.DeviceUUID,
+		DeviceName: c.cfg.DeviceName,
+	}
+	report.Local.State = st.State
+	report.Local.PositionMs = st.Position.Milliseconds()
+	report.Local.DurationMs = st.Duration.Milliseconds()
+	report.Local.MediaKey = play.MediaKey
+	report.Local.RatingKey = ratingKeyFromMediaKey(play.MediaKey)
+	report.Local.ContainerKey = play.ContainerKey
+	report.Local.PlayQueueItemID = play.PlayQueueItemID
+	report.Local.AudioStreamID = play.AudioStreamID
+	report.Local.SubtitleStreamID = play.SubtitleStreamID
+	report.Local.TranscodeSessionID = play.TranscodeSessionID
+	report.Local.PlexSessionID = play.SessionID
+	report.Local.HasToken = play.PlexToken != ""
+	if play.PlexServerAddress != "" && play.PlexServerPort != "" && play.PlexServerScheme != "" {
+		report.Local.PlexServer = fmt.Sprintf("%s://%s:%s", play.PlexServerScheme, play.PlexServerAddress, play.PlexServerPort)
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		report.PMS.StatusSessions = c.debugPMSStatusSessions(ctx, report.Local.PlexServer, play)
+		report.PMS.TranscodeSessions = c.debugPMSTranscodeSessions(ctx, report.Local.PlexServer, play)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(report)
+}
+
+func (c *Companion) debugPMSStatusSessions(ctx context.Context, serverURL string, play PlayMediaRequest) debugPMSCheck {
+	return debugPMSXML(ctx, serverURL, "/status/sessions", play.PlexToken, func(se xml.StartElement) (bool, bool) {
+		if se.Name.Local == "Video" {
+			for _, attr := range se.Attr {
+				if (attr.Name.Local == "key" && attr.Value == play.MediaKey) ||
+					(attr.Name.Local == "ratingKey" && attr.Value == ratingKeyFromMediaKey(play.MediaKey)) {
+					return true, false
+				}
+			}
+			return false, false
+		}
+		if se.Name.Local == "Player" {
+			for _, attr := range se.Attr {
+				if attr.Name.Local == "machineIdentifier" && attr.Value == c.cfg.DeviceUUID {
+					return false, true
+				}
+			}
+		}
+		return false, false
+	})
+}
+
+func (c *Companion) debugPMSTranscodeSessions(ctx context.Context, serverURL string, play PlayMediaRequest) debugPMSCheck {
+	return debugPMSXML(ctx, serverURL, "/transcode/sessions", play.PlexToken, func(se xml.StartElement) (bool, bool) {
+		if se.Name.Local != "TranscodeSession" {
+			return false, false
+		}
+		if play.TranscodeSessionID == "" {
+			return true, false
+		}
+		for _, attr := range se.Attr {
+			if attr.Value == play.TranscodeSessionID || strings.Contains(attr.Value, play.TranscodeSessionID) {
+				return true, true
+			}
+		}
+		return true, false
+	})
+}
+
+func debugPMSXML(ctx context.Context, serverURL, path, token string, inspect func(xml.StartElement) (count bool, matched bool)) debugPMSCheck {
+	reqURL, err := url.Parse(strings.TrimRight(serverURL, "/") + path)
+	check := debugPMSCheck{URL: strings.TrimRight(serverURL, "/") + path}
+	if err != nil {
+		check.Error = err.Error()
+		return check
+	}
+	if token != "" {
+		q := reqURL.Query()
+		q.Set("X-Plex-Token", token)
+		reqURL.RawQuery = q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		check.Error = err.Error()
+		return check
+	}
+	if token != "" {
+		req.Header.Set("X-Plex-Token", token)
+	}
+	resp, err := plexHTTPClient.Do(req)
+	if err != nil {
+		check.Error = err.Error()
+		return check
+	}
+	defer resp.Body.Close()
+	check.StatusCode = resp.StatusCode
+	if resp.StatusCode >= 400 {
+		check.Error = resp.Status
+		return check
+	}
+	dec := xml.NewDecoder(resp.Body)
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if err != io.EOF {
+				check.Error = err.Error()
+			}
+			break
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		count, matched := inspect(se)
+		if count {
+			check.Count++
+		}
+		if matched {
+			check.Matched = true
+		}
+	}
+	check.OK = check.Error == ""
+	return check
 }
 
 // handleTimelineSubscribe registers a controller for 1 Hz timeline pushes.

@@ -155,6 +155,7 @@ func (a *Adapter) MountRoutes(mux *http.ServeMux) {
 	h := a.companion.Handler()
 	mux.Handle("/resources", h)
 	mux.Handle("/player/", h)
+	mux.Handle("/debug/plex/", h)
 }
 
 // Start brings the Plex adapter's background work online (timeline
