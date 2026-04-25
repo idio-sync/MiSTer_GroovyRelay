@@ -569,8 +569,9 @@ git commit -m "feat(ui): render KindSecret + lookup ssh_user on bridge panel"
 
 **Files:**
 - Modify: `internal/ui/form.go` (`parseBridgeForm` at line 38)
-- Modify: `internal/ui/form_test.go` (extend fixtures + add coverage)
-- Modify: `internal/ui/bridge_test.go` (extend the existing `TestHandleBridge_POST_Success` fixture body)
+- Modify: `internal/ui/form_test.go` (add new test only)
+
+(Task 4 already extended the `TestHandleBridge_POST_Success` and `TestHandleBridge_POST_ValidationError` fixtures in `bridge_test.go`. This task does not touch `bridge_test.go`.)
 
 - [ ] **Step 1: Write the failing test**
 
