@@ -141,3 +141,77 @@ func TestExtractFieldFromFrameInto_ZeroAllocs(t *testing.T) {
 		t.Errorf("ExtractFieldFromFrameInto allocs/op = %v, want 0", got)
 	}
 }
+
+func TestReadFramesFromPipePooled_RoundTrip(t *testing.T) {
+	const frameBytes = 720 * 480 * 3
+	pool := NewFramePool(4, frameBytes)
+	buf := &bytes.Buffer{}
+	for i := 0; i < 3; i++ {
+		f := make([]byte, frameBytes)
+		for j := range f {
+			f[j] = byte(i)
+		}
+		buf.Write(f)
+	}
+	out := make(chan *FrameBuf, 4)
+	go ReadFramesFromPipePooled(buf, pool, out)
+
+	for i := 0; i < 3; i++ {
+		select {
+		case fb := <-out:
+			if fb.N != frameBytes {
+				t.Errorf("frame %d N = %d, want %d", i, fb.N, frameBytes)
+			}
+			if fb.Data[0] != byte(i) {
+				t.Errorf("frame %d first byte = %d, want %d", i, fb.Data[0], i)
+			}
+			pool.Put(fb)
+		case <-time.After(time.Second):
+			t.Fatalf("timeout on frame %d", i)
+		}
+	}
+
+	// EOF: out should close after the third frame.
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected channel close after EOF")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for channel close")
+	}
+}
+
+func TestReadFramesFromPipePooled_PartialReadReturnsBufferAndCloses(t *testing.T) {
+	const frameBytes = 1000
+	pool := NewFramePool(2, frameBytes)
+	// Write half a frame.
+	half := bytes.NewReader(make([]byte, frameBytes/2))
+	out := make(chan *FrameBuf, 2)
+	done := make(chan struct{})
+	go func() {
+		ReadFramesFromPipePooled(half, pool, out)
+		close(done)
+	}()
+
+	// out should close without emitting any *FrameBuf — partial reads
+	// are not propagated.
+	select {
+	case fb, ok := <-out:
+		if ok {
+			t.Errorf("partial read should not emit; got *FrameBuf with N=%d", fb.N)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reader did not close out after partial read")
+	}
+
+	<-done
+	// All buffers should be back in the pool.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-pool.free:
+		case <-time.After(time.Second):
+			t.Fatalf("buffer %d not returned to pool after EOF", i)
+		}
+	}
+}
