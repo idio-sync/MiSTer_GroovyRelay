@@ -1,0 +1,48 @@
+package ui
+
+import (
+	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+)
+
+// TestBridgeFields_HasMisterControlSection verifies the SSH user and
+// password fields are present under the new "MiSTer Control" section
+// with the right kinds and apply-scope.
+func TestBridgeFields_HasMisterControlSection(t *testing.T) {
+	fields := bridgeFields()
+	var user, pass *adapters.FieldDef
+	for i, f := range fields {
+		f := f
+		switch f.Key {
+		case "mister.ssh_user":
+			user = &fields[i]
+		case "mister.ssh_password":
+			pass = &fields[i]
+		}
+	}
+	if user == nil {
+		t.Fatal("mister.ssh_user not found in bridgeFields()")
+	}
+	if pass == nil {
+		t.Fatal("mister.ssh_password not found in bridgeFields()")
+	}
+	if user.Section != "MiSTer Control" {
+		t.Errorf("ssh_user section = %q, want MiSTer Control", user.Section)
+	}
+	if pass.Section != "MiSTer Control" {
+		t.Errorf("ssh_password section = %q, want MiSTer Control", pass.Section)
+	}
+	if user.Kind != adapters.KindText {
+		t.Errorf("ssh_user kind = %v, want KindText", user.Kind)
+	}
+	if pass.Kind != adapters.KindSecret {
+		t.Errorf("ssh_password kind = %v, want KindSecret", pass.Kind)
+	}
+	if user.ApplyScope != adapters.ScopeHotSwap {
+		t.Errorf("ssh_user scope = %v, want ScopeHotSwap", user.ApplyScope)
+	}
+	if pass.ApplyScope != adapters.ScopeHotSwap {
+		t.Errorf("ssh_password scope = %v, want ScopeHotSwap", pass.ApplyScope)
+	}
+}
