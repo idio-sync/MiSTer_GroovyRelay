@@ -208,6 +208,45 @@ func BuildBlitHeader(o BlitOpts) []byte {
 	return h
 }
 
+// BuildBlitHeaderInto writes the header bytes into dst and returns dst[:length]
+// where length depends on the variant (see BuildBlitHeader for the variant
+// table). dst MUST have len >= BlitHeaderLZ4Delta (13). Intended for the
+// hot tick path where re-allocating an 8-13 byte slice on every send would
+// churn the heap.
+//
+// All bytes within the returned dst[:length] are written explicitly: bytes
+// 0 through 7 for every variant; byte 8 for Duplicate; bytes 8 through 11
+// for Compressed; byte 12 for Compressed+Delta. The caller never observes
+// bytes past length, so reuse of dst across calls cannot leak stale bytes.
+func BuildBlitHeaderInto(dst []byte, o BlitOpts) []byte {
+	var length int
+	switch {
+	case o.Duplicate:
+		length = BlitHeaderRawDup
+	case o.Compressed && o.Delta:
+		length = BlitHeaderLZ4Delta
+	case o.Compressed:
+		length = BlitHeaderLZ4
+	default:
+		length = BlitHeaderRaw
+	}
+	h := dst[:length]
+	h[0] = CmdBlitFieldVSync
+	binary.LittleEndian.PutUint32(h[1:5], o.Frame)
+	h[5] = o.Field
+	binary.LittleEndian.PutUint16(h[6:8], o.VSync)
+	switch {
+	case o.Duplicate:
+		h[8] = BlitFlagDup
+	case o.Compressed:
+		binary.LittleEndian.PutUint32(h[8:12], o.CompressedSize)
+		if o.Delta {
+			h[12] = BlitFlagDelta
+		}
+	}
+	return h
+}
+
 // BuildAudioHeader returns the 3-byte AUDIO command header. The caller MUST
 // send the `soundSize` PCM bytes immediately after, using the MTU-slicing
 // sender (e.g. Sender.SendPayload). NEVER inline PCM into the header datagram

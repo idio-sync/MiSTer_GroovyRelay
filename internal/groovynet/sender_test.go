@@ -163,3 +163,40 @@ func TestSender_InitACKTimeout(t *testing.T) {
 		t.Errorf("timeout = %v, want %v", ackErr.Timeout, 60*time.Millisecond)
 	}
 }
+
+func TestSender_SndBufActualPopulated(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 32100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// On Linux/Windows readSndBuf returns the kernel's current SO_SNDBUF.
+	// On other-platforms it returns 0. Both are acceptable; we only assert
+	// there's no panic and the field is set deterministically.
+	if s.sndBufActual < 0 {
+		t.Errorf("sndBufActual should be >= 0, got %d", s.sndBufActual)
+	}
+}
+
+func TestSender_ENOBUFCountAccessor(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 32100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.ENOBUFCount() != 0 {
+		t.Errorf("fresh sender ENOBUFCount = %d, want 0", s.ENOBUFCount())
+	}
+}
+
+func TestIsPowerOfTen(t *testing.T) {
+	cases := map[uint64]bool{
+		0: false, 1: true, 2: false, 9: false, 10: true, 11: false,
+		99: false, 100: true, 999: false, 1000: true, 9999: false, 10000: true,
+	}
+	for n, want := range cases {
+		if got := isPowerOfTen(n); got != want {
+			t.Errorf("isPowerOfTen(%d) = %v, want %v", n, got, want)
+		}
+	}
+}

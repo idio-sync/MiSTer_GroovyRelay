@@ -69,7 +69,7 @@ func (d *Drainer) Run() {
 		select {
 		case d.ch <- ack:
 		default:
-			slog.Debug("ack channel full, dropping")
+			slog.Warn("ack channel full, dropping")
 		}
 	}
 }

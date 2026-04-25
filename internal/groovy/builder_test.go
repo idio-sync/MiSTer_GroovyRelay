@@ -190,3 +190,40 @@ func TestBuildClose(t *testing.T) {
 		t.Errorf("cmd = %d, want %d", got[0], CmdClose)
 	}
 }
+
+func TestBuildBlitHeaderInto_MatchesLegacy(t *testing.T) {
+	cases := []struct {
+		name string
+		opts BlitOpts
+	}{
+		{"raw", BlitOpts{Frame: 42, Field: 0, VSync: 100}},
+		{"dup", BlitOpts{Frame: 42, Field: 1, Duplicate: true}},
+		{"lz4", BlitOpts{Frame: 42, Field: 0, Compressed: true, CompressedSize: 12345}},
+		{"lz4Delta", BlitOpts{Frame: 42, Field: 1, Compressed: true, Delta: true, CompressedSize: 12345}},
+	}
+	dst := make([]byte, BlitHeaderLZ4Delta) // 13, the largest variant
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			legacy := BuildBlitHeader(c.opts)
+			out := BuildBlitHeaderInto(dst, c.opts)
+			if !bytes.Equal(legacy, out) {
+				t.Errorf("header mismatch:\n  legacy: % x\n  new:    % x", legacy, out)
+			}
+			if &out[0] != &dst[0] {
+				t.Error("BuildBlitHeaderInto returned a different backing array")
+			}
+		})
+	}
+}
+
+func TestBuildBlitHeaderInto_ZeroAllocs(t *testing.T) {
+	dst := make([]byte, BlitHeaderLZ4Delta)
+	opts := BlitOpts{Frame: 1, Field: 0, Compressed: true, CompressedSize: 1000}
+	BuildBlitHeaderInto(dst, opts) // warmup
+	got := testing.AllocsPerRun(100, func() {
+		BuildBlitHeaderInto(dst, opts)
+	})
+	if got != 0 {
+		t.Errorf("BuildBlitHeaderInto allocs/op = %v, want 0", got)
+	}
+}
