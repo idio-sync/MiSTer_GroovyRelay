@@ -3,6 +3,7 @@
 package groovynet
 
 import (
+	"net"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -26,4 +27,26 @@ func controlSocket(network, address string, c syscall.RawConn) error {
 		return err
 	}
 	return setErr
+}
+
+// readSndBuf returns the kernel's current SO_SNDBUF for conn, in bytes.
+// On Linux the kernel returns approximately 2× the requested size as a
+// long-standing bookkeeping quirk; callers must compare conservatively
+// (actual >= requested means OK; actual < requested means clamped).
+func readSndBuf(conn *net.UDPConn) (int, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var size int
+	var sockErr error
+	if err := raw.Control(func(fd uintptr) {
+		size, sockErr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF)
+	}); err != nil {
+		return 0, err
+	}
+	if sockErr != nil {
+		return 0, sockErr
+	}
+	return size, nil
 }
