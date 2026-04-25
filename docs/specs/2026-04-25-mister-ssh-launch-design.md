@@ -106,8 +106,14 @@ internal/ui/
 
 internal/config/
   config.go        # +SSHUser, +SSHPassword on MisterConfig
-  example.go       # +commented-default lines in the rendered example
-  migration.go     # legacy flat configs migrate cleanly (defaults applied)
+  example.toml     # +commented ssh_user / ssh_password lines under [bridge.mister]
+  migration.go     # +SSHUser="root" in defaultBridge() directly (do NOT extend
+                   # legacy `defaults()` — that struct is freezing as v1 ages)
+
+internal/uiserver/
+  bridge_saver.go  # +cases for "mister.ssh_user" / "mister.ssh_password" in
+                   # scopeForBridgeField (return ScopeHotSwap)
+                   # +entries for the same keys in diffBridgeConfig
 
 cmd/mister-groovy-relay/main.go
   # +construct a misterctl-backed MisterLauncher
@@ -173,21 +179,58 @@ type Config struct {
 }
 ```
 
-main.go wires a closure-backed implementation:
+main.go wires a closure-backed implementation. The closure lives
+in `cmd/mister-groovy-relay/` (alongside `main.go`) so the
+`internal/ui` and `internal/misterctl` packages can keep their
+imports clean:
 
 ```go
-launcher := misterctlAdapter{
-    bridge: bridgeSaver,                  // for live host/user/password
-    timeout: 5 * time.Second,
+type bridgeMisterLauncher struct {
+    bridge  ui.BridgeSaver
+    timeout time.Duration
 }
-ui.New(ui.Config{ ..., MisterLauncher: launcher })
+
+func (b bridgeMisterLauncher) Launch(ctx context.Context) error {
+    cur := b.bridge.Current()
+    if cur.MiSTer.Host == "" {
+        return errors.New("MiSTer host not configured (set bridge.mister.host)")
+    }
+    return misterctl.LaunchGroovy(ctx, misterctl.Params{
+        Host:     cur.MiSTer.Host,
+        User:     cur.MiSTer.SSHUser,
+        Password: cur.MiSTer.SSHPassword,
+        Timeout:  b.timeout,
+    })
+}
 ```
 
-Where `misterctlAdapter.Launch(ctx)` snapshots the live `BridgeConfig`
-from the saver, builds `misterctl.Params`, and calls
-`misterctl.LaunchGroovy`. The snapshot pattern keeps UI changes
-hot-applied: edit credentials, save, click Launch — the next click
-uses the new credentials with no restart.
+The snapshot pattern keeps UI changes hot-applied: edit credentials,
+save, click Launch — the next click uses the new credentials with
+no restart.
+
+**Empty-host short-circuit.** `cur.MiSTer.Host` is checked here
+before dialing. The default `example.toml` ships
+`host = "192.168.1.50"` (an opinionated default that almost certainly
+isn't the operator's real MiSTer); this check **does not** save
+operators from a misconfigured-but-non-empty default — that surfaces
+as a 5s dial timeout. The check is just a fast-path for the
+genuinely-empty case (e.g., the operator deleted the line).
+
+**Closure seam testing.** `bridgeMisterLauncher.Launch` is the seam
+between `ui.MisterLauncher` and `misterctl.LaunchGroovy`; bugs hide
+in field-mapping (did `Host` get the host? did `User` get the user?
+did empty-host short-circuit?). It's tested in
+`cmd/mister-groovy-relay/launcher_test.go` (or a sibling file in
+the cmd package) with:
+
+- A fake `ui.BridgeSaver` returning a known `BridgeConfig`.
+- A test seam in `misterctl` (see "Testing" below) that captures
+  the `Params` it received instead of dialing.
+- Assertions: Params.Host == cur.MiSTer.Host, Params.User ==
+  cur.MiSTer.SSHUser, Params.Password == cur.MiSTer.SSHPassword,
+  Params.Timeout == b.timeout.
+
+Three to five lines of test, covers the seam.
 
 #### Handler + route
 
@@ -251,23 +294,75 @@ CSRF wrapping is automatic via `mountPOST`.
 },
 ```
 
-`bridgeLookupString` gains the two new keys. The existing render loop
-in `bridge-panel.html` picks up the new section without template
-changes — sections are auto-numbered by `inc $i` (so "MiSTer Control"
-becomes section 05 after Network/Video/Audio/Server).
+`bridgeLookupString` gains a case for `mister.ssh_user` (returns
+`cur.MiSTer.SSHUser`). It does **not** gain a case for
+`mister.ssh_password` — see "Bridge-side `KindSecret` rendering"
+below for the no-echo invariant.
+
+The existing render loop in `bridge-panel.html` picks up the new
+section without template changes for the **input rows** — sections
+are auto-numbered by `inc $i` (so "MiSTer Control" becomes section
+05 after Network/Video/Audio/Server). The launch button itself
+lives **outside** the bridge save form; see "Launch button placement".
+
+#### Scope dispatch (`internal/uiserver/bridge_saver.go`)
+
+The `FieldDef.ApplyScope` column is informational only — runtime
+scope dispatch happens in `scopeForBridgeField`, whose default
+branch returns `ScopeRestartBridge` for every `mister.*` key today.
+Without an explicit case, every save touching the new SSH fields
+would demand a bridge restart, defeating the snapshot pattern.
+
+Add to `scopeForBridgeField`:
+
+```go
+case "mister.ssh_user", "mister.ssh_password":
+    return adapters.ScopeHotSwap
+```
+
+Add to `diffBridgeConfig`:
+
+```go
+if oldCfg.MiSTer.SSHUser != newCfg.MiSTer.SSHUser {
+    keys = append(keys, "mister.ssh_user")
+}
+if oldCfg.MiSTer.SSHPassword != newCfg.MiSTer.SSHPassword {
+    keys = append(keys, "mister.ssh_password")
+}
+```
+
+This is the canonical way the codebase wires scope per CLAUDE.md's
+"adding a field, you must decide its scope and wire it in the
+adapter's `scopeForPlexField` (or equivalent) plus the Bridge field
+table" — `bridge_fields.go` covers the table half; `bridge_saver.go`
+covers the dispatch half.
 
 #### Bridge-side `KindSecret` rendering
 
 The Bridge panel's `rowFor` (`internal/ui/bridge.go`) currently
 switches on `KindText` / `KindInt` / `KindBool` / `KindEnum` and has
-no `KindSecret` case. The adapter renderer (`internal/ui/adapter.go`)
-already supports it — same shape: `Kind = "text"`, `InputType =
-"password"`, `Placeholder = "Leave empty to keep existing"`,
-`StringValue` left blank (browsers don't pre-fill password inputs
-and we don't want the cleartext password ever in HTML).
+no `KindSecret` case. The adapter renderer (`internal/ui/adapter.go`,
+lines 167–171) already supports it.
 
-Add the same case to `bridge.go::rowFor`. No template changes — the
-existing `<input type="{{.InputType}}">` branch handles it.
+Add this case to `bridge.go::rowFor`, mirroring the adapter precedent
+verbatim:
+
+```go
+case adapters.KindSecret:
+    r.Kind = "text"
+    r.InputType = "password"
+    r.Placeholder = "Leave empty to keep existing"
+    // StringValue stays empty: do NOT echo the stored password into HTML.
+    // The preserve-on-empty conditional in handleBridgePOST recovers
+    // the prior value when the operator submits without retyping.
+```
+
+`bridgeLookupString` for `mister.ssh_password` is intentionally absent
+— if a future implementer "fixes" it to return the stored password,
+the no-echo invariant regresses silently. Leave it out and let the
+`KindSecret` case in `rowFor` short-circuit before consulting the
+lookup. No template changes — the existing
+`<input type="{{.InputType}}">` branch handles it.
 
 #### Preserve-on-empty for `ssh_password`
 
@@ -291,32 +386,71 @@ behavior, generalize then. The fix to `formToAdapterTOML` is a
 separate cleanup item (out of scope for this spec; called out in
 "Out-of-scope follow-ups" below).
 
-The launch button + result slot are appended to the section by
-extending the bridge panel template with a small after-fields block,
-gated on section name == "MiSTer Control":
+#### Launch button placement
+
+The button must live **outside** the bridge save `<form>` element.
+Two reasons:
+
+1. The outer form has `required` on `mister.host`. A nested button
+   (even with `type="button"`) is still a form-control descendant;
+   in some htmx + browser combinations the form's constraint
+   validation can fire on the click. Living outside the form
+   guarantees the validation-coupling can't surface.
+2. htmx's default `hx-include` semantics inside a form pull every
+   form field into the launch POST body. Wasted bytes, and a
+   dropped invariant if a future field becomes large.
+
+Append a new block in `bridge-panel.html` **after** the form's
+closing `</form>`. The block is unconditional — the bridge always
+ships with the MiSTer Control fields configured, so always
+rendering the launch button is correct (matching adapter-panel.html's
+`ExtraHTMLProvider` pattern, which renders extras outside the
+adapter form):
 
 ```html
-{{if eq $section.Name "MiSTer Control"}}
-<div class="field">
-    <label></label>
-    <div>
-        <button type="button" class="btn"
-            hx-post="/ui/bridge/mister/launch"
-            hx-target="#mister-launch-slot"
-            hx-swap="innerHTML"
-            hx-disabled-elt="this"
-            hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
-            Launch GroovyMiSTer
-        </button>
-        <div id="mister-launch-slot" style="margin-top: 8px;"></div>
+</form>
+
+<div class="section">
+    <h3><span class="num">06 —</span> Launch</h3>
+    <div class="field">
+        <label>Load Groovy core on the MiSTer</label>
+        <div>
+            <button type="button" class="btn"
+                hx-post="/ui/bridge/mister/launch"
+                hx-target="#mister-launch-slot"
+                hx-swap="innerHTML"
+                hx-disabled-elt="this"
+                hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
+                Launch GroovyMiSTer
+            </button>
+            <div id="mister-launch-slot" style="margin-top: 8px;"></div>
+            <div class="help">
+                Sends <code>load_core /media/fat/_Utility/Groovy.rbf</code>
+                to <code>/dev/MiSTer_cmd</code> over SSH using the
+                credentials in section 05.
+            </div>
+        </div>
     </div>
 </div>
-{{end}}
 ```
 
-`type="button"` is critical — it must not submit the surrounding
-form. The form's `hx-post` would otherwise fire at the bridge save
-endpoint and clobber the button's request.
+`type="button"` is still set as defense in depth (no other DOM
+contains a `<form>`, but the attribute is free insurance). The
+button's `hx-disabled-elt="this"` provides implicit click
+serialization so two rapid clicks can't fire concurrent SSH
+sessions — the server doesn't need its own coordination.
+
+**Section numbering note.** The numbering inside the form is driven
+by `inc $i` over `.Sections` (which renders 01..05). The Launch
+section is rendered manually outside the loop, so its number
+("06 —") is hard-coded. If the bridge ever grows another auto-rendered
+section, this number drifts; either drop the leading number on the
+Launch section header, or pick a non-numeric label. v1: hard-code 06.
+
+`Sec-Fetch-Site` in `hx-headers` is functionally a no-op (browsers
+set this header themselves and ignore explicit overrides per the
+fetch-spec forbidden-header-name list), but matches the established
+idiom in `internal/adapters/plex/link_ui.go`. Kept for consistency.
 
 #### Result fragment
 
@@ -345,8 +479,21 @@ type MisterConfig struct {
 }
 ```
 
-Defaults applied in `defaultBridge()` (or whatever helper builds the
-initial `Sectioned`): `ssh_user = "root"`, `ssh_password = ""`.
+Defaults are applied in `defaultBridge()`
+(`internal/config/migration.go:239`) **directly**, not via the
+legacy `defaults()` helper. The legacy `Config` struct is freezing
+as v1 ages; growing new fields there for parity is a maintenance
+trap. Set `MiSTer.SSHUser = "root"` literal in `defaultBridge()`
+(`SSHPassword` is the zero-value empty string and needs no explicit
+line):
+
+```go
+MiSTer: MisterConfig{
+    Port:       d.MisterPort,
+    SourcePort: d.SourcePort,
+    SSHUser:    "root",
+},
+```
 
 `Sectioned.Validate()` does **not** gate empty `ssh_user` or
 `ssh_password`. The launch button surfaces errors at click time
@@ -354,8 +501,21 @@ initial `Sectioned`): `ssh_user = "root"`, `ssh_password = ""`.
 fields is a valid state — the operator may have chosen not to use
 the launch button yet.
 
-`example.go` gains commented lines for both fields in the rendered
-default `config.toml`.
+`internal/config/example.toml` gains commented lines for both
+fields under the existing `[bridge.mister]` block. **Do not** ship
+`ssh_password = "1"` (the stock MiSTer password) as a default
+literal — leave it commented out so the operator types it in. Stock
+weak passwords in default config files are a gift to LAN scanners:
+
+```toml
+[bridge.mister]
+host = "192.168.1.50"
+port = 32100
+source_port = 32101
+ssh_user = "root"            # MiSTer's stock SSH user
+# ssh_password = ""          # Required to use the Launch GroovyMiSTer button.
+                             # MiSTer's stock password is "1".
+```
 
 `migration.go` already handles missing-field defaulting via the
 zero-value path; no migration changes needed beyond confirming the
@@ -372,7 +532,11 @@ test suite still passes after the struct field additions.
   are loggable. `LaunchGroovy` does no logging itself; the UI handler
   logs via the standard server logger only on error, formatting `err`
   (which is a wrapped Go error from `golang.org/x/crypto/ssh` and never
-  contains the password).
+  contains the password). Concretely: `slog.Error("mister launch
+  failed", "err", err)` is permitted; `slog.Error("...", "params",
+  params)` is **not** — the latter would format the whole struct
+  including the cleartext password. If a future debug-logging pass is
+  added, password-redaction must be the first concern.
 - `ssh.InsecureIgnoreHostKey` is the documented host-key callback.
   The package-level comment in `launcher.go` carries the rationale
   (LAN trust model, MiSTer regenerates keys on reflash, scope of the
@@ -397,24 +561,47 @@ will resolve it.
 
 ### Testing
 
-- `internal/misterctl/launcher_test.go`:
-  - **`TestLaunchGroovy_DialFailure`** — point at a closed port, expect
-    a wrapped dial error within the timeout.
-  - **`TestLaunchGroovy_AuthFailure`** — stand up a fake SSH server
-    using `golang.org/x/crypto/ssh` that rejects the password, expect
-    an auth-error.
-  - **`TestLaunchGroovy_ExecSuccess`** — fake server accepts the
-    password, captures the exec command string, returns exit 0;
-    assert command equals the canonical string.
-  - **`TestLaunchGroovy_ExecNonZero`** — fake server returns exit 1;
-    assert error.
-  - **`TestLaunchGroovy_PasswordNotLogged`** — drive a t.Logger or
-    captured-output check (or simply visually confirm via grep — the
-    function does no logging by design).
-  - If standing up the fake SSH server in tests is more weight than
-    the value warrants, the file may instead unit-test only the
-    Param-validation and timeout paths and leave the wire-level
-    behavior to manual verification. Decide during implementation.
+- `internal/misterctl/launcher_test.go` — **unit tests via injection
+  seam, no fake SSH server.**
+
+  `LaunchGroovy` is split into two private functions internally: a
+  pure-parameter-validation path and a `runOverSSH(ctx, p Params)
+  error` function that does the actual dial+exec. `runOverSSH` is
+  exposed via a package-level function variable defaulting to the
+  real implementation, swappable in tests:
+
+  ```go
+  // dialAndRun is the SSH dial + exec sequence; var so tests can
+  // inject a fake without standing up a real ssh.Server.
+  var dialAndRun = realDialAndRun
+
+  func realDialAndRun(ctx context.Context, p Params) error { /* ... */ }
+  ```
+
+  Tests then become:
+  - **`TestLaunchGroovy_EmptyHost`** — `Host: ""`, expect a wrapped
+    error before `dialAndRun` is called.
+  - **`TestLaunchGroovy_PassesParams`** — replace `dialAndRun` with a
+    capturing fake; assert all fields propagate verbatim including
+    Password (as a value, not via reflection or string-cmp on a log).
+  - **`TestLaunchGroovy_PropagatesError`** — replace `dialAndRun`
+    with one that returns a sentinel error; assert it bubbles
+    unwrapped or wrapped (decide on wrap policy in code).
+  - **`TestLaunchGroovy_RespectsContext`** — replace `dialAndRun`
+    with one that honors ctx; cancel ctx before call; assert
+    `ctx.Err()` is returned.
+
+  Wire-level behavior (handshake, auth, exec) is verified manually
+  against a real MiSTer once during implementation. If a regression
+  in the SSH-client dependency surfaces later, a fake-server test
+  is a non-trivial follow-up (call out as a Minor follow-up if it
+  ever happens; not worth pre-investing for v1).
+
+  **Password-not-logged guarantee.** `LaunchGroovy` does no logging
+  by construction (no `log` / `slog` calls in the package). The
+  test suite covers this passively — no test asserts on captured
+  log output, because there is none. Documented as an invariant
+  in the package-level comment.
 - `internal/ui/bridge_test.go`:
   - **Existing bridge tests** must still pass with two new fields on
     `MisterConfig`; expect to update fixtures.
@@ -431,17 +618,19 @@ will resolve it.
 
 | Failure | Surface |
 |---|---|
-| `mister.host` empty | Save-time validation already errors. Launch click would 500 on dial; not reached. |
-| `ssh_password` empty | SSH auth fails; red toast: "SSH failed: ssh: handshake failed: ..." |
+| `mister.host` empty | `bridgeMisterLauncher.Launch` short-circuits with "MiSTer host not configured" before dialing. Red toast in <100ms. |
+| `mister.host` non-empty but wrong (incl. example.toml stock `192.168.1.50`) | Dial timeout after 5s; red toast: "SSH failed: dial tcp 192.168.1.50:22: i/o timeout". Operator-visible — they go fix the host. |
+| `ssh_password` empty | SSH auth fails; red toast: "SSH failed: ssh: handshake failed: ssh: unable to authenticate, attempted methods [none password], no supported methods remain" |
 | Wrong password | Same as above. |
-| MiSTer offline / wrong IP | Dial timeout after 5s; red toast: "SSH failed: dial tcp <host>:22: i/o timeout" |
+| MiSTer offline | Same as wrong IP — dial timeout. |
 | `Groovy.rbf` not in `_Utility/` | Exec succeeds (echo writes to FIFO regardless); the MiSTer's userland logs an error nobody sees. The button reports success. **Known sharp edge.** v1 accepts this; documenting "you'll know it didn't work because the CRT doesn't switch cores" is the v1 mitigation. |
 | `/dev/MiSTer_cmd` doesn't exist | Shell redirect fails; remote shell exit code non-zero; red toast surfaces stderr. |
-| Two rapid clicks | Two SSH sessions; both write the same line; harmless. No coordination. |
+| Two rapid clicks | Implicit serialization via `hx-disabled-elt="this"` on the button — the second click can't fire until the first response swaps the slot and re-enables the button. The server does not coordinate; if the operator bypasses the disable (e.g., via direct curl), two SSH sessions race and both write the same line. Harmless. |
 
 ### Operator-visible config example
 
-After this change, `<data_dir>/config.toml` includes:
+After the operator has configured both fields, their on-disk
+`config.toml` looks like:
 
 ```toml
 [bridge.mister]
@@ -452,15 +641,28 @@ ssh_user = "root"
 ssh_password = "1"
 ```
 
-And the Bridge panel grows a fifth section:
+(Note: example.toml ships with `ssh_password` commented out; this
+shows what the file looks like *after* the operator saves credentials
+through the Settings UI, not what the bridge writes on first run.)
+
+The Bridge panel grows two new sections:
 
 ```
 05 — MiSTer Control
 
   SSH User       [ root          ]
-  SSH Password   [ ●             ]
+  SSH Password   [               ]   placeholder: "Leave empty to keep existing"
+
+06 — Launch
+
+  Load Groovy core on the MiSTer
                  [ Launch GroovyMiSTer ]
+                 (result fragment swaps in here after click)
+                 Sends load_core /media/fat/_Utility/Groovy.rbf to /dev/MiSTer_cmd...
 ```
+
+Section 05 lives inside the bridge save form. Section 06 lives
+outside it (no submit/validation coupling).
 
 ## Risks
 
@@ -492,3 +694,92 @@ And the Bridge panel grows a fifth section:
 
 None. New optional fields with defaults; existing configs continue
 to load.
+
+## Implementer's checklist
+
+Touch points for the implementation, in roughly the order a
+plan should sequence them:
+
+- [ ] `internal/config/config.go` — add `SSHUser`, `SSHPassword` to
+      `MisterConfig` with `toml:"ssh_user"` / `toml:"ssh_password"`.
+- [ ] `internal/config/migration.go` — set
+      `MiSTer.SSHUser = "root"` directly in `defaultBridge()`
+      (do **not** extend the legacy `defaults()` helper).
+- [ ] `internal/config/example.toml` — add `ssh_user = "root"` line
+      and a commented-out `# ssh_password = ""` line in the
+      `[bridge.mister]` block. Do **not** ship the stock password
+      value as a default.
+- [ ] `internal/uiserver/bridge_saver.go::scopeForBridgeField` —
+      add an explicit case for `mister.ssh_user` and
+      `mister.ssh_password` returning `ScopeHotSwap`.
+- [ ] `internal/uiserver/bridge_saver.go::diffBridgeConfig` — add
+      entries for both new fields so saves correctly detect changes.
+- [ ] `internal/ui/bridge_fields.go` — add two `FieldDef` entries
+      under `Section: "MiSTer Control"`. (Schema entry; runtime
+      scope still comes from `scopeForBridgeField`.)
+- [ ] `internal/ui/bridge.go::bridgeLookupString` — add a case for
+      `mister.ssh_user` only. **Do not** add a case for
+      `mister.ssh_password` (the no-echo invariant).
+- [ ] `internal/ui/bridge.go::rowFor` — add a `KindSecret` case
+      mirroring `internal/ui/adapter.go:167–171`. Leaves
+      `StringValue` empty.
+- [ ] `internal/ui/form.go::parseBridgeForm` — read
+      `mister.ssh_user` and `mister.ssh_password` from the form
+      into the candidate `BridgeConfig`.
+- [ ] `internal/ui/bridge.go::handleBridgePOST` — add the
+      preserve-on-empty conditional: if
+      `candidate.MiSTer.SSHPassword == ""`, copy from
+      `s.cfg.BridgeSaver.Current().MiSTer.SSHPassword` before
+      validation.
+- [ ] `internal/misterctl/launcher.go` — new package, `Params`
+      struct, `LaunchGroovy(ctx, p Params) error`, internal
+      `dialAndRun` injection seam.
+- [ ] `internal/misterctl/launcher_test.go` — unit tests via the
+      injection seam (no fake SSH server).
+- [ ] `internal/ui/server.go` — add `MisterLauncher MisterLauncher`
+      to `ui.Config`. Wire mount of
+      `/ui/bridge/mister/launch` via `mountPOST`.
+- [ ] `internal/ui/bridge.go` — add `handleBridgeMisterLaunch` and
+      `launchResultData`. Add a unit test with a fake
+      `MisterLauncher` returning nil and an error-canned variant.
+- [ ] `internal/ui/templates/bridge-panel.html` — add the post-form
+      Launch section block as specified above.
+- [ ] `internal/ui/templates/mister-launch-result.html` — new
+      template defining `mister-launch-result`.
+- [ ] `cmd/mister-groovy-relay/main.go` — construct
+      `bridgeMisterLauncher` and pass it through `ui.Config`.
+- [ ] `cmd/mister-groovy-relay/launcher_test.go` — closure-seam
+      test asserting field-mapping and empty-host short-circuit.
+- [ ] `go.mod` — `go mod tidy` to bring in `golang.org/x/crypto`
+      transitively. (Or add explicitly via `go get`.)
+
+## Decision log
+
+Locked-in choices that an implementation plan should treat as
+fixed unless the operator explicitly revisits:
+
+- **Approach 2** (dedicated package + interface seam). Not 1
+  (inline in `internal/ui`), not 3 (generalized bridge-action
+  framework).
+- **Password auth only** for v1. Key auth is a follow-up if anyone
+  asks.
+- **`InsecureIgnoreHostKey`** is the host-key callback. LAN trust
+  model. Documented in package comment + UI help text.
+- **5s timeout** for `ssh.Dial`; 6s context budget on the UI handler.
+- **Hard-coded launch command**:
+  `echo "load_core /media/fat/_Utility/Groovy.rbf" > /dev/MiSTer_cmd`.
+  No override field.
+- **`ScopeHotSwap`** for both new SSH fields. Snapshot pattern in
+  the launcher closure picks up edits at click time without any
+  runtime side effects on save.
+- **Click-time error surfacing**, not save-time. Save validates
+  config syntax (port ranges, etc.), nothing more. SSH errors are
+  exclusively a click-time concern.
+- **Unit-only tests** in `internal/misterctl` via injection seam.
+  No fake SSH server stood up in tests for v1.
+- **Launch button outside the bridge save form**, in its own
+  hard-coded "06 — Launch" section. Avoids `required`-validation
+  coupling and `hx-include` defaults.
+- **`bridgeLookupString` deliberately omits `mister.ssh_password`**
+  to enforce the no-echo invariant; `rowFor`'s `KindSecret` case
+  short-circuits before consulting the lookup.
