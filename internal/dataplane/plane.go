@@ -226,31 +226,33 @@ func (p *Plane) Run(ctx context.Context) error {
 	//    uncontested access to the socket — the sender is shared across
 	//    sessions for stable source port, so the drainer MUST be explicitly
 	//    stopped; closing the socket isn't an option.
-	ackCh := make(chan groovy.ACK, 32)
+	ackCh := make(chan groovy.ACK, 4)
 	drainer := groovynet.NewDrainer(p.cfg.Sender, ackCh)
 	go drainer.Run()
 	defer drainer.Stop()
 
-	// 4. Readers + timer.
-	videoCh := make(chan []byte, 4)
+	// 4. Readers + timer. videoCh now carries *FrameBuf pointers from the
+	//    framePool; the tick loop returns each buffer to the pool after
+	//    sendField completes. Audio path is unchanged for this perf pack.
+	videoCh := make(chan *FrameBuf, videoChCap)
 	var audioCh chan []byte
-	videoHeight := p.cfg.SpawnSpec.OutputHeight
-	if videoHeight <= 0 {
-		videoHeight = p.cfg.FieldHeight
-		if p.cfg.Modeline.Interlaced() {
-			videoHeight *= 2
-		}
-	}
-	go ReadFramesFromPipe(proc.VideoPipe(), p.cfg.FieldWidth, videoHeight, p.cfg.BytesPerPixel, videoCh)
+	videoHeight := p.cfg.resolveVideoHeight()
+	go ReadFramesFromPipePooled(proc.VideoPipe(), p.framePool, videoCh)
 	if audioEnabled {
 		audioCh = make(chan []byte, 16)
 		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
 	}
-	fieldRate := p.cfg.Modeline.FieldRate()
-	if fieldRate <= 0 {
-		fieldRate = 59.94
+	fieldPeriod := fieldPeriodFromModeline(p.cfg.Modeline)
+	if fieldPeriod <= 0 {
+		// Modeline doesn't produce a valid period (zero PClock etc.).
+		// Fall back to the previous float-derived value so we don't
+		// silently freeze.
+		fieldRate := p.cfg.Modeline.FieldRate()
+		if fieldRate <= 0 {
+			fieldRate = 59.94
+		}
+		fieldPeriod = time.Duration(float64(time.Second) / fieldRate)
 	}
-	fieldPeriod := time.Duration(float64(time.Second) / fieldRate)
 	timer := time.NewTimer(fieldPeriod)
 	defer timer.Stop()
 	lastTick := time.Now()
@@ -299,14 +301,14 @@ func (p *Plane) Run(ctx context.Context) error {
 			// Live TFF↔BFF flip (SetFieldOrder): when the operator swaps field
 			// order via the UI mid-session, fieldOrderFlip toggles true. We
 			// invert emitField so BOTH the header tag and the payload slice
-			// (ExtractFieldFromFrame below) swap together — inverting only
+			// (ExtractFieldFromFrameInto below) swap together — inverting only
 			// the header would send top-field pixels tagged as bottom-field.
 			emitField := nextField
 			if p.fieldOrderFlip.Load() {
 				emitField ^= 1
 			}
 			select {
-			case frame, ok := <-videoCh:
+			case fb, ok := <-videoCh:
 				if !ok {
 					_ = p.cfg.Sender.Send(groovy.BuildClose())
 					return nil
@@ -318,11 +320,19 @@ func (p *Plane) Run(ctx context.Context) error {
 				}
 				consecutiveUnderruns = 0
 				consecutiveUnderrunFrom = time.Time{}
-				payload := frame
+				var payload []byte
 				if p.cfg.Modeline.Interlaced() {
-					payload = ExtractFieldFromFrame(frame, p.cfg.FieldWidth, videoHeight, p.cfg.BytesPerPixel, emitField)
+					ExtractFieldFromFrameInto(p.fieldScratch, fb.Data[:fb.N],
+						p.cfg.FieldWidth, videoHeight, p.cfg.BytesPerPixel, emitField)
+					payload = p.fieldScratch
+				} else {
+					payload = fb.Data[:fb.N]
 				}
 				p.sendField(frameNum, emitField, payload)
+				// Trailing Put — invariant (2): sendField does not return
+				// errors out of Run, so unconditional Put after sendField
+				// is safe. defer is reserved for panic-prone code paths.
+				p.framePool.Put(fb)
 			default:
 				if consecutiveUnderruns == 0 {
 					consecutiveUnderrunFrom = time.Now()
@@ -334,7 +344,6 @@ func (p *Plane) Run(ctx context.Context) error {
 						"duration_ms", time.Since(consecutiveUnderrunFrom).Milliseconds(),
 						"audio_ready", p.audioReady.Load())
 				}
-				// Under-run — send a duplicate field to hold the raster.
 				p.sendDuplicate(frameNum, emitField)
 			}
 			if p.cfg.Modeline.Interlaced() {
@@ -442,30 +451,34 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 	return p.cfg.AudioRate, p.cfg.AudioChans
 }
 
-// sendField sends one BLIT_FIELD_VSYNC header + payload. Applies congestion
-// backoff before the header and records the payload size afterwards so the
-// next call can honor the reference ~11 ms wait after any >500 KB blit.
+// sendField sends one BLIT_FIELD_VSYNC header + payload using session-
+// lifetime scratch buffers (lz4Scratch for the compressed body,
+// headerScratch for the header bytes). All allocations are amortized
+// to NewPlane time. Applies congestion backoff before the header and
+// records the payload size afterwards so the next call can honor the
+// reference ~11 ms wait after any >500 KB blit.
 //
 // Compression policy: if LZ4 is enabled AND the field is compressible
-// (LZ4Compress returns ok=true), the LZ4 BLIT variant is emitted. Otherwise
-// — either LZ4 is disabled in config, OR the field is incompressible (e.g.
-// random-noise content, encrypted stream payload) — a RAW BLIT variant is
-// emitted with the uncompressed bytes. Emitting an LZ4 header with
-// CompressedSize=0 would desync the receiver.
+// (LZ4CompressInto returns ok=true), the LZ4 BLIT variant is emitted.
+// Otherwise — either LZ4 is disabled in config, OR the field is
+// incompressible — a RAW BLIT variant is emitted with the uncompressed
+// bytes. Emitting an LZ4 header with CompressedSize=0 would desync the
+// receiver.
 func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
 	if p.cfg.LZ4Enabled {
-		if compressed, ok := groovy.LZ4Compress(raw); ok {
-			payload = compressed
+		if n, ok := groovy.LZ4CompressInto(p.lz4Scratch, raw); ok {
+			payload = p.lz4Scratch[:n]
 			opts.Compressed = true
-			opts.CompressedSize = uint32(len(compressed))
+			opts.CompressedSize = uint32(n)
 		} else {
 			slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", "size", len(raw))
 		}
 	}
 	p.cfg.Sender.WaitForCongestion()
-	if err := p.cfg.Sender.Send(groovy.BuildBlitHeader(opts)); err != nil {
+	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
+	if err := p.cfg.Sender.Send(header); err != nil {
 		slog.Warn("blit header send", "err", err)
 		return
 	}
@@ -482,7 +495,8 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) {
 // resets the congestion window so the next real field isn't delayed.
 func (p *Plane) sendDuplicate(frame uint32, field uint8) {
 	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
-	_ = p.cfg.Sender.Send(groovy.BuildBlitHeader(opts))
+	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
+	_ = p.cfg.Sender.Send(header)
 	p.cfg.Sender.MarkBlitSent(0) // no payload, no congestion hit
 }
 

@@ -92,7 +92,17 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 	requireUDPSockets(t, err)
 	defer sender.Close()
 
-	p := &Plane{cfg: PlaneConfig{Sender: sender, LZ4Enabled: true}}
+	// Use NewPlane so session-lifetime scratch buffers (headerScratch,
+	// lz4Scratch) are allocated. sendField now writes through those
+	// buffers via BuildBlitHeaderInto / LZ4CompressInto, so a bare
+	// Plane{} would nil-panic.
+	p := NewPlane(PlaneConfig{
+		Sender:        sender,
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
 
 	// Random bytes — LZ4Compress will return ok=false for a 518 400-byte
 	// crypto/rand field.
