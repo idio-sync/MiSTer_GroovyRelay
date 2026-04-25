@@ -48,6 +48,11 @@ type SessionRequest struct {
 	// seeks via -ss); false when the URL is a transcode/HLS manifest whose
 	// offset is encoded server-side. Adapters set this per-session. See §5.3.
 	DirectPlay bool
+
+	// OnStop is an optional adapter cleanup hook invoked when this session is
+	// stopped or preempted. It must not block core; Manager calls it from a
+	// goroutine after the data plane has been cancelled.
+	OnStop func(reason string)
 }
 
 // Capabilities declares what operations the adapter's control surface can

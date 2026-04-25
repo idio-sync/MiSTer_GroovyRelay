@@ -149,7 +149,58 @@ func (t *TimelineBroker) postTimeline(client *http.Client, urlStr, xmlBody, targ
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("timeline post: %s", resp.Status)
+	}
+	return nil
+}
+
+func (t *TimelineBroker) postPMSTimeline(client *http.Client, urlStr string, st core.SessionStatus, play PlayMediaRequest) error {
+	reqURL, err := url.Parse(urlStr)
+	if err != nil {
+		return err
+	}
+	q := reqURL.Query()
+	if play.PlexToken != "" {
+		q.Set("X-Plex-Token", play.PlexToken)
+	}
+	if play.MediaKey != "" {
+		q.Set("key", play.MediaKey)
+		q.Set("ratingKey", ratingKeyFromMediaKey(play.MediaKey))
+	}
+	q.Set("state", plexStateFromCore(st.State))
+	q.Set("time", strconv.FormatInt(st.Position.Milliseconds(), 10))
+	if st.Duration > 0 {
+		q.Set("duration", strconv.FormatInt(st.Duration.Milliseconds(), 10))
+	}
+	if play.PlayQueueItemID != "" {
+		q.Set("playQueueItemID", play.PlayQueueItemID)
+	}
+	reqURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, reqURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/xml")
+	req.Header.Set("X-Plex-Protocol", "1.0")
+	req.Header.Set("X-Plex-Client-Identifier", t.cfg.DeviceUUID)
+	req.Header.Set("X-Plex-Device-Name", t.cfg.DeviceName)
+	if play.PlexToken != "" {
+		req.Header.Set("X-Plex-Token", play.PlexToken)
+	}
+	if play.SessionID != "" {
+		req.Header.Set("X-Plex-Session-Identifier", play.SessionID)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("pms timeline post: %s", resp.Status)
+	}
 	return nil
 }
 
@@ -157,6 +208,10 @@ func (t *TimelineBroker) postTimeline(client *http.Client, urlStr, xmlBody, targ
 // XML to each live subscriber and the source PMS when known. Isolated for test
 // access.
 func (t *TimelineBroker) broadcastOnce() {
+	t.broadcastStatusOnce(t.status())
+}
+
+func (t *TimelineBroker) broadcastStatusOnce(st core.SessionStatus) {
 	t.mu.Lock()
 	now := t.timeNow()
 	ttl := t.TTL
@@ -174,7 +229,6 @@ func (t *TimelineBroker) broadcastOnce() {
 	client := t.httpClient
 	t.mu.Unlock()
 
-	st := t.status()
 	play := PlayMediaRequest{}
 	if t.playContext != nil {
 		play = t.playContext()
@@ -204,7 +258,7 @@ func (t *TimelineBroker) broadcastOnce() {
 	if duplicatePMS {
 		return
 	}
-	if err := t.postTimeline(client, pmsURL, pmsBody, "", play.PlexToken); err != nil {
+	if err := t.postPMSTimeline(client, pmsURL, st, play); err != nil {
 		slog.Debug("timeline push failed", "target", "pms", "err", err)
 		return
 	}
@@ -239,6 +293,7 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, com
 		SeekRange         string   `xml:"seekRange,attr,omitempty"`
 		AudioStreamID     string   `xml:"audioStreamID,attr,omitempty"`
 		SubtitleStreamID  string   `xml:"subtitleStreamID,attr,omitempty"`
+		PlayQueueItemID   string   `xml:"playQueueItemID,attr,omitempty"`
 		Controllable      string   `xml:"controllable,attr,omitempty"`
 	}
 	type MediaContainer struct {
@@ -247,14 +302,12 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, com
 		Location  string     `xml:"location,attr"`
 		Timelines []Timeline `xml:"Timeline"`
 	}
-	plexState := "stopped"
+	plexState := plexStateFromCore(s.State)
 	location := ""
 	switch s.State {
 	case core.StatePlaying:
-		plexState = "playing"
 		location = "fullScreenVideo"
 	case core.StatePaused:
-		plexState = "paused"
 		location = "fullScreenVideo"
 	}
 	play := PlayMediaRequest{}
@@ -281,6 +334,7 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, com
 		video.MachineIdentifier = play.PlexMachineID
 		video.AudioStreamID = play.AudioStreamID
 		video.SubtitleStreamID = play.SubtitleStreamID
+		video.PlayQueueItemID = play.PlayQueueItemID
 	}
 	if s.Duration > 0 {
 		video.SeekRange = fmt.Sprintf("0-%d", s.Duration.Milliseconds())
@@ -356,4 +410,15 @@ func ratingKeyFromMediaKey(mediaKey string) string {
 		return strings.TrimPrefix(mediaKey, prefix)
 	}
 	return mediaKey
+}
+
+func plexStateFromCore(state core.State) string {
+	switch state {
+	case core.StatePlaying:
+		return "playing"
+	case core.StatePaused:
+		return "paused"
+	default:
+		return "stopped"
+	}
 }

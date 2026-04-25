@@ -104,6 +104,7 @@ func TestTimeline_BuildXML_IncludesPlexMetadata(t *testing.T) {
 			ContainerKey:      "/playQueues/99?own=1",
 			AudioStreamID:     "11",
 			SubtitleStreamID:  "22",
+			PlayQueueItemID:   "item-123",
 			CommandID:         "7",
 		}
 	})
@@ -125,6 +126,7 @@ func TestTimeline_BuildXML_IncludesPlexMetadata(t *testing.T) {
 		`seekRange="0-60000"`,
 		`audioStreamID="11"`,
 		`subtitleStreamID="22"`,
+		`playQueueItemID="item-123"`,
 		`controllable="playPause,stop,seekTo"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -278,6 +280,8 @@ func TestTimeline_BroadcastPushesToPMSWithoutSubscribers(t *testing.T) {
 			MediaKey:          "/library/metadata/42",
 			PlexToken:         "tok-123",
 			CommandID:         "9",
+			PlayQueueItemID:   "item-77",
+			SessionID:         "play-session-1",
 		}
 	})
 	b.broadcastOnce()
@@ -301,14 +305,84 @@ func TestTimeline_BroadcastPushesToPMSWithoutSubscribers(t *testing.T) {
 	if h.query.Get("X-Plex-Token") != "tok-123" {
 		t.Errorf("query X-Plex-Token = %q, want tok-123", h.query.Get("X-Plex-Token"))
 	}
-	for _, want := range []string{
-		`commandID="9"`,
-		`state="playing"`,
-		`key="/library/metadata/42"`,
-		`machineIdentifier="server-uuid"`,
+	if h.headers.Get("X-Plex-Session-Identifier") != "play-session-1" {
+		t.Errorf("X-Plex-Session-Identifier = %q, want play-session-1", h.headers.Get("X-Plex-Session-Identifier"))
+	}
+	for key, want := range map[string]string{
+		"key":             "/library/metadata/42",
+		"ratingKey":       "42",
+		"state":           "playing",
+		"time":            "7000",
+		"duration":        "12000",
+		"playQueueItemID": "item-77",
 	} {
-		if !strings.Contains(h.body, want) {
-			t.Errorf("PMS body missing %q: %s", want, h.body)
+		if got := h.query.Get(key); got != want {
+			t.Errorf("query %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestTimeline_BroadcastStoppedUsesProvidedStatus(t *testing.T) {
+	type received struct {
+		query url.Values
+	}
+	var mu sync.Mutex
+	var hits []received
+
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/:/timeline" {
+			http.Error(w, "unexpected path", 404)
+			return
+		}
+		mu.Lock()
+		hits = append(hits, received{query: r.URL.Query()})
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewTimelineBroker(
+		TimelineConfig{DeviceUUID: "uuid-1", DeviceName: "MiSTer"},
+		func() core.SessionStatus {
+			return core.SessionStatus{State: core.StateIdle}
+		},
+	)
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			PlexServerAddress: u.Hostname(),
+			PlexServerPort:    u.Port(),
+			PlexServerScheme:  "http",
+			MediaKey:          "/library/metadata/42",
+			PlexToken:         "tok-123",
+			PlayQueueItemID:   "item-77",
+		}
+	})
+	b.broadcastStatusOnce(core.SessionStatus{
+		State:    core.StateIdle,
+		Position: 47000 * time.Millisecond,
+		Duration: 120000 * time.Millisecond,
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits) != 1 {
+		t.Fatalf("PMS received %d POSTs, want 1", len(hits))
+	}
+	for key, want := range map[string]string{
+		"key":             "/library/metadata/42",
+		"ratingKey":       "42",
+		"state":           "stopped",
+		"time":            "47000",
+		"duration":        "120000",
+		"playQueueItemID": "item-77",
+	} {
+		if got := hits[0].query.Get(key); got != want {
+			t.Errorf("query %s = %q, want %q", key, got, want)
 		}
 	}
 }

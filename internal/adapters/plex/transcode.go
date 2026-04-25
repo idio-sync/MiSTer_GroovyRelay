@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -40,6 +41,20 @@ type TranscodeRequest struct {
 	Version       string
 	Provides      string
 	MaxBitrate    int
+	// TranscodeSessionID is the PMS transcoder session UUID documented as the
+	// transcodeSessionId query parameter. It is distinct from
+	// X-Plex-Session-Identifier, which identifies the client playback session.
+	TranscodeSessionID string
+}
+
+func NewTranscodeSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // BuildTranscodeURL constructs a PMS /video/:/transcode/universal/start.m3u8
@@ -74,6 +89,9 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("videoResolution", fmt.Sprintf("%dx%d", r.OutputWidth, r.OutputHeight))
 	q.Set("maxVideoBitrate", fmt.Sprintf("%d", r.MaxBitrate))
 	q.Set("offset", fmt.Sprintf("%d", r.OffsetMs/1000))
+	if r.TranscodeSessionID != "" {
+		q.Set("transcodeSessionId", r.TranscodeSessionID)
+	}
 	q.Set("X-Plex-Session-Identifier", r.SessionID)
 	q.Set("X-Plex-Client-Identifier", r.ClientID)
 	q.Set("X-Plex-Device-Name", r.DeviceName)
@@ -86,6 +104,38 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("X-Plex-Client-Capabilities", BuildClientCapabilities())
 	q.Set("X-Plex-Token", r.Token)
 	return r.PlexServerURL + "/video/:/transcode/universal/start.m3u8?" + q.Encode()
+}
+
+func StopTranscodeSession(ctx context.Context, serverURL, transcodeSessionID, token string) error {
+	if serverURL == "" || transcodeSessionID == "" {
+		return nil
+	}
+	u := strings.TrimRight(serverURL, "/") + "/transcode/session/" + url.PathEscape(transcodeSessionID)
+	reqURL, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		q := reqURL.Query()
+		q.Set("X-Plex-Token", token)
+		reqURL.RawQuery = q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("X-Plex-Token", token)
+	}
+	resp, err := plexHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("stop transcode: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("stop transcode: %s", resp.Status)
+	}
+	return nil
 }
 
 // pmsMediaContainer is the narrow slice of PMS's /library/metadata response

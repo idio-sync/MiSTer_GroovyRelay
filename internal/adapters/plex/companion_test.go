@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"syscall"
@@ -117,6 +118,7 @@ func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
 type fakeCore struct {
 	mu       sync.Mutex
 	lastReq  core.SessionRequest
+	starts   int
 	paused   bool
 	played   bool
 	stopped  bool
@@ -129,6 +131,7 @@ func (f *fakeCore) StartSession(r core.SessionRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastReq = r
+	f.starts++
 	return f.startErr
 }
 func (f *fakeCore) Pause() error {
@@ -215,6 +218,12 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	if !strings.Contains(fc.lastReq.StreamURL, "X-Plex-Client-Profile-Name=Custom+Profile") {
 		t.Errorf("stream URL missing plex profile name: %s", fc.lastReq.StreamURL)
 	}
+	if !strings.Contains(fc.lastReq.StreamURL, "transcodeSessionId=") {
+		t.Errorf("stream URL missing transcode session id: %s", fc.lastReq.StreamURL)
+	}
+	if fc.lastReq.OnStop == nil {
+		t.Error("plex session should register transcode cleanup callback")
+	}
 	if !fc.lastReq.Capabilities.CanPause || !fc.lastReq.Capabilities.CanSeek {
 		t.Errorf("expected CanPause+CanSeek capabilities, got %+v", fc.lastReq.Capabilities)
 	}
@@ -250,10 +259,7 @@ func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
 	defer ts.Close()
 
 	routes := []string{
-		"/player/playback/refreshPlayQueue",
 		"/player/playback/skipTo",
-		"/player/playback/skipNext",
-		"/player/playback/skipPrevious",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -264,6 +270,29 @@ func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
 			defer resp.Body.Close()
 			if resp.StatusCode != 200 {
 				t.Errorf("status = %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestPlaybackQueueRoutesRequireActivePlexSession(t *testing.T) {
+	c := NewCompanion(CompanionConfig{}, &fakeCore{})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	for _, route := range []string{
+		"/player/playback/refreshPlayQueue",
+		"/player/playback/skipNext",
+		"/player/playback/skipPrevious",
+	} {
+		t.Run(route, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + route)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
 			}
 		})
 	}
@@ -307,13 +336,23 @@ func TestPause_TargetedAtAnotherClientIsRejected(t *testing.T) {
 	}
 }
 
-func TestSeekTo_ParsesOffset(t *testing.T) {
+func TestSeekTo_RestartsPlexTranscodeAtOffset(t *testing.T) {
 	fc := &fakeCore{}
-	c := NewCompanion(CompanionConfig{}, fc)
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  "192.168.1.10",
+		PlexServerPort:     "32400",
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ContainerKey:       "/playQueues/99",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		TranscodeSessionID: "old-transcode-id",
+	})
 	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/player/playback/seekTo?offset=12345")
+	resp, err := http.Get(ts.URL + "/player/playback/seekTo?offset=90000&commandID=12")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,8 +360,112 @@ func TestSeekTo_ParsesOffset(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
-	if fc.lastSeek != 12345 {
-		t.Errorf("lastSeek = %d, want 12345", fc.lastSeek)
+	if fc.lastSeek != 0 {
+		t.Errorf("core.SeekTo should not be used for Plex transcodes, lastSeek = %d", fc.lastSeek)
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if fc.lastReq.SeekOffsetMs != 90000 {
+		t.Errorf("SeekOffsetMs = %d, want 90000", fc.lastReq.SeekOffsetMs)
+	}
+	for _, want := range []string{
+		"offset=90",
+		"transcodeSessionId=",
+		"X-Plex-Client-Identifier=our-uuid",
+		"X-Plex-Token=tok",
+	} {
+		if !strings.Contains(fc.lastReq.StreamURL, want) {
+			t.Errorf("seek restart URL missing %q: %s", want, fc.lastReq.StreamURL)
+		}
+	}
+	if strings.Contains(fc.lastReq.StreamURL, "old-transcode-id") {
+		t.Errorf("seek restart should use a fresh transcode session id: %s", fc.lastReq.StreamURL)
+	}
+	got := c.lastPlaySession()
+	if got.OffsetMs != 90000 {
+		t.Errorf("remembered OffsetMs = %d, want 90000", got.OffsetMs)
+	}
+	if got.CommandID != "12" {
+		t.Errorf("remembered CommandID = %q, want 12", got.CommandID)
+	}
+}
+
+func TestSkipNext_FetchesPlayQueueAndRestartsNextItem(t *testing.T) {
+	var gotPath string
+	var gotQuery url.Values
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer size="3">
+			<Video key="/library/metadata/41" ratingKey="41" playQueueItemID="1"/>
+			<Video key="/library/metadata/42" ratingKey="42" playQueueItemID="2"/>
+			<Video key="/library/metadata/43" ratingKey="43" playQueueItemID="3"/>
+		</MediaContainer>`))
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ContainerKey:       "/playQueues/99?own=1",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		PlayQueueItemID:    "2",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/skipNext?commandID=13")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if gotPath != "/playQueues/99" {
+		t.Errorf("play queue path = %q, want /playQueues/99", gotPath)
+	}
+	for key, want := range map[string]string{
+		"own":            "1",
+		"includeBefore":  "1",
+		"includeAfter":   "1",
+		"X-Plex-Token":   "tok",
+	} {
+		if got := gotQuery.Get(key); got != want {
+			t.Errorf("query %s = %q, want %q", key, got, want)
+		}
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "path=%2Flibrary%2Fmetadata%2F43") {
+		t.Errorf("skipNext URL should target next item: %s", fc.lastReq.StreamURL)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "offset=0") {
+		t.Errorf("skipNext URL should start next item at offset 0: %s", fc.lastReq.StreamURL)
+	}
+	got := c.lastPlaySession()
+	if got.MediaKey != "/library/metadata/43" {
+		t.Errorf("remembered MediaKey = %q, want /library/metadata/43", got.MediaKey)
+	}
+	if got.PlayQueueItemID != "3" {
+		t.Errorf("remembered PlayQueueItemID = %q, want 3", got.PlayQueueItemID)
+	}
+	if got.CommandID != "13" {
+		t.Errorf("remembered CommandID = %q, want 13", got.CommandID)
 	}
 }
 

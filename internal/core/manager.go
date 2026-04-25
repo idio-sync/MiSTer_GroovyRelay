@@ -35,6 +35,13 @@ func removeSubtitleFile(path string) {
 	}
 }
 
+func notifySessionStop(fn func(string), reason string) {
+	if fn == nil {
+		return
+	}
+	go fn(reason)
+}
+
 // Manager is the adapter-agnostic session orchestrator. One Manager per
 // process; all adapters share it. Thread-safe.
 type Manager struct {
@@ -116,8 +123,12 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	//    will match and cleanup is correctly skipped — the resumed plane
 	//    still needs the file.
 	var oldSubtitle string
+	var oldOnStop func(string)
 	if m.active != nil && m.active.req.SubtitlePath != req.SubtitlePath {
 		oldSubtitle = m.active.req.SubtitlePath
+	}
+	if m.active != nil {
+		oldOnStop = m.active.req.OnStop
 	}
 	if m.cancelFn != nil {
 		prev := m.plane
@@ -130,6 +141,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		}
 	}
 	removeSubtitleFile(oldSubtitle)
+	notifySessionStop(oldOnStop, "preempted")
 
 	// Resolve the SWITCHRES modeline from config (falls back to NTSC 480i60).
 	modeline, err := resolveModeline(m.bridge.Video.Modeline)
@@ -350,8 +362,10 @@ func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var subtitlePath string
+	var onStop func(string)
 	if m.active != nil {
 		subtitlePath = m.active.req.SubtitlePath
+		onStop = m.active.req.OnStop
 	}
 	if m.cancelFn != nil {
 		prev := m.plane
@@ -365,6 +379,7 @@ func (m *Manager) Stop() error {
 	}
 	m.active = nil
 	removeSubtitleFile(subtitlePath)
+	notifySessionStop(onStop, "stopped")
 	return m.fsm.Transition(EvStop)
 }
 

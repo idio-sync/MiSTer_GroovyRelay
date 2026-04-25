@@ -14,23 +14,64 @@ import (
 
 func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 	req := TranscodeRequest{
-		PlexServerURL: "http://192.168.1.10:32400",
-		MediaPath:     "/library/metadata/42",
-		Token:         "xyz",
-		OffsetMs:      0,
-		OutputWidth:   720,
-		OutputHeight:  480,
-		ClientID:      "client-id-abc",
+		PlexServerURL:      "http://192.168.1.10:32400",
+		MediaPath:          "/library/metadata/42",
+		Token:              "xyz",
+		OffsetMs:           0,
+		OutputWidth:        720,
+		OutputHeight:       480,
+		ClientID:           "client-id-abc",
+		TranscodeSessionID: "transcode-session-1",
 	}
 	u := BuildTranscodeURL(req)
 	for _, substr := range []string{
 		"directPlay=0", "directStream=0", "copyts=1",
 		"videoResolution=720x480", "protocol=hls", "X-Plex-Token=xyz",
 		"X-Plex-Client-Profile-Name=Plex+Home+Theater",
+		"transcodeSessionId=transcode-session-1",
 	} {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)
 		}
+	}
+}
+
+func TestNewTranscodeSessionID_ReturnsUUIDLikeValue(t *testing.T) {
+	got := NewTranscodeSessionID()
+	if len(got) != 36 {
+		t.Fatalf("session id length = %d, want 36: %q", len(got), got)
+	}
+	if got[8] != '-' || got[13] != '-' || got[18] != '-' || got[23] != '-' {
+		t.Fatalf("session id missing UUID separators: %q", got)
+	}
+}
+
+func TestStopTranscodeSession_DeletesPlexTranscodeKey(t *testing.T) {
+	var gotPath string
+	var gotTokenQuery string
+	var gotTokenHeader string
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		gotPath = r.URL.Path
+		gotTokenQuery = r.URL.Query().Get("X-Plex-Token")
+		gotTokenHeader = r.Header.Get("X-Plex-Token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if err := StopTranscodeSession(context.Background(), srv.URL, "session-abc", "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/transcode/session/session-abc" {
+		t.Errorf("path = %q, want /transcode/session/session-abc", gotPath)
+	}
+	if gotTokenQuery != "tok" {
+		t.Errorf("query token = %q, want tok", gotTokenQuery)
+	}
+	if gotTokenHeader != "tok" {
+		t.Errorf("header token = %q, want tok", gotTokenHeader)
 	}
 }
 

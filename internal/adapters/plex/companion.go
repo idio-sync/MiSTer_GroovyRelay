@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -84,6 +85,175 @@ func (c *Companion) notifyTimeline() {
 	if c.timeline != nil {
 		go c.timeline.broadcastOnce()
 	}
+}
+
+func (c *Companion) notifyStoppedTimeline(st core.SessionStatus) {
+	if c.timeline == nil {
+		return
+	}
+	st.State = core.StateIdle
+	c.timeline.broadcastStatusOnce(st)
+}
+
+func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
+	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	streamClientID := c.cfg.DeviceUUID
+	if streamClientID == "" {
+		streamClientID = p.ClientID
+	}
+	streamURL := BuildTranscodeURL(TranscodeRequest{
+		PlexServerURL:      serverURL,
+		MediaPath:          p.MediaKey,
+		Token:              p.PlexToken,
+		OffsetMs:           p.OffsetMs,
+		OutputWidth:        720,
+		OutputHeight:       480,
+		SessionID:          p.SessionID,
+		ClientID:           streamClientID,
+		DeviceName:         c.cfg.DeviceName,
+		ProfileName:        c.cfg.ProfileName,
+		Product:            companionProduct,
+		Platform:           companionPlatform,
+		Version:            c.cfg.Version,
+		Provides:           companionProvides,
+		TranscodeSessionID: p.TranscodeSessionID,
+	})
+	req := core.SessionRequest{
+		StreamURL:    streamURL,
+		SeekOffsetMs: p.OffsetMs,
+		AdapterRef:   p.MediaKey,
+		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
+	}
+	req.OnStop = func(reason string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := StopTranscodeSession(ctx, serverURL, p.TranscodeSessionID, p.PlexToken); err != nil {
+			slog.Debug("plex stop transcode", "reason", reason, "session", p.TranscodeSessionID, "err", err)
+		}
+	}
+	return req
+}
+
+type playQueueItem struct {
+	Key             string `xml:"key,attr"`
+	RatingKey       string `xml:"ratingKey,attr"`
+	PlayQueueItemID string `xml:"playQueueItemID,attr"`
+}
+
+type playQueueContainer struct {
+	Items []playQueueItem `xml:",any"`
+}
+
+func (c *Companion) fetchPlayQueue(ctx context.Context, p PlayMediaRequest) ([]playQueueItem, error) {
+	if p.ContainerKey == "" {
+		return nil, fmt.Errorf("no play queue container key")
+	}
+	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	reqURL, err := url.Parse(serverURL + p.ContainerKey)
+	if err != nil {
+		return nil, err
+	}
+	q := reqURL.Query()
+	q.Set("includeBefore", "1")
+	q.Set("includeAfter", "1")
+	if p.PlexToken != "" {
+		q.Set("X-Plex-Token", p.PlexToken)
+	}
+	reqURL.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if p.PlexToken != "" {
+		req.Header.Set("X-Plex-Token", p.PlexToken)
+	}
+	resp, err := plexHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch play queue: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("fetch play queue: %s", resp.Status)
+	}
+	var pq playQueueContainer
+	if err := xml.NewDecoder(resp.Body).Decode(&pq); err != nil {
+		return nil, fmt.Errorf("parse play queue: %w", err)
+	}
+	return pq.Items, nil
+}
+
+func nextPlayQueueItem(items []playQueueItem, currentID, currentKey string, delta int) (playQueueItem, bool) {
+	if delta == 0 {
+		return playQueueItem{}, false
+	}
+	idx := -1
+	for i, item := range items {
+		switch {
+		case currentID != "" && item.PlayQueueItemID == currentID:
+			idx = i
+		case currentID == "" && currentKey != "" && item.Key == currentKey:
+			idx = i
+		}
+		if idx >= 0 {
+			break
+		}
+	}
+	if idx < 0 {
+		return playQueueItem{}, false
+	}
+	next := idx + delta
+	if next < 0 || next >= len(items) {
+		return playQueueItem{}, false
+	}
+	return items[next], true
+}
+
+func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Request, delta int) bool {
+	prevStatus := core.SessionStatus{}
+	if c.core != nil {
+		prevStatus = c.core.Status()
+	}
+	p := c.lastPlaySession()
+	if p.MediaKey == "" {
+		http.Error(w, "no plex session", 400)
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	items, err := c.fetchPlayQueue(ctx, p)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return false
+	}
+	item, ok := nextPlayQueueItem(items, p.PlayQueueItemID, p.MediaKey, delta)
+	if !ok {
+		http.Error(w, "play queue item not found", 400)
+		return false
+	}
+	key := item.Key
+	if key == "" && item.RatingKey != "" {
+		key = "/library/metadata/" + item.RatingKey
+	}
+	if key == "" {
+		http.Error(w, "play queue item has no media key", 400)
+		return false
+	}
+	p.MediaKey = key
+	p.PlayQueueItemID = item.PlayQueueItemID
+	p.OffsetMs = 0
+	p.CommandID = queryOrHeader(r, "commandID")
+	p.TranscodeSessionID = NewTranscodeSessionID()
+	req := c.sessionRequestFor(p)
+	if prevStatus.State != core.StateIdle {
+		c.notifyStoppedTimeline(prevStatus)
+	}
+	if err := c.core.StartSession(req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return false
+	}
+	c.rememberPlaySession(p)
+	c.notifyTimeline()
+	return true
 }
 
 // Handler returns the HTTP mux wrapped in the CORS/XML middleware. Mount
@@ -223,25 +393,32 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 // can attribute status updates back to the Plex media entity (core.
 // SessionStatus.AdapterRef only carries the media key).
 type PlayMediaRequest struct {
-	PlexServerAddress string
-	PlexServerPort    string
-	PlexServerScheme  string
-	PlexMachineID     string
-	MediaKey          string
-	ContainerKey      string
-	OffsetMs          int
-	SessionID         string
-	ClientID          string
-	PlexToken         string
-	SubtitleStreamID  string
-	AudioStreamID     string
-	CommandID         string
+	PlexServerAddress  string
+	PlexServerPort     string
+	PlexServerScheme   string
+	PlexMachineID      string
+	MediaKey           string
+	ContainerKey       string
+	OffsetMs           int
+	SessionID          string
+	ClientID           string
+	PlexToken          string
+	SubtitleStreamID   string
+	AudioStreamID      string
+	CommandID          string
+	PlayQueueItemID    string
+	TranscodeSessionID string
 }
 
 // handlePlayMedia parses the Plex Companion playMedia query, builds a stream
 // URL via BuildTranscodeURL, translates into core.SessionRequest, and
 // delegates to core. On error we return 400; the controller retries.
 func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
+	prevStatus := core.SessionStatus{}
+	if c.core != nil {
+		prevStatus = c.core.Status()
+	}
+	prevPlay := c.lastPlaySession()
 	offset, _ := strconv.Atoi(queryOrHeader(r, "offset"))
 	p := PlayMediaRequest{
 		PlexServerAddress: queryOrHeader(r, "address"),
@@ -257,40 +434,16 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		// references), while some tooling and older tests still use
 		// `X-Plex-Token`. Accept both from query or headers so playback works
 		// across web/mobile/controller variants.
-		PlexToken:        queryOrHeader(r, "token", "X-Plex-Token"),
-		SubtitleStreamID: queryOrHeader(r, "subtitleStreamID"),
-		AudioStreamID:    queryOrHeader(r, "audioStreamID"),
-		CommandID:        queryOrHeader(r, "commandID"),
+		PlexToken:          queryOrHeader(r, "token", "X-Plex-Token"),
+		SubtitleStreamID:   queryOrHeader(r, "subtitleStreamID"),
+		AudioStreamID:      queryOrHeader(r, "audioStreamID"),
+		CommandID:          queryOrHeader(r, "commandID"),
+		PlayQueueItemID:    queryOrHeader(r, "playQueueItemID"),
+		TranscodeSessionID: NewTranscodeSessionID(),
 	}
 
-	// Translate Plex Companion request → generic core.SessionRequest.
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
-	streamClientID := c.cfg.DeviceUUID
-	if streamClientID == "" {
-		streamClientID = p.ClientID
-	}
-	streamURL := BuildTranscodeURL(TranscodeRequest{
-		PlexServerURL: serverURL,
-		MediaPath:     p.MediaKey,
-		Token:         p.PlexToken,
-		OffsetMs:      p.OffsetMs,
-		OutputWidth:   720,
-		OutputHeight:  480,
-		SessionID:     p.SessionID,
-		ClientID:      streamClientID,
-		DeviceName:    c.cfg.DeviceName,
-		ProfileName:   c.cfg.ProfileName,
-		Product:       companionProduct,
-		Platform:      companionPlatform,
-		Version:       c.cfg.Version,
-		Provides:      companionProvides,
-	})
-	req := core.SessionRequest{
-		StreamURL:    streamURL,
-		SeekOffsetMs: p.OffsetMs,
-		AdapterRef:   p.MediaKey,
-		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
-	}
+	req := c.sessionRequestFor(p)
 	// Resolve subtitle: if the controller asked for a stream and PMS has
 	// one, download to a temp file so libass can read it. On any error
 	// (PMS miss, network hiccup, transient 5xx), fall back to no burn-in
@@ -319,6 +472,9 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	req.SubtitlePath = subtitlePath
 	req.SubtitleIndex = subtitleIndex
 
+	if prevPlay.MediaKey != "" && prevStatus.State != core.StateIdle {
+		c.notifyStoppedTimeline(prevStatus)
+	}
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -347,20 +503,35 @@ func (c *Companion) handlePlay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Companion) handleStop(w http.ResponseWriter, r *http.Request) {
+	st := core.SessionStatus{}
+	if c.core != nil {
+		st = c.core.Status()
+	}
 	if err := c.core.Stop(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	c.notifyTimeline()
+	c.notifyStoppedTimeline(st)
+	c.clearPlaySession()
 	writeOKResponse(w)
 }
 
 func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if err := c.core.SeekTo(offset); err != nil {
+	p := c.lastPlaySession()
+	if p.MediaKey == "" {
+		http.Error(w, "no plex session", 400)
+		return
+	}
+	p.OffsetMs = offset
+	p.CommandID = queryOrHeader(r, "commandID")
+	p.TranscodeSessionID = NewTranscodeSessionID()
+	req := c.sessionRequestFor(p)
+	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	c.rememberPlaySession(p)
 	c.notifyTimeline()
 	writeOKResponse(w)
 }
@@ -369,15 +540,32 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 // surface without acting so compatible controllers don't fail on 404 while
 // queue/navigation semantics are still out of scope for the bridge.
 func (c *Companion) handleRefreshPlayQueue(w http.ResponseWriter, r *http.Request) {
+	p := c.lastPlaySession()
+	if p.MediaKey == "" {
+		http.Error(w, "no plex session", 400)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := c.fetchPlayQueue(ctx, p); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
 	writeOKResponse(w)
 }
 func (c *Companion) handleSkipTo(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
 }
 func (c *Companion) handleSkipNext(w http.ResponseWriter, r *http.Request) {
+	if !c.restartFromPlayQueueItem(w, r, 1) {
+		return
+	}
 	writeOKResponse(w)
 }
 func (c *Companion) handleSkipPrevious(w http.ResponseWriter, r *http.Request) {
+	if !c.restartFromPlayQueueItem(w, r, -1) {
+		return
+	}
 	writeOKResponse(w)
 }
 func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) {
@@ -482,6 +670,12 @@ func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = p
+}
+
+func (c *Companion) clearPlaySession() {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	c.lastPlay = PlayMediaRequest{}
 }
 
 // lastPlaySession returns a copy of the last remembered playMedia request.
