@@ -180,9 +180,13 @@ type Config struct {
 ```
 
 main.go wires a closure-backed implementation. The closure lives
-in `cmd/mister-groovy-relay/` (alongside `main.go`) so the
-`internal/ui` and `internal/misterctl` packages can keep their
-imports clean:
+in `cmd/mister-groovy-relay/` (alongside `main.go`) — `cmd/` is
+already the only place importing both `ui` and `misterctl`, so
+this is the natural home. **Not** `internal/uiserver/` (alongside
+`BridgeSaver`): putting the closure there would require
+`internal/uiserver/` to import `internal/misterctl/`, expanding
+that package's dependency surface and inverting the
+"uiserver knows core, not SSH" boundary.
 
 ```go
 type bridgeMisterLauncher struct {
@@ -226,11 +230,19 @@ the cmd package) with:
 - A fake `ui.BridgeSaver` returning a known `BridgeConfig`.
 - A test seam in `misterctl` (see "Testing" below) that captures
   the `Params` it received instead of dialing.
-- Assertions: Params.Host == cur.MiSTer.Host, Params.User ==
-  cur.MiSTer.SSHUser, Params.Password == cur.MiSTer.SSHPassword,
-  Params.Timeout == b.timeout.
+- Assertions covering both behaviors:
+  - **Field mapping**: with a fully-populated `BridgeConfig`,
+    Params.Host == cur.MiSTer.Host, Params.User ==
+    cur.MiSTer.SSHUser, Params.Password == cur.MiSTer.SSHPassword,
+    Params.Timeout == b.timeout.
+  - **Empty-host short-circuit**: with `Host: ""`, the closure
+    returns the "MiSTer host not configured" error and the fake
+    `dialAndRun` is never called.
 
-Three to five lines of test, covers the seam.
+These two test cases are the only place the empty-host
+short-circuit is exercised — `internal/misterctl/launcher_test.go`
+deliberately does not duplicate the check (per "Empty-host check
+ownership" below).
 
 #### Handler + route
 
@@ -410,6 +422,14 @@ adapter form):
 ```html
 </form>
 
+{{/*
+  Launch section is hard-coded outside the auto-rendered
+  .Sections loop. Number "06" is hard-coded; if the bridge ever
+  grows another auto-rendered section, drop the leading number
+  here or pick a non-numeric label. See spec
+  docs/specs/2026-04-25-mister-ssh-launch-design.md
+  ("Launch button placement").
+*/}}
 <div class="section">
     <h3><span class="num">06 —</span> Launch</h3>
     <div class="field">
@@ -564,11 +584,10 @@ will resolve it.
 - `internal/misterctl/launcher_test.go` — **unit tests via injection
   seam, no fake SSH server.**
 
-  `LaunchGroovy` is split into two private functions internally: a
-  pure-parameter-validation path and a `runOverSSH(ctx, p Params)
-  error` function that does the actual dial+exec. `runOverSSH` is
-  exposed via a package-level function variable defaulting to the
-  real implementation, swappable in tests:
+  `LaunchGroovy` keeps a single `dialAndRun(ctx, p Params) error`
+  function internally that does the actual dial+exec. `dialAndRun`
+  is exposed via a package-level function variable defaulting to
+  the real implementation, swappable in tests:
 
   ```go
   // dialAndRun is the SSH dial + exec sequence; var so tests can
@@ -579,8 +598,6 @@ will resolve it.
   ```
 
   Tests then become:
-  - **`TestLaunchGroovy_EmptyHost`** — `Host: ""`, expect a wrapped
-    error before `dialAndRun` is called.
   - **`TestLaunchGroovy_PassesParams`** — replace `dialAndRun` with a
     capturing fake; assert all fields propagate verbatim including
     Password (as a value, not via reflection or string-cmp on a log).
@@ -590,6 +607,21 @@ will resolve it.
   - **`TestLaunchGroovy_RespectsContext`** — replace `dialAndRun`
     with one that honors ctx; cancel ctx before call; assert
     `ctx.Err()` is returned.
+
+  **Empty-host check ownership.** `LaunchGroovy` itself does
+  **not** validate `Host == ""`; it dials whatever it's given and
+  surfaces the dial error. Empty-host short-circuiting lives
+  exclusively in `bridgeMisterLauncher.Launch` (the closure
+  adapter), where it has the `BridgeSaver` to read from and where
+  UI-layer "config not set" semantics belong. Keeping `LaunchGroovy`
+  pure (no UI-aware validation) makes it easier to reuse from a
+  future CLI flag or alternate caller without inheriting the
+  closure's policy.
+
+  **Test-parallelism constraint.** `launcher_test.go` must **not**
+  call `t.Parallel()` because the package-level `dialAndRun` var is
+  swapped in each test. Parallel tests would race the swap.
+  Document this with a comment at the top of the test file.
 
   Wire-level behavior (handshake, auth, exec) is verified manually
   against a real MiSTer once during implementation. If a regression
