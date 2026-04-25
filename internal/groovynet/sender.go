@@ -11,12 +11,16 @@ package groovynet
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
+
+const wantSndBuf = 2 * 1024 * 1024
 
 // Sender owns a single UDP4 socket bound to srcPort (ephemeral if srcPort=0)
 // and addresses every write at dstAddr. A Sender is safe for concurrent use:
@@ -30,6 +34,9 @@ type Sender struct {
 	mu           sync.Mutex // serialises Writes + Mark*
 	lastBlitSize int
 	lastBlitTime time.Time
+
+	sndBufActual int           // populated by readSndBuf at NewSender; 0 on unsupported platforms
+	enobufCount  atomic.Uint64 // populated in Task 8
 }
 
 // InitACKTimeoutError reports that the MiSTer never acknowledged the INIT
@@ -76,12 +83,37 @@ func NewSender(dstHost string, dstPort, srcPort int) (*Sender, error) {
 	}
 	conn := pc.(*net.UDPConn)
 
-	// Reference sender sets SO_SNDBUF >= 2 MB to absorb 518 KB field bursts.
-	_ = conn.SetWriteBuffer(2 * 1024 * 1024)
+	if err := conn.SetWriteBuffer(wantSndBuf); err != nil {
+		slog.Warn("SetWriteBuffer failed", "err", err)
+	}
 	_ = conn.SetReadBuffer(256 * 1024)
 
-	actual := conn.LocalAddr().(*net.UDPAddr).Port
-	return &Sender{conn: conn, dstAddr: dst, srcPort: actual}, nil
+	// Linux kernels report 2× the requested SO_SNDBUF for kernel-bookkeeping
+	// reasons; this doubling is a long-standing quirk, not a stable contract.
+	// Treat the readback as advisory: warn if it's below the requested size
+	// (kernel clamped against net.core.wmem_max), info-log the value
+	// unconditionally for postmortem debugging.
+	actual, rerr := readSndBuf(conn)
+	switch {
+	case rerr != nil:
+		slog.Debug("SO_SNDBUF readback failed", "err", rerr)
+	case actual == 0:
+		// unsupported platform — silent
+	case actual < wantSndBuf:
+		slog.Warn("kernel clamped SO_SNDBUF below 2 MB; expect ENOBUFS on busy fields. Run: sudo sysctl -w net.core.wmem_max=4194304",
+			"requested", wantSndBuf, "kernel_actual", actual)
+	default:
+		slog.Info("SO_SNDBUF readback", "requested", wantSndBuf, "kernel_actual", actual,
+			"note", "Linux returns ~2× requested as a kernel-bookkeeping quirk")
+	}
+
+	actualPort := conn.LocalAddr().(*net.UDPAddr).Port
+	return &Sender{
+		conn:         conn,
+		dstAddr:      dst,
+		srcPort:      actualPort,
+		sndBufActual: actual,
+	}, nil
 }
 
 // SourcePort returns the actual bound source port (resolved after bind even

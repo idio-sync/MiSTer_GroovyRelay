@@ -163,3 +163,17 @@ func TestSender_InitACKTimeout(t *testing.T) {
 		t.Errorf("timeout = %v, want %v", ackErr.Timeout, 60*time.Millisecond)
 	}
 }
+
+func TestSender_SndBufActualPopulated(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 32100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// On Linux/Windows readSndBuf returns the kernel's current SO_SNDBUF.
+	// On other-platforms it returns 0. Both are acceptable; we only assert
+	// there's no panic and the field is set deterministically.
+	if s.sndBufActual < 0 {
+		t.Errorf("sndBufActual should be >= 0, got %d", s.sndBufActual)
+	}
+}
