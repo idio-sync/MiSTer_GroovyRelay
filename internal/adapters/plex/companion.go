@@ -98,6 +98,18 @@ func (c *Companion) notifyStoppedTimeline(st core.SessionStatus) {
 	c.timeline.broadcastStatusOnce(st)
 }
 
+func (c *Companion) restorePausedIfNeeded(w http.ResponseWriter, wasPaused bool) bool {
+	if !wasPaused {
+		return true
+	}
+	if err := c.core.Pause(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return false
+	}
+	c.notifyTimeline()
+	return true
+}
+
 func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	streamClientID := c.cfg.DeviceUUID
@@ -213,7 +225,25 @@ func nextPlayQueueItem(items []playQueueItem, currentID, currentKey string, delt
 	return items[next], true
 }
 
-func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Request, delta int) bool {
+func playQueueItemByIDOrKey(items []playQueueItem, id, key string) (playQueueItem, bool) {
+	if id == "" && key == "" {
+		return playQueueItem{}, false
+	}
+	for _, item := range items {
+		if id != "" && item.PlayQueueItemID == id {
+			return item, true
+		}
+		if key != "" && item.Key == key {
+			return item, true
+		}
+		if key != "" && item.RatingKey != "" && "/library/metadata/"+item.RatingKey == key {
+			return item, true
+		}
+	}
+	return playQueueItem{}, false
+}
+
+func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Request, selectItem func([]playQueueItem, PlayMediaRequest) (playQueueItem, bool)) bool {
 	prevStatus := core.SessionStatus{}
 	if c.core != nil {
 		prevStatus = c.core.Status()
@@ -230,7 +260,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	item, ok := nextPlayQueueItem(items, p.PlayQueueItemID, p.MediaKey, delta)
+	item, ok := selectItem(items, p)
 	if !ok {
 		http.Error(w, "play queue item not found", 400)
 		return false
@@ -257,6 +287,9 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 	c.rememberPlaySession(p)
+	if !c.restorePausedIfNeeded(w, prevStatus.State == core.StatePaused) {
+		return false
+	}
 	c.notifyTimeline()
 	return true
 }
@@ -529,6 +562,10 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no plex session", 400)
 		return
 	}
+	st := core.SessionStatus{}
+	if c.core != nil {
+		st = c.core.Status()
+	}
 	p.OffsetMs = offset
 	p.CommandID = queryOrHeader(r, "commandID")
 	p.TranscodeSessionID = NewTranscodeSessionID()
@@ -538,6 +575,9 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.rememberPlaySession(p)
+	if !c.restorePausedIfNeeded(w, st.State == core.StatePaused) {
+		return
+	}
 	c.notifyTimeline()
 	writeOKResponse(w)
 }
@@ -560,16 +600,27 @@ func (c *Companion) handleRefreshPlayQueue(w http.ResponseWriter, r *http.Reques
 	writeOKResponse(w)
 }
 func (c *Companion) handleSkipTo(w http.ResponseWriter, r *http.Request) {
+	playQueueItemID := queryOrHeader(r, "playQueueItemID")
+	key := queryOrHeader(r, "key")
+	if !c.restartFromPlayQueueItem(w, r, func(items []playQueueItem, p PlayMediaRequest) (playQueueItem, bool) {
+		return playQueueItemByIDOrKey(items, playQueueItemID, key)
+	}) {
+		return
+	}
 	writeOKResponse(w)
 }
 func (c *Companion) handleSkipNext(w http.ResponseWriter, r *http.Request) {
-	if !c.restartFromPlayQueueItem(w, r, 1) {
+	if !c.restartFromPlayQueueItem(w, r, func(items []playQueueItem, p PlayMediaRequest) (playQueueItem, bool) {
+		return nextPlayQueueItem(items, p.PlayQueueItemID, p.MediaKey, 1)
+	}) {
 		return
 	}
 	writeOKResponse(w)
 }
 func (c *Companion) handleSkipPrevious(w http.ResponseWriter, r *http.Request) {
-	if !c.restartFromPlayQueueItem(w, r, -1) {
+	if !c.restartFromPlayQueueItem(w, r, func(items []playQueueItem, p PlayMediaRequest) (playQueueItem, bool) {
+		return nextPlayQueueItem(items, p.PlayQueueItemID, p.MediaKey, -1)
+	}) {
 		return
 	}
 	writeOKResponse(w)
@@ -615,6 +666,9 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.rememberPlaySession(p)
+	if !c.restorePausedIfNeeded(w, st.State == core.StatePaused) {
+		return
+	}
 	c.notifyTimeline()
 	writeOKResponse(w)
 }

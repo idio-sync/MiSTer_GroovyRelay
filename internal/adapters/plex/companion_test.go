@@ -261,7 +261,6 @@ func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
 	defer ts.Close()
 
 	routes := []string{
-		"/player/playback/skipTo",
 	}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
@@ -284,6 +283,7 @@ func TestPlaybackQueueRoutesRequireActivePlexSession(t *testing.T) {
 
 	for _, route := range []string{
 		"/player/playback/refreshPlayQueue",
+		"/player/playback/skipTo",
 		"/player/playback/skipNext",
 		"/player/playback/skipPrevious",
 	} {
@@ -393,6 +393,37 @@ func TestSeekTo_RestartsPlexTranscodeAtOffset(t *testing.T) {
 	}
 }
 
+func TestSeekTo_RestoresPausedStateAfterRestart(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePaused, Position: 45000 * time.Millisecond}}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  "192.168.1.10",
+		PlexServerPort:     "32400",
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/seekTo?offset=90000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d", resp.StatusCode)
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if !fc.paused {
+		t.Error("core.Pause should be called after paused seek restart")
+	}
+}
+
 func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 	var gotMethod string
 	var gotPath string
@@ -490,6 +521,55 @@ func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 	}
 	if got.CommandID != "14" {
 		t.Errorf("remembered CommandID = %q, want 14", got.CommandID)
+	}
+}
+
+func TestSetStreams_RestoresPausedStateAfterRestart(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><Video><Media><Part id="99"/></Media></Video></MediaContainer>`))
+		case "/library/parts/99":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePaused, Position: 83000 * time.Millisecond}}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/setStreams?subtitleStreamID=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if !fc.paused {
+		t.Error("core.Pause should be called after paused setStreams restart")
 	}
 }
 
@@ -658,6 +738,111 @@ func TestSkipNext_FetchesPlayQueueAndRestartsNextItem(t *testing.T) {
 	}
 	if got.CommandID != "13" {
 		t.Errorf("remembered CommandID = %q, want 13", got.CommandID)
+	}
+}
+
+func TestSkipTo_FetchesPlayQueueAndRestartsRequestedItem(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer size="3">
+			<Video key="/library/metadata/41" ratingKey="41" playQueueItemID="1"/>
+			<Video key="/library/metadata/42" ratingKey="42" playQueueItemID="2"/>
+			<Video key="/library/metadata/43" ratingKey="43" playQueueItemID="3"/>
+		</MediaContainer>`))
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/41",
+		ContainerKey:       "/playQueues/99",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		PlayQueueItemID:    "1",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/skipTo?playQueueItemID=3&commandID=15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "path=%2Flibrary%2Fmetadata%2F43") {
+		t.Errorf("skipTo URL should target requested item: %s", fc.lastReq.StreamURL)
+	}
+	got := c.lastPlaySession()
+	if got.MediaKey != "/library/metadata/43" {
+		t.Errorf("remembered MediaKey = %q, want /library/metadata/43", got.MediaKey)
+	}
+	if got.PlayQueueItemID != "3" {
+		t.Errorf("remembered PlayQueueItemID = %q, want 3", got.PlayQueueItemID)
+	}
+	if got.CommandID != "15" {
+		t.Errorf("remembered CommandID = %q, want 15", got.CommandID)
+	}
+}
+
+func TestSkipTo_RestoresPausedStateAfterRestart(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer size="2">
+			<Video key="/library/metadata/42" ratingKey="42" playQueueItemID="2"/>
+			<Video key="/library/metadata/43" ratingKey="43" playQueueItemID="3"/>
+		</MediaContainer>`))
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePaused, Position: 83000 * time.Millisecond}}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ContainerKey:       "/playQueues/99",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		PlayQueueItemID:    "2",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/skipTo?key=%2Flibrary%2Fmetadata%2F43")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if !fc.paused {
+		t.Error("core.Pause should be called after paused skipTo restart")
 	}
 }
 
