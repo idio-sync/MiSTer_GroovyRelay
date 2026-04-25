@@ -1,6 +1,7 @@
 package ffmpeg
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"log/slog"
@@ -55,13 +56,25 @@ func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
 
 	cmd := BuildCommand(ctx, spec)
 	cmd.ExtraFiles = []*os.File{videoW, audioW}
-	cmd.Stderr = os.Stderr
+	// Forward stderr line-by-line into slog instead of dumping raw to the
+	// bridge's stderr. With "-loglevel warning" set in pipeline.go, every
+	// line FFmpeg emits is at warning severity or worse — surface them as
+	// slog.Warn so they show up alongside the bridge's structured logs.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		videoR.Close()
+		videoW.Close()
+		audioR.Close()
+		audioW.Close()
+		return nil, err
+	}
 
 	if err := cmd.Start(); err != nil {
 		videoR.Close()
 		videoW.Close()
 		audioR.Close()
 		audioW.Close()
+		_ = stderrPipe.Close()
 		return nil, err
 	}
 
@@ -71,9 +84,29 @@ func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
 	audioW.Close()
 
 	p := newProcess(cmd, videoR, audioR)
+	p.forwardStderr(stderrPipe)
 	p.watchContext(ctx)
 	p.launchWaiter()
 	return p, nil
+}
+
+// forwardStderr drains the child's stderr line-by-line into slog. Must be
+// called for every spawned ffmpeg or the child eventually blocks when its
+// stderr buffer fills (~64 KB). Owned by p.wg so Stop() blocks until the
+// scanner returns.
+func (p *Process) forwardStderr(r io.ReadCloser) {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer r.Close()
+		scanner := bufio.NewScanner(r)
+		// FFmpeg can emit very long lines (e.g., progress reports with full
+		// filter graphs). Bump the buffer so we don't truncate them.
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			slog.Warn("ffmpeg stderr", "line", scanner.Text())
+		}
+	}()
 }
 
 // newProcess is the shared constructor used by both Spawn and tests.
