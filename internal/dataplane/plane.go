@@ -247,6 +247,28 @@ func (p *Plane) Run(ctx context.Context) error {
 	p.audioReady.Store(audioEnabled && ack.AudioReady())
 	p.fpgaFrame.Store(ack.FPGAFrame)
 
+	// Session-start lifecycle marker. One INFO line per session with the
+	// negotiated parameters so the operator can correlate later events
+	// against what was actually configured.
+	sessionStart := time.Now()
+	slog.Info("dataplane session started",
+		"lz4_enabled", p.cfg.LZ4Enabled,
+		"rgb_mode", p.cfg.RGBMode,
+		"audio_rate", audioRate,
+		"audio_chans", audioChans,
+		"audio_ready", p.audioReady.Load(),
+		"field_width", p.cfg.FieldWidth,
+		"field_height", p.cfg.FieldHeight,
+		"interlaced", p.cfg.Modeline.Interlaced(),
+		"pclock_mhz", p.cfg.Modeline.PClock,
+		"htotal", p.cfg.Modeline.HTotal,
+		"vtotal", p.cfg.Modeline.VTotal,
+		"direct_play", p.cfg.SpawnSpec.UseSSSeek,
+		"seek_offset_ms", p.cfg.SeekOffsetMs,
+		"field_order", p.cfg.SpawnSpec.FieldOrder,
+		"aspect_mode", p.cfg.SpawnSpec.AspectMode,
+		"pacing_us", p.cfg.Sender.PacingInterval().Microseconds())
+
 	// 2. SWITCHRES (fire-and-forget).
 	if err := p.cfg.Sender.Send(groovy.BuildSwitchres(p.cfg.Modeline)); err != nil {
 		return fmt.Errorf("switchres: %w", err)
@@ -317,10 +339,33 @@ func (p *Plane) Run(ctx context.Context) error {
 		statDuplicates     uint64
 		statMaxFieldNs     int64
 		statMaxFramesAhead uint32
+
+		// Cumulative counters for the session-end lifecycle marker.
+		// Incremented in tandem with the rolling-window counters but
+		// never reset — survives across stats-ticker fires.
+		sessionTotalFields     uint64
+		sessionTotalDuplicates uint64
+		sessionEndReason       = "unknown"
 	)
 	lastEcho = ack.FrameEcho
 	statsTicker := time.NewTicker(5 * time.Second)
 	defer statsTicker.Stop()
+
+	// Session-end lifecycle marker. Fires on every Run exit (ctx cancel,
+	// ffmpeg exit, EOF, error). Captures cumulative session totals so the
+	// operator can compute aggregate health (avg fields/sec, duplicate
+	// share, etc.) without scanning every rolling-stats line.
+	defer func() {
+		slog.Info("dataplane session ended",
+			"reason", sessionEndReason,
+			"duration_s", time.Since(sessionStart).Seconds(),
+			"fields_sent_total", sessionTotalFields,
+			"duplicates_total", sessionTotalDuplicates,
+			"final_position_s", p.Position().Seconds(),
+			"frame_num_final", frameNum,
+			"frame_echo_final", lastEcho,
+			"enobuf_total", p.cfg.Sender.ENOBUFCount())
+	}()
 	if p.cfg.Modeline.Interlaced() {
 		nextField = initialFieldForOrder(p.cfg.SpawnSpec.FieldOrder)
 	}
@@ -328,9 +373,11 @@ func (p *Plane) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			sessionEndReason = "context_cancelled"
 			_ = p.cfg.Sender.Send(groovy.BuildClose())
 			return ctx.Err()
 		case <-proc.Done():
+			sessionEndReason = "ffmpeg_exit"
 			_ = p.cfg.Sender.Send(groovy.BuildClose())
 			return nil
 		case a := <-ackCh:
@@ -404,6 +451,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			select {
 			case fb, ok := <-videoCh:
 				if !ok {
+					sessionEndReason = "video_pipe_eof"
 					_ = p.cfg.Sender.Send(groovy.BuildClose())
 					return nil
 				}
@@ -424,6 +472,7 @@ func (p *Plane) Run(ctx context.Context) error {
 				}
 				fieldElapsed := p.sendField(frameNum, emitField, payload)
 				statFieldsSent++
+				sessionTotalFields++
 				if ns := fieldElapsed.Nanoseconds(); ns > statMaxFieldNs {
 					statMaxFieldNs = ns
 				}
@@ -444,6 +493,7 @@ func (p *Plane) Run(ctx context.Context) error {
 				}
 				p.sendDuplicate(frameNum, emitField)
 				statDuplicates++
+				sessionTotalDuplicates++
 			}
 			if p.cfg.Modeline.Interlaced() {
 				nextField ^= 1
