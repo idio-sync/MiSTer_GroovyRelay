@@ -858,3 +858,130 @@ func TestRememberPlaySession_StoresLast(t *testing.T) {
 		t.Errorf("ClientID = %q, want c1", got.ClientID)
 	}
 }
+
+// TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter
+// is the URL-adapter precursor contract for the cross-adapter case:
+// when OnStop fires for the prior Plex session and lastPlay still
+// points at that session (no successor Plex playMedia interleaved),
+// the closure must (1) push a stopped timeline using the captured
+// PlayMediaRequest — NOT whatever Manager.Status() currently reports —
+// and (2) clear c.lastPlay so the broker's next 1Hz tick doesn't keep
+// pushing Plex media identity while a foreign adapter owns the session.
+func TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter(t *testing.T) {
+	// Set up a controller endpoint and a broker pointed at it.
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer", DeviceUUID: "uuid-1", ProfileName: "Plex Home Theater",
+	}, nil)
+	broker := NewTimelineBroker(TimelineConfig{DeviceUUID: "uuid-1", DeviceName: "MiSTer"},
+		func() core.SessionStatus { return core.SessionStatus{} })
+	// playContext returns a wrong/foreign play — simulates URL adapter active.
+	broker.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{MediaKey: "/library/metadata/wrong"}
+	})
+	c.SetTimeline(broker)
+	u, _ := url.Parse(srv.URL)
+	host, port, _ := net.SplitHostPort(u.Host)
+	broker.Subscribe("client-a", host, port, "http", 0)
+
+	// Remember a Plex play, then build a SessionRequest from it.
+	// PlexServerAddress points at 127.0.0.1:1 — guaranteed-unreachable
+	// loopback; StopTranscodeSession's TCP connect fails fast (refused)
+	// across Linux/macOS/Windows so the test isn't gated on network
+	// timeouts. Note that even if it WERE slow, the broadcast happens
+	// BEFORE StopTranscodeSession in the closure (see step 4) so this
+	// test would still complete deterministically.
+	prior := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-1", PlexToken: "tok",
+	}
+	c.rememberPlaySession(prior)
+	req := c.sessionRequestFor(prior)
+
+	// Fire OnStop synchronously (simulates Manager preempt notifying
+	// the prior session). The closure body itself is synchronous — the
+	// broadcast pushes happen before OnStop returns.
+	req.OnStop("preempted")
+
+	// 1. lastPlay must be cleared.
+	if got := c.lastPlaySession().MediaKey; got != "" {
+		t.Errorf("lastPlay not cleared: MediaKey = %q", got)
+	}
+
+	// 2. Subscriber received exactly one stopped timeline addressed to
+	//    the prior media key.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("subscriber pushes = %d, want 1", len(bodies))
+	}
+	if !strings.Contains(bodies[0], `key="/library/metadata/42"`) {
+		t.Errorf("body did not use captured prior MediaKey: %s", bodies[0])
+	}
+	if strings.Contains(bodies[0], "/library/metadata/wrong") {
+		t.Errorf("body leaked playContext data: %s", bodies[0])
+	}
+	if !strings.Contains(bodies[0], `state="stopped"`) {
+		t.Errorf("body not state=stopped: %s", bodies[0])
+	}
+}
+
+// TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers pins
+// the CAS clear's contract (only zero lastPlay if MediaKey still matches
+// captured). It exercises the *outcome* of the regression case from
+// round-3 review — handlePlayMedia's race:
+//
+//  1. notifyStoppedTimeline (sync)
+//  2. core.StartSession (spawns OnStop goroutine for OLD session)
+//  3. rememberPlaySession(NEW)  // overwrites c.lastPlay
+//  4. notifyTimeline             // broadcasts NEW
+//
+// — by simulating the post-race state synchronously: it calls
+// rememberPlaySession(NEW) BEFORE firing OnStop. With
+// clearPlaySessionIfMatches, the closure no-ops because c.lastPlay
+// holds the NEW session's MediaKey. Race coverage proper requires the
+// integration path through handlePlayMedia (out of scope for this
+// unit test, but `go test -race` will catch concurrent unsafe access
+// elsewhere).
+func TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers(t *testing.T) {
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer", DeviceUUID: "uuid-1", ProfileName: "Plex Home Theater",
+	}, nil)
+	// No timeline broker — this test only exercises lastPlay state.
+
+	prior := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-old", PlexToken: "tok",
+	}
+	c.rememberPlaySession(prior)
+	req := c.sessionRequestFor(prior)
+
+	// Simulate handlePlayMedia step 3 happening BEFORE OnStop's clear:
+	// remember a NEW session so c.lastPlay no longer matches captured.
+	newer := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/99", TranscodeSessionID: "tsid-new", PlexToken: "tok",
+	}
+	c.rememberPlaySession(newer)
+
+	// Now fire the prior session's OnStop (simulating goroutine running
+	// after rememberPlaySession). With clearPlaySessionIfMatches, this
+	// must NOT wipe lastPlay because the captured MediaKey ("/library/
+	// metadata/42") no longer matches c.lastPlay.MediaKey ("/library/
+	// metadata/99").
+	req.OnStop("preempted")
+
+	if got := c.lastPlaySession().MediaKey; got != "/library/metadata/99" {
+		t.Errorf("lastPlay MediaKey = %q, want %q (NEW session must survive prior OnStop)",
+			got, "/library/metadata/99")
+	}
+}

@@ -141,11 +141,30 @@ func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
 		AdapterRef:   p.MediaKey,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 	}
+	// Capture the prior PlayMediaRequest at request-construction time.
+	// Reading lastPlay or Manager.Status() from inside OnStop is unsafe:
+	// by the time the goroutine runs, a foreign adapter may have already
+	// taken over and both will reflect the new session, not this one.
+	captured := p
 	req.OnStop = func(reason string) {
+		// Order matters: notify subscribed Plex controllers FIRST, then
+		// clear local state (conditionally), then make the best-effort PMS
+		// hint last. This way the controller sees the stopped state
+		// immediately even if PMS is slow/unreachable (StopTranscodeSession
+		// has a 5s timeout and we don't want to gate the controller-cleanup
+		// latency on it).
+		if c.timeline != nil {
+			c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle}, captured)
+		}
+		// Conditional clear: only wipe lastPlay if it still references THIS
+		// session. handlePlayMedia's Plex→Plex flow may have already called
+		// rememberPlaySession(NEW) before this goroutine runs; an
+		// unconditional clear would silently break that flow's metadata.
+		c.clearPlaySessionIfMatches(captured.MediaKey)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := StopTranscodeSession(ctx, serverURL, p.TranscodeSessionID, p.PlexToken); err != nil {
-			slog.Debug("plex stop transcode", "reason", reason, "session", p.TranscodeSessionID, "err", err)
+		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
+			slog.Debug("plex stop transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
 		}
 	}
 	return req
@@ -937,6 +956,27 @@ func (c *Companion) clearPlaySession() {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = PlayMediaRequest{}
+}
+
+// clearPlaySessionIfMatches resets c.lastPlay to its zero value ONLY
+// if the current MediaKey matches the supplied one. Used by OnStop
+// closures to safely clear stale Plex session state without racing
+// against a concurrent rememberPlaySession from handlePlayMedia for a
+// new session. If lastPlay has already been overwritten with a fresh
+// playMedia (Plex→Plex preempt), this is a no-op.
+func (c *Companion) clearPlaySessionIfMatches(mediaKey string) {
+	if mediaKey == "" {
+		// Defensive: an empty captured key would otherwise match an
+		// already-cleared lastPlay (idempotent no-op) but more
+		// dangerously could match a NEW session built without a
+		// MediaKey. Skip the comparison entirely.
+		return
+	}
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	if c.lastPlay.MediaKey == mediaKey {
+		c.lastPlay = PlayMediaRequest{}
+	}
 }
 
 // lastPlaySession returns a copy of the last remembered playMedia request.
