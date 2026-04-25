@@ -96,6 +96,11 @@ type Plane struct {
 	framePool     *FramePool
 	fieldScratch  []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
 	lz4Scratch    []byte // len == lz4.CompressBlockBound(fieldBytes)
+	// headerScratch is shared by sendField and sendDuplicate. Safe because
+	// they are called from the same goroutine in mutually-exclusive branches
+	// of the tick `select` — never concurrently. Any future change that
+	// invokes either from a different goroutine must add a separate scratch
+	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 }
 
