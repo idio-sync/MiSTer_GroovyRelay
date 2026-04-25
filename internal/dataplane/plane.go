@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -295,6 +297,32 @@ func (p *Plane) Run(ctx context.Context) error {
 		audioCh = make(chan []byte, 16)
 		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
 	}
+
+	// Audio delay buffer. The CRT introduces structural latency between BLIT
+	// arrival and pixels-visible-on-screen (FPGA buffers the field for the
+	// next vsync, then the raster scans top-to-bottom over a full field
+	// period). Audio chunks queue into the FPGA's audio FIFO and play out
+	// through the DAC nearly immediately. Net effect: audio leads video by
+	// some integer number of fields, perceptible as A/V desync.
+	//
+	// GROOVY_AUDIO_DELAY_FIELDS holds N field-periods of audio in a ring
+	// buffer before sending. N=0 (default) preserves today's behavior;
+	// N=2 ≈ 33 ms; N=4 ≈ 67 ms. Operators tune empirically until A/V
+	// matches.
+	audioDelayN := 0
+	if v := os.Getenv("GROOVY_AUDIO_DELAY_FIELDS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 && n <= 16 {
+			audioDelayN = n
+			slog.Info("audio delay enabled", "delay_fields", n,
+				"delay_ms", float64(n)*1001.0/60.0)
+		} else {
+			slog.Warn("invalid GROOVY_AUDIO_DELAY_FIELDS; using 0",
+				"value", v, "err", perr)
+		}
+	}
+	audioRing := make([][]byte, audioDelayN+1)
+	audioRingHead, audioRingLen := 0, 0
+
 	fieldPeriod := fieldPeriodFromModeline(p.cfg.Modeline)
 	if fieldPeriod <= 0 {
 		// Modeline doesn't produce a valid period (zero PClock etc.).
@@ -501,15 +529,31 @@ func (p *Plane) Run(ctx context.Context) error {
 				nextField = 0
 			}
 
-			// Audio: only send while ACK bit 6 (fpga.audio) is set AND we
-			// have PCM ready. Never block the pump loop on audio.
-			if audioEnabled && p.audioReady.Load() {
+			// Audio: gated on ACK bit 6 (fpga.audio). Each tick we (a) drain
+			// the audio reader's pending chunk into the ring's tail and (b)
+			// pop the ring's head if it holds more than audioDelayN entries.
+			// audioDelayN=0 collapses to "send the chunk we just read this
+			// tick" (today's behavior); audioDelayN>0 holds N ticks of audio
+			// before starting to send, shifting playback later relative to
+			// video on the CRT. Never blocks the pump.
+			if audioEnabled {
 				select {
 				case pcm, ok := <-audioCh:
-					if ok && len(pcm) > 0 {
-						p.sendAudio(pcm)
+					if ok && len(pcm) > 0 && audioRingLen < len(audioRing) {
+						tail := (audioRingHead + audioRingLen) % len(audioRing)
+						audioRing[tail] = pcm
+						audioRingLen++
 					}
 				default:
+				}
+				if audioRingLen > audioDelayN && p.audioReady.Load() {
+					oldest := audioRing[audioRingHead]
+					audioRing[audioRingHead] = nil
+					audioRingHead = (audioRingHead + 1) % len(audioRing)
+					audioRingLen--
+					if len(oldest) > 0 {
+						p.sendAudio(oldest)
+					}
 				}
 			}
 			// Advance reported position by one field period.
