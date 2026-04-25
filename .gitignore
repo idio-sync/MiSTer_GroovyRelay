@@ -25,6 +25,7 @@ Thumbs.db
 /.claude/
 /.codex
 /.serena/
+/.playwright-mcp/
 
 # Git worktrees
 .worktrees/
