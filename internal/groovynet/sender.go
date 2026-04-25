@@ -15,6 +15,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
@@ -138,19 +139,61 @@ func (s *Sender) Send(pkt []byte) error {
 // (groovy.MaxDatagram = 1472). Used for BLIT field bytes and AUDIO PCM,
 // which stream as a pure byte sequence on the same socket with no
 // per-chunk framing.
+//
+// On ENOBUFS (kernel send queue full): increments enobufCount, logs at
+// power-of-10 milestones, and returns the error. No retry — the field
+// is torn; the caller (sendField) logs and the next field will succeed
+// once the kernel queue drains. Per-chunk retries would just delay the
+// next field while the queue drains, costing tick budget.
 func (s *Sender) SendPayload(payload []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	totalChunks := (len(payload) + groovy.MaxDatagram - 1) / groovy.MaxDatagram
+	chunkIdx := 0
 	for i := 0; i < len(payload); i += groovy.MaxDatagram {
 		end := i + groovy.MaxDatagram
 		if end > len(payload) {
 			end = len(payload)
 		}
 		if _, err := s.conn.WriteToUDP(payload[i:end], s.dstAddr); err != nil {
+			if errors.Is(err, syscall.ENOBUFS) {
+				n := s.enobufCount.Add(1)
+				if n == 1 || isPowerOfTen(n) {
+					slog.Warn("send buffer overflow (ENOBUFS); torn field — aborting remaining chunks",
+						"total_events", n,
+						"chunk_index", chunkIdx,
+						"total_chunks", totalChunks,
+						"bytes_sent", i,
+						"bytes_total", len(payload),
+						"sndbuf_actual", s.sndBufActual)
+				}
+			}
 			return err
 		}
+		chunkIdx++
 	}
 	return nil
+}
+
+// ENOBUFCount returns the monotonic count of ENOBUFS events observed since
+// the Sender was constructed. Safe to call concurrently. Intended for
+// stats endpoints / health checks; the slog throttle alone is insufficient
+// signal for chronic problems (logs only fire at 1, 10, 100, ... events).
+func (s *Sender) ENOBUFCount() uint64 { return s.enobufCount.Load() }
+
+// isPowerOfTen returns true for 1, 10, 100, 1000, ... and false for 0
+// and any other value.
+func isPowerOfTen(n uint64) bool {
+	if n == 0 {
+		return false
+	}
+	for n >= 10 {
+		if n%10 != 0 {
+			return false
+		}
+		n /= 10
+	}
+	return n == 1
 }
 
 // Close tears down the underlying UDP socket. After Close any in-flight
