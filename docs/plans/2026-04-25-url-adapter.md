@@ -20,11 +20,41 @@
 
 **Why:** The current `notifyStoppedTimeline` reads media identity through `t.playContext()` (== Companion's `lastPlaySession`). On cross-adapter preemption, the `lastPlay` is in flux and `Manager.Status()` already reflects the foreign session. The new entry point takes captured state explicitly so the closure can pass what it needs without depending on the broker's lookup path.
 
+This task also performs a small upfront refactor: thread `play` through `buildTimelineXMLWithCommandID` as an explicit parameter so `broadcastStoppedFor` can reuse the existing builder instead of duplicating ~70 lines of XML struct definitions and field-mapping logic. Single source of truth for the Timeline XML schema.
+
 **Files:**
-- Modify: `internal/adapters/plex/timeline.go` (add `broadcastStoppedFor` near line 214 after `broadcastStatusOnce`)
+- Modify: `internal/adapters/plex/timeline.go` (refactor builder signature; add `broadcastStoppedFor` near line 214 after `broadcastStatusOnce`)
 - Test: `internal/adapters/plex/timeline_test.go` (append two new tests)
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Refactor `buildTimelineXMLWithCommandID` to take `play` as an explicit parameter**
+
+In `internal/adapters/plex/timeline.go`:
+
+1. Change the signature of `buildTimelineXMLWithCommandID` from
+   `(s core.SessionStatus, commandID int) string` to
+   `(s core.SessionStatus, play PlayMediaRequest, commandID int) string`.
+2. Inside that function, **delete** the inner `play := PlayMediaRequest{}; if t.playContext != nil { play = t.playContext() }` block (currently around lines 313-316). The `play` parameter replaces it.
+3. Update `buildTimelineXML` (currently `return t.buildTimelineXMLWithCommandID(s, 0)`) to:
+   ```go
+   func (t *TimelineBroker) buildTimelineXML(s core.SessionStatus) string {
+       play := PlayMediaRequest{}
+       if t.playContext != nil {
+           play = t.playContext()
+       }
+       return t.buildTimelineXMLWithCommandID(s, play, 0)
+   }
+   ```
+4. Update `broadcastStatusOnce`'s subscriber-loop builder call (currently
+   `xmlBody := t.buildTimelineXMLWithCommandID(st, s.commandID)`) to
+   `xmlBody := t.buildTimelineXMLWithCommandID(st, play, s.commandID)`.
+   The local `play` is already in scope from line 232-235 of the existing code.
+
+- [ ] **Step 2: Verify existing tests still pass after the refactor**
+
+Run: `go test ./internal/adapters/plex/`
+Expected: PASS. Behavior is preserved — only the indirection changed.
+
+- [ ] **Step 3: Write the failing tests for `broadcastStoppedFor`**
 
 Append at the end of `internal/adapters/plex/timeline_test.go`:
 
@@ -114,12 +144,12 @@ import (
 )
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 4: Run tests to verify they fail**
 
 Run: `go test ./internal/adapters/plex/ -run TestTimeline_BroadcastStoppedFor -v`
-Expected: FAIL with `b.broadcastStoppedFor undefined`.
+Expected: FAIL — the test file won't compile because `b.broadcastStoppedFor` is undefined.
 
-- [ ] **Step 3: Implement `broadcastStoppedFor`**
+- [ ] **Step 5: Implement `broadcastStoppedFor`**
 
 Insert into `internal/adapters/plex/timeline.go` immediately after `broadcastStatusOnce` (after line 270):
 
@@ -150,7 +180,7 @@ func (t *TimelineBroker) broadcastStoppedFor(st core.SessionStatus, play PlayMed
 	client := t.httpClient
 	t.mu.Unlock()
 
-	body := t.buildTimelineXMLFor(st, play, 0)
+	body := t.buildTimelineXMLWithCommandID(st, play, 0)
 	for _, s := range subs {
 		protocol := s.protocol
 		if protocol == "" {
@@ -163,85 +193,21 @@ func (t *TimelineBroker) broadcastStoppedFor(st core.SessionStatus, play PlayMed
 		}
 	}
 }
-
-// buildTimelineXMLFor renders the same timeline shape as buildTimelineXML
-// but uses the supplied PlayMediaRequest instead of consulting playContext.
-// Extracted so broadcastStoppedFor can pass captured state without racing
-// against playContext mutation.
-func (t *TimelineBroker) buildTimelineXMLFor(s core.SessionStatus, play PlayMediaRequest, commandID int) string {
-	type Timeline struct {
-		XMLName           xml.Name `xml:"Timeline"`
-		Type              string   `xml:"type,attr"`
-		State             string   `xml:"state,attr"`
-		Time              int64    `xml:"time,attr"`
-		Duration          int64    `xml:"duration,attr"`
-		RatingKey         string   `xml:"ratingKey,attr,omitempty"`
-		Key               string   `xml:"key,attr,omitempty"`
-		ContainerKey      string   `xml:"containerKey,attr,omitempty"`
-		Address           string   `xml:"address,attr,omitempty"`
-		Port              string   `xml:"port,attr,omitempty"`
-		Protocol          string   `xml:"protocol,attr,omitempty"`
-		MachineIdentifier string   `xml:"machineIdentifier,attr,omitempty"`
-		SeekRange         string   `xml:"seekRange,attr,omitempty"`
-		AudioStreamID     string   `xml:"audioStreamID,attr,omitempty"`
-		SubtitleStreamID  string   `xml:"subtitleStreamID,attr,omitempty"`
-		PlayQueueItemID   string   `xml:"playQueueItemID,attr,omitempty"`
-		Controllable      string   `xml:"controllable,attr,omitempty"`
-	}
-	type MediaContainer struct {
-		XMLName   xml.Name   `xml:"MediaContainer"`
-		CommandID string     `xml:"commandID,attr,omitempty"`
-		Location  string     `xml:"location,attr"`
-		Timelines []Timeline `xml:"Timeline"`
-	}
-	plexState := plexStateFromCore(s.State)
-	cmd := play.CommandID
-	if commandID > 0 {
-		cmd = strconv.Itoa(commandID)
-	}
-	video := Timeline{
-		Type:     "video",
-		State:    plexState,
-		Time:     s.Position.Milliseconds(),
-		Duration: s.Duration.Milliseconds(),
-	}
-	if play.MediaKey != "" {
-		video.RatingKey = ratingKeyFromMediaKey(play.MediaKey)
-		video.Key = play.MediaKey
-		video.ContainerKey = play.ContainerKey
-		video.Address = play.PlexServerAddress
-		video.Port = play.PlexServerPort
-		video.Protocol = play.PlexServerScheme
-		video.MachineIdentifier = play.PlexMachineID
-		video.AudioStreamID = play.AudioStreamID
-		video.SubtitleStreamID = play.SubtitleStreamID
-		video.PlayQueueItemID = play.PlayQueueItemID
-	}
-	mc := MediaContainer{
-		CommandID: cmd,
-		Location:  "",
-		Timelines: []Timeline{
-			{Type: "music", State: "stopped"},
-			{Type: "photo", State: "stopped"},
-			video,
-		},
-	}
-	out, _ := xml.Marshal(mc)
-	return string(out)
-}
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+This reuses the refactored `buildTimelineXMLWithCommandID` (see Step 1) — no duplicate XML builder.
+
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `go test ./internal/adapters/plex/ -run TestTimeline_BroadcastStoppedFor -v`
 Expected: PASS for both tests.
 
-- [ ] **Step 5: Run the full Plex test suite to confirm no regressions**
+- [ ] **Step 7: Run the full Plex test suite to confirm no regressions**
 
 Run: `go test ./internal/adapters/plex/`
-Expected: PASS (existing tests unaffected — `broadcastStoppedFor` is additive).
+Expected: PASS — Step 1's refactor was transparent and `broadcastStoppedFor` is additive.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add internal/adapters/plex/timeline.go internal/adapters/plex/timeline_test.go
@@ -250,31 +216,53 @@ git commit -m "feat(plex): add broadcastStoppedFor for cross-adapter preempt"
 
 ---
 
-### Task A2: Wire `OnStop` closure to capture state and call `broadcastStoppedFor`
+### Task A2: Wire `OnStop` closure to capture state, broadcast, and conditionally clear
 
-**Why:** Today the `OnStop` body only calls `StopTranscodeSession`. After this task it also clears `lastPlay` (via the existing `clearPlaySession` helper at companion.go:935) and broadcasts a stopped timeline using the captured prior-session state. This is the actual fix for the C1 finding from the spec review.
+**Why:** Today the `OnStop` body only calls `StopTranscodeSession`. After this task it also broadcasts a stopped timeline using captured state and conditionally clears `lastPlay` (only if still pointing at this session — see step 2). The conditional clear avoids a race with `handlePlayMedia`'s Plex→Plex flow, where the closure runs in a goroutine after the new `rememberPlaySession(p)` already overwrote `lastPlay`; an unconditional clear would wipe the new session's metadata.
 
 **Files:**
-- Modify: `internal/adapters/plex/companion.go` (`sessionRequestFor`, replace the `req.OnStop = func...` block in lines 144-150)
-- Test: `internal/adapters/plex/companion_test.go` (append cross-adapter preempt test)
+- Modify: `internal/adapters/plex/companion.go` (add `clearPlaySessionIfMatches` helper near `clearPlaySession`; replace the `req.OnStop = func...` block in `sessionRequestFor`)
+- Test: `internal/adapters/plex/companion_test.go` (append cross-adapter preempt test plus a Plex→Plex non-clear test)
 
 - [ ] **Step 1: Find and confirm the existing helpers**
 
 Run: `grep -n "lastPlaySession\|rememberPlaySession\|clearPlaySession" internal/adapters/plex/companion.go`
-Expected: locates `clearPlaySession` (already at ~line 935), `lastPlaySession` getter (~line 941), and `rememberPlaySession` setter — all guarded by `c.sessMu`. The plan does NOT add a new `clearPlaySession`; it only references the existing one from inside the new OnStop closure.
+Expected: locates `clearPlaySession` (already at ~line 935), `lastPlaySession` getter (~line 941), and `rememberPlaySession` setter — all guarded by `c.sessMu`. The plan adds ONE new helper (`clearPlaySessionIfMatches`) but reuses the existing ones for everything else.
+
+- [ ] **Step 1.5: Add the `clearPlaySessionIfMatches` helper**
+
+Insert into `internal/adapters/plex/companion.go` immediately after `clearPlaySession` (~line 939):
+
+```go
+// clearPlaySessionIfMatches resets c.lastPlay to its zero value ONLY
+// if the current MediaKey matches the supplied one. Used by OnStop
+// closures to safely clear stale Plex session state without racing
+// against a concurrent rememberPlaySession from handlePlayMedia for a
+// new session. If lastPlay has already been overwritten with a fresh
+// playMedia (Plex→Plex preempt), this is a no-op.
+func (c *Companion) clearPlaySessionIfMatches(mediaKey string) {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	if c.lastPlay.MediaKey == mediaKey {
+		c.lastPlay = PlayMediaRequest{}
+	}
+}
+```
 
 - [ ] **Step 2: Write the failing test**
 
 Append to `internal/adapters/plex/companion_test.go`:
 
 ```go
-// TestSessionRequestFor_OnStopClearsAndBroadcasts is the URL-adapter
-// precursor contract: when OnStop fires (any reason — preempted, stopped,
-// eof), the closure must clear c.lastPlay AND push a stopped timeline
-// using the captured PlayMediaRequest, NOT whatever lastPlay or
-// Manager.Status() currently report (both may have already moved on to
-// a foreign adapter's session).
-func TestSessionRequestFor_OnStopClearsAndBroadcasts(t *testing.T) {
+// TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter
+// is the URL-adapter precursor contract for the cross-adapter case:
+// when OnStop fires for the prior Plex session and lastPlay still
+// points at that session (no successor Plex playMedia interleaved),
+// the closure must (1) push a stopped timeline using the captured
+// PlayMediaRequest — NOT whatever Manager.Status() currently reports —
+// and (2) clear c.lastPlay so the broker's next 1Hz tick doesn't keep
+// pushing Plex media identity while a foreign adapter owns the session.
+func TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter(t *testing.T) {
 	// Set up a controller endpoint and a broker pointed at it.
 	var mu sync.Mutex
 	var bodies []string
@@ -341,6 +329,51 @@ func TestSessionRequestFor_OnStopClearsAndBroadcasts(t *testing.T) {
 		t.Errorf("body not state=stopped: %s", bodies[0])
 	}
 }
+
+// TestSessionRequestFor_OnStopDoesNotClearAfterPlexToPlex covers the
+// regression case from round-3 review: handlePlayMedia's flow is
+//   1. notifyStoppedTimeline (sync)
+//   2. core.StartSession (spawns OnStop goroutine for OLD session)
+//   3. rememberPlaySession(NEW)  // overwrites c.lastPlay
+//   4. notifyTimeline             // broadcasts NEW
+// If the OnStop goroutine wins the race against step 3 with an
+// unconditional clearPlaySession, NEW lastPlay is wiped → broker emits
+// timelines without media identity. Using clearPlaySessionIfMatches,
+// the closure no-ops because by the time it runs c.lastPlay holds the
+// NEW session's MediaKey.
+func TestSessionRequestFor_OnStopDoesNotClearAfterPlexToPlex(t *testing.T) {
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer", DeviceUUID: "uuid-1", ProfileName: "Plex Home Theater",
+	}, nil)
+	// No timeline broker — this test only exercises lastPlay state.
+
+	prior := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-old", PlexToken: "tok",
+	}
+	c.rememberPlaySession(prior)
+	req := c.sessionRequestFor(prior)
+
+	// Simulate handlePlayMedia step 3 happening BEFORE OnStop's clear:
+	// remember a NEW session so c.lastPlay no longer matches captured.
+	newer := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/99", TranscodeSessionID: "tsid-new", PlexToken: "tok",
+	}
+	c.rememberPlaySession(newer)
+
+	// Now fire the prior session's OnStop (simulating goroutine running
+	// after rememberPlaySession). With clearPlaySessionIfMatches, this
+	// must NOT wipe lastPlay because the captured MediaKey ("/library/
+	// metadata/42") no longer matches c.lastPlay.MediaKey ("/library/
+	// metadata/99").
+	req.OnStop("preempted")
+
+	if got := c.lastPlaySession().MediaKey; got != "/library/metadata/99" {
+		t.Errorf("lastPlay MediaKey = %q, want %q (NEW session must survive prior OnStop)",
+			got, "/library/metadata/99")
+	}
+}
 ```
 
 Add any missing imports to `companion_test.go`'s import block (skip ones already present — companion_test.go imports `testing` and likely several others; be additive, do not duplicate):
@@ -357,10 +390,12 @@ Add any missing imports to `companion_test.go`'s import block (skip ones already
 "github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 3: Run tests to verify they fail**
 
-Run: `go test ./internal/adapters/plex/ -run TestSessionRequestFor_OnStopClearsAndBroadcasts -v`
-Expected: FAIL — `lastPlay not cleared` (current OnStop doesn't touch it) and `subscriber pushes = 0` (current OnStop doesn't push).
+Run: `go test ./internal/adapters/plex/ -run TestSessionRequestFor_OnStop -v`
+Expected:
+- `TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter` FAILS — `lastPlay not cleared` (current OnStop doesn't touch it) and `subscriber pushes = 0` (current OnStop doesn't push).
+- `TestSessionRequestFor_OnStopDoesNotClearAfterPlexToPlex` PASSES coincidentally because today's OnStop never touches lastPlay at all — verify it stays passing after step 4 lands.
 
 - [ ] **Step 4: Replace the `OnStop` closure body**
 
@@ -374,14 +409,19 @@ Find the `req.OnStop = func(reason string) { ... }` block in `internal/adapters/
 captured := p
 req.OnStop = func(reason string) {
 	// Order matters: notify subscribed Plex controllers FIRST, then
-	// clear local state, then make the best-effort PMS hint last.
-	// This way the controller sees the stopped state immediately even
-	// if PMS is slow/unreachable (StopTranscodeSession has a 5s timeout
-	// and we don't want to gate the controller-cleanup latency on it).
+	// clear local state (conditionally), then make the best-effort PMS
+	// hint last. This way the controller sees the stopped state
+	// immediately even if PMS is slow/unreachable (StopTranscodeSession
+	// has a 5s timeout and we don't want to gate the controller-cleanup
+	// latency on it).
 	if c.timeline != nil {
 		c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle}, captured)
 	}
-	c.clearPlaySession()
+	// Conditional clear: only wipe lastPlay if it still references THIS
+	// session. handlePlayMedia's Plex→Plex flow may have already called
+	// rememberPlaySession(NEW) before this goroutine runs; an
+	// unconditional clear would silently break that flow's metadata.
+	c.clearPlaySessionIfMatches(captured.MediaKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
@@ -390,10 +430,10 @@ req.OnStop = func(reason string) {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./internal/adapters/plex/ -run TestSessionRequestFor_OnStopClearsAndBroadcasts -v`
-Expected: PASS.
+Run: `go test ./internal/adapters/plex/ -run TestSessionRequestFor_OnStop -v`
+Expected: PASS for both tests.
 
 - [ ] **Step 6: Run the full Plex test suite to confirm no regressions**
 
@@ -1117,6 +1157,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1168,9 +1209,13 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.core.StartSession(req); err != nil {
-		a.setState(adapters.StateError, err.Error())
+		// Redact the URL in stored / returned messages — ffprobe and
+		// similar errors echo the raw input URL, which may contain
+		// user:password credentials. The slog line below also redacts.
+		safeMsg := strings.ReplaceAll(err.Error(), rawURL, redactURL(rawURL))
+		a.setState(adapters.StateError, safeMsg)
 		slog.Warn("url cast failed", "url", redactURL(rawURL), "err", err)
-		a.respondError(w, r, http.StatusInternalServerError, err.Error(), "")
+		a.respondError(w, r, http.StatusInternalServerError, safeMsg, "")
 		return
 	}
 
@@ -1240,7 +1285,7 @@ func (a *Adapter) respondError(w http.ResponseWriter, r *http.Request, code int,
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(code)
-		fmt.Fprintf(w, `<div class="url-panel error" id="url-panel"><p class="err">%s</p></div>`, htmlEscape(msg))
+		fmt.Fprintf(w, `<div class="url-panel error" id="url-panel"><p class="err">%s</p></div>`, template.HTMLEscapeString(msg))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1259,7 +1304,7 @@ func (a *Adapter) respondStarted(w http.ResponseWriter, r *http.Request, ref, ur
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprintf(w,
 			`<div class="url-panel" id="url-panel"><p>Playing: <code>%s</code></p></div>`,
-			htmlEscape(url))
+			template.HTMLEscapeString(url))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1274,11 +1319,6 @@ func (a *Adapter) respondStarted(w http.ResponseWriter, r *http.Request, ref, ur
 // isHTMXRequest mirrors internal/ui/server.go's helper. Local copy so the
 // adapter doesn't take a UI-package dependency.
 func isHTMXRequest(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
-
-// htmlEscape is a thin wrapper so we can swap to template.HTMLEscapeString.
-func htmlEscape(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;", "'", "&#39;").Replace(s)
-}
 
 // newAdapterRef returns "url:<8 hex>". 4 random bytes is plenty of entropy
 // for a single-active-session adapter; collisions are inconsequential
@@ -1486,12 +1526,12 @@ func (a *Adapter) renderPanel() string {
 	case adapters.StateRunning:
 		if lastURL != "" {
 			status = fmt.Sprintf(`<p class="status run">Playing: <code>%s</code></p>`,
-				htmlEscape(redactURL(lastURL)))
+				template.HTMLEscapeString(redactURL(lastURL)))
 		} else {
 			status = `<p class="status run">Running</p>`
 		}
 	case adapters.StateError:
-		status = fmt.Sprintf(`<p class="status err">Error: %s</p>`, htmlEscape(lastErr))
+		status = fmt.Sprintf(`<p class="status err">Error: %s</p>`, template.HTMLEscapeString(lastErr))
 	}
 
 	return fmt.Sprintf(`<section class="url-panel" id="url-panel" hx-get="/ui/adapter/url/panel" hx-trigger="every 5s" hx-swap="outerHTML">
@@ -1979,9 +2019,13 @@ func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// Fake "Plex play" — call sessionRequestFor through Companion's
-	// exported test entry point, then StartSession.
+	// exported test entry point, then StartSession. Port "1" matches
+	// the unit test in A2: guaranteed-unreachable across platforms so
+	// StopTranscodeSession's TCP connect fails fast (refused), avoiding
+	// dependence on whether a real PMS happens to be running on the
+	// developer's box.
 	priorPlay := plex.PlayMediaRequest{
-		PlexServerAddress: "127.0.0.1", PlexServerPort: "32400", PlexServerScheme: "http",
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
 		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-1", PlexToken: "tok",
 	}
 	plexReq := companion.SessionRequestForTest(priorPlay) // exposed test helper, see Step 2
@@ -2184,4 +2228,5 @@ git commit -m "test(url): add cross-adapter preempt and cap-check boundary tests
 - **500, not 502.** All `Manager.StartSession` failure modes return 500 (spec §"HTTP surface"). Validation failures (bad URL / scheme) return 400.
 - **`testing.Short()` skip on `TestURL_ProbeTimeout`.** The test takes ~12 s; gating it on `-short` keeps `go test ./...` fast for incremental loops.
 - **`companion_test_export.go` ships in the production binary.** This is a new project precedent — the existing pattern (e.g., `subscriberCount` on `TimelineBroker`) works because the existing tests live in `package plex` and can call lowercase methods. The cross-package integration test cannot, hence the `*ForTest` wrappers in a non-test file. If this convention is undesirable, the alternative is to put the cross-adapter test in `package plex` (in a new `internal/adapters/plex/cross_adapter_test.go`) and import the URL adapter from there — heavier, but no production-shipped helpers.
-- **`OnStop` ordering is broadcast → clearPlaySession → StopTranscodeSession.** This decouples controller-cleanup latency from PMS reachability: the controller learns the session ended within one HTTP RTT to itself, regardless of PMS slowness. Don't rearrange.
+- **`OnStop` ordering is broadcast → clearPlaySessionIfMatches → StopTranscodeSession.** This decouples controller-cleanup latency from PMS reachability: the controller learns the session ended within one HTTP RTT to itself, regardless of PMS slowness. The CAS clear (only if `lastPlay.MediaKey` still matches captured) avoids a race against `handlePlayMedia`'s Plex→Plex flow. Don't rearrange and don't make the clear unconditional.
+- **`POST /ui/adapter/url/play` is gated by CSRF middleware** (`internal/ui/csrf.go`). htmx automatically sets `Sec-Fetch-Site` so the panel form works without ceremony. `curl` users must include `-H "Origin: http://<bridge-host>:<port>"` (matching the Host header) or the request gets a 403. Document this in the operator-facing README when shipping. The "JSON for curl" response branch is real, but reaching it requires the Origin header.
