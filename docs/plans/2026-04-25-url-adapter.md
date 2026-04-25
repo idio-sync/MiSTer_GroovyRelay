@@ -48,6 +48,26 @@ In `internal/adapters/plex/timeline.go`:
    `xmlBody := t.buildTimelineXMLWithCommandID(st, s.commandID)`) to
    `xmlBody := t.buildTimelineXMLWithCommandID(st, play, s.commandID)`.
    The local `play` is already in scope from line 232-235 of the existing code.
+5. Update the **third caller** in `internal/adapters/plex/companion.go`'s
+   `handleTimelinePoll` (currently around line 891). Replace
+   ```go
+   _, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
+       st,
+       atoiDefault(queryOrHeader(r, "commandID"), 0),
+   )))
+   ```
+   with
+   ```go
+   _, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
+       st,
+       c.lastPlaySession(),
+       atoiDefault(queryOrHeader(r, "commandID"), 0),
+   )))
+   ```
+   Behavior is preserved: the broker's `playContext` callback (wired in
+   `adapter.go:278` via `t.timeline.SetPlayContextProvider(a.companion.lastPlaySession)`)
+   already returns exactly this value, so reading `c.lastPlaySession()`
+   here produces the same XML as the pre-refactor implicit lookup did.
 
 - [ ] **Step 2: Verify existing tests still pass after the refactor**
 
@@ -330,18 +350,22 @@ func TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter(t *testing.T
 	}
 }
 
-// TestSessionRequestFor_OnStopDoesNotClearAfterPlexToPlex covers the
-// regression case from round-3 review: handlePlayMedia's flow is
+// TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers pins
+// the CAS clear's contract (only zero lastPlay if MediaKey still matches
+// captured). It exercises the *outcome* of the regression case from
+// round-3 review — handlePlayMedia's race:
 //   1. notifyStoppedTimeline (sync)
 //   2. core.StartSession (spawns OnStop goroutine for OLD session)
 //   3. rememberPlaySession(NEW)  // overwrites c.lastPlay
 //   4. notifyTimeline             // broadcasts NEW
-// If the OnStop goroutine wins the race against step 3 with an
-// unconditional clearPlaySession, NEW lastPlay is wiped → broker emits
-// timelines without media identity. Using clearPlaySessionIfMatches,
-// the closure no-ops because by the time it runs c.lastPlay holds the
-// NEW session's MediaKey.
-func TestSessionRequestFor_OnStopDoesNotClearAfterPlexToPlex(t *testing.T) {
+// — by simulating the post-race state synchronously: it calls
+// rememberPlaySession(NEW) BEFORE firing OnStop. With
+// clearPlaySessionIfMatches, the closure no-ops because c.lastPlay
+// holds the NEW session's MediaKey. Race coverage proper requires the
+// integration path through handlePlayMedia (out of scope for this
+// unit test, but `go test -race` will catch concurrent unsafe access
+// elsewhere).
+func TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers(t *testing.T) {
 	c := NewCompanion(CompanionConfig{
 		DeviceName: "MiSTer", DeviceUUID: "uuid-1", ProfileName: "Plex Home Theater",
 	}, nil)
@@ -395,7 +419,7 @@ Add any missing imports to `companion_test.go`'s import block (skip ones already
 Run: `go test ./internal/adapters/plex/ -run TestSessionRequestFor_OnStop -v`
 Expected:
 - `TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter` FAILS — `lastPlay not cleared` (current OnStop doesn't touch it) and `subscriber pushes = 0` (current OnStop doesn't push).
-- `TestSessionRequestFor_OnStopDoesNotClearAfterPlexToPlex` PASSES coincidentally because today's OnStop never touches lastPlay at all — verify it stays passing after step 4 lands.
+- `TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers` PASSES coincidentally because today's OnStop never touches lastPlay at all — verify it stays passing after step 4 lands.
 
 - [ ] **Step 4: Replace the `OnStop` closure body**
 
