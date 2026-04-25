@@ -26,9 +26,12 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			RGBMode:             "rgb888",
 			LZ4Enabled:          true,
 		},
-		Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
-		MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100, SourcePort: 32101},
-		UI:     config.UIConfig{HTTPPort: 32500},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
+		MiSTer: config.MisterConfig{
+			Host: "192.168.1.42", Port: 32100, SourcePort: 32101,
+			SSHUser: "alice", SSHPassword: "hunter2",
+		},
+		UI: config.UIConfig{HTTPPort: 32500},
 	}
 }
 
@@ -121,6 +124,8 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 		"mister.host=192.168.1.99" +
 			"&mister.port=32100" +
 			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
 			"&host_ip=" +
 			"&video.modeline=NTSC_480i" +
 			"&video.interlace_field_order=bff" +
@@ -162,6 +167,8 @@ func TestHandleBridge_POST_ValidationError(t *testing.T) {
 		"mister.host=" + // empty → validation fails
 			"&mister.port=32100" +
 			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
 			"&host_ip=" +
 			"&video.modeline=NTSC_480i" +
 			"&video.interlace_field_order=tff" +
@@ -257,5 +264,45 @@ func TestHandleBridge_DismissFirstRun(t *testing.T) {
 	}
 	if saver.firstRun {
 		t.Error("firstRun should be false after dismiss")
+	}
+}
+
+// TestHandleBridge_GET_RendersSSHUserPrefilled confirms ssh_user
+// renders as a normal text input prefilled from the saver.
+func TestHandleBridge_GET_RendersSSHUserPrefilled(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	if !strings.Contains(body, `name="mister.ssh_user"`) {
+		t.Error("ssh_user input not rendered")
+	}
+	if !strings.Contains(body, `value="alice"`) {
+		t.Error("ssh_user value not prefilled (expected alice)")
+	}
+}
+
+// TestHandleBridge_GET_DoesNotEchoSSHPassword guards the no-echo
+// invariant: the stored password must NEVER appear in the rendered
+// HTML, regardless of what's in the saver. The input is rendered
+// as type=password with no value attribute.
+func TestHandleBridge_GET_DoesNotEchoSSHPassword(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	if strings.Contains(body, "hunter2") {
+		t.Error("stored password leaked into rendered HTML")
+	}
+	if !strings.Contains(body, `name="mister.ssh_password"`) {
+		t.Error("ssh_password input not rendered")
+	}
+	if !strings.Contains(body, `type="password"`) {
+		t.Error("ssh_password should render as type=password")
+	}
+	if !strings.Contains(body, "Leave empty to keep existing") {
+		t.Error("ssh_password placeholder missing")
 	}
 }

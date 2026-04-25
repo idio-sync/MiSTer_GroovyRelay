@@ -236,6 +236,14 @@ func rowFor(fd adapters.FieldDef, cur config.BridgeConfig, errs FormErrors) brid
 		// as strings on the wire — select/option values must match
 		// the TOML-form strings.
 		r.StringValue = bridgeLookupString(fd.Key, cur)
+	case adapters.KindSecret:
+		// Mirrors internal/ui/adapter.go:167–171.
+		r.Kind = "text"
+		r.InputType = "password"
+		r.Placeholder = "Leave empty to keep existing"
+		// StringValue stays empty: never echo a stored password into HTML.
+		// The preserve-on-empty conditional in handleBridgePOST recovers
+		// the prior value when the operator submits without retyping.
 	}
 	return r
 }
@@ -248,6 +256,8 @@ func bridgeLookupString(key string, cur config.BridgeConfig) string {
 	switch key {
 	case "mister.host":
 		return cur.MiSTer.Host
+	case "mister.ssh_user":
+		return cur.MiSTer.SSHUser
 	case "host_ip":
 		return cur.HostIP
 	case "video.modeline":
