@@ -12,6 +12,9 @@
 
 **Order rationale:** Tasks are sequenced bottom-up: config schema → scope dispatch → form rendering → form parsing → SSH package → handler/template → main.go wiring. Each task's tests can pass independently of later tasks. The `cmd/`-package closure (Task 12) depends on `misterctl` (Task 7–8) and the `MisterLauncher` interface (Task 9). The HTML template addition (Task 11) depends on the handler (Task 10). main.go wiring (Task 13) is the last code-touching task; the optional smoke test (Task 14) is verification only.
 
+**Prerequisites:**
+- Network access for Task 8 (`go get golang.org/x/crypto/ssh@latest`). If you're implementing offline (flight, restrictive proxy), prefetch the module on a connected workstation first or run `go mod download golang.org/x/crypto` once before starting.
+
 ---
 
 ## Task 1: Add SSHUser/SSHPassword to MisterConfig + defaults + example.toml
@@ -329,11 +332,21 @@ func TestBridgeFields_HasMisterControlSection(t *testing.T) {
 Run: `go test ./internal/ui/ -run TestBridgeFields_HasMisterControlSection -v`
 Expected: FAIL — the two FieldDefs don't exist yet.
 
-- [ ] **Step 3: Append the two FieldDef entries**
+- [ ] **Step 3: Append the two FieldDef entries at the end of bridgeFields()**
 
-Edit `internal/ui/bridge_fields.go`. Find the `// ---- Server ----` block (around line 115) and add a new block **before it** (so MiSTer Control sits between Audio and Server in the rendered order):
+Edit `internal/ui/bridge_fields.go`. Find the closing `}` of the slice literal in `bridgeFields()` (around line 134, after the final `data_dir` field). Add a new block **after** the existing Server block, **before** the closing `}` of the slice:
 
 ```go
+		{
+			Key:        "data_dir",
+			Label:      "Data Directory",
+			Help:       "Where plex.json and other persistent state live.",
+			Kind:       adapters.KindText,
+			Default:    "/config",
+			ApplyScope: adapters.ScopeRestartBridge,
+			Section:    "Server",
+		},
+
 		// ---- MiSTer Control ----
 		{
 			Key:        "mister.ssh_user",
@@ -353,11 +366,13 @@ Edit `internal/ui/bridge_fields.go`. Find the `// ---- Server ----` block (aroun
 			ApplyScope: adapters.ScopeHotSwap,
 			Section:    "MiSTer Control",
 		},
-
-		// ---- Server ----
+	}
+}
 ```
 
-(The trailing `// ---- Server ----` comment is shown for context — leave it where it was, just insert the MiSTer Control block immediately above.)
+(The `data_dir` entry above is the existing last entry — shown as anchor so you know to insert the new MiSTer Control block right after it. The closing `}` and `}` are the slice literal close and the function close.)
+
+The resulting render order is **Network (01) → Video (02) → Audio (03) → Server (04) → MiSTer Control (05)**, matching the spec's "MiSTer Control becomes section 05 after Network/Video/Audio/Server" requirement. The Launch section in Task 11 is hard-coded as 06.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -452,14 +467,43 @@ func TestHandleBridge_GET_DoesNotEchoSSHPassword(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Update existing POST-test fixtures so the package stays green at each commit**
+
+The existing `TestHandleBridge_POST_Success` (lines 116–155) and `TestHandleBridge_POST_ValidationError` (lines 157–189) bodies don't include the new SSH fields. After Task 5 lands those fields will be parsed; before that, missing keys yield empty-string values which is fine — but the fixtures need extending so `parseBridgeForm` (after Task 5) sees them, and so the test bodies stay readable.
+
+Update `TestHandleBridge_POST_Success`'s `body := strings.NewReader(...)` block (lines 120–132) to include the two new fields:
+
+```go
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=bff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+```
+
+Apply the same `&mister.ssh_user=root&mister.ssh_password=` extension to `TestHandleBridge_POST_ValidationError`'s body (lines 161–172). The validation test asserts on validation failure, not field values, so the addition is invisible to the assertion.
+
+The fixture needs to land in this task (not Task 5) so `go test ./internal/ui/...` stays green at every commit. Task 5 / Task 6 will then add new tests *and* assertions on the new fields against the same fixtures.
+
+- [ ] **Step 3: Run tests to verify the new ones fail and existing ones still pass**
 
 Run: `go test ./internal/ui/ -run "RendersSSHUserPrefilled|DoesNotEchoSSHPassword" -v`
 Expected: FAIL — `KindSecret` not rendered, `mister.ssh_user` not looked up.
 
-(Existing `TestHandleBridge_POST_Success` may also fail because the body doesn't include the new fields. That's fine — Task 5 + Task 6 will fix the parser; for now keep this task's test scope tight.)
+Run: `go test ./internal/ui/...`
+Expected: existing tests still PASS (the fixture extensions don't break them — `parseBridgeForm` doesn't yet read the new fields, so they're silently ignored).
 
-- [ ] **Step 3: Add `mister.ssh_user` to `bridgeLookupString`**
+- [ ] **Step 4: Add `mister.ssh_user` to `bridgeLookupString`**
 
 Edit `internal/ui/bridge.go` at the switch in `bridgeLookupString` (around line 247–267). Add a new case between `case "mister.host":` and `case "host_ip":`:
 
@@ -480,7 +524,7 @@ func bridgeLookupString(key string, cur config.BridgeConfig) string {
 
 Do **not** add a case for `mister.ssh_password`. The no-echo invariant requires the stored password to never reach the rendered HTML; the `KindSecret` case in `rowFor` (next step) leaves `StringValue` empty regardless.
 
-- [ ] **Step 4: Add `KindSecret` case to `rowFor`**
+- [ ] **Step 5: Add `KindSecret` case to `rowFor`**
 
 Edit `internal/ui/bridge.go::rowFor` (around line 211–241). After the `case adapters.KindEnum:` block, add a new case:
 
@@ -502,14 +546,15 @@ Edit `internal/ui/bridge.go::rowFor` (around line 211–241). After the `case ad
 	}
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `go test ./internal/ui/ -run "RendersSSHUserPrefilled|DoesNotEchoSSHPassword" -v`
 Expected: PASS.
 
-(Other `TestHandleBridge_POST_*` tests may still fail — Task 5 fixes them.)
+Run: `go test ./internal/ui/...`
+Expected: PASS — full package, including the existing POST tests with the extended fixtures.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add internal/ui/bridge.go internal/ui/bridge_test.go
@@ -587,43 +632,19 @@ Edit `internal/ui/form.go::parseBridgeForm` (around line 42–46). After the `ou
 Run: `go test ./internal/ui/ -run TestParseBridgeForm_SSHFields -v`
 Expected: PASS.
 
-- [ ] **Step 5: Update `TestHandleBridge_POST_Success` fixture**
-
-Edit `internal/ui/bridge_test.go::TestHandleBridge_POST_Success` (lines 116–155). Find the `body := strings.NewReader(...)` block (lines 120–132) and add the two SSH fields:
-
-```go
-	body := strings.NewReader(
-		"mister.host=192.168.1.99" +
-			"&mister.port=32100" +
-			"&mister.source_port=32101" +
-			"&mister.ssh_user=root" +
-			"&mister.ssh_password=" +
-			"&host_ip=" +
-			"&video.modeline=NTSC_480i" +
-			"&video.interlace_field_order=bff" +
-			"&video.aspect_mode=auto" +
-			"&video.lz4_enabled=true" +
-			"&audio.sample_rate=48000" +
-			"&audio.channels=2" +
-			"&ui.http_port=32500" +
-			"&data_dir=/config")
-```
-
-The `mister.ssh_password=` with no value mirrors the operator submitting the form without re-typing the password. (The preserve-on-empty conditional that handles this lands in Task 6; for now an empty value just yields an empty SSHPassword in the saved candidate. The test asserts on `MiSTer.Host` and `Video.InterlaceFieldOrder` only, so that's fine.)
-
-Apply the same fixture extension to `TestHandleBridge_POST_ValidationError` (lines 157–189) — add `&mister.ssh_user=root` and `&mister.ssh_password=` to its body too. The test asserts on validation failure, not field values.
-
-- [ ] **Step 6: Run all bridge tests to verify**
+- [ ] **Step 5: Run all bridge tests to verify**
 
 Run: `go test ./internal/ui/...`
-Expected: PASS — all existing tests + the new one.
+Expected: PASS — `parseBridgeForm` now reads the new fields, the new test passes, and the existing POST tests (with the extended fixtures from Task 4) still pass.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add internal/ui/form.go internal/ui/form_test.go internal/ui/bridge_test.go
+git add internal/ui/form.go internal/ui/form_test.go
 git commit -m "feat(ui): parse ssh_user/ssh_password from bridge form"
 ```
+
+(Note: `bridge_test.go` was modified in Task 4 — no changes here.)
 
 ---
 
@@ -635,9 +656,9 @@ git commit -m "feat(ui): parse ssh_user/ssh_password from bridge form"
 - Modify: `internal/ui/bridge.go` (`handleBridgePOST` at line 98)
 - Test: `internal/ui/bridge_test.go` (append new test)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test (and one regression guard)**
 
-Append to `internal/ui/bridge_test.go`:
+Two tests get added here. `PreservesSSHPasswordOnEmpty` is the genuine TDD failing test — it fails before the conditional lands. `OverwritesSSHPasswordWhenProvided` is a regression guard that is **already green** (the parser from Task 5 reads the form value and the saver records it); it locks in the existing behavior so the preserve-on-empty change doesn't accidentally clamp the password to a single value. Append both to `internal/ui/bridge_test.go`:
 
 ```go
 // TestHandleBridge_POST_PreservesSSHPasswordOnEmpty verifies that an
@@ -684,9 +705,11 @@ func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
 	}
 }
 
-// TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided verifies the
-// operator can change the password by typing a new value. The empty-
-// preserve must not lock the password to its initial value.
+// TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided is a
+// regression guard: it passes from green (Task 5's parseBridgeForm
+// already does this) and locks in that the preserve-on-empty
+// conditional in this task does NOT clamp the password to its
+// previous value when the operator types a new one.
 func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
 	saver := &fakeBridgeSaver{}
 	mux := newBridgeTestServer(t, saver)
@@ -725,12 +748,12 @@ func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify the failing one fails (and the regression guard passes)**
 
 Run: `go test ./internal/ui/ -run "PreservesSSHPasswordOnEmpty|OverwritesSSHPasswordWhenProvided" -v`
 Expected:
-- `PreservesSSHPasswordOnEmpty`: FAIL (saved value is empty, not "hunter2").
-- `OverwritesSSHPasswordWhenProvided`: PASS already (parseBridgeForm reads the form value and the saver records it).
+- `PreservesSSHPasswordOnEmpty`: FAIL (saved value is empty, not "hunter2"). This is the TDD failing-test gate.
+- `OverwritesSSHPasswordWhenProvided`: PASS — regression guard, already green.
 
 - [ ] **Step 3: Add the preserve-on-empty conditional**
 
@@ -762,15 +785,27 @@ Edit `internal/ui/bridge.go::handleBridgePOST` (around lines 98–127). Find the
 	if err := sec.Validate(); err != nil {
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Add a preservation assertion to the existing TestHandleBridge_POST_Success**
 
-Run: `go test ./internal/ui/ -run "PreservesSSHPasswordOnEmpty|OverwritesSSHPasswordWhenProvided" -v`
-Expected: PASS for both.
+The existing `TestHandleBridge_POST_Success` (lines 116–155 with Task 4's fixture extension) submits `&mister.ssh_password=` (empty). After the preserve-on-empty conditional lands, the saved candidate's `MiSTer.SSHPassword` should be the prior value (`"hunter2"` from `fakeBridgeSaver.Current()`). Pin that behavior so a future regression doesn't quietly let the password disappear.
+
+Add a new assertion at the end of the test body (just before the closing `}`), after the existing `applied live` toast assertion:
+
+```go
+	if saver.got.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("expected preserve-on-empty to retain prior password, got %q", saver.got.MiSTer.SSHPassword)
+	}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `go test ./internal/ui/ -run "PreservesSSHPasswordOnEmpty|OverwritesSSHPasswordWhenProvided|TestHandleBridge_POST_Success" -v`
+Expected: PASS for all three.
 
 Run: `go test ./internal/ui/...`
 Expected: PASS — full package.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/ui/bridge.go internal/ui/bridge_test.go
@@ -857,7 +892,7 @@ func LaunchGroovy(ctx context.Context, p Params) error {
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `internal/misterctl/launcher_test.go`:
+Create `internal/misterctl/launcher_test.go`. **Note:** keep the blank line between the `// Note:` comment and `package misterctl`. Without that blank line Go interprets the comment as the *package* doc comment, overriding the production package comment in `launcher.go`.
 
 ```go
 // Note: tests in this file MUST NOT call t.Parallel(). They swap the
@@ -1267,6 +1302,11 @@ Edit `internal/ui/bridge.go`. Append at the end of the file:
 // fragment. Class = "run" for green / "err" for red; Message holds
 // the operator-facing copy (success: "Sent — <command> delivered to
 // <host>", error: "SSH failed: <error>").
+//
+// Spec note: the design doc shows this as `{Success bool, Message string}`
+// with branch logic in the template. This implementation moves the
+// branch into Go (cleaner separation, identical rendered HTML — both
+// produce <div class="status-line run|err">). Functionally equivalent.
 type launchResultData struct {
 	Class   string
 	Message string
@@ -1779,5 +1819,7 @@ If something doesn't: capture the exact error message and revisit either Task 8 
   - Manual smoke test → Task 14
 - [x] **No placeholders:** Every step shows actual code or actual commands. No "TBD", no "implement appropriate validation", no "similar to Task N".
 - [x] **Type consistency:** `Params`, `BridgeConfig`, `MisterConfig`, `MisterLauncher`, `bridgeMisterLauncher`, `launchResultData`, `dialAndRun`, `realDialAndRun`, `SwapDialForTesting`, `LaunchGroovy`, `Launch`, `Current`, `Save`, `bridgeLookupString`, `rowFor`, `parseBridgeForm`, `handleBridgePOST`, `handleBridgeMisterLaunch`, `scopeForBridgeField`, `diffBridgeConfig`, `defaultBridge`, `bridgeFields`, `Mount`, `mountPOST`, `renderPanel` — verified consistent across every task.
-- [x] **TDD discipline:** Every code-changing task has a failing-test step before the implementation step.
+- [x] **TDD discipline:** Every code-changing task has a failing-test step before the implementation step. Task 6 has one regression-guard test (`OverwritesSSHPasswordWhenProvided`) that's already green — explicitly labeled as such, not a TDD failure-then-pass.
 - [x] **Frequent commits:** Each task ends with a single commit covering only the files it touched.
+- [x] **Green at every commit:** `go test ./internal/ui/...` passes after each of Tasks 4, 5, 6 — Task 4 lands the existing-test fixture extensions so Task 5's parser change does not retroactively break tests that were committed in Task 4.
+- [x] **Section ordering:** Task 3 inserts MiSTer Control AFTER Server (at end of `bridgeFields()` slice) so render order matches spec: Network(01), Video(02), Audio(03), Server(04), MiSTer Control(05), Launch(06 hard-coded).
