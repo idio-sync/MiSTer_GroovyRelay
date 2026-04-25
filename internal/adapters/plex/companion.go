@@ -116,6 +116,8 @@ func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
 		Platform:           companionPlatform,
 		Version:            c.cfg.Version,
 		Provides:           companionProvides,
+		AudioStreamID:      p.AudioStreamID,
+		SubtitleStreamID:   p.SubtitleStreamID,
 		TranscodeSessionID: p.TranscodeSessionID,
 	})
 	req := core.SessionRequest{
@@ -572,6 +574,44 @@ func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) 
 	writeOKResponse(w)
 }
 func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
+	p := c.lastPlaySession()
+	if p.MediaKey == "" {
+		http.Error(w, "no plex session", 400)
+		return
+	}
+	audioStreamID := queryOrHeader(r, "audioStreamID")
+	subtitleStreamID := queryOrHeader(r, "subtitleStreamID")
+	if audioStreamID == "" && subtitleStreamID == "" {
+		writeOKResponse(w)
+		return
+	}
+	st := core.SessionStatus{}
+	if c.core != nil {
+		st = c.core.Status()
+	}
+	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := SetStreamSelection(ctx, serverURL, p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if audioStreamID != "" {
+		p.AudioStreamID = audioStreamID
+	}
+	if subtitleStreamID != "" {
+		p.SubtitleStreamID = subtitleStreamID
+	}
+	p.OffsetMs = int(st.Position.Milliseconds())
+	p.CommandID = queryOrHeader(r, "commandID")
+	p.TranscodeSessionID = NewTranscodeSessionID()
+	req := c.sessionRequestFor(p)
+	if err := c.core.StartSession(req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	c.rememberPlaySession(p)
+	c.notifyTimeline()
 	writeOKResponse(w)
 }
 func (c *Companion) handleMirrorDetails(w http.ResponseWriter, r *http.Request) {

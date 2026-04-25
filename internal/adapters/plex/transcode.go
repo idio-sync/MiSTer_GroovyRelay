@@ -41,6 +41,8 @@ type TranscodeRequest struct {
 	Version       string
 	Provides      string
 	MaxBitrate    int
+	AudioStreamID    string
+	SubtitleStreamID string
 	// TranscodeSessionID is the PMS transcoder session UUID documented as the
 	// transcodeSessionId query parameter. It is distinct from
 	// X-Plex-Session-Identifier, which identifies the client playback session.
@@ -91,6 +93,18 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("offset", fmt.Sprintf("%d", r.OffsetMs/1000))
 	if r.TranscodeSessionID != "" {
 		q.Set("transcodeSessionId", r.TranscodeSessionID)
+	}
+	if r.AudioStreamID != "" {
+		q.Set("audioStreamID", r.AudioStreamID)
+	}
+	if r.SubtitleStreamID != "" {
+		q.Set("subtitleStreamID", r.SubtitleStreamID)
+		if r.SubtitleStreamID == "0" {
+			q.Set("subtitles", "none")
+		} else {
+			q.Set("subtitles", "burn")
+			q.Set("advancedSubtitles", "burn")
+		}
 	}
 	q.Set("X-Plex-Session-Identifier", r.SessionID)
 	q.Set("X-Plex-Client-Identifier", r.ClientID)
@@ -145,6 +159,7 @@ type pmsMediaContainer struct {
 	Video []struct {
 		Media []struct {
 			Part []struct {
+				ID     string `xml:"id,attr"`
 				Stream []struct {
 					ID         string `xml:"id,attr"`
 					StreamType string `xml:"streamType,attr"`
@@ -155,34 +170,104 @@ type pmsMediaContainer struct {
 	} `xml:"Video"`
 }
 
-// SubtitleURLFor queries PMS metadata for mediaKey and returns a URL to the
-// subtitle stream whose id matches streamID, token-appended so FetchSubtitleToFile
-// can download it. ctx bounds the metadata fetch; callers should pass a
-// context with a bounded deadline (10 s is idiomatic for PMS calls).
-func SubtitleURLFor(ctx context.Context, serverURL, mediaKey, streamID, token string) (string, error) {
+func fetchMetadata(ctx context.Context, serverURL, mediaKey, token string) (*pmsMediaContainer, error) {
 	u := fmt.Sprintf("%s%s?X-Plex-Token=%s",
 		strings.TrimRight(serverURL, "/"),
 		mediaKey,
 		url.QueryEscape(token))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	resp, err := plexHTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("metadata fetch: %w", err)
+		return nil, fmt.Errorf("metadata fetch: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("metadata fetch: %s", resp.Status)
+		return nil, fmt.Errorf("metadata fetch: %s", resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var mc pmsMediaContainer
 	if err := xml.Unmarshal(body, &mc); err != nil {
-		return "", fmt.Errorf("parse metadata: %w", err)
+		return nil, fmt.Errorf("parse metadata: %w", err)
+	}
+	return &mc, nil
+}
+
+func PartIDFor(ctx context.Context, serverURL, mediaKey, token string) (string, error) {
+	mc, err := fetchMetadata(ctx, serverURL, mediaKey, token)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range mc.Video {
+		for _, media := range v.Media {
+			for _, part := range media.Part {
+				if part.ID != "" {
+					return part.ID, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("part id not found under %s", mediaKey)
+}
+
+func SetStreamSelection(ctx context.Context, serverURL, mediaKey, token, audioStreamID, subtitleStreamID string) error {
+	if audioStreamID == "" && subtitleStreamID == "" {
+		return nil
+	}
+	partID, err := PartIDFor(ctx, serverURL, mediaKey, token)
+	if err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/library/parts/%s",
+		strings.TrimRight(serverURL, "/"),
+		url.PathEscape(partID))
+	reqURL, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+	q := reqURL.Query()
+	if audioStreamID != "" {
+		q.Set("audioStreamID", audioStreamID)
+	}
+	if subtitleStreamID != "" {
+		q.Set("subtitleStreamID", subtitleStreamID)
+	}
+	q.Set("allParts", "1")
+	if token != "" {
+		q.Set("X-Plex-Token", token)
+	}
+	reqURL.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("X-Plex-Token", token)
+	}
+	resp, err := plexHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("set stream selection: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("set stream selection: %s", resp.Status)
+	}
+	return nil
+}
+
+// SubtitleURLFor queries PMS metadata for mediaKey and returns a URL to the
+// subtitle stream whose id matches streamID, token-appended so FetchSubtitleToFile
+// can download it. ctx bounds the metadata fetch; callers should pass a
+// context with a bounded deadline (10 s is idiomatic for PMS calls).
+func SubtitleURLFor(ctx context.Context, serverURL, mediaKey, streamID, token string) (string, error) {
+	mc, err := fetchMetadata(ctx, serverURL, mediaKey, token)
+	if err != nil {
+		return "", err
 	}
 	for _, v := range mc.Video {
 		for _, media := range v.Media {

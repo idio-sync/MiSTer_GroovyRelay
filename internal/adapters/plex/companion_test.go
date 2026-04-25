@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -388,6 +389,106 @@ func TestSeekTo_RestartsPlexTranscodeAtOffset(t *testing.T) {
 	}
 	if got.CommandID != "12" {
 		t.Errorf("remembered CommandID = %q, want 12", got.CommandID)
+	}
+}
+
+func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotQuery url.Values
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><Video><Media><Part id="99"/></Media></Video></MediaContainer>`))
+		case "/library/parts/99":
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotQuery = r.URL.Query()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{
+		status: core.SessionStatus{
+			State:    core.StatePlaying,
+			Position: 83000 * time.Millisecond,
+			Duration: 120000 * time.Millisecond,
+		},
+	}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		AudioStreamID:      "100",
+		SubtitleStreamID:   "200",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/setStreams?audioStreamID=101&subtitleStreamID=0&commandID=14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/library/parts/99" {
+		t.Errorf("path = %q, want /library/parts/99", gotPath)
+	}
+	for key, want := range map[string]string{
+		"audioStreamID":    "101",
+		"subtitleStreamID": "0",
+		"allParts":         "1",
+		"X-Plex-Token":     "tok",
+	} {
+		if got := gotQuery.Get(key); got != want {
+			t.Errorf("query %s = %q, want %q", key, got, want)
+		}
+	}
+	if fc.starts != 1 {
+		t.Errorf("StartSession calls = %d, want 1", fc.starts)
+	}
+	for _, want := range []string{
+		"offset=83",
+		"audioStreamID=101",
+		"subtitleStreamID=0",
+		"subtitles=none",
+		"transcodeSessionId=",
+	} {
+		if !strings.Contains(fc.lastReq.StreamURL, want) {
+			t.Errorf("setStreams restart URL missing %q: %s", want, fc.lastReq.StreamURL)
+		}
+	}
+	got := c.lastPlaySession()
+	if got.AudioStreamID != "101" {
+		t.Errorf("remembered AudioStreamID = %q, want 101", got.AudioStreamID)
+	}
+	if got.SubtitleStreamID != "0" {
+		t.Errorf("remembered SubtitleStreamID = %q, want 0", got.SubtitleStreamID)
+	}
+	if got.OffsetMs != 83000 {
+		t.Errorf("remembered OffsetMs = %d, want 83000", got.OffsetMs)
+	}
+	if got.CommandID != "14" {
+		t.Errorf("remembered CommandID = %q, want 14", got.CommandID)
 	}
 }
 

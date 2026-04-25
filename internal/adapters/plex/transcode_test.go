@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,8 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 		OutputWidth:        720,
 		OutputHeight:       480,
 		ClientID:           "client-id-abc",
+		AudioStreamID:      "101",
+		SubtitleStreamID:   "202",
 		TranscodeSessionID: "transcode-session-1",
 	}
 	u := BuildTranscodeURL(req)
@@ -28,11 +31,33 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 		"directPlay=0", "directStream=0", "copyts=1",
 		"videoResolution=720x480", "protocol=hls", "X-Plex-Token=xyz",
 		"X-Plex-Client-Profile-Name=Plex+Home+Theater",
+		"audioStreamID=101", "subtitleStreamID=202",
+		"subtitles=burn", "advancedSubtitles=burn",
 		"transcodeSessionId=transcode-session-1",
 	} {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)
 		}
+	}
+}
+
+func TestBuildTranscodeURL_DisablesSubtitlesForZeroStream(t *testing.T) {
+	u := BuildTranscodeURL(TranscodeRequest{
+		PlexServerURL:    "http://192.168.1.10:32400",
+		MediaPath:        "/library/metadata/42",
+		Token:            "xyz",
+		OutputWidth:      720,
+		OutputHeight:     480,
+		SubtitleStreamID: "0",
+	})
+	if !strings.Contains(u, "subtitleStreamID=0") {
+		t.Errorf("url missing subtitleStreamID=0: %s", u)
+	}
+	if !strings.Contains(u, "subtitles=none") {
+		t.Errorf("url missing subtitles=none: %s", u)
+	}
+	if strings.Contains(u, "advancedSubtitles=burn") {
+		t.Errorf("url should not burn subtitles when subtitleStreamID=0: %s", u)
 	}
 }
 
@@ -95,7 +120,7 @@ func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 <MediaContainer>
 	<Video ratingKey="42">
 		<Media>
-			<Part key="/library/parts/99/file.mkv">
+			<Part id="99" key="/library/parts/99/file.mkv">
 				<Stream id="201" streamType="3" key="/library/streams/201" codec="srt"/>
 				<Stream id="202" streamType="3" key="/library/streams/202" codec="subrip"/>
 			</Part>
@@ -121,6 +146,47 @@ func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 	}
 	if !strings.Contains(url, "X-Plex-Token=tok") {
 		t.Error("subtitle URL must carry token for FFmpeg")
+	}
+}
+
+func TestSetStreamSelection_PutsPartSelection(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotQuery url.Values
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><Video><Media><Part id="99"/></Media></Video></MediaContainer>`))
+		case "/library/parts/99":
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotQuery = r.URL.Query()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	if err := SetStreamSelection(context.Background(), srv.URL, "/library/metadata/42", "tok", "101", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/library/parts/99" {
+		t.Errorf("path = %q, want /library/parts/99", gotPath)
+	}
+	for key, want := range map[string]string{
+		"audioStreamID":    "101",
+		"subtitleStreamID": "0",
+		"allParts":         "1",
+		"X-Plex-Token":     "tok",
+	} {
+		if got := gotQuery.Get(key); got != want {
+			t.Errorf("query %s = %q, want %q", key, got, want)
+		}
 	}
 }
 
