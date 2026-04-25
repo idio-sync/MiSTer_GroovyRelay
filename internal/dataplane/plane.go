@@ -143,11 +143,11 @@ func fieldPeriodFromModeline(ml groovy.Modeline) time.Duration {
 	if ml.Interlaced() {
 		pixelsPerField /= 2
 	}
-	pclockMicroHz := uint64(ml.PClock * 1_000_000)
-	if pclockMicroHz == 0 {
+	pclockHz := uint64(ml.PClock * 1_000_000)
+	if pclockHz == 0 {
 		return 0
 	}
-	return time.Duration((pixelsPerField * 1_000_000_000) / pclockMicroHz)
+	return time.Duration((pixelsPerField * 1_000_000_000) / pclockHz)
 }
 
 // Done returns a channel closed when Run exits (EOF, ctx cancel, or error).
