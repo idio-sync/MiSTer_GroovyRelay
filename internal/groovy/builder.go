@@ -215,9 +215,9 @@ func BuildBlitHeader(o BlitOpts) []byte {
 // churn the heap.
 //
 // All bytes within the returned dst[:length] are written explicitly: bytes
-// [0..8] for every variant, plus [8] for Duplicate, [8..12] for Compressed,
-// and [12] for Compressed+Delta. The caller never observes bytes past
-// length, so reuse of dst across calls cannot leak stale bytes.
+// 0 through 7 for every variant; byte 8 for Duplicate; bytes 8 through 11
+// for Compressed; byte 12 for Compressed+Delta. The caller never observes
+// bytes past length, so reuse of dst across calls cannot leak stale bytes.
 func BuildBlitHeaderInto(dst []byte, o BlitOpts) []byte {
 	var length int
 	switch {
