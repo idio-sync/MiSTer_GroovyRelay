@@ -2,11 +2,9 @@
 
 <img align="right" width="200" src=".github/screenshots/plex_dash.png">
 
-Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and Plex seek/skip/etc. is wonky.
+Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and Plex seek/skip/etc. is wonky. 100% usable though.
 
 A WIP video cast-target bridge for the MiSTer. Run it alongside your Plex Media Server; it advertises itself as a Plex cast target on the LAN, and when you pick it from the Plex client's "Cast" menu it transcodes the Plex output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine 480i NTSC video. Also works with URLs (Archive.org .mkv.mp4, etc.)
-
-
 
 ## Future Plans
 - Support for more relay sources:
@@ -14,6 +12,9 @@ A WIP video cast-target bridge for the MiSTer. Run it alongside your Plex Media 
   - Youtube (Via yt-dlp)
   - DLNA
   - IPTV/M3U playlists
+- Companion browser extension, cast video from right click
+- 240p and PAL video modes
+- Better webui/dashboard
 
 ## Hardware requirements
 
