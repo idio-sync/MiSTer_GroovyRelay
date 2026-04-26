@@ -33,8 +33,19 @@ RUN apk add --no-cache ffmpeg ca-certificates tzdata curl
 # Pinned to "latest" at build time; entrypoint.sh refreshes daily.
 # Spec: docs/specs/2026-04-25-url-ytdlp-design.md §"Distribution and
 # self-update".
-RUN curl -fsSL -o /usr/local/bin/yt-dlp \
-      https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
+# TARGETARCH is set automatically by buildx (amd64, arm64, arm, ...).
+# yt-dlp ships per-arch standalone binaries; picking the wrong one yields
+# a confusing "/bin/sh: yt-dlp: not found" at exec time (ELF arch
+# mismatch, not a missing file).
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) ytdlp_asset=yt-dlp_linux ;; \
+      arm64) ytdlp_asset=yt-dlp_linux_aarch64 ;; \
+      arm)   ytdlp_asset=yt-dlp_linux_armv7l ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /usr/local/bin/yt-dlp \
+         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${ytdlp_asset}" \
     && chmod +x /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 COPY --from=build /out/mister-groovy-relay /usr/local/bin/mister-groovy-relay
