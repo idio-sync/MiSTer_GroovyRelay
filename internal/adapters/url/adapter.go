@@ -9,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -20,6 +21,20 @@ import (
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
 	Status() core.SessionStatus
+}
+
+// resolverIface is the adapter's narrow view of *ytdlp.Resolver. Lets
+// play_test.go inject a stub without spinning up exec.
+type resolverIface interface {
+	Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error)
+}
+
+// ytdlpProbe is the cached result of probing yt-dlp at adapter Start.
+// Computed once; read-only afterward, so no mu protection needed.
+type ytdlpProbe struct {
+	Path    string // absolute path; empty if not found
+	Version string // output of `yt-dlp --version` first line
+	OK      bool   // false ⇒ adapter behaves as if YtdlpEnabled=false
 }
 
 // Adapter implements adapters.Adapter for the URL-input cast source.
@@ -34,6 +49,15 @@ type Adapter struct {
 	// cookiesPath is computed once from cfg.Bridge.DataDir at New()
 	// and is read-only thereafter — does not need mu.
 	cookiesPath string
+
+	// resolver is the yt-dlp resolver. Nil-tolerant: the play handler
+	// returns 500 if it tries to invoke a nil resolver. Set in
+	// Adapter.Start() when ytdlpProbe.OK is true; left nil otherwise.
+	resolver resolverIface
+
+	// ytdlpProbe is the cached yt-dlp version + path. Set in
+	// Adapter.Start(). Surfaced in the panel via renderPanel.
+	ytdlpProbe ytdlpProbe
 
 	mu         sync.Mutex
 	cfg        Config

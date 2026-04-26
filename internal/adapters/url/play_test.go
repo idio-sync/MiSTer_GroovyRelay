@@ -1,6 +1,8 @@
 package url
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -248,13 +251,261 @@ func TestOnStop_ReasonHandling(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.reason, func(t *testing.T) {
-			a := newTestAdapter(t, nil)
+			a, err := New(AdapterConfig{
+				Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+				Core:   nil,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
 			// Pretend a session is running.
 			a.setState(adapters.StateRunning, "")
-			a.handleOnStop(tc.reason)
+			// makeOnStop("", "") returns the closure that handlePlay
+			// would normally produce; calling it with tc.reason
+			// exercises the state-transition switch unchanged from
+			// the deleted handleOnStop method.
+			a.makeOnStop("", "")(tc.reason)
 			if got := a.Status().State; got != tc.want {
 				t.Errorf("after OnStop(%q), State = %v, want %v", tc.reason, got, tc.want)
 			}
 		})
+	}
+}
+
+// fakeResolver is a stub for the ytdlp.Resolver, injected via the
+// adapter's resolver field. Records calls; returns canned Resolution.
+type fakeResolver struct {
+	calls []resolveCall
+	res   *ytdlp.Resolution
+	err   error
+}
+
+type resolveCall struct {
+	URL         string
+	Format      string
+	CookiesPath string
+}
+
+func (f *fakeResolver) Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error) {
+	f.calls = append(f.calls, resolveCall{pageURL, format, cookiesPath})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.res, nil
+}
+
+func newAdapterWithResolver(t *testing.T, fr resolverIface) *Adapter {
+	t.Helper()
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   &fakeCore{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.cfg.Enabled = true
+	a.cfg.YtdlpEnabled = true
+	// The fixture URLs in the mode-dispatch tests use youtu.be (the
+	// short YouTube host); include it alongside youtube.com so the
+	// allowlist actually covers them.
+	a.cfg.YtdlpHosts = []string{"youtube.com", "youtu.be", "twitch.tv"}
+	a.cfg.YtdlpFormat = "best"
+	a.cfg.YtdlpResolveTimeoutSeconds = 5
+	a.resolver = fr
+	a.ytdlpProbe = ytdlpProbe{Path: "/usr/local/bin/yt-dlp", Version: "2026.04.20", OK: true}
+	return a
+}
+
+func TestPlay_ModeAuto_HostInAllowlist_RoutesToYtdlp(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{
+			URL:     "https://googlevideo.com/playback?id=resolved",
+			Headers: map[string]string{"User-Agent": "Mozilla/5.0"},
+			Title:   "Test",
+		},
+	}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=auto")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("resolver calls = %d, want 1", len(fr.calls))
+	}
+	// Manager should have received the resolved URL, not the page URL.
+	got := a.core.(*fakeCore).lastReq
+	if got.StreamURL != "https://googlevideo.com/playback?id=resolved" {
+		t.Errorf("StreamURL = %q, want resolved URL", got.StreamURL)
+	}
+	if got.InputHeaders["User-Agent"] != "Mozilla/5.0" {
+		t.Errorf("InputHeaders not threaded: %v", got.InputHeaders)
+	}
+}
+
+func TestPlay_ModeAuto_HostNotInAllowlist_GoesDirect(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fvideo.mp4&mode=auto")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("resolver called for non-allowlisted host: %v", fr.calls)
+	}
+	got := a.core.(*fakeCore).lastReq
+	if got.StreamURL != "https://example.com/video.mp4" {
+		t.Errorf("StreamURL = %q, want raw URL", got.StreamURL)
+	}
+}
+
+func TestPlay_ModeYtdlp_AlwaysRoutesThroughResolver(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{URL: "https://resolved.example/v.mp4"},
+	}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fpage&mode=ytdlp")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("resolver calls = %d, want 1 (forced)", len(fr.calls))
+	}
+}
+
+func TestPlay_ModeDirect_NeverRoutesThroughResolver(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=direct")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("resolver called in direct mode: %v", fr.calls)
+	}
+}
+
+func TestPlay_ModeYtdlp_WithYtdlpDisabled_Returns400(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+	a.cfg.YtdlpEnabled = false
+
+	body := strings.NewReader("url=https%3A%2F%2Fexample.com&mode=ytdlp")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestPlay_UnknownMode_Returns400(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fexample.com&mode=bogus")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestPlay_ModeAbsent_DefaultsToAuto(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{URL: "https://resolved.example/v"},
+	}
+	a := newAdapterWithResolver(t, fr)
+
+	// Form has no mode field; should default to auto.
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fxyz")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("auto mode (default) didn't route youtu.be to resolver")
+	}
+}
+
+func TestPlay_ResolverError_Returns500(t *testing.T) {
+	fr := &fakeResolver{err: errors.New("ytdlp: This video is unavailable")}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fdead&mode=ytdlp")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// IMPORTANT: do NOT set HX-Request. The body assertion below
+	// relies on the JSON branch of respondError, which echoes the
+	// raw error message verbatim. The HTML fragment branch wraps
+	// in a <p class="err"> with HTMLEscapeString — the literal
+	// "This video is unavailable" still appears, but a future
+	// change to the fragment markup could break this assertion.
+	// Keeping the JSON path explicit here pins the contract.
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "This video is unavailable") {
+		t.Errorf("body missing stderr line: %s", w.Body.String())
+	}
+}
+
+func TestPlay_JSONResponse_IncludesResolvedVia(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{URL: "https://resolved.example/v"},
+	}
+	a := newAdapterWithResolver(t, fr)
+
+	// JSON request, mode=auto, allowlisted host.
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play",
+		strings.NewReader(`{"url":"https://youtu.be/abc","mode":"auto"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v; body=%s", err, w.Body.String())
+	}
+	if got["resolved_via"] != "ytdlp" {
+		t.Errorf("resolved_via = %q, want ytdlp", got["resolved_via"])
 	}
 }
