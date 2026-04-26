@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,9 +28,12 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			RGBMode:             "rgb888",
 			LZ4Enabled:          true,
 		},
-		Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
-		MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100, SourcePort: 32101},
-		UI:     config.UIConfig{HTTPPort: 32500},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
+		MiSTer: config.MisterConfig{
+			Host: "192.168.1.42", Port: 32100, SourcePort: 32101,
+			SSHUser: "alice", SSHPassword: "hunter2",
+		},
+		UI: config.UIConfig{HTTPPort: 32500},
 	}
 }
 
@@ -121,6 +126,8 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 		"mister.host=192.168.1.99" +
 			"&mister.port=32100" +
 			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
 			"&host_ip=" +
 			"&video.modeline=NTSC_480i" +
 			"&video.interlace_field_order=bff" +
@@ -152,6 +159,9 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 	if !strings.Contains(rw.Body.String(), "applied live") {
 		t.Error("expected hot-swap toast message")
 	}
+	if saver.got.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("expected preserve-on-empty to retain prior password, got %q", saver.got.MiSTer.SSHPassword)
+	}
 }
 
 func TestHandleBridge_POST_ValidationError(t *testing.T) {
@@ -162,6 +172,8 @@ func TestHandleBridge_POST_ValidationError(t *testing.T) {
 		"mister.host=" + // empty → validation fails
 			"&mister.port=32100" +
 			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
 			"&host_ip=" +
 			"&video.modeline=NTSC_480i" +
 			"&video.interlace_field_order=tff" +
@@ -257,5 +269,246 @@ func TestHandleBridge_DismissFirstRun(t *testing.T) {
 	}
 	if saver.firstRun {
 		t.Error("firstRun should be false after dismiss")
+	}
+}
+
+// TestHandleBridge_GET_RendersSSHUserPrefilled confirms ssh_user
+// renders as a normal text input prefilled from the saver.
+func TestHandleBridge_GET_RendersSSHUserPrefilled(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	if !strings.Contains(body, `name="mister.ssh_user"`) {
+		t.Error("ssh_user input not rendered")
+	}
+	if !strings.Contains(body, `value="alice"`) {
+		t.Error("ssh_user value not prefilled (expected alice)")
+	}
+}
+
+// TestHandleBridge_GET_DoesNotEchoSSHPassword guards the no-echo
+// invariant: the stored password must NEVER appear in the rendered
+// HTML, regardless of what's in the saver. The input is rendered
+// as type=password with no value attribute.
+func TestHandleBridge_GET_DoesNotEchoSSHPassword(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	if strings.Contains(body, "hunter2") {
+		t.Error("stored password leaked into rendered HTML")
+	}
+	if !strings.Contains(body, `name="mister.ssh_password"`) {
+		t.Error("ssh_password input not rendered")
+	}
+	if !strings.Contains(body, `type="password"`) {
+		t.Error("ssh_password should render as type=password")
+	}
+	if !strings.Contains(body, "Leave empty to keep existing") {
+		t.Error("ssh_password placeholder missing")
+	}
+}
+
+// TestHandleBridge_POST_PreservesSSHPasswordOnEmpty verifies that an
+// empty ssh_password in the form submission preserves the prior
+// stored password (matching the placeholder "Leave empty to keep
+// existing"). Without this, every save would silently clear the
+// password whenever the operator edited an unrelated field.
+func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	mux := newBridgeTestServer(t, saver)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" + // intentionally empty
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	// fakeBridgeSaver.Current() returns SSHPassword = "hunter2".
+	// Empty-form submit should preserve it.
+	if saver.got.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("SSHPassword = %q, want preserved value 'hunter2'", saver.got.MiSTer.SSHPassword)
+	}
+}
+
+// fakeMisterLauncher implements MisterLauncher for tests.
+type fakeMisterLauncher struct {
+	called bool
+	err    error
+}
+
+func (f *fakeMisterLauncher) Launch(_ context.Context) error {
+	f.called = true
+	return f.err
+}
+
+func TestHandleBridgeMisterLaunch_Success(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	launcher := &fakeMisterLauncher{}
+	reg := adapters.NewRegistry()
+	s, err := New(Config{Registry: reg, BridgeSaver: saver, MisterLauncher: launcher})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if !launcher.called {
+		t.Error("launcher.Launch not called")
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "Sent") {
+		t.Errorf("expected success fragment with 'Sent', got: %s", body)
+	}
+	if !strings.Contains(body, "192.168.1.42") {
+		t.Error("expected host in success message")
+	}
+	if !strings.Contains(body, `class="status-line run"`) {
+		t.Error("expected green status-line class on success")
+	}
+}
+
+func TestHandleBridgeMisterLaunch_Error(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	launcher := &fakeMisterLauncher{err: errors.New("dial timeout")}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver, MisterLauncher: launcher})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "SSH failed") {
+		t.Errorf("expected error fragment with 'SSH failed', got: %s", body)
+	}
+	if !strings.Contains(body, "dial timeout") {
+		t.Error("expected error message in body")
+	}
+	if !strings.Contains(body, `class="status-line err"`) {
+		t.Error("expected red status-line class on error")
+	}
+}
+
+func TestHandleBridgeMisterLaunch_NoLauncher(t *testing.T) {
+	// MisterLauncher nil → 500. Confirms the construct-without-launcher
+	// path doesn't panic but does fail loudly at click time.
+	saver := &fakeBridgeSaver{}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rw.Code)
+	}
+}
+
+// TestHandleBridge_GET_RendersLaunchSection verifies the post-form
+// Launch section block is rendered with the launch button and result
+// slot. The block is unconditional — every bridge GET should include
+// it.
+func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	wantSnippets := []string{
+		`hx-post="/ui/bridge/mister/launch"`,
+		`id="mister-launch-slot"`,
+		"Launch GroovyMiSTer",
+		`type="button"`,
+	}
+	for _, w := range wantSnippets {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing %q in body", w)
+		}
+	}
+}
+
+// TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided is a
+// regression guard: it passes from green (Task 5's parseBridgeForm
+// already does this) and locks in that the preserve-on-empty
+// conditional in this task does NOT clamp the password to its
+// previous value when the operator types a new one.
+func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	mux := newBridgeTestServer(t, saver)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=newsecret" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	if saver.got.MiSTer.SSHPassword != "newsecret" {
+		t.Errorf("SSHPassword = %q, want overwrite to 'newsecret'", saver.got.MiSTer.SSHPassword)
 	}
 }

@@ -131,5 +131,25 @@ func bridgeFields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeRestartBridge,
 			Section:    "Server",
 		},
+
+		// ---- MiSTer Control ----
+		{
+			Key:        "mister.ssh_user",
+			Label:      "SSH User",
+			Help:       "User to SSH into the MiSTer as. MiSTer's stock user is root.",
+			Kind:       adapters.KindText,
+			Default:    "root",
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "MiSTer Control",
+		},
+		{
+			Key:        "mister.ssh_password",
+			Label:      "SSH Password",
+			Help:       "MiSTer's stock password is 1. Stored plaintext in config.toml; the bridge does not verify the MiSTer's host key (LAN-only trust model).",
+			Kind:       adapters.KindSecret,
+			Default:    "",
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "MiSTer Control",
+		},
 	}
 }

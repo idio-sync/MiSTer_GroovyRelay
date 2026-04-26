@@ -95,3 +95,32 @@ func TestParseBridgeForm_BoolFalse(t *testing.T) {
 	_ = got
 	_ = config.BridgeConfig{} // ensure import
 }
+
+// TestParseBridgeForm_SSHFields confirms ssh_user / ssh_password
+// round-trip through parseBridgeForm into BridgeConfig.MiSTer.
+func TestParseBridgeForm_SSHFields(t *testing.T) {
+	form := url.Values{}
+	form.Set("mister.host", "192.168.1.42")
+	form.Set("mister.port", "32100")
+	form.Set("mister.source_port", "32101")
+	form.Set("mister.ssh_user", "alice")
+	form.Set("mister.ssh_password", "hunter2")
+	form.Set("video.modeline", "NTSC_480i")
+	form.Set("video.interlace_field_order", "tff")
+	form.Set("video.aspect_mode", "auto")
+	form.Set("audio.sample_rate", "48000")
+	form.Set("audio.channels", "2")
+	form.Set("ui.http_port", "32500")
+	form.Set("data_dir", "/config")
+
+	got, err := parseBridgeForm(form)
+	if err != nil {
+		t.Fatalf("parseBridgeForm: %v", err)
+	}
+	if got.MiSTer.SSHUser != "alice" {
+		t.Errorf("SSHUser = %q, want alice", got.MiSTer.SSHUser)
+	}
+	if got.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("SSHPassword = %q, want hunter2", got.MiSTer.SSHPassword)
+	}
+}

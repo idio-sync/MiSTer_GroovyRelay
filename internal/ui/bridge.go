@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -111,6 +113,15 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 			s.renderPanel(w, "bridge-panel", data)
 			return
 		}
+	}
+
+	// Preserve the stored ssh_password when the operator submits with
+	// the field empty. Mirrors the "Leave empty to keep existing"
+	// placeholder shown in rowFor's KindSecret case. Without this, any
+	// save touching an unrelated field would silently clear the
+	// password every time.
+	if candidate.MiSTer.SSHPassword == "" {
+		candidate.MiSTer.SSHPassword = s.cfg.BridgeSaver.Current().MiSTer.SSHPassword
 	}
 
 	// Validate via Sectioned.Validate (covers ports, enum membership,
@@ -236,6 +247,14 @@ func rowFor(fd adapters.FieldDef, cur config.BridgeConfig, errs FormErrors) brid
 		// as strings on the wire — select/option values must match
 		// the TOML-form strings.
 		r.StringValue = bridgeLookupString(fd.Key, cur)
+	case adapters.KindSecret:
+		// Mirrors internal/ui/adapter.go:167–171.
+		r.Kind = "text"
+		r.InputType = "password"
+		r.Placeholder = "Leave empty to keep existing"
+		// StringValue stays empty: never echo a stored password into HTML.
+		// The preserve-on-empty conditional in handleBridgePOST recovers
+		// the prior value when the operator submits without retyping.
 	}
 	return r
 }
@@ -248,6 +267,8 @@ func bridgeLookupString(key string, cur config.BridgeConfig) string {
 	switch key {
 	case "mister.host":
 		return cur.MiSTer.Host
+	case "mister.ssh_user":
+		return cur.MiSTer.SSHUser
 	case "host_ip":
 		return cur.HostIP
 	case "video.modeline":
@@ -288,4 +309,46 @@ func bridgeLookupBool(key string, cur config.BridgeConfig) bool {
 		return cur.Video.LZ4Enabled
 	}
 	return false
+}
+
+// launchResultData is the template root for the launch-result
+// fragment. Class = "run" for green / "err" for red; Message holds
+// the operator-facing copy (success: "Sent — <command> delivered to
+// <host>", error: "SSH failed: <error>").
+//
+// Spec note: the design doc shows this as `{Success bool, Message string}`
+// with branch logic in the template. This implementation moves the
+// branch into Go (cleaner separation, identical rendered HTML — both
+// produce <div class="status-line run|err">). Functionally equivalent.
+type launchResultData struct {
+	Class   string
+	Message string
+}
+
+// handleBridgeMisterLaunch invokes MisterLauncher.Launch (with a
+// 6-second context budget — 1s slack on top of the 5s SSH dial
+// timeout) and renders the result fragment swapped into the launch
+// section's slot. The handler is the only place SSH errors surface
+// to the operator; spec §"Failure modes" enumerates the cases.
+//
+// CSRF wrapping is automatic via mountPOST (server.go::Mount).
+func (s *Server) handleBridgeMisterLaunch(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.MisterLauncher == nil {
+		http.Error(w, "launcher not wired", http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+
+	err := s.cfg.MisterLauncher.Launch(ctx)
+	data := launchResultData{}
+	if err != nil {
+		data.Class = "err"
+		data.Message = fmt.Sprintf("SSH failed: %v", err)
+	} else {
+		host := s.cfg.BridgeSaver.Current().MiSTer.Host
+		data.Class = "run"
+		data.Message = fmt.Sprintf("Sent — load_core /media/fat/_Utility/Groovy.rbf delivered to %s", host)
+	}
+	s.renderPanel(w, "mister-launch-result", data)
 }

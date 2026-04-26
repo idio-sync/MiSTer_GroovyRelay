@@ -132,9 +132,11 @@ type AudioConfig struct {
 }
 
 type MisterConfig struct {
-	Host       string `toml:"host"`
-	Port       int    `toml:"port"`
-	SourcePort int    `toml:"source_port"`
+	Host        string `toml:"host"`
+	Port        int    `toml:"port"`
+	SourcePort  int    `toml:"source_port"`
+	SSHUser     string `toml:"ssh_user"`
+	SSHPassword string `toml:"ssh_password"`
 }
 
 type UIConfig struct {

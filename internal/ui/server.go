@@ -6,6 +6,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -46,15 +47,27 @@ type AdapterSaver interface {
 	Save(name string, rawTOMLSection []byte) error
 }
 
+// MisterLauncher abstracts the load-core-over-SSH operation so the
+// UI package doesn't depend on internal/misterctl directly. Mirrors
+// BridgeSaver / AdapterSaver — main.go wires a real implementation
+// (a closure that snapshots live credentials from BridgeSaver and
+// calls misterctl.LaunchGroovy). Optional: nil surfaces as 500 at
+// click time, so unit tests that don't exercise the launch button
+// can construct Server with MisterLauncher=nil.
+type MisterLauncher interface {
+	Launch(ctx context.Context) error
+}
+
 // Config is the dependencies bundle passed to New. Registry is
 // required; BridgeSaver and AdapterSaver are required only for the
 // handlers that write state (nil surfaces as a 500 at request time
 // so unit tests that only exercise read paths can construct Server
 // without them).
 type Config struct {
-	Registry     *adapters.Registry
-	BridgeSaver  BridgeSaver
-	AdapterSaver AdapterSaver
+	Registry       *adapters.Registry
+	BridgeSaver    BridgeSaver
+	AdapterSaver   AdapterSaver
+	MisterLauncher MisterLauncher
 }
 
 // templateFuncs supplies the tiny set of helpers our templates need.
@@ -107,6 +120,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/bridge", s.handleBridgeGET)
 	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
 	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
+	s.mountPOST(mux, "/ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
 
 	// Sidebar status fragment (polled every 3s by the shell).
 	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)

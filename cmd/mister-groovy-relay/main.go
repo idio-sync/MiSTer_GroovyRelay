@@ -152,7 +152,14 @@ func main() {
 	saver := uiserver.NewBridgeSaver(*cfgPath, sec, coreMgr, reg)
 	adapterSaver := uiserver.NewAdapterSaver(*cfgPath, saver.Mu())
 
-	uiSrv, err := ui.New(ui.Config{Registry: reg, BridgeSaver: saver, AdapterSaver: adapterSaver})
+	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
+
+	uiSrv, err := ui.New(ui.Config{
+		Registry:       reg,
+		BridgeSaver:    saver,
+		AdapterSaver:   adapterSaver,
+		MisterLauncher: misterLauncher,
+	})
 	if err != nil {
 		slog.Error("ui init", "err", err)
 		os.Exit(1)

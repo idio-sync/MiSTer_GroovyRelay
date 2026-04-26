@@ -279,6 +279,12 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.MiSTer.SourcePort != newCfg.MiSTer.SourcePort {
 		keys = append(keys, "mister.source_port")
 	}
+	if oldCfg.MiSTer.SSHUser != newCfg.MiSTer.SSHUser {
+		keys = append(keys, "mister.ssh_user")
+	}
+	if oldCfg.MiSTer.SSHPassword != newCfg.MiSTer.SSHPassword {
+		keys = append(keys, "mister.ssh_password")
+	}
 	if oldCfg.UI.HTTPPort != newCfg.UI.HTTPPort {
 		keys = append(keys, "ui.http_port")
 	}
@@ -289,6 +295,8 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 	switch key {
 	case "video.interlace_field_order":
 		return adapters.ScopeHotSwap
+	case "mister.ssh_user", "mister.ssh_password":
+		return adapters.ScopeHotSwap
 	case "video.modeline",
 		"video.aspect_mode",
 		"video.rgb_mode",
@@ -297,7 +305,8 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		"audio.channels":
 		return adapters.ScopeRestartCast
 	default:
-		// mister.*, host_ip, data_dir, ui.http_port — all restart-bridge.
+		// mister.host, mister.port, mister.source_port, host_ip,
+		// data_dir, ui.http_port — all restart-bridge.
 		return adapters.ScopeRestartBridge
 	}
 }

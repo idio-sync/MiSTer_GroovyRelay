@@ -7,3 +7,5 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.26
 	golang.org/x/sys v0.43.0
 )
+
+require golang.org/x/crypto v0.50.0

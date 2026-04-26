@@ -42,6 +42,8 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	out.MiSTer.Host = form.Get("mister.host")
 	out.MiSTer.Port = parseIntField(form, "mister.port", errs)
 	out.MiSTer.SourcePort = parseIntField(form, "mister.source_port", errs)
+	out.MiSTer.SSHUser = form.Get("mister.ssh_user")
+	out.MiSTer.SSHPassword = form.Get("mister.ssh_password")
 	out.HostIP = form.Get("host_ip")
 
 	out.Video.Modeline = form.Get("video.modeline")

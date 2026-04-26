@@ -143,3 +143,41 @@ func TestValidate_AcceptsEmptyHostIP(t *testing.T) {
 		t.Errorf("empty host_ip (auto-detect fallback): expected OK, got %v", err)
 	}
 }
+
+// TestSectioned_RoundTripSSHFields confirms the new SSH credential
+// fields decode + re-encode through BurntSushi/toml without loss.
+// Catches a forgotten struct tag or a missed migration helper if
+// either drifts in a future refactor.
+func TestSectioned_RoundTripSSHFields(t *testing.T) {
+	const input = `
+[bridge]
+[bridge.mister]
+host = "192.168.1.42"
+port = 32100
+source_port = 32101
+ssh_user = "alice"
+ssh_password = "hunter2"
+`
+	s, _, err := loadSectionedFromBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("loadSectionedFromBytes: %v", err)
+	}
+	if s.Bridge.MiSTer.SSHUser != "alice" {
+		t.Errorf("SSHUser = %q, want alice", s.Bridge.MiSTer.SSHUser)
+	}
+	if s.Bridge.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("SSHPassword = %q, want hunter2", s.Bridge.MiSTer.SSHPassword)
+	}
+}
+
+// TestDefaultBridge_SSHUserIsRoot pins the default user so a future
+// refactor of defaultBridge can't silently change it.
+func TestDefaultBridge_SSHUserIsRoot(t *testing.T) {
+	b := defaultBridge()
+	if b.MiSTer.SSHUser != "root" {
+		t.Errorf("default SSHUser = %q, want root", b.MiSTer.SSHUser)
+	}
+	if b.MiSTer.SSHPassword != "" {
+		t.Errorf("default SSHPassword = %q, want empty", b.MiSTer.SSHPassword)
+	}
+}

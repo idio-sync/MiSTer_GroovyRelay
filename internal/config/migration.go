@@ -255,6 +255,7 @@ func defaultBridge() BridgeConfig {
 		MiSTer: MisterConfig{
 			Port:       d.MisterPort,
 			SourcePort: d.SourcePort,
+			SSHUser:    "root",
 		},
 		UI: UIConfig{
 			HTTPPort: d.HTTPPort,
