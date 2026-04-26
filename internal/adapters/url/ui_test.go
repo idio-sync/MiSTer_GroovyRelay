@@ -29,6 +29,36 @@ func TestUIRoutes_HasPlayAndPanel(t *testing.T) {
 	}
 }
 
+func TestUIRoutes_AllElevenRegistered(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	routes := a.UIRoutes()
+	if len(routes) != 11 {
+		t.Fatalf("UIRoutes count = %d, want 11", len(routes))
+	}
+	have := map[string]string{}
+	for _, r := range routes {
+		have[r.Method+" "+r.Path] = "ok"
+	}
+	want := []string{
+		"POST play",
+		"POST pause",
+		"POST resume",
+		"POST stop",
+		"POST replay",
+		"POST seek",
+		"POST history/play",
+		"POST history/delete",
+		"GET panel",
+		"POST cookies",
+		"DELETE cookies",
+	}
+	for _, w := range want {
+		if _, ok := have[w]; !ok {
+			t.Errorf("missing route %q; have: %v", w, have)
+		}
+	}
+}
+
 func TestPanel_RendersIdle(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	req := httptest.NewRequest(http.MethodGet, "/panel", nil)
