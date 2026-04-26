@@ -121,6 +121,15 @@ type Plane struct {
 	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 
+	// Period of one field in milliseconds, as the rational
+	// periodMsNumer/periodMsDenom precomputed at NewPlane from
+	// cfg.Modeline.FieldRateRatio(). NTSC: 1001/60 (≈16.683 ms).
+	// PAL:  1000/50 (= 20 ms exact). The values are stored as a
+	// rational (rather than a float64) so Position()'s integer
+	// math stays exact.
+	periodMsNumer int64
+	periodMsDenom int64
+
 	// lastBudgetWarn throttles the per-tick budget-overrun WARN to at most
 	// once per second. Owned by the tick goroutine; not safe for concurrent
 	// access (which never happens by construction).
@@ -145,6 +154,16 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		lz4Scratch:    make([]byte, lz4.CompressBlockBound(fieldBytes)),
 		headerScratch: make([]byte, groovy.BlitHeaderLZ4Delta),
 	}
+	// Derive field period (in ms) as a rational from the modeline's
+	// FieldRateRatio: period_ms = 1000 / rate_hz, with rate_hz as
+	// (rateNumer / rateDenom) → period_ms = 1000 * rateDenom / rateNumer.
+	rateNumer, rateDenom := cfg.Modeline.FieldRateRatio()
+	if rateNumer <= 0 {
+		rateNumer = 60
+		rateDenom = 1001
+	}
+	p.periodMsNumer = 1000 * rateDenom
+	p.periodMsDenom = rateNumer
 	if cfg.SpawnSpec.FieldOrder == "bff" {
 		p.fieldOrderFlip.Store(true)
 	}
@@ -176,7 +195,7 @@ func (p *Plane) SetFieldOrder(order string) error {
 // second; exact integer math prevents drift relative to PMS's timestamps.
 func (p *Plane) Position() time.Duration {
 	fields := p.positionFields.Load()
-	ms := fields*1001/60 + int64(p.cfg.SeekOffsetMs)
+	ms := fields*p.periodMsNumer/p.periodMsDenom + int64(p.cfg.SeekOffsetMs)
 	return time.Duration(ms) * time.Millisecond
 }
 
