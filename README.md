@@ -60,29 +60,130 @@ docker run --rm -it --network=host \
 
 ## URL adapter
 
-In addition to Plex, the bridge ships a minimum-viable URL adapter:
-paste an `http://` or `https://` media URL into the **URL** panel in the settings UI and click **Play**, and the bridge will probe the URL with `ffprobe` and stream it to the MiSTer the same way a Plex cast would. Anything `ffmpeg` can ingest natively over HTTP/HTTPS works; direct MP4/MKV files, HLS playlists (`.m3u8`), DASH manifests (`.mpd`). Sessions are fire-and-forget: they run to EOF or until preempted by another POST. In-session pause/seek isn't implemented yet.
+In addition to Plex, the bridge ships a URL adapter: paste an `http://`
+or `https://` URL into the **URL** panel in the settings UI and click
+**Play**. The bridge supports two flavors of URL:
 
-Scripts can also POST a URL programmatically:
+- **Direct media URLs** — anything `ffmpeg` can ingest natively over HTTP/HTTPS:
+  direct MP4/MKV files, HLS playlists (`.m3u8`), DASH manifests (`.mpd`).
+- **Page URLs from sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp)** —
+  ~1,800 sites including:
+  - YouTube videos (incl. Shorts, Live)
+  - Twitch VODs and live streams
+  - Vimeo, Dailymotion
+  - Internet Archive items
+  - SoundCloud, Bandcamp tracks
+  - ...and most other yt-dlp-supported sites (see auto-resolves list in
+    the panel for the curated default; add more via
+    `[adapters.url].ytdlp_hosts`)
+
+Sessions are fire-and-forget: they run to EOF or until preempted by
+another POST. In-session pause/seek isn't implemented yet.
+
+### How routing works
+
+The Mode radio in the URL panel picks the resolution path per-paste:
+
+- **Auto** (default) — hostname matched against the allowlist; if matched,
+  yt-dlp resolves the URL to a direct media URL and ffmpeg streams it.
+  Else, the URL is passed to ffmpeg directly.
+- **yt-dlp** — always run through yt-dlp, regardless of hostname. Use
+  for sites you've added to your config but haven't enabled in the
+  default allowlist.
+- **Direct** — never run through yt-dlp. Use for direct media URLs.
+
+### YouTube ads are bypassed automatically
+
+yt-dlp talks to YouTube's underlying media APIs and gets the raw
+video stream, not the player UI. Pre-roll and mid-roll YouTube ads
+are never injected into the cast — they don't reach the MiSTer.
+Sponsor segments baked into the video itself (e.g. NordVPN reads)
+play through; SponsorBlock integration is a planned follow-up.
+
+### Cookies for auth-walled content
+
+Age-gated YouTube videos, members-only Twitch VODs, and similar
+content require login cookies. The URL panel has a collapsed
+**Cookies** section that accepts a Netscape-format `cookies.txt`:
+
+1. Install a browser extension like
+   [Get cookies.txt LOCALLY](https://github.com/kairi003/Get-cookies.txt-LOCALLY)
+   (Chrome/Edge) or
+   [cookies.txt](https://addons.mozilla.org/firefox/addon/cookies-txt/)
+   (Firefox).
+2. Log in to the site you want to cast from.
+3. Click the extension and download the cookies file.
+4. Open the URL panel in the bridge, expand **Cookies**, paste the
+   file content, click **Save Cookies**.
+
+Cookies are saved to `<bridge.data_dir>/url_cookies.txt` (mode 0600
+on POSIX) and survive container restart through the operator's
+existing `data_dir` volume mount. The bridge reuses them on every
+yt-dlp resolve. Click **Clear** to remove them.
+
+The Cookies section never echoes saved content back into the
+textarea, and the form sets `autocomplete="off"` so password
+managers don't offer to save them.
+
+### Scripts can also POST a URL programmatically
 
 ```bash
 # htmx form-style (matches what the panel sends)
 curl -X POST \
   -H "Origin: http://<bridge-host>:32500" \
-  -d 'url=https://example.com/video.mp4' \
+  -d 'url=https://youtu.be/dQw4w9WgXcQ&mode=auto' \
   http://<bridge-host>:32500/ui/adapter/url/play
 
 # JSON
 curl -X POST \
   -H "Origin: http://<bridge-host>:32500" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com/video.mp4"}' \
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","mode":"ytdlp"}' \
   http://<bridge-host>:32500/ui/adapter/url/play
 ```
 
 The `Origin` header is required because the adapter's POST endpoint runs through the bridge's CSRF middleware. Browsers (htmx) set `Sec-Fetch-Site` automatically and pass without ceremony; `curl` and other scripted clients must include `Origin` matching the bridge's host:port. Without it, the request returns 403. The response shape also branches: htmx callers (which set `HX-Request: true`) get an HTML fragment back; everyone else gets JSON.
 
 URL credentials in the form `https://user:pass@host/path` are redacted in the panel display, the success response body, and all log lines. The JSON response echoes the URL verbatim — the API caller already submitted it.
+
+### Configuration knobs
+
+```toml
+[adapters.url]
+enabled = true                            # adapter is on
+ytdlp_enabled = true                      # yt-dlp resolution on (default)
+# ytdlp_hosts: extend or replace the curated allowlist.
+ytdlp_hosts = ["youtube.com", "twitch.tv", "vimeo.com", "archive.org"]
+# ytdlp_format: yt-dlp -f selector. Default caps at 720p (CRT can't
+# show more), avoids AV1 (slow software decode). Override only if
+# you know what you're doing.
+# ytdlp_format = "best[height<=720]/best"
+# ytdlp_resolve_timeout_seconds: hard cap on yt-dlp execution.
+# Default 30s covers cold-extractor first-hits; range [5, 120].
+# ytdlp_resolve_timeout_seconds = 30
+```
+
+### What's not supported
+
+- **DRM**: yt-dlp can't decrypt Widevine/PlayReady. Netflix, HBO,
+  Disney+, etc. will never work — this is by design and unfixable.
+- **>720p**: the format selector caps at 720p because the CRT can't
+  display more. If you want lossless source files for archival, use
+  yt-dlp directly on a desktop, not through the bridge.
+- **Twitch live ads**: Twitch injects mid-stream ads server-side and
+  yt-dlp's resolved manifest includes them. Ad-bypass proxies
+  (TTV LOL etc.) are out of scope for v1.
+- **TikTok / Instagram / X / Reddit**: extractors break frequently
+  and most content is auth-walled or DRM'd. Excluded from the default
+  hostname allowlist; opt in via TOML if you want to try, but expect
+  failures.
+
+### Self-update
+
+The Docker image bundles a recent yt-dlp binary at build time. On each
+container start, the entrypoint runs `yt-dlp -U` (gated by a daily
+marker file so hourly restarts don't hammer GitHub). Failed updates
+log a warning; the bundled version stays usable.
 
 ## Settings UI
 
