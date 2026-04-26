@@ -175,11 +175,11 @@ func TestPlay_HappyPath_BuildsSessionRequest(t *testing.T) {
 	if got.StreamURL != "https://example.com/video.mp4" {
 		t.Errorf("StreamURL = %q", got.StreamURL)
 	}
-	if got.Capabilities.CanPause || got.Capabilities.CanSeek {
-		t.Errorf("Capabilities should be {false,false}, got %+v", got.Capabilities)
+	if !got.Capabilities.CanPause || !got.Capabilities.CanSeek {
+		t.Errorf("Capabilities should be {true,true} in v1.5, got %+v", got.Capabilities)
 	}
-	if got.DirectPlay {
-		t.Errorf("DirectPlay should be false in v1")
+	if !got.DirectPlay {
+		t.Errorf("DirectPlay should be true in v1.5 (spec §Capability and DirectPlay flips)")
 	}
 	if !strings.HasPrefix(got.AdapterRef, "url:") {
 		t.Errorf("AdapterRef should start with 'url:', got %q", got.AdapterRef)
@@ -611,5 +611,58 @@ func TestPlay_AcceptsUppercaseMode(t *testing.T) {
 				t.Errorf("mode=%q: status = %d, body=%s", mode, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestPlay_HappyPath_RecordsHistory(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	req := httptest.NewRequest(http.MethodPost, "/play",
+		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	a.handlePlay(httptest.NewRecorder(), req)
+	if a.history.Len() != 1 {
+		t.Errorf("history.Len = %d, want 1 after happy-path cast", a.history.Len())
+	}
+}
+
+func TestPlay_StartSessionFailure_StillRecordsHistory(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{startErr: errors.New("probe failed")})
+	req := httptest.NewRequest(http.MethodPost, "/play",
+		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	a.handlePlay(httptest.NewRecorder(), req)
+	if a.history.Len() != 1 {
+		t.Errorf("history.Len = %d, want 1 (failed casts must record so operator can retry)", a.history.Len())
+	}
+}
+
+func TestPlay_BadURL_DoesNotRecordHistory(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	req := httptest.NewRequest(http.MethodPost, "/play",
+		strings.NewReader("url=not%20a%20valid%20url"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	a.handlePlay(httptest.NewRecorder(), req)
+	if a.history.Len() != 0 {
+		t.Errorf("history.Len = %d, want 0 (URLs failing validation must not be recorded)", a.history.Len())
+	}
+}
+
+func TestPlay_RecastSameURL_BumpsNotDuplicates(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	post := func(u string) {
+		req := httptest.NewRequest(http.MethodPost, "/play",
+			strings.NewReader("url="+u))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		a.handlePlay(httptest.NewRecorder(), req)
+	}
+	post("https%3A%2F%2Fa%2F")
+	post("https%3A%2F%2Fb%2F")
+	post("https%3A%2F%2Fa%2F") // recast a → bump to position 0
+	if a.history.Len() != 2 {
+		t.Errorf("Len = %d, want 2", a.history.Len())
+	}
+	list := a.history.List()
+	if list[0].URL != "https://a/" || list[1].URL != "https://b/" {
+		t.Errorf("after recast, list = %v, want [a, b]", list)
 	}
 }
