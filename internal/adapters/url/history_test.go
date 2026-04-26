@@ -175,6 +175,18 @@ func TestHistory_ConcurrentAddOrBump(t *testing.T) {
 	if err := json.Unmarshal(data, &hf); err != nil {
 		t.Errorf("file not valid JSON: %v\n%s", err, data)
 	}
+	list := h.List()
+	if len(list) > historyMaxEntries {
+		t.Errorf("len = %d, exceeds max %d", len(list), historyMaxEntries)
+	}
+	for _, e := range list {
+		if e.LastPlayedAt.IsZero() {
+			t.Errorf("entry %q has zero timestamp", e.URL)
+		}
+		if dedupeKey(e.URL) == "" {
+			t.Errorf("entry %q is unparseable", e.URL)
+		}
+	}
 }
 
 func TestHistory_EmptyPath_NoSave(t *testing.T) {
@@ -232,5 +244,29 @@ func TestHistory_UnparseableURL_NotRecorded(t *testing.T) {
 	h.AddOrBump("\x00not-a-url")
 	if h.Len() != 0 {
 		t.Errorf("len = %d, want 0 (unparseable URLs must not be recorded)", h.Len())
+	}
+}
+
+func TestHistory_LoadDedupesAndDropsUnparseable(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "h.json")
+	// Hand-crafted file with a duplicate dedupe key (different creds)
+	// and an unparseable URL — both should be cleaned up on load.
+	// "http://%zz" has an invalid percent-escape, which net/url.Parse
+	// rejects ("invalid URL escape"); dedupeKey returns "" for it.
+	raw := `{"version":1,"entries":[
+		{"url":"https://alice@host/x","last_played_at":"2026-01-01T00:00:00Z"},
+		{"url":"https://bob@host/x","last_played_at":"2026-01-02T00:00:00Z"},
+		{"url":"http://%zz","last_played_at":"2026-01-03T00:00:00Z"}
+	]}`
+	if err := os.WriteFile(tmp, []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h := LoadHistory(tmp)
+	if h.Len() != 1 {
+		t.Errorf("len = %d, want 1 after dedupe + drop-unparseable", h.Len())
+	}
+	list := h.List()
+	if len(list) > 0 && list[0].URL != "https://alice@host/x" {
+		t.Errorf("kept URL = %q, want first occurrence (alice)", list[0].URL)
 	}
 }

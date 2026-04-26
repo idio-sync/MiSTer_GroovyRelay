@@ -65,6 +65,9 @@ type History struct {
 // LoadHistory reads the history file at path. Failures (missing,
 // corrupt JSON, unknown version, IO error) collapse to empty history
 // + warning log; never returns nil. Path "" means in-memory only.
+// Defensively drops on-disk entries that no longer parse and entries
+// whose dedupe key duplicates an earlier entry; truncates the result
+// to historyMaxEntries.
 func LoadHistory(path string) *History {
 	h := &History{path: path}
 	if path == "" {
@@ -87,10 +90,26 @@ func LoadHistory(path string) *History {
 			"version", hf.Version, "want", historySchemaVersion, "path", path)
 		return h
 	}
-	if len(hf.Entries) > historyMaxEntries {
-		hf.Entries = hf.Entries[:historyMaxEntries]
+	// Defensive cleanup: drop entries whose URL no longer parses
+	// (schema drift / hand-edits) and dedupe by key (same hand-edit
+	// risk). Cap-truncate last so post-cleanup overflow is honored.
+	seen := make(map[string]struct{}, len(hf.Entries))
+	deduped := hf.Entries[:0]
+	for _, e := range hf.Entries {
+		k := dedupeKey(e.URL)
+		if k == "" {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, e)
 	}
-	h.entries = hf.Entries
+	if len(deduped) > historyMaxEntries {
+		deduped = deduped[:historyMaxEntries]
+	}
+	h.entries = deduped
 	return h
 }
 
@@ -107,15 +126,16 @@ func (h *History) AddOrBump(rawURL string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now().UTC()
+
+	// Remove existing entry with the same dedupe key, if any.
 	for i, e := range h.entries {
 		if dedupeKey(e.URL) == key {
-			// Re-insert at position 0 with the new raw URL + timestamp.
 			h.entries = append(h.entries[:i], h.entries[i+1:]...)
-			h.entries = append([]HistoryEntry{{URL: rawURL, LastPlayedAt: now}}, h.entries...)
-			h.saveLocked()
-			return
+			break
 		}
 	}
+
+	// Prepend the new entry, then enforce the cap unconditionally.
 	h.entries = append([]HistoryEntry{{URL: rawURL, LastPlayedAt: now}}, h.entries...)
 	if len(h.entries) > historyMaxEntries {
 		h.entries = h.entries[:historyMaxEntries]
@@ -170,9 +190,13 @@ func (h *History) saveLocked() {
 	if h.path == "" || h.persistDisabled {
 		return
 	}
+	entries := h.entries
+	if entries == nil {
+		entries = []HistoryEntry{}
+	}
 	data, err := json.Marshal(historyFile{
 		Version: historySchemaVersion,
-		Entries: h.entries,
+		Entries: entries,
 	})
 	if err != nil {
 		slog.Warn("url history save: marshal failed", "err", err)
