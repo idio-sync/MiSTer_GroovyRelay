@@ -21,7 +21,6 @@ package misterctl
 
 import (
 	"context"
-	"errors"
 	"time"
 )
 
@@ -40,11 +39,9 @@ type Params struct {
 const launchCommand = `echo "load_core /media/fat/_Utility/Groovy.rbf" > /dev/MiSTer_cmd`
 
 // dialAndRun is the SSH dial + session.Run sequence; var so tests can
-// inject a fake without standing up a real ssh.Server. Production code
-// uses realDialAndRun (defined in launcher_ssh.go in Task 8).
-var dialAndRun = func(ctx context.Context, p Params) error {
-	return errors.New("misterctl: real SSH not yet wired (Task 8)")
-}
+// inject a fake without standing up a real ssh.Server. Production
+// value is realDialAndRun (assigned in launcher_ssh.go's init).
+var dialAndRun func(ctx context.Context, p Params) error
 
 // LaunchGroovy dials the MiSTer over SSH, runs the canonical
 // load-core command, and returns nil on exec success or a wrapped
