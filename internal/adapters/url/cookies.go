@@ -19,48 +19,56 @@ type CookiesStat struct {
 }
 
 // saveCookies atomically writes data to path with mode 0600. Returns
-// the mtime of the resulting file (read AFTER os.Rename so it matches
-// what the panel will display on next render — review fix M3).
+// the resulting CookiesStat (size + mtime read AFTER os.Rename so it
+// matches what the panel will display on next render — review fix M3).
+// Symmetric with statCookies, so handlers don't need to re-stat.
 //
 // Algorithm:
 //  1. Write to <path>.tmp at mode 0600.
 //  2. os.Rename(.tmp, path) — atomic on POSIX, atomic-enough on Windows.
-//  3. Stat the renamed file for mtime.
+//  3. Stat the renamed file for mtime; size is len(data).
 //
 // On any failure, the .tmp file is removed; an existing path file is
 // untouched.
-func saveCookies(path string, data []byte) (time.Time, error) {
+//
+// Edge case: if the file is deleted between rename and stat (rare; the
+// path is bridge-owned so only operator error or external interference
+// would do this), saveCookies returns an error — but the rename did
+// succeed, so the file may exist again on retry. Retries are
+// idempotent (atomic rewrite), so a "save failed" report followed by a
+// successful retry is safe.
+func saveCookies(path string, data []byte) (CookiesStat, error) {
 	tmp := path + ".tmp"
 	// 0600 is best-effort on Windows; OpenFile will accept the mode but
 	// NTFS ACLs may not honor it. Logged as a warning by the caller if
 	// the post-write Stat reports a different mode (handler does this).
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("save cookies: open tmp: %w", err)
+		return CookiesStat{}, fmt.Errorf("save cookies: open tmp: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		_ = os.Remove(tmp)
-		return time.Time{}, fmt.Errorf("save cookies: write: %w", err)
+		return CookiesStat{}, fmt.Errorf("save cookies: write: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
 		_ = os.Remove(tmp)
-		return time.Time{}, fmt.Errorf("save cookies: sync: %w", err)
+		return CookiesStat{}, fmt.Errorf("save cookies: sync: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return time.Time{}, fmt.Errorf("save cookies: close: %w", err)
+		return CookiesStat{}, fmt.Errorf("save cookies: close: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return time.Time{}, fmt.Errorf("save cookies: rename: %w", err)
+		return CookiesStat{}, fmt.Errorf("save cookies: rename: %w", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("save cookies: stat after rename: %w", err)
+		return CookiesStat{}, fmt.Errorf("save cookies: stat after rename: %w", err)
 	}
-	return info.ModTime(), nil
+	return CookiesStat{Size: info.Size(), Mtime: info.ModTime()}, nil
 }
 
 // clearCookies removes the cookies file. Idempotent — missing file
@@ -112,9 +120,12 @@ func validateCookies(data []byte) error {
 	return errors.New("cookies body has no Netscape-format lines (expected ≥7 tab-separated fields)")
 }
 
-// readCookiesFromBody reads up to 1 MiB from r. Cap is enforced at
-// the read boundary, not after buffering — an adversarial 100 MiB
-// POST is rejected without ever fully buffering (review fix I5).
+// readCookiesFromBody is the low-level cap-enforcing reader. It
+// reads up to 1 MiB from r at the read boundary, not after buffering —
+// an adversarial 100 MiB POST is rejected without ever fully
+// buffering (review fix I5). HTTP callers should use
+// readCookiesFromHTTPRequest, which adds Content-Type dispatch and
+// http.MaxBytesReader on top of this helper.
 //
 // Returns the raw bytes; caller passes to validateCookies and
 // saveCookies.

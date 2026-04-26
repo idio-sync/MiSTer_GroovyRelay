@@ -2,6 +2,9 @@ package url
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,12 +22,15 @@ func TestSaveCookies_WritesAtomic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "url_cookies.txt")
 
-	mtime, err := saveCookies(path, []byte(sampleCookies))
+	st, err := saveCookies(path, []byte(sampleCookies))
 	if err != nil {
 		t.Fatalf("saveCookies: %v", err)
 	}
-	if mtime.IsZero() {
+	if st.Mtime.IsZero() {
 		t.Fatal("returned mtime is zero")
+	}
+	if st.Size != int64(len(sampleCookies)) {
+		t.Errorf("Size = %d, want %d", st.Size, len(sampleCookies))
 	}
 
 	got, err := os.ReadFile(path)
@@ -170,4 +176,74 @@ func TestReadCookiesFromBody_CapsAtOneMiB(t *testing.T) {
 	if !strings.Contains(err.Error(), "too large") {
 		t.Errorf("err = %q, want 'too large'", err.Error())
 	}
+}
+
+func TestReadCookiesFromHTTPRequest_FormEncoded(t *testing.T) {
+	form := url.Values{"cookies": {sampleCookies}}
+	req := httptest.NewRequest(http.MethodPost, "/whatever",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	got, err := readCookiesFromHTTPRequest(req)
+	if err != nil {
+		t.Fatalf("readCookiesFromHTTPRequest: %v", err)
+	}
+	if string(got) != sampleCookies {
+		t.Errorf("got %q, want sampleCookies", got)
+	}
+}
+
+func TestReadCookiesFromHTTPRequest_JSON(t *testing.T) {
+	body := `{"cookies":` + jsonStringLiteral(sampleCookies) + `}`
+	req := httptest.NewRequest(http.MethodPost, "/whatever",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	got, err := readCookiesFromHTTPRequest(req)
+	if err != nil {
+		t.Fatalf("readCookiesFromHTTPRequest: %v", err)
+	}
+	if string(got) != sampleCookies {
+		t.Errorf("got %q, want sampleCookies", got)
+	}
+}
+
+func TestReadCookiesFromHTTPRequest_OversizeRejected(t *testing.T) {
+	// Build an oversized form body. http.MaxBytesReader on the request
+	// body must reject it before any handler-level processing.
+	huge := strings.Repeat("a", (1<<20)+100)
+	form := url.Values{"cookies": {huge}}
+	req := httptest.NewRequest(http.MethodPost, "/whatever",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	_, err := readCookiesFromHTTPRequest(req)
+	if err == nil {
+		t.Fatal("oversize HTTP request body accepted")
+	}
+}
+
+// jsonStringLiteral encodes s as a Go string literal suitable for
+// embedding inside JSON. Avoids depending on encoding/json just for
+// the test scaffold (the production path uses json.Unmarshal).
+func jsonStringLiteral(s string) string {
+	out := []byte{'"'}
+	for _, r := range s {
+		switch r {
+		case '"':
+			out = append(out, '\\', '"')
+		case '\\':
+			out = append(out, '\\', '\\')
+		case '\n':
+			out = append(out, '\\', 'n')
+		case '\r':
+			out = append(out, '\\', 'r')
+		case '\t':
+			out = append(out, '\\', 't')
+		default:
+			out = append(out, string(r)...)
+		}
+	}
+	out = append(out, '"')
+	return string(out)
 }
