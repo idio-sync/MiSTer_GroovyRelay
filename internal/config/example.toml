@@ -34,3 +34,6 @@ device_name = "MiSTer"            # Shown in Plex cast-target list
 # device_uuid = ""                # Auto-generated on first run; persisted
 profile_name = "Plex Home Theater"
 # server_url = ""                 # Optional override; otherwise auto-discovered
+
+[adapters.url]
+enabled = false                   # Set to true (or use the UI toggle) to accept POST URL casts
