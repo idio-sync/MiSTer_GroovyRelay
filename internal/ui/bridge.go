@@ -113,6 +113,15 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Preserve the stored ssh_password when the operator submits with
+	// the field empty. Mirrors the "Leave empty to keep existing"
+	// placeholder shown in rowFor's KindSecret case. Without this, any
+	// save touching an unrelated field would silently clear the
+	// password every time.
+	if candidate.MiSTer.SSHPassword == "" {
+		candidate.MiSTer.SSHPassword = s.cfg.BridgeSaver.Current().MiSTer.SSHPassword
+	}
+
 	// Validate via Sectioned.Validate (covers ports, enum membership,
 	// required-mister-host, etc.). Keeps the save path using the same
 	// rules as boot-time validation.

@@ -157,6 +157,9 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 	if !strings.Contains(rw.Body.String(), "applied live") {
 		t.Error("expected hot-swap toast message")
 	}
+	if saver.got.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("expected preserve-on-empty to retain prior password, got %q", saver.got.MiSTer.SSHPassword)
+	}
 }
 
 func TestHandleBridge_POST_ValidationError(t *testing.T) {
@@ -304,5 +307,91 @@ func TestHandleBridge_GET_DoesNotEchoSSHPassword(t *testing.T) {
 	}
 	if !strings.Contains(body, "Leave empty to keep existing") {
 		t.Error("ssh_password placeholder missing")
+	}
+}
+
+// TestHandleBridge_POST_PreservesSSHPasswordOnEmpty verifies that an
+// empty ssh_password in the form submission preserves the prior
+// stored password (matching the placeholder "Leave empty to keep
+// existing"). Without this, every save would silently clear the
+// password whenever the operator edited an unrelated field.
+func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	mux := newBridgeTestServer(t, saver)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" + // intentionally empty
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	// fakeBridgeSaver.Current() returns SSHPassword = "hunter2".
+	// Empty-form submit should preserve it.
+	if saver.got.MiSTer.SSHPassword != "hunter2" {
+		t.Errorf("SSHPassword = %q, want preserved value 'hunter2'", saver.got.MiSTer.SSHPassword)
+	}
+}
+
+// TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided is a
+// regression guard: it passes from green (Task 5's parseBridgeForm
+// already does this) and locks in that the preserve-on-empty
+// conditional in this task does NOT clamp the password to its
+// previous value when the operator types a new one.
+func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	mux := newBridgeTestServer(t, saver)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=newsecret" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	if saver.got.MiSTer.SSHPassword != "newsecret" {
+		t.Errorf("SSHPassword = %q, want overwrite to 'newsecret'", saver.got.MiSTer.SSHPassword)
 	}
 }
