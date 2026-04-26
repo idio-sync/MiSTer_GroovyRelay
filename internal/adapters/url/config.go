@@ -69,8 +69,12 @@ func (c *Config) Validate() error {
 		})
 	}
 
-	// Hostname check: lowercase, no scheme/port/path/whitespace.
+	// Hostname check: lowercase, no scheme/port/path/whitespace/URL syntax.
+	// Rejected character class catches whitespace incl. CR/LF, slash, colon
+	// (port + scheme separator), question mark, hash, and at-sign — covers
+	// the URL-paste-into-hostname-field operator typo categories.
 	cleaned := make([]string, 0, len(c.YtdlpHosts))
+	hostsHadErrors := false
 	for _, h := range c.YtdlpHosts {
 		trimmed := strings.TrimSpace(h)
 		if trimmed == "" {
@@ -78,18 +82,26 @@ func (c *Config) Validate() error {
 				Key: "ytdlp_hosts",
 				Msg: "entries must not be empty",
 			})
+			hostsHadErrors = true
 			continue
 		}
-		if strings.ContainsAny(trimmed, " \t/:") {
+		if strings.ContainsAny(trimmed, " \t\r\n/:?#@") {
 			errs = append(errs, adapters.FieldError{
 				Key: "ytdlp_hosts",
-				Msg: fmt.Sprintf("entry %q contains whitespace, slash, or colon", h),
+				Msg: fmt.Sprintf("entry %q contains URL syntax characters (whitespace, /, :, ?, #, @)", h),
 			})
+			hostsHadErrors = true
 			continue
 		}
 		cleaned = append(cleaned, strings.ToLower(trimmed))
 	}
-	c.YtdlpHosts = cleaned
+	// Only commit the normalized list when validation succeeded for all
+	// entries. Otherwise a caller that ignores the error would observe
+	// silent dropouts of the bad entries — preserving the original list
+	// keeps Validate's "all-or-nothing" mental model.
+	if !hostsHadErrors {
+		c.YtdlpHosts = cleaned
+	}
 
 	return errs.Err()
 }
