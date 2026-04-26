@@ -16,10 +16,9 @@ func TestAdapter_ConformsToValidator(t *testing.T) {
 	var _ adapters.Validator = (*Adapter)(nil)
 }
 
-// TODO(B4): re-enable once UIRoutes() lands
-// func TestAdapter_ConformsToRouteProvider(t *testing.T) {
-// 	var _ adapters.RouteProvider = (*Adapter)(nil)
-// }
+func TestAdapter_ConformsToRouteProvider(t *testing.T) {
+	var _ adapters.RouteProvider = (*Adapter)(nil)
+}
 
 func TestAdapter_Name(t *testing.T) {
 	a := New(nil)
