@@ -26,6 +26,9 @@ Thumbs.db
 /.codex
 /.serena/
 /.playwright-mcp/
+/CLAUDE.md
+/docs/plans/
+/docs/specs/
 
 # Git worktrees
 .worktrees/
