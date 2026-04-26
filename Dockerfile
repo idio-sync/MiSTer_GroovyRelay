@@ -35,13 +35,17 @@ RUN apk add --no-cache ffmpeg ca-certificates tzdata curl
 # self-update".
 # TARGETARCH is set automatically by buildx (amd64, arm64, arm, ...).
 # yt-dlp ships per-arch standalone binaries; picking the wrong one yields
-# a confusing "/bin/sh: yt-dlp: not found" at exec time (ELF arch
-# mismatch, not a missing file).
+# a confusing "/bin/sh: yt-dlp: not found" at exec time. Two ways to hit
+# that error: ELF arch mismatch, OR libc mismatch — the yt-dlp_linux*
+# assets are PyInstaller bundles built against glibc and will not run on
+# musl/Alpine (the dynamic loader /lib64/ld-linux-*.so.2 is absent).
+# Use the yt-dlp_musllinux* assets here. Upstream does not publish a
+# musllinux variant for armv7, so error out rather than ship broken.
 ARG TARGETARCH
 RUN case "$TARGETARCH" in \
-      amd64) ytdlp_asset=yt-dlp_linux ;; \
-      arm64) ytdlp_asset=yt-dlp_linux_aarch64 ;; \
-      arm)   ytdlp_asset=yt-dlp_linux_armv7l ;; \
+      amd64) ytdlp_asset=yt-dlp_musllinux ;; \
+      arm64) ytdlp_asset=yt-dlp_musllinux_aarch64 ;; \
+      arm)   echo "yt-dlp upstream does not publish a musllinux build for armv7; use a glibc base image" >&2; exit 1 ;; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
     && curl -fsSL -o /usr/local/bin/yt-dlp \
