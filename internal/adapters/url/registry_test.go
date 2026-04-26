@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 // TestRegistry_AcceptsAdapterWithNoBackgroundWork is the spec's primary
@@ -17,7 +19,13 @@ import (
 // secretly assume every adapter has background work.
 func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 	reg := adapters.NewRegistry()
-	a := New(&fakeCore{})
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   &fakeCore{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if err := reg.Register(a); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -47,12 +55,14 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 				mux.HandleFunc("GET "+pattern, r.Handler)
 			case "POST":
 				mux.HandleFunc("POST "+pattern, r.Handler)
+			case "DELETE":
+				mux.HandleFunc("DELETE "+pattern, r.Handler)
 			}
 			mounted++
 		}
 	}
-	if mounted != 2 {
-		t.Errorf("mounted %d url routes, want 2", mounted)
+	if mounted != 4 {
+		t.Errorf("mounted %d url routes, want 4", mounted)
 	}
 
 	// Sanity-check the GET /panel route is reachable via the mux.
@@ -72,5 +82,45 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 	}
 	if got := a.Status().State; got != adapters.StateStopped {
 		t.Errorf("post-Stop State = %v, want StateStopped", got)
+	}
+}
+
+// TestRegistry_AcceptsAdapterWithExternalProcessDep extends the v1
+// boundary test (TestRegistry_AcceptsAdapterWithNoBackgroundWork) to
+// confirm the URL adapter starts cleanly even when its external
+// process dependency (yt-dlp) is absent. Graceful degradation through
+// the registry boundary.
+func TestRegistry_AcceptsAdapterWithExternalProcessDep(t *testing.T) {
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   nil,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.cfg.Enabled = true
+	a.cfg.YtdlpEnabled = true
+	// Probe says binary is missing.
+	a.probeFn = func() ytdlpProbe { return ytdlpProbe{OK: false} }
+
+	reg := adapters.NewRegistry()
+	if err := reg.Register(a); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Adapter should be Running, resolver should be nil, panel should
+	// render the "yt-dlp not found" line.
+	if a.Status().State != adapters.StateRunning {
+		t.Errorf("State = %v, want Running", a.Status().State)
+	}
+	if a.resolver != nil {
+		t.Error("resolver should be nil when probe failed")
+	}
+	html := a.renderPanel()
+	if !strings.Contains(html, "yt-dlp not found") {
+		t.Error("panel should show 'yt-dlp not found'")
 	}
 }

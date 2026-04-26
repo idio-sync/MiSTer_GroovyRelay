@@ -29,6 +29,7 @@ import (
 func urlBridgeConfig(t *testing.T) config.BridgeConfig {
 	t.Helper()
 	return config.BridgeConfig{
+		DataDir: t.TempDir(),
 		Video: config.VideoConfig{
 			Modeline:            "NTSC_480i",
 			RGBMode:             "rgb888",
@@ -38,6 +39,21 @@ func urlBridgeConfig(t *testing.T) config.BridgeConfig {
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}
+}
+
+// newURLAdapter wires the new AdapterConfig signature for the
+// integration tests — they all need DataDir set (the config helper
+// above provides it via t.TempDir).
+func newURLAdapter(t *testing.T, mgr *core.Manager) *urladapter.Adapter {
+	t.Helper()
+	a, err := urladapter.New(urladapter.AdapterConfig{
+		Bridge: urlBridgeConfig(t),
+		Core:   mgr,
+	})
+	if err != nil {
+		t.Fatalf("urladapter.New: %v", err)
+	}
+	return a
 }
 
 // TestURL_PlayDirectFile spins up an httptest.Server serving the tiny
@@ -73,7 +89,7 @@ func TestURL_PlayDirectFile(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := urladapter.New(mgr)
+	a := newURLAdapter(t, mgr)
 	form := url.Values{"url": {srv.URL + "/tiny.mp4"}}
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader(form.Encode()))
@@ -110,7 +126,7 @@ func TestURL_PlayDirectFile(t *testing.T) {
 func TestURL_RejectsBadScheme(t *testing.T) {
 	h := NewHarness(t)
 	mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
-	a := urladapter.New(mgr)
+	a := newURLAdapter(t, mgr)
 
 	form := url.Values{"url": {"file:///etc/passwd"}}
 	req := httptest.NewRequest(http.MethodPost, "/play",
@@ -139,7 +155,7 @@ func TestURL_ProbeTimeout(t *testing.T) {
 	}
 	h := NewHarness(t)
 	mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
-	a := urladapter.New(mgr)
+	a := newURLAdapter(t, mgr)
 
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
@@ -270,7 +286,7 @@ func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
 	mu.Unlock()
 
 	// URL preempts.
-	urlAdapter := urladapter.New(mgr)
+	urlAdapter := newURLAdapter(t, mgr)
 	form := url.Values{"url": {srv.URL + "/tiny.mp4"}}
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader(form.Encode()))
@@ -338,7 +354,7 @@ func TestURL_CapCheckRejectsCrossAdapterPause(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := urladapter.New(mgr)
+	a := newURLAdapter(t, mgr)
 	form := url.Values{"url": {srv.URL + "/tiny.mp4"}}
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader(form.Encode()))

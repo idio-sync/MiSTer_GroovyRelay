@@ -40,3 +40,15 @@ profile_name = "Plex Home Theater"
 
 [adapters.url]
 enabled = false                   # Set to true (or use the UI toggle) to accept POST URL casts
+ytdlp_enabled = true              # Master switch for yt-dlp resolution. When true,
+                                  # auto mode routes URLs whose host matches ytdlp_hosts
+                                  # through yt-dlp; mode=ytdlp forces it.
+# ytdlp_hosts default is the curated list (youtube.com, twitch.tv, vimeo.com,
+# archive.org, dailymotion.com, soundcloud.com, bandcamp.com, etc.). Override
+# below to add more (e.g. tiktok.com, x.com — note these break frequently).
+# ytdlp_hosts = ["youtube.com", "twitch.tv", "your-host.example"]
+# ytdlp_format = "best[height<=720][vcodec!*=av01][protocol!*=dash]/best[height<=720]/best"
+# ytdlp_resolve_timeout_seconds = 30
+# Cookies: paste a Netscape-format cookies.txt via the URL panel's Cookies
+# section. Saved to <data_dir>/url_cookies.txt mode 0600 — not configurable
+# in TOML by design.

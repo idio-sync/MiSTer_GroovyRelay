@@ -12,24 +12,96 @@
 // adapter enforces against the rest of the bridge.
 package url
 
-import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+import (
+	"fmt"
+	"strings"
 
-// Config is the [adapters.url] TOML section. Single field in v1.
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
+)
+
+// Config is the [adapters.url] TOML section.
+//
+// Defaults are produced by DefaultConfig(); operators override per-field
+// in config.toml. Validate() enforces the documented constraints.
+//
+// New fields in v1.1 (yt-dlp resolver):
+//   - YtdlpEnabled, YtdlpHosts, YtdlpFormat, YtdlpResolveTimeoutSeconds
 type Config struct {
-	Enabled bool `toml:"enabled"`
+	Enabled                    bool     `toml:"enabled"`
+	YtdlpEnabled               bool     `toml:"ytdlp_enabled"`
+	YtdlpHosts                 []string `toml:"ytdlp_hosts"`
+	YtdlpFormat                string   `toml:"ytdlp_format"`
+	YtdlpResolveTimeoutSeconds int      `toml:"ytdlp_resolve_timeout_seconds"`
 }
 
-// DefaultConfig returns the zero-config baseline: disabled. Operators
-// must opt in via the settings UI toggle (or by editing the section
-// in config.toml).
+// DefaultConfig returns the zero-config baseline. The URL adapter is
+// disabled by default; if enabled, yt-dlp resolution is on by default
+// against the curated allowlist.
+//
+// Format selector: caps at 720p (CRT can't show more), avoids AV1
+// (slow software decode), prefers single-URL (HLS/progressive) over
+// DASH multi-stream. Implementation TODO: verify the !*= negation
+// form against a real YouTube URL during integration testing — the
+// fallback form [!vcodec*=av01][!protocol*=dash] is documented in
+// the spec if needed (review fix I1).
 func DefaultConfig() Config {
-	return Config{Enabled: false}
+	return Config{
+		Enabled:                    false,
+		YtdlpEnabled:               true,
+		YtdlpHosts:                 ytdlp.DefaultHosts(),
+		YtdlpFormat:                "best[height<=720][vcodec!*=av01][protocol!*=dash]/best[height<=720]/best",
+		YtdlpResolveTimeoutSeconds: 30,
+	}
 }
 
-// Validate is a no-op in v1 (no range checks needed for a single bool).
-// Returns the FieldErrors accumulator pattern for consistency with other
-// adapters and to keep the door open for future fields.
+// Validate type-checks and range-checks the new fields. Lowercases
+// hostnames in place. The Validate contract is pure-with-respect-to
+// the rest of the system (no I/O), but it is allowed to normalize
+// the receiver — same convention as Plex.
 func (c *Config) Validate() error {
 	var errs adapters.FieldErrors
+
+	if c.YtdlpResolveTimeoutSeconds < 5 || c.YtdlpResolveTimeoutSeconds > 120 {
+		errs = append(errs, adapters.FieldError{
+			Key: "ytdlp_resolve_timeout_seconds",
+			Msg: fmt.Sprintf("must be in [5, 120], got %d", c.YtdlpResolveTimeoutSeconds),
+		})
+	}
+
+	// Hostname check: lowercase, no scheme/port/path/whitespace/URL syntax.
+	// Rejected character class catches whitespace incl. CR/LF, slash, colon
+	// (port + scheme separator), question mark, hash, and at-sign — covers
+	// the URL-paste-into-hostname-field operator typo categories.
+	cleaned := make([]string, 0, len(c.YtdlpHosts))
+	hostsHadErrors := false
+	for _, h := range c.YtdlpHosts {
+		trimmed := strings.TrimSpace(h)
+		if trimmed == "" {
+			errs = append(errs, adapters.FieldError{
+				Key: "ytdlp_hosts",
+				Msg: "entries must not be empty",
+			})
+			hostsHadErrors = true
+			continue
+		}
+		if strings.ContainsAny(trimmed, " \t\r\n/:?#@") {
+			errs = append(errs, adapters.FieldError{
+				Key: "ytdlp_hosts",
+				Msg: fmt.Sprintf("entry %q contains URL syntax characters (whitespace, /, :, ?, #, @)", h),
+			})
+			hostsHadErrors = true
+			continue
+		}
+		cleaned = append(cleaned, strings.ToLower(trimmed))
+	}
+	// Only commit the normalized list when validation succeeded for all
+	// entries. Otherwise a caller that ignores the error would observe
+	// silent dropouts of the bad entries — preserving the original list
+	// keeps Validate's "all-or-nothing" mental model.
+	if !hostsHadErrors {
+		c.YtdlpHosts = cleaned
+	}
+
 	return errs.Err()
 }

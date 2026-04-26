@@ -21,21 +21,21 @@ func TestAdapter_ConformsToRouteProvider(t *testing.T) {
 }
 
 func TestAdapter_Name(t *testing.T) {
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	if a.Name() != "url" {
 		t.Errorf("Name = %q", a.Name())
 	}
 }
 
 func TestAdapter_DisplayName(t *testing.T) {
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	if a.DisplayName() != "URL" {
 		t.Errorf("DisplayName = %q", a.DisplayName())
 	}
 }
 
 func TestAdapter_Fields_HasEnabled(t *testing.T) {
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	fields := a.Fields()
 	if len(fields) != 1 || fields[0].Key != "enabled" {
 		t.Errorf("Fields = %+v, want single 'enabled' field", fields)
@@ -49,14 +49,14 @@ func TestAdapter_Fields_HasEnabled(t *testing.T) {
 }
 
 func TestAdapter_StatusInitial_Stopped(t *testing.T) {
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	if a.Status().State != adapters.StateStopped {
 		t.Errorf("initial Status.State = %v, want StateStopped", a.Status().State)
 	}
 }
 
 func TestAdapter_StartSetsRunning_StopSetsStopped(t *testing.T) {
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestAdapter_StartSetsRunning_StopSetsStopped(t *testing.T) {
 }
 
 func TestAdapter_SetEnabled_TogglesIsEnabled(t *testing.T) {
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	a.SetEnabled(true)
 	if !a.IsEnabled() {
 		t.Error("after SetEnabled(true), IsEnabled = false")
@@ -92,7 +92,7 @@ enabled = true
 		Adapters map[string]toml.Primitive `toml:"adapters"`
 	}
 	meta, _ := toml.Decode(raw, &envelope)
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	if err := a.DecodeConfig(envelope.Adapters["url"], meta); err != nil {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
@@ -110,7 +110,7 @@ enabled = true
 		Adapters map[string]toml.Primitive `toml:"adapters"`
 	}
 	meta, _ := toml.Decode(raw, &envelope)
-	a := New(nil)
+	a := newTestAdapter(t, nil)
 	scope, err := a.ApplyConfig(envelope.Adapters["url"], meta)
 	if err != nil {
 		t.Fatalf("ApplyConfig: %v", err)

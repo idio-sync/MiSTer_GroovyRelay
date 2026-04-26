@@ -1,0 +1,189 @@
+// resolver.go: yt-dlp Runner interface + Resolve function.
+//
+// Spec: docs/specs/2026-04-25-url-ytdlp-design.md §"Resolver interface".
+package ytdlp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Runner is the testable boundary around exec.CommandContext. The
+// production implementation is OSRunner; tests inject a stub that
+// records argv and returns canned stdout/stderr.
+type Runner interface {
+	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
+}
+
+// OSRunner runs commands via os/exec. The default Runner.
+type OSRunner struct{}
+
+func (OSRunner) Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var so, se bytes.Buffer
+	cmd.Stdout = &so
+	cmd.Stderr = &se
+	err = cmd.Run()
+	return so.Bytes(), se.Bytes(), err
+}
+
+// Resolution is the parsed yt-dlp JSON output, narrowed to fields the
+// URL adapter cares about. Other JSON keys (formats[], duration, etc.)
+// are ignored.
+type Resolution struct {
+	URL     string            // resolved direct media URL (or HLS m3u8)
+	Headers map[string]string // http_headers map for ffmpeg -headers
+	IsLive  bool              // true for live streams (YouTube Live, Twitch)
+	Title   string            // for slog only; never user-facing
+}
+
+// Resolver runs yt-dlp and parses its JSON output. Construct one per
+// adapter (binary + timeout are stable for the adapter's lifetime);
+// use it concurrently from multiple play handlers.
+type Resolver struct {
+	Binary  string        // resolved at adapter Start via exec.LookPath
+	Timeout time.Duration // hard timeout per Resolve call
+	Runner  Runner        // OSRunner in prod; stub in tests
+}
+
+// Resolve invokes yt-dlp and returns the parsed Resolution.
+//
+// argv: --dump-json --no-playlist --no-warnings -f <format>
+//
+//	[--cookies <cookiesPath> if non-empty] <pageURL>
+//
+// CRITICAL: the JSON-dump flag is --dump-json (NOT --print-json).
+// --print-json does not exist in yt-dlp; using it would cause every
+// invocation to fail in production (review fix C1).
+func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*Resolution, error) {
+	if r.Binary == "" {
+		return nil, fmt.Errorf("ytdlp: binary not configured")
+	}
+
+	// Build argv. --dump-json must be in here; --print-json is wrong.
+	args := []string{
+		"--dump-json",
+		"--no-playlist",
+		"--no-warnings",
+		"-f", format,
+	}
+	if cookiesPath != "" {
+		args = append(args, "--cookies", cookiesPath)
+	}
+	args = append(args, pageURL)
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+
+	stdout, stderr, err := r.Runner.Run(timeoutCtx, r.Binary, args...)
+	if err != nil {
+		// Distinguish timeout from non-zero exit.
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("ytdlp: resolve timed out after %s", r.Timeout)
+		}
+		// NOTE: stderr may echo the input URL with embedded credentials
+		// (yt-dlp's "ERROR: [generic] https://user:pass@host/...:" form).
+		// Callers MUST redact via the URL adapter's redactURL helper
+		// before surfacing this error to logs or HTTP responses.
+		return nil, fmt.Errorf("ytdlp: %s", lastNonEmptyLine(stderr))
+	}
+
+	var raw struct {
+		URL         string            `json:"url"`
+		HTTPHeaders map[string]string `json:"http_headers"`
+		IsLive      bool              `json:"is_live"`
+		Title       string            `json:"title"`
+	}
+	if err := json.Unmarshal(stdout, &raw); err != nil {
+		preview := string(stdout)
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("ytdlp: returned unparseable JSON: %s", preview)
+	}
+	if raw.URL == "" {
+		// Defensive: yt-dlp returned valid JSON but no URL field.
+		// Surface clearly here rather than letting ffmpeg fail with
+		// an opaque "empty URL" error several layers down.
+		return nil, fmt.Errorf("ytdlp: JSON missing required \"url\" field")
+	}
+
+	// Sanitize http_headers against control-character injection BEFORE
+	// they flow into core.SessionRequest.InputHeaders → ffmpeg's
+	// -headers argument (which joins key:value pairs with \r\n).
+	// A header with embedded \r/\n/\x00 from a buggy or malicious yt-dlp
+	// extractor would be header-smuggled into ffmpeg's outbound HTTP.
+	// The bridge runs in a trusted operator role, so this is the right
+	// layer to defend at — drop offending headers and continue.
+	headers := sanitizeHeaders(raw.HTTPHeaders)
+
+	return &Resolution{
+		URL:     raw.URL,
+		Headers: headers,
+		IsLive:  raw.IsLive,
+		Title:   raw.Title,
+	}, nil
+}
+
+// lastNonEmptyLine returns the last non-empty trimmed line of buf.
+// yt-dlp prints WARNING lines before the actual ERROR; the last
+// non-empty line is the most useful for the operator.
+func lastNonEmptyLine(buf []byte) string {
+	lines := strings.Split(string(buf), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(lines[i])
+		if s != "" {
+			return s
+		}
+	}
+	return "no error message from yt-dlp"
+}
+
+// sanitizeHeaders drops any header whose key OR value contains a CR,
+// LF, or NUL byte. Those characters are header-injection primitives
+// when concatenated into ffmpeg's -headers argument (which uses \r\n
+// as the field separator). yt-dlp normally produces clean headers,
+// but a malicious site exploiting an extractor bug, or a future
+// extractor regression, could in principle return e.g.
+//
+//	{"User-Agent": "Mozilla/5.0\r\nX-Inject: yes"}
+//
+// Without this filter, the bridge would smuggle "X-Inject: yes" into
+// every outbound HTTP request ffmpeg makes for the resolved stream.
+// Dropping is preferable to escaping because there's no legitimate
+// header value with embedded control bytes — a drop is conservative
+// and never breaks a real upstream.
+//
+// Returns nil when in is nil or empty (preserves the "no headers"
+// signal — ffmpeg's -headers gets omitted).
+func sanitizeHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if containsCRLFNUL(k) || containsCRLFNUL(v) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func containsCRLFNUL(s string) bool {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\r', '\n', '\x00':
+			return true
+		}
+	}
+	return false
+}
