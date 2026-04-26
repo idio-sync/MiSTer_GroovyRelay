@@ -190,9 +190,10 @@ func (p *Plane) SetFieldOrder(order string) error {
 }
 
 // Position returns the current playback offset since start. Seeded with
-// cfg.SeekOffsetMs; advanced by one NTSC field period (1001/60 ms, exact)
-// per tick. The timeline broadcaster (plex adapter) queries this every
-// second; exact integer math prevents drift relative to PMS's timestamps.
+// cfg.SeekOffsetMs; advanced by one modeline-derived field period
+// (periodMsNumer/periodMsDenom ms, exact) per tick. The timeline
+// broadcaster (plex adapter) queries this every second; exact integer
+// math prevents drift relative to PMS's timestamps.
 func (p *Plane) Position() time.Duration {
 	fields := p.positionFields.Load()
 	ms := fields*p.periodMsNumer/p.periodMsDenom + int64(p.cfg.SeekOffsetMs)
