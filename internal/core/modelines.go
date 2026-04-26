@@ -57,12 +57,17 @@ func PresetNames() []string {
 	return []string{"NTSC_480i", "NTSC_240p", "PAL_576i", "PAL_288p"}
 }
 
+// experimentalSuffix is appended to PAL preset values in the UI dropdown
+// (internal/ui/bridge_fields.go). ResolvePreset accepts it as a defense-
+// in-depth measure for operators who hand-edit TOML by copy-pasting the
+// dropdown label. The form-decode path also strips this in form.go so
+// saved configs never persist the suffix.
+const experimentalSuffix = " (experimental)"
+
 // ResolvePreset looks up a preset by config string. Empty string
 // defaults to NTSC_480i. Unknown names return an error so the caller
 // (Manager.startPlaneLocked) can surface a session-start failure to the
 // operator without silently substituting a default.
-const experimentalSuffix = " (experimental)"
-
 func ResolvePreset(name string) (ModelinePreset, error) {
 	if strings.HasSuffix(name, experimentalSuffix) {
 		name = strings.TrimSuffix(name, experimentalSuffix)
