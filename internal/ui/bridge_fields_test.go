@@ -46,3 +46,21 @@ func TestBridgeFields_HasMisterControlSection(t *testing.T) {
 		t.Errorf("ssh_password scope = %v, want ScopeHotSwap", pass.ApplyScope)
 	}
 }
+
+func TestModelineEnumOptions_ExperimentalSuffix(t *testing.T) {
+	got := modelineEnumOptions()
+	want := []string{
+		"NTSC_480i",
+		"NTSC_240p",
+		"PAL_576i (experimental)",
+		"PAL_288p (experimental)",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("modelineEnumOptions() returned %d items, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("modelineEnumOptions()[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}

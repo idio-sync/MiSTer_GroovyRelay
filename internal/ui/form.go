@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
@@ -30,6 +31,18 @@ func (fe FormErrors) Error() string {
 	return parts
 }
 
+// stripExperimentalSuffix removes the " (experimental)" suffix that the
+// settings UI dropdown appends to PAL preset names, so the persisted
+// config stores the bare preset name (e.g. "PAL_576i", not
+// "PAL_576i (experimental)").
+func stripExperimentalSuffix(s string) string {
+	const suffix = " (experimental)"
+	if strings.HasSuffix(s, suffix) {
+		return strings.TrimSuffix(s, suffix)
+	}
+	return s
+}
+
 // parseBridgeForm translates a POSTed form into a BridgeConfig.
 // Returns FormErrors on any parse failure (bad integer, etc.);
 // validation (port ranges, enum membership) happens downstream via
@@ -46,7 +59,7 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	out.MiSTer.SSHPassword = form.Get("mister.ssh_password")
 	out.HostIP = form.Get("host_ip")
 
-	out.Video.Modeline = form.Get("video.modeline")
+	out.Video.Modeline = stripExperimentalSuffix(form.Get("video.modeline"))
 	out.Video.InterlaceFieldOrder = form.Get("video.interlace_field_order")
 	out.Video.AspectMode = form.Get("video.aspect_mode")
 	out.Video.RGBMode = "rgb888" // v1 locked; not user-editable
