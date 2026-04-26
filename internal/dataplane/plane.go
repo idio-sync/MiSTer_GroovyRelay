@@ -350,7 +350,7 @@ func (p *Plane) Run(ctx context.Context) error {
 		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 && n <= 16 {
 			audioDelayN = n
 			slog.Info("audio delay enabled", "delay_fields", n,
-				"delay_ms", float64(n)*1001.0/60.0)
+				"delay_ms", float64(n)*float64(p.periodMsNumer)/float64(p.periodMsDenom))
 		} else {
 			slog.Warn("invalid GROOVY_AUDIO_DELAY_FIELDS; using 0",
 				"value", v, "err", perr)
@@ -398,7 +398,12 @@ func (p *Plane) Run(ctx context.Context) error {
 		// silently freeze.
 		fieldRate := p.cfg.Modeline.FieldRate()
 		if fieldRate <= 0 {
-			fieldRate = 59.94
+			// Last-resort fallback when the modeline carries no
+			// timing at all. Matches NTSC 60000/1001 to avoid
+			// freezing the tick loop; production never hits this
+			// because all manager-built modelines produce valid
+			// periods.
+			fieldRate = 60000.0 / 1001.0
 		}
 		fieldPeriod = time.Duration(float64(time.Second) / fieldRate)
 	}
@@ -745,13 +750,24 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	p.cfg.Sender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
 
-	// Throttled budget-overrun warn. The NTSC field period is ~16.683 ms;
-	// 14 ms is 84% of that. If sendField regularly hits this threshold the
-	// tick is consistently late and lag will accumulate against PMS.
+	// Throttled budget-overrun warn. Threshold is 84% of the field
+	// period: NTSC (16.683 ms) => 14.0 ms; PAL (20 ms) => 16.8 ms.
+	// If sendField regularly hits this threshold the tick is
+	// consistently late and lag will accumulate against the source.
+	//
+	// Unit dance: time.Duration is int64 nanoseconds. So
+	//   time.Duration(periodMsNumer) * time.Millisecond
+	// reads as "1001 ns × 1e6 = 1,001,000,000 ns = 1.001 s" for NTSC,
+	// then `/ time.Duration(periodMsDenom)` divides by 60-as-ns and the
+	// result is 16,683,333 ns = 16.683 ms — the correct field period.
+	// The * 84 / 100 scaling stays in time.Duration throughout.
 	fieldElapsed := time.Since(fieldStart)
-	if fieldElapsed > 14*time.Millisecond && time.Since(p.lastBudgetWarn) > time.Second {
+	fieldPeriodMs := time.Duration(p.periodMsNumer) * time.Millisecond / time.Duration(p.periodMsDenom)
+	budgetThreshold := fieldPeriodMs * 84 / 100
+	if fieldElapsed > budgetThreshold && time.Since(p.lastBudgetWarn) > time.Second {
 		p.lastBudgetWarn = time.Now()
-		slog.Warn("sendField exceeded 14 ms (84% of NTSC field period)",
+		slog.Warn("sendField exceeded 84% of field period",
+			"threshold_ms", budgetThreshold.Milliseconds(),
 			"total_ms", fieldElapsed.Milliseconds(),
 			"lz4_ms", lz4Elapsed.Milliseconds(),
 			"congestion_ms", congestionElapsed.Milliseconds(),
