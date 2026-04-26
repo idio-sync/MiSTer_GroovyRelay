@@ -10,7 +10,7 @@ over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol
 into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly,
 giving you genuine 480i NTSC video. Also works with URLs (Archive.org .mkv.mp4, etc.)
 
-![image](https://raw.githubusercontent.com/idio-sync/MiSTer_GroovyRelay/refs/heads/main/.github/screenshots/plex_dash.png)
+<img align="right" width="100" height="100" src=https://raw.githubusercontent.com/idio-sync/MiSTer_GroovyRelay/refs/heads/main/.github/screenshots/plex_dash.png">
 
 ## Future Plans
 - Support for more relay sources:
