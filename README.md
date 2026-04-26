@@ -151,18 +151,23 @@ If you see glitches cap container CPU with
 ## Troubleshooting
 
 **"The target didn't show up in Plex's cast menu."**
+
 The bridge uses GDM multicast discovery (port 32414). Confirm: `--network=host` is set; your LAN is not carving off mDNS/multicast between client and server; you linked successfully (`--link`); and the bridge process is running (`docker logs mister-groovy-relay`).
 
 **"No video on the CRT."**
+
 Check the MiSTer is running the Groovy_MiSTer core and is listening on the configured `mister_port` (default 32100). Try `fake-mister` locally to confirm the bridge is sending packets at all: `go run ./cmd/fake-mister -addr :32100` on the same host as the bridge, point `mister_host = "127.0.0.1"` at it, start a cast, and watch for `cmd 2/3/7/...` counts in the fake's summary output. If you see packets there but nothing on the real MiSTer, it's network routing or a Groovy core config issue, not the bridge.
 
 **"Audio drifts over long playback."**
+
 This bridge uses a single FFmpeg process with shared A/V timestamps, so long-term drift is structurally mitigated. Short-term offsets usually indicate host CPU contention.
 
 **"The picture shimmers / fields look wrong."**
+
 Flip `interlace_field_order` between `tff` and `bff`. The "correct" value depends on your MiSTer core + cable path; once you pick the right one it stays right.
 
 **"Plex says the target is offline moments after casting."**
+
 Almost always a `source_port` regression. If the bridge restarted and bound a different ephemeral port, the MiSTer's session key no longer matches. Make sure `source_port` is set to a fixed number in `config.toml` and that nothing else on the host is using it.
 
 ## License
