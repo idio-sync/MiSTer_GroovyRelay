@@ -148,6 +148,20 @@ Under heavy CPU contention the FFmpeg decoder can fall behind; the bridge covers
 If you see glitches cap container CPU with
 `docker run --cpus=2 ...` so the bridge has dedicated cores that aren't preempted. 2 cores is typically sufficient for a single 480p transcode plus Groovy packet framing.
 
+## Configuration reference
+
+### `[bridge.video]`
+
+- `modeline` — CRT output preset. One of:
+  - `NTSC_480i` (default) — 720×480 interlaced, 59.94 Hz. Standard NTSC.
+  - `NTSC_240p` — 720×240 progressive, 59.94 Hz. For cores expecting 240p.
+  - `PAL_576i` (experimental) — 720×576 interlaced, 50 Hz. Standard PAL.
+  - `PAL_288p` (experimental) — 720×288 progressive, 50 Hz.
+
+  PAL modes are verified against the Groovy wire protocol via fake-mister
+  but have not been tested on real PAL CRT hardware. Sync may not be
+  reliable; community feedback is welcomed via GitHub issues.
+
 ## Troubleshooting
 
 **"The target didn't show up in Plex's cast menu."**
@@ -169,6 +183,18 @@ Flip `interlace_field_order` between `tff` and `bff`. The "correct" value depend
 **"Plex says the target is offline moments after casting."**
 
 Almost always a `source_port` regression. If the bridge restarted and bound a different ephemeral port, the MiSTer's session key no longer matches. Make sure `source_port` is set to a fixed number in `config.toml` and that nothing else on the host is using it.
+
+### PAL output with NTSC- or film-cadence source content shows stuttering motion
+
+This is expected and unfixable without PAL film cadence correction
+(4 % speedup with audio retiming), which is intentionally out of scope
+for v1.5. ffmpeg's `fps=50/1` filter coerces 24 / 30 / 60 Hz sources to
+50 Hz via blunt frame drop / duplicate; the resulting motion judder is
+most pronounced on 24p film content.
+
+If you primarily cast NTSC-region content (DVDs, US TV, 24p film),
+prefer `NTSC_480i` or `NTSC_240p` — the bridge handles 60 Hz cadence
+without rate coercion.
 
 ## License
 
