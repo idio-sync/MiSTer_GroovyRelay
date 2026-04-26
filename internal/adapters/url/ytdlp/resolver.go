@@ -1,0 +1,126 @@
+// resolver.go: yt-dlp Runner interface + Resolve function.
+//
+// Spec: docs/specs/2026-04-25-url-ytdlp-design.md §"Resolver interface".
+package ytdlp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Runner is the testable boundary around exec.CommandContext. The
+// production implementation is OSRunner; tests inject a stub that
+// records argv and returns canned stdout/stderr.
+type Runner interface {
+	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
+}
+
+// OSRunner runs commands via os/exec. The default Runner.
+type OSRunner struct{}
+
+func (OSRunner) Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var so, se bytes.Buffer
+	cmd.Stdout = &so
+	cmd.Stderr = &se
+	err = cmd.Run()
+	return so.Bytes(), se.Bytes(), err
+}
+
+// Resolution is the parsed yt-dlp JSON output, narrowed to fields the
+// URL adapter cares about. Other JSON keys (formats[], duration, etc.)
+// are ignored.
+type Resolution struct {
+	URL     string            // resolved direct media URL (or HLS m3u8)
+	Headers map[string]string // http_headers map for ffmpeg -headers
+	IsLive  bool              // true for live streams (YouTube Live, Twitch)
+	Title   string            // for slog only; never user-facing
+}
+
+// Resolver runs yt-dlp and parses its JSON output. Construct one per
+// adapter (binary + timeout are stable for the adapter's lifetime);
+// use it concurrently from multiple play handlers.
+type Resolver struct {
+	Binary  string        // resolved at adapter Start via exec.LookPath
+	Timeout time.Duration // hard timeout per Resolve call
+	Runner  Runner        // OSRunner in prod; stub in tests
+}
+
+// Resolve invokes yt-dlp and returns the parsed Resolution.
+//
+// argv: --dump-json --no-playlist --no-warnings -f <format>
+//
+//	[--cookies <cookiesPath> if non-empty] <pageURL>
+//
+// CRITICAL: the JSON-dump flag is --dump-json (NOT --print-json).
+// --print-json does not exist in yt-dlp; using it would cause every
+// invocation to fail in production (review fix C1).
+func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*Resolution, error) {
+	if r.Binary == "" {
+		return nil, fmt.Errorf("ytdlp: binary not configured")
+	}
+
+	// Build argv. --dump-json must be in here; --print-json is wrong.
+	args := []string{
+		"--dump-json",
+		"--no-playlist",
+		"--no-warnings",
+		"-f", format,
+	}
+	if cookiesPath != "" {
+		args = append(args, "--cookies", cookiesPath)
+	}
+	args = append(args, pageURL)
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+
+	stdout, stderr, err := r.Runner.Run(timeoutCtx, r.Binary, args...)
+	if err != nil {
+		// Distinguish timeout from non-zero exit.
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("ytdlp: resolve timed out after %s", r.Timeout)
+		}
+		return nil, fmt.Errorf("ytdlp: %s", lastNonEmptyLine(stderr))
+	}
+
+	var raw struct {
+		URL         string            `json:"url"`
+		HTTPHeaders map[string]string `json:"http_headers"`
+		IsLive      bool              `json:"is_live"`
+		Title       string            `json:"title"`
+	}
+	if err := json.Unmarshal(stdout, &raw); err != nil {
+		preview := string(stdout)
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("ytdlp: returned unparseable JSON: %s", preview)
+	}
+
+	return &Resolution{
+		URL:     raw.URL,
+		Headers: raw.HTTPHeaders,
+		IsLive:  raw.IsLive,
+		Title:   raw.Title,
+	}, nil
+}
+
+// lastNonEmptyLine returns the last non-empty trimmed line of buf.
+// yt-dlp prints WARNING lines before the actual ERROR; the last
+// non-empty line is the most useful for the operator.
+func lastNonEmptyLine(buf []byte) string {
+	lines := strings.Split(string(buf), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(lines[i])
+		if s != "" {
+			return s
+		}
+	}
+	return "no error message from yt-dlp"
+}
