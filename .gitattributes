@@ -1,0 +1,6 @@
+# Force LF line endings for shell scripts and Dockerfiles regardless of
+# the operator's git core.autocrlf setting. Docker's build context uses
+# working-tree files, not git blobs — a Windows checkout with CRLF would
+# break the alpine `/bin/sh` shebang on `entrypoint.sh`.
+*.sh text eol=lf
+Dockerfile text eol=lf
