@@ -146,13 +146,19 @@ func (a *Adapter) respondError(w http.ResponseWriter, r *http.Request, code int,
 }
 
 // respondStarted writes the 202 success response.
+//
+// The HTMX branch redacts credentials (user:pass@) from the URL before
+// echoing it to the browser — the panel could otherwise display a
+// password to anyone shoulder-surfing the operator's screen. The JSON
+// branch echoes the URL verbatim because the API caller submitted it
+// and already possesses any credentials within.
 func (a *Adapter) respondStarted(w http.ResponseWriter, r *http.Request, ref, url string) {
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprintf(w,
 			`<div class="url-panel" id="url-panel"><p>Playing: <code>%s</code></p></div>`,
-			template.HTMLEscapeString(url))
+			template.HTMLEscapeString(redactURL(url)))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

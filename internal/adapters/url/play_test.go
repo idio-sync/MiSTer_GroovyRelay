@@ -145,6 +145,28 @@ func TestPlay_HXRequest_RespondsHTML(t *testing.T) {
 	}
 }
 
+func TestPlay_HXRequest_RedactsCredentialsInBody(t *testing.T) {
+	// A credentialed URL must be redacted in the HTML success fragment
+	// shown to the operator (anyone shoulder-surfing the panel would
+	// otherwise see the password). The JSON branch echoes the URL
+	// verbatim — the API caller already possesses it.
+	fc := &fakeCore{}
+	a := New(fc)
+	req := httptest.NewRequest(http.MethodPost, "/play",
+		strings.NewReader("url=https%3A%2F%2Fuser%3Asecret%40example.com%2Fv.mp4"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+	body := w.Body.String()
+	if strings.Contains(body, "secret") {
+		t.Errorf("HTMX 202 fragment leaked password: %s", body)
+	}
+	if !strings.Contains(body, "example.com") {
+		t.Errorf("redaction stripped the host too: %s", body)
+	}
+}
+
 func TestPlay_NoHXRequest_RespondsJSON(t *testing.T) {
 	fc := &fakeCore{}
 	a := New(fc)
