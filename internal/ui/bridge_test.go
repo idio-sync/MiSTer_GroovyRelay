@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -351,6 +353,98 @@ func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
 	// Empty-form submit should preserve it.
 	if saver.got.MiSTer.SSHPassword != "hunter2" {
 		t.Errorf("SSHPassword = %q, want preserved value 'hunter2'", saver.got.MiSTer.SSHPassword)
+	}
+}
+
+// fakeMisterLauncher implements MisterLauncher for tests.
+type fakeMisterLauncher struct {
+	called bool
+	err    error
+}
+
+func (f *fakeMisterLauncher) Launch(_ context.Context) error {
+	f.called = true
+	return f.err
+}
+
+func TestHandleBridgeMisterLaunch_Success(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	launcher := &fakeMisterLauncher{}
+	reg := adapters.NewRegistry()
+	s, err := New(Config{Registry: reg, BridgeSaver: saver, MisterLauncher: launcher})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if !launcher.called {
+		t.Error("launcher.Launch not called")
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "Sent") {
+		t.Errorf("expected success fragment with 'Sent', got: %s", body)
+	}
+	if !strings.Contains(body, "192.168.1.42") {
+		t.Error("expected host in success message")
+	}
+	if !strings.Contains(body, `class="status-line run"`) {
+		t.Error("expected green status-line class on success")
+	}
+}
+
+func TestHandleBridgeMisterLaunch_Error(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	launcher := &fakeMisterLauncher{err: errors.New("dial timeout")}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver, MisterLauncher: launcher})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "SSH failed") {
+		t.Errorf("expected error fragment with 'SSH failed', got: %s", body)
+	}
+	if !strings.Contains(body, "dial timeout") {
+		t.Error("expected error message in body")
+	}
+	if !strings.Contains(body, `class="status-line err"`) {
+		t.Error("expected red status-line class on error")
+	}
+}
+
+func TestHandleBridgeMisterLaunch_NoLauncher(t *testing.T) {
+	// MisterLauncher nil → 500. Confirms the construct-without-launcher
+	// path doesn't panic but does fail loudly at click time.
+	saver := &fakeBridgeSaver{}
+	reg := adapters.NewRegistry()
+	s, _ := New(Config{Registry: reg, BridgeSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rw.Code)
 	}
 }
 

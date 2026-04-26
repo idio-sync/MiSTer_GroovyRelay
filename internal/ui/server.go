@@ -120,6 +120,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/bridge", s.handleBridgeGET)
 	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
 	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
+	s.mountPOST(mux, "/ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
 
 	// Sidebar status fragment (polled every 3s by the shell).
 	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)

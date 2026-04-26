@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -307,4 +309,46 @@ func bridgeLookupBool(key string, cur config.BridgeConfig) bool {
 		return cur.Video.LZ4Enabled
 	}
 	return false
+}
+
+// launchResultData is the template root for the launch-result
+// fragment. Class = "run" for green / "err" for red; Message holds
+// the operator-facing copy (success: "Sent — <command> delivered to
+// <host>", error: "SSH failed: <error>").
+//
+// Spec note: the design doc shows this as `{Success bool, Message string}`
+// with branch logic in the template. This implementation moves the
+// branch into Go (cleaner separation, identical rendered HTML — both
+// produce <div class="status-line run|err">). Functionally equivalent.
+type launchResultData struct {
+	Class   string
+	Message string
+}
+
+// handleBridgeMisterLaunch invokes MisterLauncher.Launch (with a
+// 6-second context budget — 1s slack on top of the 5s SSH dial
+// timeout) and renders the result fragment swapped into the launch
+// section's slot. The handler is the only place SSH errors surface
+// to the operator; spec §"Failure modes" enumerates the cases.
+//
+// CSRF wrapping is automatic via mountPOST (server.go::Mount).
+func (s *Server) handleBridgeMisterLaunch(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.MisterLauncher == nil {
+		http.Error(w, "launcher not wired", http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+
+	err := s.cfg.MisterLauncher.Launch(ctx)
+	data := launchResultData{}
+	if err != nil {
+		data.Class = "err"
+		data.Message = fmt.Sprintf("SSH failed: %v", err)
+	} else {
+		host := s.cfg.BridgeSaver.Current().MiSTer.Host
+		data.Class = "run"
+		data.Message = fmt.Sprintf("Sent — load_core /media/fat/_Utility/Groovy.rbf delivered to %s", host)
+	}
+	s.renderPanel(w, "mister-launch-result", data)
 }
