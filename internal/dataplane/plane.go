@@ -394,9 +394,10 @@ func (p *Plane) Run(ctx context.Context) error {
 			"frame_echo_final", lastEcho,
 			"enobuf_total", p.cfg.Sender.ENOBUFCount())
 	}()
-	if p.cfg.Modeline.Interlaced() {
-		nextField = initialFieldForOrder(p.cfg.SpawnSpec.FieldOrder)
-	}
+	// nextField is the row-stripe parity walking 0,1,0,1 every tick. The
+	// configured TFF/BFF baseline is encoded in fieldOrderFlip alone (set by
+	// NewPlane and SetFieldOrder); seeding nextField here would double-encode
+	// it and cancel the flip out across a restart.
 
 	for {
 		select {
@@ -566,20 +567,6 @@ func (p *Plane) Run(ctx context.Context) error {
 			}
 		}
 	}
-}
-
-func initialFieldForOrder(order string) uint8 {
-	if order == "bff" {
-		return 1
-	}
-	return 0
-}
-
-func terminalFieldForOrder(order string) uint8 {
-	if order == "bff" {
-		return 0
-	}
-	return 1
 }
 
 func rasterLinePeriod(ml groovy.Modeline) time.Duration {

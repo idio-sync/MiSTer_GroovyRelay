@@ -206,8 +206,9 @@ func TestPlane_SetFieldOrder_RejectsUnknown(t *testing.T) {
 }
 
 func TestNewPlane_SeedsFlipFromBFF(t *testing.T) {
-	// BFF SpawnSpec → flip starts true (so ffmpeg's bff-ordered output
-	// gets the bottom-label-first wire-format labeling).
+	// BFF SpawnSpec → flip starts true. ffmpeg emits progressive frames at
+	// field cadence; the plane row-stripes them, and fieldOrderFlip is the
+	// sole encoding of the configured field-order baseline.
 	cfg := PlaneConfig{SpawnSpec: ffmpeg.PipelineSpec{FieldOrder: "bff"}}
 	p := NewPlane(cfg)
 	if !p.fieldOrderFlip.Load() {
