@@ -199,7 +199,7 @@ type Handler = func(http.ResponseWriter, *http.Request)
 // Route is a single HTTP route owned by an adapter. Path is relative
 // to the adapter's mount point under /ui/adapter/<name>/.
 type Route struct {
-	Method  string // "GET" or "POST"
+	Method  string // "GET", "POST", "PUT", "PATCH", or "DELETE"
 	Path    string // relative, e.g., "link/start"
 	Handler Handler
 }
