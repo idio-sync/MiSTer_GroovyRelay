@@ -123,3 +123,41 @@ func TestCSRF_ExtensionOrigin_MozWithHeader_Accepts(t *testing.T) {
 		t.Errorf("moz-extension + header POST status = %d, want 200", rw.Code)
 	}
 }
+
+func TestCSRF_ExtensionOrigin_ChromeWithHeader_Accepts(t *testing.T) {
+	// Chrome / Edge / Brave / Opera / Vivaldi all use chrome-extension://
+	// origins. One test covers them all.
+	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req.Host = "bridge.lan:32500"
+	req.Header.Set("Origin", "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("X-Bridge-Extension", "1")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Errorf("chrome-extension + header POST status = %d, want 200", rw.Code)
+	}
+}
+
+func TestCSRF_ExtensionOrigin_SafariWithHeader_Accepts(t *testing.T) {
+	// Safari is excluded from the v1 manual-test matrix in the spec
+	// (heavier signing pipeline), but the scheme is in the bypass
+	// allowlist; this test pins the contract so a future scheme-list
+	// edit can't silently drop Safari support.
+	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req.Host = "bridge.lan:32500"
+	req.Header.Set("Origin", "safari-web-extension://AAAAAAAA-1234-5678-9abc-def012345678")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("X-Bridge-Extension", "1")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Errorf("safari-web-extension + header POST status = %d, want 200", rw.Code)
+	}
+}
