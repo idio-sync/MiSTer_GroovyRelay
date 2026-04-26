@@ -24,6 +24,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
+	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -127,6 +128,15 @@ func main() {
 	}
 	if err := reg.Register(plexAdapter); err != nil {
 		slog.Error("registry register plex", "err", err)
+		os.Exit(1)
+	}
+
+	// URL adapter (v1): minimum-viable HTTP/HTTPS URL acceptor.
+	// Spec: docs/specs/2026-04-25-url-adapter-design.md.
+	// No constructor failure modes — New() never errors.
+	urlAdapter := urladapter.New(coreMgr)
+	if err := reg.Register(urlAdapter); err != nil {
+		slog.Error("registry register url", "err", err)
 		os.Exit(1)
 	}
 

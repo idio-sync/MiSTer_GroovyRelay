@@ -249,7 +249,7 @@ func (t *TimelineBroker) broadcastStatusOnce(st core.SessionStatus) {
 	}
 
 	for _, s := range subs {
-		xmlBody := t.buildTimelineXMLWithCommandID(st, s.commandID)
+		xmlBody := t.buildTimelineXMLWithCommandID(st, play, s.commandID)
 		protocol := s.protocol
 		if protocol == "" {
 			protocol = "http"
@@ -283,14 +283,58 @@ func (t *TimelineBroker) broadcastStatusOnce(st core.SessionStatus) {
 	t.mu.Unlock()
 }
 
+// broadcastStoppedFor pushes one timeline to all current subscribers using
+// the supplied PlayMediaRequest as the source of media identity, instead of
+// reading the broker's playContext callback. Used by the cross-adapter
+// preemption path: when a foreign adapter (e.g. URL) preempts Plex, the
+// Companion's lastPlay is being torn down and Manager.Status() already
+// reflects the foreign session; the closure captures the prior Plex play
+// at request-construction time and passes it here so the controller-bound
+// timeline accurately describes the prior media as state=stopped.
+//
+// PMS pushes are skipped: this is a controller-cleanup primitive only.
+// The PMS-side StopTranscodeSession call is the prior session's
+// responsibility (already wired into the OnStop closure).
+//
+// Race note: subscriber pruning by RunBroadcastLoop is concurrent with
+// this call. "All current subscribers" means subscribers live at the
+// moment we acquire mu; pruned subscribers are by definition not
+// listening, so missing them is correct (spec §"Plex precursor" item 1.c).
+func (t *TimelineBroker) broadcastStoppedFor(st core.SessionStatus, play PlayMediaRequest) {
+	t.mu.Lock()
+	subs := make([]subscriber, 0, len(t.subscribers))
+	for _, s := range t.subscribers {
+		subs = append(subs, *s)
+	}
+	client := t.httpClient
+	t.mu.Unlock()
+
+	body := t.buildTimelineXMLWithCommandID(st, play, 0)
+	for _, s := range subs {
+		protocol := s.protocol
+		if protocol == "" {
+			protocol = "http"
+		}
+		url := fmt.Sprintf("%s://%s:%s/:/timeline", protocol, s.host, s.port)
+		if err := t.postTimeline(client, url, body, s.clientID, ""); err != nil {
+			slog.Debug("stopped timeline push failed", "sub", s.clientID, "err", err)
+			continue
+		}
+	}
+}
+
 // buildTimelineXML renders the three-<Timeline> MediaContainer Plex expects:
 // music/photo are always stopped (we only play video); video carries the live
 // state/position. State maps core.State → Plex strings.
 func (t *TimelineBroker) buildTimelineXML(s core.SessionStatus) string {
-	return t.buildTimelineXMLWithCommandID(s, 0)
+	play := PlayMediaRequest{}
+	if t.playContext != nil {
+		play = t.playContext()
+	}
+	return t.buildTimelineXMLWithCommandID(s, play, 0)
 }
 
-func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, commandID int) string {
+func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, play PlayMediaRequest, commandID int) string {
 	type Timeline struct {
 		XMLName           xml.Name `xml:"Timeline"`
 		Type              string   `xml:"type,attr"`
@@ -323,10 +367,6 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, com
 		location = "fullScreenVideo"
 	case core.StatePaused:
 		location = "fullScreenVideo"
-	}
-	play := PlayMediaRequest{}
-	if t.playContext != nil {
-		play = t.playContext()
 	}
 	cmd := play.CommandID
 	if commandID > 0 {

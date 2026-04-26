@@ -2,7 +2,9 @@ package plex
 
 import (
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -472,4 +474,70 @@ func TestCompanion_TimelinePollReturnsXML(t *testing.T) {
 	if !strings.Contains(string(body), `state="playing"`) {
 		t.Errorf("poll body missing state=playing: %s", body)
 	}
+}
+
+// TestTimeline_BroadcastStoppedFor_UsesCapturedPlay verifies that the
+// new broker entry point synthesizes timeline XML from the captured
+// PlayMediaRequest and IGNORES playContext (which may already point at
+// a foreign session after cross-adapter preempt).
+func TestTimeline_BroadcastStoppedFor_UsesCapturedPlay(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	// playContext returns a DIFFERENT play (simulating "URL adapter has
+	// already taken over"). The broker MUST NOT consult it.
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{MediaKey: "/library/metadata/wrong"}
+	})
+
+	captured := PlayMediaRequest{
+		PlexServerAddress: "192.168.1.10",
+		PlexServerPort:    "32400",
+		PlexServerScheme:  "http",
+		MediaKey:          "/library/metadata/42",
+		ContainerKey:      "/playQueues/99?own=1",
+		PlayQueueItemID:   "item-123",
+	}
+
+	// Stand up an httptest controller endpoint and subscribe to it.
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+	u, _ := url.Parse(srv.URL)
+	host, port, _ := net.SplitHostPort(u.Host)
+	b.Subscribe("client-a", host, port, "http", 0)
+
+	stopped := core.SessionStatus{State: core.StateIdle}
+	b.broadcastStoppedFor(stopped, captured)
+	// broadcastStoppedFor pushes synchronously, so no sleep is needed.
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("subscriber received %d pushes, want 1", len(bodies))
+	}
+	body := bodies[0]
+	if !strings.Contains(body, `state="stopped"`) {
+		t.Errorf("body missing state=stopped: %s", body)
+	}
+	if !strings.Contains(body, `key="/library/metadata/42"`) {
+		t.Errorf("body did not use captured MediaKey: %s", body)
+	}
+	if strings.Contains(body, "/library/metadata/wrong") {
+		t.Errorf("body leaked playContext data: %s", body)
+	}
+}
+
+// TestTimeline_BroadcastStoppedFor_NoSubscribers is a no-op smoke test
+// — calling with zero subscribers must not panic and must not push to PMS
+// (the captured PlayMediaRequest may not have a PMS address set when the
+// only target is a controller).
+func TestTimeline_BroadcastStoppedFor_NoSubscribers(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle}, PlayMediaRequest{})
+	// No assertion — just must not panic.
 }
