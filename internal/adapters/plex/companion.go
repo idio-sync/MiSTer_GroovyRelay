@@ -350,7 +350,31 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
 	mux.HandleFunc("/debug/plex/session", c.handleDebugSession)
 	mux.HandleFunc("/debug/plex/decision", c.handleDebugDecision)
-	return c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux)))
+	return c.withRequestLog(c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux))))
+}
+
+// withRequestLog logs every /player/* Companion request with the params that
+// matter for diagnosing unexpected session teardowns. Plex controllers
+// occasionally re-issue setStreams/playMedia with the current selection on
+// purely UI-side events (e.g. opening the in-player gear panel in Plex Web)
+// — surfacing those calls makes "why did the cast end?" answerable from logs
+// alone instead of having to instrument and re-deploy.
+func (c *Companion) withRequestLog(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/player/") {
+			slog.Info("plex companion request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"client_id", queryOrHeader(r, "X-Plex-Client-Identifier"),
+				"command_id", queryOrHeader(r, "commandID"),
+				"key", queryOrHeader(r, "key"),
+				"audio_stream_id", queryOrHeader(r, "audioStreamID"),
+				"subtitle_stream_id", queryOrHeader(r, "subtitleStreamID"),
+				"offset", queryOrHeader(r, "offset"),
+			)
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // withSubscriberTouch refreshes the controller's timeline subscription TTL on
@@ -671,6 +695,19 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	audioStreamID := queryOrHeader(r, "audioStreamID")
 	subtitleStreamID := queryOrHeader(r, "subtitleStreamID")
 	if audioStreamID == "" && subtitleStreamID == "" {
+		writeOKResponse(w)
+		return
+	}
+	// Plex Web's in-player gear panel re-issues setStreams with the CURRENT
+	// audio/subtitle IDs whenever it opens, even if the user hasn't picked a
+	// new track. Treating that as a real change rebuilds the ffmpeg pipeline
+	// and invalidates the PMS transcode session — the controller, still
+	// polling the old transcode ID, surfaces "There was an unexpected error
+	// during playback." Only rebuild when at least one stream actually
+	// differs from what the live cast is using.
+	audioUnchanged := audioStreamID == "" || audioStreamID == p.AudioStreamID
+	subtitleUnchanged := subtitleStreamID == "" || subtitleStreamID == p.SubtitleStreamID
+	if audioUnchanged && subtitleUnchanged {
 		writeOKResponse(w)
 		return
 	}

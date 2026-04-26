@@ -583,6 +583,55 @@ func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 	}
 }
 
+// Plex Web's in-player gear panel re-issues setStreams with the current
+// audio + subtitle IDs whenever it opens. Treating that as a real change
+// rebuilt the ffmpeg pipeline and made PMS surface "There was an unexpected
+// error during playback" to the controller — see companion.go's no-op guard.
+func TestSetStreams_NoOpWhenStreamsUnchanged(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected PMS call: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePlaying, Position: 83000 * time.Millisecond}}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		AudioStreamID:      "100",
+		SubtitleStreamID:   "200",
+		TranscodeSessionID: "live-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/setStreams?audioStreamID=100&subtitleStreamID=200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.starts != 0 {
+		t.Errorf("StartSession calls = %d, want 0 (no-op echo of current selection)", fc.starts)
+	}
+	got := c.lastPlaySession()
+	if got.TranscodeSessionID != "live-transcode-id" {
+		t.Errorf("transcode session ID changed: %q (no-op echo should preserve it)", got.TranscodeSessionID)
+	}
+}
+
 func TestSetStreams_RestoresPausedStateAfterRestart(t *testing.T) {
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

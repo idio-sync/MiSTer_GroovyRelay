@@ -131,6 +131,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		oldOnStop = m.active.req.OnStop
 	}
 	if m.cancelFn != nil {
+		slog.Info("preempting prior session for new request", "new_url", req.StreamURL)
 		prev := m.plane
 		m.cancelFn()
 		m.cancelFn = nil
@@ -249,6 +250,7 @@ func (m *Manager) Pause() error {
 		m.active.pausedPosition = m.plane.Position()
 	}
 	if m.cancelFn != nil {
+		slog.Info("pausing active session")
 		prev := m.plane
 		m.cancelFn()
 		m.cancelFn = nil
@@ -366,6 +368,9 @@ func (m *Manager) Stop() error {
 	if m.active != nil {
 		subtitlePath = m.active.req.SubtitlePath
 		onStop = m.active.req.OnStop
+	}
+	if m.active != nil || m.plane != nil {
+		slog.Info("stopping active session")
 	}
 	if m.cancelFn != nil {
 		prev := m.plane
