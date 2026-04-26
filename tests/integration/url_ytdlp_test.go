@@ -16,10 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
 
 // stubResolver records calls and returns canned Resolutions.
@@ -241,3 +243,81 @@ func TestURL_YtdlpResolve_RealBinary(t *testing.T) {
 	waitForInit(t, h, 30*time.Second)
 }
 
+// TestURL_Cookies_RoundTrip exercises POST + DELETE /cookies through
+// the real ui.Server mux. If anyone reverts the route mounter to
+// GET/POST-only, the DELETE leg returns 404 and this test fails
+// (review fix C2 regression guard).
+//
+// CSRF: every non-GET request sets Sec-Fetch-Site: same-origin to
+// satisfy internal/ui/csrf.go's check.
+func TestURL_Cookies_RoundTrip(t *testing.T) {
+	bridgeCfg := urlBridgeConfig(t)
+	a, err := urladapter.New(urladapter.AdapterConfig{
+		Bridge: bridgeCfg,
+		Core:   nil, // not exercised in this test
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	reg := adapters.NewRegistry()
+	if err := reg.Register(a); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	uiSrv, err := ui.New(ui.Config{Registry: reg})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	uiSrv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	cookies := "# Netscape HTTP Cookie File\n" +
+		".youtube.com\tTRUE\t/\tTRUE\t1893456000\tFOO\tbar\n"
+
+	// POST cookies.
+	form := "cookies=" + url.QueryEscape(cookies)
+	req, _ := http.NewRequest(http.MethodPost,
+		ts.URL+"/ui/adapter/url/cookies", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin") // satisfy csrfMiddleware
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("POST status = %d, want 202; body=%s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	if _, err := os.Stat(filepath.Join(bridgeCfg.DataDir, "url_cookies.txt")); err != nil {
+		t.Fatalf("cookies file not written: %v", err)
+	}
+
+	// DELETE cookies.
+	req, _ = http.NewRequest(http.MethodDelete,
+		ts.URL+"/ui/adapter/url/cookies", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err = ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// 404 here would mean the route mounter regressed (review fix C2).
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("DELETE status = %d, want 200 (route mounter regression?); body=%s",
+			resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	if _, err := os.Stat(filepath.Join(bridgeCfg.DataDir, "url_cookies.txt")); !os.IsNotExist(err) {
+		t.Errorf("cookies file still exists after DELETE: %v", err)
+	}
+}
