@@ -66,7 +66,7 @@ func bridgeFields() []adapters.FieldDef {
 			Help:       "Flip if you see shimmer on the CRT.",
 			Kind:       adapters.KindEnum,
 			Enum:       []string{"tff", "bff"},
-			Default:    "tff",
+			Default:    "bff",
 			ApplyScope: adapters.ScopeHotSwap,
 			Section:    "Video",
 		},

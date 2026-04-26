@@ -7,7 +7,7 @@ data_dir = "/config" # Where device UUID + plex.tv auth token are stored
 
 [bridge.video]
 modeline = "NTSC_480i"            # v1 supports "NTSC_480i" only
-interlace_field_order = "tff"     # "tff" | "bff" — flip if you see shimmer on CRT
+interlace_field_order = "bff"     # "tff" | "bff" — flip if you see shimmer on CRT
 aspect_mode = "auto"              # "letterbox" | "zoom" | "auto"
 rgb_mode = "rgb888"               # v1: rgb888 only (rgba8888 / rgb565 reserved for v2+)
 lz4_enabled = true                # LZ4 block compression (recommended)

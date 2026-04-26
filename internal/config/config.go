@@ -53,7 +53,7 @@ func defaults() *Config {
 		SourcePort:          32101,
 		HTTPPort:            32500,
 		Modeline:            "NTSC_480i",
-		InterlaceFieldOrder: "tff",
+		InterlaceFieldOrder: "bff",
 		AspectMode:          "auto",
 		RGBMode:             "rgb888",
 		LZ4Enabled:          true,

@@ -1,8 +1,8 @@
 # MiSTer_GroovyRelay
 
-Note: this is not actually functional yet.
+Note: this is in heavy dev and still has some bugs.
 
-A WIP Plex-to-MiSTer cast-target bridge. Run it alongside your Plex Media
+A WIP video cast-target bridge for the MiSTer. Run it alongside your Plex Media
 Server; it advertises itself as a Plex cast target on the LAN, and when
 you pick it from the Plex client's "Cast" menu it transcodes the
 Plex output through FFmpeg and streams raw RGB fields + PCM audio
@@ -17,7 +17,6 @@ giving you genuine 480i NTSC video for Plex content. Other sources are planned b
   - DLNA
   - IPTV/M3U playlists
   - Directly from .mkv/.mp4 files (long term)
-- WebUI for configuring settings and relay sources
 
 ## Hardware requirements
 
@@ -88,7 +87,7 @@ are migrated on first load — the original is preserved at
 | `bridge.data_dir`                      | `/config`            | Where the device UUID and plex.tv auth token live.                          |
 | `bridge.host_ip`                       | auto-detect          | LAN IP advertised to Plex. Override on multi-NIC hosts (see below).         |
 | `bridge.video.modeline`                | `"NTSC_480i"`        | Video mode. v1 supports `NTSC_480i` only.                                   |
-| `bridge.video.interlace_field_order`   | `"tff"`              | `tff` or `bff`. Flip if you see field-order shimmer on the CRT.             |
+| `bridge.video.interlace_field_order`   | `"bff"`              | `tff` or `bff`. Flip if you see field-order shimmer on the CRT.             |
 | `bridge.video.aspect_mode`             | `"auto"`             | `letterbox`, `zoom`, or `auto` (ffmpeg cropdetect probe).                   |
 | `bridge.video.rgb_mode`                | `"rgb888"`           | Wire pixel format. v1: `rgb888` only.                                       |
 | `bridge.video.lz4_enabled`             | `true`               | LZ4-compress BLIT payloads. Strongly recommended.                           |
