@@ -40,8 +40,34 @@ func urlPlayHandler(t *testing.T, a *urladapter.Adapter) http.HandlerFunc {
 			return r.Handler
 		}
 	}
-	t.Fatal("POST play route not found")
+	t.Fatalf("POST play route not found in %d routes; got: %+v", len(a.UIRoutes()), a.UIRoutes())
 	return nil
+}
+
+// newURLAdapterWithDefaults wires an adapter the way production main.go
+// would: New(AdapterConfig) + DefaultConfig() applied via the test
+// hook. New() alone leaves a.cfg as the zero Config, which means
+// YtdlpEnabled=false and YtdlpHosts=nil — both of which short-circuit
+// decideRoute in ways that make dispatch tests pass for the wrong
+// reason or fail outright. (Production wires defaults via DecodeConfig
+// against TOML; integration tests bypass that.)
+func newURLAdapterWithDefaults(t *testing.T, mgr *core.Manager, stub urladapter.ResolverIface) *urladapter.Adapter {
+	t.Helper()
+	a, err := urladapter.New(urladapter.AdapterConfig{
+		Bridge: urlBridgeConfig(t),
+		Core:   mgr,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cfg := urladapter.DefaultConfig()
+	cfg.Enabled = true
+	a.SetConfigForTesting(cfg)
+	a.SetResolverForTesting(stub)
+	a.SetYtdlpProbeForTesting(urladapter.YtdlpProbe{
+		Path: "/stub/yt-dlp", Version: "stub", OK: true,
+	})
+	return a
 }
 
 func postPlay(t *testing.T, h http.HandlerFunc, mediaURL, mode string) *httptest.ResponseRecorder {
@@ -102,18 +128,8 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
 		t.Cleanup(func() { _ = mgr.Stop() })
 
-		a, err := urladapter.New(urladapter.AdapterConfig{
-			Bridge: urlBridgeConfig(t),
-			Core:   mgr,
-		})
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
 		stub := &stubResolver{res: &ytdlp.Resolution{URL: mediaSrv.URL + "/x.mp4"}}
-		a.SetResolverForTesting(stub)
-		a.SetYtdlpProbeForTesting(urladapter.YtdlpProbe{
-			Path: "/stub/yt-dlp", Version: "stub", OK: true,
-		})
+		a := newURLAdapterWithDefaults(t, mgr, stub)
 
 		w := postPlay(t, urlPlayHandler(t, a), mediaSrv.URL+"/direct.mp4", "direct")
 		if w.Code != http.StatusAccepted {
@@ -131,25 +147,17 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
 		t.Cleanup(func() { _ = mgr.Stop() })
 
-		a, err := urladapter.New(urladapter.AdapterConfig{
-			Bridge: urlBridgeConfig(t),
-			Core:   mgr,
-		})
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
 		stub := &stubResolver{res: &ytdlp.Resolution{URL: mediaSrv.URL + "/resolved.mp4"}}
-		a.SetResolverForTesting(stub)
-		a.SetYtdlpProbeForTesting(urladapter.YtdlpProbe{
-			Path: "/stub/yt-dlp", Version: "stub", OK: true,
-		})
+		a := newURLAdapterWithDefaults(t, mgr, stub)
 
 		w := postPlay(t, urlPlayHandler(t, a), "https://example.com/page", "ytdlp")
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
 		}
+		// Assert resolver was hit BEFORE waiting for the cast — failures
+		// here mean the dispatch logic is wrong, not the data plane.
 		if stub.callsOK != 1 {
-			t.Errorf("ytdlp mode: resolver calls = %d, want 1", stub.callsOK)
+			t.Fatalf("ytdlp mode: resolver calls = %d, want 1", stub.callsOK)
 		}
 		// Real cast actually started — Init+Switchres reach fake-mister
 		// (review fix I2: third leg coverage gap closed).
@@ -162,20 +170,13 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
 		t.Cleanup(func() { _ = mgr.Stop() })
 
-		a, err := urladapter.New(urladapter.AdapterConfig{
-			Bridge: urlBridgeConfig(t),
-			Core:   mgr,
-		})
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
 		stub := &stubResolver{res: &ytdlp.Resolution{URL: "should-not-be-used"}}
-		a.SetResolverForTesting(stub)
-		a.SetYtdlpProbeForTesting(urladapter.YtdlpProbe{
-			Path: "/stub/yt-dlp", Version: "stub", OK: true,
-		})
+		a := newURLAdapterWithDefaults(t, mgr, stub)
 
-		// example.com is NOT in the default allowlist.
+		// 127.0.0.1 (httptest's loopback) is NOT in the curated default
+		// allowlist (DefaultHosts is youtube.com / twitch.tv / vimeo.com /
+		// archive.org / etc.). decideRoute(auto, 127.0.0.1, ...) →
+		// ytdlp.Match(...) returns false → direct mode.
 		w := postPlay(t, urlPlayHandler(t, a), mediaSrv.URL+"/auto.mp4", "auto")
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("status = %d", w.Code)

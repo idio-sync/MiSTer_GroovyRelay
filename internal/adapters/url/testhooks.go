@@ -33,3 +33,21 @@ func (a *Adapter) SetYtdlpProbeForTesting(p YtdlpProbe) {
 	defer a.mu.Unlock()
 	a.ytdlpProbe = p
 }
+
+// SetConfigForTesting overrides the adapter's [adapters.url] config.
+// New() does NOT apply DefaultConfig — defaults only flow through
+// DecodeConfig at startup. Integration tests that bypass DecodeConfig
+// (no TOML envelope) need to set the config explicitly, or they get
+// the zero value (YtdlpEnabled=false, empty hosts list, etc.) and
+// dispatch tests fail with surprising 400 responses.
+//
+// Typical use:
+//
+//	cfg := urladapter.DefaultConfig()
+//	cfg.Enabled = true
+//	a.SetConfigForTesting(cfg)
+func (a *Adapter) SetConfigForTesting(c Config) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg = c
+}
