@@ -88,6 +88,9 @@ func (m Modeline) FieldRate() float64 {
 // presets; for any other modeline values it falls back to deriving from
 // FieldRate() with a 1000× scale to preserve three decimal places.
 //
+// Degenerate modelines (rate ≤ 0) return (1, 1) as a safety sentinel
+// so callers can still divide without producing NaN or dividing by zero.
+//
 // Both Plane.Position (period-in-ms math) and AudioPipeReader (rate-in-Hz
 // math) consume this so the data plane never carries a parallel
 // rate-descriptor field. The lookup is keyed on (HTotal, VTotal,

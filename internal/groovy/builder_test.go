@@ -273,11 +273,18 @@ func TestModeline_FieldRateRatio_UnknownFallback(t *testing.T) {
 	// but must not panic and must produce a non-zero ratio.
 	ml := Modeline{PClock: 25.175, HTotal: 800, VTotal: 525, Interlace: 0}
 	n, d := ml.FieldRateRatio()
-	if n <= 0 || d <= 0 {
-		t.Errorf("fallback ratio must be positive, got (%d, %d)", n, d)
+	if n != 59940 || d != 1000 {
+		t.Errorf("fallback ratio = (%d, %d), want (59940, 1000)", n, d)
 	}
-	if n/d < 50 || n/d > 70 {
-		// VGA 640x480@60 ish; rough sanity check
-		t.Errorf("fallback ratio %d/%d ≈ %d Hz outside plausible range", n, d, n/d)
+}
+
+func TestModeline_FieldRateRatio_ZeroGuard(t *testing.T) {
+	// Degenerate modeline (PClock=0) makes FieldRate() return 0; the
+	// FieldRateRatio guard must short-circuit to (1, 1) so callers can
+	// still divide safely without producing NaN or panic.
+	ml := Modeline{PClock: 0, HTotal: 800, VTotal: 525, Interlace: 0}
+	n, d := ml.FieldRateRatio()
+	if n != 1 || d != 1 {
+		t.Errorf("zero-rate fallback = (%d, %d), want (1, 1)", n, d)
 	}
 }
