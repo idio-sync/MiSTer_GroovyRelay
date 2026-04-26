@@ -8,12 +8,12 @@
 ## Problem
 
 The bridge streams over the Groovy_MiSTer protocol, which only works
-when the MiSTer FPGA is running the `Groovy.rbf` core. Putting the
+when the MiSTer FPGA is running the `Groovy_20240928.rbf` core. Putting the
 MiSTer into that core today means walking to the device and using its
 on-screen menu, or opening a terminal and SSHing in:
 
 ```
-ssh root@<mister-ip> 'echo "load_core /media/fat/_Utility/Groovy.rbf" > /dev/MiSTer_cmd'
+ssh root@<mister-ip> 'echo "load_core /media/fat/_Utility/Groovy_20240928.rbf" > /dev/MiSTer_cmd'
 ```
 
 For an otherwise browser-driven workflow (open Settings UI, link Plex,
@@ -28,7 +28,7 @@ command for the operator.
   config under `[bridge.mister]`, surfaced as form fields in a new
   "MiSTer Control" section on the Bridge panel.
 - Add a **Launch GroovyMiSTer** button in that section that runs the
-  fixed `load_core /media/fat/_Utility/Groovy.rbf` command over SSH
+  fixed `load_core /media/fat/_Utility/Groovy_20240928.rbf` command over SSH
   using the saved credentials and the saved `bridge.mister.host`.
 - Surface success / failure inline (no full-page reload, no
   navigation) — same UX shape as the Plex link/unlink buttons.
@@ -46,7 +46,7 @@ command for the operator.
   via the MiSTer's own menu).
 - Override fields for the launch command, the core path, or the SSH
   port. The upstream Groovy_MiSTer install instructions specify
-  `/media/fat/_Utility/Groovy.rbf` and SSH defaults to 22; both are
+  `/media/fat/_Utility/Groovy_20240928.rbf` and SSH defaults to 22; both are
   hard-coded. If upstream ever changes the layout, the operator can
   SSH manually as a fallback while we ship a fix.
 - Host-key verification (known_hosts management UI). v1 uses
@@ -137,7 +137,7 @@ type Params struct {
 // error on auth/dial/exec failure. The password is never logged.
 //
 // Command (hard-coded):
-//   echo "load_core /media/fat/_Utility/Groovy.rbf" > /dev/MiSTer_cmd
+//   echo "load_core /media/fat/_Utility/Groovy_20240928.rbf" > /dev/MiSTer_cmd
 func LaunchGroovy(ctx context.Context, p Params) error
 ```
 
@@ -273,7 +273,7 @@ func (s *Server) handleBridgeMisterLaunch(w http.ResponseWriter, r *http.Request
         data.Message = fmt.Sprintf("SSH failed: %v", err)
     } else {
         host := s.cfg.BridgeSaver.Current().MiSTer.Host
-        data.Message = fmt.Sprintf("Sent — load_core /media/fat/_Utility/Groovy.rbf delivered to %s", host)
+        data.Message = fmt.Sprintf("Sent — load_core /media/fat/_Utility/Groovy_20240928.rbf delivered to %s", host)
     }
     s.renderPanel(w, "mister-launch-result", data)
 }
@@ -445,7 +445,7 @@ adapter form):
             </button>
             <div id="mister-launch-slot" style="margin-top: 8px;"></div>
             <div class="help">
-                Sends <code>load_core /media/fat/_Utility/Groovy.rbf</code>
+                Sends <code>load_core /media/fat/_Utility/Groovy_20240928.rbf</code>
                 to <code>/dev/MiSTer_cmd</code> over SSH using the
                 credentials in section 05.
             </div>
@@ -655,7 +655,7 @@ will resolve it.
 | `ssh_password` empty | SSH auth fails; red toast: "SSH failed: ssh: handshake failed: ssh: unable to authenticate, attempted methods [none password], no supported methods remain" |
 | Wrong password | Same as above. |
 | MiSTer offline | Same as wrong IP — dial timeout. |
-| `Groovy.rbf` not in `_Utility/` | Exec succeeds (echo writes to FIFO regardless); the MiSTer's userland logs an error nobody sees. The button reports success. **Known sharp edge.** v1 accepts this; documenting "you'll know it didn't work because the CRT doesn't switch cores" is the v1 mitigation. |
+| `Groovy_20240928.rbf` not in `_Utility/` | Exec succeeds (echo writes to FIFO regardless); the MiSTer's userland logs an error nobody sees. The button reports success. **Known sharp edge.** v1 accepts this; documenting "you'll know it didn't work because the CRT doesn't switch cores" is the v1 mitigation. |
 | `/dev/MiSTer_cmd` doesn't exist | Shell redirect fails; remote shell exit code non-zero; red toast surfaces stderr. |
 | Two rapid clicks | Implicit serialization via `hx-disabled-elt="this"` on the button — the second click can't fire until the first response swaps the slot and re-enables the button. The server does not coordinate; if the operator bypasses the disable (e.g., via direct curl), two SSH sessions race and both write the same line. Harmless. |
 
@@ -690,7 +690,7 @@ The Bridge panel grows two new sections:
   Load Groovy core on the MiSTer
                  [ Launch GroovyMiSTer ]
                  (result fragment swaps in here after click)
-                 Sends load_core /media/fat/_Utility/Groovy.rbf to /dev/MiSTer_cmd...
+                 Sends load_core /media/fat/_Utility/Groovy_20240928.rbf to /dev/MiSTer_cmd...
 ```
 
 Section 05 lives inside the bridge save form. Section 06 lives
@@ -809,7 +809,7 @@ fixed unless the operator explicitly revisits:
   model. Documented in package comment + UI help text.
 - **5s timeout** for `ssh.Dial`; 6s context budget on the UI handler.
 - **Hard-coded launch command**:
-  `echo "load_core /media/fat/_Utility/Groovy.rbf" > /dev/MiSTer_cmd`.
+  `echo "load_core /media/fat/_Utility/Groovy_20240928.rbf" > /dev/MiSTer_cmd`.
   No override field.
 - **`ScopeHotSwap`** for both new SSH fields. Snapshot pattern in
   the launcher closure picks up edits at click time without any

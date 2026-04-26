@@ -1,9 +1,9 @@
 // Package misterctl runs ad-hoc remote commands against the MiSTer
 // over SSH. v1 has exactly one operation: LaunchGroovy, which writes
-// `load_core /media/fat/_Utility/Groovy.rbf` into the MiSTer's
-// /dev/MiSTer_cmd FIFO so the FPGA loads the Groovy core. This is
-// the only currently-supported way to put the MiSTer into the right
-// core for the bridge to stream into.
+// `load_core /media/fat/_Utility/Groovy_20240928.rbf` into the
+// MiSTer's /dev/MiSTer_cmd FIFO so the FPGA loads the Groovy core.
+// This is the only currently-supported way to put the MiSTer into
+// the right core for the bridge to stream into.
 //
 // The package is package-pure: no globals beyond the dialAndRun
 // injection seam, no goroutines beyond the in-flight SSH session,
@@ -34,9 +34,14 @@ type Params struct {
 }
 
 // launchCommand is the literal shell command written to /dev/MiSTer_cmd.
-// Hard-coded per the upstream Groovy_MiSTer install instructions which
-// specify /media/fat/_Utility as the core's home directory.
-const launchCommand = `echo "load_core /media/fat/_Utility/Groovy.rbf" > /dev/MiSTer_cmd`
+// Hard-coded per the upstream Groovy_MiSTer install layout: cores live
+// in /media/fat/_Utility and ship with their release date in the
+// filename (Groovy_YYYYMMDD.rbf). 2024-09-28 is the latest upstream
+// release as of this writing; upstream is unmaintained after the
+// author's passing, so this filename is likely stable. If a future
+// release renames the core, bump this string or graduate the path to
+// a config field (see spec "Out-of-scope follow-ups").
+const launchCommand = `echo "load_core /media/fat/_Utility/Groovy_20240928.rbf" > /dev/MiSTer_cmd`
 
 // dialAndRun is the SSH dial + session.Run sequence; var so tests can
 // inject a fake without standing up a real ssh.Server. Production

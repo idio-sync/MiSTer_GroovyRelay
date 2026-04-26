@@ -348,7 +348,7 @@ func (s *Server) handleBridgeMisterLaunch(w http.ResponseWriter, r *http.Request
 	} else {
 		host := s.cfg.BridgeSaver.Current().MiSTer.Host
 		data.Class = "run"
-		data.Message = fmt.Sprintf("Sent — load_core /media/fat/_Utility/Groovy.rbf delivered to %s", host)
+		data.Message = fmt.Sprintf("Sent — load_core /media/fat/_Utility/Groovy_20240928.rbf delivered to %s", host)
 	}
 	s.renderPanel(w, "mister-launch-result", data)
 }
