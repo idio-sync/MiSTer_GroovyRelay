@@ -27,7 +27,13 @@ func TestAdapter_DisplayName(t *testing.T) {
 
 func TestAdapter_Fields_HasExpectedKeys(t *testing.T) {
 	a := &Adapter{}
-	want := map[string]bool{"enabled": false, "device_name": false, "profile_name": false, "server_url": false}
+	want := map[string]bool{
+		"enabled":                false,
+		"device_name":            false,
+		"profile_name":           false,
+		"server_url":             false,
+		"max_video_bitrate_kbps": false,
+	}
 	for _, f := range a.Fields() {
 		if _, ok := want[f.Key]; ok {
 			want[f.Key] = true
@@ -174,6 +180,60 @@ profile_name = "Plex Web Client"
 	}
 	if scope != adapters.ScopeRestartBridge {
 		t.Errorf("scope = %v, want RestartBridge (max-wins)", scope)
+	}
+}
+
+func TestApplyConfig_MaxBitrateRestartCastAndPropagatesLive(t *testing.T) {
+	companion := NewCompanion(CompanionConfig{
+		DeviceName:          "MiSTer",
+		MaxVideoBitrateKbps: 1500,
+	}, nil)
+	a := &Adapter{
+		plexCfg: Config{
+			Enabled:             true,
+			DeviceName:          "MiSTer",
+			ProfileName:         "Plex Home Theater",
+			MaxVideoBitrateKbps: 1500,
+		},
+		companion: companion,
+	}
+	raw, meta := sectionPrimitive(t, `
+device_name = "MiSTer"
+enabled = true
+profile_name = "Plex Home Theater"
+max_video_bitrate_kbps = 6000
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Errorf("scope = %v, want RestartCast", scope)
+	}
+	if a.plexCfg.MaxVideoBitrateKbps != 6000 {
+		t.Errorf("plexCfg not updated: got %d", a.plexCfg.MaxVideoBitrateKbps)
+	}
+	if got := companion.maxVideoBitrateKbps.Load(); got != 6000 {
+		t.Errorf("companion live mirror not updated: got %d", got)
+	}
+}
+
+func TestApplyConfig_BitrateOutOfBoundsRejected(t *testing.T) {
+	a := &Adapter{plexCfg: Config{
+		Enabled: true, DeviceName: "MiSTer", ProfileName: "Plex Home Theater",
+		MaxVideoBitrateKbps: 1500,
+	}}
+	raw, meta := sectionPrimitive(t, `
+device_name = "MiSTer"
+enabled = true
+profile_name = "Plex Home Theater"
+max_video_bitrate_kbps = 99999
+`)
+	if _, err := a.ApplyConfig(raw, meta); err == nil {
+		t.Fatal("want validation error for out-of-bounds bitrate")
+	}
+	if a.plexCfg.MaxVideoBitrateKbps != 1500 {
+		t.Errorf("plexCfg mutated despite validation failure: %d", a.plexCfg.MaxVideoBitrateKbps)
 	}
 }
 

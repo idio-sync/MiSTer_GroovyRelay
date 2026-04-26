@@ -231,6 +231,65 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	}
 }
 
+func TestPlayMedia_HonorsConfiguredMaxBitrate(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName:          "MiSTer",
+		DeviceUUID:          "our-uuid",
+		MaxVideoBitrateKbps: 6000,
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-1")
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if !strings.Contains(fc.lastReq.StreamURL, "maxVideoBitrate=6000") {
+		t.Errorf("stream URL did not honor configured max bitrate: %s", fc.lastReq.StreamURL)
+	}
+}
+
+func TestCompanion_SetMaxVideoBitrateKbpsTakesEffectOnNextPlay(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName:          "MiSTer",
+		DeviceUUID:          "our-uuid",
+		MaxVideoBitrateKbps: 1500,
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	c.SetMaxVideoBitrateKbps(8000)
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-1")
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if !strings.Contains(fc.lastReq.StreamURL, "maxVideoBitrate=8000") {
+		t.Errorf("post-update bitrate not picked up: %s", fc.lastReq.StreamURL)
+	}
+	if strings.Contains(fc.lastReq.StreamURL, "maxVideoBitrate=1500") {
+		t.Errorf("stale bitrate leaked through: %s", fc.lastReq.StreamURL)
+	}
+}
+
 func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer"}, fc)

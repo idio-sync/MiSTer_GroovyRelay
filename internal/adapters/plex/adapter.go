@@ -260,11 +260,12 @@ func (a *Adapter) ensureFinalized() {
 		cfgSnap := a.snapshotCfg()
 		deviceUUID := a.cfg.TokenStore.DeviceUUID
 		a.companion = NewCompanion(CompanionConfig{
-			DeviceName:  cfgSnap.DeviceName,
-			DeviceUUID:  deviceUUID,
-			Version:     a.cfg.Version,
-			ProfileName: cfgSnap.ProfileName,
-			DataDir:     a.cfg.Bridge.DataDir,
+			DeviceName:          cfgSnap.DeviceName,
+			DeviceUUID:          deviceUUID,
+			Version:             a.cfg.Version,
+			ProfileName:         cfgSnap.ProfileName,
+			DataDir:             a.cfg.Bridge.DataDir,
+			MaxVideoBitrateKbps: cfgSnap.MaxVideoBitrateKbps,
 		}, a.cfg.Core)
 		a.timeline = NewTimelineBroker(
 			TimelineConfig{DeviceUUID: deviceUUID, DeviceName: cfgSnap.DeviceName},
@@ -326,6 +327,18 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			ApplyScope:  adapters.ScopeRestartCast,
 			Placeholder: "auto-discover",
 			Section:     "Server",
+		},
+		{
+			Key:   "max_video_bitrate_kbps",
+			Label: "Max Video Bitrate (kbps)",
+			Help: "PMS server-side transcode ceiling. Higher values let Plex preserve more detail" +
+				" before FFmpeg decodes to raw RGB; the LZ4-compressed wire bandwidth often goes" +
+				" down because cleaner H.264 compresses better as raw fields. Conservative default" +
+				" 1500; bump to 3000–8000 for higher fidelity on a gigabit LAN.",
+			Kind:       adapters.KindInt,
+			Required:   true,
+			Default:    1500,
+			ApplyScope: adapters.ScopeRestartCast,
 		},
 	}
 }
@@ -412,7 +425,16 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		scope = adapters.MaxScope(scope, scopeForPlexField(key))
 	}
 	a.plexCfg = newCfg
+	companion := a.companion
 	a.mu.Unlock()
+
+	// Push live-updatable fields into the running companion so the next
+	// play sees the new value without a bridge restart. Only fields with
+	// a backing setter on Companion are mirrored here; other ScopeRestartCast
+	// fields (profile_name, server_url) still snapshot at finalization.
+	if companion != nil {
+		companion.SetMaxVideoBitrateKbps(newCfg.MaxVideoBitrateKbps)
+	}
 
 	// Side effects outside the lock: DropActiveCast can block on
 	// session teardown, and we don't want sidebar polls waiting on it.
@@ -441,6 +463,9 @@ func diffPlexConfig(oldCfg, newCfg Config) []string {
 	if oldCfg.ServerURL != newCfg.ServerURL {
 		changed = append(changed, "server_url")
 	}
+	if oldCfg.MaxVideoBitrateKbps != newCfg.MaxVideoBitrateKbps {
+		changed = append(changed, "max_video_bitrate_kbps")
+	}
 	return changed
 }
 
@@ -463,7 +488,7 @@ func scopeForPlexField(key string) adapters.ApplyScope {
 		return adapters.ScopeHotSwap // handled out-of-band by the toggle endpoint
 	case "device_name", "device_uuid":
 		return adapters.ScopeRestartBridge
-	case "profile_name", "server_url":
+	case "profile_name", "server_url", "max_video_bitrate_kbps":
 		return adapters.ScopeRestartCast
 	default:
 		return adapters.ScopeHotSwap
@@ -483,9 +508,10 @@ func (a *Adapter) SetEnabled(v bool) {
 func (a *Adapter) CurrentValues() map[string]any {
 	cfg := a.snapshotCfg()
 	return map[string]any{
-		"enabled":      cfg.Enabled,
-		"device_name":  cfg.DeviceName,
-		"profile_name": cfg.ProfileName,
-		"server_url":   cfg.ServerURL,
+		"enabled":                cfg.Enabled,
+		"device_name":            cfg.DeviceName,
+		"profile_name":           cfg.ProfileName,
+		"server_url":             cfg.ServerURL,
+		"max_video_bitrate_kbps": cfg.MaxVideoBitrateKbps,
 	}
 }

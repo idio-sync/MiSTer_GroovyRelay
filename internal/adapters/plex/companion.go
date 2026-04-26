@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -46,6 +47,10 @@ type CompanionConfig struct {
 	// DataDir is the application data directory used to store downloaded
 	// subtitle files under <DataDir>/subtitles/. Populated from config.Config.
 	DataDir string
+	// MaxVideoBitrateKbps is the maxVideoBitrate value PMS sees when we
+	// request a transcode. Snapshotted at finalization from plex.Config;
+	// changes are ScopeRestartCast so the next play picks up new values.
+	MaxVideoBitrateKbps int
 }
 
 // Companion is the Plex Companion HTTP adapter. One per process. Thread-safe.
@@ -53,6 +58,15 @@ type Companion struct {
 	cfg      CompanionConfig
 	core     SessionManager // adapter-agnostic core.Manager
 	timeline *TimelineBroker
+
+	// maxVideoBitrateKbps mirrors CompanionConfig.MaxVideoBitrateKbps as
+	// an atomic so the UI's ApplyConfig (ScopeRestartCast) can update the
+	// live companion without racing concurrent sessionRequestFor reads.
+	// Other CompanionConfig fields (DeviceName, ProfileName, ...) remain
+	// snapshot-at-finalize: changing them today still requires a bridge
+	// restart despite their declared scopes — that's a pre-existing quirk
+	// tracked separately.
+	maxVideoBitrateKbps atomic.Int64
 
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
@@ -77,7 +91,16 @@ type SessionManager interface {
 // NewCompanion constructs a Companion. core may be nil for tests that only
 // exercise handlers which don't delegate to core (e.g. /resources).
 func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
-	return &Companion{cfg: cfg, core: core}
+	c := &Companion{cfg: cfg, core: core}
+	c.maxVideoBitrateKbps.Store(int64(cfg.MaxVideoBitrateKbps))
+	return c
+}
+
+// SetMaxVideoBitrateKbps updates the live transcode bitrate ceiling. Called
+// by Adapter.ApplyConfig when the UI saves a new value; the next playMedia
+// will read the updated value through sessionRequestFor.
+func (c *Companion) SetMaxVideoBitrateKbps(kbps int) {
+	c.maxVideoBitrateKbps.Store(int64(kbps))
 }
 
 // SetTimeline wires the timeline broker after construction. Done this way
@@ -131,6 +154,7 @@ func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
 		Platform:           companionPlatform,
 		Version:            c.cfg.Version,
 		Provides:           companionProvides,
+		MaxBitrate:         int(c.maxVideoBitrateKbps.Load()),
 		AudioStreamID:      p.AudioStreamID,
 		SubtitleStreamID:   p.SubtitleStreamID,
 		TranscodeSessionID: p.TranscodeSessionID,
