@@ -103,3 +103,23 @@ func TestCSRF_PostNoHeadersRejected(t *testing.T) {
 		t.Errorf("no-header POST status = %d, want 403", rw.Code)
 	}
 }
+
+func TestCSRF_ExtensionOrigin_MozWithHeader_Accepts(t *testing.T) {
+	// First-pass bypass tier: moz-extension Origin + X-Bridge-Extension
+	// header must be accepted even though Sec-Fetch-Site is "cross-site"
+	// (which would otherwise reject). This demonstrates the bypass runs
+	// BEFORE the Sec-Fetch-Site check.
+	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req.Host = "bridge.lan:32500"
+	req.Header.Set("Origin", "moz-extension://abcd-1234-5678-9abc")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("X-Bridge-Extension", "1")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Errorf("moz-extension + header POST status = %d, want 200", rw.Code)
+	}
+}
