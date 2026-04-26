@@ -31,12 +31,32 @@ func newTestAdapter(t *testing.T, c SessionManager) *Adapter {
 	return a
 }
 
-// fakeCore captures the most recent StartSession call so tests can
-// assert what the adapter passed.
+// fakeCore captures all SessionManager calls so tests can assert what
+// the adapter passed and what it called. Per-method error fields let
+// tests force failures.
 type fakeCore struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+
+	// StartSession
 	lastReq  core.SessionRequest
 	startErr error
+
+	// Status (default: zero-value SessionStatus). Override via statusFn
+	// to return state-specific status from inside a test.
+	statusFn func() core.SessionStatus
+
+	// Pause / Play / Stop
+	pauseErr    error
+	playErr     error
+	stopErr     error
+	pauseCalled bool
+	playCalled  bool
+	stopCalled  bool
+
+	// SeekTo
+	seekErr      error
+	seekCalled   bool
+	seekOffsetMs int
 }
 
 func (f *fakeCore) StartSession(req core.SessionRequest) error {
@@ -45,7 +65,45 @@ func (f *fakeCore) StartSession(req core.SessionRequest) error {
 	f.lastReq = req
 	return f.startErr
 }
-func (f *fakeCore) Status() core.SessionStatus { return core.SessionStatus{} }
+
+func (f *fakeCore) Status() core.SessionStatus {
+	f.mu.Lock()
+	fn := f.statusFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn()
+	}
+	return core.SessionStatus{}
+}
+
+func (f *fakeCore) Pause() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pauseCalled = true
+	return f.pauseErr
+}
+
+func (f *fakeCore) Play() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.playCalled = true
+	return f.playErr
+}
+
+func (f *fakeCore) Stop() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalled = true
+	return f.stopErr
+}
+
+func (f *fakeCore) SeekTo(offsetMs int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seekCalled = true
+	f.seekOffsetMs = offsetMs
+	return f.seekErr
+}
 
 func (f *fakeCore) snapshot() core.SessionRequest {
 	f.mu.Lock()
