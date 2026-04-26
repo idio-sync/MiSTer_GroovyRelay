@@ -3,8 +3,6 @@ package core
 import (
 	"math"
 	"testing"
-
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 func TestResolvePreset_KnownNames(t *testing.T) {
@@ -116,5 +114,22 @@ func TestPresetFieldRateRatioMatchesPreset(t *testing.T) {
 	}
 }
 
-// reference to silence "groovy unused" if FieldRate's formula evolves
-var _ = groovy.NTSC480i60
+func TestPresetNamesMatchesRegistry(t *testing.T) {
+	// Guard against future drift: the registry map keys and the slice
+	// returned by PresetNames() must be identical sets. Otherwise the UI
+	// dropdown silently lacks a new preset, or ResolvePreset's error
+	// message lies about what's "supported".
+	seen := make(map[string]bool, len(presets))
+	for _, n := range PresetNames() {
+		if _, ok := presets[n]; !ok {
+			t.Errorf("PresetNames lists %q but it's not in the registry", n)
+		}
+		seen[n] = true
+	}
+	for k := range presets {
+		if !seen[k] {
+			t.Errorf("registry has %q but PresetNames doesn't list it", k)
+		}
+	}
+}
+

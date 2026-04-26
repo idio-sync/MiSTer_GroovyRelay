@@ -182,6 +182,53 @@ var NTSC480i60 = Modeline{
 	Interlace: 1,
 }
 
+// NTSC240p60 is the 720x240 progressive 60 Hz preset for cores / sources
+// that expect 240p at the same field cadence as NTSC_480i. pclock 13.875
+// produces FieldRate ≈ 59.952, within 0.02% of 60000/1001.
+var NTSC240p60 = Modeline{
+	PClock:    13.875,
+	HActive:   720,
+	HBegin:    744,
+	HEnd:      809,
+	HTotal:    880,
+	VActive:   240,
+	VBegin:    244,
+	VEnd:      247,
+	VTotal:    263,
+	Interlace: 0,
+}
+
+// PAL576i50 is the standard PAL interlaced preset. pclock 13.500 with
+// 864x625 produces FieldRate = 50.000 Hz exactly when ×2 for interlace.
+var PAL576i50 = Modeline{
+	PClock:    13.500,
+	HActive:   720,
+	HBegin:    732,
+	HEnd:      795,
+	HTotal:    864,
+	VActive:   576,
+	VBegin:    580,
+	VEnd:      585,
+	VTotal:    625,
+	Interlace: 1,
+}
+
+// PAL288p50 is the PAL progressive preset. pclock 13.478 (slightly off
+// the standard 13.500 to compensate for integer-line rounding) produces
+// FieldRate ≈ 49.992, within 0.016% of 50 Hz exact.
+var PAL288p50 = Modeline{
+	PClock:    13.478,
+	HActive:   720,
+	HBegin:    732,
+	HEnd:      795,
+	HTotal:    864,
+	VActive:   288,
+	VBegin:    290,
+	VEnd:      293,
+	VTotal:    312,
+	Interlace: 0,
+}
+
 // BuildClose returns the 1-byte CLOSE command. Sender tears down the socket
 // after; receiver resets session state on next INIT. No ACK.
 func BuildClose() []byte {
