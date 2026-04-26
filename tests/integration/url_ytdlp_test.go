@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -188,3 +189,55 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		waitForInit(t, h, 5*time.Second)
 	})
 }
+
+// TestURL_YtdlpResolve_RealBinary uses the actual yt-dlp binary
+// against a stable public Internet Archive item. Skipped when
+// yt-dlp is not on PATH (developer machine without it should not
+// see test failures). CI is expected to have it installed.
+//
+// Internet Archive chosen because:
+//   - Public domain content (no auth, no DRM)
+//   - Stable URLs across years
+//   - No rate limiting on small downloads
+//   - yt-dlp extractor is mature and rarely breaks
+func TestURL_YtdlpResolve_RealBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
+	}
+	if _, err := exec.LookPath("yt-dlp"); err != nil {
+		t.Skip("yt-dlp not on PATH")
+	}
+
+	h := NewHarness(t)
+	h.Listener.EnableACKs(true)
+	mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
+	t.Cleanup(func() { _ = mgr.Stop() })
+
+	a, err := urladapter.New(urladapter.AdapterConfig{
+		Bridge: urlBridgeConfig(t),
+		Core:   mgr,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Wire defaults so YtdlpEnabled=true and the format selector is set.
+	cfg := urladapter.DefaultConfig()
+	cfg.Enabled = true
+	a.SetConfigForTesting(cfg)
+	// Real Start wires up the real probe + real resolver.
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// A short, stable Internet Archive item. Replace if it disappears.
+	const archiveURL = "https://archive.org/details/BigBuckBunny_124"
+	w := postPlay(t, urlPlayHandler(t, a), archiveURL, "ytdlp")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	// Allow ample time: yt-dlp resolve (~3-15s on cold extractor) +
+	// ffmpeg startup + several Init+Switchres on the wire.
+	waitForInit(t, h, 30*time.Second)
+}
+
