@@ -177,6 +177,17 @@ func (t *TimelineBroker) postPMSTimeline(client *http.Client, urlStr string, st 
 	if play.PlayQueueItemID != "" {
 		q.Set("playQueueItemID", play.PlayQueueItemID)
 	}
+	if play.ContainerKey != "" {
+		q.Set("containerKey", play.ContainerKey)
+	}
+	// transcodeSession ties this heartbeat to our active PMS transcoder.
+	// Without it PMS reaps the transcoder on idle, causing ffmpeg to 404
+	// on segments mid-stream and Tautulli's session view to fall back to
+	// source-media labels rather than transcode-output state.
+	if play.TranscodeSessionID != "" {
+		q.Set("transcodeSession", play.TranscodeSessionID)
+	}
+	q.Set("identifier", "com.plexapp.plugins.library")
 	reqURL.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, reqURL.String(), nil)
@@ -187,6 +198,9 @@ func (t *TimelineBroker) postPMSTimeline(client *http.Client, urlStr string, st 
 	req.Header.Set("X-Plex-Protocol", "1.0")
 	req.Header.Set("X-Plex-Client-Identifier", t.cfg.DeviceUUID)
 	req.Header.Set("X-Plex-Device-Name", t.cfg.DeviceName)
+	req.Header.Set("X-Plex-Product", companionProduct)
+	req.Header.Set("X-Plex-Platform", companionPlatform)
+	req.Header.Set("X-Plex-Provides", companionProvides)
 	if play.PlexToken != "" {
 		req.Header.Set("X-Plex-Token", play.PlexToken)
 	}

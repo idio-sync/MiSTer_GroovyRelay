@@ -538,6 +538,16 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		PlayQueueItemID:    queryOrHeader(r, "playQueueItemID"),
 		TranscodeSessionID: NewTranscodeSessionID(),
 	}
+	// Some Plex controllers (notably mobile apps) omit
+	// X-Plex-Session-Identifier on playMedia. PMS uses this id to tie
+	// segment fetches and /:/timeline heartbeats to the same player
+	// session — without it, PMS may evict our transcoder mid-stream
+	// (HLS segment 404s) and Tautulli's /status/sessions view falls
+	// back to source-media labels rather than transcode-output state.
+	// Mint a UUID when missing so identity is always present.
+	if p.SessionID == "" {
+		p.SessionID = NewTranscodeSessionID()
+	}
 
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	req := c.sessionRequestFor(p)
