@@ -103,6 +103,48 @@ are migrated on first load — the original is preserved at
 | `adapters.plex.device_uuid`            | auto                 | Stable identifier; auto-generated on first run and persisted to `data_dir`. |
 | `adapters.plex.profile_name`           | `"Plex Home Theater"`| Client-capability profile name advertised to PMS.                           |
 | `adapters.plex.server_url`             | auto-discover        | Optional: pin a specific PMS (`http://host:32400`) instead of GDM discovery.|
+| `adapters.url.enabled`                 | `false`              | Toggle the URL adapter (paste-a-URL casting). Off by default; enable via the UI toggle. |
+
+## URL adapter
+
+In addition to Plex, the bridge ships a minimum-viable URL adapter:
+paste an `http://` or `https://` media URL into the **URL** panel in
+the settings UI and click **Play**, and the bridge will probe the URL
+with `ffprobe` and stream it to the MiSTer the same way a Plex cast
+would. Anything `ffmpeg` can ingest natively over HTTP/HTTPS works —
+direct MP4/MKV files, HLS playlists (`.m3u8`), DASH manifests
+(`.mpd`). Sessions are fire-and-forget: they run to EOF or until
+preempted by another POST. v1 doesn't ship in-session pause/seek.
+
+Scripts can also POST a URL programmatically:
+
+```bash
+# htmx form-style (matches what the panel sends)
+curl -X POST \
+  -H "Origin: http://<bridge-host>:32500" \
+  -d 'url=https://example.com/video.mp4' \
+  http://<bridge-host>:32500/ui/adapter/url/play
+
+# JSON
+curl -X POST \
+  -H "Origin: http://<bridge-host>:32500" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/video.mp4"}' \
+  http://<bridge-host>:32500/ui/adapter/url/play
+```
+
+The `Origin` header is required because the adapter's POST endpoint
+runs through the bridge's CSRF middleware. Browsers (htmx) set
+`Sec-Fetch-Site` automatically and pass without ceremony; `curl` and
+other scripted clients must include `Origin` matching the bridge's
+host:port. Without it, the request returns 403. The response shape
+also branches: htmx callers (which set `HX-Request: true`) get an
+HTML fragment back; everyone else gets JSON.
+
+URL credentials in the form `https://user:pass@host/path` are
+redacted in the panel display, the success response body, and all log
+lines. The JSON response echoes the URL verbatim — the API caller
+already submitted it.
 
 ## Settings UI
 
