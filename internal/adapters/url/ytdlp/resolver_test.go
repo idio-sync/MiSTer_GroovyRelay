@@ -159,6 +159,87 @@ func TestResolve_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestResolve_DropsHeaderInjectionAttempts(t *testing.T) {
+	// yt-dlp normally produces clean headers, but an exploited
+	// extractor or a future bug could return values with embedded
+	// CR/LF — which would smuggle into ffmpeg's -headers argument
+	// (joined with \r\n). The resolver must filter these out before
+	// they reach core.SessionRequest.InputHeaders.
+	//
+	// CR and LF cases land via JSON escapes parsed by json.Unmarshal.
+	// The NUL case is exercised separately by TestSanitizeHeaders_*
+	// because embedding a literal NUL in a Go-source raw-string is
+	// not portable across the build-tooling pipeline.
+	const injectionJSON = `{
+"url": "https://example.com/v.mp4",
+"http_headers": {
+  "User-Agent": "Mozilla/5.0\r\nX-Injected: yes",
+  "Referer": "https://safe.example/",
+  "X-Bad-Key\r\nX-Smuggled": "value"
+},
+"is_live": false,
+"title": "ok"
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(injectionJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://example.com/", "best", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Only Referer (clean) should survive.
+	if _, ok := got.Headers["User-Agent"]; ok {
+		t.Errorf("CRLF-tainted User-Agent leaked through: %q", got.Headers["User-Agent"])
+	}
+	for k := range got.Headers {
+		if containsCRLFNUL(k) {
+			t.Errorf("CRLF-tainted key leaked through: %q", k)
+		}
+	}
+	if got.Headers["Referer"] != "https://safe.example/" {
+		t.Errorf("Referer dropped or mangled: %q", got.Headers["Referer"])
+	}
+	// Exactly one header should survive (Referer).
+	if len(got.Headers) != 1 {
+		t.Errorf("got %d headers after sanitize, want 1 (Referer); headers=%v", len(got.Headers), got.Headers)
+	}
+}
+
+func TestSanitizeHeaders_StripsControlBytes(t *testing.T) {
+	// Use Go's \x00 escape to produce a real NUL byte at runtime
+	// without a literal NUL in the source file. Same mechanism for
+	// CR/LF — these escapes survive the build-tooling pipeline
+	// safely (unlike literal control bytes in raw strings).
+	in := map[string]string{
+		"GoodKey":    "good value",
+		"BadKey\r\n": "bad-key-payload",
+		"NullKey\x00":  "nul-key-payload",
+		"BadValue":   "tainted\r\nX-Smuggled: yes",
+		"NullValue":  "tainted\x00",
+	}
+	out := sanitizeHeaders(in)
+	if len(out) != 1 {
+		t.Fatalf("got %d headers, want 1; out=%v", len(out), out)
+	}
+	if out["GoodKey"] != "good value" {
+		t.Errorf("GoodKey = %q, want \"good value\"", out["GoodKey"])
+	}
+}
+
+func TestSanitizeHeaders_NilAndEmpty(t *testing.T) {
+	if sanitizeHeaders(nil) != nil {
+		t.Error("nil input should produce nil output")
+	}
+	if sanitizeHeaders(map[string]string{}) != nil {
+		t.Error("empty input should produce nil output")
+	}
+	// All-bad input → empty output collapses to nil.
+	bad := map[string]string{"K\r": "v", "K": "v\n"}
+	if sanitizeHeaders(bad) != nil {
+		t.Errorf("all-bad input should collapse to nil; got %v", sanitizeHeaders(bad))
+	}
+}
+
 func TestResolve_RejectsValidJSONWithEmptyURL(t *testing.T) {
 	// yt-dlp could in principle return valid JSON with no "url" field
 	// (extractor bug, partial response). Resolve must surface this at

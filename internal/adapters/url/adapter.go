@@ -244,10 +244,17 @@ func (a *Adapter) SetEnabled(v bool) {
 	a.cfg.Enabled = v
 }
 
-// ApplyConfig diffs and applies. With only `enabled` in v1 there's no
-// real diff to compute; we just store the new value and return
-// ScopeHotSwap. (`enabled` is handled out-of-band by the toggle endpoint
-// per the Plex precedent.)
+// ApplyConfig stores the new TOML and rebuilds any state that depends
+// on hot-swappable fields. Returns ScopeHotSwap.
+//
+// Resolver rebuild: cfg.YtdlpResolveTimeoutSeconds feeds into
+// Resolver.Timeout, which is captured at Adapter.Start. Without
+// rebuilding here, an operator changing the timeout via the UI/TOML
+// would see "applied live" in the toast but the next resolve would
+// still use the Start-time timeout — a documented HotSwap field
+// silently failing to hot-swap. The rebuild only fires when the
+// timeout actually changed, and only if probe.OK (no resolver to
+// rebuild otherwise).
 func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
 	newCfg := DefaultConfig()
 	if err := meta.PrimitiveDecode(raw, &newCfg); err != nil {
@@ -257,8 +264,21 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		a.setState(adapters.StateError, err.Error())
 		return 0, err
 	}
+
 	a.mu.Lock()
+	oldTimeout := a.cfg.YtdlpResolveTimeoutSeconds
+	probe := a.ytdlpProbe
 	a.cfg = newCfg
+	// Rebuild the resolver if (a) the binary is present and (b) the
+	// timeout-driving field actually changed. Reuses OSRunner because
+	// the Runner has no per-call state.
+	if probe.OK && oldTimeout != newCfg.YtdlpResolveTimeoutSeconds {
+		a.resolver = &ytdlp.Resolver{
+			Binary:  probe.Path,
+			Timeout: time.Duration(newCfg.YtdlpResolveTimeoutSeconds) * time.Second,
+			Runner:  ytdlp.OSRunner{},
+		}
+	}
 	a.mu.Unlock()
 	return adapters.ScopeHotSwap, nil
 }

@@ -151,7 +151,7 @@ func extractURLAndMode(r *http.Request) (rawURL, mode string, err error) {
 		if payload.URL == "" {
 			return "", "", fmt.Errorf("url is required")
 		}
-		m := payload.Mode
+		m := strings.ToLower(strings.TrimSpace(payload.Mode))
 		if m == "" {
 			m = "auto"
 		}
@@ -164,7 +164,7 @@ func extractURLAndMode(r *http.Request) (rawURL, mode string, err error) {
 	if v == "" {
 		return "", "", fmt.Errorf("url is required")
 	}
-	m := r.Form.Get("mode")
+	m := strings.ToLower(strings.TrimSpace(r.Form.Get("mode")))
 	if m == "" {
 		m = "auto"
 	}

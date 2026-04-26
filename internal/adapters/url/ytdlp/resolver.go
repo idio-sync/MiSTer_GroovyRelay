@@ -113,9 +113,18 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		return nil, fmt.Errorf("ytdlp: JSON missing required \"url\" field")
 	}
 
+	// Sanitize http_headers against control-character injection BEFORE
+	// they flow into core.SessionRequest.InputHeaders → ffmpeg's
+	// -headers argument (which joins key:value pairs with \r\n).
+	// A header with embedded \r/\n/\x00 from a buggy or malicious yt-dlp
+	// extractor would be header-smuggled into ffmpeg's outbound HTTP.
+	// The bridge runs in a trusted operator role, so this is the right
+	// layer to defend at — drop offending headers and continue.
+	headers := sanitizeHeaders(raw.HTTPHeaders)
+
 	return &Resolution{
 		URL:     raw.URL,
-		Headers: raw.HTTPHeaders,
+		Headers: headers,
 		IsLive:  raw.IsLive,
 		Title:   raw.Title,
 	}, nil
@@ -133,4 +142,48 @@ func lastNonEmptyLine(buf []byte) string {
 		}
 	}
 	return "no error message from yt-dlp"
+}
+
+// sanitizeHeaders drops any header whose key OR value contains a CR,
+// LF, or NUL byte. Those characters are header-injection primitives
+// when concatenated into ffmpeg's -headers argument (which uses \r\n
+// as the field separator). yt-dlp normally produces clean headers,
+// but a malicious site exploiting an extractor bug, or a future
+// extractor regression, could in principle return e.g.
+//
+//	{"User-Agent": "Mozilla/5.0\r\nX-Inject: yes"}
+//
+// Without this filter, the bridge would smuggle "X-Inject: yes" into
+// every outbound HTTP request ffmpeg makes for the resolved stream.
+// Dropping is preferable to escaping because there's no legitimate
+// header value with embedded control bytes — a drop is conservative
+// and never breaks a real upstream.
+//
+// Returns nil when in is nil or empty (preserves the "no headers"
+// signal — ffmpeg's -headers gets omitted).
+func sanitizeHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if containsCRLFNUL(k) || containsCRLFNUL(v) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func containsCRLFNUL(s string) bool {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\r', '\n', '\x00':
+			return true
+		}
+	}
+	return false
 }

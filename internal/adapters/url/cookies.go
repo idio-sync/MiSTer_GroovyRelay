@@ -42,8 +42,10 @@ type CookiesStat struct {
 func saveCookies(path string, data []byte) (CookiesStat, error) {
 	tmp := path + ".tmp"
 	// 0600 is best-effort on Windows; OpenFile will accept the mode but
-	// NTFS ACLs may not honor it. Logged as a warning by the caller if
-	// the post-write Stat reports a different mode (handler does this).
+	// NTFS ACLs may not honor it. The comment here used to claim the
+	// caller logs a warning on a mode mismatch — that was never wired
+	// up, so the lie was removed. Operators on Windows accept the
+	// LAN-trust threat model documented in the spec §"Security posture".
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return CookiesStat{}, fmt.Errorf("save cookies: open tmp: %w", err)
