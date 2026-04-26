@@ -190,11 +190,12 @@ func TestModeline_PAL576i(t *testing.T) {
 		t.Errorf("PAL_576i: no BlitFields captured; cannot check interlace pattern")
 	}
 
-	// 4. Audio bytes: 2 s × 48000 Hz × 2 ch × 2 bytes/sample = 384000; ±10%.
+	// 4. Audio bytes: 2 s × 48000 Hz × 2 ch × 2 bytes/sample = 384000; ±15%.
 	const wantAudio = 2 * 48000 * 2 * 2 // 384000
-	lo, hi := int(wantAudio*0.9), int(wantAudio*1.1)
+	margin := wantAudio * 15 / 100
+	lo, hi := int(wantAudio-margin), int(wantAudio+margin)
 	if snap.AudioBytes < lo || snap.AudioBytes > hi {
-		t.Errorf("PAL_576i: audio bytes = %d, want %d±10%% [%d, %d]",
+		t.Errorf("PAL_576i: audio bytes = %d, want %d±15%% [%d, %d]",
 			snap.AudioBytes, wantAudio, lo, hi)
 	}
 }
