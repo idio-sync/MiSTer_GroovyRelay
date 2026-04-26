@@ -144,6 +144,45 @@ func TestValidate_AcceptsEmptyHostIP(t *testing.T) {
 	}
 }
 
+// TestSectioned_Validate_Modeline checks that Sectioned.Validate accepts all
+// known modeline values (including the empty default) and rejects unknown ones
+// at config-load time, before they can cause a silent failure at first cast.
+func TestSectioned_Validate_Modeline(t *testing.T) {
+	valid := []string{"", "NTSC_480i", "NTSC_240p", "PAL_576i", "PAL_288p"}
+	for _, v := range valid {
+		t.Run("valid/"+v, func(t *testing.T) {
+			s := validSectioned()
+			s.Bridge.Video.Modeline = v
+			if err := s.Validate(); err != nil {
+				t.Errorf("modeline=%q: expected OK, got %v", v, err)
+			}
+		})
+	}
+
+	invalid := []string{"ntsc_240p", "BOGUS", "NTSC480i", "PAL_576i (experimental)"}
+	for _, v := range invalid {
+		t.Run("invalid/"+v, func(t *testing.T) {
+			s := validSectioned()
+			s.Bridge.Video.Modeline = v
+			err := s.Validate()
+			if err == nil {
+				t.Fatalf("modeline=%q: expected validation error, got nil", v)
+			}
+			if !strings.Contains(err.Error(), "modeline") {
+				t.Errorf("modeline=%q: error %q should mention 'modeline'", v, err)
+			}
+		})
+	}
+}
+
+// validSectioned returns a Sectioned with all required fields populated so
+// individual tests can change just the field under test.
+func validSectioned() *Sectioned {
+	b := defaultBridge()
+	b.MiSTer.Host = "192.168.1.50"
+	return &Sectioned{Bridge: b}
+}
+
 // TestSectioned_RoundTripSSHFields confirms the new SSH credential
 // fields decode + re-encode through BurntSushi/toml without loss.
 // Catches a forgotten struct tag or a missed migration helper if

@@ -179,6 +179,11 @@ func (s *Sectioned) Validate() error {
 		return err
 	}
 
+	switch b.Video.Modeline {
+	case "", "NTSC_480i", "NTSC_240p", "PAL_576i", "PAL_288p":
+	default:
+		return fmt.Errorf("bridge.video.modeline must be one of NTSC_480i, NTSC_240p, PAL_576i, PAL_288p (or empty for default), got %q", b.Video.Modeline)
+	}
 	switch b.Video.InterlaceFieldOrder {
 	case "tff", "bff":
 	default:

@@ -61,7 +61,12 @@ func PresetNames() []string {
 // defaults to NTSC_480i. Unknown names return an error so the caller
 // (Manager.startPlaneLocked) can surface a session-start failure to the
 // operator without silently substituting a default.
+const experimentalSuffix = " (experimental)"
+
 func ResolvePreset(name string) (ModelinePreset, error) {
+	if strings.HasSuffix(name, experimentalSuffix) {
+		name = strings.TrimSuffix(name, experimentalSuffix)
+	}
 	if name == "" {
 		return presets["NTSC_480i"], nil
 	}

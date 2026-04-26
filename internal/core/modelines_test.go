@@ -55,6 +55,30 @@ func TestResolvePreset_UnknownReturnsError(t *testing.T) {
 	}
 }
 
+func TestResolvePreset_ExperimentalSuffixStripped(t *testing.T) {
+	// Defense-in-depth: operators who copy-paste the UI dropdown label
+	// (which renders "(experimental)" for PAL presets) directly into
+	// TOML must get the correct preset rather than an opaque error.
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"PAL_576i (experimental)", "PAL_576i"},
+		{"PAL_288p (experimental)", "PAL_288p"},
+	}
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			got, err := ResolvePreset(c.input)
+			if err != nil {
+				t.Fatalf("ResolvePreset(%q) error = %v", c.input, err)
+			}
+			if got.Name != c.want {
+				t.Errorf("Name = %q, want %q", got.Name, c.want)
+			}
+		})
+	}
+}
+
 func TestPresetFieldRateMatchesTarget(t *testing.T) {
 	// Spec C1 guard: each preset's modeline must compute to its claimed
 	// field rate within 0.1% relative error. If a future modeline value
