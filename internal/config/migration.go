@@ -253,9 +253,10 @@ func defaultBridge() BridgeConfig {
 			Channels:   d.AudioChannels,
 		},
 		MiSTer: MisterConfig{
-			Port:       d.MisterPort,
-			SourcePort: d.SourcePort,
-			SSHUser:    "root",
+			Port:        d.MisterPort,
+			SourcePort:  d.SourcePort,
+			SSHUser:     "root",
+			SSHPassword: "1",
 		},
 		UI: UIConfig{
 			HTTPPort: d.HTTPPort,

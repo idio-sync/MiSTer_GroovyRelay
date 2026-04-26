@@ -170,14 +170,19 @@ ssh_password = "hunter2"
 	}
 }
 
-// TestDefaultBridge_SSHUserIsRoot pins the default user so a future
-// refactor of defaultBridge can't silently change it.
-func TestDefaultBridge_SSHUserIsRoot(t *testing.T) {
+// TestDefaultBridge_SSHCredentials pins the default SSH user and
+// password so a future refactor of defaultBridge can't silently
+// change them. Defaults match MiSTer's stock credentials (root / 1)
+// so first-run installs work without operator intervention. Anyone
+// running a hardened MiSTer (changed password) types their value in
+// the Settings UI and the preserve-on-empty conditional in
+// handleBridgePOST keeps it set across saves.
+func TestDefaultBridge_SSHCredentials(t *testing.T) {
 	b := defaultBridge()
 	if b.MiSTer.SSHUser != "root" {
 		t.Errorf("default SSHUser = %q, want root", b.MiSTer.SSHUser)
 	}
-	if b.MiSTer.SSHPassword != "" {
-		t.Errorf("default SSHPassword = %q, want empty", b.MiSTer.SSHPassword)
+	if b.MiSTer.SSHPassword != "1" {
+		t.Errorf("default SSHPassword = %q, want 1", b.MiSTer.SSHPassword)
 	}
 }

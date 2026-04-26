@@ -21,8 +21,8 @@ host = "192.168.1.50"             # MiSTer IP or hostname (required)
 port = 32100                      # Groovy UDP port on the MiSTer (default 32100)
 source_port = 32101               # Our stable source UDP port (kept across casts)
 ssh_user = "root"                 # MiSTer's stock SSH user
-# ssh_password = ""               # Required to use the Launch GroovyMiSTer button.
-                                  # MiSTer's stock password is "1".
+ssh_password = "1"                # MiSTer's stock password. Change here if you've
+                                  # hardened your MiSTer (or via the Settings UI).
 
 [bridge.ui]
 http_port = 32500                 # Bridge/UI HTTP port

@@ -705,6 +705,16 @@ outside it (no submit/validation coupling).
 - **Password in plaintext config file.** Same trust model as the Plex
   token (`storedDataFilename`); not a regression but worth flagging
   in a future hardening pass alongside the Plex token.
+- **Default `ssh_password = "1"` ships in the rendered config.** Post-v1
+  follow-up decision: the bridge ships MiSTer's stock credentials
+  (`root` / `1`) as defaults so first-run installs work without
+  operator config — operators who hardened their MiSTer override via
+  the Settings UI (preserve-on-empty in `handleBridgePOST` keeps
+  their value across saves). The "stock password is a gift to LAN
+  scanners" concern flagged in the original M3 review is mitigated
+  by the fact that `1` is the published default — anyone who knows
+  the bridge talks to a MiSTer can guess it. If a security-hardened
+  ship target ever surfaces, default the password back to empty.
 - **Hard-coded path could drift from upstream.** GroovyMiSTer install
   layout has been stable, but a future renaming of the core file
   ships a code change. Acceptable risk; the override field can be
