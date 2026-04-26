@@ -5,9 +5,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // Note: newTestAdapter is defined in play_test.go (same package).
@@ -24,6 +26,36 @@ func TestUIRoutes_HasPlayAndPanel(t *testing.T) {
 	}
 	if _, ok := have["GET panel"]; !ok {
 		t.Errorf("missing GET panel route: %v", have)
+	}
+}
+
+func TestUIRoutes_AllElevenRegistered(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	routes := a.UIRoutes()
+	if len(routes) != 11 {
+		t.Fatalf("UIRoutes count = %d, want 11", len(routes))
+	}
+	have := map[string]string{}
+	for _, r := range routes {
+		have[r.Method+" "+r.Path] = "ok"
+	}
+	want := []string{
+		"POST play",
+		"POST pause",
+		"POST resume",
+		"POST stop",
+		"POST replay",
+		"POST seek",
+		"POST history/play",
+		"POST history/delete",
+		"GET panel",
+		"POST cookies",
+		"DELETE cookies",
+	}
+	for _, w := range want {
+		if _, ok := have[w]; !ok {
+			t.Errorf("missing route %q; have: %v", w, have)
+		}
 	}
 }
 
@@ -214,5 +246,213 @@ func TestRenderPanel_CookiesStatusLine_ShowsBytesAndMtime(t *testing.T) {
 	// Some byte count near sampleCookies length should appear.
 	if !strings.Contains(html, "bytes") {
 		t.Error("cookies status missing 'bytes'")
+	}
+}
+
+// renderForTest is a helper for the v1.5 panel-state tests below.
+func renderForTest(t *testing.T, a *Adapter) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/panel", nil)
+	w := httptest.NewRecorder()
+	a.handlePanel(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("panel status = %d, want 200", w.Code)
+	}
+	return w.Body.String()
+}
+
+func TestPanel_StatePlaying_RendersPauseRow(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		Duration:   1 * time.Hour,
+		Position:   30 * time.Second,
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://example.com/v.mp4")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, "Playing:") || !strings.Contains(body, "example.com/v.mp4") {
+		t.Errorf("lifecycle status line missing/incorrect: %s", body)
+	}
+	if !strings.Contains(body, ">Pause<") {
+		t.Errorf("playing panel should have Pause button: %s", body)
+	}
+	if !strings.Contains(body, ">Stop<") {
+		t.Errorf("playing panel should have Stop button: %s", body)
+	}
+	if !strings.Contains(body, ">Replay<") {
+		t.Errorf("playing panel should have Replay button: %s", body)
+	}
+}
+
+func TestPanel_StatePaused_RendersResumeRow(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePaused,
+		Duration:   1 * time.Hour,
+		Position:   30 * time.Second,
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://example.com/v.mp4")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, ">Resume<") {
+		t.Errorf("paused panel should have Resume button: %s", body)
+	}
+	if strings.Contains(body, ">Pause<") {
+		t.Errorf("paused panel should NOT have Pause button: %s", body)
+	}
+}
+
+func TestPanel_StateIdle_NoControlRow(t *testing.T) {
+	fc := withStatus(core.SessionStatus{State: core.StateIdle})
+	a := newTestAdapter(t, fc)
+	body := renderForTest(t, a)
+	for _, label := range []string{">Pause<", ">Resume<", ">Stop<", ">Replay<"} {
+		if strings.Contains(body, label) {
+			t.Errorf("idle panel should not have %s: %s", label, body)
+		}
+	}
+}
+
+func TestPanel_PositionRenderedWhenDurationPositive(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		Duration:   45*time.Minute + 12*time.Second,
+		Position:   1*time.Minute + 23*time.Second,
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://example.com/v.mp4")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, "01:23 / 45:12") {
+		t.Errorf("position line missing/incorrect: %s", body)
+	}
+}
+
+func TestPanel_PositionFormatHHMMSS_OverOneHour(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		Duration:   2 * time.Hour,
+		Position:   1*time.Hour + 23*time.Minute + 45*time.Second,
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://example.com/v.mp4")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, "01:23:45 / 02:00:00") {
+		t.Errorf("HH:MM:SS format missing/incorrect: %s", body)
+	}
+}
+
+func TestPanel_ScrubBarRenderedWhenDurationPositive(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		Duration:   1 * time.Hour,
+		Position:   30 * time.Second,
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://example.com/v.mp4")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, `type="range"`) {
+		t.Errorf("playing panel with Duration > 0 must render <input type=range>: %s", body)
+	}
+	if !strings.Contains(body, `hx-post="/ui/adapter/url/seek"`) {
+		t.Errorf("scrub bar must hx-post to seek: %s", body)
+	}
+}
+
+func TestPanel_NoScrubBarWhenDurationZero(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		Duration:   0, // live
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://live.example/feed")
+	body := renderForTest(t, a)
+	if strings.Contains(body, `type="range"`) {
+		t.Errorf("Duration == 0 panel must NOT render scrub bar: %s", body)
+	}
+}
+
+func TestPanel_NoScrubBarWhenStateIdle_StateFirstRule(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StateIdle,
+		Duration:   1 * time.Hour, // stale m.active leaks Duration
+		AdapterRef: "url:abc",
+	})
+	a := newTestAdapter(t, fc)
+	body := renderForTest(t, a)
+	if strings.Contains(body, `type="range"`) {
+		t.Errorf("Idle state must hide scrub bar regardless of Duration: %s", body)
+	}
+}
+
+func TestPanel_ForeignAdapterRef_StopButtonDisabled(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		Duration:   1 * time.Hour,
+		AdapterRef: "plex:xyz",
+	})
+	a := newTestAdapter(t, fc)
+	body := renderForTest(t, a)
+	if !strings.Contains(body, "disabled") {
+		t.Errorf("foreign AdapterRef should disable the control row: %s", body)
+	}
+}
+
+func TestPanel_HXTrigger_FastWhenActive(t *testing.T) {
+	fc := withStatus(core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc"})
+	a := newTestAdapter(t, fc)
+	a.markRunning("https://example.com/v.mp4")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, `hx-trigger="every 1s"`) {
+		t.Errorf("active panel should poll every 1s: %s", body)
+	}
+}
+
+func TestPanel_HXTrigger_SlowWhenIdle(t *testing.T) {
+	fc := withStatus(core.SessionStatus{State: core.StateIdle})
+	a := newTestAdapter(t, fc)
+	body := renderForTest(t, a)
+	if !strings.Contains(body, `hx-trigger="every 5s"`) {
+		t.Errorf("idle panel should poll every 5s: %s", body)
+	}
+}
+
+func TestPanel_HistoryListRendered(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://a.example/1")
+	a.history.AddOrBump("https://b.example/2")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, "a.example/1") || !strings.Contains(body, "b.example/2") {
+		t.Errorf("history list should render both URLs: %s", body)
+	}
+	if !strings.Contains(body, `hx-post="/ui/adapter/url/history/play"`) {
+		t.Errorf("history Cast button should hx-post to history/play: %s", body)
+	}
+	if !strings.Contains(body, `hx-post="/ui/adapter/url/history/delete"`) {
+		t.Errorf("history delete button should hx-post to history/delete: %s", body)
+	}
+}
+
+func TestPanel_HistoryEmpty_NoListSection(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	body := renderForTest(t, a)
+	if strings.Contains(body, "Recent:") {
+		t.Errorf("empty history should not render the Recent section: %s", body)
+	}
+}
+
+func TestPanel_RedactsCredentialsInDisplay(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://user:secret@example.com/v.mp4")
+	body := renderForTest(t, a)
+	if strings.Contains(body, "secret") {
+		t.Errorf("password leaked into rendered panel: %s", body)
+	}
+	if !strings.Contains(body, "example.com") {
+		t.Errorf("host stripped from redacted display: %s", body)
 	}
 }

@@ -1,6 +1,7 @@
 package url
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -22,78 +23,99 @@ import (
 // handlePlay accepts a paste from the UI form or a JSON POST. Routes
 // the URL to either the direct path (existing v1 behavior) or the
 // yt-dlp resolver, based on mode + hostname allowlist. On success
-// builds a fire-and-forget core.SessionRequest and calls Manager.
+// builds a v1.5 SessionRequest (DirectPlay + Capabilities all true)
+// and calls Manager.
 //
 // mode form/JSON field values:
 //   - "" or "auto" → host in cfg.YtdlpHosts → ytdlp; else direct
 //   - "ytdlp" → forced ytdlp (400 if YtdlpEnabled=false)
 //   - "direct" → forced direct (existing v1 behavior)
 //
-// Spec: docs/specs/2026-04-25-url-ytdlp-design.md §"HTTP surface".
+// Spec: docs/specs/2026-04-25-url-ytdlp-design.md §"HTTP surface" +
+// docs/specs/2026-04-25-url-adapter-controls-design.md §"Capability
+// and DirectPlay flips".
 func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 	rawURL, mode, err := extractURLAndMode(r)
 	if err != nil {
 		a.respondError(w, r, http.StatusBadRequest, err.Error(), "url")
 		return
 	}
-
-	parsed, err := stdurl.Parse(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		a.respondError(w, r, http.StatusBadRequest, "not a valid URL", "url")
+	ref, resolvedVia, status, err := a.castURL(r.Context(), rawURL, mode)
+	if err != nil {
+		field := ""
+		if status == http.StatusBadRequest {
+			// 400 from castURL is either bad URL or bad mode value;
+			// extractURLAndMode caught form-shape errors. We can't
+			// always tell which, but "url" is the more common case.
+			field = "url"
+		}
+		a.respondError(w, r, status, err.Error(), field)
 		return
+	}
+	a.respondStarted(w, r, ref, rawURL, resolvedVia)
+}
+
+// castURL is the shared cast-spawning logic. It validates the URL,
+// records into history (so failed casts surface for one-click retry),
+// dispatches direct vs. yt-dlp per mode + cfg + probe, resolves if
+// needed, builds the SessionRequest with v1.5 caps, and starts the
+// session. Returns the AdapterRef, resolvedVia ("direct" or "ytdlp"),
+// the HTTP status to use on error, and the error.
+//
+// Used by handlePlay, handleReplay, handleResume's live-reconnect
+// branch, and handleHistoryPlay. Each of these re-resolves the URL
+// (yt-dlp tokens expire), so they all funnel through here.
+func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolvedVia string, status int, err error) {
+	parsed, perr := stdurl.Parse(rawURL)
+	if perr != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", http.StatusBadRequest, fmt.Errorf("not a valid URL")
 	}
 	switch parsed.Scheme {
 	case "http", "https":
 		// ok
 	default:
-		a.respondError(w, r, http.StatusBadRequest,
-			fmt.Sprintf("scheme not supported in v1: %s (only http and https)", parsed.Scheme),
-			"url")
-		return
+		return "", "", http.StatusBadRequest,
+			fmt.Errorf("scheme not supported in v1: %s (only http and https)", parsed.Scheme)
 	}
 
+	// Record into history regardless of dispatch / cast outcome, so
+	// the operator can re-try a typo URL with one click. Spec §"History
+	// / Constraints". MUST come BEFORE the dispatch decision so a
+	// resolver failure still records.
+	a.history.AddOrBump(rawURL)
+
 	// Decide the route. Snapshot resolver under the same lock as cfg
-	// and probe — Start writes a.resolver under a.mu (review fix I4),
-	// so the read here must hold the lock to avoid a -race detector
-	// flag in CI.
+	// and probe — Start writes a.resolver under a.mu, so the read
+	// here must hold the lock to avoid a -race detector flag in CI.
 	a.mu.Lock()
 	cfg := a.cfg
 	probe := a.ytdlpProbe
 	resolver := a.resolver
 	a.mu.Unlock()
 
-	// parsed.Hostname() strips any :port suffix. parsed.Host would
-	// produce "youtube.com:443" for an explicit-port URL, which the
-	// allowlist matcher would not match — silently routing through
-	// direct mode and serving the watch page HTML to ffmpeg.
-	useYtdlp, err := decideRoute(mode, parsed.Hostname(), cfg, probe)
-	if err != nil {
-		a.respondError(w, r, http.StatusBadRequest, err.Error(), "mode")
-		return
+	// parsed.Hostname() strips any :port suffix.
+	useYtdlp, derr := decideRoute(mode, parsed.Hostname(), cfg, probe)
+	if derr != nil {
+		return "", "", http.StatusBadRequest, derr
 	}
 
-	resolvedVia := "direct"
+	resolvedVia = "direct"
 	streamURL := rawURL
 	var headers map[string]string
 	var resolvedTitle string
 
 	if useYtdlp {
 		if resolver == nil {
-			a.respondError(w, r, http.StatusInternalServerError, "resolver not configured", "")
-			return
+			return "", "", http.StatusInternalServerError, fmt.Errorf("resolver not configured")
 		}
-		// Pass r.Context() directly — Resolver.Resolve wraps it in
-		// context.WithTimeout internally; an outer WithCancel here
-		// would be redundant (review fix E1-MIN1 from r2 plan review).
-		res, err := resolver.Resolve(r.Context(), rawURL,
+		res, rerr := resolver.Resolve(ctx, rawURL,
 			cfg.YtdlpFormat,
 			cookiesPathIfPresent(a.cookiesPath))
-		if err != nil {
-			safeMsg := strings.ReplaceAll(err.Error(), rawURL, redactURL(rawURL))
+		if rerr != nil {
+			safeMsg := strings.ReplaceAll(rerr.Error(), rawURL, redactURL(rawURL))
 			a.setState(adapters.StateError, safeMsg)
 			slog.Warn("yt-dlp resolve failed", "url", redactURL(rawURL), "err", safeMsg)
-			a.respondError(w, r, http.StatusInternalServerError, safeMsg, "")
-			return
+			return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
 		}
 		streamURL = res.URL
 		headers = res.Headers
@@ -101,37 +123,36 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 		resolvedVia = "ytdlp"
 	}
 
-	ref := newAdapterRef()
+	ref = newAdapterRef()
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
 		InputHeaders: headers,
-		Capabilities: core.Capabilities{CanSeek: false, CanPause: false},
+		// v1.5: unconditional caps + DirectPlay so the panel's controls
+		// reach core.Manager. Per-source seekability is enforced by the
+		// panel (Duration > 0 gating) and by the Resume handler's
+		// Duration-based branching. Spec §"Capability and DirectPlay
+		// flips".
+		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 		AdapterRef:   ref,
-		DirectPlay:   false,
+		DirectPlay:   true,
 		// OnStop captures rawURL + resolvedTitle at request-construction
 		// time, NOT inside the closure body — by the time OnStop runs,
 		// adapter state may have been overwritten by a preempting
-		// session (review fix I3 / spec §"Lifecycle integration").
+		// session.
 		OnStop: a.makeOnStop(rawURL, resolvedTitle),
 	}
 
 	if a.core == nil {
-		a.respondError(w, r, http.StatusInternalServerError, "core not wired", "")
-		return
+		return "", "", http.StatusInternalServerError, fmt.Errorf("core not wired")
 	}
-	if err := a.core.StartSession(req); err != nil {
-		safeMsg := strings.ReplaceAll(err.Error(), rawURL, redactURL(rawURL))
+	if serr := a.core.StartSession(req); serr != nil {
+		safeMsg := strings.ReplaceAll(serr.Error(), rawURL, redactURL(rawURL))
 		a.setState(adapters.StateError, safeMsg)
-		slog.Warn("url cast failed", "url", redactURL(rawURL), "err", err)
-		a.respondError(w, r, http.StatusInternalServerError, safeMsg, "")
-		return
+		slog.Warn("url cast failed", "url", redactURL(rawURL), "err", serr)
+		return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
 	}
 
 	a.markRunning(rawURL)
-	// Spec §"Logging" makes title strictly debug-level (privacy on a
-	// household-shared bridge — info-level logs end up in the journal
-	// and reveal the operator's viewing history). Title belongs in
-	// debug logs only; the info line stays redacted-URL + ref.
 	slog.Info("url cast started",
 		"url", redactURL(rawURL),
 		"ref", ref,
@@ -139,7 +160,7 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if resolvedTitle != "" {
 		slog.Debug("url cast resolved", "ref", ref, "title", resolvedTitle)
 	}
-	a.respondStarted(w, r, ref, rawURL, resolvedVia)
+	return ref, resolvedVia, http.StatusOK, nil
 }
 
 // extractURLAndMode parses both fields from form-encoded or JSON bodies.

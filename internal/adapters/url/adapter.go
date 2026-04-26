@@ -17,13 +17,17 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
-// SessionManager is the adapter's narrow view of core.Manager. Declared
-// here (rather than importing core.Manager concretely) so play_test.go
-// can inject fakes without spinning up a real core. core.Manager
-// satisfies this via structural typing.
+// SessionManager is the adapter's narrow view of core.Manager. v1.5
+// extends from {StartSession, Status} to add the four operations the
+// new control endpoints need. core.Manager satisfies this via
+// structural typing (manager.go:223,239,268,363,394,425).
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
 	Status() core.SessionStatus
+	Pause() error
+	Play() error
+	Stop() error
+	SeekTo(offsetMs int) error
 }
 
 // resolverIface is the adapter's narrow view of *ytdlp.Resolver. Lets
@@ -72,6 +76,11 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 	lastURL    string // last URL handed to StartSession; surfaced in the panel
+
+	// history is the LRU URL-recall list shown in the panel. Its own
+	// mutex; not guarded by a.mu. Path computed once at New() from
+	// cfg.Bridge.DataDir, mirroring the cookiesPath pattern.
+	history *History
 }
 
 // AdapterConfig bundles the bridge-level context the URL adapter
@@ -101,12 +110,14 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	if cfg.Bridge.DataDir == "" {
 		return nil, fmt.Errorf("url: AdapterConfig.Bridge.DataDir is required")
 	}
+	historyPath := filepath.Join(cfg.Bridge.DataDir, "url_history.json")
 	return &Adapter{
 		core:        cfg.Core,
 		state:       adapters.StateStopped,
 		stateSince:  time.Now(),
 		cookiesPath: filepath.Join(cfg.Bridge.DataDir, "url_cookies.txt"),
 		probeFn:     realProbeYtdlp,
+		history:     LoadHistory(historyPath),
 	}, nil
 }
 
