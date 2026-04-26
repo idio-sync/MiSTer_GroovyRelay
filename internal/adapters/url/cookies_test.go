@@ -321,6 +321,52 @@ func TestHandleCookiesDELETE_IdempotentOnMissing(t *testing.T) {
 	}
 }
 
+// F1 will use hx-target="#url-cookies-status" to swap the cookies-section
+// status line in place after Save/Clear. Pin the selector contract here so
+// any future fragment refactor that drops the id breaks loudly at the
+// HTTP-layer test, not silently in the panel.
+func TestHandleCookiesPOST_HTMX_RendersStatusFragment(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	body := strings.NewReader("cookies=" + neturl.QueryEscape(sampleCookies))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	a.handleCookiesSet(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(w.Body.String(), `id="url-cookies-status"`) {
+		t.Errorf("body missing id=\"url-cookies-status\" selector: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Cookies stored") {
+		t.Errorf("body missing 'Cookies stored' text: %s", w.Body.String())
+	}
+}
+
+func TestHandleCookiesDELETE_HTMX_RendersStatusFragment(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	req := httptest.NewRequest("DELETE", "/ui/adapter/url/cookies", nil)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	a.handleCookiesClear(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(w.Body.String(), `id="url-cookies-status"`) {
+		t.Errorf("body missing id=\"url-cookies-status\" selector: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "No cookies set") {
+		t.Errorf("body missing 'No cookies set' text: %s", w.Body.String())
+	}
+}
+
 func TestUIRoutes_IncludesCookiesEndpoints(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	got := a.UIRoutes()

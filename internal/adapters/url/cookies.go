@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -188,7 +189,11 @@ func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := saveCookies(a.cookiesPath, data)
 	if err != nil {
-		a.respondError(w, r, http.StatusInternalServerError, err.Error(), "")
+		// Don't echo the raw filesystem error (it includes the full
+		// container-side path). Log server-side; surface a generic
+		// message to the client.
+		slog.Warn("save cookies failed", "err", err)
+		a.respondError(w, r, http.StatusInternalServerError, "failed to save cookies", "")
 		return
 	}
 	if isHTMXRequest(r) {
@@ -212,7 +217,8 @@ func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
 // Idempotent — missing file returns 200 just the same.
 func (a *Adapter) handleCookiesClear(w http.ResponseWriter, r *http.Request) {
 	if err := clearCookies(a.cookiesPath); err != nil {
-		a.respondError(w, r, http.StatusInternalServerError, err.Error(), "")
+		slog.Warn("clear cookies failed", "err", err)
+		a.respondError(w, r, http.StatusInternalServerError, "failed to clear cookies", "")
 		return
 	}
 	if isHTMXRequest(r) {
