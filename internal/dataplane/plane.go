@@ -159,7 +159,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	// (rateNumer / rateDenom) → period_ms = 1000 * rateDenom / rateNumer.
 	rateNumer, rateDenom := cfg.Modeline.FieldRateRatio()
 	if rateNumer <= 0 {
-		rateNumer = 60
+		rateNumer = 60000
 		rateDenom = 1001
 	}
 	p.periodMsNumer = 1000 * rateDenom
