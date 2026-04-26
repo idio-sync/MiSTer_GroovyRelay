@@ -133,7 +133,7 @@ func TestModeline_NTSC240p(t *testing.T) {
 			AspectMode:      "letterbox",
 			AudioSampleRate: 48000,
 			AudioChannels:   2,
-			SourceProbe:     &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 24.0},
+			SourceProbe:     &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 24.0, AudioRate: 48000},
 		},
 		Modeline:      groovy.NTSC240p60,
 		FieldWidth:    int(groovy.NTSC240p60.HActive),
