@@ -230,3 +230,29 @@ func TestCSRF_HeaderWithEmptyOrigin_Rejects(t *testing.T) {
 		t.Errorf("response body = %q, want substring %q", rw.Body.String(), "CSRF: missing Origin")
 	}
 }
+
+func TestCSRF_ExtensionOrigin_GetSkipsCheck(t *testing.T) {
+	// Pins the ordering invariant: the GET / HEAD / OPTIONS short-circuit
+	// at the top of csrfMiddleware runs BEFORE the bypass tier (and
+	// before the Sec-Fetch-Site check).
+	//
+	// Test discrimination: this request would be rejected 403 if the
+	// bypass tier ran first (X-Bridge-Extension is absent, so bypass
+	// falls through to Sec-Fetch-Site: cross-site → 403). It is
+	// accepted 200 because the safe-method short-circuit handles it
+	// before either later check runs. A future refactor that re-orders
+	// these blocks would flip this test, which is the whole point.
+	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/ui/adapter/url/panel", nil)
+	req.Host = "bridge.lan:32500"
+	req.Header.Set("Origin", "moz-extension://abcd-1234")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	// no X-Bridge-Extension — that's what makes this a discriminating test
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Errorf("GET (cross-site, no bypass header) status = %d, want 200 via safe-method short-circuit", rw.Code)
+	}
+}
