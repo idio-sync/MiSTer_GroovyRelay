@@ -14,9 +14,6 @@ import (
 func TestUIRoutes_HasPlayAndPanel(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	routes := a.UIRoutes()
-	if len(routes) != 2 {
-		t.Fatalf("UIRoutes count = %d, want 2", len(routes))
-	}
 	have := map[string]string{}
 	for _, r := range routes {
 		have[r.Method+" "+r.Path] = "ok"

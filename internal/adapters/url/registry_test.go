@@ -54,12 +54,14 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 				mux.HandleFunc("GET "+pattern, r.Handler)
 			case "POST":
 				mux.HandleFunc("POST "+pattern, r.Handler)
+			case "DELETE":
+				mux.HandleFunc("DELETE "+pattern, r.Handler)
 			}
 			mounted++
 		}
 	}
-	if mounted != 2 {
-		t.Errorf("mounted %d url routes, want 2", mounted)
+	if mounted != 4 {
+		t.Errorf("mounted %d url routes, want 4", mounted)
 	}
 
 	// Sanity-check the GET /panel route is reachable via the mux.

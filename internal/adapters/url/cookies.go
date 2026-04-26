@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"os"
@@ -168,4 +169,59 @@ func readCookiesFromHTTPRequest(r *http.Request) ([]byte, error) {
 	}
 	v := r.Form.Get("cookies")
 	return []byte(v), nil
+}
+
+// handleCookiesSet handles POST /ui/adapter/url/cookies. Reads the
+// cookies field from a form-encoded or JSON body, validates lenient
+// Netscape format, atomic-writes to a.CookiesPath(). Mode 0600
+// best-effort. Returns 202 + JSON or HTML fragment depending on
+// HX-Request.
+func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
+	data, err := readCookiesFromHTTPRequest(r)
+	if err != nil {
+		a.respondError(w, r, http.StatusBadRequest, err.Error(), "cookies")
+		return
+	}
+	if err := validateCookies(data); err != nil {
+		a.respondError(w, r, http.StatusBadRequest, err.Error(), "cookies")
+		return
+	}
+	st, err := saveCookies(a.cookiesPath, data)
+	if err != nil {
+		a.respondError(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	if isHTMXRequest(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprintf(w,
+			`<div class="cookies-status" id="url-cookies-status">Cookies stored (%d bytes, set %s)</div>`,
+			st.Size,
+			template.HTMLEscapeString(st.Mtime.UTC().Format("2006-01-02 15:04:05Z")))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"bytes":  st.Size,
+		"set_at": st.Mtime.UTC().Format(time.RFC3339),
+	})
+}
+
+// handleCookiesClear handles DELETE /ui/adapter/url/cookies.
+// Idempotent — missing file returns 200 just the same.
+func (a *Adapter) handleCookiesClear(w http.ResponseWriter, r *http.Request) {
+	if err := clearCookies(a.cookiesPath); err != nil {
+		a.respondError(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	if isHTMXRequest(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div class="cookies-status" id="url-cookies-status">No cookies set</div>`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
 }

@@ -1,15 +1,19 @@
 package url
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 const sampleCookies = `# Netscape HTTP Cookie File
@@ -179,7 +183,7 @@ func TestReadCookiesFromBody_CapsAtOneMiB(t *testing.T) {
 }
 
 func TestReadCookiesFromHTTPRequest_FormEncoded(t *testing.T) {
-	form := url.Values{"cookies": {sampleCookies}}
+	form := neturl.Values{"cookies": {sampleCookies}}
 	req := httptest.NewRequest(http.MethodPost, "/whatever",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -212,7 +216,7 @@ func TestReadCookiesFromHTTPRequest_OversizeRejected(t *testing.T) {
 	// Build an oversized form body. http.MaxBytesReader on the request
 	// body must reject it before any handler-level processing.
 	huge := strings.Repeat("a", (1<<20)+100)
-	form := url.Values{"cookies": {huge}}
+	form := neturl.Values{"cookies": {huge}}
 	req := httptest.NewRequest(http.MethodPost, "/whatever",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -220,6 +224,122 @@ func TestReadCookiesFromHTTPRequest_OversizeRejected(t *testing.T) {
 	_, err := readCookiesFromHTTPRequest(req)
 	if err == nil {
 		t.Fatal("oversize HTTP request body accepted")
+	}
+}
+
+func TestHandleCookiesPOST_Form_WritesFile(t *testing.T) {
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   nil,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	body := strings.NewReader("cookies=" + neturl.QueryEscape(sampleCookies))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleCookiesSet(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	got, err := os.ReadFile(a.CookiesPath())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != sampleCookies {
+		t.Errorf("file content mismatch")
+	}
+}
+
+func TestHandleCookiesPOST_JSON_WritesFile(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	body, _ := json.Marshal(map[string]string{"cookies": sampleCookies})
+	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.handleCookiesSet(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if _, err := os.Stat(a.CookiesPath()); err != nil {
+		t.Errorf("cookies file not written: %v", err)
+	}
+}
+
+func TestHandleCookiesPOST_RejectsInvalid(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	body := strings.NewReader("cookies=" + neturl.QueryEscape("not-cookies-format"))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleCookiesSet(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if _, err := os.Stat(a.CookiesPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("file written despite invalid input")
+	}
+}
+
+func TestHandleCookiesPOST_RejectsOversize(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	huge := strings.Repeat("a", (1<<20)+100)
+	body := strings.NewReader("cookies=" + neturl.QueryEscape(huge))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleCookiesSet(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for oversize", w.Code)
+	}
+}
+
+func TestHandleCookiesDELETE_RemovesFile(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if _, err := saveCookies(a.CookiesPath(), []byte(sampleCookies)); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	req := httptest.NewRequest("DELETE", "/ui/adapter/url/cookies", nil)
+	w := httptest.NewRecorder()
+	a.handleCookiesClear(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if _, err := os.Stat(a.CookiesPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Error("file still exists after DELETE")
+	}
+}
+
+func TestHandleCookiesDELETE_IdempotentOnMissing(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	req := httptest.NewRequest("DELETE", "/ui/adapter/url/cookies", nil)
+	w := httptest.NewRecorder()
+	a.handleCookiesClear(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestUIRoutes_IncludesCookiesEndpoints(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	got := a.UIRoutes()
+	want := map[string]bool{
+		"GET panel":      false,
+		"POST play":      false,
+		"POST cookies":   false,
+		"DELETE cookies": false,
+	}
+	for _, r := range got {
+		key := r.Method + " " + r.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for k, v := range want {
+		if !v {
+			t.Errorf("missing route: %s", k)
+		}
 	}
 }
 
