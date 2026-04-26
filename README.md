@@ -4,12 +4,16 @@
 
 Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and Plex seek/skip/etc. is wonky. 100% usable though.
 
-A WIP video cast-target bridge for the MiSTer. Run it alongside your Plex Media Server; it advertises itself as a Plex cast target on the LAN, and when you pick it from the Plex client's "Cast" menu it transcodes the Plex output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine 480i NTSC video. Also works with URLs (Archive.org .mkv.mp4, etc.)
+A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Server; it advertises itself as a Plex cast target on the LAN, and when you pick it from the Plex client's "Cast" menu it transcodes the Plex output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine 480i NTSC video.
+
+## Video Sources
+- Plex
+- URL to file (Archive.org .mkv, .mp4, etc.)
+- YouTube and sites suupported by yt-dlp
 
 ## Future Plans
 - Support for more relay sources:
   - Jellyfin
-  - Youtube (Via yt-dlp)
   - DLNA
   - IPTV/M3U playlists
 - Companion browser extension, cast video from right click
@@ -93,14 +97,6 @@ The Mode radio in the URL panel picks the resolution path per-paste:
   default allowlist.
 - **Direct** — never run through yt-dlp. Use for direct media URLs.
 
-### YouTube ads are bypassed automatically
-
-yt-dlp talks to YouTube's underlying media APIs and gets the raw
-video stream, not the player UI. Pre-roll and mid-roll YouTube ads
-are never injected into the cast — they don't reach the MiSTer.
-Sponsor segments baked into the video itself (e.g. NordVPN reads)
-play through; SponsorBlock integration is a planned follow-up.
-
 ### Cookies for auth-walled content
 
 Age-gated YouTube videos, members-only Twitch VODs, and similar
@@ -146,23 +142,6 @@ curl -X POST \
 The `Origin` header is required because the adapter's POST endpoint runs through the bridge's CSRF middleware. Browsers (htmx) set `Sec-Fetch-Site` automatically and pass without ceremony; `curl` and other scripted clients must include `Origin` matching the bridge's host:port. Without it, the request returns 403. The response shape also branches: htmx callers (which set `HX-Request: true`) get an HTML fragment back; everyone else gets JSON.
 
 URL credentials in the form `https://user:pass@host/path` are redacted in the panel display, the success response body, and all log lines. The JSON response echoes the URL verbatim — the API caller already submitted it.
-
-### Configuration knobs
-
-```toml
-[adapters.url]
-enabled = true                            # adapter is on
-ytdlp_enabled = true                      # yt-dlp resolution on (default)
-# ytdlp_hosts: extend or replace the curated allowlist.
-ytdlp_hosts = ["youtube.com", "twitch.tv", "vimeo.com", "archive.org"]
-# ytdlp_format: yt-dlp -f selector. Default caps at 720p (CRT can't
-# show more), avoids AV1 (slow software decode). Override only if
-# you know what you're doing.
-# ytdlp_format = "best[height<=720]/best"
-# ytdlp_resolve_timeout_seconds: hard cap on yt-dlp execution.
-# Default 30s covers cold-extractor first-hits; range [5, 120].
-# ytdlp_resolve_timeout_seconds = 30
-```
 
 ### What's not supported
 
