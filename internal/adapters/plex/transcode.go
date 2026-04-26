@@ -64,6 +64,19 @@ func NewTranscodeSessionID() string {
 // our target profile (480p H.264, no direct play/stream). The returned URL
 // is what FFmpeg consumes as its -i input.
 func BuildTranscodeURL(r TranscodeRequest) string {
+	return r.PlexServerURL + "/video/:/transcode/universal/start.m3u8?" + buildTranscodeQuery(r).Encode()
+}
+
+// BuildDecisionURL targets PMS's /video/:/transcode/universal/decision endpoint
+// using the exact same query as BuildTranscodeURL. PMS returns an XML
+// MediaContainer describing what it would actually do (direct play, direct
+// stream, or transcode) and why. Used by /debug/plex/decision to surface
+// PMS's true decision when Tautulli reports something unexpected.
+func BuildDecisionURL(r TranscodeRequest) string {
+	return r.PlexServerURL + "/video/:/transcode/universal/decision?" + buildTranscodeQuery(r).Encode()
+}
+
+func buildTranscodeQuery(r TranscodeRequest) url.Values {
 	if r.MaxBitrate == 0 {
 		r.MaxBitrate = 1500
 	}
@@ -117,7 +130,7 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	q.Set("X-Plex-Client-Profile-Extra", BuildProfileExtra())
 	q.Set("X-Plex-Client-Capabilities", BuildClientCapabilities())
 	q.Set("X-Plex-Token", r.Token)
-	return r.PlexServerURL + "/video/:/transcode/universal/start.m3u8?" + q.Encode()
+	return q
 }
 
 func StopTranscodeSession(ctx context.Context, serverURL, transcodeSessionID, token string) error {

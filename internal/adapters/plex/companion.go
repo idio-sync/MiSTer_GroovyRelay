@@ -133,13 +133,16 @@ func (c *Companion) restorePausedIfNeeded(w http.ResponseWriter, wasPaused bool)
 	return true
 }
 
-func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
+// transcodeRequestFor mirrors the TranscodeRequest sessionRequestFor builds, so
+// the debug decision endpoint can reproduce the exact PMS request that drives
+// playback. Keep these two callers in sync — diagnostic accuracy depends on it.
+func (c *Companion) transcodeRequestFor(p PlayMediaRequest) TranscodeRequest {
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	streamClientID := c.cfg.DeviceUUID
 	if streamClientID == "" {
 		streamClientID = p.ClientID
 	}
-	streamURL := BuildTranscodeURL(TranscodeRequest{
+	return TranscodeRequest{
 		PlexServerURL:      serverURL,
 		MediaPath:          p.MediaKey,
 		Token:              p.PlexToken,
@@ -158,7 +161,13 @@ func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
 		AudioStreamID:      p.AudioStreamID,
 		SubtitleStreamID:   p.SubtitleStreamID,
 		TranscodeSessionID: p.TranscodeSessionID,
-	})
+	}
+}
+
+func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
+	tr := c.transcodeRequestFor(p)
+	serverURL := tr.PlexServerURL
+	streamURL := BuildTranscodeURL(tr)
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
 		SeekOffsetMs: p.OffsetMs,
@@ -340,6 +349,7 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
 	mux.HandleFunc("/debug/plex/session", c.handleDebugSession)
+	mux.HandleFunc("/debug/plex/decision", c.handleDebugDecision)
 	return c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux)))
 }
 
@@ -761,6 +771,60 @@ func (c *Companion) handleDebugSession(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		report.PMS.StatusSessions = c.debugPMSStatusSessions(ctx, report.Local.PlexServer, play)
 		report.PMS.TranscodeSessions = c.debugPMSTranscodeSessions(ctx, report.Local.PlexServer, play)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(report)
+}
+
+type debugDecisionReport struct {
+	URL        string `json:"url"`
+	StatusCode int    `json:"statusCode,omitempty"`
+	Body       string `json:"body,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// handleDebugDecision asks PMS what it would actually do with our transcode
+// request by hitting /video/:/transcode/universal/decision with the same
+// params BuildTranscodeURL produces. The raw XML body PMS returns includes
+// directPlayDecisionCode/Text and transcodeDecisionCode/Text on the top-level
+// MediaContainer, plus per-stream Decision attributes — definitive answer to
+// "is PMS direct-playing despite directPlay=0&directStream=0?".
+func (c *Companion) handleDebugDecision(w http.ResponseWriter, r *http.Request) {
+	play := c.lastPlaySession()
+	report := debugDecisionReport{}
+	if play.MediaKey == "" || play.PlexServerAddress == "" || play.PlexServerPort == "" || play.PlexServerScheme == "" {
+		report.Error = "no plex session"
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(report)
+		return
+	}
+	tr := c.transcodeRequestFor(play)
+	decisionURL := BuildDecisionURL(tr)
+	report.URL = decisionURL
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, decisionURL, nil)
+	if err != nil {
+		report.Error = err.Error()
+	} else {
+		if play.PlexToken != "" {
+			req.Header.Set("X-Plex-Token", play.PlexToken)
+		}
+		resp, err := plexHTTPClient.Do(req)
+		if err != nil {
+			report.Error = err.Error()
+		} else {
+			defer resp.Body.Close()
+			report.StatusCode = resp.StatusCode
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				report.Error = err.Error()
+			} else {
+				report.Body = string(body)
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
