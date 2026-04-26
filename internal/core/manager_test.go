@@ -222,19 +222,44 @@ func TestManager_BogusRGBModeRejected(t *testing.T) {
 
 func TestManager_ResolveModeline(t *testing.T) {
 	cases := []struct {
-		in  string
-		ok  bool
+		in string
+		ok bool
 	}{
 		{"", true},
 		{"NTSC_480i", true},
 		{"something-else", false},
 	}
 	for _, c := range cases {
-		_, err := resolveModeline(c.in)
+		preset, err := ResolvePreset(c.in)
 		got := err == nil
 		if got != c.ok {
-			t.Errorf("resolveModeline(%q) ok=%v, want %v (err=%v)", c.in, got, c.ok, err)
+			t.Errorf("ResolvePreset(%q) ok=%v, want %v (err=%v)", c.in, got, c.ok, err)
 		}
+		_ = preset.Modeline
+	}
+}
+
+func TestManager_StartSession_PlumbsFpsExprFromPreset(t *testing.T) {
+	cases := []struct {
+		modeline    string
+		wantFpsExpr string
+	}{
+		{modeline: "NTSC_480i", wantFpsExpr: "60000/1001"},
+		{modeline: "NTSC_240p", wantFpsExpr: "60000/1001"},
+		{modeline: "PAL_576i", wantFpsExpr: "50/1"},
+		{modeline: "PAL_288p", wantFpsExpr: "50/1"},
+	}
+	for _, c := range cases {
+		t.Run(c.modeline, func(t *testing.T) {
+			preset, err := ResolvePreset(c.modeline)
+			if err != nil {
+				t.Fatalf("ResolvePreset(%q) error = %v", c.modeline, err)
+			}
+			if preset.FpsExpr != c.wantFpsExpr {
+				t.Errorf("preset.FpsExpr = %q, want %q",
+					preset.FpsExpr, c.wantFpsExpr)
+			}
+		})
 	}
 }
 
