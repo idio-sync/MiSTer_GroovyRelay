@@ -50,4 +50,35 @@
 		<button type="submit" class="btn">Save Bridge ▸</button>
 	</div>
 </form>
+
+{{/*
+  Launch section is hard-coded outside the auto-rendered .Sections
+  loop. Number "06" is hard-coded; if the bridge ever grows another
+  auto-rendered section, drop the leading number here or pick a
+  non-numeric label. See spec
+  docs/specs/2026-04-25-mister-ssh-launch-design.md
+  ("Launch button placement").
+*/}}
+<div class="section">
+	<h3><span class="num">06 —</span> Launch</h3>
+	<div class="field">
+		<label>Load Groovy core on the MiSTer</label>
+		<div>
+			<button type="button" class="btn"
+				hx-post="/ui/bridge/mister/launch"
+				hx-target="#mister-launch-slot"
+				hx-swap="innerHTML"
+				hx-disabled-elt="this"
+				hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
+				Launch GroovyMiSTer
+			</button>
+			<div id="mister-launch-slot" style="margin-top: 8px;"></div>
+			<div class="help">
+				Sends <code>load_core /media/fat/_Utility/Groovy.rbf</code>
+				to <code>/dev/MiSTer_cmd</code> over SSH using the
+				credentials in section 05.
+			</div>
+		</div>
+	</div>
+</div>
 {{end}}

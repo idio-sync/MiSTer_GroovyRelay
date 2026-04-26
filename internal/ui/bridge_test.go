@@ -448,6 +448,29 @@ func TestHandleBridgeMisterLaunch_NoLauncher(t *testing.T) {
 	}
 }
 
+// TestHandleBridge_GET_RendersLaunchSection verifies the post-form
+// Launch section block is rendered with the launch button and result
+// slot. The block is unconditional — every bridge GET should include
+// it.
+func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+	wantSnippets := []string{
+		`hx-post="/ui/bridge/mister/launch"`,
+		`id="mister-launch-slot"`,
+		"Launch GroovyMiSTer",
+		`type="button"`,
+	}
+	for _, w := range wantSnippets {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing %q in body", w)
+		}
+	}
+}
+
 // TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided is a
 // regression guard: it passes from green (Task 5's parseBridgeForm
 // already does this) and locks in that the preserve-on-empty
