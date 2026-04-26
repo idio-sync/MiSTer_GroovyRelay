@@ -331,7 +331,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	go ReadFramesFromPipePooled(proc.VideoPipe(), p.framePool, videoCh)
 	if audioEnabled {
 		audioCh = make(chan []byte, 16)
-		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
+		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, p.cfg.Modeline, audioCh)
 	}
 
 	// Audio delay buffer. The CRT introduces structural latency between BLIT

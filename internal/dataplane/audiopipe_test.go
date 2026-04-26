@@ -5,13 +5,15 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
 // TestAudioPipeReader_EmitsPerFieldChunks verifies ReadAudioFromPipe slices
 // its upstream reader into chunks sized to match the 59.94 Hz field cadence.
 // Uses NextChunkSize to get the exact integer size the implementation computes.
 func TestAudioPipeReader_EmitsPerFieldChunks(t *testing.T) {
-	r := NewAudioPipeReader(48000, 2)
+	r := NewAudioPipeReader(48000, 2, groovy.NTSC480i60)
 	buf := &bytes.Buffer{}
 	var chunks []int
 	for i := 0; i < 3; i++ {
@@ -28,7 +30,7 @@ func TestAudioPipeReader_EmitsPerFieldChunks(t *testing.T) {
 		r.Advance(chunk)
 	}
 	ch := make(chan []byte, 4)
-	go ReadAudioFromPipe(buf, 48000, 2, ch)
+	go ReadAudioFromPipe(buf, 48000, 2, groovy.NTSC480i60, ch)
 	for i := 0; i < 3; i++ {
 		select {
 		case c := <-ch:
@@ -49,7 +51,7 @@ func TestAudioPipeReader_EmitsPerFieldChunks(t *testing.T) {
 // 16-bit stereo sample frames, so the sequence alternates 3200/3204 bytes
 // instead of producing odd byte counts like 3203.
 func TestAudioPipeReader_ChunkSize48kStereo(t *testing.T) {
-	r := NewAudioPipeReader(48000, 2)
+	r := NewAudioPipeReader(48000, 2, groovy.NTSC480i60)
 	got1 := r.NextChunkSize()
 	r.Advance(got1)
 	got2 := r.NextChunkSize()
@@ -67,13 +69,13 @@ func TestAudioPipeReader_ChunkSize48kStereo(t *testing.T) {
 // TestAudioPipeReader_ClosesOnEOF confirms out is closed when the upstream
 // hits EOF so a consumer can detect end of stream.
 func TestAudioPipeReader_ClosesOnEOF(t *testing.T) {
-	r := NewAudioPipeReader(48000, 2)
+	r := NewAudioPipeReader(48000, 2, groovy.NTSC480i60)
 	chunk := r.NextChunkSize()
 	rd := bytes.NewReader(make([]byte, chunk))
 	ch := make(chan []byte, 2)
 	done := make(chan struct{})
 	go func() {
-		ReadAudioFromPipe(rd, 48000, 2, ch)
+		ReadAudioFromPipe(rd, 48000, 2, groovy.NTSC480i60, ch)
 		close(done)
 	}()
 	if _, ok := <-ch; !ok {
@@ -97,7 +99,7 @@ func TestAudioPipeReader_ShortTailClosesClean(t *testing.T) {
 	ch := make(chan []byte, 1)
 	done := make(chan struct{})
 	go func() {
-		ReadAudioFromPipe(r, 48000, 2, ch)
+		ReadAudioFromPipe(r, 48000, 2, groovy.NTSC480i60, ch)
 		close(done)
 	}()
 	select {
@@ -127,7 +129,7 @@ func TestAudioPipeReader_IntegerExactCumulative(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run("", func(t *testing.T) {
-			r := NewAudioPipeReader(tc.sampleRate, tc.channels)
+			r := NewAudioPipeReader(tc.sampleRate, tc.channels, groovy.NTSC480i60)
 			var total int64
 			bytesPerFrame := int64(tc.channels * bytesPerSample)
 			for i := int64(0); i < tc.fields; i++ {
@@ -145,5 +147,68 @@ func TestAudioPipeReader_IntegerExactCumulative(t *testing.T) {
 					tc.sampleRate, tc.channels, tc.fields, total, want)
 			}
 		})
+	}
+}
+
+func TestAudioPipeReader_RateFromModeline(t *testing.T) {
+	const sampleRate = 48000
+	const channels = 2
+
+	cases := []struct {
+		name      string
+		ml        groovy.Modeline
+		ticks     int
+		wantBytes int // total bytes consumed by `ticks` calls
+	}{
+		{
+			name:  "NTSC_480i 60 ticks = 192192 bytes",
+			ml:    groovy.NTSC480i60,
+			ticks: 60,
+			// Integer exact: floor(60 × 48000 × 1001 / 60000) × 4 = 48048 frames × 4 bytes = 192192 bytes
+			wantBytes: 192192,
+		},
+		{
+			name: "PAL_576i 50 ticks = 192000 bytes (one second exact)",
+			ml: groovy.Modeline{
+				PClock: 13.500, HActive: 720, HBegin: 732, HEnd: 795, HTotal: 864,
+				VActive: 576, VBegin: 580, VEnd: 585, VTotal: 625, Interlace: 1,
+			},
+			ticks: 50,
+			// 50 ticks × (48000 × 2 × 2 / 50) = 50 × 3840 = 192000 bytes
+			wantBytes: 192000,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := NewAudioPipeReader(sampleRate, channels, c.ml)
+			total := 0
+			for i := 0; i < c.ticks; i++ {
+				size := r.NextChunkSize()
+				total += size
+				r.Advance(size)
+			}
+			if total != c.wantBytes {
+				t.Errorf("after %d ticks total bytes = %d, want %d (drift %d)",
+					c.ticks, total, c.wantBytes, total-c.wantBytes)
+			}
+		})
+	}
+}
+
+func TestAudioPipeReader_PALPerTickSize(t *testing.T) {
+	// PAL 50 Hz × stereo × 48000 Hz: each tick is exactly 3840 bytes
+	// because 48000 / 50 = 960 sample-frames; 960 × 2 channels × 2
+	// bytes/sample = 3840.
+	pal := groovy.Modeline{
+		PClock: 13.500, HActive: 720, HBegin: 732, HEnd: 795, HTotal: 864,
+		VActive: 576, VBegin: 580, VEnd: 585, VTotal: 625, Interlace: 1,
+	}
+	r := NewAudioPipeReader(48000, 2, pal)
+	for i := 0; i < 5; i++ {
+		got := r.NextChunkSize()
+		if got != 3840 {
+			t.Errorf("tick %d: NextChunkSize() = %d, want 3840", i, got)
+		}
+		r.Advance(got)
 	}
 }
