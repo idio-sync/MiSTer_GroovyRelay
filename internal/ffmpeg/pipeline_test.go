@@ -233,6 +233,32 @@ func TestBuildCommand_OmitsAudioOutputWhenSourceHasNoAudio(t *testing.T) {
 	}
 }
 
+func TestBuildFilterChain_FpsExpr(t *testing.T) {
+	cases := []struct {
+		name      string
+		fpsExpr   string
+		wantChain string
+	}{
+		{name: "NTSC default 60000/1001", fpsExpr: "60000/1001", wantChain: "fps=60000/1001"},
+		{name: "PAL 50/1", fpsExpr: "50/1", wantChain: "fps=50/1"},
+		{name: "empty defaults to NTSC", fpsExpr: "", wantChain: "fps=60000/1001"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := PipelineSpec{
+				OutputWidth:   720,
+				OutputHeight:  480,
+				AspectMode:    "letterbox",
+				OutputFpsExpr: c.fpsExpr,
+			}
+			chain := buildFilterChain(s)
+			if !strings.Contains(chain, c.wantChain) {
+				t.Errorf("buildFilterChain() = %q, want substring %q", chain, c.wantChain)
+			}
+		})
+	}
+}
+
 // TestBuildFilterChain_SourceRateProducesCorrectNormalizer validates that
 // every source rate is normalized to 59.94 progressive output for the
 // row-stripe data plane.

@@ -144,11 +144,12 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	removeSubtitleFile(oldSubtitle)
 	notifySessionStop(oldOnStop, "preempted")
 
-	// Resolve the SWITCHRES modeline from config (falls back to NTSC 480i60).
-	modeline, err := resolveModeline(m.bridge.Video.Modeline)
+	// Resolve the modeline preset from config (empty defaults to NTSC_480i).
+	preset, err := ResolvePreset(m.bridge.Video.Modeline)
 	if err != nil {
 		return err
 	}
+	modeline := preset.Modeline
 	rgbMode, err := resolveRGBMode(m.bridge.Video.RGBMode)
 	if err != nil {
 		return err
@@ -171,6 +172,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OutputWidth:     int(modeline.HActive),
 		OutputHeight:    int(modeline.VActive),
 		FieldOrder:      m.bridge.Video.InterlaceFieldOrder,
+		OutputFpsExpr:   preset.FpsExpr,
 		AspectMode:      m.bridge.Video.AspectMode,
 		CropRect:        cropRect,
 		SubtitleURL:     req.SubtitleURL,
@@ -447,16 +449,6 @@ func probeDuration(probe *ffmpeg.ProbeResult) time.Duration {
 		return 0
 	}
 	return time.Duration(probe.Duration * float64(time.Second))
-}
-
-// resolveModeline maps config's `modeline` string to a groovy.Modeline.
-// v1 supports "NTSC_480i" only; future values extend this switch.
-func resolveModeline(name string) (groovy.Modeline, error) {
-	switch name {
-	case "", "NTSC_480i":
-		return groovy.NTSC480i60, nil
-	}
-	return groovy.Modeline{}, fmt.Errorf("unknown modeline %q (v1 supports NTSC_480i)", name)
 }
 
 // resolveRGBMode maps config's `rgb_mode` string to the Groovy wire byte.

@@ -148,32 +148,67 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 	}
 }
 
-// TestPosition_IntegerExactFieldCount verifies that after N ticks Position()
-// returns exactly N*1001/60 ms plus the base offset. Regression harness for
-// I4 — the old code added 16 ms/tick and drifted ~0.68 ms low per field.
-func TestPosition_IntegerExactFieldCount(t *testing.T) {
+// TestPosition_PeriodFromModeline asserts Position() reports
+// integer-exact playback time derived from the modeline's
+// FieldRateRatio. Replaces the older NTSC-hardcoded version.
+func TestPosition_PeriodFromModeline(t *testing.T) {
 	cases := []struct {
-		ticks        int64
-		baseOffsetMs int
-		wantPosMs    int64
+		name           string
+		ml             groovy.Modeline
+		fieldCount     int64
+		seekOffset     int
+		wantMs         int64
 	}{
-		{3600, 0, 60_060},            // 60.06 s of playback at 59.94 Hz
-		{60_000, 0, 1_001_000},       // ~16.68 min
-		{600, 5_000, 5_000 + 10_010}, // 10 s of playback, resumed at 5 s
+		{
+			name:       "NTSC_480i 60 fields = 1001 ms",
+			ml:         groovy.NTSC480i60,
+			fieldCount: 60,
+			seekOffset: 0,
+			wantMs:     1001,
+		},
+		{
+			name:       "NTSC_480i 3600 fields = 60060 ms",
+			ml:         groovy.NTSC480i60,
+			fieldCount: 3600,
+			seekOffset: 0,
+			wantMs:     60060,
+		},
+		{
+			name: "PAL_576i 50 fields = 1000 ms",
+			ml: groovy.Modeline{
+				PClock: 13.500, HActive: 720, HBegin: 732, HEnd: 795, HTotal: 864,
+				VActive: 576, VBegin: 580, VEnd: 585, VTotal: 625, Interlace: 1,
+			},
+			fieldCount: 50,
+			seekOffset: 0,
+			wantMs:     1000,
+		},
+		{
+			name: "PAL_288p 100 fields = 2000 ms with 5000 ms seek offset",
+			ml: groovy.Modeline{
+				PClock: 13.478, HActive: 720, HBegin: 732, HEnd: 795, HTotal: 864,
+				VActive: 288, VBegin: 290, VEnd: 293, VTotal: 312, Interlace: 0,
+			},
+			fieldCount: 100,
+			seekOffset: 5000,
+			wantMs:     7000,
+		},
 	}
-	for _, tc := range cases {
-		t.Run("", func(t *testing.T) {
-			p := &Plane{}
-			p.cfg.SeekOffsetMs = tc.baseOffsetMs
-			p.resetPosition()
-			for i := int64(0); i < tc.ticks; i++ {
-				p.advancePosition()
-			}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := NewPlane(PlaneConfig{
+				Modeline:      c.ml,
+				FieldWidth:    int(c.ml.HActive),
+				FieldHeight:   c.ml.FieldHeight(),
+				BytesPerPixel: 3,
+				RGBMode:       groovy.RGBMode888,
+				SeekOffsetMs:  c.seekOffset,
+			})
+			p.positionFields.Store(c.fieldCount)
 			got := p.Position()
-			wantDur := time.Duration(tc.wantPosMs) * time.Millisecond
-			if got != wantDur {
-				t.Errorf("ticks=%d offset=%d: Position=%v, want %v",
-					tc.ticks, tc.baseOffsetMs, got, wantDur)
+			gotMs := got.Milliseconds()
+			if gotMs != c.wantMs {
+				t.Errorf("Position() = %d ms, want %d ms", gotMs, c.wantMs)
 			}
 		})
 	}

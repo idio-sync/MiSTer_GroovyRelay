@@ -96,6 +96,54 @@ func TestParseBridgeForm_BoolFalse(t *testing.T) {
 	_ = config.BridgeConfig{} // ensure import
 }
 
+func TestStripExperimentalSuffix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"NTSC_480i", "NTSC_480i"},
+		{"NTSC_240p", "NTSC_240p"},
+		{"PAL_576i (experimental)", "PAL_576i"},
+		{"PAL_288p (experimental)", "PAL_288p"},
+		{"random_value", "random_value"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got := stripExperimentalSuffix(c.in)
+			if got != c.want {
+				t.Errorf("stripExperimentalSuffix(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseBridgeForm_StripsExperimentalSuffix(t *testing.T) {
+	form := url.Values{}
+	form.Set("video.modeline", "PAL_576i (experimental)")
+	// Mirror the existing TestParseBridgeForm_HappyPath fixture (form_test.go:11-23)
+	// so parseBridgeForm doesn't fail on missing required fields.
+	form.Set("mister.host", "192.168.1.42")
+	form.Set("mister.port", "32100")
+	form.Set("mister.source_port", "32101")
+	form.Set("host_ip", "")
+	form.Set("video.interlace_field_order", "bff")
+	form.Set("video.aspect_mode", "auto")
+	form.Set("video.lz4_enabled", "true")
+	form.Set("audio.sample_rate", "48000")
+	form.Set("audio.channels", "2")
+	form.Set("ui.http_port", "32500")
+	form.Set("data_dir", "/config")
+
+	cfg, err := parseBridgeForm(form)
+	if err != nil {
+		t.Fatalf("parseBridgeForm: %v", err)
+	}
+	if cfg.Video.Modeline != "PAL_576i" {
+		t.Errorf("modeline = %q, want %q (suffix should be stripped)",
+			cfg.Video.Modeline, "PAL_576i")
+	}
+}
+
 // TestParseBridgeForm_SSHFields confirms ssh_user / ssh_password
 // round-trip through parseBridgeForm into BridgeConfig.MiSTer.
 func TestParseBridgeForm_SSHFields(t *testing.T) {

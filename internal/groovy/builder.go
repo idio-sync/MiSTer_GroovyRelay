@@ -82,6 +82,38 @@ func (m Modeline) FieldRate() float64 {
 	return rate
 }
 
+// FieldRateRatio returns the modeline's field rate as an integer rational
+// (numerator, denominator) in Hz. NTSC 480i60 / 240p60: (60000, 1001). PAL
+// 576i50 / 288p50: (50, 1). The integers are exact for the four shipped
+// presets; for any other modeline values it falls back to deriving from
+// FieldRate() with a 1000× scale to preserve three decimal places.
+//
+// Degenerate modelines (rate ≤ 0) return (1, 1) as a safety sentinel
+// so callers can still divide without producing NaN or dividing by zero.
+//
+// Both Plane.Position (period-in-ms math) and AudioPipeReader (rate-in-Hz
+// math) consume this so the data plane never carries a parallel
+// rate-descriptor field. The lookup is keyed on (HTotal, VTotal,
+// Interlace) — the integer trio uniquely identifies each preset and
+// avoids the brittleness of float64 PClock equality.
+func (m Modeline) FieldRateRatio() (numer, denom int64) {
+	switch {
+	case m.HTotal == 880 && m.VTotal == 525 && m.Interlace == 1:
+		return 60000, 1001 // NTSC_480i
+	case m.HTotal == 880 && m.VTotal == 263 && m.Interlace == 0:
+		return 60000, 1001 // NTSC_240p
+	case m.HTotal == 864 && m.VTotal == 625 && m.Interlace == 1:
+		return 50, 1 // PAL_576i
+	case m.HTotal == 864 && m.VTotal == 312 && m.Interlace == 0:
+		return 50, 1 // PAL_288p
+	}
+	rate := m.FieldRate()
+	if rate <= 0 {
+		return 1, 1
+	}
+	return int64(rate * 1000), 1000
+}
+
 // FieldLines returns the active lines in one transmitted field for the given
 // SWITCHRES values.
 func FieldLines(vActive uint16, interlace uint8) int {
@@ -148,6 +180,53 @@ var NTSC480i60 = Modeline{
 	VEnd:      494,
 	VTotal:    525,
 	Interlace: 1,
+}
+
+// NTSC240p60 is the 720x240 progressive 60 Hz preset for cores / sources
+// that expect 240p at the same field cadence as NTSC_480i. pclock 13.875
+// produces FieldRate ≈ 59.952, within 0.02% of 60000/1001.
+var NTSC240p60 = Modeline{
+	PClock:    13.875,
+	HActive:   720,
+	HBegin:    744,
+	HEnd:      809,
+	HTotal:    880,
+	VActive:   240,
+	VBegin:    244,
+	VEnd:      247,
+	VTotal:    263,
+	Interlace: 0,
+}
+
+// PAL576i50 is the standard PAL interlaced preset. pclock 13.500 with
+// 864x625 produces FieldRate = 50.000 Hz exactly when ×2 for interlace.
+var PAL576i50 = Modeline{
+	PClock:    13.500,
+	HActive:   720,
+	HBegin:    732,
+	HEnd:      795,
+	HTotal:    864,
+	VActive:   576,
+	VBegin:    580,
+	VEnd:      585,
+	VTotal:    625,
+	Interlace: 1,
+}
+
+// PAL288p50 is the PAL progressive preset. pclock 13.478 (slightly off
+// the standard 13.500 to compensate for integer-line rounding) produces
+// FieldRate ≈ 49.992, within 0.016% of 50 Hz exact.
+var PAL288p50 = Modeline{
+	PClock:    13.478,
+	HActive:   720,
+	HBegin:    732,
+	HEnd:      795,
+	HTotal:    864,
+	VActive:   288,
+	VBegin:    290,
+	VEnd:      293,
+	VTotal:    312,
+	Interlace: 0,
 }
 
 // BuildClose returns the 1-byte CLOSE command. Sender tears down the socket

@@ -121,6 +121,15 @@ type Plane struct {
 	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 
+	// Period of one field in milliseconds, as the rational
+	// periodMsNumer/periodMsDenom precomputed at NewPlane from
+	// cfg.Modeline.FieldRateRatio(). NTSC: 1001/60 (≈16.683 ms).
+	// PAL:  1000/50 (= 20 ms exact). The values are stored as a
+	// rational (rather than a float64) so Position()'s integer
+	// math stays exact.
+	periodMsNumer int64
+	periodMsDenom int64
+
 	// lastBudgetWarn throttles the per-tick budget-overrun WARN to at most
 	// once per second. Owned by the tick goroutine; not safe for concurrent
 	// access (which never happens by construction).
@@ -145,6 +154,16 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		lz4Scratch:    make([]byte, lz4.CompressBlockBound(fieldBytes)),
 		headerScratch: make([]byte, groovy.BlitHeaderLZ4Delta),
 	}
+	// Derive field period (in ms) as a rational from the modeline's
+	// FieldRateRatio: period_ms = 1000 / rate_hz, with rate_hz as
+	// (rateNumer / rateDenom) → period_ms = 1000 * rateDenom / rateNumer.
+	rateNumer, rateDenom := cfg.Modeline.FieldRateRatio()
+	if rateNumer <= 0 {
+		rateNumer = 60000
+		rateDenom = 1001
+	}
+	p.periodMsNumer = 1000 * rateDenom
+	p.periodMsDenom = rateNumer
 	if cfg.SpawnSpec.FieldOrder == "bff" {
 		p.fieldOrderFlip.Store(true)
 	}
@@ -171,12 +190,13 @@ func (p *Plane) SetFieldOrder(order string) error {
 }
 
 // Position returns the current playback offset since start. Seeded with
-// cfg.SeekOffsetMs; advanced by one NTSC field period (1001/60 ms, exact)
-// per tick. The timeline broadcaster (plex adapter) queries this every
-// second; exact integer math prevents drift relative to PMS's timestamps.
+// cfg.SeekOffsetMs; advanced by one modeline-derived field period
+// (periodMsNumer/periodMsDenom ms, exact) per tick. The timeline
+// broadcaster (plex adapter) queries this every second; exact integer
+// math prevents drift relative to PMS's timestamps.
 func (p *Plane) Position() time.Duration {
 	fields := p.positionFields.Load()
-	ms := fields*1001/60 + int64(p.cfg.SeekOffsetMs)
+	ms := fields*p.periodMsNumer/p.periodMsDenom + int64(p.cfg.SeekOffsetMs)
 	return time.Duration(ms) * time.Millisecond
 }
 
@@ -311,7 +331,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	go ReadFramesFromPipePooled(proc.VideoPipe(), p.framePool, videoCh)
 	if audioEnabled {
 		audioCh = make(chan []byte, 16)
-		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, audioCh)
+		go ReadAudioFromPipe(proc.AudioPipe(), audioRate, audioChans, p.cfg.Modeline, audioCh)
 	}
 
 	// Audio delay buffer. The CRT introduces structural latency between BLIT
@@ -330,7 +350,7 @@ func (p *Plane) Run(ctx context.Context) error {
 		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 && n <= 16 {
 			audioDelayN = n
 			slog.Info("audio delay enabled", "delay_fields", n,
-				"delay_ms", float64(n)*1001.0/60.0)
+				"delay_ms", float64(n)*float64(p.periodMsNumer)/float64(p.periodMsDenom))
 		} else {
 			slog.Warn("invalid GROOVY_AUDIO_DELAY_FIELDS; using 0",
 				"value", v, "err", perr)
@@ -378,7 +398,12 @@ func (p *Plane) Run(ctx context.Context) error {
 		// silently freeze.
 		fieldRate := p.cfg.Modeline.FieldRate()
 		if fieldRate <= 0 {
-			fieldRate = 59.94
+			// Last-resort fallback when the modeline carries no
+			// timing at all. Matches NTSC 60000/1001 to avoid
+			// freezing the tick loop; production never hits this
+			// because all manager-built modelines produce valid
+			// periods.
+			fieldRate = 60000.0 / 1001.0
 		}
 		fieldPeriod = time.Duration(float64(time.Second) / fieldRate)
 	}
@@ -725,13 +750,24 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	p.cfg.Sender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
 
-	// Throttled budget-overrun warn. The NTSC field period is ~16.683 ms;
-	// 14 ms is 84% of that. If sendField regularly hits this threshold the
-	// tick is consistently late and lag will accumulate against PMS.
+	// Throttled budget-overrun warn. Threshold is 84% of the field
+	// period: NTSC (16.683 ms) => 14.0 ms; PAL (20 ms) => 16.8 ms.
+	// If sendField regularly hits this threshold the tick is
+	// consistently late and lag will accumulate against the source.
+	//
+	// Unit dance: time.Duration is int64 nanoseconds. So
+	//   time.Duration(periodMsNumer) * time.Millisecond
+	// reads as "1001 ns × 1e6 = 1,001,000,000 ns = 1.001 s" for NTSC,
+	// then `/ time.Duration(periodMsDenom)` divides by 60-as-ns and the
+	// result is 16,683,333 ns = 16.683 ms — the correct field period.
+	// The * 84 / 100 scaling stays in time.Duration throughout.
 	fieldElapsed := time.Since(fieldStart)
-	if fieldElapsed > 14*time.Millisecond && time.Since(p.lastBudgetWarn) > time.Second {
+	fieldPeriodMs := time.Duration(p.periodMsNumer) * time.Millisecond / time.Duration(p.periodMsDenom)
+	budgetThreshold := fieldPeriodMs * 84 / 100
+	if fieldElapsed > budgetThreshold && time.Since(p.lastBudgetWarn) > time.Second {
 		p.lastBudgetWarn = time.Now()
-		slog.Warn("sendField exceeded 14 ms (84% of NTSC field period)",
+		slog.Warn("sendField exceeded 84% of field period",
+			"threshold_ms", budgetThreshold.Milliseconds(),
 			"total_ms", fieldElapsed.Milliseconds(),
 			"lz4_ms", lz4Elapsed.Milliseconds(),
 			"congestion_ms", congestionElapsed.Milliseconds(),

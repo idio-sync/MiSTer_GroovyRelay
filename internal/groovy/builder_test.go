@@ -227,3 +227,64 @@ func TestBuildBlitHeaderInto_ZeroAllocs(t *testing.T) {
 		t.Errorf("BuildBlitHeaderInto allocs/op = %v, want 0", got)
 	}
 }
+
+func TestModeline_FieldRateRatio(t *testing.T) {
+	cases := []struct {
+		name      string
+		ml        Modeline
+		wantNumer int64
+		wantDenom int64
+	}{
+		{
+			name:      "NTSC_480i",
+			ml:        Modeline{PClock: 13.846, HTotal: 880, VTotal: 525, Interlace: 1},
+			wantNumer: 60000, wantDenom: 1001,
+		},
+		{
+			name:      "NTSC_240p",
+			ml:        Modeline{PClock: 13.875, HTotal: 880, VTotal: 263, Interlace: 0},
+			wantNumer: 60000, wantDenom: 1001,
+		},
+		{
+			name:      "PAL_576i",
+			ml:        Modeline{PClock: 13.500, HTotal: 864, VTotal: 625, Interlace: 1},
+			wantNumer: 50, wantDenom: 1,
+		},
+		{
+			name:      "PAL_288p",
+			ml:        Modeline{PClock: 13.478, HTotal: 864, VTotal: 312, Interlace: 0},
+			wantNumer: 50, wantDenom: 1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotN, gotD := c.ml.FieldRateRatio()
+			if gotN != c.wantNumer || gotD != c.wantDenom {
+				t.Errorf("FieldRateRatio() = (%d, %d), want (%d, %d)",
+					gotN, gotD, c.wantNumer, c.wantDenom)
+			}
+		})
+	}
+}
+
+func TestModeline_FieldRateRatio_UnknownFallback(t *testing.T) {
+	// An off-spec modeline that doesn't match any preset key should fall
+	// back to FieldRate()-derived rationals. The fallback loses precision
+	// but must not panic and must produce a non-zero ratio.
+	ml := Modeline{PClock: 25.175, HTotal: 800, VTotal: 525, Interlace: 0}
+	n, d := ml.FieldRateRatio()
+	if n != 59940 || d != 1000 {
+		t.Errorf("fallback ratio = (%d, %d), want (59940, 1000)", n, d)
+	}
+}
+
+func TestModeline_FieldRateRatio_ZeroGuard(t *testing.T) {
+	// Degenerate modeline (PClock=0) makes FieldRate() return 0; the
+	// FieldRateRatio guard must short-circuit to (1, 1) so callers can
+	// still divide safely without producing NaN or panic.
+	ml := Modeline{PClock: 0, HTotal: 800, VTotal: 525, Interlace: 0}
+	n, d := ml.FieldRateRatio()
+	if n != 1 || d != 1 {
+		t.Errorf("zero-rate fallback = (%d, %d), want (1, 1)", n, d)
+	}
+}

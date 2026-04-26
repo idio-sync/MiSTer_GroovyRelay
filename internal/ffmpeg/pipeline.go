@@ -27,8 +27,14 @@ type PipelineSpec struct {
 	OutputWidth  int
 	OutputHeight int
 	FieldOrder   string // "tff" | "bff"
-	AspectMode   string // "letterbox" | "zoom" | "auto"
-	CropRect     *CropRect
+	// OutputFpsExpr is the ffmpeg "fps=" filter argument the pipeline
+	// uses to coerce source content to the modeline's field cadence.
+	// "60000/1001" for NTSC modes (any), "50/1" for PAL modes (any).
+	// Empty string defaults to "60000/1001" so spec literals built by
+	// hand in tests retain pre-multi-resolution behavior.
+	OutputFpsExpr string
+	AspectMode    string // "letterbox" | "zoom" | "auto"
+	CropRect      *CropRect
 
 	SubtitleURL   string // deprecated; libass cannot fetch URLs. Use SubtitlePath.
 	SubtitlePath  string // local filesystem path the filter graph passes to libass
@@ -57,7 +63,8 @@ func audioOutputEnabled(s PipelineSpec) bool {
 
 // buildFilterChain assembles the comma-delimited ffmpeg `-vf` expression.
 //
-// Contract: the chain emits full-height progressive BGR24 frames at 59.94 Hz.
+// Contract: the chain emits full-height progressive BGR24 frames at the
+// modeline's field cadence (PipelineSpec.OutputFpsExpr; defaults to 59.94 Hz).
 // For interlaced output modes the data plane row-stripes those frames into one
 // 720x240 field per tick, mirroring the approach used by working MiSTerCast /
 // Mistglow senders. We intentionally avoid ffmpeg's interlace/separatefields
@@ -65,7 +72,7 @@ func audioOutputEnabled(s PipelineSpec) bool {
 //
 // Order is load-bearing:
 //  1. yadif (only if interlaced source) → one progressive frame per input frame.
-//  2. fps=60000/1001 → normalize every source to the 59.94 Hz field cadence.
+//  2. fps=<OutputFpsExpr> → normalize every source to the modeline's field cadence.
 //  3. crop/scale/pad for aspect mode.
 //  4. subtitle burn-in on the full progressive frame.
 func buildFilterChain(s PipelineSpec) string {
@@ -77,11 +84,16 @@ func buildFilterChain(s PipelineSpec) string {
 		filters = append(filters, "yadif=mode=send_frame")
 	}
 
-	// 2. Normalize every source to 59.94 progressive frames/sec. The data
-	//    plane treats each output frame as the source for exactly one field
-	//    tick, extracting either the even or odd rows depending on the
-	//    outgoing field parity.
-	filters = append(filters, "fps=60000/1001")
+	// 2. Normalize every source to the modeline's field cadence. The
+	//    data plane treats each output frame as the source for one field
+	//    tick. NTSC presets emit "fps=60000/1001"; PAL presets emit
+	//    "fps=50/1". Empty OutputFpsExpr defaults to NTSC for back-compat
+	//    with hand-built specs in tests.
+	fpsExpr := s.OutputFpsExpr
+	if fpsExpr == "" {
+		fpsExpr = "60000/1001"
+	}
+	filters = append(filters, "fps="+fpsExpr)
 
 	// 3. Aspect / crop.
 	switch {
