@@ -62,7 +62,11 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 	resolver := a.resolver
 	a.mu.Unlock()
 
-	useYtdlp, err := decideRoute(mode, parsed.Host, cfg, probe)
+	// parsed.Hostname() strips any :port suffix. parsed.Host would
+	// produce "youtube.com:443" for an explicit-port URL, which the
+	// allowlist matcher would not match — silently routing through
+	// direct mode and serving the watch page HTML to ffmpeg.
+	useYtdlp, err := decideRoute(mode, parsed.Hostname(), cfg, probe)
 	if err != nil {
 		a.respondError(w, r, http.StatusBadRequest, err.Error(), "mode")
 		return
@@ -124,11 +128,17 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.markRunning(rawURL)
+	// Spec §"Logging" makes title strictly debug-level (privacy on a
+	// household-shared bridge — info-level logs end up in the journal
+	// and reveal the operator's viewing history). Title belongs in
+	// debug logs only; the info line stays redacted-URL + ref.
 	slog.Info("url cast started",
 		"url", redactURL(rawURL),
 		"ref", ref,
-		"resolved_via", resolvedVia,
-		"title", resolvedTitle)
+		"resolved_via", resolvedVia)
+	if resolvedTitle != "" {
+		slog.Debug("url cast resolved", "ref", ref, "title", resolvedTitle)
+	}
 	a.respondStarted(w, r, ref, rawURL, resolvedVia)
 }
 

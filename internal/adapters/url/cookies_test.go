@@ -413,3 +413,32 @@ func jsonStringLiteral(s string) string {
 	out = append(out, '"')
 	return string(out)
 }
+
+// TestHandleCookiesPOST_HTMX_ErrorFragmentTargetsCookiesStatus pins
+// the IMP-3 fix: when the cookies handler errors on HTMX, the response
+// fragment must carry id="url-cookies-status" so htmx's hx-target swap
+// lands on the right element. Previously the handler used
+// respondError, which emits id="url-panel" — leaving the cookies form
+// pointing at a missing target until the next 5s panel refresh.
+func TestHandleCookiesPOST_HTMX_ErrorFragmentTargetsCookiesStatus(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+
+	// Invalid cookies body triggers validateCookies → 400.
+	body := strings.NewReader("cookies=" + neturl.QueryEscape("not-cookies-format"))
+	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	a.handleCookiesSet(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, `id="url-cookies-status"`) {
+		t.Errorf("error fragment missing id=\"url-cookies-status\"; got %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, `id="url-panel"`) {
+		t.Errorf("error fragment wrongly carries id=\"url-panel\" (would break cookies form swap target); got %s", bodyStr)
+	}
+}

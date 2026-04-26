@@ -174,6 +174,30 @@ func readCookiesFromHTTPRequest(r *http.Request) ([]byte, error) {
 	return []byte(v), nil
 }
 
+// respondCookiesError renders an error response targeted at the
+// cookies-section status div. Using respondError here would emit a
+// fragment with id="url-panel", which the cookies form's hx-target
+// of #url-cookies-status would then swap with — leaving the cookies
+// form pointing at a missing target and broken until the next 5s
+// panel refresh. JSON callers get the same shape as respondError's
+// JSON branch so the API contract is preserved.
+func (a *Adapter) respondCookiesError(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	if isHTMXRequest(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(code)
+		fmt.Fprintf(w,
+			`<div class="cookies-status err" id="url-cookies-status">%s</div>`,
+			template.HTMLEscapeString(msg))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": msg,
+		"field": "cookies",
+	})
+}
+
 // handleCookiesSet handles POST /ui/adapter/url/cookies. Reads the
 // cookies field from a form-encoded or JSON body, validates lenient
 // Netscape format, atomic-writes to a.CookiesPath(). Mode 0600
@@ -182,11 +206,11 @@ func readCookiesFromHTTPRequest(r *http.Request) ([]byte, error) {
 func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
 	data, err := readCookiesFromHTTPRequest(r)
 	if err != nil {
-		a.respondError(w, r, http.StatusBadRequest, err.Error(), "cookies")
+		a.respondCookiesError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := validateCookies(data); err != nil {
-		a.respondError(w, r, http.StatusBadRequest, err.Error(), "cookies")
+		a.respondCookiesError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	st, err := saveCookies(a.cookiesPath, data)
@@ -195,7 +219,7 @@ func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
 		// container-side path). Log server-side; surface a generic
 		// message to the client.
 		slog.Warn("save cookies failed", "err", err)
-		a.respondError(w, r, http.StatusInternalServerError, "failed to save cookies", "")
+		a.respondCookiesError(w, r, http.StatusInternalServerError, "failed to save cookies")
 		return
 	}
 	if isHTMXRequest(r) {
@@ -220,7 +244,7 @@ func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
 func (a *Adapter) handleCookiesClear(w http.ResponseWriter, r *http.Request) {
 	if err := clearCookies(a.cookiesPath); err != nil {
 		slog.Warn("clear cookies failed", "err", err)
-		a.respondError(w, r, http.StatusInternalServerError, "failed to clear cookies", "")
+		a.respondCookiesError(w, r, http.StatusInternalServerError, "failed to clear cookies")
 		return
 	}
 	if isHTMXRequest(r) {

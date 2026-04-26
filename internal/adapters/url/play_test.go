@@ -509,3 +509,49 @@ func TestPlay_JSONResponse_IncludesResolvedVia(t *testing.T) {
 		t.Errorf("resolved_via = %q, want ytdlp", got["resolved_via"])
 	}
 }
+
+// TestPlay_ModeAuto_StripsPortFromHost guards against the regression
+// where parsed.Host (with :port) was passed to the allowlist matcher.
+// "youtube.com:443" doesn't match "youtube.com" via suffix-at-boundary,
+// so a paste of an explicit-port URL would silently route to direct
+// mode and ffmpeg would fetch the watch-page HTML.
+func TestPlay_ModeAuto_StripsPortFromHost(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{URL: "https://resolved.example/v.mp4"},
+	}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%3A443%2Fabc&mode=auto")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if len(fr.calls) != 1 {
+		t.Errorf("explicit-port URL did not route to resolver: calls=%d", len(fr.calls))
+	}
+}
+
+// TestPlay_AcceptsUppercaseMode pins the M2 fix: mode=AUTO/YTDLP/DIRECT
+// from a curl user must be accepted (lowercase + trim normalize before
+// the dispatch switch).
+func TestPlay_AcceptsUppercaseMode(t *testing.T) {
+	for _, mode := range []string{"AUTO", "Auto", " auto ", "YTDLP", "ytdlp"} {
+		t.Run(mode, func(t *testing.T) {
+			fr := &fakeResolver{
+				res: &ytdlp.Resolution{URL: "https://resolved.example/v"},
+			}
+			a := newAdapterWithResolver(t, fr)
+			body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=" + mode)
+			req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			a.handlePlay(w, req)
+			if w.Code != http.StatusAccepted {
+				t.Errorf("mode=%q: status = %d, body=%s", mode, w.Code, w.Body.String())
+			}
+		})
+	}
+}
