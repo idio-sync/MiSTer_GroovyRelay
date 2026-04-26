@@ -62,6 +62,22 @@ const (
 	framePoolSlots = videoChCap + 2
 )
 
+// Startup prebuffer defaults. The field tick loop runs at 59.94 Hz;
+// without prebuffer, the first ~30-180 ticks consume a starved videoCh
+// (because ffmpeg is still initializing its decoder + filter chain) and
+// emit duplicate-field BLITs. Operators see that as "choppy startup."
+//
+// defaultPrebufferFields holds 6 frames (~100 ms) before the tick starts
+// — large enough to absorb ffmpeg's burst-output startup pattern, small
+// enough that first-picture latency stays well under Plex's own session-
+// start UI delay. defaultPrebufferTimeoutMs is the hard ceiling that
+// guarantees a slow ffmpeg cannot deadlock the prebuffer indefinitely;
+// on timeout we fall through to the existing underrun→duplicate path.
+const (
+	defaultPrebufferFields    = 6
+	defaultPrebufferTimeoutMs = 5000
+)
+
 // Plane streams one FFmpeg session to the MiSTer. One BLIT_FIELD_VSYNC per
 // 59.94 Hz tick, audio gated on the latest ACK's audio-ready bit, and a
 // playback-position atomic exposed via Position() for the timeline.
@@ -323,6 +339,38 @@ func (p *Plane) Run(ctx context.Context) error {
 	audioRing := make([][]byte, audioDelayN+1)
 	audioRingHead, audioRingLen := 0, 0
 
+	// 4b. Startup prebuffer. Wait for ffmpeg to ramp up (open input,
+	//     init decoder, build filter chain) before the field tick fires.
+	//     Without this, the first ~30-180 ticks consume a starved videoCh
+	//     and emit duplicate-field BLITs while ffmpeg is still warming
+	//     up — operators see that as choppy startup. audioCh is drained
+	//     concurrently so the audio reader can't fill (cap=16) and
+	//     backpressure ffmpeg's muxer into a prebuffer deadlock. Index-
+	//     paired pulls in the tick loop preserve A/V sync because both
+	//     streams arrive from ffmpeg in PTS order.
+	prebufferTarget := envPrebufferFields(videoChCap)
+	prebufferTimeout := envPrebufferTimeout()
+	videoPrebuffer, audioPrebuffer, prebufferExit := p.prebuffer(
+		ctx, proc.Done(), videoCh, audioCh, prebufferTarget, prebufferTimeout)
+	switch prebufferExit {
+	case "context_cancelled", "ffmpeg_exit", "video_pipe_eof":
+		for _, fb := range videoPrebuffer {
+			p.framePool.Put(fb)
+		}
+		slog.Info("dataplane session ended during prebuffer",
+			"reason", prebufferExit,
+			"duration_s", time.Since(sessionStart).Seconds(),
+			"enobuf_total", p.cfg.Sender.ENOBUFCount())
+		_ = p.cfg.Sender.Send(groovy.BuildClose())
+		if prebufferExit == "context_cancelled" {
+			return ctx.Err()
+		}
+		return nil
+	}
+	// "timeout" or "" — proceed to the tick loop. On timeout, the tick
+	// loop's existing underrun → sendDuplicate path covers the gap until
+	// ffmpeg catches up, so the prebuffer can never deadlock playback.
+
 	fieldPeriod := fieldPeriodFromModeline(p.cfg.Modeline)
 	if fieldPeriod <= 0 {
 		// Modeline doesn't produce a valid period (zero PClock etc.).
@@ -477,13 +525,13 @@ func (p *Plane) Run(ctx context.Context) error {
 			if p.fieldOrderFlip.Load() {
 				emitField ^= 1
 			}
-			select {
-			case fb, ok := <-videoCh:
-				if !ok {
-					sessionEndReason = "video_pipe_eof"
-					_ = p.cfg.Sender.Send(groovy.BuildClose())
-					return nil
-				}
+			fb, fbOK, fbClosed := pullVideoFrame(&videoPrebuffer, videoCh)
+			if fbClosed {
+				sessionEndReason = "video_pipe_eof"
+				_ = p.cfg.Sender.Send(groovy.BuildClose())
+				return nil
+			}
+			if fbOK {
 				if consecutiveUnderruns >= 30 {
 					slog.Debug("video pipe recovered after duplicate-field underrun",
 						"fields", consecutiveUnderruns,
@@ -509,7 +557,7 @@ func (p *Plane) Run(ctx context.Context) error {
 				// errors out of Run, so unconditional Put after sendField
 				// is safe. defer is reserved for panic-prone code paths.
 				p.framePool.Put(fb)
-			default:
+			} else {
 				if consecutiveUnderruns == 0 {
 					consecutiveUnderrunFrom = time.Now()
 				}
@@ -538,14 +586,10 @@ func (p *Plane) Run(ctx context.Context) error {
 			// before starting to send, shifting playback later relative to
 			// video on the CRT. Never blocks the pump.
 			if audioEnabled {
-				select {
-				case pcm, ok := <-audioCh:
-					if ok && len(pcm) > 0 && audioRingLen < len(audioRing) {
-						tail := (audioRingHead + audioRingLen) % len(audioRing)
-						audioRing[tail] = pcm
-						audioRingLen++
-					}
-				default:
+				if pcm := pullAudioChunk(&audioPrebuffer, audioCh); len(pcm) > 0 && audioRingLen < len(audioRing) {
+					tail := (audioRingHead + audioRingLen) % len(audioRing)
+					audioRing[tail] = pcm
+					audioRingLen++
 				}
 				if audioRingLen > audioDelayN && p.audioReady.Load() {
 					oldest := audioRing[audioRingHead]
@@ -725,6 +769,168 @@ func (p *Plane) sendAudio(pcm []byte) {
 	if err := p.cfg.Sender.SendPayload(pcm); err != nil {
 		slog.Warn("audio payload send", "err", err)
 	}
+}
+
+// prebuffer blocks until videoCh has accumulated `target` frames or a
+// terminal condition fires. While waiting it concurrently drains audioCh
+// into a local slice — without that drain, ffmpeg's audio-output pipe
+// would fill (the audio reader's channel is cap=16, ~267 ms of audio)
+// and the muxer would backpressure both outputs, preventing the video
+// prebuffer from ever filling. Index-pairing in the tick loop's slice-
+// first pull keeps audio aligned with video because both streams arrive
+// from ffmpeg in PTS order.
+//
+// Returns the captured frames/chunks plus an exitReason:
+//   - "" — target hit, caller should start the tick loop with these
+//     prebuffers.
+//   - "context_cancelled" — ctx cancelled mid-wait; caller MUST return
+//     ctx.Err() and release the captured frames to the pool.
+//   - "ffmpeg_exit" — proc.Done fired before target hit; caller MUST
+//     return nil and release captured frames.
+//   - "video_pipe_eof" — videoCh closed mid-wait; same as ffmpeg_exit.
+//   - "timeout" — hard timeout fired with partial buffer; caller
+//     proceeds to the tick loop, which will sendDuplicate until ffmpeg
+//     catches up. The captured frames (if any) still feed the loop.
+//
+// audioCh may be nil (the production state when audio is disabled). Go's
+// nil-channel semantics mean the corresponding select case is never
+// selected — the prebuffer simply ignores audio in that case.
+func (p *Plane) prebuffer(
+	ctx context.Context,
+	procDone <-chan struct{},
+	videoCh <-chan *FrameBuf,
+	audioCh <-chan []byte,
+	target int,
+	timeout time.Duration,
+) (video []*FrameBuf, audio [][]byte, exitReason string) {
+	if target <= 0 {
+		return nil, nil, ""
+	}
+	video = make([]*FrameBuf, 0, target)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	start := time.Now()
+	for len(video) < target {
+		select {
+		case <-ctx.Done():
+			return video, audio, "context_cancelled"
+		case <-procDone:
+			return video, audio, "ffmpeg_exit"
+		case <-deadline.C:
+			slog.Warn("prebuffer timeout; starting tick loop with partial buffer",
+				"got", len(video), "want", target,
+				"audio_chunks", len(audio),
+				"wait_ms", time.Since(start).Milliseconds())
+			return video, audio, "timeout"
+		case fb, ok := <-videoCh:
+			if !ok {
+				return video, audio, "video_pipe_eof"
+			}
+			video = append(video, fb)
+		case pcm, ok := <-audioCh:
+			if ok && len(pcm) > 0 {
+				audio = append(audio, pcm)
+			}
+		}
+	}
+	slog.Info("prebuffer complete",
+		"video_frames", len(video),
+		"audio_chunks", len(audio),
+		"wait_ms", time.Since(start).Milliseconds())
+	return video, audio, ""
+}
+
+// pullVideoFrame returns the next video frame, sourced from the
+// prebuffer slice first then from the channel. Mirrors the existing
+// `select { case <-videoCh: default }` non-blocking semantics so the
+// tick loop never stalls on a missing frame.
+//
+// Return modes:
+//   - fb!=nil, ok=true, closed=false: real frame; caller must Put it.
+//   - fb=nil, ok=false, closed=false: underrun (channel empty);
+//     caller should sendDuplicate.
+//   - fb=nil, ok=false, closed=true: videoCh closed; caller must
+//     exit Run.
+func pullVideoFrame(prebuf *[]*FrameBuf, ch <-chan *FrameBuf) (fb *FrameBuf, ok, closed bool) {
+	if len(*prebuf) > 0 {
+		fb = (*prebuf)[0]
+		*prebuf = (*prebuf)[1:]
+		return fb, true, false
+	}
+	select {
+	case f, open := <-ch:
+		if !open {
+			return nil, false, true
+		}
+		return f, true, false
+	default:
+		return nil, false, false
+	}
+}
+
+// pullAudioChunk returns the next audio chunk, sourced from the
+// prebuffer slice first then from the channel. Returns nil if neither
+// has data — caller treats nil as "no audio this tick" (the FPGA's
+// audio FIFO holds enough margin that an occasional skip is inaudible).
+// Honors a nil channel argument — production passes nil when audio is
+// disabled.
+func pullAudioChunk(prebuf *[][]byte, ch <-chan []byte) []byte {
+	if len(*prebuf) > 0 {
+		chunk := (*prebuf)[0]
+		*prebuf = (*prebuf)[1:]
+		return chunk
+	}
+	if ch == nil {
+		return nil
+	}
+	select {
+	case pcm, ok := <-ch:
+		if ok {
+			return pcm
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// envPrebufferFields returns the configured number of video frames to
+// accumulate before the field tick starts. Tunable via
+// GROOVY_PREBUFFER_FIELDS; clamped to [0, max] where max is the video
+// channel capacity so the prebuffer can never wait for frames the
+// channel cannot hold. n=0 disables the prebuffer entirely (operator
+// escape hatch for diagnostics).
+func envPrebufferFields(max int) int {
+	n := defaultPrebufferFields
+	if v := os.Getenv("GROOVY_PREBUFFER_FIELDS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			n = parsed
+		} else {
+			slog.Warn("invalid GROOVY_PREBUFFER_FIELDS; using default",
+				"value", v, "default", defaultPrebufferFields)
+		}
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
+// envPrebufferTimeout returns the maximum wall-clock time prebuffer
+// will wait. Tunable via GROOVY_PREBUFFER_TIMEOUT_MS. On timeout the
+// tick loop starts with whatever frames were captured and the existing
+// underrun→sendDuplicate path takes over.
+func envPrebufferTimeout() time.Duration {
+	ms := defaultPrebufferTimeoutMs
+	if v := os.Getenv("GROOVY_PREBUFFER_TIMEOUT_MS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			ms = parsed
+		} else {
+			slog.Warn("invalid GROOVY_PREBUFFER_TIMEOUT_MS; using default",
+				"value", v, "default", defaultPrebufferTimeoutMs)
+		}
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // rateCodeForHz maps the integer audio rate to the wire enum for INIT byte[2].

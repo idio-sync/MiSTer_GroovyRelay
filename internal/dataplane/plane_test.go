@@ -398,6 +398,276 @@ type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
 
+// TestPlane_Prebuffer_HitsTargetReturnsFrames verifies the happy path:
+// when videoCh produces the target number of frames, prebuffer returns
+// them in order with no early-exit reason. Regression harness for the
+// startup-choppiness fix — without prebuffer, the first ~30 ticks fall
+// through to sendDuplicate while ffmpeg is still warming up.
+func TestPlane_Prebuffer_HitsTargetReturnsFrames(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 8)
+	procDone := make(chan struct{})
+
+	for i := 0; i < 4; i++ {
+		fb := pool.Get()
+		fb.N = 4
+		fb.Data[0] = byte(i)
+		videoCh <- fb
+	}
+
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, time.Second)
+	if exit != "" {
+		t.Fatalf("exit = %q, want empty (target hit)", exit)
+	}
+	if len(video) != 4 {
+		t.Fatalf("got %d video frames, want 4", len(video))
+	}
+	for i, fb := range video {
+		if fb.Data[0] != byte(i) {
+			t.Errorf("video[%d].Data[0] = %d, want %d (FIFO order broken)", i, fb.Data[0], i)
+		}
+	}
+	if len(audio) != 0 {
+		t.Errorf("got %d audio chunks, want 0 (none produced)", len(audio))
+	}
+	for _, fb := range video {
+		pool.Put(fb)
+	}
+}
+
+// TestPlane_Prebuffer_DrainsAudioWhileWaiting proves that audio chunks
+// produced during the prebuffer wait are absorbed into the audio
+// prebuffer slice instead of backpressuring ffmpeg's audio pipe. This
+// is the load-bearing property that prevents the prebuffer from
+// deadlocking when ffmpeg's audio decode races ahead of video.
+func TestPlane_Prebuffer_DrainsAudioWhileWaiting(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 32)
+	procDone := make(chan struct{})
+
+	for i := 0; i < 10; i++ {
+		audioCh <- []byte{byte(i)}
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		for i := 0; i < 2; i++ {
+			fb := pool.Get()
+			fb.N = 4
+			videoCh <- fb
+		}
+	}()
+
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 2, time.Second)
+	if exit != "" {
+		t.Fatalf("exit = %q, want empty", exit)
+	}
+	if len(video) != 2 {
+		t.Errorf("got %d video frames, want 2", len(video))
+	}
+	if len(audio) < 8 {
+		t.Errorf("got %d audio chunks, want >= 8 (audio must drain while waiting for video)", len(audio))
+	}
+	for i, pcm := range audio {
+		if len(pcm) != 1 || pcm[0] != byte(i) {
+			t.Errorf("audio[%d] = %v, want [%d] (FIFO order broken)", i, pcm, i)
+		}
+	}
+	for _, fb := range video {
+		pool.Put(fb)
+	}
+}
+
+// TestPlane_Prebuffer_HonorsCtxCancel verifies that ctx cancel mid-wait
+// returns "context_cancelled" without deadlocking. Run uses this to
+// transition cleanly when the operator changes channels mid-prebuffer.
+func TestPlane_Prebuffer_HonorsCtxCancel(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 8)
+	procDone := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	_, _, exit := p.prebuffer(ctx, procDone, videoCh, audioCh, 4, time.Second)
+	if exit != "context_cancelled" {
+		t.Errorf("exit = %q, want context_cancelled", exit)
+	}
+}
+
+// TestPlane_Prebuffer_HonorsFFmpegExit verifies that proc.Done firing
+// during prebuffer returns "ffmpeg_exit". Run uses this for the case
+// where ffmpeg crashes/exits before producing any frames.
+func TestPlane_Prebuffer_HonorsFFmpegExit(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 8)
+	procDone := make(chan struct{})
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(procDone)
+	}()
+
+	_, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, time.Second)
+	if exit != "ffmpeg_exit" {
+		t.Errorf("exit = %q, want ffmpeg_exit", exit)
+	}
+}
+
+// TestPlane_Prebuffer_HonorsVideoEOF verifies that videoCh closing
+// during prebuffer returns "video_pipe_eof". Mirrors the ReadFrames
+// EOF path that the tick loop's main select handles.
+func TestPlane_Prebuffer_HonorsVideoEOF(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 8)
+	procDone := make(chan struct{})
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(videoCh)
+	}()
+
+	_, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, time.Second)
+	if exit != "video_pipe_eof" {
+		t.Errorf("exit = %q, want video_pipe_eof", exit)
+	}
+}
+
+// TestPlane_Prebuffer_HonorsTimeout verifies that when frames don't
+// arrive within the configured timeout, prebuffer returns "timeout"
+// with whatever frames it managed to capture. Run treats this as a
+// non-fatal exit and falls through to the underrun path so a slow
+// ffmpeg start can't deadlock the tick loop.
+func TestPlane_Prebuffer_HonorsTimeout(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 8)
+	procDone := make(chan struct{})
+
+	video, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, 30*time.Millisecond)
+	if exit != "timeout" {
+		t.Errorf("exit = %q, want timeout", exit)
+	}
+	if len(video) != 0 {
+		t.Errorf("got %d frames, want 0 (none produced)", len(video))
+	}
+}
+
+// TestPlane_Prebuffer_DisabledByZeroTarget verifies that target=0
+// returns immediately with no exit reason. Operators can disable the
+// prebuffer entirely via GROOVY_PREBUFFER_FIELDS=0 to recover the
+// pre-fix behaviour for diagnostic purposes.
+func TestPlane_Prebuffer_DisabledByZeroTarget(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	audioCh := make(chan []byte, 8)
+	procDone := make(chan struct{})
+
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 0, time.Second)
+	if exit != "" {
+		t.Errorf("exit = %q, want empty (disabled)", exit)
+	}
+	if len(video) != 0 || len(audio) != 0 {
+		t.Errorf("got video=%d audio=%d, want 0/0", len(video), len(audio))
+	}
+}
+
+// TestPlane_Prebuffer_NilAudioChannel verifies that passing audioCh=nil
+// (the production state when audio is disabled) does not panic or
+// deadlock. Nil-channel reads in select block forever, which Go handles
+// correctly — the case is simply never selected.
+func TestPlane_Prebuffer_NilAudioChannel(t *testing.T) {
+	pool := NewFramePool(8, 4)
+	p := &Plane{framePool: pool}
+	videoCh := make(chan *FrameBuf, 8)
+	procDone := make(chan struct{})
+
+	for i := 0; i < 2; i++ {
+		fb := pool.Get()
+		fb.N = 4
+		videoCh <- fb
+	}
+
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, nil, 2, time.Second)
+	if exit != "" {
+		t.Errorf("exit = %q, want empty", exit)
+	}
+	if len(video) != 2 {
+		t.Errorf("got %d frames, want 2", len(video))
+	}
+	if audio != nil && len(audio) != 0 {
+		t.Errorf("got %d audio chunks, want 0", len(audio))
+	}
+	for _, fb := range video {
+		pool.Put(fb)
+	}
+}
+
+// TestEnvPrebufferFields covers the env-var parsing and clamping for
+// GROOVY_PREBUFFER_FIELDS. Bad input falls back to the default; values
+// over the channel cap are clamped down so the prebuffer can never
+// deadlock waiting for frames the channel cannot hold.
+func TestEnvPrebufferFields(t *testing.T) {
+	cases := []struct {
+		env  string
+		max  int
+		want int
+	}{
+		{"", 8, defaultPrebufferFields},  // unset → default
+		{"0", 8, 0},                      // disable
+		{"4", 8, 4},                      // valid
+		{"99", 8, 8},                     // clamp to max
+		{"-1", 8, defaultPrebufferFields}, // negative → default (parse rejects)
+		{"abc", 8, defaultPrebufferFields}, // garbage → default
+	}
+	for _, c := range cases {
+		t.Run(c.env, func(t *testing.T) {
+			t.Setenv("GROOVY_PREBUFFER_FIELDS", c.env)
+			if got := envPrebufferFields(c.max); got != c.want {
+				t.Errorf("envPrebufferFields(%d) with env=%q = %d, want %d",
+					c.max, c.env, got, c.want)
+			}
+		})
+	}
+}
+
+func TestEnvPrebufferTimeout(t *testing.T) {
+	cases := []struct {
+		env     string
+		wantMs  int
+	}{
+		{"", defaultPrebufferTimeoutMs},
+		{"1000", 1000},
+		{"0", defaultPrebufferTimeoutMs},  // 0 invalid → default
+		{"abc", defaultPrebufferTimeoutMs}, // garbage → default
+	}
+	for _, c := range cases {
+		t.Run(c.env, func(t *testing.T) {
+			t.Setenv("GROOVY_PREBUFFER_TIMEOUT_MS", c.env)
+			got := envPrebufferTimeout()
+			want := time.Duration(c.wantMs) * time.Millisecond
+			if got != want {
+				t.Errorf("envPrebufferTimeout() with env=%q = %v, want %v",
+					c.env, got, want)
+			}
+		})
+	}
+}
+
 // TestPlane_AllocationBudget verifies that the data-plane perf pack's
 // pool + scratch refactor actually keeps the hot path near zero-alloc.
 // Runs Plane.Run end-to-end against a fakemister.Listener (real UDP
