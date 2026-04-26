@@ -82,6 +82,35 @@ func (m Modeline) FieldRate() float64 {
 	return rate
 }
 
+// FieldRateRatio returns the modeline's field rate as an integer rational
+// (numerator, denominator) in Hz. NTSC 480i60 / 240p60: (60000, 1001). PAL
+// 576i50 / 288p50: (50, 1). The integers are exact for the four shipped
+// presets; for any other modeline values it falls back to deriving from
+// FieldRate() with a 1000× scale to preserve three decimal places.
+//
+// Both Plane.Position (period-in-ms math) and AudioPipeReader (rate-in-Hz
+// math) consume this so the data plane never carries a parallel
+// rate-descriptor field. The lookup is keyed on (HTotal, VTotal,
+// Interlace) — the integer trio uniquely identifies each preset and
+// avoids the brittleness of float64 PClock equality.
+func (m Modeline) FieldRateRatio() (numer, denom int64) {
+	switch {
+	case m.HTotal == 880 && m.VTotal == 525 && m.Interlace == 1:
+		return 60000, 1001 // NTSC_480i
+	case m.HTotal == 880 && m.VTotal == 263 && m.Interlace == 0:
+		return 60000, 1001 // NTSC_240p
+	case m.HTotal == 864 && m.VTotal == 625 && m.Interlace == 1:
+		return 50, 1 // PAL_576i
+	case m.HTotal == 864 && m.VTotal == 312 && m.Interlace == 0:
+		return 50, 1 // PAL_288p
+	}
+	rate := m.FieldRate()
+	if rate <= 0 {
+		return 1, 1
+	}
+	return int64(rate * 1000), 1000
+}
+
 // FieldLines returns the active lines in one transmitted field for the given
 // SWITCHRES values.
 func FieldLines(vActive uint16, interlace uint8) int {
