@@ -259,3 +259,73 @@ func redactErr(err error, lastURL string) string {
 	}
 	return strings.ReplaceAll(msg, lastURL, redactURL(lastURL))
 }
+
+// handleHistoryPlay is POST /ui/adapter/url/history/play. Body:
+// idx=N (form-encoded). Re-casts the URL at history index N and
+// bumps it to position 0 (operator's intent: this URL is now the
+// most recently used). Contrast with handleReplay and handleResume's
+// live-reconnect branch, which do NOT bump — those endpoints re-use
+// a URL that's already at position 0 from the most recent
+// handlePlay.
+//
+// Unlike handleStop / handleResume / handleReplay, this handler does
+// NOT enforce a Status().AdapterRef ownership guard. Clicking a
+// history entry is the operator's explicit intent to start a fresh
+// URL cast — preempting whatever (Plex / future adapter) was active
+// is the desired behavior, mirroring handlePlay. The deliberate
+// asymmetry is documented here so a future maintainer doesn't add a
+// "consistency" guard.
+func (a *Adapter) handleHistoryPlay(w http.ResponseWriter, r *http.Request) {
+	idx, err := parseFormIdx(r)
+	if err != nil {
+		a.respondControlError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entry, ok := a.history.Get(idx)
+	if !ok {
+		a.respondControlError(w, http.StatusBadRequest, fmt.Sprintf("idx %d out of range", idx))
+		return
+	}
+	// Bump to position 0 before casting — operator's intent is to use
+	// this URL most recently. The bump persists even if castURL
+	// fails (e.g., yt-dlp resolve failure for an expired URL).
+	a.history.AddOrBump(entry.URL)
+	_, _, status, cerr := a.castURL(r.Context(), entry.URL, "auto")
+	if cerr != nil {
+		a.respondControlError(w, status, cerr.Error())
+		return
+	}
+	a.respondPanel(w, http.StatusOK)
+}
+
+// handleHistoryDelete is POST /ui/adapter/url/history/delete. Body:
+// idx=N (form-encoded). Removes the entry; renders updated panel.
+func (a *Adapter) handleHistoryDelete(w http.ResponseWriter, r *http.Request) {
+	idx, err := parseFormIdx(r)
+	if err != nil {
+		a.respondControlError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !a.history.Remove(idx) {
+		a.respondControlError(w, http.StatusBadRequest, fmt.Sprintf("idx %d out of range", idx))
+		return
+	}
+	a.respondPanel(w, http.StatusOK)
+}
+
+// parseFormIdx extracts the "idx" form field as an int. Used by
+// history/play and history/delete.
+func parseFormIdx(r *http.Request) (int, error) {
+	if err := r.ParseForm(); err != nil {
+		return 0, fmt.Errorf("parse form: %w", err)
+	}
+	raw := strings.TrimSpace(r.Form.Get("idx"))
+	if raw == "" {
+		return 0, fmt.Errorf("idx required")
+	}
+	idx, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("idx not an integer: %s", raw)
+	}
+	return idx, nil
+}

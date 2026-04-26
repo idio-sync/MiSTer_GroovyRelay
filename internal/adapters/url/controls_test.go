@@ -443,3 +443,96 @@ func TestSeek_ProbeError_RedactsURL(t *testing.T) {
 		t.Errorf("error response should still mention host: %s", resp)
 	}
 }
+
+func TestHistoryPlay_ValidIdx_CallsStartSession(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	a.history.AddOrBump("https://a.example/1")
+	a.history.AddOrBump("https://b.example/2")
+	body := strings.NewReader("idx=1") // older entry
+	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleHistoryPlay(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if fc.lastReq.StreamURL != "https://a.example/1" {
+		t.Errorf("StreamURL = %q, want history[1]", fc.lastReq.StreamURL)
+	}
+	// Bump: a should now be at position 0.
+	list := a.history.List()
+	if list[0].URL != "https://a.example/1" {
+		t.Errorf("after history-play, list[0] = %q, want a (bumped)", list[0].URL)
+	}
+}
+
+func TestHistoryPlay_OutOfRange_400(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	a.history.AddOrBump("https://a/")
+	pre := a.history.List()
+	body := strings.NewReader("idx=99")
+	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleHistoryPlay(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if fc.lastReq.StreamURL != "" {
+		t.Error("StartSession must not be called for out-of-range idx")
+	}
+	post := a.history.List()
+	if len(pre) != len(post) || (len(pre) > 0 && pre[0].URL != post[0].URL) {
+		t.Errorf("history mutated by failed handleHistoryPlay; pre=%v post=%v", pre, post)
+	}
+}
+
+func TestHistoryDelete_ValidIdx_RemovesEntry(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://a/")
+	a.history.AddOrBump("https://b/") // list = [b, a]
+	body := strings.NewReader("idx=0")
+	req := httptest.NewRequest(http.MethodPost, "/history/delete", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleHistoryDelete(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if a.history.Len() != 1 {
+		t.Errorf("Len = %d, want 1", a.history.Len())
+	}
+	if list := a.history.List(); list[0].URL != "https://a/" {
+		t.Errorf("after delete, list[0] = %q, want a", list[0].URL)
+	}
+}
+
+func TestHistoryDelete_OutOfRange_400(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://a/")
+	body := strings.NewReader("idx=99")
+	req := httptest.NewRequest(http.MethodPost, "/history/delete", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleHistoryDelete(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if a.history.Len() != 1 {
+		t.Errorf("Len = %d after no-op delete, want 1", a.history.Len())
+	}
+}
+
+func TestHistoryPlay_NonInteger_400(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	body := strings.NewReader("idx=abc")
+	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleHistoryPlay(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
