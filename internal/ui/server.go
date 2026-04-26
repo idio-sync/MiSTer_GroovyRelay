@@ -148,6 +148,12 @@ func (s *Server) Mount(mux *http.ServeMux) {
 				mux.Handle("GET "+pattern, handler)
 			case "POST":
 				mux.Handle("POST "+pattern, csrfMiddleware(handler))
+			case "DELETE":
+				mux.Handle("DELETE "+pattern, csrfMiddleware(handler))
+			case "PUT":
+				mux.Handle("PUT "+pattern, csrfMiddleware(handler))
+			case "PATCH":
+				mux.Handle("PATCH "+pattern, csrfMiddleware(handler))
 			}
 		}
 	}
