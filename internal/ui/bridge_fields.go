@@ -1,6 +1,31 @@
 package ui
 
-import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+import (
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+)
+
+// modelineEnumOptions returns the dropdown values for video.modeline.
+// Names are passed through verbatim so the saved config string matches
+// the preset's Name field; experimental presets get a "(experimental)"
+// suffix in a sibling display-label column once we have one — for v1.5
+// the suffix is appended to the value string directly.
+func modelineEnumOptions() []string {
+	names := core.PresetNames()
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		preset, err := core.ResolvePreset(n)
+		if err != nil {
+			continue // unreachable: PresetNames returns only registered names
+		}
+		if preset.Experimental {
+			out = append(out, n+" (experimental)")
+		} else {
+			out = append(out, n)
+		}
+	}
+	return out
+}
 
 // bridgeFields is the Bridge panel's form schema, rendered in order
 // and grouped by Section. Field keys match the TOML path (dotted)
@@ -53,9 +78,9 @@ func bridgeFields() []adapters.FieldDef {
 		{
 			Key:        "video.modeline",
 			Label:      "Modeline",
-			Help:       "Video mode. v1 supports NTSC_480i only.",
+			Help:       "CRT output resolution. PAL modes are verified against the Groovy wire protocol via fake-mister but have not been tested on real PAL CRT hardware. TFF/BFF setting below only affects interlaced modes (480i / 576i).",
 			Kind:       adapters.KindEnum,
-			Enum:       []string{"NTSC_480i"},
+			Enum:       modelineEnumOptions(),
 			Default:    "NTSC_480i",
 			ApplyScope: adapters.ScopeRestartCast,
 			Section:    "Video",
