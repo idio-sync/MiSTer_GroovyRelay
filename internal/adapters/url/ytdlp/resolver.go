@@ -86,6 +86,10 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("ytdlp: resolve timed out after %s", r.Timeout)
 		}
+		// NOTE: stderr may echo the input URL with embedded credentials
+		// (yt-dlp's "ERROR: [generic] https://user:pass@host/...:" form).
+		// Callers MUST redact via the URL adapter's redactURL helper
+		// before surfacing this error to logs or HTTP responses.
 		return nil, fmt.Errorf("ytdlp: %s", lastNonEmptyLine(stderr))
 	}
 
@@ -101,6 +105,12 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 			preview = preview[:200]
 		}
 		return nil, fmt.Errorf("ytdlp: returned unparseable JSON: %s", preview)
+	}
+	if raw.URL == "" {
+		// Defensive: yt-dlp returned valid JSON but no URL field.
+		// Surface clearly here rather than letting ffmpeg fail with
+		// an opaque "empty URL" error several layers down.
+		return nil, fmt.Errorf("ytdlp: JSON missing required \"url\" field")
 	}
 
 	return &Resolution{

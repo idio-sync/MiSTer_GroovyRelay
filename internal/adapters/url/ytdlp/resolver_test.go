@@ -159,6 +159,24 @@ func TestResolve_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestResolve_RejectsValidJSONWithEmptyURL(t *testing.T) {
+	// yt-dlp could in principle return valid JSON with no "url" field
+	// (extractor bug, partial response). Resolve must surface this at
+	// its own layer so the operator sees a clear ytdlp-shaped error
+	// instead of a confusing ffmpeg failure several seconds later.
+	const noURLJSON = `{"http_headers": {}, "is_live": false, "title": "x"}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(noURLJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	_, err := res.Resolve(context.Background(), "https://youtu.be/x", "best", "")
+	if err == nil {
+		t.Fatal("want error when JSON has no url field")
+	}
+	if !strings.Contains(err.Error(), "missing required \"url\"") {
+		t.Errorf("err = %q, want 'missing required \"url\"'", err.Error())
+	}
+}
+
 func TestResolve_ContextTimeout(t *testing.T) {
 	r := &stubRunner{
 		stdouts: [][]byte{[]byte(validJSON)},
