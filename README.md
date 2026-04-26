@@ -11,7 +11,7 @@ into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly,
 giving you genuine 480i NTSC video. Also works with URLs (Archive.org .mkv.mp4, etc.)
 
 <p align="right">
-  <img src=".github/screenshots/plex_dash.png" width="60%">
+  <img src=".github/screenshots/plex_dash.png" width="30%">
 </p>
 
 ## Future Plans
