@@ -329,11 +329,13 @@ func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
 	_ = mgr.Stop()
 }
 
-// TestURL_CapCheckRejectsCrossAdapterPause: with a URL session active,
-// calling Manager.Pause directly returns the cap-check error. Proves
-// the cap check is the wall, not the data plane (spec §"Boundary-
-// validation tests").
-func TestURL_CapCheckRejectsCrossAdapterPause(t *testing.T) {
+// TestURL_PauseAndSeekSucceedV15: with a v1.5 URL session active,
+// Manager.Pause and Manager.SeekTo SUCCEED — the URL adapter now
+// declares Capabilities{CanSeek: true, CanPause: true}, so the cap
+// check is no longer a wall. Validates the spec contract from
+// §"Capability and DirectPlay flips" end-to-end through the real
+// data plane.
+func TestURL_PauseAndSeekSucceedV15(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
 	}
@@ -365,17 +367,20 @@ func TestURL_CapCheckRejectsCrossAdapterPause(t *testing.T) {
 		t.Fatalf("status = %d, want 202", w.Code)
 	}
 
-	// The URL session is now active. Pause must be rejected.
-	if err := mgr.Pause(); err == nil {
-		t.Error("Manager.Pause returned nil for URL session; cap-check failed")
-	} else if !strings.Contains(err.Error(), "pause") {
-		t.Errorf("Pause error = %q, want a 'pause' message", err)
+	// The URL session is now active. v1.5 caps allow Pause + SeekTo.
+	if err := mgr.Pause(); err != nil {
+		t.Errorf("Manager.Pause returned %q against v1.5 URL session; want nil", err)
 	}
-	// Same for SeekTo.
-	if err := mgr.SeekTo(5000); err == nil {
-		t.Error("Manager.SeekTo returned nil for URL session; cap-check failed")
-	} else if !strings.Contains(err.Error(), "seek") {
-		t.Errorf("SeekTo error = %q, want a 'seek' message", err)
+	if got := mgr.Status().State; got != core.StatePaused {
+		t.Errorf("after Pause, FSM state = %v, want StatePaused", got)
+	}
+
+	// Resume via Play, then seek.
+	if err := mgr.Play(); err != nil {
+		t.Errorf("Manager.Play returned %q against v1.5 URL session; want nil", err)
+	}
+	if err := mgr.SeekTo(2000); err != nil {
+		t.Errorf("Manager.SeekTo returned %q against v1.5 URL session; want nil", err)
 	}
 
 	_ = mgr.Stop()
