@@ -9,8 +9,10 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
+// Note: newTestAdapter is defined in play_test.go (same package).
+
 func TestUIRoutes_HasPlayAndPanel(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	routes := a.UIRoutes()
 	if len(routes) != 2 {
 		t.Fatalf("UIRoutes count = %d, want 2", len(routes))
@@ -28,7 +30,7 @@ func TestUIRoutes_HasPlayAndPanel(t *testing.T) {
 }
 
 func TestPanel_RendersIdle(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	req := httptest.NewRequest(http.MethodGet, "/panel", nil)
 	w := httptest.NewRecorder()
 	a.handlePanel(w, req)
@@ -45,7 +47,7 @@ func TestPanel_RendersIdle(t *testing.T) {
 }
 
 func TestPanel_RendersPlaying(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	a.markRunning("https://example.com/video.mp4")
 	req := httptest.NewRequest(http.MethodGet, "/panel", nil)
 	w := httptest.NewRecorder()
@@ -60,7 +62,7 @@ func TestPanel_RendersPlaying(t *testing.T) {
 }
 
 func TestPanel_RendersError(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	a.setState(adapters.StateError, "probe failed: connection refused")
 	req := httptest.NewRequest(http.MethodGet, "/panel", nil)
 	w := httptest.NewRecorder()
@@ -72,7 +74,7 @@ func TestPanel_RendersError(t *testing.T) {
 }
 
 func TestExtraPanelHTML_EmbedsPanel(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	html := string(a.ExtraPanelHTML())
 	if !strings.Contains(html, "url-panel") {
 		t.Errorf("ExtraPanelHTML should include the panel; got %s", html)

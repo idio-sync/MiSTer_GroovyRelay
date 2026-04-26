@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 // TestRegistry_AcceptsAdapterWithNoBackgroundWork is the spec's primary
@@ -17,7 +18,13 @@ import (
 // secretly assume every adapter has background work.
 func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 	reg := adapters.NewRegistry()
-	a := New(&fakeCore{})
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   &fakeCore{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if err := reg.Register(a); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

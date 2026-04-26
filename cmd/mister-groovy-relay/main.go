@@ -131,10 +131,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// URL adapter (v1): minimum-viable HTTP/HTTPS URL acceptor.
-	// Spec: docs/specs/2026-04-25-url-adapter-design.md.
-	// No constructor failure modes — New() never errors.
-	urlAdapter := urladapter.New(coreMgr)
+	// URL adapter (v1.1): minimum-viable HTTP/HTTPS URL acceptor with
+	// optional yt-dlp resolution. Spec: docs/specs/2026-04-25-url-ytdlp-design.md.
+	urlAdapter, err := urladapter.New(urladapter.AdapterConfig{
+		Bridge: sec.Bridge,
+		Core:   coreMgr,
+	})
+	if err != nil {
+		slog.Error("url adapter init", "err", err)
+		os.Exit(1)
+	}
 	if err := reg.Register(urlAdapter); err != nil {
 		slog.Error("registry register url", "err", err)
 		os.Exit(1)

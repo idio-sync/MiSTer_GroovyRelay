@@ -9,8 +9,24 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+// newTestAdapter wires the new AdapterConfig signature for the bulk of
+// the play_test cases — they don't care about DataDir, only need a
+// constructed adapter with the given core.
+func newTestAdapter(t *testing.T, c SessionManager) *Adapter {
+	t.Helper()
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   c,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return a
+}
 
 // fakeCore captures the most recent StartSession call so tests can
 // assert what the adapter passed.
@@ -35,7 +51,7 @@ func (f *fakeCore) snapshot() core.SessionRequest {
 }
 
 func TestPlay_RejectsMalformedURL(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader("url=not%20a%20valid%20url"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -47,7 +63,7 @@ func TestPlay_RejectsMalformedURL(t *testing.T) {
 }
 
 func TestPlay_RejectsEmptyURL(t *testing.T) {
-	a := New(&fakeCore{})
+	a := newTestAdapter(t, &fakeCore{})
 	req := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader("url="))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -67,7 +83,7 @@ func TestPlay_RejectsBadScheme(t *testing.T) {
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
 			fc := &fakeCore{}
-			a := New(fc)
+			a := newTestAdapter(t, fc)
 			req := httptest.NewRequest(http.MethodPost, "/play",
 				strings.NewReader("url="+in))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -85,7 +101,7 @@ func TestPlay_RejectsBadScheme(t *testing.T) {
 
 func TestPlay_HappyPath_BuildsSessionRequest(t *testing.T) {
 	fc := &fakeCore{}
-	a := New(fc)
+	a := newTestAdapter(t, fc)
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fvideo.mp4"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -114,7 +130,7 @@ func TestPlay_HappyPath_BuildsSessionRequest(t *testing.T) {
 
 func TestPlay_StartSessionFailure_500(t *testing.T) {
 	fc := &fakeCore{startErr: errors.New("probe failed")}
-	a := New(fc)
+	a := newTestAdapter(t, fc)
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -130,7 +146,7 @@ func TestPlay_StartSessionFailure_500(t *testing.T) {
 
 func TestPlay_HXRequest_RespondsHTML(t *testing.T) {
 	fc := &fakeCore{}
-	a := New(fc)
+	a := newTestAdapter(t, fc)
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -151,7 +167,7 @@ func TestPlay_HXRequest_RedactsCredentialsInBody(t *testing.T) {
 	// otherwise see the password). The JSON branch echoes the URL
 	// verbatim — the API caller already possesses it.
 	fc := &fakeCore{}
-	a := New(fc)
+	a := newTestAdapter(t, fc)
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader("url=https%3A%2F%2Fuser%3Asecret%40example.com%2Fv.mp4"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -169,7 +185,7 @@ func TestPlay_HXRequest_RedactsCredentialsInBody(t *testing.T) {
 
 func TestPlay_NoHXRequest_RespondsJSON(t *testing.T) {
 	fc := &fakeCore{}
-	a := New(fc)
+	a := newTestAdapter(t, fc)
 	req := httptest.NewRequest(http.MethodPost, "/play",
 		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -186,7 +202,7 @@ func TestPlay_NoHXRequest_RespondsJSON(t *testing.T) {
 
 func TestPlay_AcceptsJSONBody(t *testing.T) {
 	fc := &fakeCore{}
-	a := New(fc)
+	a := newTestAdapter(t, fc)
 	body := `{"url": "https://example.com/v.mp4"}`
 	req := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -232,7 +248,7 @@ func TestOnStop_ReasonHandling(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.reason, func(t *testing.T) {
-			a := New(nil)
+			a := newTestAdapter(t, nil)
 			// Pretend a session is running.
 			a.setState(adapters.StateRunning, "")
 			a.handleOnStop(tc.reason)

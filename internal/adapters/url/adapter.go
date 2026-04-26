@@ -3,11 +3,13 @@ package url
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -29,6 +31,10 @@ type SessionManager interface {
 type Adapter struct {
 	core SessionManager
 
+	// cookiesPath is computed once from cfg.Bridge.DataDir at New()
+	// and is read-only thereafter — does not need mu.
+	cookiesPath string
+
 	mu         sync.Mutex
 	cfg        Config
 	state      adapters.State
@@ -37,15 +43,44 @@ type Adapter struct {
 	lastURL    string // last URL handed to StartSession; surfaced in the panel
 }
 
-// New constructs a ready-to-Start Adapter. core may be nil for tests
-// that don't exercise the play handler.
-func New(coreMgr SessionManager) *Adapter {
-	return &Adapter{
-		core:       coreMgr,
-		state:      adapters.StateStopped,
-		stateSince: time.Now(),
-	}
+// AdapterConfig bundles the bridge-level context the URL adapter
+// needs. The [adapters.url] TOML section flows through separately via
+// DecodeConfig into Adapter.cfg — AdapterConfig carries only the
+// adapter-agnostic pieces (bridge data_dir for the cookies file,
+// session manager for StartSession).
+//
+// Mirrors the Plex AdapterConfig pattern at
+// internal/adapters/plex/adapter.go:22-42 — the URL adapter joined that
+// pattern when it grew the cookies feature (review fix C3).
+type AdapterConfig struct {
+	// Bridge is a snapshot of the bridge-level config: data_dir, etc.
+	// The adapter reads DataDir from here for the url_cookies.txt path.
+	Bridge config.BridgeConfig
+	// Core is the adapter-agnostic session manager. core.Manager
+	// satisfies this via structural typing. May be nil in tests that
+	// don't exercise the play handler.
+	Core SessionManager
 }
+
+// New constructs a ready-to-Start Adapter from the bundled config.
+// Returns an error if Bridge.DataDir is empty (the cookies path is
+// derived from it; an empty value would write to a relative path
+// inside the container's working directory).
+func New(cfg AdapterConfig) (*Adapter, error) {
+	if cfg.Bridge.DataDir == "" {
+		return nil, fmt.Errorf("url: AdapterConfig.Bridge.DataDir is required")
+	}
+	return &Adapter{
+		core:        cfg.Core,
+		state:       adapters.StateStopped,
+		stateSince:  time.Now(),
+		cookiesPath: filepath.Join(cfg.Bridge.DataDir, "url_cookies.txt"),
+	}, nil
+}
+
+// CookiesPath returns the absolute path to the cookies file. Stable
+// across the adapter's lifetime; computed once at construction.
+func (a *Adapter) CookiesPath() string { return a.cookiesPath }
 
 // ---- adapters.Adapter interface ----
 
