@@ -211,10 +211,56 @@ func (a *Adapter) CurrentValues() map[string]any {
 	}
 }
 
-// Start is implemented in Phase 5 (Task 5.3). For now it returns an
-// error so accidental calls fail loudly during incremental development.
+// Start brings the adapter online. Reads the persisted token, probes
+// /System/Info, then spins up the runSession driver. Returns an
+// error if the token is missing, invalid, or if server_url has
+// drifted from what the token was minted against.
 func (a *Adapter) Start(ctx context.Context) error {
-	return fmt.Errorf("jellyfin.Adapter.Start: not implemented yet (Phase 5)")
+	a.mu.Lock()
+	cfg := a.cfg
+	a.mu.Unlock()
+
+	tok, err := LoadToken(a.tokenPath())
+	if err != nil {
+		a.setState(adapters.StateError, err.Error())
+		return err
+	}
+	if tok.AccessToken == "" {
+		err := fmt.Errorf("not linked: run --link-jellyfin first")
+		a.setState(adapters.StateError, err.Error())
+		return err
+	}
+	if cfg.ServerURL != "" && tok.ServerURL != "" && cfg.ServerURL != tok.ServerURL {
+		_ = WipeToken(a.tokenPath())
+		a.link.SetIdle()
+		err := fmt.Errorf("server_url changed (config=%q, token=%q); please re-link", cfg.ServerURL, tok.ServerURL)
+		a.setState(adapters.StateError, err.Error())
+		return err
+	}
+
+	a.setState(adapters.StateStarting, "")
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := probeSystemInfo(probeCtx, cfg.ServerURL, tok.AccessToken); err != nil {
+		// 401 → wipe; everything else → keep token, surface error.
+		if isAuthError(err) {
+			_ = WipeToken(a.tokenPath())
+			a.link.SetIdle()
+			err = fmt.Errorf("token rejected; please re-link: %w", err)
+		}
+		a.setState(adapters.StateError, err.Error())
+		return err
+	}
+
+	// Reflect persisted token in link state so UI shows "Linked as ..."
+	// after a fresh start (especially after the headless --link-jellyfin
+	// flow, which writes the token file but doesn't go through the link
+	// UI handler that calls SetLinked). Reading from tok is race-free —
+	// it's local data; SetLinked itself takes LinkState.mu internally.
+	a.link.SetLinked(tok.UserName, tok.ServerID)
+	a.setState(adapters.StateRunning, "")
+	return a.startWS(ctx, tok.AccessToken)
 }
 
 func (a *Adapter) Stop() error {

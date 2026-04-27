@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -140,4 +141,35 @@ func AuthenticateByName(ctx context.Context, req AuthRequest) (AuthResult, error
 		UserName:    dto.User.Name,
 		ServerID:    dto.ServerID,
 	}, nil
+}
+
+// probeSystemInfo issues a GET /System/Info?api_key=<token>. Returns
+// nil on 2xx; errAuthRejected on 401; a wrapped HTTP error on other
+// failures.
+func probeSystemInfo(ctx context.Context, serverURL, token string) error {
+	q := url.Values{}
+	q.Set("api_key", token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(serverURL, "/")+"/System/Info?"+q.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := jfHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("jellyfin: probe: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errAuthRejected
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("jellyfin: probe: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+var errAuthRejected = errors.New("jellyfin: token rejected (401)")
+
+func isAuthError(err error) bool {
+	return errors.Is(err, errAuthRejected)
 }
