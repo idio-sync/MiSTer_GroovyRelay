@@ -100,7 +100,7 @@ type inboundDispatcher func(messageType string, data json.RawMessage)
 // *core.Manager), the bridge data_dir, and the bridge device UUID.
 // core may be nil for tests that don't exercise StartSession.
 func New(coreMgr SessionManager, dataDir, deviceID string) *Adapter {
-	return &Adapter{
+	a := &Adapter{
 		core:       coreMgr,
 		dataDir:    dataDir,
 		deviceID:   deviceID,
@@ -109,6 +109,23 @@ func New(coreMgr SessionManager, dataDir, deviceID string) *Adapter {
 		stateSince: time.Now(),
 		link:       NewLinkState(),
 		reporters:  map[string]*reporter{},
+	}
+	a.handleInbound = a.dispatchInbound
+	return a
+}
+
+// dispatchInbound routes inbound JF WS messages by MessageType.
+// ForceKeepAlive is intercepted earlier in readLoop and never reaches this.
+func (a *Adapter) dispatchInbound(messageType string, data json.RawMessage) {
+	switch messageType {
+	case "Play":
+		a.HandlePlay(data)
+	case "Playstate":
+		// Wired in Task 6.2.
+	case "GeneralCommand":
+		// Wired in Task 6.3.
+	default:
+		// Already debug-logged in readLoop fallback.
 	}
 }
 
