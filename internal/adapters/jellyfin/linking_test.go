@@ -46,6 +46,45 @@ func TestBuildAuthHeader_WithoutToken(t *testing.T) {
 	}
 }
 
+// TestBuildAuthHeader_SanitizesQuoteAndBackslash covers I-E from the
+// final pre-merge review: a token containing literal double-quotes or
+// backslashes must not break header parsing on the JF side. The old
+// implementation used fmt.Sprintf("%q", ...) which emits Go-syntax
+// escapes (\" \\) that JF's MediaBrowser scanner does not honour.
+// We strip those characters instead, plus ASCII control characters.
+func TestBuildAuthHeader_SanitizesQuoteAndBackslash(t *testing.T) {
+	got := BuildAuthHeader(AuthHeaderInput{
+		Token:    `weird"token\here` + "\r\n",
+		Client:   "C",
+		Device:   "D",
+		DeviceID: "I",
+		Version:  "V",
+	})
+	// Must be parseable as a single MediaBrowser header value with
+	// no embedded literal quotes or backslashes inside any field.
+	if !strings.HasPrefix(got, "MediaBrowser ") {
+		t.Fatalf("missing MediaBrowser prefix: %s", got)
+	}
+	tail := strings.TrimPrefix(got, "MediaBrowser ")
+	// Each field is wrapped in literal double quotes; the only
+	// double quotes that remain should be the field delimiters
+	// (we have 5 fields = 10 quotes).
+	if got, want := strings.Count(tail, `"`), 10; got != want {
+		t.Errorf("quote count = %d, want %d (one pair per field). value: %s", got, want, tail)
+	}
+	if strings.Contains(tail, `\`) {
+		t.Errorf("output contains backslash: %s", tail)
+	}
+	if strings.Contains(tail, "\r") || strings.Contains(tail, "\n") {
+		t.Errorf("output contains CR/LF: %q", tail)
+	}
+	// Token itself should retain the safe characters and drop the
+	// dangerous ones.
+	if !strings.Contains(tail, `Token="weirdtokenhere"`) {
+		t.Errorf("Token field not sanitized as expected: %s", tail)
+	}
+}
+
 func TestAuthenticateByName_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

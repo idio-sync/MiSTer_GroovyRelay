@@ -29,6 +29,29 @@ type AuthHeaderInput struct {
 	Version  string
 }
 
+// sanitizeAuthValue strips characters that would break a literal-
+// quoted MediaBrowser header field: embedded double quotes, backslashes,
+// and any ASCII control characters (CR/LF/NUL etc.). JF parses this
+// header with a simple scanner that does not honour Go's `%q` escape
+// syntax (\" / \\), so we cannot rely on fmt.Sprintf("%q", ...) for
+// arbitrary input. In practice every value we feed in is either
+// alphanumeric (tokens, UUIDs) or a hardcoded constant; this is a
+// belt-and-braces guard against future mistakes.
+func sanitizeAuthValue(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '"' || r == '\\' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // BuildAuthHeader constructs the value of the Authorization header
 // for a JF REST call. JF accepts the format
 //
@@ -37,22 +60,26 @@ type AuthHeaderInput struct {
 // (Or X-Emby-Authorization with the same value, or X-Emby-Token /
 // X-MediaBrowser-Token / ?api_key=. We use the canonical form for
 // authenticated REST and ?api_key= for the WebSocket handshake.)
+//
+// Inputs are sanitized via sanitizeAuthValue so a token containing a
+// literal double-quote or backslash cannot break header parsing — a
+// guardrail against future bugs (real JF tokens are alphanumeric).
 func BuildAuthHeader(in AuthHeaderInput) string {
 	parts := []string{}
 	if in.Token != "" {
-		parts = append(parts, fmt.Sprintf(`Token=%q`, in.Token))
+		parts = append(parts, `Token="`+sanitizeAuthValue(in.Token)+`"`)
 	}
 	if in.Client != "" {
-		parts = append(parts, fmt.Sprintf(`Client=%q`, in.Client))
+		parts = append(parts, `Client="`+sanitizeAuthValue(in.Client)+`"`)
 	}
 	if in.Device != "" {
-		parts = append(parts, fmt.Sprintf(`Device=%q`, in.Device))
+		parts = append(parts, `Device="`+sanitizeAuthValue(in.Device)+`"`)
 	}
 	if in.DeviceID != "" {
-		parts = append(parts, fmt.Sprintf(`DeviceId=%q`, in.DeviceID))
+		parts = append(parts, `DeviceId="`+sanitizeAuthValue(in.DeviceID)+`"`)
 	}
 	if in.Version != "" {
-		parts = append(parts, fmt.Sprintf(`Version=%q`, in.Version))
+		parts = append(parts, `Version="`+sanitizeAuthValue(in.Version)+`"`)
 	}
 	return "MediaBrowser " + strings.Join(parts, ", ")
 }
