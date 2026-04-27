@@ -1034,27 +1034,51 @@ func (c *Companion) handleTimelineUnsubscribe(w http.ResponseWriter, r *http.Req
 	writeOKResponse(w)
 }
 
-// handleTimelinePoll is the long-poll fallback used by Plexamp. v1 returns
-// the current timeline XML immediately (no wait=1 blocking semantics); the
-// broadcast loop still pushes updates to subscribed controllers.
+// pollLongWaitTimeout caps how long handleTimelinePoll will hold a wait=1
+// request open. 30 s matches the cadence Plex controllers expect: the
+// controller assumes the connection will return within ~30 s either with a
+// real state change or with the unchanged current state, and reissues the
+// poll immediately afterward. Exposed as a package var so tests can shorten
+// it without using real time.
+var pollLongWaitTimeout = 30 * time.Second
+
+// pollLongWaitTick is how often the wait loop re-reads core/lastPlay state
+// to detect changes. Adapter-internal bookkeeping is in-memory so a coarse
+// tick is fine; the goal is to break out of the wait promptly when a play
+// command changes state, not to provide millisecond-accurate timeline.
+var pollLongWaitTick = 250 * time.Millisecond
+
+// handleTimelinePoll services /player/timeline/poll. With no wait param it
+// returns the current timeline immediately (legacy behavior). With wait=1
+// it honors Plex's long-poll semantics: the connection is held open until
+// either timeline state changes or pollLongWaitTimeout elapses. Plex for
+// Windows in particular sends wait=1 and treats a steady stream of
+// instantly-returning polls — every reply identical — as an unresponsive
+// player, deselecting the cast target after a handful of seconds.
 func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 	if c.timeline == nil {
 		http.Error(w, "timeline not wired", 503)
 		return
 	}
-	st := core.SessionStatus{}
-	if c.core != nil {
-		st = c.core.Status()
-	}
+	st := c.coreStatus()
 	play := c.lastPlaySession()
-	// Diagnostic: callers polling /timeline/poll can be misled if our reply
-	// carries stale media identity from a prior cast. Log enough of the
-	// reply to confirm whether the request and response describe the same
-	// client/session. Pair this with the existing "plex companion request"
-	// log entry to correlate by remote_addr + client_id.
+	if queryOrHeader(r, "wait") == "1" {
+		st, play = c.waitForTimelineChange(r.Context(), st, play)
+		if r.Context().Err() != nil {
+			// Client disconnected mid-wait. Skip the response write — it
+			// would be discarded by the http stack anyway, but bailing
+			// avoids one log line per abandoned poll on noisy controllers.
+			return
+		}
+	}
+	// Diagnostic: pair with the "plex companion request" log entry on the
+	// same request to correlate the reply we sent with what the controller
+	// asked for. last_play_* fields surface any cross-session metadata
+	// leaking into the reply.
 	slog.Info("plex timeline poll reply",
 		"requesting_client_id", queryOrHeader(r, "X-Plex-Client-Identifier"),
 		"remote_addr", r.RemoteAddr,
+		"wait", queryOrHeader(r, "wait"),
 		"core_state", string(st.State),
 		"last_play_client_id", play.ClientID,
 		"last_play_media_key", play.MediaKey,
@@ -1066,6 +1090,69 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 		play,
 		atoiDefault(queryOrHeader(r, "commandID"), 0),
 	)))
+}
+
+// coreStatus is a small wrapper that lets tests construct a Companion with
+// a nil core and still hit the poll handler. Production paths always have
+// core wired up.
+func (c *Companion) coreStatus() core.SessionStatus {
+	if c.core == nil {
+		return core.SessionStatus{}
+	}
+	return c.core.Status()
+}
+
+// waitForTimelineChange polls in-memory state every pollLongWaitTick until
+// either a meaningful change is observed (see timelineChanged), the request
+// context is cancelled, or pollLongWaitTimeout elapses. Returns the
+// most-recent observed state — equal to the input on timeout/cancel, the
+// new state on change.
+func (c *Companion) waitForTimelineChange(ctx context.Context, st core.SessionStatus, play PlayMediaRequest) (core.SessionStatus, PlayMediaRequest) {
+	timer := time.NewTimer(pollLongWaitTimeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(pollLongWaitTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return st, play
+		case <-timer.C:
+			return st, play
+		case <-ticker.C:
+			newSt := c.coreStatus()
+			newPlay := c.lastPlaySession()
+			if timelineChanged(st, play, newSt, newPlay) {
+				return newSt, newPlay
+			}
+		}
+	}
+}
+
+// timelineChanged returns true when newSt/newPlay represent a meaningful
+// transition that controllers care about: a state change (idle/playing/paused),
+// a media swap, a new SessionID, or a stream/PlayQueue selection change.
+// Position drift during steady playback is intentionally NOT a change —
+// long-poll exists to coalesce position updates, not amplify them.
+func timelineChanged(oldSt core.SessionStatus, oldPlay PlayMediaRequest, newSt core.SessionStatus, newPlay PlayMediaRequest) bool {
+	if oldSt.State != newSt.State {
+		return true
+	}
+	if oldPlay.MediaKey != newPlay.MediaKey {
+		return true
+	}
+	if oldPlay.SessionID != newPlay.SessionID {
+		return true
+	}
+	if oldPlay.AudioStreamID != newPlay.AudioStreamID {
+		return true
+	}
+	if oldPlay.SubtitleStreamID != newPlay.SubtitleStreamID {
+		return true
+	}
+	if oldPlay.PlayQueueItemID != newPlay.PlayQueueItemID {
+		return true
+	}
+	return false
 }
 
 // atoiDefault parses an int, returning d on failure. Used for Plex query

@@ -476,6 +476,126 @@ func TestCompanion_TimelinePollReturnsXML(t *testing.T) {
 	}
 }
 
+// TestCompanion_TimelinePoll_WaitOneHoldsOpenUntilStateChange verifies that
+// a poll request carrying wait=1 does not return until either the timeline
+// state changes or the long-poll timeout elapses. Plex for Windows sends
+// wait=1 and treats a steady stream of immediately-returning polls as an
+// unresponsive cast target.
+func TestCompanion_TimelinePoll_WaitOneHoldsOpenUntilStateChange(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{State: core.StateIdle}}
+	c := NewCompanion(CompanionConfig{}, fc)
+	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
+	c.SetTimeline(b)
+
+	prevTimeout, prevTick := pollLongWaitTimeout, pollLongWaitTick
+	pollLongWaitTimeout = 2 * time.Second
+	pollLongWaitTick = 25 * time.Millisecond
+	t.Cleanup(func() {
+		pollLongWaitTimeout = prevTimeout
+		pollLongWaitTick = prevTick
+	})
+
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	// Flip core state from idle → playing after a short delay so the wait
+	// loop sees a transition. Without this, the poll would only return on
+	// the safety timeout — also a valid outcome but a weaker assertion.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		fc.mu.Lock()
+		fc.status = core.SessionStatus{State: core.StatePlaying}
+		fc.mu.Unlock()
+	}()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/player/timeline/poll?wait=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	// The handler must wait at least one tick before noticing the state
+	// flip. Anything under ~100ms means wait=1 was ignored entirely.
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("wait=1 returned in %v, expected >100ms (handler ignored wait)", elapsed)
+	}
+	if elapsed >= pollLongWaitTimeout {
+		t.Errorf("wait=1 hit safety timeout (%v); state-change wakeup didn't fire", elapsed)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `state="playing"`) {
+		t.Errorf("poll body missing state=playing: %s", body)
+	}
+}
+
+// TestCompanion_TimelinePoll_WaitOneTimesOutWhenStateUnchanged verifies that
+// the wait loop returns after pollLongWaitTimeout when nothing changes — the
+// controller then immediately reissues a fresh poll. Without this safety
+// timeout, an idle bridge would keep poll connections open forever.
+func TestCompanion_TimelinePoll_WaitOneTimesOutWhenStateUnchanged(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{State: core.StateIdle}}
+	c := NewCompanion(CompanionConfig{}, fc)
+	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
+	c.SetTimeline(b)
+
+	prevTimeout, prevTick := pollLongWaitTimeout, pollLongWaitTick
+	pollLongWaitTimeout = 200 * time.Millisecond
+	pollLongWaitTick = 25 * time.Millisecond
+	t.Cleanup(func() {
+		pollLongWaitTimeout = prevTimeout
+		pollLongWaitTick = prevTick
+	})
+
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/player/timeline/poll?wait=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if elapsed < pollLongWaitTimeout {
+		t.Errorf("wait=1 returned in %v before safety timeout (%v)", elapsed, pollLongWaitTimeout)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `state="stopped"`) {
+		t.Errorf("poll body should report stopped on timeout: %s", body)
+	}
+}
+
+// TestCompanion_TimelinePoll_NoWaitReturnsImmediately preserves the legacy
+// fast-path: requests without wait=1 must not be subjected to the long-poll
+// loop. Older controllers and ad-hoc tooling rely on /timeline/poll being
+// effectively synchronous.
+func TestCompanion_TimelinePoll_NoWaitReturnsImmediately(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{State: core.StateIdle}}
+	c := NewCompanion(CompanionConfig{}, fc)
+	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
+	c.SetTimeline(b)
+
+	prevTimeout := pollLongWaitTimeout
+	pollLongWaitTimeout = 5 * time.Second
+	t.Cleanup(func() { pollLongWaitTimeout = prevTimeout })
+
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/player/timeline/poll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("no-wait poll took %v; should return immediately", elapsed)
+	}
+}
+
 // TestTimeline_BroadcastStoppedFor_UsesCapturedPlay verifies that the
 // new broker entry point synthesizes timeline XML from the captured
 // PlayMediaRequest and IGNORES playContext (which may already point at
