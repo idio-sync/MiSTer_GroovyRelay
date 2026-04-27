@@ -206,15 +206,49 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	go func() {
 		runErr := plane.Run(ctx)
 		m.logPlaneExit(runErr)
+
+		// Capture OnStop closure and subtitle path outside of the lock so
+		// we can fire / clean up without holding m.mu. notifySessionStop
+		// spawns its own goroutine, but we follow the discipline of
+		// "never call adapter code under Manager.mu," and the same goes
+		// for any IO like file removal.
+		var onStop func(string)
+		var subtitlePath string
+
 		m.mu.Lock()
-		defer m.mu.Unlock()
 		if m.plane != plane {
+			m.mu.Unlock()
 			return
 		}
 		m.plane = nil
-		if runErr == nil {
+		switch {
+		case runErr == nil:
 			_ = m.fsm.Transition(EvEOF)
+		case errors.Is(runErr, context.Canceled):
+			// Pause's intentional cancellation; preserve StatePaused, do not
+			// transition or fire OnStop.
+		default:
+			_ = m.fsm.Transition(EvError)
+			if m.active != nil {
+				onStop = m.active.req.OnStop
+				// Capture subtitle path BEFORE clearing m.active so the
+				// file gets cleaned up. Without this, a subsequent Stop
+				// would see m.active=nil and skip removeSubtitleFile —
+				// the subtitle file would leak on every plane error.
+				subtitlePath = m.active.req.SubtitlePath
+				// Clear m.active so a subsequent Stop() doesn't re-fire
+				// OnStop with reason "stopped" for the same session.
+				// Also clear m.cancelFn since the plane has already exited;
+				// leaving a stale cancelFn would let Stop() think there's
+				// something to cancel.
+				m.active = nil
+				m.cancelFn = nil
+			}
 		}
+		m.mu.Unlock()
+
+		removeSubtitleFile(subtitlePath)
+		notifySessionStop(onStop, "error")
 	}()
 	return nil
 }
