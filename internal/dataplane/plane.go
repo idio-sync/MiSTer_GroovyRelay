@@ -111,9 +111,9 @@ type Plane struct {
 	// buffer count and frameBytes size are determined at NewPlane time
 	// from PlaneConfig and held constant for the session lifetime —
 	// mid-session resolution changes are not supported.
-	framePool     *FramePool
-	fieldScratch  []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
-	lz4Scratch    []byte // len == lz4.CompressBlockBound(fieldBytes)
+	framePool    *FramePool
+	fieldScratch []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
+	lz4Scratch   []byte // len == lz4.CompressBlockBound(fieldBytes)
 	// headerScratch is shared by sendField and sendDuplicate. Safe because
 	// they are called from the same goroutine in mutually-exclusive branches
 	// of the tick `select` — never concurrently. Any future change that
@@ -164,7 +164,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	}
 	p.periodMsNumer = 1000 * rateDenom
 	p.periodMsDenom = rateNumer
-	if cfg.SpawnSpec.FieldOrder == "bff" {
+	if cfg.Modeline.Interlaced() && cfg.SpawnSpec.FieldOrder == "bff" {
 		p.fieldOrderFlip.Store(true)
 	}
 	return p
@@ -211,6 +211,16 @@ func (p *Plane) resetPosition() {
 // tick after a successful BLIT (or BLIT-dup) send.
 func (p *Plane) advancePosition() {
 	p.positionFields.Add(1)
+}
+
+func (p *Plane) emitField(nextField uint8) uint8 {
+	if !p.cfg.Modeline.Interlaced() {
+		return 0
+	}
+	if p.fieldOrderFlip.Load() {
+		return nextField ^ 1
+	}
+	return nextField
 }
 
 // resolveVideoHeight is the single source of truth for the full
@@ -546,10 +556,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			// invert emitField so BOTH the header tag and the payload slice
 			// (ExtractFieldFromFrameInto below) swap together — inverting only
 			// the header would send top-field pixels tagged as bottom-field.
-			emitField := nextField
-			if p.fieldOrderFlip.Load() {
-				emitField ^= 1
-			}
+			emitField := p.emitField(nextField)
 			fb, fbOK, fbClosed := pullVideoFrame(&videoPrebuffer, videoCh)
 			if fbClosed {
 				sessionEndReason = "video_pipe_eof"

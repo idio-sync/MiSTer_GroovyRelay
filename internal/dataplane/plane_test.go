@@ -153,11 +153,11 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 // FieldRateRatio. Replaces the older NTSC-hardcoded version.
 func TestPosition_PeriodFromModeline(t *testing.T) {
 	cases := []struct {
-		name           string
-		ml             groovy.Modeline
-		fieldCount     int64
-		seekOffset     int
-		wantMs         int64
+		name       string
+		ml         groovy.Modeline
+		fieldCount int64
+		seekOffset int
+		wantMs     int64
 	}{
 		{
 			name:       "NTSC_480i 60 fields = 1001 ms",
@@ -244,10 +244,50 @@ func TestNewPlane_SeedsFlipFromBFF(t *testing.T) {
 	// BFF SpawnSpec → flip starts true. ffmpeg emits progressive frames at
 	// field cadence; the plane row-stripes them, and fieldOrderFlip is the
 	// sole encoding of the configured field-order baseline.
-	cfg := PlaneConfig{SpawnSpec: ffmpeg.PipelineSpec{FieldOrder: "bff"}}
+	cfg := PlaneConfig{
+		Modeline:  groovy.NTSC480i60,
+		SpawnSpec: ffmpeg.PipelineSpec{FieldOrder: "bff"},
+	}
 	p := NewPlane(cfg)
 	if !p.fieldOrderFlip.Load() {
 		t.Error("NewPlane with bff spec should set flip=true")
+	}
+}
+
+func TestPlane_ProgressiveIgnoresFieldOrderFlip(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		Modeline:  groovy.NTSC240p60,
+		SpawnSpec: ffmpeg.PipelineSpec{FieldOrder: "bff"},
+	})
+	if p.fieldOrderFlip.Load() {
+		t.Fatal("progressive modeline must not seed field-order flip")
+	}
+	if err := p.SetFieldOrder("bff"); err != nil {
+		t.Fatalf("SetFieldOrder(bff): %v", err)
+	}
+	for _, next := range []uint8{0, 1} {
+		if got := p.emitField(next); got != 0 {
+			t.Errorf("progressive emitField(%d) = %d, want 0", next, got)
+		}
+	}
+}
+
+func TestPlane_InterlacedAppliesFieldOrderFlip(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		Modeline:  groovy.NTSC480i60,
+		SpawnSpec: ffmpeg.PipelineSpec{FieldOrder: "bff"},
+	})
+	if got := p.emitField(0); got != 1 {
+		t.Errorf("BFF emitField(0) = %d, want 1", got)
+	}
+	if got := p.emitField(1); got != 0 {
+		t.Errorf("BFF emitField(1) = %d, want 0", got)
+	}
+	if err := p.SetFieldOrder("tff"); err != nil {
+		t.Fatalf("SetFieldOrder(tff): %v", err)
+	}
+	if got := p.emitField(1); got != 1 {
+		t.Errorf("TFF emitField(1) = %d, want 1", got)
 	}
 }
 
@@ -419,9 +459,9 @@ func newStubProcess() *stubProcess {
 	}
 }
 
-func (s *stubProcess) VideoPipe() io.Reader   { return s.video }
-func (s *stubProcess) AudioPipe() io.Reader   { return s.audio }
-func (s *stubProcess) Done() <-chan struct{}  { return s.done }
+func (s *stubProcess) VideoPipe() io.Reader  { return s.video }
+func (s *stubProcess) AudioPipe() io.Reader  { return s.audio }
+func (s *stubProcess) Done() <-chan struct{} { return s.done }
 func (s *stubProcess) Stop() {
 	s.once.Do(func() {
 		_ = s.video.Close()
@@ -662,11 +702,11 @@ func TestEnvPrebufferFields(t *testing.T) {
 		max  int
 		want int
 	}{
-		{"", 8, defaultPrebufferFields},  // unset → default
-		{"0", 8, 0},                      // disable
-		{"4", 8, 4},                      // valid
-		{"99", 8, 8},                     // clamp to max
-		{"-1", 8, defaultPrebufferFields}, // negative → default (parse rejects)
+		{"", 8, defaultPrebufferFields},    // unset → default
+		{"0", 8, 0},                        // disable
+		{"4", 8, 4},                        // valid
+		{"99", 8, 8},                       // clamp to max
+		{"-1", 8, defaultPrebufferFields},  // negative → default (parse rejects)
 		{"abc", 8, defaultPrebufferFields}, // garbage → default
 	}
 	for _, c := range cases {
@@ -682,12 +722,12 @@ func TestEnvPrebufferFields(t *testing.T) {
 
 func TestEnvPrebufferTimeout(t *testing.T) {
 	cases := []struct {
-		env     string
-		wantMs  int
+		env    string
+		wantMs int
 	}{
 		{"", defaultPrebufferTimeoutMs},
 		{"1000", 1000},
-		{"0", defaultPrebufferTimeoutMs},  // 0 invalid → default
+		{"0", defaultPrebufferTimeoutMs},   // 0 invalid → default
 		{"abc", defaultPrebufferTimeoutMs}, // garbage → default
 	}
 	for _, c := range cases {
