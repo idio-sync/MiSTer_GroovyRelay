@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -157,6 +158,15 @@ func main() {
 	}
 	if err := reg.Register(urlAdapter); err != nil {
 		slog.Error("registry register url", "err", err)
+		os.Exit(1)
+	}
+
+	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
+	// Spec: docs/specs/2026-04-25-jellyfin-adapter-design.md.
+	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID)
+	jfAdapter.SetVersion(version)
+	if err := reg.Register(jfAdapter); err != nil {
+		slog.Error("registry register jellyfin", "err", err)
 		os.Exit(1)
 	}
 
