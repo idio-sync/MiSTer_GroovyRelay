@@ -12,9 +12,7 @@ import (
 func TestAdapter_ImplementsContract(t *testing.T) {
 	var _ adapters.Adapter = (*Adapter)(nil)
 	var _ adapters.Validator = (*Adapter)(nil)
-	// RouteProvider is added in Task 9.1 (when UIRoutes lands). The
-	// assertion below is added then.
-	// var _ adapters.RouteProvider = (*Adapter)(nil)
+	var _ adapters.RouteProvider = (*Adapter)(nil)
 }
 
 func TestAdapter_NameAndDisplay(t *testing.T) {
