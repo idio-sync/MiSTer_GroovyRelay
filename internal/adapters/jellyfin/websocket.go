@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -62,47 +64,25 @@ func dialWebSocket(ctx context.Context, in wsDialInput) (*websocket.Conn, error)
 // inboundDispatcher is declared in adapter.go (Step 2). Do NOT
 // re-declare it here — that produces "redeclared in this block."
 
-// startWS posts Capabilities, dials the WS, and starts the read
-// goroutine. Sets a.startCancel so Stop() can tear it all down.
-// Idempotent: if startWS is already running, returns nil without
-// re-dialing.
+// startWS spawns a long-lived runSession goroutine. Idempotent: a
+// second call is a no-op while the first is still running. The
+// goroutine signals exit via a.runDone so Stop() can wait for it.
 func (a *Adapter) startWS(ctx context.Context, token string) error {
 	a.mu.Lock()
 	if a.startCancel != nil {
 		a.mu.Unlock()
 		return nil
 	}
-	cfg := a.cfg
-	deviceID := a.deviceID
-	a.mu.Unlock()
-
-	if err := PostCapabilities(ctx, CapabilitiesInput{
-		ServerURL:           cfg.ServerURL,
-		Token:               token,
-		DeviceID:            deviceID,
-		Version:             linkVersion,
-		MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
-	}); err != nil {
-		return err
-	}
-
-	conn, err := dialWebSocket(ctx, wsDialInput{
-		ServerURL: cfg.ServerURL,
-		Token:     token,
-		DeviceID:  deviceID,
-	})
-	if err != nil {
-		return err
-	}
-
 	wsCtx, cancel := context.WithCancel(ctx)
-	a.mu.Lock()
 	a.startCancel = cancel
-	a.ws = &realWSConn{conn: conn}
+	a.runDone = make(chan struct{})
+	done := a.runDone
 	a.mu.Unlock()
 
-	a.startWriteLoop(wsCtx, conn)
-	go a.readLoop(wsCtx, conn)
+	go func() {
+		defer close(done)
+		_ = a.runSession(wsCtx, token)
+	}()
 	return nil
 }
 
@@ -254,6 +234,171 @@ func (a *Adapter) setKeepAliveInterval(d time.Duration) {
 		default:
 		}
 		ch <- d
+	}
+}
+
+// hasExistingSession probes /Sessions?DeviceId=<id> to see whether
+// JF already has a session row for this DeviceId. Returns true only
+// when the GET succeeds AND the response contains an entry whose
+// DeviceId matches in.DeviceID.
+func hasExistingSession(ctx context.Context, in CapabilitiesInput) (bool, error) {
+	q := url.Values{}
+	q.Set("DeviceId", in.DeviceID)
+	q.Set("api_key", in.Token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(in.ServerURL, "/")+"/Sessions?"+q.Encode(), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := jfHTTPClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var sessions []struct {
+		DeviceID string `json:"DeviceId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		return false, err
+	}
+	for _, s := range sessions {
+		if s.DeviceID == in.DeviceID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// runSession is the long-lived "stay registered as a JF cast target"
+// driver. It loops: POST Capabilities (or skip if probe shows we're
+// already registered) → dial WS → run read+write loops → backoff on
+// disconnect. Exits when ctx is cancelled.
+//
+// On the first iteration, capabilitiesPosted is false, forcing one
+// POST. On subsequent iterations, the /Sessions probe decides — but
+// only AFTER a previously-successful WS run (hadSuccessfulRun gate),
+// preventing POST duplication during rapid dial-failure loops.
+func (a *Adapter) runSession(ctx context.Context, token string) error {
+	a.mu.Lock()
+	cfg := a.cfg
+	deviceID := a.deviceID
+	a.mu.Unlock()
+
+	capabilitiesPosted := false
+	hadSuccessfulRun := false
+	backoff := time.Second
+	const maxBackoff = 60 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		shouldPost := !capabilitiesPosted
+		if capabilitiesPosted && hadSuccessfulRun {
+			present, err := hasExistingSession(ctx, CapabilitiesInput{
+				ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
+			})
+			if err == nil && !present {
+				shouldPost = true
+			}
+		}
+		if shouldPost {
+			if err := PostCapabilities(ctx, CapabilitiesInput{
+				ServerURL:           cfg.ServerURL,
+				Token:               token,
+				DeviceID:            deviceID,
+				Version:             linkVersion,
+				MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			}); err != nil {
+				goto wait
+			}
+			capabilitiesPosted = true
+		}
+
+		{
+			conn, err := dialWebSocket(ctx, wsDialInput{
+				ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
+			})
+			if err == nil {
+				// Dial succeeded → the server created a session row. Mark
+				// hadSuccessfulRun so the probe fires on the next iteration.
+				hadSuccessfulRun = true
+				runStart := time.Now()
+				a.runOneConn(ctx, conn)
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				// Only reset backoff if the connection lasted a reasonable
+				// time (≥5 s), indicating a healthy server.
+				if time.Since(runStart) >= 5*time.Second {
+					backoff = time.Second
+				}
+			}
+		}
+
+	wait:
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(jitter(backoff)):
+		}
+		backoff = backoff * 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// runOneConn runs the read+write loops for a single conn. Returns
+// when the conn closes for any reason. On return, both goroutines
+// have exited.
+func (a *Adapter) runOneConn(ctx context.Context, conn *websocket.Conn) {
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	a.mu.Lock()
+	a.ws = &realWSConn{conn: conn}
+	a.mu.Unlock()
+
+	a.startWriteLoop(connCtx, conn)
+
+	// Drain any pending messages buffered while the WS was down.
+	a.drainPending()
+
+	// readLoop runs in this goroutine; when it returns, the conn is dead.
+	a.readLoop(connCtx, conn)
+
+	cancel()
+
+	a.mu.Lock()
+	a.ws = nil
+	a.outboundCh = nil
+	a.keepaliveSet = nil
+	a.mu.Unlock()
+}
+
+// jitter adds 0–25% jitter to d for the reconnect backoff so a fleet
+// of bridges doesn't thunder against a recovering JF server.
+func jitter(d time.Duration) time.Duration {
+	delta := time.Duration(uint64(time.Now().UnixNano())%uint64(d/4) + 1)
+	return d + delta
+}
+
+// drainPending pushes everything in a.pendingBuf to a.outboundCh
+// using the standard sendOutbound discipline. Called by runOneConn
+// just after startWriteLoop has set up the outbound channel.
+func (a *Adapter) drainPending() {
+	a.mu.Lock()
+	buf := a.pendingBuf
+	a.pendingBuf = nil
+	a.mu.Unlock()
+	if buf == nil {
+		return
+	}
+	for _, env := range buf.drainAll() {
+		a.sendOutbound(env)
 	}
 }
 

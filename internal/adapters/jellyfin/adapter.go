@@ -211,9 +211,26 @@ func (a *Adapter) Start(ctx context.Context) error {
 	return fmt.Errorf("jellyfin.Adapter.Start: not implemented yet (Phase 5)")
 }
 
-// Stop is implemented in full in Phase 4 (when WS goroutines exist to
-// stop). For now it just resets state.
 func (a *Adapter) Stop() error {
+	a.mu.Lock()
+	cancel := a.startCancel
+	done := a.runDone
+	a.startCancel = nil
+	a.runDone = nil
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	// Wait for runSession to exit so Start→Stop→Start can't double-post
+	// Capabilities. 10 s upper bound keeps the UI thread responsive even
+	// if a network call is wedged; in practice runSession exits quickly
+	// once its context is cancelled.
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	}
 	a.setState(adapters.StateStopped, "")
 	return nil
 }

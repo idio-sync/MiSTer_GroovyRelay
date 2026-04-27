@@ -297,3 +297,76 @@ func TestSendOutbound_QueuesAndWrites(t *testing.T) {
 		t.Errorf("MessageType = %q", env.MessageType)
 	}
 }
+
+func TestReconnect_ProbesSessionsAndSkipsCapabilitiesIfPresent(t *testing.T) {
+	var capPosts atomicCounter
+	var sessionsRequests atomicCounter
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/System/Info", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		capPosts.inc()
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("/Sessions", func(w http.ResponseWriter, r *http.Request) {
+		sessionsRequests.inc()
+		w.Header().Set("Content-Type", "application/json")
+		// Pretend our DeviceId already has a session row.
+		_, _ = w.Write([]byte(`[{"DeviceId":"device-1","Id":"sess-x"}]`))
+	})
+	mux.HandleFunc("/socket", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		// Close immediately to trigger reconnect on the bridge side.
+		_ = conn.Close(websocket.StatusGoingAway, "test")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "device-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		_ = a.runSession(ctx, "tok")
+	}()
+
+	// Wait for at least one /Sessions probe (which means at least one
+	// reconnect attempt happened). Backoff is 1s+jitter on first
+	// retry; give it 5s.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sessionsRequests.value() >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if sessionsRequests.value() < 1 {
+		t.Fatal("no /Sessions probe seen")
+	}
+	// First connect always POSTs Capabilities. Subsequent reconnects
+	// see existing session row and skip; total POSTs should be 1.
+	if got := capPosts.value(); got != 1 {
+		t.Errorf("capabilities POSTs = %d, want 1 (probe should suppress re-POST)", got)
+	}
+}
+
+// atomicCounter is a tiny test helper.
+type atomicCounter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *atomicCounter) inc() {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+}
+func (c *atomicCounter) value() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
