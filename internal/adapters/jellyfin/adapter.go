@@ -315,6 +315,19 @@ func (a *Adapter) Stop() error {
 		case <-time.After(10 * time.Second):
 		}
 	}
+	// Stop all reporters so they don't push stale progress onto a
+	// future WS connection after Start→Stop→Start. We snapshot
+	// refKeys under mu, drop the lock, then call stopReporter for
+	// each — stopReporter takes mu itself.
+	a.mu.Lock()
+	refKeys := make([]string, 0, len(a.reporters))
+	for k := range a.reporters {
+		refKeys = append(refKeys, k)
+	}
+	a.mu.Unlock()
+	for _, k := range refKeys {
+		a.stopReporter(k)
+	}
 	a.setState(adapters.StateStopped, "")
 	return nil
 }

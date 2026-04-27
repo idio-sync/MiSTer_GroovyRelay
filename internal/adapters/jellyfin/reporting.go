@@ -173,6 +173,20 @@ func (a *Adapter) emitProgress(r *reporter, st core.SessionStatus, msgType strin
 	}
 }
 
+// emitTerminal sends PlaybackStopped to JF.
+//
+// Known race (acceptable in v1; spec §"Reporter goroutine: single
+// source of truth" tradeoff): when a plane error fires, the manager
+// transitions FSM to Idle BEFORE notifySessionStop runs in its own
+// goroutine. If the reporter ticker happens to fire in the
+// microseconds between FSM=Idle and the OnStop goroutine writing
+// r.errReason, this function reads errReason="" and sends
+// Failed=false instead of Failed=true. Probability is astronomically
+// low (10s ticker vs μs goroutine scheduling), but the JF UI may
+// occasionally show "completed" for a crashed cast. Closing the
+// race requires reordering manager.go's plane-exit goroutine to
+// call OnStop synchronously BEFORE the FSM transition — a cleaner
+// fix that we may apply in v2.
 func (a *Adapter) emitTerminal(r *reporter, st core.SessionStatus) {
 	a.mu.Lock()
 	audIdx := derefIntOrZero(a.lastAudioStreamIdx)

@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"html"
 	"net/http"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -22,8 +23,10 @@ func (a *Adapter) UIRoutes() []adapters.Route {
 func (a *Adapter) handleStatusFragment(w http.ResponseWriter, r *http.Request) {
 	st := a.Status()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	state := html.EscapeString(st.State.String())
+	lastErr := html.EscapeString(st.LastError)
 	_, _ = w.Write([]byte(
-		`<span class="adapter-badge adapter-badge-` + st.State.String() + `">` + st.State.String() + `</span>` +
-			`<div class="adapter-error">` + st.LastError + `</div>`,
+		`<span class="adapter-badge adapter-badge-` + state + `">` + state + `</span>` +
+			`<div class="adapter-error">` + lastErr + `</div>`,
 	))
 }
