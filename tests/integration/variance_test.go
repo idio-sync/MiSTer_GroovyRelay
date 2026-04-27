@@ -3,10 +3,12 @@
 package integration
 
 import (
+	"image/png"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +48,7 @@ func TestScenario_PixelVariance(t *testing.T) {
 		t.Fatalf("mkdir dumps: %v", err)
 	}
 	dumper := fakemister.NewDumper(dumpDir, 30)
+	decoder := fakemister.NewFieldDecoder()
 
 	l, err := fakemister.NewListener("127.0.0.1:0")
 	if err != nil {
@@ -87,6 +90,29 @@ func TestScenario_PixelVariance(t *testing.T) {
 	stop := make(chan struct{})
 	dumpErrs := make(chan error, 1)
 
+	// Diagnostic counters (atomic; read in test goroutine after stop).
+	var (
+		diagFieldsTotal atomic.Int64
+		diagCompressed  atomic.Int64
+		diagDelta       atomic.Int64
+		diagDecodeErr   atomic.Int64
+		diagFirstField  atomic.Int64 // 1 if first field captured
+	)
+	type fieldSample struct {
+		frame      uint32
+		field      uint8
+		compressed bool
+		delta      bool
+		payloadLen int
+		decodedSum uint64
+		nonZero    int
+	}
+	var (
+		firstSamples   []fieldSample
+		firstSamplesMu = make(chan struct{}, 1)
+	)
+	firstSamplesMu <- struct{}{} // 1-slot semaphore
+
 	// Recorder + state-sink fan-in goroutine. Exits when stop is closed.
 	// Closing the RunWithFields channels from this side is unsafe (the
 	// listener goroutine writes into them) so we drive shutdown via stop
@@ -106,13 +132,35 @@ func TestScenario_PixelVariance(t *testing.T) {
 					modelinePtr.Store(cmd.Switchres)
 				}
 			case fe := <-fieldEvents:
-				payload := fe.Payload
+				diagFieldsTotal.Add(1)
 				if fe.Header.Compressed {
-					raw, err := groovy.LZ4Decompress(payload, int(fieldSize()))
-					if err != nil {
-						continue
+					diagCompressed.Add(1)
+				}
+				if fe.Header.Delta {
+					diagDelta.Add(1)
+				}
+				payload, err := decoder.Decode(fe, int(fieldSize()))
+				if err != nil {
+					diagDecodeErr.Add(1)
+					continue
+				}
+				// Capture diagnostic samples for the first 8 fields.
+				if diagFirstField.Add(1) <= 8 {
+					var sum uint64
+					var nz int
+					for _, b := range payload {
+						sum += uint64(b)
+						if b != 0 {
+							nz++
+						}
 					}
-					payload = raw
+					<-firstSamplesMu
+					firstSamples = append(firstSamples, fieldSample{
+						frame: fe.Header.Frame, field: fe.Header.Field,
+						compressed: fe.Header.Compressed, delta: fe.Header.Delta,
+						payloadLen: len(fe.Payload), decodedSum: sum, nonZero: nz,
+					})
+					firstSamplesMu <- struct{}{}
 				}
 				if ml := modelinePtr.Load(); ml != nil {
 					fieldHeight := groovy.FieldLines(ml.VActive, ml.Interlace)
@@ -199,6 +247,28 @@ func TestScenario_PixelVariance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Diagnostic dump — visible on -v or when the test fails. Surfaces
+	// whether the receiver is actually getting compressed/delta payloads,
+	// whether decode succeeded, and what the decoded byte distribution
+	// looks like for the first handful of fields.
+	t.Logf("DIAG fields_total=%d compressed=%d delta=%d decode_err=%d",
+		diagFieldsTotal.Load(), diagCompressed.Load(), diagDelta.Load(), diagDecodeErr.Load())
+	<-firstSamplesMu
+	for i, s := range firstSamples {
+		t.Logf("DIAG sample[%d] frame=%d field=%d compressed=%v delta=%v payload_len=%d decoded_sum=%d nonzero=%d",
+			i, s.frame, s.field, s.compressed, s.delta, s.payloadLen, s.decodedSum, s.nonZero)
+	}
+	firstSamplesMu <- struct{}{}
+	sort.Strings(matches)
+	for i, p := range matches {
+		if i >= 5 {
+			break
+		}
+		mean := pngMeanR(t, p)
+		t.Logf("DIAG png[%d] %s mean_R=%.4f", i, filepath.Base(p), mean)
+	}
+
 	if len(matches) == 0 {
 		t.Fatalf("no PNGs dumped in %s — pipeline produced no decodable fields", dumpDir)
 	}
@@ -206,4 +276,30 @@ func TestScenario_PixelVariance(t *testing.T) {
 
 	snap := rec.Snapshot()
 	assertInterFieldTiming(t, snap.FieldTimestamps)
+}
+
+func pngMeanR(t *testing.T, path string) float64 {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		return -2
+	}
+	b := img.Bounds()
+	var sum, n uint64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, _, _, _ := img.At(x, y).RGBA()
+			sum += uint64(r >> 8)
+			n++
+		}
+	}
+	if n == 0 {
+		return -3
+	}
+	return float64(sum) / float64(n)
 }

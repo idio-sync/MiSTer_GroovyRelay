@@ -29,6 +29,7 @@ func main() {
 
 	rec := fakemister.NewRecorder()
 	dumper := fakemister.NewDumper(*outDir, *pngEvery)
+	decoder := fakemister.NewFieldDecoder()
 
 	events := make(chan fakemister.Command, 64)
 
@@ -81,14 +82,10 @@ func main() {
 				dumper.CloseAudio(sampleRate, channels)
 			}
 		case fe := <-fieldEvents:
-			payload := fe.Payload
-			if fe.Header.Compressed {
-				raw, err := groovy.LZ4Decompress(payload, int(fieldSize(modeline, initPayload)))
-				if err != nil {
-					slog.Warn("lz4 decompress failed", "err", err, "frame", fe.Header.Frame)
-					continue
-				}
-				payload = raw
+			payload, err := decoder.Decode(fe, int(fieldSize(modeline, initPayload)))
+			if err != nil {
+				slog.Warn("field decode failed", "err", err, "frame", fe.Header.Frame, "delta", fe.Header.Delta)
+				continue
 			}
 			w, h, _ := fieldDims(modeline)
 			dumper.MaybeDumpField(fe.Header.Frame, w, h, payload)
