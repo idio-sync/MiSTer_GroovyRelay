@@ -58,6 +58,9 @@ func (c Config) Validate() error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("server_url: scheme %q must be http or https", u.Scheme)
 	}
+	if u.User != nil {
+		return fmt.Errorf("server_url: must not contain username/password; credentials are stored separately after linking")
+	}
 	if u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("server_url: path %q must be empty", u.Path)
 	}

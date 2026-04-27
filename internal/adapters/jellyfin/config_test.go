@@ -71,6 +71,7 @@ func TestConfig_Validate_Rejects(t *testing.T) {
 	}{
 		{"missing-url-when-enabled", Config{Enabled: true, ServerURL: "", MaxVideoBitrateKbps: 4000}, "server_url"},
 		{"bad-scheme", Config{Enabled: true, ServerURL: "ftp://jellyfin.example.com", MaxVideoBitrateKbps: 4000}, "scheme"},
+		{"url-with-userinfo", Config{Enabled: true, ServerURL: "https://user:pass@jellyfin.example.com", MaxVideoBitrateKbps: 4000}, "username"},
 		{"path-in-url", Config{Enabled: true, ServerURL: "https://jellyfin.example.com/jf", MaxVideoBitrateKbps: 4000}, "path"},
 		{"query-in-url", Config{Enabled: true, ServerURL: "https://jellyfin.example.com?x=1", MaxVideoBitrateKbps: 4000}, "query"},
 		{"fragment-in-url", Config{Enabled: true, ServerURL: "https://jellyfin.example.com#x", MaxVideoBitrateKbps: 4000}, "fragment"},
