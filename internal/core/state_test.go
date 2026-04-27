@@ -192,3 +192,40 @@ func TestState_UnknownEvent(t *testing.T) {
 		t.Error("unknown event should fail")
 	}
 }
+
+func TestStateMachine_EvError_FromPlaying_GoesIdle(t *testing.T) {
+	sm := New()
+	if err := sm.Transition(EvPlayMedia); err != nil {
+		t.Fatalf("EvPlayMedia from Idle: %v", err)
+	}
+	if err := sm.Transition(EvError); err != nil {
+		t.Fatalf("EvError from Playing: %v", err)
+	}
+	if got := sm.State(); got != StateIdle {
+		t.Errorf("state after EvError = %q, want %q", got, StateIdle)
+	}
+}
+
+func TestStateMachine_EvError_FromPaused_GoesIdle(t *testing.T) {
+	sm := New()
+	_ = sm.Transition(EvPlayMedia)
+	_ = sm.Transition(EvPause)
+	if err := sm.Transition(EvError); err != nil {
+		t.Fatalf("EvError from Paused: %v", err)
+	}
+	if got := sm.State(); got != StateIdle {
+		t.Errorf("state after EvError = %q, want %q", got, StateIdle)
+	}
+}
+
+func TestStateMachine_EvError_FromIdle_NoOp(t *testing.T) {
+	sm := New()
+	// Already StateIdle; EvError must accept it (the plane-exit goroutine
+	// can race other transitions, so EvError must be idempotent on Idle).
+	if err := sm.Transition(EvError); err != nil {
+		t.Fatalf("EvError from Idle should be accepted: %v", err)
+	}
+	if got := sm.State(); got != StateIdle {
+		t.Errorf("state after EvError-from-Idle = %q, want %q", got, StateIdle)
+	}
+}

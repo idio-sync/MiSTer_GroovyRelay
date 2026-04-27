@@ -23,6 +23,11 @@ const (
 	EvStop      Event = "stop"
 	EvSeek      Event = "seek"
 	EvEOF       Event = "eof"
+	// EvError is fired by manager.go's plane-exit goroutine when the
+	// data plane returns a non-nil, non-context.Canceled error
+	// (ffmpeg crash, INIT timeout, network drop). Transitions any
+	// state to StateIdle, mirroring EvStop/EvEOF.
+	EvError Event = "error"
 )
 
 // StateMachine is the session FSM. Transitions are thread-safe. The manager
@@ -35,7 +40,7 @@ const (
 //	Paused  → Playing   on EvPlayMedia   (preempt)
 //	Playing → Paused    on EvPause
 //	Paused  → Playing   on EvPlay
-//	*       → Idle      on EvStop | EvEOF
+//	*       → Idle      on EvStop | EvEOF | EvError
 //	Playing → Playing   on EvSeek        (plane is respawned; FSM unchanged)
 //	Paused  → Paused    on EvSeek
 //	Idle    → error     on EvSeek
@@ -73,7 +78,7 @@ func (s *StateMachine) Transition(e Event) error {
 			return fmt.Errorf("cannot play from %s", s.state)
 		}
 		s.state = StatePlaying
-	case EvStop, EvEOF:
+	case EvStop, EvEOF, EvError:
 		s.state = StateIdle
 	case EvSeek:
 		// Seek from playing or paused, stays in same state conceptually

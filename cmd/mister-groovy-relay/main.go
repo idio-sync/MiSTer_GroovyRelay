@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -42,6 +43,7 @@ func main() {
 	cfgPath := flag.String("config", "/config/config.toml", "path to config.toml")
 	logLevel := flag.String("log-level", "info", "debug|info|warn|error")
 	linkFlag := flag.Bool("link", false, "run plex.tv PIN linking and exit")
+	linkJellyfin := flag.Bool("link-jellyfin", false, "run Jellyfin pairing flow on stdin and exit")
 	flag.Parse()
 
 	slog.SetDefault(logging.New(*logLevel))
@@ -72,8 +74,21 @@ func main() {
 		}
 	}
 
+	if *linkFlag && *linkJellyfin {
+		fmt.Fprintln(os.Stderr, "error: --link and --link-jellyfin are mutually exclusive; specify at most one")
+		os.Exit(2)
+	}
+
 	if *linkFlag {
 		runLinkFlow(sec, store)
+		return
+	}
+
+	if *linkJellyfin {
+		if err := runLinkJellyfin(sec); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -143,6 +158,15 @@ func main() {
 	}
 	if err := reg.Register(urlAdapter); err != nil {
 		slog.Error("registry register url", "err", err)
+		os.Exit(1)
+	}
+
+	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
+	// Spec: docs/specs/2026-04-25-jellyfin-adapter-design.md.
+	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID)
+	jfAdapter.SetVersion(version)
+	if err := reg.Register(jfAdapter); err != nil {
+		slog.Error("registry register jellyfin", "err", err)
 		os.Exit(1)
 	}
 

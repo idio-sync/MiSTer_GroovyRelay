@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +42,38 @@ func notifySessionStop(fn func(string), reason string) {
 		return
 	}
 	go fn(reason)
+}
+
+// redactURL returns rawURL with any auth-token query parameters replaced by
+// "REDACTED". Adapters thread credentials through stream URLs via well-known
+// param names: Jellyfin uses api_key=, Plex uses X-Plex-Token=, and a few
+// other servers honour a generic token=. This helper lets log sites write
+// StreamURL without leaking the secret to operator logs.
+//
+// Returns rawURL unchanged if it is empty, not parseable, or carries no
+// known token param. The redaction is case-insensitive.
+func redactURL(rawURL string) string {
+	if rawURL == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	changed := false
+	for k := range q {
+		switch strings.ToLower(k) {
+		case "api_key", "x-plex-token", "token":
+			q.Set(k, "REDACTED")
+			changed = true
+		}
+	}
+	if !changed {
+		return rawURL
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Manager is the adapter-agnostic session orchestrator. One Manager per
@@ -131,7 +165,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		oldOnStop = m.active.req.OnStop
 	}
 	if m.cancelFn != nil {
-		slog.Info("preempting prior session for new request", "new_url", req.StreamURL)
+		slog.Info("preempting prior session for new request", "new_url", redactURL(req.StreamURL))
 		prev := m.plane
 		m.cancelFn()
 		m.cancelFn = nil
@@ -206,15 +240,49 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	go func() {
 		runErr := plane.Run(ctx)
 		m.logPlaneExit(runErr)
+
+		// Capture OnStop closure and subtitle path outside of the lock so
+		// we can fire / clean up without holding m.mu. notifySessionStop
+		// spawns its own goroutine, but we follow the discipline of
+		// "never call adapter code under Manager.mu," and the same goes
+		// for any IO like file removal.
+		var onStop func(string)
+		var subtitlePath string
+
 		m.mu.Lock()
-		defer m.mu.Unlock()
 		if m.plane != plane {
+			m.mu.Unlock()
 			return
 		}
 		m.plane = nil
-		if runErr == nil {
+		switch {
+		case runErr == nil:
 			_ = m.fsm.Transition(EvEOF)
+		case errors.Is(runErr, context.Canceled):
+			// Pause's intentional cancellation; preserve StatePaused, do not
+			// transition or fire OnStop.
+		default:
+			_ = m.fsm.Transition(EvError)
+			if m.active != nil {
+				onStop = m.active.req.OnStop
+				// Capture subtitle path BEFORE clearing m.active so the
+				// file gets cleaned up. Without this, a subsequent Stop
+				// would see m.active=nil and skip removeSubtitleFile —
+				// the subtitle file would leak on every plane error.
+				subtitlePath = m.active.req.SubtitlePath
+				// Clear m.active so a subsequent Stop() doesn't re-fire
+				// OnStop with reason "stopped" for the same session.
+				// Also clear m.cancelFn since the plane has already exited;
+				// leaving a stale cancelFn would let Stop() think there's
+				// something to cancel.
+				m.active = nil
+				m.cancelFn = nil
+			}
 		}
+		m.mu.Unlock()
+
+		removeSubtitleFile(subtitlePath)
+		notifySessionStop(onStop, "error")
 	}()
 	return nil
 }
