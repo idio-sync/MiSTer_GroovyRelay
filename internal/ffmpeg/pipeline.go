@@ -61,6 +61,36 @@ func audioOutputEnabled(s PipelineSpec) bool {
 	return true
 }
 
+// visibleDARNum / visibleDARDen describe the displayed aspect of the output
+// buffer on the target CRT. All four shipped modelines drive a 15 kHz analog
+// CRT whose visible area is 4:3, so the 720×N output buffer is rendered with
+// non-square pixels (8:9 PAR for NTSC 480i, etc.) and undoes any horizontal
+// stretch we apply in the filter chain. To get correct aspect on screen we
+// scale the source into a logical square-pixel canvas of (OutputHeight × 4/3,
+// OutputHeight) and anamorphic-stretch as the final filter step.
+//
+// v1 hardcodes 4:3 because every shipped preset is a 4:3 CRT preset; if we
+// ever need to support 16:9 NTSC monitors or non-4:3 arcade tubes this would
+// become a per-modeline or per-bridge config knob.
+const (
+	visibleDARNum = 4
+	visibleDARDen = 3
+)
+
+// logicalCanvas returns the square-pixel (W,H) the source is fitted into
+// before anamorphic-stretch to (OutputWidth, OutputHeight). For NTSC 480i
+// (480 high) it returns (640, 480); for NTSC 240p (240 high) it returns
+// (320, 240); PAL 576i (576 high) → (768, 576); PAL 288p (288 high) → (384,
+// 288). All four are even on both axes so subsequent scale/pad/crop don't
+// need fractional-pixel rounding.
+func logicalCanvas(outputHeight int) (int, int) {
+	w := outputHeight * visibleDARNum / visibleDARDen
+	if w%2 != 0 {
+		w++
+	}
+	return w, outputHeight
+}
+
 // buildFilterChain assembles the comma-delimited ffmpeg `-vf` expression.
 //
 // Contract: the chain emits full-height progressive BGR24 frames at the
@@ -73,8 +103,15 @@ func audioOutputEnabled(s PipelineSpec) bool {
 // Order is load-bearing:
 //  1. yadif (only if interlaced source) → one progressive frame per input frame.
 //  2. fps=<OutputFpsExpr> → normalize every source to the modeline's field cadence.
-//  3. crop/scale/pad for aspect mode.
-//  4. subtitle burn-in on the full progressive frame.
+//  3. crop/scale/pad for aspect mode in a square-pixel logical canvas.
+//  4. anamorphic stretch from logical canvas to OutputWidth×OutputHeight.
+//  5. subtitle burn-in on the stretched buffer.
+//
+// The aspect chain operates in the logical (square-pixel) canvas so a 4:3
+// source fills the visible 4:3 CRT area exactly and a 16:9 source produces
+// correct top/bottom letterbox bars. The anamorphic stretch in step 4 is the
+// inverse of the CRT's horizontal squish, so the picture lands at correct
+// aspect on screen.
 func buildFilterChain(s PipelineSpec) string {
 	var filters []string
 
@@ -95,30 +132,40 @@ func buildFilterChain(s PipelineSpec) string {
 	}
 	filters = append(filters, "fps="+fpsExpr)
 
-	// 3. Aspect / crop.
+	// 3. Aspect / crop in the square-pixel logical canvas.
+	logicalW, logicalH := logicalCanvas(s.OutputHeight)
 	switch {
 	case s.AspectMode == "auto" && s.CropRect != nil:
 		r := s.CropRect
 		filters = append(filters,
 			fmt.Sprintf("crop=%d:%d:%d:%d", r.W, r.H, r.X, r.Y),
-			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease", s.OutputWidth, s.OutputHeight),
-			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", s.OutputWidth, s.OutputHeight),
+			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease", logicalW, logicalH),
+			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", logicalW, logicalH),
 		)
 	case s.AspectMode == "zoom":
 		filters = append(filters,
-			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=increase", s.OutputWidth, s.OutputHeight),
-			fmt.Sprintf("crop=%d:%d", s.OutputWidth, s.OutputHeight),
+			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=increase", logicalW, logicalH),
+			fmt.Sprintf("crop=%d:%d", logicalW, logicalH),
 		)
 	default: // letterbox, or auto with no probed rect yet
 		filters = append(filters,
-			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease", s.OutputWidth, s.OutputHeight),
-			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", s.OutputWidth, s.OutputHeight),
+			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease", logicalW, logicalH),
+			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", logicalW, logicalH),
 		)
 	}
 
-	// 4. Subtitle burn-in on the full progressive frame. Only filesystem
-	//    paths work for libass; URL-sourced captions must be downloaded by
-	//    the adapter first.
+	// 4. Anamorphic stretch from logical canvas to the output buffer.
+	//    For NTSC 480i this is 640×480 → 720×480 (PAR 8:9); the CRT undoes
+	//    the stretch on display so the picture lands at correct 4:3 aspect.
+	if logicalW != s.OutputWidth || logicalH != s.OutputHeight {
+		filters = append(filters,
+			fmt.Sprintf("scale=w=%d:h=%d", s.OutputWidth, s.OutputHeight))
+	}
+
+	// 5. Subtitle burn-in on the stretched buffer. Only filesystem paths
+	//    work for libass; URL-sourced captions must be downloaded by the
+	//    adapter first. Burning after the anamorphic stretch keeps subtitle
+	//    glyphs proportioned in screen space rather than logical space.
 	if s.SubtitlePath != "" {
 		filters = append(filters,
 			fmt.Sprintf("subtitles=filename='%s':si=%d", s.SubtitlePath, s.SubtitleIndex))

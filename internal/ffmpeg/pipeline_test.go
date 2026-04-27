@@ -95,6 +95,137 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 	}
 }
 
+// TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch verifies the PAR-aware
+// pipeline: the source is fitted into a 4:3 square-pixel canvas
+// (OutputHeight × 4/3, OutputHeight) and the chain ends with an anamorphic
+// stretch to (OutputWidth, OutputHeight). The CRT's non-square pixels
+// (NTSC 8:9 etc.) undo the stretch on display so the picture lands at correct
+// 4:3 aspect on screen.
+func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
+	cases := []struct {
+		name                       string
+		outputW, outputH           int
+		mode                       string
+		cropRect                   *CropRect
+		wantLogicalScale           string
+		wantLogicalPadOrCrop       string
+		wantFinalAnamorphicStretch string
+	}{
+		{
+			name:                       "NTSC 480i letterbox → 640x480 logical, stretch to 720x480",
+			outputW:                    720,
+			outputH:                    480,
+			mode:                       "letterbox",
+			wantLogicalScale:           "scale=w=640:h=480:force_original_aspect_ratio=decrease",
+			wantLogicalPadOrCrop:       "pad=w=640:h=480:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+			wantFinalAnamorphicStretch: "scale=w=720:h=480",
+		},
+		{
+			name:                       "NTSC 240p letterbox → 320x240 logical, stretch to 720x240",
+			outputW:                    720,
+			outputH:                    240,
+			mode:                       "letterbox",
+			wantLogicalScale:           "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+			wantLogicalPadOrCrop:       "pad=w=320:h=240:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+			wantFinalAnamorphicStretch: "scale=w=720:h=240",
+		},
+		{
+			name:                       "PAL 576i letterbox → 768x576 logical, stretch to 720x576",
+			outputW:                    720,
+			outputH:                    576,
+			mode:                       "letterbox",
+			wantLogicalScale:           "scale=w=768:h=576:force_original_aspect_ratio=decrease",
+			wantLogicalPadOrCrop:       "pad=w=768:h=576:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+			wantFinalAnamorphicStretch: "scale=w=720:h=576",
+		},
+		{
+			name:                       "PAL 288p letterbox → 384x288 logical, stretch to 720x288",
+			outputW:                    720,
+			outputH:                    288,
+			mode:                       "letterbox",
+			wantLogicalScale:           "scale=w=384:h=288:force_original_aspect_ratio=decrease",
+			wantLogicalPadOrCrop:       "pad=w=384:h=288:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+			wantFinalAnamorphicStretch: "scale=w=720:h=288",
+		},
+		{
+			name:                       "NTSC 480i zoom → 640x480 logical scale=increase + crop, stretch to 720x480",
+			outputW:                    720,
+			outputH:                    480,
+			mode:                       "zoom",
+			wantLogicalScale:           "scale=w=640:h=480:force_original_aspect_ratio=increase",
+			wantLogicalPadOrCrop:       "crop=640:480",
+			wantFinalAnamorphicStretch: "scale=w=720:h=480",
+		},
+		{
+			name:                       "NTSC 480i auto+CropRect uses logical canvas",
+			outputW:                    720,
+			outputH:                    480,
+			mode:                       "auto",
+			cropRect:                   &CropRect{W: 1920, H: 800, X: 0, Y: 140},
+			wantLogicalScale:           "scale=w=640:h=480:force_original_aspect_ratio=decrease",
+			wantLogicalPadOrCrop:       "pad=w=640:h=480:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+			wantFinalAnamorphicStretch: "scale=w=720:h=480",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := PipelineSpec{
+				SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+				OutputWidth: tc.outputW, OutputHeight: tc.outputH,
+				FieldOrder: "tff", AspectMode: tc.mode,
+				CropRect: tc.cropRect,
+			}
+			chain := buildFilterChain(spec)
+			for _, want := range []string{tc.wantLogicalScale, tc.wantLogicalPadOrCrop, tc.wantFinalAnamorphicStretch} {
+				if !strings.Contains(chain, want) {
+					t.Errorf("chain missing %q\nchain=%s", want, chain)
+				}
+			}
+			// The anamorphic stretch must be the last scale step (after pad/crop, before subtitles).
+			lastScale := strings.LastIndex(chain, "scale=w=")
+			anamorphicIdx := strings.Index(chain, tc.wantFinalAnamorphicStretch)
+			if lastScale != anamorphicIdx {
+				t.Errorf("anamorphic stretch %q is not the final scale step in %s", tc.wantFinalAnamorphicStretch, chain)
+			}
+		})
+	}
+}
+
+// TestBuildFilterChain_NoStretchWhenLogicalEqualsOutput verifies that when the
+// output buffer happens to match the logical canvas (e.g., a hypothetical
+// 640×480 buffer for 4:3 NTSC), the redundant trailing scale is omitted.
+// This guards against a no-op scale step landing in the chain.
+func TestBuildFilterChain_NoStretchWhenLogicalEqualsOutput(t *testing.T) {
+	spec := PipelineSpec{
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		OutputWidth: 640, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+	}
+	chain := buildFilterChain(spec)
+	// Exactly one scale step — the logical scale. No redundant trailing stretch.
+	if got := strings.Count(chain, "scale=w="); got != 1 {
+		t.Errorf("expected exactly 1 scale step when logical == output, got %d in %s", got, chain)
+	}
+}
+
+// TestBuildFilterChain_SubtitlesAfterAnamorphicStretch keeps subtitle glyphs
+// proportioned in screen space (post-stretch) rather than logical space, so
+// the CRT shows them at the operator-expected size.
+func TestBuildFilterChain_SubtitlesAfterAnamorphicStretch(t *testing.T) {
+	spec := PipelineSpec{
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		SubtitlePath: "/tmp/x.srt", SubtitleIndex: 0,
+	}
+	chain := buildFilterChain(spec)
+	stretchIdx := strings.Index(chain, "scale=w=720:h=480")
+	subIdx := strings.Index(chain, "subtitles=")
+	if stretchIdx < 0 || subIdx < 0 || subIdx <= stretchIdx {
+		t.Errorf("subtitles must follow the anamorphic stretch: %s", chain)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // BuildCommand argv shape tests. Still pure string assembly; we never Start().
 // -----------------------------------------------------------------------------
