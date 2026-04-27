@@ -380,12 +380,17 @@ func (c *Companion) Handler() http.Handler {
 // alone instead of having to instrument and re-deploy.
 func (c *Companion) withRequestLog(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/player/") {
+		if strings.HasPrefix(r.URL.Path, "/player/") || r.URL.Path == "/resources" {
 			slog.Info("plex companion request",
 				"method", r.Method,
 				"path", r.URL.Path,
+				"remote_addr", r.RemoteAddr,
 				"client_id", queryOrHeader(r, "X-Plex-Client-Identifier"),
+				"target_id", queryOrHeader(r, "X-Plex-Target-Client-Identifier"),
+				"product", queryOrHeader(r, "X-Plex-Product"),
+				"device_name", queryOrHeader(r, "X-Plex-Device-Name"),
 				"command_id", queryOrHeader(r, "commandID"),
+				"wait", queryOrHeader(r, "wait"),
 				"key", queryOrHeader(r, "key"),
 				"audio_stream_id", queryOrHeader(r, "audioStreamID"),
 				"subtitle_stream_id", queryOrHeader(r, "subtitleStreamID"),
@@ -1041,10 +1046,24 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 	if c.core != nil {
 		st = c.core.Status()
 	}
+	play := c.lastPlaySession()
+	// Diagnostic: callers polling /timeline/poll can be misled if our reply
+	// carries stale media identity from a prior cast. Log enough of the
+	// reply to confirm whether the request and response describe the same
+	// client/session. Pair this with the existing "plex companion request"
+	// log entry to correlate by remote_addr + client_id.
+	slog.Info("plex timeline poll reply",
+		"requesting_client_id", queryOrHeader(r, "X-Plex-Client-Identifier"),
+		"remote_addr", r.RemoteAddr,
+		"core_state", string(st.State),
+		"last_play_client_id", play.ClientID,
+		"last_play_media_key", play.MediaKey,
+		"last_play_pms", play.PlexMachineID,
+	)
 	w.WriteHeader(200)
 	_, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
 		st,
-		c.lastPlaySession(),
+		play,
 		atoiDefault(queryOrHeader(r, "commandID"), 0),
 	)))
 }

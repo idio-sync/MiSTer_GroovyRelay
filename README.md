@@ -4,12 +4,12 @@
 
 Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and Plex seek/skip/etc. is wonky. 100% usable though.
 
-A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Server; it advertises itself as a Plex cast target on the LAN, and when you pick it from the Plex client's "Cast" menu it transcodes the Plex output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine 480i NTSC video.
+A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Server; it advertises itself as a Plex cast target on the LAN, and when you pick it from the Plex client's "Cast" menu it transcodes the Plex output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
 ## Video Sources
 - Plex
 - URL to file (Archive.org .mkv, .mp4, etc.)
-- YouTube and sites suupported by yt-dlp
+- YouTube URL (and other sites supported by yt-dlp)
 
 ## Future Plans
 - Support for more relay sources:
@@ -17,7 +17,7 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Serv
   - DLNA
   - IPTV/M3U playlists
 - Companion browser extension, cast video from right click
-- 240p and PAL video modes
+- Fix 240p and PAL video modes, only 480i for now
 - Better webui/dashboard
 
 ## Hardware requirements
@@ -176,19 +176,6 @@ Once the bridge is running, point a browser at `http://<host>:32500/` (or whatev
 
 Each field is tagged with an apply scope so the UI tells you what it just did: *applied live* (hot-swap), *cast restarted* (next play rebuilds the pipeline), or *restart the container* (for bindable/identity fields where live propagation would produce split-brain state).
 
-### Authentication and LAN exposure
-
-The settings UI has **no authentication**. Only expose the `http_port` on networks you trust.
-
-If stronger isolation is needed:
-
-- Put the bridge behind a reverse proxy (nginx, Caddy) with basic auth, and keep `http_port` bound LAN-only.
-- Restrict access with host firewall rules (iptables / nftables / Unraid's Bridge Network Access setting).
-- Use a WireGuard tunnel for out-of-LAN administration.
-
-The bridge requires `--network=host` for GDM multicast discovery, so binding to `127.0.0.1` would make the UI unreachable from other LAN
-devices which is almost certainly where you want to access it from. LAN-layer isolation is the v1 answer.
-
 ## First-time setup walkthrough
 
 1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
@@ -229,20 +216,6 @@ Under heavy CPU contention the FFmpeg decoder can fall behind; the bridge covers
 If you see glitches cap container CPU with
 `docker run --cpus=2 ...` so the bridge has dedicated cores that aren't preempted. 2 cores is typically sufficient for a single 480p transcode plus Groovy packet framing.
 
-## Configuration reference
-
-### `[bridge.video]`
-
-- `modeline` — CRT output preset. One of:
-  - `NTSC_480i` (default) — 720×480 interlaced, 59.94 Hz. Standard NTSC.
-  - `NTSC_240p` — 720×240 progressive, 59.94 Hz. For cores expecting 240p.
-  - `PAL_576i` (experimental) — 720×576 interlaced, 50 Hz. Standard PAL.
-  - `PAL_288p` (experimental) — 720×288 progressive, 50 Hz.
-
-  PAL modes are verified against the Groovy wire protocol via fake-mister
-  but have not been tested on real PAL CRT hardware. Sync may not be
-  reliable; community feedback is welcomed via GitHub issues.
-
 ## Troubleshooting
 
 **"The target didn't show up in Plex's cast menu."**
@@ -264,18 +237,6 @@ Flip `interlace_field_order` between `tff` and `bff`. The "correct" value depend
 **"Plex says the target is offline moments after casting."**
 
 Almost always a `source_port` regression. If the bridge restarted and bound a different ephemeral port, the MiSTer's session key no longer matches. Make sure `source_port` is set to a fixed number in `config.toml` and that nothing else on the host is using it.
-
-### PAL output with NTSC- or film-cadence source content shows stuttering motion
-
-This is expected and unfixable without PAL film cadence correction
-(4 % speedup with audio retiming), which is intentionally out of scope
-for v1.5. ffmpeg's `fps=50/1` filter coerces 24 / 30 / 60 Hz sources to
-50 Hz via blunt frame drop / duplicate; the resulting motion judder is
-most pronounced on 24p film content.
-
-If you primarily cast NTSC-region content (DVDs, US TV, 24p film),
-prefer `NTSC_480i` or `NTSC_240p` — the bridge handles 60 Hz cadence
-without rate coercion.
 
 ## License
 

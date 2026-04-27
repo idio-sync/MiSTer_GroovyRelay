@@ -114,8 +114,9 @@ func PollPIN(id int, clientID string, timeout time.Duration) (string, error) {
 // previous UUID/token pair. Requires a valid auth token; a one-shot call,
 // intended to be driven by RunRegistrationLoop.
 func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName string) error {
+	connURI := fmt.Sprintf("http://%s:%d", hostIP, httpPort)
 	form := url.Values{}
-	form.Set("Connection[][uri]", fmt.Sprintf("http://%s:%d", hostIP, httpPort))
+	form.Set("Connection[][uri]", connURI)
 	// Re-assert provides=player on every refresh so the device record stays
 	// classified as a player even if a prior link created it without the flag.
 	form.Set("X-Plex-Provides", "player")
@@ -137,6 +138,15 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName string)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("plex.tv register: %s", resp.Status)
 	}
+	// Diagnostic: surfaces the exact (uuid, name, connection URI) tuple
+	// plex.tv sees on every refresh. Cast-picker dedupe issues with
+	// neighboring Plex clients are easier to spot when this is in the log
+	// alongside the GDM M-SEARCH replies and Companion request log.
+	slog.Info("plex.tv register ok",
+		"uuid", uuid,
+		"device_name", deviceName,
+		"connection_uri", connURI,
+	)
 	return nil
 }
 

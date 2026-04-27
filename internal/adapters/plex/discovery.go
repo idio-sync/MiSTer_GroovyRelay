@@ -2,6 +2,7 @@ package plex
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 )
@@ -70,6 +71,12 @@ func (d *Discovery) Run() {
 		}
 		req := string(buf[:n])
 		if strings.HasPrefix(req, "M-SEARCH") {
+			slog.Info("plex GDM M-SEARCH received",
+				"src", src.String(),
+				"reply_uuid", d.cfg.DeviceUUID,
+				"reply_name", d.cfg.DeviceName,
+				"reply_port", d.cfg.HTTPPort,
+			)
 			d.respondToMSearch(src)
 		}
 	}
