@@ -74,10 +74,16 @@ type QueuedItem struct {
 	SubtitleStreamIndex *int
 }
 
-// reporter is the per-session progress-reporting goroutine. Populated
-// in Phase 7. Defined as an empty struct here so adapter.go compiles.
+// reporter is the per-session progress-reporting goroutine state.
+// Fully initialized in Phase 7 (Task 7.1); the fields below are
+// referenced by makeOnStop and the elision logic.
 type reporter struct {
-	// fields added in Task 7.1
+	capturedRefKey string        // packed "<itemId>:<playSessionId>"
+	itemID         string        // for the JSON payload
+	playSessionID  string        // for the JSON payload
+	wakeup         chan struct{}  // poked by Playstate handlers and OnStop
+	errReason      string        // set when OnStop fires with reason=="error"
+	// ticker, ringBuf, etc. added in Task 7.1
 }
 
 // wsConn is the package-local interface over a JF WebSocket

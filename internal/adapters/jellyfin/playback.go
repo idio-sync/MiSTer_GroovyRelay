@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // PlaybackInfoInput is the request payload for FetchPlaybackInfo.
@@ -139,4 +141,102 @@ func BuildAbsoluteStreamURL(serverURL, relativeURL, token string) string {
 		u.RawQuery = q.Encode()
 	}
 	return u.String()
+}
+
+// playRequestInput aggregates everything needed to build a single
+// core.SessionRequest. Used by HandlePlay (Phase 6) and by the
+// track-switching code (Phase 8).
+type playRequestInput struct {
+	ItemID             string
+	StartPositionTicks int64
+	PlayInfo           PlaybackInfoResult
+	ServerURL          string
+	Token              string
+}
+
+// buildSessionRequest assembles a core.SessionRequest from the
+// playback negotiation result. The OnStop closure captures the
+// adapter-internal "<itemId>:<playSessionId>" key so the elision
+// logic in the reporter can identity-check against the adapter's
+// current key.
+func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
+	refKey := in.ItemID + ":" + in.PlayInfo.PlaySessionID
+	return core.SessionRequest{
+		StreamURL:     BuildAbsoluteStreamURL(in.ServerURL, in.PlayInfo.TranscodingURL, in.Token),
+		InputHeaders:  nil,
+		SeekOffsetMs:  int(in.StartPositionTicks / 10_000),
+		SubtitleURL:   "",
+		SubtitlePath:  "",
+		SubtitleIndex: 0,
+		Capabilities:  core.Capabilities{CanSeek: true, CanPause: true},
+		AdapterRef:    refKey,
+		DirectPlay:    false,
+		OnStop:        a.makeOnStop(refKey),
+	}
+}
+
+// makeOnStop returns the OnStop closure to attach to a SessionRequest.
+// On any reason the closure: records errReason if reason=="error",
+// wakes the reporter so it doesn't have to wait for its next 10 s tick.
+// The reporter does the actual termination classification.
+func (a *Adapter) makeOnStop(refKey string) func(string) {
+	return func(reason string) {
+		a.mu.Lock()
+		r, ok := a.reporters[refKey]
+		if !ok {
+			a.mu.Unlock()
+			return
+		}
+		if reason == "error" {
+			r.errReason = reason
+		}
+		ch := r.wakeup
+		a.mu.Unlock()
+
+		// Non-blocking wake. Send outside the mutex so a slow reader
+		// can't stall any unrelated state mutation.
+		if ch != nil {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// beginSelfPreempt updates currentRefKey under Adapter.mu and returns
+// the prior value (so the caller can pass it to rollbackSelfPreempt
+// on StartSession error).
+func (a *Adapter) beginSelfPreempt(newRef string) (prev string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	prev = a.currentRefKey
+	a.currentRefKey = newRef
+	a.pendingRollback = prev
+	return prev
+}
+
+// rollbackSelfPreempt reverts currentRefKey to prev and clears
+// pendingRollback. Called when StartSession returns an error.
+func (a *Adapter) rollbackSelfPreempt(prev string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.currentRefKey = prev
+	a.pendingRollback = ""
+}
+
+// commitSelfPreempt clears pendingRollback after StartSession
+// succeeds. currentRefKey is left at the new value.
+func (a *Adapter) commitSelfPreempt() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pendingRollback = ""
+}
+
+// snapshotCurrentRefKey returns currentRefKey under Adapter.mu.
+// Used by the reporter on each tick.
+func (a *Adapter) snapshotCurrentRefKey() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.currentRefKey
 }
