@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"time"
@@ -224,7 +225,6 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		return 0, fmt.Errorf("jellyfin: decode apply config: %w", err)
 	}
 	if err := newCfg.Validate(); err != nil {
-		a.setState(adapters.StateError, err.Error())
 		return 0, err
 	}
 
@@ -251,4 +251,7 @@ func (a *Adapter) setState(s adapters.State, errMsg string) {
 	a.state = s
 	a.stateSince = time.Now()
 	a.lastErr = errMsg
+	if s == adapters.StateError && errMsg != "" {
+		slog.Error("jellyfin adapter error", "err", errMsg)
+	}
 }
