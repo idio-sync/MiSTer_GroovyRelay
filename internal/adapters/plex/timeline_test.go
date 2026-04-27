@@ -568,6 +568,58 @@ func TestCompanion_TimelinePoll_WaitOneTimesOutWhenStateUnchanged(t *testing.T) 
 	}
 }
 
+// TestCompanion_TimelinePoll_WaitOneWakesOnPlayingPositionDrift verifies
+// that wait=1 polls return promptly while playing so the controller's
+// progress bar gets fresh `time` values. Without this the bar freezes for
+// the full long-poll timeout on poll-only controllers (Plex for Windows).
+func TestCompanion_TimelinePoll_WaitOneWakesOnPlayingPositionDrift(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePlaying, Position: 5 * time.Second}}
+	c := NewCompanion(CompanionConfig{}, fc)
+	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
+	c.SetTimeline(b)
+
+	prevTimeout, prevTick, prevGranularity := pollLongWaitTimeout, pollLongWaitTick, pollPlayingPositionGranularity
+	pollLongWaitTimeout = 5 * time.Second
+	pollLongWaitTick = 25 * time.Millisecond
+	pollPlayingPositionGranularity = 200 * time.Millisecond
+	t.Cleanup(func() {
+		pollLongWaitTimeout = prevTimeout
+		pollLongWaitTick = prevTick
+		pollPlayingPositionGranularity = prevGranularity
+	})
+
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	// Bump the playing position (no state change) so the wait loop sees
+	// drift past pollPlayingPositionGranularity and wakes up.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		fc.mu.Lock()
+		fc.status.Position = 5*time.Second + 300*time.Millisecond
+		fc.mu.Unlock()
+	}()
+
+	start := time.Now()
+	resp, err := http.Get(ts.URL + "/player/timeline/poll?wait=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if elapsed >= pollLongWaitTimeout {
+		t.Errorf("wait=1 should wake on position drift; instead hit %v safety timeout", elapsed)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `state="playing"`) {
+		t.Errorf("body missing state=playing: %s", body)
+	}
+	if !strings.Contains(string(body), `time="5300"`) {
+		t.Errorf("body should reflect the bumped position 5300 ms: %s", body)
+	}
+}
+
 // TestCompanion_TimelinePoll_NoWaitReturnsImmediately preserves the legacy
 // fast-path: requests without wait=1 must not be subjected to the long-poll
 // loop. Older controllers and ad-hoc tooling rely on /timeline/poll being

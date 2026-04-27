@@ -1128,11 +1128,27 @@ func (c *Companion) waitForTimelineChange(ctx context.Context, st core.SessionSt
 	}
 }
 
-// timelineChanged returns true when newSt/newPlay represent a meaningful
-// transition that controllers care about: a state change (idle/playing/paused),
-// a media swap, a new SessionID, or a stream/PlayQueue selection change.
-// Position drift during steady playback is intentionally NOT a change —
-// long-poll exists to coalesce position updates, not amplify them.
+// pollPlayingPositionGranularity is how much the playing position must
+// advance before the long-poll wakes up to deliver an updated `time`
+// attribute. Picking ~1 s matches the 1 Hz broadcast cadence already used
+// for subscribed controllers and keeps progress bars visibly moving on
+// poll-only clients (notably Plex for Windows). A coarser value frees more
+// wait time but stalls the progress bar; finer collapses back into a tight
+// loop. Exposed as a var so tests can poke a smaller value.
+var pollPlayingPositionGranularity = time.Second
+
+// timelineChanged returns true when newSt/newPlay represent a transition
+// the controller cares about. Three buckets:
+//
+//   - Hard state/identity changes: state, MediaKey, SessionID, stream
+//     selections, PlayQueue item. These are always reported.
+//   - Playback progress: while actively playing, every
+//     pollPlayingPositionGranularity of forward drift is reported so the
+//     controller's progress bar gets fresh `time` values. Without this,
+//     wait=1 holds for the full safety timeout (~30 s) and the bar freezes
+//     between releases.
+//   - Steady idle/paused state: NOT a change; long-poll can hold the full
+//     timeout because there's no position to update.
 func timelineChanged(oldSt core.SessionStatus, oldPlay PlayMediaRequest, newSt core.SessionStatus, newPlay PlayMediaRequest) bool {
 	if oldSt.State != newSt.State {
 		return true
@@ -1151,6 +1167,15 @@ func timelineChanged(oldSt core.SessionStatus, oldPlay PlayMediaRequest, newSt c
 	}
 	if oldPlay.PlayQueueItemID != newPlay.PlayQueueItemID {
 		return true
+	}
+	if newSt.State == core.StatePlaying {
+		delta := newSt.Position - oldSt.Position
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta >= pollPlayingPositionGranularity {
+			return true
+		}
 	}
 	return false
 }
