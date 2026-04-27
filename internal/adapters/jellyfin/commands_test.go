@@ -144,3 +144,72 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 	}
 	return b
 }
+
+func TestHandlePlaystate_PauseCallsCorePause(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Pause"}))
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) != 1 || mgr.calls[0] != "Pause" {
+		t.Errorf("calls = %v, want [Pause]", mgr.calls)
+	}
+}
+
+func TestHandlePlaystate_UnpauseCallsCorePlay(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Unpause"}))
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) != 1 || mgr.calls[0] != "Play" {
+		t.Errorf("calls = %v, want [Play]", mgr.calls)
+	}
+}
+
+func TestHandlePlaystate_StopCallsCoreStop(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Stop"}))
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) != 1 || mgr.calls[0] != "Stop" {
+		t.Errorf("calls = %v, want [Stop]", mgr.calls)
+	}
+}
+
+func TestHandlePlaystate_SeekConvertsTicksToMs(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandlePlaystate(mustMarshal(t, map[string]any{
+		"Command": "Seek", "SeekPositionTicks": 50_000_000, // 5 seconds
+	}))
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) != 1 || mgr.calls[0] != "SeekTo" {
+		t.Errorf("calls = %v, want [SeekTo]", mgr.calls)
+	}
+}
+
+func TestHandlePlaystate_PlayPauseTogglesByState(t *testing.T) {
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StatePlaying}}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "PlayPause"}))
+	mgr.mu.Lock()
+	first := mgr.calls
+	mgr.mu.Unlock()
+	if len(first) != 1 || first[0] != "Pause" {
+		t.Errorf("PlayPause from Playing → calls=%v, want [Pause]", first)
+	}
+
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePaused}
+	mgr.mu.Unlock()
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "PlayPause"}))
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) != 2 || mgr.calls[1] != "Play" {
+		t.Errorf("PlayPause from Paused → calls=%v, want [..., Play]", mgr.calls)
+	}
+}

@@ -121,7 +121,7 @@ func (a *Adapter) dispatchInbound(messageType string, data json.RawMessage) {
 	case "Play":
 		a.HandlePlay(data)
 	case "Playstate":
-		// Wired in Task 6.2.
+		a.HandlePlaystate(data)
 	case "GeneralCommand":
 		// Wired in Task 6.3.
 	default:

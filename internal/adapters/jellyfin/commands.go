@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // playMessageData is the JF Play message Data field.
@@ -98,4 +100,47 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 		}
 		a.commitSelfPreempt()
 	}()
+}
+
+// playstateRequestData is the JF Playstate Data field.
+type playstateRequestData struct {
+	Command           string `json:"Command"`
+	SeekPositionTicks int64  `json:"SeekPositionTicks,omitempty"`
+	ControllingUserID string `json:"ControllingUserId,omitempty"`
+}
+
+// HandlePlaystate translates Pause / Unpause / Stop / Seek /
+// PlayPause / NextTrack / PreviousTrack into core.Manager calls.
+func (a *Adapter) HandlePlaystate(data json.RawMessage) {
+	var p playstateRequestData
+	if err := json.Unmarshal(data, &p); err != nil {
+		slog.Warn("jellyfin: bad Playstate payload", "err", err)
+		return
+	}
+	if a.core == nil {
+		return
+	}
+	switch p.Command {
+	case "Pause":
+		_ = a.core.Pause()
+	case "Unpause":
+		_ = a.core.Play()
+	case "PlayPause":
+		st := a.core.Status()
+		if st.State == core.StatePlaying {
+			_ = a.core.Pause()
+		} else if st.State == core.StatePaused {
+			_ = a.core.Play()
+		}
+	case "Stop":
+		_ = a.core.Stop()
+	case "Seek":
+		ms := int(p.SeekPositionTicks / 10_000)
+		_ = a.core.SeekTo(ms)
+	case "NextTrack", "PreviousTrack":
+		// Implemented in Task 6.4 (queue advance).
+		slog.Debug("jellyfin: NextTrack/PreviousTrack — queue not yet wired")
+	default:
+		slog.Debug("jellyfin: unhandled Playstate.Command", "cmd", p.Command)
+	}
 }
