@@ -80,15 +80,21 @@ type QueuedItem struct {
 }
 
 // reporter is the per-session progress-reporting goroutine state.
-// Fully initialized in Phase 7 (Task 7.1); the fields below are
-// referenced by makeOnStop and the elision logic.
+// capturedRefKey / itemID / playSessionID / wakeup / errReason were
+// added in Task 5.2. The remaining fields (mediaSourceID … cancel) are
+// added in Task 7.1.
 type reporter struct {
 	capturedRefKey string        // packed "<itemId>:<playSessionId>"
 	itemID         string        // for the JSON payload
 	playSessionID  string        // for the JSON payload
+	mediaSourceID  string        // reported in PlaybackProgressInfo
+	startedAt      time.Time     // reported as PlaybackStartTimeTicks
 	wakeup         chan struct{}  // poked by Playstate handlers and OnStop
 	errReason      string        // set when OnStop fires with reason=="error"
-	// ticker, ringBuf, etc. added in Task 7.1
+	ticker         *time.Ticker  // 10 s progress tick; nil until goroutine starts
+	progressBuf    *ringBuffer   // drained on WS reconnect
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // wsConn is the package-local interface over a JF WebSocket
