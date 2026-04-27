@@ -1,7 +1,9 @@
 package dataplane
 
 import (
+	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"io"
 	"net"
@@ -10,8 +12,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	cryptorand "crypto/rand"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
@@ -145,6 +145,76 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 	}
 	if hdr[0] != groovy.CmdBlitFieldVSync {
 		t.Errorf("header[0] = %#x, want CmdBlitFieldVSync %#x", hdr[0], groovy.CmdBlitFieldVSync)
+	}
+}
+
+func TestChooseBlitPayload_UsesDeltaWhenSmaller(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+	p := NewPlane(PlaneConfig{
+		Modeline:      groovy.NTSC480i60,
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+
+	prev := make([]byte, fieldBytes)
+	if _, err := cryptorand.Read(prev); err != nil {
+		t.Fatal(err)
+	}
+	copy(p.prevFields[0], prev)
+	p.prevValid[0] = true
+
+	raw := append([]byte(nil), prev...)
+	for i := 0; i < 32; i++ {
+		raw[i*1024] ^= byte(i + 1)
+	}
+
+	var elapsed time.Duration
+	opts, payload, _ := p.chooseBlitPayload(10, 0, raw, &elapsed)
+	if !opts.Compressed || !opts.Delta {
+		t.Fatalf("chooseBlitPayload selected compressed=%v delta=%v, want delta LZ4", opts.Compressed, opts.Delta)
+	}
+	delta, err := groovy.LZ4Decompress(payload, len(raw))
+	if err != nil {
+		t.Fatalf("decompress delta: %v", err)
+	}
+	reconstructed := make([]byte, len(raw))
+	xorBytes(reconstructed, delta, prev)
+	if !bytes.Equal(reconstructed, raw) {
+		t.Fatal("delta payload did not reconstruct current field")
+	}
+	if elapsed <= 0 {
+		t.Fatal("elapsed should be populated")
+	}
+}
+
+func TestChooseBlitPayload_DoesNotDeltaWithoutPreviousField(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		Modeline:      groovy.NTSC480i60,
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	raw := make([]byte, 720*240*3)
+	for i := range raw {
+		raw[i] = byte(i % 251)
+	}
+
+	opts, payload, _ := p.chooseBlitPayload(1, 0, raw, nil)
+	if !opts.Compressed {
+		t.Fatal("compressible first field should use LZ4")
+	}
+	if opts.Delta {
+		t.Fatal("first field must not use delta without previous field")
+	}
+	out, err := groovy.LZ4Decompress(payload, len(raw))
+	if err != nil {
+		t.Fatalf("decompress full LZ4: %v", err)
+	}
+	if !bytes.Equal(out, raw) {
+		t.Fatal("full LZ4 payload did not reconstruct current field")
 	}
 }
 

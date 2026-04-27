@@ -114,6 +114,10 @@ type Plane struct {
 	framePool    *FramePool
 	fieldScratch []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
 	lz4Scratch   []byte // len == lz4.CompressBlockBound(fieldBytes)
+	lz4Delta     []byte // len == lz4.CompressBlockBound(fieldBytes)
+	deltaScratch []byte // len == fieldBytes; raw XOR against previous same-polarity field
+	prevFields   [2][]byte
+	prevValid    [2]bool
 	// headerScratch is shared by sendField and sendDuplicate. Safe because
 	// they are called from the same goroutine in mutually-exclusive branches
 	// of the tick `select` — never concurrently. Any future change that
@@ -152,7 +156,12 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		framePool:     NewFramePool(framePoolSlots, frameBytes),
 		fieldScratch:  make([]byte, fieldBytes),
 		lz4Scratch:    make([]byte, lz4.CompressBlockBound(fieldBytes)),
+		lz4Delta:      make([]byte, lz4.CompressBlockBound(fieldBytes)),
+		deltaScratch:  make([]byte, fieldBytes),
 		headerScratch: make([]byte, groovy.BlitHeaderLZ4Delta),
+	}
+	for i := range p.prevFields {
+		p.prevFields[i] = make([]byte, fieldBytes)
 	}
 	// Derive field period (in ms) as a rational from the modeline's
 	// FieldRateRatio: period_ms = 1000 / rate_hz, with rate_hz as
@@ -722,35 +731,25 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 
 // sendField sends one BLIT_FIELD_VSYNC header + payload using session-
 // lifetime scratch buffers (lz4Scratch for the compressed body,
-// headerScratch for the header bytes). All allocations are amortized
-// to NewPlane time. Applies congestion backoff before the header and
-// records the payload size afterwards so the next call can honor the
-// reference ~11 ms wait after any >500 KB blit.
+// deltaScratch for previous-field XOR, headerScratch for the header bytes).
+// All allocations are amortized to NewPlane time. Applies congestion backoff
+// before the header and records the payload size afterwards so the next call
+// can honor the reference ~11 ms wait after any >500 KB blit.
 //
-// Compression policy: if LZ4 is enabled AND the field is compressible
-// (LZ4CompressInto returns ok=true), the LZ4 BLIT variant is emitted.
-// Otherwise — either LZ4 is disabled in config, OR the field is
-// incompressible — a RAW BLIT variant is emitted with the uncompressed
-// bytes. Emitting an LZ4 header with CompressedSize=0 would desync the
-// receiver.
+// Compression policy: if LZ4 is enabled, try normal LZ4 and, when a previous
+// same-polarity field exists, Groovy's delta-LZ4 variant (raw XOR previous
+// field, compressed, 13-byte header). Emit the smallest compressed candidate;
+// if neither reduces the payload, emit RAW. Emitting an LZ4 header with
+// CompressedSize=0 would desync the receiver.
 func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	fieldStart := time.Now()
 	var lz4Elapsed, congestionElapsed, sendElapsed time.Duration
 	var compressedLen int
 
-	opts := groovy.BlitOpts{Frame: frame, Field: field}
-	payload := raw
-	if p.cfg.LZ4Enabled {
-		t := time.Now()
-		if n, ok := groovy.LZ4CompressInto(p.lz4Scratch, raw); ok {
-			payload = p.lz4Scratch[:n]
-			opts.Compressed = true
-			opts.CompressedSize = uint32(n)
-			compressedLen = n
-		} else {
-			slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", "size", len(raw))
-		}
-		lz4Elapsed = time.Since(t)
+	opts, payload, compressedLen := p.chooseBlitPayload(frame, field, raw, &lz4Elapsed)
+
+	if p.cfg.LZ4Enabled && !opts.Compressed {
+		slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", "size", len(raw))
 	}
 
 	t := time.Now()
@@ -767,6 +766,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 		slog.Warn("blit payload send", "err", err)
 		return time.Since(fieldStart)
 	}
+	p.rememberField(field, raw)
 	p.cfg.Sender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
 
@@ -794,9 +794,54 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			"send_ms", sendElapsed.Milliseconds(),
 			"raw_bytes", len(raw),
 			"compressed_bytes", compressedLen,
+			"lz4_delta", opts.Delta,
 			"lz4_enabled", p.cfg.LZ4Enabled)
 	}
 	return fieldElapsed
+}
+
+func (p *Plane) chooseBlitPayload(frame uint32, field uint8, raw []byte, elapsed *time.Duration) (groovy.BlitOpts, []byte, int) {
+	opts := groovy.BlitOpts{Frame: frame, Field: field}
+	if p.cfg.LZ4Enabled {
+		t := time.Now()
+		fullN, fullOK := groovy.LZ4CompressInto(p.lz4Scratch, raw)
+		fieldIdx := int(field & 1)
+		deltaN, deltaOK := 0, false
+		if p.prevValid[fieldIdx] {
+			xorBytes(p.deltaScratch, raw, p.prevFields[fieldIdx])
+			deltaN, deltaOK = groovy.LZ4CompressInto(p.lz4Delta, p.deltaScratch)
+		}
+		if elapsed != nil {
+			*elapsed = time.Since(t)
+		}
+		switch {
+		case deltaOK && (!fullOK || deltaN < fullN):
+			opts.Compressed = true
+			opts.Delta = true
+			opts.CompressedSize = uint32(deltaN)
+			return opts, p.lz4Delta[:deltaN], deltaN
+		case fullOK:
+			opts.Compressed = true
+			opts.CompressedSize = uint32(fullN)
+			return opts, p.lz4Scratch[:fullN], fullN
+		}
+	}
+	return opts, raw, 0
+}
+
+func (p *Plane) rememberField(field uint8, raw []byte) {
+	idx := int(field & 1)
+	if len(p.prevFields[idx]) < len(raw) {
+		return
+	}
+	copy(p.prevFields[idx], raw)
+	p.prevValid[idx] = true
+}
+
+func xorBytes(dst, a, b []byte) {
+	for i := range a {
+		dst[i] = a[i] ^ b[i]
+	}
 }
 
 // sendDuplicate emits a 9-byte dup-BLIT header with no payload. Used on pipe
