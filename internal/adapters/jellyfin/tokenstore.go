@@ -76,3 +76,10 @@ func WipeToken(path string) error {
 	}
 	return nil
 }
+
+// TokenPathFor returns the canonical absolute path of the JF token
+// file given the bridge's data_dir. Used by cmd/ for the headless
+// --link-jellyfin flow before any Adapter is constructed.
+func TokenPathFor(dataDir string) string {
+	return filepath.Join(dataDir, "jellyfin", "token.json")
+}
