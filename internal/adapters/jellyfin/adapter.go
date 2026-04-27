@@ -2,6 +2,7 @@ package jellyfin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -47,6 +48,10 @@ type Adapter struct {
 	queue           []QueuedItem     // adapter-local FIFO for PlayNext / PlayLast
 	reporters       map[string]*reporter // refKey → reporter; populated in Phase 7
 	ws              wsConn           // populated in Phase 4
+	// handleInbound routes inbound JF WS messages by MessageType.
+	// Set by New() to a.dispatchInbound; tests swap freely before
+	// startWS is called.
+	handleInbound inboundDispatcher
 	// startCancel is set in Phase 4 when Start() spawns the WS goroutines.
 	// runDone is closed by the runSession goroutine when it returns;
 	// Stop() waits on it so Start→Stop→Start cannot double-post Capabilities.
@@ -73,11 +78,14 @@ type reporter struct {
 }
 
 // wsConn is the package-local interface over a JF WebSocket
-// connection. Populated in Phase 4. Defined as a typed nil here so
-// adapter.go compiles.
+// connection. Populated in Phase 4.
 type wsConn interface {
-	// methods added in Task 4.1
+	Close() error
 }
+
+// inboundDispatcher routes a parsed JF inbound WS message envelope.
+// Wired by New() to a.dispatchInbound (Task 6.1); tests may swap it.
+type inboundDispatcher func(messageType string, data json.RawMessage)
 
 // New constructs a JF adapter bound to a SessionManager (typically
 // *core.Manager), the bridge data_dir, and the bridge device UUID.
