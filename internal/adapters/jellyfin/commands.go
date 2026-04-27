@@ -182,17 +182,13 @@ func (a *Adapter) HandleGeneralCommand(data json.RawMessage) {
 		if err != nil {
 			return
 		}
-		a.mu.Lock()
-		a.lastAudioStreamIdx = &i
-		a.mu.Unlock()
+		a.trackSwitch(trackSwitchInput{audioIdx: &i})
 	case "SetSubtitleStreamIndex":
 		i, err := strconv.Atoi(g.Arguments["Index"])
 		if err != nil {
 			return
 		}
-		a.mu.Lock()
-		a.lastSubtitleStreamIdx = &i
-		a.mu.Unlock()
+		a.trackSwitch(trackSwitchInput{subtitleIdx: &i})
 	case "VolumeUp", "VolumeDown", "Mute", "Unmute", "ToggleMute", "SetVolume":
 		slog.Debug("jellyfin: volume/mute command logged but no-op", "name", g.Name)
 	case "SetMaxStreamingBitrate":
@@ -200,6 +196,136 @@ func (a *Adapter) HandleGeneralCommand(data json.RawMessage) {
 	default:
 		slog.Debug("jellyfin: unhandled GeneralCommand", "name", g.Name)
 	}
+}
+
+// trackSwitchInput carries which track is being changed. Exactly one
+// of audioIdx / subtitleIdx is non-nil per call.
+type trackSwitchInput struct {
+	audioIdx    *int
+	subtitleIdx *int
+}
+
+// trackSwitch implements the spec's §"Track switching mid-cast"
+// 5-step ordering: snapshot Status, build new req with SeekOffsetMs
+// from the snapshot, reserve currentRefKey, call StartSession, restore
+// Pause if the prior session was paused. No-ops if the new index
+// matches the current one.
+func (a *Adapter) trackSwitch(in trackSwitchInput) {
+	if a.core == nil {
+		return
+	}
+
+	// 1) Snapshot Status() BEFORE anything else.
+	st := a.core.Status()
+	if st.State != core.StatePlaying && st.State != core.StatePaused {
+		return // nothing to switch
+	}
+
+	// Skip when the requested index is identical to the already-cached one.
+	// A nil cached pointer means "never set"; always proceed in that case.
+	a.mu.Lock()
+	cachedAud := a.lastAudioStreamIdx
+	cachedSub := a.lastSubtitleStreamIdx
+	a.mu.Unlock()
+	if in.audioIdx != nil && cachedAud != nil && *in.audioIdx == *cachedAud {
+		return
+	}
+	if in.subtitleIdx != nil && cachedSub != nil && *in.subtitleIdx == *cachedSub {
+		return
+	}
+
+	// Find current item from currentRefKey.
+	cur := a.snapshotCurrentRefKey()
+	itemID, _, ok := splitRefKey(cur)
+	if !ok || itemID == "" {
+		return
+	}
+
+	// Update cached indices BEFORE the goroutine so the new reporter
+	// picks them up immediately on its first tick.
+	a.mu.Lock()
+	if in.audioIdx != nil {
+		a.lastAudioStreamIdx = in.audioIdx
+	}
+	if in.subtitleIdx != nil {
+		a.lastSubtitleStreamIdx = in.subtitleIdx
+	}
+	a.mu.Unlock()
+
+	a.mu.Lock()
+	cfg := a.cfg
+	a.mu.Unlock()
+	tok, err := LoadToken(a.tokenPath())
+	if err != nil || tok.AccessToken == "" {
+		slog.Error("jellyfin: trackSwitch: no token")
+		return
+	}
+
+	wasPaused := st.State == core.StatePaused
+	posTicks := int64(st.Position / (100 * time.Nanosecond))
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		// 2) Build new SessionRequest with SeekOffsetMs from the snapshot.
+		info, err := FetchPlaybackInfo(ctx, PlaybackInfoInput{
+			ServerURL:           cfg.ServerURL,
+			Token:               tok.AccessToken,
+			DeviceID:            a.deviceID,
+			Version:             linkVersion,
+			ItemID:              itemID,
+			UserID:              tok.UserID,
+			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			StartPositionTicks:  posTicks,
+			AudioStreamIndex:    in.audioIdx,
+			SubtitleStreamIndex: in.subtitleIdx,
+		})
+		if err != nil {
+			slog.Error("jellyfin: trackSwitch PlaybackInfo failed", "err", err)
+			return
+		}
+		req := a.buildSessionRequest(playRequestInput{
+			ItemID:             itemID,
+			StartPositionTicks: posTicks,
+			PlayInfo:           info,
+			ServerURL:          cfg.ServerURL,
+			Token:              tok.AccessToken,
+		})
+
+		// 3) Reserve currentRefKey atomically (rollback on error).
+		prev := a.beginSelfPreempt(req.AdapterRef)
+
+		// 4) Call StartSession.
+		if err := a.core.StartSession(req); err != nil {
+			a.rollbackSelfPreempt(prev)
+			slog.Error("jellyfin: trackSwitch StartSession failed", "err", err)
+			return
+		}
+		a.commitSelfPreempt()
+
+		// 5) Restore Pause if the prior session was paused.
+		if wasPaused {
+			_ = a.core.Pause()
+		}
+
+		a.spawnReporter(reporterParams{
+			ItemID:        itemID,
+			PlaySessionID: info.PlaySessionID,
+			MediaSourceID: info.MediaSourceID,
+		})
+	}()
+}
+
+// splitRefKey splits "<itemId>:<playSessionId>" into its parts.
+// Item IDs are GUIDs (no colons), so splitting on the first ':' is safe.
+func splitRefKey(k string) (itemID, playSessionID string, ok bool) {
+	for i := 0; i < len(k); i++ {
+		if k[i] == ':' {
+			return k[:i], k[i+1:], true
+		}
+	}
+	return "", "", false
 }
 
 // queueAt enqueues all items in p.ItemIDs into adapter.queue. pos==0

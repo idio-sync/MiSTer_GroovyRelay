@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -230,32 +231,39 @@ func TestHandleGeneralCommand_DisplayMessage_LogsAndDoesNothing(t *testing.T) {
 	}
 }
 
-func TestHandleGeneralCommand_SetAudioStreamIndex_RecordsButTrackSwitchInPhase8(t *testing.T) {
-	mgr := &fakeManager{}
+// TestHandleGeneralCommand_SetAudioStreamIndex_NoOpWhenNoLiveCast asserts
+// that SetAudioStreamIndex is a no-op (no StartSession, no index recorded)
+// when there is no active session (StateIdle / no token). Phase 8 track
+// switching only proceeds when a live cast is in progress.
+func TestHandleGeneralCommand_SetAudioStreamIndex_NoOpWhenNoLiveCast(t *testing.T) {
+	mgr := &fakeManager{} // st.State == zero == StateIdle
 	a := New(mgr, t.TempDir(), "dev-1")
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetAudioStreamIndex",
 		"Arguments": map[string]string{"Index": "2"},
 	}))
-	a.mu.Lock()
-	got := a.lastAudioStreamIdx
-	a.mu.Unlock()
-	if got == nil || *got != 2 {
-		t.Errorf("lastAudioStreamIdx = %v, want 2", got)
+	time.Sleep(100 * time.Millisecond)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.reqs) != 0 {
+		t.Errorf("StartSession called when no live cast: reqs=%v", mgr.reqs)
 	}
 }
 
-func TestHandleGeneralCommand_SetSubtitleStreamIndexNegativeOne(t *testing.T) {
-	a := New(&fakeManager{}, t.TempDir(), "dev-1")
+// TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast is the
+// subtitle-stream equivalent of the audio test above.
+func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testing.T) {
+	mgr := &fakeManager{} // st.State == zero == StateIdle
+	a := New(mgr, t.TempDir(), "dev-1")
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetSubtitleStreamIndex",
 		"Arguments": map[string]string{"Index": "-1"},
 	}))
-	a.mu.Lock()
-	got := a.lastSubtitleStreamIdx
-	a.mu.Unlock()
-	if got == nil || *got != -1 {
-		t.Errorf("lastSubtitleStreamIdx = %v, want -1", got)
+	time.Sleep(100 * time.Millisecond)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.reqs) != 0 {
+		t.Errorf("StartSession called when no live cast: reqs=%v", mgr.reqs)
 	}
 }
 
@@ -323,4 +331,131 @@ func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
 		t.Errorf("queue len after NextTrack = %d, want 0", len(a.queue))
 	}
 	a.mu.Unlock()
+}
+
+func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T) {
+	var pbCalls atomicInt32
+	jfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/PlaybackInfo") {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		pbCalls.inc()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src-1","TranscodingUrl":"/videos/itm-1/master.m3u8?call=` + strconv.Itoa(pbCalls.get()) + `"}],
+			"PlaySessionId":"ps-` + strconv.Itoa(pbCalls.get()) + `"
+		}`))
+	}))
+	defer jfSrv.Close()
+
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePlaying,
+		Position:   75 * time.Second,
+		AdapterRef: "itm-1:ps-1",
+	}}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.currentRefKey = "itm-1:ps-1"
+
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetAudioStreamIndex",
+		"Arguments": map[string]string{"Index": "1"},
+	}))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		n := len(mgr.reqs)
+		mgr.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.reqs) != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", len(mgr.reqs))
+	}
+	got := mgr.reqs[0]
+	if got.SeekOffsetMs != 75_000 {
+		t.Errorf("SeekOffsetMs = %d, want 75000 (resume from current position)", got.SeekOffsetMs)
+	}
+	if !strings.Contains(got.StreamURL, "call=1") {
+		t.Errorf("StreamURL doesn't reflect new PlaybackInfo: %s", got.StreamURL)
+	}
+}
+
+func TestSetSubtitleStreamIndex_RestoresPausedAfterRestart(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePaused,
+		Position:   12 * time.Second,
+		AdapterRef: "itm-1:ps-1",
+	}}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-1"
+
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetSubtitleStreamIndex",
+		"Arguments": map[string]string{"Index": "0"},
+	}))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		seen := append([]string{}, mgr.calls...)
+		mgr.mu.Unlock()
+		if len(seen) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) < 2 {
+		t.Fatalf("calls = %v, want >= 2", mgr.calls)
+	}
+	if !strings.HasPrefix(mgr.calls[0], "StartSession") {
+		t.Errorf("calls[0] = %q, want StartSession", mgr.calls[0])
+	}
+	if mgr.calls[1] != "Pause" {
+		t.Errorf("calls[1] = %q, want Pause", mgr.calls[1])
+	}
+}
+
+func TestSetAudioStreamIndex_NoOpWhenIndexUnchanged(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-1"}}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-1"
+	idx2 := 2
+	a.lastAudioStreamIdx = &idx2
+
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetAudioStreamIndex",
+		"Arguments": map[string]string{"Index": "2"},
+	}))
+
+	time.Sleep(150 * time.Millisecond)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.reqs) != 0 {
+		t.Errorf("no-op switch issued StartSession: reqs=%v", mgr.reqs)
+	}
 }
