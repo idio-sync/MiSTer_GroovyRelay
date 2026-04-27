@@ -94,31 +94,41 @@ func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
 	a.renderLinkFragment(w, "")
 }
 
-// renderLinkFragment writes either a form (when not linked) or a
-// "linked-as" fragment (when linked) into w. errMsg is shown above
-// the form on error; empty string suppresses it. No template engine
-// here — the fragment is small enough to inline, and tests can match
-// on substrings without parsing HTML.
-func (a *Adapter) renderLinkFragment(w http.ResponseWriter, errMsg string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+// linkFragmentHTML returns the link section's inner content as an
+// HTML string: a form when not-linked or in error, "Linking…" while
+// awaiting auth, or "Linked as ..." with an Unlink button when linked.
+// Must NOT include the outer <div id="jf-link"> wrapper — htmx swaps
+// this fragment into the wrapper's innerHTML, so the wrapper has to
+// survive across swaps. ExtraPanelHTML adds the wrapper for the
+// initial server-rendered render.
+func (a *Adapter) linkFragmentHTML(errMsg string) string {
 	switch a.link.State() {
 	case LinkLinked:
 		user, sid := a.link.LinkedAs()
-		fmt.Fprintf(w, `<div class="jf-link-status">Linked as %s on %s. <button hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
+		return fmt.Sprintf(`<div class="jf-link-status">Linked as %s on %s. <button hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
 			html.EscapeString(user), html.EscapeString(sid))
 	case LinkLinking:
-		fmt.Fprint(w, `<div class="jf-link-status">Linking…</div>`)
+		return `<div class="jf-link-status">Linking…</div>`
 	default:
 		// Idle or Error
 		errBlock := ""
 		if errMsg != "" {
 			errBlock = fmt.Sprintf(`<div class="jf-link-error">%s</div>`, html.EscapeString(errMsg))
 		}
-		fmt.Fprintf(w, `%s<form hx-post="/ui/adapter/jellyfin/link/start" hx-target="#jf-link">
+		return fmt.Sprintf(`%s<form hx-post="/ui/adapter/jellyfin/link/start" hx-target="#jf-link">
 <input type="text" name="server_url" placeholder="https://jellyfin.example.com" required>
 <input type="text" name="username" placeholder="username" required>
 <input type="password" name="password" placeholder="password" required>
 <button type="submit">Link</button>
 </form>`, errBlock)
 	}
+}
+
+// renderLinkFragment writes the link fragment as a 200 + html body
+// in response to htmx form posts. The body is the inner content only;
+// htmx swaps it into the existing #jf-link wrapper rendered by
+// ExtraPanelHTML.
+func (a *Adapter) renderLinkFragment(w http.ResponseWriter, errMsg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(a.linkFragmentHTML(errMsg)))
 }
