@@ -101,8 +101,8 @@ func (a *Adapter) startWS(ctx context.Context, token string) error {
 	a.ws = &realWSConn{conn: conn}
 	a.mu.Unlock()
 
+	a.startWriteLoop(wsCtx, conn)
 	go a.readLoop(wsCtx, conn)
-	// Write loop + KeepAlive added in Task 4.2.
 	return nil
 }
 
@@ -122,6 +122,13 @@ func (a *Adapter) readLoop(ctx context.Context, conn *websocket.Conn) {
 			slog.Warn("jellyfin ws: bad envelope", "err", err)
 			continue
 		}
+		if env.MessageType == "ForceKeepAlive" {
+			var secs int
+			if err := json.Unmarshal(env.Data, &secs); err == nil && secs > 0 {
+				a.setKeepAliveInterval(time.Duration(secs) * time.Second)
+			}
+			continue
+		}
 		if a.handleInbound != nil {
 			a.handleInbound(env.MessageType, env.Data)
 		} else {
@@ -139,5 +146,114 @@ type realWSConn struct {
 // Close satisfies wsConn and performs a clean WS close handshake.
 func (c *realWSConn) Close() error {
 	return c.conn.Close(websocket.StatusNormalClosure, "")
+}
+
+// outboundQueueSize bounds the buffered outbound channel. Each item is
+// at most ~1 KB; 64 entries is roughly 10 minutes at peak send-rate
+// for KeepAlive (1s) + Progress (10s).
+const outboundQueueSize = 64
+
+// startWriteLoop is called from startWS after the read goroutine has
+// been spawned. It owns the conn write side; every other goroutine
+// (KeepAlive ticker, command handlers, reporting) sends via
+// a.sendOutbound which puts items on a single channel.
+func (a *Adapter) startWriteLoop(ctx context.Context, conn *websocket.Conn) {
+	a.mu.Lock()
+	a.outboundCh = make(chan outboundEnvelope, outboundQueueSize)
+	keepaliveSet := make(chan time.Duration, 1)
+	a.keepaliveSet = keepaliveSet
+	a.mu.Unlock()
+
+	go func() {
+		var ticker *time.Ticker
+		var tickerC <-chan time.Time
+		defer func() {
+			if ticker != nil {
+				ticker.Stop()
+			}
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case d := <-keepaliveSet:
+				if ticker != nil {
+					ticker.Stop()
+				}
+				if d > 0 {
+					ticker = time.NewTicker(d)
+					tickerC = ticker.C
+				} else {
+					ticker = nil
+					tickerC = nil
+				}
+			case <-tickerC:
+				_ = a.writeFrame(ctx, conn, outboundEnvelope{MessageType: "KeepAlive"})
+			case msg := <-a.outboundCh:
+				_ = a.writeFrame(ctx, conn, msg)
+			}
+		}
+	}()
+}
+
+// writeFrame marshals env and writes it to conn. Errors are logged
+// only — the read loop will detect a dead conn and trigger reconnect.
+func (a *Adapter) writeFrame(ctx context.Context, conn *websocket.Conn, env outboundEnvelope) error {
+	data, err := json.Marshal(env)
+	if err != nil {
+		slog.Warn("jellyfin ws: marshal outbound", "err", err, "type", env.MessageType)
+		return err
+	}
+	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := conn.Write(wctx, websocket.MessageText, data); err != nil {
+		slog.Info("jellyfin ws: write error", "err", err, "type", env.MessageType)
+		return err
+	}
+	return nil
+}
+
+// sendOutbound enqueues a message for the write loop. Three paths:
+//   - WS conn live + outboundCh has room: send to ch (fast path).
+//   - WS conn live + outboundCh full: drop with warn.
+//   - WS conn down (outboundCh nil): push to a.pendingBuf (drop-oldest
+//     ring of capacity 32). Drained on the next successful runOneConn.
+func (a *Adapter) sendOutbound(env outboundEnvelope) {
+	a.mu.Lock()
+	ch := a.outboundCh
+	if ch == nil {
+		if a.pendingBuf == nil {
+			a.pendingBuf = newRingBuffer(32)
+		}
+		a.pendingBuf.push(env)
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	select {
+	case ch <- env:
+	default:
+		slog.Warn("jellyfin ws: outbound queue full, dropping", "type", env.MessageType)
+	}
+}
+
+// setKeepAliveInterval is called from the ForceKeepAlive handler in
+// readLoop. Pass d=0 to stop sending KeepAlives.
+func (a *Adapter) setKeepAliveInterval(d time.Duration) {
+	a.mu.Lock()
+	ch := a.keepaliveSet
+	a.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- d:
+	default:
+		select {
+		case <-ch:
+		default:
+		}
+		ch <- d
+	}
 }
 

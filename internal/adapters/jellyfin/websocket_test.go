@@ -198,3 +198,102 @@ func TestStartWS_BuildsCorrectURL(t *testing.T) {
 		t.Errorf("http server should map to ws://, got %s", httpURL)
 	}
 }
+
+func TestKeepAlive_FiresAfterForceKeepAlive(t *testing.T) {
+	srv, wsCh, _ := startTestJFServer(t)
+
+	a := New(nil, t.TempDir(), "device-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := a.startWS(ctx, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	var conn *websocket.Conn
+	select {
+	case conn = <-wsCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no ws upgrade")
+	}
+
+	// Tell the bridge "send a KeepAlive every 1 second"
+	if err := conn.Write(t.Context(), websocket.MessageText, []byte(`{"MessageType":"ForceKeepAlive","Data":1}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read up to 2 messages from the bridge; each should be a KeepAlive.
+	for i := 0; i < 2; i++ {
+		readCtx, rcancel := context.WithTimeout(t.Context(), 3*time.Second)
+		_, data, err := conn.Read(readCtx)
+		rcancel()
+		if err != nil {
+			t.Fatalf("read[%d]: %v", i, err)
+		}
+		var env inboundEnvelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			t.Fatal(err)
+		}
+		if env.MessageType != "KeepAlive" {
+			t.Errorf("msg[%d].MessageType = %q, want KeepAlive", i, env.MessageType)
+		}
+	}
+}
+
+func TestNoKeepAliveBeforeForceKeepAlive(t *testing.T) {
+	srv, wsCh, _ := startTestJFServer(t)
+
+	a := New(nil, t.TempDir(), "device-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := a.startWS(ctx, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	var conn *websocket.Conn
+	select {
+	case conn = <-wsCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no ws upgrade")
+	}
+
+	// Wait 1.5 s without any ForceKeepAlive; we should NOT see a KeepAlive.
+	readCtx, rcancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer rcancel()
+	_, _, err := conn.Read(readCtx)
+	if err == nil {
+		t.Fatal("got an unsolicited KeepAlive (or other message); want timeout")
+	}
+}
+
+func TestSendOutbound_QueuesAndWrites(t *testing.T) {
+	srv, wsCh, _ := startTestJFServer(t)
+
+	a := New(nil, t.TempDir(), "device-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := a.startWS(ctx, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	conn := <-wsCh
+
+	a.sendOutbound(outboundEnvelope{MessageType: "PlaybackStart", Data: map[string]string{"x": "y"}})
+	readCtx, rcancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer rcancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var env inboundEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.MessageType != "PlaybackStart" {
+		t.Errorf("MessageType = %q", env.MessageType)
+	}
+}

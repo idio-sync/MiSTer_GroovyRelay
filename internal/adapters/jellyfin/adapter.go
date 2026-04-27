@@ -48,6 +48,9 @@ type Adapter struct {
 	queue           []QueuedItem     // adapter-local FIFO for PlayNext / PlayLast
 	reporters       map[string]*reporter // refKey → reporter; populated in Phase 7
 	ws              wsConn           // populated in Phase 4
+	outboundCh      chan outboundEnvelope
+	keepaliveSet    chan time.Duration
+	pendingBuf      *ringBuffer // adapter-level drop-oldest queue used while outboundCh is nil (WS down); drained by runOneConn on reconnect
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.
