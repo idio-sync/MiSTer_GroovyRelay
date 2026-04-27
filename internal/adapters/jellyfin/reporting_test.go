@@ -132,6 +132,57 @@ func installFakeSendOutbound(t *testing.T, a *Adapter) *emittedFinder {
 	return finder
 }
 
+// TestStop_DrainsReporters covers the C1 fix from the final
+// pre-merge review: Stop() must clean up any reporters left in
+// a.reporters so that a subsequent Start does not see ghost
+// progress goroutines pushing stale state into a fresh WS
+// connection. We stage two reporters into the map directly (the
+// path used by the real WS-driven flow takes Adapter.mu the same
+// way), then call Stop and assert the map is empty and all
+// reporter goroutines have wound down.
+func TestStop_DrainsReporters(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	installFakeSendOutbound(t, a)
+
+	// Park the manager in Playing so the reporter goroutines do not
+	// immediately exit via the Idle classifier before Stop runs.
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
+	mgr.mu.Unlock()
+
+	a.spawnReporter(reporterParams{
+		ItemID:        "itm-1",
+		PlaySessionID: "ps-7",
+		MediaSourceID: "src-1",
+		TickInterval:  50 * time.Millisecond,
+	})
+	a.spawnReporter(reporterParams{
+		ItemID:        "itm-2",
+		PlaySessionID: "ps-9",
+		MediaSourceID: "src-2",
+		TickInterval:  50 * time.Millisecond,
+	})
+
+	a.mu.Lock()
+	pre := len(a.reporters)
+	a.mu.Unlock()
+	if pre != 2 {
+		t.Fatalf("setup: reporters before Stop = %d, want 2", pre)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	a.mu.Lock()
+	post := len(a.reporters)
+	a.mu.Unlock()
+	if post != 0 {
+		t.Errorf("after Stop: reporters = %d, want 0", post)
+	}
+}
+
 func TestReporter_EmitsPlaybackStartAndProgress(t *testing.T) {
 	mgr := &fakeManager{st: core.SessionStatus{
 		State:      core.StatePlaying,
