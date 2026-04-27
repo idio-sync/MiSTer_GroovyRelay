@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -36,9 +37,10 @@ func (a *Adapter) HandlePlay(data json.RawMessage) {
 	switch p.PlayCommand {
 	case "", "PlayNow":
 		a.startPlayNow(p)
-	case "PlayNext", "PlayLast":
-		// Implemented in Task 6.4.
-		slog.Info("jellyfin: PlayNext/PlayLast not yet implemented (Phase 6.4)", "cmd", p.PlayCommand)
+	case "PlayNext":
+		a.queueAt(p, 0)
+	case "PlayLast":
+		a.queueAt(p, -1) // -1 means append
 	case "PlayInstantMix", "PlayShuffle":
 		slog.Warn("jellyfin: PlayCommand simplified to PlayNow", "requested", p.PlayCommand)
 		a.startPlayNow(p)
@@ -137,10 +139,105 @@ func (a *Adapter) HandlePlaystate(data json.RawMessage) {
 	case "Seek":
 		ms := int(p.SeekPositionTicks / 10_000)
 		_ = a.core.SeekTo(ms)
-	case "NextTrack", "PreviousTrack":
-		// Implemented in Task 6.4 (queue advance).
-		slog.Debug("jellyfin: NextTrack/PreviousTrack — queue not yet wired")
+	case "NextTrack":
+		if qi, ok := a.popQueueHead(); ok {
+			a.startQueuedItem(qi)
+		}
+	case "PreviousTrack":
+		// v1: no history; PreviousTrack is a no-op. Documented gap.
+		slog.Debug("jellyfin: PreviousTrack ignored (v1 has no playback history)")
 	default:
 		slog.Debug("jellyfin: unhandled Playstate.Command", "cmd", p.Command)
 	}
+}
+
+// generalCommandData is the JF GeneralCommand Data field.
+type generalCommandData struct {
+	Name              string            `json:"Name"`
+	Arguments         map[string]string `json:"Arguments"`
+	ControllingUserID string            `json:"ControllingUserId"`
+}
+
+// HandleGeneralCommand handles Volume, Mute, track-switch, and
+// DisplayMessage. v1 does not have local volume so Volume/Mute are
+// recorded for reporting but not acted on. Track-switch records the
+// requested index and (in Phase 8) re-issues PlaybackInfo + StartSession.
+func (a *Adapter) HandleGeneralCommand(data json.RawMessage) {
+	var g generalCommandData
+	if err := json.Unmarshal(data, &g); err != nil {
+		slog.Warn("jellyfin: bad GeneralCommand payload", "err", err)
+		return
+	}
+	switch g.Name {
+	case "DisplayMessage":
+		slog.Info("jellyfin: DisplayMessage", "header", g.Arguments["Header"], "text", g.Arguments["Text"])
+	case "SetAudioStreamIndex":
+		i, err := strconv.Atoi(g.Arguments["Index"])
+		if err != nil {
+			return
+		}
+		a.mu.Lock()
+		a.lastAudioStreamIdx = &i
+		a.mu.Unlock()
+	case "SetSubtitleStreamIndex":
+		i, err := strconv.Atoi(g.Arguments["Index"])
+		if err != nil {
+			return
+		}
+		a.mu.Lock()
+		a.lastSubtitleStreamIdx = &i
+		a.mu.Unlock()
+	case "VolumeUp", "VolumeDown", "Mute", "Unmute", "ToggleMute", "SetVolume":
+		slog.Debug("jellyfin: volume/mute command logged but no-op", "name", g.Name)
+	case "SetMaxStreamingBitrate":
+		slog.Debug("jellyfin: SetMaxStreamingBitrate noted; takes effect on next play")
+	default:
+		slog.Debug("jellyfin: unhandled GeneralCommand", "name", g.Name)
+	}
+}
+
+// queueAt enqueues all items in p.ItemIDs into adapter.queue. pos==0
+// inserts at the front (PlayNext), pos<0 appends (PlayLast).
+func (a *Adapter) queueAt(p playMessageData, pos int) {
+	items := make([]QueuedItem, 0, len(p.ItemIDs))
+	for _, id := range p.ItemIDs {
+		items = append(items, QueuedItem{
+			ItemID:              id,
+			StartPositionTicks:  0,
+			MediaSourceID:       p.MediaSourceID,
+			AudioStreamIndex:    p.AudioStreamIndex,
+			SubtitleStreamIndex: p.SubtitleStreamIndex,
+		})
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if pos < 0 {
+		a.queue = append(a.queue, items...)
+	} else {
+		a.queue = append(items, a.queue...)
+	}
+}
+
+// popQueueHead returns the next queued item or zero-value if empty.
+func (a *Adapter) popQueueHead() (QueuedItem, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) == 0 {
+		return QueuedItem{}, false
+	}
+	head := a.queue[0]
+	a.queue = a.queue[1:]
+	return head, true
+}
+
+// startQueuedItem turns a QueuedItem into a Play and runs the PlayNow flow.
+func (a *Adapter) startQueuedItem(qi QueuedItem) {
+	a.startPlayNow(playMessageData{
+		ItemIDs:             []string{qi.ItemID},
+		StartPositionTicks:  qi.StartPositionTicks,
+		MediaSourceID:       qi.MediaSourceID,
+		AudioStreamIndex:    qi.AudioStreamIndex,
+		SubtitleStreamIndex: qi.SubtitleStreamIndex,
+		PlayCommand:         "PlayNow",
+	})
 }

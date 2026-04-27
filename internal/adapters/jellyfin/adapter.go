@@ -47,6 +47,11 @@ type Adapter struct {
 	pendingRollback string           // saved currentRefKey for StartSession-failure rollback
 	queue           []QueuedItem     // adapter-local FIFO for PlayNext / PlayLast
 	reporters       map[string]*reporter // refKey → reporter; populated in Phase 7
+	// lastAudioStreamIdx and lastSubtitleStreamIdx track the most
+	// recent JF-driven track selections. Reported in PlaybackProgress
+	// (Phase 7) and used in Phase 8's track-switch restart.
+	lastAudioStreamIdx    *int
+	lastSubtitleStreamIdx *int
 	ws              wsConn           // populated in Phase 4
 	outboundCh      chan outboundEnvelope
 	keepaliveSet    chan time.Duration
@@ -123,7 +128,7 @@ func (a *Adapter) dispatchInbound(messageType string, data json.RawMessage) {
 	case "Playstate":
 		a.HandlePlaystate(data)
 	case "GeneralCommand":
-		// Wired in Task 6.3.
+		a.HandleGeneralCommand(data)
 	default:
 		// Already debug-logged in readLoop fallback.
 	}

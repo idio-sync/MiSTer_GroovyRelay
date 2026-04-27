@@ -213,3 +213,114 @@ func TestHandlePlaystate_PlayPauseTogglesByState(t *testing.T) {
 		t.Errorf("PlayPause from Paused → calls=%v, want [..., Play]", mgr.calls)
 	}
 }
+
+func TestHandleGeneralCommand_DisplayMessage_LogsAndDoesNothing(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name": "DisplayMessage",
+		"Arguments": map[string]string{
+			"Header": "Hello", "Text": "From JF", "TimeoutMs": "3000",
+		},
+	}))
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.calls) != 0 {
+		t.Errorf("DisplayMessage should not call core; calls = %v", mgr.calls)
+	}
+}
+
+func TestHandleGeneralCommand_SetAudioStreamIndex_RecordsButTrackSwitchInPhase8(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetAudioStreamIndex",
+		"Arguments": map[string]string{"Index": "2"},
+	}))
+	a.mu.Lock()
+	got := a.lastAudioStreamIdx
+	a.mu.Unlock()
+	if got == nil || *got != 2 {
+		t.Errorf("lastAudioStreamIdx = %v, want 2", got)
+	}
+}
+
+func TestHandleGeneralCommand_SetSubtitleStreamIndexNegativeOne(t *testing.T) {
+	a := New(&fakeManager{}, t.TempDir(), "dev-1")
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetSubtitleStreamIndex",
+		"Arguments": map[string]string{"Index": "-1"},
+	}))
+	a.mu.Lock()
+	got := a.lastSubtitleStreamIdx
+	a.mu.Unlock()
+	if got == nil || *got != -1 {
+		t.Errorf("lastSubtitleStreamIdx = %v, want -1", got)
+	}
+}
+
+func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"itm-2", "itm-3"},
+		"PlayCommand": "PlayLast",
+	}))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 2 {
+		t.Fatalf("queue len = %d, want 2", len(a.queue))
+	}
+	if a.queue[0].ItemID != "itm-2" || a.queue[1].ItemID != "itm-3" {
+		t.Errorf("queue order = %v, want itm-2, itm-3", a.queue)
+	}
+}
+
+func TestHandlePlay_PlayNext_InsertsAtFront(t *testing.T) {
+	a := New(&fakeManager{}, t.TempDir(), "dev-1")
+	a.queue = []QueuedItem{{ItemID: "tail-1"}, {ItemID: "tail-2"}}
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"head-x"},
+		"PlayCommand": "PlayNext",
+	}))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 3 || a.queue[0].ItemID != "head-x" {
+		t.Errorf("queue = %+v, want [head-x, tail-1, tail-2]", a.queue)
+	}
+}
+
+func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.queue = []QueuedItem{{ItemID: "next-itm"}}
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "NextTrack"}))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		n := len(mgr.reqs)
+		mgr.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.mu.Lock()
+	if len(mgr.reqs) == 0 {
+		t.Fatal("NextTrack didn't trigger StartSession")
+	}
+	mgr.mu.Unlock()
+	a.mu.Lock()
+	if len(a.queue) != 0 {
+		t.Errorf("queue len after NextTrack = %d, want 0", len(a.queue))
+	}
+	a.mu.Unlock()
+}
