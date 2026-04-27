@@ -101,6 +101,12 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			return
 		}
 		a.commitSelfPreempt()
+
+		a.spawnReporter(reporterParams{
+			ItemID:        p.ItemIDs[0],
+			PlaySessionID: info.PlaySessionID,
+			MediaSourceID: info.MediaSourceID,
+		})
 	}()
 }
 

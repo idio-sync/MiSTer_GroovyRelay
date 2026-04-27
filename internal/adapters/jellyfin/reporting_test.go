@@ -2,6 +2,8 @@ package jellyfin
 
 import (
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,3 +93,243 @@ func TestRingBuffer_DrainAllEmptyAfter(t *testing.T) {
 		t.Errorf("second drain = %d, want 0", len(got))
 	}
 }
+
+// emittedFinder collects messages a fake-write side observed.
+type emittedFinder struct {
+	mu  sync.Mutex
+	out []outboundEnvelope
+}
+
+func (e *emittedFinder) collect() []outboundEnvelope {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cp := make([]outboundEnvelope, len(e.out))
+	copy(cp, e.out)
+	return cp
+}
+
+func (e *emittedFinder) push(env outboundEnvelope) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.out = append(e.out, env)
+}
+
+// installFakeSendOutbound replaces a.sendOutboundFn for the duration
+// of the test. Returns the finder. Mutex-guarded so the reporter
+// goroutine cannot race the swap.
+func installFakeSendOutbound(t *testing.T, a *Adapter) *emittedFinder {
+	t.Helper()
+	finder := &emittedFinder{}
+	a.mu.Lock()
+	prev := a.sendOutboundFn
+	a.sendOutboundFn = finder.push
+	a.mu.Unlock()
+	t.Cleanup(func() {
+		a.mu.Lock()
+		a.sendOutboundFn = prev
+		a.mu.Unlock()
+	})
+	return finder
+}
+
+func TestReporter_EmitsPlaybackStartAndProgress(t *testing.T) {
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePlaying,
+		Position:   45 * time.Second,
+		AdapterRef: "itm-1:ps-7",
+	}}
+	a := New(mgr, t.TempDir(), "dev-1")
+	finder := installFakeSendOutbound(t, a)
+
+	a.spawnReporter(reporterParams{
+		ItemID:        "itm-1",
+		PlaySessionID: "ps-7",
+		MediaSourceID: "src-1",
+		TickInterval:  50 * time.Millisecond,
+	})
+	defer a.stopReporter("itm-1:ps-7")
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(finder.collect()) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := finder.collect()
+	if len(got) < 2 {
+		t.Fatalf("got %d messages, want >= 2", len(got))
+	}
+	if got[0].MessageType != "PlaybackStart" {
+		t.Errorf("first = %q, want PlaybackStart", got[0].MessageType)
+	}
+	if got[1].MessageType != "PlaybackProgress" {
+		t.Errorf("second = %q, want PlaybackProgress", got[1].MessageType)
+	}
+}
+
+func TestReporter_StatusIdleEndsLoopWithStopped(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	finder := installFakeSendOutbound(t, a)
+
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
+	mgr.mu.Unlock()
+
+	a.spawnReporter(reporterParams{
+		ItemID:        "itm-1",
+		PlaySessionID: "ps-7",
+		MediaSourceID: "src-1",
+		TickInterval:  30 * time.Millisecond,
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StateIdle}
+	mgr.mu.Unlock()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	stoppedSeen := false
+	for time.Now().Before(deadline) {
+		for _, m := range finder.collect() {
+			if m.MessageType == "PlaybackStopped" {
+				stoppedSeen = true
+				break
+			}
+		}
+		if stoppedSeen {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !stoppedSeen {
+		t.Fatalf("no PlaybackStopped seen; messages=%+v", finder.collect())
+	}
+
+	if a.lookupReporter("itm-1:ps-7") != nil {
+		t.Errorf("reporter still registered after StateIdle")
+	}
+}
+
+func TestReporter_ExternalPreemptEmitsStoppedNotFailed(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	finder := installFakeSendOutbound(t, a)
+
+	a.currentRefKey = "itm-1:ps-7"
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
+	mgr.mu.Unlock()
+
+	a.spawnReporter(reporterParams{
+		ItemID:        "itm-1",
+		PlaySessionID: "ps-7",
+		MediaSourceID: "src-1",
+		TickInterval:  30 * time.Millisecond,
+	})
+	time.Sleep(60 * time.Millisecond)
+
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "plex:other"}
+	mgr.mu.Unlock()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	stopped := false
+	for time.Now().Before(deadline) {
+		for _, m := range finder.collect() {
+			if m.MessageType == "PlaybackStopped" {
+				body := m.Data.(PlaybackProgressInfo)
+				if body.Failed {
+					t.Errorf("Failed = true on external preempt, want false")
+				}
+				stopped = true
+				break
+			}
+		}
+		if stopped {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !stopped {
+		t.Fatal("no PlaybackStopped on external preempt")
+	}
+}
+
+func TestReporter_SelfPreemptElidesStopped(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	finder := installFakeSendOutbound(t, a)
+
+	a.currentRefKey = "itm-1:ps-7"
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
+	mgr.mu.Unlock()
+
+	a.spawnReporter(reporterParams{
+		ItemID: "itm-1", PlaySessionID: "ps-7", MediaSourceID: "src-1",
+		TickInterval: 30 * time.Millisecond,
+	})
+	time.Sleep(60 * time.Millisecond)
+
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-99"}
+	mgr.mu.Unlock()
+	a.mu.Lock()
+	a.currentRefKey = "itm-1:ps-99"
+	a.mu.Unlock()
+
+	time.Sleep(150 * time.Millisecond)
+
+	for _, m := range finder.collect() {
+		if m.MessageType == "PlaybackStopped" {
+			t.Errorf("self-preempt should elide PlaybackStopped; saw: %+v", m)
+		}
+	}
+
+	if a.lookupReporter("itm-1:ps-7") != nil {
+		t.Errorf("reporter still registered after self-preempt")
+	}
+}
+
+func TestReporter_OnStopErrorMarksFailedTrue(t *testing.T) {
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1")
+	finder := installFakeSendOutbound(t, a)
+
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
+	mgr.mu.Unlock()
+	a.spawnReporter(reporterParams{
+		ItemID: "itm-1", PlaySessionID: "ps-7", MediaSourceID: "src-1",
+		TickInterval: 30 * time.Millisecond,
+	})
+	time.Sleep(60 * time.Millisecond)
+
+	a.makeOnStop("itm-1:ps-7")("error")
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StateIdle}
+	mgr.mu.Unlock()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, m := range finder.collect() {
+			if m.MessageType == "PlaybackStopped" {
+				body := m.Data.(PlaybackProgressInfo)
+				if !body.Failed {
+					t.Errorf("Failed = false on OnStop error, want true")
+				}
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no PlaybackStopped after error")
+}
+
+// Atomic counter used in some tests below.
+type atomicInt32 struct{ v atomic.Int32 }
+
+func (a *atomicInt32) inc()     { a.v.Add(1) }
+func (a *atomicInt32) get() int { return int(a.v.Load()) }

@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"context"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -49,4 +50,145 @@ func (r *reporter) buildProgressInfo(st core.SessionStatus, audIdx, subIdx int) 
 		CanSeek:                true,
 		PlaybackStartTimeTicks: r.startedAt.UnixNano() / 100,
 	}
+}
+
+// reporterParams is the input for spawnReporter.
+type reporterParams struct {
+	ItemID        string
+	PlaySessionID string
+	MediaSourceID string
+	TickInterval  time.Duration // default 10s; overridable for tests
+}
+
+// spawnReporter starts the per-session reporter goroutine. Called
+// from commands.HandlePlay's startPlayNow after StartSession succeeds.
+func (a *Adapter) spawnReporter(p reporterParams) {
+	if p.TickInterval == 0 {
+		p.TickInterval = 10 * time.Second
+	}
+	refKey := p.ItemID + ":" + p.PlaySessionID
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &reporter{
+		capturedRefKey: refKey,
+		itemID:         p.ItemID,
+		playSessionID:  p.PlaySessionID,
+		mediaSourceID:  p.MediaSourceID,
+		startedAt:      time.Now(),
+		wakeup:         make(chan struct{}, 1),
+		ticker:         time.NewTicker(p.TickInterval),
+		progressBuf:    newRingBuffer(32),
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+	a.mu.Lock()
+	a.reporters[refKey] = r
+	a.mu.Unlock()
+
+	go a.runReporter(r)
+}
+
+// stopReporter cancels and unregisters a reporter. Called by tests
+// and on Adapter.Stop().
+func (a *Adapter) stopReporter(refKey string) {
+	a.mu.Lock()
+	r, ok := a.reporters[refKey]
+	if ok {
+		delete(a.reporters, refKey)
+	}
+	a.mu.Unlock()
+	if ok {
+		r.cancel()
+		r.ticker.Stop()
+	}
+}
+
+// lookupReporter is a test helper.
+func (a *Adapter) lookupReporter(refKey string) *reporter {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reporters[refKey]
+}
+
+// runReporter is the per-session goroutine. Emits PlaybackStart once,
+// then PlaybackProgress on each tick or wakeup poke, classifying the
+// session-end via Status() + currentRefKey identity check.
+func (a *Adapter) runReporter(r *reporter) {
+	if a.core == nil {
+		// Defensive: in production, Adapter.Start refuses to run with
+		// nil core. Tests may construct the adapter with nil + never
+		// spawn reporters; this guard makes that explicit.
+		a.stopReporter(r.capturedRefKey)
+		return
+	}
+	// PlaybackStart immediately.
+	st := a.core.Status()
+	a.emitProgress(r, st, "PlaybackStart")
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-r.wakeup:
+		case <-r.ticker.C:
+		}
+
+		st := a.core.Status()
+		cur := a.snapshotCurrentRefKey()
+
+		switch {
+		case st.State == core.StateIdle:
+			a.emitTerminal(r, st)
+			a.stopReporter(r.capturedRefKey)
+			return
+
+		case st.AdapterRef == r.capturedRefKey:
+			a.emitProgress(r, st, "PlaybackProgress")
+
+		case cur == r.capturedRefKey:
+			// External preempt: someone else replaced us in core, but our
+			// adapter hasn't moved on (currentRefKey still points to us).
+			// Emit PlaybackStopped {Failed:false}.
+			a.emitTerminal(r, st)
+			a.stopReporter(r.capturedRefKey)
+			return
+
+		default:
+			// Self-preempt (cur differs from captured): the new session's
+			// reporter will emit PlaybackStart. Elide. Exit silently.
+			a.stopReporter(r.capturedRefKey)
+			return
+		}
+	}
+}
+
+func (a *Adapter) emitProgress(r *reporter, st core.SessionStatus, msgType string) {
+	a.mu.Lock()
+	audIdx := derefIntOrZero(a.lastAudioStreamIdx)
+	subIdx := derefIntOrZero(a.lastSubtitleStreamIdx)
+	send := a.sendOutboundFn
+	a.mu.Unlock()
+	body := r.buildProgressInfo(st, audIdx, subIdx)
+	if send != nil {
+		send(outboundEnvelope{MessageType: msgType, Data: body})
+	}
+}
+
+func (a *Adapter) emitTerminal(r *reporter, st core.SessionStatus) {
+	a.mu.Lock()
+	audIdx := derefIntOrZero(a.lastAudioStreamIdx)
+	subIdx := derefIntOrZero(a.lastSubtitleStreamIdx)
+	send := a.sendOutboundFn
+	a.mu.Unlock()
+	body := r.buildProgressInfo(st, audIdx, subIdx)
+	body.Failed = r.errReason == "error"
+	if send != nil {
+		send(outboundEnvelope{MessageType: "PlaybackStopped", Data: body})
+	}
+}
+
+func derefIntOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

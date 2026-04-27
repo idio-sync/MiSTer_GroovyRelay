@@ -52,6 +52,9 @@ type Adapter struct {
 	// (Phase 7) and used in Phase 8's track-switch restart.
 	lastAudioStreamIdx    *int
 	lastSubtitleStreamIdx *int
+	// sendOutboundFn lets tests intercept outgoing WS messages.
+	// In production, set in New() to a.sendOutbound.
+	sendOutboundFn func(outboundEnvelope)
 	ws              wsConn           // populated in Phase 4
 	outboundCh      chan outboundEnvelope
 	keepaliveSet    chan time.Duration
@@ -121,6 +124,7 @@ func New(coreMgr SessionManager, dataDir, deviceID string) *Adapter {
 		link:       NewLinkState(),
 		reporters:  map[string]*reporter{},
 	}
+	a.sendOutboundFn = a.sendOutbound
 	a.handleInbound = a.dispatchInbound
 	return a
 }
