@@ -14,11 +14,14 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Serv
 ## Future Plans
 - Support for more relay sources:
   - Jellyfin
-  - DLNA
+  - DLNA/UPnP
   - IPTV/M3U playlists
+  - Moonlight/Sunshine
 - Companion browser extension, cast video from right click
-- Fix 240p and PAL video modes, only 480i for now
+- Fix 240p and PAL video modes, only 480i currently looks correct
+- Music visualizer
 - Better webui/dashboard
+- Home Assistant integration
 
 ## Hardware requirements
 
@@ -53,7 +56,7 @@ docker run -d --name mister-groovy-relay --restart unless-stopped \
 #    data_dir so you only link once.
 ```
 
-The CLI `--link` flow still works for headless / automation setups:
+The CLI `--link` flow for headless / automation setups:
 
 ```bash
 docker run --rm -it --network=host \
@@ -61,7 +64,7 @@ docker run --rm -it --network=host \
   idiosync000/mister-groovy-relay:latest --link
 ```
 
-`--network=host` is required. The bridge needs a stable source UDP port (the MiSTer keys its session by sender `IP:port`) and it needs to receive the Plex GDM multicast on `239.0.0.250:32414`. Bridged Docker networking does not pass multicast and would rewrite the source port on every restart — neither is workable.
+`--network=host` is required. The bridge needs a stable source UDP port (the MiSTer keys its session by sender `IP:port`) and it needs to receive the Plex GDM multicast on `239.0.0.250:32414`. Bridged Docker networking does not pass multicast and would rewrite the source port on every restart, neither is workable.
 
 ## URL adapter
 
@@ -141,22 +144,7 @@ curl -X POST \
 
 The `Origin` header is required because the adapter's POST endpoint runs through the bridge's CSRF middleware. Browsers (htmx) set `Sec-Fetch-Site` automatically and pass without ceremony; `curl` and other scripted clients must include `Origin` matching the bridge's host:port. Without it, the request returns 403. The response shape also branches: htmx callers (which set `HX-Request: true`) get an HTML fragment back; everyone else gets JSON.
 
-URL credentials in the form `https://user:pass@host/path` are redacted in the panel display, the success response body, and all log lines. The JSON response echoes the URL verbatim — the API caller already submitted it.
-
-### What's not supported
-
-- **DRM**: yt-dlp can't decrypt Widevine/PlayReady. Netflix, HBO,
-  Disney+, etc. will never work — this is by design and unfixable.
-- **>720p**: the format selector caps at 720p because the CRT can't
-  display more. If you want lossless source files for archival, use
-  yt-dlp directly on a desktop, not through the bridge.
-- **Twitch live ads**: Twitch injects mid-stream ads server-side and
-  yt-dlp's resolved manifest includes them. Ad-bypass proxies
-  (TTV LOL etc.) are out of scope for v1.
-- **TikTok / Instagram / X / Reddit**: extractors break frequently
-  and most content is auth-walled or DRM'd. Excluded from the default
-  hostname allowlist; opt in via TOML if you want to try, but expect
-  failures.
+URL credentials in the form `https://user:pass@host/path` are redacted in the panel display, the success response body, and all log lines. The JSON response echoes the URL verbatim, the API caller already submitted it.
 
 ### Self-update
 
@@ -169,8 +157,8 @@ log a warning; the bundled version stays usable.
 
 Once the bridge is running, point a browser at `http://<host>:32500/` (or whatever `bridge.ui.http_port` is set to). The settings page lets you:
 
-- Flip `interlace_field_order` live — no cast drop, no restart. Flip, look at the CRT, flip back. Four-click workflow per guess.
-- Link your Plex account in-browser — no more `docker run … --link` terminal step. Click **Link Plex Account**, enter the 4-character code at plex.tv/link, done.
+- Flip `interlace_field_order` live — No cast drop, no restart. Flip, look at the CRT, flip back.
+- Link your Plex account in-browser — Click **Link Plex Account**, enter the 4-character code at plex.tv/link, done.
 - Enable or disable adapters with a toggle
 - See at a glance which adapters are running (green dot), stopped (grey), or erroring (red + last error as tooltip).
 
