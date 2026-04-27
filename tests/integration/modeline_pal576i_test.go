@@ -21,7 +21,7 @@ import (
 // TestModeline_PAL576i exercises the full Plane pipeline with the PAL_576i
 // modeline: 720x576i interlaced at 50 Hz field rate (25 Hz frame × 2 fields).
 // Asserts that SWITCHRES wire bytes match groovy.BuildSwitchres(groovy.PAL576i50),
-// that at least 90 BLIT_FIELD_VSYNC fields arrive in ~2 seconds, that field
+// that at least 85 BLIT_FIELD_VSYNC fields arrive in ~2 seconds, that field
 // bits alternate 0/1 (interlaced), and that audio bytes are within ±10% of
 // the expected 2-second total.
 //
@@ -170,10 +170,13 @@ func TestModeline_PAL576i(t *testing.T) {
 	// 1. SWITCHRES wire bytes must match the preset exactly.
 	assertSwitchresMatches(t, snap, groovy.BuildSwitchres(groovy.PAL576i50), "PAL_576i")
 
-	// 2. Field count: 2 s × 50 Hz = ~100 fields; require ≥ 90.
+	// 2. Field count: 2 s × 50 Hz = ~100 fields; require ≥ 85.
+	// Threshold matches NTSC_240p's ~83 % tolerance to absorb CI cold-start
+	// (prebuffer + ffmpeg primer can drop ~12 % of the 2 s window on a
+	// 2-vCPU GitHub runner).
 	gotBlits := snap.Counts[groovy.CmdBlitFieldVSync]
-	if gotBlits < 90 {
-		t.Errorf("PAL_576i: expected ≥90 blits in 2s, got %d", gotBlits)
+	if gotBlits < 85 {
+		t.Errorf("PAL_576i: expected ≥85 blits in 2s, got %d", gotBlits)
 	}
 
 	// 3. Field bits must alternate 0/1 (interlaced modeline).
