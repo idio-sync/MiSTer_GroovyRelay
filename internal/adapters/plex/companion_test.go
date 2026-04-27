@@ -1093,3 +1093,51 @@ func TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers(t *testing.T)
 			got, "/library/metadata/99")
 	}
 }
+
+// TestSessionRequestFor_OnStop_CASClearNoOpsOnSeekSameMedia covers the
+// seek/setStreams race: the controller asks us to seek within the SAME
+// movie, so handleSeekTo mints a fresh TranscodeSessionID but reuses
+// the prior MediaKey. The flow is:
+//
+//  1. core.StartSession (spawns OnStop goroutine for OLD transcode)
+//  2. rememberPlaySession(NEW)  // same MediaKey, new TranscodeSessionID
+//  3. OnStop goroutine wakes up and runs clearPlaySessionIfMatches
+//
+// If clearPlaySessionIfMatches keys on MediaKey alone, the prior
+// session's OnStop wipes c.lastPlay even though it now describes the
+// NEW transcode — and the next timeline poll renders no key/ratingKey,
+// causing controllers to lose track of the cast. The discriminator that
+// actually identifies a session is TranscodeSessionID (UUID, never
+// collides), so the CAS must compare on that.
+func TestSessionRequestFor_OnStop_CASClearNoOpsOnSeekSameMedia(t *testing.T) {
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer", DeviceUUID: "uuid-1", ProfileName: "Plex Home Theater",
+	}, nil)
+
+	prior := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-old", PlexToken: "tok",
+	}
+	c.rememberPlaySession(prior)
+	req := c.sessionRequestFor(prior)
+
+	// Simulate handleSeekTo step 2 — same movie, fresh transcode session.
+	seek := PlayMediaRequest{
+		PlexServerAddress: "127.0.0.1", PlexServerPort: "1", PlexServerScheme: "http",
+		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-new", PlexToken: "tok",
+		OffsetMs: 30000,
+	}
+	c.rememberPlaySession(seek)
+
+	// OLD session's OnStop fires last (after rememberPlaySession). It must
+	// NOT wipe lastPlay because the live transcode is the NEW one.
+	req.OnStop("preempted")
+
+	got := c.lastPlaySession()
+	if got.MediaKey != "/library/metadata/42" {
+		t.Errorf("lastPlay MediaKey = %q, want /library/metadata/42 (NEW seek session must survive prior OnStop)", got.MediaKey)
+	}
+	if got.TranscodeSessionID != "tsid-new" {
+		t.Errorf("lastPlay TranscodeSessionID = %q, want tsid-new (NEW seek session must survive prior OnStop)", got.TranscodeSessionID)
+	}
+}

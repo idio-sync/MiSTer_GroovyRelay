@@ -190,10 +190,16 @@ func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
 			c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle}, captured)
 		}
 		// Conditional clear: only wipe lastPlay if it still references THIS
-		// session. handlePlayMedia's Plex→Plex flow may have already called
-		// rememberPlaySession(NEW) before this goroutine runs; an
-		// unconditional clear would silently break that flow's metadata.
-		c.clearPlaySessionIfMatches(captured.MediaKey)
+		// transcode. A successor handler (handlePlayMedia for a different
+		// movie, or handleSeekTo / handleSetStreams / restartFromPlayQueueItem
+		// for the same movie) may have already called rememberPlaySession(NEW)
+		// before this goroutine runs. We discriminate on TranscodeSessionID
+		// rather than MediaKey because seek/setStreams keep the MediaKey
+		// constant while minting a fresh transcode session — keying on
+		// MediaKey would wipe the just-stored NEW session and the next
+		// timeline poll would render no key/ratingKey, causing controllers
+		// to lose track of the cast.
+		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
@@ -1225,22 +1231,25 @@ func (c *Companion) clearPlaySession() {
 }
 
 // clearPlaySessionIfMatches resets c.lastPlay to its zero value ONLY
-// if the current MediaKey matches the supplied one. Used by OnStop
-// closures to safely clear stale Plex session state without racing
-// against a concurrent rememberPlaySession from handlePlayMedia for a
-// new session. If lastPlay has already been overwritten with a fresh
-// playMedia (Plex→Plex preempt), this is a no-op.
-func (c *Companion) clearPlaySessionIfMatches(mediaKey string) {
-	if mediaKey == "" {
-		// Defensive: an empty captured key would otherwise match an
+// if the current TranscodeSessionID matches the supplied one. Used by
+// OnStop closures to safely clear stale Plex session state without
+// racing against a concurrent rememberPlaySession from a successor
+// handler. If lastPlay has already been overwritten with a fresh
+// session (preempt or seek/setStreams on the same movie), this is a
+// no-op. TranscodeSessionID is the right discriminator because it is
+// minted per call and never collides — MediaKey alone would wipe a
+// just-stored seek of the same movie.
+func (c *Companion) clearPlaySessionIfMatches(transcodeSessionID string) {
+	if transcodeSessionID == "" {
+		// Defensive: an empty captured id would otherwise match an
 		// already-cleared lastPlay (idempotent no-op) but more
 		// dangerously could match a NEW session built without a
-		// MediaKey. Skip the comparison entirely.
+		// TranscodeSessionID. Skip the comparison entirely.
 		return
 	}
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
-	if c.lastPlay.MediaKey == mediaKey {
+	if c.lastPlay.TranscodeSessionID == transcodeSessionID {
 		c.lastPlay = PlayMediaRequest{}
 	}
 }
