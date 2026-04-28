@@ -586,6 +586,54 @@ func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
 	}
 }
 
+type fakeRestartBridgeSaver struct {
+	fakeBridgeSaver
+}
+
+func (f *fakeRestartBridgeSaver) Save(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+	return adapters.ScopeRestartBridge, nil
+}
+
+func TestToast_RestartBridge_HasCopyButton(t *testing.T) {
+	saver := &fakeRestartBridgeSaver{}
+	reg := adapters.NewRegistry()
+	srv, err := New(Config{Registry: reg, BridgeSaver: saver})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32600" +
+			"&data_dir=/config")
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, "docker restart mister-groovy-relay") {
+		t.Fatalf("expected docker restart command in body; got: %s", out)
+	}
+	if !strings.Contains(out, "data-copy-target") {
+		t.Error("expected copy-to-clipboard button in toast (data-copy-target hook missing)")
+	}
+}
+
 // TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided is a
 // regression guard: it passes from green (Task 5's parseBridgeForm
 // already does this) and locks in that the preserve-on-empty

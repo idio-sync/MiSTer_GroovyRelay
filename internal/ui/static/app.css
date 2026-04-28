@@ -271,3 +271,20 @@ body {
 		opacity: 1;
 	}
 }
+
+.toast-pre-wrap { position: relative; margin-top: 8px; }
+.toast-pre-wrap pre { margin: 0; padding-right: 56px; }
+.toast-copy-btn {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	padding: 2px 8px;
+	font-family: var(--font-body);
+	font-size: 11px;
+	color: var(--gr-dim);
+	background: transparent;
+	border: 1px solid var(--gr-border);
+	border-radius: 2px;
+	cursor: pointer;
+}
+.toast-copy-btn:hover { color: var(--gr-text); border-color: var(--gr-amber); }
