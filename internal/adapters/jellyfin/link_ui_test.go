@@ -21,9 +21,9 @@ func TestLinkUI_StartSuccess_PersistsTokenAndReturnsLinkedFragment(t *testing.T)
 	defer jfSrv.Close()
 
 	a := newLinkTestAdapter(t, "0.1.0")
+	a.cfg.ServerURL = jfSrv.URL
 
 	form := url.Values{}
-	form.Set("server_url", jfSrv.URL)
 	form.Set("username", "alice")
 	form.Set("password", "s3cret")
 	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
@@ -57,9 +57,9 @@ func TestLinkUI_StartBadCredentials_NoDiskWrite(t *testing.T) {
 	defer jfSrv.Close()
 
 	a := newLinkTestAdapter(t, "0.1.0")
+	a.cfg.ServerURL = jfSrv.URL
 
 	form := url.Values{}
-	form.Set("server_url", jfSrv.URL)
 	form.Set("username", "alice")
 	form.Set("password", "wrong")
 	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
@@ -77,10 +77,11 @@ func TestLinkUI_StartBadCredentials_NoDiskWrite(t *testing.T) {
 	}
 }
 
-func TestLinkUI_StartRejectsEmptyFields(t *testing.T) {
+func TestLinkUI_StartRejectsMissingServerURL(t *testing.T) {
 	a := newLinkTestAdapter(t, "0.1.0")
+	// cfg.ServerURL intentionally left empty: link should refuse without
+	// touching the network.
 	form := url.Values{}
-	form.Set("server_url", "")
 	form.Set("username", "alice")
 	form.Set("password", "s3cret")
 	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
@@ -93,6 +94,25 @@ func TestLinkUI_StartRejectsEmptyFields(t *testing.T) {
 	}
 	if a.link.State() != LinkError {
 		t.Errorf("link state = %v, want LinkError on empty server_url", a.link.State())
+	}
+}
+
+func TestLinkUI_StartRejectsEmptyCredentials(t *testing.T) {
+	a := newLinkTestAdapter(t, "0.1.0")
+	a.cfg.ServerURL = "https://jf.example.com"
+	form := url.Values{}
+	form.Set("username", "")
+	form.Set("password", "")
+	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	a.handleLinkStart(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (form errors render as fragment)", rr.Code)
+	}
+	if a.link.State() != LinkError {
+		t.Errorf("link state = %v, want LinkError on empty creds", a.link.State())
 	}
 }
 

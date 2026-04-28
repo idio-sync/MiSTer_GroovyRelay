@@ -15,6 +15,8 @@ import (
 // nest wrappers).
 func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 	a := New(nil, t.TempDir(), "dev-1")
+	// Idle state with a configured Server URL renders the link form.
+	a.cfg.ServerURL = "https://jf.example.com"
 
 	got := string(a.ExtraPanelHTML())
 	if !strings.HasPrefix(got, `<div id="jf-link">`) {
@@ -25,6 +27,9 @@ func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 	}
 	if !strings.Contains(got, `hx-post="/ui/adapter/jellyfin/link/start"`) {
 		t.Errorf("idle ExtraPanelHTML should embed link form; got: %s", got)
+	}
+	if strings.Contains(got, `name="server_url"`) {
+		t.Errorf("link form must NOT carry a server_url input — URL comes from cfg; got: %s", got)
 	}
 
 	a.link.SetLinked("alice", "sid-1")
@@ -41,6 +46,21 @@ func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 	frag := a.linkFragmentHTML("")
 	if strings.Contains(frag, `id="jf-link"`) {
 		t.Errorf("linkFragmentHTML must not include wrapper id; got: %s", frag)
+	}
+}
+
+// TestExtraPanelHTML_IdleWithoutServerURL_PromptsToSaveSettings covers
+// the empty-config path: when no Server URL has been saved yet, the
+// link form is suppressed and the operator is told to save the URL in
+// the Settings section first.
+func TestExtraPanelHTML_IdleWithoutServerURL_PromptsToSaveSettings(t *testing.T) {
+	a := New(nil, t.TempDir(), "dev-1")
+	got := string(a.ExtraPanelHTML())
+	if strings.Contains(got, `hx-post="/ui/adapter/jellyfin/link/start"`) {
+		t.Errorf("link form should be suppressed without a saved Server URL; got: %s", got)
+	}
+	if !strings.Contains(got, "Server URL") {
+		t.Errorf("idle-without-URL state should prompt operator about Server URL; got: %s", got)
 	}
 }
 

@@ -18,24 +18,31 @@ var linkVersion = "dev"
 // build version through to JF auth headers.
 func (a *Adapter) SetVersion(v string) { linkVersion = v }
 
-// handleLinkStart accepts a form-encoded {server_url, username,
-// password} POST. On success, persists the token and renders a
-// "linked-as" fragment. On failure, renders the link form with an
-// error fragment underneath. Always returns 200 (htmx fragments are
-// 200 + body; non-2xx triggers htmx error handling we don't want
-// here).
+// handleLinkStart accepts a form-encoded {username, password} POST.
+// Server URL is read from the saved adapter config (the same field
+// edited in the Settings section above the link form), so operators
+// don't have to type it in twice. On success, persists the token and
+// renders a "linked-as" fragment. On failure, renders the link form
+// with an error fragment underneath. Always returns 200 (htmx
+// fragments are 200 + body; non-2xx triggers htmx error handling we
+// don't want here).
 func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		a.renderLinkFragment(w, "Bad form")
 		return
 	}
-	serverURL := strings.TrimSpace(r.FormValue("server_url"))
+	serverURL := a.configuredServerURL()
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 
-	if serverURL == "" || username == "" || password == "" {
-		a.link.SetError("server_url, username, and password are all required")
-		a.renderLinkFragment(w, "All fields required")
+	if serverURL == "" {
+		a.link.SetError("set Server URL above and save before linking")
+		a.renderLinkFragment(w, "Set a Server URL above and click Save before linking.")
+		return
+	}
+	if username == "" || password == "" {
+		a.link.SetError("username and password are required")
+		a.renderLinkFragment(w, "Username and password are required.")
 		return
 	}
 
@@ -94,33 +101,58 @@ func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
 	a.renderLinkFragment(w, "")
 }
 
+// configuredServerURL returns the saved Server URL from cfg under the
+// adapter mutex. Used by the link form so the operator doesn't have to
+// type the URL a second time below the Settings section that already
+// owns it.
+func (a *Adapter) configuredServerURL() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return strings.TrimSpace(a.cfg.ServerURL)
+}
+
 // linkFragmentHTML returns the link section's inner content as an
 // HTML string: a form when not-linked or in error, "Linking…" while
 // awaiting auth, or "Linked as ..." with an Unlink button when linked.
+// All states are wrapped in a `.section` block so the link UI sits
+// alongside Status / Settings with the same heading + spacing.
+//
 // Must NOT include the outer <div id="jf-link"> wrapper — htmx swaps
 // this fragment into the wrapper's innerHTML, so the wrapper has to
 // survive across swaps. ExtraPanelHTML adds the wrapper for the
 // initial server-rendered render.
 func (a *Adapter) linkFragmentHTML(errMsg string) string {
+	const sectionOpen = `<div class="section"><h3><span class="num">03 —</span> Account</h3>`
+	const sectionClose = `</div>`
+
 	switch a.link.State() {
 	case LinkLinked:
 		user, sid := a.link.LinkedAs()
-		return fmt.Sprintf(`<div class="jf-link-status">Linked as %s on %s. <button hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
-			html.EscapeString(user), html.EscapeString(sid))
+		return sectionOpen + fmt.Sprintf(
+			`<div class="jf-link-status">Linked as %s on %s. <button class="btn ghost" hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
+			html.EscapeString(user), html.EscapeString(sid),
+		) + sectionClose
 	case LinkLinking:
-		return `<div class="jf-link-status">Linking…</div>`
+		return sectionOpen + `<div class="jf-link-status">Linking…</div>` + sectionClose
 	default:
-		// Idle or Error
+		// Idle or Error.
+		if a.configuredServerURL() == "" {
+			return sectionOpen +
+				`<div class="help">Set a Server URL in Settings above and click Save before linking.</div>` +
+				sectionClose
+		}
 		errBlock := ""
 		if errMsg != "" {
-			errBlock = fmt.Sprintf(`<div class="jf-link-error">%s</div>`, html.EscapeString(errMsg))
+			errBlock = fmt.Sprintf(
+				`<div class="field"><div></div><div class="err">%s</div></div>`,
+				html.EscapeString(errMsg),
+			)
 		}
-		return fmt.Sprintf(`%s<form hx-post="/ui/adapter/jellyfin/link/start" hx-target="#jf-link">
-<input type="text" name="server_url" placeholder="https://jellyfin.example.com" required>
-<input type="text" name="username" placeholder="username" required>
-<input type="password" name="password" placeholder="password" required>
-<button type="submit">Link</button>
-</form>`, errBlock)
+		return sectionOpen + `<form hx-post="/ui/adapter/jellyfin/link/start" hx-target="#jf-link">
+<div class="field"><label for="jf-username">Username</label><div><input type="text" name="username" id="jf-username" required></div></div>
+<div class="field"><label for="jf-password">Password</label><div><input type="password" name="password" id="jf-password" required></div></div>
+` + errBlock + `<div style="margin-top: 16px; text-align: right;"><button type="submit" class="btn">Link ▸</button></div>
+</form>` + sectionClose
 	}
 }
 
