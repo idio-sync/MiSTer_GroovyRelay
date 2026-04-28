@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,5 +63,41 @@ func TestLog_SnapshotIsACopy(t *testing.T) {
 	again := l.Snapshot()
 	if again[0].Message != "original" {
 		t.Errorf("Snapshot leaked mutation: got %q, want %q", again[0].Message, "original")
+	}
+}
+
+func TestLog_EvictsOldestAtCapacity(t *testing.T) {
+	l := New(3)
+	for i := 1; i <= 5; i++ {
+		l.Append(Entry{Message: string(rune('0' + i))}) // "1", "2", "3", "4", "5"
+	}
+	got := l.Snapshot()
+	if len(got) != 3 {
+		t.Fatalf("Snapshot len: got %d, want 3", len(got))
+	}
+	want := []string{"3", "4", "5"}
+	for i, e := range got {
+		if e.Message != want[i] {
+			t.Errorf("entry[%d]: got %q, want %q", i, e.Message, want[i])
+		}
+	}
+}
+
+func TestLog_ConcurrentAppend(t *testing.T) {
+	l := New(1024)
+	var wg sync.WaitGroup
+	for w := 0; w < 16; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 64; i++ {
+				l.Append(Entry{Message: "x"})
+			}
+		}()
+	}
+	wg.Wait()
+	got := l.Snapshot()
+	if len(got) != 16*64 {
+		t.Errorf("Snapshot len: got %d, want %d", len(got), 16*64)
 	}
 }
