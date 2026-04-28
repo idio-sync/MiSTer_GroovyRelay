@@ -35,3 +35,32 @@ func TestSeverity_String(t *testing.T) {
 		}
 	}
 }
+
+func TestLog_AppendAndSnapshot(t *testing.T) {
+	l := New(8)
+	l.Append(Entry{Source: "a", Message: "1"})
+	l.Append(Entry{Source: "b", Message: "2"})
+	l.Append(Entry{Source: "c", Message: "3"})
+
+	got := l.Snapshot()
+	if len(got) != 3 {
+		t.Fatalf("Snapshot len: got %d, want 3", len(got))
+	}
+	wantMsgs := []string{"1", "2", "3"}
+	for i, e := range got {
+		if e.Message != wantMsgs[i] {
+			t.Errorf("entry[%d].Message: got %q, want %q", i, e.Message, wantMsgs[i])
+		}
+	}
+}
+
+func TestLog_SnapshotIsACopy(t *testing.T) {
+	l := New(4)
+	l.Append(Entry{Message: "original"})
+	got := l.Snapshot()
+	got[0].Message = "mutated"
+	again := l.Snapshot()
+	if again[0].Message != "original" {
+		t.Errorf("Snapshot leaked mutation: got %q, want %q", again[0].Message, "original")
+	}
+}

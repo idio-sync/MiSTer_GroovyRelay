@@ -7,7 +7,10 @@
 // internal package from here.
 package eventlog
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Severity ranks an entry. Render color in the UI keys off this.
 type Severity int
@@ -42,4 +45,57 @@ type Entry struct {
 	Severity Severity
 	Source   string
 	Message  string
+}
+
+// Log is a thread-safe ring buffer of recent events. Append is O(1);
+// Snapshot returns a copy in chronological order (oldest first).
+//
+// Capacity is fixed at construction; once full, oldest entries are
+// evicted on Append. Per spec §8.4, the recommended capacity is 256
+// for production use.
+type Log struct {
+	mu  sync.Mutex
+	buf []Entry
+	// next is the index where the next Append will write. When the
+	// buffer is full, next wraps modulo len(buf).
+	next int
+	// full is true once we have wrapped at least once.
+	full bool
+}
+
+// New constructs a Log with the given capacity. Capacity must be >0.
+func New(capacity int) *Log {
+	if capacity <= 0 {
+		panic("eventlog: capacity must be > 0")
+	}
+	return &Log{buf: make([]Entry, capacity)}
+}
+
+// Append records one entry. Safe for concurrent callers.
+func (l *Log) Append(e Entry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf[l.next] = e
+	l.next++
+	if l.next == len(l.buf) {
+		l.next = 0
+		l.full = true
+	}
+}
+
+// Snapshot returns all current entries in chronological order
+// (oldest first). The returned slice is independent of the buffer —
+// callers may mutate it without affecting the log.
+func (l *Log) Snapshot() []Entry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.full {
+		out := make([]Entry, l.next)
+		copy(out, l.buf[:l.next])
+		return out
+	}
+	out := make([]Entry, len(l.buf))
+	copy(out, l.buf[l.next:])
+	copy(out[len(l.buf)-l.next:], l.buf[:l.next])
+	return out
 }
