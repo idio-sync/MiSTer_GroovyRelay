@@ -78,6 +78,28 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.link.SetLinked(res.UserName, res.ServerID)
+
+	// Bring the adapter into sync with the freshly-minted token. JF
+	// rotates the AccessToken when the same DeviceId re-authenticates,
+	// so a runSession goroutine spawned against an earlier token will
+	// 401 forever. Stop tears down the stale goroutine; Start spawns a
+	// new one that re-reads the token from disk. Idempotent for both
+	// adapters that were never started and adapters in StateError.
+	a.mu.Lock()
+	enabled := a.cfg.Enabled
+	a.mu.Unlock()
+	if enabled {
+		_ = a.Stop()
+		if startErr := a.Start(context.Background()); startErr != nil {
+			// Link itself succeeded; the adapter restart didn't. Surface
+			// the start error to the link fragment so the operator sees
+			// it without having to hunt in logs. Fragment still reads as
+			// linked because the on-disk token IS valid.
+			a.renderLinkFragment(w, "Linked, but adapter restart failed: "+startErr.Error())
+			return
+		}
+	}
+
 	a.renderLinkFragment(w, "")
 }
 
@@ -92,12 +114,18 @@ func (a *Adapter) handleLinkCancel(w http.ResponseWriter, r *http.Request) {
 	a.renderLinkFragment(w, "")
 }
 
-// handleUnlink wipes the token file and resets link state. Does NOT
-// stop a mid-cast session — that goes through the bridge-wide stop.
-// In Phase 4, this is extended to also drop the WS connection.
+// handleUnlink wipes the token file, resets link state, and stops the
+// running adapter so a stale runSession goroutine doesn't keep
+// retrying with the now-invalid token. Does NOT call core.Manager.Stop
+// — a mid-cast session goes through the bridge-wide stop path.
 func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
 	_ = WipeToken(a.tokenPath())
 	a.link.SetIdle()
+	// Stop is idempotent: a no-op when the adapter was never started or
+	// is already stopped. We always call it on unlink so any in-flight
+	// runSession goroutine — which holds the now-wiped token in its
+	// closure — exits instead of pounding JF with 401s.
+	_ = a.Stop()
 	a.renderLinkFragment(w, "")
 }
 
