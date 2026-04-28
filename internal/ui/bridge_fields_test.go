@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 // TestBridgeFields_HasMisterControlSection verifies the SSH user and
@@ -44,6 +45,24 @@ func TestBridgeFields_HasMisterControlSection(t *testing.T) {
 	}
 	if pass.ApplyScope != adapters.ScopeHotSwap {
 		t.Errorf("ssh_password scope = %v, want ScopeHotSwap", pass.ApplyScope)
+	}
+}
+
+func TestBuildBridgeSections_OrdersBySectionOrder(t *testing.T) {
+	cur := config.BridgeConfig{}
+	got := buildBridgeSections(cur, nil)
+
+	// Pre-existing bridge fields all have SectionOrder=0, so they
+	// appear in registration order: Network, Video, Audio, Server,
+	// MiSTer Control. Confirm that order survives.
+	wantPrefix := []string{"Network", "Video", "Audio", "Server", "MiSTer Control"}
+	if len(got) < len(wantPrefix) {
+		t.Fatalf("got %d sections, want at least %d", len(got), len(wantPrefix))
+	}
+	for i, name := range wantPrefix {
+		if got[i].Name != name {
+			t.Errorf("section[%d]: got %q, want %q", i, got[i].Name, name)
+		}
 	}
 }
 

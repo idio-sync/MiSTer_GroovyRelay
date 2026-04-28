@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -196,21 +197,53 @@ func (s *Server) renderPanel(w http.ResponseWriter, name string, data any) {
 // buildBridgeSections groups bridgeFields() by Section in render
 // order, populating each row's current value from cur and overlaying
 // per-field parse errors from errs.
+//
+// Render order: ascending by SectionOrder (lowest first), with ties
+// broken by the order each section's first field appears in the
+// bridgeFields() slice. Sections whose fields all have SectionOrder=0
+// retain "first-field-wins" registration order — back-compatible
+// with the pre-§8.1 contract.
 func buildBridgeSections(cur config.BridgeConfig, errs FormErrors) []bridgeSection {
-	byName := map[string]*bridgeSection{}
-	order := []string{}
-	for _, fd := range bridgeFields() {
-		sec, ok := byName[fd.Section]
-		if !ok {
-			sec = &bridgeSection{Name: fd.Section}
-			byName[fd.Section] = sec
-			order = append(order, fd.Section)
-		}
-		sec.Rows = append(sec.Rows, rowFor(fd, cur, errs))
+	type secMeta struct {
+		section *bridgeSection
+		order   int
+		regIdx  int
 	}
-	out := make([]bridgeSection, 0, len(order))
-	for _, n := range order {
-		out = append(out, *byName[n])
+	byName := map[string]*secMeta{}
+	regCounter := 0
+
+	for _, fd := range bridgeFields() {
+		meta, ok := byName[fd.Section]
+		if !ok {
+			meta = &secMeta{
+				section: &bridgeSection{Name: fd.Section},
+				order:   fd.SectionOrder,
+				regIdx:  regCounter,
+			}
+			byName[fd.Section] = meta
+			regCounter++
+		} else if fd.SectionOrder != 0 && (meta.order == 0 || fd.SectionOrder < meta.order) {
+			// Lowest non-zero SectionOrder wins.
+			meta.order = fd.SectionOrder
+		}
+		meta.section.Rows = append(meta.section.Rows, rowFor(fd, cur, errs))
+	}
+
+	all := make([]*secMeta, 0, len(byName))
+	for _, m := range byName {
+		all = append(all, m)
+	}
+	// Stable sort: order ascending, then registration index ascending.
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].order != all[j].order {
+			return all[i].order < all[j].order
+		}
+		return all[i].regIdx < all[j].regIdx
+	})
+
+	out := make([]bridgeSection, 0, len(all))
+	for _, m := range all {
+		out = append(out, *m.section)
 	}
 	return out
 }
