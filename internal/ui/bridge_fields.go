@@ -176,5 +176,26 @@ func bridgeFields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeHotSwap,
 			Section:    "MiSTer Control",
 		},
+
+		// ---- Launch ----
+		// Spec §6.2 / §8.1: Launch is a normal section rendered via a
+		// single KindAction field. SectionOrder=60 places it after the
+		// implicit-order sections (Network, Video, Audio, Server,
+		// MiSTer Control, all SectionOrder=0). The button POSTs to
+		// /ui/bridge/mister/launch — that handler is unchanged and
+		// already registered in server.go.
+		//
+		// ApplyScope is intentionally omitted: per spec §8.1 it is
+		// not consulted for KindAction. Other consumers that walk
+		// bridgeFields() filter on Kind == KindAction first
+		// (see hotSwapDiffKeys in bridge.go), so the zero value is safe.
+		{
+			Key:          "mister/launch",
+			Label:        "Launch GroovyMiSTer",
+			Help:         "Sends `load_core /media/fat/_Utility/Groovy_20240928.rbf` to /dev/MiSTer_cmd over SSH using the credentials in the MiSTer Control section.",
+			Kind:         adapters.KindAction,
+			Section:      "Launch",
+			SectionOrder: 60,
+		},
 	}
 }

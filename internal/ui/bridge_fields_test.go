@@ -104,3 +104,37 @@ func TestModelineEnumOptions_ExperimentalSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgeFields_LaunchIsKindAction(t *testing.T) {
+	var found *adapters.FieldDef
+	for i := range bridgeFields() {
+		fd := bridgeFields()[i]
+		if fd.Section == "Launch" {
+			found = &fd
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no field with Section=Launch found")
+	}
+	if found.Kind != adapters.KindAction {
+		t.Errorf("Launch field Kind: got %v, want KindAction", found.Kind)
+	}
+	if found.SectionOrder != 60 {
+		t.Errorf("Launch field SectionOrder: got %d, want 60", found.SectionOrder)
+	}
+	if found.Key != "mister/launch" {
+		t.Errorf("Launch field Key: got %q, want %q", found.Key, "mister/launch")
+	}
+}
+
+func TestBuildBridgeSections_LaunchAppearsLast(t *testing.T) {
+	got := buildBridgeSections(config.BridgeConfig{}, nil)
+	if len(got) == 0 {
+		t.Fatal("no sections")
+	}
+	last := got[len(got)-1]
+	if last.Name != "Launch" {
+		t.Errorf("last section: got %q, want %q", last.Name, "Launch")
+	}
+}
