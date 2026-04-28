@@ -77,6 +77,14 @@ type Config struct {
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
+	"hasString": func(haystack []string, needle string) bool {
+		for _, s := range haystack {
+			if s == needle {
+				return true
+			}
+		}
+		return false
+	},
 }
 
 // Server owns the parsed templates + embedded static assets + a

@@ -157,7 +157,7 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 		t.Errorf("saved interlace = %q", saver.got.Video.InterlaceFieldOrder)
 	}
 	if !strings.Contains(rw.Body.String(), "applied live") {
-		t.Error("expected hot-swap toast message")
+		t.Error("expected applied-live indicator (pip) in response")
 	}
 	if saver.got.MiSTer.SSHPassword != "hunter2" {
 		t.Errorf("expected preserve-on-empty to retain prior password, got %q", saver.got.MiSTer.SSHPassword)
@@ -490,6 +490,99 @@ func TestBridgePanel_RendersLaunchOnceAsKindAction(t *testing.T) {
 	}
 	if !strings.Contains(body, `hx-post="/ui/bridge/mister/launch"`) {
 		t.Error("Launch endpoint not wired to the rendered button")
+	}
+}
+
+func TestBridgeSave_HotSwapRendersPipNoToast(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	mux := newBridgeTestServer(t, saver)
+
+	// fakeBridgeSaver.Current() returns InterlaceFieldOrder="tff".
+	// Posting "bff" is a single-field hot-swap save.
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=bff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, `class="gr-pip applied"`) {
+		t.Error("expected gr-pip applied span in response (hot-swap pip)")
+	}
+	if !strings.Contains(out, `data-pip-key="video.interlace_field_order"`) {
+		t.Error("pip should carry data-pip-key for the changed field")
+	}
+	// Toast must NOT fire for ScopeHotSwap saves. The toast template
+	// renders <div class="toast ..."> only when toastData is non-nil.
+	if strings.Contains(out, `<div class="toast`) {
+		t.Error("ScopeHotSwap save rendered a toast; should be suppressed in favor of pip")
+	}
+}
+
+// fakeRestartCastSaver is like fakeBridgeSaver but always returns
+// ScopeRestartCast, so TestBridgeSave_RestartCastStillRendersToast
+// can exercise the toast path without mutating the shared saver type.
+type fakeRestartCastSaver struct {
+	fakeBridgeSaver
+}
+
+func (f *fakeRestartCastSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
+	f.got = &newCfg
+	return adapters.ScopeRestartCast, nil
+}
+
+func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
+	saver := &fakeRestartCastSaver{}
+
+	// fakeRestartCastSaver.Save always returns ScopeRestartCast,
+	// so any save triggers the toast path.
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=bff" +
+			"&video.aspect_mode=zoom" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	// Wire the server with the restart-cast saver directly.
+	reg := adapters.NewRegistry()
+	s, err := New(Config{Registry: reg, BridgeSaver: saver})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux2 := http.NewServeMux()
+	s.Mount(mux2)
+	mux2.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, "cast restarted") {
+		t.Errorf("expected restart-cast toast in body; got: %s", out)
 	}
 }
 

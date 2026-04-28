@@ -49,6 +49,7 @@
 						{{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
 						{{if .Required}}required{{end}}>
 				{{end}}
+				{{if hasString $.AppliedPipKeys .Key}}<span class="gr-pip applied" data-pip-key="{{.Key}}">applied live ✓</span>{{end}}
 				{{if .Help}}<div class="help">{{.Help}}</div>{{end}}
 				{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
 			</div>

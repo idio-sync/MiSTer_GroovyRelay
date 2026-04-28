@@ -16,10 +16,14 @@ import (
 // Toast is optional (nil = no toast); Sections is always populated
 // in the order Network → Video → Audio → Server. FirstRun drives
 // the quick-start banner when the bridge hasn't been configured yet.
+// AppliedPipKeys lists field keys that were just successfully
+// hot-swapped; the template renders a <span class="gr-pip applied">
+// next to each. Spec §6.2.
 type bridgePanelData struct {
-	Toast    *toastData
-	Sections []bridgeSection
-	FirstRun bool
+	Toast          *toastData
+	Sections       []bridgeSection
+	FirstRun       bool
+	AppliedPipKeys []string
 }
 
 type bridgeSection struct {
@@ -149,20 +153,27 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Success — re-render with updated values + scope-appropriate toast.
-	toast := scopeToast(scope)
-	if scope == adapters.ScopeRestartBridge && candidate.UI.HTTPPort != old.UI.HTTPPort {
-		// Spell out the reconnect URL so the operator doesn't have to
-		// guess which port to hit after the container restart.
-		host := r.Host
-		if idx := strings.Index(host, ":"); idx >= 0 {
-			host = host[:idx]
-		}
-		toast.NewURL = fmt.Sprintf("http://%s:%d/", host, candidate.UI.HTTPPort)
-	}
+	// Success — re-render with updated values + scope-appropriate feedback.
+	// Per spec §6.2, ScopeHotSwap renders an inline pip per changed field
+	// instead of a toast. ScopeRestartCast and ScopeRestartBridge keep the
+	// toast.
 	data := bridgePanelData{
-		Toast:    toast,
 		Sections: buildBridgeSections(s.cfg.BridgeSaver.Current(), nil),
+	}
+	switch scope {
+	case adapters.ScopeHotSwap:
+		data.AppliedPipKeys = hotSwapDiffKeys(old, candidate)
+	case adapters.ScopeRestartCast, adapters.ScopeRestartBridge:
+		data.Toast = scopeToast(scope)
+		if scope == adapters.ScopeRestartBridge && candidate.UI.HTTPPort != old.UI.HTTPPort {
+			// Spell out the reconnect URL so the operator doesn't have to
+			// guess which port to hit after the container restart.
+			host := r.Host
+			if idx := strings.Index(host, ":"); idx >= 0 {
+				host = host[:idx]
+			}
+			data.Toast.NewURL = fmt.Sprintf("http://%s:%d/", host, candidate.UI.HTTPPort)
+		}
 	}
 	s.renderPanel(w, "bridge-panel", data)
 }
@@ -295,6 +306,51 @@ func rowFor(fd adapters.FieldDef, cur config.BridgeConfig, errs FormErrors) brid
 		r.Kind = "action"
 	}
 	return r
+}
+
+// hotSwapDiffKeys returns the set of FieldDef keys whose value differs
+// between old and next, restricted to fields whose ApplyScope is
+// ScopeHotSwap. Used to pin the applied-live pip to exactly the
+// changed fields. (Param named `next` instead of `new` to avoid
+// shadowing the builtin.)
+func hotSwapDiffKeys(old, next config.BridgeConfig) []string {
+	var out []string
+	for _, fd := range bridgeFields() {
+		if fd.ApplyScope != adapters.ScopeHotSwap {
+			continue
+		}
+		if fd.Kind == adapters.KindAction {
+			continue // not a value field
+		}
+		if bridgeFieldsEqual(fd.Key, old, next) {
+			continue
+		}
+		out = append(out, fd.Key)
+	}
+	return out
+}
+
+// bridgeFieldsEqual reports whether the named field has the same value
+// in old and next. Comparisons go through the same lookup helpers
+// rowFor uses, so type quirks (int-as-string) are handled consistently.
+//
+// bridgeFields() Keys are unique by contract — the first match below
+// is canonical and we return immediately.
+func bridgeFieldsEqual(key string, old, next config.BridgeConfig) bool {
+	for _, fd := range bridgeFields() {
+		if fd.Key != key {
+			continue
+		}
+		switch fd.Kind {
+		case adapters.KindBool:
+			return bridgeLookupBool(key, old) == bridgeLookupBool(key, next)
+		case adapters.KindInt:
+			return bridgeLookupInt(key, old) == bridgeLookupInt(key, next)
+		default:
+			return bridgeLookupString(key, old) == bridgeLookupString(key, next)
+		}
+	}
+	return true
 }
 
 // bridgeLookupString returns the current string value for a dotted
