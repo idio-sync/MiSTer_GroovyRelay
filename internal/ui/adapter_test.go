@@ -286,6 +286,85 @@ func TestHandleAdapter_Save_Success(t *testing.T) {
 	}
 }
 
+func TestHandleAdapter_Save_StartsWhenEnableTransitions(t *testing.T) {
+	stub := &toggleStub{richStub: richStub{name: "stub", enabled: false, state: adapters.StateStopped}}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	saver := &fakeAdapterSaver{}
+	s, _ := New(Config{Registry: reg, AdapterSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	body := strings.NewReader("device_name=NewName&enabled=true")
+	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if stub.startCalls != 1 {
+		t.Errorf("want 1 Start call after enable transition via save, got %d", stub.startCalls)
+	}
+	if stub.stopCalls != 0 {
+		t.Errorf("want 0 Stop calls, got %d", stub.stopCalls)
+	}
+}
+
+func TestHandleAdapter_Save_StopsWhenDisableTransitions(t *testing.T) {
+	stub := &toggleStub{richStub: richStub{name: "stub", enabled: true, state: adapters.StateRunning}}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	saver := &fakeAdapterSaver{}
+	s, _ := New(Config{Registry: reg, AdapterSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	body := strings.NewReader("device_name=NewName&enabled=false")
+	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if stub.stopCalls != 1 {
+		t.Errorf("want 1 Stop call after disable transition via save, got %d", stub.stopCalls)
+	}
+	if stub.startCalls != 0 {
+		t.Errorf("want 0 Start calls, got %d", stub.startCalls)
+	}
+}
+
+func TestHandleAdapter_Save_NoLifecycleWhenEnableUnchanged(t *testing.T) {
+	stub := &toggleStub{richStub: richStub{name: "stub", enabled: true, state: adapters.StateRunning}}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	saver := &fakeAdapterSaver{}
+	s, _ := New(Config{Registry: reg, AdapterSaver: saver})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	body := strings.NewReader("device_name=NewName&enabled=true")
+	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if stub.startCalls != 0 || stub.stopCalls != 0 {
+		t.Errorf("want no lifecycle dispatch when enabled unchanged; start=%d stop=%d",
+			stub.startCalls, stub.stopCalls)
+	}
+}
+
 func TestHandleAdapter_Save_CSRFRejected(t *testing.T) {
 	reg := adapters.NewRegistry()
 	_ = reg.Register(&richStub{name: "stub"})

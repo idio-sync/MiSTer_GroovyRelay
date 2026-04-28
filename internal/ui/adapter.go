@@ -303,6 +303,14 @@ func (s *Server) handleAdapterSave(w http.ResponseWriter, r *http.Request) {
 	lock.Lock()
 	defer lock.Unlock()
 
+	// Capture the enabled state before ApplyConfig mutates a.cfg, so we
+	// can detect a transition and dispatch Start/Stop after a successful
+	// save. Without this, flipping "Enabled" in the form persists to disk
+	// and updates in-memory cfg but never starts the adapter — the user
+	// has to restart the bridge to bring it online. Mirrors the toggle
+	// endpoint's lifecycle dispatch.
+	oldEnabled := a.IsEnabled()
+
 	// 1. Form → TOML snippet. Type dispatch via FieldDef.Kind; parse
 	// failures (bad int, required missing) return inline FormErrors.
 	tomlBytes, ferrs := formToAdapterTOML(r.Form, a.Fields())
@@ -363,7 +371,35 @@ func (s *Server) handleAdapterSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := s.buildAdapterPanelData(a, scopeToast(scope), nil)
+	// 6. Lifecycle dispatch on enabled-flag transition. ApplyConfig has
+	// already updated cfg.Enabled in memory; mirror the toggle handler
+	// so a Save that flips "Enabled" brings the adapter online (or
+	// down) without requiring a process restart or a separate toggle
+	// click. Only fires for adapters that opted into EnableSetter — the
+	// gate keeps adapters with no enable/disable concept inert.
+	toast := scopeToast(scope)
+	if _, hasSetter := a.(EnableSetter); hasSetter {
+		newEnabled := parseBoolField(r.Form, "enabled")
+		if oldEnabled != newEnabled {
+			if newEnabled && a.Status().State != adapters.StateRunning {
+				if startErr := a.Start(context.Background()); startErr != nil {
+					toast = &toastData{
+						Class:   "err",
+						Message: fmt.Sprintf("Saved but start failed: %v", startErr),
+					}
+				}
+			} else if !newEnabled && a.Status().State == adapters.StateRunning {
+				if stopErr := a.Stop(); stopErr != nil {
+					toast = &toastData{
+						Class:   "err",
+						Message: fmt.Sprintf("Saved but stop failed: %v", stopErr),
+					}
+				}
+			}
+		}
+	}
+
+	data := s.buildAdapterPanelData(a, toast, nil)
 	s.renderPanel(w, "adapter-panel", data)
 }
 
