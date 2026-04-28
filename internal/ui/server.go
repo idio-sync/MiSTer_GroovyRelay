@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -74,7 +75,8 @@ type Config struct {
 // Keep this list small — business logic belongs in Go, not templates.
 // inc is used by the Bridge panel to render 1-indexed section numbers.
 var templateFuncs = template.FuncMap{
-	"inc": func(i int) int { return i + 1 },
+	"inc":        func(i int) int { return i + 1 },
+	"replaceAll": strings.ReplaceAll,
 }
 
 // Server owns the parsed templates + embedded static assets + a

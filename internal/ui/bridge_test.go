@@ -460,7 +460,7 @@ func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
 	body := rw.Body.String()
 	wantSnippets := []string{
 		`hx-post="/ui/bridge/mister/launch"`,
-		`id="mister-launch-slot"`,
+		`id="action-result-mister-launch"`,
 		"Launch GroovyMiSTer",
 		`type="button"`,
 	}
@@ -468,6 +468,28 @@ func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
 		if !strings.Contains(body, w) {
 			t.Errorf("missing %q in body", w)
 		}
+	}
+}
+
+func TestBridgePanel_RendersLaunchOnceAsKindAction(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	// The Launch section header must appear exactly once.
+	// The heading renders as: <span class="num">06 —</span> Launch</h3>
+	count := strings.Count(body, "</span> Launch</h3>")
+	if count != 1 {
+		t.Errorf("Launch section header count: got %d, want 1 (was the hard-coded block left in place?)", count)
+	}
+	// The button label must appear, attached to the action endpoint.
+	if !strings.Contains(body, "Launch GroovyMiSTer") {
+		t.Error("Launch button label not found in rendered HTML")
+	}
+	if !strings.Contains(body, `hx-post="/ui/bridge/mister/launch"`) {
+		t.Error("Launch endpoint not wired to the rendered button")
 	}
 }
 
