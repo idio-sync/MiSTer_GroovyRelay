@@ -168,6 +168,11 @@ func adapterRowFor(fd adapters.FieldDef, vals map[string]any, errs FormErrors) b
 		r.Kind = "text"
 		r.InputType = "password"
 		r.Placeholder = "Leave empty to keep existing"
+	case adapters.KindAction:
+		// Spec §8.1: rendered as a button. Key is the relative POST
+		// endpoint suffix (e.g. "pair/start" mounts at
+		// /ui/adapter/<name>/pair/start). No input value.
+		r.Kind = "action"
 	}
 	return r
 }

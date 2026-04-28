@@ -73,7 +73,12 @@ type Config struct {
 
 // templateFuncs supplies the tiny set of helpers our templates need.
 // Keep this list small — business logic belongs in Go, not templates.
-// inc is used by the Bridge panel to render 1-indexed section numbers.
+//
+//   inc        — bridge/adapter panels render 1-indexed section numbers.
+//   replaceAll — bridge/adapter panels sanitize KindAction Keys (which
+//                may contain "/") into HTML id attributes.
+//   hasString  — bridge panel renders the applied-live pip per
+//                changed key by membership-check on AppliedPipKeys.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,

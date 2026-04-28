@@ -404,6 +404,82 @@ func TestFormToAdapterTOML_SkipsKindAction(t *testing.T) {
 	}
 }
 
+func TestAdapterRowFor_KindAction(t *testing.T) {
+	fd := adapters.FieldDef{
+		Key:     "pair/start",
+		Label:   "Start pairing",
+		Kind:    adapters.KindAction,
+		Section: "Pairing",
+	}
+	r := adapterRowFor(fd, nil, nil)
+	if r.Kind != "action" {
+		t.Errorf("Kind: got %q, want %q", r.Kind, "action")
+	}
+	if r.Label != "Start pairing" {
+		t.Errorf("Label: got %q, want %q", r.Label, "Start pairing")
+	}
+	if r.StringValue != "" {
+		t.Errorf("StringValue: got %q, want empty", r.StringValue)
+	}
+}
+
+// actionStub is an adapter whose Fields() includes a KindAction entry
+// so we can test that the adapter-panel template emits the correct
+// hx-post URL and namespaced slot id.
+type actionStub struct {
+	richStub
+}
+
+func (a *actionStub) Fields() []adapters.FieldDef {
+	return []adapters.FieldDef{
+		{Key: "enabled", Label: "Enabled", Kind: adapters.KindBool, ApplyScope: adapters.ScopeHotSwap},
+		{Key: "pair/start", Label: "Start pairing", Kind: adapters.KindAction, Section: "Pairing"},
+	}
+}
+
+// TestHandleAdapter_GET_KindActionRendered verifies that a KindAction
+// field emits an hx-post button (not a broken zero-value <input>) and
+// that the result slot id is namespaced by the adapter name so adapters
+// sharing the same action key don't collide in the DOM.
+func TestHandleAdapter_GET_KindActionRendered(t *testing.T) {
+	stub := &actionStub{richStub: richStub{name: "myplex", enabled: true, state: adapters.StateRunning}}
+	reg := adapters.NewRegistry()
+	_ = reg.Register(stub)
+	s, err := New(Config{Registry: reg})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest("GET", "/ui/adapter/myplex", nil)
+	req.Header.Set("HX-Request", "true") // fragment only — simpler to inspect
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	body := rw.Body.String()
+
+	// Must render an hx-post button pointing at the correct adapter route.
+	wantPost := `hx-post="/ui/adapter/myplex/pair/start"`
+	if !strings.Contains(body, wantPost) {
+		t.Errorf("action button hx-post missing or wrong; want %q in:\n%s", wantPost, body)
+	}
+
+	// Slot id must be namespaced by adapter name — "pair/start" → "pair-start".
+	wantSlot := `id="action-result-myplex-pair-start"`
+	if !strings.Contains(body, wantSlot) {
+		t.Errorf("action result slot id missing or wrong; want %q in:\n%s", wantSlot, body)
+	}
+
+	// Must NOT render a plain <input> for the action field.
+	if strings.Contains(body, `name="pair/start"`) {
+		t.Errorf("action field rendered as <input> (regression); body:\n%s", body)
+	}
+}
+
 func TestHandleAdapter_Save_RequiredFieldMissing(t *testing.T) {
 	stub := &richStub{name: "stub", enabled: true}
 	reg := adapters.NewRegistry()

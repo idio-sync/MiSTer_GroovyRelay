@@ -29,6 +29,17 @@
 					</select>
 				{{else if eq .Kind "bool"}}
 					<input type="checkbox" name="{{.Key}}" id="f-{{.Key}}" value="true" {{if .BoolValue}}checked{{end}}>
+				{{else if eq .Kind "action"}}
+					{{$slot := printf "action-result-%s-%s" $.Name (replaceAll .Key "/" "-")}}
+					<button type="button" class="btn"
+						hx-post="/ui/adapter/{{$.Name}}/{{.Key}}"
+						hx-target="#{{$slot}}"
+						hx-swap="innerHTML"
+						hx-disabled-elt="this"
+						hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
+						{{.Label}}
+					</button>
+					<div id="{{$slot}}" style="margin-top: 8px;"></div>
 				{{else}}
 					<input type="{{.InputType}}" name="{{.Key}}" id="f-{{.Key}}"
 						value="{{.StringValue}}"
