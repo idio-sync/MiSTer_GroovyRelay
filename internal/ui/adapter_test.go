@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -378,6 +380,27 @@ func TestHandleAdapter_Save_CSRFRejected(t *testing.T) {
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", rw.Code)
+	}
+}
+
+func TestFormToAdapterTOML_SkipsKindAction(t *testing.T) {
+	fields := []adapters.FieldDef{
+		{Key: "host", Kind: adapters.KindText, Section: "Connection"},
+		{Key: "do_thing", Kind: adapters.KindAction, Section: "Actions", Label: "Do thing"},
+	}
+	form := url.Values{
+		"host":     {"example.com"},
+		"do_thing": {"clicked"}, // would-be button click; must NOT serialize
+	}
+	got, ferrs := formToAdapterTOML(form, fields)
+	if len(ferrs) > 0 {
+		t.Fatalf("formToAdapterTOML field errors: %v", ferrs)
+	}
+	if !bytes.Contains(got, []byte("host = ")) {
+		t.Errorf("expected host key in output; got: %s", got)
+	}
+	if bytes.Contains(got, []byte("do_thing")) {
+		t.Errorf("KindAction key leaked into TOML output: %s", got)
 	}
 }
 

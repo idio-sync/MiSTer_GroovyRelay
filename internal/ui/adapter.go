@@ -411,6 +411,11 @@ func formToAdapterTOML(form url.Values, fields []adapters.FieldDef) ([]byte, For
 	errs := FormErrors{}
 	var buf bytes.Buffer
 	for _, fd := range fields {
+		// KindAction is a button, not a value — never serialize.
+		// Spec §8.1.
+		if fd.Kind == adapters.KindAction {
+			continue
+		}
 		raw := form.Get(fd.Key)
 		switch fd.Kind {
 		case adapters.KindText, adapters.KindSecret:
