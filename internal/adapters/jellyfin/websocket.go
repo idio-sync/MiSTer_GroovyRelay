@@ -139,7 +139,8 @@ const outboundQueueSize = 64
 // a.sendOutbound which puts items on a single channel.
 func (a *Adapter) startWriteLoop(ctx context.Context, conn *websocket.Conn) {
 	a.mu.Lock()
-	a.outboundCh = make(chan outboundEnvelope, outboundQueueSize)
+	outboundCh := make(chan outboundEnvelope, outboundQueueSize)
+	a.outboundCh = outboundCh
 	keepaliveSet := make(chan time.Duration, 1)
 	a.keepaliveSet = keepaliveSet
 	a.mu.Unlock()
@@ -169,7 +170,7 @@ func (a *Adapter) startWriteLoop(ctx context.Context, conn *websocket.Conn) {
 				}
 			case <-tickerC:
 				_ = a.writeFrame(ctx, conn, outboundEnvelope{MessageType: "KeepAlive"})
-			case msg := <-a.outboundCh:
+			case msg := <-outboundCh:
 				_ = a.writeFrame(ctx, conn, msg)
 			}
 		}
