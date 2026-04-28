@@ -61,3 +61,33 @@ func TestHandler_Compat(t *testing.T) {
 	var h Handler = func(w http.ResponseWriter, r *http.Request) {}
 	_ = h
 }
+
+func TestFieldDef_SectionOrderZeroValue(t *testing.T) {
+	fd := FieldDef{Section: "Network"}
+	if fd.SectionOrder != 0 {
+		t.Errorf("zero value: got %d, want 0", fd.SectionOrder)
+	}
+}
+
+func TestKindAction_Const(t *testing.T) {
+	// KindAction must follow KindSecret in the iota sequence.
+	// Existing kinds must keep their values.
+	if KindText != 0 {
+		t.Errorf("KindText: got %d, want 0", KindText)
+	}
+	if KindInt != 1 {
+		t.Errorf("KindInt: got %d, want 1", KindInt)
+	}
+	if KindBool != 2 {
+		t.Errorf("KindBool: got %d, want 2", KindBool)
+	}
+	if KindEnum != 3 {
+		t.Errorf("KindEnum: got %d, want 3", KindEnum)
+	}
+	if KindSecret != 4 {
+		t.Errorf("KindSecret: got %d, want 4", KindSecret)
+	}
+	if KindAction != 5 {
+		t.Errorf("KindAction: got %d, want 5", KindAction)
+	}
+}
