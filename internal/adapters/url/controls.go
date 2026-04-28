@@ -227,7 +227,7 @@ func (a *Adapter) respondControlError(w http.ResponseWriter, status int, msg str
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	fmt.Fprintf(w,
-		`<div class="url-panel error" id="url-panel"><p class="err">%s</p></div>`,
+		`<div class="gr-callout err" id="url-panel"><p>%s</p></div>`,
 		template.HTMLEscapeString(msg))
 }
 

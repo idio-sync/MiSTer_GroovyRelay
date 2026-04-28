@@ -288,3 +288,22 @@ body {
 	cursor: pointer;
 }
 .toast-copy-btn:hover { color: var(--gr-text); border-color: var(--gr-amber); }
+
+/* ---- gr-callout (Spec §6.3.1) ----
+   Bordered status/info box for adapter-emitted HTML fragments.
+   Severity modifiers: .ok / .warn / .err. */
+.gr-callout {
+	background: var(--gr-surface);
+	border: 1px solid var(--gr-border);
+	border-left: 3px solid var(--gr-dim);
+	padding: 10px 14px;
+	margin: 8px 0;
+	font-size: 13px;
+	color: var(--gr-text);
+}
+.gr-callout.ok    { border-left-color: var(--gr-ok); }
+.gr-callout.warn  { border-left-color: var(--gr-warn); }
+.gr-callout.err   { border-left-color: var(--gr-err); }
+.gr-callout p { margin: 0; }
+.gr-callout p + p { margin-top: 6px; }
+.gr-callout code { font-family: var(--font-mono); font-size: 12px; }
