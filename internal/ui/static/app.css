@@ -228,3 +228,29 @@ body {
 		to   { opacity: 1; transform: translateY(0); }
 	}
 }
+
+/* ---- Applied-live pip (Spec §6.2) ----
+   Rendered server-side next to a hot-swap-saved field. Animates out
+   over 3s and is non-interactive after. Pure CSS — no JavaScript. */
+.gr-pip {
+	display: inline-block;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ok);
+	margin-left: 8px;
+	opacity: 1;
+}
+.gr-pip.applied {
+	animation: gr-pip-fade 3s ease-out forwards;
+}
+@keyframes gr-pip-fade {
+	0%   { opacity: 1; transform: translateY(0); }
+	66%  { opacity: 1; transform: translateY(0); }
+	100% { opacity: 0; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.gr-pip.applied {
+		animation: none;
+		opacity: 1;
+	}
+}
