@@ -72,7 +72,7 @@ func (s *Server) handleBridgeGET(w http.ResponseWriter, r *http.Request) {
 		s.renderPanel(w, "bridge-panel", data)
 		return
 	}
-	s.renderShellWithPanel(w, "bridge-panel", data)
+	s.renderShellWithPanel(w, r, "bridge-panel", data)
 }
 
 // handleBridgeDismissFirstRun persists the first-run dismissal and

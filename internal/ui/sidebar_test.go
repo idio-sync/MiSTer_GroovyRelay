@@ -102,3 +102,47 @@ func TestHandleSidebarStatus_LinksOverrideInheritedSwap(t *testing.T) {
 		}
 	}
 }
+
+func TestShell_DoesNotPollOuterAside(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	// Old behavior: <aside hx-get="/ui/sidebar/status" hx-swap="outerHTML">.
+	// New behavior: aside has no hx-get directly; a child element polls
+	// /ui/sidebar/dots with hx-swap="none" (OOB swaps target individual
+	// dot spans).
+	if strings.Contains(body, `<aside`) && strings.Contains(body, `hx-get="/ui/sidebar/status"`) {
+		t.Error("aside still polls /ui/sidebar/status with outerHTML — must be /ui/sidebar/dots with hx-swap=none")
+	}
+	if !strings.Contains(body, `hx-get="/ui/sidebar/dots"`) {
+		t.Error("expected sidebar to poll /ui/sidebar/dots")
+	}
+	if !strings.Contains(body, `hx-swap="none"`) {
+		t.Error("expected hx-swap=\"none\" on the polling element (OOB swaps own the visible state)")
+	}
+}
+
+func TestShell_RendersActiveLinkServerSide(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	if !strings.Contains(body, `href="/ui/bridge"`) {
+		t.Fatal("bridge link not rendered")
+	}
+	// Look for "active" class within ~200 chars after the bridge href.
+	idx := strings.Index(body, `href="/ui/bridge"`)
+	end := idx + 200
+	if end > len(body) {
+		end = len(body)
+	}
+	window := body[idx:end]
+	if !strings.Contains(window, "active") {
+		t.Errorf("bridge link not marked active server-side; window=%q", window)
+	}
+}

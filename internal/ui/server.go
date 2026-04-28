@@ -200,7 +200,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 // handleShell renders the full shell page with the sidebar populated
 // from the registry and an empty panel.
 func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
-	data := s.shellData()
+	data := s.shellDataForPath(r.URL.Path)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -211,13 +211,13 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 // renderShellWithPanel renders the full shell page around a panel
 // fragment so pushed URLs like /ui/bridge survive refresh/bookmark as
 // proper document loads instead of returning a bare fragment.
-func (s *Server) renderShellWithPanel(w http.ResponseWriter, panelName string, panelData any) {
+func (s *Server) renderShellWithPanel(w http.ResponseWriter, r *http.Request, panelName string, panelData any) {
 	panelHTML, err := s.renderTemplateHTML(panelName, panelData)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data := s.shellData()
+	data := s.shellDataForPath(r.URL.Path)
 	data.PanelHTML = panelHTML
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
@@ -231,6 +231,15 @@ func (s *Server) renderTemplateHTML(name string, data any) (template.HTML, error
 		return "", err
 	}
 	return template.HTML(buf.String()), nil
+}
+
+// shellDataForPath is shellData() with CurrentPath populated for
+// active-link rendering. Used by every shell-rendering handler;
+// the path drives the .active class on the matching sidebar <a>.
+func (s *Server) shellDataForPath(path string) shellTemplateData {
+	data := s.shellData()
+	data.CurrentPath = path
+	return data
 }
 
 // shellData builds the template data for the shell page: sidebar
@@ -250,8 +259,9 @@ func (s *Server) shellData() shellTemplateData {
 }
 
 type shellTemplateData struct {
-	Adapters  []sidebarAdapter
-	PanelHTML template.HTML
+	Adapters    []sidebarAdapter
+	PanelHTML   template.HTML
+	CurrentPath string
 }
 
 type sidebarAdapter struct {

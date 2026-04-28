@@ -66,7 +66,7 @@ func (s *Server) handleAdapterGET(w http.ResponseWriter, r *http.Request) {
 		s.renderPanel(w, "adapter-panel", data)
 		return
 	}
-	s.renderShellWithPanel(w, "adapter-panel", data)
+	s.renderShellWithPanel(w, r, "adapter-panel", data)
 }
 
 // buildAdapterPanelData assembles the template data: status line,
