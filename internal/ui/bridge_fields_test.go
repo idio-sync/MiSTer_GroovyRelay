@@ -66,6 +66,27 @@ func TestBuildBridgeSections_OrdersBySectionOrder(t *testing.T) {
 	}
 }
 
+func TestRowFor_KindAction(t *testing.T) {
+	fd := adapters.FieldDef{
+		Key:     "mister/launch",
+		Label:   "Launch GroovyMiSTer",
+		Kind:    adapters.KindAction,
+		Section: "Launch",
+	}
+	cur := config.BridgeConfig{}
+	r := rowFor(fd, cur, nil)
+	if r.Kind != "action" {
+		t.Errorf("Kind: got %q, want %q", r.Kind, "action")
+	}
+	if r.Label != "Launch GroovyMiSTer" {
+		t.Errorf("Label: got %q, want %q", r.Label, "Launch GroovyMiSTer")
+	}
+	// Action rows do not carry input values.
+	if r.StringValue != "" {
+		t.Errorf("StringValue: got %q, want empty", r.StringValue)
+	}
+}
+
 func TestModelineEnumOptions_ExperimentalSuffix(t *testing.T) {
 	got := modelineEnumOptions()
 	want := []string{

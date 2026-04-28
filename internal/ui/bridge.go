@@ -288,6 +288,11 @@ func rowFor(fd adapters.FieldDef, cur config.BridgeConfig, errs FormErrors) brid
 		// StringValue stays empty: never echo a stored password into HTML.
 		// The preserve-on-empty conditional in handleBridgePOST recovers
 		// the prior value when the operator submits without retyping.
+	case adapters.KindAction:
+		// Spec §8.1: rendered as a button. Key is the relative POST
+		// endpoint (e.g. "mister/launch" mounts at
+		// /ui/bridge/mister/launch). No input value.
+		r.Kind = "action"
 	}
 	return r
 }
