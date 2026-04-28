@@ -172,3 +172,15 @@ func TestServer_Mount_HonorsAllRouteMethods(t *testing.T) {
 		}
 	}
 }
+
+func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
+	_, mux := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/sidebar/dots", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Errorf("/ui/sidebar/dots not registered: got 404")
+	}
+}

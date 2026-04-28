@@ -126,6 +126,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 
 	// Sidebar status fragment (polled every 3s by the shell).
 	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)
+	// Sidebar dots fragment (per-adapter status indicators).
+	mux.HandleFunc("GET /ui/sidebar/dots", s.handleSidebarDots)
 
 	// Adapter panel.
 	mux.HandleFunc("GET /ui/adapter/{name}", s.handleAdapterGET)
