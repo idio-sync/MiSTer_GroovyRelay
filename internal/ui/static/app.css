@@ -29,6 +29,8 @@
 
 :root {
 	color-scheme: dark;
+
+	/* ---- Legacy tokens (still in use; will be removed in PR 2 cleanup) ---- */
 	--bg:       oklch(0.17 0.015 60);
 	--surface:  oklch(0.22 0.018 60);
 	--border:   oklch(0.32 0.022 60);
@@ -38,6 +40,19 @@
 	--ok:       oklch(0.72 0.13 150);
 	--warn:     oklch(0.78 0.15 85);
 	--err:      oklch(0.65 0.22 25);
+
+	/* ---- New token system (Spec §4.1).
+	       Hue shifted from ~60-65 to 80 for warmer Plex-cousin signature. ---- */
+	--gr-bg:        oklch(0.20 0.008 80);
+	--gr-surface:   oklch(0.25 0.010 80);
+	--gr-surface-2: oklch(0.29 0.012 80);
+	--gr-border:    oklch(0.36 0.015 80);
+	--gr-text:      oklch(0.94 0.012 85);
+	--gr-dim:       oklch(0.65 0.012 80);
+	--gr-amber:     oklch(0.78 0.16 80);
+	--gr-ok:        oklch(0.72 0.14 150);
+	--gr-warn:      oklch(0.78 0.15 70);
+	--gr-err:       oklch(0.65 0.22 25);
 
 	--font-display: 'Space Grotesk', sans-serif;
 	--font-body:    'Inter Tight', sans-serif;
