@@ -445,6 +445,47 @@ func TestPanel_HistoryEmpty_NoListSection(t *testing.T) {
 	}
 }
 
+func TestPanel_HistoryEntry_RendersTitleWhenSet(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://youtu.be/abc")
+	a.history.SetTitle("https://youtu.be/abc", "Big Buck Bunny")
+	body := renderForTest(t, a)
+	if !strings.Contains(body, "Big Buck Bunny") {
+		t.Errorf("history list missing title: %s", body)
+	}
+	if !strings.Contains(body, "history-title") {
+		t.Errorf("history list missing .history-title wrapper: %s", body)
+	}
+	if !strings.Contains(body, "youtu.be/abc") {
+		t.Errorf("history list still must show URL alongside title: %s", body)
+	}
+}
+
+func TestPanel_HistoryEntry_NoTitleClassWhenAbsent(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://example.com/raw.mp4")
+	body := renderForTest(t, a)
+	if strings.Contains(body, "history-title") {
+		t.Errorf("untitled entry rendered .history-title wrapper: %s", body)
+	}
+	if !strings.Contains(body, "example.com/raw.mp4") {
+		t.Errorf("history list missing URL for untitled entry: %s", body)
+	}
+}
+
+func TestPanel_HistoryEntry_TitleHTMLEscaped(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	a.history.AddOrBump("https://example.com/v")
+	a.history.SetTitle("https://example.com/v", `<script>alert(1)</script>`)
+	body := renderForTest(t, a)
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Errorf("title rendered without HTML escaping: %s", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("title not HTML-escaped: %s", body)
+	}
+}
+
 func TestPanel_RedactsCredentialsInDisplay(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	a.history.AddOrBump("https://user:secret@example.com/v.mp4")

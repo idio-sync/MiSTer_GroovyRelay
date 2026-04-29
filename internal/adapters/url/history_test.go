@@ -1,6 +1,7 @@
 package url
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -244,6 +245,122 @@ func TestHistory_UnparseableURL_NotRecorded(t *testing.T) {
 	h.AddOrBump("\x00not-a-url")
 	if h.Len() != 0 {
 		t.Errorf("len = %d, want 0 (unparseable URLs must not be recorded)", h.Len())
+	}
+}
+
+func TestHistory_SetTitle_AttachesAndPersists(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "h.json")
+	h := LoadHistory(tmp)
+	h.AddOrBump("https://youtu.be/abc")
+	h.SetTitle("https://youtu.be/abc", "Big Buck Bunny")
+
+	h2 := LoadHistory(tmp)
+	list := h2.List()
+	if len(list) != 1 {
+		t.Fatalf("len = %d, want 1", len(list))
+	}
+	if list[0].Title != "Big Buck Bunny" {
+		t.Errorf("title = %q, want %q", list[0].Title, "Big Buck Bunny")
+	}
+}
+
+func TestHistory_SetTitle_EmptyIsNoop(t *testing.T) {
+	h := LoadHistory("")
+	h.AddOrBump("https://youtu.be/abc")
+	h.SetTitle("https://youtu.be/abc", "First Title")
+	h.SetTitle("https://youtu.be/abc", "") // must not blank
+	list := h.List()
+	if list[0].Title != "First Title" {
+		t.Errorf("empty SetTitle blanked existing title; got %q", list[0].Title)
+	}
+}
+
+func TestHistory_SetTitle_UnknownURLIsNoop(t *testing.T) {
+	h := LoadHistory("")
+	h.AddOrBump("https://a/")
+	h.SetTitle("https://b/", "Should Not Apply")
+	list := h.List()
+	if list[0].Title != "" {
+		t.Errorf("title attached to wrong entry: %q", list[0].Title)
+	}
+}
+
+func TestHistory_SetTitle_MatchesByDedupeKey(t *testing.T) {
+	// Userinfo differs but dedupe key matches → title attaches.
+	h := LoadHistory("")
+	h.AddOrBump("https://alice@host/x")
+	h.SetTitle("https://bob:secret@host/x", "Shared Page")
+	list := h.List()
+	if list[0].Title != "Shared Page" {
+		t.Errorf("title = %q, want match by dedupe key", list[0].Title)
+	}
+}
+
+func TestHistory_AddOrBump_PreservesTitleAcrossBump(t *testing.T) {
+	// Re-casting an existing URL must not blank a title that was set
+	// by a previous successful resolve. yt-dlp will normally re-set
+	// it, but the bump itself shouldn't strip metadata.
+	h := LoadHistory("")
+	h.AddOrBump("https://youtu.be/abc")
+	h.SetTitle("https://youtu.be/abc", "Big Buck Bunny")
+	h.AddOrBump("https://youtu.be/abc") // re-cast
+	list := h.List()
+	if list[0].Title != "Big Buck Bunny" {
+		t.Errorf("AddOrBump dropped title across bump; got %q", list[0].Title)
+	}
+}
+
+func TestHistory_AddOrBump_PreservesTitleWhenURLChanges(t *testing.T) {
+	// Same dedupe key, different stored URL (creds rotated). Title
+	// should still carry forward.
+	h := LoadHistory("")
+	h.AddOrBump("https://alice@host/x")
+	h.SetTitle("https://alice@host/x", "Page Title")
+	h.AddOrBump("https://bob:secret@host/x")
+	list := h.List()
+	if list[0].URL != "https://bob:secret@host/x" {
+		t.Errorf("URL = %q, want most-recent creds", list[0].URL)
+	}
+	if list[0].Title != "Page Title" {
+		t.Errorf("Title = %q, want preserved across creds rotation", list[0].Title)
+	}
+}
+
+func TestHistory_TitleOmitemptyOnDisk(t *testing.T) {
+	// Entries without a title must not emit "title":"" — that would
+	// bloat the file and break the spec's documented schema for
+	// minimum-payload entries.
+	tmp := filepath.Join(t.TempDir(), "h.json")
+	h := LoadHistory(tmp)
+	h.AddOrBump("https://example/no-title")
+
+	data, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"title"`)) {
+		t.Errorf("on-disk JSON includes title key for an untitled entry: %s", data)
+	}
+}
+
+func TestHistory_LoadEntryWithoutTitle_BackCompat(t *testing.T) {
+	// Pre-title schema: old files will not have a title key. Loader
+	// must accept them and leave Title at its zero value.
+	tmp := filepath.Join(t.TempDir(), "h.json")
+	raw := `{"version":1,"entries":[{"url":"https://example/x","last_played_at":"2026-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(tmp, []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h := LoadHistory(tmp)
+	list := h.List()
+	if len(list) != 1 {
+		t.Fatalf("len = %d, want 1", len(list))
+	}
+	if list[0].Title != "" {
+		t.Errorf("pre-title entry got non-empty title: %q", list[0].Title)
+	}
+	if list[0].URL != "https://example/x" {
+		t.Errorf("URL roundtrip failed: %q", list[0].URL)
 	}
 }
 

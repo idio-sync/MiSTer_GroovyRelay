@@ -154,16 +154,29 @@ func (a *Adapter) renderPanel() string {
 	b.WriteString(renderVersionLine(probe))
 	b.WriteString(a.renderCookiesSection())
 
-	// History list, if any.
+	// History list, if any. Entries that carry a resolver-provided
+	// title (yt-dlp on YouTube/Vimeo/Archive.org/etc.) render the
+	// title as the primary line with the URL muted underneath; bare
+	// direct-mode URLs render as just the code line.
 	if len(hist) > 0 {
 		b.WriteString(`<div class="history"><h4>Recent:</h4><ul>`)
 		for i, e := range hist {
+			b.WriteString(`<li>`)
+			if e.Title != "" {
+				fmt.Fprintf(&b,
+					`<div class="history-title">%s</div>`+
+						`<code class="history-url muted">%s</code> `,
+					template.HTMLEscapeString(e.Title),
+					template.HTMLEscapeString(redactURL(e.URL)))
+			} else {
+				fmt.Fprintf(&b, `<code>%s</code> `,
+					template.HTMLEscapeString(redactURL(e.URL)))
+			}
 			fmt.Fprintf(&b,
-				`<li><code>%s</code> `+
-					`<button type="button" hx-post="/ui/adapter/url/history/play" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">Cast</button> `+
+				`<button type="button" hx-post="/ui/adapter/url/history/play" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">Cast</button> `+
 					`<button type="button" hx-post="/ui/adapter/url/history/delete" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">✕</button>`+
 					`</li>`,
-				template.HTMLEscapeString(redactURL(e.URL)), i, i)
+				i, i)
 		}
 		b.WriteString(`</ul></div>`)
 	}

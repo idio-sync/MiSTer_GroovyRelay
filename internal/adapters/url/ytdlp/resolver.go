@@ -39,7 +39,7 @@ type Resolution struct {
 	URL     string            // resolved direct media URL (or HLS m3u8)
 	Headers map[string]string // http_headers map for ffmpeg -headers
 	IsLive  bool              // true for live streams (YouTube Live, Twitch)
-	Title   string            // for slog only; never user-facing
+	Title   string            // surfaced in the URL adapter's history panel + slog
 }
 
 // Resolver runs yt-dlp and parses its JSON output. Construct one per

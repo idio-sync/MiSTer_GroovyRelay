@@ -38,10 +38,14 @@ const (
 )
 
 // HistoryEntry is one row of the on-disk history file. JSON tags match
-// the schema in spec §"History / Schema".
+// the schema in spec §"History / Schema". Title is populated when a
+// metadata-aware resolver (yt-dlp) returns one; direct-mode entries
+// leave it empty. omitempty keeps the on-disk JSON tidy for entries
+// that never acquired a title.
 type HistoryEntry struct {
 	URL          string    `json:"url"`
 	LastPlayedAt time.Time `json:"last_played_at"`
+	Title        string    `json:"title,omitempty"`
 }
 
 // historyFile is the on-disk envelope. Version is reserved for forward
@@ -115,9 +119,12 @@ func LoadHistory(path string) *History {
 
 // AddOrBump records rawURL. If a URL with the same dedupe key already
 // exists, it is moved to position 0 and its stored URL is replaced
-// with rawURL (latest creds win). Otherwise rawURL is inserted at
-// position 0; older entries shift down; entries beyond the max are
-// evicted. Persists to disk if path is set.
+// with rawURL (latest creds win). Any title carried by the prior
+// entry is preserved across the bump — title is metadata about the
+// content, not the credentials, so a re-cast before yt-dlp re-resolves
+// shouldn't blank the title the panel was showing. Otherwise rawURL is
+// inserted at position 0; older entries shift down; entries beyond the
+// max are evicted. Persists to disk if path is set.
 func (h *History) AddOrBump(rawURL string) {
 	key := dedupeKey(rawURL)
 	if key == "" {
@@ -127,20 +134,51 @@ func (h *History) AddOrBump(rawURL string) {
 	defer h.mu.Unlock()
 	now := time.Now().UTC()
 
-	// Remove existing entry with the same dedupe key, if any.
+	// Remove existing entry with the same dedupe key, if any. Carry
+	// its title forward so the bump doesn't drop metadata.
+	var carriedTitle string
 	for i, e := range h.entries {
 		if dedupeKey(e.URL) == key {
+			carriedTitle = e.Title
 			h.entries = append(h.entries[:i], h.entries[i+1:]...)
 			break
 		}
 	}
 
 	// Prepend the new entry, then enforce the cap unconditionally.
-	h.entries = append([]HistoryEntry{{URL: rawURL, LastPlayedAt: now}}, h.entries...)
+	h.entries = append([]HistoryEntry{{URL: rawURL, LastPlayedAt: now, Title: carriedTitle}}, h.entries...)
 	if len(h.entries) > historyMaxEntries {
 		h.entries = h.entries[:historyMaxEntries]
 	}
 	h.saveLocked()
+}
+
+// SetTitle attaches a title to the entry whose dedupe key matches
+// rawURL. No-op when title is empty (callers can pass yt-dlp's
+// possibly-empty Title unguarded — an empty resolve shouldn't blank a
+// title set by a previous successful resolve), or when no matching
+// entry exists (the entry may have been evicted before the resolver
+// finished). Persists if path is set.
+func (h *History) SetTitle(rawURL, title string) {
+	if title == "" {
+		return
+	}
+	key := dedupeKey(rawURL)
+	if key == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, e := range h.entries {
+		if dedupeKey(e.URL) == key {
+			if h.entries[i].Title == title {
+				return // no-op; avoids a redundant disk write
+			}
+			h.entries[i].Title = title
+			h.saveLocked()
+			return
+		}
+	}
 }
 
 // List returns a copy of the entries (safe to mutate the copy without

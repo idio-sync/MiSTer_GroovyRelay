@@ -518,6 +518,78 @@ func TestPlay_ModeAbsent_DefaultsToAuto(t *testing.T) {
 	}
 }
 
+func TestPlay_SuccessfulResolve_WritesTitleToHistory(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{
+			URL:   "https://googlevideo.example/v",
+			Title: "Big Buck Bunny",
+		},
+	}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=auto")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	list := a.history.List()
+	if len(list) != 1 {
+		t.Fatalf("history len = %d, want 1", len(list))
+	}
+	if list[0].Title != "Big Buck Bunny" {
+		t.Errorf("history title = %q, want %q (yt-dlp Title not propagated to history)",
+			list[0].Title, "Big Buck Bunny")
+	}
+}
+
+func TestPlay_ResolverError_DoesNotWriteTitle(t *testing.T) {
+	// Failed resolve still records the URL (per spec) but must not
+	// pretend it has a title.
+	fr := &fakeResolver{err: errors.New("ytdlp: dead URL")}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fdead&mode=ytdlp")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	list := a.history.List()
+	if len(list) != 1 {
+		t.Fatalf("failed cast must still record URL; len = %d", len(list))
+	}
+	if list[0].Title != "" {
+		t.Errorf("failed resolve attached a title: %q", list[0].Title)
+	}
+}
+
+func TestPlay_DirectMode_DoesNotWriteTitle(t *testing.T) {
+	// Direct mode bypasses yt-dlp entirely → no metadata, empty title.
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+
+	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fraw.mp4&mode=direct")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	list := a.history.List()
+	if len(list) != 1 {
+		t.Fatalf("history len = %d, want 1", len(list))
+	}
+	if list[0].Title != "" {
+		t.Errorf("direct-mode entry got a title: %q", list[0].Title)
+	}
+}
+
 func TestPlay_ResolverError_Returns500(t *testing.T) {
 	fr := &fakeResolver{err: errors.New("ytdlp: This video is unavailable")}
 	a := newAdapterWithResolver(t, fr)

@@ -121,6 +121,11 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 		headers = res.Headers
 		resolvedTitle = res.Title
 		resolvedVia = "ytdlp"
+		// Backfill the title onto the just-bumped history entry so the
+		// panel shows "Big Buck Bunny" rather than just the youtu.be
+		// shortlink. SetTitle no-ops on empty title and on missing
+		// entries, so this is safe to call unconditionally here.
+		a.history.SetTitle(rawURL, resolvedTitle)
 	}
 
 	ref = newAdapterRef()
