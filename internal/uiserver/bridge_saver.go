@@ -17,6 +17,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 )
 
 // FirstRunMarker is the dot-prefixed sentinel file placed in data_dir
@@ -167,6 +168,13 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 				return scope, fmt.Errorf("interlace hot-swap: %w", err)
 			}
 		}
+		if containsStr(changed, "logging.debug") {
+			if newCfg.Logging.Debug {
+				logging.SetLevel("debug")
+			} else {
+				logging.SetLevel("info")
+			}
+		}
 
 	case adapters.ScopeRestartCast:
 		// UpdateBridge already ran above so the next session picks up
@@ -288,6 +296,9 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.UI.HTTPPort != newCfg.UI.HTTPPort {
 		keys = append(keys, "ui.http_port")
 	}
+	if oldCfg.Logging.Debug != newCfg.Logging.Debug {
+		keys = append(keys, "logging.debug")
+	}
 	return keys
 }
 
@@ -296,6 +307,11 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 	case "video.interlace_field_order":
 		return adapters.ScopeHotSwap
 	case "mister.ssh_user", "mister.ssh_password":
+		return adapters.ScopeHotSwap
+	case "logging.debug":
+		// Flipping the log level on an in-flight session is the
+		// whole point of this checkbox — the operator wants Debug
+		// records flowing now, not after a docker restart.
 		return adapters.ScopeHotSwap
 	case "video.modeline",
 		"video.aspect_mode",

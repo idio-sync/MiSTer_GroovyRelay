@@ -177,6 +177,17 @@ func bridgeFields() []adapters.FieldDef {
 			Section:    "MiSTer Control",
 		},
 
+		// ---- Logging ----
+		{
+			Key:        "logging.debug",
+			Label:      "Debug Logging",
+			Help:       "Emit verbose slog records (request traces, timeline pushes, subscriber prunes). Takes effect immediately — no cast or container restart needed. Persisted across restarts.",
+			Kind:       adapters.KindBool,
+			Default:    false,
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "Logging",
+		},
+
 		// ---- Launch ----
 		// Spec §6.2 / §8.1: Launch is a normal section rendered via a
 		// single KindAction field. SectionOrder=60 places it after the

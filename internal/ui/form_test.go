@@ -96,6 +96,54 @@ func TestParseBridgeForm_BoolFalse(t *testing.T) {
 	_ = config.BridgeConfig{} // ensure import
 }
 
+// TestParseBridgeForm_LoggingDebug pins the round-trip for the new
+// "Debug Logging" checkbox: present → true, missing → false. Same
+// shape as the LZ4Enabled pair of tests above.
+func TestParseBridgeForm_LoggingDebug(t *testing.T) {
+	base := url.Values{}
+	base.Set("mister.host", "192.168.1.42")
+	base.Set("mister.port", "32100")
+	base.Set("mister.source_port", "32101")
+	base.Set("video.modeline", "NTSC_480i")
+	base.Set("video.interlace_field_order", "bff")
+	base.Set("video.aspect_mode", "auto")
+	base.Set("audio.sample_rate", "48000")
+	base.Set("audio.channels", "2")
+	base.Set("ui.http_port", "32500")
+	base.Set("data_dir", "/config")
+
+	t.Run("checked", func(t *testing.T) {
+		form := cloneValues(base)
+		form.Set("logging.debug", "true")
+		got, err := parseBridgeForm(form)
+		if err != nil {
+			t.Fatalf("parseBridgeForm: %v", err)
+		}
+		if !got.Logging.Debug {
+			t.Error("Logging.Debug should be true when checkbox present")
+		}
+	})
+
+	t.Run("unchecked-missing-key", func(t *testing.T) {
+		form := cloneValues(base)
+		got, err := parseBridgeForm(form)
+		if err != nil {
+			t.Fatalf("parseBridgeForm: %v", err)
+		}
+		if got.Logging.Debug {
+			t.Error("Logging.Debug should be false when checkbox absent")
+		}
+	})
+}
+
+func cloneValues(v url.Values) url.Values {
+	out := url.Values{}
+	for k, vs := range v {
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
+}
+
 func TestStripExperimentalSuffix(t *testing.T) {
 	cases := []struct {
 		in, want string

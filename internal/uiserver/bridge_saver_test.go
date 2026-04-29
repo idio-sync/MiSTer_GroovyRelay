@@ -42,3 +42,30 @@ func TestScopeForBridgeField_SSHFieldsHotSwap(t *testing.T) {
 		})
 	}
 }
+
+// TestDiffBridgeConfig_LoggingDebug pins the diff for the new logging
+// toggle so a flip surfaces as a changed key and reaches the apply
+// switch.
+func TestDiffBridgeConfig_LoggingDebug(t *testing.T) {
+	old := config.BridgeConfig{
+		Logging: config.LoggingConfig{Debug: false},
+	}
+	newCfg := old
+	newCfg.Logging.Debug = true
+
+	keys := diffBridgeConfig(old, newCfg)
+	if !containsStr(keys, "logging.debug") {
+		t.Errorf("expected logging.debug in diff keys, got %v", keys)
+	}
+}
+
+// TestScopeForBridgeField_LoggingDebugHotSwap pins the scope for the
+// logging toggle: flipping it must NOT trigger a cast restart or
+// container restart — the operator wants to enable diagnostic logs
+// against an in-flight session, that's the entire point.
+func TestScopeForBridgeField_LoggingDebugHotSwap(t *testing.T) {
+	got := scopeForBridgeField("logging.debug")
+	if got != adapters.ScopeHotSwap {
+		t.Errorf("scopeForBridgeField(logging.debug) = %v, want ScopeHotSwap", got)
+	}
+}

@@ -61,6 +61,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Apply persisted Debug Logging toggle on top of the boot flag.
+	// Precedence: explicit non-default --log-level wins; otherwise the
+	// settings-UI checkbox state (saved to bridge.logging.debug)
+	// promotes Info to Debug. Lets a power-user override at the
+	// command line without losing the UI's hot-swap path.
+	if sec.Bridge.Logging.Debug && *logLevel == "info" {
+		logging.SetLevel("debug")
+	}
+
 	// Token storage lives in the Plex adapter package because v1 only
 	// has one adapter that needs persistent auth; future adapters get
 	// their own stores. The DeviceUUID survives restarts so Plex

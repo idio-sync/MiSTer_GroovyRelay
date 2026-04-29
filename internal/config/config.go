@@ -110,12 +110,13 @@ func (c *Config) Validate() error {
 // pipeline settings, MiSTer destination, bridge-level HTTP port,
 // data directory. Every adapter shares these.
 type BridgeConfig struct {
-	DataDir string       `toml:"data_dir"`
-	HostIP  string       `toml:"host_ip"`
-	Video   VideoConfig  `toml:"video"`
-	Audio   AudioConfig  `toml:"audio"`
-	MiSTer  MisterConfig `toml:"mister"`
-	UI      UIConfig     `toml:"ui"`
+	DataDir string        `toml:"data_dir"`
+	HostIP  string        `toml:"host_ip"`
+	Video   VideoConfig   `toml:"video"`
+	Audio   AudioConfig   `toml:"audio"`
+	MiSTer  MisterConfig  `toml:"mister"`
+	UI      UIConfig      `toml:"ui"`
+	Logging LoggingConfig `toml:"logging"`
 }
 
 type VideoConfig struct {
@@ -141,6 +142,15 @@ type MisterConfig struct {
 
 type UIConfig struct {
 	HTTPPort int `toml:"http_port"`
+}
+
+// LoggingConfig is the bridge's runtime logging knob set. v1 has one
+// field — a debug toggle exposed in the settings UI as a checkbox so
+// the operator can enable verbose timeline / request logs without a
+// container restart. New() in internal/logging owns the slog.LevelVar
+// the toggle drives.
+type LoggingConfig struct {
+	Debug bool `toml:"debug"`
 }
 
 // Sectioned is the post-migration config envelope. Adapter sections

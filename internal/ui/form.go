@@ -71,6 +71,8 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	out.UI.HTTPPort = parseIntField(form, "ui.http_port", errs)
 	out.DataDir = form.Get("data_dir")
 
+	out.Logging.Debug = parseBoolField(form, "logging.debug")
+
 	if len(errs) > 0 {
 		return out, errs
 	}
