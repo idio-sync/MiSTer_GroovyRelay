@@ -29,7 +29,7 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin M
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a Raspberry Pi 4/5), anything with a few spare CPU cycles and gigabit-class networking.
 - A Plex/Jellyfin Media Server reachable from that host (optional)
 
-The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this container takes 480p form the server to 480i.
+The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this container takes 480p from the server to 480i.
 
 ## Quick start (Docker)
 
@@ -67,7 +67,7 @@ docker run --rm -it --network=host \
 
 ## URL adapter
 
-In addition to Plex, the bridge ships a URL adapter: paste an `http://`
+In addition to Plex and Jellyfin, the bridge ships a URL adapter: paste an `http://`
 or `https://` URL into the **URL** panel in the settings UI and click
 **Play**. The bridge supports two flavors of URL:
 
@@ -80,23 +80,11 @@ or `https://` URL into the **URL** panel in the settings UI and click
   - Vimeo, Dailymotion
   - Internet Archive items
   - SoundCloud, Bandcamp tracks
-  - ...and most other yt-dlp-supported sites (see "auto-resolves" list in
+  - Most other yt-dlp-supported sites (see "auto-resolves" list in
     the panel for the curated default, can add more upon request)
 
 Sessions are fire-and-forget: they run to EOF or until preempted by
 another POST. In-session pause/seek exists in a basic state in the web-ui, but I will polish it in a later pass.
-
-### How routing works
-
-The Mode radio in the URL panel picks the resolution path per-paste:
-
-- **Auto** (default) — hostname matched against the allowlist; if matched,
-  yt-dlp resolves the URL to a direct media URL and ffmpeg streams it.
-  Else, the URL is passed to ffmpeg directly.
-- **yt-dlp** — always run through yt-dlp, regardless of hostname. Use
-  for sites you've added to your config but haven't enabled in the
-  default allowlist.
-- **Direct** — never run through yt-dlp. Use for direct media URLs.
 
 ### Cookies for auth-walled content
 
@@ -156,7 +144,7 @@ log a warning; the bundled version stays usable.
 Once the bridge is running, point a browser at `http://<host>:32500/` (or whatever `bridge.ui.http_port` is set to). The settings page lets you:
 
 - Flip `interlace_field_order` live — No cast drop, no restart. Flip, look at the CRT, flip back.
-- Link your Plex/Jellyfin account in-browser — Click **Link Plex/Jellyfin Account**, enter the 4-character code at plex.tv/link, for Plex, your JF user/pass for JF.
+- Link your Plex/Jellyfin account in-browser — Click **Link Plex/Jellyfin Account**, enter the 4-character code at plex.tv/link for Plex, your JF user/pass for JF.
 - Enable or disable adapters with a toggle
 - See at a glance which adapters are running (green dot), stopped (grey), or erroring (red + last error as tooltip).
 

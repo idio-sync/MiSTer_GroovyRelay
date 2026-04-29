@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -260,6 +261,21 @@ func (a *Adapter) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
 // plex.tv stops hearing from us; LAN discovery continues as an
 // unlinked player.
 func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
+	// Snapshot (uuid, token) before any state mutation so the plex.tv revoke
+	// call carries the live credential pair. Best-effort: a network failure,
+	// 4xx, or 5xx logs at info and falls through to local cleanup. The
+	// operator clicked Unlink — the bridge is unlinked regardless of what
+	// plex.tv says.
+	a.mu.Lock()
+	uuid := a.cfg.TokenStore.DeviceUUID
+	token := a.cfg.TokenStore.AuthToken
+	a.mu.Unlock()
+	if token != "" {
+		if err := RevokeDevice(uuid, token); err != nil {
+			slog.Info("plex.tv revoke failed; proceeding with local cleanup", "err", err)
+		}
+	}
+
 	src := tokenFilePath(a.cfg.Bridge.DataDir)
 	dst := filepath.Join(a.cfg.Bridge.DataDir,
 		fmt.Sprintf(".%s.unlinked-%d", storedDataFilename, time.Now().Unix()))

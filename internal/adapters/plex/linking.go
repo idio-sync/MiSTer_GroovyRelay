@@ -150,6 +150,35 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName string)
 	return nil
 }
 
+// RevokeDevice DELETEs the bridge's device record at plex.tv via the v2
+// endpoint, which both removes the row from the user's authorized-devices
+// list and invalidates the auth token server-side. Called on Unlink so a
+// previously-leaked token can't be reused. Best-effort from the caller's
+// perspective: handleUnlink logs and proceeds with local cleanup regardless.
+//
+// Uses /api/v2/devices/{uuid} with X-Plex-Token in the header (not the query
+// string). RegisterDevice is still on the legacy /devices/{uuid} path; see
+// docs/roadmap.md for the migration question.
+func RevokeDevice(uuid, token string) error {
+	req, err := http.NewRequest(http.MethodDelete,
+		fmt.Sprintf("%s/api/v2/devices/%s", PlexAPIBase, uuid), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Plex-Token", token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := plexHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("plex.tv revoke: %s", resp.Status)
+	}
+	slog.Info("plex.tv revoke ok", "uuid", uuid)
+	return nil
+}
+
 // RunRegistrationLoop performs an immediate RegisterDevice and then keeps it
 // refreshed on the registerInterval cadence until ctx is cancelled. Errors
 // from the periodic refresh are logged at WARN but do not stop the loop —

@@ -247,6 +247,85 @@ func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
 	}
 }
 
+// TestRevokeDevice_DeletesViaV2Endpoint verifies the unlink token-revoke path
+// hits plex.tv's v2 device endpoint with the auth token in the X-Plex-Token
+// header, so the device record disappears from the user's authorized-devices
+// list and the token is invalidated server-side.
+func TestRevokeDevice_DeletesViaV2Endpoint(t *testing.T) {
+	var gotMethod, gotPath, gotTokenHeader, gotTokenQuery, gotAccept string
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotTokenHeader = r.Header.Get("X-Plex-Token")
+		gotTokenQuery = r.URL.Query().Get("X-Plex-Token")
+		gotAccept = r.Header.Get("Accept")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	restore := PlexAPIBase
+	PlexAPIBase = srv.URL
+	t.Cleanup(func() { PlexAPIBase = restore })
+
+	if err := RevokeDevice("uuid-xyz", "tok-123"); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("expected DELETE, got %s", gotMethod)
+	}
+	if gotPath != "/api/v2/devices/uuid-xyz" {
+		t.Errorf("expected /api/v2/devices/uuid-xyz, got %s", gotPath)
+	}
+	// v2 convention: token in header, not query string. The test pins this so
+	// a future migration of RegisterDevice to v2 doesn't accidentally diverge.
+	if gotTokenHeader != "tok-123" {
+		t.Errorf("expected X-Plex-Token header tok-123, got %q", gotTokenHeader)
+	}
+	if gotTokenQuery != "" {
+		t.Errorf("token must not appear as query parameter; got %q", gotTokenQuery)
+	}
+	if gotAccept != "application/json" {
+		t.Errorf("expected Accept: application/json, got %q", gotAccept)
+	}
+}
+
+// TestRevokeDevice_Returns4xxAsError ensures plex.tv 401 (already-revoked
+// token, expired token) surfaces as an error so handleUnlink can log it.
+// Local cleanup proceeds regardless; the error is informational.
+func TestRevokeDevice_Returns4xxAsError(t *testing.T) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	restore := PlexAPIBase
+	PlexAPIBase = srv.URL
+	t.Cleanup(func() { PlexAPIBase = restore })
+
+	err := RevokeDevice("uuid-x", "stale-token")
+	if err == nil {
+		t.Fatal("expected error from 401 response; got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should mention 401: %v", err)
+	}
+}
+
+// TestRevokeDevice_TransportErrorSurfacesError pins behavior for the offline
+// case: if plex.tv is unreachable, RevokeDevice returns an error rather than
+// silently succeeding. handleUnlink will log and continue with local cleanup.
+func TestRevokeDevice_TransportErrorSurfacesError(t *testing.T) {
+	restore := PlexAPIBase
+	// Unroutable address forces a transport failure inside the bounded
+	// plexHTTPClient.Timeout window.
+	PlexAPIBase = "http://127.0.0.1:1"
+	t.Cleanup(func() { PlexAPIBase = restore })
+
+	if err := RevokeDevice("uuid", "tok"); err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+}
+
 // TestPlexHTTPClient_HasTimeout verifies the shared client is configured
 // with a bounded timeout so a hanging plex.tv call cannot wedge a ticker
 // or caller.
