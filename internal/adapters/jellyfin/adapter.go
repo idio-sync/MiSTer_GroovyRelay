@@ -43,9 +43,9 @@ type Adapter struct {
 	lastErr         string
 	stateSince      time.Time
 	link            *LinkState
-	currentRefKey   string           // packed "<itemId>:<playSessionId>" for self-preempt elision
-	pendingRollback string           // saved currentRefKey for StartSession-failure rollback
-	queue           []QueuedItem     // adapter-local FIFO for PlayNext / PlayLast
+	currentRefKey   string               // packed "<itemId>:<playSessionId>" for self-preempt elision
+	pendingRollback string               // saved currentRefKey for StartSession-failure rollback
+	queue           []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
 	reporters       map[string]*reporter // refKey → reporter; populated in Phase 7
 	// lastAudioStreamIdx and lastSubtitleStreamIdx track the most
 	// recent JF-driven track selections. Reported in PlaybackProgress
@@ -55,10 +55,10 @@ type Adapter struct {
 	// sendOutboundFn lets tests intercept outgoing WS messages.
 	// In production, set in New() to a.sendOutbound.
 	sendOutboundFn func(outboundEnvelope)
-	ws              wsConn           // populated in Phase 4
-	outboundCh      chan outboundEnvelope
-	keepaliveSet    chan time.Duration
-	pendingBuf      *ringBuffer // adapter-level drop-oldest queue used while outboundCh is nil (WS down); drained by runOneConn on reconnect
+	ws             wsConn // populated in Phase 4
+	outboundCh     chan outboundEnvelope
+	keepaliveSet   chan time.Duration
+	pendingBuf     *ringBuffer // adapter-level drop-oldest queue used while outboundCh is nil (WS down); drained by runOneConn on reconnect
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.
@@ -92,7 +92,7 @@ type reporter struct {
 	playSessionID  string        // for the JSON payload
 	mediaSourceID  string        // reported in PlaybackProgressInfo
 	startedAt      time.Time     // reported as PlaybackStartTimeTicks
-	wakeup         chan struct{}  // poked by Playstate handlers and OnStop
+	wakeup         chan struct{} // poked by Playstate handlers and OnStop
 	errReason      string        // set when OnStop fires with reason=="error"
 	ticker         *time.Ticker  // 10 s progress tick; nil until goroutine starts
 	progressBuf    *ringBuffer   // drained on WS reconnect
@@ -291,7 +291,6 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// UI handler that calls SetLinked). Reading from tok is race-free —
 	// it's local data; SetLinked itself takes LinkState.mu internally.
 	a.link.SetLinked(tok.UserName, tok.ServerID)
-	a.setState(adapters.StateRunning, "")
 	return a.startWS(ctx, tok.AccessToken)
 }
 

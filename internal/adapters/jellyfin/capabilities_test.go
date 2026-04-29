@@ -24,6 +24,7 @@ func TestPostCapabilities_BodyShape(t *testing.T) {
 		ServerURL:           srv.URL,
 		Token:               "tok-1",
 		DeviceID:            "device-uuid",
+		DeviceName:          "Living Room MiSTer",
 		Version:             "0.1.0",
 		MaxVideoBitrateKbps: 4000,
 	})
@@ -34,6 +35,9 @@ func TestPostCapabilities_BodyShape(t *testing.T) {
 		t.Errorf("path = %q", gotPath)
 	}
 	if !strings.Contains(gotAuth, `Token="tok-1"`) {
+		t.Errorf("auth = %q", gotAuth)
+	}
+	if !strings.Contains(gotAuth, `Device="Living Room MiSTer"`) {
 		t.Errorf("auth = %q", gotAuth)
 	}
 

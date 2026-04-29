@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	jfClientName        = "MiSTer_GroovyRelay"
+	defaultJFDeviceName = "MiSTer"
+)
+
 // jfHTTPClient is the shared HTTP client for JF REST calls. 10 s
 // timeout bounds every network call; the bridge must never wait on a
 // hung remote under a caller that holds a mutex or drives a ticker.
@@ -59,7 +64,8 @@ func sanitizeAuthValue(s string) string {
 //
 // (Or X-Emby-Authorization with the same value, or X-Emby-Token /
 // X-MediaBrowser-Token / ?api_key=. We use the canonical form for
-// authenticated REST and ?api_key= for the WebSocket handshake.)
+// authenticated REST and also send it on the WebSocket handshake so
+// Jellyfin sees the same Client/Device/DeviceId identity there.)
 //
 // Inputs are sanitized via sanitizeAuthValue so a token containing a
 // literal double-quote or backslash cannot break header parsing — a
@@ -82,6 +88,14 @@ func BuildAuthHeader(in AuthHeaderInput) string {
 		parts = append(parts, `Version="`+sanitizeAuthValue(in.Version)+`"`)
 	}
 	return "MediaBrowser " + strings.Join(parts, ", ")
+}
+
+func effectiveDeviceName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return defaultJFDeviceName
+	}
+	return name
 }
 
 // AuthRequest carries the inputs to AuthenticateByName.
@@ -136,8 +150,8 @@ func AuthenticateByName(ctx context.Context, req AuthRequest) (AuthResult, error
 		// Note: NO Token here. AuthenticateByName is exactly the call
 		// that obtains the token; including a stale token would be
 		// rejected as malformed by some JF versions.
-		Client:   "MiSTer_GroovyRelay",
-		Device:   "MiSTer",
+		Client:   jfClientName,
+		Device:   defaultJFDeviceName,
 		DeviceID: req.DeviceID,
 		Version:  req.Version,
 	}))

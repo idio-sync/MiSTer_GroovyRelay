@@ -55,6 +55,23 @@ func TestLinkUI_StartSuccess_PersistsTokenAndReturnsLinkedFragment(t *testing.T)
 	}
 }
 
+func TestLinkFragment_LinkedDisabledShowsCastMenuHint(t *testing.T) {
+	a := newLinkTestAdapter(t, "0.1.0")
+	a.cfg.Enabled = false
+	a.link.SetLinked("alice", "sid-1")
+
+	body := a.linkFragmentHTML("")
+	if !strings.Contains(body, "Enable Jellyfin in Settings and save") {
+		t.Fatalf("disabled linked fragment missing cast-menu hint: %s", body)
+	}
+
+	a.cfg.Enabled = true
+	body = a.linkFragmentHTML("")
+	if strings.Contains(body, "Enable Jellyfin in Settings and save") {
+		t.Fatalf("enabled linked fragment should not show disabled hint: %s", body)
+	}
+}
+
 func TestLinkUI_StartBadCredentials_NoDiskWrite(t *testing.T) {
 	jfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -171,8 +188,8 @@ func TestLinkUI_Unlink_StopsAdapter(t *testing.T) {
 func jfMockServer(t *testing.T) (*httptest.Server, *int, *sync.Mutex) {
 	t.Helper()
 	var (
-		mu          sync.Mutex
-		probeCount  int
+		mu         sync.Mutex
+		probeCount int
 	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/Users/AuthenticateByName", func(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +250,10 @@ func TestLinkUI_StartSuccess_Enabled_StartsAdapter(t *testing.T) {
 	}
 	if a.link.State() != LinkLinked {
 		t.Fatalf("link state = %v, want LinkLinked", a.link.State())
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && a.Status().State != adapters.StateRunning {
+		time.Sleep(20 * time.Millisecond)
 	}
 	if got := a.Status().State; got != adapters.StateRunning {
 		t.Fatalf("adapter state = %v, want StateRunning", got)

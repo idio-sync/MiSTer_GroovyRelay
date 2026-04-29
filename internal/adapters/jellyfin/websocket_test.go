@@ -18,7 +18,7 @@ import (
 //   - GET /System/Info — returns 200 (token probe)
 //   - POST /Sessions/Capabilities/Full — captures body, returns 204
 //   - GET  /socket — accepts WS upgrade, exposes the connection to
-//                    the test via the returned channels
+//     the test via the returned channels
 //   - GET  /Sessions — used by the reconnect probe (Task 4.3)
 func startTestJFServer(t *testing.T) (*httptest.Server, <-chan *websocket.Conn, <-chan []byte) {
 	t.Helper()
@@ -69,6 +69,7 @@ func TestWSDial_PostsCapabilitiesAndUpgrades(t *testing.T) {
 		ServerURL: srv.URL,
 		Token:     "tok",
 		DeviceID:  "device-1",
+		Version:   "0.1.0",
 	})
 	if err != nil {
 		t.Fatalf("dialWebSocket: %v", err)
@@ -83,6 +84,53 @@ func TestWSDial_PostsCapabilitiesAndUpgrades(t *testing.T) {
 	// Capabilities POST is the caller's responsibility (it lives in
 	// startWS, not dialWebSocket); separately tested below.
 	_ = capCh
+}
+
+func TestWSDial_SendsMediaBrowserIdentityHeader(t *testing.T) {
+	authCh := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/socket", func(w http.ResponseWriter, r *http.Request) {
+		authCh <- r.Header.Get("Authorization")
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("ws accept: %v", err)
+			return
+		}
+		<-r.Context().Done()
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	conn, err := dialWebSocket(t.Context(), wsDialInput{
+		ServerURL:  srv.URL,
+		Token:      "tok",
+		DeviceID:   "device-1",
+		DeviceName: "Living Room MiSTer",
+		Version:    "0.1.0",
+	})
+	if err != nil {
+		t.Fatalf("dialWebSocket: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "test done")
+
+	var got string
+	select {
+	case got = <-authCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for websocket auth header")
+	}
+	for _, want := range []string{
+		`Token="tok"`,
+		`Client="MiSTer_GroovyRelay"`,
+		`Device="Living Room MiSTer"`,
+		`DeviceId="device-1"`,
+		`Version="0.1.0"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("websocket auth header missing %s in %q", want, got)
+		}
+	}
 }
 
 func TestStartWS_PostsCapabilitiesBeforeDial(t *testing.T) {

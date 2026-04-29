@@ -156,9 +156,13 @@ func (a *Adapter) linkFragmentHTML(errMsg string) string {
 	switch a.link.State() {
 	case LinkLinked:
 		user, sid := a.link.LinkedAs()
+		disabledHint := ""
+		if !a.IsEnabled() {
+			disabledHint = ` <span class="help">Enable Jellyfin in Settings and save to appear in Jellyfin cast menus.</span>`
+		}
 		return sectionOpen + fmt.Sprintf(
-			`<div class="gr-callout ok">Linked as %s on %s. <button class="btn ghost" hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
-			html.EscapeString(user), html.EscapeString(sid),
+			`<div class="gr-callout ok">Linked as %s on %s.%s <button class="btn ghost" hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
+			html.EscapeString(user), html.EscapeString(sid), disabledHint,
 		) + sectionClose
 	case LinkLinking:
 		return sectionOpen + `<div class="gr-callout">Linking…</div>` + sectionClose

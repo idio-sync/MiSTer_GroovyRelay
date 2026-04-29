@@ -18,6 +18,7 @@ type PlaybackInfoInput struct {
 	ServerURL           string
 	Token               string
 	DeviceID            string
+	DeviceName          string
 	Version             string
 	ItemID              string
 	UserID              string
@@ -92,7 +93,7 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", BuildAuthHeader(AuthHeaderInput{
-		Token: in.Token, Client: "MiSTer_GroovyRelay", Device: "MiSTer",
+		Token: in.Token, Client: jfClientName, Device: effectiveDeviceName(in.DeviceName),
 		DeviceID: in.DeviceID, Version: in.Version,
 	}))
 

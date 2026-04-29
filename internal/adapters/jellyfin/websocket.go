@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // inboundEnvelope is the wire envelope of every JF WS message
@@ -31,9 +32,11 @@ type outboundEnvelope struct {
 
 // wsDialInput carries dial params.
 type wsDialInput struct {
-	ServerURL string
-	Token     string
-	DeviceID  string
+	ServerURL  string
+	Token      string
+	DeviceID   string
+	DeviceName string
+	Version    string
 }
 
 // buildSocketURL converts an http(s) base URL to a ws(s) URL with
@@ -54,7 +57,17 @@ func buildSocketURL(serverURL, token, deviceID string) string {
 func dialWebSocket(ctx context.Context, in wsDialInput) (*websocket.Conn, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(dialCtx, buildSocketURL(in.ServerURL, in.Token, in.DeviceID), nil)
+	header := http.Header{}
+	header.Set("Authorization", BuildAuthHeader(AuthHeaderInput{
+		Token:    in.Token,
+		Client:   jfClientName,
+		Device:   effectiveDeviceName(in.DeviceName),
+		DeviceID: in.DeviceID,
+		Version:  in.Version,
+	}))
+	conn, _, err := websocket.Dial(dialCtx, buildSocketURL(in.ServerURL, in.Token, in.DeviceID), &websocket.DialOptions{
+		HTTPHeader: header,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("jellyfin: ws dial: %w", err)
 	}
@@ -312,9 +325,12 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 				ServerURL:           cfg.ServerURL,
 				Token:               token,
 				DeviceID:            deviceID,
+				DeviceName:          cfg.DeviceName,
 				Version:             linkVersion,
 				MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
 			}); err != nil {
+				slog.Warn("jellyfin capabilities post failed; cast target will not appear until retry succeeds", "err", err)
+				a.setState(adapters.StateError, err.Error())
 				goto wait
 			}
 			capabilitiesPosted = true
@@ -322,20 +338,31 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 
 		{
 			conn, err := dialWebSocket(ctx, wsDialInput{
-				ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
+				ServerURL:  cfg.ServerURL,
+				Token:      token,
+				DeviceID:   deviceID,
+				DeviceName: cfg.DeviceName,
+				Version:    linkVersion,
 			})
 			if err == nil {
 				// Dial succeeded → the server created a session row. Mark
 				// hadSuccessfulRun so the probe fires on the next iteration.
 				hadSuccessfulRun = true
+				a.setState(adapters.StateRunning, "")
 				runStart := time.Now()
 				a.runOneConn(ctx, conn)
 				_ = conn.Close(websocket.StatusNormalClosure, "")
+				if ctx.Err() == nil {
+					a.setState(adapters.StateStarting, "websocket disconnected; reconnecting")
+				}
 				// Only reset backoff if the connection lasted a reasonable
 				// time (≥5 s), indicating a healthy server.
 				if time.Since(runStart) >= 5*time.Second {
 					backoff = time.Second
 				}
+			} else if ctx.Err() == nil {
+				slog.Warn("jellyfin websocket dial failed; cast target will not appear until retry succeeds", "err", err)
+				a.setState(adapters.StateError, err.Error())
 			}
 		}
 
@@ -402,4 +429,3 @@ func (a *Adapter) drainPending() {
 		a.sendOutbound(env)
 	}
 }
-

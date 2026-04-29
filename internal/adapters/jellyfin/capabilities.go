@@ -26,6 +26,7 @@ type CapabilitiesInput struct {
 	ServerURL           string
 	Token               string
 	DeviceID            string
+	DeviceName          string
 	Version             string
 	MaxVideoBitrateKbps int
 }
@@ -65,8 +66,8 @@ func PostCapabilities(ctx context.Context, in CapabilitiesInput) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", BuildAuthHeader(AuthHeaderInput{
 		Token:    in.Token,
-		Client:   "MiSTer_GroovyRelay",
-		Device:   "MiSTer",
+		Client:   jfClientName,
+		Device:   effectiveDeviceName(in.DeviceName),
 		DeviceID: in.DeviceID,
 		Version:  in.Version,
 	}))
