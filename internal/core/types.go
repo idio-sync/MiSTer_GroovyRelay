@@ -19,6 +19,20 @@ type SessionRequest struct {
 	// InputHeaders are passed as FFmpeg -headers (e.g. Plex tokens).
 	InputHeaders map[string]string
 
+	// AudioStreamURL, when non-empty, signals that StreamURL is a
+	// video-only stream and audio must be sourced separately (the YouTube
+	// DASH path). Manager wires this through to ffmpeg as a SECOND -i
+	// input mapped via `-map 1:a:0`. Most adapters (Plex, progressive YT)
+	// leave it empty — the single-input fallback preserves today's
+	// behavior. See ffmpeg.PipelineSpec.AudioInputURL.
+	AudioStreamURL string
+
+	// AudioInputHeaders apply to AudioStreamURL only. yt-dlp returns
+	// per-format http_headers and the two streams may carry different
+	// User-Agent / Origin requirements. Empty when AudioStreamURL is
+	// empty.
+	AudioInputHeaders map[string]string
+
 	// SeekOffsetMs is where to start playback (0 = beginning).
 	SeekOffsetMs int
 

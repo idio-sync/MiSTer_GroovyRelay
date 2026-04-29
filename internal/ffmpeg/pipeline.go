@@ -24,6 +24,15 @@ type PipelineSpec struct {
 	UseSSSeek    bool         // true on direct-play (pass -ss); false on transcode (offset is in URL)
 	SourceProbe  *ProbeResult // includes first audio stream presence/rate when available
 
+	// AudioInputURL, when non-empty, makes ffmpeg take a SECOND -i input
+	// for audio-only. This is the YouTube DASH path: yt-dlp returns a
+	// video-only stream URL and an audio-only stream URL, and the bridge
+	// muxes them via `-map 0:v -map 1:a`. Empty string preserves the
+	// single-input behavior used by Plex and progressive (pre-merged)
+	// YouTube formats. AudioInputHeaders apply only to the second input.
+	AudioInputURL     string
+	AudioInputHeaders map[string]string
+
 	OutputWidth  int
 	OutputHeight int
 	FieldOrder   string // "tff" | "bff"
@@ -51,9 +60,17 @@ type PipelineSpec struct {
 // audio output. Production callers always provide SourceProbe, so clips with
 // no audio stream naturally degrade to video-only instead of failing on
 // `-map 0:a:0`.
+//
+// When AudioInputURL is set (DASH dual-stream path), audio is unconditionally
+// enabled: the existence of a separately-resolved audio URL is itself the
+// signal that the source has audio, and SourceProbe (which sees only the
+// video-only DASH stream) cannot tell us so.
 func audioOutputEnabled(s PipelineSpec) bool {
 	if s.AudioSampleRate <= 0 || s.AudioChannels <= 0 {
 		return false
+	}
+	if s.AudioInputURL != "" {
+		return true
 	}
 	if s.SourceProbe != nil && s.SourceProbe.AudioRate <= 0 {
 		return false
@@ -183,34 +200,42 @@ func buildFilterChain(s PipelineSpec) string {
 //     pass -ss. Caller sets UseSSSeek=false.
 //   - Direct-play path: pass -ss <seconds> BEFORE -i so ffmpeg fast-seeks the
 //     container. Caller sets UseSSSeek=true.
+//
+// Dual-input (DASH) path:
+//
+//	When s.AudioInputURL is non-empty, ffmpeg is invoked with TWO -i inputs:
+//	the video-only stream as input 0 and the audio-only stream as input 1.
+//	The audio output then maps `-map 1:a:0` instead of `-map 0:a:0`. Each
+//	input gets its own `-headers` block (yt-dlp may return different
+//	User-Agent / Origin / cookies per stream). On the direct-play seek
+//	path, `-ss` is repeated before each `-i` so both streams seek to the
+//	same offset and stay in sync.
 func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-fflags", "+genpts",
 	}
+
+	dualInput := s.AudioInputURL != ""
+
+	// Input 0 (video). On direct-play seek, -ss precedes -i for fast-seek.
 	if s.UseSSSeek && s.SeekSeconds > 0 {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", s.SeekSeconds))
 	}
-	// ffmpeg's `-headers` takes a single string with all headers concatenated;
-	// passing multiple `-headers` overwrites the previous value. Sort keys so
-	// the output is deterministic (tests depend on this).
-	if len(s.InputHeaders) > 0 {
-		keys := make([]string, 0, len(s.InputHeaders))
-		for k := range s.InputHeaders {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var sb strings.Builder
-		for _, k := range keys {
-			sb.WriteString(k)
-			sb.WriteString(": ")
-			sb.WriteString(s.InputHeaders[k])
-			sb.WriteString("\r\n")
-		}
-		args = append(args, "-headers", sb.String())
-	}
+	args = appendHeadersArg(args, s.InputHeaders)
 	args = append(args, "-i", s.InputURL)
+
+	// Input 1 (audio), DASH path only. Repeat -ss before this -i so the
+	// audio stream starts at the same offset as video — without it the two
+	// streams would drift on every seek.
+	if dualInput {
+		if s.UseSSSeek && s.SeekSeconds > 0 {
+			args = append(args, "-ss", fmt.Sprintf("%.3f", s.SeekSeconds))
+		}
+		args = appendHeadersArg(args, s.AudioInputHeaders)
+		args = append(args, "-i", s.AudioInputURL)
+	}
 
 	// Video output: raw full-height bgr24 progressive frames to the video
 	// pipe. The data plane row-stripes these into interlaced fields when the
@@ -229,8 +254,12 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	// probe says the source has no audio stream; otherwise ffmpeg would fail
 	// the session before any video is emitted.
 	if audioOutputEnabled(s) {
+		audioMap := "0:a:0"
+		if dualInput {
+			audioMap = "1:a:0"
+		}
 		args = append(args,
-			"-map", "0:a:0",
+			"-map", audioMap,
 			"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
 			"-ac", fmt.Sprintf("%d", s.AudioChannels),
 			"-f", "s16le",
@@ -239,4 +268,27 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	}
 
 	return exec.CommandContext(ctx, "ffmpeg", args...)
+}
+
+// appendHeadersArg formats `headers` into a single `-headers <CRLF-joined>`
+// argv pair and appends it to args. Sorted by key for deterministic output
+// (tests depend on this). Returns args unchanged when headers is empty —
+// ffmpeg accepts no -headers and uses defaults.
+func appendHeadersArg(args []string, headers map[string]string) []string {
+	if len(headers) == 0 {
+		return args
+	}
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for _, k := range keys {
+		sb.WriteString(k)
+		sb.WriteString(": ")
+		sb.WriteString(headers[k])
+		sb.WriteString("\r\n")
+	}
+	return append(args, "-headers", sb.String())
 }

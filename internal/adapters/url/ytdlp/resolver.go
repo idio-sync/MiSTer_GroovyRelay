@@ -35,11 +35,23 @@ func (OSRunner) Run(ctx context.Context, name string, args ...string) (stdout, s
 // Resolution is the parsed yt-dlp JSON output, narrowed to fields the
 // URL adapter cares about. Other JSON keys (formats[], duration, etc.)
 // are ignored.
+//
+// Single-stream sources (progressive YouTube, generic direct URLs,
+// HLS, etc.) populate URL/Headers and leave AudioURL/AudioHeaders
+// empty. The bridge feeds one ffmpeg input.
+//
+// DASH (separate video + audio) sources populate URL with the
+// video-only stream and AudioURL with the audio-only stream. yt-dlp
+// signals this by returning a `requested_formats` array of two
+// entries when the format selector merges streams (e.g. `bv*+ba`).
+// The bridge then runs ffmpeg with two -i inputs.
 type Resolution struct {
-	URL     string            // resolved direct media URL (or HLS m3u8)
-	Headers map[string]string // http_headers map for ffmpeg -headers
-	IsLive  bool              // true for live streams (YouTube Live, Twitch)
-	Title   string            // surfaced in the URL adapter's history panel + slog
+	URL          string            // resolved direct video URL (or HLS m3u8 in single-stream case)
+	Headers      map[string]string // http_headers map for ffmpeg -headers (video stream)
+	AudioURL     string            // empty in single-stream case
+	AudioHeaders map[string]string // empty in single-stream case
+	IsLive       bool              // true for live streams (YouTube Live, Twitch)
+	Title        string            // surfaced in the URL adapter's history panel + slog
 }
 
 // Resolver runs yt-dlp and parses its JSON output. Construct one per
@@ -93,11 +105,23 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		return nil, fmt.Errorf("ytdlp: %s", lastNonEmptyLine(stderr))
 	}
 
+	// Top-level url + http_headers are the single-stream fallback.
+	// requested_formats, when present and length 2, is yt-dlp's signal
+	// that the selector merged a video-only + audio-only DASH pair —
+	// each entry carries its own URL, http_headers, and a vcodec/acodec
+	// hint we use to disambiguate which is which (yt-dlp's element
+	// order is not guaranteed for non-YouTube extractors).
 	var raw struct {
-		URL         string            `json:"url"`
-		HTTPHeaders map[string]string `json:"http_headers"`
-		IsLive      bool              `json:"is_live"`
-		Title       string            `json:"title"`
+		URL              string            `json:"url"`
+		HTTPHeaders      map[string]string `json:"http_headers"`
+		IsLive           bool              `json:"is_live"`
+		Title            string            `json:"title"`
+		RequestedFormats []struct {
+			URL         string            `json:"url"`
+			HTTPHeaders map[string]string `json:"http_headers"`
+			VCodec      string            `json:"vcodec"`
+			ACodec      string            `json:"acodec"`
+		} `json:"requested_formats"`
 	}
 	if err := json.Unmarshal(stdout, &raw); err != nil {
 		preview := string(stdout)
@@ -106,6 +130,35 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		}
 		return nil, fmt.Errorf("ytdlp: returned unparseable JSON: %s", preview)
 	}
+
+	// DASH dual-stream path: classify the two requested_formats as
+	// video and audio by their codec hints. yt-dlp uses "none" as the
+	// sentinel for "this format does not have this stream type."
+	if len(raw.RequestedFormats) == 2 {
+		videoIdx, audioIdx, ok := classifyDualFormats(
+			raw.RequestedFormats[0].VCodec, raw.RequestedFormats[0].ACodec,
+			raw.RequestedFormats[1].VCodec, raw.RequestedFormats[1].ACodec,
+		)
+		if !ok {
+			return nil, fmt.Errorf(
+				"ytdlp: requested_formats does not look like a video+audio pair (vcodec/acodec ambiguous)")
+		}
+		v := raw.RequestedFormats[videoIdx]
+		a := raw.RequestedFormats[audioIdx]
+		if v.URL == "" || a.URL == "" {
+			return nil, fmt.Errorf("ytdlp: requested_formats entry missing url field")
+		}
+		return &Resolution{
+			URL:          v.URL,
+			Headers:      sanitizeHeaders(v.HTTPHeaders),
+			AudioURL:     a.URL,
+			AudioHeaders: sanitizeHeaders(a.HTTPHeaders),
+			IsLive:       raw.IsLive,
+			Title:        raw.Title,
+		}, nil
+	}
+
+	// Single-stream path (progressive, HLS, or any non-merged selector).
 	if raw.URL == "" {
 		// Defensive: yt-dlp returned valid JSON but no URL field.
 		// Surface clearly here rather than letting ffmpeg fail with
@@ -128,6 +181,27 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		IsLive:  raw.IsLive,
 		Title:   raw.Title,
 	}, nil
+}
+
+// classifyDualFormats inspects the (vcodec, acodec) of two requested_formats
+// entries and decides which is the video stream and which is the audio
+// stream. yt-dlp uses the literal "none" for "this format does not provide
+// this stream type." Returns (videoIdx, audioIdx, ok) — ok=false when the
+// pair does not cleanly resolve to one video-only + one audio-only stream
+// (e.g. both have video, both have audio, or codec hints are missing).
+func classifyDualFormats(vcodec0, acodec0, vcodec1, acodec1 string) (videoIdx, audioIdx int, ok bool) {
+	v0 := vcodec0 != "" && vcodec0 != "none"
+	a0 := acodec0 != "" && acodec0 != "none"
+	v1 := vcodec1 != "" && vcodec1 != "none"
+	a1 := acodec1 != "" && acodec1 != "none"
+	switch {
+	case v0 && !a0 && !v1 && a1:
+		return 0, 1, true
+	case !v0 && a0 && v1 && !a1:
+		return 1, 0, true
+	default:
+		return 0, 0, false
+	}
 }
 
 // lastNonEmptyLine returns the last non-empty trimmed line of buf.

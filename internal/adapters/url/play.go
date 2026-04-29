@@ -102,6 +102,8 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 	resolvedVia = "direct"
 	streamURL := rawURL
 	var headers map[string]string
+	var audioStreamURL string
+	var audioHeaders map[string]string
 	var resolvedTitle string
 
 	if useYtdlp {
@@ -119,6 +121,13 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 		}
 		streamURL = res.URL
 		headers = res.Headers
+		// DASH dual-stream path: when yt-dlp's selector merged
+		// separate video + audio formats, the resolver reports
+		// AudioURL alongside URL. Plumb both through; core.Manager
+		// turns AudioStreamURL into a second ffmpeg -i input.
+		// Empty AudioURL preserves the existing single-stream path.
+		audioStreamURL = res.AudioURL
+		audioHeaders = res.AudioHeaders
 		resolvedTitle = res.Title
 		resolvedVia = "ytdlp"
 		// Backfill the title onto the just-bumped history entry so the
@@ -130,8 +139,10 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 
 	ref = newAdapterRef()
 	req := core.SessionRequest{
-		StreamURL:    streamURL,
-		InputHeaders: headers,
+		StreamURL:         streamURL,
+		InputHeaders:      headers,
+		AudioStreamURL:    audioStreamURL,
+		AudioInputHeaders: audioHeaders,
 		// v1.5: unconditional caps + DirectPlay so the panel's controls
 		// reach core.Manager. Per-source seekability is enforced by the
 		// panel (Duration > 0 gating) and by the Resume handler's

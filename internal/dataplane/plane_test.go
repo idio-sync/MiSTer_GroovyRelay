@@ -323,6 +323,23 @@ func TestEffectiveAudioConfig(t *testing.T) {
 				AudioChans: 2,
 			},
 		},
+		{
+			// DASH dual-input: probe sees only the video-only stream
+			// (AudioRate=0). The presence of AudioInputURL is the
+			// affirmative signal that audio exists and must override
+			// the probe-zero check.
+			name: "dual-input keeps audio despite probe zero",
+			cfg: PlaneConfig{
+				SpawnSpec: ffmpeg.PipelineSpec{
+					SourceProbe:   &ffmpeg.ProbeResult{AudioRate: 0},
+					AudioInputURL: "https://audio.example/a.m4a",
+				},
+				AudioRate:  48000,
+				AudioChans: 2,
+			},
+			rate:  48000,
+			chans: 2,
+		},
 	}
 
 	for _, tt := range tests {

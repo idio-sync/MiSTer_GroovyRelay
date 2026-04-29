@@ -697,12 +697,19 @@ func resetTimer(timer *time.Timer, delay time.Duration) {
 // advertised to the MiSTer and used for FFmpeg pipe reads. Sources with no
 // audio stream are treated as video-only even when the global config requests
 // audio, so the relay doesn't advertise PCM it can never send.
+//
+// On the DASH dual-input path (SpawnSpec.AudioInputURL non-empty) the probe
+// only sees the video-only stream, so probe.AudioRate==0. The presence of a
+// separately-resolved audio URL is the affirmative signal that audio exists,
+// so we override the probe-zero check in that case.
 func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 	if p.cfg.AudioRate <= 0 || p.cfg.AudioChans <= 0 {
 		return 0, 0
 	}
-	if probe := p.cfg.SpawnSpec.SourceProbe; probe != nil && probe.AudioRate <= 0 {
-		return 0, 0
+	if p.cfg.SpawnSpec.AudioInputURL == "" {
+		if probe := p.cfg.SpawnSpec.SourceProbe; probe != nil && probe.AudioRate <= 0 {
+			return 0, 0
+		}
 	}
 	return p.cfg.AudioRate, p.cfg.AudioChans
 }

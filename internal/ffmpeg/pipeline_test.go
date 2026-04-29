@@ -343,6 +343,163 @@ func TestBuildCommand_OutputsBothPipes(t *testing.T) {
 	}
 }
 
+// TestBuildCommand_DualInputForDASH covers the YouTube DASH path: yt-dlp
+// returns separate video-only and audio-only stream URLs and the bridge
+// must invoke ffmpeg with two `-i` inputs, each with its own `-headers`
+// block, mapping audio from the second input via `-map 1:a:0`.
+func TestBuildCommand_DualInputForDASH(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL: "https://video.googlevideo.com/v.mp4?sig=v",
+		InputHeaders: map[string]string{
+			"User-Agent": "yt-dlp/video",
+		},
+		AudioInputURL: "https://audio.googlevideo.com/a.m4a?sig=a",
+		AudioInputHeaders: map[string]string{
+			"User-Agent": "yt-dlp/audio",
+		},
+		// SourceProbe sees the video-only stream → AudioRate=0.
+		// audioOutputEnabled MUST still emit audio because AudioInputURL is set.
+		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 0},
+		OutputWidth:     720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	args := cmd.Args
+	joined := strings.Join(args, " ")
+
+	// Two -i inputs, in video-then-audio order.
+	iIndices := []int{}
+	for i, a := range args {
+		if a == "-i" {
+			iIndices = append(iIndices, i)
+		}
+	}
+	if len(iIndices) != 2 {
+		t.Fatalf("expected exactly 2 -i args, got %d; argv=%s", len(iIndices), joined)
+	}
+	if args[iIndices[0]+1] != spec.InputURL {
+		t.Errorf("first -i should be video URL, got %q", args[iIndices[0]+1])
+	}
+	if args[iIndices[1]+1] != spec.AudioInputURL {
+		t.Errorf("second -i should be audio URL, got %q", args[iIndices[1]+1])
+	}
+
+	// Each input has its own -headers block, immediately preceding its -i.
+	hIndices := []int{}
+	for i, a := range args {
+		if a == "-headers" {
+			hIndices = append(hIndices, i)
+		}
+	}
+	if len(hIndices) != 2 {
+		t.Fatalf("expected exactly 2 -headers args, got %d; argv=%s", len(hIndices), joined)
+	}
+	if !strings.Contains(args[hIndices[0]+1], "yt-dlp/video") {
+		t.Errorf("first -headers should belong to video input, got %q", args[hIndices[0]+1])
+	}
+	if !strings.Contains(args[hIndices[1]+1], "yt-dlp/audio") {
+		t.Errorf("second -headers should belong to audio input, got %q", args[hIndices[1]+1])
+	}
+	if hIndices[0] >= iIndices[0] {
+		t.Errorf("video -headers must precede video -i; argv=%s", joined)
+	}
+	if hIndices[1] <= iIndices[0] || hIndices[1] >= iIndices[1] {
+		t.Errorf("audio -headers must sit between the two -i blocks; argv=%s", joined)
+	}
+
+	// Audio map points at the SECOND input.
+	if !strings.Contains(joined, "-map 1:a:0") {
+		t.Errorf("expected -map 1:a:0 for dual-input audio; argv=%s", joined)
+	}
+	// And NOT 0:a:0 — that would map a non-existent audio stream from the video-only input.
+	if strings.Contains(joined, "-map 0:a:0") {
+		t.Errorf("must NOT use -map 0:a:0 in dual-input mode; argv=%s", joined)
+	}
+	if !strings.Contains(joined, "-map 0:v:0") {
+		t.Errorf("video map missing; argv=%s", joined)
+	}
+}
+
+// TestBuildCommand_DualInputDirectPlaySeeksBothStreams: when the operator
+// seeks on a DASH source, BOTH inputs must be fast-seeked to the same
+// offset — without the second -ss the audio stream starts at t=0 while
+// video starts at t=N, producing an N-second offset for the entire
+// session.
+func TestBuildCommand_DualInputDirectPlaySeeksBothStreams(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:        "https://v.example/v.mp4",
+		AudioInputURL:   "https://a.example/a.m4a",
+		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
+		OutputWidth:     720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		SeekSeconds: 42.5, UseSSSeek: true,
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	args := cmd.Args
+
+	// Find both -ss positions and assert each precedes its -i.
+	ssIndices := []int{}
+	iIndices := []int{}
+	for i, a := range args {
+		switch a {
+		case "-ss":
+			ssIndices = append(ssIndices, i)
+		case "-i":
+			iIndices = append(iIndices, i)
+		}
+	}
+	if len(ssIndices) != 2 {
+		t.Fatalf("expected 2 -ss args (one per input), got %d", len(ssIndices))
+	}
+	if len(iIndices) != 2 {
+		t.Fatalf("expected 2 -i args, got %d", len(iIndices))
+	}
+	if ssIndices[0] >= iIndices[0] {
+		t.Errorf("first -ss must precede first -i: %v", args)
+	}
+	if ssIndices[1] <= iIndices[0] || ssIndices[1] >= iIndices[1] {
+		t.Errorf("second -ss must sit between the two -i blocks: %v", args)
+	}
+	// Both seeks should have the same value.
+	if args[ssIndices[0]+1] != args[ssIndices[1]+1] {
+		t.Errorf("both -ss values must match; got %q and %q",
+			args[ssIndices[0]+1], args[ssIndices[1]+1])
+	}
+}
+
+// TestBuildCommand_DualInputAudioWithoutHeaders: the audio stream may have
+// no headers (e.g. a generic extractor that doesn't return http_headers).
+// BuildCommand must still emit two -i inputs, with -headers omitted only
+// for the input that lacks them.
+func TestBuildCommand_DualInputAudioWithoutHeaders(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:        "https://v.example/v.mp4",
+		InputHeaders:    map[string]string{"User-Agent": "vid"},
+		AudioInputURL:   "https://a.example/a.m4a",
+		AudioInputHeaders: nil,
+		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
+		OutputWidth:     720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	args := cmd.Args
+	hCount := 0
+	for _, a := range args {
+		if a == "-headers" {
+			hCount++
+		}
+	}
+	if hCount != 1 {
+		t.Errorf("expected exactly 1 -headers (video only), got %d; argv=%v", hCount, args)
+	}
+}
+
 func TestBuildCommand_OmitsAudioOutputWhenSourceHasNoAudio(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL:    "http://pms/video.m3u8",

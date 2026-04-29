@@ -258,6 +258,198 @@ func TestResolve_RejectsValidJSONWithEmptyURL(t *testing.T) {
 	}
 }
 
+// TestResolve_ParsesRequestedFormatsAsDualStream covers the YouTube DASH
+// path: yt-dlp's selector merges a video-only + audio-only pair and
+// reports both via `requested_formats`. Resolve must populate
+// Resolution.URL/AudioURL with the right one each, classifying them by
+// vcodec/acodec.
+func TestResolve_ParsesRequestedFormatsAsDualStream(t *testing.T) {
+	const dashJSON = `{
+"url": "https://video.googlevideo.com/v.mp4?sig=v",
+"http_headers": {"User-Agent": "Mozilla/5.0"},
+"is_live": false,
+"title": "Test DASH Video",
+"requested_formats": [
+  {
+    "url": "https://video.googlevideo.com/v.mp4?sig=v",
+    "http_headers": {"User-Agent": "yt-dlp/video", "Origin": "https://www.youtube.com"},
+    "vcodec": "avc1.4d401f",
+    "acodec": "none"
+  },
+  {
+    "url": "https://audio.googlevideo.com/a.m4a?sig=a",
+    "http_headers": {"User-Agent": "yt-dlp/audio"},
+    "vcodec": "none",
+    "acodec": "mp4a.40.2"
+  }
+]
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(dashJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://youtu.be/x", "bv*+ba", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.URL != "https://video.googlevideo.com/v.mp4?sig=v" {
+		t.Errorf("URL = %q, want video URL", got.URL)
+	}
+	if got.AudioURL != "https://audio.googlevideo.com/a.m4a?sig=a" {
+		t.Errorf("AudioURL = %q, want audio URL", got.AudioURL)
+	}
+	if got.Headers["User-Agent"] != "yt-dlp/video" {
+		t.Errorf("Headers[User-Agent] = %q, want video UA", got.Headers["User-Agent"])
+	}
+	if got.AudioHeaders["User-Agent"] != "yt-dlp/audio" {
+		t.Errorf("AudioHeaders[User-Agent] = %q, want audio UA", got.AudioHeaders["User-Agent"])
+	}
+	if got.Title != "Test DASH Video" {
+		t.Errorf("Title = %q", got.Title)
+	}
+}
+
+// TestResolve_RequestedFormatsReverseOrder: the order of entries in
+// requested_formats is not guaranteed (yt-dlp puts video first for
+// YouTube but other extractors may differ). Resolve must classify by
+// codec hint, not by index.
+func TestResolve_RequestedFormatsReverseOrder(t *testing.T) {
+	const reverseJSON = `{
+"url": "ignored",
+"http_headers": {},
+"is_live": false,
+"title": "x",
+"requested_formats": [
+  {
+    "url": "https://audio.example/a.m4a",
+    "http_headers": {"User-Agent": "audio-ua"},
+    "vcodec": "none",
+    "acodec": "mp4a.40.2"
+  },
+  {
+    "url": "https://video.example/v.mp4",
+    "http_headers": {"User-Agent": "video-ua"},
+    "vcodec": "avc1.4d401f",
+    "acodec": "none"
+  }
+]
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(reverseJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://example.com/x", "bv*+ba", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.URL != "https://video.example/v.mp4" {
+		t.Errorf("URL = %q, want video URL", got.URL)
+	}
+	if got.AudioURL != "https://audio.example/a.m4a" {
+		t.Errorf("AudioURL = %q, want audio URL", got.AudioURL)
+	}
+}
+
+// TestResolve_RequestedFormatsAmbiguousRejected: if both entries claim
+// video (or both claim audio), the resolver must refuse rather than
+// guess. Picking the wrong one would silently drop video or audio.
+func TestResolve_RequestedFormatsAmbiguousRejected(t *testing.T) {
+	const ambiguousJSON = `{
+"url": "ignored",
+"is_live": false,
+"title": "x",
+"requested_formats": [
+  {"url": "https://a.example/1.mp4", "vcodec": "avc1", "acodec": "mp4a"},
+  {"url": "https://a.example/2.mp4", "vcodec": "avc1", "acodec": "mp4a"}
+]
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(ambiguousJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	_, err := res.Resolve(context.Background(), "https://example.com/x", "bv*+ba", "")
+	if err == nil {
+		t.Fatal("want error on ambiguous requested_formats")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("err = %q, want 'ambiguous'", err.Error())
+	}
+}
+
+// TestResolve_RequestedFormatsSinglestreamFallback: a non-merge selector
+// (`b` / `best`) yields one URL at the top level and either no
+// requested_formats or a single-element array. Either way the
+// single-stream code path runs and AudioURL stays empty.
+func TestResolve_RequestedFormatsSinglestreamFallback(t *testing.T) {
+	const noReqFormats = `{
+"url": "https://progressive.example/v.mp4",
+"http_headers": {"User-Agent": "yt-dlp"},
+"is_live": false,
+"title": "Progressive"
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(noReqFormats)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://example.com/x", "best", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.URL != "https://progressive.example/v.mp4" {
+		t.Errorf("URL = %q", got.URL)
+	}
+	if got.AudioURL != "" {
+		t.Errorf("AudioURL must be empty in single-stream path; got %q", got.AudioURL)
+	}
+	if got.AudioHeaders != nil {
+		t.Errorf("AudioHeaders must be nil in single-stream path; got %v", got.AudioHeaders)
+	}
+}
+
+// TestResolve_RequestedFormatsHeaderSanitization: header injection
+// defenses apply equally to the dual-stream path — a tainted header on
+// either stream must be dropped before reaching Resolution.
+func TestResolve_RequestedFormatsHeaderSanitization(t *testing.T) {
+	const taintedJSON = `{
+"url": "ignored",
+"is_live": false,
+"title": "x",
+"requested_formats": [
+  {
+    "url": "https://video.example/v.mp4",
+    "http_headers": {"User-Agent": "Mozilla/5.0\r\nX-Inject: yes", "Referer": "https://safe/"},
+    "vcodec": "avc1",
+    "acodec": "none"
+  },
+  {
+    "url": "https://audio.example/a.m4a",
+    "http_headers": {"User-Agent": "good", "X-Bad\r\n": "smuggled"},
+    "vcodec": "none",
+    "acodec": "mp4a"
+  }
+]
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(taintedJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://example.com/x", "bv*+ba", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Video-side: tainted UA dropped, clean Referer survives.
+	if _, ok := got.Headers["User-Agent"]; ok {
+		t.Errorf("CRLF-tainted video UA leaked through: %q", got.Headers["User-Agent"])
+	}
+	if got.Headers["Referer"] != "https://safe/" {
+		t.Errorf("clean Referer dropped: %v", got.Headers)
+	}
+	// Audio-side: tainted key dropped, clean UA survives.
+	for k := range got.AudioHeaders {
+		if containsCRLFNUL(k) {
+			t.Errorf("CRLF-tainted audio key leaked through: %q", k)
+		}
+	}
+	if got.AudioHeaders["User-Agent"] != "good" {
+		t.Errorf("clean audio UA dropped: %v", got.AudioHeaders)
+	}
+}
+
 func TestResolve_ContextTimeout(t *testing.T) {
 	r := &stubRunner{
 		stdouts: [][]byte{[]byte(validJSON)},

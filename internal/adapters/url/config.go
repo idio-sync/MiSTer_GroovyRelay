@@ -39,18 +39,24 @@ type Config struct {
 // disabled by default; if enabled, yt-dlp resolution is on by default
 // against the curated allowlist.
 //
-// Format selector: caps at 720p (CRT can't show more), avoids AV1
-// (slow software decode), prefers single-URL (HLS/progressive) over
-// DASH multi-stream. Implementation TODO: verify the !*= negation
-// form against a real YouTube URL during integration testing — the
-// fallback form [!vcodec*=av01][!protocol*=dash] is documented in
-// the spec if needed (review fix I1).
+// Format selector: caps at 720p (CRT can't show more), avoids AV1 (slow
+// software decode). Prefers `bv*+ba` (best video + best audio merged) so
+// the bridge handles modern YouTube DASH-only sources, where progressive
+// muxed formats have been retired. yt-dlp signals the merge by returning
+// a `requested_formats` array of two entries; the resolver classifies
+// them and the bridge runs ffmpeg with two -i inputs (video + audio)
+// mapped via `-map 0:v -map 1:a`.
+//
+// Fallback chain:
+//  1. bv*[height<=720][vcodec!*=av01]+ba — primary, DASH or progressive.
+//  2. b[height<=720][vcodec!*=av01]      — pre-merged (rare on YT in 2026).
+//  3. b                                  — last resort, any best.
 func DefaultConfig() Config {
 	return Config{
 		Enabled:                    false,
 		YtdlpEnabled:               true,
 		YtdlpHosts:                 ytdlp.DefaultHosts(),
-		YtdlpFormat:                "best[height<=720][vcodec!*=av01][protocol!*=dash]/best[height<=720]/best",
+		YtdlpFormat:                "bv*[height<=720][vcodec!*=av01]+ba/b[height<=720][vcodec!*=av01]/b",
 		YtdlpResolveTimeoutSeconds: 30,
 	}
 }
