@@ -432,7 +432,6 @@ func (p *Plane) Run(ctx context.Context) error {
 		nextField               uint8
 		consecutiveUnderruns    int
 		consecutiveUnderrunFrom time.Time
-		videoFramesBehind       int
 
 		// FPGA-frame-echo watchdog. The receiver echoes the most recent
 		// successfully-decoded frame in every ACK. If our outgoing frameNum
@@ -565,17 +564,6 @@ func (p *Plane) Run(ctx context.Context) error {
 				return nil
 			}
 			if fbOK {
-				droppedForSync := 0
-				if videoFramesBehind > 0 {
-					fb, droppedForSync = dropStaleVideoFramesForSync(
-						&videoPrebuffer, videoCh, p.framePool, fb, videoFramesBehind)
-					videoFramesBehind -= droppedForSync
-					if droppedForSync > 0 {
-						slog.Debug("dropped stale video fields after underrun to preserve A/V sync",
-							"dropped", droppedForSync,
-							"remaining_video_lag_fields", videoFramesBehind)
-					}
-				}
 				if consecutiveUnderruns >= 30 {
 					slog.Debug("video pipe recovered after duplicate-field underrun",
 						"fields", consecutiveUnderruns,
@@ -606,7 +594,6 @@ func (p *Plane) Run(ctx context.Context) error {
 					consecutiveUnderrunFrom = time.Now()
 				}
 				consecutiveUnderruns++
-				videoFramesBehind++
 				if consecutiveUnderruns == 30 || consecutiveUnderruns%120 == 0 {
 					slog.Warn("video pipe underrun; duplicating fields to hold raster",
 						"fields", consecutiveUnderruns,
@@ -922,38 +909,6 @@ func pullVideoFrame(prebuf *[]*FrameBuf, ch <-chan *FrameBuf) (fb *FrameBuf, ok,
 	default:
 		return nil, false, false
 	}
-}
-
-// dropStaleVideoFramesForSync discards up to maxDrop already-buffered video
-// frames after one or more underrun duplicates. Audio is clocked forward on
-// every tick, including duplicate-video ticks, so replaying every late video
-// frame on recovery makes picture lag behind sound. Dropping only when a
-// replacement frame is immediately available lets the picture catch up without
-// turning a marginal decoder into an infinite duplicate loop.
-//
-// current must be a real frame owned by the caller. Dropped buffers are
-// returned to pool; the returned frame remains owned by the caller.
-func dropStaleVideoFramesForSync(
-	prebuf *[]*FrameBuf,
-	ch <-chan *FrameBuf,
-	pool *FramePool,
-	current *FrameBuf,
-	maxDrop int,
-) (*FrameBuf, int) {
-	if current == nil || maxDrop <= 0 {
-		return current, 0
-	}
-	dropped := 0
-	for dropped < maxDrop {
-		next, ok, _ := pullVideoFrame(prebuf, ch)
-		if !ok {
-			break
-		}
-		pool.Put(current)
-		current = next
-		dropped++
-	}
-	return current, dropped
 }
 
 // pullAudioChunk returns the next audio chunk, sourced from the

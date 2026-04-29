@@ -8,17 +8,16 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Serv
 
 ## Video Sources
 - Plex
+- Jellyfin (initial support, still needs polish)
 - URL to file (Archive.org .mkv, .mp4, etc.)
 - YouTube URL (and other sites supported by yt-dlp)
 
 ## Future Plans
 - Support for more relay sources:
-  - Jellyfin
   - DLNA/UPnP
   - IPTV/M3U playlists
   - Moonlight/Sunshine
 - Companion browser extension, cast video from right click
-- Fix 240p and PAL video modes, only 480i currently looks correct
 - Music visualizer
 - Better webui/dashboard
 - Home Assistant integration

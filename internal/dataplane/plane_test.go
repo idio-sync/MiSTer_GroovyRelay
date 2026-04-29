@@ -691,47 +691,36 @@ func TestPlane_Prebuffer_NilAudioChannel(t *testing.T) {
 	}
 }
 
-func TestDropStaleVideoFramesForSync_DropsOnlyWithReplacement(t *testing.T) {
+func TestPullVideoFrame_PreservesBurstAfterUnderrun(t *testing.T) {
 	pool := NewFramePool(8, 4)
-	prebuf := make([]*FrameBuf, 0, 3)
-	for i := 0; i < 3; i++ {
+	prebuf := []*FrameBuf{}
+	ch := make(chan *FrameBuf, 8)
+
+	if fb, ok, closed := pullVideoFrame(&prebuf, ch); fb != nil || ok || closed {
+		t.Fatalf("empty pull = (%v, %v, %v), want underrun without close", fb, ok, closed)
+	}
+
+	for i := 0; i < 5; i++ {
 		fb := pool.Get()
 		fb.N = 4
 		fb.Data[0] = byte(i)
-		prebuf = append(prebuf, fb)
+		ch <- fb
 	}
-	ch := make(chan *FrameBuf)
 
-	current, ok, closed := pullVideoFrame(&prebuf, ch)
-	if !ok || closed {
-		t.Fatal("expected initial frame")
+	for i := 0; i < 5; i++ {
+		fb, ok, closed := pullVideoFrame(&prebuf, ch)
+		if !ok || closed {
+			t.Fatalf("pull %d = ok:%v closed:%v, want buffered frame", i, ok, closed)
+		}
+		if fb.Data[0] != byte(i) {
+			t.Fatalf("pull %d got frame marker %d, want %d", i, fb.Data[0], i)
+		}
+		pool.Put(fb)
 	}
-	current, dropped := dropStaleVideoFramesForSync(&prebuf, ch, pool, current, 2)
-	if dropped != 2 {
-		t.Fatalf("dropped = %d, want 2", dropped)
-	}
-	if current.Data[0] != 2 {
-		t.Fatalf("current frame = %d, want newest available frame 2", current.Data[0])
-	}
-	pool.Put(current)
-}
 
-func TestDropStaleVideoFramesForSync_KeepsCurrentWhenNoReplacement(t *testing.T) {
-	pool := NewFramePool(2, 4)
-	current := pool.Get()
-	current.N = 4
-	current.Data[0] = 7
-	prebuf := []*FrameBuf{}
-	ch := make(chan *FrameBuf)
-
-	got, dropped := dropStaleVideoFramesForSync(&prebuf, ch, pool, current, 3)
-	if dropped != 0 {
-		t.Fatalf("dropped = %d, want 0", dropped)
+	if fb, ok, closed := pullVideoFrame(&prebuf, ch); fb != nil || ok || closed {
+		t.Fatalf("final empty pull = (%v, %v, %v), want underrun without close", fb, ok, closed)
 	}
-	if got != current || got.Data[0] != 7 {
-		t.Fatal("current frame should be preserved when no replacement is ready")
-	}
-	pool.Put(got)
 }
 
 // TestEnvPrebufferFields covers the env-var parsing and clamping for
