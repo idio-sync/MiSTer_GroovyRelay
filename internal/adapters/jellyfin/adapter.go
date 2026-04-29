@@ -37,37 +37,45 @@ type Adapter struct {
 	dataDir  string // bridge data_dir; tokens go under <dataDir>/jellyfin/token.json
 	deviceID string // bridge.device_uuid, reused across protocols
 
-	mu              sync.Mutex
-	cfg             Config
-	state           adapters.State
-	lastErr         string
-	stateSince      time.Time
-	link            *LinkState
-	currentRefKey   string               // packed "<itemId>:<playSessionId>" for self-preempt elision
-	pendingRollback string               // saved currentRefKey for StartSession-failure rollback
-	queue           []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
-	reporters       map[string]*reporter // refKey → reporter; populated in Phase 7
-	// lastAudioStreamIdx and lastSubtitleStreamIdx track the most
-	// recent JF-driven track selections. Reported in PlaybackProgress
-	// (Phase 7) and used in Phase 8's track-switch restart.
-	lastAudioStreamIdx    *int
-	lastSubtitleStreamIdx *int
-	// sendOutboundFn lets tests intercept outgoing WS messages.
-	// In production, set in New() to a.sendOutbound.
-	sendOutboundFn func(outboundEnvelope)
-	ws             wsConn // populated in Phase 4
-	outboundCh     chan outboundEnvelope
-	keepaliveSet   chan time.Duration
-	pendingBuf     *ringBuffer // adapter-level drop-oldest queue used while outboundCh is nil (WS down); drained by runOneConn on reconnect
+	mu               sync.Mutex
+	cfg              Config
+	state            adapters.State
+	lastErr          string
+	stateSince       time.Time
+	link             *LinkState
+	currentRefKey    string               // packed "<itemId>:<playSessionId>" for self-preempt elision
+	currentSessionID string               // JF session row Id; refreshed on every successful WS dial
+	pendingRollback  string               // saved currentRefKey for StartSession-failure rollback
+	queue            []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
+	reporters        map[string]*reporter // refKey → reporter
+	ws               wsConn
+	keepaliveSet     chan time.Duration
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.
 	handleInbound inboundDispatcher
-	// startCancel is set in Phase 4 when Start() spawns the WS goroutines.
+	// startCancel is set when Start() spawns the WS goroutines.
 	// runDone is closed by the runSession goroutine when it returns;
 	// Stop() waits on it so Start→Stop→Start cannot double-post Capabilities.
 	startCancel context.CancelFunc
 	runDone     chan struct{}
+}
+
+// setCurrentSessionID stores the JF session row Id captured by the
+// post-dial probe in runSession.
+func (a *Adapter) setCurrentSessionID(id string) {
+	a.mu.Lock()
+	a.currentSessionID = id
+	a.mu.Unlock()
+}
+
+// snapshotSessionID returns currentSessionID under mu. Reporters call
+// this on every emit so a reconnect-induced session-row swap is
+// reflected on the next progress without restarting the reporter.
+func (a *Adapter) snapshotSessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.currentSessionID
 }
 
 // QueuedItem is an item enqueued via PlayNext / PlayLast. The fields
@@ -83,21 +91,26 @@ type QueuedItem struct {
 }
 
 // reporter is the per-session progress-reporting goroutine state.
-// capturedRefKey / itemID / playSessionID / wakeup / errReason were
-// added in Task 5.2. The remaining fields (mediaSourceID … cancel) are
-// added in Task 7.1.
+// All track and queue state is per-session (snapshotted at spawn) so a
+// stale Play with stream 0 can never bleed into the next session's
+// progress reports.
 type reporter struct {
-	capturedRefKey string        // packed "<itemId>:<playSessionId>"
-	itemID         string        // for the JSON payload
-	playSessionID  string        // for the JSON payload
-	mediaSourceID  string        // reported in PlaybackProgressInfo
-	startedAt      time.Time     // reported as PlaybackStartTimeTicks
-	wakeup         chan struct{} // poked by Playstate handlers and OnStop
-	errReason      string        // set when OnStop fires with reason=="error"
-	ticker         *time.Ticker  // 10 s progress tick; nil until goroutine starts
-	progressBuf    *ringBuffer   // drained on WS reconnect
-	ctx            context.Context
-	cancel         context.CancelFunc
+	capturedRefKey  string        // packed "<itemId>:<playSessionId>"
+	itemID          string        // for the JSON payload
+	playSessionID   string        // for the JSON payload
+	mediaSourceID   string        // reported in PlaybackProgressInfo
+	playlistItemID  string        // reported in PlaybackProgressInfo
+	audioIdx        *int          // nil if not explicitly set; pointer-zero is preserved
+	subtitleIdx     *int          // same
+	nowPlayingQueue []QueueItem   // adapter queue snapshot at spawn
+	auth            RESTAuth      // identity used on every REST emit
+	startedAt       time.Time     // reported as PlaybackStartTimeTicks (.NET ticks)
+	wakeup          chan struct{} // poked by Playstate handlers and OnStop
+	errReason       string        // set when OnStop fires with reason=="error"
+	ticker          *time.Ticker  // progress cadence (10 s in prod)
+	pingTicker      *time.Ticker  // /Sessions/Playing/Ping cadence (30 s)
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
 // wsConn is the package-local interface over a JF WebSocket
@@ -124,7 +137,6 @@ func New(coreMgr SessionManager, dataDir, deviceID string) *Adapter {
 		link:       NewLinkState(),
 		reporters:  map[string]*reporter{},
 	}
-	a.sendOutboundFn = a.sendOutbound
 	a.handleInbound = a.dispatchInbound
 	return a
 }

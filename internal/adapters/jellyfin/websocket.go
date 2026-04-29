@@ -23,12 +23,11 @@ type inboundEnvelope struct {
 	Data        json.RawMessage `json:"Data,omitempty"`
 }
 
-// outboundEnvelope is the wire envelope of every WS message the
-// bridge sends. Used for KeepAlive and PlaybackStart/Progress/Stopped.
-type outboundEnvelope struct {
-	MessageType string `json:"MessageType"`
-	Data        any    `json:"Data,omitempty"`
-}
+// keepAliveFrame is the only outbound WS message the bridge sends.
+// Playback reports go via REST (postPlaybackStart / Progress /
+// Stopped), not WebSocket — JF's SessionMessageType enum does not
+// include client→server playback reporting types.
+var keepAliveFrame = []byte(`{"MessageType":"KeepAlive"}`)
 
 // wsDialInput carries dial params.
 type wsDialInput struct {
@@ -141,19 +140,13 @@ func (c *realWSConn) Close() error {
 	return c.conn.Close(websocket.StatusNormalClosure, "")
 }
 
-// outboundQueueSize bounds the buffered outbound channel. Each item is
-// at most ~1 KB; 64 entries is roughly 10 minutes at peak send-rate
-// for KeepAlive (1s) + Progress (10s).
-const outboundQueueSize = 64
-
 // startWriteLoop is called from startWS after the read goroutine has
-// been spawned. It owns the conn write side; every other goroutine
-// (KeepAlive ticker, command handlers, reporting) sends via
-// a.sendOutbound which puts items on a single channel.
+// been spawned. It owns the conn write side. The only outbound WS
+// traffic is the KeepAlive ticker, paced by ForceKeepAlive messages
+// from the server (see setKeepAliveInterval). Playback reports go via
+// REST.
 func (a *Adapter) startWriteLoop(ctx context.Context, conn *websocket.Conn) {
 	a.mu.Lock()
-	outboundCh := make(chan outboundEnvelope, outboundQueueSize)
-	a.outboundCh = outboundCh
 	keepaliveSet := make(chan time.Duration, 1)
 	a.keepaliveSet = keepaliveSet
 	a.mu.Unlock()
@@ -182,53 +175,14 @@ func (a *Adapter) startWriteLoop(ctx context.Context, conn *websocket.Conn) {
 					tickerC = nil
 				}
 			case <-tickerC:
-				_ = a.writeFrame(ctx, conn, outboundEnvelope{MessageType: "KeepAlive"})
-			case msg := <-outboundCh:
-				_ = a.writeFrame(ctx, conn, msg)
+				wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				if err := conn.Write(wctx, websocket.MessageText, keepAliveFrame); err != nil {
+					slog.Info("jellyfin ws: keepalive write error", "err", err)
+				}
+				cancel()
 			}
 		}
 	}()
-}
-
-// writeFrame marshals env and writes it to conn. Errors are logged
-// only — the read loop will detect a dead conn and trigger reconnect.
-func (a *Adapter) writeFrame(ctx context.Context, conn *websocket.Conn, env outboundEnvelope) error {
-	data, err := json.Marshal(env)
-	if err != nil {
-		slog.Warn("jellyfin ws: marshal outbound", "err", err, "type", env.MessageType)
-		return err
-	}
-	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := conn.Write(wctx, websocket.MessageText, data); err != nil {
-		slog.Info("jellyfin ws: write error", "err", err, "type", env.MessageType)
-		return err
-	}
-	return nil
-}
-
-// sendOutbound enqueues a message for the write loop. Three paths:
-//   - WS conn live + outboundCh has room: send to ch (fast path).
-//   - WS conn live + outboundCh full: drop with warn.
-//   - WS conn down (outboundCh nil): push to a.pendingBuf (drop-oldest
-//     ring of capacity 32). Drained on the next successful runOneConn.
-func (a *Adapter) sendOutbound(env outboundEnvelope) {
-	a.mu.Lock()
-	ch := a.outboundCh
-	if ch == nil {
-		if a.pendingBuf == nil {
-			a.pendingBuf = newRingBuffer(32)
-		}
-		a.pendingBuf.push(env)
-		a.mu.Unlock()
-		return
-	}
-	a.mu.Unlock()
-	select {
-	case ch <- env:
-	default:
-		slog.Warn("jellyfin ws: outbound queue full, dropping", "type", env.MessageType)
-	}
 }
 
 // setKeepAliveInterval is called from the ForceKeepAlive handler in
@@ -251,39 +205,41 @@ func (a *Adapter) setKeepAliveInterval(d time.Duration) {
 	}
 }
 
-// hasExistingSession probes /Sessions?DeviceId=<id> to see whether
-// JF already has a session row for this DeviceId. Returns true only
-// when the GET succeeds AND the response contains an entry whose
-// DeviceId matches in.DeviceID.
-func hasExistingSession(ctx context.Context, in CapabilitiesInput) (bool, error) {
+// lookupSessionID probes /Sessions?DeviceId=<id> and returns the JF
+// session row's Id for our DeviceId, plus a presence flag. Used both
+// to decide whether to skip a duplicate Capabilities POST on
+// reconnect AND to capture our SessionId for playback reports — JF
+// keys progress reports on SessionId in addition to PlaySessionId.
+func lookupSessionID(ctx context.Context, in CapabilitiesInput) (id string, present bool, err error) {
 	q := url.Values{}
 	q.Set("DeviceId", in.DeviceID)
 	q.Set("api_key", in.Token)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		strings.TrimRight(in.ServerURL, "/")+"/Sessions?"+q.Encode(), nil)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	resp, err := jfHTTPClient.Do(req)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", false, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var sessions []struct {
+		ID       string `json:"Id"`
 		DeviceID string `json:"DeviceId"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return false, err
+		return "", false, err
 	}
 	for _, s := range sessions {
 		if s.DeviceID == in.DeviceID {
-			return true, nil
+			return s.ID, true, nil
 		}
 	}
-	return false, nil
+	return "", false, nil
 }
 
 // runSession is the long-lived "stay registered as a JF cast target"
@@ -313,7 +269,7 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 
 		shouldPost := !capabilitiesPosted
 		if capabilitiesPosted && hadSuccessfulRun {
-			present, err := hasExistingSession(ctx, CapabilitiesInput{
+			_, present, err := lookupSessionID(ctx, CapabilitiesInput{
 				ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
 			})
 			if err == nil && !present {
@@ -349,6 +305,17 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 				// hadSuccessfulRun so the probe fires on the next iteration.
 				hadSuccessfulRun = true
 				a.setState(adapters.StateRunning, "")
+				// Capture our SessionId for playback reports. Done here
+				// (post-dial, every iteration) rather than only on the
+				// pre-dial reconnect probe so the very first cast also
+				// has a non-empty SessionId. Best-effort: a probe failure
+				// just means we omit SessionId from progress bodies until
+				// the next reconnect succeeds.
+				if id, _, err := lookupSessionID(ctx, CapabilitiesInput{
+					ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
+				}); err == nil {
+					a.setCurrentSessionID(id)
+				}
 				runStart := time.Now()
 				a.runOneConn(ctx, conn)
 				_ = conn.Close(websocket.StatusNormalClosure, "")
@@ -392,9 +359,6 @@ func (a *Adapter) runOneConn(ctx context.Context, conn *websocket.Conn) {
 
 	a.startWriteLoop(connCtx, conn)
 
-	// Drain any pending messages buffered while the WS was down.
-	a.drainPending()
-
 	// readLoop runs in this goroutine; when it returns, the conn is dead.
 	a.readLoop(connCtx, conn)
 
@@ -402,7 +366,6 @@ func (a *Adapter) runOneConn(ctx context.Context, conn *websocket.Conn) {
 
 	a.mu.Lock()
 	a.ws = nil
-	a.outboundCh = nil
 	a.keepaliveSet = nil
 	a.mu.Unlock()
 }
@@ -414,18 +377,3 @@ func jitter(d time.Duration) time.Duration {
 	return d + delta
 }
 
-// drainPending pushes everything in a.pendingBuf to a.outboundCh
-// using the standard sendOutbound discipline. Called by runOneConn
-// just after startWriteLoop has set up the outbound channel.
-func (a *Adapter) drainPending() {
-	a.mu.Lock()
-	buf := a.pendingBuf
-	a.pendingBuf = nil
-	a.mu.Unlock()
-	if buf == nil {
-		return
-	}
-	for _, env := range buf.drainAll() {
-		a.sendOutbound(env)
-	}
-}

@@ -104,11 +104,33 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 		a.commitSelfPreempt()
 
 		a.spawnReporter(reporterParams{
-			ItemID:        p.ItemIDs[0],
-			PlaySessionID: info.PlaySessionID,
-			MediaSourceID: info.MediaSourceID,
+			ItemID:          p.ItemIDs[0],
+			PlaySessionID:   info.PlaySessionID,
+			MediaSourceID:   info.MediaSourceID,
+			AudioIdx:        p.AudioStreamIndex,
+			SubtitleIdx:     p.SubtitleStreamIndex,
+			NowPlayingQueue: a.snapshotNowPlayingQueue(p.ItemIDs[0]),
+			Auth: RESTAuth{
+				ServerURL: cfg.ServerURL, Token: tok.AccessToken,
+				DeviceID: a.deviceID, DeviceName: cfg.DeviceName,
+				Version: linkVersion,
+			},
 		})
 	}()
+}
+
+// snapshotNowPlayingQueue returns a QueueItem slice with the current
+// item first followed by any adapter-queued items. Read under
+// Adapter.mu.
+func (a *Adapter) snapshotNowPlayingQueue(currentItemID string) []QueueItem {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]QueueItem, 0, 1+len(a.queue))
+	out = append(out, QueueItem{ID: currentItemID, PlaylistItemID: currentItemID})
+	for _, qi := range a.queue {
+		out = append(out, QueueItem{ID: qi.ItemID, PlaylistItemID: qi.ItemID})
+	}
+	return out
 }
 
 // playstateRequestData is the JF Playstate Data field.
@@ -222,12 +244,25 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 		return // nothing to switch
 	}
 
-	// Skip when the requested index is identical to the already-cached one.
-	// A nil cached pointer means "never set"; always proceed in that case.
+	// Find current item from currentRefKey, and pull the active
+	// reporter's per-session indices so we can:
+	//   (a) no-op when the requested index matches the current one
+	//   (b) carry the un-touched track forward into the new session
+	cur := a.snapshotCurrentRefKey()
+	itemID, _, ok := splitRefKey(cur)
+	if !ok || itemID == "" {
+		return
+	}
+
 	a.mu.Lock()
-	cachedAud := a.lastAudioStreamIdx
-	cachedSub := a.lastSubtitleStreamIdx
+	var cachedAud, cachedSub *int
+	if r, ok := a.reporters[cur]; ok {
+		cachedAud = r.audioIdx
+		cachedSub = r.subtitleIdx
+	}
+	cfg := a.cfg
 	a.mu.Unlock()
+
 	if in.audioIdx != nil && cachedAud != nil && *in.audioIdx == *cachedAud {
 		return
 	}
@@ -235,27 +270,16 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 		return
 	}
 
-	// Find current item from currentRefKey.
-	cur := a.snapshotCurrentRefKey()
-	itemID, _, ok := splitRefKey(cur)
-	if !ok || itemID == "" {
-		return
+	// Carry forward the unchanged track so the new reporter reports
+	// both indices, not just the one that just changed.
+	nextAud := in.audioIdx
+	if nextAud == nil {
+		nextAud = cachedAud
 	}
-
-	// Update cached indices BEFORE the goroutine so the new reporter
-	// picks them up immediately on its first tick.
-	a.mu.Lock()
-	if in.audioIdx != nil {
-		a.lastAudioStreamIdx = in.audioIdx
+	nextSub := in.subtitleIdx
+	if nextSub == nil {
+		nextSub = cachedSub
 	}
-	if in.subtitleIdx != nil {
-		a.lastSubtitleStreamIdx = in.subtitleIdx
-	}
-	a.mu.Unlock()
-
-	a.mu.Lock()
-	cfg := a.cfg
-	a.mu.Unlock()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
 		slog.Error("jellyfin: trackSwitch: no token")
@@ -312,9 +336,17 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 		}
 
 		a.spawnReporter(reporterParams{
-			ItemID:        itemID,
-			PlaySessionID: info.PlaySessionID,
-			MediaSourceID: info.MediaSourceID,
+			ItemID:          itemID,
+			PlaySessionID:   info.PlaySessionID,
+			MediaSourceID:   info.MediaSourceID,
+			AudioIdx:        nextAud,
+			SubtitleIdx:     nextSub,
+			NowPlayingQueue: a.snapshotNowPlayingQueue(itemID),
+			Auth: RESTAuth{
+				ServerURL: cfg.ServerURL, Token: tok.AccessToken,
+				DeviceID: a.deviceID, DeviceName: cfg.DeviceName,
+				Version: linkVersion,
+			},
 		})
 	}()
 }

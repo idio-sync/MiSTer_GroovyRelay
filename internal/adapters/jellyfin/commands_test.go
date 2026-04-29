@@ -445,7 +445,16 @@ func TestSetAudioStreamIndex_NoOpWhenIndexUnchanged(t *testing.T) {
 	}
 	a.currentRefKey = "itm-1:ps-1"
 	idx2 := 2
-	a.lastAudioStreamIdx = &idx2
+	// Per-session indices live on the active reporter, not on Adapter.
+	// Stage a reporter for the current refKey so the no-op check has
+	// something to compare against.
+	a.spawnReporter(reporterParams{
+		ItemID: "itm-1", PlaySessionID: "ps-1", MediaSourceID: "src-1",
+		AudioIdx:     &idx2,
+		Auth:         RESTAuth{ServerURL: jfSrv.URL, Token: "tok", DeviceID: "dev-1", Version: "test"},
+		TickInterval: time.Hour, // long; we only need the reporter present, not ticking
+	})
+	defer a.stopReporter("itm-1:ps-1")
 
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetAudioStreamIndex",

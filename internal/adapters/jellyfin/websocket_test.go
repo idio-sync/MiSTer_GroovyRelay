@@ -317,35 +317,6 @@ func TestNoKeepAliveBeforeForceKeepAlive(t *testing.T) {
 	}
 }
 
-func TestSendOutbound_QueuesAndWrites(t *testing.T) {
-	srv, wsCh, _ := startTestJFServer(t)
-
-	a := New(nil, t.TempDir(), "device-1")
-	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	if err := a.startWS(ctx, "tok"); err != nil {
-		t.Fatal(err)
-	}
-	conn := <-wsCh
-
-	a.sendOutbound(outboundEnvelope{MessageType: "PlaybackStart", Data: map[string]string{"x": "y"}})
-	readCtx, rcancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer rcancel()
-	_, data, err := conn.Read(readCtx)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var env inboundEnvelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		t.Fatal(err)
-	}
-	if env.MessageType != "PlaybackStart" {
-		t.Errorf("MessageType = %q", env.MessageType)
-	}
-}
-
 func TestReconnect_ProbesSessionsAndSkipsCapabilitiesIfPresent(t *testing.T) {
 	var capPosts atomicCounter
 	var sessionsRequests atomicCounter
