@@ -161,6 +161,90 @@ func TestLinkUI_Unlink_DeletesToken(t *testing.T) {
 	}
 }
 
+// TestLinkUI_Unlink_CallsServerLogout asserts the bridge tells JF
+// to invalidate the access token and remove the device row, so the
+// JF admin's Devices list doesn't accumulate stale entries on every
+// re-link cycle. Verifies the right endpoint, the right Authorization
+// token, and that the call happens BEFORE WipeToken (otherwise the
+// token would already be gone).
+func TestLinkUI_Unlink_CallsServerLogout(t *testing.T) {
+	logoutCh := make(chan string, 1) // captures the Authorization header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/Sessions/Logout" {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case logoutCh <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	a := newLinkTestAdapter(t, "0.1.0")
+	a.cfg.ServerURL = srv.URL
+	if err := SaveToken(a.tokenPath(), Token{
+		AccessToken: "tok-to-revoke", UserID: "uid", ServerURL: srv.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.link.SetLinked("alice", "sid-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/unlink", nil)
+	rr := httptest.NewRecorder()
+	a.handleUnlink(rr, req)
+
+	select {
+	case auth := <-logoutCh:
+		if !strings.Contains(auth, `Token="tok-to-revoke"`) {
+			t.Errorf("logout auth header missing token: %q", auth)
+		}
+		if !strings.Contains(auth, `DeviceId="device-uuid"`) {
+			t.Errorf("logout auth header missing DeviceId: %q", auth)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("/Sessions/Logout never called")
+	}
+
+	// Local cleanup must still complete regardless.
+	tok, _ := LoadToken(a.tokenPath())
+	if tok != (Token{}) {
+		t.Errorf("token not wiped after unlink: %+v", tok)
+	}
+}
+
+// TestLinkUI_Unlink_LocalCleanupSurvivesServerError confirms the
+// best-effort contract: even when the JF server is unreachable or
+// returns 500, the local token gets wiped and link state goes Idle.
+// Operators clicking Unlink expect the bridge to converge to
+// "unlinked" no matter what JF says.
+func TestLinkUI_Unlink_LocalCleanupSurvivesServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	a := newLinkTestAdapter(t, "0.1.0")
+	a.cfg.ServerURL = srv.URL
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.link.SetLinked("alice", "sid-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/unlink", nil)
+	rr := httptest.NewRecorder()
+	a.handleUnlink(rr, req)
+
+	if a.link.State() != LinkIdle {
+		t.Errorf("link state = %v, want LinkIdle even after server 500", a.link.State())
+	}
+	tok, _ := LoadToken(a.tokenPath())
+	if tok != (Token{}) {
+		t.Errorf("token survived after server-side logout failed: %+v", tok)
+	}
+}
+
 // TestLinkUI_Unlink_StopsAdapter exercises the lifecycle fix: an
 // adapter sitting in StateRunning (because a prior Start succeeded)
 // must transition to StateStopped after unlink. Without this, a

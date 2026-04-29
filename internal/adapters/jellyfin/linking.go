@@ -214,3 +214,43 @@ var errAuthRejected = errors.New("jellyfin: token rejected (401)")
 func isAuthError(err error) bool {
 	return errors.Is(err, errAuthRejected)
 }
+
+// LogoutInput carries the auth bound to the token being logged out.
+// Mirrors the RESTAuth shape from reporting_rest.go but is package-
+// local to avoid a dependency cycle on the reporting types.
+type LogoutInput struct {
+	ServerURL  string
+	Token      string
+	DeviceID   string
+	DeviceName string
+	Version    string
+}
+
+// Logout POSTs /Sessions/Logout, telling JF to invalidate the access
+// token and remove the device row from its session list. No body;
+// auth is carried by the MediaBrowser header. Best-effort: on
+// network/HTTP failure the caller should still wipe the local token,
+// since the device row will eventually expire on the server side.
+func Logout(ctx context.Context, in LogoutInput) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(in.ServerURL, "/")+"/Sessions/Logout", nil)
+	if err != nil {
+		return fmt.Errorf("jellyfin: build logout request: %w", err)
+	}
+	req.Header.Set("Authorization", BuildAuthHeader(AuthHeaderInput{
+		Token:    in.Token,
+		Client:   jfClientName,
+		Device:   effectiveDeviceName(in.DeviceName),
+		DeviceID: in.DeviceID,
+		Version:  in.Version,
+	}))
+	resp, err := jfHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("jellyfin: logout: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("jellyfin: logout: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}

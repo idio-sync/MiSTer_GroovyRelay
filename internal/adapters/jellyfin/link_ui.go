@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -114,11 +115,37 @@ func (a *Adapter) handleLinkCancel(w http.ResponseWriter, r *http.Request) {
 	a.renderLinkFragment(w, "")
 }
 
-// handleUnlink wipes the token file, resets link state, and stops the
-// running adapter so a stale runSession goroutine doesn't keep
-// retrying with the now-invalid token. Does NOT call core.Manager.Stop
-// — a mid-cast session goes through the bridge-wide stop path.
+// handleUnlink tells JF to log the device out, wipes the local token
+// file, resets link state, and stops the running adapter so a stale
+// runSession goroutine doesn't keep retrying with the now-invalid
+// token. Does NOT call core.Manager.Stop — a mid-cast session goes
+// through the bridge-wide stop path.
+//
+// The /Sessions/Logout call is best-effort: on failure (network down,
+// server unreachable, token already rejected) we still proceed with
+// local cleanup, since the device row will eventually expire on the
+// server side. Bridge-side state must always converge to "unlinked"
+// when the operator clicks Unlink, regardless of what JF says.
 func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
+	tok, _ := LoadToken(a.tokenPath())
+	if tok.AccessToken != "" {
+		a.mu.Lock()
+		cfg := a.cfg
+		a.mu.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		if err := Logout(ctx, LogoutInput{
+			ServerURL:  tok.ServerURL,
+			Token:      tok.AccessToken,
+			DeviceID:   a.deviceID,
+			DeviceName: cfg.DeviceName,
+			Version:    linkVersion,
+		}); err != nil {
+			// Logged at info — operators don't need to act on this.
+			// Local unlink still proceeds.
+			slog.Info("jellyfin: server-side logout failed; proceeding with local unlink", "err", err)
+		}
+		cancel()
+	}
 	_ = WipeToken(a.tokenPath())
 	a.link.SetIdle()
 	// Stop is idempotent: a no-op when the adapter was never started or
