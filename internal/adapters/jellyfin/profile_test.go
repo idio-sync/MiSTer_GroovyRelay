@@ -59,7 +59,27 @@ func TestDeviceProfile_BitrateScaling(t *testing.T) {
 
 func TestDeviceProfile_NoDirectPlay(t *testing.T) {
 	p := BuildDeviceProfile(4000)
+	if p.DirectPlayProfiles == nil {
+		t.Fatal("DirectPlayProfiles is nil, want empty array")
+	}
 	if len(p.DirectPlayProfiles) != 0 {
 		t.Errorf("DirectPlayProfiles = %v, want empty (forces transcode)", p.DirectPlayProfiles)
+	}
+}
+
+func TestDeviceProfile_EmptyCollectionsMarshalAsArrays(t *testing.T) {
+	data, err := json.Marshal(BuildDeviceProfile(4000))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := string(data)
+	for _, want := range []string{
+		`"DirectPlayProfiles":[]`,
+		`"ContainerProfiles":[]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("DeviceProfile JSON missing %s\nfull output:\n%s", want, got)
+		}
 	}
 }

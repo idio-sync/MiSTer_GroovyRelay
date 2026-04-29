@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -77,6 +78,10 @@ func PostCapabilities(ctx context.Context, in CapabilitiesInput) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if msg := strings.TrimSpace(string(body)); msg != "" {
+			return fmt.Errorf("jellyfin: capabilities POST: HTTP %d: %s", resp.StatusCode, msg)
+		}
 		return fmt.Errorf("jellyfin: capabilities POST: HTTP %d", resp.StatusCode)
 	}
 	return nil

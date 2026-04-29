@@ -89,4 +89,7 @@ func TestPostCapabilities_NonSuccessStatus(t *testing.T) {
 	if err == nil {
 		t.Fatal("PostCapabilities(500) returned nil, want error")
 	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("PostCapabilities(500) error = %q, want response body", err)
+	}
 }

@@ -66,7 +66,7 @@ func BuildDeviceProfile(maxVideoBitrateKbps int) DeviceProfile {
 	return DeviceProfile{
 		Name:                "MiSTer_GroovyRelay",
 		MaxStreamingBitrate: maxVideoBitrateKbps * 1000,
-		DirectPlayProfiles:  nil, // explicit nil → no direct play
+		DirectPlayProfiles:  []DirectPlayProfile{},
 		TranscodingProfiles: []TranscodingProfile{{
 			Container:             "ts",
 			Type:                  "Video",
@@ -93,5 +93,6 @@ func BuildDeviceProfile(maxVideoBitrateKbps int) DeviceProfile {
 			{Format: "ass", Method: "Encode"},
 			{Format: "pgs", Method: "Encode"},
 		},
+		ContainerProfiles: []ContainerProfile{},
 	}
 }
