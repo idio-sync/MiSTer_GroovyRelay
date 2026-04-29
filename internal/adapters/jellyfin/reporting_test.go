@@ -5,11 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -423,6 +426,113 @@ func TestReporter_StoppedRetriesOnTransientFailure(t *testing.T) {
 
 	if !waitFor(t, 2*time.Second, func() bool { return cap.stopCount() >= 1 }) {
 		t.Fatalf("no successful PlaybackStopped after retry; stops=%d", cap.stopCount())
+	}
+}
+
+// TestApplyConfig_DeviceNameHotSwapRepublishesCapabilities exercises
+// the spec contract that device_name is ScopeHotSwap. Without an
+// immediate Capabilities re-POST the cast-menu name in JF clients
+// would only update at next reconnect — possibly hours away — even
+// though the UI tells the operator the change took effect now.
+func TestApplyConfig_DeviceNameHotSwapRepublishesCapabilities(t *testing.T) {
+	var capPosts atomicInt32
+	gotName := make(chan string, 4)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		// Pull the Device="..." value out of the auth header.
+		const marker = `Device="`
+		if i := strings.Index(auth, marker); i >= 0 {
+			rest := auth[i+len(marker):]
+			if j := strings.Index(rest, `"`); j >= 0 {
+				select {
+				case gotName <- rest[:j]:
+				default:
+				}
+			}
+		}
+		capPosts.inc()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, DeviceName: "Old Name"}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.setState(adapters.StateRunning, "")
+
+	raw := `
+[adapters.jellyfin]
+enabled                = true
+server_url             = "` + srv.URL + `"
+device_name            = "New Name"
+max_video_bitrate_kbps = 4000
+`
+	var envelope struct {
+		Adapters map[string]toml.Primitive `toml:"adapters"`
+	}
+	meta, err := toml.Decode(raw, &envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := a.ApplyConfig(envelope.Adapters["jellyfin"], meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Errorf("scope = %v, want ScopeHotSwap", scope)
+	}
+
+	select {
+	case name := <-gotName:
+		if name != "New Name" {
+			t.Errorf("Capabilities POST Device = %q, want %q", name, "New Name")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no Capabilities POST after device_name hot-swap; capPosts=%d", capPosts.get())
+	}
+}
+
+// TestApplyConfig_DeviceNameNotRepublishedWhenStopped covers the
+// guard that suppresses the re-POST when the adapter isn't running —
+// the next normal cap-POST in runSession will pick up the change.
+func TestApplyConfig_DeviceNameNotRepublishedWhenStopped(t *testing.T) {
+	var capPosts atomicInt32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		capPosts.inc()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, DeviceName: "Old"}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	// Adapter is in StateStopped (default after New).
+
+	raw := `
+[adapters.jellyfin]
+enabled                = false
+server_url             = "` + srv.URL + `"
+device_name            = "New"
+max_video_bitrate_kbps = 4000
+`
+	var envelope struct {
+		Adapters map[string]toml.Primitive `toml:"adapters"`
+	}
+	meta, _ := toml.Decode(raw, &envelope)
+	if _, err := a.ApplyConfig(envelope.Adapters["jellyfin"], meta); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if capPosts.get() != 0 {
+		t.Errorf("Capabilities POST fired while stopped; count=%d", capPosts.get())
 	}
 }
 

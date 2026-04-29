@@ -376,8 +376,49 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	if old.MaxVideoBitrateKbps != newCfg.MaxVideoBitrateKbps {
 		scope = adapters.MaxScope(scope, adapters.ScopeRestartCast)
 	}
-	// device_name is ScopeHotSwap (already covered by initial value).
+	// device_name is ScopeHotSwap, but the cast-menu name in JF
+	// clients comes from the last Capabilities POST. Without a fresh
+	// POST it would only update on the next WS reconnect — which can
+	// be hours away. Republish so the spec's "applied immediately"
+	// promise holds.
+	if old.DeviceName != newCfg.DeviceName {
+		a.republishCapabilities()
+	}
 	return scope, nil
+}
+
+// republishCapabilities pushes a fresh /Sessions/Capabilities/Full
+// when a ScopeHotSwap field that affects the capabilities body
+// changes (currently only device_name). No-op when the adapter isn't
+// running or the token can't be loaded — both paths converge to the
+// same cap POST on the next WS reconnect.
+func (a *Adapter) republishCapabilities() {
+	a.mu.Lock()
+	cfg := a.cfg
+	deviceID := a.deviceID
+	state := a.state
+	a.mu.Unlock()
+	if state != adapters.StateRunning && state != adapters.StateStarting {
+		return
+	}
+	tok, err := LoadToken(a.tokenPath())
+	if err != nil || tok.AccessToken == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := PostCapabilities(ctx, CapabilitiesInput{
+			ServerURL:           cfg.ServerURL,
+			Token:               tok.AccessToken,
+			DeviceID:            deviceID,
+			DeviceName:          cfg.DeviceName,
+			Version:             linkVersion,
+			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+		}); err != nil {
+			slog.Warn("jellyfin: hot-swap capabilities re-post failed", "err", err)
+		}
+	}()
 }
 
 // setState atomically updates state, stateSince, and lastErr.
