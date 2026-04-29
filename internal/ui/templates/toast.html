@@ -5,9 +5,7 @@
 	{{if .Command}}
 	<div class="toast-pre-wrap">
 		<pre id="toast-cmd">{{.Command}}</pre>
-		<button type="button" class="toast-copy-btn"
-				data-copy-target="#toast-cmd"
-				onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent);this.textContent='copied'">
+		<button type="button" class="toast-copy-btn" data-copy-target="#toast-cmd">
 			copy
 		</button>
 	</div>

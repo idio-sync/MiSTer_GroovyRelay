@@ -146,3 +146,30 @@ func TestShell_RendersActiveLinkServerSide(t *testing.T) {
 		t.Errorf("bridge link not marked active server-side; window=%q", window)
 	}
 }
+
+// TestShell_LoadsClipboardScript guards the toast copy-to-clipboard
+// fallback. The shell must reference /ui/static/clipboard.js so that
+// plain-HTTP LAN deployments (where navigator.clipboard is gated on
+// secure context) get a working execCommand fallback.
+func TestShell_LoadsClipboardScript(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	if !strings.Contains(body, `src="/ui/static/clipboard.js"`) {
+		t.Error("shell must load /ui/static/clipboard.js (toast copy fallback)")
+	}
+
+	// Confirm the asset itself is served.
+	req2 := httptest.NewRequest("GET", "/ui/static/clipboard.js", nil)
+	rw2 := httptest.NewRecorder()
+	mux.ServeHTTP(rw2, req2)
+	if rw2.Code != 200 {
+		t.Errorf("/ui/static/clipboard.js: got %d, want 200", rw2.Code)
+	}
+	if !strings.Contains(rw2.Body.String(), "data-copy-target") {
+		t.Error("clipboard.js doesn't reference data-copy-target attribute")
+	}
+}

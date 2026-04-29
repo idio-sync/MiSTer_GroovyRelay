@@ -632,6 +632,14 @@ func TestToast_RestartBridge_HasCopyButton(t *testing.T) {
 	if !strings.Contains(out, "data-copy-target") {
 		t.Error("expected copy-to-clipboard button in toast (data-copy-target hook missing)")
 	}
+	// Inline onclick was removed in favor of the delegated handler in
+	// /ui/static/clipboard.js. Inline navigator.clipboard.writeText
+	// silently fails on plain-HTTP LAN deployments; the external script
+	// has an execCommand fallback. Regression guard: the inline form
+	// must not creep back in.
+	if strings.Contains(out, "navigator.clipboard") {
+		t.Error("inline navigator.clipboard call leaked into toast (must be handled by clipboard.js)")
+	}
 }
 
 // TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided is a
