@@ -75,6 +75,17 @@ func TestPostCapabilities_BodyShape(t *testing.T) {
 	if dp["Name"] != "MiSTer_GroovyRelay" {
 		t.Errorf("DeviceProfile.Name = %v", dp["Name"])
 	}
+
+	icon, _ := body["IconUrl"].(string)
+	if !strings.HasPrefix(icon, "data:image/png;base64,") {
+		t.Errorf("IconUrl prefix = %q, want data:image/png;base64,...", icon[:min(len(icon), 40)])
+	}
+	// 22 KB PNG → ~30 KB base64 + 22-char prefix. A few bytes of slack
+	// either side; this is a regression guard against accidentally
+	// shipping an empty or obviously-wrong icon.
+	if got := len(icon); got < 25_000 || got > 40_000 {
+		t.Errorf("IconUrl length = %d bytes, want roughly 28-32 KB", got)
+	}
 }
 
 func TestPostCapabilities_NonSuccessStatus(t *testing.T) {

@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -31,8 +32,9 @@ func startTestJFServer(t *testing.T) (*httptest.Server, <-chan *websocket.Conn, 
 		_, _ = w.Write([]byte(`{"Id":"server-1","Version":"10.10.0"}`))
 	})
 	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
-		body := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(body)
+		// io.ReadAll, not Read — the body now includes a ~30 KB
+		// base64 icon that can span multiple network reads.
+		body, _ := io.ReadAll(r.Body)
 		select {
 		case capCh <- body:
 		default:

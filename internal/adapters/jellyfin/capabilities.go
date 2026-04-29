@@ -52,7 +52,7 @@ func PostCapabilities(ctx context.Context, in CapabilitiesInput) error {
 		SupportsMediaControl:         true,
 		SupportsPersistentIdentifier: true,
 		DeviceProfile:                BuildDeviceProfile(in.MaxVideoBitrateKbps),
-		IconUrl:                      "",
+		IconUrl:                      iconDataURL,
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
