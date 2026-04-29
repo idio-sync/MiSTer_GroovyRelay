@@ -23,11 +23,21 @@ type inboundEnvelope struct {
 	Data        json.RawMessage `json:"Data,omitempty"`
 }
 
-// keepAliveFrame is the only outbound WS message the bridge sends.
-// Playback reports go via REST (postPlaybackStart / Progress /
-// Stopped), not WebSocket — JF's SessionMessageType enum does not
-// include client→server playback reporting types.
-var keepAliveFrame = []byte(`{"MessageType":"KeepAlive"}`)
+// keepAliveFrame and sessionsStartFrame are the only outbound WS
+// messages the bridge sends. Playback reports go via REST
+// (postPlaybackStart / Progress / Stopped), not WebSocket — JF's
+// SessionMessageType enum does not include client→server playback
+// reporting types.
+//
+// SessionsStart subscribes to JF's periodic session-list pushes
+// (every 1500 ms after a 0 ms initial delay) so handleSessionsPush
+// can detect when JF reaps our session row and trigger an immediate
+// Capabilities re-POST to stay in client cast menus. The cadence
+// matches JF web client's apiClient.js.
+var (
+	keepAliveFrame     = []byte(`{"MessageType":"KeepAlive"}`)
+	sessionsStartFrame = []byte(`{"MessageType":"SessionsStart","Data":"0,1500"}`)
+)
 
 // wsDialInput carries dial params.
 type wsDialInput struct {
@@ -159,6 +169,20 @@ func (a *Adapter) startWriteLoop(ctx context.Context, conn *websocket.Conn) {
 				ticker.Stop()
 			}
 		}()
+
+		// Subscribe to JF's session-update push stream. Sequential
+		// before the select loop so it always lands as the first
+		// outbound frame on a fresh conn — KeepAlive cannot race it
+		// because the ticker is not armed until ForceKeepAlive arrives
+		// and a setKeepAliveInterval call drains keepaliveSet.
+		{
+			wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := conn.Write(wctx, websocket.MessageText, sessionsStartFrame); err != nil {
+				slog.Info("jellyfin ws: SessionsStart write failed", "err", err)
+			}
+			cancel()
+		}
+
 		for {
 			select {
 			case <-ctx.Done():

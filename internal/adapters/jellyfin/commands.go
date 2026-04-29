@@ -366,6 +366,49 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 	}()
 }
 
+// handleSessionsPush is the dispatch target for inbound MessageType
+// "Sessions". JF pushes the full server-wide session list every 1.5 s
+// after we subscribe via SessionsStart. We only care about whether
+// our own DeviceId is still in the list — if it isn't, JF has reaped
+// our session row (idle timeout, server restart, etc.) and clients'
+// cast menus no longer see us. Re-POST Capabilities to reappear.
+//
+// On a present row we also opportunistically refresh
+// currentSessionID — JF may have reaped-and-recreated, in which case
+// the post-dial probe's id is stale and progress reports would carry
+// a wrong (or omitted) SessionId.
+func (a *Adapter) handleSessionsPush(data json.RawMessage) {
+	var sessions []struct {
+		ID       string `json:"Id"`
+		DeviceID string `json:"DeviceId"`
+	}
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		slog.Debug("jellyfin: bad Sessions push", "err", err)
+		return
+	}
+
+	for _, s := range sessions {
+		if s.DeviceID == a.deviceID {
+			a.setCurrentSessionID(s.ID)
+			return
+		}
+	}
+
+	// Our row is missing. Rate-limit the recovery cap-POST so a
+	// persistent failure (server 5xx, auth issue) doesn't spin every
+	// 1.5 s for the lifetime of the conn.
+	a.mu.Lock()
+	if time.Since(a.lastSessionRecover) < 30*time.Second {
+		a.mu.Unlock()
+		return
+	}
+	a.lastSessionRecover = time.Now()
+	a.mu.Unlock()
+
+	slog.Info("jellyfin: session row reaped server-side; re-POSTing Capabilities to reappear in cast menus")
+	a.republishCapabilities()
+}
+
 // splitRefKey splits "<itemId>:<playSessionId>" into its parts.
 // Item IDs are GUIDs (no colons), so splitting on the first ':' is safe.
 func splitRefKey(k string) (itemID, playSessionID string, ok bool) {

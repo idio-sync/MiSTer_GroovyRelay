@@ -43,9 +43,10 @@ type Adapter struct {
 	lastErr          string
 	stateSince       time.Time
 	link             *LinkState
-	currentRefKey    string               // packed "<itemId>:<playSessionId>" for self-preempt elision
-	currentSessionID string               // JF session row Id; refreshed on every successful WS dial
-	pendingRollback  string               // saved currentRefKey for StartSession-failure rollback
+	currentRefKey      string               // packed "<itemId>:<playSessionId>" for self-preempt elision
+	currentSessionID   string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
+	lastSessionRecover time.Time            // rate-limits handleSessionsPush's cap re-POST
+	pendingRollback    string               // saved currentRefKey for StartSession-failure rollback
 	queue            []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
 	reporters        map[string]*reporter // refKey → reporter
 	ws               wsConn
@@ -151,6 +152,8 @@ func (a *Adapter) dispatchInbound(messageType string, data json.RawMessage) {
 		a.HandlePlaystate(data)
 	case "GeneralCommand":
 		a.HandleGeneralCommand(data)
+	case "Sessions":
+		a.handleSessionsPush(data)
 	default:
 		// Already debug-logged in readLoop fallback.
 	}

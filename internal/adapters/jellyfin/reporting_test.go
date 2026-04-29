@@ -309,7 +309,12 @@ func TestReporter_StatusIdleEndsLoopWithStopped(t *testing.T) {
 	if !waitFor(t, 1*time.Second, func() bool { return cap.stopCount() >= 1 }) {
 		t.Fatalf("no PlaybackStopped seen")
 	}
-	if a.lookupReporter("itm-1:ps-7") != nil {
+	// Deregistration happens immediately after emitTerminal returns, but
+	// the goroutine still has to yield. Poll briefly rather than asserting
+	// instantly to avoid a timing race on slow runners.
+	if !waitFor(t, 500*time.Millisecond, func() bool {
+		return a.lookupReporter("itm-1:ps-7") == nil
+	}) {
 		t.Errorf("reporter still registered after StateIdle")
 	}
 	if cap.lastStop().Failed {
@@ -426,6 +431,106 @@ func TestReporter_StoppedRetriesOnTransientFailure(t *testing.T) {
 
 	if !waitFor(t, 2*time.Second, func() bool { return cap.stopCount() >= 1 }) {
 		t.Fatalf("no successful PlaybackStopped after retry; stops=%d", cap.stopCount())
+	}
+}
+
+// TestHandleSessionsPush_RowMissingTriggersRepost asserts that a
+// Sessions push without our DeviceId fires a Capabilities re-POST so
+// the bridge reappears in client cast menus after JF reaps the row.
+func TestHandleSessionsPush_RowMissingTriggersRepost(t *testing.T) {
+	var capPosts atomicInt32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		capPosts.inc()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.setState(adapters.StateRunning, "")
+
+	// Sessions array contains some other device but not us.
+	push := []byte(`[{"Id":"sess-x","DeviceId":"other-device"}]`)
+	a.handleSessionsPush(push)
+
+	if !waitFor(t, 2*time.Second, func() bool { return capPosts.get() >= 1 }) {
+		t.Fatalf("missing-row Sessions push did not trigger Capabilities re-POST; count=%d", capPosts.get())
+	}
+}
+
+// TestHandleSessionsPush_RowPresentRefreshesSessionID covers the
+// other branch: when our row IS in the list, no re-POST fires but
+// currentSessionID is updated to whatever JF currently shows. This
+// catches the reaped-and-recreated edge where a stale post-dial
+// probe id would otherwise stick.
+func TestHandleSessionsPush_RowPresentRefreshesSessionID(t *testing.T) {
+	var capPosts atomicInt32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		capPosts.inc()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.setState(adapters.StateRunning, "")
+	a.setCurrentSessionID("stale-sess")
+
+	push := []byte(`[{"Id":"fresh-sess","DeviceId":"dev-1"},{"Id":"sess-y","DeviceId":"other"}]`)
+	a.handleSessionsPush(push)
+
+	if got := a.snapshotSessionID(); got != "fresh-sess" {
+		t.Errorf("currentSessionID = %q, want fresh-sess", got)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if capPosts.get() != 0 {
+		t.Errorf("present-row push triggered cap re-POST; count=%d", capPosts.get())
+	}
+}
+
+// TestHandleSessionsPush_RateLimitsRepost verifies the 30s
+// rate-limit on the recovery path so a persistent cap-POST failure
+// can't spin every 1.5 s for the lifetime of the conn.
+func TestHandleSessionsPush_RateLimitsRepost(t *testing.T) {
+	var capPosts atomicInt32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		capPosts.inc()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "dev-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.setState(adapters.StateRunning, "")
+
+	push := []byte(`[{"Id":"x","DeviceId":"other"}]`)
+	a.handleSessionsPush(push)
+	a.handleSessionsPush(push)
+	a.handleSessionsPush(push)
+	a.handleSessionsPush(push)
+
+	// Wait for any goroutines spawned by the first call to settle.
+	if !waitFor(t, 2*time.Second, func() bool { return capPosts.get() >= 1 }) {
+		t.Fatalf("first push did not trigger cap re-POST")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if capPosts.get() > 1 {
+		t.Errorf("rate-limit failed: cap re-POSTed %d times within 30s window, want 1", capPosts.get())
 	}
 }
 

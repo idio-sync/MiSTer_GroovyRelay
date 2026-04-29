@@ -266,6 +266,19 @@ func TestKeepAlive_FiresAfterForceKeepAlive(t *testing.T) {
 		t.Fatal("no ws upgrade")
 	}
 
+	// Drain the SessionsStart frame sent first on every new conn.
+	drainCtx, dcancel := context.WithTimeout(t.Context(), 1*time.Second)
+	_, data, err := conn.Read(drainCtx)
+	dcancel()
+	if err != nil {
+		t.Fatalf("draining SessionsStart: %v", err)
+	}
+	var first inboundEnvelope
+	_ = json.Unmarshal(data, &first)
+	if first.MessageType != "SessionsStart" {
+		t.Fatalf("first frame = %q, want SessionsStart", first.MessageType)
+	}
+
 	// Tell the bridge "send a KeepAlive every 1 second"
 	if err := conn.Write(t.Context(), websocket.MessageText, []byte(`{"MessageType":"ForceKeepAlive","Data":1}`)); err != nil {
 		t.Fatal(err)
@@ -308,10 +321,28 @@ func TestNoKeepAliveBeforeForceKeepAlive(t *testing.T) {
 		t.Fatal("no ws upgrade")
 	}
 
-	// Wait 1.5 s without any ForceKeepAlive; we should NOT see a KeepAlive.
+	// Drain the SessionsStart subscription frame the bridge always sends
+	// as the first outbound message on a new conn. After it, the test's
+	// invariant remains: no KeepAlive should fire until ForceKeepAlive
+	// arrives from the server.
+	drainCtx, dcancel := context.WithTimeout(t.Context(), 1*time.Second)
+	_, data, err := conn.Read(drainCtx)
+	dcancel()
+	if err != nil {
+		t.Fatalf("expected SessionsStart, got read error: %v", err)
+	}
+	var first inboundEnvelope
+	if err := json.Unmarshal(data, &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.MessageType != "SessionsStart" {
+		t.Fatalf("first frame = %q, want SessionsStart", first.MessageType)
+	}
+
+	// Now wait 1.5 s; we should NOT see a KeepAlive (or anything else).
 	readCtx, rcancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	defer rcancel()
-	_, _, err := conn.Read(readCtx)
+	_, _, err = conn.Read(readCtx)
 	if err == nil {
 		t.Fatal("got an unsolicited KeepAlive (or other message); want timeout")
 	}
