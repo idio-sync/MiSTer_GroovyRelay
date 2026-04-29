@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -72,9 +73,23 @@ type Config struct {
 
 // templateFuncs supplies the tiny set of helpers our templates need.
 // Keep this list small — business logic belongs in Go, not templates.
-// inc is used by the Bridge panel to render 1-indexed section numbers.
+//
+//   inc        — bridge/adapter panels render 1-indexed section numbers.
+//   replaceAll — bridge/adapter panels sanitize KindAction Keys (which
+//                may contain "/") into HTML id attributes.
+//   hasString  — bridge panel renders the applied-live pip per
+//                changed key by membership-check on AppliedPipKeys.
 var templateFuncs = template.FuncMap{
-	"inc": func(i int) int { return i + 1 },
+	"inc":        func(i int) int { return i + 1 },
+	"replaceAll": strings.ReplaceAll,
+	"hasString": func(haystack []string, needle string) bool {
+		for _, s := range haystack {
+			if s == needle {
+				return true
+			}
+		}
+		return false
+	},
 }
 
 // Server owns the parsed templates + embedded static assets + a
@@ -124,6 +139,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 
 	// Sidebar status fragment (polled every 3s by the shell).
 	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)
+	// Sidebar dots fragment (per-adapter status indicators).
+	mux.HandleFunc("GET /ui/sidebar/dots", s.handleSidebarDots)
 
 	// Adapter panel.
 	mux.HandleFunc("GET /ui/adapter/{name}", s.handleAdapterGET)
@@ -196,7 +213,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 // handleShell renders the full shell page with the sidebar populated
 // from the registry and an empty panel.
 func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
-	data := s.shellData()
+	data := s.shellDataForPath(r.URL.Path)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -207,13 +224,13 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 // renderShellWithPanel renders the full shell page around a panel
 // fragment so pushed URLs like /ui/bridge survive refresh/bookmark as
 // proper document loads instead of returning a bare fragment.
-func (s *Server) renderShellWithPanel(w http.ResponseWriter, panelName string, panelData any) {
+func (s *Server) renderShellWithPanel(w http.ResponseWriter, r *http.Request, panelName string, panelData any) {
 	panelHTML, err := s.renderTemplateHTML(panelName, panelData)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data := s.shellData()
+	data := s.shellDataForPath(r.URL.Path)
 	data.PanelHTML = panelHTML
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
@@ -227,6 +244,15 @@ func (s *Server) renderTemplateHTML(name string, data any) (template.HTML, error
 		return "", err
 	}
 	return template.HTML(buf.String()), nil
+}
+
+// shellDataForPath is shellData() with CurrentPath populated for
+// active-link rendering. Used by every shell-rendering handler;
+// the path drives the .active class on the matching sidebar <a>.
+func (s *Server) shellDataForPath(path string) shellTemplateData {
+	data := s.shellData()
+	data.CurrentPath = path
+	return data
 }
 
 // shellData builds the template data for the shell page: sidebar
@@ -246,8 +272,9 @@ func (s *Server) shellData() shellTemplateData {
 }
 
 type shellTemplateData struct {
-	Adapters  []sidebarAdapter
-	PanelHTML template.HTML
+	Adapters    []sidebarAdapter
+	PanelHTML   template.HTML
+	CurrentPath string
 }
 
 type sidebarAdapter struct {

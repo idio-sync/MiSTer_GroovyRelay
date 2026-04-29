@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 // TestBridgeFields_HasMisterControlSection verifies the SSH user and
@@ -47,6 +48,45 @@ func TestBridgeFields_HasMisterControlSection(t *testing.T) {
 	}
 }
 
+func TestBuildBridgeSections_OrdersBySectionOrder(t *testing.T) {
+	cur := config.BridgeConfig{}
+	got := buildBridgeSections(cur, nil)
+
+	// Pre-existing bridge fields all have SectionOrder=0, so they
+	// appear in registration order: Network, Video, Audio, Server,
+	// MiSTer Control. Confirm that order survives.
+	wantPrefix := []string{"Network", "Video", "Audio", "Server", "MiSTer Control"}
+	if len(got) < len(wantPrefix) {
+		t.Fatalf("got %d sections, want at least %d", len(got), len(wantPrefix))
+	}
+	for i, name := range wantPrefix {
+		if got[i].Name != name {
+			t.Errorf("section[%d]: got %q, want %q", i, got[i].Name, name)
+		}
+	}
+}
+
+func TestRowFor_KindAction(t *testing.T) {
+	fd := adapters.FieldDef{
+		Key:     "mister/launch",
+		Label:   "Launch GroovyMiSTer",
+		Kind:    adapters.KindAction,
+		Section: "Launch",
+	}
+	cur := config.BridgeConfig{}
+	r := rowFor(fd, cur, nil)
+	if r.Kind != "action" {
+		t.Errorf("Kind: got %q, want %q", r.Kind, "action")
+	}
+	if r.Label != "Launch GroovyMiSTer" {
+		t.Errorf("Label: got %q, want %q", r.Label, "Launch GroovyMiSTer")
+	}
+	// Action rows do not carry input values.
+	if r.StringValue != "" {
+		t.Errorf("StringValue: got %q, want empty", r.StringValue)
+	}
+}
+
 func TestModelineEnumOptions_ExperimentalSuffix(t *testing.T) {
 	got := modelineEnumOptions()
 	want := []string{
@@ -62,5 +102,39 @@ func TestModelineEnumOptions_ExperimentalSuffix(t *testing.T) {
 		if got[i] != w {
 			t.Errorf("modelineEnumOptions()[%d] = %q, want %q", i, got[i], w)
 		}
+	}
+}
+
+func TestBridgeFields_LaunchIsKindAction(t *testing.T) {
+	var found *adapters.FieldDef
+	for i := range bridgeFields() {
+		fd := bridgeFields()[i]
+		if fd.Section == "Launch" {
+			found = &fd
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no field with Section=Launch found")
+	}
+	if found.Kind != adapters.KindAction {
+		t.Errorf("Launch field Kind: got %v, want KindAction", found.Kind)
+	}
+	if found.SectionOrder != 60 {
+		t.Errorf("Launch field SectionOrder: got %d, want 60", found.SectionOrder)
+	}
+	if found.Key != "mister/launch" {
+		t.Errorf("Launch field Key: got %q, want %q", found.Key, "mister/launch")
+	}
+}
+
+func TestBuildBridgeSections_LaunchAppearsLast(t *testing.T) {
+	got := buildBridgeSections(config.BridgeConfig{}, nil)
+	if len(got) == 0 {
+		t.Fatal("no sections")
+	}
+	last := got[len(got)-1]
+	if last.Name != "Launch" {
+		t.Errorf("last section: got %q, want %q", last.Name, "Launch")
 	}
 }

@@ -6,13 +6,11 @@
 	<title>MiSTer GroovyRelay · Settings</title>
 	<link rel="stylesheet" href="/ui/static/app.css">
 	<script src="/ui/static/htmx.min.js" defer></script>
+	<script src="/ui/static/clipboard.js" defer></script>
 </head>
 <body hx-ext="">
 	<div class="shell">
-		<aside class="sidebar" id="sidebar"
-			hx-get="/ui/sidebar/status"
-			hx-trigger="every 3s"
-			hx-swap="outerHTML">
+		<aside class="sidebar">
 			{{template "sidebar-body" .}}
 		</aside>
 		<main class="panel" id="panel">
@@ -22,21 +20,31 @@
 </body>
 </html>
 {{define "sidebar-body"}}
-<h2>Bridge</h2>
+<h2>System</h2>
 <ul>
-	<li><a href="/ui/bridge" hx-get="/ui/bridge" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
-		<span class="dot">·</span> Bridge
+	<li><a href="/ui/bridge"
+	       hx-get="/ui/bridge" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true"
+	       {{if eq .CurrentPath "/ui/bridge"}}class="active"{{end}}>
+		<span id="dot-bridge" class="dot off"></span> Bridge
 	</a></li>
 </ul>
 <h2>Adapters</h2>
 <ul>
 	{{range .Adapters}}
-	<li><a href="/ui/adapter/{{.Name}}" hx-get="/ui/adapter/{{.Name}}" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
-		<span class="dot {{.DotClass}}">{{.DotGlyph}}</span>
+	<li><a href="/ui/adapter/{{.Name}}"
+	       hx-get="/ui/adapter/{{.Name}}" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true"
+	       {{if eq $.CurrentPath (printf "/ui/adapter/%s" .Name)}}class="active"{{end}}>
+		<span id="dot-{{.Name}}" class="dot {{.DotClass}}"></span>
 		{{.DisplayName}}
 	</a></li>
 	{{end}}
 </ul>
+<!-- Polling element. Returns a fragment of OOB-swap <span> tags;
+     hx-swap="none" tells htmx not to do its primary swap — the
+     server-side OOB attributes drive replacement of the dot spans
+     individually. Hover, focus, and active state on the surrounding
+     <a> elements are preserved across ticks. Spec §5.4. -->
+<div hx-get="/ui/sidebar/dots" hx-trigger="every 3s" hx-swap="none"></div>
 {{end}}
 {{define "panel-body"}}
 <h1>Settings</h1>

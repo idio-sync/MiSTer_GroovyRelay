@@ -172,3 +172,31 @@ func TestServer_Mount_HonorsAllRouteMethods(t *testing.T) {
 		}
 	}
 }
+
+func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "plex", state: adapters.StateRunning}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	s, err := New(Config{Registry: reg})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/sidebar/dots", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("/ui/sidebar/dots not registered: got 404")
+	}
+	// Distinguish the dots handler from the /ui/ catch-all that
+	// renders the shell template — only handleSidebarDots emits
+	// hx-swap-oob spans for registered adapters.
+	body := w.Body.String()
+	if !strings.Contains(body, `hx-swap-oob`) {
+		t.Errorf("dots route did not produce OOB span output (route may be served by shell catch-all)\nbody: %s", body)
+	}
+}

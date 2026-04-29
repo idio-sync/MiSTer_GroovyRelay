@@ -270,7 +270,7 @@ func (a *Adapter) respondError(w http.ResponseWriter, r *http.Request, code int,
 	if isHTMXRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(code)
-		fmt.Fprintf(w, `<div class="url-panel error" id="url-panel"><p class="err">%s</p></div>`, template.HTMLEscapeString(msg))
+		fmt.Fprintf(w, `<div class="gr-callout err" id="url-panel"><p>%s</p></div>`, template.HTMLEscapeString(msg))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -294,7 +294,7 @@ func (a *Adapter) respondStarted(w http.ResponseWriter, r *http.Request, ref, ur
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprintf(w,
-			`<div class="url-panel" id="url-panel"><p>Playing: <code>%s</code></p></div>`,
+			`<div class="gr-callout ok" id="url-panel"><p>Playing: <code>%s</code></p></div>`,
 			template.HTMLEscapeString(redactURL(url)))
 		return
 	}

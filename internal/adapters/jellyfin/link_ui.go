@@ -157,11 +157,11 @@ func (a *Adapter) linkFragmentHTML(errMsg string) string {
 	case LinkLinked:
 		user, sid := a.link.LinkedAs()
 		return sectionOpen + fmt.Sprintf(
-			`<div class="jf-link-status">Linked as %s on %s. <button class="btn ghost" hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
+			`<div class="gr-callout ok">Linked as %s on %s. <button class="btn ghost" hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
 			html.EscapeString(user), html.EscapeString(sid),
 		) + sectionClose
 	case LinkLinking:
-		return sectionOpen + `<div class="jf-link-status">Linking…</div>` + sectionClose
+		return sectionOpen + `<div class="gr-callout">Linking…</div>` + sectionClose
 	default:
 		// Idle or Error.
 		if a.configuredServerURL() == "" {

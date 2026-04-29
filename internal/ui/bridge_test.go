@@ -157,7 +157,7 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 		t.Errorf("saved interlace = %q", saver.got.Video.InterlaceFieldOrder)
 	}
 	if !strings.Contains(rw.Body.String(), "applied live") {
-		t.Error("expected hot-swap toast message")
+		t.Error("expected applied-live indicator (pip) in response")
 	}
 	if saver.got.MiSTer.SSHPassword != "hunter2" {
 		t.Errorf("expected preserve-on-empty to retain prior password, got %q", saver.got.MiSTer.SSHPassword)
@@ -460,7 +460,7 @@ func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
 	body := rw.Body.String()
 	wantSnippets := []string{
 		`hx-post="/ui/bridge/mister/launch"`,
-		`id="mister-launch-slot"`,
+		`id="action-result-mister-launch"`,
 		"Launch GroovyMiSTer",
 		`type="button"`,
 	}
@@ -468,6 +468,177 @@ func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
 		if !strings.Contains(body, w) {
 			t.Errorf("missing %q in body", w)
 		}
+	}
+}
+
+func TestBridgePanel_RendersLaunchOnceAsKindAction(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	// The Launch section header must appear exactly once.
+	// The heading renders as: <span class="num">06 —</span> Launch</h3>
+	count := strings.Count(body, "</span> Launch</h3>")
+	if count != 1 {
+		t.Errorf("Launch section header count: got %d, want 1 (was the hard-coded block left in place?)", count)
+	}
+	// The button label must appear, attached to the action endpoint.
+	if !strings.Contains(body, "Launch GroovyMiSTer") {
+		t.Error("Launch button label not found in rendered HTML")
+	}
+	if !strings.Contains(body, `hx-post="/ui/bridge/mister/launch"`) {
+		t.Error("Launch endpoint not wired to the rendered button")
+	}
+}
+
+func TestBridgeSave_HotSwapRendersPipNoToast(t *testing.T) {
+	saver := &fakeBridgeSaver{}
+	mux := newBridgeTestServer(t, saver)
+
+	// fakeBridgeSaver.Current() returns InterlaceFieldOrder="tff".
+	// Posting "bff" is a single-field hot-swap save.
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=bff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, `class="gr-pip applied"`) {
+		t.Error("expected gr-pip applied span in response (hot-swap pip)")
+	}
+	if !strings.Contains(out, `data-pip-key="video.interlace_field_order"`) {
+		t.Error("pip should carry data-pip-key for the changed field")
+	}
+	// Toast must NOT fire for ScopeHotSwap saves. The toast template
+	// renders <div class="toast ..."> only when toastData is non-nil.
+	if strings.Contains(out, `<div class="toast`) {
+		t.Error("ScopeHotSwap save rendered a toast; should be suppressed in favor of pip")
+	}
+}
+
+// fakeRestartCastSaver is like fakeBridgeSaver but always returns
+// ScopeRestartCast, so TestBridgeSave_RestartCastStillRendersToast
+// can exercise the toast path without mutating the shared saver type.
+type fakeRestartCastSaver struct {
+	fakeBridgeSaver
+}
+
+func (f *fakeRestartCastSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
+	f.got = &newCfg
+	return adapters.ScopeRestartCast, nil
+}
+
+func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
+	saver := &fakeRestartCastSaver{}
+
+	// fakeRestartCastSaver.Save always returns ScopeRestartCast,
+	// so any save triggers the toast path.
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=bff" +
+			"&video.aspect_mode=zoom" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	// Wire the server with the restart-cast saver directly.
+	reg := adapters.NewRegistry()
+	s, err := New(Config{Registry: reg, BridgeSaver: saver})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux2 := http.NewServeMux()
+	s.Mount(mux2)
+	mux2.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, "cast restarted") {
+		t.Errorf("expected restart-cast toast in body; got: %s", out)
+	}
+}
+
+type fakeRestartBridgeSaver struct {
+	fakeBridgeSaver
+}
+
+func (f *fakeRestartBridgeSaver) Save(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+	return adapters.ScopeRestartBridge, nil
+}
+
+func TestToast_RestartBridge_HasCopyButton(t *testing.T) {
+	saver := &fakeRestartBridgeSaver{}
+	reg := adapters.NewRegistry()
+	srv, err := New(Config{Registry: reg, BridgeSaver: saver})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=root" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32600" +
+			"&data_dir=/config")
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, "docker restart mister-groovy-relay") {
+		t.Fatalf("expected docker restart command in body; got: %s", out)
+	}
+	if !strings.Contains(out, "data-copy-target") {
+		t.Error("expected copy-to-clipboard button in toast (data-copy-target hook missing)")
+	}
+	// Inline onclick was removed in favor of the delegated handler in
+	// /ui/static/clipboard.js. Inline navigator.clipboard.writeText
+	// silently fails on plain-HTTP LAN deployments; the external script
+	// has an execCommand fallback. Regression guard: the inline form
+	// must not creep back in.
+	if strings.Contains(out, "navigator.clipboard") {
+		t.Error("inline navigator.clipboard call leaked into toast (must be handled by clipboard.js)")
 	}
 }
 

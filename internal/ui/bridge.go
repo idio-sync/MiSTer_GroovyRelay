@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,10 +16,14 @@ import (
 // Toast is optional (nil = no toast); Sections is always populated
 // in the order Network → Video → Audio → Server. FirstRun drives
 // the quick-start banner when the bridge hasn't been configured yet.
+// AppliedPipKeys lists field keys that were just successfully
+// hot-swapped; the template renders a <span class="gr-pip applied">
+// next to each. Spec §6.2.
 type bridgePanelData struct {
-	Toast    *toastData
-	Sections []bridgeSection
-	FirstRun bool
+	Toast          *toastData
+	Sections       []bridgeSection
+	FirstRun       bool
+	AppliedPipKeys []string
 }
 
 type bridgeSection struct {
@@ -71,7 +76,7 @@ func (s *Server) handleBridgeGET(w http.ResponseWriter, r *http.Request) {
 		s.renderPanel(w, "bridge-panel", data)
 		return
 	}
-	s.renderShellWithPanel(w, "bridge-panel", data)
+	s.renderShellWithPanel(w, r, "bridge-panel", data)
 }
 
 // handleBridgeDismissFirstRun persists the first-run dismissal and
@@ -148,20 +153,27 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Success — re-render with updated values + scope-appropriate toast.
-	toast := scopeToast(scope)
-	if scope == adapters.ScopeRestartBridge && candidate.UI.HTTPPort != old.UI.HTTPPort {
-		// Spell out the reconnect URL so the operator doesn't have to
-		// guess which port to hit after the container restart.
-		host := r.Host
-		if idx := strings.Index(host, ":"); idx >= 0 {
-			host = host[:idx]
-		}
-		toast.NewURL = fmt.Sprintf("http://%s:%d/", host, candidate.UI.HTTPPort)
-	}
+	// Success — re-render with updated values + scope-appropriate feedback.
+	// Per spec §6.2, ScopeHotSwap renders an inline pip per changed field
+	// instead of a toast. ScopeRestartCast and ScopeRestartBridge keep the
+	// toast.
 	data := bridgePanelData{
-		Toast:    toast,
 		Sections: buildBridgeSections(s.cfg.BridgeSaver.Current(), nil),
+	}
+	switch scope {
+	case adapters.ScopeHotSwap:
+		data.AppliedPipKeys = hotSwapDiffKeys(old, candidate)
+	case adapters.ScopeRestartCast, adapters.ScopeRestartBridge:
+		data.Toast = scopeToast(scope)
+		if scope == adapters.ScopeRestartBridge && candidate.UI.HTTPPort != old.UI.HTTPPort {
+			// Spell out the reconnect URL so the operator doesn't have to
+			// guess which port to hit after the container restart.
+			host := r.Host
+			if idx := strings.Index(host, ":"); idx >= 0 {
+				host = host[:idx]
+			}
+			data.Toast.NewURL = fmt.Sprintf("http://%s:%d/", host, candidate.UI.HTTPPort)
+		}
 	}
 	s.renderPanel(w, "bridge-panel", data)
 }
@@ -196,21 +208,53 @@ func (s *Server) renderPanel(w http.ResponseWriter, name string, data any) {
 // buildBridgeSections groups bridgeFields() by Section in render
 // order, populating each row's current value from cur and overlaying
 // per-field parse errors from errs.
+//
+// Render order: ascending by SectionOrder (lowest first), with ties
+// broken by the order each section's first field appears in the
+// bridgeFields() slice. Sections whose fields all have SectionOrder=0
+// retain "first-field-wins" registration order — back-compatible
+// with the pre-§8.1 contract.
 func buildBridgeSections(cur config.BridgeConfig, errs FormErrors) []bridgeSection {
-	byName := map[string]*bridgeSection{}
-	order := []string{}
-	for _, fd := range bridgeFields() {
-		sec, ok := byName[fd.Section]
-		if !ok {
-			sec = &bridgeSection{Name: fd.Section}
-			byName[fd.Section] = sec
-			order = append(order, fd.Section)
-		}
-		sec.Rows = append(sec.Rows, rowFor(fd, cur, errs))
+	type secMeta struct {
+		section *bridgeSection
+		order   int
+		regIdx  int
 	}
-	out := make([]bridgeSection, 0, len(order))
-	for _, n := range order {
-		out = append(out, *byName[n])
+	byName := map[string]*secMeta{}
+	regCounter := 0
+
+	for _, fd := range bridgeFields() {
+		meta, ok := byName[fd.Section]
+		if !ok {
+			meta = &secMeta{
+				section: &bridgeSection{Name: fd.Section},
+				order:   fd.SectionOrder,
+				regIdx:  regCounter,
+			}
+			byName[fd.Section] = meta
+			regCounter++
+		} else if fd.SectionOrder != 0 && (meta.order == 0 || fd.SectionOrder < meta.order) {
+			// Lowest non-zero SectionOrder wins.
+			meta.order = fd.SectionOrder
+		}
+		meta.section.Rows = append(meta.section.Rows, rowFor(fd, cur, errs))
+	}
+
+	all := make([]*secMeta, 0, len(byName))
+	for _, m := range byName {
+		all = append(all, m)
+	}
+	// Stable sort: order ascending, then registration index ascending.
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].order != all[j].order {
+			return all[i].order < all[j].order
+		}
+		return all[i].regIdx < all[j].regIdx
+	})
+
+	out := make([]bridgeSection, 0, len(all))
+	for _, m := range all {
+		out = append(out, *m.section)
 	}
 	return out
 }
@@ -255,8 +299,58 @@ func rowFor(fd adapters.FieldDef, cur config.BridgeConfig, errs FormErrors) brid
 		// StringValue stays empty: never echo a stored password into HTML.
 		// The preserve-on-empty conditional in handleBridgePOST recovers
 		// the prior value when the operator submits without retyping.
+	case adapters.KindAction:
+		// Spec §8.1: rendered as a button. Key is the relative POST
+		// endpoint (e.g. "mister/launch" mounts at
+		// /ui/bridge/mister/launch). No input value.
+		r.Kind = "action"
 	}
 	return r
+}
+
+// hotSwapDiffKeys returns the set of FieldDef keys whose value differs
+// between old and next, restricted to fields whose ApplyScope is
+// ScopeHotSwap. Used to pin the applied-live pip to exactly the
+// changed fields. (Param named `next` instead of `new` to avoid
+// shadowing the builtin.)
+func hotSwapDiffKeys(old, next config.BridgeConfig) []string {
+	var out []string
+	for _, fd := range bridgeFields() {
+		if fd.ApplyScope != adapters.ScopeHotSwap {
+			continue
+		}
+		if fd.Kind == adapters.KindAction {
+			continue // not a value field
+		}
+		if bridgeFieldsEqual(fd.Key, old, next) {
+			continue
+		}
+		out = append(out, fd.Key)
+	}
+	return out
+}
+
+// bridgeFieldsEqual reports whether the named field has the same value
+// in old and next. Comparisons go through the same lookup helpers
+// rowFor uses, so type quirks (int-as-string) are handled consistently.
+//
+// bridgeFields() Keys are unique by contract — the first match below
+// is canonical and we return immediately.
+func bridgeFieldsEqual(key string, old, next config.BridgeConfig) bool {
+	for _, fd := range bridgeFields() {
+		if fd.Key != key {
+			continue
+		}
+		switch fd.Kind {
+		case adapters.KindBool:
+			return bridgeLookupBool(key, old) == bridgeLookupBool(key, next)
+		case adapters.KindInt:
+			return bridgeLookupInt(key, old) == bridgeLookupInt(key, next)
+		default:
+			return bridgeLookupString(key, old) == bridgeLookupString(key, next)
+		}
+	}
+	return true
 }
 
 // bridgeLookupString returns the current string value for a dotted

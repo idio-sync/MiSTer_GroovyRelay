@@ -2,7 +2,14 @@
 {{if .}}
 <div class="toast {{.Class}}" id="toast" hx-swap-oob="innerHTML:#toast-slot">
 	<div>{{.Message}}</div>
-	{{if .Command}}<pre>{{.Command}}</pre>{{end}}
+	{{if .Command}}
+	<div class="toast-pre-wrap">
+		<pre id="toast-cmd">{{.Command}}</pre>
+		<button type="button" class="toast-copy-btn" data-copy-target="#toast-cmd">
+			copy
+		</button>
+	</div>
+	{{end}}
 	{{if .NewURL}}<div class="help">After restart, the settings UI will be at:</div><pre>{{.NewURL}}</pre>{{end}}
 </div>
 {{end}}

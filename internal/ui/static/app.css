@@ -29,6 +29,8 @@
 
 :root {
 	color-scheme: dark;
+
+	/* ---- Legacy tokens (still in use; will be removed in PR 2 cleanup) ---- */
 	--bg:       oklch(0.17 0.015 60);
 	--surface:  oklch(0.22 0.018 60);
 	--border:   oklch(0.32 0.022 60);
@@ -39,6 +41,19 @@
 	--warn:     oklch(0.78 0.15 85);
 	--err:      oklch(0.65 0.22 25);
 
+	/* ---- New token system (Spec §4.1).
+	       Hue shifted from ~60-65 to 80 for warmer Plex-cousin signature. ---- */
+	--gr-bg:        oklch(0.20 0.008 80);
+	--gr-surface:   oklch(0.25 0.010 80);
+	--gr-surface-2: oklch(0.29 0.012 80);
+	--gr-border:    oklch(0.36 0.015 80);
+	--gr-text:      oklch(0.94 0.012 85);
+	--gr-dim:       oklch(0.65 0.012 80);
+	--gr-amber:     oklch(0.78 0.16 80);
+	--gr-ok:        oklch(0.72 0.14 150);
+	--gr-warn:      oklch(0.78 0.15 70);
+	--gr-err:       oklch(0.65 0.22 25);
+
 	--font-display: 'Space Grotesk', sans-serif;
 	--font-body:    'Inter Tight', sans-serif;
 	--font-mono:    'JetBrains Mono', ui-monospace, monospace;
@@ -48,8 +63,8 @@
 html, body { margin: 0; padding: 0; }
 
 body {
-	background: var(--bg);
-	color: var(--text);
+	background: var(--gr-bg);
+	color: var(--gr-text);
 	font-family: var(--font-body);
 	font-size: 15px;
 	line-height: 1.45;
@@ -64,8 +79,9 @@ body {
 }
 
 .sidebar {
-	border-right: 1px solid var(--border);
+	border-right: 1px solid var(--gr-border);
 	padding: 32px 24px;
+	background: oklch(0.18 0.008 80); /* slightly darker than --gr-bg */
 }
 .sidebar h2 {
 	font-family: var(--font-display);
@@ -73,7 +89,7 @@ body {
 	font-weight: 600;
 	letter-spacing: 0.12em;
 	text-transform: uppercase;
-	color: var(--text-dim);
+	color: var(--gr-dim);
 	margin: 0 0 12px;
 }
 .sidebar ul { list-style: none; margin: 0 0 24px; padding: 0; }
@@ -85,18 +101,18 @@ body {
 	padding: 6px 10px;
 	margin: 0 -10px;
 	border-radius: 4px;
-	color: var(--text);
+	color: var(--gr-text);
 	text-decoration: none;
 	font-size: 14px;
 }
-.sidebar a:hover { background: var(--surface); }
-.sidebar a.active { color: var(--accent); }
+.sidebar a:hover { background: var(--gr-surface); }
+.sidebar a.active { color: var(--gr-amber); background: var(--gr-surface); }
 
-.dot { font-family: var(--font-mono); font-size: 14px; width: 12px; display: inline-block; text-align: center; }
-.dot.run { color: var(--ok); }
-.dot.starting { color: var(--warn); }
-.dot.err { color: var(--err); }
-.dot.off { color: var(--text-dim); }
+.dot { font-family: var(--font-mono); width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--gr-dim); }
+.dot.run { background: var(--gr-ok); box-shadow: 0 0 4px oklch(0.72 0.14 150 / 0.6); }
+.dot.starting { background: var(--gr-warn); }
+.dot.err { background: var(--gr-err); }
+.dot.off { background: var(--gr-dim); }
 
 .panel {
 	padding: 40px 48px;
@@ -105,12 +121,13 @@ body {
 
 .panel h1 {
 	font-family: var(--font-display);
-	font-size: 28px;
+	font-size: clamp(22px, 2.5vw, 28px);
 	font-weight: 600;
 	margin: 0 0 4px;
+	letter-spacing: -0.015em;
 }
 .panel .subtitle {
-	color: var(--text-dim);
+	color: var(--gr-dim);
 	margin: 0 0 32px;
 	font-size: 14px;
 }
@@ -120,13 +137,13 @@ body {
 }
 .section h3 {
 	font-family: var(--font-display);
-	font-size: 16px;
+	font-size: 14px;
 	font-weight: 600;
-	color: var(--text);
+	color: var(--gr-text);
 	margin: 0 0 12px;
 }
 .section h3 .num {
-	color: var(--text-dim);
+	color: var(--gr-dim);
 	font-family: var(--font-mono);
 	font-weight: 400;
 	margin-right: 8px;
@@ -140,63 +157,63 @@ body {
 	padding: 8px 0;
 }
 .field label {
-	color: var(--text-dim);
+	color: var(--gr-dim);
 	font-size: 14px;
 	padding-top: 2px;
 }
 .field .value {
 	font-family: var(--font-mono);
-	color: var(--text);
+	color: var(--gr-text);
 }
 .field .help {
 	grid-column: 2;
 	font-size: 12px;
-	color: var(--text-dim);
+	color: var(--gr-dim);
 	margin-top: 4px;
 }
 .field .err {
 	grid-column: 2;
 	font-size: 12px;
-	color: var(--err);
+	color: var(--gr-err);
 	margin-top: 4px;
 	font-family: var(--font-mono);
 }
 .field input[type="text"], .field input[type="password"], .field input[type="number"] {
 	background: transparent;
 	border: 0;
-	border-bottom: 1px solid var(--border);
-	color: var(--text);
+	border-bottom: 1px solid var(--gr-border);
+	color: var(--gr-text);
 	font-family: var(--font-mono);
 	font-size: 14px;
 	padding: 2px 0;
 	width: 100%;
 	outline: none;
 }
-.field input:focus { border-bottom-color: var(--accent); }
+.field input:focus { border-bottom-color: var(--gr-amber); }
 
 .status-line {
 	font-family: var(--font-mono);
 	font-size: 14px;
 }
-.status-line.run { color: var(--ok); }
-.status-line.err { color: var(--err); }
-.status-line.off { color: var(--text-dim); }
-.status-line.starting { color: var(--warn); }
+.status-line.run { color: var(--gr-ok); }
+.status-line.err { color: var(--gr-err); }
+.status-line.off { color: var(--gr-dim); }
+.status-line.starting { color: var(--gr-warn); }
 
 .btn {
 	font-family: var(--font-body);
 	font-size: 14px;
 	padding: 8px 18px;
-	border: 1px solid var(--accent);
+	border: 1px solid var(--gr-amber);
 	background: transparent;
-	color: var(--accent);
+	color: var(--gr-amber);
 	cursor: pointer;
 	border-radius: 2px;
 }
-.btn:hover { background: var(--accent); color: var(--bg); }
+.btn:hover { background: var(--gr-amber); color: var(--gr-bg); }
 .btn.ghost {
 	border: 0;
-	color: var(--text-dim);
+	color: var(--gr-dim);
 	padding-left: 0;
 }
 .btn.ghost::before { content: "── "; }
@@ -207,12 +224,12 @@ body {
 	right: 24px;
 	min-width: 280px;
 	padding: 12px 16px;
-	background: var(--surface);
-	border-left: 3px solid var(--ok);
-	color: var(--text);
+	background: var(--gr-surface);
+	border-left: 3px solid var(--gr-ok);
+	color: var(--gr-text);
 	font-size: 14px;
 }
-.toast.err { border-left-color: var(--err); }
+.toast.err { border-left-color: var(--gr-err); }
 .toast pre { font-family: var(--font-mono); font-size: 13px; margin: 8px 0 0; }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -228,3 +245,65 @@ body {
 		to   { opacity: 1; transform: translateY(0); }
 	}
 }
+
+/* ---- Applied-live pip (Spec §6.2) ----
+   Rendered server-side next to a hot-swap-saved field. Animates out
+   over 3s and is non-interactive after. Pure CSS — no JavaScript. */
+.gr-pip {
+	display: inline-block;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--gr-ok);
+	margin-left: 8px;
+	opacity: 1;
+}
+.gr-pip.applied {
+	animation: gr-pip-fade 3s ease-out forwards;
+}
+@keyframes gr-pip-fade {
+	0%   { opacity: 1; transform: translateY(0); }
+	66%  { opacity: 1; transform: translateY(0); }
+	100% { opacity: 0; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.gr-pip.applied {
+		animation: none;
+		opacity: 1;
+	}
+}
+
+.toast-pre-wrap { position: relative; margin-top: 8px; }
+.toast-pre-wrap pre { margin: 0; padding-right: 56px; }
+.toast-copy-btn {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	padding: 2px 8px;
+	font-family: var(--font-body);
+	font-size: 11px;
+	color: var(--gr-dim);
+	background: transparent;
+	border: 1px solid var(--gr-border);
+	border-radius: 2px;
+	cursor: pointer;
+}
+.toast-copy-btn:hover { color: var(--gr-text); border-color: var(--gr-amber); }
+
+/* ---- gr-callout (Spec §6.3.1) ----
+   Bordered status/info box for adapter-emitted HTML fragments.
+   Severity modifiers: .ok / .warn / .err. */
+.gr-callout {
+	background: var(--gr-surface);
+	border: 1px solid var(--gr-border);
+	border-left: 3px solid var(--gr-dim);
+	padding: 10px 14px;
+	margin: 8px 0;
+	font-size: 13px;
+	color: var(--gr-text);
+}
+.gr-callout.ok    { border-left-color: var(--gr-ok); }
+.gr-callout.warn  { border-left-color: var(--gr-warn); }
+.gr-callout.err   { border-left-color: var(--gr-err); }
+.gr-callout p { margin: 0; }
+.gr-callout p + p { margin-top: 6px; }
+.gr-callout code { font-family: var(--font-mono); font-size: 12px; }

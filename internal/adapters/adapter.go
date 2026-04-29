@@ -121,6 +121,12 @@ type FieldDef struct {
 	ApplyScope  ApplyScope
 	Placeholder string
 	Section     string
+	// SectionOrder is the explicit render-order weight for this field's
+	// section. The lowest SectionOrder among fields tagged with the
+	// same Section name sets that section's render order. Zero falls
+	// back to "first-field-wins" registration order — back-compatible
+	// with adapters that don't set it. See spec §8.1.
+	SectionOrder int
 }
 
 type FieldKind int
@@ -131,6 +137,12 @@ const (
 	KindBool
 	KindEnum
 	KindSecret
+	// KindAction renders as a button rather than an input. Key is
+	// the relative POST endpoint suffix (e.g. "mister/launch" mounts
+	// at /ui/bridge/mister/launch); Label is the button text.
+	// ApplyScope and Default are ignored. KindAction rows are skipped
+	// by all TOML serialization paths. See spec §8.1.
+	KindAction
 )
 
 // ---- Validation errors ----

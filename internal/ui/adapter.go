@@ -66,7 +66,7 @@ func (s *Server) handleAdapterGET(w http.ResponseWriter, r *http.Request) {
 		s.renderPanel(w, "adapter-panel", data)
 		return
 	}
-	s.renderShellWithPanel(w, "adapter-panel", data)
+	s.renderShellWithPanel(w, r, "adapter-panel", data)
 }
 
 // buildAdapterPanelData assembles the template data: status line,
@@ -168,6 +168,11 @@ func adapterRowFor(fd adapters.FieldDef, vals map[string]any, errs FormErrors) b
 		r.Kind = "text"
 		r.InputType = "password"
 		r.Placeholder = "Leave empty to keep existing"
+	case adapters.KindAction:
+		// Spec §8.1: rendered as a button. Key is the relative POST
+		// endpoint suffix (e.g. "pair/start" mounts at
+		// /ui/adapter/<name>/pair/start). No input value.
+		r.Kind = "action"
 	}
 	return r
 }
@@ -411,6 +416,11 @@ func formToAdapterTOML(form url.Values, fields []adapters.FieldDef) ([]byte, For
 	errs := FormErrors{}
 	var buf bytes.Buffer
 	for _, fd := range fields {
+		// KindAction is a button, not a value — never serialize.
+		// Spec §8.1.
+		if fd.Kind == adapters.KindAction {
+			continue
+		}
 		raw := form.Get(fd.Key)
 		switch fd.Kind {
 		case adapters.KindText, adapters.KindSecret:
