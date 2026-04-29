@@ -150,23 +150,24 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName string)
 	return nil
 }
 
-// RevokeDevice DELETEs the bridge's device record at plex.tv via the v2
-// endpoint, which both removes the row from the user's authorized-devices
-// list and invalidates the auth token server-side. Called on Unlink so a
-// previously-leaked token can't be reused. Best-effort from the caller's
-// perspective: handleUnlink logs and proceeds with local cleanup regardless.
+// RevokeDevice DELETEs the bridge's device record at plex.tv, which both
+// removes the row from the user's authorized-devices list and invalidates
+// the auth token server-side. Called on Unlink so a previously-leaked token
+// can't be reused. Best-effort from the caller's perspective: handleUnlink
+// logs and proceeds with local cleanup regardless.
 //
-// Uses /api/v2/devices/{uuid} with X-Plex-Token in the header (not the query
-// string). RegisterDevice is still on the legacy /devices/{uuid} path; see
-// docs/roadmap.md for the migration question.
+// Uses the legacy /devices/{uuid}.xml path with X-Plex-Token as a query
+// parameter — same wire convention as RegisterDevice in this file and as
+// python-plexapi's MyPlexDevice.delete(). Plex's v2 device endpoints are
+// undocumented (no public OpenAPI, no forum guidance from staff), so the
+// legacy path is the only one with a reference implementation we can point
+// at. See docs/roadmap.md for the broader v2 vs legacy investigation.
 func RevokeDevice(uuid, token string) error {
 	req, err := http.NewRequest(http.MethodDelete,
-		fmt.Sprintf("%s/api/v2/devices/%s", PlexAPIBase, uuid), nil)
+		fmt.Sprintf("%s/devices/%s.xml?X-Plex-Token=%s", PlexAPIBase, uuid, token), nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Plex-Token", token)
-	req.Header.Set("Accept", "application/json")
 	resp, err := plexHTTPClient.Do(req)
 	if err != nil {
 		return err

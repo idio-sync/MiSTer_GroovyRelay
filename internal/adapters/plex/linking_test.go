@@ -247,19 +247,20 @@ func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
 	}
 }
 
-// TestRevokeDevice_DeletesViaV2Endpoint verifies the unlink token-revoke path
-// hits plex.tv's v2 device endpoint with the auth token in the X-Plex-Token
-// header, so the device record disappears from the user's authorized-devices
-// list and the token is invalidated server-side.
-func TestRevokeDevice_DeletesViaV2Endpoint(t *testing.T) {
-	var gotMethod, gotPath, gotTokenHeader, gotTokenQuery, gotAccept string
+// TestRevokeDevice_DeletesViaLegacyXMLEndpoint verifies the unlink token-revoke
+// path hits plex.tv's legacy /devices/{uuid}.xml endpoint with the auth token
+// as a query parameter, matching python-plexapi's reference implementation
+// and RegisterDevice's wire-format conventions in this same file. Plex's v2
+// device endpoints are undocumented; the legacy path is what working Plex
+// client SDKs actually use in production.
+func TestRevokeDevice_DeletesViaLegacyXMLEndpoint(t *testing.T) {
+	var gotMethod, gotPath, gotTokenHeader, gotTokenQuery string
 	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotTokenHeader = r.Header.Get("X-Plex-Token")
 		gotTokenQuery = r.URL.Query().Get("X-Plex-Token")
-		gotAccept = r.Header.Get("Accept")
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
@@ -273,19 +274,17 @@ func TestRevokeDevice_DeletesViaV2Endpoint(t *testing.T) {
 	if gotMethod != http.MethodDelete {
 		t.Errorf("expected DELETE, got %s", gotMethod)
 	}
-	if gotPath != "/api/v2/devices/uuid-xyz" {
-		t.Errorf("expected /api/v2/devices/uuid-xyz, got %s", gotPath)
+	if gotPath != "/devices/uuid-xyz.xml" {
+		t.Errorf("expected /devices/uuid-xyz.xml, got %s", gotPath)
 	}
-	// v2 convention: token in header, not query string. The test pins this so
-	// a future migration of RegisterDevice to v2 doesn't accidentally diverge.
-	if gotTokenHeader != "tok-123" {
-		t.Errorf("expected X-Plex-Token header tok-123, got %q", gotTokenHeader)
+	// Legacy convention: token in query string, matching RegisterDevice and
+	// python-plexapi. Pinning this so a future v2 attempt doesn't accidentally
+	// land in tree without explicit migration of the whole device path family.
+	if gotTokenQuery != "tok-123" {
+		t.Errorf("expected X-Plex-Token query=tok-123, got %q", gotTokenQuery)
 	}
-	if gotTokenQuery != "" {
-		t.Errorf("token must not appear as query parameter; got %q", gotTokenQuery)
-	}
-	if gotAccept != "application/json" {
-		t.Errorf("expected Accept: application/json, got %q", gotAccept)
+	if gotTokenHeader != "" {
+		t.Errorf("token must not appear as header; got %q", gotTokenHeader)
 	}
 }
 

@@ -86,8 +86,8 @@ func TestLinkUnlink_CallsRevokeBeforeLocalCleanup(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		gotMethod = r.Method
 		gotPath = r.URL.Path
-		gotToken = r.Header.Get("X-Plex-Token")
-		w.WriteHeader(http.StatusNoContent)
+		gotToken = r.URL.Query().Get("X-Plex-Token")
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
@@ -116,8 +116,8 @@ func TestLinkUnlink_CallsRevokeBeforeLocalCleanup(t *testing.T) {
 	if gotMethod != http.MethodDelete {
 		t.Errorf("expected DELETE, got %s", gotMethod)
 	}
-	if gotPath != "/api/v2/devices/uuid-revoke" {
-		t.Errorf("expected /api/v2/devices/uuid-revoke, got %s", gotPath)
+	if gotPath != "/devices/uuid-revoke.xml" {
+		t.Errorf("expected /devices/uuid-revoke.xml, got %s", gotPath)
 	}
 	if gotToken != "tok-revoke" {
 		t.Errorf("expected snapshotted token tok-revoke, got %q", gotToken)
