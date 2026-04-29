@@ -2,15 +2,15 @@
 
 <img align="right" width="200" src=".github/screenshots/plex_dash.png">
 
-Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and Plex seek/skip/etc. is wonky. 100% usable though.
+Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and seek/skip/etc. is wonky, depending on teh source. 100% usable though.
 
-A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Server; it advertises itself as a Plex cast target on the LAN, and when you pick it from the Plex client's "Cast" menu it transcodes the Plex output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
+A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
 ## Video Sources
 - Plex
 - Jellyfin (initial support, still needs polish)
-- URL to file (Archive.org .mkv, .mp4, etc.)
-- YouTube URL (and other sites supported by yt-dlp)
+- URL to video file (Archive.org .mkv, .mp4, etc.)
+- YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 
 ## Future Plans
 - Support for more relay sources:
@@ -19,17 +19,17 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex Media Serv
   - Moonlight/Sunshine
 - Companion browser extension, cast video from right click
 - Music visualizer
-- Better webui/dashboard
+- Better webui/dashboard and setup wizard
 - Home Assistant integration
 
 ## Hardware requirements
 
-- MiSTer FPGA with Analogue I/O board (or equivalent) wired to a   15 kHz-capable CRT (consumer, PVM, arcade, etc.)
+- MiSTer FPGA with Analogue I/O board (or equivalent) wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
 - Groovy_MiSTer installed on your MiSTer
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a Raspberry Pi 4/5), anything with a few spare CPU cycles and gigabit-class networking.
-- A Plex Media Server reachable from that host
+- A Plex/Jellyfin Media Server reachable from that host (optional)
 
-The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast.
+The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this container takes 480p form the server to 480i.
 
 ## Quick start (Docker)
 
@@ -80,12 +80,11 @@ or `https://` URL into the **URL** panel in the settings UI and click
   - Vimeo, Dailymotion
   - Internet Archive items
   - SoundCloud, Bandcamp tracks
-  - ...and most other yt-dlp-supported sites (see auto-resolves list in
-    the panel for the curated default; add more via
-    `[adapters.url].ytdlp_hosts`)
+  - ...and most other yt-dlp-supported sites (see "auto-resolves" list in
+    the panel for the curated default, can add more upon request)
 
 Sessions are fire-and-forget: they run to EOF or until preempted by
-another POST. In-session pause/seek isn't implemented yet.
+another POST. In-session pause/seek exists in a basic state in the web-ui, but I will polish it in a later pass.
 
 ### How routing works
 
@@ -145,7 +144,7 @@ The `Origin` header is required because the adapter's POST endpoint runs through
 
 URL credentials in the form `https://user:pass@host/path` are redacted in the panel display, the success response body, and all log lines. The JSON response echoes the URL verbatim, the API caller already submitted it.
 
-### Self-update
+### Yt-dlp self-update
 
 The Docker image bundles a recent yt-dlp binary at build time. On each
 container start, the entrypoint runs `yt-dlp -U` (gated by a daily
@@ -157,7 +156,7 @@ log a warning; the bundled version stays usable.
 Once the bridge is running, point a browser at `http://<host>:32500/` (or whatever `bridge.ui.http_port` is set to). The settings page lets you:
 
 - Flip `interlace_field_order` live — No cast drop, no restart. Flip, look at the CRT, flip back.
-- Link your Plex account in-browser — Click **Link Plex Account**, enter the 4-character code at plex.tv/link, done.
+- Link your Plex/Jellyfin account in-browser — Click **Link Plex/Jellyfin Account**, enter the 4-character code at plex.tv/link, for Plex, your JF user/pass for JF.
 - Enable or disable adapters with a toggle
 - See at a glance which adapters are running (green dot), stopped (grey), or erroring (red + last error as tooltip).
 
@@ -174,9 +173,9 @@ Each field is tagged with an apply scope so the UI tells you what it just did: *
 3. **Open the UI.** Browse to `http://<docker-host>:32500/`. You'll land on the Bridge panel with a quick-start banner. Fill in your MiSTer's IP under **Network → MiSTer Host**, click **Save Bridge**. Because `bridge.mister.host` is a restart-bridge field (the UDP sender is bound at startup), the UI tells you to restart the
    container. `docker restart mister-groovy-relay` and reload.
 
-4. **Link Plex.** Click **Plex** in the sidebar → **Link Plex Account**. Copy the 4-character code, open `plex.tv/link` in a new tab, paste, click **Allow**. The UI transitions to *Linked · RUN* within ~2 seconds.
+4. **Link Plex/JF.** Link servers as outlined above. The UI transitions to *Linked · RUN* within ~2 seconds and you're good to go.
 
-5. **First cast.** Open Plex on your phone or browser, pick a video, tap the cast icon, pick your bridge from the target list. Video appears in 1–2 seconds.
+5. **First cast.** Open Plex/Jellyfin on your phone or browser, pick a video, tap the cast icon, pick your bridge from the target list. Video appears in 1–2 seconds.
 
 ## Operational notes
 
