@@ -154,6 +154,24 @@ func (a *Adapter) lookupReporter(refKey string) *reporter {
 	return a.reporters[refKey]
 }
 
+// pokeActiveReporter wakes the reporter whose refKey matches
+// currentRefKey. Called from HandlePlaystate after Pause/Unpause/Seek
+// so a fresh PlaybackProgress lands in JF within ms instead of
+// waiting up to 10 s for the next tick. No-op when no reporter is
+// registered (e.g. between cast sessions).
+func (a *Adapter) pokeActiveReporter() {
+	a.mu.Lock()
+	r, ok := a.reporters[a.currentRefKey]
+	a.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case r.wakeup <- struct{}{}:
+	default:
+	}
+}
+
 // runReporter is the per-session goroutine. Emits PlaybackStart once,
 // then PlaybackProgress on each tick or wakeup poke, classifying the
 // session-end via Status() + currentRefKey identity check. Pings the

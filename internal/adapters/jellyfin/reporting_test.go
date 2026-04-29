@@ -426,6 +426,58 @@ func TestReporter_StoppedRetriesOnTransientFailure(t *testing.T) {
 	}
 }
 
+// TestReporter_PauseFlushesProgressImmediately verifies that
+// HandlePlaystate{Pause} pokes the reporter wakeup channel so the
+// IsPaused flip lands in JF within ms instead of waiting for the
+// next 10 s tick. Pause() does NOT fire OnStop, so without an
+// explicit poke the dashboard would lag by up to a tick.
+func TestReporter_PauseFlushesProgressImmediately(t *testing.T) {
+	cap := &capturedREST{}
+	srv := cap.install(t)
+
+	mgr := &fakeManager{st: core.SessionStatus{
+		State: core.StatePlaying, AdapterRef: "itm-1:ps-7",
+	}}
+	a := New(mgr, t.TempDir(), "dev-1")
+	a.currentRefKey = "itm-1:ps-7"
+
+	a.spawnReporter(reporterParams{
+		ItemID: "itm-1", PlaySessionID: "ps-7", MediaSourceID: "src-1",
+		Auth: authFor(srv),
+		// Long ticker — anything we observe must come from the wakeup.
+		TickInterval: 10 * time.Second,
+	})
+	defer a.stopReporter("itm-1:ps-7")
+
+	if !waitFor(t, 1*time.Second, func() bool { return cap.startCount() >= 1 }) {
+		t.Fatal("PlaybackStart not received")
+	}
+	beforePause := cap.progCount()
+
+	// Flip the manager into Paused (HandlePlaystate calls core.Pause(),
+	// which we substitute by mutating the fake's Status return).
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StatePaused, AdapterRef: "itm-1:ps-7"}
+	mgr.mu.Unlock()
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Pause"}))
+
+	// A Progress must arrive within a fraction of the 10 s ticker.
+	if !waitFor(t, 500*time.Millisecond, func() bool {
+		return cap.progCount() > beforePause
+	}) {
+		t.Fatalf("no Progress within 500ms of Pause; progCount %d -> %d", beforePause, cap.progCount())
+	}
+
+	// And it should reflect IsPaused=true.
+	cap.mu.Lock()
+	last := cap.progs[len(cap.progs)-1]
+	cap.mu.Unlock()
+	if !last.IsPaused {
+		t.Errorf("post-Pause Progress IsPaused=false, want true")
+	}
+}
+
 // atomicInt32 is a small counter used by commands_test.go.
 type atomicInt32 struct{ v atomic.Int32 }
 

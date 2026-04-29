@@ -154,8 +154,15 @@ func (a *Adapter) HandlePlaystate(data json.RawMessage) {
 	switch p.Command {
 	case "Pause":
 		_ = a.core.Pause()
+		// Pause does NOT fire OnStop (the plane goroutine exits with
+		// runErr=Canceled and intentionally suppresses the notify so
+		// FSM stays in StatePaused). Without an explicit poke, the
+		// dashboard would wait up to 10 s for the next tick to see
+		// IsPaused flip.
+		a.pokeActiveReporter()
 	case "Unpause":
 		_ = a.core.Play()
+		a.pokeActiveReporter()
 	case "PlayPause":
 		st := a.core.Status()
 		if st.State == core.StatePlaying {
@@ -163,11 +170,19 @@ func (a *Adapter) HandlePlaystate(data json.RawMessage) {
 		} else if st.State == core.StatePaused {
 			_ = a.core.Play()
 		}
+		a.pokeActiveReporter()
 	case "Stop":
+		// Stop fires OnStop("stopped") which pokes the reporter
+		// itself, so no explicit poke needed here.
 		_ = a.core.Stop()
 	case "Seek":
 		ms := int(p.SeekPositionTicks / 10_000)
 		_ = a.core.SeekTo(ms)
+		// SeekTo re-spawns the plane and fires OnStop("preempted")
+		// on the prior request, but that path is async and may take
+		// longer than a direct wakeup. Poke explicitly so the new
+		// PositionTicks lands in JF within ms.
+		a.pokeActiveReporter()
 	case "NextTrack":
 		if qi, ok := a.popQueueHead(); ok {
 			a.startQueuedItem(qi)
