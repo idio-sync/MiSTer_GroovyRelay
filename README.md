@@ -2,7 +2,7 @@
 
 <img align="right" width="200" src=".github/screenshots/plex_dash.png">
 
-Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and seek/skip/etc. is wonky, depending on teh source. 100% usable though.
+Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and seek/skip/etc. is wonky, depending on the source. 100% usable though.
 
 A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
