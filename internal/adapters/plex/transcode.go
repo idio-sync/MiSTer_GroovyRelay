@@ -59,19 +59,25 @@ func NewTranscodeSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// BuildTranscodeURL constructs a PMS /video/:/transcode/universal/start.mkv
+// BuildTranscodeURL constructs a PMS /video/:/transcode/universal/start.ts
 // URL with all the parameters PMS needs to force a server-side transcode to
 // our target profile (480p H.264, no direct play/stream). The returned URL
 // is what FFmpeg consumes as its -i input.
 //
-// Progressive MKV (rather than HLS .m3u8) is chosen because the bridge is a
-// single sequential consumer driving a fixed-format CRT: HLS's adaptive
-// bitrate, segment-level seek, and live-playlist features go unused, while
-// HLS's segmentation-buffering tax (PMS withholds the playlist until a full
-// first segment is ready) and segment-boundary PTS rewrites cause measurable
-// session-start delay and audio-leads-video skew that progressive avoids.
+// Progressive MPEG-TS (rather than HLS .m3u8 or progressive .mkv) is chosen
+// because the bridge is a single sequential consumer driving a fixed-format
+// CRT: HLS's adaptive bitrate, segment-level seek, and live-playlist
+// features go unused, while HLS's segmentation-buffering tax (PMS withholds
+// the playlist until a full first segment is ready) and segment-boundary
+// PTS rewrites cause measurable session-start delay and audio-leads-video
+// skew that progressive avoids. MPEG-TS over MKV because MPEG-TS's
+// 188-byte sync-byte packets recover gracefully from any in-stream hiccup,
+// where MKV's length-prefixed clusters can produce visible frame corruption
+// that lasts until the next keyframe; this matches the container Jellyfin's
+// adapter requests and the container PMS already produces internally for
+// HLS segments.
 func BuildTranscodeURL(r TranscodeRequest) string {
-	return r.PlexServerURL + "/video/:/transcode/universal/start.mkv?" + buildTranscodeQuery(r).Encode()
+	return r.PlexServerURL + "/video/:/transcode/universal/start.ts?" + buildTranscodeQuery(r).Encode()
 }
 
 // BuildDecisionURL targets PMS's /video/:/transcode/universal/decision endpoint
