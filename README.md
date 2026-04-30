@@ -17,6 +17,7 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin M
   - DLNA/UPnP
   - IPTV/M3U playlists
   - Moonlight/Sunshine
+- Prebuilt binaries for Windows/macOS/Linux
 - Companion browser extension, cast video from right click
 - Music visualizer
 - Better webui/dashboard and setup wizard
