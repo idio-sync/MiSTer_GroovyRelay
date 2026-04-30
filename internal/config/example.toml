@@ -47,7 +47,7 @@ ytdlp_enabled = true              # Master switch for yt-dlp resolution. When tr
 # archive.org, dailymotion.com, soundcloud.com, bandcamp.com, etc.). Override
 # below to add more (e.g. tiktok.com, x.com — note these break frequently).
 # ytdlp_hosts = ["youtube.com", "twitch.tv", "your-host.example"]
-# ytdlp_format = "bv*[height<=720][vcodec!*=av01]+ba/b[height<=720][vcodec!*=av01]/b"
+# ytdlp_format = "bv*[height<=720]+ba/bv*+ba/b"
 # ytdlp_resolve_timeout_seconds = 30
 # Cookies: paste a Netscape-format cookies.txt via the URL panel's Cookies
 # section. Saved to <data_dir>/url_cookies.txt mode 0600 — not configurable
