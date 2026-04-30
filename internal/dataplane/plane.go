@@ -511,7 +511,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			if frameNum > lastEcho {
 				currentFramesAhead = frameNum - lastEcho
 			}
-			slog.Info("dataplane stats",
+			slog.Debug("dataplane stats",
 				"window_s", 5,
 				"ticks", statTicks,
 				"fields_sent", statFieldsSent,
@@ -883,7 +883,7 @@ func (p *Plane) prebuffer(
 			}
 		}
 	}
-	slog.Info("prebuffer complete",
+	slog.Debug("prebuffer complete",
 		"video_frames", len(video),
 		"audio_chunks", len(audio),
 		"wait_ms", time.Since(start).Milliseconds())

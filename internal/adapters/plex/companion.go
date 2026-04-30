@@ -387,7 +387,7 @@ func (c *Companion) Handler() http.Handler {
 func (c *Companion) withRequestLog(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/player/") || r.URL.Path == "/resources" {
-			slog.Info("plex companion request",
+			slog.Debug("plex companion request",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"remote_addr", r.RemoteAddr,
@@ -1081,11 +1081,13 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 	// same request to correlate the reply we sent with what the controller
 	// asked for. last_play_* fields surface any cross-session metadata
 	// leaking into the reply.
-	slog.Info("plex timeline poll reply",
+	slog.Debug("plex timeline poll reply",
 		"requesting_client_id", queryOrHeader(r, "X-Plex-Client-Identifier"),
 		"remote_addr", r.RemoteAddr,
 		"wait", queryOrHeader(r, "wait"),
 		"core_state", string(st.State),
+		"time_ms", st.Position.Milliseconds(),
+		"duration_ms", st.Duration.Milliseconds(),
 		"last_play_client_id", play.ClientID,
 		"last_play_media_key", play.MediaKey,
 		"last_play_pms", play.PlexMachineID,

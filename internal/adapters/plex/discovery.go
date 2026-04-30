@@ -71,7 +71,7 @@ func (d *Discovery) Run() {
 		}
 		req := string(buf[:n])
 		if strings.HasPrefix(req, "M-SEARCH") {
-			slog.Info("plex GDM M-SEARCH received",
+			slog.Debug("plex GDM M-SEARCH received",
 				"src", src.String(),
 				"reply_uuid", d.cfg.DeviceUUID,
 				"reply_name", d.cfg.DeviceName,

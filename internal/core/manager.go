@@ -322,7 +322,7 @@ func (m *Manager) Pause() error {
 		m.active.pausedPosition = m.plane.Position()
 	}
 	if m.cancelFn != nil {
-		slog.Info("pausing active session")
+		slog.Debug("pausing active session")
 		prev := m.plane
 		m.cancelFn()
 		m.cancelFn = nil
@@ -426,7 +426,7 @@ func (m *Manager) DropActiveCast(reason string) error {
 		return nil
 	}
 	m.mu.Unlock()
-	slog.Info("dropping active cast", "reason", reason)
+	slog.Debug("dropping active cast", "reason", reason)
 	return m.Stop()
 }
 
@@ -442,7 +442,7 @@ func (m *Manager) Stop() error {
 		onStop = m.active.req.OnStop
 	}
 	if m.active != nil || m.plane != nil {
-		slog.Info("stopping active session")
+		slog.Debug("stopping active session")
 	}
 	if m.cancelFn != nil {
 		prev := m.plane
