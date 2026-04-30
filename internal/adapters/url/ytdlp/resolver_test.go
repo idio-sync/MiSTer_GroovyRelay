@@ -76,6 +76,15 @@ func TestResolve_BuildsCorrectArgv(t *testing.T) {
 	mustNotContain(t, got, "--no-warnings")
 	mustContain(t, got, "-f")
 	mustContain(t, got, "best")
+	// --js-runtimes node MUST be present: yt-dlp defaults to Deno and
+	// silently ignores Node even when Node is on PATH. Without the flag,
+	// YouTube signature/n-challenge solving fails and the format list
+	// collapses to storyboards only.
+	mustContain(t, got, "--js-runtimes")
+	mustContain(t, got, "node")
+	if i := indexOf(got, "--js-runtimes"); i < 0 || i+1 >= len(got) || got[i+1] != "node" {
+		t.Errorf("--js-runtimes not followed by 'node'; argv = %v", got)
+	}
 	// -f must be immediately followed by the format string; positional
 	// flag-with-arg ordering matters to yt-dlp.
 	if i := indexOf(got, "-f"); i < 0 || i+1 >= len(got) || got[i+1] != "best" {

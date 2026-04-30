@@ -85,9 +85,19 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 	// are the most useful diagnostic we get when format selection fails.
 	// Stderr is only consumed in the error path below, so warnings never
 	// pollute the bridge log on successful resolves.
+	//
+	// --js-runtimes node selects Node.js for yt-dlp's EJS (Embedded
+	// JavaScript Solver), which executes YouTube's signature and
+	// n-challenge functions. yt-dlp's default runtime is Deno; without
+	// this flag, yt-dlp ignores Node even when Node is on PATH and
+	// silently fails the JS challenges, leaving the format list with
+	// only storyboard images. We standardize on Node because Alpine's
+	// multi-arch nodejs package coverage is more reliable than Deno.
+	// Dockerfile installs nodejs to satisfy this.
 	args := []string{
 		"--dump-json",
 		"--no-playlist",
+		"--js-runtimes", "node",
 		"-f", format,
 	}
 	if cookiesPath != "" {
