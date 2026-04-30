@@ -224,6 +224,64 @@ func TestRead_DispatchesByMessageType(t *testing.T) {
 	}
 }
 
+// TestRead_AcceptsLargeSessionsPayload guards against the
+// coder/websocket default 32 KiB read limit silently killing the
+// long-lived JF Sessions push channel. JF emits the full session list
+// (NowPlayingItem + chapters + transcoding state per session) every
+// 1500 ms once SessionsStart subscribes, and on any reasonably-loaded
+// server that easily exceeds 32 KiB. dialWebSocket must call
+// SetReadLimit on the conn so these frames don't trip
+// StatusMessageTooBig and force the bridge into the reconnect loop.
+func TestRead_AcceptsLargeSessionsPayload(t *testing.T) {
+	srv, wsCh, _ := startTestJFServer(t)
+
+	a := New(nil, t.TempDir(), "device-1")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+
+	gotCh := make(chan int, 1)
+	a.handleInbound = func(msgType string, data json.RawMessage) {
+		if msgType == "Sessions" {
+			select {
+			case gotCh <- len(data):
+			default:
+			}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := a.startWS(ctx, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	var conn *websocket.Conn
+	select {
+	case conn = <-wsCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no ws upgrade")
+	}
+
+	// 64 KiB filler — twice the library default — ensures the read
+	// limit (if not raised) fails this frame.
+	filler := strings.Repeat("x", 64*1024)
+	payload := []byte(`{"MessageType":"Sessions","Data":"` + filler + `"}`)
+	if len(payload) <= 32*1024 {
+		t.Fatalf("payload not large enough to exercise default read limit: %d bytes", len(payload))
+	}
+	if err := conn.Write(t.Context(), websocket.MessageText, payload); err != nil {
+		t.Fatalf("conn.Write: %v", err)
+	}
+
+	select {
+	case n := <-gotCh:
+		if n < 64*1024 {
+			t.Fatalf("dispatcher saw Data of %d bytes; want at least 64 KiB", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dispatcher never saw the large Sessions frame — read limit likely tripped")
+	}
+}
+
 func TestStartWS_BuildsCorrectURL(t *testing.T) {
 	// Test the URL builder in isolation.
 	got := buildSocketURL("https://jellyfin.example.com", "tok-x", "device-y")

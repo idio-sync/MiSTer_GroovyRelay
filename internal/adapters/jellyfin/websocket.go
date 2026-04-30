@@ -62,6 +62,15 @@ func buildSocketURL(serverURL, token, deviceID string) string {
 	return fmt.Sprintf("%s://%s/socket?%s", scheme, u.Host, q.Encode())
 }
 
+// wsReadLimit caps the size of a single inbound WebSocket message.
+// coder/websocket defaults to 32 KiB, which is well below JF's
+// Sessions push payloads (full NowPlayingItem + chapters + transcoding
+// state per active session) on a busy server — exceeding the default
+// closes the conn with StatusMessageTooBig and forces the bridge into
+// the reconnect loop. 8 MiB is generous enough that benign servers
+// will never hit it while still bounding worst-case memory.
+const wsReadLimit = 8 << 20
+
 // dialWebSocket opens the JF Sessions WebSocket. 30 s dial timeout.
 func dialWebSocket(ctx context.Context, in wsDialInput) (*websocket.Conn, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -80,6 +89,7 @@ func dialWebSocket(ctx context.Context, in wsDialInput) (*websocket.Conn, error)
 	if err != nil {
 		return nil, fmt.Errorf("jellyfin: ws dial: %w", err)
 	}
+	conn.SetReadLimit(wsReadLimit)
 	return conn, nil
 }
 
