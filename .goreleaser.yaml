@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mister-groovy-relay
+    main: ./cmd/mister-groovy-relay
+    binary: mister-groovy-relay
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+release:
+  github:
+    owner: idio-sync
+    name: MiSTer_GroovyRelay
+  generate_release_notes: true
+
+checksum:
+  name_template: 'checksums.txt'
