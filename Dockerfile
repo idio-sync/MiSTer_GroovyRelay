@@ -24,7 +24,14 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/mister-groovy-relay ./cmd/mister-groovy-relay
 
 FROM alpine:3.20
-RUN apk add --no-cache ffmpeg ca-certificates tzdata curl
+# nodejs: required by yt-dlp's EJS (Embedded JavaScript Solver) to evaluate
+# YouTube's signature/n-challenge functions. Without a JS runtime on PATH,
+# yt-dlp emits "Signature solving failed" / "n challenge solving failed"
+# warnings and YouTube returns only storyboard images — no playable formats.
+# yt-dlp auto-detects deno/node/etc. from PATH; nodejs is the most reliable
+# choice on Alpine multi-arch (deno's apk package has spotty arm64 coverage).
+# +~30 MiB image growth.
+RUN apk add --no-cache ffmpeg ca-certificates tzdata curl nodejs
 # Install the yt-dlp_linux static binary. Bundles its own Python via
 # zipapp + standalone interpreter — no python3/py3-pip apk packages
 # needed. Native `yt-dlp -U` works for in-place self-update (used by
