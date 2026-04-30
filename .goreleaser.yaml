@@ -22,11 +22,13 @@ builds:
       - goos: windows
         goarch: arm64
 
+changelog:
+  use: github-native
+
 release:
   github:
     owner: idio-sync
     name: MiSTer_GroovyRelay
-  generate_release_notes: true
 
 checksum:
   name_template: 'checksums.txt'
