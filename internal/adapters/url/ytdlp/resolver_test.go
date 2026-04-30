@@ -62,13 +62,18 @@ func TestResolve_BuildsCorrectArgv(t *testing.T) {
 	}
 	got := r.calls[0]
 
-	// Required argv: --dump-json, --no-playlist, --no-warnings, -f <fmt>, <url>.
+	// Required argv: --dump-json, --no-playlist, -f <fmt>, <url>.
 	// Critical: the JSON-dump flag MUST be --dump-json. --print-json does
 	// not exist in yt-dlp; using it would fail at every invocation in
 	// production (review fix C1).
+	//
+	// MUST NOT contain --no-warnings: WARNING lines from yt-dlp are the
+	// most useful diagnostic when format resolution fails, and stderr is
+	// only consumed in the error path so warnings cannot pollute logs on
+	// successful resolves.
 	mustContain(t, got, "--dump-json")
 	mustContain(t, got, "--no-playlist")
-	mustContain(t, got, "--no-warnings")
+	mustNotContain(t, got, "--no-warnings")
 	mustContain(t, got, "-f")
 	mustContain(t, got, "best")
 	// -f must be immediately followed by the format string; positional
@@ -478,6 +483,16 @@ func mustContain(t *testing.T, argv []string, want string) {
 		}
 	}
 	t.Errorf("argv missing %q; got %v", want, argv)
+}
+
+func mustNotContain(t *testing.T, argv []string, banned string) {
+	t.Helper()
+	for _, a := range argv {
+		if a == banned {
+			t.Errorf("argv contains banned arg %q; got %v", banned, argv)
+			return
+		}
+	}
 }
 
 func indexOf(argv []string, want string) int {

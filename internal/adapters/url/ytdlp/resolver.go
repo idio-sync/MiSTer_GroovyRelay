@@ -78,10 +78,16 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 	}
 
 	// Build argv. --dump-json must be in here; --print-json is wrong.
+	//
+	// We deliberately do NOT pass --no-warnings: yt-dlp's WARNING lines
+	// ("Some formats are missing because no PO Token is provided",
+	// "nsig extraction failed", "Sign in to confirm you're not a bot")
+	// are the most useful diagnostic we get when format selection fails.
+	// Stderr is only consumed in the error path below, so warnings never
+	// pollute the bridge log on successful resolves.
 	args := []string{
 		"--dump-json",
 		"--no-playlist",
-		"--no-warnings",
 		"-f", format,
 	}
 	if cookiesPath != "" {
@@ -102,7 +108,7 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		// (yt-dlp's "ERROR: [generic] https://user:pass@host/...:" form).
 		// Callers MUST redact via the URL adapter's redactURL helper
 		// before surfacing this error to logs or HTTP responses.
-		return nil, fmt.Errorf("ytdlp: %s", lastNonEmptyLine(stderr))
+		return nil, fmt.Errorf("ytdlp: %s", summarizeStderr(stderr))
 	}
 
 	// Top-level url + http_headers are the single-stream fallback.
@@ -204,18 +210,32 @@ func classifyDualFormats(vcodec0, acodec0, vcodec1, acodec1 string) (videoIdx, a
 	}
 }
 
-// lastNonEmptyLine returns the last non-empty trimmed line of buf.
-// yt-dlp prints WARNING lines before the actual ERROR; the last
-// non-empty line is the most useful for the operator.
-func lastNonEmptyLine(buf []byte) string {
+// summarizeStderr returns up to the last 5 non-empty trimmed lines of
+// buf, joined with " | ". yt-dlp typically prints WARNING lines (e.g.
+// "Some formats are missing because no PO Token is provided", "nsig
+// extraction failed", "Sign in to confirm you're not a bot") just
+// before the final ERROR. Surfacing those in the bridge's error log
+// lets the operator diagnose root cause without re-running yt-dlp by
+// hand. The cap on lines keeps a single failed resolve from ballooning
+// a log line when yt-dlp emits dozens of debug entries.
+func summarizeStderr(buf []byte) string {
+	const maxLines = 5
 	lines := strings.Split(string(buf), "\n")
+	var keep []string
 	for i := len(lines) - 1; i >= 0; i-- {
 		s := strings.TrimSpace(lines[i])
-		if s != "" {
-			return s
+		if s == "" {
+			continue
+		}
+		keep = append([]string{s}, keep...)
+		if len(keep) >= maxLines {
+			break
 		}
 	}
-	return "no error message from yt-dlp"
+	if len(keep) == 0 {
+		return "no error message from yt-dlp"
+	}
+	return strings.Join(keep, " | ")
 }
 
 // sanitizeHeaders drops any header whose key OR value contains a CR,
