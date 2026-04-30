@@ -28,8 +28,9 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 	}
 	u := BuildTranscodeURL(req)
 	for _, substr := range []string{
-		"directPlay=0", "directStream=0", "copyts=1",
-		"videoResolution=720x480", "protocol=hls", "X-Plex-Token=xyz",
+		"/video/:/transcode/universal/start.mkv",
+		"directPlay=0", "directStream=0",
+		"videoResolution=720x480", "protocol=http", "X-Plex-Token=xyz",
 		"X-Plex-Client-Profile-Name=Plex+Home+Theater",
 		"audioStreamID=101", "subtitleStreamID=202",
 		"subtitles=burn", "advancedSubtitles=burn",
@@ -38,6 +39,12 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)
 		}
+	}
+	if strings.Contains(u, "copyts=1") {
+		t.Errorf("url should not set copyts=1 on progressive path: %s", u)
+	}
+	if strings.Contains(u, ".m3u8") {
+		t.Errorf("url should not use HLS .m3u8 extension: %s", u)
 	}
 }
 

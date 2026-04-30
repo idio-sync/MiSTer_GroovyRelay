@@ -59,12 +59,19 @@ func NewTranscodeSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// BuildTranscodeURL constructs a PMS /video/:/transcode/universal/start.m3u8
+// BuildTranscodeURL constructs a PMS /video/:/transcode/universal/start.mkv
 // URL with all the parameters PMS needs to force a server-side transcode to
 // our target profile (480p H.264, no direct play/stream). The returned URL
 // is what FFmpeg consumes as its -i input.
+//
+// Progressive MKV (rather than HLS .m3u8) is chosen because the bridge is a
+// single sequential consumer driving a fixed-format CRT: HLS's adaptive
+// bitrate, segment-level seek, and live-playlist features go unused, while
+// HLS's segmentation-buffering tax (PMS withholds the playlist until a full
+// first segment is ready) and segment-boundary PTS rewrites cause measurable
+// session-start delay and audio-leads-video skew that progressive avoids.
 func BuildTranscodeURL(r TranscodeRequest) string {
-	return r.PlexServerURL + "/video/:/transcode/universal/start.m3u8?" + buildTranscodeQuery(r).Encode()
+	return r.PlexServerURL + "/video/:/transcode/universal/start.mkv?" + buildTranscodeQuery(r).Encode()
 }
 
 // BuildDecisionURL targets PMS's /video/:/transcode/universal/decision endpoint
@@ -96,11 +103,10 @@ func buildTranscodeQuery(r TranscodeRequest) url.Values {
 	q.Set("path", r.MediaPath)
 	q.Set("mediaIndex", "0")
 	q.Set("partIndex", "0")
-	q.Set("protocol", "hls")
+	q.Set("protocol", "http")
 	q.Set("fastSeek", "1")
 	q.Set("directPlay", "0")
 	q.Set("directStream", "0")
-	q.Set("copyts", "1")
 	q.Set("videoResolution", fmt.Sprintf("%dx%d", r.OutputWidth, r.OutputHeight))
 	q.Set("maxVideoBitrate", fmt.Sprintf("%d", r.MaxBitrate))
 	q.Set("offset", fmt.Sprintf("%d", r.OffsetMs/1000))
