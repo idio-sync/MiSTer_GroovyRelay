@@ -74,7 +74,8 @@ func TestLZ4CompressInto_RoundTrip(t *testing.T) {
 		src[i] = byte(i % 256)
 	}
 	dst := make([]byte, lz4.CompressBlockBound(len(src)))
-	n, ok := LZ4CompressInto(dst, src)
+	var c lz4.Compressor
+	n, ok := LZ4CompressInto(&c, dst, src)
 	if !ok {
 		t.Fatal("compressible input returned ok=false")
 	}
@@ -97,7 +98,8 @@ func TestLZ4CompressInto_MatchesLegacy(t *testing.T) {
 	}
 	legacy, ok1 := LZ4Compress(src)
 	dst := make([]byte, lz4.CompressBlockBound(len(src)))
-	n, ok2 := LZ4CompressInto(dst, src)
+	var c lz4.Compressor
+	n, ok2 := LZ4CompressInto(&c, dst, src)
 	if ok1 != ok2 {
 		t.Fatalf("ok mismatch: legacy=%v new=%v", ok1, ok2)
 	}
@@ -112,24 +114,19 @@ func TestLZ4CompressInto_ZeroAllocs(t *testing.T) {
 		src[i] = byte(i % 13)
 	}
 	dst := make([]byte, lz4.CompressBlockBound(len(src)))
+	var c lz4.Compressor
 	// Warmup so the LZ4 library's internal state is primed.
-	LZ4CompressInto(dst, src)
+	LZ4CompressInto(&c, dst, src)
 	got := testing.AllocsPerRun(50, func() {
-		LZ4CompressInto(dst, src)
+		LZ4CompressInto(&c, dst, src)
 	})
-	// IMPLEMENTATION NOTE: pierrec/lz4/v4's lz4.Compressor declares its
-	// hash table as a pointer field allocated on first CompressBlock call.
-	// With `var c lz4.Compressor` declared as a stack-local in
-	// LZ4CompressInto, that pointer-allocation happens once per call and
-	// AllocsPerRun WILL report > 0. If this assertion fails, two options:
-	// (a) raise the threshold to a small constant like `if got > 1`,
-	// matching the existing LZ4Compress allocation profile;
-	// (b) hoist `var lz4Compressor lz4.Compressor` to package scope and
-	// guard with a sync.Mutex (the data plane is single-threaded, but the
-	// test suite is not). The spec's allocation budget is "near-zero",
-	// not "literally zero" — option (a) is consistent with the spec.
-	if got > 1 {
-		t.Errorf("LZ4CompressInto allocs/op = %v, want <= 1", got)
+	// With the Compressor hoisted to a caller-owned value, the hot path
+	// holds zero heap allocations. A regression here means either the
+	// caller stopped reusing the Compressor (each `var c lz4.Compressor`
+	// re-escapes ~136 KB) or LZ4CompressInto reintroduced a per-call
+	// alloc — both are exactly what this test exists to catch.
+	if got != 0 {
+		t.Errorf("LZ4CompressInto allocs/op = %v, want 0", got)
 	}
 }
 
@@ -139,7 +136,8 @@ func TestLZ4CompressInto_IncompressibleReturnsFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := make([]byte, lz4.CompressBlockBound(len(src)))
-	n, ok := LZ4CompressInto(dst, src)
+	var c lz4.Compressor
+	n, ok := LZ4CompressInto(&c, dst, src)
 	if ok {
 		t.Errorf("incompressible input returned ok=true (n=%d)", n)
 	}

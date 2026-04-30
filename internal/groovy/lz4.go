@@ -42,19 +42,21 @@ func LZ4Decompress(compressed []byte, rawLen int) ([]byte, error) {
 	return dst, nil
 }
 
-// LZ4CompressInto compresses src into dst, returning the number of bytes
-// written and ok=true when compression reduced the size. The caller MUST
-// pass a dst with len >= lz4.CompressBlockBound(len(src)). Identical
-// behavior to LZ4Compress except the output buffer is supplied by the
-// caller; intended for the data plane's hot tick path where re-allocating
-// the output on every field would churn the heap.
+// LZ4CompressInto compresses src into dst using the caller-supplied
+// Compressor, returning the number of bytes written and ok=true when
+// compression reduced the size. The caller MUST pass a dst with
+// len >= lz4.CompressBlockBound(len(src)). Reusing one Compressor across
+// calls is the documented zero-alloc path: lz4.Compressor embeds a
+// ~136 KB hash table by value, so a fresh `var c lz4.Compressor` per
+// call escapes to the heap (~8 MB/s of garbage at NTSC field rate).
+// CompressBlock resets its internal in-use bitmap, so reuse is safe and
+// produces identical output across calls.
 //
 // Returns (0, false) when CompressBlock reports the input as
 // incompressible (n == 0) or when the output would be no smaller than the
 // input. Panics on programmer error (dst too small) — the library only
 // errors in that case.
-func LZ4CompressInto(dst, src []byte) (int, bool) {
-	var c lz4.Compressor
+func LZ4CompressInto(c *lz4.Compressor, dst, src []byte) (int, bool) {
 	n, err := c.CompressBlock(src, dst)
 	if err != nil {
 		panic(fmt.Errorf("lz4 compress (caller-supplied dst): %w", err))

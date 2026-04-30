@@ -114,6 +114,12 @@ type Plane struct {
 	framePool    *FramePool
 	fieldScratch []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
 	lz4Scratch   []byte // len == lz4.CompressBlockBound(fieldBytes)
+	// lz4Compressor is reused across every BLIT to amortize lz4.Compressor's
+	// ~136 KB inline hash table; a fresh one per call would escape to the
+	// heap. Owned by the tick goroutine; same single-writer discipline as
+	// the scratch slices above. CompressBlock resets the in-use bitmap on
+	// entry, so reuse produces identical output to a fresh Compressor.
+	lz4Compressor lz4.Compressor
 	// headerScratch is shared by sendField and sendDuplicate. Safe because
 	// they are called from the same goroutine in mutually-exclusive branches
 	// of the tick `select` — never concurrently. Any future change that
@@ -736,7 +742,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	payload := raw
 	if p.cfg.LZ4Enabled {
 		t := time.Now()
-		if n, ok := groovy.LZ4CompressInto(p.lz4Scratch, raw); ok {
+		if n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw); ok {
 			payload = p.lz4Scratch[:n]
 			opts.Compressed = true
 			opts.CompressedSize = uint32(n)

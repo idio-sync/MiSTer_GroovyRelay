@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/pierrec/lz4/v4"
 )
 
 // TestFieldDecoder_RawPassthrough confirms an uncompressed BLIT round-trips
@@ -39,7 +40,8 @@ func TestFieldDecoder_LZ4Passthrough(t *testing.T) {
 		raw[i] = byte(i % 251)
 	}
 	scratch := make([]byte, len(raw)*2)
-	n, ok := groovy.LZ4CompressInto(scratch, raw)
+	var c lz4.Compressor
+	n, ok := groovy.LZ4CompressInto(&c, scratch, raw)
 	if !ok {
 		t.Fatal("compressible input wasn't compressed")
 	}
@@ -90,7 +92,8 @@ func TestFieldDecoder_DeltaReconstructs(t *testing.T) {
 		delta[i] = a[i] ^ b[i]
 	}
 	scratch := make([]byte, len(delta)*2)
-	n, ok := groovy.LZ4CompressInto(scratch, delta)
+	var c lz4.Compressor
+	n, ok := groovy.LZ4CompressInto(&c, scratch, delta)
 	if !ok {
 		t.Fatal("zero-heavy delta should be compressible")
 	}
@@ -113,7 +116,8 @@ func TestFieldDecoder_DeltaWithoutPrevErrors(t *testing.T) {
 	d := NewFieldDecoder()
 	scratch := make([]byte, 4096)
 	dummy := make([]byte, 720*240*3)
-	n, ok := groovy.LZ4CompressInto(scratch, dummy)
+	var c lz4.Compressor
+	n, ok := groovy.LZ4CompressInto(&c, scratch, dummy)
 	if !ok {
 		t.Skip("zero buffer compressed to >= input; skip")
 	}

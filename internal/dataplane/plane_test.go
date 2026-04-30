@@ -801,14 +801,11 @@ func TestEnvPrebufferTimeout(t *testing.T) {
 // Budget (8 MB / 500 ms):
 //   - Pre-perf-pack legacy was ~60 MB / 500 ms (each tick allocated a
 //     fresh field buffer + LZ4 scratch + header).
-//   - Post-pack the dominant remaining allocator is pierrec/lz4/v4's
-//     Compressor: `var c lz4.Compressor` inside LZ4CompressInto stack-
-//     declares a 128 KB hash table that escapes to the heap on each
-//     call (one alloc per BLIT — see the implementation note in
-//     lz4_test.go's TestLZ4CompressInto_NoAllocPerCall). Over ~30 ticks
-//     in 500 ms that is ~3.8 MB on its own. A future fix would hoist
-//     the Compressor onto the Plane struct; until then the budget
-//     accommodates the quirk.
+//   - The previous dominant residual allocator was pierrec/lz4/v4's
+//     Compressor escaping ~136 KB per CompressBlock call (~3.8 MB /
+//     500 ms on its own). The Compressor is now hoisted onto Plane
+//     (lz4Compressor field) so the BLIT hot path holds zero allocs
+//     per tick — see TestLZ4CompressInto_ZeroAllocs.
 //   - 8 MB still catches every framePool / lz4Scratch / fieldScratch
 //     regression, which each re-introduce ~15 MB / 500 ms. It is
 //     intentionally NOT tight enough to catch headerScratch
