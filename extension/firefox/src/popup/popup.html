@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="popup">
+    <div id="configured" hidden>
+      <div class="label">Active tab:</div>
+      <div id="tab-url" class="tab-url"></div>
+      <button type="button" id="cast" class="primary">Cast this tab</button>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <a href="#" id="open-options" class="settings-link">Settings</a>
+    </div>
+
+    <div id="unconfigured" hidden>
+      <p class="empty">Bridge not configured.</p>
+      <button type="button" id="configure" class="primary">Configure bridge</button>
+    </div>
+  </div>
+
+  <script src="../lib/browser-polyfill.js"></script>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

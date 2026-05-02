@@ -216,3 +216,7 @@ Almost always a `source_port` regression. If the bridge restarted and bound a di
 ## License
 
 [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). See the design notes for why: this project stands on the shoulders of several GPL-3 references (plexdlnaplayer, plex-mpv-shim, Groovy_MiSTer) and carries that license forward.
+
+## Companion Browser Extension
+
+A WebExtension is available at [`extension/firefox/`](extension/firefox/) for Firefox / Chrome / Edge / Brave / Opera. Cast a URL from your browser to the bridge with one click. See [`extension/firefox/README.md`](extension/firefox/README.md) for install and dev instructions.
