@@ -14,6 +14,8 @@ import (
 
 const probeHelperEnv = "MISTER_GROOVY_PROBE_HELPER"
 const probeHelperPIDFileEnv = "MISTER_GROOVY_PROBE_HELPER_PID_FILE"
+const probeHelperHoldPipeFor = 15 * time.Second
+const probeLeakedPipeReturnLimit = 5 * time.Second
 
 func TestMain(m *testing.M) {
 	switch os.Getenv(probeHelperEnv) {
@@ -21,7 +23,7 @@ func TestMain(m *testing.M) {
 		runProbeLeakyParentHelper()
 		os.Exit(0)
 	case "hold-pipe":
-		time.Sleep(3 * time.Second)
+		time.Sleep(probeHelperHoldPipeFor)
 		os.Exit(0)
 	default:
 		os.Exit(m.Run())
@@ -115,7 +117,7 @@ func TestProbe_ReturnsPromptlyWhenOutputPipeRemainsOpen(t *testing.T) {
 	start := time.Now()
 	_, err := Probe(context.Background(), os.Args[0], "ignored")
 	elapsed := time.Since(start)
-	if elapsed > 2*time.Second {
+	if elapsed > probeLeakedPipeReturnLimit {
 		t.Fatalf("Probe returned after %s; want it bounded when ffprobe leaves output pipes open", elapsed)
 	}
 	if err == nil {

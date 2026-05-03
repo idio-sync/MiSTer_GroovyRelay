@@ -18,7 +18,7 @@ esac
 status=0
 output="$(
   MISTER_GROOVY_SIDECAR_TARGETS=darwin_amd64 \
-    "${ROOT}/scripts/fetch-sidecars.sh" 2>&1
+    bash "${ROOT}/scripts/fetch-sidecars.sh" 2>&1
 )" || status=$?
 
 if [ "$status" -eq 0 ]; then
