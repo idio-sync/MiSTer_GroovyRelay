@@ -13,7 +13,7 @@ WebExtension for the [MiSTer GroovyRelay bridge](../../README.md). Cast pages, l
 
 ### Firefox (signed XPI from GitHub Releases)
 
-1. Download `companion-extension-<version>.xpi` from the bridge repo's [Releases page](https://github.com/idio-sync/MiSTer_GroovyRelay/releases).
+1. Download `companion-extension-<version>-signed.xpi` from the bridge repo's [Releases page](https://github.com/idio-sync/MiSTer_GroovyRelay/releases).
 2. Open Firefox, navigate to `about:addons`.
 3. Click the gear icon, then "Install Add-on From File...".
 4. Pick the downloaded XPI.
@@ -61,7 +61,7 @@ The bridge-side change required to make this extension work is already in `main`
 
 ## Release automation
 
-GitHub Actions signs the Firefox add-on through AMO and uploads both browser artifacts when a `v*` tag is pushed.
+GitHub Actions signs the Firefox add-on through AMO and uploads the signed XPI when a `v*` tag is pushed.
 
 Repository secrets required:
 

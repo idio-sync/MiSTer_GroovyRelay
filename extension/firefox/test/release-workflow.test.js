@@ -28,6 +28,11 @@ describe("release workflow extension automation", () => {
     expect(workflow).toContain("gh release upload");
   });
 
+  it("uploads only the signed Firefox extension artifact", () => {
+    expect(workflow).toContain("\"extension/firefox/dist/companion-extension-${version}-signed.xpi\"");
+    expect(workflow).not.toContain("\"extension/firefox/dist/companion-extension-${version}.zip\"");
+  });
+
   it("signs with AMO only after GoReleaser succeeds", () => {
     expect(workflow.indexOf("goreleaser/goreleaser-action@v6")).toBeGreaterThan(-1);
     expect(workflow.indexOf("Sign Firefox extension through AMO")).toBeGreaterThan(
@@ -53,10 +58,14 @@ describe("release workflow extension automation", () => {
     expect(gitignore).toContain(".amo-upload-uuid");
   });
 
-  it("keeps GoReleaser output separate from sidecar staging", () => {
+  it("publishes only platform archives from GoReleaser", () => {
     expect(goreleaser).toContain("dist: build/goreleaser");
     expect(goreleaser).toContain("dist/sidecars/{{ .Os }}_{{ .Arch }}/*");
-    expect(goreleaser).toContain("dist/sidecar-cache/*");
+    expect(goreleaser).not.toContain("dist/sidecar-cache/*");
+    expect(goreleaser).not.toContain("extra_files:");
+    expect(goreleaser).toContain("checksum:");
+    expect(goreleaser).toContain("  disable: true");
+    expect(goreleaser).not.toContain("checksums.txt");
     expect(rootGitignore).toContain("/build/goreleaser/");
   });
 });

@@ -69,6 +69,5 @@ jobs:
         run: |
           version="${{ steps.extension_assets.outputs.version }}"
           gh release upload "${GITHUB_REF_NAME}" \
-            "extension/firefox/dist/companion-extension-${version}.zip" \
             "extension/firefox/dist/companion-extension-${version}-signed.xpi" \
             --clobber
