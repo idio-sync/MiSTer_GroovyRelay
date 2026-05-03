@@ -13,10 +13,7 @@ if (pkg.version !== manifest.version) {
 
 const refName = process.env.GITHUB_REF_NAME || "";
 if (refName.startsWith("v")) {
-  const tagVersion = refName.slice(1);
-  if (tagVersion !== pkg.version) {
-    errors.push(`release tag ${refName} does not match extension version ${pkg.version}`);
-  }
+  console.log(`check-versions: project tag ${refName}; extension version ${pkg.version}`);
 }
 
 if (errors.length > 0) {
@@ -26,4 +23,6 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log(`check-versions: extension version ${pkg.version}`);
+if (!refName.startsWith("v")) {
+  console.log(`check-versions: extension version ${pkg.version}`);
+}

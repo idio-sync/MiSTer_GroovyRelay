@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -21,5 +22,19 @@ describe("release workflow extension automation", () => {
     expect(workflow).toContain("npm run sign:amo");
     expect(workflow).toContain("companion-extension-${version}-signed.xpi");
     expect(workflow).toContain("gh release upload");
+  });
+
+  it("allows project release tags to differ from the extension version", () => {
+    const output = execFileSync(process.execPath, ["scripts/check-versions.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_REF_NAME: "v1.0",
+      },
+    });
+
+    expect(output).toContain(`project tag v1.0`);
+    expect(output).toContain(`extension version ${pkg.version}`);
   });
 });

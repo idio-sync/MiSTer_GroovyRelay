@@ -2,13 +2,11 @@
 
 <img align="right" width="200" src=".github/screenshots/plex_dash.png">
 
-Note: this is in heavy dev and still has some bugs. Video gets a bit choppy sometimes and seek/skip/etc. is wonky, depending on the source. 100% usable though.
-
 A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
 ## Video Sources
 - Plex
-- Jellyfin (initial support, still needs polish)
+- Jellyfin
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 
@@ -17,7 +15,6 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin M
   - DLNA/UPnP
   - IPTV/M3U playlists
   - Moonlight/Sunshine
-- Companion browser extension, cast video from right click
 - Music visualizer
 - Better webui/dashboard and setup wizard
 - Home Assistant integration
@@ -30,6 +27,10 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin M
 - A Plex/Jellyfin Media Server reachable from that host (optional)
 
 The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this container takes 480p from the server to 480i.
+
+## Companion Browser Extension
+
+A WebExtension is available at [`extension/firefox/`](extension/firefox/) for Firefox / Chrome / Edge / Brave / Opera. Cast a URL from your browser to the bridge with one click. See [`extension/firefox/README.md`](extension/firefox/README.md) for install and dev instructions.
 
 ## Quick start (Docker)
 
@@ -245,7 +246,3 @@ Almost always a `source_port` regression. If the bridge restarted and bound a di
 ## License
 
 [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). See the design notes for why: this project stands on the shoulders of several GPL-3 references (plexdlnaplayer, plex-mpv-shim, Groovy_MiSTer) and carries that license forward.
-
-## Companion Browser Extension
-
-A WebExtension is available at [`extension/firefox/`](extension/firefox/) for Firefox / Chrome / Edge / Brave / Opera. Cast a URL from your browser to the bridge with one click. See [`extension/firefox/README.md`](extension/firefox/README.md) for install and dev instructions.

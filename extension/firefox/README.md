@@ -68,7 +68,7 @@ Repository secrets required:
 - `AMO_JWT_ISSUER`
 - `AMO_JWT_SECRET`
 
-Before tagging a release, keep `package.json` and `manifest.json` on the same extension version. The tag must match that version, for example `v0.1.1`.
+Project release tags and extension versions are allowed to differ. Before tagging a release, keep the extension `package.json` and `manifest.json` versions in sync with each other. Bump the extension version when you need AMO to sign a new add-on package.
 
 ## Spec
 
