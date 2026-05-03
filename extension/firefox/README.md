@@ -19,7 +19,7 @@ WebExtension for the [MiSTer GroovyRelay bridge](../../README.md). Cast pages, l
 4. Pick the downloaded XPI.
 5. Approve the install prompt.
 
-Firefox 128+ is required.
+Firefox 140+ is required.
 
 ### Chrome / Edge / Brave / Opera / Vivaldi (unpacked dev install)
 
@@ -42,6 +42,10 @@ After install, the options page should open automatically. If not:
 - Chrome: `chrome://extensions` -> Details -> Extension options.
 
 Enter the bridge URL, for example `http://192.168.1.50:32500`, click "Test Connection" to verify, then "Save."
+
+## Data collection
+
+When you cast a tab, link, or video, the extension sends that URL to the bridge URL you configured. It does not send telemetry or analytics data.
 
 ## Develop
 
