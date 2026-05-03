@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MiSTer GroovyRelay Companion - Options</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 480px;
+      margin: 2em auto;
+      padding: 0 1em;
+      color: #222;
+    }
+    h1 { font-size: 1.25em; margin-bottom: 0.25em; }
+    p.help { color: #666; font-size: 0.9em; margin-top: 0; }
+    label { display: block; margin: 1em 0 0.25em; font-weight: 600; }
+    input[type="text"] {
+      width: 100%;
+      padding: 0.5em;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    .row { display: flex; gap: 0.5em; margin-top: 0.75em; }
+    button {
+      padding: 0.5em 1em;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #f5f5f5;
+      cursor: pointer;
+    }
+    button:hover { background: #eaeaea; }
+    button.primary { background: #4a90e2; color: white; border-color: #4a90e2; }
+    button.primary:hover { background: #3a7ac2; }
+    .status { margin-top: 1em; min-height: 1.5em; font-size: 0.9em; }
+    .status.ok { color: #2e7d32; }
+    .status.err { color: #c62828; }
+  </style>
+</head>
+<body>
+  <h1>MiSTer GroovyRelay Companion</h1>
+  <p class="help">Configure the URL of your MiSTer GroovyRelay bridge.</p>
+
+  <label for="bridge-url">Bridge URL</label>
+  <input
+    type="text"
+    id="bridge-url"
+    placeholder="http://192.168.1.50:32500"
+    autocomplete="off"
+    spellcheck="false">
+
+  <div class="row">
+    <button type="button" id="save" class="primary">Save</button>
+    <button type="button" id="test">Test Connection</button>
+  </div>
+
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+
+  <script src="../lib/browser-polyfill.js"></script>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

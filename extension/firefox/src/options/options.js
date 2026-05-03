@@ -1,0 +1,86 @@
+export function validateBridgeURL(input) {
+  const trimmed = (input || "").trim();
+  if (trimmed === "") return { ok: true, url: "" };
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, error: "Invalid URL" };
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return {
+      ok: false,
+      error: `Scheme must be http or https (got ${parsed.protocol.replace(":", "")})`,
+    };
+  }
+
+  return { ok: true, url: parsed.origin };
+}
+
+export async function testConnection(bridgeURL) {
+  if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 10000);
+
+  try {
+    const res = await fetch(`${bridgeURL}/ui/adapter/url/panel`, {
+      method: "GET",
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
+    if (res.ok) return { ok: true };
+    return { ok: false, error: `Bridge returned HTTP ${res.status}` };
+  } catch (e) {
+    clearTimeout(timeout);
+    if (e.name === "AbortError") return { ok: false, error: "Bridge timed out" };
+    return { ok: false, error: `Bridge unreachable: ${e.message}` };
+  }
+}
+
+export async function initOptionsPage(doc = document) {
+  const input = doc.getElementById("bridge-url");
+  const saveBtn = doc.getElementById("save");
+  const testBtn = doc.getElementById("test");
+  const statusEl = doc.getElementById("status");
+
+  const stored = await browser.storage.sync.get("bridgeURL");
+  input.value = stored.bridgeURL || "";
+
+  saveBtn.addEventListener("click", async () => {
+    const result = validateBridgeURL(input.value);
+    if (!result.ok) {
+      setStatus(statusEl, "err", result.error);
+      return;
+    }
+    await browser.storage.sync.set({ bridgeURL: result.url });
+    input.value = result.url;
+    setStatus(statusEl, "ok", result.url ? "Saved." : "Cleared.");
+  });
+
+  testBtn.addEventListener("click", async () => {
+    const result = validateBridgeURL(input.value);
+    if (!result.ok) {
+      setStatus(statusEl, "err", result.error);
+      return;
+    }
+    if (!result.url) {
+      setStatus(statusEl, "err", "Enter a bridge URL first.");
+      return;
+    }
+    setStatus(statusEl, "", "Testing...");
+    const t = await testConnection(result.url);
+    setStatus(statusEl, t.ok ? "ok" : "err", t.ok ? "Bridge is healthy." : t.error);
+  });
+}
+
+function setStatus(el, kind, msg) {
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg;
+}
+
+if (typeof document !== "undefined" && document.getElementById("bridge-url")) {
+  initOptionsPage();
+}
