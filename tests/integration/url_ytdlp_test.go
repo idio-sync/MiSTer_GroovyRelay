@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -104,10 +103,6 @@ func waitForInit(t *testing.T, h *Harness, d time.Duration) {
 // TestURL_YtdlpResolve_DirectionMatrix exercises mode dispatch end-to-end.
 // Real ffmpeg + real fake-mister; resolver stubbed.
 func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
-	}
-
 	// Tiny mp4 fixture (already used by TestURL_PlayDirectFile).
 	mp4Path := filepath.Join("testdata", "url", "tiny.mp4")
 	if _, err := os.Stat(mp4Path); err != nil {
@@ -203,9 +198,6 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 //   - No rate limiting on small downloads
 //   - yt-dlp extractor is mature and rarely breaks
 func TestURL_YtdlpResolve_RealBinary(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
-	}
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
 		t.Skip("yt-dlp not on PATH")
 	}

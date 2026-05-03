@@ -70,6 +70,9 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 
 	out.UI.HTTPPort = parseIntField(form, "ui.http_port", errs)
 	out.DataDir = form.Get("data_dir")
+	out.FFmpegPath = form.Get("ffmpeg_path")
+	out.FFprobePath = form.Get("ffprobe_path")
+	out.YTDLPPath = form.Get("ytdlp_path")
 
 	out.Logging.Debug = parseBoolField(form, "logging.debug")
 

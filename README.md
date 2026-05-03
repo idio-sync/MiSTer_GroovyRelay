@@ -17,7 +17,6 @@ A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin M
   - DLNA/UPnP
   - IPTV/M3U playlists
   - Moonlight/Sunshine
-- Prebuilt binaries for Windows/macOS/Linux
 - Companion browser extension, cast video from right click
 - Music visualizer
 - Better webui/dashboard and setup wizard
@@ -65,6 +64,36 @@ docker run --rm -it --network=host \
 ```
 
 `--network=host` is required. The bridge needs a stable source UDP port (the MiSTer keys its session by sender `IP:port`) and it needs to receive the Plex GDM multicast on `239.0.0.250:32414`. Bridged Docker networking does not pass multicast and would rewrite the source port on every restart, neither is workable.
+
+## Native builds
+
+Native archives are built for Windows, macOS, and Linux. On first run the
+bridge writes a platform-specific config file and exits so you can set
+`bridge.mister.host`, then relaunch it.
+
+Default config locations:
+
+- Windows: `%APPDATA%\mister-groovy-relay\config.toml`
+- macOS: `~/Library/Application Support/mister-groovy-relay/config.toml`
+- Linux: `$XDG_CONFIG_HOME/mister-groovy-relay/config.toml`, or
+  `~/.config/mister-groovy-relay/config.toml`
+
+Pass `--config <path>` or set `MISTER_GROOVY_CONFIG` to use a custom location.
+`bridge.data_dir = ""` auto-resolves to the same platform data directory and is
+created on startup when missing.
+
+Release archives are expected to bundle `ffmpeg`, `ffprobe`, and `yt-dlp`
+beside the bridge binary. If you prefer system-installed tools, set
+`bridge.ffmpeg_path`, `bridge.ffprobe_path`, or `bridge.ytdlp_path` in
+`config.toml`; blank means auto-resolve sidecar first, then `PATH`.
+
+On macOS, right-click the binary and choose **Open** the first time if Gatekeeper
+blocks a direct double-click. As a fallback, remove quarantine from the extracted
+folder:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/mister-groovy-relay-folder
+```
 
 ## URL adapter
 

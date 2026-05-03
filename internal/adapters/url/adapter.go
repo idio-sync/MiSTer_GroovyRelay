@@ -70,6 +70,8 @@ type Adapter struct {
 	// realProbeYtdlp; tests inject stubs.
 	probeFn func() ytdlpProbe
 
+	ytdlpBinaryResolver ytdlp.BinaryResolver
+
 	mu         sync.Mutex
 	cfg        Config
 	state      adapters.State
@@ -100,6 +102,9 @@ type AdapterConfig struct {
 	// satisfies this via structural typing. May be nil in tests that
 	// don't exercise the play handler.
 	Core SessionManager
+	// YTDLPResolver resolves yt-dlp through the shared sidecar/PATH resolver.
+	// Nil preserves the legacy PATH-only probe used by tests.
+	YTDLPResolver ytdlp.BinaryResolver
 }
 
 // New constructs a ready-to-Start Adapter from the bundled config.
@@ -111,13 +116,18 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		return nil, fmt.Errorf("url: AdapterConfig.Bridge.DataDir is required")
 	}
 	historyPath := filepath.Join(cfg.Bridge.DataDir, "url_history.json")
+	probeFn := realProbeYtdlp
+	if cfg.YTDLPResolver != nil {
+		probeFn = func() ytdlpProbe { return probeYtdlp(cfg.YTDLPResolver) }
+	}
 	return &Adapter{
-		core:        cfg.Core,
-		state:       adapters.StateStopped,
-		stateSince:  time.Now(),
-		cookiesPath: filepath.Join(cfg.Bridge.DataDir, "url_cookies.txt"),
-		probeFn:     realProbeYtdlp,
-		history:     LoadHistory(historyPath),
+		core:                cfg.Core,
+		state:               adapters.StateStopped,
+		stateSince:          time.Now(),
+		cookiesPath:         filepath.Join(cfg.Bridge.DataDir, "url_cookies.txt"),
+		probeFn:             probeFn,
+		history:             LoadHistory(historyPath),
+		ytdlpBinaryResolver: cfg.YTDLPResolver,
 	}, nil
 }
 
@@ -192,11 +202,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 	a.mu.Lock()
 	cfgTimeout := a.cfg.YtdlpResolveTimeoutSeconds
 	a.mu.Unlock()
-	if probe.OK {
+	if probe.OK || a.ytdlpBinaryResolver != nil {
 		resolver = &ytdlp.Resolver{
-			Binary:  probe.Path,
-			Timeout: time.Duration(cfgTimeout) * time.Second,
-			Runner:  ytdlp.OSRunner{},
+			Binary:         probe.Path,
+			BinaryResolver: a.ytdlpBinaryResolver,
+			Timeout:        time.Duration(cfgTimeout) * time.Second,
+			Runner:         ytdlp.OSRunner{},
 		}
 	}
 
@@ -217,6 +228,18 @@ func realProbeYtdlp() ytdlpProbe {
 	if err != nil {
 		return ytdlpProbe{OK: false}
 	}
+	return probeYtdlpPath(path)
+}
+
+func probeYtdlp(resolver ytdlp.BinaryResolver) ytdlpProbe {
+	path, err := resolver.Resolve()
+	if err != nil {
+		return ytdlpProbe{OK: false}
+	}
+	return probeYtdlpPath(path)
+}
+
+func probeYtdlpPath(path string) ytdlpProbe {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, path, "--version").Output()
@@ -283,11 +306,12 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	// Rebuild the resolver if (a) the binary is present and (b) the
 	// timeout-driving field actually changed. Reuses OSRunner because
 	// the Runner has no per-call state.
-	if probe.OK && oldTimeout != newCfg.YtdlpResolveTimeoutSeconds {
+	if (probe.OK || a.ytdlpBinaryResolver != nil) && oldTimeout != newCfg.YtdlpResolveTimeoutSeconds {
 		a.resolver = &ytdlp.Resolver{
-			Binary:  probe.Path,
-			Timeout: time.Duration(newCfg.YtdlpResolveTimeoutSeconds) * time.Second,
-			Runner:  ytdlp.OSRunner{},
+			Binary:         probe.Path,
+			BinaryResolver: a.ytdlpBinaryResolver,
+			Timeout:        time.Duration(newCfg.YtdlpResolveTimeoutSeconds) * time.Second,
+			Runner:         ytdlp.OSRunner{},
 		}
 	}
 	a.mu.Unlock()

@@ -3,7 +3,10 @@
 # Edit bridge.mister.host at minimum, then restart the bridge.
 
 [bridge]
-data_dir = "/config" # Where device UUID + plex.tv auth token are stored
+data_dir = ""                      # Auto-resolved per OS; override for custom state location
+ffmpeg_path = ""                   # Empty = bundled sidecar, then PATH
+ffprobe_path = ""                  # Empty = bundled sidecar, then PATH
+ytdlp_path = ""                    # Empty = bundled sidecar, then PATH
 
 [bridge.video]
 modeline = "NTSC_480i"            # NTSC_480i, NTSC_240p, PAL_576i (experimental), PAL_288p (experimental)

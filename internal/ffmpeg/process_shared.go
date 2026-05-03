@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -25,69 +24,6 @@ type Process struct {
 
 	stopOnce      sync.Once
 	stopRequested atomic.Bool
-}
-
-// Spawn starts an ffmpeg subprocess running the pipeline described by spec.
-// It uses os.Pipe() pairs for the video and audio streams and hands the
-// write ends to the child via cmd.ExtraFiles (fd 3 and fd 4 inside the
-// child). The parent's copies of the write ends are closed immediately so
-// EOF propagates on the read side when the child exits.
-//
-// ExtraFiles is a Linux/Unix-only feature; on Windows, cmd.Start() returns
-// an error when ExtraFiles is non-nil. Windows is not the deployment target
-// (Docker/Linux is), but unit tests that exercise lifecycle wiring should
-// use the unexported newProcess/start helpers which do not use ExtraFiles.
-func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
-	videoR, videoW, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	audioR, audioW, err := os.Pipe()
-	if err != nil {
-		videoR.Close()
-		videoW.Close()
-		return nil, err
-	}
-
-	// The child addresses these pipes as fd 3 and fd 4. This must match the
-	// order of cmd.ExtraFiles below.
-	spec.VideoPipePath = "pipe:3"
-	spec.AudioPipePath = "pipe:4"
-
-	cmd := BuildCommand(ctx, spec)
-	cmd.ExtraFiles = []*os.File{videoW, audioW}
-	// Forward stderr line-by-line into slog instead of dumping raw to the
-	// bridge's stderr. With "-loglevel warning" set in pipeline.go, every
-	// line FFmpeg emits is at warning severity or worse — surface them as
-	// slog.Warn so they show up alongside the bridge's structured logs.
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		videoR.Close()
-		videoW.Close()
-		audioR.Close()
-		audioW.Close()
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		videoR.Close()
-		videoW.Close()
-		audioR.Close()
-		audioW.Close()
-		_ = stderrPipe.Close()
-		return nil, err
-	}
-
-	// The write ends are now in the child. Close our copies so the reader
-	// side sees EOF as soon as the child exits.
-	videoW.Close()
-	audioW.Close()
-
-	p := newProcess(cmd, videoR, audioR)
-	p.forwardStderr(stderrPipe)
-	p.watchContext(ctx)
-	p.launchWaiter()
-	return p, nil
 }
 
 // forwardStderr drains the child's stderr line-by-line into slog. Must be
@@ -169,7 +105,7 @@ func (p *Process) watchContext(ctx context.Context) {
 }
 
 // VideoPipe returns the read-end of the video stream. Yields one
-// OutputWidth × OutputHeight BGR24 progressive frame per read (59.94 Hz)
+// OutputWidth x OutputHeight BGR24 progressive frame per read (59.94 Hz)
 // once the filter chain produces output.
 func (p *Process) VideoPipe() io.Reader { return p.videoPipe }
 
@@ -186,7 +122,7 @@ func (p *Process) Stop() {
 			case <-p.stopped:
 			default:
 				p.stopRequested.Store(true)
-				// Ignore errors — the process may already be gone.
+				// Ignore errors; the process may already be gone.
 				_ = p.cmd.Process.Kill()
 			}
 		}

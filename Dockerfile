@@ -62,6 +62,8 @@ RUN case "$TARGETARCH" in \
 COPY --from=build /out/mister-groovy-relay /usr/local/bin/mister-groovy-relay
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+ENV MISTER_GROOVY_CONFIG=/config/config.toml
+ENV MISTER_GROOVY_RUNTIME=docker
 # /config/config.toml is auto-created from the embedded example on first
 # run when missing — no COPY here. A COPY into /config would be shadowed
 # by the operator's bind mount anyway.

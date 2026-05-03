@@ -79,6 +79,29 @@ func TestBuildFilterChain_SubtitleAfterRateNormalize(t *testing.T) {
 	}
 }
 
+func TestEscapeSubtitlePathFor(t *testing.T) {
+	cases := []struct {
+		name string
+		goos string
+		in   string
+		want string
+	}{
+		{"linux simple", "linux", "/tmp/subs.srt", "/tmp/subs.srt"},
+		{"darwin apostrophe", "darwin", "/Users/jake/Movies/Bob's File.srt", `/Users/jake/Movies/Bob'\''s File.srt`},
+		{"windows slashes", "windows", `C:\Users\Jake\subs.srt`, "C:/Users/Jake/subs.srt"},
+		{"windows apostrophe", "windows", `C:\Users\Bob's Files\subs.srt`, `C:/Users/Bob'\''s Files/subs.srt`},
+		{"graph chars protected", "linux", "/tmp/with[brackets],and(parens).srt", "/tmp/with[brackets],and(parens).srt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escapeSubtitlePathFor(tc.goos, tc.in)
+			if got != tc.want {
+				t.Fatalf("escapeSubtitlePathFor(%q, %q) = %q, want %q", tc.goos, tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 	spec := PipelineSpec{
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
@@ -250,6 +273,23 @@ func TestBuildCommand_TranscodeSkipsSSSeek(t *testing.T) {
 	}
 }
 
+func TestBuildCommand_UsesFFmpegPath(t *testing.T) {
+	spec := PipelineSpec{
+		FFmpegPath:    "/opt/sidecars/ffmpeg",
+		InputURL:      "http://pms/video.m3u8",
+		SourceProbe:   &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		OutputWidth:   720,
+		OutputHeight:  480,
+		FieldOrder:    "tff",
+		AspectMode:    "letterbox",
+		VideoPipePath: "pipe:3",
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if cmd.Path != spec.FFmpegPath {
+		t.Fatalf("cmd.Path = %q, want %q", cmd.Path, spec.FFmpegPath)
+	}
+}
+
 func TestBuildCommand_DirectPlayPassesSSSeek(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL:    "file:///media/sample.mkv",
@@ -359,8 +399,8 @@ func TestBuildCommand_DualInputForDASH(t *testing.T) {
 		},
 		// SourceProbe sees the video-only stream → AudioRate=0.
 		// audioOutputEnabled MUST still emit audio because AudioInputURL is set.
-		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 0},
-		OutputWidth:     720, OutputHeight: 480,
+		SourceProbe: &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 0},
+		OutputWidth: 720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
 		AudioSampleRate: 48000, AudioChannels: 2,
 		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
@@ -429,10 +469,10 @@ func TestBuildCommand_DualInputForDASH(t *testing.T) {
 // session.
 func TestBuildCommand_DualInputDirectPlaySeeksBothStreams(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL:        "https://v.example/v.mp4",
-		AudioInputURL:   "https://a.example/a.m4a",
-		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
-		OutputWidth:     720, OutputHeight: 480,
+		InputURL:      "https://v.example/v.mp4",
+		AudioInputURL: "https://a.example/a.m4a",
+		SourceProbe:   &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
+		OutputWidth:   720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
 		SeekSeconds: 42.5, UseSSSeek: true,
 		AudioSampleRate: 48000, AudioChannels: 2,
@@ -477,12 +517,12 @@ func TestBuildCommand_DualInputDirectPlaySeeksBothStreams(t *testing.T) {
 // for the input that lacks them.
 func TestBuildCommand_DualInputAudioWithoutHeaders(t *testing.T) {
 	spec := PipelineSpec{
-		InputURL:        "https://v.example/v.mp4",
-		InputHeaders:    map[string]string{"User-Agent": "vid"},
-		AudioInputURL:   "https://a.example/a.m4a",
+		InputURL:          "https://v.example/v.mp4",
+		InputHeaders:      map[string]string{"User-Agent": "vid"},
+		AudioInputURL:     "https://a.example/a.m4a",
 		AudioInputHeaders: nil,
-		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
-		OutputWidth:     720, OutputHeight: 480,
+		SourceProbe:       &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
+		OutputWidth:       720, OutputHeight: 480,
 		FieldOrder: "tff", AspectMode: "letterbox",
 		AudioSampleRate: 48000, AudioChannels: 2,
 		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",

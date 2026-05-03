@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/extbin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
@@ -40,13 +42,18 @@ import (
 var version = "1.0.0"
 
 func main() {
-	cfgPath := flag.String("config", "/config/config.toml", "path to config.toml")
+	defaultCfg := defaultConfigForRuntime()
+	cfgPath := flag.String("config", defaultCfg, "path to config.toml")
 	logLevel := flag.String("log-level", "info", "debug|info|warn|error")
 	linkFlag := flag.Bool("link", false, "run plex.tv PIN linking and exit")
 	linkJellyfin := flag.Bool("link-jellyfin", false, "run Jellyfin pairing flow on stdin and exit")
 	flag.Parse()
 
 	slog.SetDefault(logging.New(*logLevel))
+	if *cfgPath == "" {
+		fmt.Fprintln(os.Stderr, "--config not set and no default available; pass --config explicitly or set MISTER_GROOVY_CONFIG.")
+		os.Exit(2)
+	}
 
 	sec, err := config.LoadSectioned(*cfgPath)
 	if err != nil {
@@ -60,6 +67,15 @@ func main() {
 		slog.Error("load config", "err", err)
 		os.Exit(1)
 	}
+	if err := config.EnsureDataDirWritable(sec.Bridge.DataDir); err != nil {
+		slog.Error("data_dir preflight", "err", err)
+		os.Exit(1)
+	}
+
+	selfDir := executableDir()
+	ffmpegResolver := extbin.New("ffmpeg", sec.Bridge.FFmpegPath, selfDir)
+	ffprobeResolver := extbin.New("ffprobe", sec.Bridge.FFprobePath, selfDir)
+	ytdlpResolver := extbin.New("yt-dlp", sec.Bridge.YTDLPPath, selfDir)
 
 	// Apply persisted Debug Logging toggle on top of the boot flag.
 	// Precedence: explicit non-default --log-level wins; otherwise the
@@ -124,7 +140,8 @@ func main() {
 		}
 	}
 
-	coreMgr := core.NewManager(sec.Bridge, sender)
+	coreMgr := core.NewManager(sec.Bridge, sender,
+		core.WithBinaryResolvers(ffmpegResolver, ffprobeResolver))
 
 	hostIP := sec.Bridge.HostIP
 	if hostIP == "" {
@@ -158,8 +175,9 @@ func main() {
 	// URL adapter (v1.1): minimum-viable HTTP/HTTPS URL acceptor with
 	// optional yt-dlp resolution. Spec: docs/specs/2026-04-25-url-ytdlp-design.md.
 	urlAdapter, err := urladapter.New(urladapter.AdapterConfig{
-		Bridge: sec.Bridge,
-		Core:   coreMgr,
+		Bridge:        sec.Bridge,
+		Core:          coreMgr,
+		YTDLPResolver: ytdlpResolver,
 	})
 	if err != nil {
 		slog.Error("url adapter init", "err", err)
@@ -198,7 +216,11 @@ func main() {
 	// tests exercise the same code path the operator hits (review fix
 	// C3). Both share one mutex so bridge + adapter saves serialize
 	// against each other — both paths read-modify-write the same file.
-	saver := uiserver.NewBridgeSaver(*cfgPath, sec, coreMgr, reg)
+	saver := uiserver.NewBridgeSaver(*cfgPath, sec, coreMgr, reg, uiserver.ToolResolvers{
+		FFmpeg:  ffmpegResolver,
+		FFprobe: ffprobeResolver,
+		YTDLP:   ytdlpResolver,
+	})
 	adapterSaver := uiserver.NewAdapterSaver(*cfgPath, saver.Mu())
 
 	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
@@ -268,6 +290,26 @@ func newUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10 (RFC 4122)
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func defaultConfigForRuntime() string {
+	if v := os.Getenv("MISTER_GROOVY_CONFIG"); v != "" {
+		return v
+	}
+	return config.DefaultConfigPath()
+}
+
+func executableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		slog.Warn("resolve executable path; sidecar lookup disabled", "err", err)
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		resolved = exe
+	}
+	return filepath.Dir(resolved)
 }
 
 // outboundIP returns the local IP the kernel would use for an outbound

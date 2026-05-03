@@ -36,6 +36,16 @@ type Core interface {
 	DropActiveCast(reason string) error
 }
 
+type OverrideUpdater interface {
+	UpdateOverride(string)
+}
+
+type ToolResolvers struct {
+	FFmpeg  OverrideUpdater
+	FFprobe OverrideUpdater
+	YTDLP   OverrideUpdater
+}
+
 // BridgeSaver implements ui.BridgeSaver + ui.FirstRunAware with real
 // per-field scope dispatch (design §9). Current() returns the live
 // in-memory bridge for prefill; Save() diffs old vs new, runs pre-flight
@@ -51,6 +61,7 @@ type BridgeSaver struct {
 	sec      *config.Sectioned
 	core     Core
 	registry *adapters.Registry
+	tools    ToolResolvers
 	mu       sync.Mutex
 }
 
@@ -58,8 +69,12 @@ type BridgeSaver struct {
 // path, in-memory sectioned config, and running core.Manager. The
 // registry is accepted for future multi-adapter coordination (field
 // probes that cross adapter boundaries); unused today.
-func NewBridgeSaver(path string, sec *config.Sectioned, core Core, registry *adapters.Registry) *BridgeSaver {
-	return &BridgeSaver{path: path, sec: sec, core: core, registry: registry}
+func NewBridgeSaver(path string, sec *config.Sectioned, core Core, registry *adapters.Registry, tools ...ToolResolvers) *BridgeSaver {
+	s := &BridgeSaver{path: path, sec: sec, core: core, registry: registry}
+	if len(tools) > 0 {
+		s.tools = tools[0]
+	}
+	return s
 }
 
 // Mu exposes the shared serialization mutex so AdapterSaver can
@@ -159,6 +174,7 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	// Disk now reflects newCfg. Move in-memory state to match.
 	r.sec.Bridge = newCfg
 	r.core.UpdateBridge(newCfg)
+	r.updateToolResolvers(changed, newCfg)
 
 	// Apply per scope.
 	switch scope {
@@ -190,6 +206,18 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	}
 
 	return scope, nil
+}
+
+func (r *BridgeSaver) updateToolResolvers(changed []string, newCfg config.BridgeConfig) {
+	if containsStr(changed, "ffmpeg_path") && r.tools.FFmpeg != nil {
+		r.tools.FFmpeg.UpdateOverride(newCfg.FFmpegPath)
+	}
+	if containsStr(changed, "ffprobe_path") && r.tools.FFprobe != nil {
+		r.tools.FFprobe.UpdateOverride(newCfg.FFprobePath)
+	}
+	if containsStr(changed, "ytdlp_path") && r.tools.YTDLP != nil {
+		r.tools.YTDLP.UpdateOverride(newCfg.YTDLPPath)
+	}
 }
 
 func containsStr(ss []string, s string) bool {
@@ -254,6 +282,15 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.DataDir != newCfg.DataDir {
 		keys = append(keys, "data_dir")
 	}
+	if oldCfg.FFmpegPath != newCfg.FFmpegPath {
+		keys = append(keys, "ffmpeg_path")
+	}
+	if oldCfg.FFprobePath != newCfg.FFprobePath {
+		keys = append(keys, "ffprobe_path")
+	}
+	if oldCfg.YTDLPPath != newCfg.YTDLPPath {
+		keys = append(keys, "ytdlp_path")
+	}
 	if oldCfg.HostIP != newCfg.HostIP {
 		keys = append(keys, "host_ip")
 	}
@@ -312,6 +349,8 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		// Flipping the log level on an in-flight session is the
 		// whole point of this checkbox — the operator wants Debug
 		// records flowing now, not after a docker restart.
+		return adapters.ScopeHotSwap
+	case "ffmpeg_path", "ffprobe_path", "ytdlp_path":
 		return adapters.ScopeHotSwap
 	case "video.modeline",
 		"video.aspect_mode",

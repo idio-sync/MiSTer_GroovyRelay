@@ -21,6 +21,9 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
+	form.Set("ffmpeg_path", "/tools/ffmpeg")
+	form.Set("ffprobe_path", "/tools/ffprobe")
+	form.Set("ytdlp_path", "/tools/yt-dlp")
 
 	got, err := parseBridgeForm(form)
 	if err != nil {
@@ -40,6 +43,9 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	}
 	if got.Audio.Channels != 2 {
 		t.Errorf("Channels = %d", got.Audio.Channels)
+	}
+	if got.FFmpegPath != "/tools/ffmpeg" || got.FFprobePath != "/tools/ffprobe" || got.YTDLPPath != "/tools/yt-dlp" {
+		t.Errorf("tool paths not parsed: %+v", got)
 	}
 }
 

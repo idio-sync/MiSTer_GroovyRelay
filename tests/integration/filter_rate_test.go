@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"runtime"
 	"testing"
 	"time"
 
@@ -17,9 +16,6 @@ import (
 // the regression harness for C1 — before the fix, 60p input produced ~150
 // fields (half rate).
 func TestFilterRate_FieldsPerSecondMatchesTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
 	cases := []struct {
 		name string
 		rate string

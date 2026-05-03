@@ -39,8 +39,11 @@ type ffprobeOutput struct {
 // responsible for supplying any authentication tokens via URL query params —
 // ffprobe's `-headers` is not threaded through here because the production
 // callers (Plex transcode URLs) already embed credentials in the URL.
-func Probe(ctx context.Context, url string) (*ProbeResult, error) {
-	cmd := exec.CommandContext(ctx, "ffprobe",
+func Probe(ctx context.Context, ffprobePath, url string) (*ProbeResult, error) {
+	if ffprobePath == "" {
+		ffprobePath = "ffprobe"
+	}
+	cmd := exec.CommandContext(ctx, ffprobePath,
 		"-v", "error",
 		"-print_format", "json",
 		"-show_streams", "-show_format",

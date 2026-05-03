@@ -3,6 +3,10 @@ package config
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -60,7 +64,7 @@ func defaults() *Config {
 		AudioSampleRate:     48000,
 		AudioChannels:       2,
 		PlexProfileName:     "Plex Home Theater",
-		DataDir:             "/config",
+		DataDir:             "",
 	}
 }
 
@@ -110,13 +114,16 @@ func (c *Config) Validate() error {
 // pipeline settings, MiSTer destination, bridge-level HTTP port,
 // data directory. Every adapter shares these.
 type BridgeConfig struct {
-	DataDir string        `toml:"data_dir"`
-	HostIP  string        `toml:"host_ip"`
-	Video   VideoConfig   `toml:"video"`
-	Audio   AudioConfig   `toml:"audio"`
-	MiSTer  MisterConfig  `toml:"mister"`
-	UI      UIConfig      `toml:"ui"`
-	Logging LoggingConfig `toml:"logging"`
+	DataDir     string        `toml:"data_dir"`
+	FFmpegPath  string        `toml:"ffmpeg_path"`
+	FFprobePath string        `toml:"ffprobe_path"`
+	YTDLPPath   string        `toml:"ytdlp_path"`
+	HostIP      string        `toml:"host_ip"`
+	Video       VideoConfig   `toml:"video"`
+	Audio       AudioConfig   `toml:"audio"`
+	MiSTer      MisterConfig  `toml:"mister"`
+	UI          UIConfig      `toml:"ui"`
+	Logging     LoggingConfig `toml:"logging"`
 }
 
 type VideoConfig struct {
@@ -217,6 +224,38 @@ func (s *Sectioned) Validate() error {
 	}
 	if b.HostIP != "" && net.ParseIP(b.HostIP) == nil {
 		return fmt.Errorf("bridge.host_ip must be a valid IP address, got %q", b.HostIP)
+	}
+	if err := validateExternalToolPath("bridge.ffmpeg_path", b.FFmpegPath); err != nil {
+		return err
+	}
+	if err := validateExternalToolPath("bridge.ffprobe_path", b.FFprobePath); err != nil {
+		return err
+	}
+	if err := validateExternalToolPath("bridge.ytdlp_path", b.YTDLPPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateExternalToolPath(label, path string) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s %q is not usable: %w", label, path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s %q is not usable: is a directory", label, path)
+	}
+	if runtime.GOOS == "windows" {
+		if strings.EqualFold(filepath.Ext(path), ".exe") {
+			return nil
+		}
+		return fmt.Errorf("%s %q is not usable: does not have .exe extension", label, path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s %q is not usable: not executable", label, path)
 	}
 	return nil
 }

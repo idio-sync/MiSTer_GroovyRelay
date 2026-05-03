@@ -2,6 +2,8 @@ package config
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -51,8 +53,12 @@ func TestProbeDirWritable_Exists(t *testing.T) {
 	}
 }
 
-func TestProbeDirWritable_Missing(t *testing.T) {
-	if err := ProbeDirWritable("/no/such/path/exists/here"); err == nil {
-		t.Error("want error for missing dir")
+func TestProbeDirWritable_CreatesMissing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing", "data")
+	if err := ProbeDirWritable(dir); err != nil {
+		t.Fatalf("missing dir should be created: %v", err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("created dir stat = %v, %v", info, err)
 	}
 }

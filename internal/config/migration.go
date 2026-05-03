@@ -14,11 +14,11 @@ import (
 type Format int
 
 const (
-	FormatEmpty      Format = iota // no relevant keys (fresh install)
-	FormatLegacy                   // flat keys, no [bridge] table
-	FormatSectioned                // [bridge] present, no flat keys
-	FormatPartial                  // both — hand-edited mid-migration, abort
-	FormatInvalid                  // syntactically invalid TOML, abort
+	FormatEmpty     Format = iota // no relevant keys (fresh install)
+	FormatLegacy                  // flat keys, no [bridge] table
+	FormatSectioned               // [bridge] present, no flat keys
+	FormatPartial                 // both — hand-edited mid-migration, abort
+	FormatInvalid                 // syntactically invalid TOML, abort
 )
 
 // legacyKeys is the set of top-level keys that existed in the pre-UI
@@ -198,13 +198,16 @@ func LoadSectioned(path string) (*Sectioned, error) {
 			return nil, fmt.Errorf("write migrated config: %w", err)
 		}
 		data = migrated
-		// fall through to sectioned-decode path
+	// fall through to sectioned-decode path
 
 	case FormatEmpty:
 		// Existing but empty/blank file: decode nothing and layer defaults.
 		s := &Sectioned{
 			Bridge:   defaultBridge(),
 			Adapters: map[string]toml.Primitive{},
+		}
+		if err := normalizeSectionedRuntimeDefaults(s); err != nil {
+			return nil, err
 		}
 		return s, nil
 	}
@@ -214,6 +217,9 @@ func LoadSectioned(path string) (*Sectioned, error) {
 		return nil, err
 	}
 	s.meta = meta
+	if err := normalizeSectionedRuntimeDefaults(s); err != nil {
+		return nil, err
+	}
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("config invalid: %w", err)
 	}
@@ -232,6 +238,15 @@ func loadSectionedFromBytes(data []byte) (*Sectioned, toml.MetaData, error) {
 		return nil, toml.MetaData{}, fmt.Errorf("parse sectioned config: %w", err)
 	}
 	return s, meta, nil
+}
+
+func normalizeSectionedRuntimeDefaults(s *Sectioned) error {
+	dataDir, err := ResolveDataDir(s.Bridge.DataDir)
+	if err != nil {
+		return err
+	}
+	s.Bridge.DataDir = dataDir
+	return nil
 }
 
 // defaultBridge returns a BridgeConfig populated with the same values

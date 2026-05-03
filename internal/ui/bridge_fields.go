@@ -150,11 +150,40 @@ func bridgeFields() []adapters.FieldDef {
 		{
 			Key:        "data_dir",
 			Label:      "Data Directory",
-			Help:       "Where plex.json and other persistent state live.",
+			Help:       "Where plex.json and other persistent state live. Leave empty for the OS default.",
 			Kind:       adapters.KindText,
-			Default:    "/config",
+			Default:    "",
 			ApplyScope: adapters.ScopeRestartBridge,
 			Section:    "Server",
+		},
+
+		// ---- External Tools ----
+		{
+			Key:         "ffmpeg_path",
+			Label:       "FFmpeg Path",
+			Help:        "Override the FFmpeg binary. Empty uses the bundled sidecar, then PATH.",
+			Kind:        adapters.KindText,
+			ApplyScope:  adapters.ScopeHotSwap,
+			Placeholder: "auto",
+			Section:     "External Tools",
+		},
+		{
+			Key:         "ffprobe_path",
+			Label:       "FFprobe Path",
+			Help:        "Override the FFprobe binary. Empty uses the bundled sidecar, then PATH.",
+			Kind:        adapters.KindText,
+			ApplyScope:  adapters.ScopeHotSwap,
+			Placeholder: "auto",
+			Section:     "External Tools",
+		},
+		{
+			Key:         "ytdlp_path",
+			Label:       "yt-dlp Path",
+			Help:        "Override the yt-dlp binary. Empty uses the bundled sidecar, then PATH.",
+			Kind:        adapters.KindText,
+			ApplyScope:  adapters.ScopeHotSwap,
+			Placeholder: "auto",
+			Section:     "External Tools",
 		},
 
 		// ---- MiSTer Control ----

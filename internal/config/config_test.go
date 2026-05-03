@@ -2,6 +2,9 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -223,5 +226,33 @@ func TestDefaultBridge_SSHCredentials(t *testing.T) {
 	}
 	if b.MiSTer.SSHPassword != "1" {
 		t.Errorf("default SSHPassword = %q, want 1", b.MiSTer.SSHPassword)
+	}
+}
+
+func TestSectioned_Validate_ExternalToolPaths(t *testing.T) {
+	tool := filepath.Join(t.TempDir(), "ffmpeg")
+	if runtime.GOOS == "windows" {
+		tool += ".exe"
+	}
+	if err := os.WriteFile(tool, []byte(""), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(tool, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := validSectioned()
+	s.Bridge.FFmpegPath = tool
+	s.Bridge.FFprobePath = tool
+	s.Bridge.YTDLPPath = tool
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid tool paths rejected: %v", err)
+	}
+
+	s.Bridge.FFmpegPath = filepath.Join(t.TempDir(), "missing")
+	if err := s.Validate(); err == nil {
+		t.Fatal("missing tool path should fail validation")
 	}
 }

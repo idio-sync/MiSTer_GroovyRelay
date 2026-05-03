@@ -37,11 +37,27 @@ func ProbeUDPPort(port int) error {
 	return c.Close()
 }
 
-// ProbeDirWritable checks that dir exists and the current process
-// can create files in it. Writes + removes a small zero-byte probe
-// file. The probe file name starts with "." so on platforms that
-// refresh ls/dir listings during the test the noise stays hidden.
+// EnsureDataDirWritable creates dir when needed, then checks that the current
+// process can create files in it. Writes + removes a small zero-byte probe file.
+// The probe file name starts with "." so on platforms that refresh ls/dir
+// listings during the test the noise stays hidden.
+func EnsureDataDirWritable(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("data_dir is empty")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("data_dir %q not writable: %w", dir, err)
+	}
+	return probeExistingDirWritable(dir)
+}
+
+// ProbeDirWritable preserves the existing pre-flight API while adopting the
+// native first-run behavior: missing data directories are created.
 func ProbeDirWritable(dir string) error {
+	return EnsureDataDirWritable(dir)
+}
+
+func probeExistingDirWritable(dir string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("data_dir %q: %w", dir, err)

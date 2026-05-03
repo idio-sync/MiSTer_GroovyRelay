@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,10 +32,6 @@ import (
 // captures BLIT timestamps exercises both the variance and timing sides
 // of §8.2.
 func TestScenario_PixelVariance(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
-
 	sample := ensureSampleMP4(t, "5s.mp4", 5)
 
 	// Per-test dump directory under the test's tempdir so artifacts are

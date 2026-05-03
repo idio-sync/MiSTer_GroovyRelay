@@ -53,15 +53,43 @@ func TestBuildBridgeSections_OrdersBySectionOrder(t *testing.T) {
 	got := buildBridgeSections(cur, nil)
 
 	// Pre-existing bridge fields all have SectionOrder=0, so they
-	// appear in registration order: Network, Video, Audio, Server,
-	// MiSTer Control. Confirm that order survives.
-	wantPrefix := []string{"Network", "Video", "Audio", "Server", "MiSTer Control"}
+	// appear in registration order. Confirm that order survives.
+	wantPrefix := []string{"Network", "Video", "Audio", "Server", "External Tools", "MiSTer Control"}
 	if len(got) < len(wantPrefix) {
 		t.Fatalf("got %d sections, want at least %d", len(got), len(wantPrefix))
 	}
 	for i, name := range wantPrefix {
 		if got[i].Name != name {
 			t.Errorf("section[%d]: got %q, want %q", i, got[i].Name, name)
+		}
+	}
+}
+
+func TestBridgeFields_HasExternalToolsSection(t *testing.T) {
+	fields := bridgeFields()
+	want := map[string]bool{
+		"ffmpeg_path":  false,
+		"ffprobe_path": false,
+		"ytdlp_path":   false,
+	}
+	for _, f := range fields {
+		if _, ok := want[f.Key]; !ok {
+			continue
+		}
+		if f.Section != "External Tools" {
+			t.Errorf("%s section = %q, want External Tools", f.Key, f.Section)
+		}
+		if f.Kind != adapters.KindText {
+			t.Errorf("%s kind = %v, want KindText", f.Key, f.Kind)
+		}
+		if f.ApplyScope != adapters.ScopeHotSwap {
+			t.Errorf("%s scope = %v, want ScopeHotSwap", f.Key, f.ApplyScope)
+		}
+		want[f.Key] = true
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("%s not found in bridgeFields()", k)
 		}
 	}
 }

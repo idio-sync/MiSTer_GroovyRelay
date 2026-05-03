@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -61,10 +60,6 @@ func newURLAdapter(t *testing.T, mgr *core.Manager) *urladapter.Adapter {
 // the data plane initialises against fake-mister (Init + Switchres
 // observed) before the short clip ends.
 func TestURL_PlayDirectFile(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
-	}
-
 	h := NewHarness(t)
 	// Enable ACKs so the data plane's SendInitAwaitACK handshake
 	// completes deterministically rather than racing the test's 5s
@@ -212,10 +207,6 @@ func TestURL_ProbeTimeout(t *testing.T) {
 //  4. Asserts the controller received a stopped timeline addressed to
 //     the prior media key during the preempt window.
 func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
-	}
-
 	h := NewHarness(t)
 	// Enable ACKs so the data plane's INIT handshake completes
 	// deterministically (matches D2's TestURL_PlayDirectFile pattern).
@@ -336,10 +327,6 @@ func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
 // §"Capability and DirectPlay flips" end-to-end through the real
 // data plane.
 func TestURL_PauseAndSeekSucceedV15(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
-	}
-
 	h := NewHarness(t)
 	h.Listener.EnableACKs(true)
 	mgr := core.NewManager(urlBridgeConfig(t), h.Sender)

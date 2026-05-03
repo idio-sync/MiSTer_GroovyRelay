@@ -128,6 +128,18 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 	if candidate.MiSTer.SSHPassword == "" {
 		candidate.MiSTer.SSHPassword = s.cfg.BridgeSaver.Current().MiSTer.SSHPassword
 	}
+	if candidate.DataDir == "" {
+		dataDir, err := config.ResolveDataDir("")
+		if err != nil {
+			data := bridgePanelData{
+				Toast:    &toastData{Class: "err", Message: err.Error()},
+				Sections: buildBridgeSections(candidate, nil),
+			}
+			s.renderPanel(w, "bridge-panel", data)
+			return
+		}
+		candidate.DataDir = dataDir
+	}
 
 	// Validate via Sectioned.Validate (covers ports, enum membership,
 	// required-mister-host, etc.). Keeps the save path using the same
@@ -377,6 +389,12 @@ func bridgeLookupString(key string, cur config.BridgeConfig) string {
 		return fmt.Sprintf("%d", cur.Audio.Channels)
 	case "data_dir":
 		return cur.DataDir
+	case "ffmpeg_path":
+		return cur.FFmpegPath
+	case "ffprobe_path":
+		return cur.FFprobePath
+	case "ytdlp_path":
+		return cur.YTDLPPath
 	}
 	return ""
 }

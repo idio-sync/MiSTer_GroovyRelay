@@ -49,4 +49,4 @@ else
     echo "yt-dlp self-update skipped (last attempt < 24h ago, version $OLD_VER)" >&2
 fi
 
-exec /usr/local/bin/mister-groovy-relay --config /config/config.toml "$@"
+exec /usr/local/bin/mister-groovy-relay "$@"

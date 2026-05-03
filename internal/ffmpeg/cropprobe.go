@@ -13,7 +13,8 @@ import (
 )
 
 // cropRegex matches ffmpeg's cropdetect log line format, e.g.
-//   "[Parsed_cropdetect_0 @ 0x55] ... crop=1920:800:0:140"
+//
+//	"[Parsed_cropdetect_0 @ 0x55] ... crop=1920:800:0:140"
 var cropRegex = regexp.MustCompile(`crop=(\d+):(\d+):(\d+):(\d+)`)
 
 // ProbeCrop runs a short ffmpeg cropdetect pass against inputURL and returns
@@ -27,8 +28,11 @@ var cropRegex = regexp.MustCompile(`crop=(\d+):(\d+):(\d+):(\d+)`)
 // The probe always runs with a wall-clock timeout of duration + 5s; that's
 // enough headroom to let ffmpeg flush on short clips and to guarantee this
 // call does not hang forever if the input URL is unreachable.
-func ProbeCrop(ctx context.Context, inputURL string, headers map[string]string, duration time.Duration) (*CropRect, error) {
-	return probeCropWithBinary(ctx, "ffmpeg", inputURL, headers, duration)
+func ProbeCrop(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration) (*CropRect, error) {
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
+	return probeCropWithBinary(ctx, ffmpegPath, inputURL, headers, duration)
 }
 
 // probeCropWithBinary is the testable variant: callers can supply a full

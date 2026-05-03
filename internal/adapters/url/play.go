@@ -92,6 +92,12 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 	probe := a.ytdlpProbe
 	resolver := a.resolver
 	a.mu.Unlock()
+	if resolver != nil {
+		// The production resolver resolves the current sidecar/PATH override
+		// at play time, so bridge.ytdlp_path hot-swaps must not be blocked by
+		// a stale startup version probe.
+		probe.OK = true
+	}
 
 	// parsed.Hostname() strips any :port suffix.
 	useYtdlp, derr := decideRoute(mode, parsed.Hostname(), cfg, probe)

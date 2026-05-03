@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 //go:embed example.toml
@@ -40,8 +42,26 @@ func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := os.WriteFile(path, exampleTOML, 0o644); err != nil {
+	rendered, err := defaultConfigTOML()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, rendered, 0o644); err != nil {
 		return fmt.Errorf("write default config: %w", err)
 	}
 	return nil
+}
+
+func defaultConfigTOML() ([]byte, error) {
+	dataDir, err := defaultDataDirForConfigWrite()
+	if err != nil {
+		return nil, err
+	}
+	line := []byte(`data_dir = ""`)
+	repl := []byte(`data_dir = ` + strconv.Quote(dataDir))
+	out := bytes.Replace(ExampleTOML(), line, repl, 1)
+	if bytes.Equal(out, exampleTOML) {
+		return nil, fmt.Errorf("write default config: data_dir template marker missing")
+	}
+	return out, nil
 }

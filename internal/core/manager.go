@@ -83,10 +83,30 @@ type Manager struct {
 	sender *groovynet.Sender
 	fsm    *StateMachine
 
+	ffmpegResolver  BinaryResolver
+	ffprobeResolver BinaryResolver
+
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
 	plane    *dataplane.Plane // nil when idle
 	active   *activeSession
+}
+
+// BinaryResolver is the manager's narrow view of an external binary resolver.
+type BinaryResolver interface {
+	Resolve() (string, error)
+}
+
+// ManagerOption customizes Manager construction without forcing tests to wire
+// production resolver objects.
+type ManagerOption func(*Manager)
+
+// WithBinaryResolvers wires ffmpeg/ffprobe resolution for native sidecars.
+func WithBinaryResolvers(ffmpegResolver, ffprobeResolver BinaryResolver) ManagerOption {
+	return func(m *Manager) {
+		m.ffmpegResolver = ffmpegResolver
+		m.ffprobeResolver = ffprobeResolver
+	}
 }
 
 // activeSession is the manager's private per-session context. Adapter-
@@ -102,8 +122,19 @@ type activeSession struct {
 // NewManager constructs a Manager. The Sender must already be bound to the
 // MiSTer's address; Manager does not own its lifecycle (the sender is shared
 // across the process lifetime so its source UDP port remains stable).
-func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender) *Manager {
-	return &Manager{bridge: bridge, sender: sender, fsm: New()}
+func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender, opts ...ManagerOption) *Manager {
+	m := &Manager{bridge: bridge, sender: sender, fsm: New()}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+func resolveBinary(r BinaryResolver, fallback string) (string, error) {
+	if r == nil {
+		return fallback, nil
+	}
+	return r.Resolve()
 }
 
 func (m *Manager) logPlaneExit(runErr error) {
@@ -127,26 +158,34 @@ func (m *Manager) logPlaneExit(runErr error) {
 // context so a stuck PMS cannot deadlock the control plane. Called by
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
 // never held during network I/O.
-func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpeg.CropRect, error) {
+func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpeg.CropRect, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	probe, err := ffmpeg.Probe(ctx, req.StreamURL)
+	ffmpegPath, err := resolveBinary(m.ffmpegResolver, "ffmpeg")
 	if err != nil {
-		return nil, nil, fmt.Errorf("probe source: %w", err)
+		return nil, nil, "", fmt.Errorf("resolve ffmpeg: %w", err)
+	}
+	ffprobePath, err := resolveBinary(m.ffprobeResolver, "ffprobe")
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("resolve ffprobe: %w", err)
+	}
+	probe, err := ffmpeg.Probe(ctx, ffprobePath, req.StreamURL)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("probe source: %w", err)
 	}
 	var cropRect *ffmpeg.CropRect
 	if m.bridge.Video.AspectMode == "auto" {
 		// ProbeCrop failures degrade gracefully to letterbox — ignore the error.
-		cropRect, _ = ffmpeg.ProbeCrop(ctx, req.StreamURL, req.InputHeaders, 2*time.Second)
+		cropRect, _ = ffmpeg.ProbeCrop(ctx, ffmpegPath, req.StreamURL, req.InputHeaders, 2*time.Second)
 	}
-	return probe, cropRect, nil
+	return probe, cropRect, ffmpegPath, nil
 }
 
 // startPlaneLocked spawns a new data plane. Caller MUST hold m.mu AND have
 // already run Probe/ProbeCrop (passed in as probe + cropRect) — this
 // function must not perform network I/O while the mutex is held.
 func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
-	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect) error {
+	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect, ffmpegPath string) error {
 	// 1. Preempt and await prior plane. Drop the lock while awaiting Done()
 	//    so the plane's exit goroutine (which re-acquires m.mu to clear
 	//    m.plane) is free to run.
@@ -216,6 +255,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		SubtitleIndex:     req.SubtitleIndex,
 		AudioSampleRate:   m.bridge.Audio.SampleRate,
 		AudioChannels:     m.bridge.Audio.Channels,
+		FFmpegPath:        ffmpegPath,
 	}
 
 	plane := dataplane.NewPlane(dataplane.PlaneConfig{
@@ -293,13 +333,13 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 // protocol-specific requests into a SessionRequest and call this. Any
 // existing session is preempted and the prior goroutine awaited.
 func (m *Manager) StartSession(req SessionRequest) error {
-	probe, cropRect, err := m.probeForStart(req)
+	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect); err != nil {
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath); err != nil {
 		return err
 	}
 	return m.fsm.Transition(EvPlayMedia)
@@ -353,14 +393,14 @@ func (m *Manager) Play() error {
 	}
 	m.mu.Unlock()
 
-	probe, cropRect, err := m.probeForStart(req)
+	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		return err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect); err != nil {
+	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath); err != nil {
 		return err
 	}
 	return m.fsm.Transition(EvPlay)
@@ -477,14 +517,14 @@ func (m *Manager) SeekTo(offsetMs int) error {
 	req := a.req
 	m.mu.Unlock()
 
-	probe, cropRect, err := m.probeForStart(req)
+	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		return err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect); err != nil {
+	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath); err != nil {
 		return err
 	}
 	// Seek keeps state=playing; FSM's Seek event is a no-op transition.

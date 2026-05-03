@@ -1,13 +1,18 @@
 # CI pipeline for MiSTer_GroovyRelay.
 #
 # test job:
-#   - Runs on every push to main/dev, every PR, and every tag push.
+#   - Runs on every push to main/dev, every PR, and every tag push across
+#     Linux, Windows, and macOS.
 #   - Installs ffmpeg (required by integration tests — the sample-clip
 #     generator and live Plane scenarios both shell out).
-#   - go vet + go test (unit) + go test -tags=integration across the
-#     whole module. The integration glob is ./... (not just
-#     tests/integration/...) so any //go:build integration test in
-#     another package also runs.
+#   - go vet + go test (unit) + go test -tags=integration across the whole
+#     module. Race tests run on Linux/macOS; Windows Go race builds require
+#     CGO plus a C compiler, which the stock runner/dev setup does not have.
+#     The integration glob is ./... (not just tests/integration/...) so any
+#     //go:build integration test in another package also runs.
+#   - Runs the sidecar fetch script guard test on Linux. That check asserts
+#     macOS FFmpeg/FFprobe source-build requests fail before downloads when
+#     invoked outside a macOS release runner.
 #
 # build-image job:
 #   - Runs on any push (main, dev, v* tag). Skipped on pull_request
@@ -31,17 +36,34 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-      - name: Install ffmpeg
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ffmpeg -y
       - run: go vet ./...
       - run: go test ./...
-      - run: go test -race ./...
+      - name: Sidecar script tests
+        if: runner.os == 'Linux'
+        run: bash scripts/fetch-sidecars-test.sh
+      - name: Race tests
+        if: runner.os != 'Windows'
+        run: go test -race ./...
       - run: go test -tags=integration ./...
 
   build-image:

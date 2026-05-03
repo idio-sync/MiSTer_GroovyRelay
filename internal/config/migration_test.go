@@ -223,8 +223,11 @@ func TestLoad_MissingWritesSectionedDefault(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("seed file not written: %v", readErr)
 	}
-	if string(data) != string(ExampleTOML()) {
-		t.Error("seed file does not match embedded example")
+	if strings.Contains(string(data), `data_dir = ""`) {
+		t.Error("seed file should have resolved data_dir, got blank template marker")
+	}
+	if !strings.Contains(string(data), `data_dir = "`) {
+		t.Errorf("seed file missing data_dir assignment: %s", data)
 	}
 	if got := Detect(data); got != FormatSectioned {
 		t.Errorf("seeded format = %v, want FormatSectioned", got)

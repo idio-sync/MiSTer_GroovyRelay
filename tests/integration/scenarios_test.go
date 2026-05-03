@@ -4,7 +4,6 @@ package integration
 
 import (
 	"net"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -173,10 +172,6 @@ func defaultRequest(streamURL, ref string) core.SessionRequest {
 // Assert a lower bound only (>= 200 000 B) so this test remains stable
 // across ffmpeg versions and CI load.
 func TestScenario_Cast(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
-
 	sample := ensureSampleMP4(t, "5s.mp4", 5)
 	h := newScenarioHarness(t)
 
@@ -221,10 +216,6 @@ func TestScenario_Cast(t *testing.T) {
 // re-runs the INIT handshake — so the recorder should see >= 2 INIT
 // commands across the session.
 func TestScenario_Seek(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
-
 	sample := ensureSampleMP4(t, "10s.mp4", 10)
 	h := newScenarioHarness(t)
 
@@ -257,10 +248,6 @@ func TestScenario_Seek(t *testing.T) {
 // band is generous: the pump loop emits at ~60 Hz, so a 500 ms window
 // should catch a delta of ~30 BLITs when playing and 0 when paused.
 func TestScenario_Pause(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
-
 	sample := ensureSampleMP4(t, "10s.mp4", 10)
 	h := newScenarioHarness(t)
 
@@ -305,10 +292,6 @@ func TestScenario_Pause(t *testing.T) {
 // pairs. The Manager's internal plane-pointer swap guarantees clip A's
 // goroutine exits before clip B's INIT is sent.
 func TestScenario_Preempt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
-
 	sampleA := ensureSampleMP4(t, "10s.mp4", 10)
 	sampleB := ensureSampleMP4(t, "5s.mp4", 5)
 	h := newScenarioHarness(t)
@@ -343,10 +326,6 @@ func TestScenario_Preempt(t *testing.T) {
 // TestScenario_Stop casts a clip and stops it mid-playback. The recorder
 // must see at least one CLOSE (emitted by the plane's ctx.Done branch).
 func TestScenario_Stop(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg scenarios require Unix ExtraFiles; run on Linux/CI")
-	}
-
 	sample := ensureSampleMP4(t, "10s.mp4", 10)
 	h := newScenarioHarness(t)
 

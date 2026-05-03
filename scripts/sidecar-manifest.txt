@@ -1,0 +1,21 @@
+# target|tool|version|url|sha256|license|output
+#
+# The fetch script refuses moving aliases such as /latest/download/ and asset
+# names containing "latest". Each row must identify a stable release tag plus
+# the exact SHA256 for the downloaded asset.
+#
+# macOS FFmpeg/FFprobe entries are intentionally absent from this binary
+# manifest. scripts/fetch-sidecars.sh builds them from the official pinned
+# FFmpeg source tarball on the macOS release runner using LGPL-safe configure
+# flags, avoiding ambiguous GPL-enabled public macOS binary builds.
+linux_amd64|ffmpeg|ffmpeg-n8.1-10-g7f5c90f77e|https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-28-15-54/ffmpeg-n8.1-10-g7f5c90f77e-linux64-lgpl-8.1.tar.xz|60dc09efbf9f13d1a6dc99e7a361bd5b431a7cac8553c058c977bc2943e07295|LGPL-2.1-or-later|ffmpeg
+linux_amd64|ffprobe|ffmpeg-n8.1-10-g7f5c90f77e|https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-28-15-54/ffmpeg-n8.1-10-g7f5c90f77e-linux64-lgpl-8.1.tar.xz|60dc09efbf9f13d1a6dc99e7a361bd5b431a7cac8553c058c977bc2943e07295|LGPL-2.1-or-later|ffprobe
+linux_arm64|ffmpeg|ffmpeg-n8.1-10-g7f5c90f77e|https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-28-15-54/ffmpeg-n8.1-10-g7f5c90f77e-linuxarm64-lgpl-8.1.tar.xz|20a08eca504da4dba40dfe747a09cf9e353e786e418e9cabedc6eb520b10e610|LGPL-2.1-or-later|ffmpeg
+linux_arm64|ffprobe|ffmpeg-n8.1-10-g7f5c90f77e|https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-28-15-54/ffmpeg-n8.1-10-g7f5c90f77e-linuxarm64-lgpl-8.1.tar.xz|20a08eca504da4dba40dfe747a09cf9e353e786e418e9cabedc6eb520b10e610|LGPL-2.1-or-later|ffprobe
+windows_amd64|ffmpeg|ffmpeg-n8.1-10-g7f5c90f77e|https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-28-15-54/ffmpeg-n8.1-10-g7f5c90f77e-win64-lgpl-8.1.zip|840d25132186e5789be2986c1c378dd271f48d1332d81e0f0367b8ba8dea1866|LGPL-2.1-or-later|ffmpeg.exe
+windows_amd64|ffprobe|ffmpeg-n8.1-10-g7f5c90f77e|https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-28-15-54/ffmpeg-n8.1-10-g7f5c90f77e-win64-lgpl-8.1.zip|840d25132186e5789be2986c1c378dd271f48d1332d81e0f0367b8ba8dea1866|LGPL-2.1-or-later|ffprobe.exe
+linux_amd64|yt-dlp|2026.03.17|https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.17/yt-dlp_linux|c2b0189f581fe4a2ddd41954f1bcb7d327db04b07ed0dea97e4f1b3e09b5dd8e|Unlicense|yt-dlp
+linux_arm64|yt-dlp|2026.03.17|https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.17/yt-dlp_linux_aarch64|6bfa19736181da9e2e066f9c767da2f24fdcc5e148fa5034d1feb09132f89ad5|Unlicense|yt-dlp
+windows_amd64|yt-dlp|2026.03.17|https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.17/yt-dlp.exe|3db811b366b2da47337d2fcfdfe5bbd9a258dad3f350c54974f005df115a1545|Unlicense|yt-dlp.exe
+darwin_amd64|yt-dlp|2026.03.17|https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.17/yt-dlp_macos|e80c47b3ce712acee51d5e3d4eace2d181b44d38f1942c3a32e3c7ff53cd9ed5|Unlicense|yt-dlp
+darwin_arm64|yt-dlp|2026.03.17|https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.17/yt-dlp_macos|e80c47b3ce712acee51d5e3d4eace2d181b44d38f1942c3a32e3c7ff53cd9ed5|Unlicense|yt-dlp

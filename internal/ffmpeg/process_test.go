@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -147,23 +148,22 @@ func TestProcess_BasicLifecycle(t *testing.T) {
 }
 
 // TestProcess_SpawnsFFmpeg is the "live" end-to-end test: Spawn a real ffmpeg
-// with ExtraFiles wiring. Skipped on Windows because cmd.ExtraFiles is not
-// supported there — exec.Cmd.Start returns an error when ExtraFiles is set
-// on Windows. The production target is Linux, so this test will run under
-// CI/Docker.
+// and read the bytes it emits through the platform pipe transport. Unix uses
+// ExtraFiles; Windows uses the loopback TCP shim.
 func TestProcess_SpawnsFFmpeg(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("ExtraFiles unsupported on Windows; Linux-only live test")
-	}
 	if findFFBinary("ffmpeg") == "" {
 		t.Skip("ffmpeg not findable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	samplePath := filepath.Join("..", "..", "tests", "integration", "testdata", "url", "tiny.mp4")
+	if _, err := os.Stat(samplePath); err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+
 	spec := PipelineSpec{
-		// Use lavfi testsrc so no external URL is required.
-		InputURL:        "testsrc=duration=1:size=320x240:rate=24",
+		InputURL:        samplePath,
 		InputHeaders:    nil,
 		SourceProbe:     &ProbeResult{Width: 320, Height: 240, FrameRate: 24, Interlaced: false},
 		OutputWidth:     720,
@@ -173,13 +173,9 @@ func TestProcess_SpawnsFFmpeg(t *testing.T) {
 		AudioSampleRate: 48000,
 		AudioChannels:   2,
 	}
-	// Swap in -f lavfi for the input format manually by rebuilding the cmd
-	// (Spawn sets VideoPipePath="pipe:3", AudioPipePath="pipe:4").
+
 	p, err := Spawn(ctx, spec)
 	if err != nil {
-		// On systems where ExtraFiles *is* supported but lavfi isn't wired,
-		// Spawn may still start; the failure will surface as a non-zero
-		// exit once the child runs. We consider the test advisory here.
 		t.Skipf("Spawn failed (environment-dependent): %v", err)
 	}
 	// Drain until EOF or timeout.

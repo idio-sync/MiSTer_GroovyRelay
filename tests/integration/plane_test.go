@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,15 +21,7 @@ import (
 // real ffmpeg spawn, INIT/ACK handshake via a stub listener, SWITCHRES,
 // ~300 BLIT_FIELD_VSYNC packets over ~5 seconds, and a clean CLOSE when the
 // process exits or context cancels.
-//
-// Skipped on Windows: cmd.ExtraFiles is Unix-only, so ffmpeg.Spawn will fail
-// at cmd.Start(). Production target is Linux/Docker; Linux CI runs this
-// test. The build still compiles on Windows so `go build ./...` stays clean.
 func TestPlane_StreamsFieldsToFake(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live FFmpeg plane test requires Unix ExtraFiles; run on Linux/CI")
-	}
-
 	samplePath := ensureSampleMP4(t, "5s.mp4", 5)
 
 	// Bring up the fake-mister listener + a stub that replies to INIT with a

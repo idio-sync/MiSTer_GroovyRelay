@@ -69,3 +69,52 @@ func TestScopeForBridgeField_LoggingDebugHotSwap(t *testing.T) {
 		t.Errorf("scopeForBridgeField(logging.debug) = %v, want ScopeHotSwap", got)
 	}
 }
+
+func TestDiffBridgeConfig_ToolPathsHotSwap(t *testing.T) {
+	old := config.BridgeConfig{}
+	newCfg := old
+	newCfg.FFmpegPath = "/bin/ffmpeg"
+	newCfg.FFprobePath = "/bin/ffprobe"
+	newCfg.YTDLPPath = "/bin/yt-dlp"
+
+	keys := diffBridgeConfig(old, newCfg)
+	for _, k := range []string{"ffmpeg_path", "ffprobe_path", "ytdlp_path"} {
+		if !containsStr(keys, k) {
+			t.Errorf("expected %s in diff keys, got %v", k, keys)
+		}
+		if got := scopeForBridgeField(k); got != adapters.ScopeHotSwap {
+			t.Errorf("scopeForBridgeField(%q) = %v, want ScopeHotSwap", k, got)
+		}
+	}
+}
+
+func TestBridgeSaver_UpdateToolResolvers(t *testing.T) {
+	ffmpeg := &fakeOverrideUpdater{}
+	ffprobe := &fakeOverrideUpdater{}
+	ytdlp := &fakeOverrideUpdater{}
+	s := &BridgeSaver{tools: ToolResolvers{FFmpeg: ffmpeg, FFprobe: ffprobe, YTDLP: ytdlp}}
+	cfg := config.BridgeConfig{
+		FFmpegPath:  "/tools/ffmpeg",
+		FFprobePath: "/tools/ffprobe",
+		YTDLPPath:   "/tools/yt-dlp",
+	}
+	s.updateToolResolvers([]string{"ffmpeg_path", "ffprobe_path", "ytdlp_path"}, cfg)
+
+	if ffmpeg.got != cfg.FFmpegPath {
+		t.Errorf("ffmpeg override = %q", ffmpeg.got)
+	}
+	if ffprobe.got != cfg.FFprobePath {
+		t.Errorf("ffprobe override = %q", ffprobe.got)
+	}
+	if ytdlp.got != cfg.YTDLPPath {
+		t.Errorf("ytdlp override = %q", ytdlp.got)
+	}
+}
+
+type fakeOverrideUpdater struct {
+	got string
+}
+
+func (f *fakeOverrideUpdater) UpdateOverride(v string) {
+	f.got = v
+}

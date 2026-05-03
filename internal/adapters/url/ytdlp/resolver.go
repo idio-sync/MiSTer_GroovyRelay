@@ -20,6 +20,11 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 }
 
+// BinaryResolver resolves yt-dlp immediately before each invocation.
+type BinaryResolver interface {
+	Resolve() (string, error)
+}
+
 // OSRunner runs commands via os/exec. The default Runner.
 type OSRunner struct{}
 
@@ -58,9 +63,10 @@ type Resolution struct {
 // adapter (binary + timeout are stable for the adapter's lifetime);
 // use it concurrently from multiple play handlers.
 type Resolver struct {
-	Binary  string        // resolved at adapter Start via exec.LookPath
-	Timeout time.Duration // hard timeout per Resolve call
-	Runner  Runner        // OSRunner in prod; stub in tests
+	Binary         string         // fallback/static binary path for tests and legacy wiring
+	BinaryResolver BinaryResolver // production sidecar/PATH resolver
+	Timeout        time.Duration  // hard timeout per Resolve call
+	Runner         Runner         // OSRunner in prod; stub in tests
 }
 
 // Resolve invokes yt-dlp and returns the parsed Resolution.
@@ -73,7 +79,15 @@ type Resolver struct {
 // --print-json does not exist in yt-dlp; using it would cause every
 // invocation to fail in production (review fix C1).
 func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*Resolution, error) {
-	if r.Binary == "" {
+	binary := r.Binary
+	if r.BinaryResolver != nil {
+		resolved, err := r.BinaryResolver.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("ytdlp: resolve binary: %w", err)
+		}
+		binary = resolved
+	}
+	if binary == "" {
 		return nil, fmt.Errorf("ytdlp: binary not configured")
 	}
 
@@ -108,7 +122,7 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 	timeoutCtx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
-	stdout, stderr, err := r.Runner.Run(timeoutCtx, r.Binary, args...)
+	stdout, stderr, err := r.Runner.Run(timeoutCtx, binary, args...)
 	if err != nil {
 		// Distinguish timeout from non-zero exit.
 		if timeoutCtx.Err() == context.DeadlineExceeded {

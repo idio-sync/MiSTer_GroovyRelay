@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -54,6 +55,7 @@ type PipelineSpec struct {
 
 	VideoPipePath string // "pipe:3", a named pipe path, or "-" for stdout
 	AudioPipePath string // "pipe:4", etc.
+	FFmpegPath    string // empty = "ffmpeg"
 }
 
 // audioOutputEnabled reports whether the ffmpeg command should emit the s16le
@@ -185,15 +187,28 @@ func buildFilterChain(s PipelineSpec) string {
 	//    glyphs proportioned in screen space rather than logical space.
 	if s.SubtitlePath != "" {
 		filters = append(filters,
-			fmt.Sprintf("subtitles=filename='%s':si=%d", s.SubtitlePath, s.SubtitleIndex))
+			fmt.Sprintf("subtitles=filename='%s':si=%d", escapeSubtitlePath(s.SubtitlePath), s.SubtitleIndex))
 	}
 
 	return strings.Join(filters, ",")
 }
 
+func escapeSubtitlePath(p string) string {
+	return escapeSubtitlePathFor(runtime.GOOS, p)
+}
+
+func escapeSubtitlePathFor(goos, p string) string {
+	if goos == "windows" {
+		p = strings.ReplaceAll(p, `\`, "/")
+	}
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	p = strings.ReplaceAll(p, `'`, `'\''`)
+	return p
+}
+
 // BuildCommand returns a ready-to-run *exec.Cmd for the pipeline described by
-// s. The caller is responsible for wiring up the fd-3/fd-4 pipes via
-// cmd.ExtraFiles (see Spawn in process.go).
+// s. The caller is responsible for wiring up the platform stream transport
+// before starting the command.
 //
 // Seeking:
 //   - Transcode path: the transcode URL encodes `offset=` server-side; do NOT
@@ -267,7 +282,11 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 		)
 	}
 
-	return exec.CommandContext(ctx, "ffmpeg", args...)
+	ffmpegPath := s.FFmpegPath
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
+	return exec.CommandContext(ctx, ffmpegPath, args...)
 }
 
 // appendHeadersArg formats `headers` into a single `-headers <CRLF-joined>`
