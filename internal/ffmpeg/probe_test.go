@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,17 +23,13 @@ func TestMain(m *testing.M) {
 	case "leaky-parent":
 		runProbeLeakyParentHelper()
 		os.Exit(0)
-	case "hold-pipe":
-		time.Sleep(probeHelperHoldPipeFor)
-		os.Exit(0)
 	default:
 		os.Exit(m.Run())
 	}
 }
 
 func runProbeLeakyParentHelper() {
-	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), probeHelperEnv+"=hold-pipe")
+	cmd := holdPipeCommand()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -42,6 +39,14 @@ func runProbeLeakyParentHelper() {
 		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
 	}
 	_, _ = os.Stdout.Write([]byte(`{"streams":[],"format":{}}`))
+}
+
+func holdPipeCommand() *exec.Cmd {
+	seconds := strconv.Itoa(int(probeHelperHoldPipeFor.Seconds()))
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd.exe", "/c", "ping -n "+seconds+" 127.0.0.1 >NUL")
+	}
+	return exec.Command("sleep", seconds)
 }
 
 func TestParseProbeOutput_ProgressiveVideoWithAudio(t *testing.T) {
