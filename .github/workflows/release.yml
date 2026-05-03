@@ -17,6 +17,45 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: extension/firefox/package-lock.json
+      - name: Install extension dependencies
+        working-directory: extension/firefox
+        run: npm ci
+      - name: Verify extension
+        working-directory: extension/firefox
+        run: |
+          npm run check:versions
+          npm test
+          npm run lint
+          npm run build
+      - name: Sign Firefox extension through AMO
+        working-directory: extension/firefox
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "AMO_JWT_ISSUER and AMO_JWT_SECRET secrets are required for Firefox signing." >&2
+            exit 1
+          fi
+          npm run sign:amo
+      - name: Prepare extension release assets
+        id: extension_assets
+        shell: bash
+        run: |
+          version="$(node -p "require('./extension/firefox/package.json').version")"
+          signed_xpi="$(find extension/firefox/dist/amo-signed -name '*.xpi' -type f | head -n 1)"
+          if [ -z "$signed_xpi" ]; then
+            echo "No signed XPI found in extension/firefox/dist/amo-signed." >&2
+            find extension/firefox/dist -maxdepth 3 -type f >&2
+            exit 1
+          fi
+          cp "$signed_xpi" "extension/firefox/dist/companion-extension-${version}-signed.xpi"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -24,3 +63,12 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload extension assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.extension_assets.outputs.version }}"
+          gh release upload "${GITHUB_REF_NAME}" \
+            "extension/firefox/dist/companion-extension-${version}.zip" \
+            "extension/firefox/dist/companion-extension-${version}-signed.xpi" \
+            --clobber

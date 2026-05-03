@@ -59,6 +59,17 @@ npm run build
 
 The bridge-side change required to make this extension work is already in `main`. The extension sends `X-Bridge-Extension: 1` on POSTs; the bridge accepts it together with an `moz-extension://`, `chrome-extension://`, or `safari-web-extension://` Origin.
 
+## Release automation
+
+GitHub Actions signs the Firefox add-on through AMO and uploads both browser artifacts when a `v*` tag is pushed.
+
+Repository secrets required:
+
+- `AMO_JWT_ISSUER`
+- `AMO_JWT_SECRET`
+
+Before tagging a release, keep `package.json` and `manifest.json` on the same extension version. The tag must match that version, for example `v0.1.1`.
+
 ## Spec
 
 Full design at [docs/specs/2026-04-25-companion-extension-design.md](../../docs/specs/2026-04-25-companion-extension-design.md).
