@@ -4,6 +4,8 @@ import fs from "node:fs";
 
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const workflow = fs.readFileSync("../../.github/workflows/release.yml", "utf8");
+const goreleaser = fs.readFileSync("../../.goreleaser.yaml", "utf8");
+const rootGitignore = fs.readFileSync("../../.gitignore", "utf8");
 const gitignore = fs.readFileSync(".gitignore", "utf8");
 
 describe("release workflow extension automation", () => {
@@ -42,5 +44,12 @@ describe("release workflow extension automation", () => {
 
   it("ignores the AMO upload UUID generated during CI signing", () => {
     expect(gitignore).toContain(".amo-upload-uuid");
+  });
+
+  it("keeps GoReleaser output separate from sidecar staging", () => {
+    expect(goreleaser).toContain("dist: build/goreleaser");
+    expect(goreleaser).toContain("dist/sidecars/{{ .Os }}_{{ .Arch }}/*");
+    expect(goreleaser).toContain("dist/sidecar-cache/*");
+    expect(rootGitignore).toContain("/build/goreleaser/");
   });
 });
