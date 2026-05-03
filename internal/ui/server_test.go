@@ -98,14 +98,14 @@ type fakeRouteAdapter struct {
 	hits map[string]int // method+path -> count
 }
 
-func (f *fakeRouteAdapter) Name() string                                    { return "fake" }
-func (f *fakeRouteAdapter) DisplayName() string                             { return "Fake" }
-func (f *fakeRouteAdapter) Fields() []adapters.FieldDef                     { return nil }
+func (f *fakeRouteAdapter) Name() string                                     { return "fake" }
+func (f *fakeRouteAdapter) DisplayName() string                              { return "Fake" }
+func (f *fakeRouteAdapter) Fields() []adapters.FieldDef                      { return nil }
 func (f *fakeRouteAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
-func (f *fakeRouteAdapter) IsEnabled() bool                                 { return true }
-func (f *fakeRouteAdapter) Start(context.Context) error                     { return nil }
-func (f *fakeRouteAdapter) Stop() error                                     { return nil }
-func (f *fakeRouteAdapter) Status() adapters.Status                         { return adapters.Status{} }
+func (f *fakeRouteAdapter) IsEnabled() bool                                  { return true }
+func (f *fakeRouteAdapter) Start(context.Context) error                      { return nil }
+func (f *fakeRouteAdapter) Stop() error                                      { return nil }
+func (f *fakeRouteAdapter) Status() adapters.Status                          { return adapters.Status{} }
 func (f *fakeRouteAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
 	return 0, nil
 }
@@ -170,6 +170,82 @@ func TestServer_Mount_HonorsAllRouteMethods(t *testing.T) {
 		if fa.hits[key] != 1 {
 			t.Errorf("hits[%q] = %d, want 1", key, fa.hits[key])
 		}
+	}
+}
+
+func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
+	reg := adapters.NewRegistry()
+	fa := &fakeRouteAdapter{hits: map[string]int{}}
+	if err := reg.Register(fa); err != nil {
+		t.Fatalf("register fake: %v", err)
+	}
+
+	srv, err := New(Config{Registry: reg})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	origin := "moz-extension://abcd-1234"
+	preflight, err := http.NewRequest(http.MethodOptions, ts.URL+"/ui/adapter/fake/thing", nil)
+	if err != nil {
+		t.Fatalf("build preflight: %v", err)
+	}
+	preflight.Header.Set("Origin", origin)
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
+	preflight.Header.Set("Access-Control-Request-Headers", "content-type, x-bridge-extension")
+	resp, err := ts.Client().Do(preflight)
+	if err != nil {
+		t.Fatalf("preflight do: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("preflight Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(got), "x-bridge-extension") {
+		t.Fatalf("preflight Access-Control-Allow-Headers = %q, want x-bridge-extension", got)
+	}
+
+	getReq, err := http.NewRequest(http.MethodGet, ts.URL+"/ui/adapter/fake/thing", nil)
+	if err != nil {
+		t.Fatalf("build GET: %v", err)
+	}
+	getReq.Header.Set("Origin", origin)
+	getResp, err := ts.Client().Do(getReq)
+	if err != nil {
+		t.Fatalf("GET do: %v", err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", getResp.StatusCode)
+	}
+	if got := getResp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("GET Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+
+	postReq, err := http.NewRequest(http.MethodPost, ts.URL+"/ui/adapter/fake/thing", nil)
+	if err != nil {
+		t.Fatalf("build POST: %v", err)
+	}
+	postReq.Header.Set("Origin", origin)
+	postReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	postReq.Header.Set("X-Bridge-Extension", "1")
+	postResp, err := ts.Client().Do(postReq)
+	if err != nil {
+		t.Fatalf("POST do: %v", err)
+	}
+	postResp.Body.Close()
+	if postResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200", postResp.StatusCode)
+	}
+	if got := postResp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("POST Access-Control-Allow-Origin = %q, want %q", got, origin)
 	}
 }
 

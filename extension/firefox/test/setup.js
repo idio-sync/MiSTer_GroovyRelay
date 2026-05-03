@@ -35,6 +35,7 @@ const browserMock = {
   },
   tabs: {
     query: vi.fn(async () => [{ url: "https://example.com" }]),
+    create: vi.fn(async () => ({})),
   },
   contextMenus: {
     create: vi.fn(),

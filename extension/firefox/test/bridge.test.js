@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { http, HttpResponse, delay } from "msw";
 import { setupServer } from "msw/node";
-import { getBridgeURL, play, _setTimeoutForTest } from "../src/lib/bridge.js";
+import {
+  getBridgeURL,
+  launchGroovyMister,
+  play,
+  _setTimeoutForTest,
+} from "../src/lib/bridge.js";
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -151,5 +156,77 @@ describe("play() error paths", () => {
     const result = await play("https://example.com/x.mp4");
 
     expect(result).toEqual({ ok: false, status: 500, error: "HTTP 500" });
+  });
+});
+
+describe("launchGroovyMister()", () => {
+  it("POSTs to /ui/bridge/mister/launch with the extension header", async () => {
+    let captured;
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", ({ request }) => {
+        captured = { headers: Object.fromEntries(request.headers) };
+        return new HttpResponse(
+          '<div class="status-line run">Sent</div>',
+          { status: 200, headers: { "Content-Type": "text/html" } }
+        );
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await launchGroovyMister();
+
+    expect(result).toEqual({ ok: true });
+    expect(captured.headers["x-bridge-extension"]).toBe("1");
+  });
+
+  it("returns 'Bridge not configured' when bridgeURL is empty", async () => {
+    const result = await launchGroovyMister();
+    expect(result).toEqual({ ok: false, error: "Bridge not configured" });
+  });
+
+  it("returns 'Bridge timed out' when launch fetch aborts", async () => {
+    _setTimeoutForTest(50);
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", async () => {
+        await delay(500);
+        return new HttpResponse('<div class="status-line run">Sent</div>', { status: 200 });
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await launchGroovyMister();
+
+    expect(result).toEqual({ ok: false, error: "Bridge timed out" });
+  });
+
+  it("returns 'Bridge unreachable: ...' on network error", async () => {
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", () => {
+        return HttpResponse.error();
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await launchGroovyMister();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/^Bridge unreachable:/);
+  });
+
+  it("returns launch failure text on HTTP error", async () => {
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", () => {
+        return new HttpResponse("SSH failed: dial timeout", { status: 500 });
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await launchGroovyMister();
+
+    expect(result).toEqual({
+      ok: false,
+      status: 500,
+      error: "Launch failed: SSH failed: dial timeout",
+    });
   });
 });

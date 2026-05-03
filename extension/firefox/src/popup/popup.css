@@ -44,6 +44,12 @@ button.primary {
 
 button.primary:hover { background: #3a7ac2; }
 
+.actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .status {
   margin-top: 10px;
   min-height: 1.5em;

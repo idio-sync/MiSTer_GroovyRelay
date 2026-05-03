@@ -1,4 +1,9 @@
-import { play, getBridgeURL, formatPlayError } from "../lib/bridge.js";
+import {
+  play,
+  getBridgeURL,
+  launchGroovyMister,
+  formatPlayError,
+} from "../lib/bridge.js";
 
 export async function initPopup(doc = document) {
   const bridgeURL = await getBridgeURL();
@@ -17,6 +22,9 @@ export async function initPopup(doc = document) {
   const tabUrlEl = doc.getElementById("tab-url");
   const castBtn = doc.getElementById("cast");
   const statusEl = doc.getElementById("status");
+  const launchBtn = doc.getElementById("launch-groovy");
+  const openWebUIBtn = doc.getElementById("open-webui");
+  const launchStatusEl = doc.getElementById("launch-status");
   const openOptions = doc.getElementById("open-options");
 
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
@@ -41,6 +49,26 @@ export async function initPopup(doc = document) {
       setStatus(statusEl, "err", formatPlayError(result));
     }
     castBtn.disabled = false;
+  });
+
+  launchBtn.addEventListener("click", async () => {
+    launchBtn.disabled = true;
+    setStatus(launchStatusEl, "", "Launching...");
+    const result = await launchGroovyMister();
+    if (result.ok) {
+      setStatus(launchStatusEl, "ok", "GroovyMiSTer launch sent.");
+    } else {
+      setStatus(launchStatusEl, "err", result.error || "Launch failed");
+    }
+    launchBtn.disabled = false;
+  });
+
+  openWebUIBtn.addEventListener("click", async () => {
+    try {
+      await browser.tabs.create({ url: bridgeURL });
+    } catch (e) {
+      setStatus(launchStatusEl, "err", `Open Web UI failed: ${e.message}`);
+    }
   });
 
   openOptions.addEventListener("click", (e) => {

@@ -51,6 +51,39 @@ export async function play(url, mode = "auto") {
   return { ok: false, status: res.status, error: errMsg };
 }
 
+export async function launchGroovyMister() {
+  const bridgeURL = await getBridgeURL();
+  if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch(`${bridgeURL}/ui/bridge/mister/launch`, {
+      method: "POST",
+      headers: {
+        "X-Bridge-Extension": "1",
+      },
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    clearTimeout(timeout);
+    if (e.name === "AbortError") return { ok: false, error: "Bridge timed out" };
+    return { ok: false, error: `Bridge unreachable: ${e.message}` };
+  }
+  clearTimeout(timeout);
+
+  if (res.ok) return { ok: true };
+
+  const errText = (await res.text().catch(() => "")).trim();
+  return {
+    ok: false,
+    status: res.status,
+    error: `Launch failed: ${errText || `HTTP ${res.status}`}`,
+  };
+}
+
 export function formatPlayError(result) {
   if (!result || result.ok) return "";
   if (!result.status || result.error === `HTTP ${result.status}`) {

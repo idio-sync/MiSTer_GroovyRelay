@@ -74,11 +74,11 @@ type Config struct {
 // templateFuncs supplies the tiny set of helpers our templates need.
 // Keep this list small — business logic belongs in Go, not templates.
 //
-//   inc        — bridge/adapter panels render 1-indexed section numbers.
-//   replaceAll — bridge/adapter panels sanitize KindAction Keys (which
-//                may contain "/") into HTML id attributes.
-//   hasString  — bridge panel renders the applied-live pip per
-//                changed key by membership-check on AppliedPipKeys.
+//	inc        — bridge/adapter panels render 1-indexed section numbers.
+//	replaceAll — bridge/adapter panels sanitize KindAction Keys (which
+//	             may contain "/") into HTML id attributes.
+//	hasString  — bridge panel renders the applied-live pip per
+//	             changed key by membership-check on AppliedPipKeys.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
@@ -115,36 +115,39 @@ func New(cfg Config) (*Server, error) {
 // bridge's shared HTTP mux — same listener Plex Companion routes sit
 // on. The /ui/ prefix keeps the two sets disjoint.
 func (s *Server) Mount(mux *http.ServeMux) {
+	mux.HandleFunc("OPTIONS /ui", handleExtensionCORSPreflight)
+	mux.HandleFunc("OPTIONS /ui/", handleExtensionCORSPreflight)
+
 	// Static assets served out of embedded FS under /ui/static/.
 	// GETs don't pass through csrfMiddleware — reads have no side
 	// effects, and the middleware short-circuits on GET anyway.
 	staticSub, _ := fs.Sub(staticFS, "static")
 	staticSrv := http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub)))
-	mux.Handle("GET /ui/static/", staticSrv)
+	mux.Handle("GET /ui/static/", extensionCORSMiddleware(staticSrv))
 
 	// Root + shell. Use {$} to match "/" exactly — a bare "GET /"
 	// would be a catch-all that conflicts with adapter-owned prefix
 	// routes (e.g., Plex Companion's "/player/") under Go 1.22's
 	// method-aware mux.
-	mux.HandleFunc("GET /{$}", s.handleRoot)
-	mux.HandleFunc("GET /ui/{$}", s.handleShell)
-	mux.HandleFunc("GET /ui/", s.handleShell) // subpaths fall through to shell
-	mux.HandleFunc("GET /ui", s.handleShell)  // no trailing slash
+	s.mountGET(mux, "/{$}", s.handleRoot)
+	s.mountGET(mux, "/ui/{$}", s.handleShell)
+	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
+	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash
 
 	// Bridge panel.
-	mux.HandleFunc("GET /ui/bridge", s.handleBridgeGET)
+	s.mountGET(mux, "/ui/bridge", s.handleBridgeGET)
 	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
 	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
 	s.mountPOST(mux, "/ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
 
 	// Sidebar status fragment (polled every 3s by the shell).
-	mux.HandleFunc("GET /ui/sidebar/status", s.handleSidebarStatus)
+	s.mountGET(mux, "/ui/sidebar/status", s.handleSidebarStatus)
 	// Sidebar dots fragment (per-adapter status indicators).
-	mux.HandleFunc("GET /ui/sidebar/dots", s.handleSidebarDots)
+	s.mountGET(mux, "/ui/sidebar/dots", s.handleSidebarDots)
 
 	// Adapter panel.
-	mux.HandleFunc("GET /ui/adapter/{name}", s.handleAdapterGET)
-	mux.HandleFunc("GET /ui/adapter/{name}/status", s.handleAdapterStatus)
+	s.mountGET(mux, "/ui/adapter/{name}", s.handleAdapterGET)
+	s.mountGET(mux, "/ui/adapter/{name}/status", s.handleAdapterStatus)
 	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
 	s.mountPOST(mux, "/ui/adapter/{name}/save", s.handleAdapterSave)
 
@@ -162,15 +165,15 @@ func (s *Server) Mount(mux *http.ServeMux) {
 			handler := http.HandlerFunc(route.Handler)
 			switch route.Method {
 			case "GET":
-				mux.Handle("GET "+pattern, handler)
+				mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
 			case "POST":
-				mux.Handle("POST "+pattern, csrfMiddleware(handler))
+				mux.Handle("POST "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
 			case "DELETE":
-				mux.Handle("DELETE "+pattern, csrfMiddleware(handler))
+				mux.Handle("DELETE "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
 			case "PUT":
-				mux.Handle("PUT "+pattern, csrfMiddleware(handler))
+				mux.Handle("PUT "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
 			case "PATCH":
-				mux.Handle("PATCH "+pattern, csrfMiddleware(handler))
+				mux.Handle("PATCH "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
 			}
 		}
 	}
@@ -196,7 +199,11 @@ func (s *Server) handleSidebarStatus(w http.ResponseWriter, r *http.Request) {
 // (bridge/save, adapter/save, plex/link/start, etc.) gets the same
 // cross-origin protection without each handler having to think about it.
 func (s *Server) mountPOST(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
-	mux.Handle("POST "+pattern, csrfMiddleware(handler))
+	mux.Handle("POST "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+}
+
+func (s *Server) mountGET(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
 }
 
 // handleRoot redirects / to /ui/. Any other path slips through to the
