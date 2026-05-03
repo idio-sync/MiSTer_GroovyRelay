@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"time"
 )
+
+const probeWaitDelay = time.Second
 
 // ProbeResult is the subset of ffprobe output the pipeline cares about.
 type ProbeResult struct {
@@ -49,6 +52,7 @@ func Probe(ctx context.Context, ffprobePath, url string) (*ProbeResult, error) {
 		"-show_streams", "-show_format",
 		url,
 	)
+	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe: %w", err)

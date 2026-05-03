@@ -6,9 +6,41 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+const probeHelperEnv = "MISTER_GROOVY_PROBE_HELPER"
+const probeHelperPIDFileEnv = "MISTER_GROOVY_PROBE_HELPER_PID_FILE"
+
+func TestMain(m *testing.M) {
+	switch os.Getenv(probeHelperEnv) {
+	case "leaky-parent":
+		runProbeLeakyParentHelper()
+		os.Exit(0)
+	case "hold-pipe":
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	default:
+		os.Exit(m.Run())
+	}
+}
+
+func runProbeLeakyParentHelper() {
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), probeHelperEnv+"=hold-pipe")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		os.Exit(2)
+	}
+	if pidFile := os.Getenv(probeHelperPIDFileEnv); pidFile != "" {
+		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
+	}
+	_, _ = os.Stdout.Write([]byte(`{"streams":[],"format":{}}`))
+}
 
 func TestParseProbeOutput_ProgressiveVideoWithAudio(t *testing.T) {
 	// Mimics ffprobe JSON for a 1920x1080 23.976p h264 clip with stereo AAC.
@@ -72,6 +104,41 @@ func TestParseFrameRate(t *testing.T) {
 			t.Errorf("parseFrameRate(%q) = %f, want %f", in, got, want)
 		}
 	}
+}
+
+func TestProbe_ReturnsPromptlyWhenOutputPipeRemainsOpen(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "helper.pid")
+	t.Setenv(probeHelperEnv, "leaky-parent")
+	t.Setenv(probeHelperPIDFileEnv, pidFile)
+	t.Cleanup(func() { killProbeHelper(t, pidFile) })
+
+	start := time.Now()
+	_, err := Probe(context.Background(), os.Args[0], "ignored")
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Fatalf("Probe returned after %s; want it bounded when ffprobe leaves output pipes open", elapsed)
+	}
+	if err == nil {
+		t.Fatal("expected Probe to return an error for a leaked ffprobe output pipe")
+	}
+}
+
+func killProbeHelper(t *testing.T, pidFile string) {
+	t.Helper()
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	_ = proc.Kill()
+	_, _ = proc.Wait()
 }
 
 // TestProbe_LiveFixture generates a 1-second synthetic test clip with ffmpeg

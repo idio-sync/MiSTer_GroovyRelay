@@ -16,10 +16,17 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
+type staticBinaryResolver string
+
+func (r staticBinaryResolver) Resolve() (string, error) {
+	return string(r), nil
+}
+
 // newTestManager returns a Manager with a Sender bound to a free local port.
-// The sender is never actually used by these tests (every StartSession fails
-// at the Probe step before any UDP traffic), but we still construct a real
-// one so we exercise NewManager's real constructor.
+// The sender is never actually used by these tests: StartSession gets a
+// missing test ffprobe path so it fails at the Probe step before any UDP
+// traffic. We still construct a real sender so NewManager's real constructor
+// is exercised without depending on host ffprobe behavior.
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	sender, err := groovynet.NewSender("127.0.0.1", 0, 0)
@@ -45,13 +52,16 @@ func newTestManager(t *testing.T) *Manager {
 			Channels:   2,
 		},
 	}
-	return NewManager(bridge, sender)
+	toolsDir := t.TempDir()
+	return NewManager(bridge, sender, WithBinaryResolvers(
+		staticBinaryResolver(filepath.Join(toolsDir, "missing-ffmpeg")),
+		staticBinaryResolver(filepath.Join(toolsDir, "missing-ffprobe")),
+	))
 }
 
-// bogusRequest builds a SessionRequest whose StreamURL reliably fails ffprobe
-// (which runs in startPlaneLocked before any UDP work). This lets us exercise
-// the Manager's public API and state bookkeeping on any platform without
-// needing real media or a fake ffmpeg.
+// bogusRequest builds a SessionRequest for tests whose Manager has a missing
+// ffprobe resolver. This lets us exercise the Manager's public API and state
+// bookkeeping on any platform without needing real media or host ffprobe.
 func bogusRequest() SessionRequest {
 	return SessionRequest{
 		StreamURL:    "udp://127.0.0.1:1/this-url-will-fail-probe",
@@ -480,7 +490,7 @@ func TestRedactURL(t *testing.T) {
 		{name: "case-insensitive", in: "http://h/v.m3u8?API_KEY=secret",
 			wantContains: []string{"API_KEY=REDACTED"}, wantNotContain: []string{"secret"}},
 		{name: "preserves other params", in: "http://h/v.m3u8?MediaSourceId=src&api_key=secret&Static=true",
-			wantContains: []string{"api_key=REDACTED", "MediaSourceId=src", "Static=true"},
+			wantContains:   []string{"api_key=REDACTED", "MediaSourceId=src", "Static=true"},
 			wantNotContain: []string{"secret"}},
 	}
 	for _, tc := range cases {
