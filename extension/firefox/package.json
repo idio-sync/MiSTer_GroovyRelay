@@ -8,9 +8,9 @@
     "check:versions": "node scripts/check-versions.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "web-ext lint --source-dir=. --ignore-files test/** --ignore-files scripts/** --ignore-files vitest.config.js --ignore-files package*.json --ignore-files node_modules/** --ignore-files dist/** --ignore-files build.sh --ignore-files go.mod --ignore-files *.md --ignore-files .gitignore",
+    "lint": "web-ext lint --source-dir=. --ignore-files test/** --ignore-files scripts/** --ignore-files vitest.config.js --ignore-files package*.json --ignore-files node_modules/** --ignore-files dist/** --ignore-files build.sh --ignore-files go.mod --ignore-files *.md --ignore-files .gitignore --ignore-files .amo-upload-uuid",
     "build": "bash build.sh",
-    "sign:amo": "web-ext sign --source-dir=. --artifacts-dir=dist/amo-signed --channel=unlisted --approval-timeout=900000 --ignore-files \"test/**\" \"scripts/**\" vitest.config.js \"package*.json\" \"node_modules/**\" \"dist/**\" build.sh go.mod \"*.md\" .gitignore"
+    "sign:amo": "web-ext sign --source-dir=. --artifacts-dir=dist/amo-signed --channel=unlisted --approval-timeout=900000 --ignore-files \"test/**\" \"scripts/**\" vitest.config.js \"package*.json\" \"node_modules/**\" \"dist/**\" build.sh go.mod \"*.md\" .gitignore .amo-upload-uuid"
   },
   "dependencies": {
     "webextension-polyfill": "^0.12.0"

@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const workflow = fs.readFileSync("../../.github/workflows/release.yml", "utf8");
+const gitignore = fs.readFileSync(".gitignore", "utf8");
 
 describe("release workflow extension automation", () => {
   it("has npm scripts for AMO signing and version checks", () => {
@@ -14,6 +15,7 @@ describe("release workflow extension automation", () => {
     expect(pkg.scripts["sign:amo"]).toContain("--channel=unlisted");
     expect(pkg.scripts["sign:amo"]).toContain("--artifacts-dir=dist/amo-signed");
     expect(pkg.scripts["sign:amo"]).toContain("\"scripts/**\"");
+    expect(pkg.scripts["sign:amo"]).toContain(".amo-upload-uuid");
   });
 
   it("signs the Firefox extension and uploads extension assets on release tags", () => {
@@ -36,5 +38,9 @@ describe("release workflow extension automation", () => {
 
     expect(output).toContain(`project tag v1.0`);
     expect(output).toContain(`extension version ${pkg.version}`);
+  });
+
+  it("ignores the AMO upload UUID generated during CI signing", () => {
+    expect(gitignore).toContain(".amo-upload-uuid");
   });
 });
