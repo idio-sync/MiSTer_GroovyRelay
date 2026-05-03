@@ -28,6 +28,13 @@ describe("release workflow extension automation", () => {
     expect(workflow).toContain("gh release upload");
   });
 
+  it("signs with AMO only after GoReleaser succeeds", () => {
+    expect(workflow.indexOf("goreleaser/goreleaser-action@v6")).toBeGreaterThan(-1);
+    expect(workflow.indexOf("Sign Firefox extension through AMO")).toBeGreaterThan(
+      workflow.indexOf("goreleaser/goreleaser-action@v6")
+    );
+  });
+
   it("allows project release tags to differ from the extension version", () => {
     const output = execFileSync(process.execPath, ["scripts/check-versions.mjs"], {
       cwd: process.cwd(),

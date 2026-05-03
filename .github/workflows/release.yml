@@ -32,6 +32,13 @@ jobs:
           npm test
           npm run lint
           npm run build
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Sign Firefox extension through AMO
         working-directory: extension/firefox
         env:
@@ -56,13 +63,6 @@ jobs:
           fi
           cp "$signed_xpi" "extension/firefox/dist/companion-extension-${version}-signed.xpi"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload extension assets to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
