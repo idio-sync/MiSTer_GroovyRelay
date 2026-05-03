@@ -29,8 +29,21 @@ describe("release workflow extension automation", () => {
   });
 
   it("uploads only the signed Firefox extension artifact", () => {
-    expect(workflow).toContain("\"extension/firefox/dist/companion-extension-${version}-signed.xpi\"");
+    expect(workflow).toContain("signed_asset=\"$release_dir/companion-extension-${version}-signed.xpi\"");
+    expect(workflow).toContain("\"${{ steps.extension_assets.outputs.asset }}\"");
     expect(workflow).not.toContain("\"extension/firefox/dist/companion-extension-${version}.zip\"");
+  });
+
+  it("reuses the previous signed Firefox artifact when the extension payload is unchanged", () => {
+    expect(workflow).toContain("id: extension_release");
+    expect(workflow).toContain("git describe --tags --abbrev=0");
+    expect(workflow).toContain("git diff --quiet \"$previous_tag\" \"$GITHUB_SHA\" --");
+    expect(workflow).toContain("extension/firefox/manifest.json");
+    expect(workflow).toContain("extension/firefox/src");
+    expect(workflow).toContain("extension/firefox/icons");
+    expect(workflow).toContain("if: steps.extension_release.outputs.changed == 'true'");
+    expect(workflow).toContain("gh release download \"$previous_tag\"");
+    expect(workflow).toContain("No signed Firefox XPI asset found on previous release");
   });
 
   it("signs with AMO only after GoReleaser succeeds", () => {

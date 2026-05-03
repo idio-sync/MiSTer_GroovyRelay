@@ -61,7 +61,11 @@ The bridge-side change required to make this extension work is already in `main`
 
 ## Release automation
 
-GitHub Actions signs the Firefox add-on through AMO and uploads the signed XPI when a `v*` tag is pushed.
+GitHub Actions uploads a signed XPI when a `v*` tag is pushed. If the signed
+extension payload (`manifest.json`, `src/`, or `icons/`) changed since the
+previous release tag, CI signs the new package through AMO. Otherwise, CI reuses
+the signed XPI from the previous release so native-only releases do not need an
+extension version bump.
 
 Repository secrets required:
 

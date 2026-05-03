@@ -32,6 +32,28 @@ jobs:
           npm test
           npm run lint
           npm run build
+      - name: Detect extension release changes
+        id: extension_release
+        shell: bash
+        run: |
+          previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)"
+          extension_changed=true
+          if [ -n "$previous_tag" ]; then
+            if git diff --quiet "$previous_tag" "$GITHUB_SHA" -- \
+              extension/firefox/manifest.json \
+              extension/firefox/src \
+              extension/firefox/icons; then
+              extension_changed=false
+            fi
+          fi
+          echo "changed=$extension_changed" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "Extension payload changed: $extension_changed"
+          if [ -n "$previous_tag" ]; then
+            echo "Previous release tag: $previous_tag"
+          else
+            echo "No previous release tag found."
+          fi
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -40,6 +62,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Sign Firefox extension through AMO
+        if: steps.extension_release.outputs.changed == 'true'
         working-directory: extension/firefox
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
@@ -53,21 +76,50 @@ jobs:
       - name: Prepare extension release assets
         id: extension_assets
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(node -p "require('./extension/firefox/package.json').version")"
-          signed_xpi="$(find extension/firefox/dist/amo-signed -name '*.xpi' -type f | head -n 1)"
-          if [ -z "$signed_xpi" ]; then
-            echo "No signed XPI found in extension/firefox/dist/amo-signed." >&2
-            find extension/firefox/dist -maxdepth 3 -type f >&2
-            exit 1
+          release_dir="extension/firefox/dist/release"
+          signed_asset="$release_dir/companion-extension-${version}-signed.xpi"
+          mkdir -p "$release_dir"
+          if [ "${{ steps.extension_release.outputs.changed }}" = "true" ]; then
+            signed_xpi="$(find extension/firefox/dist/amo-signed -name '*.xpi' -type f | head -n 1)"
+            if [ -z "$signed_xpi" ]; then
+              echo "No signed XPI found in extension/firefox/dist/amo-signed." >&2
+              find extension/firefox/dist -maxdepth 3 -type f >&2
+              exit 1
+            fi
+            cp "$signed_xpi" "$signed_asset"
+          else
+            previous_tag="${{ steps.extension_release.outputs.previous_tag }}"
+            if [ -z "$previous_tag" ]; then
+              echo "No previous release tag found to reuse a signed Firefox XPI." >&2
+              exit 1
+            fi
+            previous_asset="$(
+              gh release view "$previous_tag" --json assets --jq '.assets[].name' |
+                awk '/^companion-extension-.*-signed\.xpi$/ { print; exit }'
+            )"
+            if [ -z "$previous_asset" ]; then
+              echo "No signed Firefox XPI asset found on previous release $previous_tag." >&2
+              exit 1
+            fi
+            gh release download "$previous_tag" \
+              --pattern "$previous_asset" \
+              --dir "$release_dir" \
+              --clobber
+            downloaded_asset="$release_dir/$previous_asset"
+            if [ "$downloaded_asset" != "$signed_asset" ]; then
+              mv "$downloaded_asset" "$signed_asset"
+            fi
           fi
-          cp "$signed_xpi" "extension/firefox/dist/companion-extension-${version}-signed.xpi"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "asset=$signed_asset" >> "$GITHUB_OUTPUT"
       - name: Upload extension assets to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${{ steps.extension_assets.outputs.version }}"
           gh release upload "${GITHUB_REF_NAME}" \
-            "extension/firefox/dist/companion-extension-${version}-signed.xpi" \
+            "${{ steps.extension_assets.outputs.asset }}" \
             --clobber
