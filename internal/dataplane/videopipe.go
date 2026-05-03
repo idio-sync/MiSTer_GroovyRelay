@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"context"
 	"io"
 )
 
@@ -44,9 +45,21 @@ func ReadFramesFromPipe(r io.Reader, width, height, bytesPerPixel int, out chan<
 // The pool channel is never closed; the pool is GC'd along with the
 // Plane. The out channel is closed exactly once when the reader exits.
 func ReadFramesFromPipePooled(r io.Reader, pool *FramePool, out chan<- *FrameBuf) {
+	ReadFramesFromPipePooledContext(context.Background(), r, pool, out)
+}
+
+// ReadFramesFromPipePooledContext is ReadFramesFromPipePooled with a
+// cancellation-aware handoff. It returns any filled buffer to the pool when
+// the consumer has stopped receiving before the send can complete.
+func ReadFramesFromPipePooledContext(ctx context.Context, r io.Reader, pool *FramePool, out chan<- *FrameBuf) {
 	defer close(out)
 	for {
-		fb := pool.Get()
+		var fb *FrameBuf
+		select {
+		case fb = <-pool.free:
+		case <-ctx.Done():
+			return
+		}
 		n, err := io.ReadFull(r, fb.Data)
 		if err != nil {
 			// Both io.EOF and io.ErrUnexpectedEOF land here. Either way
@@ -55,7 +68,12 @@ func ReadFramesFromPipePooled(r io.Reader, pool *FramePool, out chan<- *FrameBuf
 			return
 		}
 		fb.N = n
-		out <- fb
+		select {
+		case out <- fb:
+		case <-ctx.Done():
+			pool.Put(fb)
+			return
+		}
 	}
 }
 

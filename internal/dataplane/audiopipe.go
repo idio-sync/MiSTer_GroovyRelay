@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"context"
 	"io"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
@@ -95,6 +96,12 @@ func (r *AudioPipeReader) Advance(got int) {
 // one whole sample frame between ticks to keep cumulative consumption aligned
 // against the modeline's field rate.
 func ReadAudioFromPipe(r io.Reader, sampleRate, channels int, ml groovy.Modeline, out chan<- []byte) {
+	ReadAudioFromPipeContext(context.Background(), r, sampleRate, channels, ml, out)
+}
+
+// ReadAudioFromPipeContext is ReadAudioFromPipe with a cancellation-aware
+// handoff for session teardown.
+func ReadAudioFromPipeContext(ctx context.Context, r io.Reader, sampleRate, channels int, ml groovy.Modeline, out chan<- []byte) {
 	defer close(out)
 	reader := NewAudioPipeReader(sampleRate, channels, ml)
 	for {
@@ -108,6 +115,10 @@ func ReadAudioFromPipe(r io.Reader, sampleRate, channels int, ml groovy.Modeline
 		if err != nil {
 			return
 		}
-		out <- buf
+		select {
+		case out <- buf:
+		case <-ctx.Done():
+			return
+		}
 	}
 }

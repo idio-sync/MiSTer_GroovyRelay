@@ -153,7 +153,6 @@ func TestURL_ProbeTimeout(t *testing.T) {
 	a := newURLAdapter(t, mgr)
 
 	hang := make(chan struct{})
-	t.Cleanup(func() { close(hang) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Block until the test ends — well past the 10s probe ceiling.
 		select {
@@ -161,7 +160,10 @@ func TestURL_ProbeTimeout(t *testing.T) {
 		case <-hang:
 		}
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() {
+		close(hang)
+		srv.Close()
+	})
 
 	form := url.Values{"url": {srv.URL + "/forever.mp4"}}
 	req := httptest.NewRequest(http.MethodPost, "/play",

@@ -2,10 +2,37 @@ package dataplane
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 	"time"
 )
+
+type readSignalReader struct {
+	data     []byte
+	readDone chan struct{}
+}
+
+func newReadSignalReader(data []byte) *readSignalReader {
+	return &readSignalReader{
+		data:     data,
+		readDone: make(chan struct{}),
+	}
+}
+
+func (r *readSignalReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	select {
+	case <-r.readDone:
+	default:
+		close(r.readDone)
+	}
+	return n, nil
+}
 
 // TestVideoPipeReader_EmitsFrames verifies ReadFramesFromPipe slices its
 // upstream reader into width*height*bpp-sized progressive frames and emits
@@ -179,6 +206,42 @@ func TestReadFramesFromPipePooled_RoundTrip(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for channel close")
+	}
+}
+
+func TestReadFramesFromPipePooledContext_CancelUnblocksSend(t *testing.T) {
+	const frameBytes = 1000
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := NewFramePool(1, frameBytes)
+	rd := newReadSignalReader(make([]byte, frameBytes))
+	out := make(chan *FrameBuf)
+	done := make(chan struct{})
+
+	go func() {
+		ReadFramesFromPipePooledContext(ctx, rd, pool, out)
+		close(done)
+	}()
+
+	select {
+	case <-rd.readDone:
+	case <-time.After(time.Second):
+		t.Fatal("reader did not fill a frame")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reader goroutine stayed blocked on send after context cancellation")
+	}
+
+	select {
+	case <-pool.free:
+	case <-time.After(time.Second):
+		t.Fatal("frame buffer was not returned to the pool after cancellation")
 	}
 }
 

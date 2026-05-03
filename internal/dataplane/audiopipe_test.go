@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -90,6 +91,37 @@ func TestAudioPipeReader_ClosesOnEOF(t *testing.T) {
 		t.Fatal("timeout waiting for close")
 	}
 	<-done
+}
+
+func TestReadAudioFromPipeContext_CancelUnblocksSend(t *testing.T) {
+	r := NewAudioPipeReader(48000, 2, groovy.NTSC480i60)
+	chunk := r.NextChunkSize()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rd := newReadSignalReader(make([]byte, chunk))
+	out := make(chan []byte)
+	done := make(chan struct{})
+
+	go func() {
+		ReadAudioFromPipeContext(ctx, rd, 48000, 2, groovy.NTSC480i60, out)
+		close(done)
+	}()
+
+	select {
+	case <-rd.readDone:
+	case <-time.After(time.Second):
+		t.Fatal("reader did not fill an audio chunk")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("audio reader goroutine stayed blocked on send after context cancellation")
+	}
 }
 
 // TestAudioPipeReader_ShortTailClosesClean verifies a partial final chunk
