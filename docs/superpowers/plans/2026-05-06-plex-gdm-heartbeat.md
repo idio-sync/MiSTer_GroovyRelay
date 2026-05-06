@@ -234,7 +234,6 @@ func TestDiscovery_RepliesViaSenderNotListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen UDP: %v", err)
 	}
-	defer listen.Close()
 
 	fake := &fakeWriter{}
 	d := &Discovery{
@@ -246,7 +245,15 @@ func TestDiscovery_RepliesViaSenderNotListener(t *testing.T) {
 		listen: listen,
 		sender: fake,
 	}
-	go d.Run()
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.Run()
+	}()
+	t.Cleanup(func() {
+		_ = listen.Close() // unblocks d.Run's ReadFromUDP
+		<-runDone           // wait for goroutine exit; no leak
+	})
 
 	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -515,12 +522,56 @@ func countHellos(writes []writeRecord) int {
 	}
 	return n
 }
+
+// TestDiscovery_HeartbeatFiresHelloImmediately pins the working
+// co-located-Docker discovery latency: the very first HELLO must go
+// out without waiting for the ticker. Uses a long ticker interval so
+// any HELLO observed during the test window comes from the immediate
+// startup send, not a tick.
+func TestDiscovery_HeartbeatFiresHelloImmediately(t *testing.T) {
+	prev := helloInterval
+	helloInterval = 5 * time.Second
+	t.Cleanup(func() { helloInterval = prev })
+
+	fake := &fakeWriter{}
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-imm",
+			HTTPPort:   32500,
+		},
+		sender: fake,
+		stop:   make(chan struct{}),
+	}
+	d.wg.Add(1)
+	go d.runHeartbeat()
+	t.Cleanup(func() {
+		close(d.stop)
+		d.wg.Wait()
+	})
+
+	// Wait briefly for the goroutine to issue the immediate send.
+	// 200ms is well below the 5s ticker, so any HELLO observed here
+	// is the startup send, not a tick.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if countHellos(fake.snapshot()) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got := countHellos(fake.snapshot())
+	if got != 1 {
+		t.Errorf("expected exactly 1 immediate HELLO (heartbeat ticker should not have fired in 200ms with 5s interval), got %d", got)
+	}
+}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
 ```powershell
-go test ./internal/adapters/plex/... -run TestDiscovery_HelloHeartbeatRepeats -v
+go test ./internal/adapters/plex/... -run "TestDiscovery_(HelloHeartbeatRepeats|HeartbeatFiresHelloImmediately)" -v
 ```
 
 Expected: build error (`undefined: helloInterval`, `undefined: runHeartbeat`, or `undefined: d.stop` / `d.wg`) — the heartbeat goroutine and its supporting fields don't exist yet.
@@ -557,7 +608,10 @@ type Discovery struct {
 }
 ```
 
-Modify `NewDiscovery` to initialize `stop` and start the heartbeat goroutine before returning. **Crucially**, the initial HELLO send is now best-effort — failure logs WARN and the heartbeat ticker will retry on its next cycle. The previous behavior (abort `NewDiscovery` if the very first multicast send fails) needlessly disabled GDM on hosts where the first send happened to fail transiently:
+Modify `NewDiscovery` to initialize `stop` and launch the heartbeat goroutine. **Crucially**, the immediate HELLO send moves *into* `runHeartbeat` (fired before entering the ticker `select` loop) rather than being a separate pre-goroutine call in `NewDiscovery`. Two reasons:
+
+1. The "fire immediately" behavior is now exclusively the goroutine's responsibility — direct-construction tests can pin both the immediate send AND the ticked sends through the same fake sender, with no seam needed for `NewDiscovery` itself.
+2. `NewDiscovery`'s startup sequence becomes simpler: just bind sockets, build the struct, launch the goroutine, return. Send-side failure during startup can never abort `NewDiscovery` because there *is* no startup send call from `NewDiscovery` to fail.
 
 ```go
 func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
@@ -571,27 +625,25 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 		listen.Close()
 		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
 	}
+
 	d := &Discovery{
 		cfg:    cfg,
 		listen: listen,
 		sender: sender.(*net.UDPConn),
 		stop:   make(chan struct{}),
 	}
-	// Initial HELLO is best-effort: a transient send failure here
-	// (e.g. NIC just came up) shouldn't disable GDM entirely. The
-	// heartbeat goroutine retries on the next tick. sendHello logs
-	// WARN on failure (added in Task 4 below).
-	_ = d.sendHello()
 	d.wg.Add(1)
 	go d.runHeartbeat()
 	return d, nil
 }
 
-// runHeartbeat re-broadcasts HELLO on the helloInterval cadence until
-// Close signals stop. Send errors propagate through sendHello's WARN
-// logging (Task 4 below).
+// runHeartbeat fires HELLO immediately on entry (preserving the
+// working co-located-Docker discovery latency) and then re-broadcasts
+// every helloInterval until Close signals stop. Send errors propagate
+// through sendHello's WARN logging (Task 4 below).
 func (d *Discovery) runHeartbeat() {
 	defer d.wg.Done()
+	_ = d.sendHello()
 	t := time.NewTicker(helloInterval)
 	defer t.Stop()
 	for {
@@ -604,6 +656,8 @@ func (d *Discovery) runHeartbeat() {
 	}
 }
 ```
+
+(Task 5 will replace the `nil`/`":0"` literals here with `senderBindFor(cfg.HostIP)` outputs. Until then, this commit's `NewDiscovery` retains today's nil-interface-and-ephemeral-port behavior — it's a TDD-clean intermediate step.)
 
 Modify `Close` to signal stop and wait for the heartbeat goroutine:
 
@@ -825,63 +879,86 @@ git commit -m "feat(plex): surface GDM send errors as WARN logs"
 - Modify: `internal/adapters/plex/discovery.go`
 - Modify: `internal/adapters/plex/discovery_test.go`
 
-Add `HostIP` to `DiscoveryConfig`. When non-empty, resolve it to a local interface via `interfaceForIP` (the helper from Task 1). If the lookup succeeds, use that interface for **both** the multicast listen-side join and the sender bind (`HostIP:0`). If it fails (HostIP isn't IPv4, doesn't match any local interface, or interface enumeration errors), log WARN and fall back to today's behavior — `nil` interface for the multicast join and `:0` for the sender.
+Add `HostIP` to `DiscoveryConfig`. Add a side-effect-free helper `senderBindFor(hostIP) (addr, iface)` that decides the sender's bind address and (when applicable) the local interface used for multicast send/receive. `NewDiscovery` calls the helper once and uses its outputs for **both** the multicast listen-side join and the sender bind. The helper is the testing focus: it lets us pin every fallback case as pure-function unit tests (no real sockets, no platform skips).
 
-**Important:** never bind the sender directly to an arbitrary `HostIP` string without first verifying it owns a local interface. A misconfigured `bridge.host_ip` (e.g. an old IP no longer assigned, or a typo'd public IP) would otherwise fail `net.ListenPacket("udp4", "1.2.3.4:0")` with `bind: cannot assign requested address` and make `NewDiscovery` return an error — disabling GDM entirely. The `interfaceForIP` gate keeps the bridge running with best-effort fallback in that case.
+**Three cases the helper covers:**
+1. `HostIP` empty → `(":0", nil)`. Listen joins multicast on `nil` interface; sender binds to ephemeral on default interface.
+2. `HostIP` set AND resolves to a local interface → `(hostIP+":0", iface)`. Listen joins multicast on that interface; sender binds to that IP.
+3. `HostIP` set but is invalid IP, IPv6, or not assigned to any local interface → `(":0", nil)` with a WARN log. **This is the case that previously broke GDM**: parseable-but-non-local `HostIP` (typo'd config, stale IP) would have failed `net.ListenPacket("udp4", "1.2.3.4:0")` with `bind: cannot assign requested address`, returning an error from `NewDiscovery` and disabling GDM entirely. The helper's fallback prevents that.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
+
+These tests exercise the `senderBindFor` helper directly — pure functions, no real sockets, no platform skips. The three cases match the helper's contract above.
 
 Append to `internal/adapters/plex/discovery_test.go`:
 
 ```go
-// TestDiscovery_SenderBindsToHostIP pins the unicast-source-IP behavior
-// for multi-NIC hosts: when HostIP is set, the sender socket binds to
-// it. We use 127.0.0.1 because every test environment has a loopback
-// address; binding to 127.0.0.1 doesn't require multicast delivery to
-// validate the bind itself.
-func TestDiscovery_SenderBindsToHostIP(t *testing.T) {
-	cfg := DiscoveryConfig{
-		DeviceName: "MiSTer-Test",
-		DeviceUUID: "uuid-bind",
-		HTTPPort:   32500,
-		HostIP:     "127.0.0.1",
+// TestSenderBindFor_EmptyHostIP pins the no-config-set fallback:
+// listen joins multicast on the default interface, sender binds to
+// ephemeral.
+func TestSenderBindFor_EmptyHostIP(t *testing.T) {
+	addr, iface := senderBindFor("")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0", addr)
 	}
-	d, err := NewDiscovery(cfg)
-	if err != nil {
-		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
-	}
-	defer d.Close()
-
-	udp, ok := d.sender.(*net.UDPConn)
-	if !ok {
-		t.Fatalf("sender is not *net.UDPConn (got %T)", d.sender)
-	}
-	bound := udp.LocalAddr().(*net.UDPAddr)
-	if bound.IP.IsUnspecified() {
-		t.Errorf("sender bound to unspecified IP; expected 127.0.0.1, got %s", bound.IP)
-	}
-	if !bound.IP.IsLoopback() {
-		t.Errorf("sender bound to non-loopback IP %s; expected 127.0.0.1", bound.IP)
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
 	}
 }
 
-// TestDiscovery_SenderFallsBackWhenHostIPEmpty preserves the
-// no-HostIP-set fallback path: sender binds to :0 (unspecified IP).
-func TestDiscovery_SenderFallsBackWhenHostIPEmpty(t *testing.T) {
-	cfg := DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500}
-	d, err := NewDiscovery(cfg)
-	if err != nil {
-		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
+// TestSenderBindFor_LocalIP pins the happy path: HostIP resolves to a
+// local interface, sender binds to it. Uses 127.0.0.1 since every
+// test environment has loopback.
+func TestSenderBindFor_LocalIP(t *testing.T) {
+	addr, iface := senderBindFor("127.0.0.1")
+	if iface == nil {
+		t.Skip("loopback enumeration unavailable on this host")
 	}
-	defer d.Close()
+	if addr != "127.0.0.1:0" {
+		t.Errorf("addr = %q; want 127.0.0.1:0", addr)
+	}
+	if iface.Flags&net.FlagLoopback == 0 {
+		t.Errorf("iface = %q (flags %v); want loopback", iface.Name, iface.Flags)
+	}
+}
 
-	udp, ok := d.sender.(*net.UDPConn)
-	if !ok {
-		t.Fatalf("sender is not *net.UDPConn (got %T)", d.sender)
+// TestSenderBindFor_FallsBackWhenHostIPNotLocal pins the regression
+// the prior plan revision missed: a parseable IPv4 address that no
+// local interface owns must fall back to (":0", nil) — never blindly
+// bind to a non-local IP, which would fail net.ListenPacket and
+// disable GDM. Uses TEST-NET-3 (203.0.113.0/24, RFC 5737) which is
+// documentation-reserved and never assignable on real hosts.
+func TestSenderBindFor_FallsBackWhenHostIPNotLocal(t *testing.T) {
+	addr, iface := senderBindFor("203.0.113.99")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0 (non-local IP must not be bound)", addr)
 	}
-	bound := udp.LocalAddr().(*net.UDPAddr)
-	if !bound.IP.IsUnspecified() {
-		t.Errorf("sender bound to %s; expected unspecified", bound.IP)
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
+	}
+}
+
+// TestSenderBindFor_FallsBackOnGarbage pins the typo'd config case:
+// non-IP-shaped strings fall back to (":0", nil).
+func TestSenderBindFor_FallsBackOnGarbage(t *testing.T) {
+	addr, iface := senderBindFor("not-an-ip")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0", addr)
+	}
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
+	}
+}
+
+// TestSenderBindFor_FallsBackOnIPv6 pins that IPv6 HostIPs (e.g. ::1)
+// fall back rather than attempting an IPv6 bind on the udp4 socket.
+func TestSenderBindFor_FallsBackOnIPv6(t *testing.T) {
+	addr, iface := senderBindFor("::1")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0", addr)
+	}
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
 	}
 }
 ```
@@ -889,12 +966,12 @@ func TestDiscovery_SenderFallsBackWhenHostIPEmpty(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```powershell
-go test ./internal/adapters/plex/... -run TestDiscovery_SenderBinds -v
+go test ./internal/adapters/plex/... -run TestSenderBindFor -v
 ```
 
-Expected: build error (`HostIP undefined`) or test failure.
+Expected: build error (`undefined: senderBindFor`).
 
-- [ ] **Step 3: Add the field and use it**
+- [ ] **Step 3: Add the field, the helper, and use both**
 
 In `internal/adapters/plex/discovery.go`, update `DiscoveryConfig`:
 
@@ -916,24 +993,37 @@ type DiscoveryConfig struct {
 }
 ```
 
+Add the helper near the top of the file (just below `interfaceForIP` from Task 1 is a natural spot):
+
+```go
+// senderBindFor decides the sender's bind address and outgoing
+// interface based on HostIP. Returning ("",  nil) is impossible —
+// the helper always returns a usable bind string, falling back to
+// ":0" + nil whenever HostIP is empty, malformed, IPv6, or doesn't
+// match any local interface. The fallback is what keeps GDM running
+// in the face of a typo'd or stale bridge.host_ip; binding directly
+// to a non-local IP would fail net.ListenPacket and disable
+// discovery entirely.
+func senderBindFor(hostIP string) (addr string, iface *net.Interface) {
+	if hostIP == "" {
+		return ":0", nil
+	}
+	found, err := interfaceForIP(hostIP)
+	if err != nil {
+		slog.Warn("plex GDM: HostIP not on a local interface; using default route for multicast and unicast",
+			"host_ip", hostIP,
+			"err", err,
+		)
+		return ":0", nil
+	}
+	return hostIP + ":0", found
+}
+```
+
 Replace the entire socket-creation block in `NewDiscovery`. Find the current sequence (lines that create `listen` and `sender`) and replace it with:
 
 ```go
-	// Resolve HostIP to a local interface once. Used for both the
-	// multicast listen-side join and the sender bind so receive and
-	// send happen on the same NIC on multi-NIC hosts. Lookup failure
-	// is best-effort: WARN-log and fall back to nil-iface + :0.
-	var iface *net.Interface
-	if cfg.HostIP != "" {
-		if found, ifErr := interfaceForIP(cfg.HostIP); ifErr == nil {
-			iface = found
-		} else {
-			slog.Warn("plex GDM: HostIP not on a local interface; using default route for multicast and unicast",
-				"host_ip", cfg.HostIP,
-				"err", ifErr,
-			)
-		}
-	}
+	senderAddr, iface := senderBindFor(cfg.HostIP)
 
 	group := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32412}
 	listen, err := net.ListenMulticastUDP("udp4", iface, group)
@@ -941,10 +1031,6 @@ Replace the entire socket-creation block in `NewDiscovery`. Find the current seq
 		return nil, err
 	}
 
-	senderAddr := ":0"
-	if iface != nil {
-		senderAddr = cfg.HostIP + ":0"
-	}
 	sender, err := net.ListenPacket("udp4", senderAddr)
 	if err != nil {
 		listen.Close()
@@ -952,15 +1038,15 @@ Replace the entire socket-creation block in `NewDiscovery`. Find the current seq
 	}
 ```
 
-(The rest of `NewDiscovery` — the `Discovery` struct literal, the best-effort `sendHello`, the heartbeat goroutine — stays as in Task 3.)
+(The rest of `NewDiscovery` — the `Discovery` struct literal, the best-effort `sendHello`, the heartbeat goroutine — stays as in Task 3. The `iface` local is reused by Task 6's `SetMulticastInterface` call.)
 
 - [ ] **Step 4: Run tests**
 
 ```powershell
-go test ./internal/adapters/plex/... -run TestDiscovery -v
+go test ./internal/adapters/plex/... -run "(TestSenderBindFor|TestDiscovery)" -v
 ```
 
-Expected: all PASS, including the two new bind tests.
+Expected: all PASS, including the five new helper tests.
 
 - [ ] **Step 5: Commit**
 
@@ -985,15 +1071,16 @@ No dedicated unit test — testing this requires a multi-NIC fixture or platform
 
 - [ ] **Step 1: Promote `golang.org/x/net` to a direct require**
 
-Pin the version that's already in the module graph rather than letting `go get` pick something newer:
+`golang.org/x/net` is currently a transitive dep of `golang.org/x/crypto` and `github.com/coder/websocket` — present in `go.sum` but not as a direct `require` in `go.mod`. Promote it with an explicit version pin (no `go get`, which would touch the network and may upgrade):
 
 ```powershell
-$ver = (go list -m golang.org/x/net) -replace '^.*\s',''
-go mod edit -require="golang.org/x/net@$ver"
+go mod edit -require=golang.org/x/net@v0.52.0
 go mod tidy
 ```
 
-(Bash equivalent: `ver=$(go list -m golang.org/x/net | awk '{print $2}'); go mod edit -require="golang.org/x/net@$ver"; go mod tidy`.)
+(Bash is identical — same command.)
+
+If `v0.52.0` is no longer the resolved transitive version (rare; check `go.sum` for the highest-numbered `golang.org/x/net` line to find what's actually been verified locally), substitute that version in the command above. `go mod tidy` will fail loudly if the chosen version isn't already in `go.sum` *and* the build environment lacks network access — in that case, run `go get golang.org/x/net@v0.52.0` once with network access to populate the module cache, then proceed.
 
 Confirm:
 
@@ -1001,7 +1088,7 @@ Confirm:
 go list -m golang.org/x/net
 ```
 
-Expected output: `golang.org/x/net <version>` and the `go.mod` `require` line for `golang.org/x/net` no longer carries `// indirect`.
+Expected output: `golang.org/x/net v0.52.0` and the `go.mod` `require` line for `golang.org/x/net` no longer carries `// indirect`.
 
 - [ ] **Step 2: Add the multicast-interface pin**
 
@@ -1158,6 +1245,21 @@ Add a package-level `var newDiscovery = NewDiscovery` so the adapter test can re
 Append to `internal/adapters/plex/adapter_interface_test.go`:
 
 ```go
+// fakeCore is a minimal SessionManager stub so Adapter.Start can run
+// to completion without spinning up real session machinery. The
+// adapter's Start method doesn't call any of these on the happy
+// startup path — they're only invoked at runtime when a Plex
+// controller issues a cast command, which the test doesn't exercise.
+type fakeCore struct{}
+
+func (fakeCore) StartSession(core.SessionRequest) error { return nil }
+func (fakeCore) Pause() error                           { return nil }
+func (fakeCore) Play() error                            { return nil }
+func (fakeCore) Stop() error                            { return nil }
+func (fakeCore) SeekTo(int) error                       { return nil }
+func (fakeCore) Status() core.SessionStatus             { return core.SessionStatus{} }
+func (fakeCore) DropActiveCast(string) error            { return nil }
+
 // TestAdapter_StartPassesHostIPToDiscovery pins that the adapter
 // threads its configured HostIP through to DiscoveryConfig. Uses the
 // package-level newDiscovery seam so we don't bind real multicast
@@ -1177,8 +1279,11 @@ func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
 	t.Cleanup(func() { newDiscovery = prev })
 
 	a, err := NewAdapter(AdapterConfig{
-		Bridge:     fakeBridgeConfig(t),
-		Core:       fakeSessionManager{},
+		Bridge: config.BridgeConfig{
+			DataDir: t.TempDir(),
+			UI:      config.UIConfig{HTTPPort: 32500},
+		},
+		Core:       fakeCore{},
 		TokenStore: &StoredData{DeviceUUID: "uuid-thread"},
 		HostIP:     "10.42.42.42",
 		Version:    "test",
@@ -1207,9 +1312,15 @@ func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
 }
 ```
 
-If `fakeBridgeConfig` and `fakeSessionManager` aren't already in the test file, check `adapter_interface_test.go` for their existing definitions and reuse. If they don't exist verbatim, look in `adapter_interface_test.go` for whatever helper this file uses to construct a minimal `AdapterConfig` and follow the same pattern. The point of this test is the `captured.HostIP` assertion — anything that gets the adapter to its `Start` path is fine.
+You'll also need these imports in `adapter_interface_test.go` if not already present:
 
-You'll also need `"context"` and `"errors"` in the test file imports if not already present.
+```go
+"context"
+"errors"
+
+"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+```
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1328,9 +1439,10 @@ Run for at least 2 minutes covering ≥2 heartbeat cycles.
 
 - [ ] **Step 4: Watch the bridge log**
 
-Tail the bridge's stdout. Expect:
-- HELLO send activity at the configured cadence (no log line per send by default; the WARN-on-failure path is silent on success).
-- No new WARN lines about "send failed" — those mean the LAN dropped the packet on the bridge's side.
+Tail the bridge's stdout. Successful HELLO/reply sends are intentionally silent (only failures log) — confirmation that they're going out comes from the pcap in step 3, not the log. What you're checking here:
+
+- **Absence** of any new `WARN` lines containing `HELLO send failed` or `M-SEARCH reply send failed`. Either of those means the bridge tried to write a UDP datagram and the kernel rejected the call (typical causes: the sender bound to a now-invalid IP, or the network interface went down). If you see them, fix that before relying on the rest of validation.
+- Existing `M-SEARCH received` debug lines should keep appearing whenever PMS or another local Plex client probes; that confirms inbound multicast still reaches the bridge.
 
 - [ ] **Step 5: Query Bishop's `/clients` after waiting ~60 s**
 
@@ -1400,11 +1512,12 @@ Defer detailed steps until we know we need them — implementing this against th
 - `newDiscovery` seam + adapter threading: Task 8.
 - `Close` idempotency: Task 7.
 - TestDiscovery_RespondsToMSearch existing test edit: Task 2.
-- TestDiscovery_RepliesViaSenderNotListener: Task 2.
+- TestDiscovery_RepliesViaSenderNotListener (with done-channel goroutine cleanup): Task 2.
 - TestDiscovery_HelloHeartbeatRepeats: Task 3.
+- TestDiscovery_HeartbeatFiresHelloImmediately: Task 3.
 - TestDiscovery_HelloSendFailureLogsWarn / ReplySendFailureLogsWarn: Task 4.
 - TestInterfaceForIP_FindsLoopback / NotFound / IPv6 / garbage: Task 1.
-- TestDiscovery_SenderBindsToHostIP / FallsBackWhenHostIPEmpty: Task 5.
+- TestSenderBindFor_EmptyHostIP / LocalIP / FallsBackWhenHostIPNotLocal / FallsBackOnGarbage / FallsBackOnIPv6: Task 5.
 - TestDiscovery_CloseIdempotent: Task 7.
 - TestAdapter_StartPassesHostIPToDiscovery: Task 8.
 - Validation procedure: Task 9.
@@ -1418,21 +1531,28 @@ All spec items covered.
 - `packetWriter` interface: defined Task 2, used Tasks 2/3/4. The `fakeWriter` and `erroringWriter` test helpers both satisfy it.
 - `helloInterval` package var: defined Task 3, used by `runHeartbeat` (also Task 3).
 - `newDiscovery` package var: defined Task 8, called from `Adapter.Start` (Task 8).
-- `interfaceForIP` helper: defined Task 1, used by `NewDiscovery` for both listen-side join and sender bind (Task 5) and by SetMulticastInterface call (Task 6).
+- `interfaceForIP` helper: defined Task 1, used by `senderBindFor` (Task 5).
+- `senderBindFor` helper: defined Task 5, called once in `NewDiscovery` (Task 5). Returns iface that's also reused by Task 6's SetMulticastInterface call.
 - `closeOnce` / `closeErr` / `stop` / `wg` fields: declared in struct refactor (Task 2 for closeOnce/closeErr; Task 3 for stop/wg). Used Task 7 (closeOnce wraps the close sequence). Consistent throughout.
 - `HostIP` field on `DiscoveryConfig`: defined Task 5, used Tasks 5/6/8.
 - `iface` local in `NewDiscovery`: introduced Task 5 (resolves once, drives both listen and sender), reused by Task 6 for SetMulticastInterface.
 - `capturingHandler` and `installCapturingSlog` test helpers: defined Task 4, only used by Task 4 (kept narrow).
+- `fakeCore` test stub: defined Task 8, only used by Task 8.
 
 No missing references.
 
-**Review-fix coverage** (responses to the review of the first revision):
-- Initial-HELLO failure no longer aborts `NewDiscovery` (Task 3 step 3): WARN-logged via `sendHello`'s own warning + heartbeat retries.
-- Non-local `HostIP` no longer disables GDM (Task 5 step 3): `interfaceForIP` gates the bind; falls back to `nil`/`:0` on miss.
+**Review-fix coverage** (responses to two rounds of plan review):
+
+First-round critical fixes (still in place):
+- Initial-HELLO failure no longer aborts `NewDiscovery` — refactored further in the second-round fixes below; the immediate send is now inside `runHeartbeat`, so there is *no* startup send call from `NewDiscovery` to fail (Task 3 step 3).
+- Non-local `HostIP` no longer disables GDM (Task 5): `senderBindFor` falls back to `(":0", nil)` on miss and emits a single WARN.
 - Listen-side multicast join uses the resolved interface (Task 5 step 3).
 - Adapter test fake returns `(nil, error)` so no nil-listen Run goroutine launches (Task 8 step 1).
-- Heartbeat test no longer binds real multicast and has no goroutine race (Task 3 step 1).
-- Reply test no longer swaps fields after goroutine starts (Task 2 step 1).
-- `go get` replaced with `go mod edit -require=` to keep the existing version pinned (Task 6 step 1).
-- WARN-vs-DEBUG split resolved: Task 5 owns the WARN for `HostIP` not on a local interface; Task 6 doesn't re-log it.
-- WARN logging is exercised by deterministic `slog`-capture tests (Task 4).
+
+Second-round fixes (this revision):
+- `go mod edit -require=golang.org/x/net@v0.52.0` with explicit version + fallback note (Task 6 step 1) — no `go list` derivation that breaks when the dep is purely transitive.
+- Task 8 test uses concrete `config.BridgeConfig{...}` literal and an inline `fakeCore` stub instead of non-existent `fakeBridgeConfig` / `fakeSessionManager` helpers.
+- `senderBindFor` extracted as a side-effect-free helper testable via pure-function unit tests; five new `TestSenderBindFor_*` cases cover empty / local / non-local / garbage / IPv6 inputs without binding any real socket (Task 5 step 1). The previously-missing non-local fallback case is now pinned by `TestSenderBindFor_FallsBackWhenHostIPNotLocal`.
+- Immediate-HELLO behavior is moved into `runHeartbeat` itself, then pinned by `TestDiscovery_HeartbeatFiresHelloImmediately` (Task 3) using the same packetWriter seam as the ticker test — no `NewDiscovery`-side seam needed.
+- Reply test (`TestDiscovery_RepliesViaSenderNotListener`) now uses a `runDone` channel and explicit `listen.Close()`-then-wait sequence in `t.Cleanup` to avoid a goroutine leak (Task 2 step 1).
+- Validation step 4 reworded — successful HELLO/reply sends are intentionally silent; the pcap is the on-the-wire confirmation, the log is only checked for *absence* of WARN failures (Task 9).
