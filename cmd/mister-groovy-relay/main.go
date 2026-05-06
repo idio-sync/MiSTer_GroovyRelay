@@ -246,6 +246,11 @@ func main() {
 		}
 	}()
 
+	// Greeter prints once after the listener is bound and adapters are
+	// started. Suppressed in JSON mode by default (see banner.go) so
+	// log aggregators receive a clean strict-JSON stream.
+	printGreeting(logging.IsTextMode(), version, hostIP, sec.Bridge.UI.HTTPPort, reg)
+
 	slog.Info("listening", "addr", addr)
 
 	// Start each enabled adapter's background work (timeline, GDM,
@@ -259,11 +264,6 @@ func main() {
 			slog.Error("adapter start", "name", a.Name(), "err", err)
 		}
 	}
-
-	// Greeter prints once after the listener is bound and adapters are
-	// started. Suppressed in JSON mode by default (see banner.go) so
-	// log aggregators receive a clean strict-JSON stream.
-	printGreeting(logging.IsTextMode(), version, hostIP, sec.Bridge.UI.HTTPPort, reg)
 
 	<-ctx.Done()
 	slog.Info("shutting down")

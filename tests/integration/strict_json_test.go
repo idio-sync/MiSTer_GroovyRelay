@@ -60,7 +60,8 @@ func TestStrictJSONStdout(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "--config", configPath, "--log-level", "info")
-	cmd.Env = append(os.Environ(), "MISTER_GROOVY_LOG_FORMAT=json")
+	cmd.Env = filterAppEnv(os.Environ())
+	cmd.Env = append(cmd.Env, "MISTER_GROOVY_LOG_FORMAT=json")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -135,4 +136,18 @@ enabled = false
 [adapters.jellyfin]
 enabled = false
 `, dataDir)
+}
+
+// filterAppEnv strips MISTER_GROOVY_* vars from env so test behavior
+// doesn't depend on the developer's shell. The test then sets exactly
+// the vars it needs.
+func filterAppEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "MISTER_GROOVY_") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

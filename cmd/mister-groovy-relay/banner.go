@@ -111,13 +111,36 @@ func greetingFor(version, hostIP string, port int, statuses []adapterStatus) str
 // os.Exit(1) reachable before httpSrv.Serve(ln). Extra structured
 // attrs follow the slog convention (key, value, key, value, ...) and
 // are emitted with the slog.Error record so the JSON stream keeps the
-// per-site context (e.g. adapter name) the prior code carried.
+// per-site context (e.g. adapter name) the prior code carried. Those
+// attrs are also surfaced in the stderr message so the operator who
+// double-clicked the .exe can see which adapter / which file failed.
 func dieFriendly(title string, err error, attrs ...any) {
 	args := append([]any{"err", err}, attrs...)
 	slog.Error(title, args...)
-	fmt.Fprintf(os.Stderr, "\nError: %s.\n  %v\n", title, err)
+
+	suffix := formatAttrSuffix(attrs)
+	fmt.Fprintf(os.Stderr, "\nError: %s%s.\n  %v\n", title, suffix, err)
 	waitForEnterOnWindows()
 	os.Exit(1)
+}
+
+// formatAttrSuffix turns variadic slog attrs (key, value, ...) into
+// " (key=value, key=value)" for inclusion in human-readable error
+// messages. Returns "" if attrs is empty or malformed (odd length).
+func formatAttrSuffix(attrs []any) string {
+	if len(attrs) == 0 || len(attrs)%2 != 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(" (")
+	for i := 0; i < len(attrs); i += 2 {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%v=%v", attrs[i], attrs[i+1])
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 // firstRunMessage prints the friendly first-run banner when the bridge

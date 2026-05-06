@@ -83,3 +83,18 @@ func TestPrintGreeting_ForcedInJSONMode(t *testing.T) {
 		t.Errorf("expected output with MISTER_GROOVY_BANNER=1")
 	}
 }
+
+func TestFormatAttrSuffix(t *testing.T) {
+	if got := formatAttrSuffix(nil); got != "" {
+		t.Errorf("nil attrs: got %q, want empty", got)
+	}
+	if got := formatAttrSuffix([]any{"name", "plex"}); got != " (name=plex)" {
+		t.Errorf("single attr: got %q", got)
+	}
+	if got := formatAttrSuffix([]any{"name", "plex", "version", 2}); got != " (name=plex, version=2)" {
+		t.Errorf("two attrs: got %q", got)
+	}
+	if got := formatAttrSuffix([]any{"odd"}); got != "" {
+		t.Errorf("malformed odd-length attrs should return empty; got %q", got)
+	}
+}
