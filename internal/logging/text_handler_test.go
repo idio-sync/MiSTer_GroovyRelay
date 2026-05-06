@@ -194,3 +194,69 @@ func TestTextHandler_NoNewlinesInValues(t *testing.T) {
 		t.Errorf("newlines should be escaped to literal \\n / \\r; got %q", got)
 	}
 }
+
+// TestTextHandler_MessageRewrite_Table asserts the seed entries in the
+// rewrite table render the friendly copy instead of the raw internal
+// message. Verifies the path that fires on every cast.
+func TestTextHandler_MessageRewrite_Table(t *testing.T) {
+	cases := []struct {
+		raw, friendly string
+	}{
+		{"listening", "Web UI ready"},
+		{"shutting down", "Shutting down..."},
+		{"adapter disabled", "Adapter disabled"},
+		{"preempting prior session for new request", "Switching to new cast"},
+		{"dataplane session started", "Cast started"},
+		{"dataplane session ended", "Cast ended"},
+		{"GDM discovery active", "Plex discovery active"},
+		{"plex.tv device registration loop started", "Plex registration active"},
+		{"plex.tv registration skipped (no auth token; run with --link)", "Plex not linked yet — open the Web UI to link"},
+		{"host_ip not set; auto-detected via default route — override in config for multi-NIC hosts", "Auto-detected LAN IP"},
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: false})
+		rec := slog.NewRecord(fixedTime(), slog.LevelInfo, c.raw, 0)
+		if err := h.Handle(t.Context(), rec); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		if !strings.Contains(buf.String(), c.friendly) {
+			t.Errorf("rewrite missing for %q -> %q; got %q", c.raw, c.friendly, buf.String())
+		}
+	}
+}
+
+// TestTextHandler_MessageRewrite_Fallback asserts an untable message
+// falls through to capitalize-first-letter.
+func TestTextHandler_MessageRewrite_Fallback(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: false})
+	rec := slog.NewRecord(fixedTime(), slog.LevelInfo, "ffmpeg started", 0)
+	if err := h.Handle(t.Context(), rec); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Ffmpeg started") {
+		t.Errorf("expected capitalized fallback; got %q", buf.String())
+	}
+}
+
+// TestJSONHandler_MessageNotRewritten asserts the rewrite table does
+// not affect the stdlib JSONHandler — JSON consumers depend on the raw
+// "msg" field staying stable for grep / aggregation.
+func TestJSONHandler_MessageNotRewritten(t *testing.T) {
+	var buf bytes.Buffer
+	original := newHandlerWriter
+	t.Cleanup(func() { newHandlerWriter = original })
+	newHandlerWriter = &buf
+
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "json")
+	logger := New("info")
+	logger.Info("listening", "addr", ":32500")
+
+	if !strings.Contains(buf.String(), `"msg":"listening"`) {
+		t.Errorf("JSON msg field should preserve raw text; got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "Web UI ready") {
+		t.Errorf("rewrite leaked into JSON output; got %q", buf.String())
+	}
+}

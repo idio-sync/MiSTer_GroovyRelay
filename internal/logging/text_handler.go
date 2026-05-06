@@ -168,11 +168,33 @@ func safeValue(s string) string {
 	return r.Replace(s)
 }
 
-// humanizeMessage capitalizes the first letter of the supplied message.
-// Task 5 extends this with the rewrite table.
+// messageRewrites maps internal slog message strings to the friendlier
+// text emitted by TextHandler. Applies only to text output; the JSON
+// handler keeps the raw msg field unchanged so log aggregation pipelines
+// that grep msg keep working. Grow additively over time — each entry
+// here is a quiet contract with downstream operators reading the
+// console, not a code dependency.
+var messageRewrites = map[string]string{
+	"listening":                                "Web UI ready",
+	"shutting down":                            "Shutting down...",
+	"adapter disabled":                         "Adapter disabled",
+	"preempting prior session for new request": "Switching to new cast",
+	"dataplane session started":                "Cast started",
+	"dataplane session ended":                  "Cast ended",
+	"GDM discovery active":                     "Plex discovery active",
+	"plex.tv device registration loop started": "Plex registration active",
+	"plex.tv registration skipped (no auth token; run with --link)":                              "Plex not linked yet — open the Web UI to link",
+	"host_ip not set; auto-detected via default route — override in config for multi-NIC hosts": "Auto-detected LAN IP",
+}
+
+// humanizeMessage looks up msg in messageRewrites; on miss it returns
+// msg with the first letter uppercased. Empty msg passes through.
 func humanizeMessage(msg string) string {
 	if msg == "" {
 		return msg
+	}
+	if friendly, ok := messageRewrites[msg]; ok {
+		return friendly
 	}
 	return strings.ToUpper(msg[:1]) + msg[1:]
 }
