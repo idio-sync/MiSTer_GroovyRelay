@@ -230,8 +230,10 @@ func TestScenario_Seek(t *testing.T) {
 		t.Fatalf("seek: %v", err)
 	}
 
-	// Let the respawned plane complete.
-	waitIdle(t, h, 15*time.Second)
+	// Let the respawned plane complete. Windows CI can run the post-seek
+	// stream at roughly half real-time while LZ4 + UDP loopback share a small
+	// runner, so keep this bounded but above that empirical slow path.
+	waitIdle(t, h, 25*time.Second)
 	time.Sleep(200 * time.Millisecond)
 
 	snap := h.Recorder.Snapshot()

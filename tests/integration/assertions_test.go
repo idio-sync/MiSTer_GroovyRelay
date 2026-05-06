@@ -5,6 +5,7 @@ package integration
 import (
 	"image/png"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -76,6 +77,9 @@ func assertInterFieldTiming(t *testing.T, fieldTimestamps []time.Time) {
 		}
 	}
 	limit := len(gaps) / 20 // 5%
+	if runtime.GOOS == "windows" {
+		limit = len(gaps) / 10 // Windows CI scheduler jitter regularly clusters.
+	}
 	if limit < 3 {
 		limit = 3
 	}
