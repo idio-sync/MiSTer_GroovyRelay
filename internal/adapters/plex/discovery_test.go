@@ -1,6 +1,10 @@
 package plex
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -308,5 +312,99 @@ func TestDiscovery_HeartbeatFiresHelloImmediately(t *testing.T) {
 	got := countHellos(fake.snapshot())
 	if got != 1 {
 		t.Errorf("expected exactly 1 immediate HELLO (heartbeat ticker should not have fired in 200ms with 5s interval), got %d", got)
+	}
+}
+
+// erroringWriter is a packetWriter that always returns the configured
+// error from WriteTo. Used to drive the WARN-logging path.
+type erroringWriter struct {
+	err error
+}
+
+func (e *erroringWriter) WriteTo(_ []byte, _ net.Addr) (int, error) { return 0, e.err }
+func (e *erroringWriter) Close() error                              { return nil }
+
+// capturingHandler records every slog Record passed through it. Used
+// to assert WARN lines fire on send failure without coupling to the
+// production handler's text/JSON shape.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []capturedRecord
+}
+
+type capturedRecord struct {
+	level slog.Level
+	msg   string
+	attrs map[string]string
+}
+
+func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cr := capturedRecord{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+	r.Attrs(func(a slog.Attr) bool {
+		cr.attrs[a.Key] = fmt.Sprint(a.Value.Any())
+		return true
+	})
+	h.records = append(h.records, cr)
+	return nil
+}
+func (h *capturingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *capturingHandler) hasWarnContaining(msgSubstr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.level == slog.LevelWarn && strings.Contains(r.msg, msgSubstr) {
+			return true
+		}
+	}
+	return false
+}
+
+// installCapturingSlog swaps the default slog handler for a capturing
+// one and restores it via t.Cleanup. Returned handler is the snapshot
+// target.
+func installCapturingSlog(t *testing.T) *capturingHandler {
+	t.Helper()
+	cap := &capturingHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(cap))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return cap
+}
+
+// TestDiscovery_HelloSendFailureLogsWarn pins the WARN-on-send-error
+// path for the heartbeat. Triggers sendHello directly with an
+// erroringWriter — no goroutine, no socket, no race.
+func TestDiscovery_HelloSendFailureLogsWarn(t *testing.T) {
+	cap := installCapturingSlog(t)
+
+	d := &Discovery{
+		cfg:    DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500},
+		sender: &erroringWriter{err: errors.New("simulated send failure")},
+	}
+	if err := d.sendHello(); err == nil {
+		t.Error("expected sendHello to surface error from sender")
+	}
+	if !cap.hasWarnContaining("HELLO send failed") {
+		t.Error("expected WARN log containing 'HELLO send failed'")
+	}
+}
+
+// TestDiscovery_ReplySendFailureLogsWarn pins the WARN-on-send-error
+// path for the M-SEARCH reply.
+func TestDiscovery_ReplySendFailureLogsWarn(t *testing.T) {
+	cap := installCapturingSlog(t)
+
+	d := &Discovery{
+		cfg:    DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500},
+		sender: &erroringWriter{err: errors.New("simulated reply failure")},
+	}
+	d.respondToMSearch(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345})
+	if !cap.hasWarnContaining("M-SEARCH reply send failed") {
+		t.Error("expected WARN log containing 'M-SEARCH reply send failed'")
 	}
 }

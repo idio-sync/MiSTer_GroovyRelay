@@ -107,8 +107,14 @@ func (d *Discovery) runHeartbeat() {
 // advertisement port (32413, distinct from the listen group port 32412).
 func (d *Discovery) sendHello() error {
 	dst := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32413}
-	_, err := d.sender.WriteTo([]byte("HELLO * HTTP/1.0\r\n\r\n"), dst)
-	return err
+	if _, err := d.sender.WriteTo([]byte("HELLO * HTTP/1.0\r\n\r\n"), dst); err != nil {
+		slog.Warn("plex GDM HELLO send failed",
+			"dst", dst.String(),
+			"err", err,
+		)
+		return err
+	}
+	return nil
 }
 
 // Run reads datagrams until the listen socket is closed and responds to
@@ -148,7 +154,12 @@ func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 		"Device-Class: stb\r\n"+
 		"Protocol-Version: 1\r\n\r\n",
 		d.cfg.DeviceName, d.cfg.HTTPPort, d.cfg.DeviceUUID)
-	_, _ = d.sender.WriteTo([]byte(body), dst)
+	if _, err := d.sender.WriteTo([]byte(body), dst); err != nil {
+		slog.Warn("plex GDM M-SEARCH reply send failed",
+			"dst", dst.String(),
+			"err", err,
+		)
+	}
 }
 
 // interfaceForIP returns the network interface that owns the given IPv4
