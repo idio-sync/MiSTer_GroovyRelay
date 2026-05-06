@@ -5,19 +5,16 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 )
 
 // GDM (Good Day Mate) is Plex's LAN discovery protocol. The bridge joins
 // multicast group 239.0.0.250 on UDP/32412 to listen for M-SEARCH queries
 // from Plex controllers, replies with a unicast HTTP-like descriptor, and
-// also broadcasts an unsolicited HELLO advertisement on startup to 32413.
+// broadcasts an unsolicited HELLO advertisement on 32413 on a heartbeat
+// (see Task 3 — added below in this plan).
 //
-// Reference: docs/references/plexdlnaplayer.md.
-//
-// Interface selection is intentionally omitted here: net.ListenMulticastUDP
-// with a nil interface joins the default route, which matches the v1 spec's
-// "don't make users pick an adapter" goal. Multi-NIC deployments can be
-// handled in a future phase by reading an interface name from config.
+// Spec: docs/superpowers/specs/2026-05-06-plex-gdm-heartbeat-design.md.
 
 // DiscoveryConfig is the minimal set of fields the responder splices into
 // the M-SEARCH reply. DeviceName is user-facing (appears in the Plex cast
@@ -29,22 +26,41 @@ type DiscoveryConfig struct {
 	HTTPPort   int
 }
 
-// Discovery owns the UDP socket bound to the GDM multicast group.
+// packetWriter is the small interface Discovery uses for outbound UDP. In
+// production it's a *net.UDPConn from net.ListenPacket; tests substitute
+// a counting fake to assert HELLO heartbeats and M-SEARCH replies without
+// binding real sockets or relying on flaky loopback multicast delivery.
+type packetWriter interface {
+	WriteTo(b []byte, addr net.Addr) (int, error)
+	Close() error
+}
+
+// Discovery owns the GDM listen socket and a separate outbound sender.
+// Splitting the two avoids a Windows quirk where sending unicast from a
+// multicast-joined socket can fail or use an unexpected source IP.
 type Discovery struct {
-	cfg  DiscoveryConfig
-	conn *net.UDPConn
+	cfg       DiscoveryConfig
+	listen    *net.UDPConn
+	sender    packetWriter
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewDiscovery joins the GDM multicast group and immediately broadcasts a
-// HELLO announcement. Callers are expected to invoke Run in a goroutine and
-// Close on shutdown.
+// HELLO announcement. Callers are expected to invoke Run in a goroutine
+// and Close on shutdown.
 func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	group := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32412}
-	conn, err := net.ListenMulticastUDP("udp4", nil, group)
+	listen, err := net.ListenMulticastUDP("udp4", nil, group)
 	if err != nil {
 		return nil, err
 	}
-	d := &Discovery{cfg: cfg, conn: conn}
+	sender, err := net.ListenPacket("udp4", ":0")
+	if err != nil {
+		listen.Close()
+		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
+	}
+	d := &Discovery{cfg: cfg, listen: listen, sender: sender.(*net.UDPConn)}
 	if err := d.sendHello(); err != nil {
 		d.Close()
 		return nil, err
@@ -56,16 +72,16 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 // advertisement port (32413, distinct from the listen group port 32412).
 func (d *Discovery) sendHello() error {
 	dst := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32413}
-	_, err := d.conn.WriteToUDP([]byte("HELLO * HTTP/1.0\r\n\r\n"), dst)
+	_, err := d.sender.WriteTo([]byte("HELLO * HTTP/1.0\r\n\r\n"), dst)
 	return err
 }
 
-// Run reads datagrams until the connection is closed and responds to each
-// M-SEARCH with a unicast descriptor targeted at the source address.
+// Run reads datagrams until the listen socket is closed and responds to
+// each M-SEARCH with a unicast descriptor targeted at the source address.
 func (d *Discovery) Run() {
 	buf := make([]byte, 4096)
 	for {
-		n, src, err := d.conn.ReadFromUDP(buf)
+		n, src, err := d.listen.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
@@ -82,8 +98,8 @@ func (d *Discovery) Run() {
 	}
 }
 
-// respondToMSearch sends the GDM descriptor fields Plex controllers look for
-// when populating the cast target list.
+// respondToMSearch sends the GDM descriptor fields Plex controllers look
+// for when populating the cast target list.
 func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 	body := fmt.Sprintf("HTTP/1.0 200 OK\r\n"+
 		"Name: %s\r\n"+
@@ -97,7 +113,7 @@ func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 		"Device-Class: stb\r\n"+
 		"Protocol-Version: 1\r\n\r\n",
 		d.cfg.DeviceName, d.cfg.HTTPPort, d.cfg.DeviceUUID)
-	d.conn.WriteToUDP([]byte(body), dst)
+	_, _ = d.sender.WriteTo([]byte(body), dst)
 }
 
 // interfaceForIP returns the network interface that owns the given IPv4
@@ -145,5 +161,13 @@ func interfaceForIP(hostIP string) (*net.Interface, error) {
 	return nil, fmt.Errorf("interfaceForIP: no interface owns %s", hostIP)
 }
 
-// Close releases the multicast socket; Run will return shortly after.
-func (d *Discovery) Close() error { return d.conn.Close() }
+// Close releases the listen and sender sockets; Run will return shortly
+// after the listen socket closes. Idempotency lands in a later task.
+func (d *Discovery) Close() error {
+	listenErr := d.listen.Close()
+	senderErr := d.sender.Close()
+	if listenErr != nil {
+		return listenErr
+	}
+	return senderErr
+}

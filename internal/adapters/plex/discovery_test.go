@@ -3,6 +3,7 @@ package plex
 import (
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,7 +39,7 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	}
 	defer client.Close()
 
-	target := d.conn.LocalAddr().(*net.UDPAddr)
+	target := d.listen.LocalAddr().(*net.UDPAddr)
 	// Rewrite 0.0.0.0 -> 127.0.0.1 so Windows will actually deliver the
 	// packet back to the bound socket.
 	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: target.Port}
@@ -72,6 +73,103 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	}
 	if !strings.Contains(resp, "Protocol: plex") {
 		t.Errorf("missing protocol header; got: %q", resp)
+	}
+}
+
+// fakeWriter is a packetWriter that records every WriteTo call. Used
+// in tests to assert HELLO heartbeats and M-SEARCH replies fire as
+// expected without binding real sockets or relying on multicast
+// delivery (which is flaky on Windows / loopback).
+type fakeWriter struct {
+	mu     sync.Mutex
+	writes []writeRecord
+}
+
+type writeRecord struct {
+	body []byte
+	dst  net.Addr
+}
+
+func (f *fakeWriter) WriteTo(b []byte, addr net.Addr) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	f.writes = append(f.writes, writeRecord{body: cp, dst: addr})
+	return len(b), nil
+}
+
+func (f *fakeWriter) Close() error { return nil }
+
+func (f *fakeWriter) snapshot() []writeRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]writeRecord, len(f.writes))
+	copy(out, f.writes)
+	return out
+}
+
+// TestDiscovery_RepliesViaSenderNotListener proves the M-SEARCH reply
+// path uses the sender packetWriter, not the multicast-joined listener.
+// On Windows, sending unicast from a multicast-joined socket is
+// fragile; this test pins the post-refactor behavior so a future change
+// can't silently regress to one-socket.
+//
+// We construct Discovery directly via its struct fields (same package,
+// so unexported fields are accessible) rather than going through
+// NewDiscovery. That way the fake sender is wired in BEFORE Run starts —
+// no goroutine race, no real multicast bind, no flake on hosts where
+// 32412 is held by a real Plex client.
+func TestDiscovery_RepliesViaSenderNotListener(t *testing.T) {
+	listen, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen UDP: %v", err)
+	}
+
+	fake := &fakeWriter{}
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-z",
+			HTTPPort:   32500,
+		},
+		listen: listen,
+		sender: fake,
+	}
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.Run()
+	}()
+	t.Cleanup(func() {
+		_ = listen.Close() // unblocks d.Run's ReadFromUDP
+		<-runDone          // wait for goroutine exit; no leak
+	})
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer client.Close()
+	target := listen.LocalAddr().(*net.UDPAddr)
+	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: target.Port}
+	if _, err := client.WriteToUDP([]byte("M-SEARCH * HTTP/1.1\r\n\r\n"), dst); err != nil {
+		t.Fatalf("write M-SEARCH: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(fake.snapshot()) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	writes := fake.snapshot()
+	if len(writes) == 0 {
+		t.Fatal("expected a reply via sender, got none")
+	}
+	if !strings.Contains(string(writes[0].body), "HTTP/1.0 200 OK") {
+		t.Errorf("first write should be M-SEARCH reply; body=%q", writes[0].body)
 	}
 }
 
