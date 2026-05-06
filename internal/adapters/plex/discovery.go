@@ -25,6 +25,16 @@ type DiscoveryConfig struct {
 	DeviceName string
 	DeviceUUID string
 	HTTPPort   int
+	// HostIP is the configured-or-autodetected LAN IPv4 address the
+	// bridge advertises as its connection URI (mirror of
+	// AdapterConfig.HostIP from the calling adapter). When non-empty
+	// AND it resolves via interfaceForIP to a local interface, that
+	// interface is used for the multicast listen-side join and the
+	// sender binds to HostIP:0 for a deterministic source IP. When
+	// HostIP is empty, isn't IPv4, or doesn't match any local
+	// interface, Discovery falls back to nil-interface multicast and
+	// :0 sender bind (today's default behavior).
+	HostIP string
 }
 
 // helloInterval is the cadence at which Discovery rebroadcasts the
@@ -62,12 +72,15 @@ type Discovery struct {
 // ticker. Callers are expected to invoke Run in a goroutine and Close on
 // shutdown.
 func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
+	senderAddr, iface := senderBindFor(cfg.HostIP)
+
 	group := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32412}
-	listen, err := net.ListenMulticastUDP("udp4", nil, group)
+	listen, err := net.ListenMulticastUDP("udp4", iface, group)
 	if err != nil {
 		return nil, err
 	}
-	sender, err := net.ListenPacket("udp4", ":0")
+
+	sender, err := net.ListenPacket("udp4", senderAddr)
 	if err != nil {
 		listen.Close()
 		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
@@ -205,6 +218,29 @@ func interfaceForIP(hostIP string) (*net.Interface, error) {
 		}
 	}
 	return nil, fmt.Errorf("interfaceForIP: no interface owns %s", hostIP)
+}
+
+// senderBindFor decides the sender's bind address and outgoing
+// interface based on HostIP. Returning ("",  nil) is impossible —
+// the helper always returns a usable bind string, falling back to
+// ":0" + nil whenever HostIP is empty, malformed, IPv6, or doesn't
+// match any local interface. The fallback is what keeps GDM running
+// in the face of a typo'd or stale bridge.host_ip; binding directly
+// to a non-local IP would fail net.ListenPacket and disable
+// discovery entirely.
+func senderBindFor(hostIP string) (addr string, iface *net.Interface) {
+	if hostIP == "" {
+		return ":0", nil
+	}
+	found, err := interfaceForIP(hostIP)
+	if err != nil {
+		slog.Warn("plex GDM: HostIP not on a local interface; using default route for multicast and unicast",
+			"host_ip", hostIP,
+			"err", err,
+		)
+		return ":0", nil
+	}
+	return hostIP + ":0", found
 }
 
 // Close signals the heartbeat goroutine to stop, waits for it to exit,

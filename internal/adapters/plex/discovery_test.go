@@ -408,3 +408,72 @@ func TestDiscovery_ReplySendFailureLogsWarn(t *testing.T) {
 		t.Error("expected WARN log containing 'M-SEARCH reply send failed'")
 	}
 }
+
+// TestSenderBindFor_EmptyHostIP pins the no-config-set fallback:
+// listen joins multicast on the default interface, sender binds to
+// ephemeral.
+func TestSenderBindFor_EmptyHostIP(t *testing.T) {
+	addr, iface := senderBindFor("")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0", addr)
+	}
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
+	}
+}
+
+// TestSenderBindFor_LocalIP pins the happy path: HostIP resolves to a
+// local interface, sender binds to it. Uses 127.0.0.1 since every
+// test environment has loopback.
+func TestSenderBindFor_LocalIP(t *testing.T) {
+	addr, iface := senderBindFor("127.0.0.1")
+	if iface == nil {
+		t.Skip("loopback enumeration unavailable on this host")
+	}
+	if addr != "127.0.0.1:0" {
+		t.Errorf("addr = %q; want 127.0.0.1:0", addr)
+	}
+	if iface.Flags&net.FlagLoopback == 0 {
+		t.Errorf("iface = %q (flags %v); want loopback", iface.Name, iface.Flags)
+	}
+}
+
+// TestSenderBindFor_FallsBackWhenHostIPNotLocal pins the regression
+// the prior plan revision missed: a parseable IPv4 address that no
+// local interface owns must fall back to (":0", nil) — never blindly
+// bind to a non-local IP, which would fail net.ListenPacket and
+// disable GDM. Uses TEST-NET-3 (203.0.113.0/24, RFC 5737) which is
+// documentation-reserved and never assignable on real hosts.
+func TestSenderBindFor_FallsBackWhenHostIPNotLocal(t *testing.T) {
+	addr, iface := senderBindFor("203.0.113.99")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0 (non-local IP must not be bound)", addr)
+	}
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
+	}
+}
+
+// TestSenderBindFor_FallsBackOnGarbage pins the typo'd config case:
+// non-IP-shaped strings fall back to (":0", nil).
+func TestSenderBindFor_FallsBackOnGarbage(t *testing.T) {
+	addr, iface := senderBindFor("not-an-ip")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0", addr)
+	}
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
+	}
+}
+
+// TestSenderBindFor_FallsBackOnIPv6 pins that IPv6 HostIPs (e.g. ::1)
+// fall back rather than attempting an IPv6 bind on the udp4 socket.
+func TestSenderBindFor_FallsBackOnIPv6(t *testing.T) {
+	addr, iface := senderBindFor("::1")
+	if addr != ":0" {
+		t.Errorf("addr = %q; want :0", addr)
+	}
+	if iface != nil {
+		t.Errorf("iface = %v; want nil", iface)
+	}
+}
