@@ -49,23 +49,39 @@ aggregation and `grep` pipelines keep working.
 
 A small custom `slog.Handler` produces text output; the existing
 `slog.JSONHandler` continues to be used otherwise. Selection happens
-once at `logging.New()` time:
+once at `logging.New()` time and resolves to one of two modes — `text`
+or `json` — plus an independent `color` boolean:
 
-1. `MISTER_GROOVY_LOG_FORMAT` env var — `text` | `text-plain` (no
-   color) | `json` | `auto` (default).
+1. `MISTER_GROOVY_LOG_FORMAT` env var — `text` | `text-plain` | `json`
+   | `auto` (default). `text-plain` is `text` with `color=false`.
 2. If `auto`: `golang.org/x/term.IsTerminal(int(os.Stdout.Fd()))` —
-   terminal → text, otherwise → JSON.
-3. Independently: if `NO_COLOR` is set, or `text-plain` is selected,
-   ANSI color escapes are suppressed.
+   terminal → `text`, otherwise → `json`.
+3. `color` resolution: starts true if mode is `text`. Forced false if
+   any of: mode is `text-plain`, `NO_COLOR` env is set (any non-empty
+   value), or stdout is not a terminal. `NO_COLOR` is a no-op for
+   `json` mode (JSON output never contains escapes).
+
+Resolved combinations (the only four that matter):
+
+| Resolution | Trigger |
+| --- | --- |
+| text + color | terminal stdout, no `NO_COLOR`, format `auto` or `text` |
+| text + no color | `text-plain`, or `text` + `NO_COLOR` |
+| json | non-terminal stdout, or explicit `json` |
+| json | (`NO_COLOR` ignored) |
 
 Docker and `tee file` are non-terminal, so they get JSON automatically.
 Windows double-click and `mister-groovy-relay.exe` from a terminal get
 text.
 
-A separate startup banner is printed via `fmt.Fprintln(os.Stdout, ...)`
-— not slog — so it shows up identically in text and JSON modes. Its
-content is constructed from already-resolved values (host IP, port,
-adapter list).
+The startup banner is printed via `fmt.Fprintln(os.Stdout, ...)` — not
+slog — and **only when the resolved mode is `text`**. JSON mode
+suppresses the banner entirely so log aggregators receive a clean
+strict-JSON stream. An operator who explicitly wants the banner in
+JSON mode (rare) can set `MISTER_GROOVY_BANNER=1`. Conversely, a
+text-mode operator who wants a quiet boot sets
+`MISTER_GROOVY_NO_BANNER=1`. Banner content is constructed from
+already-resolved values (host IP, port, adapter list).
 
 ## Architecture
 
@@ -161,20 +177,72 @@ banner.go          — new: printGreeting, dieFriendly, firstRunMessage,
 1. **First-run config-not-found:** the existing
    `fmt.Fprintf(os.Stderr, "No config found...")` block becomes
    `firstRunMessage(created.Path); waitForEnterOnWindows(); os.Exit(2)`.
-2. **Greeter:** after `httpSrv.ListenAndServe()` is goroutine-started
-   and adapter `Start()` calls return, before `<-ctx.Done()`, call
-   `printGreeting(version, hostIP, sec.Bridge.UI.HTTPPort, reg)`.
-3. **Fatal startup errors:** the seven existing
-   `slog.Error(...); os.Exit(1)` blocks for sender init, ui init, etc.
-   wrap into a `dieFriendly(slogger, "title", err)` helper that logs as
-   today, prints a short human message, calls
-   `waitForEnterOnWindows()`, and exits.
+2. **Greeter:** call `printGreeting(version, hostIP,
+   sec.Bridge.UI.HTTPPort, reg)` after the HTTP listener is *bound*
+   (see "listener readiness" below) and after adapter `Start()` calls
+   return, before `<-ctx.Done()`. The greeter is a no-op when the
+   resolved log mode is `json` (unless `MISTER_GROOVY_BANNER=1`).
+3. **Fatal startup errors → `dieFriendly`:** every `os.Exit(1)` site
+   reachable *before* the HTTP listener boots gets wrapped. Concretely,
+   the rule is: any `slog.Error(...); os.Exit(1)` between `flag.Parse`
+   and `httpSrv.Serve(ln)` returning. As of HEAD, that includes (file
+   `cmd/mister-groovy-relay/main.go`):
+   - line 67 `load config`
+   - line 71 `data_dir preflight`
+   - line 97 `save stored data`
+   - line 122 `sender init`
+   - line 167 `plex adapter init`
+   - line 171 `registry register plex`
+   - line 183 `url adapter init`
+   - line 187 `registry register url`
+   - line 196 `registry register jellyfin`
+   - line 203 `adapter DecodeConfig`
+   - line 235 `ui init`
+
+   The two `os.Exit(2)` config-flag-parse sites (lines 53–55, 102–104)
+   keep their existing `fmt.Fprintln(os.Stderr, ...)` plus
+   `waitForEnterOnWindows()` — they're argument errors, not config
+   errors, so the user-friendly tone is different.
+
+   Sites *inside* `runLinkFlow` are out of scope: `--link` is an
+   interactive flow that already prints to stdout and the user is
+   already attentive.
+
+   `dieFriendly(slogger, title, err)` calls `slog.Error(title, "err",
+   err)` (preserving today's structured log line for ops), then in text
+   mode prints a short human message
+   (`"\nError: <title> failed.\n  <err>\n"`), then
+   `waitForEnterOnWindows()`, then `os.Exit(1)`.
+
+### Listener readiness (eliminates banner race)
+
+The current code calls `httpSrv.ListenAndServe()` inside a goroutine,
+which means the banner can print before the OS-level `bind()` has
+completed. Replace with the listen-then-serve pattern:
+
+```go
+ln, err := net.Listen("tcp", addr)
+if err != nil {
+    dieFriendly(slog.Default(), "http listener", err)
+}
+go func() {
+    if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+        slog.Error("http listener", "err", err)
+    }
+}()
+```
+
+After `net.Listen` returns successfully, the port is bound and accepts
+connections (the goroutine just dispatches them). The banner can
+safely advertise the URL.
 
 `waitForEnterOnWindows()`:
 
 - No-op unless `runtime.GOOS == "windows"`.
 - No-op if `term.IsTerminal(int(os.Stdin.Fd()))` is false (Docker, CI,
   headless service, redirected stdin).
+- No-op if `term.IsTerminal(int(os.Stdout.Fd()))` is false (redirected
+  stdout — see Risks).
 - No-op if `MISTER_GROOVY_NO_PAUSE=1`.
 - Otherwise: prints `Press Enter to close this window.` and reads a
   line from stdin.
@@ -249,11 +317,20 @@ value) disables ANSI escapes. We follow that convention exactly.
 
 ### Windows ANSI
 
-Windows 10 build 1511+ enables ANSI escape sequences in `cmd.exe` and
-PowerShell by default. The repo's stated minimum is Windows 10
-(`OS Version: Windows 10 Pro 10.0.19045`). We don't call
-`SetConsoleMode` — if a non-conforming console mangles the escapes, the
-operator can set `NO_COLOR=1`.
+Windows 10 build 1511+ added support for ANSI escape sequences via the
+`ENABLE_VIRTUAL_TERMINAL_PROCESSING` console-mode flag, but the flag
+must be set per-process. Modern terminals (Windows Terminal, recent
+PowerShell) inherit it; legacy `cmd.exe` launched by double-clicking
+the .exe historically does not.
+
+We enable it explicitly. On Windows, `logging.New()` calls a small
+`enableWindowsVT()` helper that wraps
+`SetConsoleMode(stdout, current | ENABLE_VIRTUAL_TERMINAL_PROCESSING)`
+(via `golang.org/x/sys/windows`, already a transitive dep). On other
+platforms the helper is a no-op (build-tag split:
+`logging_vt_windows.go` / `logging_vt_other.go`). Failures (older
+console host, redirected handle) are silently ignored — the worst case
+is the user sees raw escapes, fixable with `NO_COLOR=1`.
 
 ## Configuration surface
 
@@ -264,7 +341,8 @@ operator-runtime concerns, not persistent config):
 | --- | --- | --- | --- |
 | `MISTER_GROOVY_LOG_FORMAT` | `auto` \| `text` \| `text-plain` \| `json` | `auto` | Force handler choice; `text-plain` = text without color. |
 | `NO_COLOR` | any non-empty | unset | Disable ANSI in text mode. |
-| `MISTER_GROOVY_NO_BANNER` | `1` | unset | Suppress startup banner. |
+| `MISTER_GROOVY_NO_BANNER` | `1` | unset | Suppress startup banner in text mode. |
+| `MISTER_GROOVY_BANNER` | `1` | unset | Force banner in JSON mode (rare). |
 | `MISTER_GROOVY_NO_PAUSE` | `1` | unset | Skip the Windows "Press Enter" pause on first-run / fatal errors. |
 
 `MISTER_GROOVY_CONFIG` already exists and is unchanged.
@@ -298,6 +376,14 @@ Reuse the existing `newHandlerWriter` swap pattern. New tests:
   resolved `hostIP`, the configured port, and a line for each adapter.
 - `TestPrintGreeting_Suppressed` — `MISTER_GROOVY_NO_BANNER=1` produces
   empty output.
+- `TestPrintGreeting_SuppressedInJSONMode` — when the resolved log
+  mode is `json`, the greeter produces no output unless
+  `MISTER_GROOVY_BANNER=1` is set.
+- `TestStdoutIsStrictJSON` — start the bridge with
+  `MISTER_GROOVY_LOG_FORMAT=json`, capture ~1s of stdout, assert every
+  newline-terminated line decodes via `json.Decoder` without error.
+  Catches future regressions where someone routes a banner or
+  `fmt.Println` through stdout in JSON mode.
 
 ### Manual
 
@@ -336,11 +422,22 @@ existing assertions.
   Docker (`docker run -it`) reports as a terminal. That's correct — the
   operator wants text. A `winpty`-wrapped MSYS shell may misreport;
   override with the env var.
-- **Banner timing.** The banner prints after `ListenAndServe` is
-  goroutine-started. There's a small race where the listener may not
-  yet be accepting connections when the banner says "Web UI ready". In
-  practice this window is microseconds and visiting the URL retries
-  fine. Not worth a synchronous probe.
+- **Banner timing.** Resolved by the listener-readiness pattern in
+  `cmd/mister-groovy-relay`: `net.Listen` runs synchronously on the
+  main goroutine before the banner prints, so the port is bound and
+  accepting connections by the time the URL is advertised.
+
+- **Redirected-stdout-from-a-terminal corner case.** Running
+  `mister-groovy-relay > log.txt` from an interactive terminal puts
+  stdout into a regular file (handler picks JSON; banner suppressed —
+  good) but leaves stdin attached to the terminal. If a fatal startup
+  error fires, the JSON `slog.Error` line goes to the file and the
+  Windows pause prompt waits on stdin — the user sees an apparently
+  stalled console. Mitigation: the pause gate also checks
+  `term.IsTerminal(stdout)`. If stdout is redirected, no pause —
+  consistent with the principle that the pause exists to keep visible
+  messages visible, and a redirected stdout has no visible message to
+  preserve.
 
 ## Out of scope (will not be addressed)
 
@@ -358,11 +455,13 @@ existing assertions.
 
 | File | Change | Approx LOC |
 | --- | --- | --- |
-| `internal/logging/logging.go` | Modified — `pickHandler` | +30 |
+| `internal/logging/logging.go` | Modified — `pickHandler`, mode/color resolution | +50 |
 | `internal/logging/text_handler.go` | New | ~150 |
 | `internal/logging/text_handler_test.go` | New | ~150 |
-| `cmd/mister-groovy-relay/main.go` | Modified — call greeter + dieFriendly + first-run banner | +20 |
+| `internal/logging/logging_vt_windows.go` | New — `enableWindowsVT` via `golang.org/x/sys/windows` | ~20 |
+| `internal/logging/logging_vt_other.go` | New — no-op for non-Windows | ~10 |
+| `cmd/mister-groovy-relay/main.go` | Modified — listen-then-serve, greeter, dieFriendly wrapping at the 11 listed sites, first-run banner | +30 |
 | `cmd/mister-groovy-relay/banner.go` | New | ~120 |
-| `cmd/mister-groovy-relay/banner_test.go` | New | ~60 |
-| `go.mod`, `go.sum` | Modified — add `golang.org/x/term` | n/a |
+| `cmd/mister-groovy-relay/banner_test.go` | New | ~80 |
+| `go.mod`, `go.sum` | Modified — add `golang.org/x/term`, ensure `golang.org/x/sys/windows` is direct | n/a |
 | `README.md` | Modified — env var note | +10 |
