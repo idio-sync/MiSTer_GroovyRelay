@@ -135,3 +135,40 @@ func TestTextHandler_NoColorLeavesPlainBytes(t *testing.T) {
 		t.Errorf("unexpected ANSI escape with color=false; got %q", buf.String())
 	}
 }
+
+// TestTextHandler_WithAttrs asserts attrs supplied via With() prepend
+// the per-record attrs in the rendered line, matching JSONHandler shape.
+func TestTextHandler_WithAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: false})
+	logger := slog.New(h).With("app", "bridge", "version", "1.0.0")
+
+	logger.Info("hello", "addr", ":32500")
+	got := buf.String()
+
+	for _, want := range []string{"app=bridge", "version=1.0.0", "addr=:32500"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q; got %q", want, got)
+		}
+	}
+	if i, j := strings.Index(got, "app="), strings.Index(got, "addr="); i >= j {
+		t.Errorf("With() attrs should appear before per-record attrs; got %q", got)
+	}
+}
+
+// TestTextHandler_WithGroup asserts WithGroup prefixes nested attr keys
+// with the group name and a dot, matching JSONHandler. Multiple nested
+// groups concatenate with dots.
+func TestTextHandler_WithGroup(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: false})
+	logger := slog.New(h).WithGroup("net").With("port", 32500)
+
+	logger.Info("listening", "host", "0.0.0.0")
+	got := buf.String()
+	for _, want := range []string{"net.port=32500", "net.host=0.0.0.0"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q; got %q", want, got)
+		}
+	}
+}

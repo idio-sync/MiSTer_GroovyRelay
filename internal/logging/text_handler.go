@@ -23,14 +23,21 @@ type textOptions struct {
 	color bool
 }
 
-// TextHandler implements slog.Handler with a single-line human format.
-// Concurrent Handle calls serialize through mu so two records can't
-// interleave bytes on stdout.
+// presetAttr is an attr accumulated via With/WithGroup. Stored
+// already-prefixed (i.e. group dots applied at With-time) so the hot
+// Handle path doesn't have to rebuild strings per record.
+type presetAttr struct {
+	key   string
+	value slog.Value
+}
+
 type TextHandler struct {
-	w     io.Writer
-	level *slog.LevelVar
-	opts  textOptions
-	mu    *sync.Mutex
+	w      io.Writer
+	level  *slog.LevelVar
+	opts   textOptions
+	mu     *sync.Mutex
+	preset []presetAttr
+	prefix string // dot-joined group path, e.g. "net." or "net.tcp."
 }
 
 func newTextHandler(w io.Writer, level *slog.LevelVar, opts textOptions) *TextHandler {
@@ -82,12 +89,24 @@ func (h *TextHandler) Handle(_ context.Context, r slog.Record) error {
 	b.WriteString("  ")
 	b.WriteString(stylize(h.opts.color, ansiBold, humanizeMessage(r.Message)))
 
-	r.Attrs(func(a slog.Attr) bool {
+	for _, a := range h.preset {
 		b.WriteString("  ")
-		b.WriteString(stylize(h.opts.color, ansiDim, a.Key))
+		b.WriteString(stylize(h.opts.color, ansiDim, a.key))
+		b.WriteString("=")
+		val := a.value.String()
+		if a.key == "err" || strings.HasSuffix(a.key, ".err") {
+			val = stylize(h.opts.color, ansiRed, val)
+		}
+		b.WriteString(val)
+	}
+
+	r.Attrs(func(a slog.Attr) bool {
+		key := h.prefix + a.Key
+		b.WriteString("  ")
+		b.WriteString(stylize(h.opts.color, ansiDim, key))
 		b.WriteString("=")
 		val := a.Value.String()
-		if a.Key == "err" {
+		if a.Key == "err" || strings.HasSuffix(key, ".err") {
 			val = stylize(h.opts.color, ansiRed, val)
 		}
 		b.WriteString(val)
@@ -102,9 +121,26 @@ func (h *TextHandler) Handle(_ context.Context, r slog.Record) error {
 	return err
 }
 
-// WithAttrs and WithGroup are filled in by Task 3.
-func (h *TextHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
-func (h *TextHandler) WithGroup(name string) slog.Handler       { return h }
+func (h *TextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if len(attrs) == 0 {
+		return h
+	}
+	clone := *h
+	clone.preset = append([]presetAttr{}, h.preset...)
+	for _, a := range attrs {
+		clone.preset = append(clone.preset, presetAttr{key: h.prefix + a.Key, value: a.Value})
+	}
+	return &clone
+}
+
+func (h *TextHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+	clone := *h
+	clone.prefix = h.prefix + name + "."
+	return &clone
+}
 
 // levelTag returns a fixed 4-char tag per slog level.
 func levelTag(l slog.Level) string {
