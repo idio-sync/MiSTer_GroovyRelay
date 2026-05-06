@@ -88,8 +88,10 @@ func TestStrictJSONStdout(t *testing.T) {
 	}()
 	select {
 	case <-deadline.C:
+		_ = stdout.Close() // forces s.Scan() to return false
 	case <-doneCh:
 	}
+	<-doneCh // wait for goroutine to exit before reading lines
 
 	if len(lines) == 0 {
 		t.Fatal("no output captured from bridge stdout in 1.5s")
