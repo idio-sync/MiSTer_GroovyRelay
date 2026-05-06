@@ -210,6 +210,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 			a.cfg.HostIP,
 			a.cfg.Bridge.UI.HTTPPort,
 			cfgSnap.DeviceName,
+			a.cfg.Version,
 		)
 		slog.Info("plex.tv device registration loop started", "hostIP", a.cfg.HostIP)
 	} else {

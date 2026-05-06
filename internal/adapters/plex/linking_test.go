@@ -15,6 +15,7 @@ import (
 // form field, and decodes the JSON body into PinResponse.
 func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	var gotPath, gotClientID, gotDeviceName, gotContentType, gotStrong string
+	var gotProvides, gotPlatform, gotPlatformVersion, gotDevice, gotModel, gotVersion string
 	var strongWasSet bool
 	var gotMethod string
 	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,6 +25,12 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 		_ = r.ParseForm()
 		gotClientID = r.PostForm.Get("X-Plex-Client-Identifier")
 		gotDeviceName = r.PostForm.Get("X-Plex-Device-Name")
+		gotProvides = r.PostForm.Get("X-Plex-Provides")
+		gotPlatform = r.PostForm.Get("X-Plex-Platform")
+		gotPlatformVersion = r.PostForm.Get("X-Plex-Platform-Version")
+		gotDevice = r.PostForm.Get("X-Plex-Device")
+		gotModel = r.PostForm.Get("X-Plex-Model")
+		gotVersion = r.PostForm.Get("X-Plex-Version")
 		_, strongWasSet = r.PostForm["strong"]
 		gotStrong = r.PostForm.Get("strong")
 		w.Header().Set("Content-Type", "application/json")
@@ -35,7 +42,7 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = restore })
 
-	pr, err := RequestPIN("client-xyz", "MiSTer-Test")
+	pr, err := RequestPIN("client-xyz", "MiSTer-Test", "9.9.9")
 	if err != nil {
 		t.Fatalf("RequestPIN: %v", err)
 	}
@@ -60,6 +67,28 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	if strongWasSet && gotStrong != "false" {
 		t.Errorf("strong form field must be unset or false for plex.tv/link flow, got %q", gotStrong)
 	}
+	// Plex Web's cast picker filters out resources whose platform/device
+	// fields are null and whose provides is bare "player". Pinning these
+	// here so a future refactor can't silently drop them and reintroduce
+	// the "MiSTer missing from cast picker" regression.
+	if gotProvides != "client,player" {
+		t.Errorf("X-Plex-Provides = %q; want client,player", gotProvides)
+	}
+	if gotPlatform == "" {
+		t.Error("X-Plex-Platform must be set")
+	}
+	if gotPlatformVersion != "9.9.9" {
+		t.Errorf("X-Plex-Platform-Version = %q; want 9.9.9", gotPlatformVersion)
+	}
+	if gotDevice == "" {
+		t.Error("X-Plex-Device must be set")
+	}
+	if gotModel == "" {
+		t.Error("X-Plex-Model must be set")
+	}
+	if gotVersion != "9.9.9" {
+		t.Errorf("X-Plex-Version = %q; want 9.9.9", gotVersion)
+	}
 	if pr.ID != 42 || pr.Code != "ABCD" {
 		t.Errorf("unexpected PinResponse: %+v", pr)
 	}
@@ -77,7 +106,7 @@ func TestRequestPIN_HTTPErrorSurfacesError(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = restore })
 
-	if _, err := RequestPIN("cid", "dn"); err == nil {
+	if _, err := RequestPIN("cid", "dn", "1.0.0"); err == nil {
 		t.Fatal("expected error on 401, got nil")
 	}
 }
@@ -143,9 +172,13 @@ func TestPollPIN_TimesOut(t *testing.T) {
 }
 
 // TestRegisterDevice_PutsConnectionURI verifies the PUT path, token query
-// parameter, and form body used to refresh the plex.tv device record.
+// parameter, and form body used to refresh the plex.tv device record. Also
+// pins the rich metadata fields (provides, platform, device, model) — Plex
+// Web's cast picker filters records that lack them, so a regression here
+// would silently break "MiSTer appears as a cast target."
 func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	var gotMethod, gotPath, gotToken, gotContentType, gotURI, gotDeviceName string
+	var gotProvides, gotPlatform, gotPlatformVersion, gotDevice, gotModel, gotVersion string
 	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
@@ -154,6 +187,12 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 		_ = r.ParseForm()
 		gotURI = r.PostForm.Get("Connection[][uri]")
 		gotDeviceName = r.PostForm.Get("X-Plex-Device-Name")
+		gotProvides = r.PostForm.Get("X-Plex-Provides")
+		gotPlatform = r.PostForm.Get("X-Plex-Platform")
+		gotPlatformVersion = r.PostForm.Get("X-Plex-Platform-Version")
+		gotDevice = r.PostForm.Get("X-Plex-Device")
+		gotModel = r.PostForm.Get("X-Plex-Model")
+		gotVersion = r.PostForm.Get("X-Plex-Version")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -162,7 +201,7 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = restore })
 
-	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500, "MiSTer"); err != nil {
+	if err := RegisterDevice("uuid-xyz", "tok-123", "10.0.0.5", 32500, "MiSTer", "9.9.9"); err != nil {
 		t.Fatalf("RegisterDevice: %v", err)
 	}
 	if gotMethod != http.MethodPut {
@@ -182,6 +221,24 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	}
 	if gotDeviceName != "MiSTer" {
 		t.Errorf("wrong device name: %q", gotDeviceName)
+	}
+	if gotProvides != "client,player" {
+		t.Errorf("X-Plex-Provides = %q; want client,player", gotProvides)
+	}
+	if gotPlatform == "" {
+		t.Error("X-Plex-Platform must be set")
+	}
+	if gotPlatformVersion != "9.9.9" {
+		t.Errorf("X-Plex-Platform-Version = %q; want 9.9.9", gotPlatformVersion)
+	}
+	if gotDevice == "" {
+		t.Error("X-Plex-Device must be set")
+	}
+	if gotModel == "" {
+		t.Error("X-Plex-Model must be set")
+	}
+	if gotVersion != "9.9.9" {
+		t.Errorf("X-Plex-Version = %q; want 9.9.9", gotVersion)
 	}
 }
 
@@ -207,7 +264,7 @@ func TestRunRegistrationLoop_FiresImmediatelyAndOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500, "MiSTer")
+		RunRegistrationLoop(ctx, "uuid", "tok", "127.0.0.1", 32500, "MiSTer", "1.0.0")
 		close(done)
 	}()
 
@@ -238,7 +295,7 @@ func TestRegisterDevice_Returns4xxAsError(t *testing.T) {
 	PlexAPIBase = srv.URL
 	t.Cleanup(func() { PlexAPIBase = oldBase })
 
-	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500, "MiSTer")
+	err := RegisterDevice("uuid-x", "stale-token", "10.0.0.1", 32500, "MiSTer", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error from 401 response; got nil")
 	}

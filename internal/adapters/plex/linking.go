@@ -41,19 +41,31 @@ type PinResponse struct {
 // RequestPIN creates a new plex.tv PIN tied to clientID/deviceName. The
 // returned PinResponse carries the 4-character Code the user types at
 // plex.tv/link. AuthToken will be empty until the PIN is claimed.
-func RequestPIN(clientID, deviceName string) (*PinResponse, error) {
+//
+// version is the bridge build version, threaded through to X-Plex-Version
+// and X-Plex-Platform-Version so plex.tv stamps the device record with the
+// actual build instead of "1.0". The platform/device/model fields use the
+// same constants the Companion /resources XML advertises — Plex Web's cast
+// picker filters out devices with null platform metadata, so these must be
+// populated at link time so the resulting device record is well-formed
+// before the periodic RegisterDevice loop kicks in.
+func RequestPIN(clientID, deviceName, version string) (*PinResponse, error) {
 	form := url.Values{}
 	// Do NOT set strong=true. "Strong" PINs are ~25-char opaque tokens
 	// meant for machine auth flows; plex.tv/link only accepts the short
 	// 4-character human Code returned when strong is omitted/false.
 	form.Set("X-Plex-Client-Identifier", clientID)
 	form.Set("X-Plex-Device-Name", deviceName)
-	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")
-	form.Set("X-Plex-Version", "1.0")
-	// X-Plex-Provides=player is baked into the plex.tv device record at link
-	// time. Without it the device is registered but not classified as a
-	// player, so controllers refuse to cast media to it.
-	form.Set("X-Plex-Provides", "player")
+	form.Set("X-Plex-Product", companionProduct)
+	form.Set("X-Plex-Version", version)
+	// provides=client,player rather than bare "player": Plex Web's modern
+	// cast picker filters resources that don't advertise "client" alongside
+	// "player", treating bare-player records as legacy/non-targetable.
+	form.Set("X-Plex-Provides", "client,player")
+	form.Set("X-Plex-Platform", companionPlatform)
+	form.Set("X-Plex-Platform-Version", version)
+	form.Set("X-Plex-Device", companionDevice)
+	form.Set("X-Plex-Model", companionModel)
 
 	req, err := http.NewRequest(http.MethodPost, PlexAPIBase+"/api/v2/pins", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -109,20 +121,31 @@ func PollPIN(id int, clientID string, timeout time.Duration) (string, error) {
 // RegisterDevice PUTs the bridge's LAN URI to plex.tv/devices/{uuid}. This
 // is how the device shows up in the Plex mobile/web cast picker when the
 // controller is on cellular data (outside the LAN). We re-assert the human
-// device name on every refresh so a stale plex.tv device record doesn't keep
-// showing an old label after the operator renames the bridge or reuses a
-// previous UUID/token pair. Requires a valid auth token; a one-shot call,
-// intended to be driven by RunRegistrationLoop.
-func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName string) error {
+// device name AND the platform/device/model metadata on every refresh —
+// Plex Web's cast picker filters out resources whose platform/device fields
+// are null, and a stale plex.tv record from an older bridge version (which
+// didn't set them) would persist those nulls until overwritten. Requires a
+// valid auth token; a one-shot call, intended to be driven by
+// RunRegistrationLoop.
+func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName, version string) error {
 	connURI := fmt.Sprintf("http://%s:%d", hostIP, httpPort)
 	form := url.Values{}
 	form.Set("Connection[][uri]", connURI)
-	// Re-assert provides=player on every refresh so the device record stays
-	// classified as a player even if a prior link created it without the flag.
-	form.Set("X-Plex-Provides", "player")
+	// provides=client,player rather than bare "player": Plex Web's modern
+	// cast picker filters bare-player records out of the picker even though
+	// they appear in /api/v2/resources. Adding "client" matches what
+	// Plexamp / PS4 / other working players advertise.
+	form.Set("X-Plex-Provides", "client,player")
 	form.Set("X-Plex-Device-Name", deviceName)
-	form.Set("X-Plex-Product", "MiSTer_GroovyRelay")
-	form.Set("X-Plex-Version", "1.0")
+	form.Set("X-Plex-Product", companionProduct)
+	form.Set("X-Plex-Version", version)
+	// platform/device/model fields populate the corresponding columns in the
+	// plex.tv device record. Plex Web's picker filters out entries whose
+	// platform is null — so all four must be set on every refresh.
+	form.Set("X-Plex-Platform", companionPlatform)
+	form.Set("X-Plex-Platform-Version", version)
+	form.Set("X-Plex-Device", companionDevice)
+	form.Set("X-Plex-Model", companionModel)
 	req, err := http.NewRequest(http.MethodPut,
 		fmt.Sprintf("%s/devices/%s?X-Plex-Token=%s", PlexAPIBase, uuid, token),
 		strings.NewReader(form.Encode()))
@@ -184,10 +207,10 @@ func RevokeDevice(uuid, token string) error {
 // refreshed on the registerInterval cadence until ctx is cancelled. Errors
 // from the periodic refresh are logged at WARN but do not stop the loop —
 // transient plex.tv hiccups should self-heal on the next tick.
-func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPort int, deviceName string) {
+func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPort int, deviceName, version string) {
 	tick := time.NewTicker(registerInterval)
 	defer tick.Stop()
-	if err := RegisterDevice(uuid, token, hostIP, httpPort, deviceName); err != nil {
+	if err := RegisterDevice(uuid, token, hostIP, httpPort, deviceName, version); err != nil {
 		slog.Warn("plex.tv register failed", "err", err)
 	}
 	for {
@@ -195,7 +218,7 @@ func RunRegistrationLoop(ctx context.Context, uuid, token, hostIP string, httpPo
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if err := RegisterDevice(uuid, token, hostIP, httpPort, deviceName); err != nil {
+			if err := RegisterDevice(uuid, token, hostIP, httpPort, deviceName, version); err != nil {
 				slog.Warn("plex.tv register failed", "err", err)
 			}
 		}

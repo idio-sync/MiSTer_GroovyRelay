@@ -345,7 +345,7 @@ func runLinkFlow(sec *config.Sectioned, store *plex.StoredData) {
 		plexCfg.DeviceName = "MiSTer"
 	}
 
-	pin, err := plex.RequestPIN(store.DeviceUUID, plexCfg.DeviceName)
+	pin, err := plex.RequestPIN(store.DeviceUUID, plexCfg.DeviceName, version)
 	if err != nil {
 		slog.Error("pin request", "err", err)
 		os.Exit(1)

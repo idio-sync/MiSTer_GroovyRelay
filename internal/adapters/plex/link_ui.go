@@ -163,7 +163,7 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	deviceUUID := a.cfg.TokenStore.DeviceUUID // TokenStore non-nil (NewAdapter)
 	deviceName := a.snapshotCfg().DeviceName
 
-	pin, err := RequestPIN(deviceUUID, deviceName)
+	pin, err := RequestPIN(deviceUUID, deviceName, a.cfg.Version)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("plex.tv unreachable: %v", err), http.StatusServiceUnavailable)
 		return
