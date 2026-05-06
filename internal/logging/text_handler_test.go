@@ -172,3 +172,25 @@ func TestTextHandler_WithGroup(t *testing.T) {
 		}
 	}
 }
+
+// TestTextHandler_NoNewlinesInValues asserts a multi-line attr value is
+// rendered as a single line — newlines escaped, single trailing \n.
+func TestTextHandler_NoNewlinesInValues(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: false})
+
+	rec := slog.NewRecord(fixedTime(), slog.LevelError, "boom", 0)
+	rec.AddAttrs(slog.String("err", "line1\nline2\rline3"))
+
+	if err := h.Handle(t.Context(), rec); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	got := buf.String()
+	if strings.Count(got, "\n") != 1 {
+		t.Errorf("expected exactly one trailing newline; got %q", got)
+	}
+	if !strings.Contains(got, `line1\nline2\rline3`) {
+		t.Errorf("newlines should be escaped to literal \\n / \\r; got %q", got)
+	}
+}

@@ -93,7 +93,7 @@ func (h *TextHandler) Handle(_ context.Context, r slog.Record) error {
 		b.WriteString("  ")
 		b.WriteString(stylize(h.opts.color, ansiDim, a.key))
 		b.WriteString("=")
-		val := a.value.String()
+		val := safeValue(a.value.String())
 		if a.key == "err" || strings.HasSuffix(a.key, ".err") {
 			val = stylize(h.opts.color, ansiRed, val)
 		}
@@ -105,7 +105,7 @@ func (h *TextHandler) Handle(_ context.Context, r slog.Record) error {
 		b.WriteString("  ")
 		b.WriteString(stylize(h.opts.color, ansiDim, key))
 		b.WriteString("=")
-		val := a.Value.String()
+		val := safeValue(a.Value.String())
 		if a.Key == "err" || strings.HasSuffix(key, ".err") {
 			val = stylize(h.opts.color, ansiRed, val)
 		}
@@ -154,6 +154,18 @@ func levelTag(l slog.Level) string {
 	default:
 		return "dbg "
 	}
+}
+
+// safeValue replaces newlines and carriage returns with literal escape
+// strings so a multi-line value can't break the one-record-per-line
+// invariant. Other control bytes are passed through — slog values are
+// already string-formatted by the time we see them.
+func safeValue(s string) string {
+	if !strings.ContainsAny(s, "\n\r") {
+		return s
+	}
+	r := strings.NewReplacer("\n", `\n`, "\r", `\r`)
+	return r.Replace(s)
 }
 
 // humanizeMessage capitalizes the first letter of the supplied message.
