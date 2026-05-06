@@ -64,6 +64,13 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV MISTER_GROOVY_CONFIG=/config/config.toml
 ENV MISTER_GROOVY_RUNTIME=docker
+# Docker stdout is a pipe, not a TTY, so the auto-detect in logging.New
+# would default to JSON. Force the human-readable text handler — color
+# is still suppressed automatically because isTerminal=false, so
+# `docker logs` output is plain text without ANSI noise. Override with
+# `-e MISTER_GROOVY_LOG_FORMAT=json` to keep the strict-JSON shape for
+# log aggregation pipelines.
+ENV MISTER_GROOVY_LOG_FORMAT=text
 # /config/config.toml is auto-created from the embedded example on first
 # run when missing — no COPY here. A COPY into /config would be shadowed
 # by the operator's bind mount anyway.

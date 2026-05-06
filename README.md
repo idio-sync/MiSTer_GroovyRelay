@@ -68,6 +68,8 @@ docker run --rm -it --network=host \
 
 `--network=host` is required. The bridge needs a stable source UDP port (the MiSTer keys its session by sender `IP:port`) and it needs to receive the Plex GDM multicast on `239.0.0.250:32414`. Bridged Docker networking does not pass multicast and would rewrite the source port on every restart, neither is workable.
 
+The container defaults to the human-readable log handler so `docker logs mister-groovy-relay` is easy to skim. Pass `-e MISTER_GROOVY_LOG_FORMAT=json` if you scrape logs into an aggregator that expects strict JSON.
+
 ## Native builds
 
 Native archives are built for Windows, macOS, and Linux. On first run the
@@ -97,25 +99,6 @@ folder:
 ```bash
 xattr -dr com.apple.quarantine /path/to/mister-groovy-relay-folder
 ```
-
-## Console output
-
-When you launch the binary directly (Windows double-click, macOS Terminal,
-Linux shell), the bridge prints a friendly startup banner with the Web UI
-URL and emits human-readable log lines. When stdout is piped to a file,
-journald, or Docker's logging driver, the bridge instead emits structured
-JSON — the same shape it has always used — so existing log-aggregation
-pipelines keep working.
-
-Override via environment variables:
-
-| Variable | Effect |
-| --- | --- |
-| `MISTER_GROOVY_LOG_FORMAT` | `auto` (default), `text`, `text-plain` (text without color), or `json`. |
-| `NO_COLOR` | If set, disables ANSI color in text mode. |
-| `MISTER_GROOVY_NO_BANNER` | If `1`, suppresses the startup banner. |
-| `MISTER_GROOVY_BANNER` | If `1`, forces the banner in JSON mode (rare). |
-| `MISTER_GROOVY_NO_PAUSE` | If `1`, disables the Windows "Press Enter to close" pause on first-run / fatal-error exits. |
 
 ## URL adapter
 
