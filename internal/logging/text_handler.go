@@ -41,19 +41,56 @@ func (h *TextHandler) Enabled(_ context.Context, l slog.Level) bool {
 	return l >= h.level.Level()
 }
 
+// ANSI escape constants. We use bare strings instead of importing a
+// terminal-styling library so the binary stays dependency-light. The
+// stylize helper short-circuits when color is disabled.
+const (
+	ansiReset = "\x1b[0m"
+	ansiBold  = "\x1b[1m"
+	ansiDim   = "\x1b[2m"
+	ansiRed   = "\x1b[31m"
+	ansiGreen = "\x1b[32m"
+	ansiYellw = "\x1b[33m"
+)
+
+// stylize wraps s in code...reset when on is true; otherwise returns s.
+func stylize(on bool, code, s string) string {
+	if !on || s == "" {
+		return s
+	}
+	return code + s + ansiReset
+}
+
+func levelColor(l slog.Level) string {
+	switch {
+	case l >= slog.LevelError:
+		return ansiRed
+	case l >= slog.LevelWarn:
+		return ansiYellw
+	case l >= slog.LevelInfo:
+		return ansiGreen
+	default:
+		return ansiDim
+	}
+}
+
 func (h *TextHandler) Handle(_ context.Context, r slog.Record) error {
 	var b strings.Builder
-	b.WriteString(r.Time.Format("15:04:05"))
+	b.WriteString(stylize(h.opts.color, ansiDim, r.Time.Format("15:04:05")))
 	b.WriteString(" ")
-	b.WriteString(levelTag(r.Level))
+	b.WriteString(stylize(h.opts.color, levelColor(r.Level), levelTag(r.Level)))
 	b.WriteString("  ")
-	b.WriteString(humanizeMessage(r.Message))
+	b.WriteString(stylize(h.opts.color, ansiBold, humanizeMessage(r.Message)))
 
 	r.Attrs(func(a slog.Attr) bool {
 		b.WriteString("  ")
-		b.WriteString(a.Key)
+		b.WriteString(stylize(h.opts.color, ansiDim, a.Key))
 		b.WriteString("=")
-		b.WriteString(a.Value.String())
+		val := a.Value.String()
+		if a.Key == "err" {
+			val = stylize(h.opts.color, ansiRed, val)
+		}
+		b.WriteString(val)
 		return true
 	})
 

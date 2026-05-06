@@ -96,3 +96,42 @@ func TestTextHandler_RespectsLevelVar(t *testing.T) {
 		t.Error("Debug still disabled after SetLevel(debug)")
 	}
 }
+
+// TestTextHandler_ColorWrapsLevelAndMessage asserts that with color=true
+// the level tag is wrapped in the level's color escape and the message
+// in bold, while err= attr values get the red escape. With color=false
+// no escape bytes (\x1b[) appear at all.
+func TestTextHandler_ColorWrapsLevelAndMessage(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: true})
+
+	rec := slog.NewRecord(fixedTime(), slog.LevelError, "boom", 0)
+	rec.AddAttrs(slog.String("err", "kaboom"))
+	if err := h.Handle(t.Context(), rec); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "\x1b[") {
+		t.Errorf("expected ANSI escapes with color=true; got %q", got)
+	}
+	// Reset code at end of every styled span.
+	if !strings.Contains(got, "\x1b[0m") {
+		t.Errorf("expected reset code; got %q", got)
+	}
+}
+
+func TestTextHandler_NoColorLeavesPlainBytes(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTextHandler(&buf, &slog.LevelVar{}, textOptions{color: false})
+
+	rec := slog.NewRecord(fixedTime(), slog.LevelError, "boom", 0)
+	rec.AddAttrs(slog.String("err", "kaboom"))
+	if err := h.Handle(t.Context(), rec); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if strings.Contains(buf.String(), "\x1b[") {
+		t.Errorf("unexpected ANSI escape with color=false; got %q", buf.String())
+	}
+}
