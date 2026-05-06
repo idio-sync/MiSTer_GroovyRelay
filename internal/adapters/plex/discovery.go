@@ -100,5 +100,50 @@ func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 	d.conn.WriteToUDP([]byte(body), dst)
 }
 
+// interfaceForIP returns the network interface that owns the given IPv4
+// address. Side-effect free — reads system interface state via
+// net.Interfaces but does not mutate it and binds no sockets. Returns
+// an error for non-IPv4 input or when no interface owns the address.
+//
+// Used by NewDiscovery to make multicast egress deterministic on
+// multi-NIC hosts. GDM is udp4-only, so non-IPv4 input is a
+// configuration mistake worth surfacing rather than silently ignoring.
+func interfaceForIP(hostIP string) (*net.Interface, error) {
+	target := net.ParseIP(hostIP)
+	if target == nil {
+		return nil, fmt.Errorf("interfaceForIP: invalid IP %q", hostIP)
+	}
+	target = target.To4()
+	if target == nil {
+		return nil, fmt.Errorf("interfaceForIP: %q is not IPv4", hostIP)
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("interfaceForIP: enumerate interfaces: %w", err)
+	}
+	for i := range ifaces {
+		addrs, err := ifaces[i].Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			if ip.To4() != nil && ip.Equal(target) {
+				return &ifaces[i], nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("interfaceForIP: no interface owns %s", hostIP)
+}
+
 // Close releases the multicast socket; Run will return shortly after.
 func (d *Discovery) Close() error { return d.conn.Close() }

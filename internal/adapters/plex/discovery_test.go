@@ -74,3 +74,45 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 		t.Errorf("missing protocol header; got: %q", resp)
 	}
 }
+
+// TestInterfaceForIP_FindsLoopback exercises the happy path: 127.0.0.1
+// resolves to whichever interface the OS reports as loopback. Skipped on
+// systems whose interface enumeration omits the loopback (sandboxed CI,
+// some container runtimes) — verifying that case is platform-specific
+// and not what this helper is for.
+func TestInterfaceForIP_FindsLoopback(t *testing.T) {
+	iface, err := interfaceForIP("127.0.0.1")
+	if err != nil {
+		t.Skipf("loopback enumeration unavailable: %v", err)
+	}
+	if iface == nil {
+		t.Fatal("got nil interface")
+	}
+	if iface.Flags&net.FlagLoopback == 0 {
+		t.Errorf("expected loopback interface, got name=%q flags=%v", iface.Name, iface.Flags)
+	}
+}
+
+// TestInterfaceForIP_NotFound uses TEST-NET-3 (203.0.113.0/24, RFC 5737),
+// which is documentation-reserved and never assignable on real hosts.
+func TestInterfaceForIP_NotFound(t *testing.T) {
+	if _, err := interfaceForIP("203.0.113.99"); err == nil {
+		t.Fatal("expected error for unassigned IP, got nil")
+	}
+}
+
+// TestInterfaceForIP_RejectsIPv6 keeps the helper IPv4-only since GDM
+// is udp4. IPv6-only HostIP must fall back to nil-interface behavior in
+// the caller, not be used here.
+func TestInterfaceForIP_RejectsIPv6(t *testing.T) {
+	if _, err := interfaceForIP("::1"); err == nil {
+		t.Fatal("expected error for IPv6 address, got nil")
+	}
+}
+
+// TestInterfaceForIP_RejectsGarbage rejects strings that aren't IPs.
+func TestInterfaceForIP_RejectsGarbage(t *testing.T) {
+	if _, err := interfaceForIP("not-an-ip"); err == nil {
+		t.Fatal("expected error for invalid input, got nil")
+	}
+}
