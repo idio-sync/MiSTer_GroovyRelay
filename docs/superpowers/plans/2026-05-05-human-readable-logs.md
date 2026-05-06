@@ -735,11 +735,7 @@ func TestJSONHandler_MessageNotRewritten(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/logging/ -run "TestTextHandler_MessageRewrite|TestJSONHandler_MessageNotRewritten" -v`
-Expected: FAIL — table lookups, env-driven mode resolution don't exist yet. (The third test requires MISTER_GROOVY_LOG_FORMAT support, added in Task 6 — it should fail differently than the first two but will be green by Task 6's tests.)
-
-Note: the third test is marked failing intentionally now; it will pass after Task 6 lands. Comment it out for this task and uncomment in Task 6 if you'd rather keep tasks self-contained — but leaving it red until Task 6 is acceptable here since it's the same package and Task 6 follows immediately.
-
-For this task, **comment out** `TestJSONHandler_MessageNotRewritten` (wrap in `/* ... */`) and uncomment in Task 6 Step 1.
+Expected: FAIL on the two TextHandler tests (table lookups undefined). The `TestJSONHandler_MessageNotRewritten` test will *pass* even at this point because `New("info")` currently returns the JSON handler unconditionally, and the JSON handler never invokes the rewrite table — that test is forward-compatible with the Task 6 mode resolution. Leave it active.
 
 - [ ] **Step 3: Implement the rewrite table**
 
@@ -806,11 +802,7 @@ git commit -m "feat(logging): add message rewrite table to TextHandler"
 
 Replace `New` with logic that resolves a `mode` (text|json) and `color` (bool) from `MISTER_GROOVY_LOG_FORMAT`, `NO_COLOR`, and `term.IsTerminal(stdout)`, then constructs the matching handler. JSON path stays default for non-terminals — every existing test continues to see JSON.
 
-- [ ] **Step 1: Re-enable the JSONHandler-not-rewritten test**
-
-In `internal/logging/text_handler_test.go`, remove the `/* ... */` wrap around `TestJSONHandler_MessageNotRewritten` so it runs again.
-
-- [ ] **Step 2: Add resolution tests to `internal/logging/logging_test.go`**
+- [ ] **Step 1: Add resolution tests to `internal/logging/logging_test.go`**
 
 Append to `internal/logging/logging_test.go`:
 
@@ -893,12 +885,12 @@ func TestResolveMode_ExplicitText(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/logging/ -run "TestResolveMode|TestJSONHandler_MessageNotRewritten" -v`
 Expected: FAIL — `resolveMode`, `logModeText`, `logModeJSON` undefined.
 
-- [ ] **Step 4: Replace `logging.go` with mode-resolving version**
+- [ ] **Step 3: Replace `logging.go` with mode-resolving version**
 
 Replace the contents of `internal/logging/logging.go` with:
 
@@ -1035,7 +1027,7 @@ func parseLevel(level string) slog.Level {
 }
 ```
 
-- [ ] **Step 5: Add a stub `enableWindowsVT` so the package compiles**
+- [ ] **Step 4: Add a stub `enableWindowsVT` so the package compiles**
 
 Create `internal/logging/logging_vt_other.go`:
 
@@ -1060,17 +1052,17 @@ package logging
 func enableWindowsVT() {}
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./internal/logging/... -race -v`
 Expected: PASS — all logging tests, including resolveMode + JSONHandler-not-rewritten.
 
-- [ ] **Step 7: Run vet on the whole repo**
+- [ ] **Step 6: Run vet on the whole repo**
 
 Run: `go vet ./...`
 Expected: PASS — no diagnostics.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```powershell
 git add internal/logging/logging.go internal/logging/logging_test.go internal/logging/text_handler_test.go internal/logging/logging_vt_windows.go internal/logging/logging_vt_other.go
@@ -1193,10 +1185,11 @@ func TestGreetingFor_IncludesURLAndAdapters(t *testing.T) {
 	}
 }
 
-// TestGreetingFor_OmitsLocalhostWhenNoHostIP asserts the LAN-IP line is
-// dropped if hostIP is empty (offline host with no default route — the
-// existing fallback path in main.go).
-func TestGreetingFor_OmitsLocalhostWhenNoHostIP(t *testing.T) {
+// TestGreetingFor_LocalhostOnlyWhenNoHostIP asserts the LAN-IP line is
+// dropped (offline host with no default route — the existing fallback
+// path in main.go) but localhost is still printed so the user has a
+// reachable URL.
+func TestGreetingFor_LocalhostOnlyWhenNoHostIP(t *testing.T) {
 	out := greetingFor("1.0.0", "", 32500, nil)
 	if strings.Contains(out, "http://:32500") {
 		t.Errorf("malformed URL leaked in: %q", out)
@@ -1332,10 +1325,11 @@ func greetingFor(version, hostIP string, port int, statuses []adapterStatus) str
 			if !s.enabled {
 				state = "disabled"
 			}
-			pad := strings.Repeat(" ", 18-len(s.display))
-			if pad == "" {
-				pad = "  "
+			n := 18 - len(s.display)
+			if n < 2 {
+				n = 2
 			}
+			pad := strings.Repeat(" ", n)
 			if first {
 				fmt.Fprintf(&b, "  %s%s%s\n", s.display, pad, state)
 				first = false
@@ -1356,14 +1350,19 @@ func greetingFor(version, hostIP string, port int, statuses []adapterStatus) str
 	return b.String()
 }
 
-// die wraps a fatal startup error with a friendly console message and
-// (on Windows) a "Press Enter to close" pause so the user can read it
-// before the console window slams shut. Always exits with code 1.
+// dieFriendly wraps a fatal startup error with a friendly console
+// message and (on Windows) a "Press Enter to close" pause so the user
+// can read it before the console window slams shut. Always exits with
+// code 1.
 //
 // Wired in main() at the 11 sites listed in the design spec — every
-// os.Exit(1) reachable before httpSrv.Serve(ln).
-func die(title string, err error) {
-	slog.Error(title, "err", err)
+// os.Exit(1) reachable before httpSrv.Serve(ln). Extra structured
+// attrs follow the slog convention (key, value, key, value, ...) and
+// are emitted with the slog.Error record so the JSON stream keeps the
+// per-site context (e.g. adapter name) the prior code carried.
+func dieFriendly(title string, err error, attrs ...any) {
+	args := append([]any{"err", err}, attrs...)
+	slog.Error(title, args...)
 	fmt.Fprintf(os.Stderr, "\nError: %s.\n  %v\n", title, err)
 	waitForEnterOnWindows()
 	os.Exit(1)
@@ -1483,7 +1482,7 @@ Expected: PASS.
 - [ ] **Step 3: Test the existing tests still pass**
 
 Run: `go test ./cmd/mister-groovy-relay/ -v`
-Expected: PASS — banner tests don't invoke the pause gate (they call `printGreeting`, not `die`).
+Expected: PASS — banner tests don't invoke the pause gate (they call `printGreeting`, not `dieFriendly`).
 
 Note: We don't unit-test `waitForEnterOnWindows` directly. The opt-out conditions all return early without I/O, and the actually-blocks-on-stdin path is intentionally interactive — a manual smoke at deploy time covers it.
 
@@ -1501,13 +1500,11 @@ git commit -m "feat(cli): add Windows console pause gate for fatal errors"
 **Files:**
 - Modify: `cmd/mister-groovy-relay/main.go`
 
-Replace `ListenAndServe` in goroutine with `net.Listen` on main + `Serve` in goroutine. Wrap the 11 listed `slog.Error; os.Exit(1)` blocks with `die()`. Replace the first-run stderr line with `firstRunMessage()`. Call `printGreeting()` after the listener is bound.
+Replace `ListenAndServe` in goroutine with `net.Listen` on main + `Serve` in goroutine. Wrap the 11 listed `slog.Error; os.Exit(1)` blocks with `dieFriendly()`. Replace the first-run stderr line with `firstRunMessage()`. Call `printGreeting()` after the listener is bound.
 
 - [ ] **Step 1: Read main.go to confirm line numbers haven't drifted**
 
-Run: `go run -h` no, just open the file:
-
-Read `cmd/mister-groovy-relay/main.go`. Confirm the 11 sites listed in the spec still line up; if a prior commit shifted them, update the substitutions accordingly.
+Read `cmd/mister-groovy-relay/main.go`. Locate the 11 sites by their `slog.Error("<title>", ...)` call rather than by line number, since prior commits may have shifted line numbers. Use the title strings listed in Step 3 (`load config`, `data_dir preflight`, etc.) to find each call site.
 
 - [ ] **Step 2: Apply the first-run message replacement**
 
@@ -1534,41 +1531,34 @@ Replace with:
 		}
 ```
 
-- [ ] **Step 3: Replace each fatal-exit site with `die()`**
+- [ ] **Step 3: Replace each fatal-exit site with `dieFriendly()`**
 
-For each of the 11 sites, replace the two-line `slog.Error(title, "err", err); os.Exit(1)` with `die(title, err)`. The 11 sites in `cmd/mister-groovy-relay/main.go` (from spec; verify line by line in the actual file):
+For each of the 11 sites, replace the two-line `slog.Error(title, ...); os.Exit(1)` with `dieFriendly(title, err, extraAttrs...)`. The 11 sites:
 
-| Line | Title |
+| Title | Extra attrs |
 | --- | --- |
-| ~67 | `load config` |
-| ~71 | `data_dir preflight` |
-| ~97 | `save stored data` |
-| ~122 | `sender init` |
-| ~167 | `plex adapter init` |
-| ~171 | `registry register plex` |
-| ~183 | `url adapter init` |
-| ~187 | `registry register url` |
-| ~196 | `registry register jellyfin` |
-| ~203 | `adapter DecodeConfig` |
-| ~235 | `ui init` |
+| `load config` | none |
+| `data_dir preflight` | none |
+| `save stored data` | none |
+| `sender init` | none |
+| `plex adapter init` | none |
+| `registry register plex` | none |
+| `url adapter init` | none |
+| `registry register url` | none |
+| `registry register jellyfin` | none |
+| `adapter DecodeConfig` | `"name", a.Name()` |
+| `ui init` | none |
 
-Note: at site ~203 (`adapter DecodeConfig`), the `slog.Error` call has three keys (`name`, `err`); preserve the structured log by inlining the `slog.Error` call before `die`. For consistency, replace all 11 sites with the two-line pattern:
-
-For sites with only an `err` key:
+Substitution for sites with only `err`:
 ```go
 		// before:
 		slog.Error("title", "err", err)
 		os.Exit(1)
 		// after:
-		die("title", err)
+		dieFriendly("title", err)
 ```
 
-For the `adapter DecodeConfig` site (and any other site with extra keys), keep its existing `slog.Error(...)` call **before** `die` so the structured fields survive in JSON mode, then replace `os.Exit(1)` with `die("adapter DecodeConfig", err)` — but `die` will emit a *second* slog.Error. To avoid double-logging, add a variant `dieSilent(title string, err error)` that skips the slog call; or, simpler: just call `die` and accept one extra log line. Simpler is fine.
-
-Recommended: just use `die(title, err)` everywhere. The `name` key on the DecodeConfig site is already in the line above; one extra ERR line is acceptable for a fatal-exit path.
-
-Concrete substitution for the DecodeConfig site:
-
+Substitution for the `adapter DecodeConfig` site (extra `name` attr):
 ```go
 		// before:
 		if err := a.DecodeConfig(raw, sec.MetaData()); err != nil {
@@ -1577,16 +1567,57 @@ Concrete substitution for the DecodeConfig site:
 		}
 		// after:
 		if err := a.DecodeConfig(raw, sec.MetaData()); err != nil {
-			slog.Error("adapter DecodeConfig", "name", a.Name(), "err", err)
-			die("adapter DecodeConfig", err)
+			dieFriendly("adapter DecodeConfig", err, "name", a.Name())
 		}
 ```
 
-This preserves the `name` field in JSON and still routes through `die` for the friendly message + Windows pause.
+`dieFriendly` is variadic — extra attrs become the trailing key/value pairs on the single `slog.Error` record, so JSON output preserves the `name` field with no double-logging.
 
-- [ ] **Step 4: Replace ListenAndServe with listen-then-serve**
+- [ ] **Step 4: Add `IsTextMode` to logging.go (caches mode at New() time)**
 
-Find:
+The greeter needs to know whether the resolved log mode is text. We cache the resolution in a package-level var at `New()` time so `IsTextMode` returns a stable answer even if env changes after startup (a latent footgun otherwise).
+
+In `internal/logging/logging.go`, add a package-level var below `levelVar`:
+
+```go
+// resolvedMode captures the mode picked by the most recent New() call.
+// IsTextMode reads it. Cached (rather than re-resolving from env) so
+// the banner gate can't drift from the actual handler choice if env
+// changes between startup and greeter invocation.
+var resolvedMode logMode
+```
+
+Update `New` to set it:
+
+```go
+func New(level string) *slog.Logger {
+	levelVar.Set(parseLevel(level))
+	mode, color := resolveMode(stdoutIsTerminal())
+	resolvedMode = mode
+
+	if mode == logModeText {
+		enableWindowsVT()
+	}
+
+	h := pickHandler(newHandlerWriter, mode, color)
+	return slog.New(h)
+}
+```
+
+Append `IsTextMode`:
+
+```go
+// IsTextMode reports whether the most recent New() call resolved to
+// text output. Used by the greeter in cmd/mister-groovy-relay to gate
+// banner printing without re-implementing the env/TTY rules.
+func IsTextMode() bool {
+	return resolvedMode == logModeText
+}
+```
+
+- [ ] **Step 5: Replace ListenAndServe with listen-then-serve and call greeter**
+
+In `cmd/mister-groovy-relay/main.go`, find:
 
 ```go
 	addr := fmt.Sprintf(":%d", sec.Bridge.UI.HTTPPort)
@@ -1619,7 +1650,7 @@ Replace with:
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		die("http listener bind", err)
+		dieFriendly("http listener bind", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -1640,31 +1671,10 @@ Then, after the adapter Start loop and before `<-ctx.Done()`, insert the greeter
 	// Greeter prints once after the listener is bound and adapters are
 	// started. Suppressed in JSON mode by default (see banner.go) so
 	// log aggregators receive a clean strict-JSON stream.
-	printGreeting(isTextMode(*logLevel), version, hostIP, sec.Bridge.UI.HTTPPort, reg)
-```
-
-- [ ] **Step 5: Add `isTextMode` helper at the bottom of main.go**
-
-The greeter needs to know whether the resolved log mode is text. Rather than re-reading env in main, expose a tiny helper from `internal/logging`:
-
-In `internal/logging/logging.go`, append:
-
-```go
-// IsTextMode reports whether the most recent New() call resolved to
-// text output. Used by the greeter in cmd/mister-groovy-relay to gate
-// banner printing without re-implementing the env/TTY rules.
-func IsTextMode() bool {
-	mode, _ := resolveMode(stdoutIsTerminal())
-	return mode == logModeText
-}
-```
-
-In `cmd/mister-groovy-relay/main.go`, replace the `isTextMode(*logLevel)` call with `logging.IsTextMode()` and remove the placeholder helper (it's not needed). Also add the `logging` import if not present — it should already be there.
-
-Final greeter call:
-```go
 	printGreeting(logging.IsTextMode(), version, hostIP, sec.Bridge.UI.HTTPPort, reg)
 ```
+
+The `logging` import is already present in main.go.
 
 - [ ] **Step 6: Run vet + tests**
 
@@ -1715,46 +1725,47 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"io"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 // TestStrictJSONStdout starts the bridge with MISTER_GROOVY_LOG_FORMAT=json,
-// captures ~1s of stdout, and asserts every line is valid JSON. Regression
-// guard for the spec's "Docker / journald / piped output keeps strict
-// JSON" promise — catches a future PR that accidentally fmt.Println's
-// banner output to stdout regardless of mode.
+// captures ~1.5s of stdout, and asserts every line is valid JSON.
+// Regression guard for the spec's "Docker / journald / piped output keeps
+// strict JSON" promise — catches a future PR that accidentally
+// fmt.Println's banner output to stdout regardless of mode.
 func TestStrictJSONStdout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping in -short mode")
 	}
 
 	// Build the bridge into a temp dir so we don't depend on a prior
-	// `make build`. Skip if go isn't on PATH (CI: it always is).
+	// `make build`. Append .exe on Windows so exec.Command can locate it.
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "mister-groovy-relay")
-	if exec.Command("go", "build", "-o", bin, "./cmd/mister-groovy-relay").Run() != nil {
-		t.Skip("go build failed")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, "./cmd/mister-groovy-relay").CombinedOutput(); err != nil {
+		t.Skipf("go build failed: %v\n%s", err, out)
 	}
 
-	// Use a temp config dir so we trigger first-run-or-load without
-	// touching the user's real config. The bridge will exit-code-2 with
-	// a first-run message because bridge.mister.host is empty in the
-	// auto-created default. That's fine — we just need ~1 second of
-	// stdout from before the exit, and we capture it via the pipe.
+	// Pre-create a minimal valid config so the bridge boots to the
+	// listener. mister.host = 127.0.0.1 + an arbitrary high port that
+	// nothing listens on — the bridge doesn't validate MiSTer
+	// reachability at startup. data_dir = the temp dir so no state
+	// leaks into the user's home directory. http_port = 32599 because
+	// internal/config.validPort rejects 0.
+	dataDir := t.TempDir()
 	cfgDir := t.TempDir()
 	configPath := filepath.Join(cfgDir, "config.toml")
-
-	// Pre-create a minimal valid config so the bridge actually boots
-	// to the listener. mister.host = 127.0.0.1 + a high port that
-	// nothing listens on; the bridge doesn't need a reachable MiSTer
-	// to start serving HTTP.
-	if err := os.WriteFile(configPath, []byte(minimalConfig()), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(minimalConfig(dataDir)), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -1762,7 +1773,7 @@ func TestStrictJSONStdout(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "--config", configPath, "--log-level", "info")
-	cmd.Env = append(os.Environ(), "MISTER_GROOVY_LOG_FORMAT=json", "MISTER_GROOVY_NO_BANNER=")
+	cmd.Env = append(os.Environ(), "MISTER_GROOVY_LOG_FORMAT=json")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1807,16 +1818,15 @@ func TestStrictJSONStdout(t *testing.T) {
 			t.Errorf("line %d not valid JSON: %v\nline: %q", i, err, line)
 		}
 	}
-	_ = io.EOF // silence unused import if scanner is the only reader
 }
 
 // minimalConfig returns the smallest config.toml that lets the bridge
 // boot to the HTTP listener stage. mister.host can be unreachable;
-// the bridge doesn't validate connectivity at startup.
-func minimalConfig() string {
-	return `
+// http_port must be a valid TCP port (validPort rejects 0).
+func minimalConfig(dataDir string) string {
+	return fmt.Sprintf(`
 [bridge]
-data_dir = ""
+data_dir = %q
 
 [bridge.mister]
 host = "127.0.0.1"
@@ -1824,7 +1834,7 @@ port = 32100
 source_port = 32101
 
 [bridge.ui]
-http_port = 0
+http_port = 32599
 
 [adapters.plex]
 enabled = false
@@ -1834,7 +1844,7 @@ enabled = false
 
 [adapters.jellyfin]
 enabled = false
-`
+`, dataDir)
 }
 ```
 
@@ -1923,7 +1933,7 @@ git commit -m "docs: document log-format and banner env vars"
 
 - [ ] **No placeholders:** every code block in this plan is a complete, copy-pasteable change.
 
-- [ ] **Type consistency:** `textOptions`, `logMode`, `logModeText`, `logModeJSON`, `printGreeting`, `printGreetingTo`, `greetingFor`, `adapterStatus`, `die`, `firstRunMessage`, `waitForEnterOnWindows`, `enableWindowsVT`, `IsTextMode` — all referenced consistently across tasks.
+- [ ] **Type consistency:** `textOptions`, `logMode`, `logModeText`, `logModeJSON`, `resolvedMode`, `printGreeting`, `printGreetingTo`, `greetingFor`, `adapterStatus`, `dieFriendly`, `firstRunMessage`, `waitForEnterOnWindows`, `enableWindowsVT`, `IsTextMode` — all referenced consistently across tasks.
 
 - [ ] **Final full-suite green:** after Task 12, run:
   ```powershell
