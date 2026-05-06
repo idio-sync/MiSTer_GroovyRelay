@@ -477,3 +477,22 @@ func TestSenderBindFor_FallsBackOnIPv6(t *testing.T) {
 		t.Errorf("iface = %v; want nil", iface)
 	}
 }
+
+// TestDiscovery_CloseIdempotent ensures a second Close is a safe no-op.
+// Without sync.Once, closing the d.stop channel twice would panic
+// "close of closed channel".
+func TestDiscovery_CloseIdempotent(t *testing.T) {
+	cfg := DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500}
+	d, err := NewDiscovery(cfg)
+	if err != nil {
+		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
+	}
+
+	if err := d.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	// Second Close must not panic and must not return an error.
+	if err := d.Close(); err != nil {
+		t.Errorf("second Close returned err: %v", err)
+	}
+}

@@ -263,14 +263,23 @@ func senderBindFor(hostIP string) (addr string, iface *net.Interface) {
 
 // Close signals the heartbeat goroutine to stop, waits for it to exit,
 // then releases the listen and sender sockets. Run will return shortly
-// after the listen socket closes. Idempotency lands in a later task.
+// after the listen socket closes. Idempotent via sync.Once: calling
+// Close more than once is a safe no-op that returns the original error
+// (or nil) from the first invocation. This matters because some
+// teardown sequences (adapter Stop + deferred test cleanup) can fire
+// Close twice; without sync.Once the second close(d.stop) would panic
+// "close of closed channel".
 func (d *Discovery) Close() error {
-	close(d.stop)
-	d.wg.Wait()
-	listenErr := d.listen.Close()
-	senderErr := d.sender.Close()
-	if listenErr != nil {
-		return listenErr
-	}
-	return senderErr
+	d.closeOnce.Do(func() {
+		close(d.stop)
+		d.wg.Wait()
+		listenErr := d.listen.Close()
+		senderErr := d.sender.Close()
+		if listenErr != nil {
+			d.closeErr = listenErr
+			return
+		}
+		d.closeErr = senderErr
+	})
+	return d.closeErr
 }
