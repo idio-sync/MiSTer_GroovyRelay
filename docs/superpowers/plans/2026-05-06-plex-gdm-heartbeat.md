@@ -223,20 +223,29 @@ func (f *fakeWriter) snapshot() []writeRecord {
 // On Windows, sending unicast from a multicast-joined socket is
 // fragile; this test pins the post-refactor behavior so a future change
 // can't silently regress to one-socket.
+//
+// We construct Discovery directly via its struct fields (same package,
+// so unexported fields are accessible) rather than going through
+// NewDiscovery. That way the fake sender is wired in BEFORE Run starts —
+// no goroutine race, no real multicast bind, no flake on hosts where
+// 32412 is held by a real Plex client.
 func TestDiscovery_RepliesViaSenderNotListener(t *testing.T) {
-	cfg := DiscoveryConfig{DeviceName: "MiSTer-Test", DeviceUUID: "uuid-z", HTTPPort: 32500}
-	d, err := NewDiscovery(cfg)
+	listen, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
-		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
+		t.Fatalf("listen UDP: %v", err)
 	}
-	defer d.Close()
+	defer listen.Close()
 
-	// Replace sender with a counting fake. Closing the original sender
-	// is fine — NewDiscovery's startup HELLO has already executed.
 	fake := &fakeWriter{}
-	_ = d.sender.Close()
-	d.sender = fake
-
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-z",
+			HTTPPort:   32500,
+		},
+		listen: listen,
+		sender: fake,
+	}
 	go d.Run()
 
 	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -244,7 +253,7 @@ func TestDiscovery_RepliesViaSenderNotListener(t *testing.T) {
 		t.Fatalf("client listen: %v", err)
 	}
 	defer client.Close()
-	target := d.listen.LocalAddr().(*net.UDPAddr)
+	target := listen.LocalAddr().(*net.UDPAddr)
 	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: target.Port}
 	if _, err := client.WriteToUDP([]byte("M-SEARCH * HTTP/1.1\r\n\r\n"), dst); err != nil {
 		t.Fatalf("write M-SEARCH: %v", err)
@@ -456,24 +465,32 @@ Append to `internal/adapters/plex/discovery_test.go`:
 
 ```go
 // TestDiscovery_HelloHeartbeatRepeats proves HELLO is sent on a ticker,
-// not just once at startup. Uses the packetWriter test seam — no real
-// multicast delivery — so the test is deterministic on every platform.
+// not just once at startup. Constructs Discovery directly via struct
+// fields and starts only the heartbeat goroutine — no real multicast
+// listener bound, no socket-creation race, no flake on hosts where
+// 32412 is held by a real Plex client.
 func TestDiscovery_HelloHeartbeatRepeats(t *testing.T) {
 	// Shorten the heartbeat interval. Restored by t.Cleanup.
 	prev := helloInterval
 	helloInterval = 50 * time.Millisecond
 	t.Cleanup(func() { helloInterval = prev })
 
-	cfg := DiscoveryConfig{DeviceName: "MiSTer-Test", DeviceUUID: "uuid-h", HTTPPort: 32500}
-	d, err := NewDiscovery(cfg)
-	if err != nil {
-		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
-	}
-	defer d.Close()
-
 	fake := &fakeWriter{}
-	_ = d.sender.Close()
-	d.sender = fake
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-h",
+			HTTPPort:   32500,
+		},
+		sender: fake,
+		stop:   make(chan struct{}),
+	}
+	d.wg.Add(1)
+	go d.runHeartbeat()
+	t.Cleanup(func() {
+		close(d.stop)
+		d.wg.Wait()
+	})
 
 	// Wait long enough for ~4 heartbeat ticks plus startup margin.
 	deadline := time.Now().Add(300 * time.Millisecond)
@@ -506,7 +523,7 @@ func countHellos(writes []writeRecord) int {
 go test ./internal/adapters/plex/... -run TestDiscovery_HelloHeartbeatRepeats -v
 ```
 
-Expected: build error (`undefined: helloInterval`) or test failure (`expected >=3 HELLO writes, got 0` because the startup HELLO went to the original sender, not the fake; subsequent ticks don't exist yet).
+Expected: build error (`undefined: helloInterval`, `undefined: runHeartbeat`, or `undefined: d.stop` / `d.wg`) — the heartbeat goroutine and its supporting fields don't exist yet.
 
 - [ ] **Step 3: Add the heartbeat goroutine**
 
@@ -540,7 +557,7 @@ type Discovery struct {
 }
 ```
 
-Modify `NewDiscovery` to initialize `stop` and start the heartbeat goroutine before returning:
+Modify `NewDiscovery` to initialize `stop` and start the heartbeat goroutine before returning. **Crucially**, the initial HELLO send is now best-effort — failure logs WARN and the heartbeat ticker will retry on its next cycle. The previous behavior (abort `NewDiscovery` if the very first multicast send fails) needlessly disabled GDM on hosts where the first send happened to fail transiently:
 
 ```go
 func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
@@ -560,18 +577,19 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 		sender: sender.(*net.UDPConn),
 		stop:   make(chan struct{}),
 	}
-	if err := d.sendHello(); err != nil {
-		d.Close()
-		return nil, err
-	}
+	// Initial HELLO is best-effort: a transient send failure here
+	// (e.g. NIC just came up) shouldn't disable GDM entirely. The
+	// heartbeat goroutine retries on the next tick. sendHello logs
+	// WARN on failure (added in Task 4 below).
+	_ = d.sendHello()
 	d.wg.Add(1)
 	go d.runHeartbeat()
 	return d, nil
 }
 
 // runHeartbeat re-broadcasts HELLO on the helloInterval cadence until
-// Close signals stop. Send errors are ignored here; surfacing them as
-// WARN logs is a separate task in this plan.
+// Close signals stop. Send errors propagate through sendHello's WARN
+// logging (Task 4 below).
 func (d *Discovery) runHeartbeat() {
 	defer d.wg.Done()
 	t := time.NewTicker(helloInterval)
@@ -631,10 +649,121 @@ git commit -m "feat(plex): broadcast GDM HELLO on a 30s heartbeat"
 
 **Files:**
 - Modify: `internal/adapters/plex/discovery.go`
+- Modify: `internal/adapters/plex/discovery_test.go`
 
-Both `sendHello` and `respondToMSearch` currently discard `WriteTo` errors. Replace the silent drops with `slog.Warn` lines so an operator can diagnose a broken LAN segment from logs alone. No new test — this is a logging change verified by code inspection. (A test that captures `slog` output is feasible but disproportionate.)
+Both `sendHello` and `respondToMSearch` currently discard `WriteTo` errors. Replace the silent drops with `slog.Warn` lines so an operator can diagnose a broken LAN segment from logs alone. Pin the WARN behavior with a deterministic `slog`-capture test so a future cleanup can't silently revert it.
 
-- [ ] **Step 1: Update `sendHello`**
+- [ ] **Step 1: Write the failing tests**
+
+Append to `internal/adapters/plex/discovery_test.go`:
+
+```go
+// erroringWriter is a packetWriter that always returns the configured
+// error from WriteTo. Used to drive the WARN-logging path.
+type erroringWriter struct {
+	err error
+}
+
+func (e *erroringWriter) WriteTo(_ []byte, _ net.Addr) (int, error) { return 0, e.err }
+func (e *erroringWriter) Close() error                              { return nil }
+
+// capturingHandler records every slog Record passed through it. Used
+// to assert WARN lines fire on send failure without coupling to the
+// production handler's text/JSON shape.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []capturedRecord
+}
+
+type capturedRecord struct {
+	level slog.Level
+	msg   string
+	attrs map[string]string
+}
+
+func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cr := capturedRecord{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+	r.Attrs(func(a slog.Attr) bool {
+		cr.attrs[a.Key] = fmt.Sprint(a.Value.Any())
+		return true
+	})
+	h.records = append(h.records, cr)
+	return nil
+}
+func (h *capturingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *capturingHandler) hasWarnContaining(msgSubstr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.level == slog.LevelWarn && strings.Contains(r.msg, msgSubstr) {
+			return true
+		}
+	}
+	return false
+}
+
+// installCapturingSlog swaps the default slog handler for a capturing
+// one and restores it via t.Cleanup. Returned handler is the snapshot
+// target.
+func installCapturingSlog(t *testing.T) *capturingHandler {
+	t.Helper()
+	cap := &capturingHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(cap))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return cap
+}
+
+// TestDiscovery_HelloSendFailureLogsWarn pins the WARN-on-send-error
+// path for the heartbeat. Triggers sendHello directly with an
+// erroringWriter — no goroutine, no socket, no race.
+func TestDiscovery_HelloSendFailureLogsWarn(t *testing.T) {
+	cap := installCapturingSlog(t)
+
+	d := &Discovery{
+		cfg:    DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500},
+		sender: &erroringWriter{err: errors.New("simulated send failure")},
+	}
+	if err := d.sendHello(); err == nil {
+		t.Error("expected sendHello to surface error from sender")
+	}
+	if !cap.hasWarnContaining("HELLO send failed") {
+		t.Error("expected WARN log containing 'HELLO send failed'")
+	}
+}
+
+// TestDiscovery_ReplySendFailureLogsWarn pins the WARN-on-send-error
+// path for the M-SEARCH reply.
+func TestDiscovery_ReplySendFailureLogsWarn(t *testing.T) {
+	cap := installCapturingSlog(t)
+
+	d := &Discovery{
+		cfg:    DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500},
+		sender: &erroringWriter{err: errors.New("simulated reply failure")},
+	}
+	d.respondToMSearch(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345})
+	if !cap.hasWarnContaining("M-SEARCH reply send failed") {
+		t.Error("expected WARN log containing 'M-SEARCH reply send failed'")
+	}
+}
+```
+
+You'll need to add `"context"`, `"errors"`, `"fmt"`, and `"log/slog"` to the test file imports if not already present.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```powershell
+go test ./internal/adapters/plex/... -run "TestDiscovery_(Hello|Reply)SendFailureLogsWarn" -v
+```
+
+Expected: tests fail (no WARN log because the production code currently swallows errors silently).
+
+- [ ] **Step 3: Update `sendHello`**
 
 In `internal/adapters/plex/discovery.go`, replace the body of `sendHello`:
 
@@ -652,7 +781,7 @@ func (d *Discovery) sendHello() error {
 }
 ```
 
-- [ ] **Step 2: Update `respondToMSearch`**
+- [ ] **Step 4: Update `respondToMSearch`**
 
 Replace the trailing write line (currently `_, _ = d.sender.WriteTo([]byte(body), dst)`) with:
 
@@ -665,30 +794,40 @@ Replace the trailing write line (currently `_, _ = d.sender.WriteTo([]byte(body)
 	}
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **Step 5: Run tests to verify they pass**
+
+```powershell
+go test ./internal/adapters/plex/... -run "TestDiscovery_(Hello|Reply)SendFailureLogsWarn" -v
+```
+
+Expected: PASS.
+
+Run the whole `TestDiscovery_*` suite to confirm no regressions:
 
 ```powershell
 go test ./internal/adapters/plex/... -run TestDiscovery -v
 ```
 
-Expected: all PASS. The fake `packetWriter` returns `nil` from `WriteTo` so no WARN lines fire in tests.
+All PASS. The benign `fakeWriter` returns `nil` from `WriteTo` so non-error tests don't fire WARN lines and are unaffected.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```powershell
-git add internal/adapters/plex/discovery.go
+git add internal/adapters/plex/discovery.go internal/adapters/plex/discovery_test.go
 git commit -m "feat(plex): surface GDM send errors as WARN logs"
 ```
 
 ---
 
-## Task 5: `HostIP` field + sender bind to `HostIP`
+## Task 5: `HostIP` field + interface-aware listen + sender bind
 
 **Files:**
 - Modify: `internal/adapters/plex/discovery.go`
 - Modify: `internal/adapters/plex/discovery_test.go`
 
-Add `HostIP` to `DiscoveryConfig`. When non-empty AND parseable as IPv4, bind the sender socket to `HostIP:0` (deterministic source IP for unicast replies on multi-NIC hosts). Otherwise keep `:0` (fallback). IPv6 input or parse failure logs WARN and falls back.
+Add `HostIP` to `DiscoveryConfig`. When non-empty, resolve it to a local interface via `interfaceForIP` (the helper from Task 1). If the lookup succeeds, use that interface for **both** the multicast listen-side join and the sender bind (`HostIP:0`). If it fails (HostIP isn't IPv4, doesn't match any local interface, or interface enumeration errors), log WARN and fall back to today's behavior — `nil` interface for the multicast join and `:0` for the sender.
+
+**Important:** never bind the sender directly to an arbitrary `HostIP` string without first verifying it owns a local interface. A misconfigured `bridge.host_ip` (e.g. an old IP no longer assigned, or a typo'd public IP) would otherwise fail `net.ListenPacket("udp4", "1.2.3.4:0")` with `bind: cannot assign requested address` and make `NewDiscovery` return an error — disabling GDM entirely. The `interfaceForIP` gate keeps the bridge running with best-effort fallback in that case.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -767,35 +906,53 @@ type DiscoveryConfig struct {
 	// HostIP is the configured-or-autodetected LAN IPv4 address the
 	// bridge advertises as its connection URI (mirror of
 	// AdapterConfig.HostIP from the calling adapter). When non-empty
-	// and parseable as IPv4, the sender socket binds to it for a
-	// deterministic unicast source IP on multi-NIC hosts. Empty,
-	// IPv6, or parse failure falls back to :0 (kernel-picked
-	// interface).
+	// AND it resolves via interfaceForIP to a local interface, that
+	// interface is used for the multicast listen-side join and the
+	// sender binds to HostIP:0 for a deterministic source IP. When
+	// HostIP is empty, isn't IPv4, or doesn't match any local
+	// interface, Discovery falls back to nil-interface multicast and
+	// :0 sender bind (today's default behavior).
 	HostIP string
 }
 ```
 
-Update the sender-bind portion of `NewDiscovery`. Replace this line:
+Replace the entire socket-creation block in `NewDiscovery`. Find the current sequence (lines that create `listen` and `sender`) and replace it with:
 
 ```go
-	sender, err := net.ListenPacket("udp4", ":0")
-```
-
-with:
-
-```go
-	senderAddr := ":0"
+	// Resolve HostIP to a local interface once. Used for both the
+	// multicast listen-side join and the sender bind so receive and
+	// send happen on the same NIC on multi-NIC hosts. Lookup failure
+	// is best-effort: WARN-log and fall back to nil-iface + :0.
+	var iface *net.Interface
 	if cfg.HostIP != "" {
-		if ip := net.ParseIP(cfg.HostIP); ip != nil && ip.To4() != nil {
-			senderAddr = cfg.HostIP + ":0"
+		if found, ifErr := interfaceForIP(cfg.HostIP); ifErr == nil {
+			iface = found
 		} else {
-			slog.Warn("plex GDM: HostIP not IPv4, sender will use default interface",
+			slog.Warn("plex GDM: HostIP not on a local interface; using default route for multicast and unicast",
 				"host_ip", cfg.HostIP,
+				"err", ifErr,
 			)
 		}
 	}
+
+	group := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32412}
+	listen, err := net.ListenMulticastUDP("udp4", iface, group)
+	if err != nil {
+		return nil, err
+	}
+
+	senderAddr := ":0"
+	if iface != nil {
+		senderAddr = cfg.HostIP + ":0"
+	}
 	sender, err := net.ListenPacket("udp4", senderAddr)
+	if err != nil {
+		listen.Close()
+		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
+	}
 ```
+
+(The rest of `NewDiscovery` — the `Discovery` struct literal, the best-effort `sendHello`, the heartbeat goroutine — stays as in Task 3.)
 
 - [ ] **Step 4: Run tests**
 
@@ -809,7 +966,7 @@ Expected: all PASS, including the two new bind tests.
 
 ```powershell
 git add internal/adapters/plex/discovery.go internal/adapters/plex/discovery_test.go
-git commit -m "feat(plex): bind GDM sender to configured HostIP"
+git commit -m "feat(plex): interface-aware GDM listen + sender via HostIP"
 ```
 
 ---
@@ -820,26 +977,31 @@ git commit -m "feat(plex): bind GDM sender to configured HostIP"
 - Modify: `go.mod`
 - Modify: `internal/adapters/plex/discovery.go`
 
-Bind alone doesn't constrain *multicast* egress; the kernel picks based on its routing table (and on Windows specifically, governed by `IP_MULTICAST_IF`). When `HostIP` resolves to an interface via the Task 1 helper, call `ipv4.NewPacketConn(sender).SetMulticastInterface(iface)` to make HELLO egress deterministic on multi-NIC hosts. Best-effort — failure logs WARN and continues.
+Bind alone doesn't constrain *multicast* egress; the kernel picks based on its routing table (and on Windows specifically, governed by `IP_MULTICAST_IF`). When `iface` resolves in Task 5, call `ipv4.NewPacketConn(sender).SetMulticastInterface(iface)` to make HELLO egress deterministic on multi-NIC hosts. Best-effort — failure logs WARN and continues.
 
-`golang.org/x/net` is already in the module graph at v0.52.0 as a transitive dependency; we promote it to a direct require.
+`golang.org/x/net` is already in the module graph at v0.52.0 as a transitive dependency; we promote it to a direct require by editing `go.mod` directly (no `go get` — that contacts the network and may upgrade the version).
 
 No dedicated unit test — testing this requires a multi-NIC fixture or platform-specific mocking the stdlib doesn't expose. Code change is short and the log line covers verification at runtime.
 
-- [ ] **Step 1: Promote `golang.org/x/net` to direct require**
+- [ ] **Step 1: Promote `golang.org/x/net` to a direct require**
+
+Pin the version that's already in the module graph rather than letting `go get` pick something newer:
 
 ```powershell
-go get golang.org/x/net
+$ver = (go list -m golang.org/x/net) -replace '^.*\s',''
+go mod edit -require="golang.org/x/net@$ver"
 go mod tidy
 ```
 
-Expected: `go.mod` now lists `golang.org/x/net v0.52.0` (or whatever was already in `go.sum`) under a direct `require` block. Confirm with:
+(Bash equivalent: `ver=$(go list -m golang.org/x/net | awk '{print $2}'); go mod edit -require="golang.org/x/net@$ver"; go mod tidy`.)
+
+Confirm:
 
 ```powershell
 go list -m golang.org/x/net
 ```
 
-Expected output: `golang.org/x/net v0.52.0` (no `// indirect` suffix in `go.mod`).
+Expected output: `golang.org/x/net <version>` and the `go.mod` `require` line for `golang.org/x/net` no longer carries `// indirect`.
 
 - [ ] **Step 2: Add the multicast-interface pin**
 
@@ -849,26 +1011,21 @@ In `internal/adapters/plex/discovery.go`, add to imports:
 	"golang.org/x/net/ipv4"
 ```
 
-After the sender is created in `NewDiscovery` and before the `d := &Discovery{...}` line, add:
+After the sender is created in `NewDiscovery` and before the `Discovery` struct literal is constructed, add:
 
 ```go
-	// Pin multicast egress to the interface owning HostIP so HELLOs
-	// don't drift to whichever interface the kernel happens to pick
-	// (matters on multi-NIC Windows hosts where IP_MULTICAST_IF
-	// governs outgoing interface separately from the bind address).
-	// Best-effort: failure logs WARN and we keep the default behavior.
-	if cfg.HostIP != "" {
-		if iface, ifErr := interfaceForIP(cfg.HostIP); ifErr == nil {
-			if err := ipv4.NewPacketConn(sender.(*net.UDPConn)).SetMulticastInterface(iface); err != nil {
-				slog.Warn("plex GDM: SetMulticastInterface failed; falling back to kernel default",
-					"iface", iface.Name,
-					"err", err,
-				)
-			}
-		} else {
-			slog.Debug("plex GDM: HostIP not assigned to any local interface; multicast will use default route",
-				"host_ip", cfg.HostIP,
-				"err", ifErr,
+	// Pin multicast egress to the interface from Task 5's iface lookup
+	// so HELLOs don't drift to whichever interface the kernel happens
+	// to pick (matters on multi-NIC Windows hosts where
+	// IP_MULTICAST_IF governs outgoing interface separately from the
+	// bind address). Best-effort: failure logs WARN and the kernel
+	// default takes over. The iface==nil case is already covered by
+	// Task 5's WARN, so no log here.
+	if iface != nil {
+		if err := ipv4.NewPacketConn(sender.(*net.UDPConn)).SetMulticastInterface(iface); err != nil {
+			slog.Warn("plex GDM: SetMulticastInterface failed; falling back to kernel default",
+				"iface", iface.Name,
+				"err", err,
 			)
 		}
 	}
@@ -1004,20 +1161,18 @@ Append to `internal/adapters/plex/adapter_interface_test.go`:
 // TestAdapter_StartPassesHostIPToDiscovery pins that the adapter
 // threads its configured HostIP through to DiscoveryConfig. Uses the
 // package-level newDiscovery seam so we don't bind real multicast
-// sockets in this test.
+// sockets.
+//
+// The fake constructor returns (nil, error) rather than a partial
+// Discovery. Adapter.Start treats discovery as best-effort: on error
+// it logs WARN and skips launching the Run goroutine. Returning a
+// nil-listen Discovery would crash Run() on its first ReadFromUDP.
 func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
-	// Capture the config the adapter passes to the constructor.
 	var captured DiscoveryConfig
 	prev := newDiscovery
 	newDiscovery = func(cfg DiscoveryConfig) (*Discovery, error) {
 		captured = cfg
-		// Return a minimal Discovery whose Close is a no-op. The
-		// adapter stores the result and may call Close on shutdown;
-		// we use a Discovery with closeOnce already triggered to
-		// keep the test focused on the constructor argument.
-		d := &Discovery{cfg: cfg}
-		d.closeOnce.Do(func() {})
-		return d, nil
+		return nil, errors.New("test fake: discovery disabled")
 	}
 	t.Cleanup(func() { newDiscovery = prev })
 
@@ -1054,7 +1209,7 @@ func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
 
 If `fakeBridgeConfig` and `fakeSessionManager` aren't already in the test file, check `adapter_interface_test.go` for their existing definitions and reuse. If they don't exist verbatim, look in `adapter_interface_test.go` for whatever helper this file uses to construct a minimal `AdapterConfig` and follow the same pattern. The point of this test is the `captured.HostIP` assertion — anything that gets the adapter to its `Start` path is fine.
 
-You'll also need `"context"` in the test file imports if not already present.
+You'll also need `"context"` and `"errors"` in the test file imports if not already present.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1247,6 +1402,7 @@ Defer detailed steps until we know we need them — implementing this against th
 - TestDiscovery_RespondsToMSearch existing test edit: Task 2.
 - TestDiscovery_RepliesViaSenderNotListener: Task 2.
 - TestDiscovery_HelloHeartbeatRepeats: Task 3.
+- TestDiscovery_HelloSendFailureLogsWarn / ReplySendFailureLogsWarn: Task 4.
 - TestInterfaceForIP_FindsLoopback / NotFound / IPv6 / garbage: Task 1.
 - TestDiscovery_SenderBindsToHostIP / FallsBackWhenHostIPEmpty: Task 5.
 - TestDiscovery_CloseIdempotent: Task 7.
@@ -1259,11 +1415,24 @@ All spec items covered.
 **Placeholder scan:** No "TBD", "TODO", or "implement appropriate X" left. Every code step shows the actual code; every command shows expected output. The one place the plan defers is the source-port addendum (Task 10), which is intentional and gated on validation evidence.
 
 **Type/symbol consistency:**
-- `packetWriter` interface: defined Task 2, used Tasks 2/3/4.
-- `helloInterval` package var: defined Task 3, no other consumers.
-- `newDiscovery` package var: defined Task 8, called Task 8.
-- `interfaceForIP`: defined Task 1, used Task 6.
-- `closeOnce` / `closeErr` / `stop` / `wg` fields: declared Task 2 (closeOnce/closeErr) and Task 3 (stop/wg). Used Task 7 (closeOnce wraps the close sequence). Consistent throughout.
-- `HostIP` field: defined Task 5, used Task 5/6/8.
+- `packetWriter` interface: defined Task 2, used Tasks 2/3/4. The `fakeWriter` and `erroringWriter` test helpers both satisfy it.
+- `helloInterval` package var: defined Task 3, used by `runHeartbeat` (also Task 3).
+- `newDiscovery` package var: defined Task 8, called from `Adapter.Start` (Task 8).
+- `interfaceForIP` helper: defined Task 1, used by `NewDiscovery` for both listen-side join and sender bind (Task 5) and by SetMulticastInterface call (Task 6).
+- `closeOnce` / `closeErr` / `stop` / `wg` fields: declared in struct refactor (Task 2 for closeOnce/closeErr; Task 3 for stop/wg). Used Task 7 (closeOnce wraps the close sequence). Consistent throughout.
+- `HostIP` field on `DiscoveryConfig`: defined Task 5, used Tasks 5/6/8.
+- `iface` local in `NewDiscovery`: introduced Task 5 (resolves once, drives both listen and sender), reused by Task 6 for SetMulticastInterface.
+- `capturingHandler` and `installCapturingSlog` test helpers: defined Task 4, only used by Task 4 (kept narrow).
 
 No missing references.
+
+**Review-fix coverage** (responses to the review of the first revision):
+- Initial-HELLO failure no longer aborts `NewDiscovery` (Task 3 step 3): WARN-logged via `sendHello`'s own warning + heartbeat retries.
+- Non-local `HostIP` no longer disables GDM (Task 5 step 3): `interfaceForIP` gates the bind; falls back to `nil`/`:0` on miss.
+- Listen-side multicast join uses the resolved interface (Task 5 step 3).
+- Adapter test fake returns `(nil, error)` so no nil-listen Run goroutine launches (Task 8 step 1).
+- Heartbeat test no longer binds real multicast and has no goroutine race (Task 3 step 1).
+- Reply test no longer swaps fields after goroutine starts (Task 2 step 1).
+- `go get` replaced with `go mod edit -require=` to keep the existing version pinned (Task 6 step 1).
+- WARN-vs-DEBUG split resolved: Task 5 owns the WARN for `HostIP` not on a local interface; Task 6 doesn't re-log it.
+- WARN logging is exercised by deterministic `slog`-capture tests (Task 4).
