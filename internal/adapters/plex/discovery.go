@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // GDM (Good Day Mate) is Plex's LAN discovery protocol. The bridge joins
@@ -26,6 +27,14 @@ type DiscoveryConfig struct {
 	HTTPPort   int
 }
 
+// helloInterval is the cadence at which Discovery rebroadcasts the
+// HELLO multicast advertisement. Plex's GDM presence TTLs are typically
+// 60-120 s, so 30 s gives PMS multiple recovery chances if a packet
+// drops or PMS started after the bridge. Exposed as a var so tests
+// shorten it to ~50 ms; matches the var-based-knob pattern used by
+// pollInterval and registerInterval in linking.go.
+var helloInterval = 30 * time.Second
+
 // packetWriter is the small interface Discovery uses for outbound UDP. In
 // production it's a *net.UDPConn from net.ListenPacket; tests substitute
 // a counting fake to assert HELLO heartbeats and M-SEARCH replies without
@@ -44,11 +53,14 @@ type Discovery struct {
 	sender    packetWriter
 	closeOnce sync.Once
 	closeErr  error
+	stop      chan struct{}
+	wg        sync.WaitGroup
 }
 
-// NewDiscovery joins the GDM multicast group and immediately broadcasts a
-// HELLO announcement. Callers are expected to invoke Run in a goroutine
-// and Close on shutdown.
+// NewDiscovery joins the GDM multicast group and launches a heartbeat
+// goroutine that broadcasts HELLO immediately and then on a helloInterval
+// ticker. Callers are expected to invoke Run in a goroutine and Close on
+// shutdown.
 func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	group := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32412}
 	listen, err := net.ListenMulticastUDP("udp4", nil, group)
@@ -60,12 +72,35 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 		listen.Close()
 		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
 	}
-	d := &Discovery{cfg: cfg, listen: listen, sender: sender.(*net.UDPConn)}
-	if err := d.sendHello(); err != nil {
-		d.Close()
-		return nil, err
+
+	d := &Discovery{
+		cfg:    cfg,
+		listen: listen,
+		sender: sender.(*net.UDPConn),
+		stop:   make(chan struct{}),
 	}
+	d.wg.Add(1)
+	go d.runHeartbeat()
 	return d, nil
+}
+
+// runHeartbeat fires HELLO immediately on entry (preserving the working
+// co-located-Docker discovery latency) and then re-broadcasts every
+// helloInterval until Close signals stop. Send errors propagate through
+// sendHello's WARN logging (added in a later task).
+func (d *Discovery) runHeartbeat() {
+	defer d.wg.Done()
+	_ = d.sendHello()
+	t := time.NewTicker(helloInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-d.stop:
+			return
+		case <-t.C:
+			_ = d.sendHello()
+		}
+	}
 }
 
 // sendHello announces our presence by writing a HELLO datagram to the GDM
@@ -161,9 +196,12 @@ func interfaceForIP(hostIP string) (*net.Interface, error) {
 	return nil, fmt.Errorf("interfaceForIP: no interface owns %s", hostIP)
 }
 
-// Close releases the listen and sender sockets; Run will return shortly
+// Close signals the heartbeat goroutine to stop, waits for it to exit,
+// then releases the listen and sender sockets. Run will return shortly
 // after the listen socket closes. Idempotency lands in a later task.
 func (d *Discovery) Close() error {
+	close(d.stop)
+	d.wg.Wait()
 	listenErr := d.listen.Close()
 	senderErr := d.sender.Close()
 	if listenErr != nil {

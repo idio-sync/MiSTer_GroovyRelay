@@ -214,3 +214,99 @@ func TestInterfaceForIP_RejectsGarbage(t *testing.T) {
 		t.Fatal("expected error for invalid input, got nil")
 	}
 }
+
+// TestDiscovery_HelloHeartbeatRepeats proves HELLO is sent on a ticker,
+// not just once at startup. Constructs Discovery directly via struct
+// fields and starts only the heartbeat goroutine — no real multicast
+// listener bound, no socket-creation race, no flake on hosts where
+// 32412 is held by a real Plex client.
+func TestDiscovery_HelloHeartbeatRepeats(t *testing.T) {
+	// Shorten the heartbeat interval. Restored by t.Cleanup.
+	prev := helloInterval
+	helloInterval = 50 * time.Millisecond
+	t.Cleanup(func() { helloInterval = prev })
+
+	fake := &fakeWriter{}
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-h",
+			HTTPPort:   32500,
+		},
+		sender: fake,
+		stop:   make(chan struct{}),
+	}
+	d.wg.Add(1)
+	go d.runHeartbeat()
+	t.Cleanup(func() {
+		close(d.stop)
+		d.wg.Wait()
+	})
+
+	// Wait long enough for ~4 heartbeat ticks plus startup margin.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if countHellos(fake.snapshot()) >= 3 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if got := countHellos(fake.snapshot()); got < 3 {
+		t.Errorf("expected >=3 HELLO writes, got %d", got)
+	}
+}
+
+func countHellos(writes []writeRecord) int {
+	n := 0
+	for _, w := range writes {
+		if strings.HasPrefix(string(w.body), "HELLO ") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestDiscovery_HeartbeatFiresHelloImmediately pins the working
+// co-located-Docker discovery latency: the very first HELLO must go
+// out without waiting for the ticker. Uses a long ticker interval so
+// any HELLO observed during the test window comes from the immediate
+// startup send, not a tick.
+func TestDiscovery_HeartbeatFiresHelloImmediately(t *testing.T) {
+	prev := helloInterval
+	helloInterval = 5 * time.Second
+	t.Cleanup(func() { helloInterval = prev })
+
+	fake := &fakeWriter{}
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-imm",
+			HTTPPort:   32500,
+		},
+		sender: fake,
+		stop:   make(chan struct{}),
+	}
+	d.wg.Add(1)
+	go d.runHeartbeat()
+	t.Cleanup(func() {
+		close(d.stop)
+		d.wg.Wait()
+	})
+
+	// Wait briefly for the goroutine to issue the immediate send.
+	// 200ms is well below the 5s ticker, so any HELLO observed here
+	// is the startup send, not a tick.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if countHellos(fake.snapshot()) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got := countHellos(fake.snapshot())
+	if got != 1 {
+		t.Errorf("expected exactly 1 immediate HELLO (heartbeat ticker should not have fired in 200ms with 5s interval), got %d", got)
+	}
+}
