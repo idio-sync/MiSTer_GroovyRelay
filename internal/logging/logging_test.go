@@ -62,3 +62,80 @@ func TestSetLevel_UnknownStringMapsToInfo(t *testing.T) {
 		t.Errorf("after SetLevel(nonsense): level=%v, want %v", got, want)
 	}
 }
+
+// TestResolveMode_DefaultsToJSONForNonTerminal asserts that without env
+// overrides, a non-terminal stdout (the test process is one) resolves
+// to mode=json so existing log-aggregation pipelines stay unaffected.
+func TestResolveMode_DefaultsToJSONForNonTerminal(t *testing.T) {
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "")
+	t.Setenv("NO_COLOR", "")
+	mode, color := resolveMode(false)
+	if mode != logModeJSON {
+		t.Errorf("expected json on non-terminal; got %v", mode)
+	}
+	if color {
+		t.Error("expected no color in json mode")
+	}
+}
+
+// TestResolveMode_AutoOnTerminal asserts that when stdout is a terminal,
+// auto resolves to text+color (no NO_COLOR set).
+func TestResolveMode_AutoOnTerminal(t *testing.T) {
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "auto")
+	t.Setenv("NO_COLOR", "")
+	mode, color := resolveMode(true)
+	if mode != logModeText {
+		t.Errorf("expected text on terminal; got %v", mode)
+	}
+	if !color {
+		t.Error("expected color on terminal without NO_COLOR")
+	}
+}
+
+// TestResolveMode_NoColor asserts NO_COLOR forces color off in text mode.
+func TestResolveMode_NoColor(t *testing.T) {
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "text")
+	t.Setenv("NO_COLOR", "1")
+	mode, color := resolveMode(true)
+	if mode != logModeText || color {
+		t.Errorf("text+NO_COLOR should be text+nocolor; got %v color=%v", mode, color)
+	}
+}
+
+// TestResolveMode_TextPlain asserts text-plain is text without color
+// regardless of NO_COLOR / terminal state.
+func TestResolveMode_TextPlain(t *testing.T) {
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "text-plain")
+	t.Setenv("NO_COLOR", "")
+	mode, color := resolveMode(true)
+	if mode != logModeText || color {
+		t.Errorf("text-plain should be text+nocolor; got %v color=%v", mode, color)
+	}
+}
+
+// TestResolveMode_ExplicitJSON asserts explicit json wins regardless
+// of TTY state.
+func TestResolveMode_ExplicitJSON(t *testing.T) {
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "json")
+	t.Setenv("NO_COLOR", "")
+	mode, color := resolveMode(true)
+	if mode != logModeJSON || color {
+		t.Errorf("explicit json should be json+nocolor; got %v color=%v", mode, color)
+	}
+}
+
+// TestResolveMode_ExplicitText asserts explicit text on a non-terminal
+// still picks text (operator opt-in).
+func TestResolveMode_ExplicitText(t *testing.T) {
+	t.Setenv("MISTER_GROOVY_LOG_FORMAT", "text")
+	t.Setenv("NO_COLOR", "")
+	mode, color := resolveMode(false)
+	if mode != logModeText {
+		t.Errorf("explicit text should win; got %v", mode)
+	}
+	// color stays off because stdout is not a terminal — protects
+	// redirected files from getting ANSI escapes burned in.
+	if color {
+		t.Error("color should be off on non-terminal even with explicit text")
+	}
+}
