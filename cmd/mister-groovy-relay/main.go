@@ -59,17 +59,14 @@ func main() {
 	if err != nil {
 		var created *config.ErrConfigCreated
 		if errors.As(err, &created) {
-			fmt.Fprintf(os.Stderr,
-				"No config found. Wrote defaults to %s.\nEdit it (set bridge.mister.host) and restart.\n",
-				created.Path)
+			firstRunMessage(created.Path)
+			waitForEnterOnWindows()
 			os.Exit(2)
 		}
-		slog.Error("load config", "err", err)
-		os.Exit(1)
+		dieFriendly("load config", err)
 	}
 	if err := config.EnsureDataDirWritable(sec.Bridge.DataDir); err != nil {
-		slog.Error("data_dir preflight", "err", err)
-		os.Exit(1)
+		dieFriendly("data_dir preflight", err)
 	}
 
 	selfDir := executableDir()
@@ -94,8 +91,7 @@ func main() {
 	if err != nil || store.DeviceUUID == "" {
 		store = &plex.StoredData{DeviceUUID: newUUID()}
 		if err := plex.SaveStoredData(sec.Bridge.DataDir, store); err != nil {
-			slog.Error("save stored data", "err", err)
-			os.Exit(1)
+			dieFriendly("save stored data", err)
 		}
 	}
 
@@ -119,8 +115,7 @@ func main() {
 
 	sender, err := groovynet.NewSender(sec.Bridge.MiSTer.Host, sec.Bridge.MiSTer.Port, sec.Bridge.MiSTer.SourcePort)
 	if err != nil {
-		slog.Error("sender init", "err", err)
-		os.Exit(1)
+		dieFriendly("sender init", err)
 	}
 	defer sender.Close()
 
@@ -164,12 +159,10 @@ func main() {
 		Version:    version,
 	})
 	if err != nil {
-		slog.Error("plex adapter init", "err", err)
-		os.Exit(1)
+		dieFriendly("plex adapter init", err)
 	}
 	if err := reg.Register(plexAdapter); err != nil {
-		slog.Error("registry register plex", "err", err)
-		os.Exit(1)
+		dieFriendly("registry register plex", err)
 	}
 
 	// URL adapter (v1.1): minimum-viable HTTP/HTTPS URL acceptor with
@@ -180,12 +173,10 @@ func main() {
 		YTDLPResolver: ytdlpResolver,
 	})
 	if err != nil {
-		slog.Error("url adapter init", "err", err)
-		os.Exit(1)
+		dieFriendly("url adapter init", err)
 	}
 	if err := reg.Register(urlAdapter); err != nil {
-		slog.Error("registry register url", "err", err)
-		os.Exit(1)
+		dieFriendly("registry register url", err)
 	}
 
 	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
@@ -193,15 +184,13 @@ func main() {
 	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID)
 	jfAdapter.SetVersion(version)
 	if err := reg.Register(jfAdapter); err != nil {
-		slog.Error("registry register jellyfin", "err", err)
-		os.Exit(1)
+		dieFriendly("registry register jellyfin", err)
 	}
 
 	for _, a := range reg.List() {
 		raw := sec.Adapters[a.Name()]
 		if err := a.DecodeConfig(raw, sec.MetaData()); err != nil {
-			slog.Error("adapter DecodeConfig", "name", a.Name(), "err", err)
-			os.Exit(1)
+			dieFriendly("adapter DecodeConfig", err, "name", a.Name())
 		}
 	}
 
@@ -232,8 +221,7 @@ func main() {
 		MisterLauncher: misterLauncher,
 	})
 	if err != nil {
-		slog.Error("ui init", "err", err)
-		os.Exit(1)
+		dieFriendly("ui init", err)
 	}
 	uiSrv.Mount(mux)
 
@@ -244,15 +232,21 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		dieFriendly("http listener bind", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		slog.Info("listening", "addr", addr)
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http listener", "err", err)
 		}
 	}()
+
+	slog.Info("listening", "addr", addr)
 
 	// Start each enabled adapter's background work (timeline, GDM,
 	// plex.tv registration). HTTP handlers were already mounted above.
@@ -265,6 +259,11 @@ func main() {
 			slog.Error("adapter start", "name", a.Name(), "err", err)
 		}
 	}
+
+	// Greeter prints once after the listener is bound and adapters are
+	// started. Suppressed in JSON mode by default (see banner.go) so
+	// log aggregators receive a clean strict-JSON stream.
+	printGreeting(logging.IsTextMode(), version, hostIP, sec.Bridge.UI.HTTPPort, reg)
 
 	<-ctx.Done()
 	slog.Info("shutting down")

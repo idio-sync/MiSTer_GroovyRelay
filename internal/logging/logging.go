@@ -34,6 +34,12 @@ const (
 // levelVar is the single source of truth for the active log threshold.
 var levelVar slog.LevelVar
 
+// resolvedMode captures the mode picked by the most recent New() call.
+// IsTextMode reads it. Cached (rather than re-resolving from env) so
+// the banner gate can't drift from the actual handler choice if env
+// changes between startup and greeter invocation.
+var resolvedMode logMode
+
 // newHandlerWriter is the io.Writer the handler pipes records into.
 // Production points at os.Stdout; tests overwrite this with a
 // bytes.Buffer to assert what reaches the handler at a given level.
@@ -51,6 +57,7 @@ var stdoutIsTerminal = func() bool {
 func New(level string) *slog.Logger {
 	levelVar.Set(parseLevel(level))
 	mode, color := resolveMode(stdoutIsTerminal())
+	resolvedMode = mode
 
 	if mode == logModeText {
 		// On Windows, enable VT processing so ANSI escapes render
@@ -61,6 +68,13 @@ func New(level string) *slog.Logger {
 
 	h := pickHandler(newHandlerWriter, mode, color)
 	return slog.New(h)
+}
+
+// IsTextMode reports whether the most recent New() call resolved to
+// text output. Used by the greeter in cmd/mister-groovy-relay to gate
+// banner printing without re-implementing the env/TTY rules.
+func IsTextMode() bool {
+	return resolvedMode == logModeText
 }
 
 // pickHandler constructs the configured handler. Split out so tests
