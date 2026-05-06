@@ -1,10 +1,13 @@
 package plex
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 func TestAdapter_ConformsToInterface(t *testing.T) {
@@ -256,5 +259,56 @@ profile_name = "Plex Home Theater"
 	}
 	if a.plexCfg.DeviceName != before.DeviceName {
 		t.Errorf("plexCfg mutated despite validation failure: %q", a.plexCfg.DeviceName)
+	}
+}
+
+// TestAdapter_StartPassesHostIPToDiscovery pins that the adapter
+// threads its configured HostIP through to DiscoveryConfig. Uses the
+// package-level newDiscovery seam so we don't bind real multicast
+// sockets.
+//
+// The fake constructor returns (nil, error) rather than a partial
+// Discovery. Adapter.Start treats discovery as best-effort: on error
+// it logs WARN and skips launching the Run goroutine. Returning a
+// nil-listen Discovery would crash Run() on its first ReadFromUDP.
+func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
+	var captured DiscoveryConfig
+	prev := newDiscovery
+	newDiscovery = func(cfg DiscoveryConfig) (*Discovery, error) {
+		captured = cfg
+		return nil, errors.New("test fake: discovery disabled")
+	}
+	t.Cleanup(func() { newDiscovery = prev })
+
+	a, err := NewAdapter(AdapterConfig{
+		Bridge: config.BridgeConfig{
+			DataDir: t.TempDir(),
+			UI:      config.UIConfig{HTTPPort: 32500},
+		},
+		Core:       &fakeCore{},
+		TokenStore: &StoredData{DeviceUUID: "uuid-thread"},
+		HostIP:     "10.42.42.42",
+		Version:    "test",
+	})
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	a.plexCfg = DefaultConfig()
+	a.plexCfg.Enabled = true
+	a.plexCfg.DeviceName = "Probe"
+
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+
+	if captured.HostIP != "10.42.42.42" {
+		t.Errorf("DiscoveryConfig.HostIP = %q; want 10.42.42.42", captured.HostIP)
+	}
+	if captured.DeviceName != "Probe" {
+		t.Errorf("DiscoveryConfig.DeviceName = %q; want Probe", captured.DeviceName)
+	}
+	if captured.DeviceUUID != "uuid-thread" {
+		t.Errorf("DiscoveryConfig.DeviceUUID = %q; want uuid-thread", captured.DeviceUUID)
 	}
 }

@@ -179,10 +179,11 @@ func (a *Adapter) Start(ctx context.Context) error {
 
 	// GDM multicast discovery. Best-effort: port conflicts shouldn't
 	// take down the adapter — out-of-LAN registration may still succeed.
-	disco, err := NewDiscovery(DiscoveryConfig{
+	disco, err := newDiscovery(DiscoveryConfig{
 		DeviceName: cfgSnap.DeviceName,
 		DeviceUUID: deviceUUID,
 		HTTPPort:   a.cfg.Bridge.UI.HTTPPort,
+		HostIP:     a.cfg.HostIP,
 	})
 	if err != nil {
 		slog.Warn("GDM discovery disabled", "err", err)

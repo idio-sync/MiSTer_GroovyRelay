@@ -47,6 +47,12 @@ type DiscoveryConfig struct {
 // pollInterval and registerInterval in linking.go.
 var helloInterval = 30 * time.Second
 
+// newDiscovery is the package-level seam Adapter.Start calls instead
+// of NewDiscovery directly. Rebound by tests to a fake constructor
+// that captures the DiscoveryConfig without binding real multicast
+// sockets.
+var newDiscovery = NewDiscovery
+
 // packetWriter is the small interface Discovery uses for outbound UDP. In
 // production it's a *net.UDPConn from net.ListenPacket; tests substitute
 // a counting fake to assert HELLO heartbeats and M-SEARCH replies without
