@@ -98,6 +98,25 @@ folder:
 xattr -dr com.apple.quarantine /path/to/mister-groovy-relay-folder
 ```
 
+## Console output
+
+When you launch the binary directly (Windows double-click, macOS Terminal,
+Linux shell), the bridge prints a friendly startup banner with the Web UI
+URL and emits human-readable log lines. When stdout is piped to a file,
+journald, or Docker's logging driver, the bridge instead emits structured
+JSON — the same shape it has always used — so existing log-aggregation
+pipelines keep working.
+
+Override via environment variables:
+
+| Variable | Effect |
+| --- | --- |
+| `MISTER_GROOVY_LOG_FORMAT` | `auto` (default), `text`, `text-plain` (text without color), or `json`. |
+| `NO_COLOR` | If set, disables ANSI color in text mode. |
+| `MISTER_GROOVY_NO_BANNER` | If `1`, suppresses the startup banner. |
+| `MISTER_GROOVY_BANNER` | If `1`, forces the banner in JSON mode (rare). |
+| `MISTER_GROOVY_NO_PAUSE` | If `1`, disables the Windows "Press Enter to close" pause on first-run / fatal-error exits. |
+
 ## URL adapter
 
 In addition to Plex and Jellyfin, the bridge ships a URL adapter: paste an `http://`
