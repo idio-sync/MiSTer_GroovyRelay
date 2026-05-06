@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 // GDM (Good Day Mate) is Plex's LAN discovery protocol. The bridge joins
@@ -84,6 +86,22 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	if err != nil {
 		listen.Close()
 		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
+	}
+
+	// Pin multicast egress to the interface from Task 5's iface lookup
+	// so HELLOs don't drift to whichever interface the kernel happens
+	// to pick (matters on multi-NIC Windows hosts where
+	// IP_MULTICAST_IF governs outgoing interface separately from the
+	// bind address). Best-effort: failure logs WARN and the kernel
+	// default takes over. The iface==nil case is already covered by
+	// Task 5's WARN, so no log here.
+	if iface != nil {
+		if err := ipv4.NewPacketConn(sender.(*net.UDPConn)).SetMulticastInterface(iface); err != nil {
+			slog.Warn("plex GDM: SetMulticastInterface failed; falling back to kernel default",
+				"iface", iface.Name,
+				"err", err,
+			)
+		}
 	}
 
 	d := &Discovery{
