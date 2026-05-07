@@ -1077,7 +1077,7 @@ func TestSessionRequestFor_OnStopBroadcastsAndClearsForCrossAdapter(t *testing.T
 		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-1", PlexToken: "tok",
 	}
 	c.rememberPlaySession(prior)
-	req := c.sessionRequestFor(prior)
+	req := c.sessionRequestForPreset(prior, mustPreset(t, ""))
 
 	// Fire OnStop synchronously (simulates Manager preempt notifying
 	// the prior session). The closure body itself is synchronous — the
@@ -1135,7 +1135,7 @@ func TestSessionRequestFor_OnStop_CASClearNoOpsWhenLastPlayDiffers(t *testing.T)
 		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-old", PlexToken: "tok",
 	}
 	c.rememberPlaySession(prior)
-	req := c.sessionRequestFor(prior)
+	req := c.sessionRequestForPreset(prior, mustPreset(t, ""))
 
 	// Simulate handlePlayMedia step 3 happening BEFORE OnStop's clear:
 	// remember a NEW session so c.lastPlay no longer matches captured.
@@ -1183,7 +1183,7 @@ func TestSessionRequestFor_OnStop_CASClearNoOpsOnSeekSameMedia(t *testing.T) {
 		MediaKey: "/library/metadata/42", TranscodeSessionID: "tsid-old", PlexToken: "tok",
 	}
 	c.rememberPlaySession(prior)
-	req := c.sessionRequestFor(prior)
+	req := c.sessionRequestForPreset(prior, mustPreset(t, ""))
 
 	// Simulate handleSeekTo step 2 — same movie, fresh transcode session.
 	seek := PlayMediaRequest{

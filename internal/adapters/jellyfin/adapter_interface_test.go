@@ -49,3 +49,29 @@ func TestAdapter_InitialState(t *testing.T) {
 		t.Errorf("initial IsEnabled = true, want false")
 	}
 }
+
+// TestAdapter_OnVideoConfigChanged_UpdatesModelineMirror pins the wiring
+// from BridgeSaver's notify path through to the JF adapter's modeline mirror.
+// Adapter is in StateStopped (no token, no WS), so republishCapabilities's
+// goroutine no-ops on the state check; the test asserts the synchronous
+// part (mirror update). republishCapabilities is exercised separately.
+func TestAdapter_OnVideoConfigChanged_UpdatesModelineMirror(t *testing.T) {
+	a := New(nil, "/tmp/data", "test-uuid", "NTSC_480i")
+	preset, err := a.currentPreset()
+	if err != nil {
+		t.Fatalf("currentPreset: %v", err)
+	}
+	if preset.Name != "NTSC_480i" {
+		t.Fatalf("initial preset = %q, want NTSC_480i", preset.Name)
+	}
+
+	a.OnVideoConfigChanged("PAL_576i")
+
+	preset, err = a.currentPreset()
+	if err != nil {
+		t.Fatalf("currentPreset after change: %v", err)
+	}
+	if preset.Name != "PAL_576i" {
+		t.Errorf("post-change preset = %q, want PAL_576i", preset.Name)
+	}
+}

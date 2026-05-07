@@ -176,13 +176,18 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	r.core.UpdateBridge(newCfg)
 	r.updateToolResolvers(changed, newCfg)
 
+	// Notify subscribers BEFORE dropping the active cast. Subscriber
+	// notifications are atomic stores (instant); dropping cuts the live
+	// session and any controller-issued retry that lands between drop
+	// and notify would otherwise build its request URL from the stale
+	// modeline mirror. Notify-first closes that microsecond window.
 	modelineChanged := containsStr(changed, "video.modeline")
 	var dropErr error
 	if modelineChanged {
+		r.notifyVideoConfigSubscribers(newCfg.Video.Modeline)
 		if err := r.core.DropActiveCast("bridge config change"); err != nil {
 			dropErr = fmt.Errorf("drop-cast: %w", err)
 		}
-		r.notifyVideoConfigSubscribers(newCfg.Video.Modeline)
 	}
 
 	// Apply per scope.
@@ -222,6 +227,10 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	return scope, nil
 }
 
+// notifyVideoConfigSubscribers fans the new modeline name out to every adapter
+// implementing adapters.VideoConfigSubscriber. Called synchronously from Save;
+// implementations MUST NOT block on network I/O — defer any HTTP/WS work to a
+// goroutine (see jellyfin.Adapter.republishCapabilities for the pattern).
 func (r *BridgeSaver) notifyVideoConfigSubscribers(modelineName string) {
 	if r.registry == nil {
 		return

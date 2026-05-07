@@ -9,12 +9,18 @@ func (c *Companion) LastPlaySessionForTest() PlayMediaRequest {
 	return c.lastPlaySession()
 }
 
-// SessionRequestForTest is an exported alias for sessionRequestFor used
-// by cross-package integration tests. Returns core.SessionRequest
-// directly so the test can override StreamURL or other fields before
-// passing to Manager.StartSession.
+// SessionRequestForTest is an exported alias for sessionRequestForPreset used
+// by cross-package integration tests. Resolves the live modeline mirror and
+// returns core.SessionRequest directly so the test can override StreamURL or
+// other fields before passing to Manager.StartSession. Falls back to the
+// default preset on resolution failure to keep test ergonomics simple — the
+// production handlers HTTP-400 instead.
 func (c *Companion) SessionRequestForTest(p PlayMediaRequest) core.SessionRequest {
-	return c.sessionRequestFor(p)
+	preset, err := c.currentPreset()
+	if err != nil {
+		preset, _ = core.ResolvePreset("")
+	}
+	return c.sessionRequestForPreset(p, preset)
 }
 
 // RememberPlaySessionForTest is an exported alias for rememberPlaySession.

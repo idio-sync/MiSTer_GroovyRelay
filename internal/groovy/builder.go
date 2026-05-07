@@ -136,6 +136,13 @@ func (m Modeline) SourceFps() int {
 // PlexTranscodeSize returns the Plex videoResolution target shape. Interlaced
 // presets keep the SD raster convention; progressive presets use a square-pixel
 // 4:3 canvas instead of the 720-wide analog sample buffer.
+//
+// The asymmetry is intentional. 720x480 (NTSC) and 720x576 (PAL) are the
+// anamorphic shapes every legacy SD player negotiated, so PMS is well-
+// calibrated for them. ffmpeg's filter chain handles the PAR 8:9 / 16:11
+// round-trip downstream. For progressive presets there is no analogous legacy
+// shape, so we ask for square-pixel 4:3 (320x240, 384x288) directly and avoid
+// a redundant resample.
 func (m Modeline) PlexTranscodeSize() (w, h int) {
 	h = m.SourceHeight()
 	if m.Interlaced() {

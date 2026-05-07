@@ -153,17 +153,10 @@ func (c *Companion) restorePausedIfNeeded(w http.ResponseWriter, wasPaused bool)
 	return true
 }
 
-// transcodeRequestFor mirrors the TranscodeRequest sessionRequestFor builds, so
-// the debug decision endpoint can reproduce the exact PMS request that drives
-// playback. Keep these two callers in sync — diagnostic accuracy depends on it.
-func (c *Companion) transcodeRequestFor(p PlayMediaRequest) TranscodeRequest {
-	preset, err := c.currentPreset()
-	if err != nil {
-		preset, _ = core.ResolvePreset("")
-	}
-	return c.transcodeRequestForPreset(p, preset)
-}
-
+// transcodeRequestForPreset mirrors the TranscodeRequest sessionRequestForPreset
+// builds, so the debug decision endpoint can reproduce the exact PMS request
+// that drives playback. Keep these two callers in sync — diagnostic accuracy
+// depends on it.
 func (c *Companion) transcodeRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) TranscodeRequest {
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	streamClientID := c.cfg.DeviceUUID
@@ -192,14 +185,6 @@ func (c *Companion) transcodeRequestForPreset(p PlayMediaRequest, preset core.Mo
 		SubtitleStreamID:   p.SubtitleStreamID,
 		TranscodeSessionID: p.TranscodeSessionID,
 	}
-}
-
-func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
-	preset, err := c.currentPreset()
-	if err != nil {
-		preset, _ = core.ResolvePreset("")
-	}
-	return c.sessionRequestForPreset(p, preset)
 }
 
 func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) core.SessionRequest {

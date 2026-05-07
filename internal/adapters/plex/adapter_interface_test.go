@@ -262,6 +262,72 @@ profile_name = "Plex Home Theater"
 	}
 }
 
+// TestAdapter_OnVideoConfigChanged_PropagatesToCompanion pins the wiring
+// from BridgeSaver's notify path through to the companion's modeline mirror.
+// Covers the post-finalization path (companion already constructed): the
+// adapter delegates to companion.SetModeline so the next request build sees
+// the new preset shape.
+func TestAdapter_OnVideoConfigChanged_PropagatesToCompanion(t *testing.T) {
+	companion := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer",
+		Modeline:   "NTSC_480i",
+	}, nil)
+	a := &Adapter{
+		plexCfg:   Config{Enabled: true, DeviceName: "MiSTer"},
+		cfg:       AdapterConfig{Core: &fakeCore{}, TokenStore: &StoredData{}},
+		companion: companion,
+	}
+	// Mark finalizeOnce as already-done so OnVideoConfigChanged doesn't try
+	// to re-construct over our test companion.
+	a.finalizeOnce.Do(func() {})
+
+	a.OnVideoConfigChanged("PAL_576i")
+
+	preset, err := companion.currentPreset()
+	if err != nil {
+		t.Fatalf("currentPreset: %v", err)
+	}
+	if preset.Name != "PAL_576i" {
+		t.Errorf("companion preset = %q, want PAL_576i", preset.Name)
+	}
+}
+
+// TestAdapter_OnVideoConfigChanged_FinalizesIfNeeded covers the early-save
+// path: a modeline save lands before MountRoutes/Start runs ensureFinalized.
+// OnVideoConfigChanged must trigger finalization AND override the stale
+// bridge-snapshot modeline with the freshly-saved value.
+func TestAdapter_OnVideoConfigChanged_FinalizesIfNeeded(t *testing.T) {
+	a, err := NewAdapter(AdapterConfig{
+		Bridge: config.BridgeConfig{
+			DataDir: t.TempDir(),
+			// Adapter's Bridge snapshot still reflects the pre-save value.
+			Video: config.VideoConfig{Modeline: "NTSC_480i"},
+			UI:    config.UIConfig{HTTPPort: 32500},
+		},
+		Core:       &fakeCore{},
+		TokenStore: &StoredData{DeviceUUID: "uuid-finalize"},
+	})
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	a.plexCfg = DefaultConfig()
+	a.plexCfg.DeviceName = "Probe"
+	a.plexCfg.Enabled = true
+
+	a.OnVideoConfigChanged("PAL_288p")
+
+	if a.companion == nil {
+		t.Fatal("companion was not finalized")
+	}
+	preset, err := a.companion.currentPreset()
+	if err != nil {
+		t.Fatalf("currentPreset: %v", err)
+	}
+	if preset.Name != "PAL_288p" {
+		t.Errorf("companion preset = %q, want PAL_288p (must override stale bridge snapshot)", preset.Name)
+	}
+}
+
 // TestAdapter_StartPassesHostIPToDiscovery pins that the adapter
 // threads its configured HostIP through to DiscoveryConfig. Uses the
 // package-level newDiscovery seam so we don't bind real multicast

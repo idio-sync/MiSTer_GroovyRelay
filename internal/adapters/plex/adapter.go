@@ -287,10 +287,15 @@ func (a *Adapter) ensureFinalized() {
 // OnVideoConfigChanged implements adapters.VideoConfigSubscriber. Bridge-level
 // modeline saves call it after updating core state so subsequent Plex requests
 // negotiate source shape from the selected CRT mode.
+//
+// ensureFinalized's sync.Once guards both the construction of a.companion and
+// the read here: if a save lands before MountRoutes/Start, the companion is
+// constructed with the new modeline as its initial CompanionConfig.Modeline
+// (snapshotted from a.cfg.Bridge.Video.Modeline, which UpdateBridge has
+// already advanced). Otherwise we update the live companion's mirror.
 func (a *Adapter) OnVideoConfigChanged(modelineName string) {
-	if a.companion != nil {
-		a.companion.SetModeline(modelineName)
-	}
+	a.ensureFinalized()
+	a.companion.SetModeline(modelineName)
 }
 
 // ---- adapters.Adapter interface implementation ----
