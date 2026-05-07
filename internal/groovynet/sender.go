@@ -81,9 +81,10 @@ func IsInitACKTimeout(err error) bool {
 }
 
 // NewSender binds a UDP4 socket on srcPort (0 = OS-assigned ephemeral) and
-// targets dstHost:dstPort for every Write. SO_REUSEADDR is set via the
-// platform-specific controlSocket so a rapid restart does not hit TIME_WAIT.
-// Returns the bound Sender or a wrapping error.
+// targets dstHost:dstPort for every Write. Returns the bound Sender or a
+// wrapping error. The source port is intentionally exclusive: the MiSTer keys
+// a session by sender IP:port, so sharing it with another process can route
+// ACKs away from this socket.
 func NewSender(dstHost string, dstPort, srcPort int) (*Sender, error) {
 	dst, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", dstHost, dstPort))
 	if err != nil {

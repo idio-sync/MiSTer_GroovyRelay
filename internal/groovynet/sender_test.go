@@ -51,6 +51,20 @@ func TestSender_StableSourcePort(t *testing.T) {
 	}
 }
 
+func TestSender_RejectsDuplicateSourcePort(t *testing.T) {
+	first, err := NewSender("127.0.0.1", 32100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	second, err := NewSender("127.0.0.1", 32100, first.SourcePort())
+	if err == nil {
+		second.Close()
+		t.Fatalf("second sender unexpectedly bound duplicate source port %d", first.SourcePort())
+	}
+}
+
 func TestSender_InitACKHandshakeSuccess(t *testing.T) {
 	l, err := fakemister.NewListener(":0")
 	if err != nil {
