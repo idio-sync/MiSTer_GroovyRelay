@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -33,24 +34,25 @@ type SessionManager interface {
 // reporters goes through mu. The mu is NEVER held during network I/O
 // — see internal/core/CLAUDE.md §"Invariants" for the discipline.
 type Adapter struct {
-	core     SessionManager
-	dataDir  string // bridge data_dir; tokens go under <dataDir>/jellyfin/token.json
-	deviceID string // bridge.device_uuid, reused across protocols
+	core         SessionManager
+	dataDir      string // bridge data_dir; tokens go under <dataDir>/jellyfin/token.json
+	deviceID     string // bridge.device_uuid, reused across protocols
+	modelineName atomic.Pointer[string]
 
-	mu               sync.Mutex
-	cfg              Config
-	state            adapters.State
-	lastErr          string
-	stateSince       time.Time
-	link             *LinkState
+	mu                 sync.Mutex
+	cfg                Config
+	state              adapters.State
+	lastErr            string
+	stateSince         time.Time
+	link               *LinkState
 	currentRefKey      string               // packed "<itemId>:<playSessionId>" for self-preempt elision
 	currentSessionID   string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
 	lastSessionRecover time.Time            // rate-limits handleSessionsPush's cap re-POST
 	pendingRollback    string               // saved currentRefKey for StartSession-failure rollback
-	queue            []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
-	reporters        map[string]*reporter // refKey → reporter
-	ws               wsConn
-	keepaliveSet     chan time.Duration
+	queue              []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
+	reporters          map[string]*reporter // refKey → reporter
+	ws                 wsConn
+	keepaliveSet       chan time.Duration
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.
@@ -127,7 +129,7 @@ type inboundDispatcher func(messageType string, data json.RawMessage)
 // New constructs a JF adapter bound to a SessionManager (typically
 // *core.Manager), the bridge data_dir, and the bridge device UUID.
 // core may be nil for tests that don't exercise StartSession.
-func New(coreMgr SessionManager, dataDir, deviceID string) *Adapter {
+func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string) *Adapter {
 	a := &Adapter{
 		core:       coreMgr,
 		dataDir:    dataDir,
@@ -138,8 +140,27 @@ func New(coreMgr SessionManager, dataDir, deviceID string) *Adapter {
 		link:       NewLinkState(),
 		reporters:  map[string]*reporter{},
 	}
+	a.SetModeline(initialModeline)
 	a.handleInbound = a.dispatchInbound
 	return a
+}
+
+func (a *Adapter) SetModeline(name string) {
+	cp := name
+	a.modelineName.Store(&cp)
+}
+
+func (a *Adapter) currentPreset() (core.ModelinePreset, error) {
+	name := ""
+	if p := a.modelineName.Load(); p != nil {
+		name = *p
+	}
+	return core.ResolvePreset(name)
+}
+
+func (a *Adapter) OnVideoConfigChanged(modelineName string) {
+	a.SetModeline(modelineName)
+	a.republishCapabilities()
 }
 
 // dispatchInbound routes inbound JF WS messages by MessageType.
@@ -396,32 +417,41 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 // running or the token can't be loaded — both paths converge to the
 // same cap POST on the next WS reconnect.
 func (a *Adapter) republishCapabilities() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := a.postCapabilitiesNow(ctx); err != nil {
+			slog.Warn("jellyfin: hot-swap capabilities re-post failed", "err", err)
+		}
+	}()
+}
+
+func (a *Adapter) postCapabilitiesNow(ctx context.Context) error {
 	a.mu.Lock()
 	cfg := a.cfg
 	deviceID := a.deviceID
 	state := a.state
 	a.mu.Unlock()
 	if state != adapters.StateRunning && state != adapters.StateStarting {
-		return
+		return nil
 	}
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
-		return
+		return nil
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := PostCapabilities(ctx, CapabilitiesInput{
-			ServerURL:           cfg.ServerURL,
-			Token:               tok.AccessToken,
-			DeviceID:            deviceID,
-			DeviceName:          cfg.DeviceName,
-			Version:             linkVersion,
-			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
-		}); err != nil {
-			slog.Warn("jellyfin: hot-swap capabilities re-post failed", "err", err)
-		}
-	}()
+	preset, err := a.currentPreset()
+	if err != nil {
+		return err
+	}
+	return PostCapabilities(ctx, CapabilitiesInput{
+		ServerURL:           cfg.ServerURL,
+		Token:               tok.AccessToken,
+		DeviceID:            deviceID,
+		DeviceName:          cfg.DeviceName,
+		Version:             linkVersion,
+		MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+		Preset:              preset,
+	})
 }
 
 // setState atomically updates state, stateSince, and lastErr.

@@ -225,7 +225,7 @@ func TestStop_DrainsReporters(t *testing.T) {
 	srv := cap.install(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	// Park manager in Playing so reporters do not immediately classify
 	// as Idle and exit before Stop runs.
@@ -267,7 +267,7 @@ func TestReporter_EmitsPlaybackStartAndProgress(t *testing.T) {
 		State: core.StatePlaying, Position: 45 * time.Second,
 		AdapterRef: "itm-1:ps-7",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	a.spawnReporter(reporterParams{
 		ItemID: "itm-1", PlaySessionID: "ps-7", MediaSourceID: "src-1",
@@ -290,7 +290,7 @@ func TestReporter_StatusIdleEndsLoopWithStopped(t *testing.T) {
 	srv := cap.install(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	mgr.mu.Lock()
 	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
@@ -327,7 +327,7 @@ func TestReporter_ExternalPreemptEmitsStoppedNotFailed(t *testing.T) {
 	srv := cap.install(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	a.currentRefKey = "itm-1:ps-7"
 	mgr.mu.Lock()
@@ -357,7 +357,7 @@ func TestReporter_SelfPreemptElidesStopped(t *testing.T) {
 	srv := cap.install(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	a.currentRefKey = "itm-1:ps-7"
 	mgr.mu.Lock()
@@ -392,7 +392,7 @@ func TestReporter_OnStopErrorMarksFailedTrue(t *testing.T) {
 	srv := cap.install(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	mgr.mu.Lock()
 	mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-7"}
@@ -422,7 +422,7 @@ func TestReporter_StoppedRetriesOnTransientFailure(t *testing.T) {
 	srv := cap.install(t)
 
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 
 	a.spawnReporter(reporterParams{
 		ItemID: "itm-1", PlaySessionID: "ps-7", MediaSourceID: "src-1",
@@ -447,7 +447,7 @@ func TestHandleSessionsPush_RowMissingTriggersRepost(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "dev-1")
+	a := New(nil, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -460,6 +460,46 @@ func TestHandleSessionsPush_RowMissingTriggersRepost(t *testing.T) {
 
 	if !waitFor(t, 2*time.Second, func() bool { return capPosts.get() >= 1 }) {
 		t.Fatalf("missing-row Sessions push did not trigger Capabilities re-POST; count=%d", capPosts.get())
+	}
+}
+
+func TestPostCapabilitiesNow_UsesCurrentModeline(t *testing.T) {
+	var gotBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Sessions/Capabilities/Full", func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := New(nil, t.TempDir(), "dev-1", "PAL_576i")
+	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.setState(adapters.StateRunning, "")
+
+	if err := a.postCapabilitiesNow(t.Context()); err != nil {
+		t.Fatalf("postCapabilitiesNow: %v", err)
+	}
+
+	var body capabilitiesBody
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("decode capabilities body: %v\n%s", err, gotBody)
+	}
+	conds := body.DeviceProfile.CodecProfiles[0].Conditions
+	want := map[string]string{"Height": "576", "VideoFramerate": "25"}
+	for _, cond := range conds {
+		if v, ok := want[cond.Property]; ok {
+			if cond.Value != v {
+				t.Errorf("%s = %q, want %q", cond.Property, cond.Value, v)
+			}
+			delete(want, cond.Property)
+		}
+	}
+	for prop, value := range want {
+		t.Errorf("missing condition %s=%s in %#v", prop, value, conds)
 	}
 }
 
@@ -478,7 +518,7 @@ func TestHandleSessionsPush_RowPresentRefreshesSessionID(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "dev-1")
+	a := New(nil, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -511,7 +551,7 @@ func TestHandleSessionsPush_RateLimitsRepost(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "dev-1")
+	a := New(nil, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -562,7 +602,7 @@ func TestApplyConfig_DeviceNameHotSwapRepublishesCapabilities(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "dev-1")
+	a := New(nil, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, DeviceName: "Old Name"}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -614,7 +654,7 @@ func TestApplyConfig_DeviceNameNotRepublishedWhenStopped(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "dev-1")
+	a := New(nil, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, DeviceName: "Old"}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -653,7 +693,7 @@ func TestReporter_PauseFlushesProgressImmediately(t *testing.T) {
 	mgr := &fakeManager{st: core.SessionStatus{
 		State: core.StatePlaying, AdapterRef: "itm-1:ps-7",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.currentRefKey = "itm-1:ps-7"
 
 	a.spawnReporter(reporterParams{
@@ -706,7 +746,7 @@ func TestReporter_PingsWithCustomTicker(t *testing.T) {
 	srv := cap.install(t)
 
 	a := New(&fakeManager{st: core.SessionStatus{State: core.StatePlaying, AdapterRef: "x"}},
-		t.TempDir(), "dev-1")
+		t.TempDir(), "dev-1", "")
 	r := &reporter{playSessionID: "ps-7", auth: authFor(srv)}
 	a.emitPing(r)
 	if !waitFor(t, 1*time.Second, func() bool { return cap.pingCount() >= 1 }) {

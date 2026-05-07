@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // SupportedCommands is the canonical list of JF commands the bridge
@@ -30,6 +32,7 @@ type CapabilitiesInput struct {
 	DeviceName          string
 	Version             string
 	MaxVideoBitrateKbps int
+	Preset              core.ModelinePreset
 }
 
 // capabilitiesBody is the wire-format struct for /Sessions/Capabilities/Full.
@@ -51,7 +54,7 @@ func PostCapabilities(ctx context.Context, in CapabilitiesInput) error {
 		SupportedCommands:            SupportedCommands,
 		SupportsMediaControl:         true,
 		SupportsPersistentIdentifier: true,
-		DeviceProfile:                BuildDeviceProfile(in.MaxVideoBitrateKbps),
+		DeviceProfile:                BuildDeviceProfile(in.MaxVideoBitrateKbps, in.Preset),
 		IconUrl:                      iconDataURL,
 	}
 	data, err := json.Marshal(body)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildSessionRequest_PopulatesAllFields(t *testing.T) {
-	a := New(nil, t.TempDir(), "device-1")
+	a := New(nil, t.TempDir(), "device-1", "")
 
 	req := a.buildSessionRequest(playRequestInput{
 		ItemID:             "itm-1",
@@ -45,7 +45,7 @@ func TestBuildSessionRequest_PopulatesAllFields(t *testing.T) {
 }
 
 func TestMakeOnStop_RecordsErrorAndWakesReporter(t *testing.T) {
-	a := New(nil, t.TempDir(), "device-1")
+	a := New(nil, t.TempDir(), "device-1", "")
 
 	// Install a fake reporter and wakeup channel.
 	var wakeReceived sync.WaitGroup
@@ -75,7 +75,7 @@ func TestMakeOnStop_RecordsErrorAndWakesReporter(t *testing.T) {
 }
 
 func TestMakeOnStop_WakesEvenOnPreempt(t *testing.T) {
-	a := New(nil, t.TempDir(), "device-1")
+	a := New(nil, t.TempDir(), "device-1", "")
 	wakeup := make(chan struct{}, 1)
 	r := &reporter{capturedRefKey: "itm-1:ps-7", wakeup: wakeup}
 	a.reporters["itm-1:ps-7"] = r
@@ -96,7 +96,7 @@ func TestMakeOnStop_WakesEvenOnPreempt(t *testing.T) {
 }
 
 func TestSetCurrentRefKey_RollbackOnStartSessionError(t *testing.T) {
-	a := New(nil, t.TempDir(), "device-1")
+	a := New(nil, t.TempDir(), "device-1", "")
 	a.currentRefKey = "old-ref"
 
 	prev := a.beginSelfPreempt("new-ref")
@@ -114,7 +114,7 @@ func TestSetCurrentRefKey_RollbackOnStartSessionError(t *testing.T) {
 }
 
 func TestSetCurrentRefKey_ClearOnSuccess(t *testing.T) {
-	a := New(nil, t.TempDir(), "device-1")
+	a := New(nil, t.TempDir(), "device-1", "")
 	a.currentRefKey = "old-ref"
 	_ = a.beginSelfPreempt("new-ref")
 	a.commitSelfPreempt()

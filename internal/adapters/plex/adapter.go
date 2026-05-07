@@ -268,6 +268,7 @@ func (a *Adapter) ensureFinalized() {
 			ProfileName:         cfgSnap.ProfileName,
 			DataDir:             a.cfg.Bridge.DataDir,
 			MaxVideoBitrateKbps: cfgSnap.MaxVideoBitrateKbps,
+			Modeline:            a.cfg.Bridge.Video.Modeline,
 		}, a.cfg.Core)
 		a.timeline = NewTimelineBroker(
 			TimelineConfig{DeviceUUID: deviceUUID, DeviceName: cfgSnap.DeviceName},
@@ -281,6 +282,15 @@ func (a *Adapter) ensureFinalized() {
 		a.timeline.SetPlayContextProvider(a.companion.lastPlaySession)
 		a.companion.SetTimeline(a.timeline)
 	})
+}
+
+// OnVideoConfigChanged implements adapters.VideoConfigSubscriber. Bridge-level
+// modeline saves call it after updating core state so subsequent Plex requests
+// negotiate source shape from the selected CRT mode.
+func (a *Adapter) OnVideoConfigChanged(modelineName string) {
+	if a.companion != nil {
+		a.companion.SetModeline(modelineName)
+	}
 }
 
 // ---- adapters.Adapter interface implementation ----

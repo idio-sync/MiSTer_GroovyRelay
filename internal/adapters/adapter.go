@@ -203,6 +203,12 @@ type Validator interface {
 	Validate(raw toml.Primitive, meta toml.MetaData) error
 }
 
+// VideoConfigSubscriber is an optional interface for adapters that mirror
+// bridge.video settings into live request builders.
+type VideoConfigSubscriber interface {
+	OnVideoConfigChanged(modelineName string)
+}
+
 // Handler is the handler signature adapter routes register with. An
 // alias for http.HandlerFunc's underlying type so adapters don't need
 // to import net/http types just to satisfy the Route struct.

@@ -33,6 +33,7 @@ func TestFetchPlaybackInfo_BodyShape(t *testing.T) {
 		UserID:              "uid",
 		MaxVideoBitrateKbps: 4000,
 		StartPositionTicks:  60_0000_0000, // 6 seconds
+		Preset:              mustPreset(t, "PAL_288p"),
 	})
 	if err != nil {
 		t.Fatalf("FetchPlaybackInfo: %v", err)
@@ -66,6 +67,23 @@ func TestFetchPlaybackInfo_BodyShape(t *testing.T) {
 	if got := body["MaxStreamingBitrate"].(float64); got != 4_000_000 {
 		t.Errorf("MaxStreamingBitrate = %v, want 4000000", got)
 	}
+	dp := body["DeviceProfile"].(map[string]any)
+	codecProfiles := dp["CodecProfiles"].([]any)
+	conditions := codecProfiles[0].(map[string]any)["Conditions"].([]any)
+	foundPALHeight := false
+	foundPALFPS := false
+	for _, raw := range conditions {
+		cond := raw.(map[string]any)
+		if cond["Property"] == "Height" && cond["Value"] == "288" {
+			foundPALHeight = true
+		}
+		if cond["Property"] == "VideoFramerate" && cond["Value"] == "50" {
+			foundPALFPS = true
+		}
+	}
+	if !foundPALHeight || !foundPALFPS {
+		t.Errorf("DeviceProfile conditions did not carry PAL_288p shape: %#v", conditions)
+	}
 }
 
 func TestFetchPlaybackInfo_ErrorCode(t *testing.T) {
@@ -78,6 +96,7 @@ func TestFetchPlaybackInfo_ErrorCode(t *testing.T) {
 	_, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
 		ServerURL: srv.URL, Token: "x", DeviceID: "y", Version: "z",
 		ItemID: "i", UserID: "u", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
 	})
 	if err == nil {
 		t.Fatal("FetchPlaybackInfo with ErrorCode returned nil, want error")

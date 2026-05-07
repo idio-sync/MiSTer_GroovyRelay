@@ -267,6 +267,37 @@ func TestModeline_FieldRateRatio(t *testing.T) {
 	}
 }
 
+func TestModelineSourceShape(t *testing.T) {
+	cases := []struct {
+		name             string
+		ml               Modeline
+		wantSourceHeight int
+		wantSourceFPS    int
+		wantPlexWidth    int
+		wantPlexHeight   int
+	}{
+		{"NTSC_480i", NTSC480i60, 480, 30, 720, 480},
+		{"NTSC_240p", NTSC240p60, 240, 60, 320, 240},
+		{"PAL_576i", PAL576i50, 576, 25, 720, 576},
+		{"PAL_288p", PAL288p50, 288, 50, 384, 288},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.ml.SourceHeight(); got != c.wantSourceHeight {
+				t.Errorf("SourceHeight() = %d, want %d", got, c.wantSourceHeight)
+			}
+			if got := c.ml.SourceFps(); got != c.wantSourceFPS {
+				t.Errorf("SourceFps() = %d, want %d", got, c.wantSourceFPS)
+			}
+			gotW, gotH := c.ml.PlexTranscodeSize()
+			if gotW != c.wantPlexWidth || gotH != c.wantPlexHeight {
+				t.Errorf("PlexTranscodeSize() = (%d, %d), want (%d, %d)",
+					gotW, gotH, c.wantPlexWidth, c.wantPlexHeight)
+			}
+		})
+	}
+}
+
 func TestModeline_FieldRateRatio_UnknownFallback(t *testing.T) {
 	// An off-spec modeline that doesn't match any preset key should fall
 	// back to FieldRate()-derived rationals. The fallback loses precision

@@ -15,7 +15,7 @@ import (
 
 func newLinkTestAdapter(t *testing.T, version string) *Adapter {
 	t.Helper()
-	return New(nil, t.TempDir(), "device-uuid")
+	return New(nil, t.TempDir(), "device-uuid", "")
 }
 
 func TestLinkUI_StartSuccess_PersistsTokenAndReturnsLinkedFragment(t *testing.T) {

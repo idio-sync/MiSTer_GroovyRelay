@@ -231,6 +231,71 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	}
 }
 
+func TestPlayMedia_UsesConfiguredModelinePreset(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName:  "MiSTer",
+		DeviceUUID:  "our-uuid",
+		ProfileName: "Plex Home Theater",
+		Modeline:    "PAL_576i",
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "videoResolution=720x576") {
+		t.Errorf("stream URL should use PAL_576i target shape: %s", fc.lastReq.StreamURL)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "resolution%3A720x576") {
+		t.Errorf("stream URL should advertise PAL_576i capabilities: %s", fc.lastReq.StreamURL)
+	}
+}
+
+func TestSeekTo_UsesLiveModelineMirror(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePlaying, Position: 1000 * time.Millisecond}}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.SetModeline("PAL_288p")
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  "192.168.1.10",
+		PlexServerPort:     "32400",
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		PlexToken:          "tok",
+		TranscodeSessionID: "old-transcode-id",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/seekTo?offset=90000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(fc.lastReq.StreamURL, "videoResolution=384x288") {
+		t.Errorf("seek restart URL should use live PAL_288p target shape: %s", fc.lastReq.StreamURL)
+	}
+	if strings.Contains(fc.lastReq.StreamURL, "videoResolution=720x288") {
+		t.Errorf("seek restart URL must not use non-4:3 progressive target: %s", fc.lastReq.StreamURL)
+	}
+}
+
 func TestPlayMedia_HonorsConfiguredMaxBitrate(t *testing.T) {
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{
@@ -319,8 +384,7 @@ func TestPlaybackCompatibilityRoutes_Return200(t *testing.T) {
 	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
-	routes := []string{
-	}
+	routes := []string{}
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
 			resp, err := http.Get(ts.URL + route)
@@ -819,10 +883,10 @@ func TestSkipNext_FetchesPlayQueueAndRestartsNextItem(t *testing.T) {
 		t.Errorf("play queue path = %q, want /playQueues/99", gotPath)
 	}
 	for key, want := range map[string]string{
-		"own":            "1",
-		"includeBefore":  "1",
-		"includeAfter":   "1",
-		"X-Plex-Token":   "tok",
+		"own":           "1",
+		"includeBefore": "1",
+		"includeAfter":  "1",
+		"X-Plex-Token":  "tok",
 	} {
 		if got := gotQuery.Get(key); got != want {
 			t.Errorf("query %s = %q, want %q", key, got, want)

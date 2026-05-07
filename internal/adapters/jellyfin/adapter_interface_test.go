@@ -16,7 +16,7 @@ func TestAdapter_ImplementsContract(t *testing.T) {
 }
 
 func TestAdapter_NameAndDisplay(t *testing.T) {
-	a := New(nil, "/tmp/data", "test-uuid")
+	a := New(nil, "/tmp/data", "test-uuid", "")
 	if a.Name() != "jellyfin" {
 		t.Errorf("Name() = %q, want %q", a.Name(), "jellyfin")
 	}
@@ -26,7 +26,7 @@ func TestAdapter_NameAndDisplay(t *testing.T) {
 }
 
 func TestAdapter_FieldsSchema(t *testing.T) {
-	a := New(nil, "/tmp/data", "test-uuid")
+	a := New(nil, "/tmp/data", "test-uuid", "")
 	fields := a.Fields()
 	wantKeys := []string{"enabled", "server_url", "device_name", "max_video_bitrate_kbps"}
 	if len(fields) != len(wantKeys) {
@@ -40,7 +40,7 @@ func TestAdapter_FieldsSchema(t *testing.T) {
 }
 
 func TestAdapter_InitialState(t *testing.T) {
-	a := New(nil, "/tmp/data", "test-uuid")
+	a := New(nil, "/tmp/data", "test-uuid", "")
 	st := a.Status()
 	if st.State != adapters.StateStopped {
 		t.Errorf("initial State = %v, want StateStopped", st.State)

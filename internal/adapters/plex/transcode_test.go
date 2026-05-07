@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
@@ -124,6 +126,29 @@ func TestBuildTranscodeURL_DefaultMaxBitrateIsStableLowMotionFriendlyValue(t *te
 	}
 }
 
+func TestBuildTranscodeURL_UsesPresetProfileAndTargetShape(t *testing.T) {
+	req := TranscodeRequest{
+		PlexServerURL: "http://192.168.1.10:32400",
+		MediaPath:     "/library/metadata/42",
+		Token:         "xyz",
+		Preset:        mustTranscodePreset(t, "PAL_288p"),
+	}
+	u := BuildTranscodeURL(req)
+	for _, want := range []string{
+		"videoResolution=384x288",
+		"name%3Dvideo.height%26value%3D288",
+		"name%3Dvideo.framerate%26value%3D50",
+		"resolution%3A384x288",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("url missing %q: %s", want, u)
+		}
+	}
+	if strings.Contains(u, "videoResolution=720x288") {
+		t.Errorf("url must not ask PMS for non-4:3 progressive target: %s", u)
+	}
+}
+
 func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 	xmlBody := `<?xml version="1.0"?>
 <MediaContainer>
@@ -156,6 +181,15 @@ func TestSubtitleURLFor_FindsMatchingStream(t *testing.T) {
 	if !strings.Contains(url, "X-Plex-Token=tok") {
 		t.Error("subtitle URL must carry token for FFmpeg")
 	}
+}
+
+func mustTranscodePreset(t *testing.T, name string) core.ModelinePreset {
+	t.Helper()
+	preset, err := core.ResolvePreset(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return preset
 }
 
 func TestSetStreamSelection_PutsPartSelection(t *testing.T) {

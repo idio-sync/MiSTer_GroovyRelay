@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // plexHTTPClient is the shared HTTP client for PMS + plex.tv requests.
@@ -26,21 +28,22 @@ var plexHTTPClient = &http.Client{Timeout: 10 * time.Second}
 // PMS less room to preserve high-motion detail that later turns into large,
 // poorly-compressible raw fields on the MiSTer side.
 type TranscodeRequest struct {
-	PlexServerURL string
-	MediaPath     string
-	Token         string
-	OffsetMs      int
-	OutputWidth   int
-	OutputHeight  int
-	SessionID     string
-	ClientID      string
-	DeviceName    string
-	ProfileName   string
-	Product       string
-	Platform      string
-	Version       string
-	Provides      string
-	MaxBitrate    int
+	PlexServerURL    string
+	MediaPath        string
+	Token            string
+	OffsetMs         int
+	OutputWidth      int
+	OutputHeight     int
+	Preset           core.ModelinePreset
+	SessionID        string
+	ClientID         string
+	DeviceName       string
+	ProfileName      string
+	Product          string
+	Platform         string
+	Version          string
+	Provides         string
+	MaxBitrate       int
 	AudioStreamID    string
 	SubtitleStreamID string
 	// TranscodeSessionID is the PMS transcoder session UUID documented as the
@@ -90,6 +93,13 @@ func BuildDecisionURL(r TranscodeRequest) string {
 }
 
 func buildTranscodeQuery(r TranscodeRequest) url.Values {
+	preset := r.Preset
+	if preset.Name == "" {
+		preset = defaultPreset(preset)
+	}
+	if r.OutputWidth == 0 || r.OutputHeight == 0 {
+		r.OutputWidth, r.OutputHeight = preset.Modeline.PlexTranscodeSize()
+	}
 	if r.MaxBitrate == 0 {
 		r.MaxBitrate = 1500
 	}
@@ -139,8 +149,8 @@ func buildTranscodeQuery(r TranscodeRequest) url.Values {
 	q.Set("X-Plex-Version", r.Version)
 	q.Set("X-Plex-Provides", r.Provides)
 	q.Set("X-Plex-Client-Profile-Name", r.ProfileName)
-	q.Set("X-Plex-Client-Profile-Extra", BuildProfileExtra())
-	q.Set("X-Plex-Client-Capabilities", BuildClientCapabilities())
+	q.Set("X-Plex-Client-Profile-Extra", BuildProfileExtra(preset))
+	q.Set("X-Plex-Client-Capabilities", BuildClientCapabilities(preset))
 	q.Set("X-Plex-Token", r.Token)
 	return q
 }

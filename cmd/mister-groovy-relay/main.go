@@ -181,7 +181,7 @@ func main() {
 
 	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
 	// Spec: docs/specs/2026-04-25-jellyfin-adapter-design.md.
-	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID)
+	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID, sec.Bridge.Video.Modeline)
 	jfAdapter.SetVersion(version)
 	if err := reg.Register(jfAdapter); err != nil {
 		dieFriendly("registry register jellyfin", err)

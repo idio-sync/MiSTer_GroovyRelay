@@ -244,7 +244,13 @@ func (a *Adapter) setKeepAliveInterval(d time.Duration) {
 // to decide whether to skip a duplicate Capabilities POST on
 // reconnect AND to capture our SessionId for playback reports — JF
 // keys progress reports on SessionId in addition to PlaySessionId.
-func lookupSessionID(ctx context.Context, in CapabilitiesInput) (id string, present bool, err error) {
+type SessionLookupInput struct {
+	ServerURL string
+	Token     string
+	DeviceID  string
+}
+
+func lookupSessionID(ctx context.Context, in SessionLookupInput) (id string, present bool, err error) {
 	q := url.Values{}
 	q.Set("DeviceId", in.DeviceID)
 	q.Set("api_key", in.Token)
@@ -303,7 +309,7 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 
 		shouldPost := !capabilitiesPosted
 		if capabilitiesPosted && hadSuccessfulRun {
-			_, present, err := lookupSessionID(ctx, CapabilitiesInput{
+			_, present, err := lookupSessionID(ctx, SessionLookupInput{
 				ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
 			})
 			if err == nil && !present {
@@ -311,6 +317,12 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 			}
 		}
 		if shouldPost {
+			preset, err := a.currentPreset()
+			if err != nil {
+				slog.Warn("jellyfin capabilities post skipped; modeline is invalid", "err", err)
+				a.setState(adapters.StateError, err.Error())
+				goto wait
+			}
 			if err := PostCapabilities(ctx, CapabilitiesInput{
 				ServerURL:           cfg.ServerURL,
 				Token:               token,
@@ -318,6 +330,7 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 				DeviceName:          cfg.DeviceName,
 				Version:             linkVersion,
 				MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+				Preset:              preset,
 			}); err != nil {
 				slog.Warn("jellyfin capabilities post failed; cast target will not appear until retry succeeds", "err", err)
 				a.setState(adapters.StateError, err.Error())
@@ -345,7 +358,7 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 				// has a non-empty SessionId. Best-effort: a probe failure
 				// just means we omit SessionId from progress bodies until
 				// the next reconnect succeeds.
-				if id, _, err := lookupSessionID(ctx, CapabilitiesInput{
+				if id, _, err := lookupSessionID(ctx, SessionLookupInput{
 					ServerURL: cfg.ServerURL, Token: token, DeviceID: deviceID,
 				}); err == nil {
 					a.setCurrentSessionID(id)
@@ -410,4 +423,3 @@ func jitter(d time.Duration) time.Duration {
 	delta := time.Duration(uint64(time.Now().UnixNano())%uint64(d/4) + 1)
 	return d + delta
 }
-

@@ -51,6 +51,9 @@ type CompanionConfig struct {
 	// request a transcode. Snapshotted at finalization from plex.Config;
 	// changes are ScopeRestartCast so the next play picks up new values.
 	MaxVideoBitrateKbps int
+	// Modeline mirrors bridge.video.modeline so Plex transcode requests can
+	// advertise source shape matching the active CRT mode.
+	Modeline string
 }
 
 // Companion is the Plex Companion HTTP adapter. One per process. Thread-safe.
@@ -67,6 +70,7 @@ type Companion struct {
 	// restart despite their declared scopes — that's a pre-existing quirk
 	// tracked separately.
 	maxVideoBitrateKbps atomic.Int64
+	modelineName        atomic.Pointer[string]
 
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
@@ -93,6 +97,7 @@ type SessionManager interface {
 func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 	c := &Companion{cfg: cfg, core: core}
 	c.maxVideoBitrateKbps.Store(int64(cfg.MaxVideoBitrateKbps))
+	c.SetModeline(cfg.Modeline)
 	return c
 }
 
@@ -101,6 +106,21 @@ func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 // will read the updated value through sessionRequestFor.
 func (c *Companion) SetMaxVideoBitrateKbps(kbps int) {
 	c.maxVideoBitrateKbps.Store(int64(kbps))
+}
+
+// SetModeline updates the live modeline mirror. Bridge saves call this through
+// Adapter.OnVideoConfigChanged so the next Plex request gets fresh dimensions.
+func (c *Companion) SetModeline(name string) {
+	cp := name
+	c.modelineName.Store(&cp)
+}
+
+func (c *Companion) currentPreset() (core.ModelinePreset, error) {
+	name := ""
+	if p := c.modelineName.Load(); p != nil {
+		name = *p
+	}
+	return core.ResolvePreset(name)
 }
 
 // SetTimeline wires the timeline broker after construction. Done this way
@@ -137,18 +157,28 @@ func (c *Companion) restorePausedIfNeeded(w http.ResponseWriter, wasPaused bool)
 // the debug decision endpoint can reproduce the exact PMS request that drives
 // playback. Keep these two callers in sync — diagnostic accuracy depends on it.
 func (c *Companion) transcodeRequestFor(p PlayMediaRequest) TranscodeRequest {
+	preset, err := c.currentPreset()
+	if err != nil {
+		preset, _ = core.ResolvePreset("")
+	}
+	return c.transcodeRequestForPreset(p, preset)
+}
+
+func (c *Companion) transcodeRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) TranscodeRequest {
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	streamClientID := c.cfg.DeviceUUID
 	if streamClientID == "" {
 		streamClientID = p.ClientID
 	}
+	targetW, targetH := preset.Modeline.PlexTranscodeSize()
 	return TranscodeRequest{
 		PlexServerURL:      serverURL,
 		MediaPath:          p.MediaKey,
 		Token:              p.PlexToken,
 		OffsetMs:           p.OffsetMs,
-		OutputWidth:        720,
-		OutputHeight:       480,
+		OutputWidth:        targetW,
+		OutputHeight:       targetH,
+		Preset:             preset,
 		SessionID:          p.SessionID,
 		ClientID:           streamClientID,
 		DeviceName:         c.cfg.DeviceName,
@@ -165,7 +195,15 @@ func (c *Companion) transcodeRequestFor(p PlayMediaRequest) TranscodeRequest {
 }
 
 func (c *Companion) sessionRequestFor(p PlayMediaRequest) core.SessionRequest {
-	tr := c.transcodeRequestFor(p)
+	preset, err := c.currentPreset()
+	if err != nil {
+		preset, _ = core.ResolvePreset("")
+	}
+	return c.sessionRequestForPreset(p, preset)
+}
+
+func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) core.SessionRequest {
+	tr := c.transcodeRequestForPreset(p, preset)
 	serverURL := tr.PlexServerURL
 	streamURL := BuildTranscodeURL(tr)
 	req := core.SessionRequest{
@@ -336,7 +374,12 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 	p.OffsetMs = 0
 	p.CommandID = queryOrHeader(r, "commandID")
 	p.TranscodeSessionID = NewTranscodeSessionID()
-	req := c.sessionRequestFor(p)
+	preset, err := c.currentPreset()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	req := c.sessionRequestForPreset(p, preset)
 	if prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
@@ -580,7 +623,12 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
-	req := c.sessionRequestFor(p)
+	preset, err := c.currentPreset()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req := c.sessionRequestForPreset(p, preset)
 	// Resolve subtitle: if the controller asked for a stream and PMS has
 	// one, download to a temp file so libass can read it. On any error
 	// (PMS miss, network hiccup, transient 5xx), fall back to no burn-in
@@ -667,7 +715,12 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 	p.OffsetMs = offset
 	p.CommandID = queryOrHeader(r, "commandID")
 	p.TranscodeSessionID = NewTranscodeSessionID()
-	req := c.sessionRequestFor(p)
+	preset, err := c.currentPreset()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req := c.sessionRequestForPreset(p, preset)
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -771,7 +824,12 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	p.OffsetMs = int(st.Position.Milliseconds())
 	p.CommandID = queryOrHeader(r, "commandID")
 	p.TranscodeSessionID = NewTranscodeSessionID()
-	req := c.sessionRequestFor(p)
+	preset, err := c.currentPreset()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req := c.sessionRequestForPreset(p, preset)
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -877,7 +935,15 @@ func (c *Companion) handleDebugDecision(w http.ResponseWriter, r *http.Request) 
 		_ = json.NewEncoder(w).Encode(report)
 		return
 	}
-	tr := c.transcodeRequestFor(play)
+	preset, err := c.currentPreset()
+	if err != nil {
+		report.Error = err.Error()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(report)
+		return
+	}
+	tr := c.transcodeRequestForPreset(play, preset)
 	decisionURL := BuildDecisionURL(tr)
 	report.URL = decisionURL
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)

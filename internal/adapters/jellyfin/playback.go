@@ -23,6 +23,7 @@ type PlaybackInfoInput struct {
 	ItemID              string
 	UserID              string
 	MaxVideoBitrateKbps int
+	Preset              core.ModelinePreset
 	StartPositionTicks  int64
 	MediaSourceID       string // optional
 	AudioStreamIndex    *int   // optional
@@ -79,7 +80,7 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 		EnableDirectStream:                  false,
 		EnableTranscoding:                   true,
 		AlwaysBurnInSubtitleWhenTranscoding: true,
-		DeviceProfile:                       BuildDeviceProfile(in.MaxVideoBitrateKbps),
+		DeviceProfile:                       BuildDeviceProfile(in.MaxVideoBitrateKbps, in.Preset),
 	}
 	data, err := json.Marshal(body)
 	if err != nil {

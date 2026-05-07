@@ -72,7 +72,7 @@ func TestHandlePlay_PlayNow_CallsStartSession(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestHandlePlay_PlaybackInfoErrorCode_NoStartSession(t *testing.T) {
 	defer jfSrv.Close()
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 
 func TestHandlePlaystate_PauseCallsCorePause(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Pause"}))
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -159,7 +159,7 @@ func TestHandlePlaystate_PauseCallsCorePause(t *testing.T) {
 
 func TestHandlePlaystate_UnpauseCallsCorePlay(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Unpause"}))
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -170,7 +170,7 @@ func TestHandlePlaystate_UnpauseCallsCorePlay(t *testing.T) {
 
 func TestHandlePlaystate_StopCallsCoreStop(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Stop"}))
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -181,7 +181,7 @@ func TestHandlePlaystate_StopCallsCoreStop(t *testing.T) {
 
 func TestHandlePlaystate_SeekConvertsTicksToMs(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandlePlaystate(mustMarshal(t, map[string]any{
 		"Command": "Seek", "SeekPositionTicks": 50_000_000, // 5 seconds
 	}))
@@ -194,7 +194,7 @@ func TestHandlePlaystate_SeekConvertsTicksToMs(t *testing.T) {
 
 func TestHandlePlaystate_PlayPauseTogglesByState(t *testing.T) {
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StatePlaying}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "PlayPause"}))
 	mgr.mu.Lock()
 	first := mgr.calls
@@ -217,7 +217,7 @@ func TestHandlePlaystate_PlayPauseTogglesByState(t *testing.T) {
 
 func TestHandleGeneralCommand_DisplayMessage_LogsAndDoesNothing(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name": "DisplayMessage",
 		"Arguments": map[string]string{
@@ -237,7 +237,7 @@ func TestHandleGeneralCommand_DisplayMessage_LogsAndDoesNothing(t *testing.T) {
 // switching only proceeds when a live cast is in progress.
 func TestHandleGeneralCommand_SetAudioStreamIndex_NoOpWhenNoLiveCast(t *testing.T) {
 	mgr := &fakeManager{} // st.State == zero == StateIdle
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetAudioStreamIndex",
 		"Arguments": map[string]string{"Index": "2"},
@@ -254,7 +254,7 @@ func TestHandleGeneralCommand_SetAudioStreamIndex_NoOpWhenNoLiveCast(t *testing.
 // subtitle-stream equivalent of the audio test above.
 func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testing.T) {
 	mgr := &fakeManager{} // st.State == zero == StateIdle
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetSubtitleStreamIndex",
 		"Arguments": map[string]string{"Index": "-1"},
@@ -269,7 +269,7 @@ func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testi
 
 func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.HandlePlay(mustMarshal(t, map[string]any{
 		"ItemIds":     []string{"itm-2", "itm-3"},
 		"PlayCommand": "PlayLast",
@@ -285,7 +285,7 @@ func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
 }
 
 func TestHandlePlay_PlayNext_InsertsAtFront(t *testing.T) {
-	a := New(&fakeManager{}, t.TempDir(), "dev-1")
+	a := New(&fakeManager{}, t.TempDir(), "dev-1", "")
 	a.queue = []QueuedItem{{ItemID: "tail-1"}, {ItemID: "tail-2"}}
 	a.HandlePlay(mustMarshal(t, map[string]any{
 		"ItemIds":     []string{"head-x"},
@@ -302,7 +302,7 @@ func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T)
 		Position:   75 * time.Second,
 		AdapterRef: "itm-1:ps-1",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestSetSubtitleStreamIndex_RestoresPausedAfterRestart(t *testing.T) {
 		Position:   12 * time.Second,
 		AdapterRef: "itm-1:ps-1",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -438,7 +438,7 @@ func TestSetAudioStreamIndex_NoOpWhenIndexUnchanged(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-1"}}
-	a := New(mgr, t.TempDir(), "dev-1")
+	a := New(mgr, t.TempDir(), "dev-1", "")
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)

@@ -59,6 +59,11 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 		slog.Error("jellyfin: startPlayNow: no token", "err", err)
 		return
 	}
+	preset, err := a.currentPreset()
+	if err != nil {
+		slog.Error("jellyfin: startPlayNow: modeline", "err", err)
+		return
+	}
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -72,6 +77,7 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			ItemID:              p.ItemIDs[0],
 			UserID:              tok.UserID,
 			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			Preset:              preset,
 			StartPositionTicks:  p.StartPositionTicks,
 			MediaSourceID:       p.MediaSourceID,
 			AudioStreamIndex:    p.AudioStreamIndex,
@@ -300,6 +306,11 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 		slog.Error("jellyfin: trackSwitch: no token")
 		return
 	}
+	preset, err := a.currentPreset()
+	if err != nil {
+		slog.Error("jellyfin: trackSwitch: modeline", "err", err)
+		return
+	}
 
 	wasPaused := st.State == core.StatePaused
 	posTicks := int64(st.Position / (100 * time.Nanosecond))
@@ -318,6 +329,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 			ItemID:              itemID,
 			UserID:              tok.UserID,
 			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			Preset:              preset,
 			StartPositionTicks:  posTicks,
 			AudioStreamIndex:    in.audioIdx,
 			SubtitleStreamIndex: in.subtitleIdx,

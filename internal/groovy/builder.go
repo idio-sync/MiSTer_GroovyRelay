@@ -114,6 +114,40 @@ func (m Modeline) FieldRateRatio() (numer, denom int64) {
 	return int64(rate * 1000), 1000
 }
 
+// SourceHeight returns the maximum source-content height the bridge asks a
+// media server to transcode for this modeline.
+func (m Modeline) SourceHeight() int {
+	return int(m.VActive)
+}
+
+// SourceFps returns the maximum source-content frame rate the bridge asks a
+// media server to transcode for this modeline.
+func (m Modeline) SourceFps() int {
+	n, d := m.FieldRateRatio()
+	if d <= 0 {
+		return 1
+	}
+	if m.Interlaced() {
+		return int((n + 2*d - 1) / (2 * d))
+	}
+	return int((n + d - 1) / d)
+}
+
+// PlexTranscodeSize returns the Plex videoResolution target shape. Interlaced
+// presets keep the SD raster convention; progressive presets use a square-pixel
+// 4:3 canvas instead of the 720-wide analog sample buffer.
+func (m Modeline) PlexTranscodeSize() (w, h int) {
+	h = m.SourceHeight()
+	if m.Interlaced() {
+		return int(m.HActive), h
+	}
+	w = h * 4 / 3
+	if w%2 != 0 {
+		w++
+	}
+	return w, h
+}
+
 // FieldLines returns the active lines in one transmitted field for the given
 // SWITCHRES values.
 func FieldLines(vActive uint16, interlace uint8) int {

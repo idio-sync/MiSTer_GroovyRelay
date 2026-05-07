@@ -1,8 +1,13 @@
 package uiserver
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
@@ -109,6 +114,160 @@ func TestBridgeSaver_UpdateToolResolvers(t *testing.T) {
 	if ytdlp.got != cfg.YTDLPPath {
 		t.Errorf("ytdlp override = %q", ytdlp.got)
 	}
+}
+
+func TestBridgeSaver_ModelineSaveDropsAndNotifiesSubscribers(t *testing.T) {
+	core := &fakeBridgeCore{}
+	sub := &fakeVideoConfigSubscriber{name: "fake"}
+	reg := adapters.NewRegistry()
+	if err := reg.Register(sub); err != nil {
+		t.Fatal(err)
+	}
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, reg)
+
+	next := old
+	next.Video.Modeline = "PAL_576i"
+	scope, err := s.Save(next)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Fatalf("scope = %v, want restart-cast", scope)
+	}
+	if core.drops != 1 {
+		t.Fatalf("DropActiveCast calls = %d, want 1", core.drops)
+	}
+	if core.updated.Video.Modeline != "PAL_576i" {
+		t.Errorf("core updated modeline = %q", core.updated.Video.Modeline)
+	}
+	if sub.got != "PAL_576i" {
+		t.Errorf("subscriber modeline = %q, want PAL_576i", sub.got)
+	}
+}
+
+func TestBridgeSaver_ModelineMixedRestartBridgeStillDropsAndNotifies(t *testing.T) {
+	core := &fakeBridgeCore{}
+	sub := &fakeVideoConfigSubscriber{name: "fake"}
+	reg := adapters.NewRegistry()
+	if err := reg.Register(sub); err != nil {
+		t.Fatal(err)
+	}
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, reg)
+
+	next := old
+	next.Video.Modeline = "PAL_288p"
+	next.HostIP = "192.0.2.55"
+	scope, err := s.Save(next)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if scope != adapters.ScopeRestartBridge {
+		t.Fatalf("scope = %v, want restart-bridge", scope)
+	}
+	if core.drops != 1 {
+		t.Fatalf("DropActiveCast calls = %d, want 1", core.drops)
+	}
+	if sub.got != "PAL_288p" {
+		t.Errorf("subscriber modeline = %q, want PAL_288p", sub.got)
+	}
+}
+
+func TestBridgeSaver_ModelineDropErrorStillNotifiesSubscribers(t *testing.T) {
+	dropErr := errors.New("drop failed")
+	core := &fakeBridgeCore{dropErr: dropErr}
+	sub := &fakeVideoConfigSubscriber{name: "fake"}
+	reg := adapters.NewRegistry()
+	if err := reg.Register(sub); err != nil {
+		t.Fatal(err)
+	}
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, reg)
+
+	next := old
+	next.Video.Modeline = "PAL_576i"
+	scope, err := s.Save(next)
+	if !errors.Is(err, dropErr) {
+		t.Fatalf("Save error = %v, want wrapping %v", err, dropErr)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Fatalf("scope = %v, want restart-cast", scope)
+	}
+	if sub.got != "PAL_576i" {
+		t.Errorf("subscriber modeline = %q, want PAL_576i", sub.got)
+	}
+}
+
+func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
+	t.Helper()
+	return config.BridgeConfig{
+		DataDir: t.TempDir(),
+		Video: config.VideoConfig{
+			Modeline:            modeline,
+			InterlaceFieldOrder: "bff",
+			AspectMode:          "auto",
+			RGBMode:             "rgb888",
+			LZ4Enabled:          true,
+		},
+		Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
+		MiSTer: config.MisterConfig{Port: 32100, SourcePort: 32101},
+		UI:     config.UIConfig{HTTPPort: 32500},
+	}
+}
+
+func testConfigPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[adapters.fake]\nenabled = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type fakeBridgeCore struct {
+	updated config.BridgeConfig
+	drops   int
+	dropErr error
+}
+
+func (f *fakeBridgeCore) UpdateBridge(b config.BridgeConfig) {
+	f.updated = b
+}
+
+func (f *fakeBridgeCore) SetInterlaceFieldOrder(string) error {
+	return nil
+}
+
+func (f *fakeBridgeCore) DropActiveCast(string) error {
+	f.drops++
+	return f.dropErr
+}
+
+type fakeVideoConfigSubscriber struct {
+	name string
+	got  string
+}
+
+func (f *fakeVideoConfigSubscriber) Name() string                { return f.name }
+func (f *fakeVideoConfigSubscriber) DisplayName() string         { return f.name }
+func (f *fakeVideoConfigSubscriber) Fields() []adapters.FieldDef { return nil }
+func (f *fakeVideoConfigSubscriber) DecodeConfig(toml.Primitive, toml.MetaData) error {
+	return nil
+}
+func (f *fakeVideoConfigSubscriber) IsEnabled() bool { return true }
+func (f *fakeVideoConfigSubscriber) Start(context.Context) error {
+	return nil
+}
+func (f *fakeVideoConfigSubscriber) Stop() error { return nil }
+func (f *fakeVideoConfigSubscriber) Status() adapters.Status {
+	return adapters.Status{}
+}
+func (f *fakeVideoConfigSubscriber) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeHotSwap, nil
+}
+func (f *fakeVideoConfigSubscriber) OnVideoConfigChanged(modelineName string) {
+	f.got = modelineName
 }
 
 type fakeOverrideUpdater struct {

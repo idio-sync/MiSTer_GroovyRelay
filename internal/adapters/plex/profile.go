@@ -1,5 +1,11 @@
 package plex
 
+import (
+	"fmt"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+)
+
 // BuildProfileExtra returns the X-Plex-Client-Profile-Extra string that
 // overrides the server-side profile lookup. Structured as semicolon-separated
 // conditions.
@@ -19,14 +25,18 @@ package plex
 //
 // 480 is the tallest dimension the MiSTer's NTSC 480i modeline can display;
 // forcing a transcode also lets us subtitle-burn-in server-side when needed.
-func BuildProfileExtra() string {
+func BuildProfileExtra(preset core.ModelinePreset) string {
+	preset = defaultPreset(preset)
+	capW := int(preset.Modeline.HActive)
+	h := preset.Modeline.SourceHeight()
+	fps := preset.Modeline.SourceFps()
 	return "" +
 		"add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mpegts&videoCodec=h264&audioCodec=aac);" +
 		"add-transcode-target-audio-codec(type=videoProfile&context=streaming&protocol=http&audioCodec=aac);" +
 		"add-transcode-target-settings(type=videoProfile&context=streaming&CopyInternalSubs=true&BurnSubtitles=true);" +
-		"add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.width&value=720&isRequired=true);" +
-		"add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.height&value=480&isRequired=true);" +
-		"add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.framerate&value=30&isRequired=true);" +
+		fmt.Sprintf("add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.width&value=%d&isRequired=true);", capW) +
+		fmt.Sprintf("add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.height&value=%d&isRequired=true);", h) +
+		fmt.Sprintf("add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.framerate&value=%d&isRequired=true);", fps) +
 		"add-limitation(scope=audioCodec&scopeName=aac&type=upperBound&name=audio.channels&value=2)"
 }
 
@@ -36,8 +46,18 @@ func BuildProfileExtra() string {
 // progressive-HTTP / H.264 / AAC stereo shape we actually want so PMS does
 // not optimize into a different "compatible" path on already-low-resolution
 // sources.
-func BuildClientCapabilities() string {
+func BuildClientCapabilities(preset core.ModelinePreset) string {
+	preset = defaultPreset(preset)
+	w, h := preset.Modeline.PlexTranscodeSize()
 	return "protocols=http-streaming-video,http-mp2t-video;" +
-		"videoDecoders=h264{profile:baseline,main,high;resolution:720x480;level:31};" +
+		fmt.Sprintf("videoDecoders=h264{profile:baseline,main,high;resolution:%dx%d;level:31};", w, h) +
 		"audioDecoders=aac{channels:2}"
+}
+
+func defaultPreset(preset core.ModelinePreset) core.ModelinePreset {
+	if preset.Name != "" {
+		return preset
+	}
+	preset, _ = core.ResolvePreset("")
+	return preset
 }

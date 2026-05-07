@@ -51,6 +51,10 @@ type Config struct {
 //  1. bv*[height<=720]+ba — best ≤720p video + best audio (DASH merge).
 //  2. bv*+ba              — drop height cap; lets ffmpeg downscale.
 //  3. b                   — last resort, single muxed file (rare on YT).
+//
+// The selector intentionally does not constrain frame rate. PAL operators
+// casting NTSC-region uploads can override ytdlp_format with an fps cap when
+// avoiding cross-region 60→50 Hz judder matters more than broad compatibility.
 func DefaultConfig() Config {
 	return Config{
 		Enabled:                    false,

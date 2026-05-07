@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestDeviceProfile_StructureAndConditions(t *testing.T) {
-	p := BuildDeviceProfile(4000)
+	p := BuildDeviceProfile(4000, mustPreset(t, "NTSC_480i"))
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +52,7 @@ func TestDeviceProfile_BitrateScaling(t *testing.T) {
 		{50000, 50_000_000},
 	}
 	for _, c := range cases {
-		p := BuildDeviceProfile(c.kbps)
+		p := BuildDeviceProfile(c.kbps, mustPreset(t, "NTSC_480i"))
 		if p.MaxStreamingBitrate != c.bps {
 			t.Errorf("BuildDeviceProfile(%d).MaxStreamingBitrate = %d, want %d", c.kbps, p.MaxStreamingBitrate, c.bps)
 		}
@@ -58,7 +60,7 @@ func TestDeviceProfile_BitrateScaling(t *testing.T) {
 }
 
 func TestDeviceProfile_NoDirectPlay(t *testing.T) {
-	p := BuildDeviceProfile(4000)
+	p := BuildDeviceProfile(4000, mustPreset(t, "NTSC_480i"))
 	if p.DirectPlayProfiles == nil {
 		t.Fatal("DirectPlayProfiles is nil, want empty array")
 	}
@@ -68,7 +70,7 @@ func TestDeviceProfile_NoDirectPlay(t *testing.T) {
 }
 
 func TestDeviceProfile_EmptyCollectionsMarshalAsArrays(t *testing.T) {
-	data, err := json.Marshal(BuildDeviceProfile(4000))
+	data, err := json.Marshal(BuildDeviceProfile(4000, mustPreset(t, "NTSC_480i")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,4 +84,42 @@ func TestDeviceProfile_EmptyCollectionsMarshalAsArrays(t *testing.T) {
 			t.Fatalf("DeviceProfile JSON missing %s\nfull output:\n%s", want, got)
 		}
 	}
+}
+
+func TestDeviceProfile_UsesModelineSourceShape(t *testing.T) {
+	cases := []struct {
+		preset string
+		height string
+		fps    string
+	}{
+		{"NTSC_480i", "480", "30"},
+		{"NTSC_240p", "240", "60"},
+		{"PAL_576i", "576", "25"},
+		{"PAL_288p", "288", "50"},
+	}
+	for _, c := range cases {
+		t.Run(c.preset, func(t *testing.T) {
+			p := BuildDeviceProfile(4000, mustPreset(t, c.preset))
+			conds := p.CodecProfiles[0].Conditions
+			want := map[string]string{
+				"Width":          "720",
+				"Height":         c.height,
+				"VideoFramerate": c.fps,
+			}
+			for _, cond := range conds {
+				if got, ok := want[cond.Property]; ok && cond.Value != got {
+					t.Errorf("%s = %q, want %q", cond.Property, cond.Value, got)
+				}
+			}
+		})
+	}
+}
+
+func mustPreset(t *testing.T, name string) core.ModelinePreset {
+	t.Helper()
+	preset, err := core.ResolvePreset(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return preset
 }

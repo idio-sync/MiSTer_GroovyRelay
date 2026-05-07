@@ -176,6 +176,15 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	r.core.UpdateBridge(newCfg)
 	r.updateToolResolvers(changed, newCfg)
 
+	modelineChanged := containsStr(changed, "video.modeline")
+	var dropErr error
+	if modelineChanged {
+		if err := r.core.DropActiveCast("bridge config change"); err != nil {
+			dropErr = fmt.Errorf("drop-cast: %w", err)
+		}
+		r.notifyVideoConfigSubscribers(newCfg.Video.Modeline)
+	}
+
 	// Apply per scope.
 	switch scope {
 	case adapters.ScopeHotSwap:
@@ -196,8 +205,10 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 		// UpdateBridge already ran above so the next session picks up
 		// the new aspect_mode / audio settings. Now drop the active
 		// cast so the pipeline rebuilds.
-		if err := r.core.DropActiveCast("bridge config change"); err != nil {
-			return scope, fmt.Errorf("drop-cast: %w", err)
+		if !modelineChanged {
+			if err := r.core.DropActiveCast("bridge config change"); err != nil {
+				return scope, fmt.Errorf("drop-cast: %w", err)
+			}
 		}
 
 	case adapters.ScopeRestartBridge:
@@ -205,7 +216,21 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 		// restart-required toast with the docker command.
 	}
 
+	if dropErr != nil {
+		return scope, dropErr
+	}
 	return scope, nil
+}
+
+func (r *BridgeSaver) notifyVideoConfigSubscribers(modelineName string) {
+	if r.registry == nil {
+		return
+	}
+	for _, a := range r.registry.List() {
+		if sub, ok := a.(adapters.VideoConfigSubscriber); ok {
+			sub.OnVideoConfigChanged(modelineName)
+		}
+	}
 }
 
 func (r *BridgeSaver) updateToolResolvers(changed []string, newCfg config.BridgeConfig) {

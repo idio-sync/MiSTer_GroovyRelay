@@ -27,6 +27,7 @@ func TestPostCapabilities_BodyShape(t *testing.T) {
 		DeviceName:          "Living Room MiSTer",
 		Version:             "0.1.0",
 		MaxVideoBitrateKbps: 4000,
+		Preset:              mustPreset(t, "PAL_576i"),
 	})
 	if err != nil {
 		t.Fatalf("PostCapabilities: %v", err)
@@ -75,6 +76,22 @@ func TestPostCapabilities_BodyShape(t *testing.T) {
 	if dp["Name"] != "MiSTer_GroovyRelay" {
 		t.Errorf("DeviceProfile.Name = %v", dp["Name"])
 	}
+	codecProfiles := dp["CodecProfiles"].([]any)
+	conditions := codecProfiles[0].(map[string]any)["Conditions"].([]any)
+	foundPALHeight := false
+	foundPALFPS := false
+	for _, raw := range conditions {
+		cond := raw.(map[string]any)
+		if cond["Property"] == "Height" && cond["Value"] == "576" {
+			foundPALHeight = true
+		}
+		if cond["Property"] == "VideoFramerate" && cond["Value"] == "25" {
+			foundPALFPS = true
+		}
+	}
+	if !foundPALHeight || !foundPALFPS {
+		t.Errorf("DeviceProfile conditions did not carry PAL_576i shape: %#v", conditions)
+	}
 
 	icon, _ := body["IconUrl"].(string)
 	if !strings.HasPrefix(icon, "data:image/png;base64,") {
@@ -96,6 +113,7 @@ func TestPostCapabilities_NonSuccessStatus(t *testing.T) {
 
 	err := PostCapabilities(t.Context(), CapabilitiesInput{
 		ServerURL: srv.URL, Token: "x", DeviceID: "y", Version: "z", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
 	})
 	if err == nil {
 		t.Fatal("PostCapabilities(500) returned nil, want error")

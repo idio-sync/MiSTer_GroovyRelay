@@ -1,5 +1,11 @@
 package jellyfin
 
+import (
+	"strconv"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+)
+
 // DeviceProfile is the subset of JF's DeviceProfile schema the bridge
 // uses. Fields are JSON-tagged to match JF's PascalCase wire format.
 // Schema reference: Jellyfin OpenAPI stable 10.10.x; spec
@@ -62,7 +68,13 @@ type ContainerProfile struct {
 // /Sessions/Capabilities/Full and every /Items/{id}/PlaybackInfo body.
 // The shape forces server-side transcode to MPEG-TS / H.264 / AAC /
 // stereo / ≤720×480 / ≤30 fps with subtitles burned in.
-func BuildDeviceProfile(maxVideoBitrateKbps int) DeviceProfile {
+func BuildDeviceProfile(maxVideoBitrateKbps int, preset core.ModelinePreset) DeviceProfile {
+	if preset.Name == "" {
+		preset, _ = core.ResolvePreset("")
+	}
+	width := int(preset.Modeline.HActive)
+	height := preset.Modeline.SourceHeight()
+	fps := preset.Modeline.SourceFps()
 	return DeviceProfile{
 		Name:                "MiSTer_GroovyRelay",
 		MaxStreamingBitrate: maxVideoBitrateKbps * 1000,
@@ -83,9 +95,9 @@ func BuildDeviceProfile(maxVideoBitrateKbps int) DeviceProfile {
 			Type:  "Video",
 			Codec: "h264",
 			Conditions: []ProfileCondition{
-				{Condition: "LessThanEqual", Property: "Width", Value: "720", IsRequired: true},
-				{Condition: "LessThanEqual", Property: "Height", Value: "480", IsRequired: true},
-				{Condition: "LessThanEqual", Property: "VideoFramerate", Value: "30", IsRequired: true},
+				{Condition: "LessThanEqual", Property: "Width", Value: strconv.Itoa(width), IsRequired: true},
+				{Condition: "LessThanEqual", Property: "Height", Value: strconv.Itoa(height), IsRequired: true},
+				{Condition: "LessThanEqual", Property: "VideoFramerate", Value: strconv.Itoa(fps), IsRequired: true},
 			},
 		}},
 		SubtitleProfiles: []SubtitleProfile{

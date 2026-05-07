@@ -3,10 +3,12 @@ package plex
 import (
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestProfileExtra_Forces480pH264(t *testing.T) {
-	extra := BuildProfileExtra()
+	extra := BuildProfileExtra(mustPreset(t, "NTSC_480i"))
 	if !strings.Contains(extra, "video-resolution-match=match(videoResolution,\"480\")") &&
 		!strings.Contains(extra, "resolution=720x480") &&
 		!strings.Contains(extra, "value=480") {
@@ -30,7 +32,7 @@ func TestProfileExtra_Forces480pH264(t *testing.T) {
 }
 
 func TestClientCapabilities_AdvertisesH264(t *testing.T) {
-	caps := BuildClientCapabilities()
+	caps := BuildClientCapabilities(mustPreset(t, "NTSC_480i"))
 	if !strings.Contains(caps, "h264") {
 		t.Errorf("client capabilities should mention h264: %s", caps)
 	}
@@ -49,4 +51,61 @@ func TestClientCapabilities_AdvertisesH264(t *testing.T) {
 	if !strings.Contains(caps, "audioDecoders=aac{channels:2}") {
 		t.Errorf("client capabilities should advertise stereo AAC: %s", caps)
 	}
+}
+
+func TestProfileExtra_UsesModelineSourceCaps(t *testing.T) {
+	cases := []struct {
+		preset string
+		height string
+		fps    string
+	}{
+		{"NTSC_480i", "480", "30"},
+		{"NTSC_240p", "240", "60"},
+		{"PAL_576i", "576", "25"},
+		{"PAL_288p", "288", "50"},
+	}
+	for _, c := range cases {
+		t.Run(c.preset, func(t *testing.T) {
+			extra := BuildProfileExtra(mustPreset(t, c.preset))
+			for _, want := range []string{
+				"name=video.width&value=720&isRequired=true",
+				"name=video.height&value=" + c.height + "&isRequired=true",
+				"name=video.framerate&value=" + c.fps + "&isRequired=true",
+			} {
+				if !strings.Contains(extra, want) {
+					t.Errorf("profile extra missing %q: %s", want, extra)
+				}
+			}
+		})
+	}
+}
+
+func TestClientCapabilities_UsesPlexTranscodeTargetSize(t *testing.T) {
+	cases := []struct {
+		preset     string
+		resolution string
+	}{
+		{"NTSC_480i", "720x480"},
+		{"NTSC_240p", "320x240"},
+		{"PAL_576i", "720x576"},
+		{"PAL_288p", "384x288"},
+	}
+	for _, c := range cases {
+		t.Run(c.preset, func(t *testing.T) {
+			caps := BuildClientCapabilities(mustPreset(t, c.preset))
+			want := "resolution:" + c.resolution
+			if !strings.Contains(caps, want) {
+				t.Errorf("client capabilities missing %q: %s", want, caps)
+			}
+		})
+	}
+}
+
+func mustPreset(t *testing.T, name string) core.ModelinePreset {
+	t.Helper()
+	preset, err := core.ResolvePreset(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return preset
 }
