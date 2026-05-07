@@ -6,7 +6,7 @@
 
 **Architecture:** `Discovery` gains a `packetWriter`-typed sender field separate from its multicast-joined `*net.UDPConn` listener. A goroutine sends HELLO every `helloInterval` (package var, 30 s default). A new `interfaceForIP` helper plus `DiscoveryConfig.HostIP` make multi-NIC selection deterministic. Two unexported test seams — the `packetWriter` interface and a package-level `newDiscovery` constructor var — let tests assert HELLO/reply behavior and adapter threading without binding real multicast sockets or relying on flaky loopback delivery.
 
-**Tech Stack:** Go 1.26.2, `net`, `log/slog`, `golang.org/x/net/ipv4` (promoted from transitive to direct require — already at v0.52.0 in the module graph), `sync` (`sync.Once` for idempotent close).
+**Tech Stack:** Go 1.26.2, `net`, `log/slog`, `golang.org/x/net/ipv4` (new direct dependency pinned at v0.52.0), `sync` (`sync.Once` for idempotent close).
 
 **Spec:** [docs/superpowers/specs/2026-05-06-plex-gdm-heartbeat-design.md](../specs/2026-05-06-plex-gdm-heartbeat-design.md)
 
@@ -18,7 +18,7 @@
 
 **Modify:**
 - `internal/adapters/plex/discovery.go` — primary change.
-- `internal/adapters/plex/discovery_test.go` — one existing test edited (rename `d.conn`→`d.listen`); five new tests added.
+- `internal/adapters/plex/discovery_test.go` — one existing test edited (rename `d.conn`→`d.listen`); new tests added for sender writes, heartbeat, logging, HostIP binding, and close idempotency.
 - `internal/adapters/plex/adapter.go` — call through `newDiscovery` seam, pass `HostIP`.
 - `internal/adapters/plex/adapter_interface_test.go` — append `TestAdapter_StartPassesHostIPToDiscovery` (existing test file, no new file).
 - `go.mod` / `go.sum` — promote `golang.org/x/net` to direct require.
@@ -1065,13 +1065,13 @@ git commit -m "feat(plex): interface-aware GDM listen + sender via HostIP"
 
 Bind alone doesn't constrain *multicast* egress; the kernel picks based on its routing table (and on Windows specifically, governed by `IP_MULTICAST_IF`). When `iface` resolves in Task 5, call `ipv4.NewPacketConn(sender).SetMulticastInterface(iface)` to make HELLO egress deterministic on multi-NIC hosts. Best-effort — failure logs WARN and continues.
 
-`golang.org/x/net` is already in the module graph at v0.52.0 as a transitive dependency; we promote it to a direct require by editing `go.mod` directly (no `go get` — that contacts the network and may upgrade the version).
+`golang.org/x/net` is not currently in this repo's `go.mod` or `go.sum`; adding `ipv4` makes it a new direct dependency. Pin the version explicitly in `go.mod` rather than using bare `go get`, which may select a newer version than intended.
 
 No dedicated unit test — testing this requires a multi-NIC fixture or platform-specific mocking the stdlib doesn't expose. Code change is short and the log line covers verification at runtime.
 
 - [ ] **Step 1: Promote `golang.org/x/net` to a direct require**
 
-`golang.org/x/net` is currently a transitive dep of `golang.org/x/crypto` and `github.com/coder/websocket` — present in `go.sum` but not as a direct `require` in `go.mod`. Promote it with an explicit version pin (no `go get`, which would touch the network and may upgrade):
+Add `golang.org/x/net` with an explicit version pin. This version exists upstream and matches the contemporary `x/*` module family, but it is not currently verified in this repo's `go.sum`, so `go mod tidy` may need network access the first time it downloads the module. Do not use bare `go get`, which may upgrade to a newer version:
 
 ```powershell
 go mod edit -require=golang.org/x/net@v0.52.0
@@ -1080,7 +1080,7 @@ go mod tidy
 
 (Bash is identical — same command.)
 
-If `v0.52.0` is no longer the resolved transitive version (rare; check `go.sum` for the highest-numbered `golang.org/x/net` line to find what's actually been verified locally), substitute that version in the command above. `go mod tidy` will fail loudly if the chosen version isn't already in `go.sum` *and* the build environment lacks network access — in that case, run `go get golang.org/x/net@v0.52.0` once with network access to populate the module cache, then proceed.
+If `go mod tidy` fails with a network/module-download error under sandboxing, rerun the same `go mod tidy` with network approval so Go can fetch `golang.org/x/net@v0.52.0`. If v0.52.0 becomes unavailable in the future, choose an explicit known-good replacement version and update this plan before proceeding; do not switch to an unpinned `go get`.
 
 Confirm:
 
@@ -1245,21 +1245,6 @@ Add a package-level `var newDiscovery = NewDiscovery` so the adapter test can re
 Append to `internal/adapters/plex/adapter_interface_test.go`:
 
 ```go
-// fakeCore is a minimal SessionManager stub so Adapter.Start can run
-// to completion without spinning up real session machinery. The
-// adapter's Start method doesn't call any of these on the happy
-// startup path — they're only invoked at runtime when a Plex
-// controller issues a cast command, which the test doesn't exercise.
-type fakeCore struct{}
-
-func (fakeCore) StartSession(core.SessionRequest) error { return nil }
-func (fakeCore) Pause() error                           { return nil }
-func (fakeCore) Play() error                            { return nil }
-func (fakeCore) Stop() error                            { return nil }
-func (fakeCore) SeekTo(int) error                       { return nil }
-func (fakeCore) Status() core.SessionStatus             { return core.SessionStatus{} }
-func (fakeCore) DropActiveCast(string) error            { return nil }
-
 // TestAdapter_StartPassesHostIPToDiscovery pins that the adapter
 // threads its configured HostIP through to DiscoveryConfig. Uses the
 // package-level newDiscovery seam so we don't bind real multicast
@@ -1283,7 +1268,7 @@ func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
 			DataDir: t.TempDir(),
 			UI:      config.UIConfig{HTTPPort: 32500},
 		},
-		Core:       fakeCore{},
+		Core:       &fakeCore{},
 		TokenStore: &StoredData{DeviceUUID: "uuid-thread"},
 		HostIP:     "10.42.42.42",
 		Version:    "test",
@@ -1319,8 +1304,9 @@ You'll also need these imports in `adapter_interface_test.go` if not already pre
 "errors"
 
 "github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
-"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 ```
+
+`fakeCore` already exists in `companion_test.go` in package `plex`; reuse it here as `&fakeCore{}`. Do not declare another `fakeCore` type in `adapter_interface_test.go`, because Go compiles all package test files together and duplicate type names fail the build.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1537,7 +1523,7 @@ All spec items covered.
 - `HostIP` field on `DiscoveryConfig`: defined Task 5, used Tasks 5/6/8.
 - `iface` local in `NewDiscovery`: introduced Task 5 (resolves once, drives both listen and sender), reused by Task 6 for SetMulticastInterface.
 - `capturingHandler` and `installCapturingSlog` test helpers: defined Task 4, only used by Task 4 (kept narrow).
-- `fakeCore` test stub: defined Task 8, only used by Task 8.
+- `fakeCore` test stub: already defined in `companion_test.go`; Task 8 reuses it as `&fakeCore{}`.
 
 No missing references.
 
@@ -1550,8 +1536,8 @@ First-round critical fixes (still in place):
 - Adapter test fake returns `(nil, error)` so no nil-listen Run goroutine launches (Task 8 step 1).
 
 Second-round fixes (this revision):
-- `go mod edit -require=golang.org/x/net@v0.52.0` with explicit version + fallback note (Task 6 step 1) — no `go list` derivation that breaks when the dep is purely transitive.
-- Task 8 test uses concrete `config.BridgeConfig{...}` literal and an inline `fakeCore` stub instead of non-existent `fakeBridgeConfig` / `fakeSessionManager` helpers.
+- `go mod edit -require=golang.org/x/net@v0.52.0` with explicit version + network-approval note (Task 6 step 1) — no `go list` derivation and no false claim that `x/net` is already verified in this repo's `go.sum`.
+- Task 8 test uses concrete `config.BridgeConfig{...}` literal and reuses the existing package-level `&fakeCore{}` test stub instead of non-existent `fakeBridgeConfig` / `fakeSessionManager` helpers or a duplicate `fakeCore` declaration.
 - `senderBindFor` extracted as a side-effect-free helper testable via pure-function unit tests; five new `TestSenderBindFor_*` cases cover empty / local / non-local / garbage / IPv6 inputs without binding any real socket (Task 5 step 1). The previously-missing non-local fallback case is now pinned by `TestSenderBindFor_FallsBackWhenHostIPNotLocal`.
 - Immediate-HELLO behavior is moved into `runHeartbeat` itself, then pinned by `TestDiscovery_HeartbeatFiresHelloImmediately` (Task 3) using the same packetWriter seam as the ticker test — no `NewDiscovery`-side seam needed.
 - Reply test (`TestDiscovery_RepliesViaSenderNotListener`) now uses a `runDone` channel and explicit `listen.Close()`-then-wait sequence in `t.Cleanup` to avoid a goroutine leak (Task 2 step 1).

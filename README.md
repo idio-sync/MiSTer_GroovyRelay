@@ -24,7 +24,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board (or equivalent) wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
-- Groovy_MiSTer installed on your MiSTer
+- Groovy_MiSTer installed on your MiSTer, ideally the [44.1khz audio fix release](https://github.com/iequalshane/Groovy_MiSTer/releases/tag/0.8)
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a Raspberry Pi 4/5), anything with a few spare CPU cycles and gigabit-class networking.
 - A Plex/Jellyfin Media Server reachable from that host (optional)
 
@@ -32,7 +32,7 @@ The bridge itself is stateless and light, just a few hundred MB of RAM and one F
 
 ## Companion Browser Extension
 
-A WebExtension is available at [`extension/firefox/`](extension/firefox/) for Firefox / Chrome / Edge / Brave / Opera. Cast a URL from your browser to the bridge with one click. See [`extension/firefox/README.md`](extension/firefox/README.md) for install and dev instructions.
+A WIP browser is available at [`extension/firefox/`](extension/firefox/) for Firefox / Chrome / Edge / Brave / Opera. Cast a URL from your browser to the bridge with one click. See [`extension/firefox/README.md`](extension/firefox/README.md) for install and dev instructions.
 
 ## Quick start (Docker)
 
@@ -68,8 +68,6 @@ docker run --rm -it --network=host \
 
 `--network=host` is required. The bridge needs a stable source UDP port (the MiSTer keys its session by sender `IP:port`) and it needs to receive the Plex GDM multicast on `239.0.0.250:32414`. Bridged Docker networking does not pass multicast and would rewrite the source port on every restart, neither is workable.
 
-The container defaults to the human-readable log handler so `docker logs mister-groovy-relay` is easy to skim. Pass `-e MISTER_GROOVY_LOG_FORMAT=json` if you scrape logs into an aggregator that expects strict JSON.
-
 ## Native builds
 
 Native archives are built for Windows, macOS, and Linux. On first run the
@@ -83,14 +81,10 @@ Default config locations:
 - Linux: `$XDG_CONFIG_HOME/mister-groovy-relay/config.toml`, or
   `~/.config/mister-groovy-relay/config.toml`
 
-Pass `--config <path>` or set `MISTER_GROOVY_CONFIG` to use a custom location.
-`bridge.data_dir = ""` auto-resolves to the same platform data directory and is
-created on startup when missing.
-
-Release archives are expected to bundle `ffmpeg`, `ffprobe`, and `yt-dlp`
-beside the bridge binary. If you prefer system-installed tools, set
-`bridge.ffmpeg_path`, `bridge.ffprobe_path`, or `bridge.ytdlp_path` in
-`config.toml`; blank means auto-resolve sidecar first, then `PATH`.
+Release archives bundle `ffmpeg`, `ffprobe`, and `yt-dlp`beside the bridge
+binary. If you prefer system-installed tools, set `bridge.ffmpeg_path`,
+`bridge.ffprobe_path`, or `bridge.ytdlp_path` in `config.toml`; blank means
+auto-resolve sidecar first, then `PATH`.
 
 On macOS, right-click the binary and choose **Open** the first time if Gatekeeper
 blocks a direct double-click. As a fallback, remove quarantine from the extracted
@@ -188,13 +182,13 @@ Each field is tagged with an apply scope so the UI tells you what it just did: *
 ## First-time setup walkthrough
 
 1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
-   or `go build ./cmd/mister-groovy-relay` for a native binary.
+   or download native binary.
 
-2. **Mount a config dir.** `docker run -v /opt/mister-groovy-relay:/config …`.
+2. **Mount a config dir. (Docker Only)** `docker run -v /opt/mister-groovy-relay:/config …`.
    The bridge auto-creates `config.toml` from defaults on first start if the file is missing.
 
-3. **Open the UI.** Browse to `http://<docker-host>:32500/`. You'll land on the Bridge panel with a quick-start banner. Fill in your MiSTer's IP under **Network → MiSTer Host**, click **Save Bridge**. Because `bridge.mister.host` is a restart-bridge field (the UDP sender is bound at startup), the UI tells you to restart the
-   container. `docker restart mister-groovy-relay` and reload.
+3. **Open the UI.** Browse to `http://<host-ip>:32500/`. You'll land on the Bridge panel with a quick-start banner. Fill in your MiSTer's IP under **Network → MiSTer Host**, click **Save Bridge**. Because `bridge.mister.host` is a restart-bridge field (the UDP sender is bound at startup), the UI tells you to restart the container. `docker restart mister-groovy-relay` or close and reopen
+the binary and reload.
 
 4. **Link Plex/JF.** Link servers as outlined above. The UI transitions to *Linked · RUN* within ~2 seconds and you're good to go.
 
