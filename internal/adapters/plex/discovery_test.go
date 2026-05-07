@@ -13,27 +13,42 @@ import (
 )
 
 // TestDiscovery_RespondsToMSearch exercises the M-SEARCH responder by
-// directly sending a unicast UDP datagram to the discovery listener's
-// bound address. This bypasses multicast (which is flaky in CI / across
-// host firewalls) while still covering the request parsing and response
-// formatting logic in respondToMSearch.
-//
-// On Windows the port 32412 may be held by a real Plex Media Server or
-// Plex client. If ListenMulticastUDP fails we skip rather than fail the
-// suite.
+// directly sending a unicast UDP datagram to an isolated loopback listener.
+// This bypasses multicast (which is flaky in CI / across host firewalls)
+// while still covering request parsing, real UDP reply delivery, and the
+// response formatting logic in respondToMSearch.
 func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	cfg := DiscoveryConfig{
 		DeviceName: "MiSTer-Test",
 		DeviceUUID: "uuid-abc-123",
 		HTTPPort:   32500,
 	}
-	d, err := NewDiscovery(cfg)
-	if err != nil {
-		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
-	}
-	defer d.Close()
 
-	go d.Run()
+	listen, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen UDP: %v", err)
+	}
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		listen.Close()
+		t.Fatalf("sender UDP: %v", err)
+	}
+
+	d := &Discovery{
+		cfg:    cfg,
+		listen: listen,
+		sender: sender,
+		stop:   make(chan struct{}),
+	}
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		d.Run()
+	}()
+	t.Cleanup(func() {
+		_ = d.Close()
+		<-runDone
+	})
 
 	// Send an M-SEARCH from an ephemeral UDP socket directly to the
 	// discovery conn's bound address.
@@ -43,10 +58,7 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	}
 	defer client.Close()
 
-	target := d.listen.LocalAddr().(*net.UDPAddr)
-	// Rewrite 0.0.0.0 -> 127.0.0.1 so Windows will actually deliver the
-	// packet back to the bound socket.
-	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: target.Port}
+	dst := d.listen.LocalAddr().(*net.UDPAddr)
 
 	if _, err := client.WriteToUDP([]byte("M-SEARCH * HTTP/1.1\r\n\r\n"), dst); err != nil {
 		t.Fatalf("write M-SEARCH: %v", err)
@@ -58,11 +70,9 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	if sender, ok := d.sender.(*net.UDPConn); ok {
-		senderPort := sender.LocalAddr().(*net.UDPAddr).Port
-		if senderPort == 32412 && src.Port != 32412 {
-			t.Errorf("response source port = %d; want 32412", src.Port)
-		}
+	senderPort := sender.LocalAddr().(*net.UDPAddr).Port
+	if src.Port != senderPort {
+		t.Errorf("response source port = %d; want %d", src.Port, senderPort)
 	}
 
 	resp := string(buf[:n])
