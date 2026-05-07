@@ -25,12 +25,16 @@ Thumbs.db
 # AI tooling
 /.claude/
 /.codex
+/.agents/
+/.opencode/
 /.serena/
 /.playwright-mcp/
 /CLAUDE.md
 /docs/plans/
 /docs/specs/
+/docs/superpowers/
 
 # Git worktrees
 .worktrees/
 .superpowers/
+.codex-worktrees/
