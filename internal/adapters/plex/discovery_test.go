@@ -54,9 +54,15 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 4096)
-	n, _, err := client.ReadFromUDP(buf)
+	n, src, err := client.ReadFromUDP(buf)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
+	}
+	if sender, ok := d.sender.(*net.UDPConn); ok {
+		senderPort := sender.LocalAddr().(*net.UDPAddr).Port
+		if senderPort == 32412 && src.Port != 32412 {
+			t.Errorf("response source port = %d; want 32412", src.Port)
+		}
 	}
 
 	resp := string(buf[:n])
@@ -174,6 +180,14 @@ func TestDiscovery_RepliesViaSenderNotListener(t *testing.T) {
 	}
 	if !strings.Contains(string(writes[0].body), "HTTP/1.0 200 OK") {
 		t.Errorf("first write should be M-SEARCH reply; body=%q", writes[0].body)
+	}
+	gotDst, ok := writes[0].dst.(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("reply dst type = %T; want *net.UDPAddr", writes[0].dst)
+	}
+	wantDst := client.LocalAddr().(*net.UDPAddr)
+	if !gotDst.IP.Equal(wantDst.IP) || gotDst.Port != wantDst.Port {
+		t.Errorf("reply dst = %s; want %s", gotDst, wantDst)
 	}
 }
 
@@ -411,11 +425,11 @@ func TestDiscovery_ReplySendFailureLogsWarn(t *testing.T) {
 
 // TestSenderBindFor_EmptyHostIP pins the no-config-set fallback:
 // listen joins multicast on the default interface, sender binds to
-// ephemeral.
+// GDM port 32412 so replies use the source port PMS expects.
 func TestSenderBindFor_EmptyHostIP(t *testing.T) {
 	addr, iface := senderBindFor("")
-	if addr != ":0" {
-		t.Errorf("addr = %q; want :0", addr)
+	if addr != ":32412" {
+		t.Errorf("addr = %q; want :32412", addr)
 	}
 	if iface != nil {
 		t.Errorf("iface = %v; want nil", iface)
@@ -430,8 +444,8 @@ func TestSenderBindFor_LocalIP(t *testing.T) {
 	if iface == nil {
 		t.Skip("loopback enumeration unavailable on this host")
 	}
-	if addr != "127.0.0.1:0" {
-		t.Errorf("addr = %q; want 127.0.0.1:0", addr)
+	if addr != "127.0.0.1:32412" {
+		t.Errorf("addr = %q; want 127.0.0.1:32412", addr)
 	}
 	if iface.Flags&net.FlagLoopback == 0 {
 		t.Errorf("iface = %q (flags %v); want loopback", iface.Name, iface.Flags)
@@ -440,14 +454,14 @@ func TestSenderBindFor_LocalIP(t *testing.T) {
 
 // TestSenderBindFor_FallsBackWhenHostIPNotLocal pins the regression
 // the prior plan revision missed: a parseable IPv4 address that no
-// local interface owns must fall back to (":0", nil) — never blindly
-// bind to a non-local IP, which would fail net.ListenPacket and
-// disable GDM. Uses TEST-NET-3 (203.0.113.0/24, RFC 5737) which is
+// local interface owns must fall back to (":32412", nil) — still using
+// the expected GDM source port, but without blindly binding to a
+// non-local IP. Uses TEST-NET-3 (203.0.113.0/24, RFC 5737) which is
 // documentation-reserved and never assignable on real hosts.
 func TestSenderBindFor_FallsBackWhenHostIPNotLocal(t *testing.T) {
 	addr, iface := senderBindFor("203.0.113.99")
-	if addr != ":0" {
-		t.Errorf("addr = %q; want :0 (non-local IP must not be bound)", addr)
+	if addr != ":32412" {
+		t.Errorf("addr = %q; want :32412 (non-local IP must not be bound)", addr)
 	}
 	if iface != nil {
 		t.Errorf("iface = %v; want nil", iface)
@@ -455,11 +469,11 @@ func TestSenderBindFor_FallsBackWhenHostIPNotLocal(t *testing.T) {
 }
 
 // TestSenderBindFor_FallsBackOnGarbage pins the typo'd config case:
-// non-IP-shaped strings fall back to (":0", nil).
+// non-IP-shaped strings fall back to (":32412", nil).
 func TestSenderBindFor_FallsBackOnGarbage(t *testing.T) {
 	addr, iface := senderBindFor("not-an-ip")
-	if addr != ":0" {
-		t.Errorf("addr = %q; want :0", addr)
+	if addr != ":32412" {
+		t.Errorf("addr = %q; want :32412", addr)
 	}
 	if iface != nil {
 		t.Errorf("iface = %v; want nil", iface)
@@ -470,8 +484,8 @@ func TestSenderBindFor_FallsBackOnGarbage(t *testing.T) {
 // fall back rather than attempting an IPv6 bind on the udp4 socket.
 func TestSenderBindFor_FallsBackOnIPv6(t *testing.T) {
 	addr, iface := senderBindFor("::1")
-	if addr != ":0" {
-		t.Errorf("addr = %q; want :0", addr)
+	if addr != ":32412" {
+		t.Errorf("addr = %q; want :32412", addr)
 	}
 	if iface != nil {
 		t.Errorf("iface = %v; want nil", iface)

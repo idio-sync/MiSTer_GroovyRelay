@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,11 +12,16 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
+const (
+	gdmPort      = 32412
+	gdmHelloPort = 32413
+	gdmGroupIP   = "239.0.0.250"
+)
+
 // GDM (Good Day Mate) is Plex's LAN discovery protocol. The bridge joins
 // multicast group 239.0.0.250 on UDP/32412 to listen for M-SEARCH queries
 // from Plex controllers, replies with a unicast HTTP-like descriptor, and
-// broadcasts an unsolicited HELLO advertisement on 32413 on a heartbeat
-// (see Task 3 — added below in this plan).
+// broadcasts unsolicited HELLO advertisements on UDP/32413.
 //
 // Spec: docs/superpowers/specs/2026-05-06-plex-gdm-heartbeat-design.md.
 
@@ -32,10 +38,10 @@ type DiscoveryConfig struct {
 	// AdapterConfig.HostIP from the calling adapter). When non-empty
 	// AND it resolves via interfaceForIP to a local interface, that
 	// interface is used for the multicast listen-side join and the
-	// sender binds to HostIP:0 for a deterministic source IP. When
-	// HostIP is empty, isn't IPv4, or doesn't match any local
-	// interface, Discovery falls back to nil-interface multicast and
-	// :0 sender bind (today's default behavior).
+	// sender binds to HostIP:32412 for a deterministic source IP and
+	// GDM source port. When HostIP is empty, isn't IPv4, or doesn't
+	// match any local interface, Discovery falls back to nil-interface
+	// multicast and a :32412 sender bind.
 	HostIP string
 }
 
@@ -54,7 +60,7 @@ var helloInterval = 30 * time.Second
 var newDiscovery = NewDiscovery
 
 // packetWriter is the small interface Discovery uses for outbound UDP. In
-// production it's a *net.UDPConn from net.ListenPacket; tests substitute
+// production it's a *net.UDPConn from ListenConfig.ListenPacket; tests substitute
 // a counting fake to assert HELLO heartbeats and M-SEARCH replies without
 // binding real sockets or relying on flaky loopback multicast delivery.
 type packetWriter interface {
@@ -82,27 +88,36 @@ type Discovery struct {
 func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	senderAddr, iface := senderBindFor(cfg.HostIP)
 
-	group := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32412}
+	group := &net.UDPAddr{IP: net.ParseIP(gdmGroupIP), Port: gdmPort}
 	listen, err := net.ListenMulticastUDP("udp4", iface, group)
 	if err != nil {
 		return nil, err
 	}
 
-	sender, err := net.ListenPacket("udp4", senderAddr)
+	sender, err := listenReusablePacket("udp4", senderAddr)
 	if err != nil {
-		listen.Close()
-		return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
+		fallbackAddr := senderFallbackBindFor(cfg.HostIP, iface)
+		slog.Warn("plex GDM: bind sender on GDM port failed; falling back to ephemeral source port",
+			"addr", senderAddr,
+			"fallback_addr", fallbackAddr,
+			"err", err,
+		)
+		sender, err = listenPlainPacket("udp4", fallbackAddr)
+		if err != nil {
+			listen.Close()
+			return nil, fmt.Errorf("plex GDM: bind sender: %w", err)
+		}
 	}
 
-	// Pin multicast egress to the interface from Task 5's iface lookup
-	// so HELLOs don't drift to whichever interface the kernel happens
-	// to pick (matters on multi-NIC Windows hosts where
+	// Pin multicast egress to the selected HostIP-owned interface so
+	// HELLOs don't drift to whichever interface the kernel happens to
+	// pick (matters on multi-NIC Windows hosts where
 	// IP_MULTICAST_IF governs outgoing interface separately from the
 	// bind address). Best-effort: failure logs WARN and the kernel
-	// default takes over. The iface==nil case is already covered by
-	// Task 5's WARN, so no log here.
+	// default takes over. If iface is nil, there is no selected
+	// interface to pin.
 	if iface != nil {
-		if err := ipv4.NewPacketConn(sender.(*net.UDPConn)).SetMulticastInterface(iface); err != nil {
+		if err := ipv4.NewPacketConn(sender).SetMulticastInterface(iface); err != nil {
 			slog.Warn("plex GDM: SetMulticastInterface failed; falling back to kernel default",
 				"iface", iface.Name,
 				"err", err,
@@ -113,7 +128,7 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	d := &Discovery{
 		cfg:    cfg,
 		listen: listen,
-		sender: sender.(*net.UDPConn),
+		sender: sender,
 		stop:   make(chan struct{}),
 	}
 	d.wg.Add(1)
@@ -124,7 +139,7 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 // runHeartbeat fires HELLO immediately on entry (preserving the working
 // co-located-Docker discovery latency) and then re-broadcasts every
 // helloInterval until Close signals stop. Send errors propagate through
-// sendHello's WARN logging (added in a later task).
+// sendHello's WARN logging.
 func (d *Discovery) runHeartbeat() {
 	defer d.wg.Done()
 	_ = d.sendHello()
@@ -143,7 +158,7 @@ func (d *Discovery) runHeartbeat() {
 // sendHello announces our presence by writing a HELLO datagram to the GDM
 // advertisement port (32413, distinct from the listen group port 32412).
 func (d *Discovery) sendHello() error {
-	dst := &net.UDPAddr{IP: net.ParseIP("239.0.0.250"), Port: 32413}
+	dst := &net.UDPAddr{IP: net.ParseIP(gdmGroupIP), Port: gdmHelloPort}
 	if _, err := d.sender.WriteTo([]byte("HELLO * HTTP/1.0\r\n\r\n"), dst); err != nil {
 		slog.Warn("plex GDM HELLO send failed",
 			"dst", dst.String(),
@@ -244,27 +259,60 @@ func interfaceForIP(hostIP string) (*net.Interface, error) {
 	return nil, fmt.Errorf("interfaceForIP: no interface owns %s", hostIP)
 }
 
-// senderBindFor decides the sender's bind address and outgoing
-// interface based on HostIP. Returning ("",  nil) is impossible —
-// the helper always returns a usable bind string, falling back to
-// ":0" + nil whenever HostIP is empty, malformed, IPv6, or doesn't
-// match any local interface. The fallback is what keeps GDM running
-// in the face of a typo'd or stale bridge.host_ip; binding directly
-// to a non-local IP would fail net.ListenPacket and disable
-// discovery entirely.
+func listenReusablePacket(network, addr string) (*net.UDPConn, error) {
+	lc := &net.ListenConfig{Control: controlReusableSocket}
+	pc, err := lc.ListenPacket(context.Background(), network, addr)
+	if err != nil {
+		return nil, err
+	}
+	conn, ok := pc.(*net.UDPConn)
+	if !ok {
+		pc.Close()
+		return nil, fmt.Errorf("unexpected packet conn type %T", pc)
+	}
+	return conn, nil
+}
+
+func listenPlainPacket(network, addr string) (*net.UDPConn, error) {
+	pc, err := net.ListenPacket(network, addr)
+	if err != nil {
+		return nil, err
+	}
+	conn, ok := pc.(*net.UDPConn)
+	if !ok {
+		pc.Close()
+		return nil, fmt.Errorf("unexpected packet conn type %T", pc)
+	}
+	return conn, nil
+}
+
+// senderBindFor decides the sender's preferred bind address and
+// outgoing interface based on HostIP. Returning ("", nil) is
+// impossible: the helper always returns a usable GDM-port bind string,
+// falling back to ":32412" + nil whenever HostIP is empty, malformed,
+// IPv6, or doesn't match any local interface. The fallback keeps GDM
+// running in the face of a typo'd or stale bridge.host_ip without
+// losing the source port PMS expects.
 func senderBindFor(hostIP string) (addr string, iface *net.Interface) {
 	if hostIP == "" {
-		return ":0", nil
+		return fmt.Sprintf(":%d", gdmPort), nil
 	}
 	found, err := interfaceForIP(hostIP)
 	if err != nil {
-		slog.Warn("plex GDM: HostIP not on a local interface; using default route for multicast and unicast",
+		slog.Warn("plex GDM: HostIP not on a local interface; using default route for multicast and GDM sender",
 			"host_ip", hostIP,
 			"err", err,
 		)
-		return ":0", nil
+		return fmt.Sprintf(":%d", gdmPort), nil
 	}
-	return hostIP + ":0", found
+	return fmt.Sprintf("%s:%d", hostIP, gdmPort), found
+}
+
+func senderFallbackBindFor(hostIP string, iface *net.Interface) string {
+	if iface != nil && hostIP != "" {
+		return hostIP + ":0"
+	}
+	return ":0"
 }
 
 // Close signals the heartbeat goroutine to stop, waits for it to exit,
