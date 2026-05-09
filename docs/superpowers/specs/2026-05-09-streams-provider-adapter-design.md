@@ -536,6 +536,8 @@ The first streams pass does not have to add mini-remote UI, but its internal que
 - No cached catalog: provider enters `StateError` with a retryable message.
 - Unknown provider type: ignore with warning.
 - Provider URL matches but channel is missing: return a clear error such as `stream provider channel not found: metal`.
+- Unsupported manifest version: reject the fetched manifest and keep the previous active snapshot.
+- Corrupt cache file or metadata mismatch: ignore that cache file, log a warning, and fall back to bundled or previously active data.
 - Playlist JSON too large: reject and keep last good cache.
 - Malformed YouTube IDs: skip those items and count them in provider diagnostics.
 - yt-dlp resolve failure for an item: record item failure and try the next item.
@@ -550,6 +552,9 @@ The first streams pass does not have to add mini-remote UI, but its internal que
 - Remote JavaScript is not evaluated.
 - Bundled manifest/catalog URLs may use `http` or `https`, but remote manifest overlays must use `https` unless the operator sets `allow_local_manifest_urls=true`.
 - Remote-sourced manifest/catalog targets that resolve to loopback, private LAN, link-local, multicast, or unspecified addresses are rejected after DNS resolution unless local manifest URLs are explicitly allowed.
+- IP literal hosts are rejected for remote-sourced URLs unless `allow_local_manifest_urls=true`.
+- Redirects are capped at three hops. Each redirect target is revalidated, and redirects from `https` to `http` are rejected unless local manifest URLs are explicitly allowed.
+- When `remote_provider_allowed_hosts` is non-empty, remote-added providers may fetch catalogs only from those hosts after redirect resolution.
 - Unknown provider types are ignored.
 - Catalog and manifest sizes are bounded.
 - URL rules are matched against parsed URLs, not raw substring checks.
@@ -563,10 +568,13 @@ The first streams pass does not have to add mini-remote UI, but its internal que
 Unit tests:
 
 - Manifest merge: bundled + cached + remote precedence.
+- Unsupported manifest version leaves the previous active snapshot in place.
 - Remote provider with unknown type is ignored.
 - Remote update that changes a bundled provider's type is ignored.
+- Duplicate provider IDs, duplicate channel IDs, duplicate group IDs, and duplicate URL rule IDs reject the affected provider update.
 - Provider URL rule matching.
 - Parsed URL rule non-matches for unrelated paths, hosts, query-only matches, userinfo, and raw substring traps.
+- URL extraction edge cases: repeated query param, empty query param, encoded channel IDs, mixed-case hosts, path-prefix extra segments, invalid YouTube IDs, and `channel` plus `v` on the same URL.
 - MTV `?channel=metal` resolution.
 - MTV `?v=<id>` and `/s/<id>` resolution.
 - Cartoon `?channel=heman` resolution.
@@ -576,10 +584,13 @@ Unit tests:
 - Malformed YouTube IDs skipped.
 - Consecutive failure cap stops queue.
 - Cache fallback on refresh failure.
+- Corrupt cache bodies and metadata checksum mismatches fall back without replacing active data.
 - End-of-queue behavior for sequential, shuffle, and first-then-shuffle.
-- Stale `OnStop` callbacks from manual next/previous do not mutate the new active queue.
+- Active queue item snapshots are preserved when catalog refresh replaces the provider catalog.
+- Stale `OnStop` callbacks from manual next/previous, EOF auto-advance, and resolve cancellation do not mutate the new active queue.
 - Foreign-adapter preemption clears only the matching active queue.
 - `allow_remote_manifest=false` ignores cached remote manifests.
+- `allow_cached_remote_manifest=true` uses cached remote overlays without fetching.
 
 Adapter tests:
 
@@ -591,6 +602,7 @@ Adapter tests:
 - URL adapter handoff calls pure `ResolveStreamURL` before normal URL routing.
 - Matched URL handoff calls `StartResolvedStream` exactly once and does not start playback from `ResolveStreamURL`.
 - Disabled streams adapter produces a clear URL handoff error.
+- Seek controls are absent when the active streams item has `CanSeek=false`.
 
 Core tests:
 
@@ -607,6 +619,7 @@ Fake HTTP server tests:
 - `304 Not Modified` keeps cached catalog.
 - Restarted bridge reuses persisted `ETag` metadata for conditional manifest and catalog fetches.
 - Remote manifest/catalog URLs that resolve to private, loopback, link-local, multicast, or unspecified addresses are rejected by default.
+- Remote manifest/catalog URLs using unsupported schemes, HTTP downgrade redirects, too many redirects, or disallowed hosts are rejected.
 - Malformed manifest leaves previous good manifest active.
 - Malformed provider catalog leaves previous good catalog active.
 - Oversized manifest/catalog is rejected.
@@ -614,11 +627,11 @@ Fake HTTP server tests:
 ## Rollout
 
 1. Add core EOF lifecycle fix with tests.
-2. Add `streams` adapter skeleton, config, cache, and manifest loading.
+2. Add `streams` adapter skeleton, config, cache, manifest loading, URL rule validation, and remote fetch security gates.
 3. Add `youtube-channel-json` provider and bundled MTV/Cartoon definitions.
-4. Add queue playback and controls.
-5. Add Web UI panel.
-6. Add URL adapter handoff.
+4. Add queue playback and URL adapter handoff for source-compatible provider links such as MTV `?channel=metal`.
+5. Add route-level controls and JSON/htmx status endpoints.
+6. Add Web UI panel.
 7. Add README section and example provider links.
 
 Each phase should be shippable behind `adapters.streams.enabled=false` until the full adapter is ready.
