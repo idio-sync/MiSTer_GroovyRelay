@@ -82,6 +82,28 @@ func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
 	}
 }
 
+func TestCompanion_OPTIONSPreflightAllowsPrivateNetworkAccess(t *testing.T) {
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "bridge-uuid", Version: "1.2.3"}, nil)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodOptions, ts.URL+"/player/timeline/poll", nil)
+	req.Header.Set("Origin", "https://app.plex.tv")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Private-Network", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Errorf("Access-Control-Allow-Private-Network = %q, want true", got)
+	}
+}
+
 func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
 	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "bridge-uuid", Version: "1.2.3"}, nil)
 	ts := newLoopbackServer(t, c.Handler())
