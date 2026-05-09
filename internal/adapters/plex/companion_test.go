@@ -120,6 +120,9 @@ func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
 	if got := resp.Header.Get("X-Plex-Client-Identifier"); got != "bridge-uuid" {
 		t.Errorf("X-Plex-Client-Identifier = %q, want bridge-uuid", got)
 	}
+	if got := resp.Header.Get("X-Plex-Provides"); got != "client,player" {
+		t.Errorf("X-Plex-Provides = %q, want client,player", got)
+	}
 
 	body, _ := io.ReadAll(resp.Body)
 	for _, want := range []string{
@@ -129,7 +132,7 @@ func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
 		`version="1.2.3"`,
 		`device="MiSTer"`,
 		`model="MiSTer"`,
-		`provides="player"`,
+		`provides="client,player"`,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("resources missing %q: %s", want, body)

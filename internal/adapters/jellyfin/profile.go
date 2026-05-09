@@ -76,7 +76,7 @@ func BuildDeviceProfile(maxVideoBitrateKbps int, preset core.ModelinePreset) Dev
 	height := preset.Modeline.SourceHeight()
 	fps := preset.Modeline.SourceFps()
 	return DeviceProfile{
-		Name:                "MiSTer_GroovyRelay",
+		Name:                "GroovyRelay",
 		MaxStreamingBitrate: maxVideoBitrateKbps * 1000,
 		DirectPlayProfiles:  []DirectPlayProfile{},
 		TranscodingProfiles: []TranscodingProfile{{
