@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	companionProduct  = "MiSTer_GroovyRelay"
+	companionProduct  = "GroovyRelay"
 	companionPlatform = "Linux"
 	companionDevice   = "MiSTer"
 	companionModel    = "MiSTer"
