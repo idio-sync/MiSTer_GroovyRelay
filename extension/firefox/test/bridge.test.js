@@ -54,6 +54,24 @@ describe("play() happy path", () => {
     expect(captured.body).toEqual({ url: "https://youtu.be/x", mode: "auto" });
   });
 
+  it("requests bridge host permission before POSTing when it is missing", async () => {
+    browser.permissions.contains.mockResolvedValueOnce(false);
+    browser.permissions.request.mockResolvedValueOnce(true);
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/adapter/url/play", () => {
+        return HttpResponse.json({ adapter_ref: "url:abc123" }, { status: 202 });
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await play("https://youtu.be/x");
+
+    expect(result).toEqual({ ok: true, adapter_ref: "url:abc123" });
+    expect(browser.permissions.request).toHaveBeenCalledWith({
+      origins: ["http://192.168.1.50/*"],
+    });
+  });
+
   it("uses provided mode parameter", async () => {
     let capturedBody;
     server.use(

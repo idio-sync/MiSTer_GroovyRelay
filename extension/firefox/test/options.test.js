@@ -86,6 +86,36 @@ describe("testConnection", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  it("requests bridge host permission before testing when it is missing", async () => {
+    browser.permissions.contains.mockResolvedValueOnce(false);
+    browser.permissions.request.mockResolvedValueOnce(true);
+    server.use(
+      http.get("http://192.168.1.50:32500/ui/adapter/url/panel", () => {
+        return new HttpResponse("<div>panel</div>", { status: 200 });
+      })
+    );
+
+    const result = await testConnection("http://192.168.1.50:32500");
+
+    expect(result).toEqual({ ok: true });
+    expect(browser.permissions.contains).toHaveBeenCalledWith({
+      origins: ["http://192.168.1.50/*"],
+    });
+    expect(browser.permissions.request).toHaveBeenCalledWith({
+      origins: ["http://192.168.1.50/*"],
+    });
+  });
+
+  it("returns a permission error when bridge host permission is denied", async () => {
+    browser.permissions.contains.mockResolvedValueOnce(false);
+    browser.permissions.request.mockResolvedValueOnce(false);
+
+    const result = await testConnection("http://192.168.1.50:32500");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/permission/i);
+  });
+
   it("returns ok:false with status code on 404", async () => {
     server.use(
       http.get("http://192.168.1.50:32500/ui/adapter/url/panel", () => {

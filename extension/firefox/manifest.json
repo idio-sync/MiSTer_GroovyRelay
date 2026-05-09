@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "MiSTer GroovyRelay Companion",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Cast pages, links, and videos to a MiSTer GroovyRelay bridge.",
   "permissions": ["activeTab", "contextMenus", "storage", "notifications"],
   "host_permissions": ["<all_urls>"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "scripts": ["src/background.js"],
     "service_worker": "src/background.js",

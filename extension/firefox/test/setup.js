@@ -44,6 +44,10 @@ const browserMock = {
   notifications: {
     create: vi.fn(async () => "notification-id"),
   },
+  permissions: {
+    contains: vi.fn(async () => true),
+    request: vi.fn(async () => true),
+  },
 };
 
 globalThis.browser = browserMock;
@@ -52,4 +56,6 @@ globalThis.chrome = browserMock;
 beforeEach(async () => {
   storageBacking = {};
   vi.clearAllMocks();
+  browserMock.permissions.contains.mockResolvedValue(true);
+  browserMock.permissions.request.mockResolvedValue(true);
 });

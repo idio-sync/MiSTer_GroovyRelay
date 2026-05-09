@@ -1,3 +1,5 @@
+import { ensureBridgeHostPermission } from "./permissions.js";
+
 const DEFAULT_TIMEOUT_MS = 15000;
 let timeoutMs = DEFAULT_TIMEOUT_MS;
 
@@ -13,6 +15,9 @@ export async function getBridgeURL() {
 export async function play(url, mode = "auto") {
   const bridgeURL = await getBridgeURL();
   if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
+
+  const permission = await ensureBridgeHostPermission(bridgeURL);
+  if (!permission.ok) return permission;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -54,6 +59,9 @@ export async function play(url, mode = "auto") {
 export async function launchGroovyMister() {
   const bridgeURL = await getBridgeURL();
   if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
+
+  const permission = await ensureBridgeHostPermission(bridgeURL);
+  if (!permission.ok) return permission;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
