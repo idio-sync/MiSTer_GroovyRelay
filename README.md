@@ -10,12 +10,12 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Plex
 - Jellyfin
 - URL to video file (Archive.org .mkv, .mp4, etc.)
+- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
 - YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 
 ## Future Plans
 - Support for more relay sources:
   - DLNA/UPnP
-  - IPTV/M3U playlists
   - Moonlight/Sunshine
 - Music visualizer
 - Better webui/dashboard and setup wizard
