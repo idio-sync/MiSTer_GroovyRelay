@@ -12,6 +12,19 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
+// newDiscoveryFn is the package-level seam Adapter.Start calls instead
+// of NewDiscovery directly. Rebound by tests to a fake constructor that
+// captures the DiscoveryConfig and returns a fake discoveryRunner (or
+// an error to drive the StateError path) — same pattern Plex uses for
+// its GDM Discovery (internal/adapters/plex/discovery.go:60).
+//
+// Returns discoveryRunner (not *Discovery) so tests can substitute a
+// no-socket fake. Production wraps NewDiscovery so its concrete
+// *Discovery satisfies the interface.
+var newDiscoveryFn = func(cfg DiscoveryConfig) (discoveryRunner, error) {
+	return NewDiscovery(cfg)
+}
+
 // Adapter implements adapters.Adapter for the DLNA / UPnP MediaRenderer
 // cast source. Spec:
 // docs/superpowers/specs/2026-05-03-dlna-mediarenderer-design.md.
@@ -46,6 +59,23 @@ type Adapter struct {
 	state      adapters.State
 	lastErr    string
 	stateSince time.Time
+
+	// discovery and discoveryDone are owned by Start/Stop. discovery is
+	// nil when the adapter is disabled, when Start hasn't run, or after
+	// Stop. discoveryDone is the close signal from the Run goroutine; we
+	// block on it inside Stop so Stop returns only after SSDP has
+	// fully shut down (mirror of plex.Adapter.discoDone).
+	discovery     discoveryRunner
+	discoveryDone chan struct{}
+}
+
+// discoveryRunner is the small interface Adapter.Start uses to drive
+// SSDP. Production binds the *Discovery returned by NewDiscovery; tests
+// substitute a fake via newDiscoveryFn that records Run/Close calls
+// without binding sockets. Mirrors the plex.packetWriter seam-shape.
+type discoveryRunner interface {
+	Run(ctx context.Context)
+	Close() error
 }
 
 // AdapterConfig bundles the bridge-level context the DLNA adapter
@@ -149,11 +179,14 @@ func (a *Adapter) IsEnabled() bool {
 func (a *Adapter) Start(ctx context.Context) error {
 	a.mu.Lock()
 	enabled := a.cfg.Enabled
+	deviceName := a.cfg.DeviceName
 	a.mu.Unlock()
 
 	if !enabled {
 		// No-op: Start can be called by main.go on every adapter,
-		// including ones the operator left disabled. Keep StateStopped.
+		// including ones the operator left disabled. Keep StateStopped
+		// and don't construct Discovery (asserted by
+		// TestAdapterStart_NoDiscoveryWhenDisabled).
 		return nil
 	}
 
@@ -164,14 +197,60 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("dlna: %s", msg)
 	}
 
+	// Spec line 261: "If SSDP bind or multicast join fails, Start
+	// should set adapter state to StateError and return the error."
+	// NewDiscovery wraps the underlying join error; Start translates
+	// that into the state machine.
+	disco, err := newDiscoveryFn(DiscoveryConfig{
+		DeviceUUID: a.deviceUUID,
+		DeviceName: deviceName,
+		HostIP:     trimmed,
+		HTTPPort:   a.httpPort,
+	})
+	if err != nil {
+		a.setState(adapters.StateError, err.Error())
+		return err
+	}
+
+	done := make(chan struct{})
+	a.mu.Lock()
+	a.discovery = disco
+	a.discoveryDone = done
+	a.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		disco.Run(ctx)
+	}()
+
 	a.setState(adapters.StateRunning, "")
 	return nil
 }
 
-// Stop tears down SSDP background work and returns nil. Phase 1 has
-// no SSDP yet, so this is just a state mutation. Stopping a disabled
-// adapter is a no-op (already in StateStopped).
+// Stop tears down SSDP background work and returns nil. Closing
+// discovery sends the byebye burst, unblocks the Run goroutine, and
+// frees the multicast/sender sockets. We block on discoveryDone so
+// Stop returns only once SSDP has fully shut down — main.go assumes
+// adapter shutdown is synchronous and a leaked goroutine would race
+// the bridge's HTTP listener teardown.
+//
+// Stopping a disabled adapter (where discovery was never constructed)
+// is a no-op state mutation.
 func (a *Adapter) Stop() error {
+	a.mu.Lock()
+	disco := a.discovery
+	done := a.discoveryDone
+	a.discovery = nil
+	a.discoveryDone = nil
+	a.mu.Unlock()
+
+	if disco != nil {
+		_ = disco.Close()
+		if done != nil {
+			<-done
+		}
+	}
+
 	a.setState(adapters.StateStopped, "")
 	return nil
 }
