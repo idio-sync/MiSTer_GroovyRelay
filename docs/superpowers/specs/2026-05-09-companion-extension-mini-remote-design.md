@@ -102,7 +102,9 @@ Motion should be CSS-only:
 
 Add `internal/ui/companion.go` and register routes from `Server.Mount`.
 
-All routes live under `/ui/companion/*`, use the existing extension CORS middleware, and wrap mutating methods in `csrfMiddleware`. The current extension bypass remains the security contract: extension origin plus `X-Bridge-Extension: 1`.
+All routes live under `/ui/companion/*` and use a companion-specific extension gate. This gate is stricter than the normal UI read path: every non-`OPTIONS` companion request, including `GET /ui/companion/status`, must include both an extension-scheme `Origin` and `X-Bridge-Extension: 1`. CORS preflight requests still return `204` with the existing extension CORS headers. Rejected companion requests return JSON `403`.
+
+The regular UI remains LAN-readable as before. The companion API is different because it exposes URL history and session metadata in a machine-readable form.
 
 ### Routes
 
@@ -114,6 +116,63 @@ All routes live under `/ui/companion/*`, use the existing extension CORS middlew
 | `POST` | `/ui/companion/history/play` | Recast a URL history entry |
 | `POST` | `/ui/companion/history/delete` | Delete a URL history entry |
 | `POST` | `/ui/companion/launch` | Launch GroovyMiSTer over SSH |
+
+### Server Dependencies
+
+Extend `ui.Config` with explicit companion dependencies. The UI package must not import concrete URL adapter internals or inspect unexported history/control state.
+
+```go
+type CompanionSessionProvider interface {
+	Status() core.SessionStatus
+}
+
+type CompanionPlayResult struct {
+	AdapterRef  string
+	ResolvedVia string
+}
+
+type CompanionHistoryEntry struct {
+	ID         string
+	Title      string
+	URLDisplay string
+	LastPlayed time.Time
+}
+
+type CompanionSessionDisplay struct {
+	AdapterName   string
+	Title         string
+	SourceDisplay string
+	ResolvedVia   string
+}
+
+type CompanionURLSource interface {
+	CompanionPlay(ctx context.Context, rawURL, mode string) (CompanionPlayResult, error)
+	CompanionPause(ctx context.Context) error
+	CompanionResume(ctx context.Context) error
+	CompanionStop(ctx context.Context) error
+	CompanionReplay(ctx context.Context) (CompanionPlayResult, error)
+	CompanionSeek(ctx context.Context, offsetMs int) error
+	CompanionHistory() []CompanionHistoryEntry
+	CompanionHistoryPlay(ctx context.Context, id string) (CompanionPlayResult, error)
+	CompanionHistoryDelete(ctx context.Context, id string) error
+	CompanionLastURLDisplay() string
+}
+
+type CompanionDisplayProvider interface {
+	CompanionDisplay(adapterRef string) CompanionSessionDisplay
+}
+```
+
+`core.Manager` satisfies `CompanionSessionProvider`. The URL adapter implements `CompanionURLSource` by factoring its existing `castURL`, pause/resume/stop/replay/seek, and history logic out of HTML handlers into reusable methods. `CompanionDisplayProvider` is optional; v1 can use it for URL display/title if implemented and otherwise fall back to `AdapterRef`.
+
+`ui.Config` gains:
+
+```go
+CompanionSession CompanionSessionProvider
+CompanionURL     CompanionURLSource
+```
+
+`MisterLauncher` remains the launch dependency. The registry remains the source for adapter lifecycle badges.
 
 ### Status Response
 
@@ -162,8 +221,8 @@ Fields that are expensive or unavailable may be omitted or returned as empty str
 
 Use existing state first:
 
-- `core.Manager.Status()` for state, adapter ref, position, duration, and started time.
-- URL adapter state/history for last URL, history titles, and URL ownership.
+- `CompanionSessionProvider.Status()` for state, adapter ref, position, duration, and started time.
+- `CompanionURLSource` for URL history, last URL display, URL-owned controls, and URL ownership checks.
 - Adapter registry for enabled/disabled/running/error status.
 - `MisterLauncher` wiring only for launch; do not probe MiSTer on every popup open.
 
@@ -181,11 +240,13 @@ Capabilities are server-owned. The extension never infers permission from adapte
   - `can_seek` when duration is known and URL adapter can seek.
 - Foreign active session:
   - Show status for any adapter.
-  - Enable only controls backed by the active adapter or manager and explicitly marked safe.
-  - For the first implementation, foreign sessions may be read-only except `can_stop` if the bridge already treats global stop as safe. Default to read-only when unsure.
+  - V1 renders foreign sessions read-only: all control capability flags are `false`.
+  - A later adapter-owned companion-control interface may expose safe controls for Plex, Jellyfin, or DLNA, but that is out of scope for this first mini-remote pass.
 - Idle:
   - No session controls.
   - Show cast, launch, open UI, settings, and history.
+
+This read-only default prevents the popup from accidentally exposing global manager controls for sessions whose owning adapter has stronger protocol semantics than the URL adapter.
 
 ### Mutating Request Shapes
 
@@ -215,7 +276,9 @@ Allowed actions: `pause`, `resume`, `stop`, `replay`, `seek`.
 { "id": "0" }
 ```
 
-The `id` is an opaque history identifier from the status response. It may map to the existing index internally in v1, but the response should not expose raw URLs just to recast them.
+The `id` is a stable opaque history identifier from the status response. It must not be the current list index because URL history reorders on recast. Implement this by adding an `id` field to URL history entries, generated as a random 128-bit value when an entry is created. Existing history entries loaded from older files receive an id during load and are saved on the next history mutation.
+
+The extension sends only the id back. The response does not expose raw URLs just to recast them.
 
 `POST /ui/companion/history/delete`
 
@@ -227,21 +290,41 @@ The `id` is an opaque history identifier from the status response. It may map to
 
 ### Error Responses
 
-Return JSON for all companion routes:
+Return JSON for all companion application responses:
 
 ```json
 { "ok": false, "error": "active session belongs to another adapter" }
 ```
 
+CORS preflight is the only exception: `OPTIONS /ui/companion/*` returns `204` with no JSON body.
+
 Status codes:
 
 - `400` for malformed JSON, unsupported action, bad URL, or missing required field.
-- `403` from existing CSRF/extension checks.
+- `403` from the companion extension gate.
 - `404` for unknown history id.
 - `409` for state/capability conflicts.
 - `500` for bridge-side failures.
 
 Errors should be short, operator-readable, and redact URL credentials.
+
+### Companion Extension Gate
+
+Add a helper near `cors.go` / `csrf.go`:
+
+```go
+func companionExtensionGate(next http.Handler) http.Handler
+```
+
+Behavior:
+
+- `OPTIONS` uses `handleExtensionCORSPreflight`.
+- Non-`OPTIONS` requires `isExtensionOrigin(r.Header.Get("Origin"))`.
+- Non-`OPTIONS` requires `X-Bridge-Extension: 1`.
+- Success sets extension CORS headers and calls the route.
+- Failure returns `403` JSON with `Content-Type: application/json`.
+
+Because this gate already requires the exact extension-origin/header pair used by the existing CSRF bypass, companion POST routes should not rely on the generic `csrfMiddleware` for rejection behavior. If the implementation still composes a CSRF check for defense in depth, it must be a JSON-aware variant so the companion error contract remains true.
 
 ## Extension Architecture
 
@@ -264,6 +347,8 @@ extension/firefox/src/
 ```
 
 No new framework and no build-step change beyond including the packaged font assets in the extension archive.
+
+All companion client calls, including `GET /ui/companion/status`, send `X-Bridge-Extension: 1`. The browser supplies the extension-scheme `Origin`; the companion extension gate validates both.
 
 ### Popup State Machine
 
@@ -377,16 +462,20 @@ popup history id
 - `POST /ui/companion/play`:
   - valid JSON delegates to URL adapter and returns adapter ref.
   - malformed JSON and bad URL return `400`.
-  - extension CSRF path still required for mutating calls.
+  - companion extension gate rejects missing header, non-extension origin, and extension origin without header with JSON `403`.
+  - CORS preflight returns `204` with extension CORS headers.
+  - every error path redacts URL credentials.
 - `POST /ui/companion/control`:
   - pause/resume/stop/replay/seek happy paths.
   - foreign ownership conflict returns `409`.
   - seek without duration returns `409`.
   - unsupported action returns `400`.
 - History:
-  - recast by id.
-  - delete by id.
+  - recast by stable id.
+  - delete by stable id.
   - missing id returns `404`.
+  - stale id after history reorder does not act on the wrong entry.
+  - old history file entries without ids receive stable ids.
 - Launch:
   - success returns JSON ok.
   - launcher error returns JSON error with appropriate status.
@@ -409,6 +498,9 @@ popup history id
 - Options tests:
   - URL validation unchanged.
   - test connection uses companion status.
+- Manifest/release tests:
+  - `package.json` and `manifest.json` versions stay in sync.
+  - build/package checks include the new font assets.
 
 ### Manual Verification
 
