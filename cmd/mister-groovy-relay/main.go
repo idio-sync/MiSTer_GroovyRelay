@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
@@ -185,6 +186,25 @@ func main() {
 	jfAdapter.SetVersion(version)
 	if err := reg.Register(jfAdapter); err != nil {
 		dieFriendly("registry register jellyfin", err)
+	}
+
+	// DLNA / UPnP MediaRenderer adapter (Phase 1: descriptors + SSDP +
+	// Phase-1 SOAP surface; playback in Phase 2+).
+	// Spec: docs/superpowers/specs/2026-05-03-dlna-mediarenderer-design.md.
+	//
+	// Future adapters follow the same construct-then-Register pattern.
+	// /dlna/* HTTP routes mount via the PublicRouteProvider walk below;
+	// no explicit MountRoutes call is needed here.
+	dlnaAdapter, err := dlna.New(dlna.AdapterConfig{
+		DeviceUUID: store.DeviceUUID,
+		HostIP:     hostIP,
+		HTTPPort:   sec.Bridge.UI.HTTPPort,
+	})
+	if err != nil {
+		dieFriendly("dlna adapter init", err)
+	}
+	if err := reg.Register(dlnaAdapter); err != nil {
+		dieFriendly("registry register dlna", err)
 	}
 
 	for _, a := range reg.List() {

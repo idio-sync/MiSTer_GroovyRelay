@@ -11,10 +11,10 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Jellyfin
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
+- DLNA / UPnP MediaRenderer (Phase 1: discoverable + descriptors + query-only SOAP; playback lands in a follow-up release)
 
 ## Future Plans
 - Support for more relay sources:
-  - DLNA/UPnP
   - IPTV/M3U playlists
   - Moonlight/Sunshine
 - Music visualizer
@@ -167,6 +167,61 @@ The Docker image bundles a recent yt-dlp binary at build time. On each
 container start, the entrypoint runs `yt-dlp -U` (gated by a daily
 marker file so hourly restarts don't hammer GitHub). Failed updates
 log a warning; the bundled version stays usable.
+
+## DLNA / UPnP adapter
+
+The DLNA adapter advertises the bridge as a UPnP `MediaRenderer:1`
+device on the LAN. Any DLNA control point (VLC, BubbleUPnP, Kodi,
+Windows "Cast to device", etc.) on the same subnet can pick the bridge
+as a render target and push media at it. The bridge then translates
+the controller's `SetAVTransportURI` + `Play` into a core session and
+streams to the MiSTer like any other adapter.
+
+> **WARNING:** DLNA exposes **unauthenticated LAN control**. The UPnP
+> spec has no notion of pairing or auth — any device on the LAN that
+> can reach the bridge's HTTP port can change what's playing. The
+> adapter is **disabled by default** for that reason. Only enable it on
+> trusted networks (home LAN, lab subnet) and never on a network shared
+> with untrusted clients.
+
+**Required configuration.** When DLNA is enabled the bridge must know
+its own LAN IP so it can advertise a reachable `LOCATION` URL in SSDP
+NOTIFY packets and the device descriptor. Set `bridge.host_ip`
+explicitly in `config.toml` (recommended), or rely on the default-route
+autodetect (the same logic used for the Plex `/resources` response —
+see [Multi-NIC hosts](#multi-nic-hosts)). If `bridge.host_ip` ends up
+empty when DLNA is enabled, `Start` fails with `StateError` and the
+sidebar entry shows the misconfig.
+
+**Config (`[adapters.dlna]`):**
+
+```toml
+[adapters.dlna]
+enabled = false                   # Set to true to advertise as a DLNA / UPnP MediaRenderer.
+                                  # WARNING: DLNA exposes unauthenticated LAN control —
+                                  # any device on the LAN can change what plays.
+device_name = "MiSTer"            # Friendly name shown in DLNA controllers.
+                                  # Restart-bridge: changes apply on next start.
+autoplay_on_set_uri = false       # Some controllers set a URI but never send Play.
+                                  # Enable for compatibility with those controllers.
+allow_public_source_urls = false  # Default false; private/LAN targets always allowed.
+                                  # When true, accepts media URLs that resolve to
+                                  # public-internet addresses (SSRF risk).
+```
+
+**Phase 1 scope.** v1 ships descriptors + discovery (SSDP NOTIFY /
+M-SEARCH / byebye) + a query-only SOAP surface (`GetTransportInfo`,
+`GetMediaInfo`, `GetPositionInfo`, `GetProtocolInfo`, RenderingControl
+volume/mute getters/setters against a virtual state). Playback actions
+(`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`) and GENA
+eventing (`SUBSCRIBE` / `NOTIFY`) land in a follow-up release —
+controllers will see the device, browse it, and probe its state, but
+hitting Play is a no-op until Phase 2.
+
+**Compatibility testing pending** for VLC, BubbleUPnP, Kodi, and
+Windows "Cast to device". File issues with the controller name and
+bridge log output if a control point misbehaves against the Phase 1
+surface.
 
 ## Settings UI
 
