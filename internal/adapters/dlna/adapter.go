@@ -211,9 +211,11 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	if err := newCfg.Validate(); err != nil {
 		// Don't transition to StateError on Validate failure: the save
 		// path rejects the change before disk write, so the running
-		// config is unaffected. Mirrors URL adapter's ApplyConfig
-		// behavior wrt validation errors leaving state alone (a
-		// validation-time error is not a runtime error).
+		// adapter is unaffected. A validation-time error is a UI-level
+		// rejection, not a runtime error, and BridgeSaver expects the
+		// adapter's State to remain unchanged across a rejected save.
+		// (The URL adapter currently does setState(StateError) here —
+		// known divergence; DLNA follows the spec.)
 		return 0, err
 	}
 
@@ -222,6 +224,12 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	a.cfg = newCfg
 	a.mu.Unlock()
 
+	// Per-field scope contributions per spec §Config (the "Field
+	// meanings and ApplyScope" table). The Enabled / AutoplayOnSetURI /
+	// AllowPublicSourceURLs branches are arithmetically no-ops today
+	// (all three are HotSwap, the floor — MaxScope(HotSwap, HotSwap) ==
+	// HotSwap) but are kept explicit so a future field with a higher
+	// scope adds a row to this table without inverting the structure.
 	scope := adapters.ScopeHotSwap
 	if oldCfg.Enabled != newCfg.Enabled {
 		scope = adapters.MaxScope(scope, adapters.ScopeHotSwap)

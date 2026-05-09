@@ -31,29 +31,27 @@ const phase1PlaceholderBody = "DLNA Phase 1 placeholder; descriptors and SOAP ar
 // every method (returning 503) because the goal is route claiming;
 // T4 will tighten dispatch and reject unknown methods with 405.
 func (a *Adapter) MountPublicRoutes(mux *http.ServeMux) {
-	stub := stubHandler
-
 	// Descriptors: device + per-service SCPD documents (GET only in v1).
 	// We use Go 1.22's method-prefixed pattern syntax for these — they
 	// only need to dispatch on GET, and the pattern enforces 405 on
 	// other methods automatically.
-	mux.HandleFunc("GET /dlna/device.xml", stub)
-	mux.HandleFunc("GET /dlna/AVTransport.xml", stub)
-	mux.HandleFunc("GET /dlna/ConnectionManager.xml", stub)
-	mux.HandleFunc("GET /dlna/RenderingControl.xml", stub)
+	mux.HandleFunc("GET /dlna/device.xml", stubHandler)
+	mux.HandleFunc("GET /dlna/AVTransport.xml", stubHandler)
+	mux.HandleFunc("GET /dlna/ConnectionManager.xml", stubHandler)
+	mux.HandleFunc("GET /dlna/RenderingControl.xml", stubHandler)
 
 	// SOAP control endpoints: POST only.
-	mux.HandleFunc("POST /dlna/control/AVTransport", stub)
-	mux.HandleFunc("POST /dlna/control/ConnectionManager", stub)
-	mux.HandleFunc("POST /dlna/control/RenderingControl", stub)
+	mux.HandleFunc("POST /dlna/control/AVTransport", stubHandler)
+	mux.HandleFunc("POST /dlna/control/ConnectionManager", stubHandler)
+	mux.HandleFunc("POST /dlna/control/RenderingControl", stubHandler)
 
 	// Eventing endpoints: SUBSCRIBE/UNSUBSCRIBE are non-standard HTTP
 	// methods — register path-only and dispatch in the handler. Phase
 	// 1 stubs accept any method to keep route registration simple;
 	// T4 will switch to method-aware handlers that 405 on Unknown.
-	mux.HandleFunc("/dlna/event/AVTransport", stub)
-	mux.HandleFunc("/dlna/event/RenderingControl", stub)
-	mux.HandleFunc("/dlna/event/ConnectionManager", stub)
+	mux.HandleFunc("/dlna/event/AVTransport", stubHandler)
+	mux.HandleFunc("/dlna/event/RenderingControl", stubHandler)
+	mux.HandleFunc("/dlna/event/ConnectionManager", stubHandler)
 }
 
 // stubHandler returns 503 with the Phase 1 placeholder body. Kept as a
