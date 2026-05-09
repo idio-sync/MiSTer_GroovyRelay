@@ -1,8 +1,6 @@
 package dlna
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/xml"
 	"strings"
 	"testing"
@@ -76,64 +74,21 @@ func TestDeviceXML_ParsesAsXML(t *testing.T) {
 
 // ---- SCPD invariants ----
 
-// scpdGoldenHashes pins the SHA-256 hash of each SCPD body. Any
-// intentional broadening (adding actions, broadening MIME, fixing
-// argument names) must update both the const string in descriptors.go
-// and the corresponding hash here. The pair-update is the deliberate
-// gate the spec asks for at line 584.
-//
-// Hashes are computed from the const strings at first run (TestMain
-// would have to populate them) — we instead generate-and-pin via the
-// helper testGoldenSHA256 below.
-var scpdGoldenHashes = map[string]string{
-	"avTransport":         goldenSHA256(avTransportSCPD),
-	"connectionManager":   goldenSHA256(connectionManagerSCPD),
-	"renderingControl":    goldenSHA256(renderingControlSCPD),
-}
-
-// goldenSHA256 is intentionally NOT a hard-coded hex string — the test
-// computes it once at startup. The "golden test" here lives in the
-// stability assertion: the constants define the contract, and any
-// edit to those constants is intentionally observable through the
-// matching hash check below. This pattern documents the contract
-// without forcing the developer to manually re-derive the hash on
-// every cosmetic edit.
-func goldenSHA256(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-// TestSCPDsAreNonEmptyAndDeterministic proves each SCPD body is
-// non-empty and that goldenSHA256 produces a stable hash for it.
-// The map values are the pins — if a future edit changes one of the
-// const strings without updating expected_hashes_test.go (or this
-// test), the next run will surface the diff via the explicit
-// comparison block below.
-func TestSCPDsAreNonEmptyAndDeterministic(t *testing.T) {
-	for name, body := range map[string]string{
-		"avTransport":       avTransportSCPD,
-		"connectionManager": connectionManagerSCPD,
-		"renderingControl":  renderingControlSCPD,
-	} {
-		if len(body) == 0 {
-			t.Errorf("%s SCPD is empty", name)
-		}
-		// Recomputing the hash must match the cached value.
-		if got := goldenSHA256(body); got != scpdGoldenHashes[name] {
-			t.Errorf("%s SCPD hash drifted: got %s, want %s", name, got, scpdGoldenHashes[name])
-		}
-	}
-}
-
-// TestSCPDsParseAsXML confirms each SCPD is well-formed XML.
-// `xmlns="..."` on <scpd> is required by UPnP, and the underlying
-// XML decoder rejects mismatched tags or invalid character data.
+// TestSCPDsParseAsXML confirms each SCPD is well-formed XML and
+// non-empty. `xmlns="..."` on <scpd> is required by UPnP, and the
+// underlying XML decoder rejects mismatched tags or invalid character
+// data. The non-empty check guards against a future const accidentally
+// being nil'd out; structural invariants live in TestSCPDActionLists
+// and TestSCPDEventedStateVariables.
 func TestSCPDsParseAsXML(t *testing.T) {
 	for name, body := range map[string]string{
 		"avTransport":       avTransportSCPD,
 		"connectionManager": connectionManagerSCPD,
 		"renderingControl":  renderingControlSCPD,
 	} {
+		if len(body) == 0 {
+			t.Fatalf("%s SCPD is empty", name)
+		}
 		var dummy struct {
 			XMLName xml.Name
 		}

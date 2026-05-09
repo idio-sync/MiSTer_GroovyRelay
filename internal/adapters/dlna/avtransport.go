@@ -1,7 +1,6 @@
 package dlna
 
 import (
-	"errors"
 	"net/http"
 )
 
@@ -54,16 +53,12 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 
 	_, args, err := parseSOAPRequest(w, r)
 	if err != nil {
-		// Body parse errors map to InvalidArgs — the controller sent a
-		// malformed envelope. errSOAPBodyTooLarge is already terminal
-		// (MaxBytesReader has written a 413 internally), so we still
-		// emit the SOAP fault but the actual on-wire status will be
-		// whichever response the writer produced first. In practice
-		// this is fine: oversized SOAP is exotic.
-		if errors.Is(err, errSOAPBodyTooLarge) || errors.Is(err, errSOAPMissingBody) || errors.Is(err, errSOAPMissingAction) {
-			writeSOAPFault(w, upnpErrInvalidArgs)
-			return
-		}
+		// All parse failures (oversized body, empty body, missing
+		// action element, malformed XML) map to InvalidArgs — the
+		// controller sent a malformed envelope. MaxBytesReader sets
+		// Connection: close on the response and stops the read with
+		// *http.MaxBytesError on the next Read; we still emit a SOAP
+		// fault as the response body, then the connection closes.
 		writeSOAPFault(w, upnpErrInvalidArgs)
 		return
 	}

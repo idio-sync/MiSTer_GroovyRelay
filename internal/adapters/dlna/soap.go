@@ -244,6 +244,7 @@ func writeSOAPFault(w http.ResponseWriter, code upnpErrorCode) {
 	buf.WriteString(`</s:Body></s:Envelope>`)
 
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
+	w.Header().Set("EXT", "")
 	w.WriteHeader(http.StatusInternalServerError)
 	_, _ = w.Write(buf.Bytes())
 }

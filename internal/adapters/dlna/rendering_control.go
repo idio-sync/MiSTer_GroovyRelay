@@ -1,7 +1,6 @@
 package dlna
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 )
@@ -44,10 +43,12 @@ func (a *Adapter) handleRenderingControlSOAP(w http.ResponseWriter, r *http.Requ
 
 	_, args, err := parseSOAPRequest(w, r)
 	if err != nil {
-		if errors.Is(err, errSOAPBodyTooLarge) || errors.Is(err, errSOAPMissingBody) || errors.Is(err, errSOAPMissingAction) {
-			writeSOAPFault(w, upnpErrInvalidArgs)
-			return
-		}
+		// All parse failures (oversized body, empty body, missing
+		// action element, malformed XML) map to InvalidArgs — the
+		// controller sent a malformed envelope. MaxBytesReader sets
+		// Connection: close on the response and stops the read with
+		// *http.MaxBytesError on the next Read; we still emit a SOAP
+		// fault as the response body, then the connection closes.
 		writeSOAPFault(w, upnpErrInvalidArgs)
 		return
 	}

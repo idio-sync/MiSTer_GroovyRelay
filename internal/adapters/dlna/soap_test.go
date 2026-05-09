@@ -176,6 +176,13 @@ func TestWriteSOAPFault_Shape(t *testing.T) {
 	if ct != `text/xml; charset="utf-8"` {
 		t.Errorf("Content-Type = %q, want %q", ct, `text/xml; charset="utf-8"`)
 	}
+	// UPnP DCP requires every control response (success and fault) to
+	// carry an empty EXT header. http.Header.Get returns "" both for
+	// "header not present" and "header set to empty string" — use the
+	// raw map so we can distinguish.
+	if _, ok := rr.Header()["Ext"]; !ok {
+		t.Errorf("EXT header missing; UPnP requires empty EXT on fault responses\nheaders: %v", rr.Header())
+	}
 	body := rr.Body.String()
 	wantSubstrings := []string{
 		`<s:Envelope`,
