@@ -119,7 +119,7 @@ The regular UI remains LAN-readable as before. The companion API is different be
 
 ### Threat Model Note
 
-The companion extension gate is an anti-CSRF and privacy boundary for the browser extension path, not full bridge authentication. It prevents ordinary web pages from reading companion JSON or issuing companion commands, but it does not change the bridge's LAN-trusted posture or authenticate a human user. Rate limiting is deferred because the first version is local companion traffic on the existing trusted UI listener; if the bridge later grows auth or non-LAN exposure, companion routes must inherit that auth.
+The companion extension gate is an anti-CSRF and privacy boundary for the browser extension path, not full bridge authentication. It prevents ordinary web pages from reading companion JSON or issuing companion commands, but it does not change the bridge's LAN-bound, unauthenticated posture or authenticate a human user. Rate limiting is deferred because the first version is local companion traffic on the existing UI listener; if the bridge later grows auth or non-LAN exposure, companion routes must inherit that auth.
 
 ### Server Dependencies
 
@@ -133,6 +133,11 @@ type CompanionSessionProvider interface {
 type CompanionPlayResult struct {
 	AdapterRef  string
 	ResolvedVia string
+}
+
+type CompanionError interface {
+	error
+	HTTPStatus() int
 }
 
 type CompanionHistoryEntry struct {
@@ -181,6 +186,8 @@ CompanionDisplay CompanionDisplayProvider
 
 Read methods on these companion interfaces are point-in-time snapshots and do not take `context.Context`. Context is reserved for mutating operations that may block on resolution, launch, or manager control.
 
+`CompanionURLSource` errors that should map to non-`500` responses implement `CompanionError`; the route uses `HTTPStatus()` for the JSON response status. Any other error becomes `500`. This preserves the existing URL adapter distinction between bad input (`400`), state/capability conflicts (`409`), missing history ids (`404`), and resolver or manager failures (`500`) without leaking adapter internals into `internal/ui`.
+
 ### Status Response
 
 `GET /ui/companion/status` returns a single popup view model:
@@ -224,6 +231,8 @@ Read methods on these companion interfaces are point-in-time snapshots and do no
 
 Optional fields that are expensive or unavailable are omitted from the JSON response. The extension should still tolerate empty strings defensively, but the bridge emits omission rather than mixing omission and empty-string semantics.
 
+`session.state` is the same enum exposed by `core.SessionStatus.State`: `idle`, `playing`, or `paused`. Companion mutation responses that include a `state` field use this same enum, never adapter-local lifecycle strings such as `running`.
+
 ### Status Data Sources
 
 Use existing state first:
@@ -257,7 +266,7 @@ This read-only default prevents the popup from accidentally exposing global mana
 
 ### Mutating Request Shapes
 
-All companion POST routes consume JSON request bodies, except `/ui/companion/launch`, which accepts an empty body. POSTs with any non-empty unsupported `Content-Type` return `415`.
+All companion POST routes with request bodies require `Content-Type: application/json`. Missing `Content-Type` with a non-empty body and unsupported non-empty content types return `415`. `/ui/companion/launch` accepts an empty body without `Content-Type`.
 
 `POST /ui/companion/play`
 
@@ -268,8 +277,10 @@ All companion POST routes consume JSON request bodies, except `/ui/companion/lau
 Delegates to the URL adapter's existing cast logic. Success returns `202 Accepted`:
 
 ```json
-{ "ok": true, "adapter_ref": "url:abc123", "state": "running", "resolved_via": "ytdlp" }
+{ "ok": true, "adapter_ref": "url:abc123", "state": "playing", "resolved_via": "ytdlp" }
 ```
+
+The companion play route must not reuse the URL adapter's existing `respondStarted` helper. That helper is tied to HTML/legacy URL API behavior, echoes the submitted URL in the JSON branch, and uses adapter-local response shape; companion play builds its own JSON envelope.
 
 `POST /ui/companion/control`
 
@@ -277,7 +288,7 @@ Delegates to the URL adapter's existing cast logic. Success returns `202 Accepte
 { "action": "seek", "offset_ms": 90000 }
 ```
 
-Allowed actions: `pause`, `resume`, `stop`, `replay`, `seek`. In v1, the server dispatches these actions only when the active `AdapterRef` is URL-owned and the corresponding URL capability flag is true. Non-URL sessions return `409` rather than calling global manager controls.
+Allowed actions: `pause`, `resume`, `stop`, `replay`, `seek`. In v1, the server dispatches these actions only when the active `AdapterRef` is URL-owned and the corresponding URL capability flag is true. Non-URL sessions return `409` rather than calling global manager controls. `offset_ms` for `seek` is an absolute offset from the beginning of the media, not a relative delta.
 
 Success returns `200 OK`:
 
@@ -298,7 +309,7 @@ The extension sends only the id back. The response does not expose raw URLs just
 Success returns `202 Accepted` because recast starts a new URL session:
 
 ```json
-{ "ok": true, "adapter_ref": "url:def456", "state": "running", "resolved_via": "direct" }
+{ "ok": true, "adapter_ref": "url:def456", "state": "playing", "resolved_via": "direct" }
 ```
 
 `POST /ui/companion/history/delete`
@@ -360,7 +371,7 @@ Behavior:
 - Success sets extension CORS headers and calls the route.
 - Failure returns `403` JSON with `Content-Type: application/json`.
 
-Because this gate already requires the exact extension-origin/header pair used by the existing CSRF bypass, companion POST routes should not rely on the generic `csrfMiddleware` for rejection behavior. If the implementation still composes a CSRF check for defense in depth, it must be a JSON-aware variant so the companion error contract remains true.
+Register companion routes through a new gate-only mount helper, not `mountPOST`, so mutating companion routes are not double-wrapped with the generic HTML-oriented `csrfMiddleware`. Because this gate already requires the exact extension-origin/header pair used by the existing CSRF bypass, companion POST routes should not rely on the generic `csrfMiddleware` for rejection behavior. If the implementation still composes a CSRF check for defense in depth, it must be a JSON-aware variant so the companion error contract remains true.
 
 ## Extension Architecture
 
@@ -408,6 +419,8 @@ Open flow:
 `position_ms` is a fresh server snapshot at response time. The popup must not extrapolate position between polls; it can render the received value until the next status response arrives.
 
 Polling and command state are local to each popup instance. If two popups are open, one popup pausing its own polling during an in-flight command does not coordinate with the other popup; both converge on server state at their next `GET /ui/companion/status`.
+
+The popup marks its current status snapshot stale after any non-2xx status response, any network/timeout error, or any successful status poll whose `bridge_url` host differs from the previous successful poll. Controls and history actions stay disabled until the next successful 2xx status poll refreshes the snapshot.
 
 ### Popup Layout
 
@@ -462,7 +475,7 @@ popup button/seek input
   -> popup refreshes status
 ```
 
-Before honoring any control button state after a bridge reconnect or failed status poll, the popup must first re-fetch `/ui/companion/status`. Controls rendered from a stale pre-restart snapshot are disabled until that refresh succeeds.
+Before honoring any control button state after the snapshot becomes stale, the popup must first re-fetch `/ui/companion/status`. Controls rendered from a stale snapshot are disabled until that refresh succeeds.
 
 ### History
 
@@ -474,7 +487,7 @@ popup history id
   -> popup refreshes status
 ```
 
-Before recasting or deleting a history id after a bridge reconnect or failed status poll, the popup must first re-fetch `/ui/companion/status`. History ids rendered from a stale pre-restart snapshot are treated as stale until the refresh succeeds.
+Before recasting or deleting a history id after the snapshot becomes stale, the popup must first re-fetch `/ui/companion/status`. History ids rendered from a stale snapshot are treated as stale until the refresh succeeds.
 
 ## Error Handling
 
@@ -484,7 +497,7 @@ Before recasting or deleting a history id after a bridge reconnect or failed sta
 - Bad active tab URL: disable cast button and show a concise reason.
 - Missing optional status fields: hide optional UI rather than rendering placeholders.
 - History id disappeared between poll and click: show "history entry no longer exists" and refresh.
-- Bridge restarted while popup is open: mark the current status snapshot stale, disable history/control actions, and re-fetch `/ui/companion/status` before honoring any old history id or capability flag.
+- Stale status snapshot: disable history/control actions and re-fetch `/ui/companion/status` before honoring any old history id or capability flag.
 - URL credentials: bridge returns redacted display values; extension never logs raw URLs.
 
 ## Accessibility
@@ -527,7 +540,7 @@ Before recasting or deleting a history id after a bridge reconnect or failed sta
   - delete by stable id.
   - missing id returns `404`.
   - stale id after history reorder does not act on the wrong entry.
-  - old history file entries without ids receive stable ids and trigger one save during load.
+  - old history file entries without ids receive stable ids and trigger one save during load while the history is still locked or otherwise not yet published to readers.
   - history recast success returns `202`; delete success returns `200`.
   - unsupported content type returns `415`.
 - Launch:
@@ -549,7 +562,7 @@ Before recasting or deleting a history id after a bridge reconnect or failed sta
   - seek hidden when duration is missing.
   - history recast/delete.
   - polling pauses during commands and refreshes after.
-  - multiple popup instances converge on server state through polling.
+  - multiple popup instances with independent fake timers converge on server state through their own polling loops.
   - bridge restart disables stale controls/history until a status refresh succeeds.
 - Background tests:
   - link/video context menu uses companion play.
@@ -581,7 +594,7 @@ The extension version should bump because the signed extension payload changes. 
 
 The implementation plan should split this work into three landable steps:
 
-1. Interfaces, companion extension gate, and `GET /ui/companion/status` only.
+1. Interfaces, companion extension gate, read-only `CompanionURLSource` methods (`CompanionHistory`, `CompanionLastURLDisplay`), history-id backfill, and `GET /ui/companion/status`.
 2. URL adapter refactor plus mutating companion routes.
 3. Extension popup, context-menu migration, packaged fonts, and visual polish.
 
