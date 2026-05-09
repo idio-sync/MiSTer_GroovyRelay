@@ -359,11 +359,16 @@ func interfaceForHostIP(hostIP string, logger *slog.Logger) *net.Interface {
 	return nil
 }
 
-// Run blocks until ctx is cancelled or Close is called. On entry it
-// fires one full alive burst, then loops: read inbound datagram (ignore
-// errors caused by Close-induced socket closure); on M-SEARCH dispatch
-// matching unicast replies; on the refresh timer rebroadcast the alive
-// set.
+// Run blocks until Close is called. On entry it fires one full alive
+// burst, then loops: read inbound datagram (ignore errors caused by
+// Close-induced socket closure); on M-SEARCH dispatch matching unicast
+// replies; on the refresh timer rebroadcast the alive set.
+//
+// ctx is reserved for future per-call cancellation but currently has
+// no early-exit semantics — Adapter.Stop is the shutdown contract,
+// which calls Close() to unblock the reader and drain this loop. A
+// raw ctx-cancel here would return without closing the listen socket
+// or draining the reader goroutine, which is why we don't honor it.
 //
 // The refresh timer uses a single-shot time.NewTimer that's reset each
 // iteration with fresh randomness in [ssdpRefreshMin, ssdpRefreshMax].
@@ -416,8 +421,6 @@ func (d *Discovery) Run(ctx context.Context) {
 
 	for {
 		select {
-		case <-ctx.Done():
-			return
 		case <-d.stop:
 			// Drain the reader so its goroutine exits cleanly.
 			<-readerDone
@@ -656,7 +659,9 @@ func (d *Discovery) locationURL() string {
 // Order of operations:
 //  1. signal stop (close d.stop)
 //  2. unblock the reader by closing the listen socket
-//  3. wait for reader + reply goroutines via wg
+//  3. wait for Run and any in-flight reply goroutines via wg
+//     (Run drains readerDone before returning, so the reader is
+//     reached transitively).
 //  4. send byebye burst on the still-open sender socket
 //  5. close the sender
 //
