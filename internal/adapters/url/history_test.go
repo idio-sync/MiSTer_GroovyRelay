@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -385,5 +386,75 @@ func TestHistory_LoadDedupesAndDropsUnparseable(t *testing.T) {
 	list := h.List()
 	if len(list) > 0 && list[0].URL != "https://alice@host/x" {
 		t.Errorf("kept URL = %q, want first occurrence (alice)", list[0].URL)
+	}
+}
+
+func TestHistory_AddOrBumpAssignsStableOpaqueID(t *testing.T) {
+	h := LoadHistory("")
+	h.AddOrBump("https://example.com/a")
+	first := h.List()[0]
+	if !strings.HasPrefix(first.ID, "h_") {
+		t.Fatalf("ID = %q, want h_ prefix", first.ID)
+	}
+	if len(first.ID) != 34 {
+		t.Fatalf("ID length = %d, want 34", len(first.ID))
+	}
+	h.AddOrBump("https://example.com/a")
+	second := h.List()[0]
+	if second.ID != first.ID {
+		t.Fatalf("bump changed ID: before=%q after=%q", first.ID, second.ID)
+	}
+}
+
+func TestHistory_LoadBackfillsIDsAndSavesOnce(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "h.json")
+	raw := `{"version":1,"entries":[{"url":"https://example.com/a","last_played_at":"2026-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(tmp, []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := LoadHistory(tmp)
+	list := h.List()
+	if len(list) != 1 {
+		t.Fatalf("len = %d, want 1", len(list))
+	}
+	if !strings.HasPrefix(list[0].ID, "h_") {
+		t.Fatalf("backfilled ID = %q, want h_ prefix", list[0].ID)
+	}
+
+	data, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hf historyFile
+	if err := json.Unmarshal(data, &hf); err != nil {
+		t.Fatal(err)
+	}
+	if hf.Entries[0].ID != list[0].ID {
+		t.Fatalf("saved ID = %q, want %q", hf.Entries[0].ID, list[0].ID)
+	}
+}
+
+func TestHistory_GetAndRemoveByIDSurviveReorder(t *testing.T) {
+	h := LoadHistory("")
+	h.AddOrBump("https://example.com/a")
+	h.AddOrBump("https://example.com/b")
+	older := h.List()[1]
+	h.AddOrBump("https://example.com/a")
+
+	got, ok := h.GetByID(older.ID)
+	if !ok {
+		t.Fatalf("GetByID(%q) returned false", older.ID)
+	}
+	if got.URL != "https://example.com/a" {
+		t.Fatalf("GetByID URL = %q, want older entry URL", got.URL)
+	}
+	if !h.RemoveByID(older.ID) {
+		t.Fatalf("RemoveByID(%q) returned false", older.ID)
+	}
+	for _, e := range h.List() {
+		if e.ID == older.ID {
+			t.Fatalf("removed ID still present in history: %+v", e)
+		}
 	}
 }
