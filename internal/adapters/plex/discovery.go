@@ -159,7 +159,7 @@ func (d *Discovery) runHeartbeat() {
 // advertisement port (32413, distinct from the listen group port 32412).
 func (d *Discovery) sendHello() error {
 	dst := &net.UDPAddr{IP: net.ParseIP(gdmGroupIP), Port: gdmHelloPort}
-	if _, err := d.sender.WriteTo([]byte("HELLO * HTTP/1.0\r\n\r\n"), dst); err != nil {
+	if _, err := d.sender.WriteTo([]byte(d.descriptor("HELLO * HTTP/1.0")), dst); err != nil {
 		slog.Warn("plex GDM HELLO send failed",
 			"dst", dst.String(),
 			"err", err,
@@ -194,7 +194,16 @@ func (d *Discovery) Run() {
 // respondToMSearch sends the GDM descriptor fields Plex controllers look
 // for when populating the cast target list.
 func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
-	body := fmt.Sprintf("HTTP/1.0 200 OK\r\n"+
+	if _, err := d.sender.WriteTo([]byte(d.descriptor("HTTP/1.0 200 OK")), dst); err != nil {
+		slog.Warn("plex GDM M-SEARCH reply send failed",
+			"dst", dst.String(),
+			"err", err,
+		)
+	}
+}
+
+func (d *Discovery) descriptor(statusLine string) string {
+	return fmt.Sprintf(statusLine+"\r\n"+
 		"Name: %s\r\n"+
 		"Port: %d\r\n"+
 		"Resource-Identifier: %s\r\n"+
@@ -206,12 +215,6 @@ func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 		"Device-Class: stb\r\n"+
 		"Protocol-Version: 1\r\n\r\n",
 		d.cfg.DeviceName, d.cfg.HTTPPort, d.cfg.DeviceUUID)
-	if _, err := d.sender.WriteTo([]byte(body), dst); err != nil {
-		slog.Warn("plex GDM M-SEARCH reply send failed",
-			"dst", dst.String(),
-			"err", err,
-		)
-	}
 }
 
 // interfaceForIP returns the network interface that owns the given IPv4

@@ -285,6 +285,39 @@ func TestDiscovery_HelloHeartbeatRepeats(t *testing.T) {
 	}
 }
 
+func TestDiscovery_HelloCarriesDescriptorFields(t *testing.T) {
+	fake := &fakeWriter{}
+	d := &Discovery{
+		cfg: DiscoveryConfig{
+			DeviceName: "MiSTer-Test",
+			DeviceUUID: "uuid-hello",
+			HTTPPort:   32500,
+		},
+		sender: fake,
+	}
+
+	if err := d.sendHello(); err != nil {
+		t.Fatalf("sendHello: %v", err)
+	}
+	writes := fake.snapshot()
+	if len(writes) != 1 {
+		t.Fatalf("writes = %d; want 1", len(writes))
+	}
+	body := string(writes[0].body)
+	for _, want := range []string{
+		"HELLO * HTTP/1.0",
+		"Name: MiSTer-Test",
+		"Port: 32500",
+		"Resource-Identifier: uuid-hello",
+		"Content-Type: plex/media-player",
+		"Protocol: plex",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("HELLO missing %q; body=%q", want, body)
+		}
+	}
+}
+
 func countHellos(writes []writeRecord) int {
 	n := 0
 	for _, w := range writes {
