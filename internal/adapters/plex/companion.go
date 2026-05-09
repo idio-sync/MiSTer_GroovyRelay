@@ -31,7 +31,7 @@ const (
 	companionPlatform = "Linux"
 	companionDevice   = "MiSTer"
 	companionModel    = "MiSTer"
-	companionProvides = "player"
+	companionProvides = "client,player"
 	companionProtocol = "1.0"
 )
 
@@ -513,10 +513,9 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 		Version              string `xml:"version,attr"`
 		Platform             string `xml:"platform,attr"`
 		PlatformVersion      string `xml:"platformVersion,attr"`
-		// provides="player" tells Plex controllers this device is a valid
-		// cast target for media playback. Without it, controllers show the
-		// target in the picker but refuse to cast, with "This content is
-		// not currently supported when connected to this remote player."
+		// provides="client,player" matches the plex.tv registration record.
+		// Modern Plex Web filters bare-player records out of the picker or
+		// rejects them during target selection.
 		Provides string `xml:"provides,attr"`
 	}
 	type MediaContainer struct {
