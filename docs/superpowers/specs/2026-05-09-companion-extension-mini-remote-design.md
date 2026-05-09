@@ -170,6 +170,7 @@ type CompanionDisplayProvider interface {
 ```go
 CompanionSession CompanionSessionProvider
 CompanionURL     CompanionURLSource
+CompanionDisplay CompanionDisplayProvider // optional
 ```
 
 `MisterLauncher` remains the launch dependency. The registry remains the source for adapter lifecycle badges.
@@ -206,7 +207,7 @@ CompanionURL     CompanionURLSource
   },
   "history": [
     {
-      "id": "0",
+      "id": "h_7f4c9e2b8a1d4c0aa9d3e6f124b8c2d1",
       "title": "Night of the Living Dead",
       "url_display": "archive.org/details/night-of-the-living-dead",
       "last_played": "2026-05-09T01:02:03Z"
@@ -268,12 +269,12 @@ Delegates to the URL adapter's existing cast logic and returns:
 { "action": "seek", "offset_ms": 90000 }
 ```
 
-Allowed actions: `pause`, `resume`, `stop`, `replay`, `seek`.
+Allowed actions: `pause`, `resume`, `stop`, `replay`, `seek`. In v1, the server dispatches these actions only when the active `AdapterRef` is URL-owned and the corresponding URL capability flag is true. Non-URL sessions return `409` rather than calling global manager controls.
 
 `POST /ui/companion/history/play`
 
 ```json
-{ "id": "0" }
+{ "id": "h_7f4c9e2b8a1d4c0aa9d3e6f124b8c2d1" }
 ```
 
 The `id` is a stable opaque history identifier from the status response. It must not be the current list index because URL history reorders on recast. Implement this by adding an `id` field to URL history entries, generated as a random 128-bit value when an entry is created. Existing history entries loaded from older files receive an id during load and are saved on the next history mutation.
@@ -283,7 +284,7 @@ The extension sends only the id back. The response does not expose raw URLs just
 `POST /ui/companion/history/delete`
 
 ```json
-{ "id": "0" }
+{ "id": "h_7f4c9e2b8a1d4c0aa9d3e6f124b8c2d1" }
 ```
 
 `POST /ui/companion/launch` has no body.
@@ -416,8 +417,8 @@ popup active tab URL
 ```text
 popup button/seek input
   -> POST /ui/companion/control
-  -> server validates action + capability + ownership
-  -> manager or URL adapter control method
+  -> server validates URL ownership + action + capability
+  -> URL adapter companion control method
   -> JSON result
   -> popup refreshes status
 ```
@@ -459,6 +460,8 @@ popup history id
   - URL active response with capabilities.
   - foreign active response with read-only controls.
   - history entries redacted and shaped correctly.
+  - companion extension gate rejects missing header, non-extension origin, and extension origin without header with JSON `403`.
+  - CORS preflight returns `204` with extension CORS headers.
 - `POST /ui/companion/play`:
   - valid JSON delegates to URL adapter and returns adapter ref.
   - malformed JSON and bad URL return `400`.
