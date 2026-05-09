@@ -209,6 +209,21 @@ type VideoConfigSubscriber interface {
 	OnVideoConfigChanged(modelineName string)
 }
 
+// PublicRouteProvider is an optional interface an adapter implements
+// when it needs to mount HTTP routes outside the settings UI CSRF
+// middleware — e.g. UPnP/DLNA control points that cannot send the
+// origin headers the /ui/* paths require. cmd/mister-groovy-relay
+// walks the registry for this interface at startup and calls
+// MountPublicRoutes BEFORE the UI server mounts /ui/*.
+//
+// Adapters must register only paths that are disjoint from /ui/* and
+// any other adapter's public routes (e.g. Plex's /resources, /player/*).
+// Conflict resolution is the operator's responsibility — the registry
+// does not de-duplicate.
+type PublicRouteProvider interface {
+	MountPublicRoutes(*http.ServeMux)
+}
+
 // Handler is the handler signature adapter routes register with. An
 // alias for http.HandlerFunc's underlying type so adapters don't need
 // to import net/http types just to satisfy the Route struct.

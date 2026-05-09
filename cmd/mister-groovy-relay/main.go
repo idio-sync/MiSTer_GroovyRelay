@@ -201,6 +201,19 @@ func main() {
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
 
+	// Mount adapter-owned public protocol routes (DLNA SSDP descriptors,
+	// SOAP control, GENA SUBSCRIBE) on the shared mux. These paths
+	// bypass the settings-UI CSRF middleware that wraps /ui/* because
+	// protocol clients (UPnP control points) are not browsers and do not
+	// send the headers that middleware expects. Plex's existing explicit
+	// MountRoutes call above is the precedent; future adapters should
+	// implement PublicRouteProvider instead of an explicit call here.
+	for _, a := range reg.List() {
+		if pp, ok := a.(adapters.PublicRouteProvider); ok {
+			pp.MountPublicRoutes(mux)
+		}
+	}
+
 	// Bridge + adapter savers live in internal/uiserver so integration
 	// tests exercise the same code path the operator hits (review fix
 	// C3). Both share one mutex so bridge + adapter saves serialize
