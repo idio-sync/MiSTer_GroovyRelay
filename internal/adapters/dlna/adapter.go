@@ -60,6 +60,16 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 
+	// volume and muted are RenderingControl:1's adapter-local virtual
+	// state (spec §RenderingControl lines 442-449). They do NOT change
+	// FFmpeg or Groovy audio in v1 — they exist so DLNA control points
+	// (VLC, BubbleUPnP, Kodi) can probe and set the renderer's volume
+	// without their UI flow failing. Defaults: volume=100, muted=false.
+	// Reset on FactoryDefaults preset and on Adapter.Start (no disk
+	// persistence in Phase 1). Guarded by mu.
+	volume int
+	muted  bool
+
 	// discovery and discoveryDone are owned by Start/Stop. discovery is
 	// nil when the adapter is disabled, when Start hasn't run, or after
 	// Stop. discoveryDone is the close signal from the Run goroutine; we
@@ -122,6 +132,10 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		cfg:        DefaultConfig(),
 		state:      adapters.StateStopped,
 		stateSince: time.Now(),
+		// RenderingControl:1 defaults per spec §RenderingControl lines
+		// 444-445: Volume=100, Mute=false.
+		volume: 100,
+		muted:  false,
 	}, nil
 }
 
