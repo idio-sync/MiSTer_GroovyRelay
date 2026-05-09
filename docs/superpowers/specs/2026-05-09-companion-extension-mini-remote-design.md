@@ -117,6 +117,10 @@ The regular UI remains LAN-readable as before. The companion API is different be
 | `POST` | `/ui/companion/history/delete` | Delete a URL history entry |
 | `POST` | `/ui/companion/launch` | Launch GroovyMiSTer over SSH |
 
+### Threat Model Note
+
+The companion extension gate is an anti-CSRF and privacy boundary for the browser extension path, not full bridge authentication. It prevents ordinary web pages from reading companion JSON or issuing companion commands, but it does not change the bridge's LAN-trusted posture or authenticate a human user. Rate limiting is deferred because the first version is local companion traffic on the existing trusted UI listener; if the bridge later grows auth or non-LAN exposure, companion routes must inherit that auth.
+
 ### Server Dependencies
 
 Extend `ui.Config` with explicit companion dependencies. The UI package must not import concrete URL adapter internals or inspect unexported history/control state.
@@ -163,17 +167,19 @@ type CompanionDisplayProvider interface {
 }
 ```
 
-`core.Manager` satisfies `CompanionSessionProvider`. The URL adapter implements `CompanionURLSource` by factoring its existing `castURL`, pause/resume/stop/replay/seek, and history logic out of HTML handlers into reusable methods. `CompanionDisplayProvider` is optional; v1 can use it for URL display/title if implemented and otherwise fall back to `AdapterRef`.
+`core.Manager` satisfies `CompanionSessionProvider`. The URL adapter implements `CompanionURLSource` by factoring its existing `castURL`, pause/resume/stop/replay/seek, and history logic out of HTML handlers into reusable methods. The URL adapter also implements `CompanionDisplayProvider` for URL-owned sessions. Non-URL sessions fall back to `AdapterRef` / registry display name in v1.
 
 `ui.Config` gains:
 
 ```go
 CompanionSession CompanionSessionProvider
 CompanionURL     CompanionURLSource
-CompanionDisplay CompanionDisplayProvider // optional
+CompanionDisplay CompanionDisplayProvider
 ```
 
 `MisterLauncher` remains the launch dependency. The registry remains the source for adapter lifecycle badges.
+
+Read methods on these companion interfaces are point-in-time snapshots and do not take `context.Context`. Context is reserved for mutating operations that may block on resolution, launch, or manager control.
 
 ### Status Response
 
@@ -216,7 +222,7 @@ CompanionDisplay CompanionDisplayProvider // optional
 }
 ```
 
-Fields that are expensive or unavailable may be omitted or returned as empty strings. The extension treats missing optional fields as unavailable.
+Optional fields that are expensive or unavailable are omitted from the JSON response. The extension should still tolerate empty strings defensively, but the bridge emits omission rather than mixing omission and empty-string semantics.
 
 ### Status Data Sources
 
@@ -227,7 +233,7 @@ Use existing state first:
 - Adapter registry for enabled/disabled/running/error status.
 - `MisterLauncher` wiring only for launch; do not probe MiSTer on every popup open.
 
-If PR2's `StatusHomeView()` lands first, the companion status route should reuse it for richer title/modeline/stat fields. If this mini-remote lands first, it should add only the minimal title/display fields it needs and remain compatible with the later PR2 aggregator.
+If PR2's `core.Manager.StatusHomeView()` from `docs/specs/2026-05-08-ui-redesign-pr2-design.md` lands first, the companion status route should reuse it for richer title/modeline/stat fields. If this mini-remote lands first, it should add only the minimal title/display fields it needs and keep the field names compatible with that later aggregator.
 
 ### Capability Rules
 
@@ -251,16 +257,18 @@ This read-only default prevents the popup from accidentally exposing global mana
 
 ### Mutating Request Shapes
 
+All companion POST routes consume JSON request bodies, except `/ui/companion/launch`, which accepts an empty body. POSTs with any non-empty unsupported `Content-Type` return `415`.
+
 `POST /ui/companion/play`
 
 ```json
 { "url": "https://youtu.be/...", "mode": "auto" }
 ```
 
-Delegates to the URL adapter's existing cast logic and returns:
+Delegates to the URL adapter's existing cast logic. Success returns `202 Accepted`:
 
 ```json
-{ "ok": true, "adapter_ref": "url:abc123", "resolved_via": "ytdlp" }
+{ "ok": true, "adapter_ref": "url:abc123", "state": "running", "resolved_via": "ytdlp" }
 ```
 
 `POST /ui/companion/control`
@@ -271,15 +279,27 @@ Delegates to the URL adapter's existing cast logic and returns:
 
 Allowed actions: `pause`, `resume`, `stop`, `replay`, `seek`. In v1, the server dispatches these actions only when the active `AdapterRef` is URL-owned and the corresponding URL capability flag is true. Non-URL sessions return `409` rather than calling global manager controls.
 
+Success returns `200 OK`:
+
+```json
+{ "ok": true, "state": "paused" }
+```
+
 `POST /ui/companion/history/play`
 
 ```json
 { "id": "h_7f4c9e2b8a1d4c0aa9d3e6f124b8c2d1" }
 ```
 
-The `id` is a stable opaque history identifier from the status response. It must not be the current list index because URL history reorders on recast. Implement this by adding an `id` field to URL history entries, generated as a random 128-bit value when an entry is created. Existing history entries loaded from older files receive an id during load and are saved on the next history mutation.
+The `id` is a stable opaque history identifier from the status response. It must not be the current list index because URL history reorders on recast. Implement this by adding an `id` field to URL history entries, generated as a random 128-bit value when an entry is created. Existing history entries loaded from older files receive an id during load. If any id is backfilled, `LoadHistory` saves the file once before returning so concurrent popups and bridge restarts do not see different generated ids for the same persisted row.
 
 The extension sends only the id back. The response does not expose raw URLs just to recast them.
+
+Success returns `202 Accepted` because recast starts a new URL session:
+
+```json
+{ "ok": true, "adapter_ref": "url:def456", "state": "running", "resolved_via": "direct" }
+```
 
 `POST /ui/companion/history/delete`
 
@@ -287,7 +307,19 @@ The extension sends only the id back. The response does not expose raw URLs just
 { "id": "h_7f4c9e2b8a1d4c0aa9d3e6f124b8c2d1" }
 ```
 
-`POST /ui/companion/launch` has no body.
+Success returns `200 OK`:
+
+```json
+{ "ok": true }
+```
+
+`POST /ui/companion/launch` has no body. It does not call the existing `handleBridgeMisterLaunch` HTML handler. It calls `MisterLauncher.Launch(ctx)` directly and returns a JSON envelope.
+
+Success returns `200 OK`:
+
+```json
+{ "ok": true }
+```
 
 ### Error Responses
 
@@ -305,9 +337,12 @@ Status codes:
 - `403` from the companion extension gate.
 - `404` for unknown history id.
 - `409` for state/capability conflicts.
+- `415` for unsupported request content type.
 - `500` for bridge-side failures.
 
 Errors should be short, operator-readable, and redact URL credentials.
+
+Companion request logging should follow the URL adapter's redaction rules: log redacted display URLs, stable history ids, adapter refs, status codes, and resolver mode; never log raw URLs that may contain credentials.
 
 ### Companion Extension Gate
 
@@ -370,6 +405,10 @@ Open flow:
 4. Poll status every 2 seconds while popup is open.
 5. Suspend polling while a command is in flight, then refresh once.
 
+`position_ms` is a fresh server snapshot at response time. The popup must not extrapolate position between polls; it can render the received value until the next status response arrives.
+
+Polling and command state are local to each popup instance. If two popups are open, one popup pausing its own polling during an in-flight command does not coordinate with the other popup; both converge on server state at their next `GET /ui/companion/status`.
+
 ### Popup Layout
 
 Active layout:
@@ -423,6 +462,8 @@ popup button/seek input
   -> popup refreshes status
 ```
 
+Before honoring any control button state after a bridge reconnect or failed status poll, the popup must first re-fetch `/ui/companion/status`. Controls rendered from a stale pre-restart snapshot are disabled until that refresh succeeds.
+
 ### History
 
 ```text
@@ -433,6 +474,8 @@ popup history id
   -> popup refreshes status
 ```
 
+Before recasting or deleting a history id after a bridge reconnect or failed status poll, the popup must first re-fetch `/ui/companion/status`. History ids rendered from a stale pre-restart snapshot are treated as stale until the refresh succeeds.
+
 ## Error Handling
 
 - Bridge unreachable: render inline, keep settings/open UI available, disable bridge actions.
@@ -441,6 +484,7 @@ popup history id
 - Bad active tab URL: disable cast button and show a concise reason.
 - Missing optional status fields: hide optional UI rather than rendering placeholders.
 - History id disappeared between poll and click: show "history entry no longer exists" and refresh.
+- Bridge restarted while popup is open: mark the current status snapshot stale, disable history/control actions, and re-fetch `/ui/companion/status` before honoring any old history id or capability flag.
 - URL credentials: bridge returns redacted display values; extension never logs raw URLs.
 
 ## Accessibility
@@ -455,33 +499,43 @@ popup history id
 
 ### Go
 
+- Companion gate:
+  - table-driven coverage for every `/ui/companion/*` route.
+  - missing header, non-extension origin, and extension origin without header return JSON `403`.
+  - CORS preflight returns `204` with extension CORS headers.
 - `GET /ui/companion/status`:
   - unconfigured/idle response.
   - URL active response with capabilities.
   - foreign active response with read-only controls.
   - history entries redacted and shaped correctly.
-  - companion extension gate rejects missing header, non-extension origin, and extension origin without header with JSON `403`.
-  - CORS preflight returns `204` with extension CORS headers.
+  - `position_ms` renders as a snapshot and is not extrapolated by extension tests.
 - `POST /ui/companion/play`:
   - valid JSON delegates to URL adapter and returns adapter ref.
+  - success returns `202` with `{ok,state,adapter_ref,resolved_via}`.
   - malformed JSON and bad URL return `400`.
-  - companion extension gate rejects missing header, non-extension origin, and extension origin without header with JSON `403`.
-  - CORS preflight returns `204` with extension CORS headers.
+  - unsupported content type returns `415`.
   - every error path redacts URL credentials.
 - `POST /ui/companion/control`:
   - pause/resume/stop/replay/seek happy paths.
+  - success returns `200` with `{ok,state}`.
   - foreign ownership conflict returns `409`.
   - seek without duration returns `409`.
   - unsupported action returns `400`.
+  - unsupported content type returns `415`.
 - History:
   - recast by stable id.
   - delete by stable id.
   - missing id returns `404`.
   - stale id after history reorder does not act on the wrong entry.
-  - old history file entries without ids receive stable ids.
+  - old history file entries without ids receive stable ids and trigger one save during load.
+  - history recast success returns `202`; delete success returns `200`.
+  - unsupported content type returns `415`.
 - Launch:
   - success returns JSON ok.
+  - companion launch calls `MisterLauncher.Launch` directly and never calls the HTML bridge launch handler.
   - launcher error returns JSON error with appropriate status.
+  - empty body with no content type is accepted; unsupported non-empty content type returns `415`.
+  - companion request logging redacts URL-bearing fields and includes status code / adapter ref / history id only.
 
 ### Extension
 
@@ -495,6 +549,8 @@ popup history id
   - seek hidden when duration is missing.
   - history recast/delete.
   - polling pauses during commands and refreshes after.
+  - multiple popup instances converge on server state through polling.
+  - bridge restart disables stale controls/history until a status refresh succeeds.
 - Background tests:
   - link/video context menu uses companion play.
   - notifications use shared error formatting.
@@ -504,6 +560,7 @@ popup history id
 - Manifest/release tests:
   - `package.json` and `manifest.json` versions stay in sync.
   - build/package checks include the new font assets.
+  - bundled font licenses are covered by existing license notices or updated notices.
 
 ### Manual Verification
 
@@ -516,9 +573,19 @@ popup history id
 
 ## Rollout
 
-This can land independently of the broader PR2 UI work as long as the popup-local CSS mirrors the PR2 tokens. If PR2's richer status aggregator lands first, reuse it. If not, the companion API should implement the minimal view model and stay compatible with later aggregation.
+This can land independently of the broader PR2 UI work as long as the popup-local CSS mirrors the PR2 tokens. If PR2's richer status aggregator lands first, reuse `core.Manager.StatusHomeView()`. If not, the companion API should implement the minimal view model and keep field names compatible with later aggregation.
 
-The extension version should bump because the signed extension payload changes.
+The extension version should bump because the signed extension payload changes. Packaging the PR2 fonts into the extension also requires confirming the existing third-party license notices cover those font assets; update notices if the extension package would otherwise omit required attribution.
+
+## Implementation Sequencing
+
+The implementation plan should split this work into three landable steps:
+
+1. Interfaces, companion extension gate, and `GET /ui/companion/status` only.
+2. URL adapter refactor plus mutating companion routes.
+3. Extension popup, context-menu migration, packaged fonts, and visual polish.
+
+Each step should be independently testable and should avoid landing popup UI that depends on routes not yet implemented.
 
 ## Open Questions
 
