@@ -1,6 +1,6 @@
 {
   "name": "mister-groovy-relay-companion",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "private": true,
   "description": "Companion browser extension for the MiSTer GroovyRelay bridge.",
   "type": "module",

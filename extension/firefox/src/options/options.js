@@ -31,13 +31,16 @@ export async function testConnection(bridgeURL) {
   const timeout = setTimeout(() => ctrl.abort(), 10000);
 
   try {
-    const res = await fetch(`${bridgeURL}/ui/adapter/url/panel`, {
+    const res = await fetch(`${bridgeURL}/ui/companion/status`, {
       method: "GET",
+      headers: { "X-Bridge-Extension": "1" },
       signal: ctrl.signal,
     });
     clearTimeout(timeout);
     if (res.ok) return { ok: true };
-    return { ok: false, error: `Bridge returned HTTP ${res.status}` };
+    const data = await res.json().catch(() => ({}));
+    const suffix = data.error ? `: ${data.error}` : "";
+    return { ok: false, error: `Bridge returned HTTP ${res.status}${suffix}` };
   } catch (e) {
     clearTimeout(timeout);
     if (e.name === "AbortError") return { ok: false, error: "Bridge timed out" };

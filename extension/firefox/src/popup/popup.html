@@ -5,24 +5,62 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div id="popup">
-    <div id="configured" hidden>
-      <div class="label">Active tab:</div>
-      <div id="tab-url" class="tab-url"></div>
-      <button type="button" id="cast" class="primary">Cast this tab</button>
-      <div id="status" class="status" role="status" aria-live="polite"></div>
+  <div id="popup" class="popup-shell" data-state="loading">
+    <section id="unconfigured" class="view" hidden>
+      <div class="brand-row">
+        <span class="brand">GroovyRelay</span>
+        <span class="chip">SETUP</span>
+      </div>
+      <h1>Configure bridge</h1>
+      <p class="empty">Bridge URL is not set.</p>
+      <button type="button" id="configure" class="primary">Configure</button>
+    </section>
+
+    <section id="configured" class="view" hidden>
+      <div class="brand-row">
+        <span class="brand">GroovyRelay</span>
+        <span id="state-chip" class="chip">LOADING</span>
+      </div>
+
+      <div id="active-view" class="remote-view" hidden>
+        <p class="eyebrow">Now playing</p>
+        <h1 id="media-title">Unknown source</h1>
+        <p id="source-line" class="source-line"></p>
+        <div id="progress-wrap" class="progress-wrap" hidden>
+          <div class="time-row">
+            <span id="position-label">0:00</span>
+            <span id="duration-label">0:00</span>
+          </div>
+          <input id="seek" type="range" min="0" value="0" step="1000">
+        </div>
+        <div class="control-grid">
+          <button type="button" id="pause">Pause</button>
+          <button type="button" id="resume">Resume</button>
+          <button type="button" id="stop">Stop</button>
+          <button type="button" id="replay">Replay</button>
+        </div>
+      </div>
+
+      <div id="idle-view" class="remote-view" hidden>
+        <p class="eyebrow">Cast this tab</p>
+        <div id="tab-url" class="tab-url"></div>
+        <button type="button" id="cast" class="primary">Cast tab</button>
+        <div class="health-grid">
+          <div><span>Bridge</span><strong id="health-bridge">--</strong></div>
+          <div><span>MiSTer</span><strong id="health-mister">--</strong></div>
+          <div><span>URL</span><strong id="health-url">--</strong></div>
+        </div>
+      </div>
+
+      <div id="history" class="history-list"></div>
+
       <div class="actions">
         <button type="button" id="launch-groovy">Launch GroovyMiSTer</button>
         <button type="button" id="open-webui">Open Web UI</button>
+        <button type="button" id="open-options">Settings</button>
       </div>
-      <div id="launch-status" class="status" role="status" aria-live="polite"></div>
-      <a href="#" id="open-options" class="settings-link">Settings</a>
-    </div>
-
-    <div id="unconfigured" hidden>
-      <p class="empty">Bridge not configured.</p>
-      <button type="button" id="configure" class="primary">Configure bridge</button>
-    </div>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
   </div>
 
   <script src="../lib/browser-polyfill.js"></script>

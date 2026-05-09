@@ -1,5 +1,5 @@
 import "./lib/browser-polyfill.js";
-import { play, getBridgeURL, formatPlayError } from "./lib/bridge.js";
+import { play, getBridgeURL, formatBridgeError } from "./lib/bridge.js";
 
 const MENU_LINK = "mgr-cast-link";
 const MENU_VIDEO = "mgr-cast-video";
@@ -43,7 +43,7 @@ browser.contextMenus.onClicked.addListener(async (info) => {
   if (result.ok) {
     notify("ok", `Playing on MiSTer: ${truncateForToast(url)}`);
   } else {
-    notify("error", formatPlayError(result));
+    notify("error", formatBridgeError(result, "Cast failed"));
   }
 });
 
