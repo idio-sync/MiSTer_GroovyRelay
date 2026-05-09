@@ -17,6 +17,17 @@ type CompanionSessionProvider interface {
 	Status() core.SessionStatus
 }
 
+// CompanionPlayResult is the JSON-safe result companion mutating routes
+// return. It intentionally does not mirror the URL adapter's HTML/form
+// response helpers, keeping URL redaction rules local to the adapter.
+type CompanionPlayResult struct {
+	State         core.State
+	AdapterRef    string
+	ResolvedVia   string
+	Title         string
+	SourceDisplay string
+}
+
 // CompanionHistoryEntry is the redacted, stable-id history shape exposed to
 // the browser extension. ID is opaque and stable across reorder/bump events.
 type CompanionHistoryEntry struct {
