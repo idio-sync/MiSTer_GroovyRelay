@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -50,7 +52,15 @@ type CompanionSessionDisplay struct {
 // Step 1 uses only the read methods; mutating methods are added to this
 // contract when the companion write routes land.
 type CompanionURLSource interface {
+	CompanionPlay(context.Context, string, string) (CompanionPlayResult, error)
+	CompanionPause(context.Context) error
+	CompanionResume(context.Context) error
+	CompanionStop(context.Context) error
+	CompanionReplay(context.Context) (CompanionPlayResult, error)
+	CompanionSeek(context.Context, int) error
 	CompanionHistory() []CompanionHistoryEntry
+	CompanionHistoryPlay(context.Context, string) (CompanionPlayResult, error)
+	CompanionHistoryDelete(context.Context, string) error
 	CompanionLastURLDisplay() string
 }
 
@@ -152,6 +162,195 @@ func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
 		Session: s.companionSession(st),
 		History: history,
 	})
+}
+
+func (s *Server) handleCompanionPlay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL  string `json:"url"`
+		Mode string `json:"mode"`
+	}
+	if !decodeCompanionJSON(w, r, &req) {
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	if req.URL == "" {
+		writeCompanionError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "auto"
+	}
+	src, ok := s.companionURLRequired(w)
+	if !ok {
+		return
+	}
+	res, err := src.CompanionPlay(r.Context(), req.URL, req.Mode)
+	if err != nil {
+		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		return
+	}
+	writeCompanionJSON(w, http.StatusAccepted, companionStartedResponse(res))
+}
+
+func (s *Server) handleCompanionControl(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action   string `json:"action"`
+		OffsetMS int    `json:"offset_ms"`
+	}
+	if !decodeCompanionJSON(w, r, &req) {
+		return
+	}
+	src, ok := s.companionURLRequired(w)
+	if !ok {
+		return
+	}
+	var err error
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "pause":
+		err = src.CompanionPause(r.Context())
+	case "resume":
+		err = src.CompanionResume(r.Context())
+	case "stop":
+		err = src.CompanionStop(r.Context())
+	case "replay":
+		var res CompanionPlayResult
+		res, err = src.CompanionReplay(r.Context())
+		if err == nil {
+			writeCompanionJSON(w, http.StatusAccepted, companionStartedResponse(res))
+			return
+		}
+	case "seek":
+		err = src.CompanionSeek(r.Context(), req.OffsetMS)
+	default:
+		writeCompanionError(w, http.StatusBadRequest, "unsupported action")
+		return
+	}
+	if err != nil {
+		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		return
+	}
+	state := core.StateIdle
+	if s.cfg.CompanionSession != nil {
+		state = s.cfg.CompanionSession.Status().State
+		if state == "" {
+			state = core.StateIdle
+		}
+	}
+	writeCompanionJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
+}
+
+func (s *Server) handleCompanionHistoryPlay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if !decodeCompanionJSON(w, r, &req) {
+		return
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	if req.ID == "" {
+		writeCompanionError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	src, ok := s.companionURLRequired(w)
+	if !ok {
+		return
+	}
+	res, err := src.CompanionHistoryPlay(r.Context(), req.ID)
+	if err != nil {
+		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		return
+	}
+	writeCompanionJSON(w, http.StatusAccepted, companionStartedResponse(res))
+}
+
+func (s *Server) handleCompanionHistoryDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if !decodeCompanionJSON(w, r, &req) {
+		return
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	if req.ID == "" {
+		writeCompanionError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	src, ok := s.companionURLRequired(w)
+	if !ok {
+		return
+	}
+	if err := src.CompanionHistoryDelete(r.Context(), req.ID); err != nil {
+		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		return
+	}
+	writeCompanionJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleCompanionLaunch(w http.ResponseWriter, r *http.Request) {
+	if !requireCompanionJSON(w, r) {
+		return
+	}
+	if s.cfg.MisterLauncher == nil {
+		writeCompanionError(w, http.StatusInternalServerError, "mister launcher not wired")
+		return
+	}
+	if err := s.cfg.MisterLauncher.Launch(r.Context()); err != nil {
+		writeCompanionError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeCompanionJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func requireCompanionJSON(w http.ResponseWriter, r *http.Request) bool {
+	ct := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if ct == "" {
+		if r.ContentLength == 0 {
+			return true
+		}
+		writeCompanionError(w, http.StatusUnsupportedMediaType, "Content-Type application/json required")
+		return false
+	}
+	mt := strings.ToLower(strings.TrimSpace(strings.Split(ct, ";")[0]))
+	if mt != "application/json" {
+		writeCompanionError(w, http.StatusUnsupportedMediaType, "Content-Type application/json required")
+		return false
+	}
+	return true
+}
+
+func decodeCompanionJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if !requireCompanionJSON(w, r) {
+		return false
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeCompanionError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return false
+	}
+	return true
+}
+
+func (s *Server) companionURLRequired(w http.ResponseWriter) (CompanionURLSource, bool) {
+	if s.cfg.CompanionURL == nil {
+		writeCompanionError(w, http.StatusInternalServerError, "companion URL source not wired")
+		return nil, false
+	}
+	return s.cfg.CompanionURL, true
+}
+
+func companionStartedResponse(res CompanionPlayResult) map[string]any {
+	state := res.State
+	if state == "" {
+		state = core.StatePlaying
+	}
+	return map[string]any{
+		"ok":           true,
+		"adapter_ref":  res.AdapterRef,
+		"state":        state,
+		"resolved_via": res.ResolvedVia,
+	}
 }
 
 func (s *Server) companionSession(st core.SessionStatus) companionSessionPayload {
@@ -306,4 +505,15 @@ func writeCompanionJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeCompanionError(w http.ResponseWriter, status int, message string) {
 	writeCompanionJSON(w, status, companionErrorResponse{OK: false, Error: message})
+}
+
+func companionHTTPStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	var ce interface{ HTTPStatus() int }
+	if errors.As(err, &ce) {
+		return ce.HTTPStatus()
+	}
+	return http.StatusInternalServerError
 }
