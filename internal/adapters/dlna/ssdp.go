@@ -48,12 +48,30 @@ const (
 	ssdpMXCapDefault = 1 * time.Second
 	ssdpMXCapMax     = 5 * time.Second
 
-	// SERVER product token. The middle field is the UPnP version, the
-	// outer fields identify the bridge implementation. T5 will swap the
-	// hard-coded "0.1" for main.go's `version` variable; for now this
-	// constant keeps T3 self-contained.
-	ssdpServerToken = "MiSTerGroovyRelay/0.1 UPnP/1.0 MiSTer-DLNA/1.0"
+	// ssdpServerTokenDefault is the SERVER product token used when the
+	// adapter has no version threaded through (older test paths,
+	// integration scaffolds). buildServerToken below is the canonical
+	// surface — it splices the threaded version into the middle field
+	// and otherwise matches this string.
+	ssdpServerTokenDefault = "MiSTerGroovyRelay/0.0.0 UPnP/1.0 MiSTer-DLNA/1.0"
 )
+
+// buildServerToken renders the SERVER header value with the supplied
+// version. Empty/whitespace-only versions fall back to "0.0.0" so the
+// header always parses by controllers that split on '/'. Format:
+//
+//	MiSTerGroovyRelay/<version> UPnP/1.0 MiSTer-DLNA/1.0
+//
+// The first field is the bridge product token, the middle is the UPnP
+// architectural version (UPnP 1.0 is the floor every controller agrees
+// on), and the trailing token identifies the DLNA renderer profile.
+func buildServerToken(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "0.0.0"
+	}
+	return "MiSTerGroovyRelay/" + v + " UPnP/1.0 MiSTer-DLNA/1.0"
+}
 
 // targets enumerates the six NT/USN/ST tuples the renderer advertises.
 // Spec §SSDP "On start" list (lines 266-272) plus the M-SEARCH match
@@ -136,6 +154,12 @@ type DiscoveryConfig struct {
 	// HTTPPort is the port number /dlna/device.xml is served on.
 	// Must be in (0, 65535].
 	HTTPPort int
+	// ServerToken is the full SERVER header value advertised in NOTIFY
+	// and M-SEARCH replies. When empty NewDiscovery uses
+	// ssdpServerTokenDefault — the test/scaffolding path that doesn't
+	// thread main.version into the adapter. Production main.go builds
+	// this via buildServerToken(version).
+	ServerToken string
 	// Logger is nil-tolerant: when nil, slog.Default() is used.
 	Logger *slog.Logger
 }
@@ -157,6 +181,11 @@ type Discovery struct {
 	cfg     DiscoveryConfig
 	logger  *slog.Logger
 	targets []ssdpTarget
+	// serverToken is the resolved SERVER header value — cfg.ServerToken
+	// when non-empty, ssdpServerTokenDefault otherwise. Captured at
+	// NewDiscovery time so buildNotify / buildSearchResponse stay
+	// allocation-free in the hot path.
+	serverToken string
 
 	listen *net.UDPConn
 	sender packetWriter
@@ -255,14 +284,20 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 		}
 	}
 
+	serverToken := strings.TrimSpace(cfg.ServerToken)
+	if serverToken == "" {
+		serverToken = ssdpServerTokenDefault
+	}
+
 	d := &Discovery{
-		cfg:     cfg,
-		logger:  logger,
-		targets: newTargets(cfg.DeviceUUID),
-		listen:  listen,
-		sender:  udpSender,
-		rng:     newSeededRand(),
-		stop:    make(chan struct{}),
+		cfg:         cfg,
+		logger:      logger,
+		targets:     newTargets(cfg.DeviceUUID),
+		serverToken: serverToken,
+		listen:      listen,
+		sender:      udpSender,
+		rng:         newSeededRand(),
+		stop:        make(chan struct{}),
 	}
 	return d, nil
 }
@@ -364,11 +399,12 @@ func interfaceForHostIP(hostIP string, logger *slog.Logger) *net.Interface {
 // Close-induced socket closure); on M-SEARCH dispatch matching unicast
 // replies; on the refresh timer rebroadcast the alive set.
 //
-// ctx is reserved for future per-call cancellation but currently has
-// no early-exit semantics — Adapter.Stop is the shutdown contract,
-// which calls Close() to unblock the reader and drain this loop. A
-// raw ctx-cancel here would return without closing the listen socket
-// or draining the reader goroutine, which is why we don't honor it.
+// ctx is honored as an early-exit signal alongside d.stop: a ctx-cancel
+// returns from the loop the same way Close() does (drain reader, exit).
+// Adapter.Stop is still the canonical shutdown contract — it calls
+// Close() which closes d.stop AND the listen socket — but plumbing ctx
+// into the select keeps a future timeout/cancel use case working
+// without a refactor and matches typical Go context discipline.
 //
 // The refresh timer uses a single-shot time.NewTimer that's reset each
 // iteration with fresh randomness in [ssdpRefreshMin, ssdpRefreshMax].
@@ -423,6 +459,16 @@ func (d *Discovery) Run(ctx context.Context) {
 		select {
 		case <-d.stop:
 			// Drain the reader so its goroutine exits cleanly.
+			<-readerDone
+			return
+		case <-ctx.Done():
+			// External cancellation. Close the listen socket so the
+			// reader goroutine exits, then drain it. We don't call
+			// d.Close() from here — the caller (Adapter.Stop) owns the
+			// Close lifecycle and we'd race with a concurrent Stop. The
+			// listen-close is enough to unblock ReadFromUDP; sender
+			// teardown happens when the caller eventually calls Close.
+			_ = d.listen.Close()
 			<-readerDone
 			return
 		case <-readerDone:
@@ -598,7 +644,7 @@ func (d *Discovery) buildNotify(method, nt, usn string) []byte {
 	b.WriteString("\r\n")
 	if method == "ssdp:alive" {
 		b.WriteString("SERVER: ")
-		b.WriteString(ssdpServerToken)
+		b.WriteString(d.serverToken)
 		b.WriteString("\r\n")
 	}
 	b.WriteString("USN: ")
@@ -625,7 +671,7 @@ func (d *Discovery) buildSearchResponse(st, usn string) []byte {
 	b.WriteString(d.locationURL())
 	b.WriteString("\r\n")
 	b.WriteString("SERVER: ")
-	b.WriteString(ssdpServerToken)
+	b.WriteString(d.serverToken)
 	b.WriteString("\r\n")
 	b.WriteString("ST: ")
 	b.WriteString(st)

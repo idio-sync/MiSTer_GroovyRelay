@@ -169,31 +169,61 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		})
 
 	case "GetPositionInfo":
-		// Position/duration zeros until playback (P2.4); Track=1 only
-		// when a URI is loaded. TrackURI mirrors loadedURI and
-		// TrackMetaData mirrors loadedMetaRaw — controllers expect
-		// these to round-trip.
+		// Spec §Query Actions line 407: Track=1 when a URI is loaded,
+		// Track=0 otherwise; TrackURI is the stored URI; RelTime comes
+		// from core.Status().Position only when the active session ref
+		// matches the current dlna: ref. Foreign sessions never lend us
+		// their position (we wouldn't claim them as ours), and the
+		// no-active-session case mirrors the loaded-but-not-yet-playing
+		// shape with zeros.
+		//
+		// Locking: snapshot adapter state under mu, drop, then call
+		// core.Status() outside mu (CLAUDE.md: never hold a.mu across
+		// core.Manager calls).
 		a.mu.Lock()
 		uri := a.loadedURI
 		metaRaw := a.loadedMetaRaw
-		duration := a.loadedMeta.Duration
+		metaDuration := a.loadedMeta.Duration
+		owned := a.currentRef
 		a.mu.Unlock()
+
+		st := a.core.Status()
+		ownSession := owned != "" && st.AdapterRef == owned
 
 		track := "0"
 		trackDuration := "00:00:00"
+		relTime := "00:00:00"
 		if uri != "" {
 			track = "1"
-			if duration > 0 {
-				trackDuration = formatUPnPDuration(duration)
+			// Pick the duration source: live core.Status() wins when we
+			// own the session AND its probe surfaced a positive duration;
+			// otherwise fall back to the metadata's res@duration. Live
+			// streams (Duration == 0 on both sides) stay "00:00:00".
+			switch {
+			case ownSession && st.Duration > 0:
+				trackDuration = formatUPnPDuration(st.Duration)
+			case metaDuration > 0:
+				trackDuration = formatUPnPDuration(metaDuration)
+			}
+			// RelTime: only emit a non-zero value for our own session.
+			// Live streams (Duration == 0) still produce a meaningful
+			// elapsed-time figure — controllers treat that as a wall-clock
+			// timer. Foreign / no-session: RelTime stays 00:00:00 because
+			// we cannot claim someone else's position.
+			if ownSession {
+				relTime = formatUPnPDuration(st.Position)
 			}
 		}
+		// AbsTime mirrors RelTime: UPnP convention when the renderer
+		// doesn't track an absolute timeline separately is to alias the
+		// two — most controllers either ignore AbsTime or accept this.
 		writeSOAPResponse(w, avTransportServiceURN, action, []soapOutArg{
 			{Name: "Track", Value: track},
 			{Name: "TrackDuration", Value: trackDuration},
 			{Name: "TrackMetaData", Value: metaRaw},
 			{Name: "TrackURI", Value: uri},
-			{Name: "RelTime", Value: "00:00:00"},
-			{Name: "AbsTime", Value: "00:00:00"},
+			{Name: "RelTime", Value: relTime},
+			{Name: "AbsTime", Value: relTime},
 			{Name: "RelCount", Value: "0"},
 			{Name: "AbsCount", Value: "0"},
 		})

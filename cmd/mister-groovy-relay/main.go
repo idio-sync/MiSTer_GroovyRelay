@@ -207,6 +207,7 @@ func main() {
 		DeviceUUID: store.DeviceUUID,
 		HostIP:     hostIP,
 		HTTPPort:   sec.Bridge.UI.HTTPPort,
+		Version:    version,
 		Core:       coreMgr,
 	})
 	if err != nil {

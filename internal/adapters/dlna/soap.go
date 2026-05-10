@@ -146,11 +146,16 @@ func parseSOAPRequest(w http.ResponseWriter, r *http.Request) (action string, ar
 
 // extractSOAPAction returns the action name from a SOAPACTION header.
 // The header is canonically `"<service-type>#<action>"` (with quotes).
-// We tolerate missing quotes — some controllers omit them — and an
-// empty value or unparseable input returns false.
+// We tolerate missing quotes — some controllers omit them — and accept
+// single quotes too: the standard mandates double quotes, but real-world
+// controllers from the early-2000s era sometimes ship single-quoted
+// headers. Empty value or unparseable input returns false.
 func extractSOAPAction(hdr string) (string, bool) {
 	s := strings.TrimSpace(hdr)
-	s = strings.Trim(s, `"`)
+	// Trim outer quoting characters in any combination — double quotes
+	// (canonical), single quotes (non-standards-compliant but seen in
+	// the wild), and inner whitespace between the quote and the value.
+	s = strings.Trim(s, "\"' ")
 	if s == "" {
 		return "", false
 	}

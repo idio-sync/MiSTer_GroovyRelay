@@ -1,7 +1,11 @@
 package dlna
 
 import (
+	"log/slog"
+	"math/rand"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,10 +25,18 @@ func validDiscoveryConfig() DiscoveryConfig {
 // pure-function tests don't pay the price of a real multicast join.
 // listen and sender stay nil; tests that exercise Run must NOT call
 // it on the result. Targets / RNG match what NewDiscovery would set.
+// ServerToken honors cfg.ServerToken when set so tests for the version
+// threading work; otherwise the default is used.
 func newTestDiscovery(cfg DiscoveryConfig) *Discovery {
+	token := strings.TrimSpace(cfg.ServerToken)
+	if token == "" {
+		token = ssdpServerTokenDefault
+	}
 	return &Discovery{
-		cfg:     cfg,
-		targets: newTargets(cfg.DeviceUUID),
+		cfg:         cfg,
+		logger:      slog.Default(),
+		targets:     newTargets(cfg.DeviceUUID),
+		serverToken: token,
 	}
 }
 
@@ -375,6 +387,244 @@ func TestRefreshIntervalWithinJitter(t *testing.T) {
 			t.Errorf("nextRefreshDelay #%d = %v; want [%v, %v]", i, got, ssdpRefreshMin, ssdpRefreshMax)
 		}
 	}
+}
+
+// ----- handleMSearch / randomDelayUpTo / SERVER token -----
+
+// fakePacketWriter is a packetWriter that captures every WriteTo call.
+// Tests assert on the captured payloads and destinations to verify
+// reply content + unicast routing without binding any UDP sockets.
+type fakePacketWriter struct {
+	mu      sync.Mutex
+	writes  []fakeWrite
+	closed  bool
+	closeOK bool
+}
+
+type fakeWrite struct {
+	body []byte
+	addr net.Addr
+}
+
+func (f *fakePacketWriter) WriteTo(b []byte, addr net.Addr) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Copy the body — handleMSearch may reuse buffers. Today's
+	// implementation builds a fresh []byte per write, but defensive
+	// copying makes the assertion code robust to a future change.
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	f.writes = append(f.writes, fakeWrite{body: cp, addr: addr})
+	return len(b), nil
+}
+
+func (f *fakePacketWriter) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	if f.closeOK {
+		return nil
+	}
+	return nil
+}
+
+func (f *fakePacketWriter) snapshotWrites() []fakeWrite {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fakeWrite, len(f.writes))
+	copy(out, f.writes)
+	return out
+}
+
+// newHandleMSearchTestDiscovery builds a Discovery with a fake sender
+// and a deterministic RNG so the per-USN delay/stagger arithmetic is
+// observable in the assertions. wg is included so the in-flight
+// goroutines spawned by handleMSearch can be drained.
+func newHandleMSearchTestDiscovery(t *testing.T) (*Discovery, *fakePacketWriter) {
+	t.Helper()
+	cfg := validDiscoveryConfig()
+	d := newTestDiscovery(cfg)
+	// rng must be non-nil — handleMSearch calls randomDelayUpTo. Seed
+	// with a fixed value so any timing assertions can rely on
+	// reproducibility (though the current tests don't time-assert).
+	d.rng = rand.New(rand.NewSource(42))
+	d.stop = make(chan struct{})
+	fw := &fakePacketWriter{}
+	d.sender = fw
+	return d, fw
+}
+
+// drainHandleMSearch waits for handleMSearch's worker goroutines to
+// finish via Discovery.wg, then signals stop so any laggers exit.
+// Returns once the WaitGroup count hits zero or the timeout fires.
+func drainHandleMSearch(t *testing.T, d *Discovery, timeout time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		// Signal stop so any reply goroutines blocked on time.After
+		// exit. They check stop in their select.
+		close(d.stop)
+		select {
+		case <-done:
+		case <-time.After(timeout):
+			t.Fatal("handleMSearch goroutines did not drain")
+		}
+	}
+}
+
+func TestHandleMSearch_AllMatchesAllTargets(t *testing.T) {
+	d, fw := newHandleMSearchTestDiscovery(t)
+	src := &net.UDPAddr{IP: net.ParseIP("192.168.1.99"), Port: 1900}
+
+	// MX="0" yields an immediate-reply ceiling; replies fire after only
+	// the per-USN stagger which is at most 5*ssdpUSNStagger == 250ms.
+	d.handleMSearch("ssdp:all", "0", src)
+	drainHandleMSearch(t, d, 1*time.Second)
+
+	writes := fw.snapshotWrites()
+	if len(writes) != len(d.targets) {
+		t.Fatalf("ssdp:all produced %d replies; want %d (one per target)",
+			len(writes), len(d.targets))
+	}
+	// Every reply must be unicast to src (not the multicast group).
+	for i, w := range writes {
+		if got, want := w.addr.String(), src.String(); got != want {
+			t.Errorf("reply[%d] addr = %q, want %q (unicast)", i, got, want)
+		}
+		if !strings.HasPrefix(string(w.body), "HTTP/1.1 200 OK") {
+			t.Errorf("reply[%d] not an HTTP 200 OK reply: %q", i, snippet(string(w.body)))
+		}
+	}
+}
+
+func TestHandleMSearch_SpecificSTMatchesSingleTarget(t *testing.T) {
+	d, fw := newHandleMSearchTestDiscovery(t)
+	src := &net.UDPAddr{IP: net.ParseIP("192.168.1.99"), Port: 1900}
+
+	d.handleMSearch("urn:schemas-upnp-org:device:MediaRenderer:1", "0", src)
+	drainHandleMSearch(t, d, 1*time.Second)
+
+	writes := fw.snapshotWrites()
+	if len(writes) != 1 {
+		t.Fatalf("MediaRenderer M-SEARCH produced %d replies; want 1", len(writes))
+	}
+	body := string(writes[0].body)
+	if !strings.Contains(body, "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n") {
+		t.Errorf("reply ST mismatch:\n%s", snippet(body))
+	}
+}
+
+func TestHandleMSearch_NoMatchYieldsNoReply(t *testing.T) {
+	d, fw := newHandleMSearchTestDiscovery(t)
+	src := &net.UDPAddr{IP: net.ParseIP("192.168.1.99"), Port: 1900}
+
+	d.handleMSearch("urn:schemas-upnp-org:service:DoesNotExist:1", "0", src)
+	drainHandleMSearch(t, d, 500*time.Millisecond)
+
+	writes := fw.snapshotWrites()
+	if len(writes) != 0 {
+		t.Errorf("non-matching ST produced %d replies; want 0\nwrites: %+v",
+			len(writes), writes)
+	}
+}
+
+func TestHandleMSearch_ReplyAddrIsUnicastSource(t *testing.T) {
+	d, fw := newHandleMSearchTestDiscovery(t)
+	src := &net.UDPAddr{IP: net.ParseIP("10.0.0.42"), Port: 53412}
+
+	d.handleMSearch("upnp:rootdevice", "0", src)
+	drainHandleMSearch(t, d, 500*time.Millisecond)
+
+	writes := fw.snapshotWrites()
+	if len(writes) != 1 {
+		t.Fatalf("rootdevice produced %d replies; want 1", len(writes))
+	}
+	got, _ := writes[0].addr.(*net.UDPAddr)
+	if got == nil {
+		t.Fatalf("reply addr is %T, want *net.UDPAddr", writes[0].addr)
+	}
+	if !got.IP.Equal(src.IP) || got.Port != src.Port {
+		t.Errorf("reply addr = %v, want %v (unicast back to source)", got, src)
+	}
+}
+
+func TestRandomDelayUpTo_ZeroCeilingReturnsZero(t *testing.T) {
+	d := newTestDiscovery(validDiscoveryConfig())
+	d.rng = rand.New(rand.NewSource(1))
+	if got := d.randomDelayUpTo(0); got != 0 {
+		t.Errorf("randomDelayUpTo(0) = %v, want 0", got)
+	}
+	if got := d.randomDelayUpTo(-1 * time.Second); got != 0 {
+		t.Errorf("randomDelayUpTo(-1s) = %v, want 0", got)
+	}
+}
+
+func TestRandomDelayUpTo_BoundedBelowCeiling(t *testing.T) {
+	d := newTestDiscovery(validDiscoveryConfig())
+	d.rng = rand.New(rand.NewSource(7))
+
+	const ceiling = 1 * time.Second
+	for i := 0; i < 100; i++ {
+		got := d.randomDelayUpTo(ceiling)
+		if got < 0 || got > ceiling {
+			t.Errorf("iter %d: randomDelayUpTo(%v) = %v; want [0, %v]",
+				i, ceiling, got, ceiling)
+		}
+	}
+}
+
+func TestBuildServerToken_VersionThreaded(t *testing.T) {
+	cases := []struct {
+		version string
+		want    string
+	}{
+		{"1.2.3", "MiSTerGroovyRelay/1.2.3 UPnP/1.0 MiSTer-DLNA/1.0"},
+		{"", "MiSTerGroovyRelay/0.0.0 UPnP/1.0 MiSTer-DLNA/1.0"},
+		{"  ", "MiSTerGroovyRelay/0.0.0 UPnP/1.0 MiSTer-DLNA/1.0"},
+		{"v0.9.1-beta", "MiSTerGroovyRelay/v0.9.1-beta UPnP/1.0 MiSTer-DLNA/1.0"},
+	}
+	for _, tc := range cases {
+		if got := buildServerToken(tc.version); got != tc.want {
+			t.Errorf("buildServerToken(%q) = %q, want %q", tc.version, got, tc.want)
+		}
+	}
+}
+
+func TestNotify_EmbedsCustomServerToken(t *testing.T) {
+	cfg := validDiscoveryConfig()
+	cfg.ServerToken = "MiSTerGroovyRelay/9.9.9 UPnP/1.0 MiSTer-DLNA/1.0"
+	d := newTestDiscovery(cfg)
+	body := string(d.buildNotify("ssdp:alive", "upnp:rootdevice",
+		"uuid:abcdef01-2345-6789-abcd-ef0123456789::upnp:rootdevice"))
+	if !strings.Contains(body, "SERVER: MiSTerGroovyRelay/9.9.9 UPnP/1.0 MiSTer-DLNA/1.0\r\n") {
+		t.Errorf("alive NOTIFY missing custom SERVER header\nbody:\n%s", body)
+	}
+}
+
+func TestSearchResponse_EmbedsCustomServerToken(t *testing.T) {
+	cfg := validDiscoveryConfig()
+	cfg.ServerToken = "MiSTerGroovyRelay/2.0.0 UPnP/1.0 MiSTer-DLNA/1.0"
+	d := newTestDiscovery(cfg)
+	body := string(d.buildSearchResponse("upnp:rootdevice",
+		"uuid:abcdef01-2345-6789-abcd-ef0123456789::upnp:rootdevice"))
+	if !strings.Contains(body, "SERVER: MiSTerGroovyRelay/2.0.0 UPnP/1.0 MiSTer-DLNA/1.0\r\n") {
+		t.Errorf("search response missing custom SERVER header\nbody:\n%s", body)
+	}
+}
+
+// snippet returns the first 200 bytes of s for failure messages.
+func snippet(s string) string {
+	const n = 200
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }
 
 // ----- helpers -----

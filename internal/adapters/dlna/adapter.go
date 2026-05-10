@@ -79,6 +79,11 @@ type Adapter struct {
 	// httpPort is bridge.ui.http_port — the bridge HTTP listener
 	// where /dlna/* routes are mounted. Immutable post-construction.
 	httpPort int
+	// version is the bridge build version threaded from main.go's
+	// `version` symbol (set via `-ldflags "-X main.version=..."`). Used
+	// to construct the SSDP SERVER header. Empty in tests; production
+	// passes a non-empty string. Immutable post-construction.
+	version string
 	// core is the adapter-agnostic session manager. Set once at New()
 	// and never mutated, so it is held outside mu — same precedent as
 	// internal/adapters/url/adapter.go:54 and the locking discipline in
@@ -177,6 +182,12 @@ type AdapterConfig struct {
 	// HTTPPort is bridge.ui.http_port — the single bridge HTTP
 	// listener where /dlna/* routes are mounted. Must be in (0, 65535].
 	HTTPPort int
+	// Version is the bridge build version (main.version). Threaded into
+	// the SSDP SERVER header so controllers see a stable, distinguishable
+	// product token across releases. Empty/whitespace falls back to
+	// "0.0.0" inside buildServerToken — useful for tests and dev builds
+	// where ldflags aren't in play.
+	Version string
 	// Core is the adapter-agnostic session manager. core.Manager
 	// satisfies this via structural typing. Required: the SOAP
 	// handlers added in P2.3 / P2.4 dereference it without nil-checking
@@ -204,6 +215,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		deviceUUID: cfg.DeviceUUID,
 		hostIP:     cfg.HostIP,
 		httpPort:   cfg.HTTPPort,
+		version:    cfg.Version,
 		core:       cfg.Core,
 		cfg:        DefaultConfig(),
 		state:      adapters.StateStopped,
@@ -382,10 +394,11 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// NewDiscovery wraps the underlying join error; Start translates
 	// that into the state machine.
 	disco, err := newDiscoveryFn(DiscoveryConfig{
-		DeviceUUID: a.deviceUUID,
-		DeviceName: deviceName,
-		HostIP:     trimmed,
-		HTTPPort:   a.httpPort,
+		DeviceUUID:  a.deviceUUID,
+		DeviceName:  deviceName,
+		HostIP:      trimmed,
+		HTTPPort:    a.httpPort,
+		ServerToken: buildServerToken(a.version),
 	})
 	if err != nil {
 		a.setState(adapters.StateError, err.Error())
