@@ -51,6 +51,14 @@ type captureSessionManager struct {
 	// 501-Action-Failed branch in handlePause.
 	pauseErr error
 
+	// seekErr lets a test inject a SeekTo error to exercise the
+	// 501-Action-Failed branch in handleSeek.
+	seekErr error
+
+	// seekOffsets captures every SeekTo offsetMs argument in order so
+	// tests can assert the milliseconds value the handler computed.
+	seekOffsets []int
+
 	// Method counters mirror fakeSessionManager — useful for assertions
 	// like "core.Stop was called once."
 	startCalls int
@@ -96,11 +104,12 @@ func (c *captureSessionManager) Stop() error {
 	return c.stopErr
 }
 
-func (c *captureSessionManager) SeekTo(int) error {
+func (c *captureSessionManager) SeekTo(offsetMs int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seekCalls++
-	return nil
+	c.seekOffsets = append(c.seekOffsets, offsetMs)
+	return c.seekErr
 }
 
 // lastReq returns the most-recent captured SessionRequest. Convenience
@@ -138,6 +147,24 @@ func (c *captureSessionManager) snapshotPauseCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pauseCalls
+}
+
+func (c *captureSessionManager) snapshotSeekCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seekCalls
+}
+
+// lastSeekOffset returns the most-recent SeekTo offsetMs, or -1 when
+// SeekTo has not been called. Used by handleSeek tests to verify the
+// HH:MM:SS → ms conversion inside the handler.
+func (c *captureSessionManager) lastSeekOffset() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.seekOffsets) == 0 {
+		return -1
+	}
+	return c.seekOffsets[len(c.seekOffsets)-1]
 }
 
 // avtPlayAdapter constructs an enabled adapter with a captureSessionManager

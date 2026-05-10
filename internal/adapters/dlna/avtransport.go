@@ -24,8 +24,10 @@ import (
 //     Play, Stop
 //   Impl (P3.1):
 //     Pause
-//   Stub (return 501 Action Failed) — flip to Impl in P3.2 / never:
-//     Seek, Next, Previous
+//   Impl (P3.2):
+//     Seek
+//   Stub (return 501 Action Failed) — never:
+//     Next, Previous
 
 const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 
@@ -34,10 +36,9 @@ const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 // dispatcher can branch on the action name without a per-action stub
 // function. SetAVTransportURI moved out of this set in P2.3 (real
 // validate+store handler); Play/Stop moved out in P2.4; Pause moved
-// out in P3.1. The remaining three are Seek (P3.2) and the
-// Next/Previous pair (queue model not implemented; v1 has no queue).
+// out in P3.1; Seek moved out in P3.2. Next/Previous remain stubs —
+// v1 has no queue model.
 var avtStubActions = map[string]struct{}{
-	"Seek":     {},
 	"Next":     {},
 	"Previous": {},
 }
@@ -88,6 +89,10 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 	}
 	if action == "Pause" {
 		a.handlePause(w, extractPauseArgs(args))
+		return
+	}
+	if action == "Seek" {
+		a.handleSeek(w, extractSeekArgs(args))
 		return
 	}
 

@@ -202,11 +202,14 @@ func parseDIDLDuration(s string) time.Duration {
 		return 0
 	}
 
-	// Split on the first dot for the optional fractional seconds.
-	// Splitting on "." rather than parsing time.Duration via
-	// time.ParseDuration keeps the format strict — "1h30m" would
-	// otherwise parse and we don't want that.
-	dotIdx := strings.IndexByte(s, '.')
+	// Split on the first dot OR comma for the optional fractional
+	// seconds. UPnP standards use ".", but real-world EU controllers
+	// can be locale-affected and emit "00:00:30,500" — accepting both
+	// improves interop without weakening the format (the digit-count
+	// check still rejects garbage). Splitting via IndexAny rather than
+	// time.ParseDuration keeps the format strict — "1h30m" still
+	// rejects.
+	dotIdx := strings.IndexAny(s, ".,")
 	mainPart := s
 	fracPart := ""
 	if dotIdx >= 0 {
