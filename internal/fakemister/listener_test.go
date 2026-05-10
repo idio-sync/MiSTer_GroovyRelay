@@ -68,6 +68,51 @@ func TestListener_BlitHeaderThenPayload(t *testing.T) {
 	}
 }
 
+func TestListener_BuffersFullRawFieldBeforeRunStarts(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+
+	l, err := NewListener("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().(*net.UDPAddr)
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(groovy.BuildBlitHeader(groovy.BlitOpts{Frame: 1, Field: 0})); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, fieldBytes)
+	for i := 0; i < len(payload); i += groovy.MaxDatagram {
+		end := i + groovy.MaxDatagram
+		if end > len(payload) {
+			end = len(payload)
+		}
+		if _, err := conn.Write(payload[i:end]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmds := make(chan Command, 8)
+	fields := make(chan FieldEvent, 1)
+	audios := make(chan AudioEvent, 1)
+	go l.RunWithFields(cmds, fields, audios, func() uint32 { return fieldBytes })
+
+	select {
+	case fe := <-fields:
+		if len(fe.Payload) != fieldBytes {
+			t.Fatalf("payload len = %d, want %d", len(fe.Payload), fieldBytes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for full raw field")
+	}
+}
+
 func TestListener_AudioHeaderThenPayload(t *testing.T) {
 	l, _ := NewListener(":0")
 	defer l.Close()
