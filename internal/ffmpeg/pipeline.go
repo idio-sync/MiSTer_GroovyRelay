@@ -33,6 +33,11 @@ type VisualizerSpec struct {
 	Enabled  bool
 	Mode     VisualizerMode
 	Metadata VisualizerMetadata
+
+	// DrawTextAvailable is populated by ffmpeg.Spawn after probing the
+	// resolved FFmpeg binary. BuildCommand stays pure and renders bars-only
+	// when this is false.
+	DrawTextAvailable bool
 }
 
 // PipelineSpec is the full set of knobs the filter-chain/command builder needs.
@@ -240,6 +245,107 @@ func escapeSubtitlePathFor(goos, p string) string {
 	return p
 }
 
+func escapeFilterText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\r', '\n', '\t':
+			b.WriteByte(' ')
+		case '\\', '\'', ':', ',', ';', '%', '[', ']':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			if r < 0x20 {
+				b.WriteByte(' ')
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func visualizerTextLines(s PipelineSpec) []string {
+	md := s.Visualizer.Metadata
+	title := strings.TrimSpace(md.Title)
+	if title == "" {
+		title = "Now Playing"
+	}
+	lines := []string{title}
+	if artistAlbum := strings.TrimSpace(strings.Join(nonEmpty(md.Artist, md.Album), " - ")); artistAlbum != "" {
+		lines = append(lines, artistAlbum)
+	}
+	if md.Duration > 0 {
+		lines = append(lines, "%{pts\\:hms} / "+formatDurationClock(md.Duration))
+	}
+	return lines
+}
+
+func nonEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, strings.TrimSpace(v))
+		}
+	}
+	return out
+}
+
+func formatDurationClock(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d.Round(time.Second).Seconds())
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
+	if s.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+		return "", fmt.Errorf("unsupported visualizer mode %q", s.Visualizer.Mode)
+	}
+	fpsExpr := s.OutputFpsExpr
+	if fpsExpr == "" {
+		fpsExpr = "60000/1001"
+	}
+	logicalW, logicalH := logicalCanvas(s.OutputHeight)
+	parts := []string{
+		fmt.Sprintf("[0:a:0]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]", logicalW, logicalH),
+	}
+	label := "viz0"
+	if s.Visualizer.DrawTextAvailable {
+		for i, line := range visualizerTextLines(s) {
+			next := fmt.Sprintf("viztext%d", i)
+			y := 24 + i*30
+			parts = append(parts, fmt.Sprintf("[%s]drawtext=text='%s':x=24:y=%d:fontsize=24:fontcolor=0x9dff9d:box=1:boxcolor=0x00000099[%s]",
+				label, escapeFilterText(line), y, next))
+			label = next
+		}
+		if s.Visualizer.Metadata.Duration > 0 {
+			next := "vizbar"
+			seconds := s.Visualizer.Metadata.Duration.Seconds()
+			parts = append(parts, fmt.Sprintf("[%s]drawbox=x=24:y=h-34:w='(w-48)*min(t/%.3f,1)':h=8:color=0x70ff70:t=fill[%s]",
+				label, seconds, next))
+			label = next
+		}
+	}
+	parts = append(parts, fmt.Sprintf("[%s]fps=%s,scale=w=%d:h=%d,format=bgr24[visualizer_video]",
+		label, fpsExpr, s.OutputWidth, s.OutputHeight))
+	return strings.Join(parts, ";"), nil
+}
+
+func ffmpegPathFor(s PipelineSpec) string {
+	if s.FFmpegPath != "" {
+		return s.FFmpegPath
+	}
+	return "ffmpeg"
+}
+
 // BuildCommand returns a ready-to-run *exec.Cmd for the pipeline described by
 // s. The caller is responsible for wiring up the platform stream transport
 // before starting the command.
@@ -293,6 +399,32 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 		args = append(args, "-i", s.AudioInputURL)
 	}
 
+	if s.Visualizer.Enabled {
+		graph, err := buildVisualizerFilterChain(s)
+		if err != nil {
+			cmd := exec.CommandContext(ctx, ffmpegPathFor(s), "-version")
+			cmd.Err = err
+			return cmd
+		}
+		args = append(args,
+			"-filter_complex", graph,
+			"-map", "[visualizer_video]",
+			"-pix_fmt", "bgr24",
+			"-f", "rawvideo",
+			s.VideoPipePath,
+		)
+		if audioOutputEnabled(s) {
+			args = append(args,
+				"-map", "0:a:0",
+				"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
+				"-ac", fmt.Sprintf("%d", s.AudioChannels),
+				"-f", "s16le",
+				s.AudioPipePath,
+			)
+		}
+		return exec.CommandContext(ctx, ffmpegPathFor(s), args...)
+	}
+
 	// Video output: raw full-height bgr24 progressive frames to the video
 	// pipe. The data plane row-stripes these into interlaced fields when the
 	// active modeline is interlaced. This matches the working MiSTerCast /
@@ -323,11 +455,7 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 		)
 	}
 
-	ffmpegPath := s.FFmpegPath
-	if ffmpegPath == "" {
-		ffmpegPath = "ffmpeg"
-	}
-	return exec.CommandContext(ctx, ffmpegPath, args...)
+	return exec.CommandContext(ctx, ffmpegPathFor(s), args...)
 }
 
 // appendHeadersArg formats `headers` into a single `-headers <CRLF-joined>`

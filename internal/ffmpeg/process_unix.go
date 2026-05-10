@@ -32,6 +32,7 @@ func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
 	spec.VideoPipePath = "pipe:3"
 	spec.AudioPipePath = "pipe:4"
 
+	spec = withVisualizerCapabilities(ctx, spec)
 	cmd := BuildCommand(ctx, spec)
 	cmd.ExtraFiles = []*os.File{videoW, audioW}
 	// Forward stderr line-by-line into slog instead of dumping raw to the
