@@ -219,10 +219,12 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 				// for the underlying cause.
 				slog.Default().Warn("dlna: core.Play resume failed", "err", err, "ref", owned)
 				a.setLastError("Play resume failed (see bridge logs)")
+				a.publishAVTransportLastChange()
 				writeSOAPFault(w, upnpErrActionFailed)
 				return
 			}
 			a.setTransportState(transportStatePlaying)
+			a.publishAVTransportLastChange()
 			writeSOAPResponse(w, avTransportServiceURN, "Play", nil)
 			return
 		}
@@ -387,6 +389,7 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 			}
 			a.mu.Unlock()
 		}
+		a.publishAVTransportLastChange()
 		if errors.Is(err, core.ErrProbeUnreachable) {
 			return upnpErrResourceNotFound
 		}
@@ -409,6 +412,7 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 		a.lastError = ""
 	}
 	a.mu.Unlock()
+	a.publishAVTransportLastChange()
 	return 0
 }
 
@@ -428,9 +432,9 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 func (a *Adapter) onStopForRef(ref string) func(string) {
 	return func(reason string) {
 		a.mu.Lock()
-		defer a.mu.Unlock()
 		// Compare-and-clear: only act on equality (spec line 303).
 		if a.currentRef != ref {
+			a.mu.Unlock()
 			return
 		}
 		a.currentRef = ""
@@ -443,6 +447,8 @@ func (a *Adapter) onStopForRef(ref string) func(string) {
 		if reason != "" && reason != "stopped" {
 			a.lastError = "playback ended: " + reason
 		}
+		a.mu.Unlock()
+		a.publishAVTransportLastChange()
 	}
 }
 
@@ -520,6 +526,7 @@ func (a *Adapter) handleStop(w http.ResponseWriter, args stopArgs) {
 		// bridge logs (slog below) for the underlying cause.
 		slog.Default().Warn("dlna: core.Stop failed", "err", err, "ref", owned)
 		a.setLastError("Stop failed (see bridge logs)")
+		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrActionFailed)
 		return
 	}

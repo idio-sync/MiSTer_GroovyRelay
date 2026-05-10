@@ -32,20 +32,20 @@ func extractPauseArgs(args map[string]string) pauseArgs {
 //
 // Decision tree:
 //
-//   1. InstanceID == 0 (else 718).
-//   2. Snapshot enabled + currentRef + transportState + lastError under
-//      mu, drop. Disabled adapter rejects with 701.
-//   3. core.Status() enforces the ownership guard: foreign session
-//      rejects with 701.
-//   4. No active DLNA session (currentRef == "") rejects with 701 —
-//      there is nothing to pause.
-//   5. Already STOPPED or already PAUSED_PLAYBACK rejects with 701.
-//      The FSM rejects EvPause from those states; surfacing the
-//      controller-visible "transition not available" matches the
-//      core's view of the world.
-//   6. core.Pause() under lock-released conditions; on success,
-//      compare-and-clear the transportState flip (same discipline
-//      buildAndStartSession uses for currentRef).
+//  1. InstanceID == 0 (else 718).
+//  2. Snapshot enabled + currentRef + transportState + lastError under
+//     mu, drop. Disabled adapter rejects with 701.
+//  3. core.Status() enforces the ownership guard: foreign session
+//     rejects with 701.
+//  4. No active DLNA session (currentRef == "") rejects with 701 —
+//     there is nothing to pause.
+//  5. Already STOPPED or already PAUSED_PLAYBACK rejects with 701.
+//     The FSM rejects EvPause from those states; surfacing the
+//     controller-visible "transition not available" matches the
+//     core's view of the world.
+//  6. core.Pause() under lock-released conditions; on success,
+//     compare-and-clear the transportState flip (same discipline
+//     buildAndStartSession uses for currentRef).
 //
 // Locking discipline: a.mu is never held across the core.Status() or
 // core.Pause() call (CLAUDE.md). All snapshots are brief read/release.
@@ -107,6 +107,7 @@ func (a *Adapter) handlePause(w http.ResponseWriter, args pauseArgs) {
 		// buildAndStartSession's StartSession failure path.
 		slog.Default().Warn("dlna: core.Pause failed", "err", err, "ref", owned)
 		a.setLastError("Pause failed (see bridge logs)")
+		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrActionFailed)
 		return
 	}
@@ -120,5 +121,6 @@ func (a *Adapter) handlePause(w http.ResponseWriter, args pauseArgs) {
 		a.transportState = transportStatePausedPlayback
 	}
 	a.mu.Unlock()
+	a.publishAVTransportLastChange()
 	writeSOAPResponse(w, avTransportServiceURN, "Pause", nil)
 }

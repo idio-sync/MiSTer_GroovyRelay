@@ -244,30 +244,6 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	return a, nil
 }
 
-func (a *Adapter) seedEventSnapshots() {
-	a.events.setSnapshot(serviceAVTransport, eventProperties{
-		"LastChange": buildAVTransportLastChange(avTransportEventState{
-			TransportState:          a.transportState,
-			TransportStatus:         "OK",
-			CurrentTrackURI:         a.loadedURI,
-			CurrentTrackDuration:    "00:00:00",
-			RelativeTimePosition:    "00:00:00",
-			CurrentTransportActions: "Play",
-		}),
-	})
-	a.events.setSnapshot(serviceRenderingControl, eventProperties{
-		"LastChange": buildRenderingControlLastChange(renderingControlEventState{
-			Volume: a.volume,
-			Muted:  a.muted,
-		}),
-	})
-	a.events.setSnapshot(serviceConnectionManager, eventProperties{
-		"SourceProtocolInfo":   "",
-		"SinkProtocolInfo":     sinkProtocolInfo,
-		"CurrentConnectionIDs": "0",
-	})
-}
-
 // mintSessionRef returns a fresh "dlna:<hex>" ref. 8 bytes of crypto
 // randomness gives 64 bits of uniqueness — enough that the chance of two
 // concurrent sessions colliding is irrelevant in practice (the
