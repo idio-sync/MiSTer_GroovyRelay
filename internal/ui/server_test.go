@@ -255,6 +255,18 @@ func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
 	}
 }
 
+func TestShell_IncludesConsoleEasterEgg(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "GroovyRelay") || !strings.Contains(body, "console.log") {
+		t.Errorf("missing console easter egg block in shell")
+	}
+}
+
 func TestStaticAssets_AppCSSIncludesPR2bClasses(t *testing.T) {
 	_, mux := newTestServer(t)
 	r := httptest.NewRequest("GET", "/ui/static/app.css", nil)

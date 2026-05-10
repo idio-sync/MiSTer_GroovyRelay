@@ -17,6 +17,19 @@
 			{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
 		</main>
 	</div>
+<script>
+  // S11b — devtools easter egg. The only JS PR2 ships.
+  (function () {
+    var amber = "background:oklch(0.78 0.16 80);color:oklch(0.20 0.030 80);" +
+                "font:600 13px 'Space Grotesk',system-ui;padding:6px 10px;" +
+                "border-radius:2px;letter-spacing:-0.01em;";
+    var dim = "color:oklch(0.65 0.012 80);font:400 12px 'JetBrains Mono',monospace;";
+    var body = "color:oklch(0.94 0.012 85);font:400 13px 'Inter Tight',system-ui;";
+    console.log("%c GroovyRelay %c cast · mister", amber, dim);
+    console.log("%cTracing the scanlines for you, friend.", body);
+    console.log("%chttps://github.com/idio-sync/MiSTer_GroovyRelay", dim);
+  })();
+</script>
 </body>
 </html>
 {{define "sidebar-body"}}

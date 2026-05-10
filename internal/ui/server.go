@@ -175,8 +175,6 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
 	s.mountPOST(mux, "/ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
 
-	// Sidebar status fragment (polled every 3s by the shell).
-	s.mountGET(mux, "/ui/sidebar/status", s.handleSidebarStatus)
 	// Sidebar dots fragment (per-adapter status indicators).
 	s.mountGET(mux, "/ui/sidebar/dots", s.handleSidebarDots)
 
@@ -216,21 +214,6 @@ func (s *Server) Mount(mux *http.ServeMux) {
 			}
 		}
 	}
-}
-
-// handleSidebarStatus renders the <aside> fragment swapped in every
-// 3 s by the shell's hx-trigger. Returns the entire <aside> (not
-// just the inner dots) so the outer hx-get + hx-trigger attributes
-// survive the outerHTML swap — the sidebar re-registers its own
-// polling on every refresh.
-func (s *Server) handleSidebarStatus(w http.ResponseWriter, r *http.Request) {
-	data := s.shellData()
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := w.Write([]byte(`<aside class="sidebar" id="sidebar" hx-get="/ui/sidebar/status" hx-trigger="every 3s" hx-swap="outerHTML">`)); err != nil {
-		return
-	}
-	_ = s.tmpl.ExecuteTemplate(w, "sidebar-body", data)
-	_, _ = w.Write([]byte(`</aside>`))
 }
 
 // mountPOST is the canonical way to register a POST handler on the UI
@@ -310,7 +293,6 @@ func (s *Server) shellData() shellTemplateData {
 		adaptersData = append(adaptersData, sidebarAdapter{
 			Name:        a.Name(),
 			DisplayName: a.DisplayName(),
-			DotGlyph:    dotGlyph(st.State),
 			DotClass:    dotClass(st.State),
 		})
 	}
@@ -326,25 +308,7 @@ type shellTemplateData struct {
 type sidebarAdapter struct {
 	Name        string
 	DisplayName string
-	DotGlyph    string
 	DotClass    string
-}
-
-// dotGlyph returns the single-character status indicator for a state.
-// Matches the palette conventions in app.css (.dot.run/.starting/.err/
-// .off); changing glyphs here also requires updating any template
-// that asserts against specific characters.
-func dotGlyph(s adapters.State) string {
-	switch s {
-	case adapters.StateRunning:
-		return "●"
-	case adapters.StateStarting:
-		return "◐"
-	case adapters.StateError:
-		return "●"
-	default:
-		return "○"
-	}
 }
 
 // dotClass returns the CSS class for a state (colors the dot).
