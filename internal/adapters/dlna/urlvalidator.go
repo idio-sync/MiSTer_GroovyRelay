@@ -128,7 +128,13 @@ type dnsResolverFunc func(ctx context.Context, host string) ([]net.IP, error)
 // caller maps it to ErrAddressNotAllowed (the most precise mapping
 // for "we can't tell what this resolves to, so we can't say it's
 // safe").
-func defaultDNSResolver(ctx context.Context, host string) ([]net.IP, error) {
+//
+// Stored as a package-level variable (not a function declaration) so
+// integration tests can swap it for a hostMappingResolver / staticResolver
+// stub via installResolverOverride. Production callers (validateMediaURL)
+// use this value directly. Concurrency: tests serialize via t.Cleanup
+// restoration; production never mutates the variable.
+var defaultDNSResolver dnsResolverFunc = func(ctx context.Context, host string) ([]net.IP, error) {
 	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
 

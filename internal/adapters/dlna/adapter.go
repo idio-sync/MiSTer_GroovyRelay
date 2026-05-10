@@ -112,6 +112,23 @@ type Adapter struct {
 	currentRef    string
 	startInFlight bool
 
+	// loadedURI is the most-recently-stored validated media URI; "" when
+	// no URI is loaded. loadedMeta is the parsed DIDL-Lite from the same
+	// SetAVTransportURI call. loadedMetaRaw is the raw CurrentURIMetaData
+	// XML the controller sent — round-tripped verbatim by GetMediaInfo /
+	// GetPositionInfo so we don't have to reconstruct DIDL on the fly.
+	// lastError is the redacted last-error message from a validation /
+	// probe / playback failure (used by query actions to surface
+	// ERROR_OCCURRED with context). All four are guarded by mu.
+	//
+	// The redaction discipline for lastError: never store userinfo or
+	// query strings — at most scheme + host (URLs go through redactURL
+	// before being included). DIDL parse errors store a generic message.
+	loadedURI     string
+	loadedMeta    DIDLMetadata
+	loadedMetaRaw string
+	lastError     string
+
 	// discovery and discoveryDone are owned by Start/Stop. discovery is
 	// nil when the adapter is disabled, when Start hasn't run, or after
 	// Stop. discoveryDone is the close signal from the Run goroutine; we
