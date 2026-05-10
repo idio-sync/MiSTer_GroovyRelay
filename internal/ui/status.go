@@ -87,7 +87,7 @@ func (s *Server) buildStatusData() statusPanelData {
 		d.Title = v.Title
 		d.AdapterRef = v.AdapterRef
 		d.Modeline = v.Modeline
-		d.AdapterDisplayName = displayNameForRef(s.cfg.Registry, v.AdapterRef)
+		d.AdapterDisplayName = displayNameForSource(s.cfg.Registry, v.Source, v.AdapterRef)
 		switch v.State {
 		case core.StatePlaying:
 			d.FPS = formatFPS(v.BlitsTotal, time.Since(v.StartedAt))
@@ -206,8 +206,22 @@ func statusBadgeLabel(s adapters.State) string {
 	}
 }
 
-func displayNameForRef(reg *adapters.Registry, ref string) string {
-	if ref == "" || reg == nil {
+// displayNameForSource resolves the human-readable display name for the
+// active session. Prefers the explicit Source field on SessionRequest
+// (the contract added in PR2 follow-up #10); falls back to the
+// AdapterRef's leading "name/" segment for sessions started before
+// adapters were taught to populate Source.
+func displayNameForSource(reg *adapters.Registry, source, ref string) string {
+	if reg == nil {
+		return source
+	}
+	if source != "" {
+		if a, ok := reg.Get(source); ok {
+			return a.DisplayName()
+		}
+		return source
+	}
+	if ref == "" {
 		return ""
 	}
 	name, _, _ := strings.Cut(ref, "/")

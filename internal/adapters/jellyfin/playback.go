@@ -182,6 +182,7 @@ func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 		SubtitleIndex: 0,
 		Capabilities:  core.Capabilities{CanSeek: true, CanPause: true},
 		AdapterRef:    refKey,
+		Source:        "jellyfin",
 		DirectPlay:    false,
 		OnStop:        a.makeOnStop(refKey),
 	}

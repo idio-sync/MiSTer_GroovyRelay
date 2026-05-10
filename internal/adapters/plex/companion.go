@@ -214,6 +214,7 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 		StreamURL:    streamURL,
 		SeekOffsetMs: p.OffsetMs,
 		AdapterRef:   p.MediaKey,
+		Source:       "plex",
 		Title:        p.Title,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 	}
