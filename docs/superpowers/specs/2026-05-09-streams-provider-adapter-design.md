@@ -138,6 +138,7 @@ enabled = false
 manifest_url = "https://raw.githubusercontent.com/idio-sync/MiSTer_GroovyRelay/main/docs/streams/providers.json"
 manifest_refresh_hours = 24
 catalog_refresh_hours = 12
+max_manifest_bytes = 1048576
 max_catalog_bytes = 10485760
 max_items_per_channel = 5000
 max_consecutive_failures = 5
@@ -157,6 +158,7 @@ catalog_refresh_hours = 12
 Notes:
 
 - `enabled=false` avoids unexpected background network traffic until the operator opts in.
+- When `enabled=true` and `allow_remote_manifest=true`, the adapter starts background HTTP refresh after loading bundled/cache state. Operators who want no background network access should keep streams disabled or set `allow_remote_manifest=false`.
 - `allow_remote_manifest=false` disables remote manifest fetches and ignores cached remote manifest overlays. It may still use cached provider catalogs for bundled provider definitions.
 - `allow_cached_remote_manifest=true` is an explicit escape hatch for using the last good remote manifest overlay while remote fetching is disabled.
 - `allow_local_manifest_urls=false` rejects loopback, private LAN, link-local, multicast, and unspecified manifest/catalog targets even when they use `http` or `https`. Operators who intentionally host provider data on their LAN must opt in explicitly.
@@ -164,6 +166,28 @@ Notes:
 - `[adapters.streams.providers.<id>]` entries are user overrides. `disabled=true` removes that provider from URL matching, UI lists, refreshes, and cached catalog loading. `catalog_refresh_hours` overrides the provider default after validation.
 - The default `youtube_format` mirrors the URL adapter's conservative SD bias. Future changes may tune the streams default without changing URL adapter behavior.
 - The adapter uses the bridge-level `yt-dlp` sidecar/path resolution, not a provider-specific binary.
+
+Apply scopes:
+
+| Field | Scope | Reason |
+|---|---|---|
+| `enabled` | `ScopeHotSwap` | Starts/stops the adapter lifecycle through the existing toggle path. |
+| `manifest_url` | `ScopeHotSwap` | Cancels in-flight refresh and affects the next manifest refresh without restarting the bridge. |
+| `manifest_refresh_hours` | `ScopeHotSwap` | Background scheduler re-reads before the next sleep. |
+| `catalog_refresh_hours` | `ScopeHotSwap` | Background scheduler re-reads before the next catalog refresh. |
+| `max_manifest_bytes` | `ScopeHotSwap` | Applied on the next manifest fetch/validation. |
+| `max_catalog_bytes` | `ScopeHotSwap` | Applied on the next catalog fetch/validation. |
+| `max_items_per_channel` | `ScopeHotSwap` | Applied on the next catalog validation; active queues keep their snapshot. |
+| `max_consecutive_failures` | `ScopeHotSwap` | Queue error handling reads the current value before deciding to continue. |
+| `manifest_request_timeout_seconds` | `ScopeHotSwap` | Applied to newly created manifest requests. |
+| `catalog_request_timeout_seconds` | `ScopeHotSwap` | Applied to newly created catalog requests. |
+| `youtube_format` | `ScopeRestartCast` | Affects yt-dlp resolution and FFmpeg inputs for future items. |
+| `allow_remote_manifest` | `ScopeHotSwap` | Starts/stops remote overlay refresh without affecting active queue snapshots. |
+| `allow_cached_remote_manifest` | `ScopeHotSwap` | Changes manifest overlay selection on the next reload. |
+| `allow_local_manifest_urls` | `ScopeHotSwap` | Changes URL validation for future manifest/catalog requests. |
+| `remote_provider_allowed_hosts` | `ScopeHotSwap` | Changes URL validation for future remote-added provider requests. |
+| `providers.<id>.disabled` | `ScopeHotSwap` | Removes provider from matching/UI/refresh on the next reload; active queues keep their snapshot. |
+| `providers.<id>.catalog_refresh_hours` | `ScopeHotSwap` | Background scheduler re-reads before that provider's next refresh. |
 
 ## Manifest
 
@@ -275,6 +299,7 @@ Validation rules:
 - `playlist_url` and `base_url`, when present, must pass the remote fetch security checks before the provider is accepted.
 - Duplicate provider IDs reject the later provider update. Duplicate group, channel, or URL rule IDs reject that provider update.
 - A channel with an unknown `group_id` is accepted but moved to "Ungrouped" with a diagnostic.
+- `adhoc` is a reserved synthetic channel ID and is rejected in provider manifests.
 - Unsupported play modes reject the affected channel override; unsupported provider defaults reject that provider update.
 - Provider counts, group counts, channel counts, URL rule counts, and item counts are bounded by config constants before the new snapshot can replace the active snapshot.
 
@@ -306,20 +331,23 @@ Fetch behavior:
 - When enabled, start a background refresh loop after startup. Manual refresh uses the same refresh path but returns the final status to the UI/API caller.
 - Use `ETag` and `If-None-Match` for the remote manifest and provider catalog URLs.
 - Use `manifest_request_timeout_seconds` for manifest fetches and `catalog_request_timeout_seconds` for catalog fetches. Redirects are capped at three hops and every redirected target must pass the same URL security checks before following it.
+- Manifest bodies are capped by `max_manifest_bytes` before JSON decode. Catalog bodies are capped by `max_catalog_bytes` before provider parsing.
 - Failed background refreshes use bounded exponential backoff with jitter, capped by the configured refresh interval. They never clear the last good in-memory snapshot.
 - Save the last good manifest and catalog snapshots under `data_dir/streams/`.
 - Persist cache metadata alongside each snapshot: `etag`, optional `last_modified`, `fetched_at`, `source_url`, schema version, and a snapshot SHA-256. Restarted bridges use this metadata for conditional requests.
 - Use atomic writes for cache and metadata files.
 - On `304 Not Modified`, keep the in-memory snapshot and update freshness metadata.
 - Purging `data_dir/streams/manifest*` removes remote manifest influence. With `allow_remote_manifest=false`, cached remote manifest files are ignored even if present.
-- A newly fetched manifest or catalog replaces the active snapshot only after it fully validates. Active queues keep their already-built `[]StreamItem` snapshot and are never mutated by catalog refresh; replay or a new channel start uses the latest active catalog.
+- A newly fetched manifest or catalog replaces the active snapshot only after it fully validates. Active queues keep their already-built `[]StreamItem` snapshot and are never mutated by catalog refresh. Next, Previous, EOF advancement, and error-skip all use the active queue snapshot; only Replay or a new channel start rebuilds from the latest active catalog.
 - Provider status exposes freshness, source (`bundled`, `cached`, or `remote`), last refresh time, current ETag, stale/error state, and the last user-safe error message.
 
 ### Remote Data Trust Boundary
 
-Remote manifest data is inert, but URLs inside it are still security-sensitive because the bridge fetches them from the operator's LAN. Remote-sourced manifest and catalog URLs must pass scheme, host, DNS, IP range, size, and timeout validation before any HTTP request is made. This validation is separate from playback URLs synthesized from validated YouTube IDs.
+Remote manifest data is inert, but URLs inside it are still security-sensitive because the bridge fetches them from the operator's LAN. Remote-sourced manifest and catalog URLs must pass scheme, normalized host, DNS, IP range, redirect, size, and timeout validation before any HTTP request is made. This validation is separate from playback URLs synthesized from validated YouTube IDs.
 
 ## Bundled Providers
+
+Bundled provider definitions ship with data-only seed catalogs generated from the public playlist JSON at release time. Seeds let the channel browser and first play work before the first successful network refresh. A fetched catalog replaces the seed only after normal validation, and failed refreshes fall back to the seed or last good cache.
 
 ### MTV Rewind
 
@@ -330,7 +358,7 @@ Playlist URL: `https://wantmymtv.vercel.app/public/mtv-playlists.json`
 URL handling:
 
 - `player.html?channel=metal` starts the `metal` channel.
-- `player.html?v=<id>` starts that YouTube ID. If the ID exists in one or more known channels, use the first containing channel by provider/channel order and move the selected item to the front of the queue. If the ID is not in the catalog, play it as a single-item queue under MTV Rewind.
+- `player.html?v=<id>` starts that YouTube ID. If the ID exists in one or more known channels, use the first containing channel by provider/channel order and move the selected item to the front of the queue. If the ID is not in the catalog, play it as a single-item queue under MTV Rewind with `ChannelID="adhoc"` and display name `MTV Rewind Link`.
 - `/s/<id>` is treated like `?v=<id>`.
 
 Play mode defaults:
@@ -346,10 +374,12 @@ Provider ID: `cartoon-rewind`
 Provider type: `youtube-channel-json`  
 Playlist URL: `https://cartoonrewind.tv/cartoon-playlists.json`
 
+Seed catalog: checked in from the public playlist JSON and validated the same way as fetched catalogs.
+
 URL handling:
 
 - `player.html?channel=heman` starts the `heman` channel.
-- `player.html?v=<id>` starts that video or a single-item queue.
+- `player.html?v=<id>` starts that video or a single-item queue with `ChannelID="adhoc"` and display name `Cartoon Rewind Link` when the item is outside the catalog.
 
 Play mode defaults:
 
@@ -419,6 +449,7 @@ Queue construction:
 - `shuffle`: shuffle using an injected RNG so tests can be deterministic.
 - `first_then_shuffle`: keep item 0 first, shuffle items 1..n.
 - `all` channels concatenate eligible channels, then apply the configured play mode.
+- Ad-hoc item queues use reserved `ChannelID="adhoc"`, display name `<Provider Name> Link`, play mode `sequential`, and one item. Provider manifests may not define a real channel with ID `adhoc`.
 - Empty queues fail before touching `core.Manager`.
 
 End-of-queue behavior:
@@ -448,7 +479,7 @@ Next/previous:
 
 - `Next` advances index and starts a new item, preempting the active session.
 - `Previous` moves to the previous queue item, wrapping at the start.
-- Manual next/previous cancels any in-flight item resolution before starting the requested item.
+- Manual next/previous/replay/stop cancels any in-flight item resolution before mutating queue state or starting the requested item.
 
 EOF advancement:
 
@@ -468,7 +499,8 @@ Current `core.Manager` already lets adapters provide `SessionRequest.OnStop`, an
 
 The streams implementation must include a small core fix:
 
-- When the active plane exits with `runErr == nil`, read the active session's `OnStop`, subtitle path, and session identity while holding `Manager.mu`.
+- Preserve the goroutine's existing identity guard: while holding `Manager.mu`, return immediately if `m.plane != plane`.
+- When the active plane exits with `runErr == nil`, return immediately if `m.active == nil`; otherwise read the active session's `OnStop`, subtitle path, and session identity while holding `Manager.mu`.
 - Clear `m.active`, `m.plane`, and `m.cancelFn` for that completed session.
 - Transition the FSM with `EvEOF`.
 - Release `Manager.mu`, then remove subtitle files and fire `notifySessionStop(onStop, "eof")`.
@@ -529,6 +561,8 @@ The companion mini-remote spec renders foreign sessions read-only unless server-
 
 The first streams pass does not have to add mini-remote UI, but its internal queue/control API should avoid URL-adapter-only assumptions.
 
+For v1, these fields are exposed through `GET /ui/adapter/streams/status` when requested as JSON. A later companion mini-remote pass can reuse the same internal status model instead of scraping HTML or URL-adapter state.
+
 ## Error Handling
 
 - Remote manifest unavailable: use cached manifest or bundled defaults.
@@ -553,14 +587,17 @@ The first streams pass does not have to add mini-remote UI, but its internal que
 - Bundled manifest/catalog URLs may use `http` or `https`, but remote manifest overlays must use `https` unless the operator sets `allow_local_manifest_urls=true`.
 - Remote-sourced manifest/catalog targets that resolve to loopback, private LAN, link-local, multicast, or unspecified addresses are rejected after DNS resolution unless local manifest URLs are explicitly allowed.
 - IP literal hosts are rejected for remote-sourced URLs unless `allow_local_manifest_urls=true`.
+- DNS rebinding mitigation: resolve the hostname once during validation, choose a validated public IP, and dial that IP. Preserve the original hostname only for SNI and the HTTP `Host` header. Do not re-resolve between validation and dial.
+- IPv4 deny ranges include `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `224.0.0.0/4`, and `0.0.0.0/8`.
+- IPv6 deny ranges include `::1/128`, `::/128`, `fc00::/7`, `fe80::/10`, and `ff00::/8`. IPv4-mapped IPv6 addresses in `::ffff:0:0/96` are unwrapped and checked against the IPv4 deny list.
 - Redirects are capped at three hops. Each redirect target is revalidated, and redirects from `https` to `http` are rejected unless local manifest URLs are explicitly allowed.
-- When `remote_provider_allowed_hosts` is non-empty, remote-added providers may fetch catalogs only from those hosts after redirect resolution.
+- `remote_provider_allowed_hosts` entries are normalized with the same host rules as URL rules: lowercase, IDNA-normalized, trailing dot removed, default port stripped, hostname-only, no wildcards. When the allowlist is non-empty, remote-added providers may fetch catalogs only from those hosts after redirect resolution.
 - Unknown provider types are ignored.
-- Catalog and manifest sizes are bounded.
+- Catalog and manifest sizes are bounded by `max_catalog_bytes` and `max_manifest_bytes`.
 - URL rules are matched against parsed URLs, not raw substring checks.
 - `youtube-channel-json` only synthesizes YouTube watch URLs from validated IDs.
 - Provider refresh honors context cancellation and bounded timeouts.
-- Log output must not dump full remote catalog bodies.
+- Log output must follow the URL adapter's redaction discipline: log redacted display URLs, provider IDs, channel IDs, status codes, cache source, and adapter refs; never log full remote catalog bodies, raw manifest bodies, URL userinfo, or credential-like query params such as `token`, `api_key`, `x-plex-token`, `auth`, or `authorization`.
 - The adapter does not add LAN authentication. It follows the existing trusted-LAN UI posture.
 
 ## Testing Strategy
@@ -572,11 +609,13 @@ Unit tests:
 - Remote provider with unknown type is ignored.
 - Remote update that changes a bundled provider's type is ignored.
 - Duplicate provider IDs, duplicate channel IDs, duplicate group IDs, and duplicate URL rule IDs reject the affected provider update.
+- Reserved manifest channel ID `adhoc` is rejected.
 - Provider URL rule matching.
 - Parsed URL rule non-matches for unrelated paths, hosts, query-only matches, userinfo, and raw substring traps.
 - URL extraction edge cases: repeated query param, empty query param, encoded channel IDs, mixed-case hosts, path-prefix extra segments, invalid YouTube IDs, and `channel` plus `v` on the same URL.
 - MTV `?channel=metal` resolution.
 - MTV `?v=<id>` and `/s/<id>` resolution.
+- Out-of-catalog `?v=<id>` builds an ad-hoc queue with `ChannelID="adhoc"` and provider-specific display name.
 - Cartoon `?channel=heman` resolution.
 - Queue construction for sequential, shuffle, and first-then-shuffle.
 - Deterministic shuffle with injected RNG.
@@ -585,12 +624,15 @@ Unit tests:
 - Consecutive failure cap stops queue.
 - Cache fallback on refresh failure.
 - Corrupt cache bodies and metadata checksum mismatches fall back without replacing active data.
+- Manifest bodies over `max_manifest_bytes` are rejected before JSON decode.
 - End-of-queue behavior for sequential, shuffle, and first-then-shuffle.
 - Active queue item snapshots are preserved when catalog refresh replaces the provider catalog.
-- Stale `OnStop` callbacks from manual next/previous, EOF auto-advance, and resolve cancellation do not mutate the new active queue.
+- Stale `OnStop` callbacks from manual next/previous/replay/stop, EOF auto-advance, and resolve cancellation do not mutate the new active queue.
 - Foreign-adapter preemption clears only the matching active queue.
 - `allow_remote_manifest=false` ignores cached remote manifests.
 - `allow_cached_remote_manifest=true` uses cached remote overlays without fetching.
+- Every streams config field has the expected `ApplyScope`, and max-scope-wins is used when multiple fields change.
+- Logging redacts URL userinfo and credential-like query params.
 
 Adapter tests:
 
@@ -619,7 +661,9 @@ Fake HTTP server tests:
 - `304 Not Modified` keeps cached catalog.
 - Restarted bridge reuses persisted `ETag` metadata for conditional manifest and catalog fetches.
 - Remote manifest/catalog URLs that resolve to private, loopback, link-local, multicast, or unspecified addresses are rejected by default.
-- Remote manifest/catalog URLs using unsupported schemes, HTTP downgrade redirects, too many redirects, or disallowed hosts are rejected.
+- Remote manifest/catalog URLs using unsupported schemes, HTTP downgrade redirects, too many redirects, disallowed hosts, or per-hop redirect targets that fail validation are rejected.
+- DNS rebinding tests verify validation resolves once and dials the validated IP rather than re-resolving at dial time.
+- IPv6 tests cover `::1/128`, `::/128`, `fc00::/7`, `fe80::/10`, `ff00::/8`, and IPv4-mapped private addresses in `::ffff:0:0/96`.
 - Malformed manifest leaves previous good manifest active.
 - Malformed provider catalog leaves previous good catalog active.
 - Oversized manifest/catalog is rejected.
