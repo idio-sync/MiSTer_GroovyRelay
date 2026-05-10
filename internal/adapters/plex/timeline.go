@@ -404,9 +404,9 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 		CommandID: cmd,
 		Location:  location,
 		Timelines: []Timeline{
+			video,
 			{Type: "music", State: "stopped"},
 			{Type: "photo", State: "stopped"},
-			video,
 		},
 	}
 	out, _ := xml.Marshal(mc)

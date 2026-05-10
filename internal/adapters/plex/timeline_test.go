@@ -190,6 +190,34 @@ func TestTimeline_BuildXML_VideoTimelineCarriesLocation(t *testing.T) {
 	t.Fatalf("missing video timeline: %s", got)
 }
 
+func TestTimeline_BuildXML_ActiveVideoTimelineIsFirst(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 12345 * time.Millisecond,
+		Duration: 60000 * time.Millisecond,
+	})
+
+	var parsed struct {
+		Timelines []struct {
+			Type string `xml:"type,attr"`
+			Time int64  `xml:"time,attr"`
+		} `xml:"Timeline"`
+	}
+	if err := xmlpkg.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Timelines) == 0 {
+		t.Fatalf("missing timelines: %s", got)
+	}
+	if parsed.Timelines[0].Type != "video" {
+		t.Fatalf("first timeline type = %q, want video; xml=%s", parsed.Timelines[0].Type, got)
+	}
+	if parsed.Timelines[0].Time != 12345 {
+		t.Fatalf("first timeline time = %d, want 12345; xml=%s", parsed.Timelines[0].Time, got)
+	}
+}
+
 func TestTimeline_BuildXML_StateMapping(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	cases := []struct {
