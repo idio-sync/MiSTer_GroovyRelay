@@ -98,6 +98,17 @@ type Config struct {
 	Version          string        // build version, displayed in diagnostics
 }
 
+// sectionCtxData is the context object passed to the "field-section"
+// template partial. It carries everything the partial needs: the
+// section itself, its 0-based index (for sequential section numbering),
+// and the enclosing adapter name (for building hx-post URLs and slot
+// IDs for KindAction buttons).
+type sectionCtxData struct {
+	AdapterName string
+	Index       int
+	Section     bridgeSection
+}
+
 // templateFuncs supplies the tiny set of helpers our templates need.
 // Keep this list small — business logic belongs in Go, not templates.
 //
@@ -106,6 +117,10 @@ type Config struct {
 //	             may contain "/") into HTML id attributes.
 //	hasString  — bridge panel renders the applied-live pip per
 //	             changed key by membership-check on AppliedPipKeys.
+//	sectionCtx — adapter-panel template partial assembles per-section
+//	             context (adapter name + index + section) into one
+//	             value so {{template "field-section" ...}} has all it
+//	             needs without multiple top-level bindings.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
@@ -116,6 +131,9 @@ var templateFuncs = template.FuncMap{
 			}
 		}
 		return false
+	},
+	"sectionCtx": func(adapterName string, index int, section bridgeSection) sectionCtxData {
+		return sectionCtxData{AdapterName: adapterName, Index: index, Section: section}
 	},
 }
 
