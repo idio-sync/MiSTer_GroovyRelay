@@ -11,10 +11,16 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
-func newTestServer(t *testing.T) (*Server, *http.ServeMux) {
+// newTestServer constructs a *Server + mux for tests. Pass option
+// funcs to populate Config fields before construction; do NOT call
+// Mount again afterward.
+func newTestServer(t *testing.T, opts ...func(*Config)) (*Server, *http.ServeMux) {
 	t.Helper()
-	reg := adapters.NewRegistry()
-	s, err := New(Config{Registry: reg})
+	cfg := Config{Registry: adapters.NewRegistry()}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("ui.New: %v", err)
 	}

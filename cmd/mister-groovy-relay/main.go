@@ -264,6 +264,10 @@ func main() {
 		CompanionSession: coreMgr,
 		CompanionURL:     urlAdapter,
 		CompanionDisplay: urlAdapter,
+		StatusViewer:     coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
+		EventLog:         elog,    // in-memory ring buffer constructed above
+		Version:          version, // build-time ldflags variable
+		// MisterProber: nil — production UDP prober lands in a later task
 	})
 	if err != nil {
 		dieFriendly("ui init", err)

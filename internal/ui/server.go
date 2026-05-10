@@ -15,6 +15,8 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // BridgeSaver abstracts the bridge-level save operation so the UI
@@ -59,6 +61,24 @@ type MisterLauncher interface {
 	Launch(ctx context.Context) error
 }
 
+// StatusViewer is the UI's narrow view of core.Manager — just the one
+// method status.go needs. Declared here so tests can inject fakes;
+// production wires *core.Manager which satisfies via structural typing.
+type StatusViewer interface {
+	StatusHomeView() core.StatusHomeView
+}
+
+// MisterProber sends a single safe reachability probe to the configured
+// MiSTer. Distinct from MisterLauncher (which loads a core over SSH —
+// firing it on every diagnostics click would have side effects on the
+// operator's hardware). Production wires this from a closure that
+// dials UDP / sends a minimal probe packet that the FPGA either ignores
+// or ACKs without engaging the data plane. Returns nil on success,
+// error on timeout/unreachable.
+type MisterProber interface {
+	Probe(ctx context.Context) error
+}
+
 // Config is the dependencies bundle passed to New. Registry is
 // required; BridgeSaver and AdapterSaver are required only for the
 // handlers that write state (nil surfaces as a 500 at request time
@@ -72,6 +92,10 @@ type Config struct {
 	CompanionSession CompanionSessionProvider
 	CompanionURL     CompanionURLSource
 	CompanionDisplay CompanionDisplayProvider
+	MisterProber     MisterProber  // nil disables reachability probe on diagnostics page
+	StatusViewer     StatusViewer  // nil disables live data on status home
+	EventLog         *eventlog.Log // nil disables activity feed
+	Version          string        // build version, displayed in diagnostics
 }
 
 // templateFuncs supplies the tiny set of helpers our templates need.
