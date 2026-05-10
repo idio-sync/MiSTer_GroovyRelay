@@ -376,7 +376,7 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		return nil, nil, "", wrapped
 	}
 	if req.Visualizer.Enabled {
-		if probe.AudioRate <= 0 {
+		if probe == nil || probe.AudioRate <= 0 {
 			return nil, nil, "", fmt.Errorf("visualizer source has no audio")
 		}
 		return probe, nil, ffmpegPath, nil
@@ -900,6 +900,17 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 	req := a.req
 	m.mu.Unlock()
 
+	if err := validateVisualizerRequest(req); err != nil {
+		if expectedRef != "" {
+			m.mu.Lock()
+			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
+		return true, err
+	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		if expectedRef != "" {

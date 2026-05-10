@@ -543,6 +543,31 @@ func TestManager_SeekRequiresActiveSession(t *testing.T) {
 	}
 }
 
+func TestManager_SeekValidatesVisualizerBeforeProbe(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("Probe must not run before seek visualizer validation")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		StreamURL:    "http://pms/music.mp3",
+		AdapterRef:   "plex:/library/metadata/42:tsid-1",
+		MediaKind:    MediaKindMusic,
+		Capabilities: Capabilities{CanSeek: true},
+		Visualizer:   VisualizerRequest{Enabled: true, Mode: VisualizerMode("unknown")},
+	}}
+	m.mu.Unlock()
+
+	err := m.SeekTo(5000)
+	if err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("SeekTo err = %v, want unsupported visualizer mode", err)
+	}
+}
+
 func TestManager_BogusModelineRejected(t *testing.T) {
 	m := newTestManager(t)
 	m.bridge.Video.Modeline = "bogus_modeline"
@@ -1158,11 +1183,49 @@ func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
 	if !captured.SpawnSpec.Visualizer.Enabled {
 		t.Fatalf("SpawnSpec.Visualizer.Enabled = false, want true")
 	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeRetroAnalyzer {
+		t.Fatalf("visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeRetroAnalyzer)
+	}
 	if captured.SpawnSpec.Visualizer.Metadata.Title != "Blue Monday" {
 		t.Fatalf("visualizer title = %q", captured.SpawnSpec.Visualizer.Metadata.Title)
 	}
+	if captured.SpawnSpec.Visualizer.Metadata.Artist != "New Order" {
+		t.Fatalf("visualizer artist = %q", captured.SpawnSpec.Visualizer.Metadata.Artist)
+	}
+	if captured.SpawnSpec.Visualizer.Metadata.Album != "Power Corruption & Lies" {
+		t.Fatalf("visualizer album = %q", captured.SpawnSpec.Visualizer.Metadata.Album)
+	}
+	if captured.SpawnSpec.Visualizer.Metadata.Duration != 3*time.Minute {
+		t.Fatalf("visualizer metadata duration = %v, want 3m", captured.SpawnSpec.Visualizer.Metadata.Duration)
+	}
 	if got := m.Status().Duration; got != 3*time.Minute {
 		t.Fatalf("Status duration = %v, want metadata duration", got)
+	}
+}
+
+func TestManager_VisualizerRejectsNilProbeWithoutPanic(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return nil, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		t.Fatal("ProbeCrop must not run after visualizer nil-probe audio validation fails")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/not-audio",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err == nil || !strings.Contains(err.Error(), "visualizer source has no audio") {
+		t.Fatalf("StartSession err = %v, want visualizer source has no audio", err)
 	}
 }
 
@@ -1201,6 +1264,25 @@ func TestManager_VisualizerRejectsNonMusicKind(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "visualizer requires music media kind") {
 		t.Fatalf("StartSession err = %v, want visualizer media kind validation", err)
+	}
+}
+
+func TestManager_VisualizerRejectsUnsupportedModeBeforeProbe(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("Probe must not run after visualizer mode validation fails")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerMode("unknown")},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("StartSession err = %v, want unsupported visualizer mode", err)
 	}
 }
 
