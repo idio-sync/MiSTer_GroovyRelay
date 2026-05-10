@@ -175,6 +175,14 @@ func main() {
 		dieFriendly("registry register plex", err)
 	}
 
+	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
+	// Spec: docs/specs/2026-04-25-jellyfin-adapter-design.md.
+	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID, sec.Bridge.Video.Modeline, elog)
+	jfAdapter.SetVersion(version)
+	if err := reg.Register(jfAdapter); err != nil {
+		dieFriendly("registry register jellyfin", err)
+	}
+
 	// URL adapter (v1.1): minimum-viable HTTP/HTTPS URL acceptor with
 	// optional yt-dlp resolution. Spec: docs/specs/2026-04-25-url-ytdlp-design.md.
 	urlAdapter, err := urladapter.New(urladapter.AdapterConfig{
@@ -201,14 +209,6 @@ func main() {
 	}
 	if err := reg.Register(streamsAdapter); err != nil {
 		dieFriendly("registry register streams", err)
-	}
-
-	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
-	// Spec: docs/specs/2026-04-25-jellyfin-adapter-design.md.
-	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID, sec.Bridge.Video.Modeline, elog)
-	jfAdapter.SetVersion(version)
-	if err := reg.Register(jfAdapter); err != nil {
-		dieFriendly("registry register jellyfin", err)
 	}
 
 	// DLNA / UPnP MediaRenderer adapter (Phase 1: descriptors + SSDP +
