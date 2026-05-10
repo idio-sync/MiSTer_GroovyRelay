@@ -39,6 +39,7 @@ const defaultYTDLPResolveTimeout = 30 * time.Second
 type Adapter struct {
 	core        SessionManager
 	cookiesPath string
+	cacheDir    string
 	ytdlpBinary ytdlp.BinaryResolver
 	resolver    streamResolver
 
@@ -75,6 +76,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	a := &Adapter{
 		core:        cfg.Core,
 		cookiesPath: filepath.Join(cfg.Bridge.DataDir, "streams_cookies.txt"),
+		cacheDir:    filepath.Join(cfg.Bridge.DataDir, "streams"),
 		ytdlpBinary: cfg.YTDLPResolver,
 		cfg:         DefaultConfig(),
 		state:       adapters.StateStopped,
@@ -83,7 +85,8 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		definitions: map[string]ProviderDefinition{},
 		catalogs:    map[string]ProviderCatalog{},
 	}
-	a.refreshOnce = func(context.Context, string) RefreshStatus { return RefreshStatus{} }
+	a.fetchManifest = a.fetchManifestDefault
+	a.refreshOnce = a.refreshOnceDefault
 	return a, nil
 }
 
@@ -176,6 +179,9 @@ func (a *Adapter) SetEnabled(v bool) {
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var resolver streamResolver
 	if a.ytdlpBinary != nil {
 		resolver = &ytdlp.Resolver{
@@ -185,13 +191,30 @@ func (a *Adapter) Start(ctx context.Context) error {
 		}
 	}
 
+	defs, catalogs, err := a.buildStartupSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	a.resolver = resolver
+	a.installSnapshotLocked(defs, catalogs)
 	a.loopCtx = ctx
 	a.state = adapters.StateRunning
 	a.lastErr = ""
 	a.stateSince = time.Now()
+	startLoop := a.cfg.Enabled && a.cfg.AllowRemoteManifest
+	if startLoop {
+		a.loopCtx, a.loopCancel = context.WithCancel(ctx)
+		a.loopDone = make(chan struct{})
+	}
+	loopCtx := a.loopCtx
+	loopDone := a.loopDone
 	a.mu.Unlock()
+
+	if startLoop {
+		go a.refreshLoop(loopCtx, loopDone)
+	}
 	return nil
 }
 
@@ -252,11 +275,18 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		return 0, err
 	}
 
+	defs, catalogs, err := buildStartupSnapshot(context.Background(), newCfg, a.cacheDir)
+	if err != nil {
+		return 0, err
+	}
+
 	a.mu.Lock()
 	oldCfg := a.cfg
 	a.cfg = newCfg
+	a.installSnapshotLocked(defs, catalogs)
 	a.mu.Unlock()
 
+	a.reconcileRefreshLoop()
 	return configChangeScope(oldCfg, newCfg), nil
 }
 
@@ -305,4 +335,86 @@ func configChangeScope(oldCfg, newCfg Config) adapters.ApplyScope {
 		scope = adapters.MaxScope(scope, adapters.ScopeRestartCast)
 	}
 	return scope
+}
+
+func (a *Adapter) configSnapshot() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
+}
+
+func (a *Adapter) installSnapshotLocked(defs []ProviderDefinition, catalogs []ProviderCatalog) {
+	a.definitions = map[string]ProviderDefinition{}
+	a.definitionOrder = a.definitionOrder[:0]
+	for _, def := range defs {
+		a.definitions[def.ID] = def
+		a.definitionOrder = append(a.definitionOrder, def.ID)
+	}
+	a.catalogs = map[string]ProviderCatalog{}
+	for _, cat := range catalogs {
+		a.catalogs[cat.ProviderID] = cat
+	}
+}
+
+func (a *Adapter) needsStartupSnapshot() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.definitions) == 0 || len(a.catalogs) == 0
+}
+
+func (a *Adapter) ensureStartupSnapshot(ctx context.Context) error {
+	if !a.needsStartupSnapshot() {
+		return nil
+	}
+	defs, catalogs, err := a.buildStartupSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.definitions) == 0 || len(a.catalogs) == 0 {
+		a.installSnapshotLocked(defs, catalogs)
+	}
+	return nil
+}
+
+func (a *Adapter) buildStartupSnapshot(ctx context.Context) ([]ProviderDefinition, []ProviderCatalog, error) {
+	cfg := a.configSnapshot()
+	return buildStartupSnapshot(ctx, cfg, a.cacheDir)
+}
+
+func (a *Adapter) reconcileRefreshLoop() {
+	a.mu.Lock()
+	desired := a.state == adapters.StateRunning && a.cfg.Enabled && a.cfg.AllowRemoteManifest
+	running := a.loopCancel != nil && a.loopDone != nil
+	if desired == running {
+		a.mu.Unlock()
+		return
+	}
+	if !desired {
+		cancel := a.loopCancel
+		done := a.loopDone
+		a.loopCancel = nil
+		a.loopDone = nil
+		a.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if done != nil {
+			<-done
+		}
+		return
+	}
+
+	parent := a.loopCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	loopCtx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	a.loopCtx = loopCtx
+	a.loopCancel = cancel
+	a.loopDone = done
+	a.mu.Unlock()
+	go a.refreshLoop(loopCtx, done)
 }

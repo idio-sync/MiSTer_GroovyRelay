@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 func TestResolveStreamURL_MTVChannel(t *testing.T) {
@@ -14,6 +16,20 @@ func TestResolveStreamURL_MTVChannel(t *testing.T) {
 	}
 	if !matched || res.ProviderID != "mtv-rewind" || res.ChannelID != "metal" {
 		t.Fatalf("resolution = %+v matched=%v", res, matched)
+	}
+}
+
+func TestResolveStreamURLLoadsBundledBeforeStart(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, matched, err := a.ResolveStreamURL(t.Context(), "https://wantmymtv.vercel.app/player.html?channel=metal")
+	if err != nil {
+		t.Fatalf("ResolveStreamURL: %v", err)
+	}
+	if !matched || res.ProviderID != "mtv-rewind" || res.ChannelID != "metal" {
+		t.Fatalf("resolution = %+v matched=%v, want mtv-rewind metal", res, matched)
 	}
 }
 

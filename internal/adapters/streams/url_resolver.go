@@ -12,7 +12,12 @@ import (
 )
 
 func (a *Adapter) ResolveStreamURL(ctx context.Context, rawURL string) (streamhandoff.Resolution, bool, error) {
-	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := a.ensureStartupSnapshot(ctx); err != nil {
+		return streamhandoff.Resolution{}, false, err
+	}
 
 	parsed, err := stdurl.Parse(rawURL)
 	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" {

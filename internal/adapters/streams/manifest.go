@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -20,7 +21,17 @@ const (
 var manifestIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 var manifestValidationResolver hostResolver = net.DefaultResolver
 
+type remoteDataURLValidator func(context.Context, string, Config) error
+
 func validateManifest(ctx context.Context, m Manifest, cfg Config) error {
+	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURL)
+}
+
+func validateCachedManifest(ctx context.Context, m Manifest, cfg Config) error {
+	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURLSyntax)
+}
+
+func validateManifestWithURLValidator(ctx context.Context, m Manifest, cfg Config, validateURL remoteDataURLValidator) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -33,7 +44,7 @@ func validateManifest(ctx context.Context, m Manifest, cfg Config) error {
 
 	providerIDs := map[string]struct{}{}
 	for _, provider := range m.Providers {
-		if err := validateProviderDefinition(ctx, provider, cfg); err != nil {
+		if err := validateProviderDefinition(ctx, provider, cfg, validateURL); err != nil {
 			return err
 		}
 		if _, ok := providerIDs[provider.ID]; ok {
@@ -44,7 +55,7 @@ func validateManifest(ctx context.Context, m Manifest, cfg Config) error {
 	return nil
 }
 
-func validateProviderDefinition(ctx context.Context, provider ProviderDefinition, cfg Config) error {
+func validateProviderDefinition(ctx context.Context, provider ProviderDefinition, cfg Config, validateURL remoteDataURLValidator) error {
 	if err := validateManifestID("provider id", provider.ID); err != nil {
 		return err
 	}
@@ -69,11 +80,11 @@ func validateProviderDefinition(ctx context.Context, provider ProviderDefinition
 	if strings.TrimSpace(provider.PlaylistURL) == "" {
 		return fmt.Errorf("provider %q playlist_url is required", provider.ID)
 	}
-	if err := validateRemoteDataURL(ctx, provider.PlaylistURL, cfg); err != nil {
+	if err := validateURL(ctx, provider.PlaylistURL, cfg); err != nil {
 		return fmt.Errorf("provider %q playlist_url: %w", provider.ID, err)
 	}
 	if strings.TrimSpace(provider.BaseURL) != "" {
-		if err := validateRemoteDataURL(ctx, provider.BaseURL, cfg); err != nil {
+		if err := validateURL(ctx, provider.BaseURL, cfg); err != nil {
 			return fmt.Errorf("provider %q base_url: %w", provider.ID, err)
 		}
 	}
@@ -127,6 +138,35 @@ func validateProviderDefinition(ctx context.Context, provider ProviderDefinition
 			return fmt.Errorf("provider %q duplicate url_rule id %q", provider.ID, rule.ID)
 		}
 		ruleIDs[rule.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateRemoteDataURLSyntax(ctx context.Context, raw string, cfg Config) error {
+	_ = ctx
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo is not allowed")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "https" && !(cfg.AllowLocalManifestURLs && scheme == "http") {
+		return fmt.Errorf("scheme %q is not allowed", scheme)
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		if !cfg.AllowLocalManifestURLs {
+			return fmt.Errorf("IP literal hosts are not allowed")
+		}
+		return nil
+	}
+	if _, err := normalizeConfigHost(host); err != nil {
+		return err
 	}
 	return nil
 }

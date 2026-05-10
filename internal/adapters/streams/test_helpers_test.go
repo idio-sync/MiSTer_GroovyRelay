@@ -207,3 +207,15 @@ func (a *Adapter) replaceCatalogsForTest(cats []ProviderCatalog) {
 		a.catalogs[cat.ProviderID] = cat
 	}
 }
+
+func (a *Adapter) catalogSnapshotForTest(providerID string) ProviderCatalog {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cat := a.catalogs[providerID]
+	cat.Groups = append([]ChannelGroup(nil), cat.Groups...)
+	cat.Channels = append([]Channel(nil), cat.Channels...)
+	for i := range cat.Channels {
+		cat.Channels[i].Items = append([]StreamItem(nil), cat.Channels[i].Items...)
+	}
+	return cat
+}
