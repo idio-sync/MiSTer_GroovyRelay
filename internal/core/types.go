@@ -67,6 +67,20 @@ type SessionRequest struct {
 	// stopped or preempted. It must not block core; Manager calls it from a
 	// goroutine after the data plane has been cancelled.
 	OnStop func(reason string)
+
+	// MediaInputPolicy constrains how ffprobe / ffmpeg dereference the
+	// stream URL: protocol whitelist, reconnect/redirect behavior,
+	// blocked-header deny-list, and read/write timeout. Adapters that hand
+	// untrusted URLs to core (DLNA today; future operator-supplied
+	// adapters) populate this; existing adapters (Plex, Jellyfin, URL)
+	// leave it zero-valued and the resulting FFmpeg argv stays identical
+	// to today. core.Manager applies the policy to Probe, ProbeCrop, and
+	// BuildCommand consistently — adapter-only URL validation is not
+	// sufficient because ffprobe/ffmpeg can otherwise follow redirects,
+	// reconnect, or demux child resources after the adapter accepted the
+	// original URL. See internal/ffmpeg/policy.go and spec §Architecture /
+	// Core Media Input Policy.
+	MediaInputPolicy MediaInputPolicy
 }
 
 // Capabilities declares what operations the adapter's control surface can
