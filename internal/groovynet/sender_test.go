@@ -192,6 +192,18 @@ func TestSender_SndBufActualPopulated(t *testing.T) {
 	}
 }
 
+func TestSender_DefaultPacingInterval(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 32100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if got := s.PacingInterval(); got != 20*time.Microsecond {
+		t.Errorf("default pacing interval = %v, want 20µs", got)
+	}
+}
+
 func TestSender_ENOBUFCountAccessor(t *testing.T) {
 	s, err := NewSender("127.0.0.1", 32100, 0)
 	if err != nil {

@@ -207,7 +207,7 @@ func (d *Discovery) descriptor(statusLine string) string {
 		"Name: %s\r\n"+
 		"Port: %d\r\n"+
 		"Resource-Identifier: %s\r\n"+
-		"Product: MiSTer_GroovyRelay\r\n"+
+		"Product: "+companionProduct+"\r\n"+
 		"Version: 1.0\r\n"+
 		"Content-Type: plex/media-player\r\n"+
 		"Protocol: plex\r\n"+
@@ -289,13 +289,12 @@ func listenPlainPacket(network, addr string) (*net.UDPConn, error) {
 	return conn, nil
 }
 
-// senderBindFor decides the sender's preferred bind address and
-// outgoing interface based on HostIP. Returning ("", nil) is
-// impossible: the helper always returns a usable GDM-port bind string,
-// falling back to ":32412" + nil whenever HostIP is empty, malformed,
-// IPv6, or doesn't match any local interface. The fallback keeps GDM
-// running in the face of a typo'd or stale bridge.host_ip without
-// losing the source port PMS expects.
+// senderBindFor decides the sender's bind address and outgoing multicast
+// interface based on HostIP. The sender binds to :32412 even when HostIP is
+// known: PMS may M-SEARCH from loopback, Docker bridge, and LAN interfaces on
+// the same host, and a HostIP-bound socket cannot produce usable replies for
+// every one of those destinations. The selected iface is still returned so
+// HELLO multicast egress can be pinned to the configured LAN interface.
 func senderBindFor(hostIP string) (addr string, iface *net.Interface) {
 	if hostIP == "" {
 		return fmt.Sprintf(":%d", gdmPort), nil
@@ -308,13 +307,10 @@ func senderBindFor(hostIP string) (addr string, iface *net.Interface) {
 		)
 		return fmt.Sprintf(":%d", gdmPort), nil
 	}
-	return fmt.Sprintf("%s:%d", hostIP, gdmPort), found
+	return fmt.Sprintf(":%d", gdmPort), found
 }
 
 func senderFallbackBindFor(hostIP string, iface *net.Interface) string {
-	if iface != nil && hostIP != "" {
-		return hostIP + ":0"
-	}
 	return ":0"
 }
 

@@ -128,13 +128,13 @@ func NewSender(dstHost string, dstPort, srcPort int) (*Sender, error) {
 		dstAddr:      dst,
 		srcPort:      actualPort,
 		sndBufActual: actual,
-		// Default to 10 µs per chunk: empirically proven on a 170 s
-		// session to hold steady 60 Hz with max_field_ms of 3-6 ms and
-		// zero receiver-side packet loss. Override via SetPacingInterval
-		// (GROOVY_PACING_US env var in main.go) — set 0 to disable
-		// pacing on a dedicated wired link if profiling shows it's
+		// Default to 20 µs per chunk. That keeps a full 518 KB RAW field
+		// below gigabit line rate while leaving several milliseconds of
+		// NTSC field budget for syscalls and compression. Override via
+		// SetPacingInterval (GROOVY_PACING_US env var in main.go) — set 0
+		// to disable pacing on a dedicated link if profiling shows it's
 		// unnecessary.
-		paceInterval: 10 * time.Microsecond,
+		paceInterval: 20 * time.Microsecond,
 	}, nil
 }
 

@@ -123,13 +123,17 @@ func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
 	if got := resp.Header.Get("X-Plex-Provides"); got != "client,player" {
 		t.Errorf("X-Plex-Provides = %q, want client,player", got)
 	}
+	if got := resp.Header.Get("X-Plex-Platform"); got != "Linux" {
+		t.Errorf("X-Plex-Platform = %q, want Linux", got)
+	}
 
 	body, _ := io.ReadAll(resp.Body)
 	for _, want := range []string{
 		`machineIdentifier="bridge-uuid"`,
 		`protocol="plex"`,
-		`product="MiSTer_GroovyRelay"`,
+		`product="GroovyRelay"`,
 		`version="1.2.3"`,
+		`platform="Linux"`,
 		`device="MiSTer"`,
 		`model="MiSTer"`,
 		`provides="client,player"`,
@@ -253,6 +257,66 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	}
 	if !fc.lastReq.Capabilities.CanPause || !fc.lastReq.Capabilities.CanSeek {
 		t.Errorf("expected CanPause+CanSeek capabilities, got %+v", fc.lastReq.Capabilities)
+	}
+}
+
+func TestPlayMedia_ResolvesPlayQueueItemIDFromContainerKey(t *testing.T) {
+	var gotPath string
+	var gotQuery url.Values
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer size="3">
+			<Video key="/library/metadata/41" ratingKey="41" playQueueItemID="1"/>
+			<Video key="/library/metadata/42" ratingKey="42" playQueueItemID="2"/>
+			<Video key="/library/metadata/43" ratingKey="43" playQueueItemID="3"/>
+		</MediaContainer>`))
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	q := url.Values{}
+	q.Set("address", u.Hostname())
+	q.Set("port", u.Port())
+	q.Set("protocol", "http")
+	q.Set("key", "/library/metadata/42")
+	q.Set("containerKey", "/playQueues/99?own=1")
+	q.Set("offset", "0")
+	q.Set("token", "tok")
+	resp, err := http.Get(ts.URL + "/player/playback/playMedia?" + q.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+
+	if gotPath != "/playQueues/99" {
+		t.Errorf("play queue path = %q, want /playQueues/99", gotPath)
+	}
+	for key, want := range map[string]string{
+		"own":           "1",
+		"includeBefore": "1",
+		"includeAfter":  "1",
+		"X-Plex-Token":  "tok",
+	} {
+		if got := gotQuery.Get(key); got != want {
+			t.Errorf("query %s = %q, want %q", key, got, want)
+		}
+	}
+	if got := c.lastPlaySession().PlayQueueItemID; got != "2" {
+		t.Errorf("remembered PlayQueueItemID = %q, want 2", got)
 	}
 }
 

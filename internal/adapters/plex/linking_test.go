@@ -74,8 +74,8 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	if gotProvides != "client,player" {
 		t.Errorf("X-Plex-Provides = %q; want client,player", gotProvides)
 	}
-	if gotPlatform == "" {
-		t.Error("X-Plex-Platform must be set")
+	if gotPlatform != "Linux" {
+		t.Errorf("X-Plex-Platform = %q; want Linux", gotPlatform)
 	}
 	if gotPlatformVersion != "9.9.9" {
 		t.Errorf("X-Plex-Platform-Version = %q; want 9.9.9", gotPlatformVersion)
@@ -225,8 +225,8 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	if gotProvides != "client,player" {
 		t.Errorf("X-Plex-Provides = %q; want client,player", gotProvides)
 	}
-	if gotPlatform == "" {
-		t.Error("X-Plex-Platform must be set")
+	if gotPlatform != "Linux" {
+		t.Errorf("X-Plex-Platform = %q; want Linux", gotPlatform)
 	}
 	if gotPlatformVersion != "9.9.9" {
 		t.Errorf("X-Plex-Platform-Version = %q; want 9.9.9", gotPlatformVersion)

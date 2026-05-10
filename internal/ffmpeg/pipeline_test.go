@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // -----------------------------------------------------------------------------
@@ -558,6 +559,174 @@ func TestBuildCommand_OmitsAudioOutputWhenSourceHasNoAudio(t *testing.T) {
 	}
 	if !strings.Contains(joined, "-map 0:v:0") || !strings.Contains(joined, "pipe:3") {
 		t.Errorf("video output missing from argv: %s", joined)
+	}
+}
+
+// TestBuildCommand_ZeroPolicyArgvUnchanged is the backward-compat guard:
+// pre-existing FFmpeg invocations from Plex / Jellyfin / URL casts (which
+// leave req.MediaInputPolicy zero-valued) must produce IDENTICAL argv
+// to the pre-refactor implementation. The check is "no policy flag
+// substrings appear" — emitting any of them would mean a non-zero policy
+// leaked through.
+func TestBuildCommand_ZeroPolicyArgvUnchanged(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL: "http://pms/video.m3u8",
+		InputHeaders: map[string]string{
+			"X-Plex-Token": "abc",
+		},
+		SourceProbe:     &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, AudioRate: 48000},
+		OutputWidth:     720,
+		OutputHeight:    480,
+		FieldOrder:      "tff",
+		AspectMode:      "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		// Policy: zero value
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	joined := strings.Join(cmd.Args, " ")
+	for _, leaked := range []string{
+		"-protocol_whitelist",
+		"-reconnect ",
+		"-reconnect_at_eof",
+		"-rw_timeout",
+	} {
+		if strings.Contains(joined, leaked) {
+			t.Errorf("zero-policy argv must NOT contain %q: %s", leaked, joined)
+		}
+	}
+	// Sanity: regular flags are still present.
+	if !strings.Contains(joined, "-i http://pms/video.m3u8") {
+		t.Errorf("expected -i URL in argv: %s", joined)
+	}
+}
+
+// TestBuildCommand_PolicyEmitsFlagsBeforeInput verifies a non-zero policy
+// emits its argv flags AFTER any -ss seek arg but BEFORE -headers / -i,
+// so they take effect as ffmpeg input options on the upcoming input.
+func TestBuildCommand_PolicyEmitsFlagsBeforeInput(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://example/clip.mp4",
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, AudioRate: 48000},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Policy: MediaInputPolicy{
+			ProtocolWhitelist: []string{"file", "http", "https", "tcp", "tls", "crypto"},
+			DisableReconnect:  true,
+			RWTimeout:         5 * time.Second,
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	args := cmd.Args
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-protocol_whitelist file,http,https,tcp,tls,crypto",
+		"-reconnect 0",
+		"-reconnect_at_eof 0",
+		"-reconnect_streamed 0",
+		"-reconnect_on_network_error 0",
+		"-rw_timeout 5000000",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in argv: %s", want, joined)
+		}
+	}
+
+	// All policy flags must appear before the FIRST -i.
+	firstI := -1
+	for i, a := range args {
+		if a == "-i" {
+			firstI = i
+			break
+		}
+	}
+	if firstI < 0 {
+		t.Fatalf("no -i in argv: %v", args)
+	}
+	for _, flag := range []string{
+		"-protocol_whitelist",
+		"-reconnect",
+		"-reconnect_at_eof",
+		"-reconnect_streamed",
+		"-reconnect_on_network_error",
+		"-rw_timeout",
+	} {
+		idx := -1
+		for i, a := range args[:firstI] {
+			if a == flag {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			t.Errorf("policy flag %q must appear before -i; argv=%v", flag, args)
+		}
+	}
+}
+
+// TestBuildCommand_PolicyAppliesToBothInputsInDualInputMode covers the DASH
+// path: Policy.Apply must precede each of the two -i args, so the secondary
+// (audio) input is constrained identically to the primary (video) input.
+// Without this, an adapter that validated only InputURL could be bypassed
+// via AudioInputURL.
+func TestBuildCommand_PolicyAppliesToBothInputsInDualInputMode(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:        "https://v.example/v.mp4",
+		AudioInputURL:   "https://a.example/a.m4a",
+		SourceProbe:     &ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97},
+		OutputWidth:     720,
+		OutputHeight:    480,
+		FieldOrder:      "tff",
+		AspectMode:      "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Policy: MediaInputPolicy{
+			ProtocolWhitelist: []string{"file", "http", "https"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	args := cmd.Args
+	count := 0
+	for _, a := range args {
+		if a == "-protocol_whitelist" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected 2 -protocol_whitelist args (one per input), got %d; argv=%v", count, args)
+	}
+}
+
+// TestBuildCommand_HeaderFilterIsCallerResponsibility documents that the
+// FFmpeg layer does NOT filter headers itself (per spec line 115 the
+// filter happens at the core/FFmpeg boundary). If the spec ever migrates
+// the filter into BuildCommand, this test should be updated; until then
+// it pins the contract so a well-meaning future refactor doesn't quietly
+// double-filter.
+func TestBuildCommand_HeaderFilterIsCallerResponsibility(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL: "http://example/clip.mp4",
+		// Caller has NOT filtered yet — Cookie is present.
+		InputHeaders: map[string]string{
+			"Cookie":     "session=abc",
+			"User-Agent": "ua",
+		},
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Policy: MediaInputPolicy{BlockedHeaders: []string{"Cookie"}},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	joined := strings.Join(cmd.Args, " ")
+	// Cookie SHOULD still appear because BuildCommand does not filter.
+	// core.Manager is responsible for filtering before constructing the
+	// PipelineSpec.
+	if !strings.Contains(joined, "Cookie: session=abc") {
+		t.Errorf("BuildCommand must not filter headers itself (filter is at core/FFmpeg boundary); argv=%s", joined)
 	}
 }
 

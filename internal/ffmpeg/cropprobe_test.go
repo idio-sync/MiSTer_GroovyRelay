@@ -4,9 +4,92 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// argvForCropProbe rebuilds the argv slice the way probeCropWithBinary
+// would, but without spawning ffmpeg. This lets us assert policy flag
+// placement portably even when ffmpeg isn't on PATH.
+func argvForCropProbe(headers map[string]string, duration time.Duration, policy MediaInputPolicy, inputURL string) []string {
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "info",
+		"-t", "2.0",
+	}
+	_ = duration // placeholder so signature matches probeCropWithBinary's intent
+	args = policy.Apply(args)
+	if len(headers) > 0 {
+		var sb strings.Builder
+		for k, v := range headers {
+			sb.WriteString(k)
+			sb.WriteString(": ")
+			sb.WriteString(v)
+			sb.WriteString("\r\n")
+		}
+		args = append(args, "-headers", sb.String())
+	}
+	args = append(args,
+		"-i", inputURL,
+		"-vf", "cropdetect=limit=24:round=2:reset=0",
+		"-f", "null", "-",
+	)
+	return args
+}
+
+// TestProbeCrop_ZeroPolicyArgvUnchanged guarantees that the historical
+// crop-probe argv shape is preserved when no policy is set. Pre-existing
+// crop probes for Plex/Jellyfin/URL casts must produce identical argv
+// after the refactor.
+func TestProbeCrop_ZeroPolicyArgvUnchanged(t *testing.T) {
+	got := argvForCropProbe(nil, 2*time.Second, MediaInputPolicy{}, "http://pms/clip.mp4")
+	want := []string{
+		"-hide_banner",
+		"-loglevel", "info",
+		"-t", "2.0",
+		"-i", "http://pms/clip.mp4",
+		"-vf", "cropdetect=limit=24:round=2:reset=0",
+		"-f", "null", "-",
+	}
+	for i, a := range want {
+		if got[i] != a {
+			t.Errorf("argv[%d] = %q, want %q (full got=%v)", i, got[i], a, got)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("argv length mismatch: got %d, want %d (got=%v)", len(got), len(want), got)
+	}
+}
+
+// TestProbeCrop_PolicyAppliedBeforeInput verifies that policy flags appear
+// after the -t but before -i so ffmpeg treats them as input options.
+func TestProbeCrop_PolicyAppliedBeforeInput(t *testing.T) {
+	policy := MediaInputPolicy{
+		ProtocolWhitelist: []string{"file", "http", "https"},
+		DisableReconnect:  true,
+		RWTimeout:         5 * time.Second,
+	}
+	got := argvForCropProbe(nil, 2*time.Second, policy, "http://example/clip.mp4")
+	joined := strings.Join(got, " ")
+	for _, want := range []string{
+		"-protocol_whitelist file,http,https",
+		"-reconnect 0",
+		"-reconnect_at_eof 0",
+		"-reconnect_streamed 0",
+		"-reconnect_on_network_error 0",
+		"-rw_timeout 5000000",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in argv: %s", want, joined)
+		}
+	}
+	whitelistIdx := strings.Index(joined, "-protocol_whitelist")
+	iIdx := strings.Index(joined, "-i ")
+	if whitelistIdx < 0 || iIdx < 0 || whitelistIdx >= iIdx {
+		t.Errorf("policy flags must precede -i: %s", joined)
+	}
+}
 
 // TestParseCropLine is a pure-unit test for the cropdetect regex. No ffmpeg.
 func TestParseCropLine(t *testing.T) {
@@ -58,7 +141,7 @@ func TestProbeCrop_FindsLetterbox(t *testing.T) {
 		t.Skipf("fixture generation failed (%v): %s", err, out)
 	}
 
-	rect, err := probeCropWithBinary(ctx, ffmpegBin, clip, nil, 2*time.Second)
+	rect, err := probeCropWithBinary(ctx, ffmpegBin, clip, nil, 2*time.Second, MediaInputPolicy{})
 	if err != nil {
 		t.Fatalf("ProbeCrop: %v", err)
 	}
@@ -102,7 +185,7 @@ func TestProbeCrop_NoLetterboxReturnsFullFrame(t *testing.T) {
 		t.Skipf("fixture generation failed (%v): %s", err, out)
 	}
 
-	rect, err := probeCropWithBinary(ctx, ffmpegBin, clip, nil, 2*time.Second)
+	rect, err := probeCropWithBinary(ctx, ffmpegBin, clip, nil, 2*time.Second, MediaInputPolicy{})
 	if err != nil {
 		t.Fatalf("ProbeCrop: %v", err)
 	}

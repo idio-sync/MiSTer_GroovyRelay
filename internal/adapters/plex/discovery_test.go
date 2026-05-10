@@ -88,6 +88,9 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	if !strings.Contains(resp, "Resource-Identifier: uuid-abc-123") {
 		t.Errorf("missing uuid header; got: %q", resp)
 	}
+	if !strings.Contains(resp, "Product: GroovyRelay") {
+		t.Errorf("missing product header; got: %q", resp)
+	}
 	if !strings.Contains(resp, "Content-Type: plex/media-player") {
 		t.Errorf("missing plex content-type header; got: %q", resp)
 	}
@@ -479,16 +482,18 @@ func TestSenderBindFor_EmptyHostIP(t *testing.T) {
 	}
 }
 
-// TestSenderBindFor_LocalIP pins the happy path: HostIP resolves to a
-// local interface, sender binds to it. Uses 127.0.0.1 since every
-// test environment has loopback.
+// TestSenderBindFor_LocalIP pins the multi-interface happy path:
+// HostIP resolves to a local interface for multicast egress pinning,
+// but the sender still binds to :32412 so unicast M-SEARCH replies can
+// use the kernel-selected source address for loopback, Docker bridge,
+// and LAN destinations.
 func TestSenderBindFor_LocalIP(t *testing.T) {
 	addr, iface := senderBindFor("127.0.0.1")
 	if iface == nil {
 		t.Skip("loopback enumeration unavailable on this host")
 	}
-	if addr != "127.0.0.1:32412" {
-		t.Errorf("addr = %q; want 127.0.0.1:32412", addr)
+	if addr != ":32412" {
+		t.Errorf("addr = %q; want :32412", addr)
 	}
 	if iface.Flags&net.FlagLoopback == 0 {
 		t.Errorf("iface = %q (flags %v); want loopback", iface.Name, iface.Flags)
@@ -539,10 +544,15 @@ func TestSenderBindFor_FallsBackOnIPv6(t *testing.T) {
 // Without sync.Once, closing the d.stop channel twice would panic
 // "close of closed channel".
 func TestDiscovery_CloseIdempotent(t *testing.T) {
-	cfg := DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500}
-	d, err := NewDiscovery(cfg)
+	listen, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
-		t.Skipf("port 32412 busy or multicast unavailable: %v", err)
+		t.Fatalf("listen UDP: %v", err)
+	}
+	d := &Discovery{
+		cfg:    DiscoveryConfig{DeviceName: "x", DeviceUUID: "y", HTTPPort: 32500},
+		listen: listen,
+		sender: &fakeWriter{},
+		stop:   make(chan struct{}),
 	}
 
 	if err := d.Close(); err != nil {

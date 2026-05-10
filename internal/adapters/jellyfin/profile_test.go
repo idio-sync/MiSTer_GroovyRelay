@@ -17,7 +17,7 @@ func TestDeviceProfile_StructureAndConditions(t *testing.T) {
 	got := string(data)
 
 	wantContains := []string{
-		`"Name": "MiSTer_GroovyRelay"`,
+		`"Name": "GroovyRelay"`,
 		`"MaxStreamingBitrate": 4000000`,
 		`"Container": "ts"`,
 		`"VideoCodec": "h264"`,

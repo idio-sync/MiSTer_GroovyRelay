@@ -154,6 +154,21 @@ func (m *Manager) logPlaneExit(runErr error) {
 	slog.Warn("data plane exited", "err", runErr)
 }
 
+// probeFn / probeCropFn are the package-private indirections through
+// which probeForStart calls into the ffmpeg package. Production sets them
+// to ffmpeg.Probe / ffmpeg.ProbeCrop; tests swap them with stubs that
+// capture the arguments passed in (specifically the MediaInputPolicy)
+// without actually spawning ffprobe/ffmpeg. Mirrors the spawnProcess
+// pattern in internal/dataplane/plane.go.
+var (
+	probeFn = func(ctx context.Context, ffprobePath, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return ffmpeg.Probe(ctx, ffprobePath, url, policy)
+	}
+	probeCropFn = func(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return ffmpeg.ProbeCrop(ctx, ffmpegPath, inputURL, headers, duration, policy)
+	}
+)
+
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
 // context so a stuck PMS cannot deadlock the control plane. Called by
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
@@ -169,14 +184,19 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("resolve ffprobe: %w", err)
 	}
-	probe, err := ffmpeg.Probe(ctx, ffprobePath, req.StreamURL)
+	probe, err := probeFn(ctx, ffprobePath, req.StreamURL, req.MediaInputPolicy)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("probe source: %w", err)
 	}
 	var cropRect *ffmpeg.CropRect
 	if m.bridge.Video.AspectMode == "auto" {
 		// ProbeCrop failures degrade gracefully to letterbox — ignore the error.
-		cropRect, _ = ffmpeg.ProbeCrop(ctx, ffmpegPath, req.StreamURL, req.InputHeaders, 2*time.Second)
+		// Filter headers through the policy's BlockedHeaders before they reach
+		// ffmpeg so a forgotten "Referer" / "Cookie" can't leak via the crop
+		// probe (spec line 115 mandates this happens at the core/FFmpeg
+		// boundary so adapters stay naive).
+		filteredHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
+		cropRect, _ = probeCropFn(ctx, ffmpegPath, req.StreamURL, filteredHeaders, 2*time.Second, req.MediaInputPolicy)
 	}
 	return probe, cropRect, ffmpegPath, nil
 }
@@ -236,11 +256,19 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelFn = cancel
 
+	// Filter input headers through the policy's BlockedHeaders before they
+	// reach FFmpeg. The filter belongs at this boundary (spec line 115) so
+	// adapters can keep building InputHeaders / AudioInputHeaders naively
+	// — they don't need to remember which header names are unsafe under a
+	// constrained-input policy.
+	inputHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
+	audioInputHeaders := req.MediaInputPolicy.FilterHeaders(req.AudioInputHeaders)
+
 	spec := ffmpeg.PipelineSpec{
 		InputURL:          req.StreamURL,
-		InputHeaders:      req.InputHeaders,
+		InputHeaders:      inputHeaders,
 		AudioInputURL:     req.AudioStreamURL,
-		AudioInputHeaders: req.AudioInputHeaders,
+		AudioInputHeaders: audioInputHeaders,
 		SeekSeconds:       float64(offsetMs) / 1000.0,
 		UseSSSeek:         req.DirectPlay,
 		SourceProbe:       probe,
@@ -256,6 +284,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioSampleRate:   m.bridge.Audio.SampleRate,
 		AudioChannels:     m.bridge.Audio.Channels,
 		FFmpegPath:        ffmpegPath,
+		Policy:            req.MediaInputPolicy,
 	}
 
 	plane := dataplane.NewPlane(dataplane.PlaneConfig{

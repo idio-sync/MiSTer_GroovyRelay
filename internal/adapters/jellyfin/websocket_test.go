@@ -124,7 +124,7 @@ func TestWSDial_SendsMediaBrowserIdentityHeader(t *testing.T) {
 	}
 	for _, want := range []string{
 		`Token="tok"`,
-		`Client="MiSTer_GroovyRelay"`,
+		`Client="GroovyRelay"`,
 		`Device="Living Room MiSTer"`,
 		`DeviceId="device-1"`,
 		`Version="0.1.0"`,
