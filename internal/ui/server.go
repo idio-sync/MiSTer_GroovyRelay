@@ -205,6 +205,15 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
 	s.mountPOST(mux, "/ui/adapter/{name}/save", s.handleAdapterSave)
 
+	// First-run wizard routes. These are wrapped in mountGET/mountPOST
+	// which apply firstRunGuard — the guard passes /ui/setup/* through
+	// unconditionally (rule 2) so the wizard can render during first-run.
+	s.mountGET(mux, "/ui/setup/{$}", s.handleSetupRoot)
+	s.mountGET(mux, "/ui/setup", s.handleSetupRoot)
+	s.mountGET(mux, "/ui/setup/step/{name}", s.handleSetupStepGET)
+	s.mountPOST(mux, "/ui/setup/step/{name}", s.handleSetupStepPOST)
+	s.mountPOST(mux, "/ui/setup/done", s.handleSetupDone)
+
 	// Per-adapter routes contributed via RouteProvider (e.g., Plex's
 	// link/start, link/status, unlink). Mounted under
 	// /ui/adapter/<name>/<route.Path>; POSTs are wrapped in
@@ -332,6 +341,8 @@ type shellTemplateData struct {
 	Adapters    []sidebarAdapter
 	PanelHTML   template.HTML
 	CurrentPath string
+	SetupMode   bool
+	Steps       []stepperItem
 }
 
 type sidebarAdapter struct {

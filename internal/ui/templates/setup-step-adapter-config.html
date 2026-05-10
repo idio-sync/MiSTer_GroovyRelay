@@ -1,0 +1,47 @@
+{{define "setup-step-adapter-config"}}
+<section class="gr-wizard-step">
+	<header class="gr-wizard-step-head">
+		<h1>Configure {{.AdapterDisplayName}}</h1>
+		<p class="subtitle">Settings will be saved and the adapter will be enabled when you continue.</p>
+	</header>
+
+	{{if .AdapterErrors}}
+		{{with index .AdapterErrors ""}}
+		<div class="toast err">{{.}}</div>
+		{{end}}
+	{{end}}
+
+	{{if .ExtraHTML}}
+	<div class="adapter-extras">{{.ExtraHTML}}</div>
+	{{end}}
+
+	{{if .GateForm}}
+	<section class="gr-form-locked">
+		<p class="gr-form-locked-msg">Complete the linking step above before configuring this adapter.</p>
+		<fieldset disabled>
+	{{end}}
+
+	<form method="POST" action="/ui/setup/step/{{.AdapterName}}" class="gr-wizard-form">
+		<input type="hidden" name="csrf_ok" value="1">
+		<input type="hidden" name="enabled" value="true">
+
+		{{range $i, $section := .AdapterSections}}
+		<div class="section">
+			<h3><span class="num">{{printf "%02d" (inc $i)}} —</span> {{$section.Name}}</h3>
+			{{range $section.Rows}}
+			{{template "field-row" .}}
+			{{end}}
+		</div>
+		{{end}}
+
+		<div class="gr-wizard-actions">
+			<button type="submit" class="btn">Save & continue ▸</button>
+		</div>
+	</form>
+
+	{{if .GateForm}}
+		</fieldset>
+	</section>
+	{{end}}
+</section>
+{{end}}

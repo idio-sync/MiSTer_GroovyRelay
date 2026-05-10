@@ -1,0 +1,30 @@
+{{define "setup-step-done"}}
+<section class="gr-wizard-step">
+	<header class="gr-wizard-step-head">
+		<h1>You're all set.</h1>
+		<p class="subtitle">GroovyRelay is configured. The Status page will show live activity once a controller starts a cast.</p>
+	</header>
+
+	{{if .EnabledAdapters}}
+	<div class="section">
+		<h3><span class="num">▸</span> Enabled adapters</h3>
+		<ul class="gr-summary-list">
+			{{range .EnabledAdapters}}
+			<li>{{.}}</li>
+			{{end}}
+		</ul>
+	</div>
+	{{else}}
+	<div class="section">
+		<p>No cast sources are enabled yet. You can enable adapters anytime from the sidebar.</p>
+	</div>
+	{{end}}
+
+	<form method="POST" action="/ui/setup/done" class="gr-wizard-form">
+		<input type="hidden" name="csrf_ok" value="1">
+		<div class="gr-wizard-actions">
+			<button type="submit" class="btn">Take me to Status ▸</button>
+		</div>
+	</form>
+</section>
+{{end}}
