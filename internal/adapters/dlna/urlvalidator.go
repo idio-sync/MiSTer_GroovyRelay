@@ -33,6 +33,16 @@ import (
 // Path A (spec line 341): hand FFmpeg only the prevalidated final URL
 // after server-side redirect chase. The validating-proxy alternative
 // (Path B) is explicitly out of scope for v1.
+//
+// Residual SSRF surface (intentional, v1 scope): a malicious server
+// can answer HEAD with 200 OK and GET with a 302 redirect to a
+// disallowed address. FFmpeg's -protocol_whitelist (set via
+// MediaInputPolicy) constrains schemes on its own redirect chase but
+// does NOT re-classify IPs. Closing this gap requires a validating
+// proxy in front of FFmpeg (Path B from spec, deferred to a later
+// release). Operators can mitigate by leaving allow_public_source_urls
+// at its default (false), which keeps the entire URL space inside
+// LAN address ranges.
 
 // validatorMaxRedirects is the redirect-chain hop cap from spec line
 // 340. Three hops is generous for legitimate CDNs (e.g. Plex's media
@@ -40,11 +50,13 @@ import (
 // at attacker-controlled hosts terminates quickly.
 const validatorMaxRedirects = 3
 
-// validatorRequestTimeout bounds each HEAD/GET hop in the redirect
-// chase. A stalled remote must not pin SetAVTransportURI handling.
-// The cumulative bound is roughly validatorRequestTimeout *
-// (validatorMaxRedirects+1) which keeps total handler latency under
-// 20s in the worst case.
+// validatorRequestTimeout is the per-hop notional budget; the actual
+// enforced bound is the cumulative chain budget
+// (validatorRequestTimeout * (validatorMaxRedirects+1) — roughly 20s
+// in the worst case) applied via context.WithTimeout in validate().
+// Per-hop stall detection would need a custom RoundTripper since
+// http.Client.Do takes a single context across all redirects, so a
+// stalled middle hop is bounded only by this aggregate.
 const validatorRequestTimeout = 5 * time.Second
 
 // AddressPolicy enumerates the address classes for media-source URL
@@ -124,10 +136,12 @@ func defaultDNSResolver(ctx context.Context, host string) ([]net.IP, error) {
 // validateMediaURL which constructs one with stdlib defaults; tests
 // construct one directly to inject resolver/client stubs.
 //
-// The validator is stateless across calls (no cache, no rate
-// limiting) so it is safe to share across goroutines, but the cheap
-// per-call construction keeps the call sites in the SOAP handler
-// straightforward.
+// The validator is constructed fresh per validateMediaURL call. It is
+// NOT safe to share across concurrent calls — validate mutates
+// v.client.CheckRedirect with a closure that captures per-call local
+// state (redirectError, finalURL, isPrivate, hops). The public
+// validateMediaURL function wraps construction so callers don't need
+// to think about lifecycle.
 type urlValidator struct {
 	resolver dnsResolverFunc
 	// client is the HTTP client used for the redirect chase. Tests
@@ -157,10 +171,12 @@ type urlValidator struct {
 func validateMediaURL(ctx context.Context, rawURL string, policy AddressPolicy) (ValidatedURL, error) {
 	v := &urlValidator{
 		resolver: defaultDNSResolver,
-		// Timeout is per-request; the redirect chase reuses the same
-		// client so each hop pays its own clock. Setting Client.Timeout
-		// would bound the WHOLE chain instead, which masks per-hop
-		// stalls — we want a stalled hop to fail fast on its own.
+		// Timeout enforcement is via context.WithTimeout inside validate
+		// (not Client.Timeout), so the same shape would apply either
+		// way: http.Client.Do takes a single context that spans the
+		// whole redirect chain. The chain-wide bound is the cumulative
+		// validatorRequestTimeout * (validatorMaxRedirects+1) — see the
+		// constant doc and validate() for the per-hop caveat.
 		client: &http.Client{
 			// CheckRedirect is overwritten per-call inside validate.
 			Timeout: 0,
@@ -227,11 +243,12 @@ func (v *urlValidator) validate(ctx context.Context, rawURL string, policy Addre
 		return nil
 	}
 
-	// Per-hop timeout via context, not Client.Timeout (see comment in
-	// validateMediaURL). Each hop the CheckRedirect callback runs
-	// after the previous response, so the request itself doesn't
-	// need its own context derivation here — the parent ctx + the
-	// validator's explicit timeout below covers it.
+	// Cumulative chain bound: at most validatorRequestTimeout *
+	// (validatorMaxRedirects+1) seconds across all hops. A single
+	// stalled hop is detected only via this aggregate; per-hop stall
+	// detection would require a custom RoundTripper because
+	// http.Client.Do takes a single context across the whole redirect
+	// chain.
 	hopCtx, cancel := context.WithTimeout(ctx, validatorRequestTimeout*time.Duration(validatorMaxRedirects+1))
 	defer cancel()
 
