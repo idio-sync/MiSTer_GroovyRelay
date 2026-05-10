@@ -7,10 +7,84 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+// dlnaStubCore is a configurable SessionManager for the DLNA smoke
+// tests. The Phase-1 surface used a no-op stub, but Phase 2 needs to
+// observe StartSession / Stop calls so the smoke can confirm Play /
+// Stop SOAP actions actually drive the adapter→core wiring.
+//
+// startReqs records every SessionRequest passed to StartSession;
+// status drives Status() returns; method counters confirm call shape.
+// All fields are guarded by mu so a future test that exercises the
+// OnStop goroutine can read the captured request without a race.
+type dlnaStubCore struct {
+	mu sync.Mutex
+
+	statusFn func() core.SessionStatus
+
+	startReqs  []core.SessionRequest
+	startCalls int
+	stopCalls  int
+}
+
+func (s *dlnaStubCore) StartSession(req core.SessionRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startReqs = append(s.startReqs, req)
+	s.startCalls++
+	return nil
+}
+
+func (s *dlnaStubCore) Status() core.SessionStatus {
+	if s.statusFn != nil {
+		return s.statusFn()
+	}
+	return core.SessionStatus{}
+}
+
+func (*dlnaStubCore) Pause() error { return nil }
+func (*dlnaStubCore) Play() error  { return nil }
+
+func (s *dlnaStubCore) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopCalls++
+	return nil
+}
+
+func (*dlnaStubCore) SeekTo(int) error { return nil }
+
+// snapshotStartCalls / snapshotStopCalls / lastStartReq are read
+// helpers used by the Phase 2 smoke. Each takes the mutex so a
+// goroutine running the OnStop callback (which the adapter fires
+// asynchronously when core.Stop succeeds) can't race with a test's
+// assertion read.
+func (s *dlnaStubCore) snapshotStartCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCalls
+}
+
+func (s *dlnaStubCore) snapshotStopCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopCalls
+}
+
+func (s *dlnaStubCore) lastStartReq() core.SessionRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.startReqs) == 0 {
+		return core.SessionRequest{}
+	}
+	return s.startReqs[len(s.startReqs)-1]
+}
 
 // TestDLNA_Smoke_Phase1HTTPSurface exercises the full Phase 1 HTTP
 // surface end-to-end through a real httptest.Server: the four
@@ -35,6 +109,7 @@ func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 		DeviceUUID: fakeUUID,
 		HostIP:     fakeIP,
 		HTTPPort:   fakePort,
+		Core:       &dlnaStubCore{},
 	})
 	if err != nil {
 		t.Fatalf("dlna.New: %v", err)
@@ -205,6 +280,191 @@ func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 			t.Fatalf("status = %d, want 503 (Phase 4 stub)", resp.StatusCode)
 		}
 	})
+}
+
+// TestDLNA_Smoke_Phase2Playback exercises the SetAVTransportURI →
+// Play → Stop SOAP flow end-to-end through the same shared mux as the
+// Phase 1 smoke. The dlnaStubCore captures every StartSession /
+// Stop call so the smoke confirms the adapter actually drives core
+// with the right SessionRequest. The full data plane (real ffmpeg +
+// fakemister) is out of scope here — that lives in a follow-up
+// integration test.
+//
+// The dlna adapter's URL validator runs DNS classification on the
+// SetAVTransportURI hostname; we override it to return a private LAN
+// IP so the loopback-bound httptest.Server is accepted (the validator
+// would otherwise reject 127.0.0.1 outright). The actual TCP dial
+// the validator's HEAD request makes still goes to loopback because
+// the URL string carries the loopback host:port — only the IP
+// classification is fooled.
+func TestDLNA_Smoke_Phase2Playback(t *testing.T) {
+	const (
+		fakeUUID = "22222222-3333-4444-5555-666666666666"
+		fakeIP   = "127.0.0.1"
+		fakePort = 32500
+	)
+
+	// Origin server that the SetAVTransportURI URL points at. A 200
+	// response on HEAD is enough for the validator to accept the URL.
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	// Override the DNS resolver so the loopback host is classified as
+	// private. Without this the validator rejects 127.0.0.1 with 716
+	// before the URL ever reaches StartSession. See dlna/testhooks.go.
+	restore := dlna.SetDNSResolverForTesting(dlna.StaticIPResolver("192.168.99.1"))
+	defer restore()
+
+	stub := &dlnaStubCore{}
+	a, err := dlna.New(dlna.AdapterConfig{
+		DeviceUUID: fakeUUID,
+		HostIP:     fakeIP,
+		HTTPPort:   fakePort,
+		Core:       stub,
+	})
+	if err != nil {
+		t.Fatalf("dlna.New: %v", err)
+	}
+	// The adapter rejects SetAVTransportURI when disabled, so flip on.
+	a.SetEnabled(true)
+
+	mux := http.NewServeMux()
+	a.MountPublicRoutes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Helper to POST a SOAP envelope and return the response body
+	// string. Fails the test on transport error.
+	postSOAP := func(t *testing.T, action, args string) (int, string) {
+		t.Helper()
+		envelope := `<?xml version="1.0" encoding="utf-8"?>` +
+			`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ` +
+			`s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">` +
+			`<s:Body><u:` + action + ` xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">` +
+			args +
+			`</u:` + action + `></s:Body></s:Envelope>`
+		req, err := http.NewRequest(http.MethodPost,
+			srv.URL+"/dlna/control/AVTransport",
+			strings.NewReader(envelope))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+		req.Header.Set("SOAPACTION",
+			`"urn:schemas-upnp-org:service:AVTransport:1#`+action+`"`)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return resp.StatusCode, string(body)
+	}
+
+	// --- 1. GetCurrentTransportActions before any URI: empty.
+	status, body := postSOAP(t, "GetCurrentTransportActions",
+		"<InstanceID>0</InstanceID>")
+	if status != http.StatusOK {
+		t.Fatalf("pre-SetURI GetCurrentTransportActions status = %d, want 200; body=%s",
+			status, snippet(body))
+	}
+	if !strings.Contains(body, "<Actions></Actions>") {
+		t.Fatalf("pre-SetURI Actions not empty:\n%s", snippet(body))
+	}
+
+	// --- 2. SetAVTransportURI with a private-LAN URL (loopback as
+	//        seen via the resolver override).
+	mediaURL := origin.URL + "/movie.mp4"
+	status, body = postSOAP(t, "SetAVTransportURI",
+		"<InstanceID>0</InstanceID>"+
+			"<CurrentURI>"+mediaURL+"</CurrentURI>"+
+			"<CurrentURIMetaData></CurrentURIMetaData>")
+	if status != http.StatusOK {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s",
+			status, snippet(body))
+	}
+	// The Phase 1 stub's startCalls counter should still be zero —
+	// SetAVTransportURI alone (autoplay disabled in DefaultConfig) must
+	// not spawn a session.
+	if got := stub.snapshotStartCalls(); got != 0 {
+		t.Fatalf("StartSession called %d time(s) after SetAVTransportURI; want 0 (autoplay off)",
+			got)
+	}
+
+	// --- 3. GetCurrentTransportActions after SetURI: "Play".
+	status, body = postSOAP(t, "GetCurrentTransportActions",
+		"<InstanceID>0</InstanceID>")
+	if status != http.StatusOK {
+		t.Fatalf("post-SetURI GetCurrentTransportActions status = %d", status)
+	}
+	if !strings.Contains(body, "<Actions>Play</Actions>") {
+		t.Fatalf("post-SetURI Actions != Play:\n%s", snippet(body))
+	}
+
+	// --- 4. Play. StartSession must be called with the validator's
+	//        FinalURL (== mediaURL since no redirect happened).
+	status, body = postSOAP(t, "Play",
+		"<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if status != http.StatusOK {
+		t.Fatalf("Play status = %d, want 200; body=%s", status, snippet(body))
+	}
+	if got := stub.snapshotStartCalls(); got != 1 {
+		t.Fatalf("StartSession called %d time(s) after Play; want 1", got)
+	}
+	req := stub.lastStartReq()
+	if req.StreamURL != mediaURL {
+		t.Errorf("StartSession.StreamURL = %q, want %q", req.StreamURL, mediaURL)
+	}
+	if req.AdapterRef == "" || !strings.HasPrefix(req.AdapterRef, "dlna:") {
+		t.Errorf("StartSession.AdapterRef = %q, want dlna:* prefix", req.AdapterRef)
+	}
+	if !req.DirectPlay {
+		t.Error("StartSession.DirectPlay = false, want true")
+	}
+	if req.OnStop == nil {
+		t.Error("StartSession.OnStop = nil, want closure")
+	}
+
+	// --- 5. GetTransportInfo after Play: PLAYING.
+	status, body = postSOAP(t, "GetTransportInfo",
+		"<InstanceID>0</InstanceID>")
+	if status != http.StatusOK {
+		t.Fatalf("GetTransportInfo status = %d", status)
+	}
+	if !strings.Contains(body, "<CurrentTransportState>PLAYING</CurrentTransportState>") {
+		t.Fatalf("post-Play state != PLAYING:\n%s", snippet(body))
+	}
+
+	// --- 6. GetCurrentTransportActions after Play: "Stop".
+	status, body = postSOAP(t, "GetCurrentTransportActions",
+		"<InstanceID>0</InstanceID>")
+	if status != http.StatusOK {
+		t.Fatalf("playing GetCurrentTransportActions status = %d", status)
+	}
+	if !strings.Contains(body, "<Actions>Stop</Actions>") {
+		t.Fatalf("playing Actions != Stop:\n%s", snippet(body))
+	}
+
+	// --- 7. Stop. core.Stop must be called once.
+	status, body = postSOAP(t, "Stop", "<InstanceID>0</InstanceID>")
+	if status != http.StatusOK {
+		t.Fatalf("Stop status = %d, want 200; body=%s", status, snippet(body))
+	}
+	if got := stub.snapshotStopCalls(); got != 1 {
+		t.Fatalf("core.Stop called %d time(s); want 1", got)
+	}
+
+	// Note: the OnStop callback fires via core.Manager in production;
+	// the stub doesn't fire it here. transportState therefore remains
+	// PLAYING from the adapter's perspective (the spec's "OnStop is
+	// the source of truth" semantic, not "Stop sets state"). That's
+	// the design — assertion stops at the core call boundary, which
+	// is what this smoke is meant to prove.
 }
 
 // snippet returns up to the first 512 bytes of s for failure messages.
