@@ -624,6 +624,11 @@ func (a *Adapter) stopPreviousOwnedCore(canProceed func(*ActiveQueue) bool, bump
 		a.cancelAndBumpQueueIfCurrent(q, bumpGeneration)
 		return nil
 	}
+	if requireOwned && !hasInFlightResolve && coreManager.Status().AdapterRef != ref {
+		return playbackError(providerID, "streams does not own the active core session")
+	}
+
+	a.cancelAndBumpQueueIfCurrent(q, bumpGeneration)
 
 	a.playbackMu.Lock()
 	matched, err := coreManager.StopIfAdapterRef(ref)
@@ -634,7 +639,6 @@ func (a *Adapter) stopPreviousOwnedCore(canProceed func(*ActiveQueue) bool, bump
 	if requireOwned && !matched && !hasInFlightResolve {
 		return playbackError(providerID, "streams does not own the active core session")
 	}
-	a.cancelAndBumpQueueIfCurrent(q, bumpGeneration)
 	return nil
 }
 

@@ -77,8 +77,42 @@ func TestStatusJSONActiveQueueCapabilities(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !got.Capabilities.CanNext || !got.Capabilities.CanReplay || !got.Capabilities.CanStop || got.Capabilities.CanSeek || got.Capabilities.CanPause {
+	if !got.Capabilities.CanNext || !got.Capabilities.CanReplay || !got.Capabilities.CanStop || !got.Capabilities.CanPause || got.Capabilities.CanSeek {
 		t.Fatalf("active capabilities = %+v", got.Capabilities)
+	}
+}
+
+func TestHandleProvidersJSONFiltersByProviderIDAndQuery(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?provider_id=mtv-rewind", nil)
+	req.Header.Set("Accept", "application/json")
+	rr := httptest.NewRecorder()
+	a.handleProviders(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("provider_id status = %d", rr.Code)
+	}
+	var byProvider []ProviderStatusView
+	if err := json.NewDecoder(rr.Body).Decode(&byProvider); err != nil {
+		t.Fatalf("decode provider_id: %v", err)
+	}
+	if len(byProvider) != 1 || byProvider[0].ID != "mtv-rewind" {
+		t.Fatalf("provider_id filter = %+v, want only mtv-rewind", byProvider)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?q=he-man", nil)
+	req.Header.Set("Accept", "application/json")
+	rr = httptest.NewRecorder()
+	a.handleProviders(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("q status = %d", rr.Code)
+	}
+	var byQuery []ProviderStatusView
+	if err := json.NewDecoder(rr.Body).Decode(&byQuery); err != nil {
+		t.Fatalf("decode q: %v", err)
+	}
+	if len(byQuery) != 1 || byQuery[0].ID != "cartoon-rewind" {
+		t.Fatalf("q filter = %+v, want only cartoon-rewind", byQuery)
 	}
 }
 

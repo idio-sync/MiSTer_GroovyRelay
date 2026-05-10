@@ -71,7 +71,7 @@ func TestManualRefreshKeepsLastGoodOnFailure(t *testing.T) {
 		return RefreshStatus{Err: errors.New("network down")}
 	}
 
-	status := a.RefreshNow(t.Context(), "mtv-rewind")
+	status := a.RefreshNow(t.Context(), "")
 	if status.Err == nil {
 		t.Fatal("manual refresh should report error")
 	}
@@ -107,6 +107,51 @@ func TestRefreshIntervalBacksOffRepeatedFailuresWithJitter(t *testing.T) {
 	}
 	if success != time.Hour {
 		t.Fatalf("success interval = %s, want configured interval", success)
+	}
+}
+
+func TestRefreshScheduleUsesCatalogIntervalBeforeManifestInterval(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ManifestRefreshHours = 24
+	cfg.CatalogRefreshHours = 12
+	defs := []ProviderDefinition{bundledMTVDefinition()}
+	now := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	schedule := refreshSchedule{}
+
+	first := schedule.nextJob(now, cfg, defs)
+	if first.Kind != refreshJobManifest {
+		t.Fatalf("first job = %+v, want manifest", first)
+	}
+	schedule.mark(first, now, defs)
+
+	next := schedule.nextJob(now.Add(12*time.Hour), cfg, defs)
+	if next.Kind != refreshJobCatalog || len(next.ProviderIDs) != 1 || next.ProviderIDs[0] != "mtv-rewind" {
+		t.Fatalf("next job = %+v, want catalog refresh for mtv-rewind", next)
+	}
+	wait := schedule.nextInterval(now, cfg, defs)
+	if wait != 12*time.Hour {
+		t.Fatalf("next interval = %s, want 12h catalog interval", wait)
+	}
+}
+
+func TestRefreshScheduleUsesProviderCatalogRefreshOverride(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ManifestRefreshHours = 24
+	cfg.CatalogRefreshHours = 12
+	cfg.Providers["mtv-rewind"] = ProviderConfig{CatalogRefreshHours: 3}
+	defs := []ProviderDefinition{bundledMTVDefinition(), bundledCartoonDefinition()}
+	now := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	schedule := refreshSchedule{}
+
+	first := schedule.nextJob(now, cfg, defs)
+	if first.Kind != refreshJobManifest {
+		t.Fatalf("first job = %+v, want manifest", first)
+	}
+	schedule.mark(first, now, defs)
+
+	next := schedule.nextJob(now.Add(3*time.Hour), cfg, defs)
+	if next.Kind != refreshJobCatalog || len(next.ProviderIDs) != 1 || next.ProviderIDs[0] != "mtv-rewind" {
+		t.Fatalf("next job = %+v, want only mtv-rewind provider override due", next)
 	}
 }
 

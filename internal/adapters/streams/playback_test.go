@@ -380,6 +380,37 @@ func TestManualNextFailureStopsPreviousOwnedSession(t *testing.T) {
 	}
 }
 
+func TestManualNextIgnoresExpectedStoppedCallback(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{
+				{ID: "aaaaaaaaaaa", SourceID: "aaaaaaaaaaa", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+				{ID: "bbbbbbbbbbb", SourceID: "bbbbbbbbbbb", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+			},
+		}},
+	}})
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	core.stopHook = func() {
+		core.lastReq.OnStop("stopped")
+	}
+
+	if err := a.Next(t.Context()); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if a.active == nil || a.active.Index != 1 || a.active.Items[a.active.Index].ID != "bbbbbbbbbbb" {
+		t.Fatalf("active queue after Next = %+v, want second item", a.active)
+	}
+}
+
 func TestStopQueueDuringInFlightResolutionClearsAndPreventsLateStart(t *testing.T) {
 	a, core := newTestAdapterWithFakeCore(t)
 	resolver := newBlockingSuccessResolver(&ytdlp.Resolution{URL: "https://media.example/late.mp4"})
@@ -464,6 +495,38 @@ func TestReplayRebuildsChannelFromLatestCatalog(t *testing.T) {
 	}
 	if a.active.ChannelName != "Metal Fresh" {
 		t.Fatalf("channel name = %q, want latest catalog name", a.active.ChannelName)
+	}
+}
+
+func TestReplayIgnoresExpectedStoppedCallback(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal Fresh",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{{
+				ID:       "freshfresh1",
+				SourceID: "freshfresh1",
+				URL:      "https://www.youtube.com/watch?v=freshfresh1",
+			}},
+		}},
+	}})
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	core.stopHook = func() {
+		core.lastReq.OnStop("stopped")
+	}
+
+	if err := a.Replay(t.Context()); err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if a.active == nil || len(a.active.Items) != 1 || a.active.Items[0].ID != "freshfresh1" {
+		t.Fatalf("active queue after replay = %+v, want latest catalog item", a.active)
 	}
 }
 

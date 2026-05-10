@@ -140,6 +140,25 @@ func TestValidateManifestRejectsTooManyURLRules(t *testing.T) {
 	}
 }
 
+func TestValidateManifestIgnoresUnknownProviderType(t *testing.T) {
+	useManifestValidationResolver(t, blockingResolver{})
+	m := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:   "future-provider",
+		Type: "future-provider-type",
+	}}}
+	if err := validateManifest(t.Context(), m, DefaultConfig()); err != nil {
+		t.Fatalf("unknown provider type should be ignored during validation: %v", err)
+	}
+}
+
+func TestValidateManifestStillRejectsKnownProviderMissingPlaylistURL(t *testing.T) {
+	m := validManifestForTest()
+	m.Providers[0].PlaylistURL = ""
+	if err := validateManifest(t.Context(), m, DefaultConfig()); err == nil {
+		t.Fatal("known provider missing playlist URL accepted")
+	}
+}
+
 func TestMergeManifestsRemoteUnknownTypeIgnored(t *testing.T) {
 	bundled := validManifestForTest()
 	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{

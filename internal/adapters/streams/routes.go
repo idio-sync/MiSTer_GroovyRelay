@@ -49,12 +49,51 @@ func (a *Adapter) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Adapter) handleProviders(w http.ResponseWriter, r *http.Request) {
+	providers := filterProviderStatusViews(a.statusView().Providers, r)
 	if wantsJSON(r) {
-		respondJSON(w, http.StatusOK, a.statusView().Providers)
+		respondJSON(w, http.StatusOK, providers)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(a.renderProviders()))
+	_, _ = w.Write([]byte(renderProvidersFromView(providers)))
+}
+
+func filterProviderStatusViews(providers []ProviderStatusView, r *http.Request) []ProviderStatusView {
+	if r == nil {
+		return providers
+	}
+	providerID := strings.TrimSpace(r.URL.Query().Get("provider_id"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	if providerID == "" && query == "" {
+		return providers
+	}
+
+	out := make([]ProviderStatusView, 0, len(providers))
+	for _, provider := range providers {
+		if providerID != "" && provider.ID != providerID {
+			continue
+		}
+		if query != "" && !providerMatchesQuery(provider, query) {
+			continue
+		}
+		out = append(out, provider)
+	}
+	return out
+}
+
+func providerMatchesQuery(provider ProviderStatusView, query string) bool {
+	if strings.Contains(strings.ToLower(provider.ID), query) ||
+		strings.Contains(strings.ToLower(provider.Name), query) {
+		return true
+	}
+	for _, channel := range provider.Channels {
+		if strings.Contains(strings.ToLower(channel.ID), query) ||
+			strings.Contains(strings.ToLower(channel.Name), query) ||
+			strings.Contains(strings.ToLower(channel.Description), query) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) handleRefresh(w http.ResponseWriter, r *http.Request) {

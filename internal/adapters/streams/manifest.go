@@ -44,6 +44,9 @@ func validateManifestWithURLValidator(ctx context.Context, m Manifest, cfg Confi
 
 	providerIDs := map[string]struct{}{}
 	for _, provider := range m.Providers {
+		if isUnsupportedProviderType(provider.Type) {
+			continue
+		}
 		if err := validateProviderDefinition(ctx, provider, cfg, validateURL); err != nil {
 			return err
 		}
@@ -53,6 +56,15 @@ func validateManifestWithURLValidator(ctx context.Context, m Manifest, cfg Confi
 		providerIDs[provider.ID] = struct{}{}
 	}
 	return nil
+}
+
+func isUnsupportedProviderType(providerType string) bool {
+	providerType = strings.TrimSpace(providerType)
+	if providerType == "" {
+		return false
+	}
+	_, ok := providerFactories()[providerType]
+	return !ok
 }
 
 func validateProviderDefinition(ctx context.Context, provider ProviderDefinition, cfg Config, validateURL remoteDataURLValidator) error {

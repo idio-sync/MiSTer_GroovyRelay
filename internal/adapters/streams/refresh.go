@@ -16,11 +16,32 @@ type RefreshStatus struct {
 	Err        error
 }
 
+type refreshJobKind string
+
+const (
+	refreshJobNone     refreshJobKind = ""
+	refreshJobManifest refreshJobKind = "manifest"
+	refreshJobCatalog  refreshJobKind = "catalog"
+)
+
+type refreshJob struct {
+	Kind        refreshJobKind
+	ProviderIDs []string
+}
+
+type refreshSchedule struct {
+	lastManifest time.Time
+	lastCatalog  map[string]time.Time
+}
+
 func (a *Adapter) RefreshNow(ctx context.Context, providerID string) RefreshStatus {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	status := RefreshStatus{ProviderID: providerID}
+	if providerID != "" {
+		return a.refreshCatalogsDefault(ctx, []string{providerID}, "manual")
+	}
 	if a.refreshOnce != nil {
 		status = a.refreshOnce(ctx, "manual")
 		if status.ProviderID == "" {
@@ -33,10 +54,21 @@ func (a *Adapter) RefreshNow(ctx context.Context, providerID string) RefreshStat
 func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 	defer close(done)
 	failures := 0
+	schedule := refreshSchedule{}
 	for {
+		cfg := a.configSnapshot()
+		defs := a.definitionSnapshot()
+		job := schedule.nextJob(time.Now(), cfg, defs)
 		status := RefreshStatus{}
-		if a.refreshOnce != nil {
-			status = a.refreshOnce(ctx, "background")
+		switch job.Kind {
+		case refreshJobManifest:
+			if a.refreshOnce != nil {
+				status = a.refreshOnce(ctx, "background")
+			}
+		case refreshJobCatalog:
+			status = a.refreshCatalogsDefault(ctx, job.ProviderIDs, "background")
+		default:
+			status = RefreshStatus{Source: "remote", FetchedAt: time.Now().UTC()}
 		}
 		if ctx.Err() != nil {
 			return
@@ -45,8 +77,12 @@ func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 			failures++
 		} else {
 			failures = 0
+			schedule.mark(job, time.Now(), a.definitionSnapshot())
 		}
 		interval := a.refreshInterval(status.Err, failures)
+		if status.Err == nil {
+			interval = schedule.nextInterval(time.Now(), a.configSnapshot(), a.definitionSnapshot())
+		}
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -57,14 +93,93 @@ func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 	}
 }
 
+func (s *refreshSchedule) nextJob(now time.Time, cfg Config, defs []ProviderDefinition) refreshJob {
+	if s.lastManifest.IsZero() || !now.Before(s.lastManifest.Add(refreshHoursDuration(cfg.ManifestRefreshHours))) {
+		return refreshJob{Kind: refreshJobManifest}
+	}
+	due := make([]string, 0, len(defs))
+	for _, def := range defs {
+		last := s.lastCatalogTime(def.ID)
+		if last.IsZero() || !now.Before(last.Add(providerCatalogRefreshDuration(cfg, def))) {
+			due = append(due, def.ID)
+		}
+	}
+	if len(due) != 0 {
+		return refreshJob{Kind: refreshJobCatalog, ProviderIDs: due}
+	}
+	return refreshJob{Kind: refreshJobNone}
+}
+
+func (s *refreshSchedule) nextInterval(now time.Time, cfg Config, defs []ProviderDefinition) time.Duration {
+	next := s.lastManifest.Add(refreshHoursDuration(cfg.ManifestRefreshHours))
+	if s.lastManifest.IsZero() {
+		next = now
+	}
+	for _, def := range defs {
+		catalogNext := s.lastCatalogTime(def.ID).Add(providerCatalogRefreshDuration(cfg, def))
+		if s.lastCatalogTime(def.ID).IsZero() {
+			catalogNext = now
+		}
+		if catalogNext.Before(next) {
+			next = catalogNext
+		}
+	}
+	if !next.After(now) {
+		return 0
+	}
+	return next.Sub(now)
+}
+
+func (s *refreshSchedule) mark(job refreshJob, at time.Time, defs []ProviderDefinition) {
+	if job.Kind == refreshJobNone {
+		return
+	}
+	if s.lastCatalog == nil {
+		s.lastCatalog = map[string]time.Time{}
+	}
+	switch job.Kind {
+	case refreshJobManifest:
+		s.lastManifest = at
+		for _, def := range defs {
+			s.lastCatalog[def.ID] = at
+		}
+	case refreshJobCatalog:
+		for _, providerID := range job.ProviderIDs {
+			s.lastCatalog[providerID] = at
+		}
+	}
+}
+
+func (s *refreshSchedule) lastCatalogTime(providerID string) time.Time {
+	if s.lastCatalog == nil {
+		return time.Time{}
+	}
+	return s.lastCatalog[providerID]
+}
+
+func refreshHoursDuration(hours int) time.Duration {
+	if hours < 1 {
+		hours = 1
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+func providerCatalogRefreshDuration(cfg Config, def ProviderDefinition) time.Duration {
+	hours := cfg.CatalogRefreshHours
+	if def.CatalogRefreshHours != nil && *def.CatalogRefreshHours > 0 {
+		hours = *def.CatalogRefreshHours
+	}
+	if override, ok := cfg.Providers[def.ID]; ok && override.CatalogRefreshHours > 0 {
+		hours = override.CatalogRefreshHours
+	}
+	return refreshHoursDuration(hours)
+}
+
 func (a *Adapter) refreshInterval(err error, failures int) time.Duration {
 	a.mu.Lock()
 	hours := a.cfg.ManifestRefreshHours
 	a.mu.Unlock()
-	if hours < 1 {
-		hours = 1
-	}
-	interval := time.Duration(hours) * time.Hour
+	interval := refreshHoursDuration(hours)
 	if err == nil {
 		return interval
 	}
@@ -142,6 +257,67 @@ func (a *Adapter) refreshOnceDefault(ctx context.Context, reason string) Refresh
 
 	status.Source = "remote"
 	status.FetchedAt = meta.FetchedAt
+	return status
+}
+
+func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []string, reason string) RefreshStatus {
+	_ = reason
+	cfg := a.configSnapshot()
+	status := RefreshStatus{Source: "bundled", FetchedAt: time.Now().UTC()}
+	if len(providerIDs) == 1 {
+		status.ProviderID = providerIDs[0]
+	}
+	if !cfg.AllowRemoteManifest {
+		return status
+	}
+
+	defs, err := a.definitionsForRefresh(providerIDs)
+	if err != nil {
+		a.recordRefreshFailure(err)
+		status.Err = err
+		return status
+	}
+	catalogs := make([]ProviderCatalog, 0, len(defs))
+	bodies := map[string][]byte{}
+	metas := map[string]CacheMetadata{}
+	for _, def := range defs {
+		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, a.cacheDir)
+		if err != nil {
+			a.recordRefreshFailure(err)
+			status.Err = err
+			return status
+		}
+		cat, err := buildProviderCatalog(def, raw, cfg)
+		if err != nil {
+			a.recordRefreshFailure(err)
+			status.Err = err
+			return status
+		}
+		catalogs = append(catalogs, cat)
+		bodies[def.ID] = raw
+		metas[def.ID] = meta
+		if meta.FetchedAt.After(status.FetchedAt) {
+			status.FetchedAt = meta.FetchedAt
+		}
+	}
+	if err := writeCatalogCaches(a.cacheDir, bodies, metas); err != nil {
+		a.recordRefreshFailure(err)
+		status.Err = err
+		return status
+	}
+
+	a.mu.Lock()
+	for _, cat := range catalogs {
+		a.catalogs[cat.ProviderID] = cat
+	}
+	a.lastErr = ""
+	if a.state != adapters.StateStopped {
+		a.state = adapters.StateRunning
+	}
+	a.stateSince = time.Now()
+	a.mu.Unlock()
+
+	status.Source = "remote"
 	return status
 }
 
@@ -227,6 +403,41 @@ func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir s
 		}
 	}
 	return defs, catalogs, nil
+}
+
+func (a *Adapter) definitionSnapshot() []ProviderDefinition {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]ProviderDefinition, 0, len(a.definitionOrder))
+	for _, id := range a.definitionOrder {
+		if def, ok := a.definitions[id]; ok {
+			out = append(out, def)
+		}
+	}
+	return out
+}
+
+func (a *Adapter) definitionsForRefresh(providerIDs []string) ([]ProviderDefinition, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(providerIDs) == 0 {
+		out := make([]ProviderDefinition, 0, len(a.definitionOrder))
+		for _, id := range a.definitionOrder {
+			if def, ok := a.definitions[id]; ok {
+				out = append(out, def)
+			}
+		}
+		return out, nil
+	}
+	out := make([]ProviderDefinition, 0, len(providerIDs))
+	for _, providerID := range providerIDs {
+		def, ok := a.definitions[providerID]
+		if !ok {
+			return nil, fmt.Errorf("streams provider %q is not active", providerID)
+		}
+		out = append(out, def)
+	}
+	return out, nil
 }
 
 func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {

@@ -120,6 +120,7 @@ func (a *Adapter) statusView() StatusView {
 			caps.CanReplay = a.canReplayLocked(q)
 			caps.CanNext = q.canAdvanceNext()
 			caps.CanPrevious = q.canAdvancePrevious()
+			caps.CanPause = true
 		}
 	}
 
