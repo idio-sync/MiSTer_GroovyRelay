@@ -108,6 +108,9 @@ func TestStart_EnabledRequiresHostIP_Invalid(t *testing.T) {
 }
 
 func TestStart_EnabledWithValidHostIP(t *testing.T) {
+	fb := newFakeBuilder()
+	fb.installBuilder(t)
+
 	a, err := New(validAdapterConfig())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -116,6 +119,9 @@ func TestStart_EnabledWithValidHostIP(t *testing.T) {
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start with valid HostIP: %v, want nil", err)
 	}
+	t.Cleanup(func() {
+		_ = a.Stop()
+	})
 	st := a.Status()
 	if st.State != adapters.StateRunning {
 		t.Errorf("State = %v, want StateRunning", st.State)
@@ -126,6 +132,9 @@ func TestStart_EnabledWithValidHostIP(t *testing.T) {
 }
 
 func TestStart_EnabledWithIPv6HostIP(t *testing.T) {
+	fb := newFakeBuilder()
+	fb.installBuilder(t)
+
 	cfg := validAdapterConfig()
 	cfg.HostIP = "fe80::1"
 	a, err := New(cfg)
@@ -136,6 +145,9 @@ func TestStart_EnabledWithIPv6HostIP(t *testing.T) {
 	if err := a.Start(context.Background()); err != nil {
 		t.Errorf("Start with IPv6 HostIP: %v, want nil", err)
 	}
+	t.Cleanup(func() {
+		_ = a.Stop()
+	})
 }
 
 func TestStop_FromAnyState(t *testing.T) {
