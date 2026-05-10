@@ -110,6 +110,9 @@ func TestTimeline_BuildXML_StatePlaying(t *testing.T) {
 	if !strings.Contains(xml, `time="12345"`) {
 		t.Errorf("xml missing time=12345: %s", xml)
 	}
+	if !strings.Contains(xml, `playbackTime="12345"`) {
+		t.Errorf("xml missing playbackTime=12345: %s", xml)
+	}
 	if !strings.Contains(xml, `duration="60000"`) {
 		t.Errorf("xml missing duration=60000: %s", xml)
 	}

@@ -340,6 +340,7 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 		Type              string   `xml:"type,attr"`
 		State             string   `xml:"state,attr"`
 		Time              int64    `xml:"time,attr"`
+		PlaybackTime      int64    `xml:"playbackTime,attr"`
 		Duration          int64    `xml:"duration,attr"`
 		RatingKey         string   `xml:"ratingKey,attr,omitempty"`
 		Key               string   `xml:"key,attr,omitempty"`
@@ -373,10 +374,11 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 		cmd = strconv.Itoa(commandID)
 	}
 	video := Timeline{
-		Type:     "video",
-		State:    plexState,
-		Time:     s.Position.Milliseconds(),
-		Duration: s.Duration.Milliseconds(),
+		Type:         "video",
+		State:        plexState,
+		Time:         s.Position.Milliseconds(),
+		PlaybackTime: s.Position.Milliseconds(),
+		Duration:     s.Duration.Milliseconds(),
 	}
 	if play.MediaKey != "" {
 		video.RatingKey = ratingKeyFromMediaKey(play.MediaKey)
