@@ -627,6 +627,90 @@ func TestEventPublish_AccountsFailuresInSequenceOrder(t *testing.T) {
 	waitForSubscriptionPruned(t, em, serviceAVTransport, sid)
 }
 
+func TestDeliverNotify_DoesNotFollowCallbackRedirectToDisallowedTarget(t *testing.T) {
+	targetHits := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/metadata", http.StatusTemporaryRedirect)
+	}))
+	defer callback.Close()
+
+	em := newEventManager(eventManagerConfig{
+		now:      time.Now,
+		resolver: privateResolverForEventTests("192.168.1.10"),
+		client:   callback.Client(),
+	})
+	sub := &eventSubscription{
+		SID:         "uuid:11111111-2222-3333-4444-555555555555",
+		Service:     serviceAVTransport,
+		CallbackURL: callback.URL,
+		RemoteAddr:  "192.168.1.44",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+
+	if em.deliverNotify(sub, eventProperties{"LastChange": "redirect"}, 1) {
+		t.Fatal("deliverNotify returned success for redirected callback; want failure")
+	}
+	select {
+	case <-targetHits:
+		t.Fatal("NOTIFY followed callback redirect to disallowed target")
+	default:
+	}
+}
+
+func TestDeliverNotify_RevalidatesCallbackAddressPolicyBeforeHTTP(t *testing.T) {
+	resolveCalls := 0
+	resolver := func(_ context.Context, _ string) ([]net.IP, error) {
+		resolveCalls++
+		if resolveCalls == 1 {
+			return []net.IP{net.ParseIP("192.168.1.10")}, nil
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	transportCalls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		transportCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})}
+	em := newEventManager(eventManagerConfig{
+		now:      time.Now,
+		resolver: resolver,
+		client:   client,
+	})
+
+	callback, err := em.validateCallbackHeader(context.Background(), "<http://controller.local/cb>")
+	if err != nil {
+		t.Fatalf("validateCallbackHeader: %v", err)
+	}
+	sub := &eventSubscription{
+		SID:         "uuid:11111111-2222-3333-4444-555555555555",
+		Service:     serviceAVTransport,
+		CallbackURL: callback,
+		RemoteAddr:  "192.168.1.44",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+
+	if em.deliverNotify(sub, eventProperties{"LastChange": "rebind"}, 1) {
+		t.Fatal("deliverNotify returned success after callback revalidated to disallowed address")
+	}
+	if resolveCalls != 2 {
+		t.Fatalf("resolver calls = %d, want 2 (subscription validation + delivery revalidation)", resolveCalls)
+	}
+	if transportCalls != 0 {
+		t.Fatalf("transport calls = %d, want 0 when delivery callback policy fails", transportCalls)
+	}
+}
+
 func TestEventPublish_DeliveryQueuePreservesEnqueueOrderBeforeExecution(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	started := make(chan string, 2)
@@ -696,6 +780,65 @@ func TestEventPublish_DeliveryQueuePreservesEnqueueOrderBeforeExecution(t *testi
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SEQ 2 delivery")
+	}
+}
+
+func TestEventDeliveryQueue_PrunesSlowSubscriberWhenPendingLimitExceeded(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	const pendingLimit = 16
+	firstArrived := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	defer close(releaseFirst)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("SEQ") == "1" {
+			firstArrived <- struct{}{}
+			<-releaseFirst
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})}
+	em := newEventManager(eventManagerConfig{
+		now:              func() time.Time { return now },
+		resolver:         privateResolverForEventTests("192.168.1.10"),
+		client:           client,
+		maxPerService:    2,
+		maxPerRemoteAddr: 2,
+	})
+	sid := "uuid:11111111-2222-3333-4444-555555555555"
+	em.subscriptions[serviceAVTransport][sid] = &eventSubscription{
+		SID:         sid,
+		Service:     serviceAVTransport,
+		CallbackURL: "http://controller.local/cb",
+		RemoteAddr:  "192.168.1.44",
+		ExpiresAt:   now.Add(time.Hour),
+		NextSeq:     1,
+	}
+	key := subscriptionKey(serviceAVTransport, sid)
+
+	em.publish(serviceAVTransport, eventProperties{"LastChange": "blocking"})
+	select {
+	case <-firstArrived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first NOTIFY to block")
+	}
+
+	for i := 0; i <= pendingLimit; i++ {
+		em.publish(serviceAVTransport, eventProperties{"LastChange": "pending-" + strconv.Itoa(i)})
+	}
+
+	em.mu.Lock()
+	_, exists := em.subscriptions[serviceAVTransport][sid]
+	_, queueExists := em.deliveries[key]
+	em.mu.Unlock()
+	if exists {
+		t.Fatal("slow subscriber still exists after pending delivery limit was exceeded")
+	}
+	if queueExists {
+		t.Fatal("delivery queue still exists after slow subscriber was pruned")
 	}
 }
 

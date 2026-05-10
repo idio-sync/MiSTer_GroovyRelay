@@ -32,6 +32,7 @@ const (
 	defaultNotifyTimeout              = 2 * time.Second
 	defaultNotifyResponseLimit        = int64(1024)
 	defaultMaxNotifyFailures          = 3
+	defaultMaxPendingNotifyDeliveries = 16
 )
 
 var (
@@ -94,7 +95,7 @@ func newEventManager(cfg eventManagerConfig) *eventManager {
 	}
 	client := cfg.client
 	if client == nil {
-		client = &http.Client{Timeout: defaultNotifyTimeout}
+		client = newPolicyNotifyClient(resolver)
 	}
 	maxPerService := cfg.maxPerService
 	if maxPerService <= 0 {
@@ -405,6 +406,10 @@ func (e *eventManager) enqueueNotifyLocked(sub *eventSubscription, props eventPr
 		queue = &eventDeliveryQueue{}
 		e.deliveries[key] = queue
 	}
+	if len(queue.deliveries) >= defaultMaxPendingNotifyDeliveries {
+		e.deleteSubscriptionLocked(sub.Service, sub.SID)
+		return key, nil, false
+	}
 	queue.deliveries = append(queue.deliveries, eventDelivery{
 		sub:   cloneSubscription(sub),
 		props: cloneEventProperties(props),
@@ -451,8 +456,14 @@ func (e *eventManager) deliverNotify(sub *eventSubscription, props eventProperti
 	ctx, cancel := context.WithTimeout(context.Background(), defaultNotifyTimeout)
 	defer cancel()
 
+	v := &urlValidator{resolver: e.resolver, client: e.client}
+	callbackURL, _, err := v.parseAndClassify(ctx, sub.CallbackURL, PolicyPrivateOnly)
+	if err != nil {
+		return false
+	}
+
 	body := buildGENAPropertySet(props)
-	req, err := http.NewRequestWithContext(ctx, "NOTIFY", sub.CallbackURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "NOTIFY", callbackURL, bytes.NewReader(body))
 	if err != nil {
 		return false
 	}
@@ -463,7 +474,7 @@ func (e *eventManager) deliverNotify(sub *eventSubscription, props eventProperti
 	req.Header.Set("SEQ", strconv.FormatUint(uint64(seq), 10))
 	req.ContentLength = int64(len(body))
 
-	resp, err := e.client.Do(req)
+	resp, err := noRedirectNotifyClient(e.client).Do(req)
 	if err != nil {
 		return false
 	}
@@ -474,6 +485,50 @@ func (e *eventManager) deliverNotify(sub *eventSubscription, props eventProperti
 		return false
 	}
 	return true
+}
+
+func noRedirectNotifyClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = newPolicyNotifyClient(defaultDNSResolver)
+	}
+	cp := *base
+	cp.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &cp
+}
+
+func newPolicyNotifyClient(resolver dnsResolverFunc) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	dialer := &net.Dialer{Timeout: defaultNotifyTimeout}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := resolver(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve %q: %v", ErrAddressNotAllowed, host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("%w: %q resolved to no addresses", ErrAddressNotAllowed, host)
+		}
+		for _, ip := range ips {
+			class := classifyIP(ip)
+			if class != ipClassPrivate {
+				return nil, fmt.Errorf("%w: %s -> %s (policy=PrivateOnly)", ErrAddressNotAllowed, host, ip)
+			}
+		}
+		if net.ParseIP(host) != nil {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	}
+	return &http.Client{
+		Timeout:   defaultNotifyTimeout,
+		Transport: transport,
+	}
 }
 
 func nextEventSeq(seq uint32) uint32 {

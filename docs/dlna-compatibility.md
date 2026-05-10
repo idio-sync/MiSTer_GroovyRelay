@@ -28,11 +28,17 @@ source.
 2. Confirm the controller discovers the MiSTer Groovy Relay renderer.
 3. Confirm the controller receives HTTP 200 from each `SUBSCRIBE` request.
 4. Confirm each event subscription receives an initial `NOTIFY` with `SEQ: 0`.
-5. Cast an MP4/H.264/AAC HTTP media item from the controller or media server.
-6. Exercise Play, Pause, Resume, Stop, and Seek from the controller.
-7. Confirm transport controls stay hidden or disabled until `LastChange` events
+5. Leave the controller connected long enough to confirm subscription renewal
+   returns HTTP 200 with the same SID and an updated timeout.
+6. Cast an MP4/H.264/AAC HTTP media item from the controller or media server.
+7. Exercise Play, Pause, Resume, Stop, and Seek from the controller.
+8. Confirm transport controls stay hidden or disabled until `LastChange` events
    advertise the available actions.
-8. Repeat the set-media path with `autoplay_on_set_uri` enabled for controllers
+9. Repeat the set-media path with `autoplay_on_set_uri` enabled for controllers
    that set a URI but do not send `Play`.
-9. Check bridge logs for failed SOAP actions, unsupported MIME types, or
+10. Disconnect the controller or explicitly unsubscribe and confirm the bridge
+    stops delivering `NOTIFY` messages for that SID.
+11. Stop the bridge and confirm active subscriptions and pending delivery queues
+    are cleaned up, with no further `NOTIFY` delivery attempts after shutdown.
+12. Check bridge logs for failed SOAP actions, unsupported MIME types, or
    controller-specific request quirks.
