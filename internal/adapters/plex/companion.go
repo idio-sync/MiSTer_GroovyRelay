@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 const (
@@ -54,6 +55,9 @@ type CompanionConfig struct {
 	// Modeline mirrors bridge.video.modeline so Plex transcode requests can
 	// advertise source shape matching the active CRT mode.
 	Modeline string
+
+	// EventLog is the optional ring buffer for adapter lifecycle events.
+	EventLog *eventlog.Log
 }
 
 // Companion is the Plex Companion HTTP adapter. One per process. Thread-safe.
@@ -113,6 +117,19 @@ func (c *Companion) SetMaxVideoBitrateKbps(kbps int) {
 func (c *Companion) SetModeline(name string) {
 	cp := name
 	c.modelineName.Store(&cp)
+}
+
+// emit appends to the configured eventlog if one is wired.
+func (c *Companion) emit(sev eventlog.Severity, msg string) {
+	if c.cfg.EventLog == nil {
+		return
+	}
+	c.cfg.EventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "plex",
+		Message:  msg,
+	})
 }
 
 func (c *Companion) currentPreset() (core.ModelinePreset, error) {
@@ -195,6 +212,7 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 		StreamURL:    streamURL,
 		SeekOffsetMs: p.OffsetMs,
 		AdapterRef:   p.MediaKey,
+		Title:        p.Title,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 	}
 	// Capture the prior PlayMediaRequest at request-construction time.
@@ -368,6 +386,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 	if prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return false
@@ -565,6 +584,10 @@ type PlayMediaRequest struct {
 	CommandID          string
 	PlayQueueItemID    string
 	TranscodeSessionID string
+	// Title is the human-readable label sent by the Plex controller on
+	// playMedia (the `title` query param). Empty for seek/setStreams
+	// restarts where the controller doesn't re-send identity metadata.
+	Title string
 }
 
 // handlePlayMedia parses the Plex Companion playMedia query, builds a stream
@@ -597,6 +620,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		CommandID:          queryOrHeader(r, "commandID"),
 		PlayQueueItemID:    queryOrHeader(r, "playQueueItemID"),
 		TranscodeSessionID: NewTranscodeSessionID(),
+		Title:              queryOrHeader(r, "title"),
 	}
 	// Some Plex controllers (notably mobile apps) omit
 	// X-Plex-Session-Identifier on playMedia. PMS uses this id to tie
@@ -657,6 +681,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	if prevPlay.MediaKey != "" && prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -718,6 +743,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := c.sessionRequestForPreset(p, preset)
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -827,6 +853,7 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := c.sessionRequestForPreset(p, preset)
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
