@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
@@ -187,6 +188,25 @@ func main() {
 		dieFriendly("registry register jellyfin", err)
 	}
 
+	// DLNA / UPnP MediaRenderer adapter (Phase 1: descriptors + SSDP +
+	// Phase-1 SOAP surface; playback in Phase 2+).
+	// Spec: docs/superpowers/specs/2026-05-03-dlna-mediarenderer-design.md.
+	//
+	// Future adapters follow the same construct-then-Register pattern.
+	// /dlna/* HTTP routes mount via the PublicRouteProvider walk below;
+	// no explicit MountRoutes call is needed here.
+	dlnaAdapter, err := dlna.New(dlna.AdapterConfig{
+		DeviceUUID: store.DeviceUUID,
+		HostIP:     hostIP,
+		HTTPPort:   sec.Bridge.UI.HTTPPort,
+	})
+	if err != nil {
+		dieFriendly("dlna adapter init", err)
+	}
+	if err := reg.Register(dlnaAdapter); err != nil {
+		dieFriendly("registry register dlna", err)
+	}
+
 	for _, a := range reg.List() {
 		raw := sec.Adapters[a.Name()]
 		if err := a.DecodeConfig(raw, sec.MetaData()); err != nil {
@@ -200,6 +220,19 @@ func main() {
 	// ui.Server mounts /ui/* and the root redirect.
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
+
+	// Mount adapter-owned public protocol routes (DLNA SSDP descriptors,
+	// SOAP control, GENA SUBSCRIBE) on the shared mux. These paths
+	// bypass the settings-UI CSRF middleware that wraps /ui/* because
+	// protocol clients (UPnP control points) are not browsers and do not
+	// send the headers that middleware expects. Plex's existing explicit
+	// MountRoutes call above is the precedent; future adapters should
+	// implement PublicRouteProvider instead of an explicit call here.
+	for _, a := range reg.List() {
+		if pp, ok := a.(adapters.PublicRouteProvider); ok {
+			pp.MountPublicRoutes(mux)
+		}
+	}
 
 	// Bridge + adapter savers live in internal/uiserver so integration
 	// tests exercise the same code path the operator hits (review fix
