@@ -6,7 +6,7 @@
 
 **Architecture:** Implement `internal/adapters/streams` as a peer adapter that owns provider catalogs, queue state, playback controls, and UI routes. Remote provider data is data-only and passes strict manifest, cache, URL, redirect, DNS, and byte-limit validation before becoming active. Playback reuses the existing yt-dlp resolver and `core.Manager`, with a small EOF lifecycle fix in core so queues can advance naturally.
 
-**Tech Stack:** Go 1.26, BurntSushi/toml, stdlib `net/http`, `html/template`, `httptest`, `embed`, `encoding/json`, `net/netip`, `internal/adapters/url/ytdlp`, htmx fragments through the existing adapter route mount.
+**Tech Stack:** Go 1.26.2, BurntSushi/toml, stdlib `net/http`, `html/template`, `httptest`, `embed`, `encoding/json`, `net/netip`, `golang.org/x/net/idna`, `internal/adapters/url/ytdlp`, htmx fragments through the existing adapter route mount.
 
 **Spec:** [docs/superpowers/specs/2026-05-09-streams-provider-adapter-design.md](../specs/2026-05-09-streams-provider-adapter-design.md)
 
@@ -32,6 +32,7 @@
 - `internal/adapters/streams/*_test.go` — focused unit/adapter/fake-server tests.
 - `internal/adapters/streams/testdata/mtv-playlists.seed.json` — small checked-in MTV seed catalog.
 - `internal/adapters/streams/testdata/cartoon-playlists.seed.json` — small checked-in Cartoon seed catalog.
+- `internal/adapters/streamhandoff/handoff.go` — neutral URL-to-streams handoff contract shared by URL and streams.
 
 **Modify:**
 - `internal/core/manager.go` — fire `OnStop("eof")` on natural EOF with existing identity guards.
@@ -61,7 +62,7 @@
 
 **Why:** Streams queues need `SessionRequest.OnStop("eof")` when a plane exits normally. The current `runErr == nil` branch transitions `EvEOF` but never captures `OnStop`, clears `m.active`, clears `m.cancelFn`, removes subtitles, or calls `notifySessionStop`.
 
-- [ ] **Step 1: Write failing EOF regression test**
+- [ ] **Step 1: Write failing EOF regression test with a hermetic plane seam**
 
 Add this test near the existing manager lifecycle tests in `internal/core/manager_test.go`:
 
@@ -69,13 +70,17 @@ Add this test near the existing manager lifecycle tests in `internal/core/manage
 func TestManager_NaturalEOFFiresOnStopAndClearsActive(t *testing.T) {
 	m := newTestManager(t)
 	done := make(chan string, 1)
-	req := bogusRequest()
-	req.OnStop = func(reason string) { done <- reason }
 
-	if err := m.StartSession(req); err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-	waitForPlaneExit(t, m)
+	plane := &fakePlane{}
+	m.mu.Lock()
+	m.plane = plane
+	m.cancelFn = func() {}
+	m.active = &activeSession{req: SessionRequest{
+		OnStop: func(reason string) { done <- reason },
+	}}
+	m.mu.Unlock()
+
+	m.handlePlaneExit(plane, nil)
 
 	select {
 	case got := <-done:
@@ -85,33 +90,31 @@ func TestManager_NaturalEOFFiresOnStopAndClearsActive(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("OnStop was not called")
 	}
-	if err := m.Stop(); err == nil {
-		t.Fatal("Stop after EOF should report no active session")
+	if st := m.Status(); st.State != StateIdle {
+		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active != nil || m.plane != nil || m.cancelFn != nil {
+		t.Fatalf("manager did not clear session: active=%v plane=%v cancelFnNil=%v", m.active, m.plane, m.cancelFn == nil)
 	}
 }
 ```
 
-If `newTestManager` or `waitForPlaneExit` do not already exist with this exact shape, add small helpers in the same test file:
+Add this fake plane to the same test file:
 
 ```go
-func waitForPlaneExit(t *testing.T, m *Manager) {
-	t.Helper()
-	deadline := time.After(time.Second)
-	for {
-		m.mu.Lock()
-		plane := m.plane
-		m.mu.Unlock()
-		if plane == nil {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("plane did not exit")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
+type fakePlane struct{}
+
+func (f *fakePlane) Run(context.Context) error        { return nil }
+func (f *fakePlane) Done() <-chan struct{}            { ch := make(chan struct{}); close(ch); return ch }
+func (f *fakePlane) Position() time.Duration          { return 0 }
+func (f *fakePlane) SetFieldOrder(string) error       { return nil }
 ```
+
+Add `context` to the existing `internal/core/manager_test.go` import block.
+
+This test intentionally does not call `StartSession` and does not use `bogusRequest()`: the current helpers exercise the probe failure path, not natural EOF.
 
 - [ ] **Step 2: Run the failing test**
 
@@ -121,47 +124,78 @@ Run:
 cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/core -run TestManager_NaturalEOFFiresOnStopAndClearsActive -count=1
 ```
 
-Expected: FAIL because `OnStop` is not called with `"eof"` or `Stop()` still sees an active session.
+Expected: FAIL with `cannot use plane as *dataplane.Plane` or `m.handlePlaneExit undefined`. The failure proves the test seam and EOF exit path do not exist yet.
 
 - [ ] **Step 3: Implement EOF handling with existing guards**
 
-In `internal/core/manager.go`, update the goroutine inside `startPlaneLocked` so the `runErr == nil` branch mirrors the safe parts of the error branch:
+In `internal/core/manager.go`, introduce a narrow plane interface and move the goroutine body into a helper so tests can drive the EOF branch without ffmpeg/ffprobe:
 
 ```go
-m.mu.Lock()
-if m.plane != plane {
-	m.mu.Unlock()
-	return
+type planeRunner interface {
+	Run(context.Context) error
+	Done() <-chan struct{}
+	Position() time.Duration
+	SetFieldOrder(string) error
 }
-m.plane = nil
-reason := "error"
-switch {
-case runErr == nil:
-	reason = "eof"
-	_ = m.fsm.Transition(EvEOF)
-	if m.active != nil {
-		onStop = m.active.req.OnStop
-		subtitlePath = m.active.req.SubtitlePath
-		m.active = nil
-		m.cancelFn = nil
-	}
-case errors.Is(runErr, context.Canceled):
-	reason = ""
-default:
-	_ = m.fsm.Transition(EvError)
-	if m.active != nil {
-		onStop = m.active.req.OnStop
-		subtitlePath = m.active.req.SubtitlePath
-		m.active = nil
-		m.cancelFn = nil
-	}
-}
-m.mu.Unlock()
 
-removeSubtitleFile(subtitlePath)
-if reason != "" {
-	notifySessionStop(onStop, reason)
+var newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+	return dataplane.NewPlane(cfg)
 }
+```
+
+Change `Manager.plane` from `*dataplane.Plane` to `planeRunner`, change `plane := dataplane.NewPlane(...)` to `plane := newPlane(...)`, and add:
+
+```go
+func (m *Manager) handlePlaneExit(plane planeRunner, runErr error) {
+	m.logPlaneExit(runErr)
+
+	var onStop func(string)
+	var subtitlePath string
+	reason := "error"
+
+	m.mu.Lock()
+	if m.plane != plane {
+		m.mu.Unlock()
+		return
+	}
+	m.plane = nil
+	switch {
+	case runErr == nil:
+		reason = "eof"
+		_ = m.fsm.Transition(EvEOF)
+		if m.active != nil {
+			onStop = m.active.req.OnStop
+			subtitlePath = m.active.req.SubtitlePath
+			m.active = nil
+			m.cancelFn = nil
+		}
+	case errors.Is(runErr, context.Canceled):
+		reason = ""
+	default:
+		_ = m.fsm.Transition(EvError)
+		if m.active != nil {
+			onStop = m.active.req.OnStop
+			subtitlePath = m.active.req.SubtitlePath
+			m.active = nil
+			m.cancelFn = nil
+		}
+	}
+	m.mu.Unlock()
+
+	removeSubtitleFile(subtitlePath)
+	if reason != "" {
+		notifySessionStop(onStop, reason)
+	}
+}
+```
+
+Then replace the goroutine body with:
+
+```go
+go func() {
+	runErr := plane.Run(ctx)
+	m.handlePlaneExit(plane, runErr)
+}()
 ```
 
 Keep the existing `m.plane != plane` guard. Keep pause cancellation silent by leaving `reason == ""`.
@@ -232,17 +266,35 @@ func TestConfigValidateRejectsBadRanges(t *testing.T) {
 
 func TestScopeForField(t *testing.T) {
 	cases := map[string]adapters.ApplyScope{
-		"enabled":                         adapters.ScopeHotSwap,
-		"manifest_url":                    adapters.ScopeHotSwap,
-		"max_manifest_bytes":              adapters.ScopeHotSwap,
-		"youtube_format":                  adapters.ScopeRestartCast,
-		"providers.mtv-rewind.disabled":   adapters.ScopeHotSwap,
+		"enabled":                                      adapters.ScopeHotSwap,
+		"manifest_url":                                 adapters.ScopeHotSwap,
+		"manifest_refresh_hours":                       adapters.ScopeHotSwap,
+		"catalog_refresh_hours":                        adapters.ScopeHotSwap,
+		"max_manifest_bytes":                           adapters.ScopeHotSwap,
+		"max_catalog_bytes":                            adapters.ScopeHotSwap,
+		"max_items_per_channel":                        adapters.ScopeHotSwap,
+		"max_consecutive_failures":                     adapters.ScopeHotSwap,
+		"manifest_request_timeout_seconds":             adapters.ScopeHotSwap,
+		"catalog_request_timeout_seconds":              adapters.ScopeHotSwap,
+		"youtube_format":                               adapters.ScopeRestartCast,
+		"allow_remote_manifest":                        adapters.ScopeHotSwap,
+		"allow_cached_remote_manifest":                 adapters.ScopeHotSwap,
+		"allow_local_manifest_urls":                    adapters.ScopeHotSwap,
+		"remote_provider_allowed_hosts":                adapters.ScopeHotSwap,
+		"providers.mtv-rewind.disabled":                adapters.ScopeHotSwap,
 		"providers.mtv-rewind.catalog_refresh_hours": adapters.ScopeHotSwap,
 	}
 	for key, want := range cases {
-		if got := scopeForField(key); got != want {
+		got, ok := scopeForField(key)
+		if !ok {
+			t.Fatalf("scopeForField(%q) not found", key)
+		}
+		if got != want {
 			t.Fatalf("scopeForField(%q) = %v, want %v", key, got, want)
 		}
+	}
+	if _, ok := scopeForField("youtub_format"); ok {
+		t.Fatal("unknown field should not receive an implicit scope")
 	}
 }
 ```
@@ -383,32 +435,86 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.YoutubeFormat) == "" {
 		errs = append(errs, adapters.FieldError{Key: "youtube_format", Msg: "must not be empty"})
 	}
-	for host := range normalizeHostSet(c.RemoteProviderAllowedHosts) {
-		if strings.ContainsAny(host, " \t\r\n/:?#@*") {
-			errs = append(errs, adapters.FieldError{Key: "remote_provider_allowed_hosts", Msg: fmt.Sprintf("invalid hostname %q", host)})
-		}
+	if _, err := normalizeHostSet(c.RemoteProviderAllowedHosts); err != nil {
+		errs = append(errs, adapters.FieldError{
+			Key: "remote_provider_allowed_hosts",
+			Msg: err.Error(),
+		})
 	}
 	return errs.Err()
 }
 
-func scopeForField(key string) adapters.ApplyScope {
-	if key == "youtube_format" {
-		return adapters.ScopeRestartCast
-	}
-	return adapters.ScopeHotSwap
+var fieldScopes = map[string]adapters.ApplyScope{
+	"enabled":                         adapters.ScopeHotSwap,
+	"manifest_url":                    adapters.ScopeHotSwap,
+	"manifest_refresh_hours":          adapters.ScopeHotSwap,
+	"catalog_refresh_hours":           adapters.ScopeHotSwap,
+	"max_manifest_bytes":              adapters.ScopeHotSwap,
+	"max_catalog_bytes":               adapters.ScopeHotSwap,
+	"max_items_per_channel":           adapters.ScopeHotSwap,
+	"max_consecutive_failures":        adapters.ScopeHotSwap,
+	"manifest_request_timeout_seconds": adapters.ScopeHotSwap,
+	"catalog_request_timeout_seconds":  adapters.ScopeHotSwap,
+	"youtube_format":                  adapters.ScopeRestartCast,
+	"allow_remote_manifest":           adapters.ScopeHotSwap,
+	"allow_cached_remote_manifest":    adapters.ScopeHotSwap,
+	"allow_local_manifest_urls":       adapters.ScopeHotSwap,
+	"remote_provider_allowed_hosts":   adapters.ScopeHotSwap,
 }
 
-func normalizeHostSet(in []string) map[string]struct{} {
+func scopeForField(key string) (adapters.ApplyScope, bool) {
+	if scope, ok := fieldScopes[key]; ok {
+		return scope, true
+	}
+	if strings.HasPrefix(key, "providers.") &&
+		(strings.HasSuffix(key, ".disabled") || strings.HasSuffix(key, ".catalog_refresh_hours")) {
+		return adapters.ScopeHotSwap, true
+	}
+	return 0, false
+}
+
+func normalizeHostSet(in []string) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
 	for _, h := range in {
-		h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
-		if h != "" {
-			out[h] = struct{}{}
+		normalized, err := normalizeConfigHost(h)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hostname %q: %w", h, err)
+		}
+		if normalized != "" {
+			out[normalized] = struct{}{}
 		}
 	}
-	return out
+	return out, nil
 }
 ```
+
+Add `normalizeConfigHost` tests before implementing it:
+
+```go
+func TestNormalizeConfigHost(t *testing.T) {
+	cases := map[string]string{
+		"Example.COM.":           "example.com",
+		"https://Example.COM:443/path": "example.com",
+		"bücher.example":         "xn--bcher-kva.example",
+	}
+	for in, want := range cases {
+		got, err := normalizeConfigHost(in)
+		if err != nil {
+			t.Fatalf("normalizeConfigHost(%q): %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeConfigHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, bad := range []string{"*.example.com", "http://user@example.com", "127.0.0.1"} {
+		if got, err := normalizeConfigHost(bad); err == nil {
+			t.Fatalf("normalizeConfigHost(%q) = %q, want error", bad, got)
+		}
+	}
+}
+```
+
+Implement `normalizeConfigHost` with `net/url`, `net/netip`, and `golang.org/x/net/idna`: accept either a bare hostname or URL-like value, strip default `:443` for HTTPS and `:80` for HTTP, reject userinfo, wildcard hosts, empty hosts, and IP literals, lower-case, trim a trailing dot, and convert to ASCII with `idna.Lookup.ToASCII`.
 
 Create `internal/adapters/streams/adapter.go` with the adapter shell, fields, `DecodeConfig`, `Validate`, `ApplyConfig`, `CurrentValues`, `SetEnabled`, `Start`, `Stop`, and `Status`. Keep `Start` as state-only in this task:
 
@@ -517,13 +623,79 @@ func validManifestForTest() Manifest {
 }
 ```
 
-- [ ] **Step 2: Write fetch security tests**
+- [ ] **Step 2: Write cache correctness tests**
+
+Create `internal/adapters/streams/cache_test.go`:
+
+```go
+func TestCacheReadRejectsChecksumMismatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeCacheFile(dir, "manifest", []byte(`{"version":1}`), CacheMetadata{
+		Schema:    1,
+		SourceURL: "https://example.test/providers.json",
+		SHA256:    "not-the-real-digest",
+	}); err != nil {
+		t.Fatalf("writeCacheFile: %v", err)
+	}
+	if _, _, err := readCacheFile(dir, "manifest"); err == nil {
+		t.Fatal("checksum mismatch accepted")
+	}
+}
+
+func TestCacheReadRejectsCorruptMetadata(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatalf("write body: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.meta.json"), []byte(`{bad json`), 0o600); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+	if _, _, err := readCacheFile(dir, "manifest"); err == nil {
+		t.Fatal("corrupt metadata accepted")
+	}
+}
+
+func TestCacheWriteIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeCacheFile(dir, "catalog-mtv-rewind", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{
+		Schema:    1,
+		SourceURL: "https://wantmymtv.vercel.app/public/mtv-playlists.json",
+	}); err != nil {
+		t.Fatalf("writeCacheFile: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files left behind: %v", matches)
+	}
+}
+
+func TestCachedRemoteManifestIgnoredWhenDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AllowRemoteManifest = false
+	cfg.AllowCachedRemoteManifest = false
+	bundled := validManifestForTest()
+	cached := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID: "cached-provider", Type: "youtube-channel-json", DisplayName: "Cached",
+	}}}
+	got := mergeManifests(cfg, bundled, &cached, nil, map[string]ProviderFactory{
+		"youtube-channel-json": nil,
+	})
+	if _, ok := got.Provider("cached-provider"); ok {
+		t.Fatal("cached remote manifest should be ignored")
+	}
+}
+```
+
+- [ ] **Step 3: Write fetch security tests**
 
 Create `internal/adapters/streams/fetch_test.go`:
 
 ```go
 func TestFetchRejectsLoopbackByDefault(t *testing.T) {
-	f := secureFetcher{client: http.DefaultClient, resolver: staticResolver{"example.test": {"127.0.0.1"}}}
+	f := secureFetcher{client: http.DefaultClient, resolver: staticResolver{"example.test": []string{"127.0.0.1"}}}
 	_, err := f.Fetch(t.Context(), "https://example.test/catalog.json", fetchLimits{MaxBytes: 1024})
 	if err == nil {
 		t.Fatal("loopback target accepted")
@@ -541,19 +713,37 @@ func TestFetchRejectsIPv6PrivateRanges(t *testing.T) {
 }
 
 func TestFetchRejectsRedirectToPrivateIP(t *testing.T) {
-	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{}"))
-	}))
-	defer private.Close()
-	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, private.URL, http.StatusFound)
-	}))
-	defer public.Close()
-
-	f := testFetcherAllowingServerHosts(t, public, private)
-	_, err := f.Fetch(t.Context(), public.URL, fetchLimits{MaxBytes: 1024})
+	f := secureFetcher{
+		resolver: sequenceResolver{
+			"public.example":  {[]string{"203.0.113.10"}},
+			"private.example": {[]string{"192.168.1.10"}},
+		},
+		transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Hostname() != "public.example" {
+				t.Fatalf("unexpected first request host %s", req.URL.Host)
+			}
+			return redirectResponse(req, "https://private.example/catalog.json"), nil
+		}),
+	}
+	_, err := f.Fetch(t.Context(), "https://public.example/catalog.json", fetchLimits{MaxBytes: 1024})
 	if err == nil {
 		t.Fatal("redirect revalidation did not reject private target")
+	}
+}
+
+func TestFetchResolvesOnceAndDialsValidatedIP(t *testing.T) {
+	resolver := &rebindResolver{
+		first:  []string{"203.0.113.10"},
+		second: []string{"192.168.1.20"},
+	}
+	dialer := &recordingDialer{}
+	f := secureFetcher{resolver: resolver, dialContext: dialer.DialContext}
+	_, _ = f.Fetch(t.Context(), "https://media.example/catalog.json", fetchLimits{MaxBytes: 1024})
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolver.calls)
+	}
+	if !strings.Contains(dialer.addr, "203.0.113.10") {
+		t.Fatalf("dialed %q, want validated IP 203.0.113.10", dialer.addr)
 	}
 }
 ```
@@ -570,25 +760,58 @@ func (r staticResolver) LookupHost(ctx context.Context, host string) ([]string, 
 	return nil, fmt.Errorf("unexpected lookup for %s", host)
 }
 
-func testFetcherAllowingServerHosts(t *testing.T, servers ...*httptest.Server) secureFetcher {
-	t.Helper()
-	lookup := staticResolver{}
-	for _, srv := range servers {
-		u, err := url.Parse(srv.URL)
-		if err != nil {
-			t.Fatalf("parse server URL: %v", err)
-		}
-		host, _, err := net.SplitHostPort(u.Host)
-		if err != nil {
-			t.Fatalf("split host: %v", err)
-		}
-		lookup[u.Hostname()] = []string{host}
+type sequenceResolver map[string][][]string
+
+func (r sequenceResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	seq := r[host]
+	if len(seq) == 0 {
+		return nil, fmt.Errorf("unexpected lookup for %s", host)
 	}
-	return secureFetcher{client: http.DefaultClient, resolver: lookup}
+	out := seq[0]
+	r[host] = seq[1:]
+	return out, nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func redirectResponse(req *http.Request, loc string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusFound,
+		Header:     http.Header{"Location": []string{loc}},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}
+}
+
+type rebindResolver struct {
+	first  []string
+	second []string
+	calls  int
+}
+
+func (r *rebindResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	r.calls++
+	if r.calls == 1 {
+		return r.first, nil
+	}
+	return r.second, nil
+}
+
+type recordingDialer struct {
+	addr string
+}
+
+func (d *recordingDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	d.addr = addr
+	return nil, errors.New("stop after recording dial address")
 }
 ```
 
-- [ ] **Step 3: Implement schema, merge, cache, and fetch**
+- [ ] **Step 4: Implement schema, merge, cache, and fetch**
 
 Implement these exported/internal types in `provider.go`:
 
@@ -642,12 +865,13 @@ var deniedIPv6 = []netip.Prefix{
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("ff00::/8"),
+	netip.MustParsePrefix("::ffff:0:0/96"),
 }
 ```
 
-The fetcher must resolve once, dial the validated IP, preserve host for SNI/Host, cap redirects at three, reject HTTPS-to-HTTP downgrade unless local URLs are allowed, and wrap response bodies with `http.MaxBytesReader` or `io.LimitReader` plus an over-limit check.
+The fetcher must resolve once, dial the validated IP, preserve host for SNI/Host, cap redirects at three, reject HTTPS-to-HTTP downgrade unless local URLs are allowed, and wrap response bodies with `http.MaxBytesReader` or `io.LimitReader` plus an over-limit check. Give `secureFetcher` injectable `resolver`, `transport`, and `dialContext` fields so DNS rebinding and redirect behavior are testable without real external network.
 
-- [ ] **Step 4: Run manifest/cache/fetch tests**
+- [ ] **Step 5: Run manifest/cache/fetch tests**
 
 Run:
 
@@ -657,7 +881,7 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/adapters/streams
@@ -786,6 +1010,7 @@ git commit -m "feat(streams): add youtube channel provider"
 ## Task 5: URL Rule Resolution And URL Adapter Handoff
 
 **Files:**
+- Create: `internal/adapters/streamhandoff/handoff.go`
 - Create: `internal/adapters/streams/url_resolver.go`
 - Create: `internal/adapters/streams/url_resolver_test.go`
 - Modify: `internal/adapters/url/adapter.go`
@@ -839,7 +1064,9 @@ func newTestAdapterWithCatalog(t *testing.T) *Adapter {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	cat := ProviderCatalog{
+	mtvDef := bundledMTVDefinition()
+	cartoonDef := bundledCartoonDefinition()
+	mtvCat := ProviderCatalog{
 		ProviderID: "mtv-rewind",
 		Name:       "MTV Rewind",
 		Channels: []Channel{{
@@ -853,7 +1080,22 @@ func newTestAdapterWithCatalog(t *testing.T) *Adapter {
 			}},
 		}},
 	}
-	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	cartoonCat := ProviderCatalog{
+		ProviderID: "cartoon-rewind",
+		Name:       "Cartoon Rewind",
+		Channels: []Channel{{
+			ID:       "heman",
+			Name:     "He-Man",
+			PlayMode: PlayShuffle,
+			Items: []StreamItem{{
+				ID:       "9bZkp7q19f0",
+				SourceID: "9bZkp7q19f0",
+				URL:      "https://www.youtube.com/watch?v=9bZkp7q19f0",
+			}},
+		}},
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{mtvDef, cartoonDef})
+	a.replaceCatalogsForTest([]ProviderCatalog{mtvCat, cartoonCat})
 	return a
 }
 ```
@@ -871,6 +1113,19 @@ func (a *Adapter) replaceCatalogsForTest(cats []ProviderCatalog) {
 }
 ```
 
+Also add:
+
+```go
+func (a *Adapter) replaceDefinitionsForTest(defs []ProviderDefinition) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.definitions = map[string]ProviderDefinition{}
+	for _, def := range defs {
+		a.definitions[def.ID] = def
+	}
+}
+```
+
 - [ ] **Step 2: Write URL adapter handoff tests**
 
 In `internal/adapters/url/play_test.go`, add a fake stream resolver and tests:
@@ -878,23 +1133,23 @@ In `internal/adapters/url/play_test.go`, add a fake stream resolver and tests:
 ```go
 type fakeStreamResolver struct {
 	matched bool
-	res     StreamURLResolution
+	res     streamhandoff.Resolution
 	err     error
 	starts  int
 }
 
-func (f *fakeStreamResolver) ResolveStreamURL(ctx context.Context, rawURL string) (StreamURLResolution, bool, error) {
+func (f *fakeStreamResolver) ResolveStreamURL(ctx context.Context, rawURL string) (streamhandoff.Resolution, bool, error) {
 	return f.res, f.matched, f.err
 }
 
-func (f *fakeStreamResolver) StartResolvedStream(ctx context.Context, res StreamURLResolution) (StreamStartResult, error) {
+func (f *fakeStreamResolver) StartResolvedStream(ctx context.Context, res streamhandoff.Resolution) (streamhandoff.StartResult, error) {
 	f.starts++
-	return StreamStartResult{AdapterRef: res.AdapterRef, ProviderID: res.ProviderID, ChannelID: res.ChannelID, ItemID: res.ItemID}, nil
+	return streamhandoff.StartResult{AdapterRef: res.AdapterRef, ProviderID: res.ProviderID, ChannelID: res.ChannelID, ItemID: res.ItemID}, nil
 }
 
 func TestCastURL_StreamsHandoffBeforeYTDLP(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
-	f := &fakeStreamResolver{matched: true, res: StreamURLResolution{AdapterRef: "streams:1", ProviderID: "mtv-rewind", ChannelID: "metal"}}
+	f := &fakeStreamResolver{matched: true, res: streamhandoff.Resolution{AdapterRef: "streams:1", ProviderID: "mtv-rewind", ChannelID: "metal"}}
 	a.SetStreamResolver(f)
 	ref, via, status, err := a.castURL(t.Context(), "https://wantmymtv.vercel.app/player.html?channel=metal", "auto")
 	if err != nil {
@@ -906,24 +1161,28 @@ func TestCastURL_StreamsHandoffBeforeYTDLP(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Implement handoff interfaces**
+- [ ] **Step 3: Implement neutral handoff interfaces**
 
-Define the shared handoff types in `internal/adapters/url/adapter.go` to avoid importing streams into URL:
+Create `internal/adapters/streamhandoff/handoff.go`:
 
 ```go
-type StreamURLResolver interface {
-	ResolveStreamURL(ctx context.Context, rawURL string) (StreamURLResolution, bool, error)
-	StartResolvedStream(ctx context.Context, res StreamURLResolution) (StreamStartResult, error)
+package streamhandoff
+
+import "context"
+
+type Resolver interface {
+	ResolveStreamURL(ctx context.Context, rawURL string) (Resolution, bool, error)
+	StartResolvedStream(ctx context.Context, res Resolution) (StartResult, error)
 }
 
-type StreamURLResolution struct {
+type Resolution struct {
 	AdapterRef string
 	ProviderID string
 	ChannelID  string
 	ItemID     string
 }
 
-type StreamStartResult struct {
+type StartResult struct {
 	AdapterRef string `json:"adapter_ref"`
 	ProviderID string `json:"provider_id"`
 	ChannelID  string `json:"channel_id,omitempty"`
@@ -931,10 +1190,10 @@ type StreamStartResult struct {
 }
 ```
 
-Add `streamResolver StreamURLResolver` to `url.Adapter`, plus:
+Add `streamResolver streamhandoff.Resolver` to `url.Adapter`, import the neutral package, and add:
 
 ```go
-func (a *Adapter) SetStreamResolver(r StreamURLResolver) {
+func (a *Adapter) SetStreamResolver(r streamhandoff.Resolver) {
 	a.mu.Lock()
 	a.streamResolver = r
 	a.mu.Unlock()
@@ -942,6 +1201,8 @@ func (a *Adapter) SetStreamResolver(r StreamURLResolver) {
 ```
 
 At the start of `castURL`, after URL parse/scheme validation and history add, snapshot `streamResolver` and call it before `decideRoute`.
+
+The streams package must return `streamhandoff.Resolution` and `streamhandoff.StartResult`; it must not import `internal/adapters/url`.
 
 - [ ] **Step 4: Run tests**
 
@@ -989,12 +1250,80 @@ func TestBuildQueueFirstThenShuffleSingleItem(t *testing.T) {
 }
 
 func TestStaleOnStopDoesNotAdvanceNewQueue(t *testing.T) {
-	a := newTestAdapterWithFakeCore(t)
+	a, _ := newTestAdapterWithFakeCore(t)
 	a.active = &ActiveQueue{ProviderID: "mtv-rewind", ChannelID: "metal", Generation: 2, ItemToken: 9, SessionID: "new", Items: []StreamItem{{ID: "new"}}}
 	cb := a.makeOnStop(queueCapture{Generation: 1, ItemToken: 8, SessionID: "old", ItemID: "old"})
 	cb("eof")
 	if a.active.SessionID != "new" {
 		t.Fatalf("stale callback mutated active queue: %+v", a.active)
+	}
+}
+
+func TestManualControlsIncrementGenerationAndCancelResolve(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	cancelled := false
+	a.active = &ActiveQueue{
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		Generation: 4,
+		Items:      []StreamItem{{ID: "a"}, {ID: "b"}},
+		cancelResolve: func() { cancelled = true },
+	}
+	if err := a.Next(t.Context()); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("Next did not cancel in-flight resolution")
+	}
+	if a.active.Generation != 5 {
+		t.Fatalf("generation = %d, want 5", a.active.Generation)
+	}
+}
+
+func TestQueueSnapshotSurvivesCatalogRefresh(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		Items:      []StreamItem{{ID: "old"}},
+	}
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Channels: []Channel{{ID: "metal", Items: []StreamItem{{ID: "new"}}}},
+	}})
+	if got := a.active.Items[0].ID; got != "old" {
+		t.Fatalf("active queue item = %q, want old snapshot", got)
+	}
+}
+
+func TestAdhocSingleItemStopsOnEOF(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		ProviderID: "mtv-rewind",
+		ChannelID:  "adhoc",
+		SessionID:  "s1",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "dQw4w9WgXcQ"}},
+	}
+	cb := a.makeOnStop(queueCapture{Generation: 0, ItemToken: 1, SessionID: "s1", ItemID: "dQw4w9WgXcQ"})
+	cb("eof")
+	if a.active != nil {
+		t.Fatalf("adhoc EOF should clear queue, got %+v", a.active)
+	}
+}
+
+func TestForeignPreemptClearsOnlyMatchingQueue(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{ProviderID: "mtv-rewind", ChannelID: "metal", Generation: 2, ItemToken: 3, SessionID: "current", Items: []StreamItem{{ID: "x"}}}
+	stale := a.makeOnStop(queueCapture{Generation: 1, ItemToken: 3, SessionID: "old", ItemID: "x"})
+	stale("preempted")
+	if a.active == nil {
+		t.Fatal("stale preempt cleared current queue")
+	}
+	matching := a.makeOnStop(queueCapture{Generation: 2, ItemToken: 3, SessionID: "current", ItemID: "x"})
+	matching("preempted")
+	if a.active != nil {
+		t.Fatal("matching preempt should clear queue")
 	}
 }
 ```
@@ -1007,7 +1336,7 @@ Create `internal/adapters/streams/playback_test.go`:
 func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	a, core := newTestAdapterWithFakeCore(t)
 	a.resolver = fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4", Title: "Clip"}}
-	_, err := a.StartResolvedStream(t.Context(), StreamURLResolution{ProviderID: "mtv-rewind", ChannelID: "metal"})
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"})
 	if err != nil {
 		t.Fatalf("StartResolvedStream: %v", err)
 	}
@@ -1023,7 +1352,7 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 func TestOutOfCatalogItemBuildsAdhocQueue(t *testing.T) {
 	a, _ := newTestAdapterWithFakeCore(t)
 	a.resolver = fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
-	_, err := a.StartResolvedStream(t.Context(), StreamURLResolution{ProviderID: "mtv-rewind", ItemID: "dQw4w9WgXcQ"})
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ItemID: "dQw4w9WgXcQ"})
 	if err != nil {
 		t.Fatalf("StartResolvedStream: %v", err)
 	}
@@ -1265,6 +1594,9 @@ git commit -m "feat(streams): add provider ui routes"
 ## Task 8: Main Wiring, Refresh Loop, README
 
 **Files:**
+- Create: `internal/adapters/streams/refresh.go`
+- Create: `internal/adapters/streams/refresh_test.go`
+- Modify: `internal/adapters/streams/adapter.go`
 - Modify: `cmd/mister-groovy-relay/main.go`
 - Modify: `README.md`
 - Create: `internal/adapters/streams/registry_test.go`
@@ -1272,7 +1604,90 @@ git commit -m "feat(streams): add provider ui routes"
 
 **Why:** The adapter must be registered in the real bridge, URL must receive the stream resolver, and operators need config and example links.
 
-- [ ] **Step 1: Write registry/wiring tests**
+- [ ] **Step 1: Write refresh lifecycle tests**
+
+Create `internal/adapters/streams/refresh_test.go`:
+
+```go
+func TestStartDisabledLoadsBundledAndDoesNotFetch(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	fetches := 0
+	a.fetchManifest = func(context.Context) (Manifest, CacheMetadata, error) {
+		fetches++
+		return Manifest{}, CacheMetadata{}, nil
+	}
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if fetches != 0 {
+		t.Fatalf("disabled Start fetched remote manifest %d times", fetches)
+	}
+}
+
+func TestStartEnabledStartsRefreshLoopAndStopCancels(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.SetEnabled(true)
+	started := make(chan struct{})
+	a.refreshOnce = func(ctx context.Context, reason string) RefreshStatus {
+		close(started)
+		<-ctx.Done()
+		return RefreshStatus{Err: ctx.Err()}
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("refresh loop did not start")
+	}
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestManualRefreshKeepsLastGoodOnFailure(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	before := a.catalogSnapshotForTest("mtv-rewind")
+	a.refreshOnce = func(ctx context.Context, reason string) RefreshStatus {
+		return RefreshStatus{Err: errors.New("network down")}
+	}
+	status := a.RefreshNow(t.Context(), "mtv-rewind")
+	if status.Err == nil {
+		t.Fatal("manual refresh should report error")
+	}
+	after := a.catalogSnapshotForTest("mtv-rewind")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("failed refresh replaced last good catalog")
+	}
+}
+```
+
+Implement `catalogSnapshotForTest` in `test_helpers_test.go` if the catalog store is private.
+
+- [ ] **Step 2: Implement refresh lifecycle**
+
+Create `internal/adapters/streams/refresh.go` with:
+
+```go
+type RefreshStatus struct {
+	ProviderID string
+	Source     string
+	FetchedAt  time.Time
+	ETag       string
+	Err        error
+}
+
+func (a *Adapter) RefreshNow(ctx context.Context, providerID string) RefreshStatus {
+	return a.refreshOnce(ctx, "manual")
+}
+```
+
+In `Adapter.Start`, synchronously load bundled definitions, allowed cached remote manifest overlays, and cached catalogs without network. If `cfg.Enabled && cfg.AllowRemoteManifest`, start a background loop owned by an adapter context. The loop calls `refreshOnce`, backs off on failure with jitter, and exits on `Stop`. `Stop` must cancel the context and wait for the loop to exit.
+
+The refresh path must validate a full manifest/catalog snapshot before swapping it into `a.definitions`/`a.catalogs`. Active queues keep their item snapshot.
+
+- [ ] **Step 3: Write registry/wiring tests**
 
 Create `internal/adapters/streams/registry_test.go`:
 
@@ -1295,7 +1710,7 @@ func TestAdapterCanRegisterAndStartDisabled(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Wire main**
+- [ ] **Step 4: Wire main**
 
 In `cmd/mister-groovy-relay/main.go`, construct streams after URL and before Jellyfin:
 
@@ -1316,11 +1731,11 @@ if err := reg.Register(streamsAdapter); err != nil {
 
 Import `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams`.
 
-- [ ] **Step 3: Document config and examples**
+- [ ] **Step 5: Document config and examples**
 
 Add a README section with:
 
-```markdown
+````markdown
 ### Streams adapter
 
 The Streams adapter turns supported catalog sites into native relay queues. It is disabled by default.
@@ -1337,11 +1752,12 @@ youtube_format = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b"
 Example links handled natively when Streams is enabled:
 
 - `https://wantmymtv.vercel.app/player.html?channel=metal`
+- `https://wantmymtv.xyz/player.html?channel=metal`
 - `https://wantmymtv.vercel.app/player.html?v=dQw4w9WgXcQ`
 - `https://cartoonrewind.tv/player.html?channel=heman`
-```
+````
 
-- [ ] **Step 4: Run focused integration tests**
+- [ ] **Step 6: Run focused integration tests**
 
 Run:
 
@@ -1351,7 +1767,7 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams ./in
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add cmd/mister-groovy-relay/main.go internal/adapters/streams internal/adapters/url README.md
@@ -1424,7 +1840,7 @@ Apply Critical and Important review items before merge. If a review item conflic
   - Final verification and code review: Task 9.
 - Placeholder scan: run `rg -n "TB[D]|TO[D]O|implement lat[e]r|fill i[n]|similar t[o]|appropriat[e]" docs/superpowers/plans/2026-05-09-streams-provider-adapter.md`.
 - Type consistency:
-  - URL handoff types are declared in URL adapter to avoid streams-to-URL runtime coupling.
-  - Streams adapter implements URL's structural `StreamURLResolver`.
+  - URL handoff types are declared in `internal/adapters/streamhandoff` to avoid streams-to-URL runtime coupling.
+  - Streams adapter implements `streamhandoff.Resolver`.
   - `ActiveQueue` generation/item token/session ID/item ID checks match the spec.
   - Route paths match `/ui/adapter/streams/<path>` from the UI server mount.
