@@ -102,7 +102,11 @@ const (
 type Plane struct {
 	cfg            PlaneConfig
 	proc           processHandle
-	positionFields atomic.Int64 // fields emitted since session start; Position() derives ms
+	positionFields atomic.Int64  // fields emitted since session start; Position() derives ms
+	framesTotal    atomic.Uint64 // ffmpeg frames consumed since session start
+	underruns      atomic.Uint64 // dataplane underruns since session start
+	wireBytes      atomic.Uint64 // post-LZ4 bytes sent since session start
+	lastACKUnix    atomic.Int64  // unix nanos of last received ACK; 0 = never
 	audioReady     atomic.Bool
 	fpgaFrame      atomic.Uint32
 	done           chan struct{}
@@ -225,6 +229,43 @@ func (p *Plane) Position() time.Duration {
 // offset.
 func (p *Plane) resetPosition() {
 	p.positionFields.Store(0)
+}
+
+// BlitsTotal returns the cumulative count of fields emitted (one per
+// BLIT_FIELD_VSYNC) since this plane's Run() started. Same source as
+// Position(); exposed under a more general name for the status home.
+func (p *Plane) BlitsTotal() uint64 {
+	v := p.positionFields.Load()
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
+}
+
+// FramesTotal returns the cumulative count of ffmpeg frames consumed
+// (one per source field after deinterlace, equivalent for progressive).
+func (p *Plane) FramesTotal() uint64 { return p.framesTotal.Load() }
+
+// Underruns returns the cumulative dataplane underrun count. Increments
+// each time the field-pump goroutine has no frame ready when the field
+// deadline arrives.
+func (p *Plane) Underruns() uint64 { return p.underruns.Load() }
+
+// WireBytes returns the cumulative post-LZ4 bytes sent across the
+// Groovy UDP socket. Drives the status home's throughput readout.
+// See PR2 spec §S10.
+func (p *Plane) WireBytes() uint64 { return p.wireBytes.Load() }
+
+// LastACKAge returns the wall-clock duration since the last ACK was
+// parsed, or 0 if no ACK has arrived yet. The status home displays
+// "echo stall" style indicators when this exceeds an adapter-defined
+// threshold.
+func (p *Plane) LastACKAge() time.Duration {
+	ns := p.lastACKUnix.Load()
+	if ns == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, ns))
 }
 
 // advancePosition increments the field counter by one. Called once per field

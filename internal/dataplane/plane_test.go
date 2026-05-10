@@ -1024,3 +1024,37 @@ func TestPlane_AllocationBudget(t *testing.T) {
 	t.Logf("Plane.Run allocated %d bytes over 500ms (budget %d, %.1f%% used)",
 		delta, budgetBytes, 100*float64(delta)/float64(budgetBytes))
 }
+
+// newPlaneForTest constructs a minimal Plane via NewPlane for tests that only
+// need a valid Plane instance without network, ffmpeg, or hardware. Uses the
+// minimum non-zero dimensions required by NewPlane's scratch-buffer allocation
+// (FieldWidth * FieldHeight * BytesPerPixel > 0). No Sender is set so UDP
+// calls would panic — this helper is intended only for accessors / struct
+// inspection tests that do not call Run or sendField.
+func newPlaneForTest(t *testing.T) *Plane {
+	t.Helper()
+	return NewPlane(PlaneConfig{
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+}
+
+func TestPlane_TelemetryAccessors_ZeroBeforeRun(t *testing.T) {
+	p := newPlaneForTest(t)
+	if got := p.BlitsTotal(); got != 0 {
+		t.Errorf("BlitsTotal: got %d, want 0", got)
+	}
+	if got := p.FramesTotal(); got != 0 {
+		t.Errorf("FramesTotal: got %d, want 0", got)
+	}
+	if got := p.Underruns(); got != 0 {
+		t.Errorf("Underruns: got %d, want 0", got)
+	}
+	if got := p.WireBytes(); got != 0 {
+		t.Errorf("WireBytes: got %d, want 0", got)
+	}
+	if got := p.LastACKAge(); got != 0 {
+		t.Errorf("LastACKAge: got %v, want 0", got)
+	}
+}
