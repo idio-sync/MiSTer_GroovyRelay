@@ -783,6 +783,167 @@ func TestManager_StatusHomeView_PausedKeepsSnapshot(t *testing.T) {
 	}
 }
 
+// TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop verifies
+// the P3.3 fix: when startPlaneLocked is invoked for the SAME AdapterRef
+// (the Play-resume and SeekTo paths both replay m.active.req into
+// startPlaneLocked), the previously-active session's OnStop closure must
+// NOT be fired with reason "preempted". Same-session replay carries the
+// same OnStop forward to the new activeSession, so firing it would
+// double-clear adapter state (DLNA's onStopForRef would clear its
+// currentRef while core retains the session).
+//
+// We exercise the bug-prone code path directly: seed m.active with a
+// known ref + OnStop, then call startPlaneLocked with a SessionRequest
+// carrying the SAME AdapterRef. The probe stub returns a synthetic
+// result and we expect the OnStop NOT to be called.
+func TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 720, Height: 480, FrameRate: 29.97}, nil
+	}
+	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+
+	const sharedRef = "dlna:test-ref-1"
+	onStopCalls := make(chan string, 4)
+	onStop := func(reason string) {
+		onStopCalls <- reason
+	}
+
+	// Seed the manager with an existing active session for sharedRef.
+	// We don't spawn a real plane; instead we set m.active directly to
+	// emulate the post-Pause shape (cancelFn=nil, plane=nil, but active
+	// retained so Play() / SeekTo() can resume).
+	m.active = &activeSession{
+		req: SessionRequest{
+			StreamURL:    "udp://127.0.0.1:1/x",
+			AdapterRef:   sharedRef,
+			OnStop:       onStop,
+			Capabilities: Capabilities{CanSeek: true, CanPause: true},
+		},
+	}
+
+	// Build a SessionRequest with the SAME AdapterRef — same-session
+	// replay (the shape Play() and SeekTo() construct internally).
+	replayReq := SessionRequest{
+		StreamURL:    "udp://127.0.0.1:1/x",
+		AdapterRef:   sharedRef,
+		OnStop:       onStop,
+		Capabilities: Capabilities{CanSeek: true, CanPause: true},
+	}
+
+	probe, cropRect, ffmpegPath, err := m.probeForStart(replayReq)
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+
+	m.mu.Lock()
+	err = m.startPlaneLocked(replayReq, 0, probe, cropRect, ffmpegPath)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("startPlaneLocked: %v", err)
+	}
+
+	// Stop immediately so the spawned plane goroutine winds down quickly.
+	// Stop's own OnStop fire is "stopped"; we filter that out below.
+	t.Cleanup(func() { _ = m.Stop() })
+
+	// notifySessionStop spawns a goroutine; allow a brief window for any
+	// "preempted" call to land. If the fix is in place, the channel
+	// receives only "stopped" (from Stop above) — never "preempted".
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case reason := <-onStopCalls:
+			if reason == "preempted" {
+				t.Fatalf("OnStop fired with reason %q on same-session replay; "+
+					"P3.3 regression: startPlaneLocked must gate the "+
+					"preempted fire on a genuine AdapterRef change", reason)
+			}
+			// "stopped" / "error" / "" are acceptable outcomes for the
+			// post-cleanup phase; we only fail on the regressed reason.
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestStartPlaneLocked_DifferentSession_FiresOldOnStop verifies that a
+// genuine preempt — startPlaneLocked invoked with a DIFFERENT AdapterRef
+// while a session is active — still fires the prior session's OnStop
+// with reason "preempted". This is the case we must NOT regress while
+// fixing the same-session-replay bug.
+func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 720, Height: 480, FrameRate: 29.97}, nil
+	}
+	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+
+	preempted := make(chan string, 4)
+	oldOnStop := func(reason string) {
+		preempted <- reason
+	}
+
+	// Seed with the prior session.
+	m.active = &activeSession{
+		req: SessionRequest{
+			StreamURL:    "udp://127.0.0.1:1/old",
+			AdapterRef:   "plex:old-ref",
+			OnStop:       oldOnStop,
+			Capabilities: Capabilities{CanSeek: true, CanPause: true},
+		},
+	}
+
+	// Different AdapterRef — genuine preempt.
+	newReq := SessionRequest{
+		StreamURL:    "udp://127.0.0.1:1/new",
+		AdapterRef:   "dlna:new-ref",
+		OnStop:       func(string) {},
+		Capabilities: Capabilities{CanSeek: true, CanPause: true},
+	}
+
+	probe, cropRect, ffmpegPath, err := m.probeForStart(newReq)
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+
+	m.mu.Lock()
+	err = m.startPlaneLocked(newReq, 0, probe, cropRect, ffmpegPath)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("startPlaneLocked: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+
+	select {
+	case reason := <-preempted:
+		if reason != "preempted" {
+			t.Errorf("OnStop reason = %q, want %q", reason, "preempted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected OnStop with reason \"preempted\" on different-session replacement; "+
+			"never fired within 2s")
+	}
+}
+
 // TestProbeForStart_ZeroPolicyPreservesBehavior is the backward-compat
 // guard: when req.MediaInputPolicy is the zero value, the ffmpeg package
 // receives the zero value verbatim — no filter, no flags, no behavioral

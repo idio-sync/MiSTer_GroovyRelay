@@ -173,19 +173,23 @@ func waitForState(t *testing.T, mgr *core.Manager, want core.State, timeout time
 	return st
 }
 
-// TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Stop covers
-// the SetAVTransportURI → Play → Pause → Resume → Stop flow against a
-// real core.Manager (no fakes). The Seek leg lives in its own test
-// (TestDLNAControls_SetURI_Play_Seek_Stop) — splitting them is a
-// pragmatic concession to a known core/dlna gap: today's
-// Manager.Play (resume) and Manager.SeekTo both fire the prior
-// session's OnStop with reason="preempted" inside startPlaneLocked,
-// and the DLNA OnStop closure interprets that as session-end and
-// clears currentRef. Mixing Pause-then-Resume with a subsequent SOAP
-// Seek therefore lands on a no-active-DLNA-session shape (701). That
-// is a pre-existing integration gap, not P3.3 work; the split keeps
-// each leg honest while exercising the full SOAP surface.
-func TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Stop(t *testing.T) {
+// TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Seek_Stop covers
+// the canonical SOAP control flow end to end against a real core.Manager
+// (no fakes): SetAVTransportURI → Play → Pause → Resume → Seek → Stop.
+// Every transition is driven by an actual SOAP POST against the AVTransport
+// control endpoint — no direct core.Manager calls — so this is the proof
+// that the entire DLNA SOAP surface composes correctly with the core FSM
+// + data plane.
+//
+// Originally this lived as two tests (Pause+Resume and Seek-only) split
+// around a regression in core.startPlaneLocked: same-session replay
+// (Play-resume, SeekTo) was unconditionally firing the active session's
+// OnStop with reason="preempted", and the DLNA onStopForRef closure
+// interpreted that as session-end and cleared currentRef. The P3.3 fix
+// gates the OnStop fire on a genuine AdapterRef change, so same-session
+// replay no longer clobbers adapter state — making this single
+// end-to-end test possible.
+func TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Seek_Stop(t *testing.T) {
 	f := newDLNAIntegrationFixture(t, "10s.mp4")
 
 	mediaURL := f.origin.URL + "/movie.mp4"
@@ -211,6 +215,7 @@ func TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Stop(t *testing.T) {
 	if !strings.HasPrefix(st.AdapterRef, "dlna:") {
 		t.Errorf("StartSession.AdapterRef = %q, want dlna:* prefix", st.AdapterRef)
 	}
+	originalRef := st.AdapterRef
 
 	// --- 3. GetPositionInfo: Track=1, TrackDuration parsed from the
 	//        live probe (10s, formatted as 00:00:10).
@@ -244,73 +249,43 @@ func TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Stop(t *testing.T) {
 		t.Errorf("GetTransportInfo state != PAUSED_PLAYBACK: %s", snippet(body))
 	}
 
-	// --- 5. Play (resume). FSM flips back to Playing. Today's
-	//        core.Manager.Play fires OnStop("preempted") on the prior
-	//        session's request even when cancelFn is already nil; the
-	//        DLNA OnStop closure clears currentRef in response. The
-	//        SOAP Play itself succeeds with 200 (the resume call into
-	//        core returned nil); the cleared currentRef is a follow-up
-	//        artifact that other actions in this same test would trip
-	//        over — hence the SeekStop split.
+	// --- 5. Play (resume). FSM flips back to Playing. After the P3.3
+	//        fix, same-session replay (Play with the same AdapterRef
+	//        carried forward by m.active.req) does NOT fire OnStop —
+	//        currentRef is preserved across the resume.
 	status, body = f.postSOAP(t, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
 	if status != http.StatusOK {
 		t.Fatalf("Play resume status = %d, want 200; body=%s", status, snippet(body))
 	}
-	waitForState(t, f.mgr, core.StatePlaying, 10*time.Second)
-
-	// --- 6. Stop. We use core.Manager.Stop directly because the resume
-	//        above cleared the DLNA adapter's currentRef (see §5 note).
-	//        SOAP-Stop coverage lives in TestDLNA_Smoke_Phase2Playback.
-	if err := f.mgr.Stop(); err != nil {
-		t.Fatalf("mgr.Stop: %v", err)
-	}
-	waitForState(t, f.mgr, core.StateIdle, 5*time.Second)
-}
-
-// TestDLNAControls_SetURI_Play_Seek_Stop covers the Seek leg of the
-// canonical control flow. Split from the Pause/Resume test for the
-// reasons documented on TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Stop.
-// The 10-second fixture gives the data plane wall-clock headroom to
-// stay live across SetURI → Play → Seek (a 5s file would EOF before
-// the Seek SOAP arrived).
-func TestDLNAControls_SetURI_Play_Seek_Stop(t *testing.T) {
-	f := newDLNAIntegrationFixture(t, "10s.mp4")
-
-	mediaURL := f.origin.URL + "/movie.mp4"
-	didl := `&lt;DIDL-Lite xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;` +
-		`&lt;item&gt;&lt;res duration=&quot;0:00:30.000&quot;&gt;` + mediaURL + `&lt;/res&gt;` +
-		`&lt;/item&gt;&lt;/DIDL-Lite&gt;`
-
-	status, body := f.postSOAP(t, "SetAVTransportURI",
-		"<InstanceID>0</InstanceID>"+
-			"<CurrentURI>"+mediaURL+"</CurrentURI>"+
-			"<CurrentURIMetaData>"+didl+"</CurrentURIMetaData>")
-	if status != http.StatusOK {
-		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", status, snippet(body))
+	st = waitForState(t, f.mgr, core.StatePlaying, 10*time.Second)
+	if st.AdapterRef != originalRef {
+		t.Errorf("after resume, AdapterRef = %q, want unchanged %q",
+			st.AdapterRef, originalRef)
 	}
 
-	status, body = f.postSOAP(t, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
-	if status != http.StatusOK {
-		t.Fatalf("Play status = %d, want 200; body=%s", status, snippet(body))
-	}
-	waitForState(t, f.mgr, core.StatePlaying, 10*time.Second)
-
-	// Seek to 00:00:02. core.SeekTo respawns the plane at the new offset;
-	// FSM stays Playing. The SOAP-level success returns 200 even though
-	// (per the §5 note in the Pause-Resume test) the underlying preempt
-	// fires OnStop and clears currentRef as a side effect. We don't
-	// follow up with another SOAP action here that would depend on
-	// currentRef — the Stop below is on core.Manager directly.
+	// --- 6. Seek to 00:00:02 via SOAP. core.SeekTo respawns the plane
+	//        at the new offset; FSM stays Playing. After the P3.3 fix,
+	//        SeekTo no longer fires OnStop("preempted") on the same-ref
+	//        replay, so the adapter's currentRef survives the seek and
+	//        subsequent SOAP actions still address our session.
 	status, body = f.postSOAP(t, "Seek",
 		"<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:02</Target>")
 	if status != http.StatusOK {
 		t.Fatalf("Seek status = %d, want 200; body=%s", status, snippet(body))
 	}
+	st = waitForState(t, f.mgr, core.StatePlaying, 10*time.Second)
+	if st.AdapterRef != originalRef {
+		t.Errorf("after seek, AdapterRef = %q, want unchanged %q",
+			st.AdapterRef, originalRef)
+	}
 
-	// Stop via core.Manager. SOAP-Stop coverage on a non-preempted
-	// session is in TestDLNA_Smoke_Phase2Playback.
-	if err := f.mgr.Stop(); err != nil {
-		t.Fatalf("mgr.Stop: %v", err)
+	// --- 7. Stop via SOAP. Now possible end-to-end because steps 5–6
+	//        no longer clear the adapter's currentRef. handleStop
+	//        snapshots ownership, calls core.Stop, and the OnStop
+	//        callback drives the transportState → STOPPED transition.
+	status, body = f.postSOAP(t, "Stop", "<InstanceID>0</InstanceID>")
+	if status != http.StatusOK {
+		t.Fatalf("Stop status = %d, want 200; body=%s", status, snippet(body))
 	}
 	waitForState(t, f.mgr, core.StateIdle, 5*time.Second)
 }

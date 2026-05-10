@@ -288,7 +288,18 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		}
 	}
 	removeSubtitleFile(oldSubtitle)
-	notifySessionStop(oldOnStop, "preempted")
+	// Only notify the prior session's OnStop when this is a genuine
+	// session replacement (different AdapterRef), NOT when Play (resume)
+	// or SeekTo replays the same SessionRequest into startPlaneLocked.
+	// Same-session replay carries the same OnStop closure forward to the
+	// new activeSession, so firing "preempted" here would clear the
+	// adapter's ref while core.Manager retains the session — see the
+	// DLNA Pause→Resume regression where DLNA's onStopForRef sees its
+	// own ref → clears currentRef → next SOAP action fails despite core
+	// having a healthy active session.
+	if oldRef != "" && oldRef != req.AdapterRef {
+		notifySessionStop(oldOnStop, "preempted")
+	}
 
 	// Resolve the modeline preset from config (empty defaults to NTSC_480i).
 	// Wrap with ErrPlaneError so adapters that fault-map can categorize
