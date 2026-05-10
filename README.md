@@ -9,10 +9,11 @@ Note: The primary deployment target is a Docker container running on the same ho
 ## Video Sources
 - Plex
 - Jellyfin
+- YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
-- YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - DLNA / UPnP MediaRenderer
+- Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind)
 
 ## Future Plans
 - Support for more relay sources:
@@ -170,20 +171,9 @@ log a warning; the bundled version stays usable.
 
 ## Streams adapter
 
-The Streams adapter turns supported catalog sites into native relay queues. It
-is disabled by default.
-
-```toml
-[adapters.streams]
-enabled = false
-allow_remote_manifest = true
-manifest_refresh_hours = 24
-catalog_refresh_hours = 12
-youtube_format = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b"
-```
+The Streams adapter turns supported catalog sites into native relay queues. Right now only Cartoon Rewind and MTV Rewind are supported, but more will be coming. I have initial "channel" buttons but the URL adapter now also supprts links from these sites. 
 
 Example links handled natively when Streams is enabled:
-
 - `https://wantmymtv.vercel.app/player.html?channel=metal`
 - `https://wantmymtv.xyz/player.html?channel=metal`
 - `https://wantmymtv.vercel.app/player.html?v=dQw4w9WgXcQ`
@@ -230,19 +220,9 @@ allow_public_source_urls = false  # Default false; private/LAN targets always al
                                   # public-internet addresses (SSRF risk).
 ```
 
-**Phase 1 scope.** v1 ships descriptors + discovery (SSDP NOTIFY /
-M-SEARCH / byebye) + a query-only SOAP surface (`GetTransportInfo`,
-`GetMediaInfo`, `GetPositionInfo`, `GetProtocolInfo`, RenderingControl
-volume/mute getters/setters against a virtual state). Playback actions
-(`SetAVTransportURI`, `Play`, `Pause`, `Stop`, `Seek`) and GENA
-eventing (`SUBSCRIBE` / `NOTIFY`) land in a follow-up release —
-controllers will see the device, browse it, and probe its state, but
-hitting Play is a no-op until Phase 2.
-
 **Compatibility testing pending** for VLC, BubbleUPnP, Kodi, and
 Windows "Cast to device". File issues with the controller name and
-bridge log output if a control point misbehaves against the Phase 1
-surface.
+bridge log output if a control point misbehaves.
 
 ## Settings UI
 
