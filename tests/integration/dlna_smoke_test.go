@@ -41,6 +41,10 @@ func (s *dlnaStubCore) StartSession(req core.SessionRequest) error {
 	return nil
 }
 
+func (s *dlnaStubCore) StartSessionIfAdapterRef(req core.SessionRequest, _ string) (bool, error) {
+	return true, s.StartSession(req)
+}
+
 func (s *dlnaStubCore) Status() core.SessionStatus {
 	if s.statusFn != nil {
 		return s.statusFn()
@@ -49,7 +53,16 @@ func (s *dlnaStubCore) Status() core.SessionStatus {
 }
 
 func (*dlnaStubCore) Pause() error { return nil }
-func (*dlnaStubCore) Play() error  { return nil }
+
+func (s *dlnaStubCore) PauseIfAdapterRef(string) (bool, error) {
+	return true, s.Pause()
+}
+
+func (*dlnaStubCore) Play() error { return nil }
+
+func (s *dlnaStubCore) PlayIfAdapterRef(string) (bool, error) {
+	return true, s.Play()
+}
 
 func (s *dlnaStubCore) Stop() error {
 	s.mu.Lock()
@@ -58,7 +71,15 @@ func (s *dlnaStubCore) Stop() error {
 	return nil
 }
 
+func (s *dlnaStubCore) StopIfAdapterRef(string) (bool, error) {
+	return true, s.Stop()
+}
+
 func (*dlnaStubCore) SeekTo(int) error { return nil }
+
+func (s *dlnaStubCore) SeekToIfAdapterRef(_ string, offsetMs int) (bool, error) {
+	return true, s.SeekTo(offsetMs)
+}
 
 // snapshotStartCalls / snapshotStopCalls / lastStartReq are read
 // helpers used by the Phase 2 smoke. Each takes the mutex so a
