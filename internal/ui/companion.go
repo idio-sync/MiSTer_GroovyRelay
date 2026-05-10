@@ -32,11 +32,14 @@ type CompanionPlayResult struct {
 
 // CompanionHistoryEntry is the redacted, stable-id history shape exposed to
 // the browser extension. ID is opaque and stable across reorder/bump events.
+// JSON tag last_played matches the locked spec
+// (docs/superpowers/specs/2026-05-09-companion-extension-mini-remote-design.md
+// line 226).
 type CompanionHistoryEntry struct {
 	ID         string    `json:"id"`
 	Title      string    `json:"title,omitempty"`
 	URLDisplay string    `json:"url_display"`
-	LastPlayed time.Time `json:"last_played_at"`
+	LastPlayed time.Time `json:"last_played"`
 }
 
 // CompanionSessionDisplay lets adapters enrich core.SessionStatus without
@@ -449,6 +452,12 @@ func (s *Server) companionAdapterName(adapterRef string) string {
 	return a.DisplayName()
 }
 
+// companionAdapterHealth maps an adapter's runtime state to the spec
+// health enum (spec line 242: enabled/disabled/running/error). The
+// extension popup renders this as plain text, so keep the strings
+// short and operator-readable. "missing" means the adapter is not
+// registered at all; "off" is the post-Stop terminal state; the rest
+// align with adapters.State.
 func (s *Server) companionAdapterHealth(name string) string {
 	a, ok := s.cfg.Registry.Get(name)
 	if !ok {
@@ -459,13 +468,13 @@ func (s *Server) companionAdapterHealth(name string) string {
 	}
 	switch a.Status().State {
 	case adapters.StateRunning:
-		return "online"
+		return "running"
 	case adapters.StateStarting:
 		return "starting"
 	case adapters.StateError:
 		return "error"
 	case adapters.StateStopped:
-		return "offline"
+		return "off"
 	default:
 		return "unknown"
 	}
