@@ -126,6 +126,15 @@ func (e *eventManager) setSnapshot(service eventService, props eventProperties) 
 	e.snapshots[service] = cloneEventProperties(props)
 }
 
+func (e *eventManager) resetSubscriptions() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for service := range e.subscriptions {
+		e.subscriptions[service] = map[string]*eventSubscription{}
+	}
+	e.deliveries = map[string]*eventDeliveryQueue{}
+}
+
 func (e *eventManager) handleSubscribe(w http.ResponseWriter, r *http.Request, service eventService) {
 	if sid := strings.TrimSpace(r.Header.Get("SID")); sid != "" {
 		if !isValidSubscriptionSID(sid) {

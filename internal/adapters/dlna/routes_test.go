@@ -8,13 +8,13 @@ import (
 )
 
 // allDLNARoutes is the set of (method, path) pairs the spec
-// §HTTP Surface (lines 152-164) declares. Phase 1's T4 implements
-// real handlers for descriptors and SOAP; event SUBSCRIBE/UNSUBSCRIBE
-// remain 503 until Phase 4.
+// §HTTP Surface (lines 152-164) declares. Descriptor and SOAP routes
+// have real handlers; event SUBSCRIBE/UNSUBSCRIBE requests reach the
+// service-aware GENA handlers and reject malformed empty requests.
 var allDLNARoutes = []struct {
 	method     string
 	path       string
-	wantStatus int // 200 for descriptors, 503 for event stubs, "varies" for SOAP control
+	wantStatus int // 200 for descriptors, 400 for empty event requests, "varies" for SOAP control
 }{
 	{"GET", "/dlna/device.xml", http.StatusOK},
 	{"GET", "/dlna/AVTransport.xml", http.StatusOK},
@@ -22,12 +22,12 @@ var allDLNARoutes = []struct {
 	{"GET", "/dlna/RenderingControl.xml", http.StatusOK},
 	// SOAP control endpoints expect a SOAPACTION header + envelope.
 	// Without those they 500 (UPnP fault) — covered specifically below.
-	{"SUBSCRIBE", "/dlna/event/AVTransport", http.StatusServiceUnavailable},
-	{"UNSUBSCRIBE", "/dlna/event/AVTransport", http.StatusServiceUnavailable},
-	{"SUBSCRIBE", "/dlna/event/RenderingControl", http.StatusServiceUnavailable},
-	{"UNSUBSCRIBE", "/dlna/event/RenderingControl", http.StatusServiceUnavailable},
-	{"SUBSCRIBE", "/dlna/event/ConnectionManager", http.StatusServiceUnavailable},
-	{"UNSUBSCRIBE", "/dlna/event/ConnectionManager", http.StatusServiceUnavailable},
+	{"SUBSCRIBE", "/dlna/event/AVTransport", http.StatusBadRequest},
+	{"UNSUBSCRIBE", "/dlna/event/AVTransport", http.StatusBadRequest},
+	{"SUBSCRIBE", "/dlna/event/RenderingControl", http.StatusBadRequest},
+	{"UNSUBSCRIBE", "/dlna/event/RenderingControl", http.StatusBadRequest},
+	{"SUBSCRIBE", "/dlna/event/ConnectionManager", http.StatusBadRequest},
+	{"UNSUBSCRIBE", "/dlna/event/ConnectionManager", http.StatusBadRequest},
 }
 
 // newTestAdapterForRoutes constructs a default adapter and mounts its
@@ -89,11 +89,26 @@ func TestMountPublicRoutes_HandlesNonStandardMethods(t *testing.T) {
 						"event endpoints must accept SUBSCRIBE/UNSUBSCRIBE",
 						method, path)
 				}
-				if rr.Code != http.StatusServiceUnavailable {
-					t.Errorf("%s %s status = %d, want %d", method, path, rr.Code, http.StatusServiceUnavailable)
+				if rr.Code != http.StatusBadRequest {
+					t.Errorf("%s %s status = %d, want %d", method, path, rr.Code, http.StatusBadRequest)
 				}
 			})
 		}
+	}
+}
+
+func TestMountPublicRoutes_RejectsUnsupportedEventMethod(t *testing.T) {
+	_, mux := newTestAdapterForRoutes(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/dlna/event/AVTransport", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+	if got, want := rr.Header().Get("Allow"), "SUBSCRIBE, UNSUBSCRIBE"; got != want {
+		t.Fatalf("Allow = %q, want %q", got, want)
 	}
 }
 
@@ -177,11 +192,11 @@ func TestDeviceDescriptor_FriendlyNameFromConfig(t *testing.T) {
 // signal that T4 has activated.
 func TestSOAPControlRoute_DispatchesValidGet(t *testing.T) {
 	tests := []struct {
-		name        string
-		path        string
-		soapAction  string
-		envelope    string
-		wantInBody  string
+		name       string
+		path       string
+		soapAction string
+		envelope   string
+		wantInBody string
 	}{
 		{
 			name:       "AVTransport GetTransportInfo",

@@ -95,6 +95,11 @@ type Adapter struct {
 	// CLAUDE.md (never hold a.mu across a core.Manager call).
 	core SessionManager
 
+	// events owns GENA SUBSCRIBE/UNSUBSCRIBE state and NOTIFY delivery
+	// queues. The pointer is immutable after New; eventManager protects
+	// its own maps with eventManager.mu.
+	events *eventManager
+
 	mu         sync.Mutex
 	cfg        Config
 	state      adapters.State
@@ -216,7 +221,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	if cfg.Core == nil {
 		return nil, fmt.Errorf("dlna: AdapterConfig.Core is required")
 	}
-	return &Adapter{
+	a := &Adapter{
 		deviceUUID: cfg.DeviceUUID,
 		hostIP:     cfg.HostIP,
 		httpPort:   cfg.HTTPPort,
@@ -233,7 +238,34 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		// to PLAYING on a successful StartSession; OnStop / Stop bring
 		// it back. Spec §Query Actions / state mapping (line 387-393).
 		transportState: transportStateStopped,
-	}, nil
+		events:         newEventManager(eventManagerConfig{}),
+	}
+	a.seedEventSnapshots()
+	return a, nil
+}
+
+func (a *Adapter) seedEventSnapshots() {
+	a.events.setSnapshot(serviceAVTransport, eventProperties{
+		"LastChange": buildAVTransportLastChange(avTransportEventState{
+			TransportState:          a.transportState,
+			TransportStatus:         "OK",
+			CurrentTrackURI:         a.loadedURI,
+			CurrentTrackDuration:    "00:00:00",
+			RelativeTimePosition:    "00:00:00",
+			CurrentTransportActions: "Play",
+		}),
+	})
+	a.events.setSnapshot(serviceRenderingControl, eventProperties{
+		"LastChange": buildRenderingControlLastChange(renderingControlEventState{
+			Volume: a.volume,
+			Muted:  a.muted,
+		}),
+	})
+	a.events.setSnapshot(serviceConnectionManager, eventProperties{
+		"SourceProtocolInfo":   "",
+		"SinkProtocolInfo":     sinkProtocolInfo,
+		"CurrentConnectionIDs": "0",
+	})
 }
 
 // mintSessionRef returns a fresh "dlna:<hex>" ref. 8 bytes of crypto
@@ -489,6 +521,9 @@ func (a *Adapter) Stop() error {
 		}
 	}
 
+	if a.events != nil {
+		a.events.resetSubscriptions()
+	}
 	a.setState(adapters.StateStopped, "")
 	return nil
 }

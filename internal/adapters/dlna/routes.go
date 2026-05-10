@@ -10,18 +10,16 @@ import "net/http"
 // origin headers the /ui/* CSRF middleware requires) reach the
 // adapter without going through that middleware.
 //
-// **T4: Phase 1 routing surface.** Descriptor and SOAP control
-// handlers are real (descriptors.go / soap.go / avtransport.go /
-// rendering_control.go / connection_manager.go). Event SUBSCRIBE/
-// UNSUBSCRIBE handlers stay 503 — eventing lands in Phase 4.
+// Descriptor, SOAP control, and GENA event routes are real handlers
+// (descriptors.go / soap.go / avtransport.go / rendering_control.go /
+// connection_manager.go / eventing.go).
 //
 // **Non-standard HTTP methods.** UPnP eventing uses SUBSCRIBE and
 // UNSUBSCRIBE, which Go's http.ServeMux does NOT dispatch on. Even
 // the Go 1.22+ method-prefixed pattern syntax ("GET /path") only
 // recognizes standard methods. To accept SUBSCRIBE/UNSUBSCRIBE we
 // register a single path-only pattern for each event endpoint and
-// switch on r.Method inside the handler. Phase 4 will tighten dispatch
-// and reject unknown methods with 405.
+// switch on r.Method inside the handler.
 func (a *Adapter) MountPublicRoutes(mux *http.ServeMux) {
 	// Descriptors: device + per-service SCPD documents (GET only).
 	// Method-prefixed pattern syntax enforces 405 on other methods.
@@ -38,12 +36,10 @@ func (a *Adapter) MountPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /dlna/control/RenderingControl", a.handleRenderingControlSOAP)
 
 	// Eventing endpoints: SUBSCRIBE/UNSUBSCRIBE are non-standard HTTP
-	// methods — register path-only and dispatch in the handler. Phase 1
-	// stubs return 503 for all event traffic; Phase 4 implements the
-	// SUBSCRIBE/UNSUBSCRIBE/NOTIFY surface.
-	mux.HandleFunc("/dlna/event/AVTransport", eventStubHandler)
-	mux.HandleFunc("/dlna/event/RenderingControl", eventStubHandler)
-	mux.HandleFunc("/dlna/event/ConnectionManager", eventStubHandler)
+	// methods — register path-only and dispatch in the handler.
+	mux.HandleFunc("/dlna/event/AVTransport", a.handleEvent(serviceAVTransport))
+	mux.HandleFunc("/dlna/event/RenderingControl", a.handleEvent(serviceRenderingControl))
+	mux.HandleFunc("/dlna/event/ConnectionManager", a.handleEvent(serviceConnectionManager))
 }
 
 // handleDeviceDescriptor returns the root device descriptor with
@@ -95,12 +91,21 @@ func writeXMLDescriptor(w http.ResponseWriter, body []byte) {
 	_, _ = w.Write(body)
 }
 
-// eventStubHandler returns 503 for all event-route requests in Phase 1.
-// Phase 4 replaces this with a SUBSCRIBE/UNSUBSCRIBE-aware handler.
-const eventPhase1Body = "DLNA eventing arrives in Phase 4"
+func (a *Adapter) handleEvent(service eventService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.events == nil {
+			http.Error(w, "event manager unavailable", http.StatusServiceUnavailable)
+			return
+		}
 
-func eventStubHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(eventPhase1Body))
+		switch r.Method {
+		case "SUBSCRIBE":
+			a.events.handleSubscribe(w, r, service)
+		case "UNSUBSCRIBE":
+			a.events.handleUnsubscribe(w, r, service)
+		default:
+			w.Header().Set("Allow", "SUBSCRIBE, UNSUBSCRIBE")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
 }

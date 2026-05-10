@@ -699,6 +699,65 @@ func TestEventPublish_DeliveryQueuePreservesEnqueueOrderBeforeExecution(t *testi
 	}
 }
 
+func TestAdapterStopClearsSubscriptions(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	cb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cb.Close()
+
+	a, err := New(validAdapterConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.events.now = func() time.Time { return now }
+	a.events.resolver = privateResolverForEventTests("192.168.1.10")
+	a.events.client = cb.Client()
+	a.events.setSnapshot(serviceAVTransport, eventProperties{"LastChange": "initial"})
+
+	req := eventRequest("SUBSCRIBE", "/dlna/event/AVTransport")
+	req.Header.Set("CALLBACK", "<"+cb.URL+"/callback>")
+	req.Header.Set("NT", "upnp:event")
+	req.Header.Set("TIMEOUT", "Second-900")
+
+	rr := httptest.NewRecorder()
+	a.events.handleSubscribe(rr, req, serviceAVTransport)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("subscribe status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	sid := rr.Header().Get("SID")
+	if sid == "" {
+		t.Fatal("subscribe response missing SID")
+	}
+
+	a.events.mu.Lock()
+	if len(a.events.subscriptions[serviceAVTransport]) != 1 {
+		t.Fatalf("subscriptions before Stop = %d, want 1", len(a.events.subscriptions[serviceAVTransport]))
+	}
+	a.events.deliveries[subscriptionKey(serviceAVTransport, sid)] = &eventDeliveryQueue{
+		deliveries: []eventDelivery{{
+			sub:   cloneSubscription(a.events.subscriptions[serviceAVTransport][sid]),
+			props: eventProperties{"LastChange": "queued"},
+			seq:   1,
+		}},
+		running: true,
+	}
+	a.events.mu.Unlock()
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	a.events.mu.Lock()
+	defer a.events.mu.Unlock()
+	if got := len(a.events.subscriptions[serviceAVTransport]); got != 0 {
+		t.Fatalf("AVTransport subscriptions after Stop = %d, want 0", got)
+	}
+	if got := len(a.events.deliveries); got != 0 {
+		t.Fatalf("delivery queues after Stop = %d, want 0", got)
+	}
+}
+
 func TestNewSubscriptionSIDFormatsUUIDAndFailsClosed(t *testing.T) {
 	sid, err := newSubscriptionSIDFromReader(strings.NewReader("abcdefghijklmnop"))
 	if err != nil {
