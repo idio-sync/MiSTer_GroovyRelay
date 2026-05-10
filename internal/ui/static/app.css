@@ -981,6 +981,33 @@ body {
 .gr-skip:hover { color: var(--gr-text); }
 .gr-wizard-foot .actions { display: flex; gap: 8px; }
 
+/* ============================================================
+   PR 2c — form-gating overlay (used by wizard adapter step
+   and the regular adapter page when LinkAware.IsLinked() is false)
+   See docs/specs/2026-05-08-ui-redesign-pr2-design.md §S2
+   ============================================================ */
+.gr-form-locked {
+	position: relative;
+	border-radius: 3px;
+}
+.gr-form-locked-overlay {
+	margin-bottom: 12px;
+	padding: 12px 14px;
+	background: oklch(0.22 0.008 80);
+	border: 1px dashed var(--gr-border);
+	border-radius: 3px;
+	color: var(--gr-dim);
+	font: 500 13px var(--font-body);
+}
+.gr-form-locked-overlay p { margin: 0; }
+.gr-form-locked fieldset[disabled] {
+	opacity: 0.55;
+	pointer-events: none;
+	border: none;
+	padding: 0;
+	margin: 0;
+}
+
 /* ---- Layout helpers ---- */
 .gr-stack-sm { display: flex; flex-direction: column; gap: 8px; }
 .gr-strip {

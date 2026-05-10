@@ -284,6 +284,22 @@ func TestStaticAssets_AppCSSIncludesPR2bClasses(t *testing.T) {
 	}
 }
 
+func TestStaticAssets_AppCSSIncludesPR2cClasses(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status: %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, cls := range []string{".gr-stepper", ".gr-pick", ".gr-form-locked", ".gr-wizard-foot"} {
+		if !strings.Contains(body, cls) {
+			t.Errorf("missing %q in app.css", cls)
+		}
+	}
+}
+
 func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
 	reg := adapters.NewRegistry()
 	if err := reg.Register(&uiStubAdapter{name: "plex", state: adapters.StateRunning}); err != nil {
