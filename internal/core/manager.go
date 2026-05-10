@@ -624,6 +624,37 @@ func (m *Manager) Status() SessionStatus {
 	return st
 }
 
+// StatusHomeView builds the aggregated view consumed by the UI Status
+// home and Diagnostics pages. Composes from the active session, the
+// running plane (if any), and the bridge config. Mu is held for the
+// snapshot only — no I/O, no allocations beyond the returned struct.
+//
+// See docs/specs/2026-05-08-ui-redesign-pr2-design.md §S3.
+func (m *Manager) StatusHomeView() StatusHomeView {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	view := StatusHomeView{State: m.fsm.State()}
+	if m.active != nil {
+		view.Title = m.active.req.Title
+		view.AdapterRef = m.active.req.AdapterRef
+		view.StartedAt = m.active.startedAt
+		view.Duration = m.active.duration
+		view.Modeline = m.bridge.Video.Modeline
+		view.Position = m.active.pausedPosition
+	}
+	if m.plane != nil {
+		view.Modeline = m.bridge.Video.Modeline
+		view.Position = m.plane.Position()
+		view.BlitsTotal = m.plane.BlitsTotal()
+		view.FramesTotal = m.plane.FramesTotal()
+		view.Underruns = m.plane.Underruns()
+		view.WireBytes = m.plane.WireBytes()
+		view.LastACKAge = m.plane.LastACKAge()
+	}
+	return view
+}
+
 // probeDuration turns ffprobe's floating-point seconds into a time.Duration.
 // Unknown/invalid durations collapse to zero so live streams and malformed
 // sources don't advertise nonsense to Plex timelines.

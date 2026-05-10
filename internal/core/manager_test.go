@@ -712,6 +712,77 @@ func TestManager_EmitsCastPreempted(t *testing.T) {
 	}
 }
 
+func TestManager_StatusHomeView_Idle(t *testing.T) {
+	m := newTestManager(t)
+	v := m.StatusHomeView()
+	if v.State != StateIdle {
+		t.Errorf("State: got %q, want idle", v.State)
+	}
+	if v.Title != "" || v.AdapterRef != "" || v.Modeline != "" {
+		t.Errorf("non-empty fields when idle: %+v", v)
+	}
+	if v.BlitsTotal != 0 {
+		t.Errorf("BlitsTotal non-zero when idle: %d", v.BlitsTotal)
+	}
+}
+
+func TestManager_StatusHomeView_Casting(t *testing.T) {
+	m := newTestManager(t)
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	m.active = &activeSession{
+		req:       SessionRequest{Title: "Test Title", AdapterRef: "plex/12345"},
+		startedAt: time.Now().Add(-30 * time.Second),
+		duration:  90 * time.Minute,
+	}
+	v := m.StatusHomeView()
+	if v.State != StatePlaying {
+		t.Errorf("State: got %q, want playing", v.State)
+	}
+	if v.Title != "Test Title" {
+		t.Errorf("Title: got %q", v.Title)
+	}
+	if v.AdapterRef != "plex/12345" {
+		t.Errorf("AdapterRef: got %q", v.AdapterRef)
+	}
+	if v.Duration != 90*time.Minute {
+		t.Errorf("Duration: got %v, want 90m", v.Duration)
+	}
+}
+
+func TestManager_StatusHomeView_PausedKeepsSnapshot(t *testing.T) {
+	m := newTestManager(t)
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		t.Fatalf("play transition: %v", err)
+	}
+	if err := m.fsm.Transition(EvPause); err != nil {
+		t.Fatalf("pause transition: %v", err)
+	}
+	m.bridge.Video.Modeline = "PAL_576i"
+	m.active = &activeSession{
+		req:            SessionRequest{Title: "Paused Title", AdapterRef: "plex/paused"},
+		startedAt:      time.Now().Add(-2 * time.Minute),
+		pausedPosition: 42 * time.Second,
+		duration:       90 * time.Minute,
+	}
+	m.plane = nil
+
+	v := m.StatusHomeView()
+	if v.State != StatePaused {
+		t.Errorf("State: got %q, want paused", v.State)
+	}
+	if v.Position != 42*time.Second {
+		t.Errorf("Position: got %v, want paused snapshot", v.Position)
+	}
+	if v.Modeline != "PAL_576i" {
+		t.Errorf("Modeline: got %q, want PAL_576i", v.Modeline)
+	}
+	if v.Title != "Paused Title" || v.AdapterRef != "plex/paused" {
+		t.Errorf("active fields lost while paused: %+v", v)
+	}
+}
+
 // TestProbeForStart_ZeroPolicyPreservesBehavior is the backward-compat
 // guard: when req.MediaInputPolicy is the zero value, the ffmpeg package
 // receives the zero value verbatim — no filter, no flags, no behavioral

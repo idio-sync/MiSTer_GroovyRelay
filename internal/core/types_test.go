@@ -145,3 +145,19 @@ func TestSessionRequest_Title_ZeroValue(t *testing.T) {
 		t.Errorf("zero-value Title: got %q, want empty", r.Title)
 	}
 }
+
+func TestStatusHomeView_ZeroValue(t *testing.T) {
+	var v StatusHomeView
+	if v.State != "" {
+		t.Errorf("zero-value State: got %q, want empty", v.State)
+	}
+	if v.Title != "" || v.AdapterRef != "" || v.Modeline != "" {
+		t.Errorf("zero-value strings non-empty: %+v", v)
+	}
+	if v.BlitsTotal != 0 || v.FramesTotal != 0 || v.Underruns != 0 || v.WireBytes != 0 {
+		t.Errorf("zero-value counters non-zero: %+v", v)
+	}
+	if v.LastACKAge != 0 {
+		t.Errorf("zero-value LastACKAge: got %v, want 0", v.LastACKAge)
+	}
+}
