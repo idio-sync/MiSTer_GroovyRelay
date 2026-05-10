@@ -7,12 +7,32 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // CropRect is a locked crop window produced by Task 5.4's probe pass.
 // When non-nil (auto mode) it replaces the default pad-to-fit behaviour.
 type CropRect struct {
 	W, H, X, Y int
+}
+
+type VisualizerMode string
+
+const (
+	VisualizerModeRetroAnalyzer VisualizerMode = "retro_analyzer"
+)
+
+type VisualizerMetadata struct {
+	Title    string
+	Artist   string
+	Album    string
+	Duration time.Duration
+}
+
+type VisualizerSpec struct {
+	Enabled  bool
+	Mode     VisualizerMode
+	Metadata VisualizerMetadata
 }
 
 // PipelineSpec is the full set of knobs the filter-chain/command builder needs.
@@ -45,6 +65,7 @@ type PipelineSpec struct {
 	OutputFpsExpr string
 	AspectMode    string // "letterbox" | "zoom" | "auto"
 	CropRect      *CropRect
+	Visualizer    VisualizerSpec
 
 	SubtitleURL   string // deprecated; libass cannot fetch URLs. Use SubtitlePath.
 	SubtitlePath  string // local filesystem path the filter graph passes to libass
