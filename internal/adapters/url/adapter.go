@@ -16,6 +16,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // SessionManager is the adapter's narrow view of core.Manager. v1.5
@@ -85,6 +86,11 @@ type Adapter struct {
 	// mutex; not guarded by a.mu. Path computed once at New() from
 	// cfg.Bridge.DataDir, mirroring the cookiesPath pattern.
 	history *History
+
+	// eventLog is the optional ring buffer for cast lifecycle events
+	// (cast-requested). Nil-safe: emit() checks before appending.
+	// Set at construction from AdapterConfig.EventLog.
+	eventLog *eventlog.Log
 }
 
 // AdapterConfig bundles the bridge-level context the URL adapter
@@ -107,6 +113,10 @@ type AdapterConfig struct {
 	// YTDLPResolver resolves yt-dlp through the shared sidecar/PATH resolver.
 	// Nil preserves the legacy PATH-only probe used by tests.
 	YTDLPResolver ytdlp.BinaryResolver
+
+	// EventLog is the optional ring buffer for cast-requested events.
+	// Nil-safe: the adapter's emit() method checks before appending.
+	EventLog *eventlog.Log
 }
 
 // New constructs a ready-to-Start Adapter from the bundled config.
@@ -130,7 +140,22 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		probeFn:             probeFn,
 		history:             LoadHistory(historyPath),
 		ytdlpBinaryResolver: cfg.YTDLPResolver,
+		eventLog:            cfg.EventLog,
 	}, nil
+}
+
+// emit appends a lifecycle event to the event log if one is configured.
+// Nil-safe: a nil eventLog is a no-op (most tests don't wire a log).
+func (a *Adapter) emit(sev eventlog.Severity, msg string) {
+	if a.eventLog == nil {
+		return
+	}
+	a.eventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "url",
+		Message:  msg,
+	})
 }
 
 // CookiesPath returns the absolute path to the cookies file. Stable

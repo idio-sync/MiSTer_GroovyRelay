@@ -14,7 +14,7 @@ import (
 // do NOT include the wrapper themselves (so innerHTML swaps don't
 // nest wrappers).
 func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
-	a := New(nil, t.TempDir(), "dev-1", "")
+	a := New(nil, t.TempDir(), "dev-1", "", nil)
 	// Idle state with a configured Server URL renders the link form.
 	a.cfg.ServerURL = "https://jf.example.com"
 
@@ -54,7 +54,7 @@ func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 // link form is suppressed and the operator is told to save the URL in
 // the Settings section first.
 func TestExtraPanelHTML_IdleWithoutServerURL_PromptsToSaveSettings(t *testing.T) {
-	a := New(nil, t.TempDir(), "dev-1", "")
+	a := New(nil, t.TempDir(), "dev-1", "", nil)
 	got := string(a.ExtraPanelHTML())
 	if strings.Contains(got, `hx-post="/ui/adapter/jellyfin/link/start"`) {
 		t.Errorf("link form should be suppressed without a saved Server URL; got: %s", got)
@@ -65,7 +65,7 @@ func TestExtraPanelHTML_IdleWithoutServerURL_PromptsToSaveSettings(t *testing.T)
 }
 
 func TestLinkSummary_ReflectsState(t *testing.T) {
-	a := New(nil, t.TempDir(), "dev-1", "")
+	a := New(nil, t.TempDir(), "dev-1", "", nil)
 	got := a.LinkSummary()
 	if got.Phase != "idle" {
 		t.Errorf("Phase = %q, want idle", got.Phase)

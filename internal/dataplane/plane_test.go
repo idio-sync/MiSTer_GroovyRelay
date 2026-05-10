@@ -1024,3 +1024,118 @@ func TestPlane_AllocationBudget(t *testing.T) {
 	t.Logf("Plane.Run allocated %d bytes over 500ms (budget %d, %.1f%% used)",
 		delta, budgetBytes, 100*float64(delta)/float64(budgetBytes))
 }
+
+// newPlaneForTest constructs a minimal Plane via NewPlane for tests that only
+// need a valid Plane instance without network, ffmpeg, or hardware. Uses the
+// minimum non-zero dimensions required by NewPlane's scratch-buffer allocation
+// (FieldWidth * FieldHeight * BytesPerPixel > 0). No Sender is set so UDP
+// calls would panic — this helper is intended only for accessors / struct
+// inspection tests that do not call Run or sendField.
+func newPlaneForTest(t *testing.T) *Plane {
+	t.Helper()
+	return NewPlane(PlaneConfig{
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+}
+
+func TestPlane_TelemetryAccessors_ZeroBeforeRun(t *testing.T) {
+	p := newPlaneForTest(t)
+	if got := p.BlitsTotal(); got != 0 {
+		t.Errorf("BlitsTotal: got %d, want 0", got)
+	}
+	if got := p.FramesTotal(); got != 0 {
+		t.Errorf("FramesTotal: got %d, want 0", got)
+	}
+	if got := p.Underruns(); got != 0 {
+		t.Errorf("Underruns: got %d, want 0", got)
+	}
+	if got := p.WireBytes(); got != 0 {
+		t.Errorf("WireBytes: got %d, want 0", got)
+	}
+	if got := p.LastACKAge(); got != 0 {
+		t.Errorf("LastACKAge: got %v, want 0", got)
+	}
+}
+
+// TestPlane_TelemetryRaceFree validates the atomic-read accessors against
+// concurrent atomic writes to the same fields. CI runs this under -race to
+// validate no data race.
+//
+// Local environments without CGO cannot run -race; this test still passes
+// under plain `go test` because the asserted invariants (monotonic
+// non-decreasing counters) hold regardless.
+//
+// Option B (simpler-than-real) is used here: no real Plane.Run(), no UDP,
+// no ffmpeg. Writers simulate the production update sites by calling the
+// exact same atomic primitives used inside Run/sendField; readers call the
+// public accessor methods. The integration suite covers the real-plane-
+// race angle; this test focuses solely on the accessor lock discipline.
+func TestPlane_TelemetryRaceFree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping race test in -short mode")
+	}
+	p := newPlaneForTest(t)
+	deadline := time.Now().Add(200 * time.Millisecond)
+
+	// Writers: simulate the production update sites concurrently.
+	// Each field mirrors the exact atomic operation used in plane.go:
+	//   positionFields.Add(1)  — emitField / Run tick loop
+	//   framesTotal.Add(1)     — Run tick loop on new frame
+	//   underruns.Add(1)       — Run tick loop on underrun
+	//   wireBytes.Add(64)      — sendField / sendAudio
+	//   lastACKUnix.Store(ns)  — handleACK / Run ACK path
+	const writers = 4
+	var wg sync.WaitGroup
+	wg.Add(writers + 1)
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(deadline) {
+				p.positionFields.Add(1)
+				p.framesTotal.Add(1)
+				p.underruns.Add(1)
+				p.wireBytes.Add(64)
+				p.lastACKUnix.Store(time.Now().UnixNano())
+			}
+		}()
+	}
+
+	// Reader: tight loop calling every public accessor.
+	go func() {
+		defer wg.Done()
+		for time.Now().Before(deadline) {
+			_ = p.BlitsTotal()
+			_ = p.FramesTotal()
+			_ = p.Underruns()
+			_ = p.WireBytes()
+			_ = p.LastACKAge()
+		}
+	}()
+
+	wg.Wait()
+
+	// Final invariants: every counter must be non-zero if writers ran.
+	if p.BlitsTotal() == 0 {
+		t.Error("BlitsTotal stayed zero — writers did not run")
+	}
+	if p.FramesTotal() == 0 {
+		t.Error("FramesTotal stayed zero")
+	}
+	if p.Underruns() == 0 {
+		t.Error("Underruns stayed zero")
+	}
+	if p.WireBytes() == 0 {
+		t.Error("WireBytes stayed zero")
+	}
+	// LastACKAge() derives from lastACKUnix; on some platforms (notably
+	// Windows, which has coarse wall-clock resolution) the computed age
+	// can be zero even when the field was written — e.g. if the Store and
+	// the subsequent Load happen within the same OS clock tick. Assert the
+	// raw atomic field instead: it must be non-zero to prove the writers
+	// actually executed the Store path.
+	if p.lastACKUnix.Load() == 0 {
+		t.Error("lastACKUnix stayed zero — ACK timestamp writers did not run")
+	}
+}

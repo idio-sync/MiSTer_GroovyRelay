@@ -2,7 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { http, HttpResponse, delay } from "msw";
 import { setupServer } from "msw/node";
 import {
+  control,
   getBridgeURL,
+  getStatus,
   launchGroovyMister,
   play,
   _setTimeoutForTest,
@@ -30,16 +32,16 @@ describe("getBridgeURL", () => {
 });
 
 describe("play() happy path", () => {
-  it("POSTs to /ui/adapter/url/play with the right headers and body", async () => {
+  it("POSTs to /ui/companion/play with the right headers and body", async () => {
     let captured;
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", async ({ request }) => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", async ({ request }) => {
         captured = {
           headers: Object.fromEntries(request.headers),
           body: await request.json(),
         };
         return HttpResponse.json(
-          { adapter_ref: "url:abc123", state: "running", url: "https://youtu.be/x" },
+          { ok: true, adapter_ref: "url:abc123", state: "playing", resolved_via: "direct" },
           { status: 202 }
         );
       })
@@ -48,7 +50,12 @@ describe("play() happy path", () => {
 
     const result = await play("https://youtu.be/x");
 
-    expect(result).toEqual({ ok: true, adapter_ref: "url:abc123" });
+    expect(result).toEqual({
+      ok: true,
+      adapter_ref: "url:abc123",
+      state: "playing",
+      resolved_via: "direct",
+    });
     expect(captured.headers["content-type"]).toBe("application/json");
     expect(captured.headers["x-bridge-extension"]).toBe("1");
     expect(captured.body).toEqual({ url: "https://youtu.be/x", mode: "auto" });
@@ -58,8 +65,8 @@ describe("play() happy path", () => {
     browser.permissions.contains.mockResolvedValueOnce(false);
     browser.permissions.request.mockResolvedValueOnce(true);
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", () => {
-        return HttpResponse.json({ adapter_ref: "url:abc123" }, { status: 202 });
+      http.post("http://192.168.1.50:32500/ui/companion/play", () => {
+        return HttpResponse.json({ ok: true, adapter_ref: "url:abc123" }, { status: 202 });
       })
     );
     await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
@@ -75,9 +82,9 @@ describe("play() happy path", () => {
   it("uses provided mode parameter", async () => {
     let capturedBody;
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", async ({ request }) => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", async ({ request }) => {
         capturedBody = await request.json();
-        return HttpResponse.json({ adapter_ref: "url:xxx" }, { status: 202 });
+        return HttpResponse.json({ ok: true, adapter_ref: "url:xxx" }, { status: 202 });
       })
     );
     await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
@@ -97,9 +104,9 @@ describe("play() error paths", () => {
   it("returns 'Bridge timed out' when fetch aborts", async () => {
     _setTimeoutForTest(50);
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", async () => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", async () => {
         await delay(500);
-        return HttpResponse.json({ adapter_ref: "url:never" }, { status: 202 });
+        return HttpResponse.json({ ok: true, adapter_ref: "url:never" }, { status: 202 });
       })
     );
     await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
@@ -111,7 +118,7 @@ describe("play() error paths", () => {
 
   it("returns 'Bridge unreachable: ...' on network error", async () => {
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", () => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", () => {
         return HttpResponse.error();
       })
     );
@@ -125,9 +132,9 @@ describe("play() error paths", () => {
 
   it("returns the bridge's error message on 4xx with JSON body", async () => {
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", () => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", () => {
         return HttpResponse.json(
-          { error: "not a valid URL", field: "url" },
+          { ok: false, error: "not a valid URL" },
           { status: 400 }
         );
       })
@@ -145,9 +152,9 @@ describe("play() error paths", () => {
 
   it("returns the bridge's error message on 5xx with JSON body", async () => {
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", () => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", () => {
         return HttpResponse.json(
-          { error: "probe source: ffprobe: exit status 1" },
+          { ok: false, error: "probe source: ffprobe: exit status 1" },
           { status: 500 }
         );
       })
@@ -165,7 +172,7 @@ describe("play() error paths", () => {
 
   it("falls back to 'HTTP <status>' on non-JSON error response", async () => {
     server.use(
-      http.post("http://192.168.1.50:32500/ui/adapter/url/play", () => {
+      http.post("http://192.168.1.50:32500/ui/companion/play", () => {
         return new HttpResponse("internal server error (text body)", { status: 500 });
       })
     );
@@ -177,16 +184,53 @@ describe("play() error paths", () => {
   });
 });
 
-describe("launchGroovyMister()", () => {
-  it("POSTs to /ui/bridge/mister/launch with the extension header", async () => {
+describe("getStatus()", () => {
+  it("GETs companion status with the extension header", async () => {
     let captured;
     server.use(
-      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", ({ request }) => {
+      http.get("http://192.168.1.50:32500/ui/companion/status", ({ request }) => {
         captured = { headers: Object.fromEntries(request.headers) };
-        return new HttpResponse(
-          '<div class="status-line run">Sent</div>',
-          { status: 200, headers: { "Content-Type": "text/html" } }
-        );
+        return HttpResponse.json({
+          configured: true,
+          health: { bridge: "online", mister: "unknown", url_adapter: "enabled" },
+        });
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await getStatus();
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(captured.headers["x-bridge-extension"]).toBe("1");
+  });
+});
+
+describe("control()", () => {
+  it("POSTs control actions to the companion control route", async () => {
+    let captured;
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/companion/control", async ({ request }) => {
+        captured = await request.json();
+        return HttpResponse.json({ ok: true, state: "paused" });
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await control("seek", { offset_ms: 90000 });
+
+    expect(result).toEqual({ ok: true, state: "paused" });
+    expect(captured).toEqual({ action: "seek", offset_ms: 90000 });
+  });
+});
+
+describe("launchGroovyMister()", () => {
+  it("POSTs launch to the companion launch route", async () => {
+    let captured;
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/companion/launch", ({ request }) => {
+        captured = { headers: Object.fromEntries(request.headers) };
+        return HttpResponse.json({ ok: true });
       })
     );
     await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
@@ -205,9 +249,9 @@ describe("launchGroovyMister()", () => {
   it("returns 'Bridge timed out' when launch fetch aborts", async () => {
     _setTimeoutForTest(50);
     server.use(
-      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", async () => {
+      http.post("http://192.168.1.50:32500/ui/companion/launch", async () => {
         await delay(500);
-        return new HttpResponse('<div class="status-line run">Sent</div>', { status: 200 });
+        return HttpResponse.json({ ok: true });
       })
     );
     await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
@@ -219,7 +263,7 @@ describe("launchGroovyMister()", () => {
 
   it("returns 'Bridge unreachable: ...' on network error", async () => {
     server.use(
-      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", () => {
+      http.post("http://192.168.1.50:32500/ui/companion/launch", () => {
         return HttpResponse.error();
       })
     );
@@ -231,10 +275,10 @@ describe("launchGroovyMister()", () => {
     expect(result.error).toMatch(/^Bridge unreachable:/);
   });
 
-  it("returns launch failure text on HTTP error", async () => {
+  it("returns JSON launch failure on HTTP error", async () => {
     server.use(
-      http.post("http://192.168.1.50:32500/ui/bridge/mister/launch", () => {
-        return new HttpResponse("SSH failed: dial timeout", { status: 500 });
+      http.post("http://192.168.1.50:32500/ui/companion/launch", () => {
+        return HttpResponse.json({ ok: false, error: "SSH failed: dial timeout" }, { status: 500 });
       })
     );
     await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
@@ -244,7 +288,7 @@ describe("launchGroovyMister()", () => {
     expect(result).toEqual({
       ok: false,
       status: 500,
-      error: "Launch failed: SSH failed: dial timeout",
+      error: "SSH failed: dial timeout",
     });
   });
 });

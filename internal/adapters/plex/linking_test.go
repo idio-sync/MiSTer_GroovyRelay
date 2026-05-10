@@ -16,6 +16,7 @@ import (
 func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	var gotPath, gotClientID, gotDeviceName, gotContentType, gotStrong string
 	var gotProvides, gotPlatform, gotPlatformVersion, gotDevice, gotModel, gotVersion string
+	var gotProtocolVersion, gotProtocolCapabilities string
 	var strongWasSet bool
 	var gotMethod string
 	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +32,8 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 		gotDevice = r.PostForm.Get("X-Plex-Device")
 		gotModel = r.PostForm.Get("X-Plex-Model")
 		gotVersion = r.PostForm.Get("X-Plex-Version")
+		gotProtocolVersion = r.PostForm.Get("X-Plex-Protocol-Version")
+		gotProtocolCapabilities = r.PostForm.Get("X-Plex-Protocol-Capabilities")
 		_, strongWasSet = r.PostForm["strong"]
 		gotStrong = r.PostForm.Get("strong")
 		w.Header().Set("Content-Type", "application/json")
@@ -71,8 +74,8 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	// fields are null and whose provides is bare "player". Pinning these
 	// here so a future refactor can't silently drop them and reintroduce
 	// the "MiSTer missing from cast picker" regression.
-	if gotProvides != "client,player" {
-		t.Errorf("X-Plex-Provides = %q; want client,player", gotProvides)
+	if gotProvides != "client,player,provider-playback" {
+		t.Errorf("X-Plex-Provides = %q; want client,player,provider-playback", gotProvides)
 	}
 	if gotPlatform != "Linux" {
 		t.Errorf("X-Plex-Platform = %q; want Linux", gotPlatform)
@@ -88,6 +91,12 @@ func TestRequestPIN_PostsFormAndParsesResponse(t *testing.T) {
 	}
 	if gotVersion != "9.9.9" {
 		t.Errorf("X-Plex-Version = %q; want 9.9.9", gotVersion)
+	}
+	if gotProtocolVersion != "2" {
+		t.Errorf("X-Plex-Protocol-Version = %q; want 2", gotProtocolVersion)
+	}
+	if gotProtocolCapabilities != "timeline,playback,navigation,playqueues,provider-playback" {
+		t.Errorf("X-Plex-Protocol-Capabilities = %q; want full Plex target capabilities", gotProtocolCapabilities)
 	}
 	if pr.ID != 42 || pr.Code != "ABCD" {
 		t.Errorf("unexpected PinResponse: %+v", pr)
@@ -179,6 +188,7 @@ func TestPollPIN_TimesOut(t *testing.T) {
 func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	var gotMethod, gotPath, gotToken, gotContentType, gotURI, gotDeviceName string
 	var gotProvides, gotPlatform, gotPlatformVersion, gotDevice, gotModel, gotVersion string
+	var gotProtocolVersion, gotProtocolCapabilities string
 	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
@@ -193,6 +203,8 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 		gotDevice = r.PostForm.Get("X-Plex-Device")
 		gotModel = r.PostForm.Get("X-Plex-Model")
 		gotVersion = r.PostForm.Get("X-Plex-Version")
+		gotProtocolVersion = r.PostForm.Get("X-Plex-Protocol-Version")
+		gotProtocolCapabilities = r.PostForm.Get("X-Plex-Protocol-Capabilities")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -222,8 +234,8 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	if gotDeviceName != "MiSTer" {
 		t.Errorf("wrong device name: %q", gotDeviceName)
 	}
-	if gotProvides != "client,player" {
-		t.Errorf("X-Plex-Provides = %q; want client,player", gotProvides)
+	if gotProvides != "client,player,provider-playback" {
+		t.Errorf("X-Plex-Provides = %q; want client,player,provider-playback", gotProvides)
 	}
 	if gotPlatform != "Linux" {
 		t.Errorf("X-Plex-Platform = %q; want Linux", gotPlatform)
@@ -239,6 +251,12 @@ func TestRegisterDevice_PutsConnectionURI(t *testing.T) {
 	}
 	if gotVersion != "9.9.9" {
 		t.Errorf("X-Plex-Version = %q; want 9.9.9", gotVersion)
+	}
+	if gotProtocolVersion != "2" {
+		t.Errorf("X-Plex-Protocol-Version = %q; want 2", gotProtocolVersion)
+	}
+	if gotProtocolCapabilities != "timeline,playback,navigation,playqueues,provider-playback" {
+		t.Errorf("X-Plex-Protocol-Capabilities = %q; want full Plex target capabilities", gotProtocolCapabilities)
 	}
 }
 

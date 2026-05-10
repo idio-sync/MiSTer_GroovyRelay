@@ -1,0 +1,66 @@
+{{define "status-content.html"}}
+{{if eq .State "idle"}}
+  <section class="gr-hero">
+    <div class="gr-hero-grid">
+      <div>
+        <div class="gr-hero-status"><span class="glyph">○</span><span>Idle</span></div>
+        <h2 class="gr-hero-title">Ready to cast</h2>
+        <p class="gr-hero-meta">{{.AdapterListeningSummary}}</p>
+      </div>
+      <div class="gr-hero-readout"><span class="badge">Bridge</span><span class="value">online</span></div>
+    </div>
+  </section>
+{{else if or (eq .State "playing") (eq .State "paused")}}
+  <section class="gr-hero live">
+    <div class="gr-hero-grid">
+      <div>
+        <div class="gr-hero-status"><span class="glyph">{{if eq .State "playing"}}●{{else}}‖{{end}}</span><span>{{if eq .State "playing"}}Live{{else}}Paused{{end}}</span></div>
+        <h2 class="gr-hero-title">{{if .Title}}{{.Title}}{{else}}via {{.AdapterRef}}{{end}}</h2>
+        <p class="gr-hero-meta">via {{.AdapterDisplayName}}<span class="sep">·</span>{{.Modeline}}<span class="sep">·</span>{{.FieldOrder}}</p>
+      </div>
+      <div class="gr-hero-stats">
+        <div class="stat"><span class="label">fps</span><span class="value amber">{{.FPS}}</span></div>
+        <div class="stat"><span class="label">throughput</span><span class="value">{{.ThroughputMBps}} MB/s</span></div>
+        <div class="stat"><span class="label">elapsed</span><span class="value">{{.Elapsed}}</span></div>
+      </div>
+    </div>
+  </section>
+{{end}}
+
+<section class="gr-tile-grid">
+  {{range .Tiles}}
+    <article class="gr-tile">
+      <header class="gr-tile-head">
+        <div class="gr-tile-name"><span class="num">{{.Num}}</span> {{.Name}}</div>
+        <span class="gr-badge {{.BadgeClass}}"><span class="g">{{.BadgeGlyph}}</span>{{.BadgeLabel}}</span>
+      </header>
+      <dl class="gr-tile-rows">
+        {{range .Rows}}<dt>{{.Key}}</dt><dd>{{.Value}}</dd>{{end}}
+      </dl>
+    </article>
+  {{end}}
+</section>
+{{if .Empty}}
+  <div class="gr-empty-state">
+    <p>Bridge ready · no source configured.</p>
+    <a class="gr-btn" href="/ui/setup?step=adapters">+ Add a source</a>
+  </div>
+{{end}}
+
+<section class="gr-activity">
+  <header class="gr-activity-head">
+    <h3>Recent activity</h3>
+    <span class="meta">last {{.ActivityShown}} of {{.ActivityTotal}} · ring {{.ActivityCapacity}}</span>
+  </header>
+  <div class="gr-activity-body">
+    {{range .Events}}
+      <div class="gr-activity-entry{{if .Highlight}} highlight{{end}}">
+        <span class="time">{{.Time}}</span>
+        <span class="sev {{.SevClass}}">{{.Severity}}</span>
+        <span class="src">{{.Source}}</span>
+        <span class="msg">{{.Message}}</span>
+      </div>
+    {{end}}
+  </div>
+</section>
+{{end}}

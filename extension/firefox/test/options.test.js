@@ -38,7 +38,7 @@ describe("validateBridgeURL", () => {
   });
 
   it("normalizes a pasted bridge UI path to the origin", () => {
-    expect(validateBridgeURL("http://192.168.1.50:32500/ui/adapter/url/panel")).toEqual({
+    expect(validateBridgeURL("http://192.168.1.50:32500/ui/companion/status")).toEqual({
       ok: true,
       url: "http://192.168.1.50:32500",
     });
@@ -76,22 +76,25 @@ describe("validateBridgeURL", () => {
 });
 
 describe("testConnection", () => {
-  it("returns ok:true on 200 from /ui/adapter/url/panel", async () => {
+  it("returns ok:true on 200 from /ui/companion/status with the extension header", async () => {
+    let captured;
     server.use(
-      http.get("http://192.168.1.50:32500/ui/adapter/url/panel", () => {
-        return new HttpResponse("<div>panel</div>", { status: 200 });
+      http.get("http://192.168.1.50:32500/ui/companion/status", ({ request }) => {
+        captured = { headers: Object.fromEntries(request.headers) };
+        return HttpResponse.json({ ok: true, health: { bridge: "online" } });
       })
     );
     const result = await testConnection("http://192.168.1.50:32500");
     expect(result).toEqual({ ok: true });
+    expect(captured.headers["x-bridge-extension"]).toBe("1");
   });
 
   it("requests bridge host permission before testing when it is missing", async () => {
     browser.permissions.contains.mockResolvedValueOnce(false);
     browser.permissions.request.mockResolvedValueOnce(true);
     server.use(
-      http.get("http://192.168.1.50:32500/ui/adapter/url/panel", () => {
-        return new HttpResponse("<div>panel</div>", { status: 200 });
+      http.get("http://192.168.1.50:32500/ui/companion/status", () => {
+        return HttpResponse.json({ ok: true });
       })
     );
 
@@ -118,8 +121,8 @@ describe("testConnection", () => {
 
   it("returns ok:false with status code on 404", async () => {
     server.use(
-      http.get("http://192.168.1.50:32500/ui/adapter/url/panel", () => {
-        return new HttpResponse("not found", { status: 404 });
+      http.get("http://192.168.1.50:32500/ui/companion/status", () => {
+        return HttpResponse.json({ ok: false, error: "not found" }, { status: 404 });
       })
     );
     const result = await testConnection("http://192.168.1.50:32500");
@@ -129,7 +132,7 @@ describe("testConnection", () => {
 
   it("returns ok:false on network error", async () => {
     server.use(
-      http.get("http://192.168.1.50:32500/ui/adapter/url/panel", () => {
+      http.get("http://192.168.1.50:32500/ui/companion/status", () => {
         return HttpResponse.error();
       })
     );

@@ -12,12 +12,14 @@ import (
 	"net/http"
 	stdurl "net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // handlePlay accepts a paste from the UI form or a JSON POST. Routes
@@ -162,6 +164,21 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 	}
 
 	ref = newAdapterRef()
+
+	// Derive a human-readable title from the URL. For direct file URLs
+	// the basename (e.g. "clip.mp4") is the most useful label; for HLS
+	// manifests and streaming URLs the path component is often empty or
+	// just "/" so we fall back to the host. Spec PR2 §S3.
+	title := resolvedTitle // yt-dlp already provided a rich title
+	if title == "" {
+		base := path.Base(parsed.Path)
+		if base == "" || base == "/" || base == "." {
+			title = parsed.Host
+		} else {
+			title = base
+		}
+	}
+
 	req := core.SessionRequest{
 		StreamURL:         streamURL,
 		InputHeaders:      headers,
@@ -174,7 +191,9 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 		// flips".
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 		AdapterRef:   ref,
+		Source:       "url",
 		DirectPlay:   true,
+		Title:        title,
 		// OnStop captures rawURL + resolvedTitle at request-construction
 		// time, NOT inside the closure body — by the time OnStop runs,
 		// adapter state may have been overwritten by a preempting
@@ -185,6 +204,10 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 	if a.core == nil {
 		return "", "", http.StatusInternalServerError, fmt.Errorf("core not wired")
 	}
+	// Emit cast-requested before StartSession so the event is recorded
+	// even if the manager rejects the request (e.g. probe failure).
+	// Spec PR2 §S7, Source "url", Severity Info.
+	a.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if serr := a.core.StartSession(req); serr != nil {
 		safeMsg := strings.ReplaceAll(serr.Error(), rawURL, redactURL(rawURL))
 		a.setState(adapters.StateError, safeMsg)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,10 +12,16 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
-func newTestServer(t *testing.T) (*Server, *http.ServeMux) {
+// newTestServer constructs a *Server + mux for tests. Pass option
+// funcs to populate Config fields before construction; do NOT call
+// Mount again afterward.
+func newTestServer(t *testing.T, opts ...func(*Config)) (*Server, *http.ServeMux) {
 	t.Helper()
-	reg := adapters.NewRegistry()
-	s, err := New(Config{Registry: reg})
+	cfg := Config{Registry: adapters.NewRegistry()}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("ui.New: %v", err)
 	}
@@ -249,6 +256,50 @@ func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
 	}
 }
 
+func TestShell_IncludesConsoleEasterEgg(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "GroovyRelay") || !strings.Contains(body, "console.log") {
+		t.Errorf("missing console easter egg block in shell")
+	}
+}
+
+func TestStaticAssets_AppCSSIncludesPR2bClasses(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status: %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, cls := range []string{".gr-hero", ".gr-tile", ".gr-activity-entry", ".gr-callout", ".gr-build-grid", "prefers-reduced-motion"} {
+		if !strings.Contains(body, cls) {
+			t.Errorf("missing %q in app.css", cls)
+		}
+	}
+}
+
+func TestStaticAssets_AppCSSIncludesPR2cClasses(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status: %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, cls := range []string{".gr-stepper", ".gr-pick", ".gr-form-locked", ".gr-wizard-foot"} {
+		if !strings.Contains(body, cls) {
+			t.Errorf("missing %q in app.css", cls)
+		}
+	}
+}
+
 func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
 	reg := adapters.NewRegistry()
 	if err := reg.Register(&uiStubAdapter{name: "plex", state: adapters.StateRunning}); err != nil {
@@ -274,5 +325,43 @@ func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `hx-swap-oob`) {
 		t.Errorf("dots route did not produce OOB span output (route may be served by shell catch-all)\nbody: %s", body)
+	}
+}
+
+// newMockAdapter returns a minimal uiStubAdapter with the given name and
+// enabled state. Used by shellData filter tests.
+func newMockAdapter(name string, enabled bool) *uiStubAdapter {
+	return &uiStubAdapter{name: name, enabled: enabled, enabledSet: true}
+}
+
+func TestShellData_FiltersDisabledAdapters(t *testing.T) {
+	srv, _ := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(
+			newMockAdapter("plex", true),     // enabled
+			newMockAdapter("jellyfin", true), // enabled
+			newMockAdapter("url", false),     // disabled — should be filtered
+		)
+	})
+	data := srv.shellData()
+	names := []string{}
+	for _, a := range data.Adapters {
+		names = append(names, a.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"plex", "jellyfin"}) {
+		t.Errorf("filtered adapters: got %v, want [plex jellyfin]", names)
+	}
+}
+
+func TestShell_RendersAddSourceLink(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	if !strings.Contains(body, "+ Add source") {
+		t.Errorf("missing + Add source link")
+	}
+	if !strings.Contains(body, `href="/ui/setup?step=adapters"`) {
+		t.Errorf("missing wizard link target")
 	}
 }

@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+const extensionFiles = [
+  "src/fonts/InterTight-400.woff2",
+  "src/fonts/InterTight-500.woff2",
+  "src/fonts/JetBrainsMono-400.woff2",
+  "src/fonts/SpaceGrotesk-600.woff2",
+];
 
 describe("manifest data collection declaration", () => {
   it("declares optional bridge host permissions for runtime requests", () => {
@@ -18,5 +24,11 @@ describe("manifest data collection declaration", () => {
 
   it("requires a Firefox version that supports built-in data collection consent", () => {
     expect(manifest.browser_specific_settings?.gecko?.strict_min_version).toBe("140.0");
+  });
+
+  it("bundles popup font assets locally", () => {
+    for (const file of extensionFiles) {
+      expect(fs.existsSync(file), file).toBe(true);
+    }
   });
 });

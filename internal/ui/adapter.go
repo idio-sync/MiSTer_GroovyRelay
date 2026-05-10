@@ -49,6 +49,12 @@ type adapterPanelData struct {
 	Sections     []bridgeSection
 	Toast        *toastData
 	ExtraHTML    template.HTML
+	// GateForm is true when the adapter implements LinkAware and
+	// IsLinked() returns false. The template wraps the form in a
+	// <section class="gr-form-locked"> + <fieldset disabled> so every
+	// input and the Save button are visually dimmed and non-interactive
+	// until linking is complete. Spec §S2.
+	GateForm bool
 }
 
 // handleAdapterGET renders the named adapter's panel. Unknown names
@@ -121,6 +127,14 @@ func (s *Server) buildAdapterPanelData(a adapters.Adapter, toast *toastData, err
 	if extra, ok := a.(ExtraHTMLProvider); ok {
 		data.ExtraHTML = extra.ExtraPanelHTML()
 	}
+
+	// Gate the form when the adapter is LinkAware but not yet linked.
+	// Spec §S2: <fieldset disabled> + .gr-form-locked overlay until
+	// the operator completes the linking step (PIN, OAuth, etc.).
+	if la, ok := a.(adapters.LinkAware); ok {
+		data.GateForm = !la.IsLinked()
+	}
+
 	return data
 }
 

@@ -1,6 +1,7 @@
 package url
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,71 @@ func postEmpty(handler http.HandlerFunc) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	handler(w, req)
 	return w
+}
+
+func TestCompanionPause_URLSessionCallsPause(t *testing.T) {
+	fc := withStatus(core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc"})
+	a := newTestAdapter(t, fc)
+	if err := a.CompanionPause(context.Background()); err != nil {
+		t.Fatalf("CompanionPause error = %v", err)
+	}
+	if !fc.pauseCalled {
+		t.Fatal("Pause was not called")
+	}
+}
+
+func TestCompanionPause_ForeignSessionReturns409(t *testing.T) {
+	fc := withStatus(core.SessionStatus{State: core.StatePlaying, AdapterRef: "plex:abc"})
+	a := newTestAdapter(t, fc)
+	err := a.CompanionPause(context.Background())
+	var ce interface{ HTTPStatus() int }
+	if !errors.As(err, &ce) || ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("error = %v, want companion 409", err)
+	}
+	if fc.pauseCalled {
+		t.Fatal("Pause called for foreign session")
+	}
+}
+
+func TestCompanionSeekAbsoluteClampsAndCallsSeekTo(t *testing.T) {
+	fc := withStatus(core.SessionStatus{
+		State:      core.StatePlaying,
+		AdapterRef: "url:abc",
+		Duration:   time.Minute,
+	})
+	a := newTestAdapter(t, fc)
+	if err := a.CompanionSeek(context.Background(), 90_000); err != nil {
+		t.Fatalf("CompanionSeek error = %v", err)
+	}
+	if fc.seekOffsetMs != 60_000 {
+		t.Fatalf("seek offset = %d, want duration clamp 60000", fc.seekOffsetMs)
+	}
+}
+
+func TestCompanionHistoryPlayUsesID(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	a.history.AddOrBump("https://example.com/a")
+	id := a.history.List()[0].ID
+	res, err := a.CompanionHistoryPlay(context.Background(), id)
+	if err != nil {
+		t.Fatalf("CompanionHistoryPlay error = %v", err)
+	}
+	if res.AdapterRef == "" || res.ResolvedVia != "direct" {
+		t.Fatalf("result = %+v", res)
+	}
+	if fc.lastReq.StreamURL != "https://example.com/a" {
+		t.Fatalf("StreamURL = %q", fc.lastReq.StreamURL)
+	}
+}
+
+func TestCompanionHistoryDeleteUnknownIDReturns404(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	err := a.CompanionHistoryDelete(context.Background(), "h_00000000000000000000000000000000")
+	var ce interface{ HTTPStatus() int }
+	if !errors.As(err, &ce) || ce.HTTPStatus() != http.StatusNotFound {
+		t.Fatalf("error = %v, want companion 404", err)
+	}
 }
 
 func TestPause_StatePlaying_CallsPause(t *testing.T) {

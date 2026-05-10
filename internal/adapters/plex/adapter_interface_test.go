@@ -377,4 +377,7 @@ func TestAdapter_StartPassesHostIPToDiscovery(t *testing.T) {
 	if captured.DeviceUUID != "uuid-thread" {
 		t.Errorf("DiscoveryConfig.DeviceUUID = %q; want uuid-thread", captured.DeviceUUID)
 	}
+	if captured.Version != "test" {
+		t.Errorf("DiscoveryConfig.Version = %q; want test", captured.Version)
+	}
 }

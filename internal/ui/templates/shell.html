@@ -10,13 +10,42 @@
 </head>
 <body hx-ext="">
 	<div class="shell">
+		{{if not .SetupMode}}
 		<aside class="sidebar">
 			{{template "sidebar-body" .}}
 		</aside>
-		<main class="panel" id="panel">
+		{{end}}
+		<main class="{{if .SetupMode}}gr-wizard{{else}}panel{{end}}" id="panel">
+			{{if .SetupMode}}
+			<div class="gr-wizard-brand">
+				<span class="mark"></span>GroovyRelay
+				<span class="tagline">first-run setup</span>
+			</div>
+			<ol class="gr-stepper">
+				{{range .Steps}}
+				<li class="gr-step{{if .Done}} done{{end}}{{if .Active}} active{{end}}">
+					<span class="num">{{if .Done}}<svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5 5 9 9.5 3.5"/></svg>{{else if .Final}}▸{{else}}{{.Number}}{{end}}</span>
+					<span>{{.Label}}</span>
+				</li>
+				{{end}}
+			</ol>
+			{{end}}
 			{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
 		</main>
 	</div>
+<script>
+  // S11b — devtools easter egg. The only JS PR2 ships.
+  (function () {
+    var amber = "background:oklch(0.78 0.16 80);color:oklch(0.20 0.030 80);" +
+                "font:600 13px 'Space Grotesk',system-ui;padding:6px 10px;" +
+                "border-radius:2px;letter-spacing:-0.01em;";
+    var dim = "color:oklch(0.65 0.012 80);font:400 12px 'JetBrains Mono',monospace;";
+    var body = "color:oklch(0.94 0.012 85);font:400 13px 'Inter Tight',system-ui;";
+    console.log("%c GroovyRelay %c cast · mister", amber, dim);
+    console.log("%cTracing the scanlines for you, friend.", body);
+    console.log("%chttps://github.com/idio-sync/MiSTer_GroovyRelay", dim);
+  })();
+</script>
 </body>
 </html>
 {{define "sidebar-body"}}
@@ -38,6 +67,10 @@
 		{{.DisplayName}}
 	</a></li>
 	{{end}}
+	<li><a class="gr-nav-link add" href="/ui/setup?step=adapters">
+		<span class="dot add"></span>
+		<span class="label">+ Add source</span>
+	</a></li>
 </ul>
 <!-- Polling element. Returns a fragment of OOB-swap <span> tags;
      hx-swap="none" tells htmx not to do its primary swap — the

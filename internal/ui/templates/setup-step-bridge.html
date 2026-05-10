@@ -1,0 +1,58 @@
+{{define "setup-step-bridge"}}
+<section class="gr-wizard-step">
+	<header class="gr-wizard-step-head">
+		<h1>Bridge basics</h1>
+		<p class="subtitle">Tell GroovyRelay where your MiSTer lives. You can refine these later from the Bridge panel.</p>
+	</header>
+
+	{{if .BridgeErrors}}
+		{{with index .BridgeErrors ""}}
+		<div class="toast err">{{.}}</div>
+		{{end}}
+	{{end}}
+
+	<form method="POST" action="/ui/setup/step/bridge" class="gr-wizard-form">
+		<div class="section">
+			<h3><span class="num">01 —</span> MiSTer connection</h3>
+
+			<div class="field">
+				<label for="f-mister.host">MiSTer host</label>
+				<div>
+					<input type="text" name="mister.host" id="f-mister.host"
+						value="{{.Bridge.MiSTer.Host}}"
+						placeholder="192.168.1.42"
+						required>
+					<div class="help">IP address or hostname of the MiSTer FPGA on your LAN.</div>
+					{{with index .BridgeErrors "mister.host"}}<div class="err">{{.}}</div>{{end}}
+				</div>
+			</div>
+
+			<div class="field">
+				<label for="f-mister.port">MiSTer port</label>
+				<div>
+					<input type="number" name="mister.port" id="f-mister.port"
+						value="{{if .Bridge.MiSTer.Port}}{{.Bridge.MiSTer.Port}}{{else}}32100{{end}}"
+						required>
+					<div class="help">UDP port the MiSTer's Groovy_MiSTer listens on. Default 32100.</div>
+					{{with index .BridgeErrors "mister.port"}}<div class="err">{{.}}</div>{{end}}
+				</div>
+			</div>
+
+			<div class="field">
+				<label for="f-mister.source_port">Source port</label>
+				<div>
+					<input type="number" name="mister.source_port" id="f-mister.source_port"
+						value="{{if .Bridge.MiSTer.SourcePort}}{{.Bridge.MiSTer.SourcePort}}{{else}}32101{{end}}"
+						required>
+					<div class="help">Bridge-side UDP port. Must stay stable across restarts — the MiSTer keys its session by this. Default 32101.</div>
+					{{with index .BridgeErrors "mister.source_port"}}<div class="err">{{.}}</div>{{end}}
+				</div>
+			</div>
+		</div>
+
+		<div class="gr-wizard-actions">
+			<button type="submit" class="btn">Continue ▸</button>
+		</div>
+	</form>
+</section>
+{{end}}

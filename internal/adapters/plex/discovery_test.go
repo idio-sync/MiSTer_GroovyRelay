@@ -22,6 +22,7 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 		DeviceName: "MiSTer-Test",
 		DeviceUUID: "uuid-abc-123",
 		HTTPPort:   32500,
+		Version:    "9.9.9",
 	}
 
 	listen, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -91,11 +92,20 @@ func TestDiscovery_RespondsToMSearch(t *testing.T) {
 	if !strings.Contains(resp, "Product: GroovyRelay") {
 		t.Errorf("missing product header; got: %q", resp)
 	}
+	if !strings.Contains(resp, "Version: 9.9.9") {
+		t.Errorf("missing version header; got: %q", resp)
+	}
 	if !strings.Contains(resp, "Content-Type: plex/media-player") {
 		t.Errorf("missing plex content-type header; got: %q", resp)
 	}
 	if !strings.Contains(resp, "Protocol: plex") {
 		t.Errorf("missing protocol header; got: %q", resp)
+	}
+	if !strings.Contains(resp, "Protocol-Version: 2") {
+		t.Errorf("missing protocol version header; got: %q", resp)
+	}
+	if !strings.Contains(resp, "Protocol-Capabilities: timeline,playback,navigation,playqueues,provider-playback") {
+		t.Errorf("missing full protocol capabilities header; got: %q", resp)
 	}
 }
 

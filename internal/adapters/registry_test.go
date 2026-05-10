@@ -139,3 +139,11 @@ func TestRegistry_ConcurrentReadAndRegister(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestNewRegistryWith_SeedsAdapters(t *testing.T) {
+	a := &stubAdapter{name: "plex"}
+	reg := NewRegistryWith(a)
+	if got, ok := reg.Get("plex"); !ok || got != a {
+		t.Errorf("Get(plex): got %v, want %v", got, a)
+	}
+}

@@ -24,15 +24,18 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 const (
-	companionProduct  = "GroovyRelay"
-	companionPlatform = "Linux"
-	companionDevice   = "MiSTer"
-	companionModel    = "MiSTer"
-	companionProvides = "client,player"
-	companionProtocol = "1.0"
+	companionProduct              = "GroovyRelay"
+	companionPlatform             = "Linux"
+	companionDevice               = "MiSTer"
+	companionModel                = "MiSTer"
+	companionProvides             = "client,player,provider-playback"
+	companionProtocol             = "1.0"
+	companionProtocolVersion      = "2"
+	companionProtocolCapabilities = "timeline,playback,navigation,playqueues,provider-playback"
 )
 
 // CompanionConfig carries the identity of this device as advertised to Plex
@@ -54,6 +57,9 @@ type CompanionConfig struct {
 	// Modeline mirrors bridge.video.modeline so Plex transcode requests can
 	// advertise source shape matching the active CRT mode.
 	Modeline string
+
+	// EventLog is the optional ring buffer for adapter lifecycle events.
+	EventLog *eventlog.Log
 }
 
 // Companion is the Plex Companion HTTP adapter. One per process. Thread-safe.
@@ -113,6 +119,19 @@ func (c *Companion) SetMaxVideoBitrateKbps(kbps int) {
 func (c *Companion) SetModeline(name string) {
 	cp := name
 	c.modelineName.Store(&cp)
+}
+
+// emit appends to the configured eventlog if one is wired.
+func (c *Companion) emit(sev eventlog.Severity, msg string) {
+	if c.cfg.EventLog == nil {
+		return
+	}
+	c.cfg.EventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "plex",
+		Message:  msg,
+	})
 }
 
 func (c *Companion) currentPreset() (core.ModelinePreset, error) {
@@ -195,6 +214,8 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 		StreamURL:    streamURL,
 		SeekOffsetMs: p.OffsetMs,
 		AdapterRef:   p.MediaKey,
+		Source:       "plex",
+		Title:        p.Title,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 	}
 	// Capture the prior PlayMediaRequest at request-construction time.
@@ -368,6 +389,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 	if prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return false
@@ -401,6 +423,7 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/timeline/unsubscribe", c.handleTimelineUnsubscribe)
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
+	mux.HandleFunc("/player/navigation/", c.handleNavigation)
 	mux.HandleFunc("/debug/plex/session", c.handleDebugSession)
 	mux.HandleFunc("/debug/plex/decision", c.handleDebugDecision)
 	return c.withRequestLog(c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux))))
@@ -474,9 +497,9 @@ func (c *Companion) withTargetValidation(h http.Handler) http.Handler {
 func (c *Companion) withHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Device, X-Plex-Model, X-Plex-Provides, X-Plex-Protocol, X-Plex-Protocol-Version, X-Plex-Protocol-Capabilities, X-Plex-Target-Client-Identifier, Content-Type, Accept")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Device, X-Plex-Model, X-Plex-Provides, X-Plex-Protocol, X-Plex-Protocol-Version, X-Plex-Protocol-Capabilities")
 		if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
 			w.Header().Set("Access-Control-Allow-Private-Network", "true")
 		}
@@ -486,8 +509,12 @@ func (c *Companion) withHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Plex-Version", c.cfg.Version)
 		w.Header().Set("X-Plex-Platform", companionPlatform)
 		w.Header().Set("X-Plex-Platform-Version", c.cfg.Version)
+		w.Header().Set("X-Plex-Device", companionDevice)
+		w.Header().Set("X-Plex-Model", companionModel)
 		w.Header().Set("X-Plex-Provides", companionProvides)
 		w.Header().Set("X-Plex-Protocol", companionProtocol)
+		w.Header().Set("X-Plex-Protocol-Version", companionProtocolVersion)
+		w.Header().Set("X-Plex-Protocol-Capabilities", companionProtocolCapabilities)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -513,9 +540,9 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 		Version              string `xml:"version,attr"`
 		Platform             string `xml:"platform,attr"`
 		PlatformVersion      string `xml:"platformVersion,attr"`
-		// provides="client,player" matches the plex.tv registration record.
-		// Modern Plex Web filters bare-player records out of the picker or
-		// rejects them during target selection.
+		// Keep provides aligned with the plex.tv registration record. Modern
+		// Plex Web filters bare-player records out of the picker or rejects
+		// them during target selection.
 		Provides string `xml:"provides,attr"`
 	}
 	type MediaContainer struct {
@@ -529,8 +556,8 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 			Title:                c.cfg.DeviceName,
 			MachineIdentifier:    c.cfg.DeviceUUID,
 			Protocol:             "plex",
-			ProtocolVersion:      "1",
-			ProtocolCapabilities: "timeline,playback,playqueues",
+			ProtocolVersion:      companionProtocolVersion,
+			ProtocolCapabilities: companionProtocolCapabilities,
 			DeviceClass:          "stb",
 			Device:               companionDevice,
 			Model:                companionModel,
@@ -565,6 +592,10 @@ type PlayMediaRequest struct {
 	CommandID          string
 	PlayQueueItemID    string
 	TranscodeSessionID string
+	// Title is the human-readable label sent by the Plex controller on
+	// playMedia (the `title` query param). Empty for seek/setStreams
+	// restarts where the controller doesn't re-send identity metadata.
+	Title string
 }
 
 // handlePlayMedia parses the Plex Companion playMedia query, builds a stream
@@ -597,6 +628,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		CommandID:          queryOrHeader(r, "commandID"),
 		PlayQueueItemID:    queryOrHeader(r, "playQueueItemID"),
 		TranscodeSessionID: NewTranscodeSessionID(),
+		Title:              queryOrHeader(r, "title"),
 	}
 	// Some Plex controllers (notably mobile apps) omit
 	// X-Plex-Session-Identifier on playMedia. PMS uses this id to tie
@@ -657,6 +689,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	if prevPlay.MediaKey != "" && prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -718,6 +751,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := c.sessionRequestForPreset(p, preset)
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -776,6 +810,11 @@ func (c *Companion) handleSkipPrevious(w http.ResponseWriter, r *http.Request) {
 func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
 }
+
+func (c *Companion) handleNavigation(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+
 func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	p := c.lastPlaySession()
 	if p.MediaKey == "" {
@@ -827,6 +866,7 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := c.sessionRequestForPreset(p, preset)
+	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return

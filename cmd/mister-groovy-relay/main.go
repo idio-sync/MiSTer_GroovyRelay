@@ -31,6 +31,7 @@ import (
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/extbin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
@@ -44,6 +45,7 @@ import (
 var version = "1.0.0"
 
 func main() {
+	startedAt := time.Now()
 	defaultCfg := defaultConfigForRuntime()
 	cfgPath := flag.String("config", defaultCfg, "path to config.toml")
 	logLevel := flag.String("log-level", "info", "debug|info|warn|error")
@@ -115,6 +117,11 @@ func main() {
 		return
 	}
 
+	// Event log: in-memory ring buffer for status home + diagnostics.
+	// Capacity 256 per spec §8.4. Pure synchronous append-and-snapshot;
+	// no goroutines.
+	elog := eventlog.New(256)
+
 	sender, err := groovynet.NewSender(sec.Bridge.MiSTer.Host, sec.Bridge.MiSTer.Port, sec.Bridge.MiSTer.SourcePort)
 	if err != nil {
 		dieFriendly("sender init", err)
@@ -137,7 +144,8 @@ func main() {
 	}
 
 	coreMgr := core.NewManager(sec.Bridge, sender,
-		core.WithBinaryResolvers(ffmpegResolver, ffprobeResolver))
+		core.WithBinaryResolvers(ffmpegResolver, ffprobeResolver),
+		core.WithEventLog(elog))
 
 	hostIP := sec.Bridge.HostIP
 	if hostIP == "" {
@@ -158,6 +166,7 @@ func main() {
 		TokenStore: store,
 		HostIP:     hostIP,
 		Version:    version,
+		EventLog:   elog,
 	})
 	if err != nil {
 		dieFriendly("plex adapter init", err)
@@ -172,6 +181,7 @@ func main() {
 		Bridge:        sec.Bridge,
 		Core:          coreMgr,
 		YTDLPResolver: ytdlpResolver,
+		EventLog:      elog,
 	})
 	if err != nil {
 		dieFriendly("url adapter init", err)
@@ -195,7 +205,7 @@ func main() {
 
 	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
 	// Spec: docs/specs/2026-04-25-jellyfin-adapter-design.md.
-	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID, sec.Bridge.Video.Modeline)
+	jfAdapter := jellyfin.New(coreMgr, sec.Bridge.DataDir, store.DeviceUUID, sec.Bridge.Video.Modeline, elog)
 	jfAdapter.SetVersion(version)
 	if err := reg.Register(jfAdapter); err != nil {
 		dieFriendly("registry register jellyfin", err)
@@ -212,6 +222,7 @@ func main() {
 		DeviceUUID: store.DeviceUUID,
 		HostIP:     hostIP,
 		HTTPPort:   sec.Bridge.UI.HTTPPort,
+		Core:       coreMgr,
 	})
 	if err != nil {
 		dieFriendly("dlna adapter init", err)
@@ -256,15 +267,25 @@ func main() {
 		FFprobe: ffprobeResolver,
 		YTDLP:   ytdlpResolver,
 	})
+	saver.WithEventLog(elog)
 	adapterSaver := uiserver.NewAdapterSaver(*cfgPath, saver.Mu())
 
 	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
+	misterProber := bridgeMisterProber{bridge: saver, timeout: 1 * time.Second}
 
 	uiSrv, err := ui.New(ui.Config{
-		Registry:       reg,
-		BridgeSaver:    saver,
-		AdapterSaver:   adapterSaver,
-		MisterLauncher: misterLauncher,
+		Registry:         reg,
+		BridgeSaver:      saver,
+		AdapterSaver:     adapterSaver,
+		MisterLauncher:   misterLauncher,
+		CompanionSession: coreMgr,
+		CompanionURL:     urlAdapter,
+		CompanionDisplay: urlAdapter,
+		StatusViewer:     coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
+		EventLog:         elog,    // in-memory ring buffer constructed above
+		Version:          version, // build-time ldflags variable
+		MisterProber:     misterProber,
+		StartedAt:        startedAt,
 	})
 	if err != nil {
 		dieFriendly("ui init", err)
@@ -282,6 +303,16 @@ func main() {
 	if err != nil {
 		dieFriendly("http listener bind", err)
 	}
+
+	// bridge-boot: emitted once the TCP port is bound — the earliest
+	// point at which incoming connections are accepted. Per spec §S7,
+	// Source "bridge", Severity Info.
+	elog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: eventlog.SeverityInfo,
+		Source:   "bridge",
+		Message:  fmt.Sprintf("bridge-boot v%s on %s:%d", version, hostIP, sec.Bridge.UI.HTTPPort),
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

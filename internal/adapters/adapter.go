@@ -203,6 +203,32 @@ type Validator interface {
 	Validate(raw toml.Primitive, meta toml.MetaData) error
 }
 
+// LinkAware is an optional Adapter capability for adapters that need
+// user-driven authentication (PIN, password, OAuth, etc.). Adapters
+// without a link concept (URL-input, future DLNA) don't implement it.
+//
+// Adapters implementing LinkAware mount their own link routes under
+// /ui/adapter/<name>/link/* and render their own state-machine HTML —
+// different adapters have meaningfully different link semantics, so
+// the shared UI layer doesn't try to model them.
+//
+// See docs/specs/2026-04-26-ui-redesign-design.md §8.2 and the PR2 delta
+// spec §S8 (Plex derivation rules).
+type LinkAware interface {
+	// LinkPhase returns a stable lowercase string for UI rendering.
+	// Adapter-defined values; common ones include "idle", "linking",
+	// "pin-issued", "linked", "error". The shared UI does NOT branch
+	// on this value — it's emitted as a CSS class hook and exposed
+	// for diagnostics.
+	LinkPhase() string
+
+	// IsLinked reports whether the adapter has completed authentication
+	// and is ready to be enabled. The wizard's Continue button is
+	// disabled until IsLinked() returns true; the adapter-page form
+	// renders read-only until IsLinked() returns true.
+	IsLinked() bool
+}
+
 // VideoConfigSubscriber is an optional interface for adapters that mirror
 // bridge.video settings into live request builders.
 type VideoConfigSubscriber interface {

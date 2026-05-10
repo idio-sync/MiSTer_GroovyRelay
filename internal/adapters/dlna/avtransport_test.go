@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // avtSOAPRequest builds a SOAP envelope for an AVTransport action call.
@@ -89,6 +92,46 @@ func TestAVT_GetPositionInfo_Defaults(t *testing.T) {
 	}
 }
 
+func TestAVT_GetPositionInfo_UsesOwnedCoreStatus(t *testing.T) {
+	const ref = "dlna:test-position"
+	fake := &fakeSessionManager{
+		statusFn: func() core.SessionStatus {
+			return core.SessionStatus{
+				AdapterRef: ref,
+				Position:   42*time.Second + 700*time.Millisecond,
+				Duration:   95 * time.Second,
+			}
+		},
+	}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.loadedURI = "http://192.168.1.99/movie.mp4"
+	a.currentRef = ref
+	a.transportState = transportStatePlaying
+	a.mu.Unlock()
+
+	req, rr := avtSOAPRequest(t, "GetPositionInfo", "<InstanceID>0</InstanceID>")
+	a.handleAVTransportSOAP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"<TrackDuration>00:01:35</TrackDuration>",
+		"<RelTime>00:00:42</RelTime>",
+		"<AbsTime>00:00:42</AbsTime>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\nbody:\n%s", want, body)
+		}
+	}
+}
+
 func TestAVT_GetDeviceCapabilities(t *testing.T) {
 	rr := runAVT(t, "GetDeviceCapabilities", "<InstanceID>0</InstanceID>")
 	if rr.Code != 200 {
@@ -166,14 +209,16 @@ func TestAVT_SetPlayMode_NonNormalReturns712(t *testing.T) {
 // ---- Stub actions return 501 ----
 
 func TestAVT_StubActions_Return501(t *testing.T) {
+	// SetAVTransportURI moved out of the stub set in P2.3 (real
+	// validate-and-store). Play/Stop moved out in P2.4 (real
+	// handlers). The remaining four — Pause, Seek, Next, Previous —
+	// still 501. Pause/Seek will flip in Phase 3; Next/Previous stay
+	// stubs because v1 has no queue model.
 	stubs := map[string]string{
-		"SetAVTransportURI": "<InstanceID>0</InstanceID><CurrentURI>http://example.com/v.mp4</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>",
-		"Play":              "<InstanceID>0</InstanceID><Speed>1</Speed>",
-		"Pause":             "<InstanceID>0</InstanceID>",
-		"Stop":              "<InstanceID>0</InstanceID>",
-		"Seek":              "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:30</Target>",
-		"Next":              "<InstanceID>0</InstanceID>",
-		"Previous":          "<InstanceID>0</InstanceID>",
+		"Pause":    "<InstanceID>0</InstanceID>",
+		"Seek":     "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:30</Target>",
+		"Next":     "<InstanceID>0</InstanceID>",
+		"Previous": "<InstanceID>0</InstanceID>",
 	}
 	for action, argsXML := range stubs {
 		t.Run(action, func(t *testing.T) {

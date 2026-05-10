@@ -7,15 +7,59 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // validAdapterConfig builds an AdapterConfig satisfying the constructor
-// invariants. Tests can override fields after the call.
+// invariants. Tests can override fields after the call. Core defaults
+// to a zero-behavior stub so existing tests (which don't exercise the
+// session manager) keep passing without per-test plumbing; tests that
+// need to drive ownership-guard behavior or capture StartSession calls
+// override Core with a tailored fakeSessionManager.
 func validAdapterConfig() AdapterConfig {
 	return AdapterConfig{
 		DeviceUUID: "abcdef01-2345-6789-abcd-ef0123456789",
 		HostIP:     "192.168.1.50",
 		HTTPPort:   32500,
+		Core:       &stubSessionManager{},
+	}
+}
+
+// stubSessionManager is a no-op SessionManager used by tests that don't
+// care about core interactions. All methods return zero values so a
+// nil-safe Core dereference works without panicking. Tests that need
+// to inspect calls or inject AdapterRef into Status use
+// fakeSessionManager (session_lifecycle_test.go) instead.
+type stubSessionManager struct{}
+
+func (*stubSessionManager) StartSession(core.SessionRequest) error { return nil }
+func (*stubSessionManager) Status() core.SessionStatus             { return core.SessionStatus{} }
+func (*stubSessionManager) Pause() error                           { return nil }
+func (*stubSessionManager) Play() error                            { return nil }
+func (*stubSessionManager) Stop() error                            { return nil }
+func (*stubSessionManager) SeekTo(int) error                       { return nil }
+
+func TestNew_RequiresCore(t *testing.T) {
+	cfg := validAdapterConfig()
+	cfg.Core = nil
+	if _, err := New(cfg); err == nil {
+		t.Fatal("New with nil Core: want error, got nil")
+	}
+}
+
+func TestNew_StoresCore(t *testing.T) {
+	stub := &stubSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = stub
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Interface == concrete-pointer requires casting one side; the
+	// underlying pointer is what matters here.
+	got, ok := a.core.(*stubSessionManager)
+	if !ok || got != stub {
+		t.Errorf("adapter.core not the injected stub: got=%v ok=%v", got, ok)
 	}
 }
 

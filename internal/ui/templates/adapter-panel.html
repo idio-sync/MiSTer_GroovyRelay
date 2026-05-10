@@ -1,3 +1,57 @@
+{{define "field-row"}}
+<div class="field">
+	<label for="f-{{.Key}}">{{.Label}}</label>
+	<div>
+		{{if eq .Kind "enum"}}
+			<select name="{{.Key}}" id="f-{{.Key}}">
+				{{$current := .StringValue}}
+				{{range .Enum}}
+				<option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+				{{end}}
+			</select>
+		{{else if eq .Kind "bool"}}
+			<input type="checkbox" name="{{.Key}}" id="f-{{.Key}}" value="true" {{if .BoolValue}}checked{{end}}>
+		{{else if eq .Kind "action"}}
+			<button type="button" class="btn">{{.Label}}</button>
+		{{else}}
+			<input type="{{.InputType}}" name="{{.Key}}" id="f-{{.Key}}"
+				value="{{.StringValue}}"
+				{{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
+				{{if .Required}}required{{end}}>
+		{{end}}
+		{{if .Help}}<div class="help">{{.Help}}</div>{{end}}
+		{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+	</div>
+</div>
+{{end}}
+
+{{define "field-section"}}
+<div class="section">
+	<h3><span class="num">{{printf "%02d" (inc (inc .Index))}} —</span> {{.Section.Name}}</h3>
+	{{range .Section.Rows}}
+	{{if eq .Kind "action"}}
+	<div class="field">
+		<label for="f-{{.Key}}">{{.Label}}</label>
+		<div>
+			{{$slot := printf "action-result-%s-%s" $.AdapterName (replaceAll .Key "/" "-")}}
+			<button type="button" class="btn"
+				hx-post="/ui/adapter/{{$.AdapterName}}/{{.Key}}"
+				hx-target="#{{$slot}}"
+				hx-swap="innerHTML"
+				hx-disabled-elt="this"
+				hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
+				{{.Label}}
+			</button>
+			<div id="{{$slot}}" style="margin-top: 8px;"></div>
+		</div>
+	</div>
+	{{else}}
+	{{template "field-row" .}}
+	{{end}}
+	{{end}}
+</div>
+{{end}}
+
 {{define "adapter-panel"}}
 <div id="toast-slot"></div>
 {{template "toast" .Toast}}
@@ -12,54 +66,32 @@
 	</div>
 </div>
 
-<form hx-post="/ui/adapter/{{.Name}}/save" hx-target="#panel" hx-swap="innerHTML">
-	{{range $i, $section := .Sections}}
-	<div class="section">
-		<h3><span class="num">{{printf "%02d" (inc (inc $i))}} —</span> {{$section.Name}}</h3>
-		{{range $section.Rows}}
-		<div class="field">
-			<label for="f-{{.Key}}">{{.Label}}</label>
-			<div>
-				{{if eq .Kind "enum"}}
-					<select name="{{.Key}}" id="f-{{.Key}}">
-						{{$current := .StringValue}}
-						{{range .Enum}}
-						<option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
-						{{end}}
-					</select>
-				{{else if eq .Kind "bool"}}
-					<input type="checkbox" name="{{.Key}}" id="f-{{.Key}}" value="true" {{if .BoolValue}}checked{{end}}>
-				{{else if eq .Kind "action"}}
-					{{$slot := printf "action-result-%s-%s" $.Name (replaceAll .Key "/" "-")}}
-					<button type="button" class="btn"
-						hx-post="/ui/adapter/{{$.Name}}/{{.Key}}"
-						hx-target="#{{$slot}}"
-						hx-swap="innerHTML"
-						hx-disabled-elt="this"
-						hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
-						{{.Label}}
-					</button>
-					<div id="{{$slot}}" style="margin-top: 8px;"></div>
-				{{else}}
-					<input type="{{.InputType}}" name="{{.Key}}" id="f-{{.Key}}"
-						value="{{.StringValue}}"
-						{{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
-						{{if .Required}}required{{end}}>
-				{{end}}
-				{{if .Help}}<div class="help">{{.Help}}</div>{{end}}
-				{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
-			</div>
-		</div>
-		{{end}}
-	</div>
-	{{end}}
-
-	<div style="margin-top: 24px; text-align: right;">
-		<button type="submit" class="btn">Save {{.DisplayName}} ▸</button>
-	</div>
-</form>
-
 {{if .ExtraHTML}}
 <div class="adapter-extras">{{.ExtraHTML}}</div>
 {{end}}
+
+<form hx-post="/ui/adapter/{{.Name}}/save" hx-target="#panel" hx-swap="innerHTML">
+
+  {{if .GateForm}}
+  <section class="gr-form-locked" aria-disabled="true">
+    <div class="gr-form-locked-overlay">
+      <p>Complete linking above to configure.</p>
+    </div>
+    <fieldset disabled>
+      {{range $i, $section := .Sections}}
+      {{template "field-section" (sectionCtx $.Name $i $section)}}
+      {{end}}
+    </fieldset>
+  </section>
+  {{else}}
+  {{range $i, $section := .Sections}}
+  {{template "field-section" (sectionCtx $.Name $i $section)}}
+  {{end}}
+  {{end}}
+
+	<div style="margin-top: 24px; text-align: right;">
+		<button type="submit" class="btn"{{if .GateForm}} disabled{{end}}>Save {{.DisplayName}} ▸</button>
+	</div>
+</form>
+
 {{end}}

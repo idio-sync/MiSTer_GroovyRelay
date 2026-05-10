@@ -91,3 +91,25 @@ func TestKindAction_Const(t *testing.T) {
 		t.Errorf("KindAction: got %d, want 5", KindAction)
 	}
 }
+
+// fakeLinkAware verifies the LinkAware interface compiles. The actual
+// linkability semantics are tested in each adapter package.
+type fakeLinkAware struct {
+	phase  string
+	linked bool
+}
+
+func (f *fakeLinkAware) LinkPhase() string { return f.phase }
+func (f *fakeLinkAware) IsLinked() bool    { return f.linked }
+
+func TestLinkAware_InterfaceCompiles(t *testing.T) {
+	var _ LinkAware = (*fakeLinkAware)(nil)
+
+	la := &fakeLinkAware{phase: "linked", linked: true}
+	if got := la.LinkPhase(); got != "linked" {
+		t.Errorf("LinkPhase: got %q, want %q", got, "linked")
+	}
+	if !la.IsLinked() {
+		t.Error("IsLinked: got false, want true")
+	}
+}

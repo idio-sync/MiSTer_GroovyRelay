@@ -12,7 +12,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
 - YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
-- DLNA / UPnP MediaRenderer (Phase 1: discoverable + descriptors + query-only SOAP; playback lands in a follow-up release)
+- DLNA / UPnP MediaRenderer
 
 ## Future Plans
 - Support for more relay sources:

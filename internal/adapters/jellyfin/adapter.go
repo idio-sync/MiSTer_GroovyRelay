@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // SessionManager is the narrow view of core.Manager the JF adapter
@@ -38,6 +39,8 @@ type Adapter struct {
 	dataDir      string // bridge data_dir; tokens go under <dataDir>/jellyfin/token.json
 	deviceID     string // bridge.device_uuid, reused across protocols
 	modelineName atomic.Pointer[string]
+
+	eventLog *eventlog.Log // nil disables emission
 
 	mu                 sync.Mutex
 	cfg                Config
@@ -129,11 +132,13 @@ type inboundDispatcher func(messageType string, data json.RawMessage)
 // New constructs a JF adapter bound to a SessionManager (typically
 // *core.Manager), the bridge data_dir, and the bridge device UUID.
 // core may be nil for tests that don't exercise StartSession.
-func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string) *Adapter {
+// eventLog may be nil; a nil log disables event emission.
+func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string, eventLog *eventlog.Log) *Adapter {
 	a := &Adapter{
 		core:       coreMgr,
 		dataDir:    dataDir,
 		deviceID:   deviceID,
+		eventLog:   eventLog,
 		cfg:        DefaultConfig(),
 		state:      adapters.StateStopped,
 		stateSince: time.Now(),
@@ -142,7 +147,30 @@ func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string) *Ada
 	}
 	a.SetModeline(initialModeline)
 	a.handleInbound = a.dispatchInbound
+	a.link.SetOnPhaseChange(func(phase LinkPhase, errMsg string) {
+		switch phase {
+		case LinkLinked:
+			a.emitEvent(eventlog.SeverityInfo, "adapter-linked")
+		case LinkError:
+			a.emitEvent(eventlog.SeverityErr, fmt.Sprintf("adapter-link-failed: %s", errMsg))
+		case LinkIdle:
+			a.emitEvent(eventlog.SeverityInfo, "adapter-unlinked")
+		}
+	})
 	return a
+}
+
+// emitEvent appends an event to the adapter's event log. No-op when eventLog is nil.
+func (a *Adapter) emitEvent(sev eventlog.Severity, msg string) {
+	if a.eventLog == nil {
+		return
+	}
+	a.eventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "jellyfin",
+		Message:  msg,
+	})
 }
 
 func (a *Adapter) SetModeline(name string) {
@@ -255,6 +283,28 @@ func (a *Adapter) IsEnabled() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.cfg.Enabled
+}
+
+// IsLinked implements adapters.LinkAware. Delegates to LinkState.
+func (a *Adapter) IsLinked() bool {
+	return a.link.State() == LinkLinked
+}
+
+// LinkPhase implements adapters.LinkAware. Maps the LinkPhase enum to
+// the parent spec's adapter-defined phase strings.
+func (a *Adapter) LinkPhase() string {
+	switch a.link.State() {
+	case LinkIdle:
+		return "idle"
+	case LinkLinking:
+		return "linking"
+	case LinkLinked:
+		return "linked"
+	case LinkError:
+		return "error"
+	default:
+		return "unknown"
+	}
 }
 
 // SetEnabled implements ui.EnableSetter. The toggle handler at

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 func newLoopbackServer(t *testing.T, h http.Handler) *httptest.Server {
@@ -80,6 +81,38 @@ func TestCompanion_OPTIONSPreflightReturns204(t *testing.T) {
 	if got := resp.Header.Get("X-Plex-Product"); got != companionProduct {
 		t.Errorf("X-Plex-Product = %q, want %s", got, companionProduct)
 	}
+	for header, want := range map[string]string{
+		"X-Plex-Device":                "MiSTer",
+		"X-Plex-Model":                 "MiSTer",
+		"X-Plex-Protocol-Version":      "2",
+		"X-Plex-Protocol-Capabilities": "timeline,playback,navigation,playqueues,provider-playback",
+	} {
+		if got := resp.Header.Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	allow := resp.Header.Get("Access-Control-Allow-Headers")
+	for _, want := range []string{
+		"X-Plex-Device",
+		"X-Plex-Model",
+		"X-Plex-Protocol-Version",
+		"X-Plex-Protocol-Capabilities",
+	} {
+		if !strings.Contains(allow, want) {
+			t.Errorf("Access-Control-Allow-Headers missing %q: %s", want, allow)
+		}
+	}
+	expose := resp.Header.Get("Access-Control-Expose-Headers")
+	for _, want := range []string{
+		"X-Plex-Device",
+		"X-Plex-Model",
+		"X-Plex-Protocol-Version",
+		"X-Plex-Protocol-Capabilities",
+	} {
+		if !strings.Contains(expose, want) {
+			t.Errorf("Access-Control-Expose-Headers missing %q: %s", want, expose)
+		}
+	}
 }
 
 func TestCompanion_OPTIONSPreflightAllowsPrivateNetworkAccess(t *testing.T) {
@@ -120,26 +153,56 @@ func TestCompanion_ResourcesAdvertiseStableIdentity(t *testing.T) {
 	if got := resp.Header.Get("X-Plex-Client-Identifier"); got != "bridge-uuid" {
 		t.Errorf("X-Plex-Client-Identifier = %q, want bridge-uuid", got)
 	}
-	if got := resp.Header.Get("X-Plex-Provides"); got != "client,player" {
-		t.Errorf("X-Plex-Provides = %q, want client,player", got)
+	if got := resp.Header.Get("X-Plex-Provides"); got != "client,player,provider-playback" {
+		t.Errorf("X-Plex-Provides = %q, want client,player,provider-playback", got)
 	}
 	if got := resp.Header.Get("X-Plex-Platform"); got != "Linux" {
 		t.Errorf("X-Plex-Platform = %q, want Linux", got)
+	}
+	if got := resp.Header.Get("X-Plex-Protocol-Version"); got != "2" {
+		t.Errorf("X-Plex-Protocol-Version = %q, want 2", got)
+	}
+	if got := resp.Header.Get("X-Plex-Protocol-Capabilities"); got != "timeline,playback,navigation,playqueues,provider-playback" {
+		t.Errorf("X-Plex-Protocol-Capabilities = %q, want full Plex target capabilities", got)
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	for _, want := range []string{
 		`machineIdentifier="bridge-uuid"`,
 		`protocol="plex"`,
+		`protocolVersion="2"`,
+		`protocolCapabilities="timeline,playback,navigation,playqueues,provider-playback"`,
 		`product="GroovyRelay"`,
 		`version="1.2.3"`,
 		`platform="Linux"`,
 		`device="MiSTer"`,
 		`model="MiSTer"`,
-		`provides="client,player"`,
+		`provides="client,player,provider-playback"`,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("resources missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestCompanion_AdvertisedNavigationEndpointsReturnOK(t *testing.T) {
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "bridge-uuid", Version: "1.2.3"}, nil)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	for _, path := range []string{
+		"/player/navigation/home",
+		"/player/navigation/music",
+		"/player/navigation/back",
+		"/player/navigation/select",
+	} {
+		resp, err := http.Get(ts.URL + path + "?commandID=1&X-Plex-Target-Client-Identifier=bridge-uuid")
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s status = %d, want %d", path, resp.StatusCode, http.StatusOK)
 		}
 	}
 }
@@ -1292,5 +1355,72 @@ func TestSessionRequestFor_OnStop_CASClearNoOpsOnSeekSameMedia(t *testing.T) {
 	}
 	if got.TranscodeSessionID != "tsid-new" {
 		t.Errorf("lastPlay TranscodeSessionID = %q, want tsid-new (NEW seek session must survive prior OnStop)", got.TranscodeSessionID)
+	}
+}
+
+func TestPlexCompanion_PlayMediaEmitsCastRequested(t *testing.T) {
+	log := eventlog.New(16)
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer",
+		DeviceUUID: "our-uuid",
+		EventLog:   log,
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-1")
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	entries := log.Snapshot()
+	if len(entries) == 0 {
+		t.Fatal("expected cast-requested entry in eventlog")
+	}
+	e := entries[len(entries)-1]
+	if e.Source != "plex" || e.Severity != eventlog.SeverityInfo {
+		t.Errorf("Source/Severity: got %q/%v, want plex/Info", e.Source, e.Severity)
+	}
+	if !strings.Contains(e.Message, "cast-requested") {
+		t.Errorf("Message: got %q, want it to contain cast-requested", e.Message)
+	}
+}
+
+func TestPlexCompanion_PlayMediaPopulatesTitle(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer",
+		DeviceUUID: "our-uuid",
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&" +
+		"title=S01E03+%E2%80%94+The+Lord+of+Light"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if got := fc.lastReq.Title; got != "S01E03 — The Lord of Light" {
+		t.Errorf("Title: got %q, want %q", got, "S01E03 — The Lord of Light")
 	}
 }

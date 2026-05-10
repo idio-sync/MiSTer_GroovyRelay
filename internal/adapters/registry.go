@@ -53,3 +53,15 @@ func (r *Registry) List() []Adapter {
 	}
 	return out
 }
+
+// NewRegistryWith constructs a Registry pre-seeded with the given
+// adapters. Convenience for tests that don't want a separate Register
+// loop. Production wiring still uses NewRegistry() + per-adapter
+// Register calls in main.go.
+func NewRegistryWith(adapters ...Adapter) *Registry {
+	r := NewRegistry()
+	for _, a := range adapters {
+		_ = r.Register(a)
+	}
+	return r
+}
