@@ -3,6 +3,7 @@ package streams
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,10 +11,11 @@ import (
 )
 
 type RefreshStatus struct {
-	ProviderID string
-	Source     string
-	FetchedAt  time.Time
-	Err        error
+	ProviderID           string
+	Source               string
+	FetchedAt            time.Time
+	Err                  error
+	refreshedProviderIDs []string
 }
 
 type refreshJobKind string
@@ -73,16 +75,16 @@ func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 		if ctx.Err() != nil {
 			return
 		}
+		markTime := time.Now()
+		defs = a.definitionSnapshot()
+		schedule.markRefreshResult(job, status, markTime, defs)
 		if status.Err != nil {
 			failures++
 		} else {
 			failures = 0
-			schedule.mark(job, time.Now(), a.definitionSnapshot())
 		}
 		interval := a.refreshInterval(status.Err, failures)
-		if status.Err == nil {
-			interval = schedule.nextInterval(time.Now(), a.configSnapshot(), a.definitionSnapshot())
-		}
+		interval = schedule.intervalAfterRefreshResult(time.Now(), a.configSnapshot(), a.definitionSnapshot(), job, status, interval)
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -111,11 +113,18 @@ func (s *refreshSchedule) nextJob(now time.Time, cfg Config, defs []ProviderDefi
 }
 
 func (s *refreshSchedule) nextInterval(now time.Time, cfg Config, defs []ProviderDefinition) time.Duration {
+	return s.nextIntervalExcludingCatalogIDs(now, cfg, defs, nil)
+}
+
+func (s *refreshSchedule) nextIntervalExcludingCatalogIDs(now time.Time, cfg Config, defs []ProviderDefinition, excluded map[string]struct{}) time.Duration {
 	next := s.lastManifest.Add(refreshHoursDuration(cfg.ManifestRefreshHours))
 	if s.lastManifest.IsZero() {
 		next = now
 	}
 	for _, def := range defs {
+		if _, ok := excluded[def.ID]; ok {
+			continue
+		}
 		catalogNext := s.lastCatalogTime(def.ID).Add(providerCatalogRefreshDuration(cfg, def))
 		if s.lastCatalogTime(def.ID).IsZero() {
 			catalogNext = now
@@ -148,6 +157,53 @@ func (s *refreshSchedule) mark(job refreshJob, at time.Time, defs []ProviderDefi
 			s.lastCatalog[providerID] = at
 		}
 	}
+}
+
+func (s *refreshSchedule) markRefreshResult(job refreshJob, status RefreshStatus, at time.Time, defs []ProviderDefinition) {
+	if job.Kind == refreshJobCatalog {
+		if len(status.refreshedProviderIDs) != 0 {
+			s.mark(refreshJob{Kind: refreshJobCatalog, ProviderIDs: status.refreshedProviderIDs}, at, defs)
+			return
+		}
+		if status.Err != nil {
+			return
+		}
+	}
+	if status.Err == nil {
+		s.mark(job, at, defs)
+	}
+}
+
+func (s *refreshSchedule) intervalAfterRefreshResult(now time.Time, cfg Config, defs []ProviderDefinition, job refreshJob, status RefreshStatus, failureInterval time.Duration) time.Duration {
+	if status.Err == nil {
+		return s.nextInterval(now, cfg, defs)
+	}
+	if job.Kind != refreshJobCatalog {
+		return failureInterval
+	}
+	failed := failedCatalogProviderSet(job.ProviderIDs, status.refreshedProviderIDs)
+	if len(failed) == 0 {
+		return failureInterval
+	}
+	nextHealthy := s.nextIntervalExcludingCatalogIDs(now, cfg, defs, failed)
+	if nextHealthy < failureInterval {
+		return nextHealthy
+	}
+	return failureInterval
+}
+
+func failedCatalogProviderSet(requested, refreshed []string) map[string]struct{} {
+	refreshedSet := make(map[string]struct{}, len(refreshed))
+	for _, providerID := range refreshed {
+		refreshedSet[providerID] = struct{}{}
+	}
+	failed := make(map[string]struct{}, len(requested))
+	for _, providerID := range requested {
+		if _, ok := refreshedSet[providerID]; !ok {
+			failed[providerID] = struct{}{}
+		}
+	}
+	return failed
 }
 
 func (s *refreshSchedule) lastCatalogTime(providerID string) time.Time {
@@ -277,47 +333,49 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 		status.Err = err
 		return status
 	}
-	catalogs := make([]ProviderCatalog, 0, len(defs))
-	bodies := map[string][]byte{}
-	metas := map[string]CacheMetadata{}
+	var errs []error
 	for _, def := range defs {
 		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, a.cacheDir)
 		if err != nil {
-			a.recordRefreshFailure(err)
-			status.Err = err
-			return status
+			errs = append(errs, err)
+			continue
 		}
 		cat, err := buildProviderCatalog(def, raw, cfg)
 		if err != nil {
-			a.recordRefreshFailure(err)
-			status.Err = err
-			return status
+			errs = append(errs, fmt.Errorf("provider %q build catalog: %w", def.ID, err))
+			continue
 		}
-		catalogs = append(catalogs, cat)
-		bodies[def.ID] = raw
-		metas[def.ID] = meta
+		if err := writeCatalogCaches(a.cacheDir, map[string][]byte{def.ID: raw}, map[string]CacheMetadata{def.ID: meta}); err != nil {
+			errs = append(errs, fmt.Errorf("provider %q write catalog cache: %w", def.ID, err))
+			continue
+		}
+
+		a.mu.Lock()
+		a.catalogs[cat.ProviderID] = cat
+		if a.state != adapters.StateStopped {
+			a.state = adapters.StateRunning
+		}
+		a.stateSince = time.Now()
+		a.mu.Unlock()
+
+		status.refreshedProviderIDs = append(status.refreshedProviderIDs, def.ID)
 		if meta.FetchedAt.After(status.FetchedAt) {
 			status.FetchedAt = meta.FetchedAt
 		}
 	}
-	if err := writeCatalogCaches(a.cacheDir, bodies, metas); err != nil {
-		a.recordRefreshFailure(err)
-		status.Err = err
+	if len(status.refreshedProviderIDs) != 0 {
+		status.Source = "remote"
+	}
+	if len(errs) != 0 {
+		status.Err = errors.Join(errs...)
+		a.recordRefreshFailure(status.Err)
 		return status
 	}
 
 	a.mu.Lock()
-	for _, cat := range catalogs {
-		a.catalogs[cat.ProviderID] = cat
-	}
 	a.lastErr = ""
-	if a.state != adapters.StateStopped {
-		a.state = adapters.StateRunning
-	}
-	a.stateSince = time.Now()
 	a.mu.Unlock()
 
-	status.Source = "remote"
 	return status
 }
 

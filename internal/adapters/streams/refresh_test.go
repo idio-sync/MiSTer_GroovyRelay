@@ -155,6 +155,181 @@ func TestRefreshScheduleUsesProviderCatalogRefreshOverride(t *testing.T) {
 	}
 }
 
+func TestRefreshScheduleMarksOnlySuccessfulCatalogProvidersOnPartialFailure(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ManifestRefreshHours = 24
+	cfg.CatalogRefreshHours = 12
+	defs := []ProviderDefinition{bundledMTVDefinition(), bundledCartoonDefinition()}
+	now := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	schedule := refreshSchedule{}
+
+	schedule.mark(refreshJob{Kind: refreshJobManifest}, now, defs)
+	job := refreshJob{Kind: refreshJobCatalog, ProviderIDs: []string{"mtv-rewind", "cartoon-rewind"}}
+	schedule.markRefreshResult(job, RefreshStatus{
+		Err:                  errors.New("mtv failed"),
+		refreshedProviderIDs: []string{"cartoon-rewind"},
+	}, now.Add(12*time.Hour), defs)
+
+	next := schedule.nextJob(now.Add(12*time.Hour), cfg, defs)
+	if next.Kind != refreshJobCatalog || len(next.ProviderIDs) != 1 || next.ProviderIDs[0] != "mtv-rewind" {
+		t.Fatalf("next job = %+v, want only failed mtv-rewind provider still due", next)
+	}
+}
+
+func TestRefreshScheduleCapsPartialFailureBackoffByNextHealthyProviderDue(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ManifestRefreshHours = 24
+	cfg.CatalogRefreshHours = 12
+	cfg.Providers["cartoon-rewind"] = ProviderConfig{CatalogRefreshHours: 3}
+	defs := []ProviderDefinition{bundledMTVDefinition(), bundledCartoonDefinition()}
+	now := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	schedule := refreshSchedule{}
+
+	schedule.mark(refreshJob{Kind: refreshJobManifest}, now, defs)
+	job := refreshJob{Kind: refreshJobCatalog, ProviderIDs: []string{"mtv-rewind", "cartoon-rewind"}}
+	status := RefreshStatus{
+		Err:                  errors.New("mtv failed"),
+		refreshedProviderIDs: []string{"cartoon-rewind"},
+	}
+	markTime := now.Add(12 * time.Hour)
+	schedule.markRefreshResult(job, status, markTime, defs)
+
+	got := schedule.intervalAfterRefreshResult(markTime, cfg, defs, job, status, 6*time.Hour)
+	if got != 3*time.Hour {
+		t.Fatalf("partial failure retry interval = %s, want capped by cartoon next due time 3h", got)
+	}
+}
+
+func TestRefreshScheduleCapsFailedOnlyRetryByNextHealthyProviderDue(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ManifestRefreshHours = 24
+	cfg.CatalogRefreshHours = 12
+	cfg.Providers["cartoon-rewind"] = ProviderConfig{CatalogRefreshHours: 3}
+	defs := []ProviderDefinition{bundledMTVDefinition(), bundledCartoonDefinition()}
+	now := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	schedule := refreshSchedule{}
+
+	schedule.mark(refreshJob{Kind: refreshJobManifest}, now, defs)
+	initialJob := refreshJob{Kind: refreshJobCatalog, ProviderIDs: []string{"mtv-rewind", "cartoon-rewind"}}
+	initialStatus := RefreshStatus{
+		Err:                  errors.New("mtv failed"),
+		refreshedProviderIDs: []string{"cartoon-rewind"},
+	}
+	markTime := now.Add(12 * time.Hour)
+	schedule.markRefreshResult(initialJob, initialStatus, markTime, defs)
+
+	retryNow := markTime.Add(time.Hour)
+	retryJob := refreshJob{Kind: refreshJobCatalog, ProviderIDs: []string{"mtv-rewind"}}
+	retryStatus := RefreshStatus{Err: errors.New("mtv still failed")}
+	got := schedule.intervalAfterRefreshResult(retryNow, cfg, defs, retryJob, retryStatus, 6*time.Hour)
+	if got != 2*time.Hour {
+		t.Fatalf("failed-only retry interval = %s, want capped by cartoon remaining due time 2h", got)
+	}
+}
+
+func TestRefreshCatalogsContinuesAfterProviderFailure(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	hits := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		hits[req.URL.Path]++
+		switch req.URL.Path {
+		case "/mtv.json":
+			http.Error(w, "upstream down", http.StatusBadGateway)
+		case "/cartoon.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"heman":["AAAAAAAAAAA"]}`))
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	mtvDef := bundledMTVDefinition()
+	mtvDef.BaseURL = server.URL
+	mtvDef.PlaylistURL = server.URL + "/mtv.json"
+	cartoonDef := bundledCartoonDefinition()
+	cartoonDef.BaseURL = server.URL
+	cartoonDef.PlaylistURL = server.URL + "/cartoon.json"
+	a.replaceDefinitionsForTest([]ProviderDefinition{mtvDef, cartoonDef})
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = true
+	a.cfg.AllowLocalManifestURLs = true
+	a.mu.Unlock()
+
+	status := a.refreshCatalogsDefault(t.Context(), []string{"mtv-rewind", "cartoon-rewind"}, "background")
+	if status.Err == nil {
+		t.Fatal("partial catalog refresh should report the failed provider")
+	}
+	if !reflect.DeepEqual(status.refreshedProviderIDs, []string{"cartoon-rewind"}) {
+		t.Fatalf("refreshed provider IDs = %#v, want only cartoon-rewind", status.refreshedProviderIDs)
+	}
+	if hits["/mtv.json"] != 1 || hits["/cartoon.json"] != 1 {
+		t.Fatalf("playlist fetches = %#v, want both providers attempted", hits)
+	}
+	cartoon := a.catalogSnapshotForTest("cartoon-rewind")
+	if got := cartoon.Channel("heman").Items[0].SourceID; got != "AAAAAAAAAAA" {
+		t.Fatalf("cartoon catalog item = %q, want refreshed catalog despite mtv failure", got)
+	}
+	mtv := a.catalogSnapshotForTest("mtv-rewind")
+	if got := mtv.Channel("metal").Items[0].SourceID; got != "dQw4w9WgXcQ" {
+		t.Fatalf("mtv catalog item = %q, want last good catalog after failed refresh", got)
+	}
+}
+
+func TestRefreshNowProviderIDRefreshesOnlyThatCatalog(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	manifestFetches := 0
+	hits := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		hits[req.URL.Path]++
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/mtv.json":
+			_, _ = w.Write([]byte(`{"metal":["BBBBBBBBBBB"]}`))
+		case "/cartoon.json":
+			_, _ = w.Write([]byte(`{"heman":["AAAAAAAAAAA"]}`))
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	mtvDef := bundledMTVDefinition()
+	mtvDef.BaseURL = server.URL
+	mtvDef.PlaylistURL = server.URL + "/mtv.json"
+	cartoonDef := bundledCartoonDefinition()
+	cartoonDef.BaseURL = server.URL
+	cartoonDef.PlaylistURL = server.URL + "/cartoon.json"
+	a.replaceDefinitionsForTest([]ProviderDefinition{mtvDef, cartoonDef})
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = true
+	a.cfg.AllowLocalManifestURLs = true
+	a.mu.Unlock()
+	a.fetchManifest = func(context.Context) (Manifest, CacheMetadata, error) {
+		manifestFetches++
+		return Manifest{}, CacheMetadata{}, nil
+	}
+
+	status := a.RefreshNow(t.Context(), "cartoon-rewind")
+	if status.Err != nil {
+		t.Fatalf("RefreshNow provider: %v", status.Err)
+	}
+	if manifestFetches != 0 {
+		t.Fatalf("provider refresh fetched manifest %d times", manifestFetches)
+	}
+	if hits["/cartoon.json"] != 1 || hits["/mtv.json"] != 0 {
+		t.Fatalf("playlist fetches = %#v, want only cartoon provider fetched", hits)
+	}
+	cartoon := a.catalogSnapshotForTest("cartoon-rewind")
+	if got := cartoon.Channel("heman").Items[0].SourceID; got != "AAAAAAAAAAA" {
+		t.Fatalf("cartoon catalog item = %q, want refreshed provider catalog", got)
+	}
+	mtv := a.catalogSnapshotForTest("mtv-rewind")
+	if got := mtv.Channel("metal").Items[0].SourceID; got != "dQw4w9WgXcQ" {
+		t.Fatalf("mtv catalog item = %q, want unchanged provider catalog", got)
+	}
+}
+
 func TestStartLoadsCachedRemoteManifestAndCatalogWithoutNetwork(t *testing.T) {
 	useManifestValidationResolver(t, blockingResolver{})
 

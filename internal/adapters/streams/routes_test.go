@@ -116,6 +116,32 @@ func TestHandleProvidersJSONFiltersByProviderIDAndQuery(t *testing.T) {
 	}
 }
 
+func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?provider_id=mtv-rewind", nil)
+	rr := httptest.NewRecorder()
+	a.handleProviders(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("provider_id status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Cartoon Rewind") {
+		t.Fatalf("provider_id HTML body = %q, want only MTV provider", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?q=he-man", nil)
+	rr = httptest.NewRecorder()
+	a.handleProviders(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("q status = %d", rr.Code)
+	}
+	body = rr.Body.String()
+	if !strings.Contains(body, "Cartoon Rewind") || !strings.Contains(body, "He-Man") || strings.Contains(body, "MTV Rewind") {
+		t.Fatalf("q HTML body = %q, want only matching cartoon provider", body)
+	}
+}
+
 func TestStatusJSONDisablesControlsForForeignOwner(t *testing.T) {
 	a, core := newTestAdapterWithFakeCore(t)
 	a.active = &ActiveQueue{
