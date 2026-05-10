@@ -203,6 +203,7 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		}
 		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
 	}
+	title := streamSessionTitle(item, resolved.Title)
 
 	req := core.SessionRequest{
 		StreamURL:         resolved.URL,
@@ -213,6 +214,8 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		DirectPlay:        true,
 		Capabilities:      core.Capabilities{CanPause: true, CanSeek: false},
 		OnStop:            a.makeOnStop(capture),
+		Source:            a.Name(),
+		Title:             title,
 	}
 	a.playbackMu.Lock()
 	if !a.captureStillActive(capture) {
@@ -234,6 +237,7 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	if capture.matches(a.active) {
 		a.active.LastResolvedAt = now
 		a.active.cancelResolve = nil
+		setActiveItemTitleLocked(a.active, capture.ItemID, title)
 	}
 	a.mu.Unlock()
 
@@ -243,6 +247,28 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		ChannelID:  q.ChannelID,
 		ItemID:     itemIdentity(item),
 	}, nil
+}
+
+func streamSessionTitle(item StreamItem, resolvedTitle string) string {
+	if title := strings.TrimSpace(resolvedTitle); title != "" {
+		return title
+	}
+	return strings.TrimSpace(item.Title)
+}
+
+func setActiveItemTitleLocked(q *ActiveQueue, itemID, title string) {
+	if q == nil || itemID == "" || title == "" {
+		return
+	}
+	if item, ok := q.currentItem(); ok && itemIdentity(item) == itemID {
+		q.Items[q.Index].Title = title
+	}
+	for i := range q.baseItems {
+		if streamItemMatches(q.baseItems[i], itemID) {
+			q.baseItems[i].Title = title
+			return
+		}
+	}
 }
 
 func (a *Adapter) Next(ctx context.Context) error {

@@ -40,6 +40,9 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	if !req.Capabilities.CanPause || req.Capabilities.CanSeek {
 		t.Fatalf("streams capabilities = %+v, want pause only", req.Capabilities)
 	}
+	if req.Source != "streams" || req.Title != "Clip" {
+		t.Fatalf("SessionRequest source/title = %q/%q, want streams/Clip", req.Source, req.Title)
+	}
 	if req.OnStop == nil {
 		t.Fatal("streams sessions should install OnStop")
 	}
@@ -51,6 +54,10 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	}
 	if resolver.calls != 1 || resolver.pageURLs[0] == "" {
 		t.Fatalf("resolver calls = %d urls=%v", resolver.calls, resolver.pageURLs)
+	}
+	item, ok := a.active.currentItem()
+	if !ok || item.Title != "Clip" {
+		t.Fatalf("active item title = %+v, want Clip", item)
 	}
 }
 

@@ -43,10 +43,13 @@ type QueueStatusView struct {
 	ChannelID    string    `json:"channel_id"`
 	ChannelName  string    `json:"channel_name,omitempty"`
 	ItemID       string    `json:"item_id,omitempty"`
+	ItemTitle    string    `json:"item_title,omitempty"`
 	Index        int       `json:"index"`
 	Total        int       `json:"total"`
 	StartedAt    time.Time `json:"started_at,omitempty"`
 	AdapterRef   string    `json:"adapter_ref,omitempty"`
+	PositionMS   int64     `json:"position_ms,omitempty"`
+	DurationMS   int64     `json:"duration_ms,omitempty"`
 }
 
 type ControlCapabilities struct {
@@ -129,13 +132,19 @@ func (a *Adapter) statusView() StatusView {
 		}
 		if item, ok := q.currentItem(); ok {
 			active.ItemID = itemIdentity(item)
+			active.ItemTitle = item.Title
 		}
-		if activeRef != "" && a.core != nil && a.core.Status().AdapterRef == activeRef {
-			caps.CanStop = true
-			caps.CanReplay = a.canReplayLocked(q)
-			caps.CanNext = q.canAdvanceNext()
-			caps.CanPrevious = q.canAdvancePrevious()
-			caps.CanPause = true
+		if activeRef != "" && a.core != nil {
+			coreStatus := a.core.Status()
+			if coreStatus.AdapterRef == activeRef {
+				active.PositionMS = coreStatus.Position.Milliseconds()
+				active.DurationMS = coreStatus.Duration.Milliseconds()
+				caps.CanStop = true
+				caps.CanReplay = a.canReplayLocked(q)
+				caps.CanNext = q.canAdvanceNext()
+				caps.CanPrevious = q.canAdvancePrevious()
+				caps.CanPause = true
+			}
 		}
 	}
 
@@ -164,7 +173,11 @@ func (a *Adapter) canReplayLocked(q *ActiveQueue) bool {
 func (a *Adapter) renderPanel() string {
 	view := a.statusView()
 	var b strings.Builder
-	b.WriteString(`<section class="streams-panel" id="streams-panel" hx-get="/ui/adapter/streams/panel" hx-trigger="every 5s" hx-swap="outerHTML">`)
+	trigger := "every 5s"
+	if view.Active != nil {
+		trigger = "every 1s"
+	}
+	fmt.Fprintf(&b, `<section class="streams-panel" id="streams-panel" hx-get="/ui/adapter/streams/panel" hx-trigger="%s" hx-swap="outerHTML">`, trigger)
 	b.WriteString(`<h3>Streams</h3>`)
 	b.WriteString(`<div class="controls">`)
 	button(&b, "/ui/adapter/streams/refresh", "Refresh", false)
@@ -173,6 +186,15 @@ func (a *Adapter) renderPanel() string {
 	if view.Active != nil {
 		fmt.Fprintf(&b, `<p class="status run">Playing: %s / %s</p>`,
 			esc(view.Active.ProviderName), esc(view.Active.ChannelName))
+		if view.Active.ItemTitle != "" {
+			fmt.Fprintf(&b, `<p class="streams-now-title">%s</p>`, esc(view.Active.ItemTitle))
+		}
+		if view.Active.DurationMS > 0 {
+			position := time.Duration(view.Active.PositionMS) * time.Millisecond
+			duration := time.Duration(view.Active.DurationMS) * time.Millisecond
+			fmt.Fprintf(&b, `<p class="position">%s / %s</p>`,
+				formatDuration(position), formatDuration(duration))
+		}
 		b.WriteString(`<div class="controls">`)
 		button(&b, "/ui/adapter/streams/previous", "Previous", !view.Capabilities.CanPrevious)
 		button(&b, "/ui/adapter/streams/next", "Next", !view.Capabilities.CanNext)
@@ -301,6 +323,20 @@ func (a *Adapter) respondControlError(w http.ResponseWriter, status int, msg str
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	fmt.Fprintf(w, `<div class="gr-callout err" id="streams-panel"><p>%s</p></div>`, esc(msg))
+}
+
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d / time.Second)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
 func sortedChannels(channels []Channel) []Channel {
