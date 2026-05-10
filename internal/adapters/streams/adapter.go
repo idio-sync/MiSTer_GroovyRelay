@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
+	"math/rand"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -25,7 +26,8 @@ type AdapterConfig struct {
 
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
-	Stop() error
+	PauseIfAdapterRef(string) (bool, error)
+	StopIfAdapterRef(string) (bool, error)
 	Status() core.SessionStatus
 }
 
@@ -44,15 +46,21 @@ type Adapter struct {
 	fetchManifest func(context.Context) (Manifest, CacheMetadata, error)
 	refreshOnce   func(ctx context.Context, reason string) RefreshStatus
 
-	mu              sync.Mutex
-	cfg             Config
-	state           adapters.State
-	lastErr         string
-	stateSince      time.Time
-	definitions     map[string]ProviderDefinition
-	definitionOrder []string
-	catalogs        map[string]ProviderCatalog
-	active          *ActiveQueue
+	// Test seam for deterministic stale-continuation interleaving coverage.
+	beforeQueueContinuation func()
+	// Test seam for deterministic StopQueue/OnStop interleaving coverage.
+	beforeStopQueuePlaybackLock func(queueCapture)
+	playbackMu                  sync.Mutex
+	mu                          sync.Mutex
+	cfg                         Config
+	state                       adapters.State
+	lastErr                     string
+	stateSince                  time.Time
+	rng                         *rand.Rand
+	definitions                 map[string]ProviderDefinition
+	definitionOrder             []string
+	catalogs                    map[string]ProviderCatalog
+	active                      *ActiveQueue
 
 	loopCtx    context.Context
 	loopCancel context.CancelFunc
@@ -70,6 +78,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		cfg:         DefaultConfig(),
 		state:       adapters.StateStopped,
 		stateSince:  time.Now(),
+		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
 		definitions: map[string]ProviderDefinition{},
 		catalogs:    map[string]ProviderCatalog{},
 	}
@@ -189,6 +198,7 @@ func (a *Adapter) Stop() error {
 	a.mu.Lock()
 	cancel := a.loopCancel
 	done := a.loopDone
+	coreManager := a.core
 	a.loopCtx = nil
 	a.loopCancel = nil
 	a.loopDone = nil
@@ -202,6 +212,22 @@ func (a *Adapter) Stop() error {
 	}
 	if done != nil {
 		<-done
+	}
+
+	a.playbackMu.Lock()
+	defer a.playbackMu.Unlock()
+
+	a.mu.Lock()
+	ref := activeAdapterRef(a.active)
+	hadActive := a.active != nil
+	if hadActive {
+		a.clearActiveLocked()
+	}
+	a.mu.Unlock()
+
+	if hadActive && coreManager != nil && ref != "" {
+		_, err := coreManager.StopIfAdapterRef(ref)
+		return err
 	}
 	return nil
 }

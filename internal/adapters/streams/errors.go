@@ -6,6 +6,7 @@ const (
 	ErrKindNoMatch           ErrorKind = "no_match"
 	ErrKindInvalidExtraction ErrorKind = "invalid_extraction"
 	ErrKindProviderDisabled  ErrorKind = "provider_disabled"
+	ErrKindPlayback          ErrorKind = "playback"
 )
 
 type StreamsError struct {

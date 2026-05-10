@@ -2,8 +2,6 @@ package streams
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	stdurl "net/url"
 	"sort"
@@ -107,46 +105,6 @@ func (a *Adapter) definitionsInOrderLocked() []ProviderDefinition {
 		definitions = append(definitions, a.definitions[id])
 	}
 	return definitions
-}
-
-func (a *Adapter) StartResolvedStream(ctx context.Context, res streamhandoff.Resolution) (streamhandoff.StartResult, error) {
-	_ = ctx
-
-	a.mu.Lock()
-	enabled := a.cfg.Enabled
-	providerCfg, hasProviderCfg := a.cfg.Providers[res.ProviderID]
-	catalogs := make(map[string]ProviderCatalog, len(a.catalogs))
-	for id, cat := range a.catalogs {
-		catalogs[id] = cat
-	}
-	a.mu.Unlock()
-
-	if !enabled {
-		return streamhandoff.StartResult{}, &StreamsError{
-			Kind:    ErrKindProviderDisabled,
-			Message: "streams adapter is disabled",
-		}
-	}
-	if hasProviderCfg && providerCfg.Disabled {
-		return streamhandoff.StartResult{}, &StreamsError{
-			Kind:    ErrKindProviderDisabled,
-			Message: fmt.Sprintf("streams provider %q is disabled", res.ProviderID),
-		}
-	}
-	if err := validateStreamResolution(catalogs, res); err != nil {
-		return streamhandoff.StartResult{}, err
-	}
-
-	ref := res.AdapterRef
-	if ref == "" {
-		ref = newStreamsAdapterRef()
-	}
-	return streamhandoff.StartResult{
-		AdapterRef: ref,
-		ProviderID: res.ProviderID,
-		ChannelID:  res.ChannelID,
-		ItemID:     res.ItemID,
-	}, nil
 }
 
 func urlRuleMatchesLocation(rule URLRule, scheme, host, escapedPath string) bool {
@@ -295,10 +253,4 @@ func defaultPortForScheme(scheme string) string {
 	default:
 		return ""
 	}
-}
-
-func newStreamsAdapterRef() string {
-	var b [4]byte
-	_, _ = rand.Read(b[:])
-	return "streams:" + hex.EncodeToString(b[:])
 }

@@ -130,6 +130,8 @@ type activeSession struct {
 	duration       time.Duration
 }
 
+var errAdapterRefChanged = errors.New("adapter ref changed")
+
 // NewManager constructs a Manager. The Sender must already be bound to the
 // MiSTer's address; Manager does not own its lifecycle (the sender is shared
 // across the process lifetime so its source UDP port remains stable).
@@ -392,8 +394,36 @@ func (m *Manager) StartSession(req SessionRequest) error {
 func (m *Manager) Pause() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.pauseLocked("")
+}
+
+// PauseIfAdapterRef pauses the active session only when the current
+// AdapterRef still matches ref. It lets adapters avoid a Status()+Pause()
+// check-then-act race against cross-adapter preemption.
+func (m *Manager) PauseIfAdapterRef(ref string) (bool, error) {
+	if ref == "" {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil || m.active.req.AdapterRef != ref {
+		return false, nil
+	}
+	if err := m.pauseLocked(ref); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func (m *Manager) pauseLocked(expectedRef string) error {
 	if m.active == nil {
 		return fmt.Errorf("no session to pause")
+	}
+	if expectedRef != "" && m.active.req.AdapterRef != expectedRef {
+		return errAdapterRefChanged
 	}
 	if !m.active.req.Capabilities.CanPause {
 		return fmt.Errorf("adapter does not support pause")
@@ -411,6 +441,9 @@ func (m *Manager) Pause() error {
 			m.mu.Unlock()
 			<-prev.Done()
 			m.mu.Lock()
+			if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+				return errAdapterRefChanged
+			}
 		}
 	}
 	return m.fsm.Transition(EvPause)
@@ -516,8 +549,36 @@ func (m *Manager) DropActiveCast(reason string) error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.stopLocked("")
+}
+
+// StopIfAdapterRef stops the active session only when the current AdapterRef
+// still matches ref. It lets adapters avoid a Status()+Stop() check-then-act
+// race against cross-adapter preemption.
+func (m *Manager) StopIfAdapterRef(ref string) (bool, error) {
+	if ref == "" {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil || m.active.req.AdapterRef != ref {
+		return false, nil
+	}
+	if err := m.stopLocked(ref); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func (m *Manager) stopLocked(expectedRef string) error {
 	var subtitlePath string
 	var onStop func(string)
+	if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+		return errAdapterRefChanged
+	}
 	if m.active != nil {
 		subtitlePath = m.active.req.SubtitlePath
 		onStop = m.active.req.OnStop
@@ -533,6 +594,9 @@ func (m *Manager) Stop() error {
 			m.mu.Unlock()
 			<-prev.Done()
 			m.mu.Lock()
+			if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+				return errAdapterRefChanged
+			}
 		}
 	}
 	m.active = nil
