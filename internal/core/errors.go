@@ -22,8 +22,10 @@ import "errors"
 var (
 	// ErrProbeUnreachable indicates the upstream media probe could not
 	// reach the source (DNS failure, TCP refused, ffprobe timeout, HTTP
-	// 4xx/5xx, etc.). Wrapped by Manager.probeForStart at the
-	// "probe source" failure path so callers can branch via errors.Is.
+	// 4xx/5xx, etc.). Wrapped by Manager.probeForStart only when the
+	// ffprobe failure looks like a reachability problem; parse/invalid-
+	// data failures remain generic probe errors so callers can map them
+	// separately.
 	ErrProbeUnreachable = errors.New("probe unreachable")
 
 	// ErrPolicyRejected is reserved for the case where an adapter's

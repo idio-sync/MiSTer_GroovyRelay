@@ -93,7 +93,12 @@ func (a *Adapter) handlePause(w http.ResponseWriter, args pauseArgs) {
 		return
 	}
 
-	if err := a.core.Pause(); err != nil {
+	matched, err := a.core.PauseIfAdapterRef(owned)
+	if !matched {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
+	if err != nil {
 		// Don't echo err.Error() into lastError — a wrapped
 		// ffmpeg/dataplane error could surface container paths or
 		// internal hostnames into a SOAP GetTransportInfo response

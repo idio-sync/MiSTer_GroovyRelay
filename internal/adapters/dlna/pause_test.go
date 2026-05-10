@@ -212,6 +212,32 @@ func TestPause_CoreFailure_Returns501AndSetsLastError(t *testing.T) {
 	}
 }
 
+func TestPause_RefMismatchAtCoreCall_Returns701(t *testing.T) {
+	a, fake, ref := pausePrimedAdapter(t)
+	fake.pauseIfMismatch = true
+
+	rr := avtSendPause(t, a, "<InstanceID>0</InstanceID>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotPauseCalls() != 0 {
+		t.Errorf("core.Pause called %d times after ref mismatch; want 0",
+			fake.snapshotPauseCalls())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != ref {
+		t.Errorf("currentRef = %q after ref mismatch; want %q", a.currentRef, ref)
+	}
+	if a.transportState != transportStatePlaying {
+		t.Errorf("transportState = %q after ref mismatch; want PLAYING",
+			a.transportState)
+	}
+}
+
 // ---- Concurrent-Play guard ----
 
 func TestPlay_StartInFlight_Returns701(t *testing.T) {
@@ -400,13 +426,14 @@ func TestPlay_PausedResume_LiveUnknownDuration_RebuildsAtLiveEdge(t *testing.T) 
 	if req.StreamURL != "http://192.168.1.99/movie.mp4" {
 		t.Errorf("rebuilt StreamURL = %q, want preserved loaded URI", req.StreamURL)
 	}
+	if req.AdapterRef != originalRef {
+		t.Errorf("rebuilt AdapterRef = %q, want preserved ref %q", req.AdapterRef, originalRef)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentRef == originalRef {
-		t.Error("currentRef unchanged after live-edge rebuild; want fresh ref via markStartInFlight")
-	}
-	if a.currentRef == "" {
-		t.Error("currentRef empty after live-edge rebuild; want fresh ref")
+	if a.currentRef != originalRef {
+		t.Errorf("currentRef = %q after live-edge rebuild; want preserved ref %q",
+			a.currentRef, originalRef)
 	}
 	if a.transportState != transportStatePlaying {
 		t.Errorf("transportState = %q after live-edge rebuild; want PLAYING", a.transportState)
@@ -414,13 +441,9 @@ func TestPlay_PausedResume_LiveUnknownDuration_RebuildsAtLiveEdge(t *testing.T) 
 }
 
 // TestPlay_PausedResume_LiveEdgeFailure_GenericError_Returns501 mirrors
-// TestPlay_StartSessionFailure_RollsBackRef but enters the failure path
-// from the live-edge resume caller (PAUSED_PLAYBACK → live-edge rebuild)
-// instead of the fresh-start caller. P3.1 review issue 1: the
-// buildAndStartSession failure block must force transportState=STOPPED
-// unconditionally so both callers leave the same observable shape —
-// otherwise the live-edge caller would strand the adapter at
-// PAUSED_PLAYBACK with an empty currentRef, an "orphan PAUSED" state.
+// TestPlay_StartSessionFailure_RollsBackRef but enters from the live-edge
+// resume caller. The existing paused session must remain visible if the
+// reconnect probe/start fails before core replaces it.
 func TestPlay_PausedResume_LiveEdgeFailure_GenericError_Returns501(t *testing.T) {
 	a, fake := avtPlayAdapter(t)
 	originalRef := "dlna:live-edge-fail"
@@ -450,20 +473,15 @@ func TestPlay_PausedResume_LiveEdgeFailure_GenericError_Returns501(t *testing.T)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// Rollback discipline: ref cleared, in-flight cleared.
-	if a.currentRef != "" {
-		t.Errorf("currentRef = %q after live-edge rebuild failure; want empty (rollback)",
-			a.currentRef)
+	if a.currentRef != originalRef {
+		t.Errorf("currentRef = %q after live-edge rebuild failure; want preserved ref %q",
+			a.currentRef, originalRef)
 	}
 	if a.startInFlight {
 		t.Error("startInFlight = true after live-edge rebuild failure; want false")
 	}
-	// The fix from issue 1: transportState must land at STOPPED, NOT
-	// stay at PAUSED_PLAYBACK. Without the unconditional set, the
-	// live-edge caller would strand at PAUSED_PLAYBACK with currentRef
-	// empty — the orphan-PAUSED bug.
-	if a.transportState != transportStateStopped {
-		t.Errorf("transportState = %q after live-edge rebuild failure; want STOPPED (orphan-PAUSED guard)",
+	if a.transportState != transportStatePausedPlayback {
+		t.Errorf("transportState = %q after live-edge rebuild failure; want PAUSED_PLAYBACK",
 			a.transportState)
 	}
 	if a.lastError == "" {
@@ -508,15 +526,15 @@ func TestPlay_PausedResume_LiveEdgeFailure_ProbeUnreachable_Returns716(t *testin
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentRef != "" {
-		t.Errorf("currentRef = %q after live-edge probe-unreachable failure; want empty (rollback)",
-			a.currentRef)
+	if a.currentRef != originalRef {
+		t.Errorf("currentRef = %q after live-edge probe-unreachable failure; want preserved ref %q",
+			a.currentRef, originalRef)
 	}
 	if a.startInFlight {
 		t.Error("startInFlight = true after live-edge probe-unreachable failure; want false")
 	}
-	if a.transportState != transportStateStopped {
-		t.Errorf("transportState = %q after live-edge probe-unreachable failure; want STOPPED",
+	if a.transportState != transportStatePausedPlayback {
+		t.Errorf("transportState = %q after live-edge probe-unreachable failure; want PAUSED_PLAYBACK",
 			a.transportState)
 	}
 	if a.lastError == "" {
@@ -580,6 +598,26 @@ func TestGetCurrentTransportActions_PausedOwnSeekable_PlayStopSeek(t *testing.T)
 	}
 	if !strings.Contains(rr.Body.String(), "<Actions>Play,Stop,Seek</Actions>") {
 		t.Errorf("body missing <Actions>Play,Stop,Seek</Actions>; got: %s", rr.Body.String())
+	}
+}
+
+func TestGetCurrentTransportActions_PlayingForeignSession_Empty(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	a.mu.Lock()
+	a.currentRef = "dlna:ours"
+	a.transportState = transportStatePlaying
+	a.mu.Unlock()
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: "plex:/library/metadata/1234", Duration: 2 * time.Hour}
+	}
+
+	req, rr := avtSOAPRequest(t, "GetCurrentTransportActions", "<InstanceID>0</InstanceID>")
+	a.handleAVTransportSOAP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<Actions></Actions>") {
+		t.Errorf("body missing empty Actions for foreign session; got: %s", rr.Body.String())
 	}
 }
 

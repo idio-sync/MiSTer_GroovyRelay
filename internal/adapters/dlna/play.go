@@ -115,21 +115,21 @@ func extractStopArgs(args map[string]string) stopArgs {
 //
 // Decision tree (spec §Play, lines 353-372):
 //
-//   1. InstanceID == 0 (else 718).
-//   2. Speed == "1" (else 717). Empty Speed defaults to "1" — some
-//      controllers omit it on the assumption the renderer treats
-//      missing-Speed as 1, which matches AVTransport:1's default.
-//   3. Snapshot enabled + currentRef + transportState + startInFlight
-//      under mu, drop, call core.Status(), enforce ownership.
-//   4. Branch:
-//      a. Already PLAYING with own session → success no-op.
-//      b. PAUSED_PLAYBACK with own session → either core.Play() (VOD
-//         with known duration) or rebuild + StartSession with
-//         SeekOffsetMs=0 for live/unknown-duration (live-edge resume
-//         per spec §Play line 358).
-//      c. No active DLNA session AND a URI is loaded → fresh start
-//         via startFreshSession.
-//      d. No active DLNA session AND no URI loaded → 701.
+//  1. InstanceID == 0 (else 718).
+//  2. Speed == "1" (else 717). Empty Speed defaults to "1" — some
+//     controllers omit it on the assumption the renderer treats
+//     missing-Speed as 1, which matches AVTransport:1's default.
+//  3. Snapshot enabled + currentRef + transportState + startInFlight
+//     under mu, drop, call core.Status(), enforce ownership.
+//  4. Branch:
+//     a. Already PLAYING with own session → success no-op.
+//     b. PAUSED_PLAYBACK with own session → either core.Play() (VOD
+//     with known duration) or rebuild + StartSession with
+//     SeekOffsetMs=0 for live/unknown-duration (live-edge resume
+//     per spec §Play line 358).
+//     c. No active DLNA session AND a URI is loaded → fresh start
+//     via startFreshSession.
+//     d. No active DLNA session AND no URI loaded → 701.
 //
 // The mutex is never held across core.* calls (CLAUDE.md discipline):
 // every snapshot is a brief lock/read/release, and every state
@@ -203,7 +203,12 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 		// SeekOffsetMs=0 and call core.StartSession to reconnect from
 		// the live edge."
 		if st.Duration > 0 {
-			if err := a.core.Play(); err != nil {
+			matched, err := a.core.PlayIfAdapterRef(owned)
+			if !matched {
+				writeSOAPFault(w, upnpErrTransitionNotAvail)
+				return
+			}
+			if err != nil {
 				// Don't echo err.Error() into lastError — a wrapped
 				// ffmpeg/dataplane error could surface container paths
 				// or internal hostnames into a SOAP GetTransportInfo
@@ -222,13 +227,11 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 			return
 		}
 
-		// Live / unknown-duration resume: rebuild a fresh SessionRequest
-		// and reconnect at the live edge. The new markStartInFlight
-		// inside buildAndStartSession overwrites currentRef under mu;
-		// the prior session's OnStop closure still carries the OLD ref
-		// by value and will no-op on the compare-and-clear if it fires
-		// late (spec §Session Ref Lifecycle step 4).
-		if code := a.buildAndStartSession(0); code != 0 {
+		// Live / unknown-duration resume: rebuild the same SessionRequest
+		// at the live edge while preserving the existing AdapterRef. If
+		// probe/start fails before core replaces the plane, the paused
+		// session remains owned by DLNA and visible to future actions.
+		if code := a.buildAndStartSession(0, owned); code != 0 {
 			writeSOAPFault(w, code)
 			return
 		}
@@ -268,42 +271,43 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 // Returns 0 on success or a UPnP fault code on failure.
 //
 // Thin wrapper over buildAndStartSession that encodes the "fresh start"
-// intent: SeekOffsetMs=0 from a STOPPED state. The PAUSED→live-edge
-// reconnect branch in handlePlay also calls buildAndStartSession(0) but
-// from a PAUSED state with an existing ref about to be superseded —
-// keeping these as two callers (rather than collapsing them) makes the
-// state-transition contract at the call site explicit.
+// intent: SeekOffsetMs=0 from a STOPPED state with no expected active core
+// ref. The PAUSED→live-edge reconnect branch passes its current ref so the
+// same DLNA session remains visible if reconnect fails before core replaces
+// the plane.
 func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
-	return a.buildAndStartSession(0)
+	return a.buildAndStartSession(0, "")
 }
 
 // buildAndStartSession is the shared core of startFreshSession and the
-// PAUSED→live-edge reconnect branch in handlePlay. Mints a fresh ref +
-// OnStop closure, builds the SessionRequest from the currently loaded
-// URI, and calls core.StartSession at the given SeekOffsetMs. Returns
+// PAUSED→live-edge reconnect branch in handlePlay. Fresh starts mint a
+// ref; live-edge reconnects preserve the existing ref. Both paths build
+// the SessionRequest from the currently loaded URI and call core at the
+// given SeekOffsetMs. Returns
 // 0 on success or a UPnP fault code on failure.
 //
 // Locking discipline (spec §Session Ref Lifecycle steps 1-6):
 //
-//   1. Snapshot the loaded URI under mu.
-//   2. markStartInFlight under mu (sets currentRef + startInFlight).
-//   3. Build the OnStop closure that captures the freshly-minted ref
-//      by VALUE — so a late OnStop from a superseded session no-ops
-//      on its own captured ref instead of clobbering ours.
-//   4. Drop mu before calling core.StartSession.
-//   5. On success: clearStartInFlight(ref, true) keeps currentRef and
-//      flips transportState to PLAYING.
-//   6. On failure: clearStartInFlight(ref, false) rolls back ref +
-//      records lastError + maps to 716 (probe unreachable) or 501
-//      (anything else) per the spec's fault mapping table.
+//  1. Snapshot the loaded URI under mu.
+//  2. markStartInFlightFor under mu (sets startInFlight and either
+//     mints currentRef or preserves the expected currentRef).
+//  3. Build the OnStop closure that captures the session ref
+//     by VALUE — so a late OnStop from a superseded session no-ops
+//     on its own captured ref instead of clobbering ours.
+//  4. Drop mu before calling core.StartSessionIfAdapterRef.
+//  5. On success: clearStartInFlight(ref, true) keeps currentRef and
+//     flips transportState to PLAYING.
+//  6. On failure: fresh starts roll back the minted ref; live-edge
+//     reconnects keep the paused ref/state. Both record lastError and
+//     map to 716 (probe unreachable) or 501 (anything else) per the
+//     spec's fault mapping table.
 //
 // Why a shared helper: the live-edge reconnect path in handlePlay
-// rebuilds the same SessionRequest the fresh-start path builds, just
-// with the prior ref about to be replaced. Centralizing here keeps the
-// ref/OnStop mint, the SessionRequest shape, and the rollback discipline
-// in one place; the two callers differ only in which transport state
-// they enter the helper from.
-func (a *Adapter) buildAndStartSession(seekOffsetMs int) (faultCode upnpErrorCode) {
+// rebuilds the same SessionRequest the fresh-start path builds, while
+// preserving the prior ref. Centralizing here keeps the ref/OnStop
+// capture, the SessionRequest shape, and the rollback discipline in one
+// place.
+func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string) (faultCode upnpErrorCode) {
 	// Snapshot the loaded URI under mu. We DO NOT need to hold mu
 	// across the StartSession call — the URL is captured into a local.
 	a.mu.Lock()
@@ -316,11 +320,13 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int) (faultCode upnpErrorCod
 		return upnpErrTransitionNotAvail
 	}
 
-	// Mint the fresh ref under mu and build the OnStop closure that
-	// captures THIS ref by value. A late OnStop from a preempted
-	// session carries its own captured ref and no-ops on the compare-
-	// and-clear in onStopForRef.
-	ref := a.markStartInFlight()
+	// Admit this StartSession attempt atomically. Fresh starts mint a
+	// new ref; live-edge resumes preserve the paused session's existing
+	// ref. Either way, only one start may be in flight at a time.
+	ref, admitted := a.markStartInFlightFor(expectedCoreRef)
+	if !admitted {
+		return upnpErrTransitionNotAvail
+	}
 	onStop := a.onStopForRef(ref)
 
 	req := core.SessionRequest{
@@ -343,7 +349,16 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int) (faultCode upnpErrorCod
 		MediaInputPolicy: dlnaInputPolicy(),
 	}
 
-	if err := a.core.StartSession(req); err != nil {
+	matched, err := a.core.StartSessionIfAdapterRef(req, expectedCoreRef)
+	if !matched {
+		if expectedCoreRef == "" {
+			a.clearStartInFlight(ref, false)
+		} else {
+			a.clearStartInFlightPreserveRef(ref)
+		}
+		return upnpErrTransitionNotAvail
+	}
+	if err != nil {
 		// Roll back the ref and record a redacted last error. Spec table
 		// at line 321: "Backend probe/playback failure → 716 when the
 		// resource cannot be reached, otherwise 501 Action Failed."
@@ -352,30 +367,26 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int) (faultCode upnpErrorCod
 		// policy rejection) maps to 501. The match here is errors.Is
 		// rather than direct equality so the joined/wrapped chain
 		// works.
-		a.clearStartInFlight(ref, false)
+		if expectedCoreRef == "" {
+			a.clearStartInFlight(ref, false)
+		} else {
+			a.clearStartInFlightPreserveRef(ref)
+		}
 		// Don't include err.Error() verbatim — ffprobe stderr can
 		// echo internal hosts or path fragments. Just record that
 		// StartSession failed; redactURL gives a scheme+host snapshot
 		// for operator context.
 		a.setLastError("StartSession failed for " + redactURL(loadedURI))
-		// On failure: roll back the just-minted ref and force STOPPED
-		// so both callers (fresh-start from STOPPED, live-edge resume
-		// from PAUSED_PLAYBACK) observe the same post-failure shape —
-		// empty currentRef, transportState=STOPPED, ERROR_OCCURRED via
-		// lastError. Without this the live-edge caller would leave a
-		// controller-visible "orphan PAUSED" state. The compare-and-
-		// clear guard mirrors clearStartInFlight(ref, false): we only
-		// touch transportState if our ref was the latest at clear time.
-		// If a newer session has already overwritten currentRef before
-		// this lock, we leave its transportState untouched.
-		a.mu.Lock()
-		if a.currentRef == "" {
-			// clearStartInFlight just cleared it (success path of the
-			// compare-and-clear) — no newer session present, so set
-			// STOPPED to normalize across both call sites.
-			a.transportState = transportStateStopped
+		if expectedCoreRef == "" {
+			// Fresh-start failure rolls back to STOPPED/no ref. Live-edge
+			// resume failure preserves the paused ref/state because core
+			// may still own that session.
+			a.mu.Lock()
+			if a.currentRef == "" {
+				a.transportState = transportStateStopped
+			}
+			a.mu.Unlock()
 		}
-		a.mu.Unlock()
 		if errors.Is(err, core.ErrProbeUnreachable) {
 			return upnpErrResourceNotFound
 		}
@@ -494,7 +505,12 @@ func (a *Adapter) handleStop(w http.ResponseWriter, args stopArgs) {
 		return
 	}
 
-	if err := a.core.Stop(); err != nil {
+	matched, err := a.core.StopIfAdapterRef(owned)
+	if !matched {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
+	if err != nil {
 		// Don't echo err.Error() into lastError — a wrapped
 		// ffmpeg/dataplane shutdown error could surface container paths
 		// or internal hostnames into a SOAP GetTransportInfo response

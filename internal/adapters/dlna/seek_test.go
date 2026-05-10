@@ -187,6 +187,33 @@ func TestSeek_ForeignSession_Returns701(t *testing.T) {
 	}
 }
 
+func TestSeek_RefMismatchAtCoreCall_Returns701(t *testing.T) {
+	a, fake, ref := seekPrimedAdapter(t)
+	fake.seekIfMismatch = true
+
+	rr := avtSendSeek(t, a,
+		"<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:30</Target>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotSeekCalls() != 0 {
+		t.Errorf("core.SeekTo called %d times after ref mismatch; want 0",
+			fake.snapshotSeekCalls())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != ref {
+		t.Errorf("currentRef = %q after ref mismatch; want %q", a.currentRef, ref)
+	}
+	if a.transportState != transportStatePlaying {
+		t.Errorf("transportState = %q after ref mismatch; want PLAYING",
+			a.transportState)
+	}
+}
+
 func TestSeek_EmptyTarget_Returns711(t *testing.T) {
 	a, fake, _ := seekPrimedAdapter(t)
 	rr := avtSendSeek(t, a,
@@ -289,6 +316,23 @@ func TestSeek_TargetBeyondDuration_Returns711(t *testing.T) {
 	}
 }
 
+func TestSeek_HugeTargetOverflow_Returns711(t *testing.T) {
+	a, fake, _ := seekPrimedAdapter(t)
+
+	rr := avtSendSeek(t, a,
+		"<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>3000000:00:00</Target>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>711</errorCode>") {
+		t.Errorf("body missing errorCode 711: %s", rr.Body.String())
+	}
+	if fake.snapshotSeekCalls() != 0 {
+		t.Errorf("core.SeekTo called %d times on overflowing target; want 0",
+			fake.snapshotSeekCalls())
+	}
+}
+
 func TestSeek_HappyPath_CallsCoreSeekToWithCorrectOffset(t *testing.T) {
 	a, fake, _ := seekPrimedAdapter(t)
 
@@ -383,6 +427,7 @@ func TestParseUPnPDuration(t *testing.T) {
 		{"missing colons", "30", 0, true},
 		{"out-of-range minute", "00:60:00", 0, true},
 		{"out-of-range second", "00:00:60", 0, true},
+		{"overflowing hours", "3000000:00:00", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -36,6 +36,10 @@ func (f *fakeSessionManager) StartSession(core.SessionRequest) error {
 	return nil
 }
 
+func (f *fakeSessionManager) StartSessionIfAdapterRef(req core.SessionRequest, ref string) (bool, error) {
+	return true, f.StartSession(req)
+}
+
 func (f *fakeSessionManager) Status() core.SessionStatus {
 	if f.statusFn != nil {
 		return f.statusFn()
@@ -50,11 +54,19 @@ func (f *fakeSessionManager) Pause() error {
 	return nil
 }
 
+func (f *fakeSessionManager) PauseIfAdapterRef(ref string) (bool, error) {
+	return true, f.Pause()
+}
+
 func (f *fakeSessionManager) Play() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.playCalls++
 	return nil
+}
+
+func (f *fakeSessionManager) PlayIfAdapterRef(ref string) (bool, error) {
+	return true, f.Play()
 }
 
 func (f *fakeSessionManager) Stop() error {
@@ -64,11 +76,19 @@ func (f *fakeSessionManager) Stop() error {
 	return nil
 }
 
+func (f *fakeSessionManager) StopIfAdapterRef(ref string) (bool, error) {
+	return true, f.Stop()
+}
+
 func (f *fakeSessionManager) SeekTo(int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seekCalls++
 	return nil
+}
+
+func (f *fakeSessionManager) SeekToIfAdapterRef(ref string, offsetMs int) (bool, error) {
+	return true, f.SeekTo(offsetMs)
 }
 
 // newAdapterWithFake builds an Adapter whose core is the given fake.

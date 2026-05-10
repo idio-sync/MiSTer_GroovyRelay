@@ -270,11 +270,14 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		// any core.SeekTo call would run, so advertising Seek for them
 		// would be deceptive.
 		ownSession := owned != "" && st.AdapterRef == owned
+		foreignActive := st.AdapterRef != "" && !ownSession
 		canSeek := ownSession && st.Duration > 0
 
 		actions := ""
 		switch {
 		case !hasURI:
+			actions = ""
+		case foreignActive:
 			actions = ""
 		case state == transportStatePlaying:
 			actions = "Pause,Stop"

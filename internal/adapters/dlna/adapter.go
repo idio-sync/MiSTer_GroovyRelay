@@ -24,11 +24,16 @@ import (
 // SessionManager interface (internal/adapters/url/adapter.go:24-31).
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	StartSessionIfAdapterRef(core.SessionRequest, string) (bool, error)
 	Status() core.SessionStatus
 	Pause() error
+	PauseIfAdapterRef(string) (bool, error)
 	Play() error
+	PlayIfAdapterRef(string) (bool, error)
 	Stop() error
+	StopIfAdapterRef(string) (bool, error)
 	SeekTo(offsetMs int) error
+	SeekToIfAdapterRef(string, int) (bool, error)
 }
 
 // errForeignSession is the sentinel returned by ownershipGuard when
@@ -267,6 +272,34 @@ func (a *Adapter) markStartInFlight() string {
 	return ref
 }
 
+// markStartInFlightFor conditionally admits a StartSession attempt.
+// expectedRef == "" means "fresh start": mint and store a new DLNA ref,
+// but only when no other start is already in flight. expectedRef != ""
+// means "same-session rebuild": keep that ref and only mark in-flight if
+// currentRef still matches. Caller must NOT hold mu.
+func (a *Adapter) markStartInFlightFor(expectedRef string) (string, bool) {
+	mintedRef := ""
+	if expectedRef == "" {
+		mintedRef = a.mintSessionRef()
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.startInFlight {
+		return "", false
+	}
+	if expectedRef != "" {
+		if a.currentRef != expectedRef {
+			return "", false
+		}
+		a.startInFlight = true
+		return expectedRef, true
+	}
+	a.currentRef = mintedRef
+	a.startInFlight = true
+	return mintedRef, true
+}
+
 // clearStartInFlight reconciles the in-flight bookkeeping after a
 // StartSession call returns. Caller must NOT hold mu.
 //
@@ -288,6 +321,18 @@ func (a *Adapter) clearStartInFlight(ref string, success bool) {
 	if !success {
 		a.currentRef = ""
 	}
+}
+
+// clearStartInFlightPreserveRef clears only the in-flight flag for a
+// same-session rebuild. Used by live-edge resume failures: core may still
+// own the paused session, so the adapter must keep currentRef visible.
+func (a *Adapter) clearStartInFlightPreserveRef(ref string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != ref {
+		return
+	}
+	a.startInFlight = false
 }
 
 // ownershipGuard is the read-only check Pause / Play / Stop / Seek run

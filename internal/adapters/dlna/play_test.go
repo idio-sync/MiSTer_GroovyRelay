@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -38,6 +39,11 @@ type captureSessionManager struct {
 	// startErr lets a test inject a StartSession error to exercise the
 	// rollback path. nil = success.
 	startErr error
+	// startIfMismatch makes StartSessionIfAdapterRef report that core's
+	// active AdapterRef no longer matched by the time the atomic core call
+	// ran. The broad StartSession method ignores this, which lets tests
+	// catch check-then-act races.
+	startIfMismatch bool
 
 	// startEntered/blockStart let tests hold StartSession open so they
 	// can observe the adapter's in-flight admission behavior.
@@ -47,18 +53,26 @@ type captureSessionManager struct {
 	// stopErr lets a test inject a Stop error to exercise the
 	// 501-Action-Failed branch in handleStop.
 	stopErr error
+	// stopIfMismatch makes StopIfAdapterRef report an ownership mismatch.
+	stopIfMismatch bool
 
 	// playErr lets a test inject a Play error to exercise the
 	// PAUSED→Play branch's error path.
 	playErr error
+	// playIfMismatch makes PlayIfAdapterRef report an ownership mismatch.
+	playIfMismatch bool
 
 	// pauseErr lets a test inject a Pause error to exercise the
 	// 501-Action-Failed branch in handlePause.
 	pauseErr error
+	// pauseIfMismatch makes PauseIfAdapterRef report an ownership mismatch.
+	pauseIfMismatch bool
 
 	// seekErr lets a test inject a SeekTo error to exercise the
 	// 501-Action-Failed branch in handleSeek.
 	seekErr error
+	// seekIfMismatch makes SeekToIfAdapterRef report an ownership mismatch.
+	seekIfMismatch bool
 
 	// seekOffsets captures every SeekTo offsetMs argument in order so
 	// tests can assert the milliseconds value the handler computed.
@@ -95,6 +109,16 @@ func (c *captureSessionManager) StartSession(req core.SessionRequest) error {
 	return startErr
 }
 
+func (c *captureSessionManager) StartSessionIfAdapterRef(req core.SessionRequest, ref string) (bool, error) {
+	c.mu.Lock()
+	mismatch := c.startIfMismatch
+	c.mu.Unlock()
+	if mismatch {
+		return false, nil
+	}
+	return true, c.StartSession(req)
+}
+
 func (c *captureSessionManager) Status() core.SessionStatus {
 	if c.statusFn != nil {
 		return c.statusFn()
@@ -109,11 +133,31 @@ func (c *captureSessionManager) Pause() error {
 	return c.pauseErr
 }
 
+func (c *captureSessionManager) PauseIfAdapterRef(ref string) (bool, error) {
+	c.mu.Lock()
+	mismatch := c.pauseIfMismatch
+	c.mu.Unlock()
+	if mismatch {
+		return false, nil
+	}
+	return true, c.Pause()
+}
+
 func (c *captureSessionManager) Play() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.playCalls++
 	return c.playErr
+}
+
+func (c *captureSessionManager) PlayIfAdapterRef(ref string) (bool, error) {
+	c.mu.Lock()
+	mismatch := c.playIfMismatch
+	c.mu.Unlock()
+	if mismatch {
+		return false, nil
+	}
+	return true, c.Play()
 }
 
 func (c *captureSessionManager) Stop() error {
@@ -123,12 +167,32 @@ func (c *captureSessionManager) Stop() error {
 	return c.stopErr
 }
 
+func (c *captureSessionManager) StopIfAdapterRef(ref string) (bool, error) {
+	c.mu.Lock()
+	mismatch := c.stopIfMismatch
+	c.mu.Unlock()
+	if mismatch {
+		return false, nil
+	}
+	return true, c.Stop()
+}
+
 func (c *captureSessionManager) SeekTo(offsetMs int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seekCalls++
 	c.seekOffsets = append(c.seekOffsets, offsetMs)
 	return c.seekErr
+}
+
+func (c *captureSessionManager) SeekToIfAdapterRef(ref string, offsetMs int) (bool, error) {
+	c.mu.Lock()
+	mismatch := c.seekIfMismatch
+	c.mu.Unlock()
+	if mismatch {
+		return false, nil
+	}
+	return true, c.SeekTo(offsetMs)
 }
 
 // lastReq returns the most-recent captured SessionRequest. Convenience
@@ -224,6 +288,15 @@ func avtSendStop(t *testing.T, a *Adapter, argsXML string) *httptest.ResponseRec
 	return rr
 }
 
+func waitForTestSignal(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
 // ---- Play handler ----
 
 func TestPlay_FreshStart_StoresRefAndPlays(t *testing.T) {
@@ -286,6 +359,34 @@ func TestPlay_FreshStart_StoresRefAndPlays(t *testing.T) {
 	}
 	if a.lastError != "" {
 		t.Errorf("lastError = %q after success; want empty", a.lastError)
+	}
+}
+
+func TestPlay_FreshStartCoreRefMismatch_Returns701(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	fake.startIfMismatch = true
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotStartCalls() != 0 {
+		t.Errorf("StartSession called %d times after ref mismatch; want 0",
+			fake.snapshotStartCalls())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != "" {
+		t.Errorf("currentRef = %q after ref mismatch; want empty", a.currentRef)
+	}
+	if a.startInFlight {
+		t.Error("startInFlight = true after ref mismatch; want false")
+	}
+	if a.transportState != transportStateStopped {
+		t.Errorf("transportState = %q after ref mismatch; want STOPPED", a.transportState)
 	}
 }
 
@@ -393,6 +494,60 @@ func TestPlay_StartInFlightRejectsSecondFreshStart(t *testing.T) {
 	}
 }
 
+func TestPlay_ConcurrentRequestsPastInitialSnapshot_OnlyOneStarts(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	fake.startEntered = make(chan struct{}, 1)
+	fake.blockStart = make(chan struct{})
+	fake.statusFn = func() core.SessionStatus {
+		entered <- struct{}{}
+		<-release
+		return core.SessionStatus{}
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			done <- avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+		}()
+	}
+
+	waitForTestSignal(t, entered, "first status snapshot")
+	waitForTestSignal(t, entered, "second status snapshot")
+	close(release)
+	waitForTestSignal(t, fake.startEntered, "winning StartSession")
+
+	loser := <-done
+	if loser.Code != 500 || !strings.Contains(loser.Body.String(), "<errorCode>701</errorCode>") {
+		t.Fatalf("losing Play response status=%d body=%s; want 701", loser.Code, loser.Body.String())
+	}
+	if got := fake.snapshotStartCalls(); got != 1 {
+		t.Fatalf("StartSession called %d times while winner blocked, want 1", got)
+	}
+	close(fake.blockStart)
+
+	winner := <-done
+	successes := 0
+	rejects := 0
+	for _, rr := range []*httptest.ResponseRecorder{loser, winner} {
+		switch {
+		case rr.Code == 200:
+			successes++
+		case rr.Code == 500 && strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>"):
+			rejects++
+		default:
+			t.Fatalf("unexpected Play response status=%d body=%s", rr.Code, rr.Body.String())
+		}
+	}
+	if successes != 1 || rejects != 1 {
+		t.Fatalf("responses: successes=%d rejects=%d, want 1/1", successes, rejects)
+	}
+	if got := fake.snapshotStartCalls(); got != 1 {
+		t.Errorf("StartSession called %d times, want 1", got)
+	}
+}
+
 func TestPlay_PausedOwnSession_CallsCorePlay(t *testing.T) {
 	// PAUSED → core.Play() resume branch (VOD with known duration).
 	// Spec §Play line 358 splits on Duration: known-duration sources
@@ -429,6 +584,42 @@ func TestPlay_PausedOwnSession_CallsCorePlay(t *testing.T) {
 	if a.transportState != transportStatePlaying {
 		t.Errorf("transportState = %q, want %q after resume",
 			a.transportState, transportStatePlaying)
+	}
+}
+
+func TestPlay_PausedResume_VODRefMismatch_Returns701(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+
+	ref := "dlna:abc123"
+	a.mu.Lock()
+	a.currentRef = ref
+	a.transportState = transportStatePausedPlayback
+	a.mu.Unlock()
+
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: ref, Duration: time.Hour}
+	}
+	fake.playIfMismatch = true
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotPlayCalls() != 0 {
+		t.Errorf("core.Play called %d times after ref mismatch; want 0",
+			fake.snapshotPlayCalls())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != ref {
+		t.Errorf("currentRef = %q after ref mismatch; want %q", a.currentRef, ref)
+	}
+	if a.transportState != transportStatePausedPlayback {
+		t.Errorf("transportState = %q after ref mismatch; want PAUSED_PLAYBACK",
+			a.transportState)
 	}
 }
 
@@ -652,6 +843,39 @@ func TestStop_OwnSession_CallsCoreStop(t *testing.T) {
 	}
 	if fake.snapshotStopCalls() != 1 {
 		t.Errorf("core.Stop called %d times, want 1", fake.snapshotStopCalls())
+	}
+}
+
+func TestStop_RefMismatchAtCoreCall_Returns701(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200", rr.Code)
+	}
+	a.mu.Lock()
+	ref := a.currentRef
+	a.mu.Unlock()
+
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: ref}
+	}
+	fake.stopIfMismatch = true
+
+	rr2 := avtSendStop(t, a, "<InstanceID>0</InstanceID>")
+	if rr2.Code != 500 {
+		t.Errorf("status = %d, want 500", rr2.Code)
+	}
+	if !strings.Contains(rr2.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr2.Body.String())
+	}
+	if fake.snapshotStopCalls() != 0 {
+		t.Errorf("core.Stop called %d times after ref mismatch; want 0",
+			fake.snapshotStopCalls())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != ref {
+		t.Errorf("currentRef = %q after ref mismatch; want %q", a.currentRef, ref)
 	}
 }
 

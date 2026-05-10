@@ -9,12 +9,11 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 )
 
-// TestProbeForStart_WrapsErrProbeUnreachable proves the P3.0 contract:
-// any probeFn failure flows back through probeForStart with
-// ErrProbeUnreachable in the error chain, so DLNA handlers can fault-
-// map via errors.Is. The underlying ffprobe error remains accessible
-// for slog / operator logging.
-func TestProbeForStart_WrapsErrProbeUnreachable(t *testing.T) {
+// TestProbeForStart_WrapsErrProbeUnreachableForNetworkFailures proves
+// the fault-mapping contract for source reachability failures: DLNA
+// handlers can map errors.Is(ErrProbeUnreachable) to UPnP 716 while the
+// underlying ffprobe error remains available for slog/operator logging.
+func TestProbeForStart_WrapsErrProbeUnreachableForNetworkFailures(t *testing.T) {
 	origProbe := probeFn
 	t.Cleanup(func() { probeFn = origProbe })
 
@@ -30,6 +29,28 @@ func TestProbeForStart_WrapsErrProbeUnreachable(t *testing.T) {
 	}
 	if !errors.Is(err, ErrProbeUnreachable) {
 		t.Errorf("errors.Is(err, ErrProbeUnreachable) = false; err=%v", err)
+	}
+	if !errors.Is(err, sentinelInner) {
+		t.Errorf("inner ffprobe error not preserved in chain: %v", err)
+	}
+}
+
+func TestProbeForStart_DoesNotWrapProbeParseFailureAsUnreachable(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+
+	sentinelInner := errors.New("parse ffprobe: invalid character 'n'")
+	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return nil, sentinelInner
+	}
+
+	m := newTestManager(t)
+	_, _, _, err := m.probeForStart(SessionRequest{StreamURL: "https://example/clip.mp4"})
+	if err == nil {
+		t.Fatal("probeForStart returned nil error; want wrapped failure")
+	}
+	if errors.Is(err, ErrProbeUnreachable) {
+		t.Errorf("errors.Is(err, ErrProbeUnreachable) = true for parse failure; err=%v", err)
 	}
 	if !errors.Is(err, sentinelInner) {
 		t.Errorf("inner ffprobe error not preserved in chain: %v", err)

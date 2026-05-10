@@ -163,7 +163,12 @@ func (a *Adapter) handleSeek(w http.ResponseWriter, args seekArgs) {
 	// and bounded by st.Duration (which is in-range time.Duration), so
 	// the int conversion is safe.
 	offsetMs := int(target / time.Millisecond)
-	if err := a.core.SeekTo(offsetMs); err != nil {
+	matched, err := a.core.SeekToIfAdapterRef(owned, offsetMs)
+	if !matched {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
+	if err != nil {
 		// Don't echo err.Error() into lastError — a wrapped
 		// ffmpeg/dataplane seek error could surface container paths or
 		// internal hostnames into a SOAP GetTransportInfo response
@@ -237,9 +242,21 @@ func parseUPnPDuration(s string) (time.Duration, error) {
 	if err != nil || sec < 0 || sec >= 60 {
 		return 0, errInvalidUPnPDuration
 	}
-	total := time.Duration(h)*time.Hour +
-		time.Duration(m)*time.Minute +
-		time.Duration(sec)*time.Second
+	const maxDuration = time.Duration(1<<63 - 1)
+	if int64(h) > int64(maxDuration/time.Hour) {
+		return 0, errInvalidUPnPDuration
+	}
+	total := time.Duration(h) * time.Hour
+	minuteDur := time.Duration(m) * time.Minute
+	if minuteDur > maxDuration-total {
+		return 0, errInvalidUPnPDuration
+	}
+	total += minuteDur
+	secondDur := time.Duration(sec) * time.Second
+	if secondDur > maxDuration-total {
+		return 0, errInvalidUPnPDuration
+	}
+	total += secondDur
 
 	if fracPart != "" {
 		// Pad or truncate to 3 digits (milliseconds). UPnP says
@@ -256,7 +273,11 @@ func parseUPnPDuration(s string) (time.Duration, error) {
 		if err != nil || ms < 0 {
 			return 0, errInvalidUPnPDuration
 		}
-		total += time.Duration(ms) * time.Millisecond
+		msDur := time.Duration(ms) * time.Millisecond
+		if msDur > maxDuration-total {
+			return 0, errInvalidUPnPDuration
+		}
+		total += msDur
 	}
 
 	return total, nil

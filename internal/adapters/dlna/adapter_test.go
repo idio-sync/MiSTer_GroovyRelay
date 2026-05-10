@@ -33,11 +33,26 @@ func validAdapterConfig() AdapterConfig {
 type stubSessionManager struct{}
 
 func (*stubSessionManager) StartSession(core.SessionRequest) error { return nil }
-func (*stubSessionManager) Status() core.SessionStatus             { return core.SessionStatus{} }
-func (*stubSessionManager) Pause() error                           { return nil }
-func (*stubSessionManager) Play() error                            { return nil }
-func (*stubSessionManager) Stop() error                            { return nil }
-func (*stubSessionManager) SeekTo(int) error                       { return nil }
+func (*stubSessionManager) StartSessionIfAdapterRef(core.SessionRequest, string) (bool, error) {
+	return true, nil
+}
+func (*stubSessionManager) Status() core.SessionStatus { return core.SessionStatus{} }
+func (*stubSessionManager) Pause() error               { return nil }
+func (*stubSessionManager) PauseIfAdapterRef(string) (bool, error) {
+	return true, nil
+}
+func (*stubSessionManager) Play() error { return nil }
+func (*stubSessionManager) PlayIfAdapterRef(string) (bool, error) {
+	return true, nil
+}
+func (*stubSessionManager) Stop() error { return nil }
+func (*stubSessionManager) StopIfAdapterRef(string) (bool, error) {
+	return true, nil
+}
+func (*stubSessionManager) SeekTo(int) error { return nil }
+func (*stubSessionManager) SeekToIfAdapterRef(string, int) (bool, error) {
+	return true, nil
+}
 
 func TestNew_RequiresCore(t *testing.T) {
 	cfg := validAdapterConfig()

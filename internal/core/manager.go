@@ -274,6 +274,44 @@ var (
 	}
 )
 
+func probeErrorIsLikelyUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"connection refused",
+		"connection reset",
+		"connection timed out",
+		"could not resolve host",
+		"dial tcp",
+		"failed to resolve",
+		"host not found",
+		"http 4",
+		"http 5",
+		"http error 4",
+		"http error 5",
+		"i/o timeout",
+		"network is unreachable",
+		"no route to host",
+		"no such host",
+		"not found",
+		"server returned 4",
+		"server returned 5",
+		"temporary failure in name resolution",
+		"timed out",
+		"tls handshake timeout",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
 // context so a stuck PMS cannot deadlock the control plane. Called by
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
@@ -291,12 +329,15 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 	}
 	probe, err := probeFn(ctx, ffprobePath, req.StreamURL, req.MediaInputPolicy)
 	if err != nil {
-		// Join the underlying ffprobe error with ErrProbeUnreachable so
-		// adapters can distinguish "couldn't reach the source" (UPnP 716
-		// for DLNA) from "something else broke" via errors.Is. The
-		// underlying error remains in the chain for slog / operator
-		// visibility; the sentinel is purely a category tag.
-		return nil, nil, "", errors.Join(fmt.Errorf("probe source: %w", err), ErrProbeUnreachable)
+		wrapped := fmt.Errorf("probe source: %w", err)
+		if probeErrorIsLikelyUnreachable(err) {
+			// Join the underlying ffprobe error with ErrProbeUnreachable
+			// only for likely source reachability failures. Parse /
+			// invalid-data failures remain generic probe errors so DLNA
+			// maps them to 501 instead of over-reporting Resource not found.
+			return nil, nil, "", errors.Join(wrapped, ErrProbeUnreachable)
+		}
+		return nil, nil, "", wrapped
 	}
 	var cropRect *ffmpeg.CropRect
 	if m.bridge.Video.AspectMode == "auto" {
@@ -489,6 +530,30 @@ func (m *Manager) StartSession(req SessionRequest) error {
 	return m.fsm.Transition(EvPlayMedia)
 }
 
+// StartSessionIfAdapterRef starts req only when the active session still
+// matches expectedRef. expectedRef == "" means "there must be no active
+// session"; a non-empty expectedRef means "replace/replay this same adapter
+// session only." The probe still runs before Manager.mu, then the ref is
+// checked under the lock immediately before mutating the plane.
+func (m *Manager) StartSessionIfAdapterRef(req SessionRequest, expectedRef string) (bool, error) {
+	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
+	if err != nil {
+		return true, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case expectedRef == "" && m.active != nil:
+		return false, nil
+	case expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef):
+		return false, nil
+	}
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath); err != nil {
+		return true, err
+	}
+	return true, m.fsm.Transition(EvPlayMedia)
+}
+
 // Pause stops the data plane and transitions the FSM to Paused. The current
 // plane position is snapshotted so Play can resume from it. Returns an error
 // if there is no active session or the adapter does not advertise CanPause.
@@ -553,13 +618,35 @@ func (m *Manager) pauseLocked(expectedRef string) error {
 // Play resumes a paused session by respawning the data plane at the
 // snapshotted pause position.
 func (m *Manager) Play() error {
+	_, err := m.playIfAdapterRef("")
+	return err
+}
+
+// PlayIfAdapterRef resumes the active paused session only when the current
+// AdapterRef still matches ref. It avoids a Status()+Play() check-then-act
+// race against cross-adapter preemption.
+func (m *Manager) PlayIfAdapterRef(ref string) (bool, error) {
+	if ref == "" {
+		return false, nil
+	}
+	return m.playIfAdapterRef(ref)
+}
+
+func (m *Manager) playIfAdapterRef(expectedRef string) (bool, error) {
 	// Capture the active request outside the lock so we can probe against
 	// the same URL without holding the mutex.
 	m.mu.Lock()
 	a := m.active
 	if a == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("no session to resume")
+		if expectedRef != "" {
+			return false, nil
+		}
+		return true, fmt.Errorf("no session to resume")
+	}
+	if expectedRef != "" && a.req.AdapterRef != expectedRef {
+		m.mu.Unlock()
+		return false, nil
 	}
 	req := a.req
 	resumeMs := int(a.pausedPosition / time.Millisecond)
@@ -570,15 +657,26 @@ func (m *Manager) Play() error {
 
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
-		return err
+		if expectedRef != "" {
+			m.mu.Lock()
+			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
+		return true, err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath); err != nil {
-		return err
+	if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+		return false, nil
 	}
-	return m.fsm.Transition(EvPlay)
+	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath); err != nil {
+		return true, err
+	}
+	return true, m.fsm.Transition(EvPlay)
 }
 
 // SetInterlaceFieldOrder changes the interlace polarity live —
@@ -715,31 +813,64 @@ func (m *Manager) stopLocked(expectedRef string) error {
 // stays in Playing (or Paused) per the Seek semantics; only the data plane
 // changes. Requires an active session whose adapter advertises CanSeek.
 func (m *Manager) SeekTo(offsetMs int) error {
+	_, err := m.seekToIfAdapterRef("", offsetMs)
+	return err
+}
+
+// SeekToIfAdapterRef seeks the active session only when the current
+// AdapterRef still matches ref. It lets adapters avoid a Status()+SeekTo()
+// check-then-act race against cross-adapter preemption.
+func (m *Manager) SeekToIfAdapterRef(ref string, offsetMs int) (bool, error) {
+	if ref == "" {
+		return false, nil
+	}
+	return m.seekToIfAdapterRef(ref, offsetMs)
+}
+
+func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, error) {
 	m.mu.Lock()
 	a := m.active
 	if a == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("no session")
+		if expectedRef != "" {
+			return false, nil
+		}
+		return true, fmt.Errorf("no session")
+	}
+	if expectedRef != "" && a.req.AdapterRef != expectedRef {
+		m.mu.Unlock()
+		return false, nil
 	}
 	if !a.req.Capabilities.CanSeek {
 		m.mu.Unlock()
-		return fmt.Errorf("adapter does not support seek")
+		return true, fmt.Errorf("adapter does not support seek")
 	}
 	req := a.req
 	m.mu.Unlock()
 
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
-		return err
+		if expectedRef != "" {
+			m.mu.Lock()
+			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
+		return true, err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+		return false, nil
+	}
 	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath); err != nil {
-		return err
+		return true, err
 	}
 	// Seek keeps state=playing; FSM's Seek event is a no-op transition.
-	return m.fsm.Transition(EvSeek)
+	return true, m.fsm.Transition(EvSeek)
 }
 
 // Status returns the live session status, including the running plane's
