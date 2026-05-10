@@ -135,6 +135,23 @@ func (m *Manager) emit(sev eventlog.Severity, msg string) {
 	})
 }
 
+// makeOnInitCallback constructs the dataplane.PlaneConfig.OnInit closure
+// for a new session, capturing adapterRef and modelineName at call time
+// (i.e. while m.mu is held in startPlaneLocked). The returned closure
+// fires from the Plane.Run goroutine without holding m.mu, so it must NOT
+// read any m.bridge fields at fire time — that would race with concurrent
+// UpdateBridge calls. See PR2 code review concern #1.
+func (m *Manager) makeOnInitCallback(adapterRef, modelineName string) func(error) {
+	return func(err error) {
+		if err != nil {
+			m.emit(eventlog.SeverityErr, fmt.Sprintf("init-failed: %v", err))
+			return
+		}
+		m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-started %s · %s",
+			adapterRef, modelineName))
+	}
+}
+
 // activeSession is the manager's private per-session context. Adapter-
 // specific state (subscribers, media keys, etc.) stays in the adapter.
 type activeSession struct {
@@ -330,14 +347,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioRate:     m.bridge.Audio.SampleRate,
 		AudioChans:    m.bridge.Audio.Channels,
 		SeekOffsetMs:  offsetMs,
-		OnInit: func(err error) {
-			if err != nil {
-				m.emit(eventlog.SeverityErr, fmt.Sprintf("init-failed: %v", err))
-				return
-			}
-			m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-started %s · %s",
-				req.AdapterRef, m.bridge.Video.Modeline))
-		},
+		OnInit: m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
 	m.active = &activeSession{
