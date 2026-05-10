@@ -13,7 +13,7 @@ import (
 )
 
 func TestStart_NoToken_Errors(t *testing.T) {
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: "https://jf.example.com", MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	err := a.Start(t.Context())
@@ -28,7 +28,7 @@ func TestStart_TokenProbe401_WipesAndError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "stale", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestStart_HappyPath_DialsAndPostsCapabilities(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: srv.URL}); err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestStart_ServerURLDriftForcesUnlink(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	// Token says we linked against a DIFFERENT server.
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", ServerURL: "https://old.example.com"}); err != nil {
