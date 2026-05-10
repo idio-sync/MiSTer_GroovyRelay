@@ -51,6 +51,13 @@ type PlaneConfig struct {
 	AudioRate     int // Go-side integer (48000)
 	AudioChans    int // 2 for stereo
 	SeekOffsetMs  int // reported as session start position
+
+	// OnInit is fired exactly once after the INIT handshake completes.
+	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
+	// err = INIT timeout or socket error (Run will return this same
+	// error). Manager wires this into eventlog emission per spec §S7.
+	// Optional; may be nil for tests that don't care about init events.
+	OnInit func(err error)
 }
 
 // framePoolSlots is the depth of the free queue. Sized to videoChCap + 2
@@ -302,6 +309,9 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	initPkt := groovy.BuildInit(lz4Mode, soundRate, byte(audioChans), p.cfg.RGBMode)
 	ack, err := p.cfg.Sender.SendInitAwaitACK(initPkt, 60*time.Millisecond)
+	if p.cfg.OnInit != nil {
+		p.cfg.OnInit(err)
+	}
 	if err != nil {
 		return fmt.Errorf("init handshake: %w", err)
 	}

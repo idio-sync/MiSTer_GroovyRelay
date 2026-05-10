@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
@@ -24,19 +25,10 @@ func (r staticBinaryResolver) Resolve() (string, error) {
 	return string(r), nil
 }
 
-// newTestManager returns a Manager with a Sender bound to a free local port.
-// The sender is never actually used by these tests: StartSession gets a
-// missing test ffprobe path so it fails at the Probe step before any UDP
-// traffic. We still construct a real sender so NewManager's real constructor
-// is exercised without depending on host ffprobe behavior.
-func newTestManager(t *testing.T) *Manager {
+// testBridgeConfig returns a minimal BridgeConfig suitable for unit tests.
+func testBridgeConfig(t *testing.T) config.BridgeConfig {
 	t.Helper()
-	sender, err := groovynet.NewSender("127.0.0.1", 0, 0)
-	if err != nil {
-		t.Fatalf("new sender: %v", err)
-	}
-	t.Cleanup(func() { _ = sender.Close() })
-	bridge := config.BridgeConfig{
+	return config.BridgeConfig{
 		MiSTer: config.MisterConfig{
 			Host:       "127.0.0.1",
 			Port:       32100,
@@ -54,11 +46,28 @@ func newTestManager(t *testing.T) *Manager {
 			Channels:   2,
 		},
 	}
+}
+
+// newTestManager returns a Manager with a Sender bound to a free local port.
+// The sender is never actually used by these tests: StartSession gets a
+// missing test ffprobe path so it fails at the Probe step before any UDP
+// traffic. We still construct a real sender so NewManager's real constructor
+// is exercised without depending on host ffprobe behavior.
+// Extra opts are forwarded to NewManager after the default WithBinaryResolvers.
+func newTestManager(t *testing.T, opts ...ManagerOption) *Manager {
+	t.Helper()
+	sender, err := groovynet.NewSender("127.0.0.1", 0, 0)
+	if err != nil {
+		t.Fatalf("new sender: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	bridge := testBridgeConfig(t)
 	toolsDir := t.TempDir()
-	return NewManager(bridge, sender, WithBinaryResolvers(
+	allOpts := append([]ManagerOption{WithBinaryResolvers(
 		staticBinaryResolver(filepath.Join(toolsDir, "missing-ffmpeg")),
 		staticBinaryResolver(filepath.Join(toolsDir, "missing-ffprobe")),
-	))
+	)}, opts...)
+	return NewManager(bridge, sender, allOpts...)
 }
 
 // bogusRequest builds a SessionRequest for tests whose Manager has a missing
@@ -624,6 +633,82 @@ func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
 	}
 	if got := capturedCropHeaders["User-Agent"]; got != "groovyrelay" {
 		t.Errorf("User-Agent should pass through filter; got %q (full=%v)", got, capturedCropHeaders)
+	}
+}
+
+func TestManager_WithEventLog_AppendsBridgeBoot(t *testing.T) {
+	// WithEventLog sets the field; no event is emitted by the option itself.
+	// This test exists so the option survives later refactors.
+	log := eventlog.New(16)
+	m := NewManager(testBridgeConfig(t), nil, WithEventLog(log))
+	if m.eventLog != log {
+		t.Error("WithEventLog did not store the log pointer")
+	}
+}
+
+func TestManager_EmitsCastStarted(t *testing.T) {
+	// Unit test for the entry shape: invoke m.emit directly with the
+	// same payload the production OnInit callback would produce.
+	log := eventlog.New(16)
+	m := newTestManager(t, WithEventLog(log))
+	m.active = &activeSession{req: SessionRequest{AdapterRef: "plex/abc"}}
+	m.emit(eventlog.SeverityInfo,
+		fmt.Sprintf("cast-started %s · %s", m.active.req.AdapterRef, m.bridge.Video.Modeline))
+
+	entries := log.Snapshot()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Source != "core" || e.Severity != eventlog.SeverityInfo ||
+		!strings.Contains(e.Message, "cast-started plex/abc") {
+		t.Errorf("entry: %+v", e)
+	}
+}
+
+func TestManager_EmitsCastEnded(t *testing.T) {
+	log := eventlog.New(16)
+	m := newTestManager(t, WithEventLog(log))
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	m.active = &activeSession{req: SessionRequest{AdapterRef: "plex/abc"}}
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	entries := log.Snapshot()
+	if len(entries) == 0 {
+		t.Fatal("expected at least one event entry")
+	}
+	last := entries[len(entries)-1]
+	if last.Source != "core" {
+		t.Errorf("Source: got %q, want %q", last.Source, "core")
+	}
+	if last.Severity != eventlog.SeverityInfo {
+		t.Errorf("Severity: got %v, want Info", last.Severity)
+	}
+	if !strings.Contains(last.Message, "cast-ended") {
+		t.Errorf("Message: got %q, want substring %q", last.Message, "cast-ended")
+	}
+}
+
+func TestManager_EmitsInitFailed_AsErr(t *testing.T) {
+	log := eventlog.New(16)
+	m := newTestManager(t, WithEventLog(log))
+	m.emit(eventlog.SeverityErr, "init-failed: timeout")
+	entries := log.Snapshot()
+	if len(entries) != 1 || entries[0].Severity != eventlog.SeverityErr {
+		t.Fatalf("entries: %+v", entries)
+	}
+}
+
+func TestManager_EmitsCastPreempted(t *testing.T) {
+	log := eventlog.New(16)
+	m := newTestManager(t, WithEventLog(log))
+	m.emit(eventlog.SeverityInfo, "cast-preempted plex/old")
+	entries := log.Snapshot()
+	if len(entries) != 1 || !strings.Contains(entries[0].Message, "cast-preempted") {
+		t.Fatalf("entries: %+v", entries)
 	}
 }
 

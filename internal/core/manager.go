@@ -19,6 +19,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -90,6 +91,8 @@ type Manager struct {
 	cancelFn context.CancelFunc
 	plane    *dataplane.Plane // nil when idle
 	active   *activeSession
+
+	eventLog *eventlog.Log // nilable; nil disables event emission
 }
 
 // BinaryResolver is the manager's narrow view of an external binary resolver.
@@ -107,6 +110,29 @@ func WithBinaryResolvers(ffmpegResolver, ffprobeResolver BinaryResolver) Manager
 		m.ffmpegResolver = ffmpegResolver
 		m.ffprobeResolver = ffprobeResolver
 	}
+}
+
+// WithEventLog wires the event-log ring buffer for cast lifecycle
+// emissions. Nil disables emission; tests that don't care about
+// events can omit this option.
+func WithEventLog(log *eventlog.Log) ManagerOption {
+	return func(m *Manager) {
+		m.eventLog = log
+	}
+}
+
+// emit appends to the eventlog if one is wired. Safe to call when
+// eventLog is nil.
+func (m *Manager) emit(sev eventlog.Severity, msg string) {
+	if m.eventLog == nil {
+		return
+	}
+	m.eventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "core",
+		Message:  msg,
+	})
 }
 
 // activeSession is the manager's private per-session context. Adapter-
@@ -217,14 +243,19 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	//    still needs the file.
 	var oldSubtitle string
 	var oldOnStop func(string)
+	var oldRef string
 	if m.active != nil && m.active.req.SubtitlePath != req.SubtitlePath {
 		oldSubtitle = m.active.req.SubtitlePath
 	}
 	if m.active != nil {
 		oldOnStop = m.active.req.OnStop
+		oldRef = m.active.req.AdapterRef
 	}
 	if m.cancelFn != nil {
 		slog.Info("preempting prior session for new request", "new_url", redactURL(req.StreamURL))
+		if oldRef != "" {
+			m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-preempted %s", oldRef))
+		}
 		prev := m.plane
 		m.cancelFn()
 		m.cancelFn = nil
@@ -299,6 +330,14 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioRate:     m.bridge.Audio.SampleRate,
 		AudioChans:    m.bridge.Audio.Channels,
 		SeekOffsetMs:  offsetMs,
+		OnInit: func(err error) {
+			if err != nil {
+				m.emit(eventlog.SeverityErr, fmt.Sprintf("init-failed: %v", err))
+				return
+			}
+			m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-started %s · %s",
+				req.AdapterRef, m.bridge.Video.Modeline))
+		},
 	})
 	m.plane = plane
 	m.active = &activeSession{
@@ -506,9 +545,11 @@ func (m *Manager) Stop() error {
 	defer m.mu.Unlock()
 	var subtitlePath string
 	var onStop func(string)
+	var adapterRef string
 	if m.active != nil {
 		subtitlePath = m.active.req.SubtitlePath
 		onStop = m.active.req.OnStop
+		adapterRef = m.active.req.AdapterRef
 	}
 	if m.active != nil || m.plane != nil {
 		slog.Debug("stopping active session")
@@ -524,6 +565,9 @@ func (m *Manager) Stop() error {
 		}
 	}
 	m.active = nil
+	if adapterRef != "" {
+		m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-ended %s", adapterRef))
+	}
 	removeSubtitleFile(subtitlePath)
 	notifySessionStop(onStop, "stopped")
 	return m.fsm.Transition(EvStop)
