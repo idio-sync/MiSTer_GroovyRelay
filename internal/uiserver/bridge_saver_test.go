@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // TestDiffBridgeConfig_SSHFields confirms ssh_user and ssh_password
@@ -276,4 +278,98 @@ type fakeOverrideUpdater struct {
 
 func (f *fakeOverrideUpdater) UpdateOverride(v string) {
 	f.got = v
+}
+
+// minimalSectionedConfigTOML returns a TOML string in sectioned format
+// (has a [bridge] section) with values that pass config validation.
+func minimalSectionedConfigTOML(t *testing.T) string {
+	t.Helper()
+	return `[bridge]
+data_dir = ""
+
+[bridge.video]
+modeline = "NTSC_480i"
+interlace_field_order = "bff"
+aspect_mode = "auto"
+rgb_mode = "rgb888"
+lz4_enabled = true
+
+[bridge.audio]
+sample_rate = 48000
+channels = 2
+
+[bridge.mister]
+host = "192.168.1.50"
+port = 32100
+source_port = 32101
+
+[bridge.ui]
+http_port = 32500
+`
+}
+
+// loadSectionedForTest loads a sectioned config from disk, failing the
+// test immediately on any error.
+func loadSectionedForTest(t *testing.T, path string) *config.Sectioned {
+	t.Helper()
+	sec, err := config.LoadSectioned(path)
+	if err != nil {
+		t.Fatalf("loadSectionedForTest: %v", err)
+	}
+	return sec
+}
+
+func TestBridgeSaver_EmitsConfigSaved(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(minimalSectionedConfigTOML(t)), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	sec := loadSectionedForTest(t, cfgPath)
+	log := eventlog.New(16)
+	saver := NewBridgeSaver(cfgPath, sec, &fakeBridgeCore{}, adapters.NewRegistry())
+	saver.WithEventLog(log)
+
+	current := saver.Current()
+	current.UI.HTTPPort = 32600 // any change that passes validation
+	if _, err := saver.Save(current); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	entries := log.Snapshot()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Source != "bridge" || e.Severity != eventlog.SeverityInfo {
+		t.Errorf("Source/Severity: got %q/%v, want bridge/Info", e.Source, e.Severity)
+	}
+	if !strings.Contains(e.Message, "bridge-config-saved") {
+		t.Errorf("Message: got %q", e.Message)
+	}
+}
+
+func TestBridgeSaver_EmitsConfigSavedWhenPersistedEvenIfDropFails(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(minimalSectionedConfigTOML(t)), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	sec := loadSectionedForTest(t, cfgPath)
+	log := eventlog.New(16)
+	core := &fakeBridgeCore{dropErr: errors.New("drop failed after persist")}
+	saver := NewBridgeSaver(cfgPath, sec, core, adapters.NewRegistry())
+	saver.WithEventLog(log)
+
+	current := saver.Current()
+	current.Video.Modeline = "PAL_576i" // triggers notify + DropActiveCast after persist
+	if _, err := saver.Save(current); err == nil {
+		t.Fatal("Save returned nil; want drop-cast error after persisted config")
+	}
+	entries := log.Snapshot()
+	if len(entries) != 1 {
+		t.Fatalf("expected persisted event despite drop error, got %d", len(entries))
+	}
+	if !strings.Contains(entries[0].Message, "bridge-config-saved") {
+		t.Errorf("Message: got %q", entries[0].Message)
+	}
 }

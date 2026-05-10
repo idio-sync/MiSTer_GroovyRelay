@@ -13,10 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 )
 
@@ -62,6 +64,7 @@ type BridgeSaver struct {
 	core     Core
 	registry *adapters.Registry
 	tools    ToolResolvers
+	eventLog *eventlog.Log
 	mu       sync.Mutex
 }
 
@@ -76,6 +79,10 @@ func NewBridgeSaver(path string, sec *config.Sectioned, core Core, registry *ada
 	}
 	return s
 }
+
+// WithEventLog wires the event-log ring buffer. Nil disables emission;
+// callers that want events must call this after construction.
+func (r *BridgeSaver) WithEventLog(log *eventlog.Log) { r.eventLog = log }
 
 // Mu exposes the shared serialization mutex so AdapterSaver can
 // coordinate with bridge saves on the same file. Both paths read-modify-
@@ -175,6 +182,18 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	r.sec.Bridge = newCfg
 	r.core.UpdateBridge(newCfg)
 	r.updateToolResolvers(changed, newCfg)
+
+	// Emit persistence event. This fires as soon as disk + in-memory
+	// state agree, before any later side effect (drop-cast, etc.) that
+	// may fail. Spec §S7: "bridge-config-saved" source="bridge".
+	if r.eventLog != nil {
+		r.eventLog.Append(eventlog.Entry{
+			Time:     time.Now(),
+			Severity: eventlog.SeverityInfo,
+			Source:   "bridge",
+			Message:  fmt.Sprintf("bridge-config-saved scope=%s", scope.String()),
+		})
+	}
 
 	// Notify subscribers BEFORE dropping the active cast. Subscriber
 	// notifications are atomic stores (instant); dropping cuts the live
