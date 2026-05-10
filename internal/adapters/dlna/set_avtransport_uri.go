@@ -202,7 +202,31 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	a.loadedMeta = parsed
 	a.loadedMetaRaw = args.CurrentURIMetaData
 	a.lastError = ""
+	autoplay := a.cfg.AutoplayOnSetURI
 	a.mu.Unlock()
+
+	// autoplay_on_set_uri (spec line 330 + line 395): "compatibility
+	// mode for controllers that do not send Play." When enabled, kick
+	// off the same fresh-start path Play uses. This is BEST EFFORT:
+	// SetAVTransportURI itself returns SOAP success even if the
+	// autoplay's StartSession fails — the URI is still stored, an
+	// explicit Play afterward will retry, and the failure is visible
+	// via lastError on the next GetTransportInfo poll.
+	//
+	// Why best-effort: the spec models autoplay as a controller-
+	// compatibility shim, not a transactional contract. Failing the
+	// SetAVTransportURI when autoplay's StartSession dies would surprise
+	// controllers that DO send Play (they'd see the URI accepted but
+	// the next Play would also fail because nothing is loaded — wrong
+	// signal). Storing the URI and surfacing the error via
+	// TransportStatus=ERROR_OCCURRED matches the model where Play and
+	// SetAVTransportURI are independent.
+	if autoplay {
+		// startFreshSession sets lastError on failure and returns the
+		// fault code we'd otherwise emit. We deliberately discard the
+		// code here.
+		_ = a.startFreshSession()
+	}
 
 	// SetAVTransportURI has no out-arguments per UPnP AVTransport:1.
 	writeSOAPResponse(w, avTransportServiceURN, "SetAVTransportURI", nil)

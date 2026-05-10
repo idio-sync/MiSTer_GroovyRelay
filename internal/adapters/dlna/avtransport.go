@@ -29,11 +29,11 @@ const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 // returns 501. Listed explicitly so the table is auditable and so the
 // dispatcher can branch on the action name without a per-action stub
 // function. SetAVTransportURI moved out of this set in P2.3 (real
-// validate+store handler); Play/Stop will move in P2.4.
+// validate+store handler); Play/Stop moved out in P2.4. The four
+// remaining stubs are the Pause/Seek pair (Phase 3) and the
+// Next/Previous pair (queue model not implemented; v1 has no queue).
 var avtStubActions = map[string]struct{}{
-	"Play":     {},
 	"Pause":    {},
-	"Stop":     {},
 	"Seek":     {},
 	"Next":     {},
 	"Previous": {},
@@ -67,13 +67,25 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 	// SetAVTransportURI runs BEFORE the generic InstanceID gate because
 	// the handler enforces InstanceID itself (it has admission checks
 	// that should run regardless of InstanceID validity to keep the
-	// handler self-contained).
+	// handler self-contained). Same rationale for Play/Stop: they
+	// enforce their own InstanceID validation and have argument-shape
+	// checks (Speed) that should be reachable without the generic
+	// gate intercepting.
 	if action == "SetAVTransportURI" {
 		a.handleSetAVTransportURI(w, r, extractSetAVTransportURIArgs(args))
 		return
 	}
+	if action == "Play" {
+		a.handlePlay(w, extractPlayArgs(args))
+		return
+	}
+	if action == "Stop" {
+		a.handleStop(w, extractStopArgs(args))
+		return
+	}
 
-	// Stub actions return 501 (will flip to Impl in P2.4 / P3).
+	// Stub actions return 501 (Pause/Seek will flip to Impl in P3;
+	// Next/Previous remain stubs — v1 has no queue model).
 	if _, isStub := avtStubActions[action]; isStub {
 		writeSOAPFault(w, upnpErrActionFailed)
 		return
@@ -119,12 +131,18 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		})
 
 	case "GetTransportInfo":
-		// State is always STOPPED until P2.4 wires Play. TransportStatus
-		// is OK by default and ERROR_OCCURRED when lastError is non-empty
-		// (a prior failed SetAVTransportURI / probe). Spec §Common Action
-		// Rules line 326: "On failure, set TransportStatus=ERROR_OCCURRED,
-		// store a redacted last error..."
+		// State reflects the live transportState field (P2.4). For
+		// Phase 2 the values cycle STOPPED ↔ PLAYING — Pause is still
+		// 501 so PAUSED_PLAYBACK isn't reachable from a controller,
+		// but the field can carry that value and we surface it
+		// faithfully so Phase 3's Pause flip needs no change here.
+		// TransportStatus is OK by default and ERROR_OCCURRED when
+		// lastError is non-empty (a prior failed SetAVTransportURI,
+		// probe, or playback). Spec §Common Action Rules line 326:
+		// "On failure, set TransportStatus=ERROR_OCCURRED, store a
+		// redacted last error..."
 		a.mu.Lock()
+		state := a.transportState
 		lastErr := a.lastError
 		a.mu.Unlock()
 
@@ -133,7 +151,7 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 			status = "ERROR_OCCURRED"
 		}
 		writeSOAPResponse(w, avTransportServiceURN, action, []soapOutArg{
-			{Name: "CurrentTransportState", Value: "STOPPED"},
+			{Name: "CurrentTransportState", Value: state},
 			{Name: "CurrentTransportStatus", Value: status},
 			{Name: "CurrentSpeed", Value: "1"},
 		})
@@ -184,13 +202,36 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		})
 
 	case "GetCurrentTransportActions":
-		// P2.3: no playback yet, so no transport actions are advertised
-		// even when a URI is loaded. P2.4 will populate this with
-		// {Play, Stop[, Pause, Seek]} based on stream capabilities.
-		// Until then, reading from loadedURI alone would lie about what
-		// the renderer can do.
+		// Spec §Query Actions / GetCurrentTransportActions (lines
+		// 401-406). Phase 2's three reachable shapes:
+		//   - No URI: empty (controller knows there's nothing to do).
+		//   - STOPPED with URI: "Play".
+		//   - PLAYING (any source): "Stop".
+		// Phase 3 will add Pause / Seek based on probe Duration —
+		// noted in the spec at lines 366-369. Returning Pause/Seek
+		// here today would lie to the controller because we have no
+		// handler for them yet.
+		a.mu.Lock()
+		state := a.transportState
+		hasURI := a.loadedURI != ""
+		a.mu.Unlock()
+
+		actions := ""
+		switch {
+		case !hasURI:
+			actions = ""
+		case state == transportStatePlaying:
+			actions = "Stop"
+		case state == transportStateStopped:
+			actions = "Play"
+		default:
+			// PAUSED_PLAYBACK or TRANSITIONING — not reachable in
+			// Phase 2 (Pause is 501, TRANSITIONING is Phase 4).
+			// Leave empty; Phase 3 fills this in.
+			actions = ""
+		}
 		writeSOAPResponse(w, avTransportServiceURN, action, []soapOutArg{
-			{Name: "Actions", Value: ""},
+			{Name: "Actions", Value: actions},
 		})
 
 	case "SetNextAVTransportURI":

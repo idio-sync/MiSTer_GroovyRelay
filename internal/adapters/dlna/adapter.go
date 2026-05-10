@@ -129,6 +129,14 @@ type Adapter struct {
 	loadedMetaRaw string
 	lastError     string
 
+	// transportState is the UPnP TransportState surfaced via
+	// GetTransportInfo. Values: "STOPPED" | "PLAYING" |
+	// "PAUSED_PLAYBACK" | "TRANSITIONING" (TRANSITIONING is reserved
+	// for Phase 4 eventing). Phase 2 transitions STOPPED → PLAYING on
+	// Play and PLAYING/PAUSED_PLAYBACK → STOPPED on Stop or OnStop.
+	// Initialized to "STOPPED" in New(). Guarded by mu.
+	transportState string
+
 	// discovery and discoveryDone are owned by Start/Stop. discovery is
 	// nil when the adapter is disabled, when Start hasn't run, or after
 	// Stop. discoveryDone is the close signal from the Run goroutine; we
@@ -204,6 +212,10 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		// 444-445: Volume=100, Mute=false.
 		volume: 100,
 		muted:  false,
+		// AVTransport:1 starts in STOPPED. P2.4's Play handler advances
+		// to PLAYING on a successful StartSession; OnStop / Stop bring
+		// it back. Spec §Query Actions / state mapping (line 387-393).
+		transportState: transportStateStopped,
 	}, nil
 }
 
