@@ -44,14 +44,15 @@ type Adapter struct {
 	fetchManifest func(context.Context) (Manifest, CacheMetadata, error)
 	refreshOnce   func(ctx context.Context, reason string) RefreshStatus
 
-	mu          sync.Mutex
-	cfg         Config
-	state       adapters.State
-	lastErr     string
-	stateSince  time.Time
-	definitions map[string]ProviderDefinition
-	catalogs    map[string]ProviderCatalog
-	active      *ActiveQueue
+	mu              sync.Mutex
+	cfg             Config
+	state           adapters.State
+	lastErr         string
+	stateSince      time.Time
+	definitions     map[string]ProviderDefinition
+	definitionOrder []string
+	catalogs        map[string]ProviderCatalog
+	active          *ActiveQueue
 
 	loopCtx    context.Context
 	loopCancel context.CancelFunc
