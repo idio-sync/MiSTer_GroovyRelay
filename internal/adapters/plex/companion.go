@@ -280,7 +280,7 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		Provides:           companionProvides,
 		TranscodeSessionID: p.TranscodeSessionID,
 	})
-	title := firstNonEmpty(p.Title, md.Title, p.MediaKey, "Now Playing")
+	title := firstNonEmpty(md.Title, p.Title, p.MediaKey, "Now Playing")
 	ref := p.MediaKey + ":" + p.TranscodeSessionID
 	req := core.SessionRequest{
 		StreamURL:    streamURL,

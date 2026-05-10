@@ -555,7 +555,7 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 
 	reqURL := ts.URL + "/player/playback/playMedia?" +
 		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
-		"key=%2Flibrary%2Fmetadata%2F42&offset=12000&token=tok&type=track&title=Blue+Monday"
+		"key=%2Flibrary%2Fmetadata%2F42&offset=12000&token=tok&type=track&title=Controller+Title"
 	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
 	resp, err := http.DefaultClient.Do(req)
@@ -574,6 +574,12 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 	}
 	if !got.Visualizer.Enabled || got.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
 		t.Fatalf("Visualizer = %+v", got.Visualizer)
+	}
+	if got.Title != "Blue Monday" {
+		t.Fatalf("Title = %q, want PMS metadata title", got.Title)
+	}
+	if got.Visualizer.Metadata.Title != "Blue Monday" {
+		t.Fatalf("visualizer title = %q, want PMS metadata title", got.Visualizer.Metadata.Title)
 	}
 	if got.Visualizer.Metadata.Artist != "New Order" || got.Visualizer.Metadata.Album != "Power Corruption & Lies" {
 		t.Fatalf("metadata = %+v", got.Visualizer.Metadata)
