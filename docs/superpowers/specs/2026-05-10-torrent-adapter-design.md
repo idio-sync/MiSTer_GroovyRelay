@@ -129,7 +129,7 @@ Add `[adapters.torrent]`:
 [adapters.torrent]
 enabled = false
 traffic_acknowledged = false
-download_dir = ""                 # default <data_dir>/torrent
+download_dir = ""                 # default <data_dir>/groovyrelay-torrent
 keep_completed = false            # session-only by default
 max_cache_bytes = 21474836480     # 20 GiB
 metadata_timeout_seconds = 60
@@ -154,7 +154,7 @@ Apply scopes:
 | `max_download_rate_kbps` | `ScopeRestartCast` | Changes torrent client transfer behavior. |
 | `listen_port` | `ScopeRestartCast` | Changes torrent client network listener. |
 
-`download_dir` is treated as a parent location, not a deletion root. When empty, the adapter stores data under `<data_dir>/torrent`. When set, the adapter creates an owned child directory such as `<download_dir>/groovyrelay-torrent` and stores all session/cache data inside that child.
+`download_dir` is treated as a parent location, not a deletion root. When empty, the adapter stores data under `<data_dir>/groovyrelay-torrent`. When set, the adapter creates an owned child directory such as `<download_dir>/groovyrelay-torrent` and stores all session/cache data inside that child.
 
 The adapter owns its `download_dir` validation. There is no existing generic directory validator in `internal/config`; `validateExternalToolPath` is executable-specific and must not be reused.
 

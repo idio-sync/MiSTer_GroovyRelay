@@ -553,7 +553,7 @@ func torrentFields() []adapters.FieldDef {
 	return []adapters.FieldDef{
 		{Key: "enabled", Label: "Enabled", Help: "Allow new torrent sessions.", Kind: adapters.KindBool, Default: false, ApplyScope: adapters.ScopeHotSwap},
 		{Key: "traffic_acknowledged", Label: "I understand this uses BitTorrent traffic", Help: "Required before magnet links or torrent uploads can start network activity.", Kind: adapters.KindBool, Default: false, ApplyScope: adapters.ScopeHotSwap},
-		{Key: "download_dir", Label: "Download directory", Help: "Directory where torrent cache data is stored. Empty uses bridge data_dir/torrent.", Kind: adapters.KindText, Default: "", ApplyScope: adapters.ScopeRestartCast},
+		{Key: "download_dir", Label: "Download directory", Help: "Directory where torrent cache data is stored. Empty uses bridge data_dir/groovyrelay-torrent.", Kind: adapters.KindText, Default: "", ApplyScope: adapters.ScopeRestartCast},
 		{Key: "keep_completed", Label: "Keep completed data", Help: "Keep completed cache data after playback stops.", Kind: adapters.KindBool, Default: false, ApplyScope: adapters.ScopeHotSwap},
 		{Key: "max_cache_bytes", Label: "Maximum cache bytes", Help: "Persistent cache budget. Zero disables pruning.", Kind: adapters.KindInt, Default: int64(20 * 1024 * 1024 * 1024), ApplyScope: adapters.ScopeHotSwap},
 		{Key: "metadata_timeout_seconds", Label: "Metadata timeout seconds", Help: "Maximum wait for magnet metadata.", Kind: adapters.KindInt, Default: 60, ApplyScope: adapters.ScopeHotSwap},
