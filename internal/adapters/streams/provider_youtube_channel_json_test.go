@@ -72,6 +72,38 @@ func TestYouTubeChannelJSONSynthesizesAllChannelWhenMissing(t *testing.T) {
 	}
 }
 
+func TestYouTubeChannelJSONUsesBundledCartoonDecadeMetadata(t *testing.T) {
+	def := bundledCartoonDefinition()
+	raw := []byte(`{"loonytunes":["AAAAAAAAAAA"],"tomandjerry":["BBBBBBBBBBB"],"pinkpanther":["CCCCCCCCCCC"],"heman":["DDDDDDDDDDD"],"carmensandiego":["EEEEEEEEEEE"],"commercials":["FFFFFFFFFFF"]}`)
+	cat, err := buildYouTubeChannelCatalog(def, raw, DefaultConfig())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	cases := map[string]struct {
+		name  string
+		group string
+	}{
+		"loonytunes":     {name: "Looney Tunes", group: "1930s"},
+		"tomandjerry":    {name: "Tom and Jerry", group: "1940s"},
+		"pinkpanther":    {name: "Pink Panther", group: "1960s"},
+		"heman":          {name: "He-Man", group: "1980s"},
+		"carmensandiego": {name: "Where on Earth Is Carmen Sandiego?", group: "1990s"},
+	}
+	for id, want := range cases {
+		ch := cat.Channel(id)
+		if ch == nil {
+			t.Fatalf("channel %q missing", id)
+		}
+		if ch.Name != want.name || ch.GroupID != want.group {
+			t.Fatalf("channel %q metadata = name %q group %q, want name %q group %q", id, ch.Name, ch.GroupID, want.name, want.group)
+		}
+	}
+	if cat.Channel("commercials") != nil {
+		t.Fatal("commercials should remain hidden")
+	}
+}
+
 func TestYouTubeChannelJSONSkipsMalformedIDs(t *testing.T) {
 	def := bundledMTVDefinition()
 	raw := []byte(`{"metal":["not a youtube id","dQw4w9WgXcQ"]}`)

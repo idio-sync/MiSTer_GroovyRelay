@@ -171,24 +171,37 @@ func bundledCartoonDefinition() ProviderDefinition {
 				QueryParam: "v",
 			},
 		},
-		Groups: []GroupDefinition{
-			{ID: "shows", Name: "Cartoon Shows", Order: 50},
-		},
-		Channels: []ChannelDefinition{
-			{
-				ID:       "heman",
-				Name:     "He-Man",
-				GroupID:  "shows",
-				PlayMode: PlayShuffle,
-				Order:    10,
-			},
-			{
-				ID:       "all",
-				Name:     "All Cartoons",
-				GroupID:  "shows",
-				PlayMode: PlayShuffle,
-				Order:    100,
-			},
-		},
+		Groups:   cartoonGroups(),
+		Channels: cartoonChannels(),
+	}
+}
+
+func cartoonGroups() []GroupDefinition {
+	return []GroupDefinition{
+		{ID: "1930s", Name: "1930s", Order: 10},
+		{ID: "1940s", Name: "1940s", Order: 20},
+		{ID: "1950s", Name: "1950s", Order: 30},
+		{ID: "1960s", Name: "1960s", Order: 40},
+		{ID: "1980s", Name: "1980s", Order: 50},
+		{ID: "1990s", Name: "1990s", Order: 60},
+		{ID: "all", Name: "All", Order: 100},
+	}
+}
+
+func cartoonChannels() []ChannelDefinition {
+	return []ChannelDefinition{
+		{ID: "loonytunes", Name: "Looney Tunes", GroupID: "1930s", PlayMode: PlayShuffle, Order: 10},
+		{ID: "tomandjerry", Name: "Tom and Jerry", GroupID: "1940s", PlayMode: PlayShuffle, Order: 10},
+		{ID: "rockyandbullwinkle", Name: "Rocky and Bullwinkle", GroupID: "1950s", PlayMode: PlayShuffle, Order: 10},
+		{ID: "pinkpanther", Name: "Pink Panther", GroupID: "1960s", PlayMode: PlayShuffle, Order: 10},
+		{ID: "speedracer", Name: "Speed Racer", GroupID: "1960s", PlayMode: PlayShuffle, Order: 20},
+		{ID: "underdog", Name: "Underdog", GroupID: "1960s", PlayMode: PlayShuffle, Order: 30},
+		{ID: "smurfs", Name: "The Smurfs", GroupID: "1980s", PlayMode: PlayShuffle, Order: 10},
+		{ID: "heman", Name: "He-Man", GroupID: "1980s", PlayMode: PlayShuffle, Order: 20},
+		{ID: "inspectorgadget", Name: "Inspector Gadget", GroupID: "1980s", PlayMode: PlayShuffle, Order: 30},
+		{ID: "transformers", Name: "Transformers", GroupID: "1980s", PlayMode: PlayShuffle, Order: 40},
+		{ID: "animaniacs", Name: "Animaniacs", GroupID: "1990s", PlayMode: PlayShuffle, Order: 10},
+		{ID: "carmensandiego", Name: "Where on Earth Is Carmen Sandiego?", GroupID: "1990s", PlayMode: PlayShuffle, Order: 20},
+		{ID: "all", Name: "All Cartoons", GroupID: "all", PlayMode: PlayShuffle, Order: 10},
 	}
 }

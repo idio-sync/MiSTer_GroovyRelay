@@ -139,27 +139,28 @@
         }
       ],
       "groups": [
-        {
-          "id": "shows",
-          "name": "Cartoon Shows",
-          "order": 50
-        }
+        { "id": "1930s", "name": "1930s", "order": 10 },
+        { "id": "1940s", "name": "1940s", "order": 20 },
+        { "id": "1950s", "name": "1950s", "order": 30 },
+        { "id": "1960s", "name": "1960s", "order": 40 },
+        { "id": "1980s", "name": "1980s", "order": 50 },
+        { "id": "1990s", "name": "1990s", "order": 60 },
+        { "id": "all", "name": "All", "order": 100 }
       ],
       "channels": [
-        {
-          "id": "heman",
-          "name": "He-Man",
-          "group_id": "shows",
-          "play_mode": "shuffle",
-          "order": 10
-        },
-        {
-          "id": "all",
-          "name": "All Cartoons",
-          "group_id": "shows",
-          "play_mode": "shuffle",
-          "order": 100
-        }
+        { "id": "loonytunes", "name": "Looney Tunes", "group_id": "1930s", "play_mode": "shuffle", "order": 10 },
+        { "id": "tomandjerry", "name": "Tom and Jerry", "group_id": "1940s", "play_mode": "shuffle", "order": 10 },
+        { "id": "rockyandbullwinkle", "name": "Rocky and Bullwinkle", "group_id": "1950s", "play_mode": "shuffle", "order": 10 },
+        { "id": "pinkpanther", "name": "Pink Panther", "group_id": "1960s", "play_mode": "shuffle", "order": 10 },
+        { "id": "speedracer", "name": "Speed Racer", "group_id": "1960s", "play_mode": "shuffle", "order": 20 },
+        { "id": "underdog", "name": "Underdog", "group_id": "1960s", "play_mode": "shuffle", "order": 30 },
+        { "id": "smurfs", "name": "The Smurfs", "group_id": "1980s", "play_mode": "shuffle", "order": 10 },
+        { "id": "heman", "name": "He-Man", "group_id": "1980s", "play_mode": "shuffle", "order": 20 },
+        { "id": "inspectorgadget", "name": "Inspector Gadget", "group_id": "1980s", "play_mode": "shuffle", "order": 30 },
+        { "id": "transformers", "name": "Transformers", "group_id": "1980s", "play_mode": "shuffle", "order": 40 },
+        { "id": "animaniacs", "name": "Animaniacs", "group_id": "1990s", "play_mode": "shuffle", "order": 10 },
+        { "id": "carmensandiego", "name": "Where on Earth Is Carmen Sandiego?", "group_id": "1990s", "play_mode": "shuffle", "order": 20 },
+        { "id": "all", "name": "All Cartoons", "group_id": "all", "play_mode": "shuffle", "order": 10 }
       ]
     }
   ]
