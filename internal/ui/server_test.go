@@ -334,12 +334,12 @@ func newMockAdapter(name string, enabled bool) *uiStubAdapter {
 	return &uiStubAdapter{name: name, enabled: enabled, enabledSet: true}
 }
 
-func TestShellData_FiltersDisabledAdapters(t *testing.T) {
+func TestShellData_IncludesDisabledAdapters(t *testing.T) {
 	srv, _ := newTestServer(t, func(c *Config) {
 		c.Registry = adapters.NewRegistryWith(
 			newMockAdapter("plex", true),     // enabled
 			newMockAdapter("jellyfin", true), // enabled
-			newMockAdapter("url", false),     // disabled — should be filtered
+			newMockAdapter("url", false),     // disabled — still listed, dot off
 		)
 	})
 	data := srv.shellData()
@@ -347,8 +347,13 @@ func TestShellData_FiltersDisabledAdapters(t *testing.T) {
 	for _, a := range data.Adapters {
 		names = append(names, a.Name)
 	}
-	if !reflect.DeepEqual(names, []string{"plex", "jellyfin"}) {
-		t.Errorf("filtered adapters: got %v, want [plex jellyfin]", names)
+	if !reflect.DeepEqual(names, []string{"plex", "jellyfin", "url"}) {
+		t.Errorf("sidebar adapters: got %v, want [plex jellyfin url]", names)
+	}
+	for _, a := range data.Adapters {
+		if a.Name == "url" && a.DotClass != "off" {
+			t.Errorf("disabled adapter url: dot=%q, want off", a.DotClass)
+		}
 	}
 }
 

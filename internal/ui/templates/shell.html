@@ -9,9 +9,9 @@
 	<script src="/ui/static/clipboard.js" defer></script>
 </head>
 <body hx-ext="">
-	<div class="shell">
+	<div class="{{if .SetupMode}}gr-shell gr-shell-fullpage{{else}}gr-shell{{end}}">
 		{{if not .SetupMode}}
-		<aside class="sidebar">
+		<aside class="gr-sidebar">
 			{{template "sidebar-body" .}}
 		</aside>
 		{{end}}
@@ -49,29 +49,39 @@
 </body>
 </html>
 {{define "sidebar-body"}}
-<h2>System</h2>
-<ul>
-	<li><a href="/ui/bridge"
-	       hx-get="/ui/bridge" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true"
-	       {{if eq .CurrentPath "/ui/bridge"}}class="active"{{end}}>
-		<span id="dot-bridge" class="dot off"></span> Bridge
-	</a></li>
-</ul>
-<h2>Adapters</h2>
-<ul>
+<div class="gr-brand">
+	<div class="gr-brand-name"><span class="gr-brand-mark"></span>GroovyRelay</div>
+	<div class="gr-brand-tagline">cast · mister</div>
+</div>
+<nav class="gr-nav-group">
+	<h2>System</h2>
+	<a class="gr-nav-link{{if eq .CurrentPath "/ui/"}} active{{end}}" href="/ui/"
+	   hx-get="/ui/" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+		<span class="dot off"></span><span class="label">Status</span>
+	</a>
+	<a class="gr-nav-link{{if eq .CurrentPath "/ui/bridge"}} active{{end}}" href="/ui/bridge"
+	   hx-get="/ui/bridge" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+		<span id="dot-bridge" class="dot off"></span><span class="label">Bridge</span>
+	</a>
+	<a class="gr-nav-link{{if eq .CurrentPath "/ui/diagnostics"}} active{{end}}" href="/ui/diagnostics"
+	   hx-get="/ui/diagnostics" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+		<span class="dot off"></span><span class="label">Diagnostics</span>
+	</a>
+</nav>
+<nav class="gr-nav-group">
+	<h2>Adapters</h2>
 	{{range .Adapters}}
-	<li><a href="/ui/adapter/{{.Name}}"
-	       hx-get="/ui/adapter/{{.Name}}" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true"
-	       {{if eq $.CurrentPath (printf "/ui/adapter/%s" .Name)}}class="active"{{end}}>
+	<a class="gr-nav-link{{if eq $.CurrentPath (printf "/ui/adapter/%s" .Name)}} active{{end}}" href="/ui/adapter/{{.Name}}"
+	   hx-get="/ui/adapter/{{.Name}}" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
 		<span id="dot-{{.Name}}" class="dot {{.DotClass}}"></span>
-		{{.DisplayName}}
-	</a></li>
+		<span class="label">{{.DisplayName}}</span>
+	</a>
 	{{end}}
-	<li><a class="gr-nav-link add" href="/ui/setup?step=adapters">
+	<a class="gr-nav-link add" href="/ui/setup?step=adapters">
 		<span class="dot add"></span>
 		<span class="label">+ Add source</span>
-	</a></li>
-</ul>
+	</a>
+</nav>
 <!-- Polling element. Returns a fragment of OOB-swap <span> tags;
      hx-swap="none" tells htmx not to do its primary swap — the
      server-side OOB attributes drive replacement of the dot spans

@@ -346,19 +346,23 @@ func (s *Server) shellDataForPath(path string) shellTemplateData {
 }
 
 // shellData builds the template data for the shell page: sidebar
-// entries (one per enabled adapter) + status-dot classes.
-// Disabled adapters are filtered out per spec §5.1 (PR 2c Task D1).
+// entries (one per registered adapter) + status-dot classes.
+// All registered adapters are listed — disabled ones render with the
+// "off" dot so the operator can navigate to their settings page (and
+// enable them) without first running the wizard. Matches the PR2
+// preview at C:/tmp/groovyrelay-pr2-preview.html.
 func (s *Server) shellData() shellTemplateData {
 	adaptersData := make([]sidebarAdapter, 0)
 	for _, a := range s.cfg.Registry.List() {
-		if !a.IsEnabled() {
-			continue
-		}
 		st := a.Status()
+		dc := dotClass(st.State)
+		if !a.IsEnabled() {
+			dc = "off"
+		}
 		adaptersData = append(adaptersData, sidebarAdapter{
 			Name:        a.Name(),
 			DisplayName: a.DisplayName(),
-			DotClass:    dotClass(st.State),
+			DotClass:    dc,
 		})
 	}
 	return shellTemplateData{Adapters: adaptersData}

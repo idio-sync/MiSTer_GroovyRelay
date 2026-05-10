@@ -77,13 +77,19 @@ func TestShell_RendersActiveLinkServerSide(t *testing.T) {
 	if !strings.Contains(body, `href="/ui/bridge"`) {
 		t.Fatal("bridge link not rendered")
 	}
-	// Look for "active" class within ~200 chars after the bridge href.
+	// Look for "active" class within ~200 chars on either side of the
+	// bridge href — the class attribute now precedes href in the
+	// preview-aligned template.
 	idx := strings.Index(body, `href="/ui/bridge"`)
+	start := idx - 200
+	if start < 0 {
+		start = 0
+	}
 	end := idx + 200
 	if end > len(body) {
 		end = len(body)
 	}
-	window := body[idx:end]
+	window := body[start:end]
 	if !strings.Contains(window, "active") {
 		t.Errorf("bridge link not marked active server-side; window=%q", window)
 	}

@@ -215,7 +215,7 @@ func TestSetup_StepBridge_Renders(t *testing.T) {
 		}
 	}
 	// Sidebar must be hidden in setup mode.
-	if strings.Contains(body, `<aside class="sidebar">`) {
+	if strings.Contains(body, `<aside class="gr-sidebar">`) {
 		t.Error("sidebar should be hidden in SetupMode")
 	}
 	// Stepper must be visible.
