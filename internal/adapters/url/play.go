@@ -173,6 +173,7 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 		// flips".
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 		AdapterRef:   ref,
+		Source:       "url",
 		DirectPlay:   true,
 		Title:        title,
 		// OnStop captures rawURL + resolvedTitle at request-construction

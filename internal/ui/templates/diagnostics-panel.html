@@ -36,15 +36,7 @@
     <span class="num">02</span><span>Network probe</span>
     <span class="desc">single UDP packet · 1s ack window</span>
   </header>
-  <div class="gr-probe" id="probe-result">
-    <button class="gr-btn primary" type="button"
-            hx-post="/ui/diagnostics/probe"
-            hx-target="#probe-result"
-            hx-swap="outerHTML">
-      Test MiSTer connectivity
-    </button>
-    {{if .ProbeResult}}{{.ProbeResult}}{{end}}
-  </div>
+  {{template "probe-result" .ProbeResult}}
 </section>
 
 <section class="gr-section">

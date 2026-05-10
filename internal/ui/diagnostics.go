@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"html/template"
 	"net/http"
 	"runtime"
 	"time"
@@ -19,13 +18,21 @@ type diagnosticsPanelData struct {
 	Counts        struct{ All, Info, Warn, Err int }
 	Events        []statusEvent
 
-	ProbeResult template.HTML
+	ProbeResult probeResultData
 
 	BuildInfo []diagKV
 }
 
 // diagKV is a key/value pair for the Build info section.
 type diagKV struct{ Key, Value string }
+
+// probeResultData parameterizes the probe-result.html partial. Status
+// is one of "" (initial render — button only), "ok", or "err".
+type probeResultData struct {
+	Status    string
+	ElapsedMs int64
+	ErrMsg    string
+}
 
 func (s *Server) handleDiagnosticsGET(w http.ResponseWriter, r *http.Request) {
 	data := s.shellDataForPath(r.URL.Path)
@@ -51,18 +58,17 @@ func (s *Server) handleDiagnosticsProbe(w http.ResponseWriter, r *http.Request) 
 	} else {
 		probeErr = fmt.Errorf("no prober configured")
 	}
-	elapsed := time.Since(start)
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	data := probeResultData{ElapsedMs: time.Since(start).Milliseconds()}
 	if probeErr != nil {
-		fmt.Fprintf(w,
-			`<div class="gr-probe" id="probe-result"><button class="gr-btn primary" type="button" hx-post="/ui/diagnostics/probe" hx-target="#probe-result" hx-swap="outerHTML">Test MiSTer connectivity</button><div class="gr-callout err" style="flex:1;"><p><strong style="color:var(--gr-err);">probe failed</strong> · %s · %dms</p></div></div>`,
-			template.HTMLEscapeString(probeErr.Error()), elapsed.Milliseconds())
-		return
+		data.Status = "err"
+		data.ErrMsg = probeErr.Error()
+	} else {
+		data.Status = "ok"
 	}
-	fmt.Fprintf(w,
-		`<div class="gr-probe" id="probe-result"><button class="gr-btn primary" type="button" hx-post="/ui/diagnostics/probe" hx-target="#probe-result" hx-swap="outerHTML">Test MiSTer connectivity</button><div class="gr-callout ok" style="flex:1;"><p><strong style="color:var(--gr-ok);">ACK in %dms</strong></p></div></div>`,
-		elapsed.Milliseconds())
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "probe-result", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) buildDiagnosticsData() diagnosticsPanelData {

@@ -648,6 +648,7 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 	if m.active != nil {
 		view.Title = m.active.req.Title
 		view.AdapterRef = m.active.req.AdapterRef
+		view.Source = m.active.req.Source
 		view.StartedAt = m.active.startedAt
 		view.Duration = m.active.duration
 		view.Modeline = m.bridge.Video.Modeline

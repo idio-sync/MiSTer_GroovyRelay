@@ -55,8 +55,18 @@ type SessionRequest struct {
 
 	// AdapterRef is an opaque handle the adapter can use to correlate
 	// status updates back to its own session context (e.g., a Plex media
-	// key or a URL-input session ID). Never inspected by core.
+	// key or a URL-input session ID). Never inspected by core. Its shape
+	// is per-adapter (Plex uses /library/parts/..., URL uses url:hex8,
+	// etc.); use Source — not a parse of AdapterRef — to identify the
+	// owning adapter.
 	AdapterRef string
+
+	// Source is the registered adapter name that originated this session
+	// ("plex", "jellyfin", "url", …). Adapters populate it at the same
+	// callsite as AdapterRef; the status home reads it via StatusHomeView
+	// to render display names without parsing AdapterRef. May be empty
+	// in legacy callsites; consumers must treat empty as "unknown".
+	Source string
 
 	// DirectPlay is true when the source URL is a direct media URL (FFmpeg
 	// seeks via -ss); false when the URL is a transcode/HLS manifest whose
@@ -114,6 +124,7 @@ type StatusHomeView struct {
 	State       State
 	Title       string        // empty when idle
 	AdapterRef  string        // empty when idle
+	Source      string        // adapter name ("plex", "jellyfin", "url"); empty when idle
 	Modeline    string        // e.g. "NTSC_480i"; empty when idle
 	Position    time.Duration
 	Duration    time.Duration

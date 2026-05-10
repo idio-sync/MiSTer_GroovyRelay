@@ -1,0 +1,19 @@
+{{define "probe-result"}}
+<div class="gr-probe" id="probe-result">
+  <button class="gr-btn primary" type="button"
+          hx-post="/ui/diagnostics/probe"
+          hx-target="#probe-result"
+          hx-swap="outerHTML">
+    Test MiSTer connectivity
+  </button>
+  {{if eq .Status "ok"}}
+    <div class="gr-callout ok" style="flex:1;">
+      <p><strong style="color:var(--gr-ok);">ACK in {{.ElapsedMs}}ms</strong></p>
+    </div>
+  {{else if eq .Status "err"}}
+    <div class="gr-callout err" style="flex:1;">
+      <p><strong style="color:var(--gr-err);">probe failed</strong> · {{.ErrMsg}} · {{.ElapsedMs}}ms</p>
+    </div>
+  {{end}}
+</div>
+{{end}}
