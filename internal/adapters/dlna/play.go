@@ -1,6 +1,7 @@
 package dlna
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -275,14 +276,14 @@ func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
 	}
 
 	if err := a.core.StartSession(req); err != nil {
-		// Roll back the ref and record a redacted last error. The spec
-		// table at line 321 says "Backend probe/playback failure → 716
-		// when resource cannot be reached, otherwise 501." We don't
-		// have typed sentinels from core.Manager today, so we default
-		// to 716 — the more common case is a probe failure (the
-		// resource is unreachable from FFmpeg's vantage even if the
-		// validator could reach it). When typed sentinels arrive we
-		// can switch on errors.Is here.
+		// Roll back the ref and record a redacted last error. Spec table
+		// at line 321: "Backend probe/playback failure → 716 when the
+		// resource cannot be reached, otherwise 501 Action Failed."
+		// core.Manager wraps probe failures with ErrProbeUnreachable
+		// (P3.0); anything else (plane setup, FSM transitions, future
+		// policy rejection) maps to 501. The match here is errors.Is
+		// rather than direct equality so the joined/wrapped chain
+		// works.
 		a.clearStartInFlight(ref, false)
 		// Don't include err.Error() verbatim — ffprobe stderr can
 		// echo internal hosts or path fragments. Just record that
@@ -292,7 +293,10 @@ func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
 		// Stay in STOPPED — the spec at line 326 says "On failure,
 		// keep the prior transport state when possible." We never
 		// flipped to PLAYING; nothing to revert.
-		return upnpErrResourceNotFound
+		if errors.Is(err, core.ErrProbeUnreachable) {
+			return upnpErrResourceNotFound
+		}
+		return upnpErrActionFailed
 	}
 
 	// Success path. clearStartInFlight(ref, true) keeps currentRef =

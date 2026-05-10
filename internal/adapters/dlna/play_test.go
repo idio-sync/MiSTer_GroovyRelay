@@ -393,10 +393,12 @@ func TestPlay_StartSessionFailure_RollsBackRef(t *testing.T) {
 	if rr.Code != 500 {
 		t.Errorf("status = %d, want 500", rr.Code)
 	}
-	// Spec line 321: backend probe/playback failures map to 716 by
-	// default; without typed sentinels we always emit 716.
-	if !strings.Contains(rr.Body.String(), "<errorCode>716</errorCode>") {
-		t.Errorf("body missing errorCode 716: %s", rr.Body.String())
+	// Spec line 321: a generic backend failure (no ErrProbeUnreachable
+	// sentinel in the chain) maps to 501 Action Failed. The 716
+	// "Resource not found" path is exercised by
+	// TestPlay_StartSession_ProbeUnreachable_Returns716 below.
+	if !strings.Contains(rr.Body.String(), "<errorCode>501</errorCode>") {
+		t.Errorf("body missing errorCode 501: %s", rr.Body.String())
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

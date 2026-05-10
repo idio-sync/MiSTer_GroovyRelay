@@ -229,7 +229,12 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 	}
 	probe, err := probeFn(ctx, ffprobePath, req.StreamURL, req.MediaInputPolicy)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("probe source: %w", err)
+		// Join the underlying ffprobe error with ErrProbeUnreachable so
+		// adapters can distinguish "couldn't reach the source" (UPnP 716
+		// for DLNA) from "something else broke" via errors.Is. The
+		// underlying error remains in the chain for slog / operator
+		// visibility; the sentinel is purely a category tag.
+		return nil, nil, "", errors.Join(fmt.Errorf("probe source: %w", err), ErrProbeUnreachable)
 	}
 	var cropRect *ffmpeg.CropRect
 	if m.bridge.Video.AspectMode == "auto" {
@@ -286,14 +291,18 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	notifySessionStop(oldOnStop, "preempted")
 
 	// Resolve the modeline preset from config (empty defaults to NTSC_480i).
+	// Wrap with ErrPlaneError so adapters that fault-map can categorize
+	// these as plane-setup failures rather than network-unreachable. In
+	// practice these only fire on bridge config corruption — operator-
+	// visible — so 501 (generic failure) is the right SOAP fault.
 	preset, err := ResolvePreset(m.bridge.Video.Modeline)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrPlaneError, err)
 	}
 	modeline := preset.Modeline
 	rgbMode, err := resolveRGBMode(m.bridge.Video.RGBMode)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrPlaneError, err)
 	}
 
 	// Groovy SWITCHRES carries full-frame vActive even for interlaced modes;
