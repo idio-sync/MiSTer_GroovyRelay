@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -38,6 +39,12 @@ func TestHostedProviderManifestFileValidates(t *testing.T) {
 		}
 		if got.Type != want.Type || got.BaseURL != want.BaseURL || got.PlaylistURL != want.PlaylistURL || got.DefaultChannel != want.DefaultChannel {
 			t.Fatalf("hosted provider %q does not match bundled definition: %+v", want.ID, got)
+		}
+		if !reflect.DeepEqual(got.Groups, want.Groups) {
+			t.Fatalf("hosted provider %q groups do not match bundled definition", want.ID)
+		}
+		if !reflect.DeepEqual(got.Channels, want.Channels) {
+			t.Fatalf("hosted provider %q channels do not match bundled definition", want.ID)
 		}
 	}
 }

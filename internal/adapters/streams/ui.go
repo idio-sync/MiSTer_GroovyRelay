@@ -18,14 +18,21 @@ type StatusView struct {
 type ProviderStatusView struct {
 	ID        string              `json:"id"`
 	Name      string              `json:"name"`
+	Groups    []ChannelGroupView  `json:"groups,omitempty"`
 	Channels  []ChannelStatusView `json:"channels"`
 	UpdatedAt time.Time           `json:"updated_at,omitempty"`
+}
+
+type ChannelGroupView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type ChannelStatusView struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	GroupID     string `json:"group_id,omitempty"`
 	ItemCount   int    `json:"item_count"`
 	PlayMode    string `json:"play_mode,omitempty"`
 }
@@ -74,10 +81,17 @@ func (a *Adapter) statusView() StatusView {
 			ID:        cat.ProviderID,
 			Name:      cat.Name,
 			UpdatedAt: cat.UpdatedAt,
+			Groups:    make([]ChannelGroupView, 0, len(cat.Groups)),
 			Channels:  make([]ChannelStatusView, 0, len(cat.Channels)),
 		}
 		if p.Name == "" {
 			p.Name = providerDisplayName(cat, a.definitions[id])
+		}
+		for _, group := range cat.Groups {
+			p.Groups = append(p.Groups, ChannelGroupView{
+				ID:   group.ID,
+				Name: group.Name,
+			})
 		}
 		for _, ch := range sortedChannels(cat.Channels) {
 			if len(ch.Items) == 0 {
@@ -87,6 +101,7 @@ func (a *Adapter) statusView() StatusView {
 				ID:          ch.ID,
 				Name:        ch.Name,
 				Description: ch.Description,
+				GroupID:     ch.GroupID,
 				ItemCount:   len(ch.Items),
 				PlayMode:    string(ch.PlayMode),
 			})
@@ -185,20 +200,86 @@ func renderProvidersFromView(providers []ProviderStatusView) string {
 		if len(p.Channels) == 0 {
 			b.WriteString(`<p class="muted">No channels</p>`)
 		}
-		for _, ch := range p.Channels {
-			fmt.Fprintf(&b,
-				`<form class="streams-channel" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`+
-					`<input type="hidden" name="provider_id" value="%s">`+
-					`<input type="hidden" name="channel_id" value="%s">`+
-					`<button type="submit">%s</button>`+
-					`<span class="muted">%d items</span>`+
-					`</form>`,
-				escAttr(p.ID), escAttr(ch.ID), esc(ch.Name), ch.ItemCount)
+		groups := groupedChannels(p)
+		if len(groups) != 0 {
+			b.WriteString(`<div class="streams-channel-groups">`)
+		}
+		for _, group := range groups {
+			fmt.Fprintf(&b, `<section class="streams-channel-group"><h5>%s</h5><table class="streams-channel-table"><tbody>`, esc(group.Name))
+			for i, ch := range group.Channels {
+				if i%streamsChannelsPerRow == 0 {
+					b.WriteString(`<tr>`)
+				}
+				fmt.Fprintf(&b,
+					`<td class="streams-channel-cell">`+
+						`<form class="streams-channel" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`+
+						`<input type="hidden" name="provider_id" value="%s">`+
+						`<input type="hidden" name="channel_id" value="%s">`+
+						`<button type="submit">%s</button>`+
+						`<span class="muted">%d items</span>`+
+						`</form>`+
+						`</td>`,
+					escAttr(p.ID), escAttr(ch.ID), esc(ch.Name), ch.ItemCount)
+				if i%streamsChannelsPerRow == streamsChannelsPerRow-1 || i == len(group.Channels)-1 {
+					b.WriteString(`</tr>`)
+				}
+			}
+			b.WriteString(`</tbody></table></section>`)
+		}
+		if len(groups) != 0 {
+			b.WriteString(`</div>`)
 		}
 		b.WriteString(`</section>`)
 	}
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+const streamsChannelsPerRow = 3
+
+type groupedChannelView struct {
+	ID       string
+	Name     string
+	Channels []ChannelStatusView
+}
+
+func groupedChannels(provider ProviderStatusView) []groupedChannelView {
+	groups := make([]groupedChannelView, 0, len(provider.Groups)+1)
+	indexByID := make(map[string]int, len(provider.Groups)+1)
+	for _, group := range provider.Groups {
+		name := group.Name
+		if name == "" {
+			name = group.ID
+		}
+		indexByID[group.ID] = len(groups)
+		groups = append(groups, groupedChannelView{ID: group.ID, Name: name})
+	}
+
+	for _, ch := range provider.Channels {
+		groupID := ch.GroupID
+		if groupID == "" {
+			groupID = ungroupedGroupID
+		}
+		idx, ok := indexByID[groupID]
+		if !ok {
+			name := "Other Channels"
+			if groupID != ungroupedGroupID {
+				name = groupID
+			}
+			idx = len(groups)
+			indexByID[groupID] = idx
+			groups = append(groups, groupedChannelView{ID: groupID, Name: name})
+		}
+		groups[idx].Channels = append(groups[idx].Channels, ch)
+	}
+
+	out := groups[:0]
+	for _, group := range groups {
+		if len(group.Channels) != 0 {
+			out = append(out, group)
+		}
+	}
+	return out
 }
 
 func button(b *strings.Builder, path, label string, disabled bool) {

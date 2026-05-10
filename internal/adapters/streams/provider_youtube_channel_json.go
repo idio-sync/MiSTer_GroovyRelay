@@ -29,6 +29,12 @@ func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) 
 		return ProviderCatalog{}, fmt.Errorf("playlist JSON has %d channels, max %d", len(playlists), maxCatalogChannels)
 	}
 
+	defByID := make(map[string]ChannelDefinition, len(def.Channels))
+	for _, channel := range def.Channels {
+		defByID[channel.ID] = channel
+	}
+	addSyntheticAllPlaylist(playlists, def, defByID, cfg)
+
 	groupByID := make(map[string]ChannelGroup, len(def.Groups)+1)
 	for _, group := range def.Groups {
 		groupByID[group.ID] = ChannelGroup{
@@ -36,11 +42,6 @@ func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) 
 			Name:  group.Name,
 			Order: group.Order,
 		}
-	}
-
-	defByID := make(map[string]ChannelDefinition, len(def.Channels))
-	for _, channel := range def.Channels {
-		defByID[channel.ID] = channel
 	}
 
 	channels := make([]Channel, 0, len(playlists))
@@ -96,6 +97,63 @@ func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) 
 		Channels:   channels,
 		UpdatedAt:  time.Now(),
 	}, nil
+}
+
+func addSyntheticAllPlaylist(playlists map[string][]string, def ProviderDefinition, defByID map[string]ChannelDefinition, cfg Config) {
+	if _, ok := defByID["all"]; !ok {
+		return
+	}
+	if _, ok := playlists["all"]; ok {
+		return
+	}
+	keys := make([]string, 0, len(playlists))
+	for id := range playlists {
+		if id == "all" || isExcludedPlaylist(def, id) {
+			continue
+		}
+		if _, known := defByID[id]; !known && !validUnknownPlaylistID(id) {
+			continue
+		}
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+
+	existingAccepted := 0
+	for _, id := range keys {
+		for _, sourceID := range playlists[id] {
+			if !youtubeIDRE.MatchString(sourceID) {
+				continue
+			}
+			existingAccepted++
+			if existingAccepted >= maxCatalogItems {
+				return
+			}
+		}
+	}
+	limit := maxCatalogItems - existingAccepted
+	if cfg.MaxItemsPerChannel > 0 && cfg.MaxItemsPerChannel < limit {
+		limit = cfg.MaxItemsPerChannel
+	}
+	if limit <= 0 {
+		return
+	}
+
+	all := make([]string, 0)
+	for _, id := range keys {
+		for _, sourceID := range playlists[id] {
+			if !youtubeIDRE.MatchString(sourceID) {
+				continue
+			}
+			all = append(all, sourceID)
+			if len(all) >= limit {
+				playlists["all"] = all
+				return
+			}
+		}
+	}
+	if len(all) != 0 {
+		playlists["all"] = all
+	}
 }
 
 func channelFromDefinition(id string, def ChannelDefinition, known bool, provider ProviderDefinition) Channel {

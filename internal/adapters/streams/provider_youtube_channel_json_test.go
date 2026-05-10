@@ -24,6 +24,54 @@ func TestYouTubeChannelJSONBuildsCatalog(t *testing.T) {
 	}
 }
 
+func TestYouTubeChannelJSONUsesBundledMTVChannelMetadata(t *testing.T) {
+	def := bundledMTVDefinition()
+	raw := []byte(`{"120minutes":["dQw4w9WgXcQ"],"80s":["9bZkp7q19f0"],"defjam":["3JZ_D3ELwOQ"],"spikejonze":["AAAAAAAAAAA"]}`)
+	cat, err := buildYouTubeChannelCatalog(def, raw, DefaultConfig())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	cases := map[string]struct {
+		name  string
+		group string
+	}{
+		"120minutes": {name: "120 Minutes", group: "shows"},
+		"80s":        {name: "80s", group: "decades"},
+		"defjam":     {name: "Def Jam", group: "labels"},
+		"spikejonze": {name: "Spike Jonze", group: "directors"},
+	}
+	for id, want := range cases {
+		ch := cat.Channel(id)
+		if ch == nil {
+			t.Fatalf("channel %q missing", id)
+		}
+		if ch.Name != want.name || ch.GroupID != want.group {
+			t.Fatalf("channel %q metadata = name %q group %q, want name %q group %q", id, ch.Name, ch.GroupID, want.name, want.group)
+		}
+	}
+}
+
+func TestYouTubeChannelJSONSynthesizesAllChannelWhenMissing(t *testing.T) {
+	def := bundledMTVDefinition()
+	raw := []byte(`{"80s":["AAAAAAAAAAA","BBBBBBBBBBB"],"90s":["CCCCCCCCCCC"]}`)
+	cat, err := buildYouTubeChannelCatalog(def, raw, DefaultConfig())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	all := cat.Channel("all")
+	if all == nil {
+		t.Fatal("all channel missing")
+	}
+	if all.Name != "All MTV Rewind" || all.GroupID != "decades" {
+		t.Fatalf("all metadata = name %q group %q", all.Name, all.GroupID)
+	}
+	if got := len(all.Items); got != 3 {
+		t.Fatalf("all items = %d, want flattened playlist items", got)
+	}
+}
+
 func TestYouTubeChannelJSONSkipsMalformedIDs(t *testing.T) {
 	def := bundledMTVDefinition()
 	raw := []byte(`{"metal":["not a youtube id","dQw4w9WgXcQ"]}`)

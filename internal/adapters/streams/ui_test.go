@@ -15,6 +15,35 @@ func TestExtraPanelHTMLContainsStreamsPanel(t *testing.T) {
 	}
 }
 
+func TestExtraPanelHTMLGroupsChannelsByCategory(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Groups: []ChannelGroup{
+			{ID: "shows", Name: "MTV Shows", Order: 10},
+			{ID: "decades", Name: "By Decade", Order: 20},
+		},
+		Channels: []Channel{
+			{ID: "120minutes", Name: "120 Minutes", GroupID: "shows", Order: 10, Items: []StreamItem{{ID: "AAAAAAAAAAA"}}},
+			{ID: "80s", Name: "80s", GroupID: "decades", Order: 20, Items: []StreamItem{{ID: "BBBBBBBBBBB"}}},
+		},
+	}})
+	html := string(a.ExtraPanelHTML())
+	for _, want := range []string{
+		`class="streams-channel-groups"`,
+		`class="streams-channel-table"`,
+		`<h5>MTV Shows</h5>`,
+		`<h5>By Decade</h5>`,
+		`120 Minutes`,
+		`80s`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("panel missing %q: %s", want, html)
+		}
+	}
+}
+
 func TestExtraPanelHTMLEscapesProviderAndChannelNames(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.replaceCatalogsForTest([]ProviderCatalog{{
