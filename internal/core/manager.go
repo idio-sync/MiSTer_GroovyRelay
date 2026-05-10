@@ -879,8 +879,9 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 func (m *Manager) Status() SessionStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := SessionStatus{State: m.fsm.State()}
+	st := SessionStatus{State: m.fsm.State(), MediaKind: MediaKindVideo}
 	if m.active != nil {
+		st.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
 		st.AdapterRef = m.active.req.AdapterRef
 		st.StartedAt = m.active.startedAt
 		st.Duration = m.active.duration
@@ -903,8 +904,9 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	view := StatusHomeView{State: m.fsm.State()}
+	view := StatusHomeView{State: m.fsm.State(), MediaKind: MediaKindVideo}
 	if m.active != nil {
+		view.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
 		view.Title = m.active.req.Title
 		view.AdapterRef = m.active.req.AdapterRef
 		view.Source = m.active.req.Source

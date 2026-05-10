@@ -7,6 +7,41 @@ import "time"
 // declared here so SessionStatus is self-contained.
 type State string
 
+type MediaKind string
+
+const (
+	MediaKindVideo MediaKind = "video"
+	MediaKindMusic MediaKind = "music"
+)
+
+func NormalizeMediaKind(k MediaKind) MediaKind {
+	switch k {
+	case MediaKindMusic:
+		return MediaKindMusic
+	default:
+		return MediaKindVideo
+	}
+}
+
+type VisualizerMode string
+
+const (
+	VisualizerModeRetroAnalyzer VisualizerMode = "retro_analyzer"
+)
+
+type VisualizerMetadata struct {
+	Title    string
+	Artist   string
+	Album    string
+	Duration time.Duration
+}
+
+type VisualizerRequest struct {
+	Enabled  bool
+	Mode     VisualizerMode
+	Metadata VisualizerMetadata
+}
+
 // SessionRequest is the adapter-agnostic input to StartSession. Every adapter
 // (Plex, and future: URL-input, Jellyfin, DLNA, ...) translates its
 // protocol-specific request into one of these before calling the manager.
@@ -83,6 +118,14 @@ type SessionRequest struct {
 	// Surfaced by the status home; never inspected by core. May be empty.
 	Title string
 
+	// MediaKind identifies whether the active item should be reported as
+	// video or music. Empty is treated as video for legacy adapters.
+	MediaKind MediaKind
+
+	// Visualizer requests FFmpeg-generated video for an audio-only session.
+	// Enabled sessions must use MediaKindMusic and a supported Mode.
+	Visualizer VisualizerRequest
+
 	// MediaInputPolicy constrains how ffprobe / ffmpeg dereference the
 	// stream URL: protocol whitelist, reconnect/redirect behavior,
 	// blocked-header deny-list, and read/write timeout. Adapters that hand
@@ -111,6 +154,7 @@ type Capabilities struct {
 // Adapters subscribe to this for their timeline reporting.
 type SessionStatus struct {
 	State      State
+	MediaKind  MediaKind
 	Position   time.Duration
 	Duration   time.Duration
 	AdapterRef string
@@ -122,10 +166,11 @@ type SessionStatus struct {
 // current state; no caching. See docs/specs/2026-05-08-ui-redesign-pr2-design.md §S3.
 type StatusHomeView struct {
 	State       State
-	Title       string        // empty when idle
-	AdapterRef  string        // empty when idle
-	Source      string        // adapter name ("plex", "jellyfin", "url"); empty when idle
-	Modeline    string        // e.g. "NTSC_480i"; empty when idle
+	MediaKind   MediaKind
+	Title       string // empty when idle
+	AdapterRef  string // empty when idle
+	Source      string // adapter name ("plex", "jellyfin", "url"); empty when idle
+	Modeline    string // e.g. "NTSC_480i"; empty when idle
 	Position    time.Duration
 	Duration    time.Duration
 	StartedAt   time.Time

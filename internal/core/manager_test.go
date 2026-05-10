@@ -1077,6 +1077,33 @@ func TestManager_StatusHomeView_Casting(t *testing.T) {
 	}
 }
 
+func TestManager_StatusCarriesMediaKind(t *testing.T) {
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.active = &activeSession{
+		req: SessionRequest{
+			AdapterRef: "plex:/library/metadata/42:tsid-1",
+			Source:     "plex",
+			Title:      "Blue Monday",
+			MediaKind:  MediaKindMusic,
+			Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		},
+		startedAt: time.Now(),
+		duration:  4 * time.Minute,
+	}
+	_ = m.fsm.Transition(EvPlayMedia)
+	m.mu.Unlock()
+
+	st := m.Status()
+	if st.MediaKind != MediaKindMusic {
+		t.Fatalf("Status.MediaKind = %q, want %q", st.MediaKind, MediaKindMusic)
+	}
+	view := m.StatusHomeView()
+	if view.MediaKind != MediaKindMusic {
+		t.Fatalf("StatusHomeView.MediaKind = %q, want %q", view.MediaKind, MediaKindMusic)
+	}
+}
+
 func TestManager_StatusHomeView_PausedKeepsSnapshot(t *testing.T) {
 	m := newTestManager(t)
 	if err := m.fsm.Transition(EvPlayMedia); err != nil {
