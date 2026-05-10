@@ -1,0 +1,32 @@
+{{define "setup-step-adapters"}}
+<section class="gr-wizard-step">
+	<header class="gr-wizard-step-head">
+		<h1>Pick your sources</h1>
+		<p class="subtitle">Select the cast sources you want to enable. You can configure each one in the next steps; you can also add more later from the sidebar.</p>
+	</header>
+
+	<form method="POST" action="/ui/setup/step/adapters" class="gr-wizard-form">
+
+		<div class="gr-adapter-cards">
+			{{range .AdapterCards}}
+			<label class="gr-adapter-card" for="adapter-{{.Name}}">
+				<input type="checkbox"
+					name="adapters"
+					value="{{.Name}}"
+					id="adapter-{{.Name}}"
+					{{if .Picked}}checked{{end}}>
+				<div class="gr-adapter-card-body">
+					<div class="gr-adapter-card-title">{{.DisplayName}}</div>
+					{{if .Description}}<div class="gr-adapter-card-desc">{{.Description}}</div>{{end}}
+				</div>
+			</label>
+			{{end}}
+		</div>
+
+		<div class="gr-wizard-actions">
+			<a href="/ui/setup/step/done" class="gr-skip">Skip — finish without adapters</a>
+			<button type="submit" class="btn">Continue ▸</button>
+		</div>
+	</form>
+</section>
+{{end}}

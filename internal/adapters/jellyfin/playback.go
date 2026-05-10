@@ -36,6 +36,7 @@ type PlaybackInfoResult struct {
 	MediaSourceID  string
 	PlaySessionID  string
 	TranscodingURL string // relative path with query string
+	Title          string // human title for status/eventlog; empty if unavailable
 }
 
 type playbackInfoBody struct {
@@ -55,10 +56,14 @@ type playbackInfoBody struct {
 type playbackInfoResponseDTO struct {
 	MediaSources []struct {
 		ID             string `json:"Id"`
+		Name           string `json:"Name"`
 		TranscodingURL string `json:"TranscodingUrl"`
 	} `json:"MediaSources"`
 	PlaySessionID string `json:"PlaySessionId"`
 	ErrorCode     string `json:"ErrorCode"`
+	Item          struct {
+		Name string `json:"Name"`
+	} `json:"Item"`
 }
 
 // FetchPlaybackInfo POSTs /Items/{ItemId}/PlaybackInfo and returns
@@ -119,10 +124,15 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 		return PlaybackInfoResult{}, errors.New("jellyfin: PlaybackInfo returned no MediaSources")
 	}
 	src := dto.MediaSources[0]
+	title := dto.Item.Name
+	if title == "" {
+		title = src.Name
+	}
 	return PlaybackInfoResult{
 		MediaSourceID:  src.ID,
 		PlaySessionID:  dto.PlaySessionID,
 		TranscodingURL: src.TranscodingURL,
+		Title:          title,
 	}, nil
 }
 

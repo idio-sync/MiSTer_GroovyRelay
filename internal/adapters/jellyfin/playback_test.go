@@ -128,3 +128,51 @@ func TestBuildAbsoluteStreamURL_NoDoubleAPIKey(t *testing.T) {
 		t.Errorf("existing api_key replaced: %s", got)
 	}
 }
+
+func TestFetchPlaybackInfo_DecodesTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src1","Name":"Source 1","TranscodingUrl":"/x"}],
+			"PlaySessionId":"session-abc",
+			"Item":{"Name":"Game of Thrones · S01E03"}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "x", DeviceID: "y", Version: "z",
+		ItemID: "i", UserID: "u", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if result.Title != "Game of Thrones · S01E03" {
+		t.Errorf("Title: got %q, want %q", result.Title, "Game of Thrones · S01E03")
+	}
+}
+
+func TestFetchPlaybackInfo_TitleFallsBackToSourceName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// No Item.Name — should fall back to MediaSource.Name
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src1","Name":"Fallback Source","TranscodingUrl":"/x"}],
+			"PlaySessionId":"session-abc"
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "x", DeviceID: "y", Version: "z",
+		ItemID: "i", UserID: "u", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if result.Title != "Fallback Source" {
+		t.Errorf("Title fallback: got %q, want %q", result.Title, "Fallback Source")
+	}
+}

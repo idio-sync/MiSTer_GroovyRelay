@@ -15,6 +15,8 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // BridgeSaver abstracts the bridge-level save operation so the UI
@@ -59,6 +61,24 @@ type MisterLauncher interface {
 	Launch(ctx context.Context) error
 }
 
+// StatusViewer is the UI's narrow view of core.Manager — just the one
+// method status.go needs. Declared here so tests can inject fakes;
+// production wires *core.Manager which satisfies via structural typing.
+type StatusViewer interface {
+	StatusHomeView() core.StatusHomeView
+}
+
+// MisterProber sends a single safe reachability probe to the configured
+// MiSTer. Distinct from MisterLauncher (which loads a core over SSH —
+// firing it on every diagnostics click would have side effects on the
+// operator's hardware). Production wires this from a closure that
+// dials UDP / sends a minimal probe packet that the FPGA either ignores
+// or ACKs without engaging the data plane. Returns nil on success,
+// error on timeout/unreachable.
+type MisterProber interface {
+	Probe(ctx context.Context) error
+}
+
 // Config is the dependencies bundle passed to New. Registry is
 // required; BridgeSaver and AdapterSaver are required only for the
 // handlers that write state (nil surfaces as a 500 at request time
@@ -72,6 +92,21 @@ type Config struct {
 	CompanionSession CompanionSessionProvider
 	CompanionURL     CompanionURLSource
 	CompanionDisplay CompanionDisplayProvider
+	MisterProber     MisterProber  // nil disables reachability probe on diagnostics page
+	StatusViewer     StatusViewer  // nil disables live data on status home
+	EventLog         *eventlog.Log // nil disables activity feed
+	Version          string        // build version, displayed in diagnostics
+}
+
+// sectionCtxData is the context object passed to the "field-section"
+// template partial. It carries everything the partial needs: the
+// section itself, its 0-based index (for sequential section numbering),
+// and the enclosing adapter name (for building hx-post URLs and slot
+// IDs for KindAction buttons).
+type sectionCtxData struct {
+	AdapterName string
+	Index       int
+	Section     bridgeSection
 }
 
 // templateFuncs supplies the tiny set of helpers our templates need.
@@ -82,6 +117,10 @@ type Config struct {
 //	             may contain "/") into HTML id attributes.
 //	hasString  — bridge panel renders the applied-live pip per
 //	             changed key by membership-check on AppliedPipKeys.
+//	sectionCtx — adapter-panel template partial assembles per-section
+//	             context (adapter name + index + section) into one
+//	             value so {{template "field-section" ...}} has all it
+//	             needs without multiple top-level bindings.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
@@ -93,14 +132,18 @@ var templateFuncs = template.FuncMap{
 		}
 		return false
 	},
+	"sectionCtx": func(adapterName string, index int, section bridgeSection) sectionCtxData {
+		return sectionCtxData{AdapterName: adapterName, Index: index, Section: section}
+	},
 }
 
 // Server owns the parsed templates + embedded static assets + a
 // reference to the adapter registry. Constructed once at startup and
 // mounted on the shared HTTP mux.
 type Server struct {
-	cfg  Config
-	tmpl *template.Template
+	cfg   Config
+	tmpl  *template.Template
+	guard func(http.Handler) http.Handler
 }
 
 func New(cfg Config) (*Server, error) {
@@ -111,7 +154,19 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ui: parse templates: %w", err)
 	}
-	return &Server{cfg: cfg, tmpl: tmpl}, nil
+	s := &Server{cfg: cfg, tmpl: tmpl}
+
+	// Build the first-run guard once. Guard against nil BridgeSaver before
+	// the type assertion — a naked assert on a nil interface panics.
+	var firstRun FirstRunAware
+	if cfg.BridgeSaver != nil {
+		if fra, ok := cfg.BridgeSaver.(FirstRunAware); ok {
+			firstRun = fra
+		}
+	}
+	s.guard = firstRunGuard(firstRun)
+
+	return s, nil
 }
 
 // Mount registers the UI routes on mux. The mux is expected to be the
@@ -131,16 +186,21 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// Static assets served out of embedded FS under /ui/static/.
 	// GETs don't pass through csrfMiddleware — reads have no side
 	// effects, and the middleware short-circuits on GET anyway.
+	// The guard passes /ui/static/* through unconditionally (rule 3),
+	// but we still wrap so the middleware chain is consistent.
 	staticSub, _ := fs.Sub(staticFS, "static")
 	staticSrv := http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub)))
-	mux.Handle("GET /ui/static/", extensionCORSMiddleware(staticSrv))
+	mux.Handle("GET /ui/static/", extensionCORSMiddleware(s.guard(staticSrv)))
 
 	// Root + shell. Use {$} to match "/" exactly — a bare "GET /"
 	// would be a catch-all that conflicts with adapter-owned prefix
 	// routes (e.g., Plex Companion's "/player/") under Go 1.22's
 	// method-aware mux.
-	s.mountGET(mux, "/{$}", s.handleRoot)
-	s.mountGET(mux, "/ui/{$}", s.handleShell)
+	// Root redirect is unguarded: GET / → /ui/ must always work so the
+	// operator can reach /ui/setup even before first-run is complete.
+	s.mountGETUnguarded(mux, "/{$}", s.handleRoot)
+	s.mountGET(mux, "/ui/{$}", s.handleStatusHome)
+	s.mountGET(mux, "/ui/status/content", s.handleStatusContent)
 	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
 	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash
 
@@ -150,16 +210,27 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
 	s.mountPOST(mux, "/ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
 
-	// Sidebar status fragment (polled every 3s by the shell).
-	s.mountGET(mux, "/ui/sidebar/status", s.handleSidebarStatus)
 	// Sidebar dots fragment (per-adapter status indicators).
 	s.mountGET(mux, "/ui/sidebar/dots", s.handleSidebarDots)
+
+	// Diagnostics page.
+	s.mountGET(mux, "/ui/diagnostics", s.handleDiagnosticsGET)
+	s.mountPOST(mux, "/ui/diagnostics/probe", s.handleDiagnosticsProbe)
 
 	// Adapter panel.
 	s.mountGET(mux, "/ui/adapter/{name}", s.handleAdapterGET)
 	s.mountGET(mux, "/ui/adapter/{name}/status", s.handleAdapterStatus)
 	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
 	s.mountPOST(mux, "/ui/adapter/{name}/save", s.handleAdapterSave)
+
+	// First-run wizard routes. These are wrapped in mountGET/mountPOST
+	// which apply firstRunGuard — the guard passes /ui/setup/* through
+	// unconditionally (rule 2) so the wizard can render during first-run.
+	s.mountGET(mux, "/ui/setup/{$}", s.handleSetupRoot)
+	s.mountGET(mux, "/ui/setup", s.handleSetupRoot)
+	s.mountGET(mux, "/ui/setup/step/{name}", s.handleSetupStepGET)
+	s.mountPOST(mux, "/ui/setup/step/{name}", s.handleSetupStepPOST)
+	s.mountPOST(mux, "/ui/setup/done", s.handleSetupDone)
 
 	// Per-adapter routes contributed via RouteProvider (e.g., Plex's
 	// link/start, link/status, unlink). Mounted under
@@ -175,44 +246,41 @@ func (s *Server) Mount(mux *http.ServeMux) {
 			handler := http.HandlerFunc(route.Handler)
 			switch route.Method {
 			case "GET":
-				mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
+				mux.Handle("GET "+pattern, extensionCORSMiddleware(s.guard(handler)))
 			case "POST":
-				mux.Handle("POST "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("POST "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			case "DELETE":
-				mux.Handle("DELETE "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("DELETE "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			case "PUT":
-				mux.Handle("PUT "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("PUT "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			case "PATCH":
-				mux.Handle("PATCH "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("PATCH "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			}
 		}
 	}
 }
 
-// handleSidebarStatus renders the <aside> fragment swapped in every
-// 3 s by the shell's hx-trigger. Returns the entire <aside> (not
-// just the inner dots) so the outer hx-get + hx-trigger attributes
-// survive the outerHTML swap — the sidebar re-registers its own
-// polling on every refresh.
-func (s *Server) handleSidebarStatus(w http.ResponseWriter, r *http.Request) {
-	data := s.shellData()
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := w.Write([]byte(`<aside class="sidebar" id="sidebar" hx-get="/ui/sidebar/status" hx-trigger="every 3s" hx-swap="outerHTML">`)); err != nil {
-		return
-	}
-	_ = s.tmpl.ExecuteTemplate(w, "sidebar-body", data)
-	_, _ = w.Write([]byte(`</aside>`))
-}
-
 // mountPOST is the canonical way to register a POST handler on the UI
-// mux. Wraps the handler in csrfMiddleware so every write endpoint
-// (bridge/save, adapter/save, plex/link/start, etc.) gets the same
-// cross-origin protection without each handler having to think about it.
+// mux. Wraps the handler in csrfMiddleware and firstRunGuard so every
+// write endpoint (bridge/save, adapter/save, plex/link/start, etc.)
+// gets cross-origin protection and first-run enforcement without each
+// handler having to think about it.
 func (s *Server) mountPOST(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
-	mux.Handle("POST "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+	mux.Handle("POST "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 }
 
+// mountGET registers a guarded GET handler. All UI GET routes pass
+// through firstRunGuard so unauthenticated first-run state redirects
+// to /ui/setup.
 func (s *Server) mountGET(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	mux.Handle("GET "+pattern, extensionCORSMiddleware(s.guard(handler)))
+}
+
+// mountGETUnguarded registers a GET handler that bypasses firstRunGuard.
+// Use ONLY for the root redirect (GET /{$}) so that GET / always
+// redirects to /ui/ regardless of first-run state — the operator must
+// be able to reach /ui/setup from a bare host URL.
+func (s *Server) mountGETUnguarded(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
 	mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
 }
 
@@ -273,15 +341,18 @@ func (s *Server) shellDataForPath(path string) shellTemplateData {
 }
 
 // shellData builds the template data for the shell page: sidebar
-// entries (one per registered adapter) + status-dot classes.
+// entries (one per enabled adapter) + status-dot classes.
+// Disabled adapters are filtered out per spec §5.1 (PR 2c Task D1).
 func (s *Server) shellData() shellTemplateData {
 	adaptersData := make([]sidebarAdapter, 0)
 	for _, a := range s.cfg.Registry.List() {
+		if !a.IsEnabled() {
+			continue
+		}
 		st := a.Status()
 		adaptersData = append(adaptersData, sidebarAdapter{
 			Name:        a.Name(),
 			DisplayName: a.DisplayName(),
-			DotGlyph:    dotGlyph(st.State),
 			DotClass:    dotClass(st.State),
 		})
 	}
@@ -292,30 +363,14 @@ type shellTemplateData struct {
 	Adapters    []sidebarAdapter
 	PanelHTML   template.HTML
 	CurrentPath string
+	SetupMode   bool
+	Steps       []stepperItem
 }
 
 type sidebarAdapter struct {
 	Name        string
 	DisplayName string
-	DotGlyph    string
 	DotClass    string
-}
-
-// dotGlyph returns the single-character status indicator for a state.
-// Matches the palette conventions in app.css (.dot.run/.starting/.err/
-// .off); changing glyphs here also requires updating any template
-// that asserts against specific characters.
-func dotGlyph(s adapters.State) string {
-	switch s {
-	case adapters.StateRunning:
-		return "●"
-	case adapters.StateStarting:
-		return "◐"
-	case adapters.StateError:
-		return "●"
-	default:
-		return "○"
-	}
 }
 
 // dotClass returns the CSS class for a state (colors the dot).

@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // AdapterConfig bundles the bridge-level context the Plex adapter
@@ -39,6 +40,11 @@ type AdapterConfig struct {
 	// Version is the build version string spliced into /resources
 	// platformVersion and X-Plex-Version headers.
 	Version string
+
+	// EventLog is the optional ring buffer for adapter lifecycle
+	// emissions (cast-requested, adapter-linked, etc.). Nil disables
+	// emission; main.go wires the production log.
+	EventLog *eventlog.Log
 }
 
 // Adapter owns the Plex Companion handlers, the GDM multicast
@@ -125,6 +131,19 @@ func (a *Adapter) snapshotPending() *pendingLink {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.pending
+}
+
+// emit appends to the configured eventlog if one is wired.
+func (a *Adapter) emit(sev eventlog.Severity, msg string) {
+	if a.cfg.EventLog == nil {
+		return
+	}
+	a.cfg.EventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "plex",
+		Message:  msg,
+	})
 }
 
 // NewAdapter constructs a ready-to-Start Adapter. Companion + timeline
@@ -270,6 +289,7 @@ func (a *Adapter) ensureFinalized() {
 			DataDir:             a.cfg.Bridge.DataDir,
 			MaxVideoBitrateKbps: cfgSnap.MaxVideoBitrateKbps,
 			Modeline:            a.cfg.Bridge.Video.Modeline,
+			EventLog:            a.cfg.EventLog,
 		}, a.cfg.Core)
 		a.timeline = NewTimelineBroker(
 			TimelineConfig{DeviceUUID: deviceUUID, DeviceName: cfgSnap.DeviceName},
@@ -394,6 +414,37 @@ func (a *Adapter) IsEnabled() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.plexCfg.Enabled
+}
+
+// IsLinked implements adapters.LinkAware. True when an auth token is
+// persisted; the wizard's Continue button gates on this. See PR2 spec §S8.
+func (a *Adapter) IsLinked() bool {
+	return a.snapshotToken() != ""
+}
+
+// LinkPhase implements adapters.LinkAware. Derived from the (token,
+// pending) tuple. Adapter-defined string; the shared UI emits it as a
+// CSS class hook only. See PR2 spec §S8.
+func (a *Adapter) LinkPhase() string {
+	if a.snapshotToken() != "" {
+		return "linked"
+	}
+	p := a.snapshotPending()
+	if p == nil {
+		return "idle"
+	}
+	if p.Done() {
+		// Race window: PIN flow completed but token snapshot hasn't
+		// been refreshed yet. Treat as terminal.
+		if p.Error() != "" {
+			return "error"
+		}
+		return "linked"
+	}
+	if p.Expired() {
+		return "error"
+	}
+	return "pin-issued"
 }
 
 func (a *Adapter) Status() adapters.Status {

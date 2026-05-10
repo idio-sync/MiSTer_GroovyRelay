@@ -138,7 +138,7 @@ func TestWSDial_SendsMediaBrowserIdentityHeader(t *testing.T) {
 func TestStartWS_PostsCapabilitiesBeforeDial(t *testing.T) {
 	srv, wsCh, capCh := startTestJFServer(t)
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -166,7 +166,7 @@ func TestStartWS_PostsCapabilitiesBeforeDial(t *testing.T) {
 func TestRead_DispatchesByMessageType(t *testing.T) {
 	srv, wsCh, _ := startTestJFServer(t)
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	// Hook the dispatch table.
@@ -235,7 +235,7 @@ func TestRead_DispatchesByMessageType(t *testing.T) {
 func TestRead_AcceptsLargeSessionsPayload(t *testing.T) {
 	srv, wsCh, _ := startTestJFServer(t)
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	gotCh := make(chan int, 1)
@@ -310,7 +310,7 @@ func TestStartWS_BuildsCorrectURL(t *testing.T) {
 func TestKeepAlive_FiresAfterForceKeepAlive(t *testing.T) {
 	srv, wsCh, _ := startTestJFServer(t)
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -365,7 +365,7 @@ func TestKeepAlive_FiresAfterForceKeepAlive(t *testing.T) {
 func TestNoKeepAliveBeforeForceKeepAlive(t *testing.T) {
 	srv, wsCh, _ := startTestJFServer(t)
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -435,7 +435,7 @@ func TestReconnect_ProbesSessionsAndSkipsCapabilitiesIfPresent(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := New(nil, t.TempDir(), "device-1", "")
+	a := New(nil, t.TempDir(), "device-1", "", nil)
 	a.cfg = Config{ServerURL: srv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 
 	ctx, cancel := context.WithCancel(t.Context())

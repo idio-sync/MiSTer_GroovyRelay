@@ -43,10 +43,22 @@ type LinkState struct {
 	serverID  string
 	lastErr   string
 	updatedAt time.Time
+
+	onPhaseChange func(phase LinkPhase, errMsg string)
 }
 
 func NewLinkState() *LinkState {
 	return &LinkState{phase: LinkIdle, updatedAt: time.Now()}
+}
+
+// SetOnPhaseChange wires a callback fired whenever the link phase
+// transitions. Callers (the adapter) translate phase changes into
+// eventlog entries. Safe to call once at construction; do not call
+// concurrently with SetLinked/SetError/SetIdle/SetLinking.
+func (s *LinkState) SetOnPhaseChange(fn func(phase LinkPhase, errMsg string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onPhaseChange = fn
 }
 
 func (s *LinkState) State() LinkPhase {
@@ -69,38 +81,54 @@ func (s *LinkState) LastError() string {
 
 func (s *LinkState) SetIdle() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.phase = LinkIdle
 	s.user = ""
 	s.serverID = ""
 	s.lastErr = ""
 	s.updatedAt = time.Now()
+	cb := s.onPhaseChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(LinkIdle, "")
+	}
 }
 
 func (s *LinkState) SetLinking() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.phase = LinkLinking
 	s.lastErr = ""
 	s.updatedAt = time.Now()
+	cb := s.onPhaseChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(LinkLinking, "")
+	}
 }
 
 func (s *LinkState) SetLinked(user, serverID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.phase = LinkLinked
 	s.user = user
 	s.serverID = serverID
 	s.lastErr = ""
 	s.updatedAt = time.Now()
+	cb := s.onPhaseChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(LinkLinked, "")
+	}
 }
 
 func (s *LinkState) SetError(msg string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.phase = LinkError
 	s.lastErr = msg
 	s.updatedAt = time.Now()
+	cb := s.onPhaseChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(LinkError, msg)
+	}
 }
 
 // UpdatedAt returns when the state last changed. Used by the UI's

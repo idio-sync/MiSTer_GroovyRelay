@@ -68,6 +68,11 @@ type SessionRequest struct {
 	// goroutine after the data plane has been cancelled.
 	OnStop func(reason string)
 
+	// Title is a short human-readable label for the session, populated
+	// by the adapter (Plex item title / Jellyfin item Name / URL filename).
+	// Surfaced by the status home; never inspected by core. May be empty.
+	Title string
+
 	// MediaInputPolicy constrains how ffprobe / ffmpeg dereference the
 	// stream URL: protocol whitelist, reconnect/redirect behavior,
 	// blocked-header deny-list, and read/write timeout. Adapters that hand
@@ -100,4 +105,22 @@ type SessionStatus struct {
 	Duration   time.Duration
 	AdapterRef string
 	StartedAt  time.Time
+}
+
+// StatusHomeView is the aggregated read-only view consumed by the
+// status home and diagnostics pages. Built once per request from
+// current state; no caching. See docs/specs/2026-05-08-ui-redesign-pr2-design.md §S3.
+type StatusHomeView struct {
+	State       State
+	Title       string        // empty when idle
+	AdapterRef  string        // empty when idle
+	Modeline    string        // e.g. "NTSC_480i"; empty when idle
+	Position    time.Duration
+	Duration    time.Duration
+	StartedAt   time.Time
+	BlitsTotal  uint64        // fields emitted (one per BLIT_FIELD_VSYNC)
+	FramesTotal uint64        // ffmpeg frames consumed
+	Underruns   uint64        // dataplane underruns since session start
+	WireBytes   uint64        // post-LZ4 bytes sent (drives throughput; §S10)
+	LastACKAge  time.Duration // 0 when no plane or no ACK yet
 }

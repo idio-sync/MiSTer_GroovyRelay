@@ -19,6 +19,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -90,6 +91,8 @@ type Manager struct {
 	cancelFn context.CancelFunc
 	plane    *dataplane.Plane // nil when idle
 	active   *activeSession
+
+	eventLog *eventlog.Log // nilable; nil disables event emission
 }
 
 // BinaryResolver is the manager's narrow view of an external binary resolver.
@@ -106,6 +109,46 @@ func WithBinaryResolvers(ffmpegResolver, ffprobeResolver BinaryResolver) Manager
 	return func(m *Manager) {
 		m.ffmpegResolver = ffmpegResolver
 		m.ffprobeResolver = ffprobeResolver
+	}
+}
+
+// WithEventLog wires the event-log ring buffer for cast lifecycle
+// emissions. Nil disables emission; tests that don't care about
+// events can omit this option.
+func WithEventLog(log *eventlog.Log) ManagerOption {
+	return func(m *Manager) {
+		m.eventLog = log
+	}
+}
+
+// emit appends to the eventlog if one is wired. Safe to call when
+// eventLog is nil.
+func (m *Manager) emit(sev eventlog.Severity, msg string) {
+	if m.eventLog == nil {
+		return
+	}
+	m.eventLog.Append(eventlog.Entry{
+		Time:     time.Now(),
+		Severity: sev,
+		Source:   "core",
+		Message:  msg,
+	})
+}
+
+// makeOnInitCallback constructs the dataplane.PlaneConfig.OnInit closure
+// for a new session, capturing adapterRef and modelineName at call time
+// (i.e. while m.mu is held in startPlaneLocked). The returned closure
+// fires from the Plane.Run goroutine without holding m.mu, so it must NOT
+// read any m.bridge fields at fire time — that would race with concurrent
+// UpdateBridge calls. See PR2 code review concern #1.
+func (m *Manager) makeOnInitCallback(adapterRef, modelineName string) func(error) {
+	return func(err error) {
+		if err != nil {
+			m.emit(eventlog.SeverityErr, fmt.Sprintf("init-failed: %v", err))
+			return
+		}
+		m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-started %s · %s",
+			adapterRef, modelineName))
 	}
 }
 
@@ -217,14 +260,19 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	//    still needs the file.
 	var oldSubtitle string
 	var oldOnStop func(string)
+	var oldRef string
 	if m.active != nil && m.active.req.SubtitlePath != req.SubtitlePath {
 		oldSubtitle = m.active.req.SubtitlePath
 	}
 	if m.active != nil {
 		oldOnStop = m.active.req.OnStop
+		oldRef = m.active.req.AdapterRef
 	}
 	if m.cancelFn != nil {
 		slog.Info("preempting prior session for new request", "new_url", redactURL(req.StreamURL))
+		if oldRef != "" {
+			m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-preempted %s", oldRef))
+		}
 		prev := m.plane
 		m.cancelFn()
 		m.cancelFn = nil
@@ -299,6 +347,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioRate:     m.bridge.Audio.SampleRate,
 		AudioChans:    m.bridge.Audio.Channels,
 		SeekOffsetMs:  offsetMs,
+		OnInit: m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
 	m.active = &activeSession{
@@ -506,9 +555,11 @@ func (m *Manager) Stop() error {
 	defer m.mu.Unlock()
 	var subtitlePath string
 	var onStop func(string)
+	var adapterRef string
 	if m.active != nil {
 		subtitlePath = m.active.req.SubtitlePath
 		onStop = m.active.req.OnStop
+		adapterRef = m.active.req.AdapterRef
 	}
 	if m.active != nil || m.plane != nil {
 		slog.Debug("stopping active session")
@@ -524,6 +575,9 @@ func (m *Manager) Stop() error {
 		}
 	}
 	m.active = nil
+	if adapterRef != "" {
+		m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-ended %s", adapterRef))
+	}
 	removeSubtitleFile(subtitlePath)
 	notifySessionStop(onStop, "stopped")
 	return m.fsm.Transition(EvStop)
@@ -578,6 +632,37 @@ func (m *Manager) Status() SessionStatus {
 		}
 	}
 	return st
+}
+
+// StatusHomeView builds the aggregated view consumed by the UI Status
+// home and Diagnostics pages. Composes from the active session, the
+// running plane (if any), and the bridge config. Mu is held for the
+// snapshot only — no I/O, no allocations beyond the returned struct.
+//
+// See docs/specs/2026-05-08-ui-redesign-pr2-design.md §S3.
+func (m *Manager) StatusHomeView() StatusHomeView {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	view := StatusHomeView{State: m.fsm.State()}
+	if m.active != nil {
+		view.Title = m.active.req.Title
+		view.AdapterRef = m.active.req.AdapterRef
+		view.StartedAt = m.active.startedAt
+		view.Duration = m.active.duration
+		view.Modeline = m.bridge.Video.Modeline
+		view.Position = m.active.pausedPosition
+	}
+	if m.plane != nil {
+		view.Modeline = m.bridge.Video.Modeline
+		view.Position = m.plane.Position()
+		view.BlitsTotal = m.plane.BlitsTotal()
+		view.FramesTotal = m.plane.FramesTotal()
+		view.Underruns = m.plane.Underruns()
+		view.WireBytes = m.plane.WireBytes()
+		view.LastACKAge = m.plane.LastACKAge()
+	}
+	return view
 }
 
 // probeDuration turns ffprobe's floating-point seconds into a time.Duration.

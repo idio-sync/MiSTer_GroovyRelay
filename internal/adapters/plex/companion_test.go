@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 func newLoopbackServer(t *testing.T, h http.Handler) *httptest.Server {
@@ -1354,5 +1355,72 @@ func TestSessionRequestFor_OnStop_CASClearNoOpsOnSeekSameMedia(t *testing.T) {
 	}
 	if got.TranscodeSessionID != "tsid-new" {
 		t.Errorf("lastPlay TranscodeSessionID = %q, want tsid-new (NEW seek session must survive prior OnStop)", got.TranscodeSessionID)
+	}
+}
+
+func TestPlexCompanion_PlayMediaEmitsCastRequested(t *testing.T) {
+	log := eventlog.New(16)
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer",
+		DeviceUUID: "our-uuid",
+		EventLog:   log,
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Client-Identifier", "client-1")
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	entries := log.Snapshot()
+	if len(entries) == 0 {
+		t.Fatal("expected cast-requested entry in eventlog")
+	}
+	e := entries[len(entries)-1]
+	if e.Source != "plex" || e.Severity != eventlog.SeverityInfo {
+		t.Errorf("Source/Severity: got %q/%v, want plex/Info", e.Source, e.Severity)
+	}
+	if !strings.Contains(e.Message, "cast-requested") {
+		t.Errorf("Message: got %q, want it to contain cast-requested", e.Message)
+	}
+}
+
+func TestPlexCompanion_PlayMediaPopulatesTitle(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName: "MiSTer",
+		DeviceUUID: "our-uuid",
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/player/playback/playMedia?" +
+		"address=192.168.1.10&port=32400&protocol=http&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&" +
+		"title=S01E03+%E2%80%94+The+Lord+of+Light"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if got := fc.lastReq.Title; got != "S01E03 — The Lord of Light" {
+		t.Errorf("Title: got %q, want %q", got, "S01E03 — The Lord of Light")
 	}
 }

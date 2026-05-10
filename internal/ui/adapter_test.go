@@ -509,3 +509,72 @@ func TestHandleAdapter_Save_RequiredFieldMissing(t *testing.T) {
 		t.Errorf("saver should have been called for non-required form; lastName = %q", saver.lastName)
 	}
 }
+
+func TestAdapterPanel_LinkAwareNotLinked_GatesForm(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(newMockLinkAwareAdapter("plex"))
+	})
+
+	r := httptest.NewRequest("GET", "/ui/adapter/plex", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+
+	if !strings.Contains(body, "<fieldset disabled>") {
+		t.Errorf("expected disabled fieldset; got: %s", body)
+	}
+	if !strings.Contains(body, "gr-form-locked") {
+		t.Errorf("expected .gr-form-locked overlay; got: %s", body)
+	}
+}
+
+func TestAdapterPanel_LinkAwareLinked_FormEnabled(t *testing.T) {
+	a := newMockLinkAwareAdapter("plex")
+	a.linked = true
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(a)
+	})
+
+	r := httptest.NewRequest("GET", "/ui/adapter/plex", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+
+	if strings.Contains(body, "<fieldset disabled>") {
+		t.Errorf("form should not be disabled when linked; got: %s", body)
+	}
+}
+
+// plainAdapter returns an adapter that satisfies adapters.Adapter
+// but does NOT implement LinkAware. Used to verify the form-gating
+// path doesn't trigger on adapters without a link concept.
+type plainAdapter struct{ name string }
+
+func (a *plainAdapter) Name() string                                                      { return a.name }
+func (a *plainAdapter) DisplayName() string                                               { return a.name }
+func (a *plainAdapter) Fields() []adapters.FieldDef                                       { return nil }
+func (a *plainAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error                  { return nil }
+func (a *plainAdapter) IsEnabled() bool                                                   { return true }
+func (a *plainAdapter) Start(context.Context) error                                       { return nil }
+func (a *plainAdapter) Stop() error                                                       { return nil }
+func (a *plainAdapter) Status() adapters.Status                                           { return adapters.Status{State: adapters.StateRunning} }
+func (a *plainAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeHotSwap, nil
+}
+
+var _ adapters.Adapter = (*plainAdapter)(nil)
+
+func TestAdapterPanel_NoLinkAware_NoGating(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(&plainAdapter{name: "url"})
+	})
+
+	r := httptest.NewRequest("GET", "/ui/adapter/url", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+
+	if strings.Contains(body, "<fieldset disabled>") {
+		t.Errorf("non-LinkAware adapter should not be gated; got: %s", body)
+	}
+}

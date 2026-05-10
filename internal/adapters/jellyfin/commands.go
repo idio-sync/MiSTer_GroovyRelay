@@ -3,11 +3,13 @@ package jellyfin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // playMessageData is the JF Play message Data field.
@@ -95,6 +97,7 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			ServerURL:          cfg.ServerURL,
 			Token:              tok.AccessToken,
 		})
+		req.Title = info.Title
 
 		prev := a.beginSelfPreempt(req.AdapterRef)
 		if a.core == nil {
@@ -102,6 +105,7 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			slog.Error("jellyfin: no core SessionManager")
 			return
 		}
+		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 		if err := a.core.StartSession(req); err != nil {
 			a.rollbackSelfPreempt(prev)
 			slog.Error("jellyfin: StartSession failed", "err", err)
@@ -345,11 +349,13 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 			ServerURL:          cfg.ServerURL,
 			Token:              tok.AccessToken,
 		})
+		req.Title = info.Title
 
 		// 3) Reserve currentRefKey atomically (rollback on error).
 		prev := a.beginSelfPreempt(req.AdapterRef)
 
 		// 4) Call StartSession.
+		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 		if err := a.core.StartSession(req); err != nil {
 			a.rollbackSelfPreempt(prev)
 			slog.Error("jellyfin: trackSwitch StartSession failed", "err", err)
