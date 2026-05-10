@@ -52,6 +52,18 @@ type captureSessionManager struct {
 	// PAUSED→Play branch's error path.
 	playErr error
 
+	// pauseErr lets a test inject a Pause error to exercise the
+	// 501-Action-Failed branch in handlePause.
+	pauseErr error
+
+	// seekErr lets a test inject a SeekTo error to exercise the
+	// 501-Action-Failed branch in handleSeek.
+	seekErr error
+
+	// seekOffsets captures every SeekTo offsetMs argument in order so
+	// tests can assert the milliseconds value the handler computed.
+	seekOffsets []int
+
 	// Method counters mirror fakeSessionManager — useful for assertions
 	// like "core.Stop was called once."
 	startCalls int
@@ -94,7 +106,7 @@ func (c *captureSessionManager) Pause() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pauseCalls++
-	return nil
+	return c.pauseErr
 }
 
 func (c *captureSessionManager) Play() error {
@@ -111,11 +123,12 @@ func (c *captureSessionManager) Stop() error {
 	return c.stopErr
 }
 
-func (c *captureSessionManager) SeekTo(int) error {
+func (c *captureSessionManager) SeekTo(offsetMs int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seekCalls++
-	return nil
+	c.seekOffsets = append(c.seekOffsets, offsetMs)
+	return c.seekErr
 }
 
 // lastReq returns the most-recent captured SessionRequest. Convenience
@@ -147,6 +160,30 @@ func (c *captureSessionManager) snapshotPlayCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.playCalls
+}
+
+func (c *captureSessionManager) snapshotPauseCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pauseCalls
+}
+
+func (c *captureSessionManager) snapshotSeekCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seekCalls
+}
+
+// lastSeekOffset returns the most-recent SeekTo offsetMs, or -1 when
+// SeekTo has not been called. Used by handleSeek tests to verify the
+// HH:MM:SS → ms conversion inside the handler.
+func (c *captureSessionManager) lastSeekOffset() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.seekOffsets) == 0 {
+		return -1
+	}
+	return c.seekOffsets[len(c.seekOffsets)-1]
 }
 
 // avtPlayAdapter constructs an enabled adapter with a captureSessionManager
@@ -357,10 +394,11 @@ func TestPlay_StartInFlightRejectsSecondFreshStart(t *testing.T) {
 }
 
 func TestPlay_PausedOwnSession_CallsCorePlay(t *testing.T) {
-	// Phase 2 has no Pause handler so this state isn't reachable from a
-	// controller, but the code path still needs to exist for Phase 3.
-	// Set up the state by directly mutating transportState to
-	// PAUSED_PLAYBACK and pointing Status() at our ref.
+	// PAUSED → core.Play() resume branch (VOD with known duration).
+	// Spec §Play line 358 splits on Duration: known-duration sources
+	// resume via core.Play(); live/unknown-duration rebuild at the
+	// live edge (covered by pause_test.go's live-edge test). This
+	// test pins the VOD branch.
 	a, fake := avtPlayAdapter(t)
 
 	ref := "dlna:abc123"
@@ -370,7 +408,8 @@ func TestPlay_PausedOwnSession_CallsCorePlay(t *testing.T) {
 	a.mu.Unlock()
 
 	fake.statusFn = func() core.SessionStatus {
-		return core.SessionStatus{AdapterRef: ref}
+		// Duration > 0 selects the VOD resume branch.
+		return core.SessionStatus{AdapterRef: ref, Duration: 1}
 	}
 
 	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
@@ -459,10 +498,12 @@ func TestPlay_StartSessionFailure_RollsBackRef(t *testing.T) {
 	if rr.Code != 500 {
 		t.Errorf("status = %d, want 500", rr.Code)
 	}
-	// Spec line 321: backend probe/playback failures map to 716 by
-	// default; without typed sentinels we always emit 716.
-	if !strings.Contains(rr.Body.String(), "<errorCode>716</errorCode>") {
-		t.Errorf("body missing errorCode 716: %s", rr.Body.String())
+	// Spec line 321: a generic backend failure (no ErrProbeUnreachable
+	// sentinel in the chain) maps to 501 Action Failed. The 716
+	// "Resource not found" path is exercised by
+	// TestPlay_StartSession_ProbeUnreachable_Returns716 below.
+	if !strings.Contains(rr.Body.String(), "<errorCode>501</errorCode>") {
+		t.Errorf("body missing errorCode 501: %s", rr.Body.String())
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -757,7 +798,10 @@ func TestPlay_Resume_CoreFailure_RedactsLastError(t *testing.T) {
 	a.mu.Unlock()
 
 	fake.statusFn = func() core.SessionStatus {
-		return core.SessionStatus{AdapterRef: ref}
+		// Duration > 0 selects the VOD resume branch — that's the one
+		// that calls core.Play() and has the redaction surface this
+		// test pins.
+		return core.SessionStatus{AdapterRef: ref, Duration: 1}
 	}
 	leakPayload := "/var/lib/groovy/socket: connection refused on 10.0.0.42:32100"
 	fake.playErr = errors.New("dataplane resume: " + leakPayload)
@@ -926,7 +970,11 @@ func TestGetCurrentTransportActions_StoppedWithURI_Play(t *testing.T) {
 	}
 }
 
-func TestGetCurrentTransportActions_Playing_Stop(t *testing.T) {
+func TestGetCurrentTransportActions_Playing_PauseStop(t *testing.T) {
+	// P3.1 advertises Pause for PLAYING (now reachable). Seek is not
+	// advertised here because the test's captureSessionManager returns
+	// zero-value Status (Duration=0 + empty AdapterRef), so ownSession
+	// is false.
 	a, _ := avtPlayAdapter(t)
 	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
 	if rr.Code != 200 {
@@ -937,8 +985,8 @@ func TestGetCurrentTransportActions_Playing_Stop(t *testing.T) {
 	if rr2.Code != 200 {
 		t.Fatalf("status = %d, want 200", rr2.Code)
 	}
-	if !strings.Contains(rr2.Body.String(), "<Actions>Stop</Actions>") {
-		t.Errorf("body missing <Actions>Stop</Actions>; got: %s", rr2.Body.String())
+	if !strings.Contains(rr2.Body.String(), "<Actions>Pause,Stop</Actions>") {
+		t.Errorf("body missing <Actions>Pause,Stop</Actions>; got: %s", rr2.Body.String())
 	}
 }
 

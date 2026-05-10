@@ -291,7 +291,12 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 	}
 	probe, err := probeFn(ctx, ffprobePath, req.StreamURL, req.MediaInputPolicy)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("probe source: %w", err)
+		// Join the underlying ffprobe error with ErrProbeUnreachable so
+		// adapters can distinguish "couldn't reach the source" (UPnP 716
+		// for DLNA) from "something else broke" via errors.Is. The
+		// underlying error remains in the chain for slog / operator
+		// visibility; the sentinel is purely a category tag.
+		return nil, nil, "", errors.Join(fmt.Errorf("probe source: %w", err), ErrProbeUnreachable)
 	}
 	var cropRect *ffmpeg.CropRect
 	if m.bridge.Video.AspectMode == "auto" {
@@ -330,9 +335,45 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		oldOnStop = m.active.req.OnStop
 		oldRef = m.active.req.AdapterRef
 	}
+	// genuinePreempt is true only when this StartSession actually replaces
+	// a different adapter session (different AdapterRef), NOT when Play
+	// (resume) or SeekTo replays the same SessionRequest into
+	// startPlaneLocked. Same-session replay carries the same OnStop
+	// closure and AdapterRef forward to the new activeSession, so firing
+	// "preempted" notifications here would clear the adapter's ref while
+	// core.Manager retains the session — see the DLNA Pause→Resume
+	// regression where DLNA's onStopForRef sees its own ref → clears
+	// currentRef → next SOAP action fails despite core having a healthy
+	// active session.
+	//
+	// Architectural assumption: a new SessionRequest with the same
+	// AdapterRef as the active session means "same session continues"
+	// (DLNA Pause→Resume, DLNA live-edge reconnect, DLNA Seek). Adapters
+	// whose protocol mints fresh server-side resources per seek MUST
+	// vary AdapterRef across those boundaries to opt back into the
+	// preempt path; otherwise OnStop will not fire on seek.
+	//
+	// Plex caveat (FIXME plex-orphan-transcode): Plex's companion adapter
+	// currently sets AdapterRef = MediaKey and mints a fresh
+	// TranscodeSessionID on every SeekTo. Under this gate, Plex seek
+	// leaves an orphan TranscodeSessionID at PMS until PMS's own idle
+	// timeout reaps it (~60–120 s). Migrating Plex's AdapterRef to
+	// include TranscodeSessionID (e.g. MediaKey + ":" + TranscodeSessionID)
+	// would restore explicit StopTranscodeSession on seek. Tracked
+	// separately from the Phase 3 DLNA scope; PMS's reaper makes the
+	// orphan benign at the controller-side and only observable in PMS
+	// dashboards.
+	genuinePreempt := oldRef != "" && oldRef != req.AdapterRef
 	if m.cancelFn != nil {
+		// The slog line is kept unconditional: it logs at debug volume
+		// for operators tracing a replay path. For same-session replay
+		// this is still technically a preempt of the prior PLANE
+		// goroutine (it gets torn down and replaced), even though the
+		// SESSION continues. The eventlog "cast-preempted" entry below
+		// is operator-visible state and must match the OnStop
+		// notification, so it is gated on genuinePreempt.
 		slog.Info("preempting prior session for new request", "new_url", redactURL(req.StreamURL))
-		if oldRef != "" {
+		if genuinePreempt {
 			m.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-preempted %s", oldRef))
 		}
 		prev := m.plane
@@ -345,17 +386,23 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		}
 	}
 	removeSubtitleFile(oldSubtitle)
-	notifySessionStop(oldOnStop, "preempted")
+	if genuinePreempt {
+		notifySessionStop(oldOnStop, "preempted")
+	}
 
 	// Resolve the modeline preset from config (empty defaults to NTSC_480i).
+	// Wrap with ErrPlaneError so adapters that fault-map can categorize
+	// these as plane-setup failures rather than network-unreachable. In
+	// practice these only fire on bridge config corruption — operator-
+	// visible — so 501 (generic failure) is the right SOAP fault.
 	preset, err := ResolvePreset(m.bridge.Video.Modeline)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrPlaneError, err)
 	}
 	modeline := preset.Modeline
 	rgbMode, err := resolveRGBMode(m.bridge.Video.RGBMode)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrPlaneError, err)
 	}
 
 	// Groovy SWITCHRES carries full-frame vActive even for interlaced modes;

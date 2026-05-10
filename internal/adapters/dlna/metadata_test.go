@@ -186,6 +186,7 @@ func TestParseDIDLDuration(t *testing.T) {
 		{"hh:mm:ss", "01:02:03", time.Hour + 2*time.Minute + 3*time.Second},
 		{"zero", "00:00:00", 0},
 		{"with fractional", "00:00:30.500", 30*time.Second + 500*time.Millisecond},
+		{"comma decimal", "00:00:30,500", 30*time.Second + 500*time.Millisecond},
 		{"single-digit ms", "00:00:30.5", 30*time.Second + 500*time.Millisecond},
 		{"3-digit ms", "00:00:30.123", 30*time.Second + 123*time.Millisecond},
 		{"6-digit truncated", "00:00:30.123456", 30*time.Second + 123*time.Millisecond},

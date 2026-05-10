@@ -210,13 +210,10 @@ func TestAVT_SetPlayMode_NonNormalReturns712(t *testing.T) {
 
 func TestAVT_StubActions_Return501(t *testing.T) {
 	// SetAVTransportURI moved out of the stub set in P2.3 (real
-	// validate-and-store). Play/Stop moved out in P2.4 (real
-	// handlers). The remaining four — Pause, Seek, Next, Previous —
-	// still 501. Pause/Seek will flip in Phase 3; Next/Previous stay
-	// stubs because v1 has no queue model.
+	// validate-and-store). Play/Stop moved out in P2.4. Pause moved
+	// out in P3.1. Seek moved out in P3.2. Next/Previous stay stubs
+	// because v1 has no queue model.
 	stubs := map[string]string{
-		"Pause":    "<InstanceID>0</InstanceID>",
-		"Seek":     "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:30</Target>",
 		"Next":     "<InstanceID>0</InstanceID>",
 		"Previous": "<InstanceID>0</InstanceID>",
 	}

@@ -20,10 +20,14 @@ import (
 //     SetPlayMode (NORMAL ok; other modes → 712)
 //   Impl (validate + store) — Phase 2 P2.3:
 //     SetAVTransportURI
-//   Impl (playback lifecycle) — Phase 2 P2.4:
+//   Impl (P2.4):
 //     Play, Stop
-//   Stub (return 501 Action Failed) — flip to Impl in P3 / never:
-//     Pause, Seek, Next, Previous
+//   Impl (P3.1):
+//     Pause
+//   Impl (P3.2):
+//     Seek
+//   Stub (return 501 Action Failed) — never:
+//     Next, Previous
 
 const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 
@@ -31,12 +35,10 @@ const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 // returns 501. Listed explicitly so the table is auditable and so the
 // dispatcher can branch on the action name without a per-action stub
 // function. SetAVTransportURI moved out of this set in P2.3 (real
-// validate+store handler); Play/Stop moved out in P2.4. The four
-// remaining stubs are the Pause/Seek pair (Phase 3) and the
-// Next/Previous pair (queue model not implemented; v1 has no queue).
+// validate+store handler); Play/Stop moved out in P2.4; Pause moved
+// out in P3.1; Seek moved out in P3.2. Next/Previous remain stubs —
+// v1 has no queue model.
 var avtStubActions = map[string]struct{}{
-	"Pause":    {},
-	"Seek":     {},
 	"Next":     {},
 	"Previous": {},
 }
@@ -85,8 +87,16 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		a.handleStop(w, extractStopArgs(args))
 		return
 	}
+	if action == "Pause" {
+		a.handlePause(w, extractPauseArgs(args))
+		return
+	}
+	if action == "Seek" {
+		a.handleSeek(w, extractSeekArgs(args))
+		return
+	}
 
-	// Stub actions return 501 (Pause/Seek will flip to Impl in P3;
+	// Stub actions return 501 (Seek will flip to Impl in P3.2;
 	// Next/Previous remain stubs — v1 has no queue model).
 	if _, isStub := avtStubActions[action]; isStub {
 		writeSOAPFault(w, upnpErrActionFailed)
@@ -159,44 +169,61 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		})
 
 	case "GetPositionInfo":
-		// TrackURI mirrors loadedURI and TrackMetaData mirrors
-		// loadedMetaRaw — controllers expect these to round-trip.
-		// RelTime/AbsTime come from core.Status only while the active
-		// core session still matches this adapter's current ref; a
-		// foreign or stale session must not leak its timeline here.
+		// Spec §Query Actions line 407: Track=1 when a URI is loaded,
+		// Track=0 otherwise; TrackURI is the stored URI; RelTime comes
+		// from core.Status().Position only when the active session ref
+		// matches the current dlna: ref. Foreign sessions never lend us
+		// their position (we wouldn't claim them as ours), and the
+		// no-active-session case mirrors the loaded-but-not-yet-playing
+		// shape with zeros.
+		//
+		// Locking: snapshot adapter state under mu, drop, then call
+		// core.Status() outside mu (CLAUDE.md: never hold a.mu across
+		// core.Manager calls).
 		a.mu.Lock()
 		uri := a.loadedURI
 		metaRaw := a.loadedMetaRaw
-		duration := a.loadedMeta.Duration
-		ref := a.currentRef
+		metaDuration := a.loadedMeta.Duration
+		owned := a.currentRef
 		a.mu.Unlock()
 
-		position := time.Duration(0)
 		st := a.core.Status()
-		if ref != "" && st.AdapterRef == ref {
-			if st.Duration > 0 {
-				duration = st.Duration
-			}
-			if st.Position > 0 {
-				position = st.Position
-			}
-		}
+		ownSession := owned != "" && st.AdapterRef == owned
 
 		track := "0"
 		trackDuration := "00:00:00"
+		relTime := "00:00:00"
 		if uri != "" {
 			track = "1"
-			if duration > 0 {
-				trackDuration = formatUPnPDuration(duration)
+			// Pick the duration source: live core.Status() wins when we
+			// own the session AND its probe surfaced a positive duration;
+			// otherwise fall back to the metadata's res@duration. Live
+			// streams (Duration == 0 on both sides) stay "00:00:00".
+			switch {
+			case ownSession && st.Duration > 0:
+				trackDuration = formatUPnPDuration(st.Duration)
+			case metaDuration > 0:
+				trackDuration = formatUPnPDuration(metaDuration)
+			}
+			// RelTime: only emit a non-zero value for our own session.
+			// Live streams (Duration == 0) still produce a meaningful
+			// elapsed-time figure — controllers treat that as a wall-clock
+			// timer. Foreign / no-session: RelTime stays 00:00:00 because
+			// we cannot claim someone else's position.
+			if ownSession {
+				relTime = formatUPnPDuration(st.Position)
 			}
 		}
+		// AbsTime mirrors RelTime: UPnP convention when the renderer
+		// doesn't track an absolute timeline separately is to alias the
+		// two — most controllers either ignore AbsTime or accept this.
 		writeSOAPResponse(w, avTransportServiceURN, action, []soapOutArg{
 			{Name: "Track", Value: track},
 			{Name: "TrackDuration", Value: trackDuration},
 			{Name: "TrackMetaData", Value: metaRaw},
 			{Name: "TrackURI", Value: uri},
-			{Name: "RelTime", Value: formatUPnPDuration(position)},
-			{Name: "AbsTime", Value: formatUPnPDuration(position)},
+			{Name: "RelTime", Value: relTime},
+			{Name: "AbsTime", Value: relTime},
 			{Name: "RelCount", Value: "0"},
 			{Name: "AbsCount", Value: "0"},
 		})
@@ -218,31 +245,51 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 
 	case "GetCurrentTransportActions":
 		// Spec §Query Actions / GetCurrentTransportActions (lines
-		// 401-406). Phase 2's three reachable shapes:
+		// 401-406). Reachable shapes after P3.1:
 		//   - No URI: empty (controller knows there's nothing to do).
 		//   - STOPPED with URI: "Play".
-		//   - PLAYING (any source): "Stop".
-		// Phase 3 will add Pause / Seek based on probe Duration —
-		// noted in the spec at lines 366-369. Returning Pause/Seek
-		// here today would lie to the controller because we have no
-		// handler for them yet.
+		//   - PLAYING own seekable VOD: "Pause,Stop,Seek".
+		//   - PLAYING own live/unknown-duration: "Pause,Stop".
+		//   - PAUSED own seekable VOD: "Play,Stop,Seek".
+		//   - PAUSED own live/unknown-duration: "Play,Stop".
+		// Seek advertisement is gated on core.Status().Duration > 0
+		// AND own session — advertising Seek for a foreign session
+		// would lie to the controller (we wouldn't accept the call).
+		// Snapshot adapter state under mu, drop, call core.Status()
+		// outside mu (CLAUDE.md: never hold mu across core.* calls).
 		a.mu.Lock()
 		state := a.transportState
 		hasURI := a.loadedURI != ""
+		owned := a.currentRef
 		a.mu.Unlock()
+
+		st := a.core.Status()
+		// Seek can only honor an OWN session with known duration. The
+		// spec at line 367-369 derives seekability from probe Duration;
+		// foreign sessions are rejected by the ownership guard before
+		// any core.SeekTo call would run, so advertising Seek for them
+		// would be deceptive.
+		ownSession := owned != "" && st.AdapterRef == owned
+		canSeek := ownSession && st.Duration > 0
 
 		actions := ""
 		switch {
 		case !hasURI:
 			actions = ""
 		case state == transportStatePlaying:
-			actions = "Stop"
+			actions = "Pause,Stop"
+			if canSeek {
+				actions = "Pause,Stop,Seek"
+			}
 		case state == transportStateStopped:
 			actions = "Play"
+		case state == transportStatePausedPlayback:
+			actions = "Play,Stop"
+			if canSeek {
+				actions = "Play,Stop,Seek"
+			}
 		default:
-			// PAUSED_PLAYBACK or TRANSITIONING — not reachable in
-			// Phase 2 (Pause is 501, TRANSITIONING is Phase 4).
-			// Leave empty; Phase 3 fills this in.
+			// TRANSITIONING — Phase 4 eventing. Not reachable today.
 			actions = ""
 		}
 		writeSOAPResponse(w, avTransportServiceURN, action, []soapOutArg{

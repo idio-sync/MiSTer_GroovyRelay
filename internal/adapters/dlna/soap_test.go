@@ -58,6 +58,21 @@ func TestExtractSOAPAction(t *testing.T) {
 			want:   "",
 			wantOK: false,
 		},
+		{
+			// Some non-conformant controllers ship single-quoted SOAPACTION
+			// headers. The trim accepts them so dispatch still finds the
+			// action name.
+			name:   "single-quoted form",
+			header: `'urn:schemas-upnp-org:service:AVTransport:1#Pause'`,
+			want:   "Pause",
+			wantOK: true,
+		},
+		{
+			name:   "only single quotes",
+			header: `''`,
+			want:   "",
+			wantOK: false,
+		},
 	}
 
 	for _, tt := range tests {

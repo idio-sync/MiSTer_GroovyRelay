@@ -440,14 +440,17 @@ func TestDLNA_Smoke_Phase2Playback(t *testing.T) {
 		t.Fatalf("post-Play state != PLAYING:\n%s", snippet(body))
 	}
 
-	// --- 6. GetCurrentTransportActions after Play: "Stop".
+	// --- 6. GetCurrentTransportActions after Play: "Pause,Stop".
+	// P3.1 added Pause to the advertised action set when transportState
+	// is PLAYING. The stub Status() returns Duration=0 so Seek is NOT
+	// advertised (canSeek requires st.Duration > 0).
 	status, body = postSOAP(t, "GetCurrentTransportActions",
 		"<InstanceID>0</InstanceID>")
 	if status != http.StatusOK {
 		t.Fatalf("playing GetCurrentTransportActions status = %d", status)
 	}
-	if !strings.Contains(body, "<Actions>Stop</Actions>") {
-		t.Fatalf("playing Actions != Stop:\n%s", snippet(body))
+	if !strings.Contains(body, "<Actions>Pause,Stop</Actions>") {
+		t.Fatalf("playing Actions != Pause,Stop:\n%s", snippet(body))
 	}
 
 	// --- 7. Stop. core.Stop must be called once.
