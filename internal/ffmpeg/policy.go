@@ -31,25 +31,51 @@ type MediaInputPolicy struct {
 	// allow-everything behavior. Spec line 343.
 	ProtocolWhitelist []string
 
-	// DisableRedirects is currently a NO-OP at the FFmpeg argv layer and is
-	// intentional. Per spec §SetAVTransportURI (lines 340-348), the strategy
-	// for v1 is "path A": adapters validate the URL (and any redirects)
-	// upstream and hand FFmpeg the prevalidated final URL. The
-	// -protocol_whitelist + omitted reconnect flags + adapter-side
-	// validation together prevent FFmpeg from following redirects to
-	// disallowed schemes/addresses. There is no single FFmpeg flag that
-	// disables redirect-following on the HTTP demuxer in a way the spec
-	// considers safe to rely on; the field is kept as a contract marker so
-	// adapter authors can declare the intent (and so future changes —
-	// e.g. switching to a validating proxy — have a place to attach
-	// behavior). Setting this true today does not change argv.
+	// DisableRedirects exists as a contract marker but emits NO FFmpeg
+	// flag. Path-A safety against redirect-based SSRF requires TWO things,
+	// and the policy alone is NOT sufficient:
+	//
+	//   1. The adapter resolves and revalidates EVERY HTTP Location header
+	//      server-side BEFORE handing the final URL to core (spec line 340:
+	//      max 3 redirects, re-validate each target, reject disallowed
+	//      schemes/addresses). This is load-bearing for IP-address safety.
+	//   2. ProtocolWhitelist is set to constrain which schemes ffmpeg's
+	//      HTTP demuxer will follow on any redirect it does observe.
+	//
+	// Item 1 is the part that closes the SSRF gap. ProtocolWhitelist alone
+	// DOES NOT re-run the adapter's RFC1918 / loopback / link-local /
+	// metadata-endpoint rejection on a redirect target — a 302 from a
+	// public hostname to 169.254.169.254 (cloud metadata) is allowed by
+	// `-protocol_whitelist=https` and would bypass the original URL's
+	// IP-address check. The adapter MUST do the prevalidation pass; the
+	// policy cannot do it for the adapter.
+	//
+	// There is no single FFmpeg flag that disables redirect-following on
+	// the HTTP demuxer in a way the spec considers safe to rely on, so
+	// this field deliberately produces no argv. It is kept in the policy
+	// struct so future per-source policy can express "redirects allowed"
+	// vs "redirects forbidden" without requiring code changes elsewhere
+	// (e.g. if v2 introduces a validating proxy, this flag becomes its
+	// configuration anchor). Setting this true today does not change argv.
 	DisableRedirects bool
 
-	// DisableReconnect emits "-reconnect 0 -reconnect_at_eof 0", which
-	// blocks ffmpeg's HTTP demuxer from re-issuing requests on EOF or
-	// transport error. The DLNA spec requires this because reconnects can
+	// DisableReconnect emits FOUR flags that together cover every
+	// reconnect path the FFmpeg HTTP demuxer exposes:
+	//
+	//   -reconnect 0
+	//   -reconnect_at_eof 0
+	//   -reconnect_streamed 0
+	//   -reconnect_on_network_error 0
+	//
+	// All four default to off in current FFmpeg builds, so the explicit
+	// zeros are defense-in-depth: a future FFmpeg release could flip any
+	// of them on by default and silently regress the policy if we relied
+	// on defaults. The DLNA spec requires this because reconnects can
 	// race a server-side rebind after the validator accepted the URL
-	// (lines 345-346).
+	// (lines 345-346) — a different IP could be served on the retry.
+	//
+	// All four option names are present in FFmpeg 4.4+ (the project's
+	// bundled FFmpeg via Alpine 3.20 ships 6.1.1, well above that floor).
 	DisableReconnect bool
 
 	// RWTimeout > 0 emits "-rw_timeout <microseconds>" so a stalled remote
@@ -95,7 +121,10 @@ func (p MediaInputPolicy) IsZero() bool {
 // comment. The flags emitted are:
 //
 //   - "-protocol_whitelist <list>" when ProtocolWhitelist is non-empty.
-//   - "-reconnect 0 -reconnect_at_eof 0" when DisableReconnect is true.
+//   - "-reconnect 0 -reconnect_at_eof 0 -reconnect_streamed 0
+//     -reconnect_on_network_error 0" when DisableReconnect is true. All
+//     four are emitted as defense-in-depth against a future FFmpeg
+//     changing reconnect defaults; see the field doc.
 //   - "-rw_timeout <usec>" when RWTimeout > 0 (FFmpeg expects µs).
 //
 // Sorted/deterministic for testability: protocol_whitelist first, then
@@ -105,7 +134,12 @@ func (p MediaInputPolicy) Apply(args []string) []string {
 		args = append(args, "-protocol_whitelist", strings.Join(p.ProtocolWhitelist, ","))
 	}
 	if p.DisableReconnect {
-		args = append(args, "-reconnect", "0", "-reconnect_at_eof", "0")
+		args = append(args,
+			"-reconnect", "0",
+			"-reconnect_at_eof", "0",
+			"-reconnect_streamed", "0",
+			"-reconnect_on_network_error", "0",
+		)
 	}
 	if p.RWTimeout > 0 {
 		usec := p.RWTimeout.Microseconds()

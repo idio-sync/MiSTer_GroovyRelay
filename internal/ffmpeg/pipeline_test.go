@@ -625,6 +625,8 @@ func TestBuildCommand_PolicyEmitsFlagsBeforeInput(t *testing.T) {
 		"-protocol_whitelist file,http,https,tcp,tls,crypto",
 		"-reconnect 0",
 		"-reconnect_at_eof 0",
+		"-reconnect_streamed 0",
+		"-reconnect_on_network_error 0",
 		"-rw_timeout 5000000",
 	} {
 		if !strings.Contains(joined, want) {
@@ -643,7 +645,14 @@ func TestBuildCommand_PolicyEmitsFlagsBeforeInput(t *testing.T) {
 	if firstI < 0 {
 		t.Fatalf("no -i in argv: %v", args)
 	}
-	for _, flag := range []string{"-protocol_whitelist", "-reconnect", "-reconnect_at_eof", "-rw_timeout"} {
+	for _, flag := range []string{
+		"-protocol_whitelist",
+		"-reconnect",
+		"-reconnect_at_eof",
+		"-reconnect_streamed",
+		"-reconnect_on_network_error",
+		"-rw_timeout",
+	} {
 		idx := -1
 		for i, a := range args[:firstI] {
 			if a == flag {

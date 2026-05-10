@@ -53,9 +53,18 @@ func TestMediaInputPolicy_Apply_ProtocolWhitelist(t *testing.T) {
 }
 
 func TestMediaInputPolicy_Apply_DisableReconnectEmits(t *testing.T) {
+	// DisableReconnect emits FOUR reconnect flags as defense-in-depth.
+	// All four default to 0/off in current FFmpeg, but a future build
+	// could flip a default; explicit zeros prevent silent regression.
+	// See policy.go DisableReconnect doc.
 	p := MediaInputPolicy{DisableReconnect: true}
 	got := strings.Join(p.Apply(nil), " ")
-	for _, want := range []string{"-reconnect 0", "-reconnect_at_eof 0"} {
+	for _, want := range []string{
+		"-reconnect 0",
+		"-reconnect_at_eof 0",
+		"-reconnect_streamed 0",
+		"-reconnect_on_network_error 0",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in argv: %q", want, got)
 		}
@@ -103,6 +112,8 @@ func TestMediaInputPolicy_Apply_FullPolicyRoundTrip(t *testing.T) {
 		"-protocol_whitelist", "file,http,https",
 		"-reconnect", "0",
 		"-reconnect_at_eof", "0",
+		"-reconnect_streamed", "0",
+		"-reconnect_on_network_error", "0",
 		"-rw_timeout", "3000000",
 	}
 	if !reflect.DeepEqual(args, want) {

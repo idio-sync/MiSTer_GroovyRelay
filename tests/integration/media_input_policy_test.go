@@ -36,6 +36,8 @@ func TestMediaInputPolicy_GatesAllThreeFFmpegEntryPoints(t *testing.T) {
 		"-protocol_whitelist file,http,https,tcp,tls,crypto",
 		"-reconnect 0",
 		"-reconnect_at_eof 0",
+		"-reconnect_streamed 0",
+		"-reconnect_on_network_error 0",
 		"-rw_timeout 5000000",
 	}
 
@@ -94,10 +96,21 @@ func TestMediaInputPolicy_GatesAllThreeFFmpegEntryPoints(t *testing.T) {
 		// The negative assertions: option parser-level rejection of
 		// a known flag name. We DON'T assert on connection-level
 		// failures (those are expected — port 1 isn't listening).
+		//
+		// Version note: -reconnect_streamed and
+		// -reconnect_on_network_error were added to the FFmpeg HTTP
+		// demuxer in 4.4. The project's bundled FFmpeg (Alpine 3.20 →
+		// 6.1.1) supports both. If an operator runs against an FFmpeg
+		// older than 4.4 with DisableReconnect enabled, ffmpeg will
+		// emit "Option ... not found" and this test will surface it —
+		// which is the desired signal: the policy is silently
+		// degrading on that runtime.
 		for _, bad := range []string{
 			"Unrecognized option",
 			"Option reconnect not found",
 			"Option reconnect_at_eof not found",
+			"Option reconnect_streamed not found",
+			"Option reconnect_on_network_error not found",
 			"Option rw_timeout not found",
 			"Option protocol_whitelist not found",
 		} {

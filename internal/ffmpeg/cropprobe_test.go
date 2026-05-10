@@ -76,6 +76,8 @@ func TestProbeCrop_PolicyAppliedBeforeInput(t *testing.T) {
 		"-protocol_whitelist file,http,https",
 		"-reconnect 0",
 		"-reconnect_at_eof 0",
+		"-reconnect_streamed 0",
+		"-reconnect_on_network_error 0",
 		"-rw_timeout 5000000",
 	} {
 		if !strings.Contains(joined, want) {
