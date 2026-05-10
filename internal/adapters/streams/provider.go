@@ -68,6 +68,15 @@ type ProviderCatalog struct {
 	UpdatedAt  time.Time
 }
 
+func (c ProviderCatalog) Channel(id string) *Channel {
+	for i := range c.Channels {
+		if c.Channels[i].ID == id {
+			return &c.Channels[i]
+		}
+	}
+	return nil
+}
+
 type ChannelGroup struct {
 	ID    string
 	Name  string
