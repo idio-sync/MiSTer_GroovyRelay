@@ -1,0 +1,10 @@
+{{define "status-panel.html"}}
+<div class="gr-panel-head">
+  <h1>Status</h1>
+  <span class="crumb">{{.HostPort}} · uptime {{.Uptime}}</span>
+</div>
+
+<div id="status-content" hx-get="/ui/status/content" hx-trigger="every 3s" hx-swap="innerHTML">
+  {{template "status-content.html" .}}
+</div>
+{{end}}

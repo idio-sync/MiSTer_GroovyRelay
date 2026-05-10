@@ -164,7 +164,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// routes (e.g., Plex Companion's "/player/") under Go 1.22's
 	// method-aware mux.
 	s.mountGET(mux, "/{$}", s.handleRoot)
-	s.mountGET(mux, "/ui/{$}", s.handleShell)
+	s.mountGET(mux, "/ui/{$}", s.handleStatusHome)
+	s.mountGET(mux, "/ui/status/content", s.handleStatusContent)
 	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
 	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash
 
