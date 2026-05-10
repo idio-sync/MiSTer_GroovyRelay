@@ -277,7 +277,7 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
 		"key=%2Flibrary%2Fmetadata%2F42&offset=0&" +
-		"token=tok"
+		"token=tok&type=video"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Client-Identifier", "client-1")
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
@@ -355,6 +355,7 @@ func TestPlayMedia_ResolvesPlayQueueItemIDFromContainerKey(t *testing.T) {
 	q.Set("containerKey", "/playQueues/99?own=1")
 	q.Set("offset", "0")
 	q.Set("token", "tok")
+	q.Set("type", "video")
 	resp, err := http.Get(ts.URL + "/player/playback/playMedia?" + q.Encode())
 	if err != nil {
 		t.Fatal(err)
@@ -396,7 +397,7 @@ func TestPlayMedia_UsesConfiguredModelinePreset(t *testing.T) {
 
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
-		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=video"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
 	resp, err := http.DefaultClient.Do(req)
@@ -425,6 +426,7 @@ func TestSeekTo_UsesLiveModelineMirror(t *testing.T) {
 		PlexServerPort:     "32400",
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
+		MediaType:          "video",
 		PlexToken:          "tok",
 		TranscodeSessionID: "old-transcode-id",
 	})
@@ -460,7 +462,7 @@ func TestPlayMedia_HonorsConfiguredMaxBitrate(t *testing.T) {
 
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
-		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=video"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Client-Identifier", "client-1")
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
@@ -489,7 +491,7 @@ func TestCompanion_SetMaxVideoBitrateKbpsTakesEffectOnNextPlay(t *testing.T) {
 
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
-		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=video"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Client-Identifier", "client-1")
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
@@ -515,7 +517,7 @@ func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
 
 	url := ts.URL + "/player/application/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
-		"key=%2Flibrary%2Fmetadata%2F99&offset=0&token=tok"
+		"key=%2Flibrary%2Fmetadata%2F99&offset=0&token=tok&type=video"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Client-Identifier", "client-2")
 	resp, err := http.DefaultClient.Do(req)
@@ -528,6 +530,126 @@ func TestPlayMedia_ApplicationRouteDelegatesToCore(t *testing.T) {
 	}
 	if fc.lastReq.AdapterRef != "/library/metadata/99" {
 		t.Errorf("AdapterRef = %q, want /library/metadata/99", fc.lastReq.AdapterRef)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<Track title="Blue Monday" grandparentTitle="New Order"
+					parentTitle="Power Corruption &amp; Lies" duration="449000"/>
+			</MediaContainer>`))
+		default:
+			t.Fatalf("unexpected PMS path %q", r.URL.Path)
+		}
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=12000&token=tok&type=track&title=Blue+Monday"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+
+	got := fc.lastReq
+	if got.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", got.MediaKind)
+	}
+	if !got.Visualizer.Enabled || got.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
+		t.Fatalf("Visualizer = %+v", got.Visualizer)
+	}
+	if got.Visualizer.Metadata.Artist != "New Order" || got.Visualizer.Metadata.Album != "Power Corruption & Lies" {
+		t.Fatalf("metadata = %+v", got.Visualizer.Metadata)
+	}
+	if got.Visualizer.Metadata.Duration != 449*time.Second {
+		t.Fatalf("Duration = %v, want 449s", got.Visualizer.Metadata.Duration)
+	}
+	if !strings.Contains(got.StreamURL, "/music/:/transcode/universal/start.mp3") {
+		t.Fatalf("StreamURL = %s", got.StreamURL)
+	}
+	if strings.Contains(got.StreamURL, "/video/:/") {
+		t.Fatalf("music stream URL used video endpoint: %s", got.StreamURL)
+	}
+	if got.AdapterRef == "/library/metadata/42" || !strings.Contains(got.AdapterRef, ":") {
+		t.Fatalf("AdapterRef should include transcode identity for music cleanup, got %q", got.AdapterRef)
+	}
+}
+
+func TestPlexCompanion_PlayMediaVideoTypeSkipsMusicMetadata(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/player/playback/playMedia?"+
+		"address=192.168.1.10&port=32400&protocol=http&"+
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=video", nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.lastReq.MediaKind == core.MediaKindMusic || fc.lastReq.Visualizer.Enabled {
+		t.Fatalf("video playMedia incorrectly used visualizer: %+v", fc.lastReq)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMissingTypeUsesTrackMetadata(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/library/metadata/42" {
+			t.Fatalf("unexpected PMS path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`<MediaContainer size="1">
+			<Track title="Blue Monday" grandparentTitle="New Order"
+				parentTitle="Power Corruption &amp; Lies" duration="449000"/>
+		</MediaContainer>`))
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.lastReq.MediaKind != core.MediaKindMusic || !fc.lastReq.Visualizer.Enabled {
+		t.Fatalf("missing-type track metadata did not use visualizer: %+v", fc.lastReq)
 	}
 }
 
@@ -622,6 +744,7 @@ func TestSeekTo_RestartsPlexTranscodeAtOffset(t *testing.T) {
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
 		ContainerKey:       "/playQueues/99",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		TranscodeSessionID: "old-transcode-id",
@@ -676,6 +799,7 @@ func TestSeekTo_RestoresPausedStateAfterRestart(t *testing.T) {
 		PlexServerPort:     "32400",
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		TranscodeSessionID: "old-transcode-id",
@@ -736,6 +860,7 @@ func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 		PlexServerPort:     u.Port(),
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		AudioStreamID:      "100",
@@ -821,6 +946,7 @@ func TestSetStreams_NoOpWhenStreamsUnchanged(t *testing.T) {
 		PlexServerPort:     u.Port(),
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		AudioStreamID:      "100",
@@ -873,6 +999,7 @@ func TestSetStreams_RestoresPausedStateAfterRestart(t *testing.T) {
 		PlexServerPort:     u.Port(),
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		TranscodeSessionID: "old-transcode-id",
@@ -1014,6 +1141,7 @@ func TestSkipNext_FetchesPlayQueueAndRestartsNextItem(t *testing.T) {
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
 		ContainerKey:       "/playQueues/99?own=1",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		PlayQueueItemID:    "2",
@@ -1088,6 +1216,7 @@ func TestSkipTo_FetchesPlayQueueAndRestartsRequestedItem(t *testing.T) {
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/41",
 		ContainerKey:       "/playQueues/99",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		PlayQueueItemID:    "1",
@@ -1145,6 +1274,7 @@ func TestSkipTo_RestoresPausedStateAfterRestart(t *testing.T) {
 		PlexServerScheme:   "http",
 		MediaKey:           "/library/metadata/42",
 		ContainerKey:       "/playQueues/99",
+		MediaType:          "video",
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		PlayQueueItemID:    "2",
@@ -1371,7 +1501,7 @@ func TestPlexCompanion_PlayMediaEmitsCastRequested(t *testing.T) {
 
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
-		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok"
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=video"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Client-Identifier", "client-1")
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
@@ -1409,7 +1539,7 @@ func TestPlexCompanion_PlayMediaPopulatesTitle(t *testing.T) {
 	url := ts.URL + "/player/playback/playMedia?" +
 		"address=192.168.1.10&port=32400&protocol=http&" +
 		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&" +
-		"title=S01E03+%E2%80%94+The+Lord+of+Light"
+		"type=video&title=S01E03+%E2%80%94+The+Lord+of+Light"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
 	resp, err := http.DefaultClient.Do(req)

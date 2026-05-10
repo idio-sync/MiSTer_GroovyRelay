@@ -218,6 +218,39 @@ func TestTimeline_BuildXML_ActiveVideoTimelineIsFirst(t *testing.T) {
 	}
 }
 
+func TestTimeline_BuildXML_MusicSessionMakesMusicLive(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			MediaKey:          "/library/metadata/42",
+			ContainerKey:      "/playQueues/9",
+			PlexServerAddress: "192.168.1.10",
+			PlexServerPort:    "32400",
+			PlexServerScheme:  "http",
+			PlexMachineID:     "server-uuid",
+			PlayQueueItemID:   "item-42",
+		}
+	})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:     core.StatePlaying,
+		MediaKind: core.MediaKindMusic,
+		Position:  12 * time.Second,
+		Duration:  60 * time.Second,
+	})
+	if !strings.Contains(got, `<Timeline type="music" state="playing"`) {
+		t.Fatalf("music timeline not live: %s", got)
+	}
+	if !strings.Contains(got, `<Timeline type="video" state="stopped"`) {
+		t.Fatalf("video timeline not stopped: %s", got)
+	}
+	if !strings.Contains(got, `key="/library/metadata/42"`) {
+		t.Fatalf("music timeline missing metadata: %s", got)
+	}
+	if !strings.Contains(got, `containerKey="/playQueues/9"`) {
+		t.Fatalf("music timeline missing container metadata: %s", got)
+	}
+}
+
 func TestTimeline_BuildXML_StateMapping(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	cases := []struct {

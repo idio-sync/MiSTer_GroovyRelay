@@ -334,28 +334,61 @@ func (t *TimelineBroker) buildTimelineXML(s core.SessionStatus) string {
 	return t.buildTimelineXMLWithCommandID(s, play, 0)
 }
 
-func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, play PlayMediaRequest, commandID int) string {
-	type Timeline struct {
-		XMLName           xml.Name `xml:"Timeline"`
-		Type              string   `xml:"type,attr"`
-		State             string   `xml:"state,attr"`
-		Location          string   `xml:"location,attr,omitempty"`
-		Time              int64    `xml:"time,attr"`
-		PlaybackTime      int64    `xml:"playbackTime,attr"`
-		Duration          int64    `xml:"duration,attr"`
-		RatingKey         string   `xml:"ratingKey,attr,omitempty"`
-		Key               string   `xml:"key,attr,omitempty"`
-		ContainerKey      string   `xml:"containerKey,attr,omitempty"`
-		Address           string   `xml:"address,attr,omitempty"`
-		Port              string   `xml:"port,attr,omitempty"`
-		Protocol          string   `xml:"protocol,attr,omitempty"`
-		MachineIdentifier string   `xml:"machineIdentifier,attr,omitempty"`
-		SeekRange         string   `xml:"seekRange,attr,omitempty"`
-		AudioStreamID     string   `xml:"audioStreamID,attr,omitempty"`
-		SubtitleStreamID  string   `xml:"subtitleStreamID,attr,omitempty"`
-		PlayQueueItemID   string   `xml:"playQueueItemID,attr,omitempty"`
-		Controllable      string   `xml:"controllable,attr,omitempty"`
+type Timeline struct {
+	XMLName           xml.Name `xml:"Timeline"`
+	Type              string   `xml:"type,attr"`
+	State             string   `xml:"state,attr"`
+	Location          string   `xml:"location,attr,omitempty"`
+	Time              int64    `xml:"time,attr"`
+	PlaybackTime      int64    `xml:"playbackTime,attr"`
+	Duration          int64    `xml:"duration,attr"`
+	RatingKey         string   `xml:"ratingKey,attr,omitempty"`
+	Key               string   `xml:"key,attr,omitempty"`
+	ContainerKey      string   `xml:"containerKey,attr,omitempty"`
+	Address           string   `xml:"address,attr,omitempty"`
+	Port              string   `xml:"port,attr,omitempty"`
+	Protocol          string   `xml:"protocol,attr,omitempty"`
+	MachineIdentifier string   `xml:"machineIdentifier,attr,omitempty"`
+	SeekRange         string   `xml:"seekRange,attr,omitempty"`
+	AudioStreamID     string   `xml:"audioStreamID,attr,omitempty"`
+	SubtitleStreamID  string   `xml:"subtitleStreamID,attr,omitempty"`
+	PlayQueueItemID   string   `xml:"playQueueItemID,attr,omitempty"`
+	Controllable      string   `xml:"controllable,attr,omitempty"`
+}
+
+func timelineFor(kind, state string, s core.SessionStatus, play PlayMediaRequest, location string) Timeline {
+	tl := Timeline{
+		Type:         kind,
+		State:        state,
+		Time:         s.Position.Milliseconds(),
+		PlaybackTime: s.Position.Milliseconds(),
+		Duration:     s.Duration.Milliseconds(),
 	}
+	if kind == "video" && location != "" {
+		tl.Location = location
+	}
+	if play.MediaKey != "" {
+		tl.RatingKey = ratingKeyFromMediaKey(play.MediaKey)
+		tl.Key = play.MediaKey
+		tl.ContainerKey = play.ContainerKey
+		tl.Address = play.PlexServerAddress
+		tl.Port = play.PlexServerPort
+		tl.Protocol = play.PlexServerScheme
+		tl.MachineIdentifier = play.PlexMachineID
+		tl.AudioStreamID = play.AudioStreamID
+		tl.SubtitleStreamID = play.SubtitleStreamID
+		tl.PlayQueueItemID = play.PlayQueueItemID
+	}
+	if s.Duration > 0 {
+		tl.SeekRange = fmt.Sprintf("0-%d", s.Duration.Milliseconds())
+	}
+	if state == "playing" || state == "paused" {
+		tl.Controllable = "playPause,stop,seekTo"
+	}
+	return tl
+}
+
+func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, play PlayMediaRequest, commandID int) string {
 	type MediaContainer struct {
 		XMLName   xml.Name   `xml:"MediaContainer"`
 		CommandID string     `xml:"commandID,attr,omitempty"`
@@ -374,38 +407,27 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 	if commandID > 0 {
 		cmd = strconv.Itoa(commandID)
 	}
-	video := Timeline{
-		Type:         "video",
-		State:        plexState,
-		Location:     location,
-		Time:         s.Position.Milliseconds(),
-		PlaybackTime: s.Position.Milliseconds(),
-		Duration:     s.Duration.Milliseconds(),
+	musicState := "stopped"
+	videoState := "stopped"
+	if s.MediaKind == core.MediaKindMusic {
+		musicState = plexState
+	} else {
+		videoState = plexState
 	}
-	if play.MediaKey != "" {
-		video.RatingKey = ratingKeyFromMediaKey(play.MediaKey)
-		video.Key = play.MediaKey
-		video.ContainerKey = play.ContainerKey
-		video.Address = play.PlexServerAddress
-		video.Port = play.PlexServerPort
-		video.Protocol = play.PlexServerScheme
-		video.MachineIdentifier = play.PlexMachineID
-		video.AudioStreamID = play.AudioStreamID
-		video.SubtitleStreamID = play.SubtitleStreamID
-		video.PlayQueueItemID = play.PlayQueueItemID
+	music := timelineFor("music", musicState, s, play, "")
+	video := timelineFor("video", videoState, s, play, location)
+	if s.MediaKind == core.MediaKindMusic {
+		video = timelineFor("video", "stopped", s, play, "")
 	}
-	if s.Duration > 0 {
-		video.SeekRange = fmt.Sprintf("0-%d", s.Duration.Milliseconds())
-	}
-	if location != "" {
-		video.Controllable = "playPause,stop,seekTo"
+	if s.MediaKind != core.MediaKindMusic {
+		music = timelineFor("music", "stopped", s, play, "")
 	}
 	mc := MediaContainer{
 		CommandID: cmd,
 		Location:  location,
 		Timelines: []Timeline{
 			video,
-			{Type: "music", State: "stopped"},
+			music,
 			{Type: "photo", State: "stopped"},
 		},
 	}
