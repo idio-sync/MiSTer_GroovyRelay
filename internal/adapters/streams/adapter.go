@@ -3,7 +3,6 @@ package streams
 import (
 	"context"
 	"fmt"
-	"html/template"
 	"math/rand"
 	"path/filepath"
 	"reflect"
@@ -50,17 +49,19 @@ type Adapter struct {
 	beforeQueueContinuation func()
 	// Test seam for deterministic StopQueue/OnStop interleaving coverage.
 	beforeStopQueuePlaybackLock func(queueCapture)
-	playbackMu                  sync.Mutex
-	mu                          sync.Mutex
-	cfg                         Config
-	state                       adapters.State
-	lastErr                     string
-	stateSince                  time.Time
-	rng                         *rand.Rand
-	definitions                 map[string]ProviderDefinition
-	definitionOrder             []string
-	catalogs                    map[string]ProviderCatalog
-	active                      *ActiveQueue
+	// Test seam for deterministic Replay replacement interleaving coverage.
+	beforeReplayReplace func()
+	playbackMu          sync.Mutex
+	mu                  sync.Mutex
+	cfg                 Config
+	state               adapters.State
+	lastErr             string
+	stateSince          time.Time
+	rng                 *rand.Rand
+	definitions         map[string]ProviderDefinition
+	definitionOrder     []string
+	catalogs            map[string]ProviderCatalog
+	active              *ActiveQueue
 
 	loopCtx    context.Context
 	loopCancel context.CancelFunc
@@ -284,14 +285,6 @@ func (a *Adapter) CurrentValues() map[string]any {
 		values[fmt.Sprintf("providers.%s.catalog_refresh_hours", id)] = provider.CatalogRefreshHours
 	}
 	return values
-}
-
-func (a *Adapter) UIRoutes() []adapters.Route {
-	return nil
-}
-
-func (a *Adapter) ExtraPanelHTML() template.HTML {
-	return template.HTML("")
 }
 
 func decodeConfig(raw toml.Primitive, meta toml.MetaData) (Config, error) {

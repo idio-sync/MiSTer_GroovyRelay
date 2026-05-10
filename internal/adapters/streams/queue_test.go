@@ -130,10 +130,12 @@ func TestManualControlsIncrementGenerationAndCancelResolve(t *testing.T) {
 		ChannelID:     "metal",
 		ChannelName:   "Metal",
 		Generation:    4,
+		ItemToken:     1,
 		Items:         []StreamItem{{ID: "a", URL: "https://youtu.be/a"}, {ID: "b", URL: "https://youtu.be/b"}},
 		loopMode:      loopSequential,
 		cancelResolve: func() { cancelled = true },
 	}
+	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
 	if err := a.Next(t.Context()); err != nil {
 		t.Fatalf("Next: %v", err)
 	}
@@ -148,6 +150,38 @@ func TestManualControlsIncrementGenerationAndCancelResolve(t *testing.T) {
 	}
 	if core.startCalls != 1 {
 		t.Fatalf("core start calls = %d, want 1", core.startCalls)
+	}
+}
+
+func TestNextDoesNotPreemptForeignOwner(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:    "s1",
+		ProviderID:   "mtv-rewind",
+		ProviderName: "MTV Rewind",
+		ChannelID:    "metal",
+		ChannelName:  "Metal",
+		Generation:   4,
+		ItemToken:    1,
+		Items:        []StreamItem{{ID: "a", URL: "https://youtu.be/a"}, {ID: "b", URL: "https://youtu.be/b"}},
+		loopMode:     loopSequential,
+	}
+	core.status.AdapterRef = "url:foreign"
+
+	if err := a.Next(t.Context()); err == nil {
+		t.Fatal("Next with foreign core owner should fail")
+	}
+	if a.active.Generation != 4 {
+		t.Fatalf("generation = %d, want 4", a.active.Generation)
+	}
+	if a.active.Index != 0 {
+		t.Fatalf("index = %d, want 0", a.active.Index)
+	}
+	if core.stopCalls != 0 {
+		t.Fatalf("guarded core stop calls = %d, want 0", core.stopCalls)
+	}
+	if core.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0", core.startCalls)
 	}
 }
 
@@ -443,7 +477,7 @@ func TestStopQueuePreservesNewerQueueInstalledDuringCoreStop(t *testing.T) {
 	}
 }
 
-func TestStopQueueDoesNotCallCoreForForeignOwner(t *testing.T) {
+func TestStopQueueDoesNotMutateForeignOwner(t *testing.T) {
 	a, core := newTestAdapterWithFakeCore(t)
 	a.active = &ActiveQueue{
 		ProviderID: "mtv-rewind",
@@ -454,8 +488,8 @@ func TestStopQueueDoesNotCallCoreForForeignOwner(t *testing.T) {
 	}
 	core.status.AdapterRef = "url:foreign"
 
-	if err := a.StopQueue(t.Context()); err != nil {
-		t.Fatalf("StopQueue with foreign core owner: %v", err)
+	if err := a.StopQueue(t.Context()); err == nil {
+		t.Fatal("StopQueue with foreign core owner should fail")
 	}
 	if core.stopCalls != 0 {
 		t.Fatalf("guarded core stop calls = %d, want 0", core.stopCalls)
@@ -463,8 +497,8 @@ func TestStopQueueDoesNotCallCoreForForeignOwner(t *testing.T) {
 	if core.rawStopCalls != 0 {
 		t.Fatalf("raw core stop calls = %d, want 0", core.rawStopCalls)
 	}
-	if a.active != nil {
-		t.Fatalf("StopQueue with foreign owner should clear streams active queue, got %+v", a.active)
+	if a.active == nil || a.active.SessionID != "s1" {
+		t.Fatalf("StopQueue with foreign owner should preserve streams active queue, got %+v", a.active)
 	}
 }
 

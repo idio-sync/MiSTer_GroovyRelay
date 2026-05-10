@@ -430,6 +430,115 @@ func TestOutOfCatalogItemBuildsAdhocQueue(t *testing.T) {
 	}
 }
 
+func TestReplayRebuildsChannelFromLatestCatalog(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:  "s1",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "old", SourceID: "old", URL: "https://www.youtube.com/watch?v=oldoldold01"}},
+		loopMode:   loopSequential,
+	}
+	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal Fresh",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{{
+				ID:       "freshfresh1",
+				SourceID: "freshfresh1",
+				URL:      "https://www.youtube.com/watch?v=freshfresh1",
+			}},
+		}},
+	}})
+
+	if err := a.Replay(t.Context()); err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if a.active == nil || len(a.active.Items) != 1 || a.active.Items[0].ID != "freshfresh1" {
+		t.Fatalf("active queue after replay = %+v, want latest catalog item", a.active)
+	}
+	if a.active.ChannelName != "Metal Fresh" {
+		t.Fatalf("channel name = %q, want latest catalog name", a.active.ChannelName)
+	}
+}
+
+func TestReplayEmptyLatestCatalogChannelDoesNotStopCurrentSession(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:  "s1",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "old", SourceID: "old", URL: "https://www.youtube.com/watch?v=oldoldold01"}},
+		loopMode:   loopSequential,
+	}
+	activeRef := queueAdapterRef(a.active, a.active.ItemToken)
+	core.status.AdapterRef = activeRef
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels:   []Channel{{ID: "metal", Name: "Metal Empty", PlayMode: PlaySequential}},
+	}})
+
+	if err := a.Replay(t.Context()); err == nil {
+		t.Fatal("Replay should fail when the latest catalog channel has no playable items")
+	}
+	if core.stopCalls != 0 {
+		t.Fatalf("core stop calls = %d, want 0", core.stopCalls)
+	}
+	if got := core.Status().AdapterRef; got != activeRef {
+		t.Fatalf("core AdapterRef = %q, want %q", got, activeRef)
+	}
+	if a.active == nil || a.active.SessionID != "s1" || a.active.Items[0].ID != "old" {
+		t.Fatalf("active queue was replaced or cleared: %+v", a.active)
+	}
+}
+
+func TestReplayDoesNotReplaceNewerSameChannelQueue(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	old := &ActiveQueue{
+		SessionID:  "old-session",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "old", SourceID: "old", URL: "https://www.youtube.com/watch?v=oldoldold01"}},
+		loopMode:   loopSequential,
+	}
+	newer := &ActiveQueue{
+		SessionID:  "new-session",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "new", SourceID: "new", URL: "https://www.youtube.com/watch?v=newnewnew01"}},
+		loopMode:   loopSequential,
+	}
+	a.active = old
+	core.status.AdapterRef = queueAdapterRef(old, old.ItemToken)
+	a.beforeReplayReplace = func() {
+		a.mu.Lock()
+		a.active = newer
+		a.mu.Unlock()
+		core.mu.Lock()
+		core.status.AdapterRef = queueAdapterRef(newer, newer.ItemToken)
+		core.mu.Unlock()
+	}
+
+	if err := a.Replay(t.Context()); err == nil {
+		t.Fatal("Replay should fail when a newer same-channel queue replaces the captured queue")
+	}
+	if a.active == nil || a.active.SessionID != "new-session" {
+		t.Fatalf("newer queue was not preserved: %+v", a.active)
+	}
+	if a.active.Items[0].ID != "new" {
+		t.Fatalf("newer queue item = %+v", a.active.Items)
+	}
+}
+
 type blockedFirstResolver struct {
 	entered chan struct{}
 	release chan struct{}
