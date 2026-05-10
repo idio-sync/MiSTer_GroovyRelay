@@ -252,7 +252,6 @@ func TestSetup_BridgePOST_PersistsAndRedirects(t *testing.T) {
 	form.Set("mister.host", "192.168.1.99")
 	form.Set("mister.port", "32100")
 	form.Set("mister.source_port", "32101")
-	form.Set("csrf_ok", "1")
 
 	req := httptest.NewRequest("POST", "/ui/setup/step/bridge", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -288,7 +287,6 @@ func TestSetup_AdaptersPOST_RedirectsToFirstPicked(t *testing.T) {
 
 	form := url.Values{}
 	form.Add("adapters", "plex")
-	form.Set("csrf_ok", "1")
 
 	req := httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -317,7 +315,6 @@ func TestSetup_AdaptersPOST_SkipRedirectsToDone(t *testing.T) {
 	})
 
 	form := url.Values{}
-	form.Set("csrf_ok", "1") // no "adapters" entries
 
 	req := httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -399,7 +396,6 @@ func TestSetup_AdaptersStep_RejectsInvalidName(t *testing.T) {
 	form := url.Values{}
 	form.Add("adapters", "ghost") // not registered
 	form.Add("adapters", "plex")
-	form.Set("csrf_ok", "1")
 
 	req := httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

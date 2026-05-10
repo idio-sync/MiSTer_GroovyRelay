@@ -34,7 +34,7 @@ type setupStepData struct {
 	AdapterSections    []bridgeSection
 	AdapterErrors      FormErrors
 	ExtraHTML          template.HTML
-	GateForm           bool // C1: form is gated pending link; rendering hook added here, behaviour wired in C1
+	GateForm           bool // true when LinkAware && !IsLinked() — wraps form in <fieldset disabled> overlay
 
 	// Done step
 	EnabledAdapters []string

@@ -22,7 +22,6 @@
 	{{end}}
 
 	<form method="POST" action="/ui/setup/step/{{.AdapterName}}" class="gr-wizard-form">
-		<input type="hidden" name="csrf_ok" value="1">
 		<input type="hidden" name="enabled" value="true">
 
 		{{range $i, $section := .AdapterSections}}
