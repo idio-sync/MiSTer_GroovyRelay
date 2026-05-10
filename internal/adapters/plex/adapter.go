@@ -183,6 +183,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		DeviceName: cfgSnap.DeviceName,
 		DeviceUUID: deviceUUID,
 		HTTPPort:   a.cfg.Bridge.UI.HTTPPort,
+		Version:    a.cfg.Version,
 		HostIP:     a.cfg.HostIP,
 	})
 	if err != nil {

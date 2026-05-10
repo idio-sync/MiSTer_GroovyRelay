@@ -33,6 +33,7 @@ type DiscoveryConfig struct {
 	DeviceName string
 	DeviceUUID string
 	HTTPPort   int
+	Version    string
 	// HostIP is the configured-or-autodetected LAN IPv4 address the
 	// bridge advertises as its connection URI (mirror of
 	// AdapterConfig.HostIP from the calling adapter). When non-empty
@@ -203,18 +204,22 @@ func (d *Discovery) respondToMSearch(dst *net.UDPAddr) {
 }
 
 func (d *Discovery) descriptor(statusLine string) string {
+	version := d.cfg.Version
+	if version == "" {
+		version = "1.0"
+	}
 	return fmt.Sprintf(statusLine+"\r\n"+
 		"Name: %s\r\n"+
 		"Port: %d\r\n"+
 		"Resource-Identifier: %s\r\n"+
 		"Product: "+companionProduct+"\r\n"+
-		"Version: 1.0\r\n"+
+		"Version: %s\r\n"+
 		"Content-Type: plex/media-player\r\n"+
 		"Protocol: plex\r\n"+
-		"Protocol-Capabilities: timeline,playback,playqueues\r\n"+
+		"Protocol-Capabilities: "+companionProtocolCapabilities+"\r\n"+
 		"Device-Class: stb\r\n"+
-		"Protocol-Version: 1\r\n\r\n",
-		d.cfg.DeviceName, d.cfg.HTTPPort, d.cfg.DeviceUUID)
+		"Protocol-Version: "+companionProtocolVersion+"\r\n\r\n",
+		d.cfg.DeviceName, d.cfg.HTTPPort, d.cfg.DeviceUUID, version)
 }
 
 // interfaceForIP returns the network interface that owns the given IPv4

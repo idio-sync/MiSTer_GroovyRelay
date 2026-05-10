@@ -58,10 +58,9 @@ func RequestPIN(clientID, deviceName, version string) (*PinResponse, error) {
 	form.Set("X-Plex-Device-Name", deviceName)
 	form.Set("X-Plex-Product", companionProduct)
 	form.Set("X-Plex-Version", version)
-	// provides=client,player rather than bare "player": Plex Web's modern
-	// cast picker filters resources that don't advertise "client" alongside
-	// "player", treating bare-player records as legacy/non-targetable.
-	form.Set("X-Plex-Provides", "client,player")
+	form.Set("X-Plex-Provides", companionProvides)
+	form.Set("X-Plex-Protocol-Version", companionProtocolVersion)
+	form.Set("X-Plex-Protocol-Capabilities", companionProtocolCapabilities)
 	form.Set("X-Plex-Platform", companionPlatform)
 	form.Set("X-Plex-Platform-Version", version)
 	form.Set("X-Plex-Device", companionDevice)
@@ -131,14 +130,12 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName, versio
 	connURI := fmt.Sprintf("http://%s:%d", hostIP, httpPort)
 	form := url.Values{}
 	form.Set("Connection[][uri]", connURI)
-	// provides=client,player rather than bare "player": Plex Web's modern
-	// cast picker filters bare-player records out of the picker even though
-	// they appear in /api/v2/resources. Adding "client" matches what
-	// Plexamp / PS4 / other working players advertise.
-	form.Set("X-Plex-Provides", "client,player")
+	form.Set("X-Plex-Provides", companionProvides)
 	form.Set("X-Plex-Device-Name", deviceName)
 	form.Set("X-Plex-Product", companionProduct)
 	form.Set("X-Plex-Version", version)
+	form.Set("X-Plex-Protocol-Version", companionProtocolVersion)
+	form.Set("X-Plex-Protocol-Capabilities", companionProtocolCapabilities)
 	// platform/device/model fields populate the corresponding columns in the
 	// plex.tv device record. Plex Web's picker filters out entries whose
 	// platform is null — so all four must be set on every refresh.

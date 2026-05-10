@@ -27,12 +27,14 @@ import (
 )
 
 const (
-	companionProduct  = "GroovyRelay"
-	companionPlatform = "Linux"
-	companionDevice   = "MiSTer"
-	companionModel    = "MiSTer"
-	companionProvides = "client,player"
-	companionProtocol = "1.0"
+	companionProduct              = "GroovyRelay"
+	companionPlatform             = "Linux"
+	companionDevice               = "MiSTer"
+	companionModel                = "MiSTer"
+	companionProvides             = "client,player,provider-playback"
+	companionProtocol             = "1.0"
+	companionProtocolVersion      = "2"
+	companionProtocolCapabilities = "timeline,playback,navigation,playqueues,provider-playback"
 )
 
 // CompanionConfig carries the identity of this device as advertised to Plex
@@ -401,6 +403,7 @@ func (c *Companion) Handler() http.Handler {
 	mux.HandleFunc("/player/timeline/unsubscribe", c.handleTimelineUnsubscribe)
 	mux.HandleFunc("/player/timeline/poll", c.handleTimelinePoll)
 	mux.HandleFunc("/player/mirror/details", c.handleMirrorDetails)
+	mux.HandleFunc("/player/navigation/", c.handleNavigation)
 	mux.HandleFunc("/debug/plex/session", c.handleDebugSession)
 	mux.HandleFunc("/debug/plex/decision", c.handleDebugDecision)
 	return c.withRequestLog(c.withHeaders(c.withTargetValidation(c.withSubscriberTouch(mux))))
@@ -474,9 +477,9 @@ func (c *Companion) withTargetValidation(h http.Handler) http.Handler {
 func (c *Companion) withHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol, X-Plex-Target-Client-Identifier, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Plex-Token, X-Plex-Session-Identifier, X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Device, X-Plex-Model, X-Plex-Provides, X-Plex-Protocol, X-Plex-Protocol-Version, X-Plex-Protocol-Capabilities, X-Plex-Target-Client-Identifier, Content-Type, Accept")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Provides, X-Plex-Protocol")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Plex-Client-Identifier, X-Plex-Device-Name, X-Plex-Product, X-Plex-Version, X-Plex-Platform, X-Plex-Platform-Version, X-Plex-Device, X-Plex-Model, X-Plex-Provides, X-Plex-Protocol, X-Plex-Protocol-Version, X-Plex-Protocol-Capabilities")
 		if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
 			w.Header().Set("Access-Control-Allow-Private-Network", "true")
 		}
@@ -486,8 +489,12 @@ func (c *Companion) withHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Plex-Version", c.cfg.Version)
 		w.Header().Set("X-Plex-Platform", companionPlatform)
 		w.Header().Set("X-Plex-Platform-Version", c.cfg.Version)
+		w.Header().Set("X-Plex-Device", companionDevice)
+		w.Header().Set("X-Plex-Model", companionModel)
 		w.Header().Set("X-Plex-Provides", companionProvides)
 		w.Header().Set("X-Plex-Protocol", companionProtocol)
+		w.Header().Set("X-Plex-Protocol-Version", companionProtocolVersion)
+		w.Header().Set("X-Plex-Protocol-Capabilities", companionProtocolCapabilities)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -513,9 +520,9 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 		Version              string `xml:"version,attr"`
 		Platform             string `xml:"platform,attr"`
 		PlatformVersion      string `xml:"platformVersion,attr"`
-		// provides="client,player" matches the plex.tv registration record.
-		// Modern Plex Web filters bare-player records out of the picker or
-		// rejects them during target selection.
+		// Keep provides aligned with the plex.tv registration record. Modern
+		// Plex Web filters bare-player records out of the picker or rejects
+		// them during target selection.
 		Provides string `xml:"provides,attr"`
 	}
 	type MediaContainer struct {
@@ -529,8 +536,8 @@ func (c *Companion) handleResources(w http.ResponseWriter, r *http.Request) {
 			Title:                c.cfg.DeviceName,
 			MachineIdentifier:    c.cfg.DeviceUUID,
 			Protocol:             "plex",
-			ProtocolVersion:      "1",
-			ProtocolCapabilities: "timeline,playback,playqueues",
+			ProtocolVersion:      companionProtocolVersion,
+			ProtocolCapabilities: companionProtocolCapabilities,
 			DeviceClass:          "stb",
 			Device:               companionDevice,
 			Model:                companionModel,
@@ -776,6 +783,11 @@ func (c *Companion) handleSkipPrevious(w http.ResponseWriter, r *http.Request) {
 func (c *Companion) handleSetParameters(w http.ResponseWriter, r *http.Request) {
 	writeOKResponse(w)
 }
+
+func (c *Companion) handleNavigation(w http.ResponseWriter, r *http.Request) {
+	writeOKResponse(w)
+}
+
 func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	p := c.lastPlaySession()
 	if p.MediaKey == "" {
