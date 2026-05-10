@@ -35,17 +35,15 @@ type probeResultData struct {
 }
 
 func (s *Server) handleDiagnosticsGET(w http.ResponseWriter, r *http.Request) {
-	data := s.shellDataForPath(r.URL.Path)
-	panelHTML, err := s.renderTemplateHTML("diagnostics-panel.html", s.buildDiagnosticsData())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	panelData := s.buildDiagnosticsData()
+	if isHTMXRequest(r) {
+		// Sidebar nav targets #panel with hx-swap=innerHTML; returning the
+		// full shell would nest a second sidebar inside the panel. Match
+		// the bridge/adapter handlers and emit panel-only here.
+		s.renderPanel(w, "diagnostics-panel.html", panelData)
 		return
 	}
-	data.PanelHTML = panelHTML
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	s.renderShellWithPanel(w, r, "diagnostics-panel.html", panelData)
 }
 
 func (s *Server) handleDiagnosticsProbe(w http.ResponseWriter, r *http.Request) {

@@ -55,17 +55,15 @@ type statusEvent struct {
 }
 
 func (s *Server) handleStatusHome(w http.ResponseWriter, r *http.Request) {
-	data := s.shellDataForPath(r.URL.Path)
-	panelHTML, err := s.renderTemplateHTML("status-panel.html", s.buildStatusData())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	panelData := s.buildStatusData()
+	if isHTMXRequest(r) {
+		// Sidebar nav targets #panel with hx-swap=innerHTML; returning the
+		// full shell would nest a second sidebar inside the panel. Match
+		// the bridge/adapter handlers and emit panel-only here.
+		s.renderPanel(w, "status-panel.html", panelData)
 		return
 	}
-	data.PanelHTML = panelHTML
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "shell.html", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	s.renderShellWithPanel(w, r, "status-panel.html", panelData)
 }
 
 func (s *Server) handleStatusContent(w http.ResponseWriter, r *http.Request) {
