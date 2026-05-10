@@ -112,19 +112,65 @@ func (f *fakePlane) Position() time.Duration          { return 0 }
 func (f *fakePlane) SetFieldOrder(string) error       { return nil }
 ```
 
-Add `context` to the existing `internal/core/manager_test.go` import block.
+Add `context` and `github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane` to the existing `internal/core/manager_test.go` import block. The test file already imports `internal/ffmpeg`.
 
-This test intentionally does not call `StartSession` and does not use `bogusRequest()`: the current helpers exercise the probe failure path, not natural EOF.
+This direct `handlePlaneExit` test asserts handler logic without going through the goroutine wrapper. It does not call `StartSession` and does not use `bogusRequest()`: the current helpers exercise the probe failure path, not natural EOF.
 
-- [ ] **Step 2: Run the failing test**
+The wrapper itself is covered by a second test that drives EOF through the real goroutine path with an injected `newPlane` factory. Use `startPlaneLocked` directly so the test stays hermetic and does not need a fake ffprobe seam:
+
+```go
+func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
+	prevNewPlane := newPlane
+	t.Cleanup(func() { newPlane = prevNewPlane })
+
+	plane := &fakePlane{}
+	newPlane = func(dataplane.PlaneConfig) planeRunner { return plane }
+
+	m := newTestManager(t)
+	done := make(chan string, 1)
+	req := SessionRequest{
+		StreamURL:  "https://example.test/video.mp4",
+		DirectPlay: true,
+		OnStop:     func(reason string) { done <- reason },
+	}
+	probe := &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 48000, Duration: 1}
+
+	m.mu.Lock()
+	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg"); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("startPlaneLocked: %v", err)
+	}
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition play media: %v", err)
+	}
+	m.mu.Unlock()
+
+	select {
+	case got := <-done:
+		if got != "eof" {
+			t.Fatalf("OnStop reason = %q, want eof", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called via goroutine wrapper")
+	}
+	if st := m.Status(); st.State != StateIdle {
+		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
+	}
+}
+```
+
+This test ensures that a future refactor which drops `m.handlePlaneExit(plane, runErr)` from the goroutine body fails CI rather than silently regressing.
+
+- [ ] **Step 2: Run the failing tests**
 
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/core -run TestManager_NaturalEOFFiresOnStopAndClearsActive -count=1
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/core -run "TestManager_NaturalEOF" -count=1
 ```
 
-Expected: FAIL with `cannot use plane as *dataplane.Plane` or `m.handlePlaneExit undefined`. The failure proves the test seam and EOF exit path do not exist yet.
+Expected: FAIL with `cannot use plane as *dataplane.Plane`, `m.handlePlaneExit undefined`, or `newPlane undefined`. The failures prove the test seam, EOF exit path, and `newPlane` injection point do not exist yet.
 
 - [ ] **Step 3: Implement EOF handling with existing guards**
 
@@ -198,6 +244,8 @@ go func() {
 }()
 ```
 
+Rationale on ordering: `m.plane = nil` runs unconditionally before the `switch` on `runErr` so that a Pause (`context.Canceled`) leaves `m.active` intact for `Play()` to reattach a fresh plane, while EOF and Error tear `m.active` down inside the matching switch arms. This mirrors the current code's behavior — `m.plane = nil` is already global to all exit paths in the existing implementation; only `m.active` is per-branch.
+
 Keep the existing `m.plane != plane` guard. Keep pause cancellation silent by leaving `reason == ""`.
 
 - [ ] **Step 4: Run lifecycle tests**
@@ -224,6 +272,9 @@ git commit -m "fix(core): fire eof stop callbacks"
 **Files:**
 - Create: `internal/adapters/streams/adapter.go`
 - Create: `internal/adapters/streams/config.go`
+- Create: `internal/adapters/streams/provider.go`
+- Create: `internal/adapters/streams/queue.go`
+- Create: `internal/adapters/streams/refresh.go`
 - Create: `internal/adapters/streams/adapter_test.go`
 - Create: `internal/adapters/streams/config_test.go`
 
@@ -516,13 +567,13 @@ func TestNormalizeConfigHost(t *testing.T) {
 
 Implement `normalizeConfigHost` with `net/url`, `net/netip`, and `golang.org/x/net/idna`: accept either a bare hostname or URL-like value, strip default `:443` for HTTPS and `:80` for HTTP, reject userinfo, wildcard hosts, empty hosts, and IP literals, lower-case, trim a trailing dot, and convert to ASCII with `idna.Lookup.ToASCII`.
 
-Create `internal/adapters/streams/adapter.go` with the adapter shell, fields, `DecodeConfig`, `Validate`, `ApplyConfig`, `CurrentValues`, `SetEnabled`, `Start`, `Stop`, and `Status`. Keep `Start` as state-only in this task:
+Create `internal/adapters/streams/adapter.go` with the adapter shell, fields, `DecodeConfig`, `Validate`, `ApplyConfig`, `CurrentValues`, `SetEnabled`, `Start`, `Stop`, and `Status`. Keep `Start` lightweight in this task: no network/catalog refresh, just state and resolver construction:
 
 ```go
 type AdapterConfig struct {
 	Bridge        config.BridgeConfig
 	Core          SessionManager
-	YTDLPResolver ytdlp.BinaryResolver
+	YTDLPResolver ytdlp.BinaryResolver // binary-path resolver, mirrors url.AdapterConfig
 }
 
 type SessionManager interface {
@@ -530,7 +581,94 @@ type SessionManager interface {
 	Stop() error
 	Status() core.SessionStatus
 }
+
+// streamResolver is the adapter's narrow view of *ytdlp.Resolver. Lets
+// playback_test.go inject a stub without spinning up exec. Mirrors the
+// resolverIface pattern in internal/adapters/url/adapter.go.
+type streamResolver interface {
+	Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error)
+}
+
+const defaultYTDLPResolveTimeout = 30 * time.Second
 ```
+
+Declare the `Adapter` struct now with every private field that later tasks reference, so each task can compile independently:
+
+```go
+type Adapter struct {
+	core        SessionManager
+	cookiesPath string
+	ytdlpBinary ytdlp.BinaryResolver
+	// Assigned in Start() from ytdlpBinary; tests overwrite directly.
+	resolver streamResolver
+	// Injectable in refresh tests.
+	fetchManifest func(context.Context) (Manifest, CacheMetadata, error)
+	// Injectable in refresh tests.
+	refreshOnce func(ctx context.Context, reason string) RefreshStatus
+
+	mu          sync.Mutex
+	cfg         Config
+	state       adapters.State
+	lastErr     string
+	stateSince  time.Time
+	definitions map[string]ProviderDefinition
+	catalogs    map[string]ProviderCatalog
+	active      *ActiveQueue
+
+	loopCtx    context.Context
+	loopCancel context.CancelFunc
+	loopDone   chan struct{}
+}
+```
+
+Create `internal/adapters/streams/provider.go` with the minimal compile-time shells that `Adapter` references in this task. Later tasks expand these same definitions as their failing tests require more fields:
+
+```go
+package streams
+
+type Manifest struct{}
+type ProviderDefinition struct{}
+type ProviderCatalog struct{}
+type CacheMetadata struct{}
+```
+
+Create `internal/adapters/streams/queue.go` with the active queue shell used by the adapter:
+
+```go
+package streams
+
+type ActiveQueue struct {
+	ProviderID string
+	ChannelID  string
+}
+```
+
+Create `internal/adapters/streams/refresh.go` with the refresh status shell used by the injectable `refreshOnce` field:
+
+```go
+package streams
+
+import "time"
+
+type RefreshStatus struct {
+	ProviderID string
+	Source     string
+	FetchedAt  time.Time
+	Err        error
+}
+```
+
+In `New`, store the `AdapterConfig.YTDLPResolver` value on `a.ytdlpBinary`. In `Start()`, when `a.ytdlpBinary != nil`, build this resolver and assign it to `a.resolver`:
+
+```go
+a.resolver = &ytdlp.Resolver{
+	BinaryResolver: a.ytdlpBinary,
+	Timeout:        defaultYTDLPResolveTimeout,
+	Runner:         ytdlp.OSRunner{},
+}
+```
+
+This mirrors the construction pattern in `internal/adapters/url/adapter.go:206` and `:310`, with a fixed 30 second timeout because the accepted streams spec does not define a separate yt-dlp timeout field.
 
 - [ ] **Step 4: Run tests**
 
@@ -554,7 +692,7 @@ git commit -m "feat(streams): add adapter config skeleton"
 ## Task 3: Manifest, Cache, Fetch Security
 
 **Files:**
-- Create: `internal/adapters/streams/provider.go`
+- Modify: `internal/adapters/streams/provider.go`
 - Create: `internal/adapters/streams/manifest.go`
 - Create: `internal/adapters/streams/cache.go`
 - Create: `internal/adapters/streams/fetch.go`
@@ -581,6 +719,17 @@ func TestValidateManifestRejectsReservedAdhocChannel(t *testing.T) {
 	m.Providers[0].Channels = []ChannelDefinition{{ID: "adhoc", Name: "Bad"}}
 	if err := validateManifest(m, DefaultConfig()); err == nil {
 		t.Fatal("reserved channel ID accepted")
+	}
+}
+
+func TestValidateManifestRejectsReservedAdhocProviderID(t *testing.T) {
+	// "adhoc" is the synthetic channel ID used for ?v=<id> single-item
+	// queues; reserving it as a provider ID too prevents stable-key
+	// collisions in the queue model.
+	m := validManifestForTest()
+	m.Providers[0].ID = "adhoc"
+	if err := validateManifest(m, DefaultConfig()); err == nil {
+		t.Fatal("reserved provider ID accepted")
 	}
 }
 
@@ -746,6 +895,36 @@ func TestFetchResolvesOnceAndDialsValidatedIP(t *testing.T) {
 		t.Fatalf("dialed %q, want validated IP 203.0.113.10", dialer.addr)
 	}
 }
+
+func TestFetchRemoteProviderRespectsHostAllowlistAfterRedirect(t *testing.T) {
+	// Spec §"RemoteProviderAllowedHosts": when the allowlist is non-empty,
+	// remote-added providers may fetch catalogs only from those hosts after
+	// redirect resolution. Allowlist must re-apply on each redirect hop.
+	allow, err := normalizeHostSet([]string{"trusted.example"})
+	if err != nil {
+		t.Fatalf("normalizeHostSet: %v", err)
+	}
+	f := secureFetcher{
+		resolver: staticResolver{
+			"trusted.example":   []string{"203.0.113.10"},
+			"untrusted.example": []string{"203.0.113.20"},
+		},
+		transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Hostname() == "trusted.example" {
+				return redirectResponse(req, "https://untrusted.example/catalog.json"), nil
+			}
+			t.Fatalf("untrusted host should never be fetched, got %s", req.URL.Host)
+			return nil, nil
+		}),
+	}
+	_, err = f.Fetch(t.Context(), "https://trusted.example/catalog.json", fetchLimits{
+		MaxBytes:     1024,
+		AllowedHosts: allow,
+	})
+	if err == nil {
+		t.Fatal("redirect to non-allowlisted host should be rejected")
+	}
+}
 ```
 
 Add these helpers to `internal/adapters/streams/fetch_test.go`:
@@ -852,6 +1031,7 @@ Implement fetch security in `fetch.go` with:
 var deniedIPv4 = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT (RFC 6598)
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("169.254.0.0/16"),
 	netip.MustParsePrefix("172.16.0.0/12"),
@@ -1011,6 +1191,7 @@ git commit -m "feat(streams): add youtube channel provider"
 
 **Files:**
 - Create: `internal/adapters/streamhandoff/handoff.go`
+- Create: `internal/adapters/streams/errors.go`
 - Create: `internal/adapters/streams/url_resolver.go`
 - Create: `internal/adapters/streams/url_resolver_test.go`
 - Modify: `internal/adapters/url/adapter.go`
@@ -1052,8 +1233,47 @@ func TestResolveStreamURLRejectsRepeatedQueryParam(t *testing.T) {
 	if !matched || err == nil {
 		t.Fatal("repeated channel param should match provider and return validation error")
 	}
+	// Spec §"URL rule grammar": match-but-invalid must be a typed streams
+	// error so the URL adapter (Task 5) can distinguish "matched but
+	// extraction failed" from "no match" and refuse to fall through to
+	// generic URL casting. Plain errors.New(...) is not enough.
+	var streamsErr *StreamsError
+	if !errors.As(err, &streamsErr) {
+		t.Fatalf("error type = %T, want *StreamsError", err)
+	}
 }
 ```
+
+Create `internal/adapters/streams/errors.go` with:
+
+```go
+package streams
+
+type ErrorKind string
+
+const (
+	ErrKindNoMatch           ErrorKind = "no_match"
+	ErrKindInvalidExtraction ErrorKind = "invalid_extraction"
+	ErrKindProviderDisabled  ErrorKind = "provider_disabled"
+)
+
+type StreamsError struct {
+	Kind    ErrorKind
+	Message string
+}
+
+func (e *StreamsError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	return string(e.Kind)
+}
+```
+
+The URL adapter (Task 5 Step 3) checks the discriminator to decide whether to fall through.
 
 Add this helper to `internal/adapters/streams/test_helpers_test.go`:
 
@@ -1226,7 +1446,7 @@ git commit -m "feat(streams): route provider urls natively"
 ## Task 6: Queue Playback And Controls
 
 **Files:**
-- Create: `internal/adapters/streams/queue.go`
+- Modify: `internal/adapters/streams/queue.go`
 - Create: `internal/adapters/streams/playback.go`
 - Create: `internal/adapters/streams/queue_test.go`
 - Create: `internal/adapters/streams/playback_test.go`
@@ -1309,6 +1529,31 @@ func TestAdhocSingleItemStopsOnEOF(t *testing.T) {
 	cb("eof")
 	if a.active != nil {
 		t.Fatalf("adhoc EOF should clear queue, got %+v", a.active)
+	}
+}
+
+func TestAdhocPauseAfterEOFIsNoOp(t *testing.T) {
+	// Lifecycle interaction: Capabilities{CanPause:true} on an adhoc
+	// queue means a Pause request can arrive after the EOF callback has
+	// already cleared a.active. The streams Pause handler must check
+	// a.active for nil before dereferencing — otherwise Task 1's EOF
+	// teardown plus this code path is a nil deref.
+	a, _ := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		ProviderID: "mtv-rewind",
+		ChannelID:  "adhoc",
+		SessionID:  "s1",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "dQw4w9WgXcQ"}},
+	}
+	cb := a.makeOnStop(queueCapture{Generation: 0, ItemToken: 1, SessionID: "s1", ItemID: "dQw4w9WgXcQ"})
+	cb("eof")
+	if a.active != nil {
+		t.Fatal("precondition: EOF should clear adhoc queue")
+	}
+	// Pause must not panic on a cleared queue and must report a clear error.
+	if err := a.Pause(t.Context()); err == nil {
+		t.Fatal("Pause on cleared adhoc queue should report no-active-session error")
 	}
 }
 
@@ -1525,7 +1770,11 @@ Create `internal/adapters/streams/ui_test.go`:
 func TestExtraPanelHTMLContainsStreamsPanel(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	html := string(a.ExtraPanelHTML())
-	for _, want := range []string{"streams-panel", "MTV Rewind", "Cartoon Rewind", "hx-post=\"/ui/adapter/streams/play\""} {
+	// Match the existing URL adapter UI convention: route-table paths are
+	// relative, but rendered htmx URLs are absolute mounted paths because
+	// htmx resolves relative URLs against the current browser URL, not the
+	// fetched fragment URL.
+	for _, want := range []string{"streams-panel", "MTV Rewind", "Cartoon Rewind", `hx-post="/ui/adapter/streams/play"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel missing %q: %s", want, html)
 		}
@@ -1534,6 +1783,8 @@ func TestExtraPanelHTMLContainsStreamsPanel(t *testing.T) {
 ```
 
 - [ ] **Step 3: Implement routes and UI**
+
+Route `Path` values are **relative** to the UI server's mount, which is `/ui/adapter/streams/` (managed by the registry; do not hard-code or duplicate the prefix in `UIRoutes`). Mirror the `Path: "panel"` style used by `internal/adapters/url/routes.go`. Rendered htmx `hx-*` attributes should use absolute mounted paths such as `/ui/adapter/streams/play`, matching `internal/adapters/url/ui.go`, because htmx resolves relative URLs against the current browser URL.
 
 `UIRoutes()` must return:
 
@@ -1594,7 +1845,7 @@ git commit -m "feat(streams): add provider ui routes"
 ## Task 8: Main Wiring, Refresh Loop, README
 
 **Files:**
-- Create: `internal/adapters/streams/refresh.go`
+- Modify: `internal/adapters/streams/refresh.go`
 - Create: `internal/adapters/streams/refresh_test.go`
 - Modify: `internal/adapters/streams/adapter.go`
 - Modify: `cmd/mister-groovy-relay/main.go`
@@ -1667,7 +1918,7 @@ Implement `catalogSnapshotForTest` in `test_helpers_test.go` if the catalog stor
 
 - [ ] **Step 2: Implement refresh lifecycle**
 
-Create `internal/adapters/streams/refresh.go` with:
+Replace the Task 2 refresh shell in `internal/adapters/streams/refresh.go` with:
 
 ```go
 type RefreshStatus struct {
@@ -1712,7 +1963,7 @@ func TestAdapterCanRegisterAndStartDisabled(t *testing.T) {
 
 - [ ] **Step 4: Wire main**
 
-In `cmd/mister-groovy-relay/main.go`, construct streams after URL and before Jellyfin:
+In `cmd/mister-groovy-relay/main.go`, construct streams after URL and before Jellyfin. **Order matters**: `urlAdapter.SetStreamResolver(streamsAdapter)` must run before `streamsAdapter.Start(ctx)` so the URL adapter never observes a half-initialized streams adapter, and `reg.Register` happens last so the HTTP mux only exposes routes for a fully-wired adapter.
 
 ```go
 streamsAdapter, err := streams.New(streams.AdapterConfig{
@@ -1723,17 +1974,19 @@ streamsAdapter, err := streams.New(streams.AdapterConfig{
 if err != nil {
 	dieFriendly("streams adapter init", err)
 }
-urlAdapter.SetStreamResolver(streamsAdapter)
+urlAdapter.SetStreamResolver(streamsAdapter)       // wire dependency BEFORE Start.
 if err := reg.Register(streamsAdapter); err != nil {
 	dieFriendly("registry register streams", err)
 }
+// streamsAdapter.Start(ctx) is invoked by the registry's Start loop later,
+// matching the existing per-adapter Start sequence in main.go.
 ```
 
 Import `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams`.
 
 - [ ] **Step 5: Document config and examples**
 
-Add a README section with:
+Add a README section **after the URL adapter section and before the troubleshooting section** (mirroring the existing per-adapter ordering in `README.md`):
 
 ````markdown
 ### Streams adapter
@@ -1781,6 +2034,8 @@ git commit -m "feat(streams): register provider adapter"
 **Files:**
 - No new files unless a test reveals a defect.
 
+All `cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe ...` invocations below assume this Windows machine's pinned Go toolchain. On any other host (CI, Linux dev, fresh checkout) where `go` is on PATH, drop the prefix and run `go test ./...` directly.
+
 - [ ] **Step 1: Run full Go tests**
 
 Run:
@@ -1791,7 +2046,17 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./...
 
 Expected: PASS.
 
-- [ ] **Step 2: Run vet**
+- [ ] **Step 2: Run race-detector tests**
+
+CI runs `go test -race ./...` on every push (CLAUDE.md §Commands). The streams adapter introduces non-trivial new shared state — the queue mutex, the refresh background goroutine, and the `OnStop` closures captured into `core.SessionRequest`. Run the race detector locally before merge:
+
+```bash
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test -race ./internal/adapters/streams ./internal/adapters/url ./internal/core
+```
+
+Expected: PASS with no `DATA RACE` reports.
+
+- [ ] **Step 3: Run vet**
 
 Run:
 
@@ -1801,17 +2066,17 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe vet ./...
 
 Expected: PASS.
 
-- [ ] **Step 3: Search for forbidden implementation drift**
+- [ ] **Step 4: Search for forbidden implementation drift**
 
 Run:
 
 ```bash
-rg -n "TO[D]O|TB[D]|execute remote|channels-config.js|url_patterns|CanSeek: true" internal/adapters/streams internal/adapters/url internal/core cmd/mister-groovy-relay README.md
+rg -n "TO[D]O|TB[D]|execute remote|channels-config.js|url_patterns|CanSeek: true" internal/adapters/streams internal/adapters/streamhandoff internal/adapters/url internal/core cmd/mister-groovy-relay README.md
 ```
 
 Expected: no matches except explanatory documentation that explicitly says remote JavaScript is not executed.
 
-- [ ] **Step 4: Request code review**
+- [ ] **Step 5: Request code review**
 
 Use `superpowers:requesting-code-review` with:
 
@@ -1820,7 +2085,7 @@ Use `superpowers:requesting-code-review` with:
 - Base SHA: commit before Task 1.
 - Head SHA: current `HEAD`.
 
-- [ ] **Step 5: Fix review feedback or document pushback**
+- [ ] **Step 6: Fix review feedback or document pushback**
 
 Apply Critical and Important review items before merge. If a review item conflicts with the accepted spec, write the technical pushback in the final handoff and cite the spec section.
 
@@ -1838,7 +2103,7 @@ Apply Critical and Important review items before merge. If a review item conflic
   - UI/API/companion status shape: Task 7.
   - Main wiring and docs: Task 8.
   - Final verification and code review: Task 9.
-- Placeholder scan: run `rg -n "TB[D]|TO[D]O|implement lat[e]r|fill i[n]|similar t[o]|appropriat[e]" docs/superpowers/plans/2026-05-09-streams-provider-adapter.md`.
+- Placeholder scan: run `rg -n "TB[D]|TO[D]O|implement lat[e]r|fill i[n]|similar t[o]|appropriat[e]" docs/superpowers/plans/2026-05-09-streams-provider-adapter.md internal/adapters/streams internal/adapters/streamhandoff` so any placeholders left in newly written code are caught alongside any left in the plan itself.
 - Type consistency:
   - URL handoff types are declared in `internal/adapters/streamhandoff` to avoid streams-to-URL runtime coupling.
   - Streams adapter implements `streamhandoff.Resolver`.
