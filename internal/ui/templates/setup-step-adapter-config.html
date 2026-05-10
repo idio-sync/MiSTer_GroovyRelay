@@ -22,7 +22,8 @@
 	{{end}}
 
 	<form method="POST" action="/ui/setup/step/{{.AdapterName}}" class="gr-wizard-form">
-		<input type="hidden" name="enabled" value="true">
+		{{/* enabled=true is injected server-side in handleSetupAdapterConfigPOST
+		     (see internal/ui/setup.go) — no hidden input needed here. */}}
 
 		{{range $i, $section := .AdapterSections}}
 		<div class="section">
