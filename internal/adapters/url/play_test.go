@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -111,6 +112,121 @@ func (f *fakeCore) snapshot() core.SessionRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastReq
+}
+
+type fakeStreamResolver struct {
+	matched  bool
+	res      streamhandoff.Resolution
+	err      error
+	startErr error
+	starts   int
+}
+
+func (f *fakeStreamResolver) ResolveStreamURL(ctx context.Context, rawURL string) (streamhandoff.Resolution, bool, error) {
+	return f.res, f.matched, f.err
+}
+
+func (f *fakeStreamResolver) StartResolvedStream(ctx context.Context, res streamhandoff.Resolution) (streamhandoff.StartResult, error) {
+	f.starts++
+	if f.startErr != nil {
+		return streamhandoff.StartResult{}, f.startErr
+	}
+	return streamhandoff.StartResult{
+		AdapterRef: res.AdapterRef,
+		ProviderID: res.ProviderID,
+		ChannelID:  res.ChannelID,
+		ItemID:     res.ItemID,
+	}, nil
+}
+
+func TestCastURL_StreamsHandoffBeforeYTDLP(t *testing.T) {
+	fr := &fakeResolver{res: &ytdlp.Resolution{URL: "https://resolved.example/video.mp4"}}
+	a := newAdapterWithResolver(t, fr)
+	a.cfg.YtdlpHosts = append(a.cfg.YtdlpHosts, "wantmymtv.vercel.app")
+	f := &fakeStreamResolver{
+		matched: true,
+		res: streamhandoff.Resolution{
+			AdapterRef: "streams:1",
+			ProviderID: "mtv-rewind",
+			ChannelID:  "metal",
+		},
+	}
+	a.SetStreamResolver(f)
+
+	ref, via, status, err := a.castURL(t.Context(), "https://wantmymtv.vercel.app/player.html?channel=metal", "auto")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if ref != "streams:1" || via != "streams" || status != http.StatusOK || f.starts != 1 {
+		t.Fatalf("ref=%q via=%q status=%d starts=%d", ref, via, status, f.starts)
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("yt-dlp resolver should not be called for streams handoff: %v", fr.calls)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != "" {
+		t.Fatalf("URL core should not be started for streams handoff; StreamURL=%q", got)
+	}
+}
+
+func TestCastURL_StreamsNoMatchFallsBack(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	f := &fakeStreamResolver{matched: false}
+	a.SetStreamResolver(f)
+
+	ref, via, status, err := a.castURL(t.Context(), "https://example.com/video.mp4", "auto")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if ref == "" || via != "direct" || status != http.StatusOK || f.starts != 0 {
+		t.Fatalf("ref=%q via=%q status=%d starts=%d", ref, via, status, f.starts)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != "https://example.com/video.mp4" {
+		t.Fatalf("fallback StreamURL = %q", got)
+	}
+}
+
+func TestCastURL_StreamsResolveErrorDoesNotFallBack(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	f := &fakeStreamResolver{
+		matched: true,
+		err:     errors.New("streams link is invalid"),
+	}
+	a.SetStreamResolver(f)
+
+	_, _, status, err := a.castURL(t.Context(), "https://wantmymtv.vercel.app/player.html?channel=", "auto")
+	if err == nil {
+		t.Fatal("castURL should return streams resolver error")
+	}
+	if status != http.StatusBadRequest || f.starts != 0 {
+		t.Fatalf("status=%d starts=%d, want 400 and no start", status, f.starts)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != "" {
+		t.Fatalf("URL core should not be started after streams resolve error; StreamURL=%q", got)
+	}
+}
+
+func TestCastURL_StreamsStartErrorDoesNotFallBack(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	f := &fakeStreamResolver{
+		matched: true,
+		res: streamhandoff.Resolution{
+			ProviderID: "mtv-rewind",
+			ChannelID:  "metal",
+		},
+		startErr: errors.New("streams adapter is disabled"),
+	}
+	a.SetStreamResolver(f)
+
+	_, _, status, err := a.castURL(t.Context(), "https://wantmymtv.vercel.app/player.html?channel=metal", "auto")
+	if err == nil {
+		t.Fatal("castURL should return streams start error")
+	}
+	if status != http.StatusBadRequest || f.starts != 1 {
+		t.Fatalf("status=%d starts=%d, want 400 and one streams start", status, f.starts)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != "" {
+		t.Fatalf("URL core should not be started after streams start error; StreamURL=%q", got)
+	}
 }
 
 func TestPlay_RejectsMalformedURL(t *testing.T) {

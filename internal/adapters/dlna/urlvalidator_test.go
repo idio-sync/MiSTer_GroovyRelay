@@ -376,7 +376,6 @@ func TestValidateMediaURL_RedirectToDisallowedScheme(t *testing.T) {
 		t.Errorf("err = %v, want ErrSchemeNotAllowed", err)
 	}
 }
-
 func TestValidateMediaURL_RedirectToCloudMetadata(t *testing.T) {
 	// SSRF DEFENSE TEST: a public-looking initial URL that 302s to
 	// 169.254.169.254 must be rejected. This is the headline reason
@@ -435,4 +434,3 @@ func TestValidateMediaURL_DefaultEntryPoint_RejectsBadScheme(t *testing.T) {
 		t.Errorf("err = %v, want ErrSchemeNotAllowed", err)
 	}
 }
-

@@ -42,48 +42,51 @@ func (r *AdapterSaver) Save(name string, rawTOMLSection []byte) error {
 }
 
 // replaceAdapterSection rewrites (or appends) the [adapters.<name>]
-// block inside doc. The section is matched by exact header line; its
-// body extends to the next [header] line or EOF. The replacement
-// section is normalized to end with exactly one newline before
-// splicing so repeated saves don't accumulate blank lines or run
-// adjacent lines together.
+// block inside doc. It removes the parent table and descendant adapter
+// subtables before inserting the normalized replacement at the first
+// removed location. Descendant removal matters for adapters that expose
+// dynamic dotted keys through the generic UI: leaving old subtables behind
+// can make the next TOML parse fail with duplicate definitions.
 func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 	section = bytes.TrimRight(section, "\r\n\t ")
 	section = append(section, '\n')
 
 	header := fmt.Sprintf("[adapters.%s]", name)
+	descendantPrefix := fmt.Sprintf("[adapters.%s.", name)
 	lines := strings.Split(string(doc), "\n")
 
-	start := -1
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) == header {
-			start = i
-			break
+	outLines := make([]string, 0, len(lines))
+	inserted := false
+	removedAny := false
+
+	for i := 0; i < len(lines); {
+		tr := strings.TrimSpace(lines[i])
+		if tr == header || (strings.HasPrefix(tr, descendantPrefix) && strings.HasSuffix(tr, "]")) {
+			if !inserted {
+				outLines = append(outLines, header)
+				outLines = append(outLines, strings.Split(strings.TrimRight(string(section), "\n"), "\n")...)
+				inserted = true
+			}
+			removedAny = true
+			i++
+			for i < len(lines) {
+				next := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(next, "[") && strings.HasSuffix(next, "]") {
+					break
+				}
+				i++
+			}
+			continue
 		}
+		outLines = append(outLines, lines[i])
+		i++
 	}
 
-	if start < 0 {
+	if !removedAny {
 		// Append. Ensure doc ends with a newline before concatenating.
 		out := strings.TrimRight(string(doc), "\r\n\t ") + "\n\n"
 		out += header + "\n" + string(section)
 		return []byte(out)
 	}
-
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		tr := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(tr, "[") && strings.HasSuffix(tr, "]") {
-			end = i
-			break
-		}
-	}
-
-	newLines := append([]string{}, lines[:start+1]...)
-	sectionLines := strings.Split(strings.TrimRight(string(section), "\n"), "\n")
-	newLines = append(newLines, sectionLines...)
-	if end < len(lines) {
-		newLines = append(newLines, "")
-	}
-	newLines = append(newLines, lines[end:]...)
-	return []byte(strings.Join(newLines, "\n"))
+	return []byte(strings.Join(outLines, "\n"))
 }

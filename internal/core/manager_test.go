@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -81,6 +82,33 @@ func bogusRequest() SessionRequest {
 	}
 }
 
+type fakePlane struct{}
+
+func (f *fakePlane) Run(context.Context) error  { return nil }
+func (f *fakePlane) Done() <-chan struct{}      { ch := make(chan struct{}); close(ch); return ch }
+func (f *fakePlane) Position() time.Duration    { return 0 }
+func (f *fakePlane) SetFieldOrder(string) error { return nil }
+func (f *fakePlane) BlitsTotal() uint64         { return 0 }
+func (f *fakePlane) FramesTotal() uint64        { return 0 }
+func (f *fakePlane) Underruns() uint64          { return 0 }
+func (f *fakePlane) WireBytes() uint64          { return 0 }
+func (f *fakePlane) LastACKAge() time.Duration  { return 0 }
+
+type blockingDonePlane struct {
+	done chan struct{}
+	pos  time.Duration
+}
+
+func (f *blockingDonePlane) Run(context.Context) error  { <-f.done; return nil }
+func (f *blockingDonePlane) Done() <-chan struct{}      { return f.done }
+func (f *blockingDonePlane) Position() time.Duration    { return f.pos }
+func (f *blockingDonePlane) SetFieldOrder(string) error { return nil }
+func (f *blockingDonePlane) BlitsTotal() uint64         { return 0 }
+func (f *blockingDonePlane) FramesTotal() uint64        { return 0 }
+func (f *blockingDonePlane) Underruns() uint64          { return 0 }
+func (f *blockingDonePlane) WireBytes() uint64          { return 0 }
+func (f *blockingDonePlane) LastACKAge() time.Duration  { return 0 }
+
 func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	m := newTestManager(t)
 	if err := m.DropActiveCast("unit test"); err != nil {
@@ -145,6 +173,79 @@ func TestManager_LogPlaneExit_InitACKTimeoutIsClear(t *testing.T) {
 	}
 }
 
+func TestManager_NaturalEOFFiresOnStopAndClearsActive(t *testing.T) {
+	m := newTestManager(t)
+	done := make(chan string, 1)
+
+	plane := &fakePlane{}
+	m.mu.Lock()
+	m.plane = plane
+	m.cancelFn = func() {}
+	m.active = &activeSession{req: SessionRequest{
+		OnStop: func(reason string) { done <- reason },
+	}}
+	m.mu.Unlock()
+
+	m.handlePlaneExit(plane, nil)
+
+	select {
+	case got := <-done:
+		if got != "eof" {
+			t.Fatalf("OnStop reason = %q, want eof", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called")
+	}
+	if st := m.Status(); st.State != StateIdle {
+		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active != nil || m.plane != nil || m.cancelFn != nil {
+		t.Fatalf("manager did not clear session: active=%v plane=%v cancelFnNil=%v", m.active, m.plane, m.cancelFn == nil)
+	}
+}
+
+func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
+	prevNewPlane := newPlane
+	t.Cleanup(func() { newPlane = prevNewPlane })
+
+	plane := &fakePlane{}
+	newPlane = func(dataplane.PlaneConfig) planeRunner { return plane }
+
+	m := newTestManager(t)
+	done := make(chan string, 1)
+	req := SessionRequest{
+		StreamURL:  "https://example.test/video.mp4",
+		DirectPlay: true,
+		OnStop:     func(reason string) { done <- reason },
+	}
+	probe := &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 48000, Duration: 1}
+
+	m.mu.Lock()
+	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg"); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("startPlaneLocked: %v", err)
+	}
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition play media: %v", err)
+	}
+	m.mu.Unlock()
+
+	select {
+	case got := <-done:
+		if got != "eof" {
+			t.Fatalf("OnStop reason = %q, want eof", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called via goroutine wrapper")
+	}
+	if st := m.Status(); st.State != StateIdle {
+		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
+	}
+}
+
 func TestManager_StartSession_ProbeFailLeavesIdle(t *testing.T) {
 	m := newTestManager(t)
 	err := m.StartSession(bogusRequest())
@@ -184,6 +285,118 @@ func TestManager_StopWhenIdleIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestManager_StopIfAdapterRefMismatchDoesNotStopForeignActive(t *testing.T) {
+	m := newTestManager(t)
+	stopped := make(chan string, 1)
+	cancelled := false
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef: "streams:owned",
+		OnStop:     func(reason string) { stopped <- reason },
+	}}
+	m.cancelFn = func() { cancelled = true }
+	m.mu.Unlock()
+
+	matched, err := m.StopIfAdapterRef("url:foreign")
+	if err != nil {
+		t.Fatalf("StopIfAdapterRef mismatch: %v", err)
+	}
+	if matched {
+		t.Fatal("StopIfAdapterRef mismatch returned matched=true")
+	}
+	if cancelled {
+		t.Fatal("StopIfAdapterRef mismatch cancelled the foreign active session")
+	}
+	if got := m.Status().AdapterRef; got != "streams:owned" {
+		t.Fatalf("AdapterRef after mismatch = %q, want streams:owned", got)
+	}
+	select {
+	case reason := <-stopped:
+		t.Fatalf("OnStop fired on mismatch with reason %q", reason)
+	default:
+	}
+}
+
+func TestManager_StopIfAdapterRefMatchStopsActive(t *testing.T) {
+	m := newTestManager(t)
+	stopped := make(chan string, 1)
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef: "streams:owned",
+		OnStop:     func(reason string) { stopped <- reason },
+	}}
+	m.mu.Unlock()
+
+	matched, err := m.StopIfAdapterRef("streams:owned")
+	if err != nil {
+		t.Fatalf("StopIfAdapterRef match: %v", err)
+	}
+	if !matched {
+		t.Fatal("StopIfAdapterRef match returned matched=false")
+	}
+	if got := m.Status().AdapterRef; got != "" {
+		t.Fatalf("AdapterRef after stop = %q, want empty", got)
+	}
+	select {
+	case reason := <-stopped:
+		if reason != "stopped" {
+			t.Fatalf("OnStop reason = %q, want stopped", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called")
+	}
+}
+
+func TestManager_StopIfAdapterRefPreservesNewSessionInstalledWhileOldPlaneDrains(t *testing.T) {
+	m := newTestManager(t)
+	oldPlane := &blockingDonePlane{done: make(chan struct{})}
+	cancelled := make(chan struct{})
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{AdapterRef: "streams:old"}}
+	m.plane = oldPlane
+	m.cancelFn = func() { close(cancelled) }
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition to playing: %v", err)
+	}
+	m.mu.Unlock()
+
+	done := make(chan struct {
+		matched bool
+		err     error
+	}, 1)
+	go func() {
+		matched, err := m.StopIfAdapterRef("streams:old")
+		done <- struct {
+			matched bool
+			err     error
+		}{matched: matched, err: err}
+	}()
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("StopIfAdapterRef did not cancel old plane")
+	}
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{AdapterRef: "streams:new"}}
+	m.plane = &fakePlane{}
+	m.mu.Unlock()
+	close(oldPlane.done)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("StopIfAdapterRef: %v", got.err)
+	}
+	if got.matched {
+		t.Fatal("StopIfAdapterRef should report mismatch after a newer session is installed")
+	}
+	st := m.Status()
+	if st.AdapterRef != "streams:new" || st.State != StatePlaying {
+		t.Fatalf("status after guarded stop race = %+v, want playing streams:new", st)
+	}
+}
+
 func TestManager_PauseRequiresActiveSession(t *testing.T) {
 	m := newTestManager(t)
 	err := m.Pause()
@@ -192,6 +405,119 @@ func TestManager_PauseRequiresActiveSession(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no session") {
 		t.Errorf("err = %v, want 'no session'", err)
+	}
+}
+
+func TestManager_PauseIfAdapterRefMismatchDoesNotPauseForeignActive(t *testing.T) {
+	m := newTestManager(t)
+	cancelled := false
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef:   "streams:owned",
+		Capabilities: Capabilities{CanPause: true},
+	}}
+	m.cancelFn = func() { cancelled = true }
+	m.mu.Unlock()
+
+	matched, err := m.PauseIfAdapterRef("url:foreign")
+	if err != nil {
+		t.Fatalf("PauseIfAdapterRef mismatch: %v", err)
+	}
+	if matched {
+		t.Fatal("PauseIfAdapterRef mismatch returned matched=true")
+	}
+	if cancelled {
+		t.Fatal("PauseIfAdapterRef mismatch cancelled the foreign active session")
+	}
+	if got := m.Status().AdapterRef; got != "streams:owned" {
+		t.Fatalf("AdapterRef after mismatch = %q, want streams:owned", got)
+	}
+}
+
+func TestManager_PauseIfAdapterRefMatchPausesActive(t *testing.T) {
+	m := newTestManager(t)
+	cancelled := false
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef:   "streams:owned",
+		Capabilities: Capabilities{CanPause: true},
+	}}
+	m.plane = &fakePlane{}
+	m.cancelFn = func() { cancelled = true }
+	m.mu.Unlock()
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		t.Fatalf("transition to playing: %v", err)
+	}
+
+	matched, err := m.PauseIfAdapterRef("streams:owned")
+	if err != nil {
+		t.Fatalf("PauseIfAdapterRef match: %v", err)
+	}
+	if !matched {
+		t.Fatal("PauseIfAdapterRef match returned matched=false")
+	}
+	if !cancelled {
+		t.Fatal("PauseIfAdapterRef match did not cancel the active plane")
+	}
+	st := m.Status()
+	if st.State != StatePaused || st.AdapterRef != "streams:owned" {
+		t.Fatalf("status after pause = %+v, want paused owned session", st)
+	}
+}
+
+func TestManager_PauseIfAdapterRefPreservesNewSessionInstalledWhileOldPlaneDrains(t *testing.T) {
+	m := newTestManager(t)
+	oldPlane := &blockingDonePlane{done: make(chan struct{}), pos: 42 * time.Millisecond}
+	cancelled := make(chan struct{})
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef:   "streams:old",
+		Capabilities: Capabilities{CanPause: true},
+	}}
+	m.plane = oldPlane
+	m.cancelFn = func() { close(cancelled) }
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition to playing: %v", err)
+	}
+	m.mu.Unlock()
+
+	done := make(chan struct {
+		matched bool
+		err     error
+	}, 1)
+	go func() {
+		matched, err := m.PauseIfAdapterRef("streams:old")
+		done <- struct {
+			matched bool
+			err     error
+		}{matched: matched, err: err}
+	}()
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("PauseIfAdapterRef did not cancel old plane")
+	}
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef:   "streams:new",
+		Capabilities: Capabilities{CanPause: true},
+	}}
+	m.plane = &fakePlane{}
+	m.mu.Unlock()
+	close(oldPlane.done)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("PauseIfAdapterRef: %v", got.err)
+	}
+	if got.matched {
+		t.Fatal("PauseIfAdapterRef should report mismatch after a newer session is installed")
+	}
+	st := m.Status()
+	if st.AdapterRef != "streams:new" || st.State != StatePlaying {
+		t.Fatalf("status after guarded pause race = %+v, want playing streams:new", st)
 	}
 }
 

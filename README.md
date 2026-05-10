@@ -168,6 +168,27 @@ container start, the entrypoint runs `yt-dlp -U` (gated by a daily
 marker file so hourly restarts don't hammer GitHub). Failed updates
 log a warning; the bundled version stays usable.
 
+## Streams adapter
+
+The Streams adapter turns supported catalog sites into native relay queues. It
+is disabled by default.
+
+```toml
+[adapters.streams]
+enabled = false
+allow_remote_manifest = true
+manifest_refresh_hours = 24
+catalog_refresh_hours = 12
+youtube_format = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b"
+```
+
+Example links handled natively when Streams is enabled:
+
+- `https://wantmymtv.vercel.app/player.html?channel=metal`
+- `https://wantmymtv.xyz/player.html?channel=metal`
+- `https://wantmymtv.vercel.app/player.html?v=dQw4w9WgXcQ`
+- `https://cartoonrewind.tv/player.html?channel=heman`
+
 ## DLNA / UPnP adapter
 
 The DLNA adapter advertises the bridge as a UPnP `MediaRenderer:1`

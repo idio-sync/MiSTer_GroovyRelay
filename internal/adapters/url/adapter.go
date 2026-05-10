@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -72,6 +73,7 @@ type Adapter struct {
 	probeFn func() ytdlpProbe
 
 	ytdlpBinaryResolver ytdlp.BinaryResolver
+	streamResolver      streamhandoff.Resolver
 
 	mu         sync.Mutex
 	cfg        Config
@@ -159,6 +161,12 @@ func (a *Adapter) emit(sev eventlog.Severity, msg string) {
 // CookiesPath returns the absolute path to the cookies file. Stable
 // across the adapter's lifetime; computed once at construction.
 func (a *Adapter) CookiesPath() string { return a.cookiesPath }
+
+func (a *Adapter) SetStreamResolver(r streamhandoff.Resolver) {
+	a.mu.Lock()
+	a.streamResolver = r
+	a.mu.Unlock()
+}
 
 // ---- adapters.Adapter interface ----
 

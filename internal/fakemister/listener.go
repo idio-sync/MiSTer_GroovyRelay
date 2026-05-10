@@ -11,6 +11,11 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
 
+// Enough room for a full 720x240x3 RAW field burst plus command traffic.
+// Tests can send a field before RunWithFields starts; the kernel buffer must
+// hold those datagrams until the fake receiver begins reassembly.
+const wantRcvBuf = 2 * 1024 * 1024
+
 // Listener wraps a UDP socket and decodes incoming datagrams into typed
 // Commands. The zero-value is not usable; construct via NewListener.
 type Listener struct {
@@ -39,6 +44,9 @@ func NewListener(addr string) (*Listener, error) {
 	conn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		return nil, err
+	}
+	if err := conn.SetReadBuffer(wantRcvBuf); err != nil {
+		slog.Warn("fake MiSTer SetReadBuffer failed", "err", err)
 	}
 	return &Listener{conn: conn}, nil
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -185,8 +186,21 @@ func main() {
 	if err != nil {
 		dieFriendly("url adapter init", err)
 	}
+	streamsAdapter, err := streams.New(streams.AdapterConfig{
+		Bridge:        sec.Bridge,
+		Core:          coreMgr,
+		YTDLPResolver: ytdlpResolver,
+	})
+	if err != nil {
+		dieFriendly("streams adapter init", err)
+	}
+	urlAdapter.SetStreamResolver(streamsAdapter)
+
 	if err := reg.Register(urlAdapter); err != nil {
 		dieFriendly("registry register url", err)
+	}
+	if err := reg.Register(streamsAdapter); err != nil {
+		dieFriendly("registry register streams", err)
 	}
 
 	// Jellyfin adapter: HTTP-based session control + WebSocket push events.
