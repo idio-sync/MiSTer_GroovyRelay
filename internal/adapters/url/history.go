@@ -1,11 +1,14 @@
 package url
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	stdurl "net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,12 +40,29 @@ const (
 	historySchemaVersion = 1
 )
 
+func newHistoryID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("url history id entropy unavailable: " + err.Error())
+	}
+	return "h_" + hex.EncodeToString(b[:])
+}
+
+func validHistoryID(id string) bool {
+	if len(id) != 34 || !strings.HasPrefix(id, "h_") {
+		return false
+	}
+	_, err := hex.DecodeString(id[2:])
+	return err == nil
+}
+
 // HistoryEntry is one row of the on-disk history file. JSON tags match
 // the schema in spec §"History / Schema". Title is populated when a
 // metadata-aware resolver (yt-dlp) returns one; direct-mode entries
 // leave it empty. omitempty keeps the on-disk JSON tidy for entries
 // that never acquired a title.
 type HistoryEntry struct {
+	ID           string    `json:"id,omitempty"`
 	URL          string    `json:"url"`
 	LastPlayedAt time.Time `json:"last_played_at"`
 	Title        string    `json:"title,omitempty"`
@@ -113,7 +133,19 @@ func LoadHistory(path string) *History {
 	if len(deduped) > historyMaxEntries {
 		deduped = deduped[:historyMaxEntries]
 	}
+	backfilled := false
+	for i := range deduped {
+		if !validHistoryID(deduped[i].ID) {
+			deduped[i].ID = newHistoryID()
+			backfilled = true
+		}
+	}
+	h.mu.Lock()
 	h.entries = deduped
+	if backfilled {
+		h.saveLocked()
+	}
+	h.mu.Unlock()
 	return h
 }
 
@@ -136,17 +168,27 @@ func (h *History) AddOrBump(rawURL string) {
 
 	// Remove existing entry with the same dedupe key, if any. Carry
 	// its title forward so the bump doesn't drop metadata.
+	var carriedID string
 	var carriedTitle string
 	for i, e := range h.entries {
 		if dedupeKey(e.URL) == key {
+			carriedID = e.ID
 			carriedTitle = e.Title
 			h.entries = append(h.entries[:i], h.entries[i+1:]...)
 			break
 		}
 	}
+	if !validHistoryID(carriedID) {
+		carriedID = newHistoryID()
+	}
 
 	// Prepend the new entry, then enforce the cap unconditionally.
-	h.entries = append([]HistoryEntry{{URL: rawURL, LastPlayedAt: now, Title: carriedTitle}}, h.entries...)
+	h.entries = append([]HistoryEntry{{
+		ID:           carriedID,
+		URL:          rawURL,
+		LastPlayedAt: now,
+		Title:        carriedTitle,
+	}}, h.entries...)
 	if len(h.entries) > historyMaxEntries {
 		h.entries = h.entries[:historyMaxEntries]
 	}
@@ -219,6 +261,32 @@ func (h *History) Get(idx int) (HistoryEntry, bool) {
 		return HistoryEntry{}, false
 	}
 	return h.entries[idx], true
+}
+
+// GetByID returns the entry with id. Returns ok=false when missing.
+func (h *History) GetByID(id string) (HistoryEntry, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range h.entries {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return HistoryEntry{}, false
+}
+
+// RemoveByID deletes the entry with id. Returns false when missing.
+func (h *History) RemoveByID(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, e := range h.entries {
+		if e.ID == id {
+			h.entries = append(h.entries[:i], h.entries[i+1:]...)
+			h.saveLocked()
+			return true
+		}
+	}
+	return false
 }
 
 // saveLocked persists to disk if path is set and persistDisabled is

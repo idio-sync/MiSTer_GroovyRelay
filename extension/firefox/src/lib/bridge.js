@@ -12,7 +12,7 @@ export async function getBridgeURL() {
   return result.bridgeURL || "";
 }
 
-export async function play(url, mode = "auto") {
+async function companionFetch(path, options = {}) {
   const bridgeURL = await getBridgeURL();
   if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
 
@@ -22,86 +22,93 @@ export async function play(url, mode = "auto") {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
 
-  let res;
+  const headers = {
+    "X-Bridge-Extension": "1",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {}),
+  };
+
   try {
-    res = await fetch(`${bridgeURL}/ui/adapter/url/play`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Bridge-Extension": "1",
-      },
-      body: JSON.stringify({ url, mode }),
+    const res = await fetch(`${bridgeURL}${path}`, {
+      method: options.method || "GET",
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
       signal: ctrl.signal,
     });
+    clearTimeout(timeout);
+
+    const text = await res.text().catch(() => "");
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = {};
+      }
+    }
+    if (res.ok) return { ok: true, ...data };
+    return {
+      ok: false,
+      status: res.status,
+      error: data.error || `HTTP ${res.status}`,
+    };
   } catch (e) {
     clearTimeout(timeout);
     if (e.name === "AbortError") return { ok: false, error: "Bridge timed out" };
     return { ok: false, error: `Bridge unreachable: ${e.message}` };
   }
-  clearTimeout(timeout);
+}
 
-  if (res.ok) {
-    const data = await res.json().catch(() => ({}));
-    return { ok: true, adapter_ref: data.adapter_ref };
-  }
+export async function getStatus() {
+  return companionFetch("/ui/companion/status");
+}
 
-  const errText = await res.text().catch(() => "");
-  let errMsg = `HTTP ${res.status}`;
-  try {
-    const body = JSON.parse(errText);
-    if (body.error) errMsg = body.error;
-  } catch {
-    // Keep the HTTP <code> fallback for non-JSON responses.
-  }
-  return { ok: false, status: res.status, error: errMsg };
+export async function play(url, mode = "auto") {
+  return companionFetch("/ui/companion/play", {
+    method: "POST",
+    body: { url, mode },
+  });
+}
+
+export async function control(action, extra = {}) {
+  return companionFetch("/ui/companion/control", {
+    method: "POST",
+    body: { action, ...extra },
+  });
+}
+
+export async function historyPlay(id) {
+  return companionFetch("/ui/companion/history/play", {
+    method: "POST",
+    body: { id },
+  });
+}
+
+export async function historyDelete(id) {
+  return companionFetch("/ui/companion/history/delete", {
+    method: "POST",
+    body: { id },
+  });
 }
 
 export async function launchGroovyMister() {
-  const bridgeURL = await getBridgeURL();
-  if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
-
-  const permission = await ensureBridgeHostPermission(bridgeURL);
-  if (!permission.ok) return permission;
-
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
-
-  let res;
-  try {
-    res = await fetch(`${bridgeURL}/ui/bridge/mister/launch`, {
-      method: "POST",
-      headers: {
-        "X-Bridge-Extension": "1",
-      },
-      signal: ctrl.signal,
-    });
-  } catch (e) {
-    clearTimeout(timeout);
-    if (e.name === "AbortError") return { ok: false, error: "Bridge timed out" };
-    return { ok: false, error: `Bridge unreachable: ${e.message}` };
-  }
-  clearTimeout(timeout);
-
-  if (res.ok) return { ok: true };
-
-  const errText = (await res.text().catch(() => "")).trim();
-  return {
-    ok: false,
-    status: res.status,
-    error: `Launch failed: ${errText || `HTTP ${res.status}`}`,
-  };
+  return companionFetch("/ui/companion/launch", { method: "POST" });
 }
 
-export function formatPlayError(result) {
+export function formatBridgeError(result, fallback = "Command failed") {
   if (!result || result.ok) return "";
   if (!result.status || result.error === `HTTP ${result.status}`) {
-    return result.error || "Cast failed";
+    return result.error || fallback;
   }
   if (result.status >= 400 && result.status < 500) {
     return `Bridge rejected: ${result.error}`;
   }
   if (result.status >= 500) {
-    return `Cast failed: ${result.error}`;
+    return `${fallback}: ${result.error}`;
   }
   return result.error || `HTTP ${result.status}`;
+}
+
+export function formatPlayError(result) {
+  return formatBridgeError(result, "Cast failed");
 }

@@ -247,10 +247,13 @@ func main() {
 	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
 
 	uiSrv, err := ui.New(ui.Config{
-		Registry:       reg,
-		BridgeSaver:    saver,
-		AdapterSaver:   adapterSaver,
-		MisterLauncher: misterLauncher,
+		Registry:         reg,
+		BridgeSaver:      saver,
+		AdapterSaver:     adapterSaver,
+		MisterLauncher:   misterLauncher,
+		CompanionSession: coreMgr,
+		CompanionURL:     urlAdapter,
+		CompanionDisplay: urlAdapter,
 	})
 	if err != nil {
 		dieFriendly("ui init", err)

@@ -15,17 +15,30 @@ import (
 // Lives here rather than being imported from the adapters package
 // because test files don't export symbols across packages.
 type uiStubAdapter struct {
-	name  string
-	state adapters.State
+	name        string
+	displayName string
+	enabled     bool
+	enabledSet  bool
+	state       adapters.State
 }
 
-func (a *uiStubAdapter) Name() string                { return a.name }
-func (a *uiStubAdapter) DisplayName() string         { return a.name }
+func (a *uiStubAdapter) Name() string { return a.name }
+func (a *uiStubAdapter) DisplayName() string {
+	if a.displayName != "" {
+		return a.displayName
+	}
+	return a.name
+}
 func (a *uiStubAdapter) Fields() []adapters.FieldDef { return nil }
 func (a *uiStubAdapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	return nil
 }
-func (a *uiStubAdapter) IsEnabled() bool                 { return true }
+func (a *uiStubAdapter) IsEnabled() bool {
+	if a.enabledSet {
+		return a.enabled
+	}
+	return true
+}
 func (a *uiStubAdapter) Start(ctx context.Context) error { return nil }
 func (a *uiStubAdapter) Stop() error                     { return nil }
 func (a *uiStubAdapter) Status() adapters.Status         { return adapters.Status{State: a.state} }

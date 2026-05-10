@@ -30,3 +30,11 @@ https://ffmpeg.org/legal.html
 
 yt-dlp is distributed under The Unlicense. See:
 https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE
+
+## Bundled UI Fonts
+
+The bridge UI and companion extension bundle WOFF2 font assets for Space
+Grotesk, Inter Tight, and JetBrains Mono. These fonts are distributed under
+the SIL Open Font License 1.1 by their upstream projects. The bundled files
+are used locally by the web UI and extension popup and are not fetched from a
+remote font service at runtime.

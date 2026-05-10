@@ -65,10 +65,13 @@ type MisterLauncher interface {
 // so unit tests that only exercise read paths can construct Server
 // without them).
 type Config struct {
-	Registry       *adapters.Registry
-	BridgeSaver    BridgeSaver
-	AdapterSaver   AdapterSaver
-	MisterLauncher MisterLauncher
+	Registry         *adapters.Registry
+	BridgeSaver      BridgeSaver
+	AdapterSaver     AdapterSaver
+	MisterLauncher   MisterLauncher
+	CompanionSession CompanionSessionProvider
+	CompanionURL     CompanionURLSource
+	CompanionDisplay CompanionDisplayProvider
 }
 
 // templateFuncs supplies the tiny set of helpers our templates need.
@@ -117,6 +120,13 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /ui", handleExtensionCORSPreflight)
 	mux.HandleFunc("OPTIONS /ui/", handleExtensionCORSPreflight)
+	mux.Handle("OPTIONS /ui/companion/", companionExtensionGate(http.NotFoundHandler()))
+	s.mountCompanion(mux, http.MethodGet, "/ui/companion/status", s.handleCompanionStatus)
+	s.mountCompanion(mux, http.MethodPost, "/ui/companion/play", s.handleCompanionPlay)
+	s.mountCompanion(mux, http.MethodPost, "/ui/companion/control", s.handleCompanionControl)
+	s.mountCompanion(mux, http.MethodPost, "/ui/companion/history/play", s.handleCompanionHistoryPlay)
+	s.mountCompanion(mux, http.MethodPost, "/ui/companion/history/delete", s.handleCompanionHistoryDelete)
+	s.mountCompanion(mux, http.MethodPost, "/ui/companion/launch", s.handleCompanionLaunch)
 
 	// Static assets served out of embedded FS under /ui/static/.
 	// GETs don't pass through csrfMiddleware — reads have no side
