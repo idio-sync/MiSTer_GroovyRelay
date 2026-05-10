@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -308,5 +309,43 @@ func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `hx-swap-oob`) {
 		t.Errorf("dots route did not produce OOB span output (route may be served by shell catch-all)\nbody: %s", body)
+	}
+}
+
+// newMockAdapter returns a minimal uiStubAdapter with the given name and
+// enabled state. Used by shellData filter tests.
+func newMockAdapter(name string, enabled bool) *uiStubAdapter {
+	return &uiStubAdapter{name: name, enabled: enabled, enabledSet: true}
+}
+
+func TestShellData_FiltersDisabledAdapters(t *testing.T) {
+	srv, _ := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(
+			newMockAdapter("plex", true),     // enabled
+			newMockAdapter("jellyfin", true), // enabled
+			newMockAdapter("url", false),     // disabled — should be filtered
+		)
+	})
+	data := srv.shellData()
+	names := []string{}
+	for _, a := range data.Adapters {
+		names = append(names, a.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"plex", "jellyfin"}) {
+		t.Errorf("filtered adapters: got %v, want [plex jellyfin]", names)
+	}
+}
+
+func TestShell_RendersAddSourceLink(t *testing.T) {
+	_, mux := newTestServer(t)
+	r := httptest.NewRequest("GET", "/ui/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	if !strings.Contains(body, "+ Add source") {
+		t.Errorf("missing + Add source link")
+	}
+	if !strings.Contains(body, `href="/ui/setup?step=adapters"`) {
+		t.Errorf("missing wizard link target")
 	}
 }
