@@ -76,6 +76,27 @@ func TestTimeline_TouchResetsLastSeen(t *testing.T) {
 	}
 }
 
+func TestTimeline_TouchSubscriberCommandDoesNotRegress(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.Subscribe("client-a", "127.0.0.1", "32500", "http", 22)
+
+	b.TouchSubscriberCommand("client-a", 1)
+	b.mu.Lock()
+	got := b.subscribers["client-a"].commandID
+	b.mu.Unlock()
+	if got != 22 {
+		t.Errorf("commandID regressed to %d, want 22", got)
+	}
+
+	b.TouchSubscriberCommand("client-a", 23)
+	b.mu.Lock()
+	got = b.subscribers["client-a"].commandID
+	b.mu.Unlock()
+	if got != 23 {
+		t.Errorf("commandID = %d, want 23 after newer command", got)
+	}
+}
+
 func TestTimeline_BuildXML_StatePlaying(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	xml := b.buildTimelineXML(core.SessionStatus{
@@ -623,6 +644,37 @@ func TestCompanion_TimelinePoll_WaitOneWakesOnPlayingPositionDrift(t *testing.T)
 	}
 	if !strings.Contains(string(body), `time="5300"`) {
 		t.Errorf("body should reflect the bumped position 5300 ms: %s", body)
+	}
+}
+
+func TestCompanion_TimelinePoll_DoesNotReportStaleCommandID(t *testing.T) {
+	fc := &fakeCore{status: core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 5 * time.Second,
+		Duration: 60 * time.Second,
+	}}
+	c := NewCompanion(CompanionConfig{}, fc)
+	b := NewTimelineBroker(TimelineConfig{}, fc.Status)
+	c.SetTimeline(b)
+	c.rememberPlaySession(PlayMediaRequest{
+		MediaKey:  "/library/metadata/99",
+		CommandID: "22",
+	})
+
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/timeline/poll?commandID=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `time="5000"`) {
+		t.Errorf("body should include live position: %s", body)
+	}
+	if !strings.Contains(string(body), `commandID="22"`) {
+		t.Errorf("timeline should retain the latest completed commandID, got: %s", body)
 	}
 }
 

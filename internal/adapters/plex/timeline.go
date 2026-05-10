@@ -42,16 +42,16 @@ type subscriber struct {
 // TimelineBroker pushes 1 Hz timeline XML to registered Plex controllers and
 // serves the /player/timeline/poll long-poll fallback. Thread-safe.
 type TimelineBroker struct {
-	cfg         TimelineConfig
-	status      func() core.SessionStatus
-	playContext func() PlayMediaRequest
-	mu          sync.Mutex
-	subscribers map[string]*subscriber
-	lastPMSURL  string
-	lastPMSBody string
+	cfg          TimelineConfig
+	status       func() core.SessionStatus
+	playContext  func() PlayMediaRequest
+	mu           sync.Mutex
+	subscribers  map[string]*subscriber
+	lastPMSURL   string
+	lastPMSBody  string
 	lastPMSToken string
-	stop        chan struct{}
-	stopOnce    sync.Once
+	stop         chan struct{}
+	stopOnce     sync.Once
 
 	// TTL is the stale-subscriber prune threshold. Defaults to 90s per the
 	// Plex-mpv-shim convention; tests override this to avoid real waits.
@@ -445,7 +445,7 @@ func (t *TimelineBroker) TouchSubscriberCommand(clientID string, commandID int) 
 	defer t.mu.Unlock()
 	if s, ok := t.subscribers[clientID]; ok {
 		s.lastSeen = t.timeNow()
-		if commandID > 0 {
+		if commandID > s.commandID {
 			s.commandID = commandID
 		}
 	}

@@ -1195,11 +1195,15 @@ func (c *Companion) handleTimelinePoll(w http.ResponseWriter, r *http.Request) {
 		"last_play_media_key", play.MediaKey,
 		"last_play_pms", play.PlexMachineID,
 	)
+	replyCommandID := atoiDefault(queryOrHeader(r, "commandID"), 0)
+	if playCommandID := atoiDefault(play.CommandID, 0); playCommandID > replyCommandID {
+		replyCommandID = playCommandID
+	}
 	w.WriteHeader(200)
 	_, _ = w.Write([]byte(c.timeline.buildTimelineXMLWithCommandID(
 		st,
 		play,
-		atoiDefault(queryOrHeader(r, "commandID"), 0),
+		replyCommandID,
 	)))
 }
 
