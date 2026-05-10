@@ -358,6 +358,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	p.audioReady.Store(audioEnabled && ack.AudioReady())
 	p.fpgaFrame.Store(ack.FPGAFrame)
+	p.lastACKUnix.Store(time.Now().UnixNano())
 
 	// Session-start lifecycle marker. One INFO line per session with the
 	// negotiated parameters so the operator can correlate later events
@@ -559,6 +560,7 @@ func (p *Plane) Run(ctx context.Context) error {
 		case a := <-ackCh:
 			p.audioReady.Store(audioEnabled && a.AudioReady())
 			p.fpgaFrame.Store(a.FPGAFrame)
+			p.lastACKUnix.Store(time.Now().UnixNano())
 			latestACK = a
 			if a.FrameEcho != lastEcho {
 				lastEcho = a.FrameEcho
@@ -653,11 +655,13 @@ func (p *Plane) Run(ctx context.Context) error {
 				// errors out of Run, so unconditional Put after sendField
 				// is safe. defer is reserved for panic-prone code paths.
 				p.framePool.Put(fb)
+				p.framesTotal.Add(1)
 			} else {
 				if consecutiveUnderruns == 0 {
 					consecutiveUnderrunFrom = time.Now()
 				}
 				consecutiveUnderruns++
+				p.underruns.Add(1)
 				if consecutiveUnderruns == 30 || consecutiveUnderruns%120 == 0 {
 					slog.Warn("video pipe underrun; duplicating fields to hold raster",
 						"fields", consecutiveUnderruns,
@@ -821,10 +825,12 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 		slog.Warn("blit header send", "err", err)
 		return time.Since(fieldStart)
 	}
+	p.wireBytes.Add(uint64(len(header)))
 	if err := p.cfg.Sender.SendPayload(payload); err != nil {
 		slog.Warn("blit payload send", "err", err)
 		return time.Since(fieldStart)
 	}
+	p.wireBytes.Add(uint64(len(payload)))
 	p.cfg.Sender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
 
@@ -879,7 +885,11 @@ func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
 func (p *Plane) sendDuplicate(frame uint32, field uint8) {
 	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
-	_ = p.cfg.Sender.Send(header)
+	if err := p.cfg.Sender.Send(header); err != nil {
+		slog.Warn("duplicate blit header send", "err", err)
+		return
+	}
+	p.wireBytes.Add(uint64(len(header)))
 	p.cfg.Sender.MarkBlitSent(0) // no payload, no congestion hit
 }
 
@@ -891,13 +901,17 @@ func (p *Plane) sendAudio(pcm []byte) {
 	if len(pcm) > maxSoundSize {
 		pcm = pcm[:maxSoundSize]
 	}
-	if err := p.cfg.Sender.Send(groovy.BuildAudioHeader(uint16(len(pcm)))); err != nil {
+	audioHeader := groovy.BuildAudioHeader(uint16(len(pcm)))
+	if err := p.cfg.Sender.Send(audioHeader); err != nil {
 		slog.Warn("audio header send", "err", err)
 		return
 	}
+	p.wireBytes.Add(uint64(len(audioHeader)))
 	if err := p.cfg.Sender.SendPayload(pcm); err != nil {
 		slog.Warn("audio payload send", "err", err)
+		return
 	}
+	p.wireBytes.Add(uint64(len(pcm)))
 }
 
 // prebuffer blocks until videoCh has accumulated `target` frames or a
