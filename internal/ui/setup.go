@@ -65,6 +65,14 @@ func (s *Server) handleSetupRoot(w http.ResponseWriter, r *http.Request) {
 //   - bridge: host is empty → must configure
 //   - adapters: no adapters are enabled → must pick
 //   - done: everything looks good
+//
+// Known limitation: if the operator picks multiple adapters in step 2 and
+// configures only the first, this returns "done" as soon as that one
+// adapter is enabled — the unconfigured-but-picked adapters are invisible
+// to the walk because the picker step deliberately does NOT write
+// enabled=true to disk before configure (see round-3 review fix C3).
+// Multi-adapter setup currently requires re-entering /ui/setup?step=adapters
+// after each configure; tracked as a follow-up.
 func (s *Server) firstIncompleteStep() string {
 	if s.cfg.BridgeSaver != nil {
 		cur := s.cfg.BridgeSaver.Current()
