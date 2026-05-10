@@ -160,6 +160,8 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 		"drawtext=",
 		"Blue Monday",
 		"New Order",
+		"%{pts\\:hms}",
+		"w='(iw-48)*min(t/449.000,1)'",
 		"fps=60000/1001",
 		"scale=w=720:h=480",
 		"format=bgr24",
@@ -171,6 +173,11 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 	}
 	if strings.Contains(graph, "format=rgb24") {
 		t.Fatalf("graph contains wasted intermediate format=rgb24:\n%s", graph)
+	}
+	for _, bad := range []string{`\%{pts`, "(w-48)*min"} {
+		if strings.Contains(graph, bad) {
+			t.Fatalf("graph contains invalid duration expression %q:\n%s", bad, graph)
+		}
 	}
 }
 
@@ -738,6 +745,36 @@ func TestBuildCommand_VisualizerUsesFilterComplex(t *testing.T) {
 	}
 }
 
+func TestBuildCommand_VisualizerDualInputMapsAudioInputOne(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:        "https://video.example/video-only.mp4",
+		AudioInputURL:   "https://audio.example/audio-only.m4a",
+		SourceProbe:     &ProbeResult{AudioRate: 0},
+		OutputWidth:     720,
+		OutputHeight:    480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:           true,
+			Mode:              VisualizerModeRetroAnalyzer,
+			DrawTextAvailable: true,
+			Metadata:          VisualizerMetadata{Title: "Blue Monday"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	graph := argAfter(cmd.Args, "-filter_complex")
+	if !strings.Contains(graph, "[1:a:0]showfreqs") {
+		t.Fatalf("visualizer graph must analyze input 1 audio, got:\n%s", graph)
+	}
+	if !argPairExists(cmd.Args, "-map", "1:a:0") {
+		t.Fatalf("visualizer argv missing PCM audio map 1:a:0:\n%v", cmd.Args)
+	}
+	if argPairExists(cmd.Args, "-map", "0:a:0") {
+		t.Fatalf("visualizer argv must not map input 0 audio in dual-input mode:\n%v", cmd.Args)
+	}
+}
+
 func TestBuildCommand_VisualizerRejectsUnknownMode(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL:    "http://pms/music.mp3",
@@ -748,6 +785,24 @@ func TestBuildCommand_VisualizerRejectsUnknownMode(t *testing.T) {
 	if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "unsupported visualizer mode") {
 		t.Fatalf("cmd.Err = %v, want unsupported visualizer mode", cmd.Err)
 	}
+}
+
+func argAfter(args []string, flag string) string {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func argPairExists(args []string, flag, value string) bool {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // TestBuildCommand_ZeroPolicyArgvUnchanged is the backward-compat guard:

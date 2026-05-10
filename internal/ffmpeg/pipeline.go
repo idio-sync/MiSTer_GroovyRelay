@@ -119,6 +119,13 @@ func audioOutputEnabled(s PipelineSpec) bool {
 	return true
 }
 
+func audioInputMap(s PipelineSpec) string {
+	if s.AudioInputURL != "" {
+		return "1:a:0"
+	}
+	return "0:a:0"
+}
+
 // visibleDARNum / visibleDARDen describe the displayed aspect of the output
 // buffer on the target CRT. All four shipped modelines drive a 15 kHz analog
 // CRT whose visible area is 4:3, so the 720×N output buffer is rendered with
@@ -265,20 +272,32 @@ func escapeFilterText(s string) string {
 	return b.String()
 }
 
-func visualizerTextLines(s PipelineSpec) []string {
+type visualizerTextLine struct {
+	Text        string
+	TrustedExpr bool
+}
+
+func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 	md := s.Visualizer.Metadata
 	title := strings.TrimSpace(md.Title)
 	if title == "" {
 		title = "Now Playing"
 	}
-	lines := []string{title}
+	lines := []visualizerTextLine{{Text: title}}
 	if artistAlbum := strings.TrimSpace(strings.Join(nonEmpty(md.Artist, md.Album), " - ")); artistAlbum != "" {
-		lines = append(lines, artistAlbum)
+		lines = append(lines, visualizerTextLine{Text: artistAlbum})
 	}
 	if md.Duration > 0 {
-		lines = append(lines, "%{pts\\:hms} / "+formatDurationClock(md.Duration))
+		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), TrustedExpr: true})
 	}
 	return lines
+}
+
+func visualizerDrawText(line visualizerTextLine) string {
+	if line.TrustedExpr {
+		return line.Text
+	}
+	return escapeFilterText(line.Text)
 }
 
 func nonEmpty(values ...string) []string {
@@ -315,7 +334,7 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 	}
 	logicalW, logicalH := logicalCanvas(s.OutputHeight)
 	parts := []string{
-		fmt.Sprintf("[0:a:0]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]", logicalW, logicalH),
+		fmt.Sprintf("[%s]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]", audioInputMap(s), logicalW, logicalH),
 	}
 	label := "viz0"
 	if s.Visualizer.DrawTextAvailable {
@@ -323,13 +342,13 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 			next := fmt.Sprintf("viztext%d", i)
 			y := 24 + i*30
 			parts = append(parts, fmt.Sprintf("[%s]drawtext=text='%s':x=24:y=%d:fontsize=24:fontcolor=0x9dff9d:box=1:boxcolor=0x00000099[%s]",
-				label, escapeFilterText(line), y, next))
+				label, visualizerDrawText(line), y, next))
 			label = next
 		}
 		if s.Visualizer.Metadata.Duration > 0 {
 			next := "vizbar"
 			seconds := s.Visualizer.Metadata.Duration.Seconds()
-			parts = append(parts, fmt.Sprintf("[%s]drawbox=x=24:y=h-34:w='(w-48)*min(t/%.3f,1)':h=8:color=0x70ff70:t=fill[%s]",
+			parts = append(parts, fmt.Sprintf("[%s]drawbox=x=24:y=h-34:w='(iw-48)*min(t/%.3f,1)':h=8:color=0x70ff70:t=fill[%s]",
 				label, seconds, next))
 			label = next
 		}
@@ -400,6 +419,7 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	}
 
 	if s.Visualizer.Enabled {
+		audioMap := audioInputMap(s)
 		graph, err := buildVisualizerFilterChain(s)
 		if err != nil {
 			cmd := exec.CommandContext(ctx, ffmpegPathFor(s), "-version")
@@ -415,7 +435,7 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 		)
 		if audioOutputEnabled(s) {
 			args = append(args,
-				"-map", "0:a:0",
+				"-map", audioMap,
 				"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
 				"-ac", fmt.Sprintf("%d", s.AudioChannels),
 				"-f", "s16le",
@@ -442,10 +462,7 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	// probe says the source has no audio stream; otherwise ffmpeg would fail
 	// the session before any video is emitted.
 	if audioOutputEnabled(s) {
-		audioMap := "0:a:0"
-		if dualInput {
-			audioMap = "1:a:0"
-		}
+		audioMap := audioInputMap(s)
 		args = append(args,
 			"-map", audioMap,
 			"-ar", fmt.Sprintf("%d", s.AudioSampleRate),
