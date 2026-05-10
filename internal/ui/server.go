@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -96,6 +97,7 @@ type Config struct {
 	StatusViewer     StatusViewer  // nil disables live data on status home
 	EventLog         *eventlog.Log // nil disables activity feed
 	Version          string        // build version, displayed in diagnostics
+	StartedAt        time.Time     // process start time for status/diagnostics uptime
 }
 
 // sectionCtxData is the context object passed to the "field-section"
@@ -149,6 +151,9 @@ type Server struct {
 func New(cfg Config) (*Server, error) {
 	if cfg.Registry == nil {
 		return nil, fmt.Errorf("ui: Config.Registry is required")
+	}
+	if cfg.StartedAt.IsZero() {
+		cfg.StartedAt = time.Now()
 	}
 	tmpl, err := template.New("ui").Funcs(templateFuncs).ParseFS(templatesFS, "templates/*.html")
 	if err != nil {

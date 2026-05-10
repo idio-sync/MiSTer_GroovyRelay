@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,9 +10,63 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
+
+type setupLifecycleAdapter struct {
+	name        string
+	displayName string
+	enabled     bool
+	state       adapters.State
+	applyErr    error
+	startErr    error
+	applyCalls  int
+	startCalls  int
+}
+
+func (a *setupLifecycleAdapter) Name() string { return a.name }
+func (a *setupLifecycleAdapter) DisplayName() string {
+	if a.displayName != "" {
+		return a.displayName
+	}
+	return a.name
+}
+func (a *setupLifecycleAdapter) Fields() []adapters.FieldDef {
+	return []adapters.FieldDef{{
+		Key:      "host",
+		Label:    "Host",
+		Kind:     adapters.KindText,
+		Required: true,
+	}}
+}
+func (a *setupLifecycleAdapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
+	return nil
+}
+func (a *setupLifecycleAdapter) IsEnabled() bool { return a.enabled }
+func (a *setupLifecycleAdapter) Start(ctx context.Context) error {
+	a.startCalls++
+	if a.startErr != nil {
+		return a.startErr
+	}
+	a.state = adapters.StateRunning
+	return nil
+}
+func (a *setupLifecycleAdapter) Stop() error             { return nil }
+func (a *setupLifecycleAdapter) Status() adapters.Status { return adapters.Status{State: a.state} }
+func (a *setupLifecycleAdapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
+	a.applyCalls++
+	if a.applyErr != nil {
+		return 0, a.applyErr
+	}
+	a.enabled = true
+	return adapters.ScopeHotSwap, nil
+}
+func (a *setupLifecycleAdapter) SetEnabled(v bool) { a.enabled = v }
+func (a *setupLifecycleAdapter) CurrentValues() map[string]any {
+	return map[string]any{"host": "127.0.0.1"}
+}
 
 // fakeBridgeSaverFirstRun is a fake implementing both BridgeSaver and
 // FirstRunAware so tests can drive the wizard's first-run gate.
@@ -203,7 +259,17 @@ func TestSetup_StepAdapters_Renders(t *testing.T) {
 // TestSetup_Done_DismissesFlagAndRedirects verifies POST /ui/setup/done
 // clears the first-run flag and redirects to /ui/.
 func TestSetup_Done_DismissesFlagAndRedirects(t *testing.T) {
-	_, mux, saver := newTestServerWithFirstRun(t, true)
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "plex", displayName: "Plex", enabled: true, enabledSet: true}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, mux, saver := newTestServerWithFirstRun(t, false, func(c *Config) {
+		c.Registry = reg
+	})
+	saver.mu.Lock()
+	saver.first = true
+	saver.mu.Unlock()
+
 	if !saver.IsFirstRun() {
 		t.Fatal("precondition: saver.IsFirstRun() should be true")
 	}
@@ -222,6 +288,28 @@ func TestSetup_Done_DismissesFlagAndRedirects(t *testing.T) {
 	}
 	if saver.IsFirstRun() {
 		t.Error("first-run flag was not dismissed")
+	}
+}
+
+// TestSetup_Done_BlocksIncompleteWizard verifies POST /ui/setup/done
+// cannot dismiss first-run while required setup steps are still incomplete.
+func TestSetup_Done_BlocksIncompleteWizard(t *testing.T) {
+	_, mux, saver := newTestServerWithFirstRun(t, true)
+
+	req := httptest.NewRequest("POST", "/ui/setup/done", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
+	}
+	loc := rw.Header().Get("Location")
+	if loc != "/ui/setup/step/bridge" {
+		t.Errorf("Location = %q, want /ui/setup/step/bridge", loc)
+	}
+	if !saver.IsFirstRun() {
+		t.Error("first-run flag should not be dismissed while setup is incomplete")
 	}
 }
 
@@ -331,6 +419,109 @@ func TestSetup_AdaptersPOST_SkipRedirectsToDone(t *testing.T) {
 	}
 }
 
+func TestSetup_AdapterConfigPOST_StartsAdapterAfterSave(t *testing.T) {
+	reg := adapters.NewRegistry()
+	adapter := &setupLifecycleAdapter{name: "plex", displayName: "Plex", state: adapters.StateStopped}
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	saver := &fakeAdapterSaver{}
+	_, mux, _ := newTestServerWithFirstRun(t, false, func(c *Config) {
+		c.Registry = reg
+		c.AdapterSaver = saver
+	})
+
+	form := url.Values{"host": {"127.0.0.1"}}
+	req := httptest.NewRequest("POST", "/ui/setup/step/plex", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
+	}
+	if loc := rw.Header().Get("Location"); loc != "/ui/setup" {
+		t.Errorf("Location = %q, want /ui/setup", loc)
+	}
+	if saver.lastName != "plex" {
+		t.Errorf("adapter saver name = %q, want plex", saver.lastName)
+	}
+	if !strings.Contains(string(saver.lastRaw), "enabled = true") {
+		t.Errorf("saved TOML missing enabled=true: %s", saver.lastRaw)
+	}
+	if adapter.applyCalls != 1 {
+		t.Errorf("ApplyConfig calls = %d, want 1", adapter.applyCalls)
+	}
+	if adapter.startCalls != 1 {
+		t.Errorf("Start calls = %d, want 1", adapter.startCalls)
+	}
+	if !adapter.IsEnabled() {
+		t.Error("adapter should be enabled in memory after setup save")
+	}
+}
+
+func TestSetup_AdapterConfigPOST_RendersApplyError(t *testing.T) {
+	reg := adapters.NewRegistry()
+	adapter := &setupLifecycleAdapter{
+		name:        "plex",
+		displayName: "Plex",
+		state:       adapters.StateStopped,
+		applyErr:    errors.New("apply exploded"),
+	}
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	saver := &fakeAdapterSaver{}
+	_, mux, _ := newTestServerWithFirstRun(t, false, func(c *Config) {
+		c.Registry = reg
+		c.AdapterSaver = saver
+	})
+
+	form := url.Values{"host": {"127.0.0.1"}}
+	req := httptest.NewRequest("POST", "/ui/setup/step/plex", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%q", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "Saved to disk but apply failed") || !strings.Contains(body, "apply exploded") {
+		t.Errorf("missing apply error in body: %s", body)
+	}
+	if adapter.startCalls != 0 {
+		t.Errorf("Start calls = %d, want 0 after apply failure", adapter.startCalls)
+	}
+	if adapter.IsEnabled() {
+		t.Error("adapter should not be enabled in memory after apply failure")
+	}
+}
+
+func TestSetup_LinkAwareConfigFormEnabledBeforeLinking(t *testing.T) {
+	mock := newMockLinkAwareAdapter("plex")
+	_, mux, _ := newTestServerWithFirstRun(t, false, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(mock)
+	})
+
+	req := httptest.NewRequest("GET", "/ui/setup/step/plex", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%q", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if strings.Contains(body, "<fieldset disabled>") {
+		t.Errorf("setup adapter config form should stay enabled before linking; body=%s", body)
+	}
+	if !strings.Contains(body, `name="host"`) {
+		t.Errorf("setup adapter config form missing host field: %s", body)
+	}
+}
+
 // TestSetup_StepDone_Renders verifies the done step renders the
 // completion message and "Take me to Status" button.
 func TestSetup_StepDone_Renders(t *testing.T) {
@@ -380,6 +571,24 @@ func TestSetup_FirstIncompleteStep_DoneWhenAdapterEnabled(t *testing.T) {
 	if loc != "/ui/setup/step/done" {
 		t.Errorf("Location = %q, want /ui/setup/step/done", loc)
 	}
+}
+
+func TestSetup_StepperIncludesActiveUnenabledAdapter(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "plex", displayName: "Plex", enabled: false, enabledSet: true}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	items := stepperFor("plex", reg)
+	for _, item := range items {
+		if item.Label == "Plex" {
+			if !item.Active {
+				t.Fatal("Plex step should be active")
+			}
+			return
+		}
+	}
+	t.Fatalf("active Plex step missing from stepper: %#v", items)
 }
 
 // TestSetup_AdaptersStep_RejectsInvalidName verifies an unknown adapter

@@ -72,7 +72,10 @@ func (s *Server) handleDiagnosticsProbe(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) buildDiagnosticsData() diagnosticsPanelData {
-	d := diagnosticsPanelData{RingCapacity: 256}
+	d := diagnosticsPanelData{
+		RingCapacity: 256,
+		Uptime:       formatElapsed(time.Since(s.cfg.StartedAt)),
+	}
 	d.BuildInfo = []diagKV{
 		{"version", s.cfg.Version},
 		{"go runtime", runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH},

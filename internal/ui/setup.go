@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -22,7 +23,7 @@ type stepperItem struct {
 // setupStepData is the template root for all wizard step templates.
 type setupStepData struct {
 	// Bridge step
-	Bridge   config.BridgeConfig
+	Bridge       config.BridgeConfig
 	BridgeErrors FormErrors
 
 	// Adapters picker step
@@ -34,7 +35,7 @@ type setupStepData struct {
 	AdapterSections    []bridgeSection
 	AdapterErrors      FormErrors
 	ExtraHTML          template.HTML
-	GateForm           bool // true when LinkAware && !IsLinked() — wraps form in <fieldset disabled> overlay
+	GateForm           bool // true when LinkAware && !IsLinked(); setup keeps config fields enabled before linking
 
 	// Done step
 	EnabledAdapters []string
@@ -220,8 +221,14 @@ func (s *Server) handleSetupAdapterConfigPOST(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	lock := adapterLocks.forName(adapterName)
+	lock.Lock()
+	defer lock.Unlock()
+
+	oldEnabled := a.IsEnabled()
+
 	// Build TOML snippet from form, injecting enabled=true.
-	tomlBytes, ferrs := formToAdapterTOML(r.Form, a.Fields())
+	tomlBytes, ferrs := formToAdapterTOML(r.Form, setupAdapterConfigFields(a.Fields()))
 	if len(ferrs) > 0 {
 		data := buildSetupAdapterConfigData(a, ferrs)
 		s.renderSetupStep(w, r, adapterName, data)
@@ -252,11 +259,27 @@ func (s *Server) handleSetupAdapterConfigPOST(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Apply config (enables the adapter in-memory).
+	// Apply config (enables the adapter in-memory). If apply fails, the
+	// disk write has already happened, but the operator needs to see the
+	// failure instead of being advanced through first-run with a stopped
+	// source.
+	if _, err := a.ApplyConfig(raw, meta); err != nil {
+		data := buildSetupAdapterConfigData(a, FormErrors{"": fmt.Sprintf("Saved to disk but apply failed: %v", err)})
+		s.renderSetupStep(w, r, adapterName, data)
+		return
+	}
+
 	if setter, ok := a.(EnableSetter); ok {
 		setter.SetEnabled(true)
 	}
-	_, _ = a.ApplyConfig(raw, meta)
+
+	if (!oldEnabled || a.IsEnabled()) && a.Status().State != adapters.StateRunning {
+		if err := a.Start(context.Background()); err != nil {
+			data := buildSetupAdapterConfigData(a, FormErrors{"": fmt.Sprintf("Saved but start failed: %v", err)})
+			s.renderSetupStep(w, r, adapterName, data)
+			return
+		}
+	}
 
 	// Redirect back to /ui/setup — it will route to the next incomplete step.
 	http.Redirect(w, r, "/ui/setup", http.StatusFound)
@@ -264,6 +287,10 @@ func (s *Server) handleSetupAdapterConfigPOST(w http.ResponseWriter, r *http.Req
 
 // handleSetupDone dismisses the first-run flag and redirects to the main UI.
 func (s *Server) handleSetupDone(w http.ResponseWriter, r *http.Request) {
+	if target := s.firstIncompleteStep(); target != "done" {
+		http.Redirect(w, r, "/ui/setup/step/"+target, http.StatusFound)
+		return
+	}
 	if fra, ok := s.cfg.BridgeSaver.(FirstRunAware); ok {
 		_ = fra.DismissFirstRun()
 	}
@@ -341,9 +368,11 @@ func stepperFor(activeStep string, reg *adapters.Registry) []stepperItem {
 		{"adapters", "Pick sources"},
 	}
 
-	// Add enabled adapters as individual configure steps.
+	// Add enabled adapters as individual configure steps. While actively
+	// configuring an adapter, include it even before enabled=true has been
+	// saved so the stepper can highlight the current step.
 	for _, a := range reg.List() {
-		if a.IsEnabled() {
+		if a.IsEnabled() || a.Name() == activeStep {
 			steps = append(steps, namedStep{a.Name(), a.DisplayName()})
 		}
 	}
@@ -431,10 +460,7 @@ func buildSetupAdapterConfigData(a adapters.Adapter, errs FormErrors) setupStepD
 
 	byName := map[string]*bridgeSection{}
 	order := []string{}
-	for _, fd := range a.Fields() {
-		if fd.Kind == adapters.KindAction {
-			continue // skip action buttons in wizard
-		}
+	for _, fd := range setupAdapterConfigFields(a.Fields()) {
 		section := fd.Section
 		if section == "" {
 			section = "Settings"
@@ -458,6 +484,8 @@ func buildSetupAdapterConfigData(a adapters.Adapter, errs FormErrors) setupStepD
 	}
 
 	// GateForm: true if the adapter implements LinkAware and is not yet linked.
+	// The setup template intentionally does not disable fields from this bit:
+	// Jellyfin and similar adapters need their server URL saved before linking.
 	gateForm := false
 	if la, ok := a.(adapters.LinkAware); ok {
 		gateForm = !la.IsLinked()
@@ -471,6 +499,17 @@ func buildSetupAdapterConfigData(a adapters.Adapter, errs FormErrors) setupStepD
 		ExtraHTML:          extraHTML,
 		GateForm:           gateForm,
 	}
+}
+
+func setupAdapterConfigFields(fields []adapters.FieldDef) []adapters.FieldDef {
+	out := make([]adapters.FieldDef, 0, len(fields))
+	for _, fd := range fields {
+		if fd.Kind == adapters.KindAction || fd.Key == "enabled" {
+			continue
+		}
+		out = append(out, fd)
+	}
+	return out
 }
 
 // buildSetupDoneData builds the done step data.
@@ -498,4 +537,3 @@ func adapterDescription(name string) string {
 	}
 	return ""
 }
-

@@ -5,12 +5,14 @@ package main
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/misterctl"
 )
 
@@ -77,5 +79,60 @@ func TestBridgeMisterLauncher_EmptyHostShortCircuits(t *testing.T) {
 	}
 	if dialed {
 		t.Error("dialAndRun called on empty-host short-circuit")
+	}
+}
+
+func TestBridgeMisterProber_SendsStatusProbe(t *testing.T) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("ListenUDP: %v", err)
+	}
+	defer conn.Close()
+
+	got := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, addr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		got <- append([]byte(nil), buf[:n]...)
+		ack := make([]byte, groovy.ACKPacketSize)
+		ack[12] = 1
+		_, _ = conn.WriteToUDP(ack, addr)
+	}()
+
+	port := conn.LocalAddr().(*net.UDPAddr).Port
+	saver := &fakeBridgeSaver{cur: config.BridgeConfig{
+		MiSTer: config.MisterConfig{Host: "127.0.0.1", Port: port},
+	}}
+	prober := bridgeMisterProber{bridge: saver, timeout: time.Second}
+
+	if err := prober.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+
+	select {
+	case pkt := <-got:
+		if len(pkt) != 1 || pkt[0] != groovy.CmdGetStatus {
+			t.Fatalf("probe packet = %v, want [%d]", pkt, groovy.CmdGetStatus)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive status probe")
+	}
+}
+
+func TestBridgeMisterProber_EmptyHostShortCircuits(t *testing.T) {
+	saver := &fakeBridgeSaver{cur: config.BridgeConfig{
+		MiSTer: config.MisterConfig{Host: ""},
+	}}
+	prober := bridgeMisterProber{bridge: saver, timeout: time.Second}
+
+	err := prober.Probe(context.Background())
+	if err == nil {
+		t.Fatal("expected empty-host error, got nil")
+	}
+	if !strings.Contains(err.Error(), "MiSTer host not configured") {
+		t.Errorf("err = %q, want 'MiSTer host not configured'", err)
 	}
 }

@@ -79,6 +79,7 @@ func (s *Server) buildStatusData() statusPanelData {
 	d := statusPanelData{
 		State:            "idle",
 		ActivityCapacity: 256,
+		Uptime:           formatElapsed(time.Since(s.cfg.StartedAt)),
 	}
 
 	if s.cfg.StatusViewer != nil {

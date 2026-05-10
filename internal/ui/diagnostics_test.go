@@ -39,6 +39,17 @@ func TestDiagnostics_RendersAllSections(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_RendersProcessUptime(t *testing.T) {
+	srv, _ := newTestServer(t, func(c *Config) {
+		c.StartedAt = time.Now().Add(-65 * time.Minute)
+	})
+
+	data := srv.buildDiagnosticsData()
+	if data.Uptime != "1h 05m" {
+		t.Fatalf("diagnostics uptime = %q, want 1h 05m", data.Uptime)
+	}
+}
+
 type fakeProber struct {
 	err   error
 	delay time.Duration

@@ -15,12 +15,6 @@
 	<div class="adapter-extras">{{.ExtraHTML}}</div>
 	{{end}}
 
-	{{if .GateForm}}
-	<section class="gr-form-locked">
-		<p class="gr-form-locked-msg">Complete the linking step above before configuring this adapter.</p>
-		<fieldset disabled>
-	{{end}}
-
 	<form method="POST" action="/ui/setup/step/{{.AdapterName}}" class="gr-wizard-form">
 		{{/* enabled=true is injected server-side in handleSetupAdapterConfigPOST
 		     (see internal/ui/setup.go) — no hidden input needed here. */}}
@@ -38,10 +32,5 @@
 			<button type="submit" class="btn">Save & continue ▸</button>
 		</div>
 	</form>
-
-	{{if .GateForm}}
-		</fieldset>
-	</section>
-	{{end}}
 </section>
 {{end}}

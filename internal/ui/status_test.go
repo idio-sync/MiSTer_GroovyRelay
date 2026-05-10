@@ -36,6 +36,25 @@ func TestStatusHome_Idle(t *testing.T) {
 	}
 }
 
+func TestStatusHome_RendersProcessUptime(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.StartedAt = time.Now().Add(-65 * time.Minute)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+
+	r := httptest.NewRequest("GET", "/ui/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	body := w.Body.String()
+	if w.Code != 200 {
+		t.Fatalf("status: %d, body: %s", w.Code, body)
+	}
+	if !strings.Contains(body, "uptime 1h 05m") {
+		t.Errorf("missing process uptime: %s", body)
+	}
+}
+
 func TestStatusHome_Casting(t *testing.T) {
 	_, mux := newTestServer(t, func(c *Config) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{

@@ -44,6 +44,7 @@ import (
 var version = "1.0.0"
 
 func main() {
+	startedAt := time.Now()
 	defaultCfg := defaultConfigForRuntime()
 	cfgPath := flag.String("config", defaultCfg, "path to config.toml")
 	logLevel := flag.String("log-level", "info", "debug|info|warn|error")
@@ -256,6 +257,7 @@ func main() {
 	adapterSaver := uiserver.NewAdapterSaver(*cfgPath, saver.Mu())
 
 	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
+	misterProber := bridgeMisterProber{bridge: saver, timeout: 1 * time.Second}
 
 	uiSrv, err := ui.New(ui.Config{
 		Registry:         reg,
@@ -268,7 +270,8 @@ func main() {
 		StatusViewer:     coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
 		EventLog:         elog,    // in-memory ring buffer constructed above
 		Version:          version, // build-time ldflags variable
-		// MisterProber: nil — production UDP prober lands in a later task
+		MisterProber:     misterProber,
+		StartedAt:        startedAt,
 	})
 	if err != nil {
 		dieFriendly("ui init", err)
