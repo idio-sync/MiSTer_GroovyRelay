@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // linkTemplate holds the four account-section fragments: unlinked,
@@ -191,13 +192,15 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 func (a *Adapter) pollPendingLink(pl *pendingLink, pinID int, deviceUUID string) {
 	token, err := pollForTokenCtx(pl.ctx, pinID, deviceUUID, 15*time.Minute)
 	if err != nil {
-		pl.complete("", err.Error())
+		a.finishPendingLink(pl, "", err.Error())
 		return
 	}
 
 	a.mu.Lock()
 	if a.pending != pl {
 		// Abandoned by a newer flow; don't clobber its state.
+		// Do NOT call finishPendingLink here — abandoned flows must
+		// not emit events (they are a race artifact, not a real outcome).
 		a.mu.Unlock()
 		pl.complete("", "abandoned")
 		return
@@ -210,10 +213,28 @@ func (a *Adapter) pollPendingLink(pl *pendingLink, pinID int, deviceUUID string)
 	// SaveStoredData is disk I/O; run outside a.mu so sidebar polls
 	// and other handlers don't block on fsync.
 	if err := SaveStoredData(dataDir, store); err != nil {
-		pl.complete("", fmt.Sprintf("token received but save failed: %v", err))
+		a.finishPendingLink(pl, "", fmt.Sprintf("token received but save failed: %v", err))
 		return
 	}
-	pl.complete(token, "")
+	a.finishPendingLink(pl, token, "")
+}
+
+// finishPendingLink marks pl as done and emits the appropriate lifecycle
+// event. Exactly one of token or errMsg must be non-empty:
+//
+//   - token non-empty → success: emit adapter-linked (Info), complete with token.
+//   - errMsg non-empty → failure: emit adapter-link-failed (Err), complete with error.
+//
+// The abandoned-flow branch in pollPendingLink calls pl.complete directly
+// without going through here, so abandoned flows never emit.
+func (a *Adapter) finishPendingLink(pl *pendingLink, token, errMsg string) {
+	if token != "" {
+		pl.complete(token, "")
+		a.emit(eventlog.SeverityInfo, "adapter-linked")
+		return
+	}
+	pl.complete("", errMsg)
+	a.emit(eventlog.SeverityErr, fmt.Sprintf("adapter-link-failed: %s", errMsg))
 }
 
 // handleLinkStatus returns the Account-section fragment for the
