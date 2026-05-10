@@ -57,6 +57,11 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	reg := adapters.NewRegistry()
 
 	saver := uiserver.NewBridgeSaver(cfgPath, sec, coreMgr, reg)
+	// This test exercises the post-first-run hot-swap path, not the wizard;
+	// dismiss the first-run flag so firstRunGuard doesn't 409 the save POST.
+	if err := saver.DismissFirstRun(); err != nil {
+		t.Fatalf("DismissFirstRun: %v", err)
+	}
 	uiSrv, err := ui.New(ui.Config{Registry: reg, BridgeSaver: saver})
 	if err != nil {
 		t.Fatal(err)
