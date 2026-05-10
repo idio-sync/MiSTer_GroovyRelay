@@ -1,6 +1,10 @@
 package jellyfin
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"testing"
+)
 
 func TestLinkState_InitialIsIdle(t *testing.T) {
 	s := NewLinkState()
@@ -66,5 +70,22 @@ func TestLinkState_StringForms(t *testing.T) {
 		if got := phase.String(); got != want {
 			t.Errorf("LinkPhase(%d).String() = %q, want %q", int(phase), got, want)
 		}
+	}
+}
+
+func TestLinkState_SetLinkedFiresCallback(t *testing.T) {
+	got := []string{}
+	s := NewLinkState()
+	s.SetOnPhaseChange(func(phase LinkPhase, errMsg string) {
+		got = append(got, fmt.Sprintf("%s/%s", phase.String(), errMsg))
+	})
+
+	s.SetLinked("jake", "server-uuid")
+	s.SetError("network unreachable")
+	s.SetIdle()
+
+	want := []string{"linked/", "error/network unreachable", "idle/"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("phases: got %v, want %v", got, want)
 	}
 }

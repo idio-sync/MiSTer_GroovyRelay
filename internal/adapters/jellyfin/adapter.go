@@ -147,6 +147,16 @@ func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string, even
 	}
 	a.SetModeline(initialModeline)
 	a.handleInbound = a.dispatchInbound
+	a.link.SetOnPhaseChange(func(phase LinkPhase, errMsg string) {
+		switch phase {
+		case LinkLinked:
+			a.emitEvent(eventlog.SeverityInfo, "adapter-linked")
+		case LinkError:
+			a.emitEvent(eventlog.SeverityErr, fmt.Sprintf("adapter-link-failed: %s", errMsg))
+		case LinkIdle:
+			a.emitEvent(eventlog.SeverityInfo, "adapter-unlinked")
+		}
+	})
 	return a
 }
 
