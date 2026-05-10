@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -19,37 +21,15 @@ type CompanionSessionProvider interface {
 	Status() core.SessionStatus
 }
 
-// CompanionPlayResult is the JSON-safe result companion mutating routes
-// return. It intentionally does not mirror the URL adapter's HTML/form
-// response helpers, keeping URL redaction rules local to the adapter.
-type CompanionPlayResult struct {
-	State         core.State
-	AdapterRef    string
-	ResolvedVia   string
-	Title         string
-	SourceDisplay string
-}
-
-// CompanionHistoryEntry is the redacted, stable-id history shape exposed to
-// the browser extension. ID is opaque and stable across reorder/bump events.
-// JSON tag last_played matches the locked spec
-// (docs/superpowers/specs/2026-05-09-companion-extension-mini-remote-design.md
-// line 226).
-type CompanionHistoryEntry struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title,omitempty"`
-	URLDisplay string    `json:"url_display"`
-	LastPlayed time.Time `json:"last_played"`
-}
-
-// CompanionSessionDisplay lets adapters enrich core.SessionStatus without
-// leaking adapter internals into internal/ui.
-type CompanionSessionDisplay struct {
-	AdapterName   string
-	Title         string
-	SourceDisplay string
-	ResolvedVia   string
-}
+// Payload types are defined in internal/companion so internal/adapters/url
+// does not have to import internal/ui to satisfy the companion interfaces
+// (canonical layering is ui->adapters, never the reverse). The aliases
+// here let existing internal/ui code refer to the bare names.
+type (
+	CompanionPlayResult     = companion.CompanionPlayResult
+	CompanionHistoryEntry   = companion.CompanionHistoryEntry
+	CompanionSessionDisplay = companion.CompanionSessionDisplay
+)
 
 // CompanionURLSource is the companion surface owned by the URL adapter.
 // Step 1 uses only the read methods; mutating methods are added to this
@@ -125,7 +105,7 @@ func companionExtensionGate(next http.Handler) http.Handler {
 		}
 		setExtensionCORSHeaders(w, r)
 		if !isExtensionOrigin(r.Header.Get("Origin")) || r.Header.Get("X-Bridge-Extension") != "1" {
-			writeCompanionError(w, http.StatusForbidden, "companion extension origin and header required")
+			writeCompanionError(w, r, http.StatusForbidden, "companion extension origin and header required")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -153,7 +133,7 @@ func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeCompanionJSON(w, http.StatusOK, companionStatusResponse{
+	writeCompanionJSON(w, r, http.StatusOK, companionStatusResponse{
 		OK:         true,
 		Configured: true,
 		BridgeURL:  companionBridgeURL(r),
@@ -178,22 +158,22 @@ func (s *Server) handleCompanionPlay(w http.ResponseWriter, r *http.Request) {
 	req.URL = strings.TrimSpace(req.URL)
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
 	if req.URL == "" {
-		writeCompanionError(w, http.StatusBadRequest, "url is required")
+		writeCompanionError(w, r, http.StatusBadRequest, "url is required")
 		return
 	}
 	if req.Mode == "" {
 		req.Mode = "auto"
 	}
-	src, ok := s.companionURLRequired(w)
+	src, ok := s.companionURLRequired(w, r)
 	if !ok {
 		return
 	}
 	res, err := src.CompanionPlay(r.Context(), req.URL, req.Mode)
 	if err != nil {
-		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		writeCompanionError(w, r, companionHTTPStatus(err), err.Error())
 		return
 	}
-	writeCompanionJSON(w, http.StatusAccepted, companionStartedResponse(res))
+	writeCompanionJSON(w, r, http.StatusAccepted, companionStartedResponse(res))
 }
 
 func (s *Server) handleCompanionControl(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +184,7 @@ func (s *Server) handleCompanionControl(w http.ResponseWriter, r *http.Request) 
 	if !decodeCompanionJSON(w, r, &req) {
 		return
 	}
-	src, ok := s.companionURLRequired(w)
+	src, ok := s.companionURLRequired(w, r)
 	if !ok {
 		return
 	}
@@ -220,17 +200,17 @@ func (s *Server) handleCompanionControl(w http.ResponseWriter, r *http.Request) 
 		var res CompanionPlayResult
 		res, err = src.CompanionReplay(r.Context())
 		if err == nil {
-			writeCompanionJSON(w, http.StatusAccepted, companionStartedResponse(res))
+			writeCompanionJSON(w, r, http.StatusAccepted, companionStartedResponse(res))
 			return
 		}
 	case "seek":
 		err = src.CompanionSeek(r.Context(), req.OffsetMS)
 	default:
-		writeCompanionError(w, http.StatusBadRequest, "unsupported action")
+		writeCompanionError(w, r, http.StatusBadRequest, "unsupported action")
 		return
 	}
 	if err != nil {
-		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		writeCompanionError(w, r, companionHTTPStatus(err), err.Error())
 		return
 	}
 	state := core.StateIdle
@@ -240,7 +220,7 @@ func (s *Server) handleCompanionControl(w http.ResponseWriter, r *http.Request) 
 			state = core.StateIdle
 		}
 	}
-	writeCompanionJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
+	writeCompanionJSON(w, r, http.StatusOK, map[string]any{"ok": true, "state": state})
 }
 
 func (s *Server) handleCompanionHistoryPlay(w http.ResponseWriter, r *http.Request) {
@@ -252,19 +232,19 @@ func (s *Server) handleCompanionHistoryPlay(w http.ResponseWriter, r *http.Reque
 	}
 	req.ID = strings.TrimSpace(req.ID)
 	if req.ID == "" {
-		writeCompanionError(w, http.StatusBadRequest, "id is required")
+		writeCompanionError(w, r, http.StatusBadRequest, "id is required")
 		return
 	}
-	src, ok := s.companionURLRequired(w)
+	src, ok := s.companionURLRequired(w, r)
 	if !ok {
 		return
 	}
 	res, err := src.CompanionHistoryPlay(r.Context(), req.ID)
 	if err != nil {
-		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		writeCompanionError(w, r, companionHTTPStatus(err), err.Error())
 		return
 	}
-	writeCompanionJSON(w, http.StatusAccepted, companionStartedResponse(res))
+	writeCompanionJSON(w, r, http.StatusAccepted, companionStartedResponse(res))
 }
 
 func (s *Server) handleCompanionHistoryDelete(w http.ResponseWriter, r *http.Request) {
@@ -276,18 +256,18 @@ func (s *Server) handleCompanionHistoryDelete(w http.ResponseWriter, r *http.Req
 	}
 	req.ID = strings.TrimSpace(req.ID)
 	if req.ID == "" {
-		writeCompanionError(w, http.StatusBadRequest, "id is required")
+		writeCompanionError(w, r, http.StatusBadRequest, "id is required")
 		return
 	}
-	src, ok := s.companionURLRequired(w)
+	src, ok := s.companionURLRequired(w, r)
 	if !ok {
 		return
 	}
 	if err := src.CompanionHistoryDelete(r.Context(), req.ID); err != nil {
-		writeCompanionError(w, companionHTTPStatus(err), err.Error())
+		writeCompanionError(w, r, companionHTTPStatus(err), err.Error())
 		return
 	}
-	writeCompanionJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeCompanionJSON(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleCompanionLaunch(w http.ResponseWriter, r *http.Request) {
@@ -295,14 +275,14 @@ func (s *Server) handleCompanionLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.MisterLauncher == nil {
-		writeCompanionError(w, http.StatusInternalServerError, "mister launcher not wired")
+		writeCompanionError(w, r, http.StatusInternalServerError, "mister launcher not wired")
 		return
 	}
 	if err := s.cfg.MisterLauncher.Launch(r.Context()); err != nil {
-		writeCompanionError(w, http.StatusInternalServerError, err.Error())
+		writeCompanionError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeCompanionJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeCompanionJSON(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
 func requireCompanionJSON(w http.ResponseWriter, r *http.Request) bool {
@@ -311,12 +291,12 @@ func requireCompanionJSON(w http.ResponseWriter, r *http.Request) bool {
 		if r.ContentLength == 0 {
 			return true
 		}
-		writeCompanionError(w, http.StatusUnsupportedMediaType, "Content-Type application/json required")
+		writeCompanionError(w, r, http.StatusUnsupportedMediaType, "Content-Type application/json required")
 		return false
 	}
 	mt := strings.ToLower(strings.TrimSpace(strings.Split(ct, ";")[0]))
 	if mt != "application/json" {
-		writeCompanionError(w, http.StatusUnsupportedMediaType, "Content-Type application/json required")
+		writeCompanionError(w, r, http.StatusUnsupportedMediaType, "Content-Type application/json required")
 		return false
 	}
 	return true
@@ -329,15 +309,15 @@ func decodeCompanionJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		writeCompanionError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeCompanionError(w, r, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}
 	return true
 }
 
-func (s *Server) companionURLRequired(w http.ResponseWriter) (CompanionURLSource, bool) {
+func (s *Server) companionURLRequired(w http.ResponseWriter, r *http.Request) (CompanionURLSource, bool) {
 	if s.cfg.CompanionURL == nil {
-		writeCompanionError(w, http.StatusInternalServerError, "companion URL source not wired")
+		writeCompanionError(w, r, http.StatusInternalServerError, "companion URL source not wired")
 		return nil, false
 	}
 	return s.cfg.CompanionURL, true
@@ -506,14 +486,51 @@ func companionBridgeURL(r *http.Request) string {
 	return scheme + "://" + host
 }
 
-func writeCompanionJSON(w http.ResponseWriter, status int, payload any) {
+// writeCompanionJSON is the single chokepoint for every companion
+// response. Centralizing here means every successful or errored
+// route gets observed via slog without per-handler log calls. The
+// URL adapter has already redacted any URL-bearing error message
+// before it reaches this layer (see redactErr in
+// internal/adapters/url/controls.go), so logging err.Error() is
+// safe.
+func writeCompanionJSON(w http.ResponseWriter, r *http.Request, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+	logCompanionResult(r, status, payload)
 }
 
-func writeCompanionError(w http.ResponseWriter, status int, message string) {
-	writeCompanionJSON(w, status, companionErrorResponse{OK: false, Error: message})
+func writeCompanionError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	writeCompanionJSON(w, r, status, companionErrorResponse{OK: false, Error: message})
+}
+
+// logCompanionResult emits one structured log line per companion
+// response. The status route is polled every 2s by every open popup
+// so its 2xx responses are skipped to avoid log volume; gate
+// rejections (403s) and other errors on /status are still logged.
+// 5xx maps to WARN; everything else to INFO. The URL adapter is the
+// authoritative source of cast-attempt logs (with redacted URLs);
+// this logger only sees ui-layer outcomes.
+func logCompanionResult(r *http.Request, status int, payload any) {
+	if r == nil {
+		return
+	}
+	if r.URL.Path == "/ui/companion/status" && status < 400 {
+		return
+	}
+	level := slog.LevelInfo
+	if status >= 500 {
+		level = slog.LevelWarn
+	}
+	args := []any{
+		"route", r.URL.Path,
+		"method", r.Method,
+		"status", status,
+	}
+	if errResp, ok := payload.(companionErrorResponse); ok && !errResp.OK {
+		args = append(args, "err", errResp.Error)
+	}
+	slog.Log(r.Context(), level, "companion request", args...)
 }
 
 func companionHTTPStatus(err error) int {

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
 
 type companionHTTPError struct {
@@ -32,11 +32,11 @@ func foreignSession(st core.SessionStatus) bool {
 
 // CompanionHistory returns redacted point-in-time history snapshots for
 // the browser extension. Raw URLs never cross the internal/ui boundary.
-func (a *Adapter) CompanionHistory() []ui.CompanionHistoryEntry {
+func (a *Adapter) CompanionHistory() []companion.CompanionHistoryEntry {
 	history := a.history.List()
-	out := make([]ui.CompanionHistoryEntry, 0, len(history))
+	out := make([]companion.CompanionHistoryEntry, 0, len(history))
 	for _, e := range history {
-		out = append(out, ui.CompanionHistoryEntry{
+		out = append(out, companion.CompanionHistoryEntry{
 			ID:         e.ID,
 			Title:      e.Title,
 			URLDisplay: redactURL(e.URL),
@@ -59,12 +59,12 @@ func (a *Adapter) CompanionLastURLDisplay() string {
 // CompanionDisplay enriches URL-owned core sessions with the URL adapter's
 // title/history knowledge. Foreign adapter refs intentionally return zero so
 // internal/ui can fall back to the registry display name.
-func (a *Adapter) CompanionDisplay(adapterRef string) ui.CompanionSessionDisplay {
+func (a *Adapter) CompanionDisplay(adapterRef string) companion.CompanionSessionDisplay {
 	if !strings.HasPrefix(adapterRef, "url:") {
-		return ui.CompanionSessionDisplay{}
+		return companion.CompanionSessionDisplay{}
 	}
 	raw := a.snapshotLastURL()
-	display := ui.CompanionSessionDisplay{
+	display := companion.CompanionSessionDisplay{
 		AdapterName:   a.DisplayName(),
 		SourceDisplay: a.CompanionLastURLDisplay(),
 	}
@@ -81,12 +81,12 @@ func (a *Adapter) CompanionDisplay(adapterRef string) ui.CompanionSessionDisplay
 	return display
 }
 
-func (a *Adapter) CompanionPlay(ctx context.Context, rawURL, mode string) (ui.CompanionPlayResult, error) {
+func (a *Adapter) CompanionPlay(ctx context.Context, rawURL, mode string) (companion.CompanionPlayResult, error) {
 	ref, resolvedVia, status, err := a.castURL(ctx, rawURL, mode)
 	if err != nil {
-		return ui.CompanionPlayResult{}, companionErr(status, err)
+		return companion.CompanionPlayResult{}, companionErr(status, err)
 	}
-	return ui.CompanionPlayResult{State: core.StatePlaying, AdapterRef: ref, ResolvedVia: resolvedVia}, nil
+	return companion.CompanionPlayResult{State: core.StatePlaying, AdapterRef: ref, ResolvedVia: resolvedVia}, nil
 }
 
 func (a *Adapter) CompanionPause(ctx context.Context) error {
@@ -141,20 +141,20 @@ func (a *Adapter) CompanionStop(ctx context.Context) error {
 	return nil
 }
 
-func (a *Adapter) CompanionReplay(ctx context.Context) (ui.CompanionPlayResult, error) {
+func (a *Adapter) CompanionReplay(ctx context.Context) (companion.CompanionPlayResult, error) {
 	st := a.core.Status()
 	if foreignSession(st) {
-		return ui.CompanionPlayResult{}, companionMsg(http.StatusConflict, "active session belongs to another adapter")
+		return companion.CompanionPlayResult{}, companionMsg(http.StatusConflict, "active session belongs to another adapter")
 	}
 	lastURL := a.snapshotLastURL()
 	if lastURL == "" {
-		return ui.CompanionPlayResult{}, companionMsg(http.StatusBadRequest, "no URL to replay")
+		return companion.CompanionPlayResult{}, companionMsg(http.StatusBadRequest, "no URL to replay")
 	}
 	ref, resolvedVia, status, err := a.castURL(ctx, lastURL, "auto")
 	if err != nil {
-		return ui.CompanionPlayResult{}, companionErr(status, err)
+		return companion.CompanionPlayResult{}, companionErr(status, err)
 	}
-	return ui.CompanionPlayResult{State: core.StatePlaying, AdapterRef: ref, ResolvedVia: resolvedVia}, nil
+	return companion.CompanionPlayResult{State: core.StatePlaying, AdapterRef: ref, ResolvedVia: resolvedVia}, nil
 }
 
 // CompanionSeek seeks to an absolute offset in milliseconds, clamped to the
@@ -181,16 +181,16 @@ func (a *Adapter) CompanionSeek(ctx context.Context, offsetMs int) error {
 	return nil
 }
 
-func (a *Adapter) CompanionHistoryPlay(ctx context.Context, id string) (ui.CompanionPlayResult, error) {
+func (a *Adapter) CompanionHistoryPlay(ctx context.Context, id string) (companion.CompanionPlayResult, error) {
 	entry, ok := a.history.GetByID(id)
 	if !ok {
-		return ui.CompanionPlayResult{}, companionMsg(http.StatusNotFound, "history entry no longer exists")
+		return companion.CompanionPlayResult{}, companionMsg(http.StatusNotFound, "history entry no longer exists")
 	}
 	ref, resolvedVia, status, err := a.castURL(ctx, entry.URL, "auto")
 	if err != nil {
-		return ui.CompanionPlayResult{}, companionErr(status, err)
+		return companion.CompanionPlayResult{}, companionErr(status, err)
 	}
-	return ui.CompanionPlayResult{State: core.StatePlaying, AdapterRef: ref, ResolvedVia: resolvedVia}, nil
+	return companion.CompanionPlayResult{State: core.StatePlaying, AdapterRef: ref, ResolvedVia: resolvedVia}, nil
 }
 
 func (a *Adapter) CompanionHistoryDelete(ctx context.Context, id string) error {

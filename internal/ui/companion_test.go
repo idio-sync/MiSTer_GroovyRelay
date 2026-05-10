@@ -268,6 +268,60 @@ func TestCompanionStatusURLSessionIncludesCapabilitiesAndHistory(t *testing.T) {
 	}
 }
 
+// TestCompanionStatusURLSessionUnknownDurationDisablesSeek covers the
+// capability rule at spec line 256: can_seek is true only when duration
+// is known. Live streams (Duration == 0) must surface can_seek=false even
+// while playing or paused, so the popup hides its scrub bar instead of
+// rendering a misleading 0/0 control.
+func TestCompanionStatusURLSessionUnknownDurationDisablesSeek(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{
+		Registry: reg,
+		CompanionSession: fakeCompanionSession{status: core.SessionStatus{
+			State:      core.StatePlaying,
+			AdapterRef: "url:live",
+			Position:   30 * time.Second,
+			// Duration intentionally zero — live stream / unknown.
+		}},
+		CompanionURL: fakeCompanionURL{lastDisplay: "live.example.com/feed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/companion/status", nil)
+	req.Header.Set("Origin", "moz-extension://abc")
+	req.Header.Set("X-Bridge-Extension", "1")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	session := got["session"].(map[string]any)
+	if session["state"] != "playing" {
+		t.Fatalf("state = %v, want playing", session["state"])
+	}
+	if session["duration_ms"] != float64(0) {
+		t.Fatalf("duration_ms = %v, want 0", session["duration_ms"])
+	}
+	caps := session["capabilities"].(map[string]any)
+	if caps["can_seek"] != false {
+		t.Fatalf("can_seek = %v, want false (Duration == 0)", caps["can_seek"])
+	}
+	if caps["can_pause"] != true || caps["can_stop"] != true {
+		t.Fatalf("non-seek caps lost when Duration == 0: %#v", caps)
+	}
+}
+
 func TestCompanionStatusForeignSessionReadOnly(t *testing.T) {
 	reg := adapters.NewRegistry()
 	if err := reg.Register(&uiStubAdapter{name: "plex", displayName: "Plex", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {

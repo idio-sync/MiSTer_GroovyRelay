@@ -191,6 +191,37 @@ describe("initPopup companion remote", () => {
     clearInterval(state.pollTimer);
   });
 
+  it("pauses polling while a command is in flight and resumes after", async () => {
+    // Spec testing strategy line 564: "polling pauses during commands and
+    // refreshes after." popup.js:36-39 implements that by skipping the
+    // setInterval tick while state.commanding is true. This test pins the
+    // contract by toggling the flag directly (mirroring what runCommand
+    // does) and asserting refreshes only happen when the flag is false.
+    vi.useFakeTimers();
+    const getStatus = vi.spyOn(bridge, "getStatus").mockResolvedValue(playingStatus());
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const state = await initPopup(document);
+    const initialCalls = getStatus.mock.calls.length;
+
+    // Simulate an in-flight command. runCommand sets this flag for the
+    // duration of its bridge call (popup.js:99-114).
+    state.commanding = true;
+
+    // Advance through three full poll intervals (2 s each, see POLL_MS in
+    // popup.js). The setInterval callback fires but the early-return at
+    // popup.js:37 skips state.refresh().
+    await vi.advanceTimersByTimeAsync(2000 * 3 + 100);
+    expect(getStatus.mock.calls.length).toBe(initialCalls);
+
+    // Command finishes; the next interval tick must refresh once.
+    state.commanding = false;
+    await vi.advanceTimersByTimeAsync(2000 + 100);
+    expect(getStatus.mock.calls.length).toBe(initialCalls + 1);
+
+    clearInterval(state.pollTimer);
+  });
+
   it("plays and deletes history rows by opaque id", async () => {
     const historyPlay = vi.spyOn(bridge, "historyPlay").mockResolvedValue({ ok: true, state: "playing" });
     const historyDelete = vi.spyOn(bridge, "historyDelete").mockResolvedValue({ ok: true });
