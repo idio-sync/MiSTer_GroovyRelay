@@ -1,7 +1,7 @@
 # Torrent Adapter Design
 
 **Date:** 2026-05-10  
-**Status:** Design approved; implementation plan not started  
+**Status:** Review fixes applied; implementation plan not started
 **Scope:** Add a standalone torrent adapter that can stream video from magnet links and uploaded `.torrent` files through the existing GroovyRelay data plane.
 
 ## Problem
@@ -82,6 +82,12 @@ internal/adapters/torrent/
 
 The adapter mounts UI routes under `/ui/adapter/torrent/*` and a tokenized media route under an adapter-owned route such as `/torrent/session/{token}/media`. FFmpeg receives a loopback URL to that media route. The adapter route must reject non-loopback requests, require a high-entropy session token, and stop serving as soon as the session ends.
 
+Route integration uses the existing adapter extension points:
+
+- UI endpoints implement `adapters.RouteProvider` through `UIRoutes()` and mount below `/ui/adapter/torrent/*`.
+- Media serving implements `adapters.PublicRouteProvider` through `MountPublicRoutes(*http.ServeMux)` because `/torrent/session/{token}/media` lives outside `/ui/*` and must not pass through the settings UI route prefix.
+- Public routes must use a torrent-specific prefix disjoint from Plex `/resources` and `/player/*`, DLNA routes, and all `/ui/*` routes.
+
 The core boundary stays unchanged:
 
 ```go
@@ -92,6 +98,13 @@ core.SessionRequest{
     DirectPlay:   true,
     Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
     Title:        selectedDisplayName,
+    MediaInputPolicy: core.MediaInputPolicy{
+        ProtocolWhitelist: []string{"http", "tcp"},
+        DisableRedirects:  true,
+        DisableReconnect:  true,
+        RWTimeout:         30 * time.Second,
+        BlockedHeaders:    []string{"Cookie", "Authorization", "Proxy-Authorization"},
+    },
     OnStop:       sessionCleanup,
 }
 ```
@@ -109,7 +122,7 @@ keep_completed = false            # session-only by default
 max_cache_bytes = 21474836480     # 20 GiB
 metadata_timeout_seconds = 60
 startup_buffer_seconds = 10
-max_upload_rate_kbps = 0          # 0 = library/default unlimited
+max_upload_rate_kbps = 512        # 0 = explicit library/default unlimited
 max_download_rate_kbps = 0        # 0 = library/default unlimited
 listen_port = 0                   # 0 = library/default random
 ```
@@ -129,13 +142,16 @@ Apply scopes:
 | `max_download_rate_kbps` | `ScopeRestartCast` | Changes torrent client transfer behavior. |
 | `listen_port` | `ScopeRestartCast` | Changes torrent client network listener. |
 
+`download_dir` is treated as a parent location, not a deletion root. When empty, the adapter stores data under `<data_dir>/torrent`. When set, the adapter creates an owned child directory such as `<download_dir>/groovyrelay-torrent` and stores all session/cache data inside that child.
+
 Validation:
 
 - `download_dir` may be empty or a valid filesystem path accepted by existing config path validation helpers.
+- `download_dir` must not be a filesystem root, home directory, or other dangerous broad root.
 - `max_cache_bytes` must be at least 1 GiB and at most 1 TiB.
 - `metadata_timeout_seconds` must be 5-600.
 - `startup_buffer_seconds` must be 0-120.
-- transfer limits must be 0 or positive.
+- transfer limits must be 0 or positive. Upload defaults to a conservative cap; `0` is an explicit operator opt-in to the library/default unlimited behavior.
 - `listen_port` must be 0 or 1-65535.
 
 ## UI And HTTP Surface
@@ -169,12 +185,20 @@ The media route is not a user-facing route. It must:
 - return `404` after session cleanup;
 - avoid exposing torrent paths on disk.
 
+Upload handling:
+
+- v1 accepts one multipart file field named `torrent_file`.
+- The request body is capped with `http.MaxBytesReader` before multipart parsing.
+- The v1 upload limit is 4 MiB (`4194304` bytes), fixed rather than configurable.
+- Multipart memory use is bounded; implementations should spill through the standard multipart path instead of reading unbounded bodies.
+- Over-limit uploads return a validation error before torrent parsing.
+
 ## Playback Data Flow
 
 1. User enables the adapter and acknowledges BitTorrent traffic.
 2. User submits a magnet link or uploads a `.torrent`.
 3. Adapter validates the input without logging sensitive magnet query details.
-4. Adapter creates or reuses its torrent client rooted at `<data_dir>/torrent` or `download_dir`.
+4. Adapter creates or reuses its torrent client rooted at the adapter-owned storage root.
 5. Adapter adds the torrent and waits for metadata with `metadata_timeout_seconds`.
 6. Adapter enumerates files and chooses the largest supported video file.
 7. Adapter deprioritizes unwanted files where the library API supports it.
@@ -213,18 +237,25 @@ Archives, sample clips, disc images, subtitle files, and metadata files are not 
 
 Default behavior is session-only:
 
-- create a per-session directory;
+- create a per-session directory under the adapter-owned storage root;
+- write an adapter marker file, such as `.groovyrelay-torrent-session.json`, before any directory becomes eligible for cleanup;
 - remove it when playback ends or session start fails;
 - remove any inactive session dirs at adapter start.
 
 When `keep_completed=true`:
 
-- data may remain under `download_dir`;
+- data may remain under the adapter-owned storage root;
 - inactive cache pruning enforces `max_cache_bytes`;
 - active session data is never pruned;
-- pruning deletes oldest inactive entries first using filesystem mtime or adapter-maintained metadata.
+- pruning deletes oldest inactive entries first using adapter-maintained metadata or filesystem mtime.
 
-The adapter should never delete outside its configured torrent data root.
+Cleanup and pruning rules:
+
+- The adapter must never delete outside the adapter-owned storage root.
+- The adapter must never delete the configured `download_dir` itself.
+- The adapter must never delete a directory or file lacking the adapter marker.
+- Unsafe roots are rejected during validation before any cleanup logic can run.
+- Path traversal-like torrent file paths are treated as display names only and never as paths to delete.
 
 ## Safety And Privacy
 
@@ -232,10 +263,12 @@ The adapter should never delete outside its configured torrent data root.
 - v1 accepts only local user-provided magnet text and uploaded `.torrent` bytes.
 - v1 does not fetch remote `.torrent` URLs, avoiding another SSRF validation surface.
 - Logs use torrent name, selected file name, and info hash when available; full magnet URIs are redacted.
-- Uploaded `.torrent` bodies are size-limited before parsing.
+- Uploaded `.torrent` bodies are capped at 4 MiB before parsing.
 - Media serving requires loopback remote address plus a high-entropy session token.
+- Core playback uses a restrictive `MediaInputPolicy` for the local route: `http,tcp` only, redirects/reconnect disabled, bounded read/write timeout, and no sensitive headers.
 - The adapter does not expose a remote torrent-control API.
 - On adapter disable, stop, preempt, or bridge shutdown, active torrent resources are closed promptly.
+- Session-only mode closes the torrent on stop/preempt/error, which also stops any ongoing upload/seeding for that session. Persistent cache does not imply persistent seeding after playback stops.
 
 ## Error Handling
 
@@ -249,6 +282,21 @@ User-visible errors:
 - No playable file: "Torrent contains no supported video files."
 - Media route expired: "Torrent session is no longer active."
 - Core start failure: "Torrent playback could not start."
+
+HTTP status mapping:
+
+| Case | Status |
+|---|---:|
+| adapter disabled | `409 Conflict` |
+| traffic not acknowledged | `403 Forbidden` |
+| invalid magnet or malformed `.torrent` | `400 Bad Request` |
+| upload over 4 MiB | `413 Payload Too Large` |
+| metadata timeout | `504 Gateway Timeout` |
+| no playable file | `422 Unprocessable Entity` |
+| active session conflict/preempt refusal | `409 Conflict` |
+| expired or unknown media token | `404 Not Found` |
+| non-loopback media request | `403 Forbidden` |
+| core start failure | `500 Internal Server Error` |
 
 Operational handling:
 
@@ -267,6 +315,8 @@ Unit tests:
 - config defaults, decode, validation, field definitions, apply scopes;
 - magnet and `.torrent` route validation;
 - disabled and acknowledgement gate behavior;
+- dangerous `download_dir` rejection;
+- adapter-owned subdirectory derivation for custom `download_dir`;
 - playable extension detection;
 - largest-video selection and deterministic ties;
 - no-playable-file error;
@@ -274,7 +324,13 @@ Unit tests:
 - loopback-only media route enforcement;
 - HTTP range request handling;
 - cleanup behavior for session-only and persistent cache modes;
+- cleanup never deletes unmarked files or directories;
 - cache pruning bounded by `max_cache_bytes`;
+- oversized upload rejection before parsing;
+- malformed metainfo handling;
+- huge file-list metainfo handling;
+- duplicate and path-traversal-like torrent display paths;
+- error-to-HTTP-status mapping;
 - safe magnet redaction in errors/log helpers.
 
 Session tests with fake torrent client:
