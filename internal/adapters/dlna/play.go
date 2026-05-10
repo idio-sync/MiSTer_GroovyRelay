@@ -1,6 +1,7 @@
 package dlna
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -172,7 +173,15 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 	// Phase 3 alongside Pause.
 	if state == transportStatePausedPlayback && owned != "" && st.AdapterRef == owned {
 		if err := a.core.Play(); err != nil {
-			a.setLastError("Play resume failed: " + err.Error())
+			// Don't echo err.Error() into lastError — a wrapped
+			// ffmpeg/dataplane error could surface container paths or
+			// internal hostnames into a SOAP GetTransportInfo response
+			// (TransportStatus=ERROR_OCCURRED) visible to any DLNA
+			// control point. Match the redaction discipline used at
+			// startFreshSession's StartSession failure path. Operators
+			// have bridge logs (slog below) for the underlying cause.
+			slog.Default().Warn("dlna: core.Play resume failed", "err", err, "ref", owned)
+			a.setLastError("Play resume failed (see bridge logs)")
 			writeSOAPFault(w, upnpErrActionFailed)
 			return
 		}
@@ -389,7 +398,15 @@ func (a *Adapter) handleStop(w http.ResponseWriter, args stopArgs) {
 	}
 
 	if err := a.core.Stop(); err != nil {
-		a.setLastError("Stop failed: " + err.Error())
+		// Don't echo err.Error() into lastError — a wrapped
+		// ffmpeg/dataplane shutdown error could surface container paths
+		// or internal hostnames into a SOAP GetTransportInfo response
+		// (TransportStatus=ERROR_OCCURRED) visible to any DLNA control
+		// point. Match the redaction discipline used at
+		// startFreshSession's StartSession failure path. Operators have
+		// bridge logs (slog below) for the underlying cause.
+		slog.Default().Warn("dlna: core.Stop failed", "err", err, "ref", owned)
+		a.setLastError("Stop failed (see bridge logs)")
 		writeSOAPFault(w, upnpErrActionFailed)
 		return
 	}

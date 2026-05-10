@@ -626,6 +626,96 @@ func TestStop_CoreStopFailure_Returns501(t *testing.T) {
 	if a.lastError == "" {
 		t.Error("lastError empty after Stop failure; want descriptive message")
 	}
+	// Redaction discipline: the wrapped err.Error() must NOT leak into
+	// lastError. A wrapped ffmpeg/dataplane error could surface
+	// container paths or internal hostnames into a SOAP
+	// GetTransportInfo response.
+	if strings.Contains(a.lastError, "simulated stop failure") {
+		t.Errorf("lastError = %q; raw err.Error() leaked into operator-visible field",
+			a.lastError)
+	}
+}
+
+// TestStop_LastError_DoesNotLeakRawError pins the redaction discipline:
+// even a wrapped error that includes a path-like substring (the kind of
+// thing an ffmpeg/dataplane teardown error tends to carry) must not be
+// echoed verbatim into the operator-visible lastError. lastError is
+// round-tripped to DLNA control points via GetTransportInfo's
+// TransportStatus=ERROR_OCCURRED so any leak is observable to anyone on
+// the LAN.
+func TestStop_LastError_DoesNotLeakRawError(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200", rr.Code)
+	}
+	a.mu.Lock()
+	ref := a.currentRef
+	a.mu.Unlock()
+
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: ref}
+	}
+	// A realistic worst-case error: wrapped ffmpeg stderr that echoes a
+	// container-internal path. If lastError contained err.Error() this
+	// substring would be visible to any DLNA control point.
+	leakPayload := "/var/lib/groovy/socket: connection refused on 10.0.0.42:32100"
+	fake.stopErr = errors.New("dataplane shutdown: " + leakPayload)
+
+	rr2 := avtSendStop(t, a, "<InstanceID>0</InstanceID>")
+	if rr2.Code != 500 {
+		t.Fatalf("status = %d, want 500", rr2.Code)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if strings.Contains(a.lastError, leakPayload) {
+		t.Errorf("lastError = %q; leaked path/host fragment from wrapped error",
+			a.lastError)
+	}
+	if !strings.HasPrefix(a.lastError, "Stop failed") {
+		t.Errorf("lastError = %q; want it to start with the generic %q prefix",
+			a.lastError, "Stop failed")
+	}
+}
+
+// TestPlay_Resume_CoreFailure_RedactsLastError mirrors the Stop redaction
+// guarantee for the PAUSED_PLAYBACK→PLAYING resume branch in handlePlay.
+// Same leak vector (lastError → GetTransportInfo), same discipline.
+func TestPlay_Resume_CoreFailure_RedactsLastError(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+
+	ref := "dlna:abc123"
+	a.mu.Lock()
+	a.currentRef = ref
+	a.transportState = transportStatePausedPlayback
+	a.mu.Unlock()
+
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: ref}
+	}
+	leakPayload := "/var/lib/groovy/socket: connection refused on 10.0.0.42:32100"
+	fake.playErr = errors.New("dataplane resume: " + leakPayload)
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>501</errorCode>") {
+		t.Errorf("body missing errorCode 501: %s", rr.Body.String())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lastError == "" {
+		t.Error("lastError empty after Play resume failure; want descriptive message")
+	}
+	if strings.Contains(a.lastError, leakPayload) {
+		t.Errorf("lastError = %q; leaked path/host fragment from wrapped error",
+			a.lastError)
+	}
+	if !strings.HasPrefix(a.lastError, "Play resume failed") {
+		t.Errorf("lastError = %q; want it to start with %q prefix",
+			a.lastError, "Play resume failed")
+	}
 }
 
 // ---- autoplay ----
