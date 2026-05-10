@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -78,6 +81,35 @@ func TestManualRefreshKeepsLastGoodOnFailure(t *testing.T) {
 	}
 }
 
+func TestRefreshIntervalBacksOffRepeatedFailuresWithJitter(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.mu.Lock()
+	a.cfg.ManifestRefreshHours = 1
+	a.rng = rand.New(rand.NewSource(1))
+	a.mu.Unlock()
+
+	first := a.refreshInterval(errors.New("network down"), 1)
+	third := a.refreshInterval(errors.New("network down"), 3)
+	capped := a.refreshInterval(errors.New("network down"), 20)
+	success := a.refreshInterval(nil, 0)
+
+	if first < 45*time.Second || first > 75*time.Second {
+		t.Fatalf("first failure interval = %s, want about one minute with jitter", first)
+	}
+	if third < 3*time.Minute || third > 5*time.Minute {
+		t.Fatalf("third failure interval = %s, want about four minutes with jitter", third)
+	}
+	if third <= first {
+		t.Fatalf("third failure interval = %s, want greater than first %s", third, first)
+	}
+	if capped > time.Hour {
+		t.Fatalf("capped failure interval = %s, want no more than configured interval", capped)
+	}
+	if success != time.Hour {
+		t.Fatalf("success interval = %s, want configured interval", success)
+	}
+}
+
 func TestStartLoadsCachedRemoteManifestAndCatalogWithoutNetwork(t *testing.T) {
 	useManifestValidationResolver(t, blockingResolver{})
 
@@ -88,7 +120,7 @@ func TestStartLoadsCachedRemoteManifestAndCatalogWithoutNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}
-	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{SourceURL: "https://cached.example/providers.json"}); err != nil {
+	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{SourceURL: DefaultConfig().ManifestURL}); err != nil {
 		t.Fatalf("write manifest cache: %v", err)
 	}
 	if err := writeCacheFile(cacheDir, "catalog-cached-provider", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{SourceURL: remoteDef.PlaylistURL}); err != nil {
@@ -124,6 +156,281 @@ func TestStartLoadsCachedRemoteManifestAndCatalogWithoutNetwork(t *testing.T) {
 	}
 }
 
+func TestStartIgnoresCachedRemoteManifestForDifferentSourceURL(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "streams")
+	remoteDef := cachedProviderDefinitionForTest()
+	manifestBody, err := json.Marshal(Manifest{Version: 1, Providers: []ProviderDefinition{remoteDef}})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{SourceURL: "https://old.example/providers.json"}); err != nil {
+		t.Fatalf("write manifest cache: %v", err)
+	}
+	if err := writeCacheFile(cacheDir, "catalog-cached-provider", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{SourceURL: remoteDef.PlaylistURL}); err != nil {
+		t.Fatalf("write catalog cache: %v", err)
+	}
+
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dataDir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg.ManifestURL = "https://new.example/providers.json"
+	a.cfg.AllowRemoteManifest = false
+	a.cfg.AllowCachedRemoteManifest = true
+	a.mu.Unlock()
+
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	if cat := a.catalogSnapshotForTest("cached-provider"); cat.ProviderID != "" {
+		t.Fatalf("cached provider loaded from mismatched manifest source: %+v", cat)
+	}
+}
+
+func TestStartIgnoresCachedCatalogForDifferentSourceURL(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "streams")
+	remoteDef := cachedProviderDefinitionForTest()
+	manifestURL := "https://cached.example/providers.json"
+	manifestBody, err := json.Marshal(Manifest{Version: 1, Providers: []ProviderDefinition{remoteDef}})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{SourceURL: manifestURL}); err != nil {
+		t.Fatalf("write manifest cache: %v", err)
+	}
+	if err := writeCacheFile(cacheDir, "catalog-cached-provider", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{SourceURL: "https://old.example/playlist.json"}); err != nil {
+		t.Fatalf("write catalog cache: %v", err)
+	}
+
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dataDir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg.ManifestURL = manifestURL
+	a.cfg.AllowRemoteManifest = false
+	a.cfg.AllowCachedRemoteManifest = true
+	a.mu.Unlock()
+
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	if cat := a.catalogSnapshotForTest("cached-provider"); cat.ProviderID != "" {
+		t.Fatalf("cached catalog loaded from mismatched playlist source: %+v", cat)
+	}
+}
+
+func TestFetchManifestDefaultUsesCacheOnNotModified(t *testing.T) {
+	useManifestValidationResolver(t, staticResolver{
+		"cached.example": []string{"93.184.216.34"},
+	})
+
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "streams")
+	remoteDef := cachedProviderDefinitionForTest()
+	manifestBody, err := json.Marshal(Manifest{Version: 1, Providers: []ProviderDefinition{remoteDef}})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	const etag = `"manifest-v1"`
+	const lastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get("If-None-Match"); got != etag {
+			t.Fatalf("If-None-Match = %q, want %q", got, etag)
+		}
+		if got := req.Header.Get("If-Modified-Since"); got != lastModified {
+			t.Fatalf("If-Modified-Since = %q", got)
+		}
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Last-Modified", lastModified)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(server.Close)
+	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{
+		ETag:         etag,
+		LastModified: lastModified,
+		SourceURL:    server.URL,
+	}); err != nil {
+		t.Fatalf("write manifest cache: %v", err)
+	}
+
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dataDir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg.ManifestURL = server.URL
+	a.cfg.AllowLocalManifestURLs = true
+	a.mu.Unlock()
+
+	manifest, meta, err := a.fetchManifestDefault(t.Context())
+	if err != nil {
+		t.Fatalf("fetchManifestDefault: %v", err)
+	}
+	if len(manifest.Providers) != 1 || manifest.Providers[0].ID != "cached-provider" {
+		t.Fatalf("manifest providers = %+v", manifest.Providers)
+	}
+	if meta.ETag != etag || meta.LastModified != lastModified {
+		t.Fatalf("metadata = %+v", meta)
+	}
+}
+
+func TestFetchManifestDefaultIgnoresCachedValidatorsForDifferentSourceURL(t *testing.T) {
+	useManifestValidationResolver(t, staticResolver{
+		"cached.example": []string{"93.184.216.34"},
+	})
+
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "streams")
+	oldManifestBody, err := json.Marshal(Manifest{Version: 1, Providers: []ProviderDefinition{cachedProviderDefinitionForTest()}})
+	if err != nil {
+		t.Fatalf("marshal old manifest: %v", err)
+	}
+	if err := writeCacheFile(cacheDir, "manifest", oldManifestBody, CacheMetadata{
+		ETag:         `"old-manifest"`,
+		LastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+		SourceURL:    "https://old.example/providers.json",
+	}); err != nil {
+		t.Fatalf("write manifest cache: %v", err)
+	}
+
+	seenHeaders := make(chan http.Header, 1)
+	newManifestBody, err := json.Marshal(Manifest{Version: 1, Providers: []ProviderDefinition{cachedProviderDefinitionForTest()}})
+	if err != nil {
+		t.Fatalf("marshal new manifest: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seenHeaders <- req.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(newManifestBody)
+	}))
+	t.Cleanup(server.Close)
+
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dataDir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg.ManifestURL = server.URL
+	a.cfg.AllowLocalManifestURLs = true
+	a.mu.Unlock()
+
+	if _, _, err := a.fetchManifestDefault(t.Context()); err != nil {
+		t.Fatalf("fetchManifestDefault: %v", err)
+	}
+	headers := <-seenHeaders
+	if got := headers.Get("If-None-Match"); got != "" {
+		t.Fatalf("If-None-Match = %q, want empty for different cache source", got)
+	}
+	if got := headers.Get("If-Modified-Since"); got != "" {
+		t.Fatalf("If-Modified-Since = %q, want empty for different cache source", got)
+	}
+}
+
+func TestRefreshUsesCachedCatalogOnNotModified(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "streams")
+	const etag = `"catalog-v1"`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get("If-None-Match"); got != etag {
+			t.Fatalf("If-None-Match = %q, want %q", got, etag)
+		}
+		w.Header().Set("ETag", etag)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(server.Close)
+	if err := writeCacheFile(cacheDir, "catalog-cached-provider", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{
+		ETag:      etag,
+		SourceURL: server.URL,
+	}); err != nil {
+		t.Fatalf("write catalog cache: %v", err)
+	}
+
+	remoteDef := cachedProviderDefinitionForTest()
+	remoteDef.PlaylistURL = server.URL
+	remoteDef.BaseURL = server.URL
+
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dataDir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = true
+	a.cfg.AllowLocalManifestURLs = true
+	a.cfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+	a.cfg.Providers["cartoon-rewind"] = ProviderConfig{Disabled: true}
+	a.mu.Unlock()
+	a.fetchManifest = func(context.Context) (Manifest, CacheMetadata, error) {
+		return Manifest{Version: 1, Providers: []ProviderDefinition{remoteDef}}, CacheMetadata{FetchedAt: time.Now().UTC()}, nil
+	}
+
+	status := a.RefreshNow(t.Context(), "")
+	if status.Err != nil {
+		t.Fatalf("RefreshNow: %v", status.Err)
+	}
+	cat := a.catalogSnapshotForTest("cached-provider")
+	if cat.ProviderID != "cached-provider" || len(cat.Channels) != 1 || len(cat.Channels[0].Items) != 1 {
+		t.Fatalf("cached catalog not loaded: %+v", cat)
+	}
+}
+
+func TestRefreshIgnoresCatalogCacheValidatorsForDifferentSourceURL(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "streams")
+	if err := writeCacheFile(cacheDir, "catalog-cached-provider", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{
+		ETag:      `"old-catalog"`,
+		SourceURL: "https://old.example/playlist.json",
+	}); err != nil {
+		t.Fatalf("write catalog cache: %v", err)
+	}
+
+	seenHeaders := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seenHeaders <- req.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"metal":["9bZkp7q19f0"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	remoteDef := cachedProviderDefinitionForTest()
+	remoteDef.PlaylistURL = server.URL
+	remoteDef.BaseURL = server.URL
+
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dataDir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = true
+	a.cfg.AllowLocalManifestURLs = true
+	a.cfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+	a.cfg.Providers["cartoon-rewind"] = ProviderConfig{Disabled: true}
+	a.mu.Unlock()
+	a.fetchManifest = func(context.Context) (Manifest, CacheMetadata, error) {
+		return Manifest{Version: 1, Providers: []ProviderDefinition{remoteDef}}, CacheMetadata{FetchedAt: time.Now().UTC()}, nil
+	}
+
+	status := a.RefreshNow(t.Context(), "")
+	if status.Err != nil {
+		t.Fatalf("RefreshNow: %v", status.Err)
+	}
+	headers := <-seenHeaders
+	if got := headers.Get("If-None-Match"); got != "" {
+		t.Fatalf("If-None-Match = %q, want empty for different cache source", got)
+	}
+	cat := a.catalogSnapshotForTest("cached-provider")
+	if got := cat.Channel("metal").Items[0].SourceID; got != "9bZkp7q19f0" {
+		t.Fatalf("catalog item = %q, want freshly fetched body", got)
+	}
+}
+
 func TestApplyConfigLoadsCachedOverlayWhenEnabled(t *testing.T) {
 	useManifestValidationResolver(t, blockingResolver{})
 
@@ -134,7 +441,7 @@ func TestApplyConfigLoadsCachedOverlayWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}
-	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{SourceURL: "https://cached.example/providers.json"}); err != nil {
+	if err := writeCacheFile(cacheDir, "manifest", manifestBody, CacheMetadata{SourceURL: DefaultConfig().ManifestURL}); err != nil {
 		t.Fatalf("write manifest cache: %v", err)
 	}
 	if err := writeCacheFile(cacheDir, "catalog-cached-provider", []byte(`{"metal":["dQw4w9WgXcQ"]}`), CacheMetadata{SourceURL: remoteDef.PlaylistURL}); err != nil {

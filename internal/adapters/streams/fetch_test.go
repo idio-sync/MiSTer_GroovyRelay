@@ -194,6 +194,35 @@ func TestFetchRejectsResponseOverMaxBytes(t *testing.T) {
 	}
 }
 
+func TestFetchConditionalNotModified(t *testing.T) {
+	dialer, transport := newPinnedFetchServer(t, func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get("If-None-Match"); got != `"abc"` {
+			t.Fatalf("If-None-Match = %q, want %q", got, `"abc"`)
+		}
+		if got := req.Header.Get("If-Modified-Since"); got != "Wed, 21 Oct 2015 07:28:00 GMT" {
+			t.Fatalf("If-Modified-Since = %q", got)
+		}
+		w.Header().Set("ETag", `"abc"`)
+		w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+		w.WriteHeader(http.StatusNotModified)
+	})
+	f := secureFetcher{
+		resolver:    staticResolver{"media.example": []string{"93.184.216.34"}},
+		transport:   transport,
+		dialContext: dialer.DialContext,
+	}
+	resp, err := f.FetchConditional(t.Context(), "https://media.example/catalog.json", fetchLimits{MaxBytes: 1024}, fetchCondition{
+		ETag:         `"abc"`,
+		LastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+	})
+	if err != nil {
+		t.Fatalf("FetchConditional: %v", err)
+	}
+	if !resp.NotModified || len(resp.Body) != 0 || resp.ETag != `"abc"` {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
 type staticResolver map[string][]string
 
 func (r staticResolver) LookupHost(ctx context.Context, host string) ([]string, error) {

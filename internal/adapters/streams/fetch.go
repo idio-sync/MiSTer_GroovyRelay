@@ -65,6 +65,18 @@ type secureFetcher struct {
 	dialContext func(context.Context, string, string) (net.Conn, error)
 }
 
+type fetchCondition struct {
+	ETag         string
+	LastModified string
+}
+
+type fetchResponse struct {
+	Body         []byte
+	ETag         string
+	LastModified string
+	NotModified  bool
+}
+
 type validatedFetchTarget struct {
 	url        *url.URL
 	hostname   string
@@ -73,34 +85,42 @@ type validatedFetchTarget struct {
 }
 
 func (f secureFetcher) Fetch(ctx context.Context, rawURL string, limits fetchLimits) ([]byte, error) {
+	resp, err := f.FetchConditional(ctx, rawURL, limits, fetchCondition{})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+func (f secureFetcher) FetchConditional(ctx context.Context, rawURL string, limits fetchLimits, condition fetchCondition) (fetchResponse, error) {
 	if limits.MaxBytes <= 0 {
-		return nil, fmt.Errorf("max bytes must be positive")
+		return fetchResponse{}, fmt.Errorf("max bytes must be positive")
 	}
 
 	current, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		return fetchResponse{}, err
 	}
 	var previousScheme string
 	for redirects := 0; ; {
 		target, err := f.validateTarget(ctx, current, previousScheme, limits)
 		if err != nil {
-			return nil, err
+			return fetchResponse{}, err
 		}
 
-		resp, err := f.roundTrip(ctx, target)
+		resp, err := f.roundTrip(ctx, target, condition)
 		if err != nil {
-			return nil, err
+			return fetchResponse{}, err
 		}
 		if isRedirectStatus(resp.StatusCode) {
 			location := resp.Header.Get("Location")
 			_ = resp.Body.Close()
 			if redirects >= maxFetchRedirects {
-				return nil, fmt.Errorf("too many redirects")
+				return fetchResponse{}, fmt.Errorf("too many redirects")
 			}
 			next, err := current.Parse(location)
 			if err != nil {
-				return nil, err
+				return fetchResponse{}, err
 			}
 			previousScheme = current.Scheme
 			current = next
@@ -109,12 +129,24 @@ func (f secureFetcher) Fetch(ctx context.Context, rawURL string, limits fetchLim
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusNotModified {
-			return nil, nil
+			return fetchResponse{
+				ETag:         resp.Header.Get("ETag"),
+				LastModified: resp.Header.Get("Last-Modified"),
+				NotModified:  true,
+			}, nil
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+			return fetchResponse{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
 		}
-		return readCappedBody(resp.Body, limits.MaxBytes)
+		body, err := readCappedBody(resp.Body, limits.MaxBytes)
+		if err != nil {
+			return fetchResponse{}, err
+		}
+		return fetchResponse{
+			Body:         body,
+			ETag:         resp.Header.Get("ETag"),
+			LastModified: resp.Header.Get("Last-Modified"),
+		}, nil
 	}
 }
 
@@ -195,12 +227,18 @@ func resolveValidatedIP(ctx context.Context, resolver hostResolver, hostname str
 	return netip.Addr{}, fmt.Errorf("host %q did not resolve to an allowed public IP", hostname)
 }
 
-func (f secureFetcher) roundTrip(ctx context.Context, target validatedFetchTarget) (*http.Response, error) {
+func (f secureFetcher) roundTrip(ctx context.Context, target validatedFetchTarget, condition fetchCondition) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Host = target.url.Host
+	if condition.ETag != "" {
+		req.Header.Set("If-None-Match", condition.ETag)
+	}
+	if condition.LastModified != "" {
+		req.Header.Set("If-Modified-Since", condition.LastModified)
+	}
 
 	rt, cleanup := f.roundTripper(target)
 	if cleanup != nil {

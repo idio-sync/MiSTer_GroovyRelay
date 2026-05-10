@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,82 @@ func TestYouTubeChannelJSONRejectsNullPlaylistMap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "playlist JSON must be an object") {
 		t.Fatalf("error = %q, want clear null object error", err)
+	}
+}
+
+func TestYouTubeChannelJSONRejectsTooManyCatalogChannels(t *testing.T) {
+	var raw strings.Builder
+	raw.WriteByte('{')
+	for i := 0; i <= maxManifestChannels; i++ {
+		if i > 0 {
+			raw.WriteByte(',')
+		}
+		fmt.Fprintf(&raw, "%q:[\"dQw4w9WgXcQ\"]", fmt.Sprintf("chan-%d", i))
+	}
+	raw.WriteByte('}')
+
+	_, err := buildYouTubeChannelCatalog(bundledMTVDefinition(), []byte(raw.String()), DefaultConfig())
+	if err == nil {
+		t.Fatal("oversized channel catalog accepted")
+	}
+	if !strings.Contains(err.Error(), "channels") {
+		t.Fatalf("error = %q, want channel bound error", err)
+	}
+}
+
+func TestYouTubeChannelJSONRejectsTooManyCatalogItems(t *testing.T) {
+	cfg := DefaultConfig()
+	channelCount := maxCatalogItems/cfg.MaxItemsPerChannel + 1
+
+	var raw strings.Builder
+	raw.WriteByte('{')
+	for channel := 0; channel < channelCount; channel++ {
+		if channel > 0 {
+			raw.WriteByte(',')
+		}
+		fmt.Fprintf(&raw, "%q:[", fmt.Sprintf("chan-%d", channel))
+		for item := 0; item < cfg.MaxItemsPerChannel; item++ {
+			if item > 0 {
+				raw.WriteByte(',')
+			}
+			raw.WriteString(`"dQw4w9WgXcQ"`)
+		}
+		raw.WriteByte(']')
+	}
+	raw.WriteByte('}')
+
+	_, err := buildYouTubeChannelCatalog(bundledMTVDefinition(), []byte(raw.String()), cfg)
+	if err == nil {
+		t.Fatal("oversized item catalog accepted")
+	}
+	if !strings.Contains(err.Error(), "items") {
+		t.Fatalf("error = %q, want item bound error", err)
+	}
+}
+
+func TestYouTubeChannelJSONAllowsTotalCatalogItemsAtLimit(t *testing.T) {
+	cfg := DefaultConfig()
+	channelCount := maxCatalogItems / cfg.MaxItemsPerChannel
+
+	var raw strings.Builder
+	raw.WriteByte('{')
+	for channel := 0; channel < channelCount; channel++ {
+		if channel > 0 {
+			raw.WriteByte(',')
+		}
+		fmt.Fprintf(&raw, "%q:[", fmt.Sprintf("chan-%d", channel))
+		for item := 0; item < cfg.MaxItemsPerChannel; item++ {
+			if item > 0 {
+				raw.WriteByte(',')
+			}
+			raw.WriteString(`"dQw4w9WgXcQ"`)
+		}
+		raw.WriteByte(']')
+	}
+	raw.WriteByte('}')
+
+	if _, err := buildYouTubeChannelCatalog(bundledMTVDefinition(), []byte(raw.String()), cfg); err != nil {
+		t.Fatalf("limit-sized catalog rejected: %v", err)
 	}
 }
 

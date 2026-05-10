@@ -32,6 +32,7 @@ func (a *Adapter) RefreshNow(ctx context.Context, providerID string) RefreshStat
 
 func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 	defer close(done)
+	failures := 0
 	for {
 		status := RefreshStatus{}
 		if a.refreshOnce != nil {
@@ -40,7 +41,12 @@ func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 		if ctx.Err() != nil {
 			return
 		}
-		interval := a.refreshInterval(status.Err)
+		if status.Err != nil {
+			failures++
+		} else {
+			failures = 0
+		}
+		interval := a.refreshInterval(status.Err, failures)
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -51,7 +57,7 @@ func (a *Adapter) refreshLoop(ctx context.Context, done chan struct{}) {
 	}
 }
 
-func (a *Adapter) refreshInterval(err error) time.Duration {
+func (a *Adapter) refreshInterval(err error, failures int) time.Duration {
 	a.mu.Lock()
 	hours := a.cfg.ManifestRefreshHours
 	a.mu.Unlock()
@@ -59,10 +65,40 @@ func (a *Adapter) refreshInterval(err error) time.Duration {
 		hours = 1
 	}
 	interval := time.Duration(hours) * time.Hour
-	if err != nil && interval > time.Minute {
-		return time.Minute
+	if err == nil {
+		return interval
 	}
-	return interval
+	if failures < 1 {
+		failures = 1
+	}
+
+	delay := time.Minute
+	for i := 1; i < failures && delay < interval; i++ {
+		delay *= 2
+		if delay > interval {
+			delay = interval
+		}
+	}
+	return a.jitterRefreshDelay(delay, interval)
+}
+
+func (a *Adapter) jitterRefreshDelay(delay, max time.Duration) time.Duration {
+	jitter := delay / 10
+	if jitter <= 0 {
+		return delay
+	}
+	a.mu.Lock()
+	if a.rng != nil {
+		delay += time.Duration(a.rng.Int63n(int64(jitter)*2+1)) - jitter
+	}
+	a.mu.Unlock()
+	if delay < time.Second {
+		return time.Second
+	}
+	if delay > max {
+		return max
+	}
+	return delay
 }
 
 func (a *Adapter) refreshOnceDefault(ctx context.Context, reason string) RefreshStatus {
@@ -78,7 +114,7 @@ func (a *Adapter) refreshOnceDefault(ctx context.Context, reason string) Refresh
 		status.Err = err
 		return status
 	}
-	snapshot, err := buildRemoteSnapshot(ctx, cfg, manifest)
+	snapshot, err := buildRemoteSnapshot(ctx, cfg, manifest, a.cacheDir)
 	if err != nil {
 		a.recordRefreshFailure(err)
 		status.Err = err
@@ -123,24 +159,36 @@ func (a *Adapter) fetchManifestDefault(ctx context.Context) (Manifest, CacheMeta
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	body, err := secureFetcher{}.Fetch(fetchCtx, cfg.ManifestURL, fetchLimits{
+	cachedBody, cachedMeta, cachedOK := readConditionalCache(a.cacheDir, "manifest", cfg.ManifestURL)
+	resp, err := secureFetcher{}.FetchConditional(fetchCtx, cfg.ManifestURL, fetchLimits{
 		MaxBytes:       cfg.MaxManifestBytes,
 		AllowLocalURLs: cfg.AllowLocalManifestURLs,
-	})
+	}, fetchConditionFromMeta(cachedMeta))
 	if err != nil {
 		return Manifest{}, CacheMetadata{}, err
+	}
+	body := resp.Body
+	meta := cacheMetadataFromFetch(cfg.ManifestURL, resp, cachedMeta)
+	if resp.NotModified {
+		if !cachedOK {
+			return Manifest{}, CacheMetadata{}, fmt.Errorf("manifest returned not modified without a valid cache")
+		}
+		body = cachedBody
 	}
 	var manifest Manifest
 	if err := json.Unmarshal(body, &manifest); err != nil {
 		return Manifest{}, CacheMetadata{}, fmt.Errorf("parse manifest json: %w", err)
 	}
+	if resp.NotModified {
+		if err := validateCachedManifest(fetchCtx, manifest, cfg); err != nil {
+			return Manifest{}, CacheMetadata{}, err
+		}
+		return manifest, meta, nil
+	}
 	if err := validateManifest(fetchCtx, manifest, cfg); err != nil {
 		return Manifest{}, CacheMetadata{}, err
 	}
-	return manifest, CacheMetadata{
-		FetchedAt: time.Now().UTC(),
-		SourceURL: cfg.ManifestURL,
-	}, nil
+	return manifest, meta, nil
 }
 
 type remoteSnapshot struct {
@@ -159,7 +207,7 @@ func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string) ([]P
 func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
 	catalogs := make([]ProviderCatalog, 0, len(defs))
 	for _, def := range defs {
-		if raw, _, err := readCacheFile(cacheDir, catalogCacheKey(def.ID)); err == nil {
+		if raw, _, ok := readConditionalCache(cacheDir, catalogCacheKey(def.ID), def.PlaylistURL); ok {
 			cat, err := buildProviderCatalog(def, raw, cfg)
 			if err == nil {
 				catalogs = append(catalogs, cat)
@@ -181,7 +229,7 @@ func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir s
 	return defs, catalogs, nil
 }
 
-func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest) (remoteSnapshot, error) {
+func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {
 	manifest := mergeManifests(cfg, bundledManifest(), nil, &remote, providerFactories())
 	out := remoteSnapshot{
 		Definitions:   manifest.Providers,
@@ -190,7 +238,7 @@ func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest) (remo
 		CatalogMetas:  map[string]CacheMetadata{},
 	}
 	for _, def := range manifest.Providers {
-		raw, err := fetchProviderPlaylist(ctx, def, cfg)
+		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, cacheDir)
 		if err != nil {
 			return remoteSnapshot{}, err
 		}
@@ -200,23 +248,29 @@ func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest) (remo
 		}
 		out.Catalogs = append(out.Catalogs, cat)
 		out.CatalogBodies[def.ID] = raw
-		out.CatalogMetas[def.ID] = CacheMetadata{
-			FetchedAt: time.Now().UTC(),
-			SourceURL: def.PlaylistURL,
-		}
+		out.CatalogMetas[def.ID] = meta
 	}
 	return out, nil
 }
 
-func fetchProviderPlaylist(ctx context.Context, def ProviderDefinition, cfg Config) ([]byte, error) {
+func fetchProviderPlaylist(ctx context.Context, def ProviderDefinition, cfg Config, cacheDir string) ([]byte, CacheMetadata, error) {
 	timeout := time.Duration(cfg.CatalogRequestTimeoutSeconds) * time.Second
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	body, err := secureFetcher{}.Fetch(fetchCtx, def.PlaylistURL, fetchLimitsForProvider(def, cfg))
+	cacheKey := catalogCacheKey(def.ID)
+	cachedBody, cachedMeta, cachedOK := readConditionalCache(cacheDir, cacheKey, def.PlaylistURL)
+	resp, err := secureFetcher{}.FetchConditional(fetchCtx, def.PlaylistURL, fetchLimitsForProvider(def, cfg), fetchConditionFromMeta(cachedMeta))
 	if err != nil {
-		return nil, fmt.Errorf("fetch provider %q playlist: %w", def.ID, err)
+		return nil, CacheMetadata{}, fmt.Errorf("fetch provider %q playlist: %w", def.ID, err)
 	}
-	return body, nil
+	meta := cacheMetadataFromFetch(def.PlaylistURL, resp, cachedMeta)
+	if resp.NotModified {
+		if !cachedOK {
+			return nil, CacheMetadata{}, fmt.Errorf("fetch provider %q playlist: not modified without a valid cache", def.ID)
+		}
+		return cachedBody, meta, nil
+	}
+	return resp.Body, meta, nil
 }
 
 func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (ProviderCatalog, error) {
@@ -249,8 +303,8 @@ func loadCachedManifest(ctx context.Context, cfg Config, cacheDir string) *Manif
 	if !cfg.AllowRemoteManifest && !cfg.AllowCachedRemoteManifest {
 		return nil
 	}
-	raw, _, err := readCacheFile(cacheDir, "manifest")
-	if err != nil {
+	raw, _, ok := readConditionalCache(cacheDir, "manifest", cfg.ManifestURL)
+	if !ok {
 		return nil
 	}
 	var manifest Manifest
@@ -310,4 +364,44 @@ func mustHostSet(hosts []string) map[string]struct{} {
 		return nil
 	}
 	return set
+}
+
+func readConditionalCache(cacheDir, key, sourceURL string) ([]byte, CacheMetadata, bool) {
+	body, meta, err := readCacheFile(cacheDir, key)
+	if err != nil {
+		return nil, CacheMetadata{}, false
+	}
+	if meta.SourceURL != sourceURL {
+		return nil, CacheMetadata{}, false
+	}
+	return body, meta, true
+}
+
+func fetchConditionFromMeta(meta CacheMetadata) fetchCondition {
+	return fetchCondition{
+		ETag:         meta.ETag,
+		LastModified: meta.LastModified,
+	}
+}
+
+func cacheMetadataFromFetch(sourceURL string, resp fetchResponse, cached CacheMetadata) CacheMetadata {
+	now := time.Now().UTC()
+	if resp.NotModified {
+		meta := cached
+		meta.FetchedAt = now
+		meta.SourceURL = sourceURL
+		if resp.ETag != "" {
+			meta.ETag = resp.ETag
+		}
+		if resp.LastModified != "" {
+			meta.LastModified = resp.LastModified
+		}
+		return meta
+	}
+	return CacheMetadata{
+		ETag:         resp.ETag,
+		LastModified: resp.LastModified,
+		FetchedAt:    now,
+		SourceURL:    sourceURL,
+	}
 }

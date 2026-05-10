@@ -12,6 +12,11 @@ var youtubeIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
 
 const ungroupedGroupID = "ungrouped"
 
+const (
+	maxCatalogChannels = maxManifestChannels
+	maxCatalogItems    = 250_000
+)
+
 func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) (ProviderCatalog, error) {
 	var playlists map[string][]string
 	if err := json.Unmarshal(raw, &playlists); err != nil {
@@ -19,6 +24,9 @@ func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) 
 	}
 	if playlists == nil {
 		return ProviderCatalog{}, fmt.Errorf("playlist JSON must be an object")
+	}
+	if len(playlists) > maxCatalogChannels {
+		return ProviderCatalog{}, fmt.Errorf("playlist JSON has %d channels, max %d", len(playlists), maxCatalogChannels)
 	}
 
 	groupByID := make(map[string]ChannelGroup, len(def.Groups)+1)
@@ -36,6 +44,7 @@ func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) 
 	}
 
 	channels := make([]Channel, 0, len(playlists))
+	totalItems := 0
 	for id, ids := range playlists {
 		if isExcludedPlaylist(def, id) {
 			continue
@@ -60,11 +69,15 @@ func buildYouTubeChannelCatalog(def ProviderDefinition, raw []byte, cfg Config) 
 			if cfg.MaxItemsPerChannel > 0 && len(channel.Items) >= cfg.MaxItemsPerChannel {
 				break
 			}
+			if totalItems >= maxCatalogItems {
+				return ProviderCatalog{}, fmt.Errorf("playlist JSON has more than %d accepted items", maxCatalogItems)
+			}
 			channel.Items = append(channel.Items, StreamItem{
 				ID:       sourceID,
 				URL:      "https://www.youtube.com/watch?v=" + sourceID,
 				SourceID: sourceID,
 			})
+			totalItems++
 		}
 		channels = append(channels, channel)
 	}
