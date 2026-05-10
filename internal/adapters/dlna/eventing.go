@@ -1,6 +1,7 @@
 package dlna
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -58,6 +59,7 @@ type eventManager struct {
 
 	subscriptions map[eventService]map[string]*eventSubscription
 	snapshots     map[eventService]eventProperties
+	deliveries    map[string]*eventDeliveryQueue
 }
 
 type eventSubscription struct {
@@ -68,6 +70,17 @@ type eventSubscription struct {
 	ExpiresAt    time.Time
 	NextSeq      uint32
 	FailureCount int
+}
+
+type eventDelivery struct {
+	sub   *eventSubscription
+	props eventProperties
+	seq   uint32
+}
+
+type eventDeliveryQueue struct {
+	deliveries []eventDelivery
+	running    bool
 }
 
 func newEventManager(cfg eventManagerConfig) *eventManager {
@@ -102,7 +115,8 @@ func newEventManager(cfg eventManagerConfig) *eventManager {
 			serviceRenderingControl:  {},
 			serviceConnectionManager: {},
 		},
-		snapshots: map[eventService]eventProperties{},
+		snapshots:  map[eventService]eventProperties{},
+		deliveries: map[string]*eventDeliveryQueue{},
 	}
 }
 
@@ -173,14 +187,16 @@ func (e *eventManager) handleNewSubscription(w http.ResponseWriter, r *http.Requ
 	}
 	e.subscriptions[service][sid] = sub
 	initial := cloneEventProperties(e.snapshots[service])
-	initialSub := cloneSubscription(sub)
+	key, queue, startWorker := e.enqueueNotifyLocked(sub, initial, 0)
 	e.mu.Unlock()
 
 	w.Header().Set("SID", sid)
 	w.Header().Set("TIMEOUT", "Second-"+strconv.Itoa(int(timeout/time.Second)))
 	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(http.StatusOK)
-	go e.sendNotify(initialSub, initial, 0)
+	if startWorker {
+		go e.runDeliveryQueue(key, queue)
+	}
 }
 
 func (e *eventManager) handleRenewal(w http.ResponseWriter, r *http.Request, service eventService, sid string) {
@@ -223,7 +239,7 @@ func (e *eventManager) handleUnsubscribe(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "unknown subscription", http.StatusPreconditionFailed)
 		return
 	}
-	delete(e.subscriptions[service], sid)
+	e.deleteSubscriptionLocked(service, sid)
 	e.mu.Unlock()
 	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(http.StatusOK)
@@ -309,6 +325,15 @@ func cloneSubscription(in *eventSubscription) *eventSubscription {
 	return &cp
 }
 
+func subscriptionKey(service eventService, sid string) string {
+	return string(service) + "\x00" + sid
+}
+
+func (e *eventManager) deleteSubscriptionLocked(service eventService, sid string) {
+	delete(e.subscriptions[service], sid)
+	delete(e.deliveries, subscriptionKey(service, sid))
+}
+
 func (e *eventManager) countRemoteLocked(service eventService, remote string) int {
 	n := 0
 	for _, sub := range e.subscriptions[service] {
@@ -328,13 +353,163 @@ func (e *eventManager) pruneExpiredLocked(now time.Time) {
 	for service, subs := range e.subscriptions {
 		for sid, sub := range subs {
 			if !sub.ExpiresAt.After(now) {
-				delete(e.subscriptions[service], sid)
+				e.deleteSubscriptionLocked(service, sid)
 			}
 		}
 	}
 }
 
-func (e *eventManager) sendNotify(_ *eventSubscription, _ eventProperties, _ uint32) {}
+func (e *eventManager) publish(service eventService, props eventProperties) {
+	props = cloneEventProperties(props)
+	type workerStart struct {
+		key   string
+		queue *eventDeliveryQueue
+	}
+	var starts []workerStart
+
+	e.mu.Lock()
+	e.pruneExpiredLocked(e.now())
+	if eventPropertiesEqual(e.snapshots[service], props) {
+		e.mu.Unlock()
+		return
+	}
+	e.snapshots[service] = cloneEventProperties(props)
+	for _, sub := range e.subscriptions[service] {
+		seq := sub.NextSeq
+		sub.NextSeq = nextEventSeq(seq)
+		key, queue, startWorker := e.enqueueNotifyLocked(sub, props, seq)
+		if startWorker {
+			starts = append(starts, workerStart{key: key, queue: queue})
+		}
+	}
+	e.mu.Unlock()
+
+	for _, start := range starts {
+		go e.runDeliveryQueue(start.key, start.queue)
+	}
+}
+
+func (e *eventManager) enqueueNotifyLocked(sub *eventSubscription, props eventProperties, seq uint32) (string, *eventDeliveryQueue, bool) {
+	key := subscriptionKey(sub.Service, sub.SID)
+	queue := e.deliveries[key]
+	if queue == nil {
+		queue = &eventDeliveryQueue{}
+		e.deliveries[key] = queue
+	}
+	queue.deliveries = append(queue.deliveries, eventDelivery{
+		sub:   cloneSubscription(sub),
+		props: cloneEventProperties(props),
+		seq:   seq,
+	})
+	if queue.running {
+		return key, queue, false
+	}
+	queue.running = true
+	return key, queue, true
+}
+
+func (e *eventManager) runDeliveryQueue(key string, queue *eventDeliveryQueue) {
+	for {
+		e.mu.Lock()
+		if e.deliveries[key] != queue {
+			e.mu.Unlock()
+			return
+		}
+		if len(queue.deliveries) == 0 {
+			queue.running = false
+			e.mu.Unlock()
+			return
+		}
+		delivery := queue.deliveries[0]
+		copy(queue.deliveries, queue.deliveries[1:])
+		queue.deliveries[len(queue.deliveries)-1] = eventDelivery{}
+		queue.deliveries = queue.deliveries[:len(queue.deliveries)-1]
+		e.mu.Unlock()
+
+		e.sendNotify(delivery.sub, delivery.props, delivery.seq)
+	}
+}
+
+func (e *eventManager) sendNotify(sub *eventSubscription, props eventProperties, seq uint32) {
+	if e.deliverNotify(sub, props, seq) {
+		e.recordNotifySuccess(sub)
+		return
+	}
+	e.recordNotifyFailure(sub)
+}
+
+func (e *eventManager) deliverNotify(sub *eventSubscription, props eventProperties, seq uint32) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultNotifyTimeout)
+	defer cancel()
+
+	body := buildGENAPropertySet(props)
+	req, err := http.NewRequestWithContext(ctx, "NOTIFY", sub.CallbackURL, bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("CONTENT-TYPE", `text/xml; charset="utf-8"`)
+	req.Header.Set("NT", "upnp:event")
+	req.Header.Set("NTS", "upnp:propchange")
+	req.Header.Set("SID", sub.SID)
+	req.Header.Set("SEQ", strconv.FormatUint(uint64(seq), 10))
+	req.ContentLength = int64(len(body))
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.CopyN(io.Discard, resp.Body, defaultNotifyResponseLimit)
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false
+	}
+	return true
+}
+
+func nextEventSeq(seq uint32) uint32 {
+	next := seq + 1
+	if next == 0 {
+		return 1
+	}
+	return next
+}
+
+func eventPropertiesEqual(a, b eventProperties) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if bv, ok := b[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *eventManager) recordNotifySuccess(sub *eventSubscription) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.subscriptions[sub.Service][sub.SID]
+	if current == nil {
+		return
+	}
+	// Delivery failures are counted consecutively; any success resets the streak.
+	current.FailureCount = 0
+}
+
+func (e *eventManager) recordNotifyFailure(sub *eventSubscription) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.subscriptions[sub.Service][sub.SID]
+	if current == nil {
+		return
+	}
+	current.FailureCount++
+	if current.FailureCount >= defaultMaxNotifyFailures {
+		e.deleteSubscriptionLocked(sub.Service, sub.SID)
+	}
+}
 
 func (e *eventManager) validateCallbackHeader(ctx context.Context, header string) (string, error) {
 	callbacks, err := parseCallbackHeader(header)
