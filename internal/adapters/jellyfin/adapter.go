@@ -285,6 +285,28 @@ func (a *Adapter) IsEnabled() bool {
 	return a.cfg.Enabled
 }
 
+// IsLinked implements adapters.LinkAware. Delegates to LinkState.
+func (a *Adapter) IsLinked() bool {
+	return a.link.State() == LinkLinked
+}
+
+// LinkPhase implements adapters.LinkAware. Maps the LinkPhase enum to
+// the parent spec's adapter-defined phase strings.
+func (a *Adapter) LinkPhase() string {
+	switch a.link.State() {
+	case LinkIdle:
+		return "idle"
+	case LinkLinking:
+		return "linking"
+	case LinkLinked:
+		return "linked"
+	case LinkError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
 // SetEnabled implements ui.EnableSetter. The toggle handler at
 // internal/ui/adapter.go:handleAdapterToggle calls this in sync with
 // Start/Stop. Without it the toggle endpoint returns 500.
