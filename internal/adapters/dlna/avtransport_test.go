@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // avtSOAPRequest builds a SOAP envelope for an AVTransport action call.
@@ -85,6 +88,46 @@ func TestAVT_GetPositionInfo_Defaults(t *testing.T) {
 	} {
 		if !strings.Contains(rr.Body.String(), want) {
 			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestAVT_GetPositionInfo_UsesOwnedCoreStatus(t *testing.T) {
+	const ref = "dlna:test-position"
+	fake := &fakeSessionManager{
+		statusFn: func() core.SessionStatus {
+			return core.SessionStatus{
+				AdapterRef: ref,
+				Position:   42*time.Second + 700*time.Millisecond,
+				Duration:   95 * time.Second,
+			}
+		},
+	}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.loadedURI = "http://192.168.1.99/movie.mp4"
+	a.currentRef = ref
+	a.transportState = transportStatePlaying
+	a.mu.Unlock()
+
+	req, rr := avtSOAPRequest(t, "GetPositionInfo", "<InstanceID>0</InstanceID>")
+	a.handleAVTransportSOAP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"<TrackDuration>00:01:35</TrackDuration>",
+		"<RelTime>00:00:42</RelTime>",
+		"<AbsTime>00:00:42</AbsTime>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\nbody:\n%s", want, body)
 		}
 	}
 }

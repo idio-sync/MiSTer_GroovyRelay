@@ -20,8 +20,10 @@ import (
 //     SetPlayMode (NORMAL ok; other modes → 712)
 //   Impl (validate + store) — Phase 2 P2.3:
 //     SetAVTransportURI
-//   Stub (return 501 Action Failed) — flip to Impl in P2.4 / P3:
-//     Play, Pause, Stop, Seek, Next, Previous
+//   Impl (playback lifecycle) — Phase 2 P2.4:
+//     Play, Stop
+//   Stub (return 501 Action Failed) — flip to Impl in P3 / never:
+//     Pause, Seek, Next, Previous
 
 const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 
@@ -157,15 +159,28 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		})
 
 	case "GetPositionInfo":
-		// Position/duration zeros until playback (P2.4); Track=1 only
-		// when a URI is loaded. TrackURI mirrors loadedURI and
-		// TrackMetaData mirrors loadedMetaRaw — controllers expect
-		// these to round-trip.
+		// TrackURI mirrors loadedURI and TrackMetaData mirrors
+		// loadedMetaRaw — controllers expect these to round-trip.
+		// RelTime/AbsTime come from core.Status only while the active
+		// core session still matches this adapter's current ref; a
+		// foreign or stale session must not leak its timeline here.
 		a.mu.Lock()
 		uri := a.loadedURI
 		metaRaw := a.loadedMetaRaw
 		duration := a.loadedMeta.Duration
+		ref := a.currentRef
 		a.mu.Unlock()
+
+		position := time.Duration(0)
+		st := a.core.Status()
+		if ref != "" && st.AdapterRef == ref {
+			if st.Duration > 0 {
+				duration = st.Duration
+			}
+			if st.Position > 0 {
+				position = st.Position
+			}
+		}
 
 		track := "0"
 		trackDuration := "00:00:00"
@@ -180,8 +195,8 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 			{Name: "TrackDuration", Value: trackDuration},
 			{Name: "TrackMetaData", Value: metaRaw},
 			{Name: "TrackURI", Value: uri},
-			{Name: "RelTime", Value: "00:00:00"},
-			{Name: "AbsTime", Value: "00:00:00"},
+			{Name: "RelTime", Value: formatUPnPDuration(position)},
+			{Name: "AbsTime", Value: formatUPnPDuration(position)},
 			{Name: "RelCount", Value: "0"},
 			{Name: "AbsCount", Value: "0"},
 		})

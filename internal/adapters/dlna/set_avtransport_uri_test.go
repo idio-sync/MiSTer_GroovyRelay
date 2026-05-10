@@ -257,6 +257,43 @@ func TestSetAVTransportURI_RejectsBusyDuringStartInFlight(t *testing.T) {
 	}
 }
 
+func TestSetAVTransportURI_RechecksBusyAfterValidation(t *testing.T) {
+	a := avtWithLoopbackResolver(t)
+	a.mu.Lock()
+	a.loadedURI = "http://prior.local/already.mp4"
+	a.loadedMetaRaw = "<prior/>"
+	a.mu.Unlock()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.mu.Lock()
+		a.startInFlight = true
+		a.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(installResolverOverride(t, hostMappingResolver(t, nil)))
+
+	rr := avtSendSetURI(t, a, fmt.Sprintf(
+		`<InstanceID>0</InstanceID><CurrentURI>%s/new.mp4</CurrentURI><CurrentURIMetaData><new/></CurrentURIMetaData>`,
+		html.EscapeString(srv.URL),
+	))
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loadedURI != "http://prior.local/already.mp4" {
+		t.Errorf("loadedURI mutated after post-validation busy state: got %q", a.loadedURI)
+	}
+	if a.loadedMetaRaw != "<prior/>" {
+		t.Errorf("loadedMetaRaw mutated after post-validation busy state: got %q", a.loadedMetaRaw)
+	}
+}
+
 // ---- RejectsMalformedMetadata ----
 
 func TestSetAVTransportURI_RejectsMalformedMetadata(t *testing.T) {
@@ -571,4 +608,3 @@ func TestRedactURL(t *testing.T) {
 		}
 	}
 }
-

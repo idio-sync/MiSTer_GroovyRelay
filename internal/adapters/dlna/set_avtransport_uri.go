@@ -191,13 +191,20 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// All checks passed. Store the validated URI + metadata under mu.
+	// All checks passed. Store the validated URI + metadata under mu,
+	// but re-run admission first: validation performs network I/O, so
+	// Play/autoplay may have started while the lock was dropped.
 	// FinalURL is what the data plane needs (post-redirect) — passing
 	// the original CurrentURI would let the URL-validator's redirect
 	// chase be wasted, since FFmpeg would re-fetch from the original
 	// host and potentially get a different redirect target than what
 	// the validator approved.
 	a.mu.Lock()
+	if !a.cfg.Enabled || a.startInFlight {
+		a.mu.Unlock()
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
 	a.loadedURI = validated.FinalURL
 	a.loadedMeta = parsed
 	a.loadedMetaRaw = args.CurrentURIMetaData

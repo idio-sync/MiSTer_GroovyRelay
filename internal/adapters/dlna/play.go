@@ -146,10 +146,21 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 
 	// Snapshot adapter-side ownership state under mu.
 	a.mu.Lock()
+	enabled := a.cfg.Enabled
 	owned := a.currentRef
 	state := a.transportState
 	hasURI := a.loadedURI != ""
+	inFlight := a.startInFlight
 	a.mu.Unlock()
+
+	if !enabled {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
+	if inFlight {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
 
 	// core.Status() enforces the ownership guard. Empty AdapterRef →
 	// no foreign session; matching ref → our session; otherwise 701.
@@ -235,12 +246,23 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 //      records lastError + maps to 716 (the spec's catch-all for
 //      backend failures absent typed sentinels).
 func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
-	// Snapshot the loaded URI under mu. We DO NOT need to hold mu
-	// across the StartSession call — the URL is captured into a local.
+	// Atomically admit one fresh start. The loaded URI snapshot, ref
+	// mint, and startInFlight flag must move together; otherwise a
+	// concurrent SetAVTransportURI or Play can describe/start a
+	// different URI than the one being handed to core.StartSession.
+	ref := a.mintSessionRef()
 	a.mu.Lock()
+	if !a.cfg.Enabled {
+		a.mu.Unlock()
+		return upnpErrTransitionNotAvail
+	}
+	if a.startInFlight {
+		a.mu.Unlock()
+		return upnpErrTransitionNotAvail
+	}
 	loadedURI := a.loadedURI
-	a.mu.Unlock()
 	if loadedURI == "" {
+		a.mu.Unlock()
 		// Defensive guard. Caller (handlePlay) already checked this
 		// path; autoplay also checks it before calling. If we somehow
 		// got here without a URI, return 701 rather than calling core
@@ -248,11 +270,9 @@ func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
 		return upnpErrTransitionNotAvail
 	}
 
-	// Mint the fresh ref under mu and build the OnStop closure that
-	// captures THIS ref by value. A late OnStop from a preempted
-	// session carries its own captured ref and no-ops on the compare-
-	// and-clear in onStopForRef.
-	ref := a.markStartInFlight()
+	a.currentRef = ref
+	a.startInFlight = true
+	a.mu.Unlock()
 	onStop := a.onStopForRef(ref)
 
 	req := core.SessionRequest{

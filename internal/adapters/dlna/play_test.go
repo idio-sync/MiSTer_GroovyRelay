@@ -39,6 +39,11 @@ type captureSessionManager struct {
 	// rollback path. nil = success.
 	startErr error
 
+	// startEntered/blockStart let tests hold StartSession open so they
+	// can observe the adapter's in-flight admission behavior.
+	startEntered chan struct{}
+	blockStart   chan struct{}
+
 	// stopErr lets a test inject a Stop error to exercise the
 	// 501-Action-Failed branch in handleStop.
 	stopErr error
@@ -58,10 +63,24 @@ type captureSessionManager struct {
 
 func (c *captureSessionManager) StartSession(req core.SessionRequest) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.startReqs = append(c.startReqs, req)
 	c.startCalls++
-	return c.startErr
+	startEntered := c.startEntered
+	blockStart := c.blockStart
+	shouldBlock := blockStart != nil && c.startCalls == 1
+	startErr := c.startErr
+	c.mu.Unlock()
+
+	if startEntered != nil {
+		select {
+		case startEntered <- struct{}{}:
+		default:
+		}
+	}
+	if shouldBlock {
+		<-blockStart
+	}
+	return startErr
 }
 
 func (c *captureSessionManager) Status() core.SessionStatus {
@@ -256,6 +275,23 @@ func TestPlay_NoURILoaded_ReturnsTransitionNotAvail(t *testing.T) {
 	}
 }
 
+func TestPlay_DisabledRejectsLoadedURI(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	a.SetEnabled(false)
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotStartCalls() != 0 {
+		t.Errorf("StartSession called %d times while disabled, want 0",
+			fake.snapshotStartCalls())
+	}
+}
+
 func TestPlay_AlreadyPlayingOwnSession_NoOp(t *testing.T) {
 	a, fake := avtPlayAdapter(t)
 
@@ -287,6 +323,36 @@ func TestPlay_AlreadyPlayingOwnSession_NoOp(t *testing.T) {
 	if fake.snapshotStartCalls() != 1 {
 		t.Errorf("StartSession called %d times after second Play, want 1 (no-op)",
 			fake.snapshotStartCalls())
+	}
+}
+
+func TestPlay_StartInFlightRejectsSecondFreshStart(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	fake.startEntered = make(chan struct{}, 1)
+	fake.blockStart = make(chan struct{})
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	}()
+
+	<-fake.startEntered
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Errorf("second Play status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("second Play body missing errorCode 701: %s", rr.Body.String())
+	}
+	if got := fake.snapshotStartCalls(); got != 1 {
+		t.Errorf("StartSession called %d times while first start in flight, want 1", got)
+	}
+
+	close(fake.blockStart)
+	first := <-firstDone
+	if first.Code != 200 {
+		t.Fatalf("first Play status = %d, want 200; body=%s", first.Code, first.Body.String())
 	}
 }
 
