@@ -2,8 +2,11 @@ package streams
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -12,6 +15,30 @@ func TestValidateManifestRejectsUnsupportedVersion(t *testing.T) {
 	m := Manifest{Version: 2}
 	if err := validateManifest(t.Context(), m, DefaultConfig()); err == nil {
 		t.Fatal("unsupported version accepted")
+	}
+}
+
+func TestHostedProviderManifestFileValidates(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "streams", "providers.json"))
+	if err != nil {
+		t.Fatalf("read hosted manifest: %v", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("parse hosted manifest: %v", err)
+	}
+	if err := validateCachedManifest(t.Context(), manifest, DefaultConfig()); err != nil {
+		t.Fatalf("validate hosted manifest: %v", err)
+	}
+
+	for _, want := range bundledManifest().Providers {
+		got, ok := manifest.Provider(want.ID)
+		if !ok {
+			t.Fatalf("hosted manifest missing bundled provider %q", want.ID)
+		}
+		if got.Type != want.Type || got.BaseURL != want.BaseURL || got.PlaylistURL != want.PlaylistURL || got.DefaultChannel != want.DefaultChannel {
+			t.Fatalf("hosted provider %q does not match bundled definition: %+v", want.ID, got)
+		}
 	}
 }
 

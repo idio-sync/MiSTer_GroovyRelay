@@ -81,6 +81,61 @@ func TestManualRefreshKeepsLastGoodOnFailure(t *testing.T) {
 	}
 }
 
+func TestRefreshOnceFallsBackToBundledCatalogsWhenManifestFetchFails(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	hits := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		hits[req.URL.Path]++
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/mtv.json":
+			_, _ = w.Write([]byte(`{"metal":["BBBBBBBBBBB"]}`))
+		case "/cartoon.json":
+			_, _ = w.Write([]byte(`{"heman":["AAAAAAAAAAA"]}`))
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	mtvDef := bundledMTVDefinition()
+	mtvDef.BaseURL = server.URL
+	mtvDef.PlaylistURL = server.URL + "/mtv.json"
+	cartoonDef := bundledCartoonDefinition()
+	cartoonDef.BaseURL = server.URL
+	cartoonDef.PlaylistURL = server.URL + "/cartoon.json"
+	a.replaceDefinitionsForTest([]ProviderDefinition{mtvDef, cartoonDef})
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = true
+	a.cfg.AllowLocalManifestURLs = true
+	a.mu.Unlock()
+	a.fetchManifest = func(context.Context) (Manifest, CacheMetadata, error) {
+		return Manifest{}, CacheMetadata{}, errors.New("manifest unavailable")
+	}
+
+	status := a.refreshOnceDefault(t.Context(), "manual")
+	if status.Err != nil {
+		t.Fatalf("refreshOnceDefault: %v", status.Err)
+	}
+	if !reflect.DeepEqual(status.refreshedProviderIDs, []string{"mtv-rewind", "cartoon-rewind"}) {
+		t.Fatalf("refreshed provider IDs = %#v, want bundled providers", status.refreshedProviderIDs)
+	}
+	if hits["/mtv.json"] != 1 || hits["/cartoon.json"] != 1 {
+		t.Fatalf("playlist fetches = %#v, want both bundled provider playlists", hits)
+	}
+	mtv := a.catalogSnapshotForTest("mtv-rewind")
+	if got := mtv.Channel("metal").Items[0].SourceID; got != "BBBBBBBBBBB" {
+		t.Fatalf("mtv catalog item = %q, want bundled playlist refresh", got)
+	}
+	cartoon := a.catalogSnapshotForTest("cartoon-rewind")
+	if got := cartoon.Channel("heman").Items[0].SourceID; got != "AAAAAAAAAAA" {
+		t.Fatalf("cartoon catalog item = %q, want bundled playlist refresh", got)
+	}
+}
+
 func TestRefreshIntervalBacksOffRepeatedFailuresWithJitter(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.mu.Lock()

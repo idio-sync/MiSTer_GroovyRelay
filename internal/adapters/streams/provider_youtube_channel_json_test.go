@@ -186,3 +186,38 @@ func TestBundledSeedCatalogsBuild(t *testing.T) {
 		})
 	}
 }
+
+func TestBundledSeedCatalogsDoNotContainPlaceholderVideos(t *testing.T) {
+	placeholderIDs := map[string]string{
+		"dQw4w9WgXcQ": "sample URL placeholder",
+		"9bZkp7q19f0": "sample URL placeholder",
+		"3JZ_D3ELwOQ": "sample URL placeholder",
+	}
+	tests := []struct {
+		name string
+		path string
+		def  ProviderDefinition
+	}{
+		{name: "mtv", path: "testdata/mtv-playlists.seed.json", def: bundledMTVDefinition()},
+		{name: "cartoon", path: "testdata/cartoon-playlists.seed.json", def: bundledCartoonDefinition()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := seedFS.ReadFile(tt.path)
+			if err != nil {
+				t.Fatalf("read seed: %v", err)
+			}
+			cat, err := buildYouTubeChannelCatalog(tt.def, raw, DefaultConfig())
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			for _, ch := range cat.Channels {
+				for _, item := range ch.Items {
+					if reason, ok := placeholderIDs[item.SourceID]; ok {
+						t.Fatalf("%s seed channel %q contains placeholder video %q (%s)", tt.name, ch.ID, item.SourceID, reason)
+					}
+				}
+			}
+		})
+	}
+}

@@ -281,6 +281,13 @@ func (a *Adapter) refreshOnceDefault(ctx context.Context, reason string) Refresh
 
 	manifest, meta, err := a.fetchManifest(ctx)
 	if err != nil {
+		fallback := a.refreshCatalogsDefault(ctx, nil, reason)
+		if len(fallback.refreshedProviderIDs) != 0 {
+			return fallback
+		}
+		if fallback.Err != nil {
+			err = errors.Join(err, fallback.Err)
+		}
 		a.recordRefreshFailure(err)
 		status.Err = err
 		return status

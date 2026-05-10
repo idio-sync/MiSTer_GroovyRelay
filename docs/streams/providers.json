@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "mtv-rewind",
+      "type": "youtube-channel-json",
+      "display_name": "MTV Rewind",
+      "base_url": "https://wantmymtv.vercel.app",
+      "playlist_url": "https://wantmymtv.vercel.app/public/mtv-playlists.json",
+      "default_channel": "1stday",
+      "default_play_mode": "shuffle",
+      "url_rules": [
+        {
+          "id": "mtv-player-channel",
+          "schemes": ["https"],
+          "hosts": ["wantmymtv.vercel.app", "wantmymtv.xyz"],
+          "path": "/player.html",
+          "target": "channel",
+          "query_param": "channel"
+        },
+        {
+          "id": "mtv-player-video",
+          "schemes": ["https"],
+          "hosts": ["wantmymtv.vercel.app", "wantmymtv.xyz"],
+          "path": "/player.html",
+          "target": "item",
+          "query_param": "v"
+        },
+        {
+          "id": "mtv-short-video",
+          "schemes": ["https"],
+          "hosts": ["wantmymtv.vercel.app", "wantmymtv.xyz"],
+          "path_prefix": "/s/",
+          "target": "item"
+        }
+      ],
+      "groups": [
+        {
+          "id": "shows",
+          "name": "MTV Shows",
+          "order": 50
+        },
+        {
+          "id": "decades",
+          "name": "By Decade",
+          "order": 60
+        }
+      ],
+      "channels": [
+        {
+          "id": "1stday",
+          "name": "First Day on MTV",
+          "group_id": "shows",
+          "play_mode": "sequential",
+          "order": 10
+        },
+        {
+          "id": "metal",
+          "name": "Headbangers Ball",
+          "group_id": "shows",
+          "play_mode": "shuffle",
+          "order": 40
+        },
+        {
+          "id": "all",
+          "name": "All MTV Rewind",
+          "group_id": "decades",
+          "play_mode": "shuffle",
+          "order": 100
+        }
+      ]
+    },
+    {
+      "id": "cartoon-rewind",
+      "type": "youtube-channel-json",
+      "display_name": "Cartoon Rewind",
+      "base_url": "https://cartoonrewind.tv",
+      "playlist_url": "https://cartoonrewind.tv/cartoon-playlists.json",
+      "default_channel": "all",
+      "default_play_mode": "shuffle",
+      "url_rules": [
+        {
+          "id": "cartoon-player-channel",
+          "schemes": ["https"],
+          "hosts": ["cartoonrewind.tv"],
+          "path": "/player.html",
+          "target": "channel",
+          "query_param": "channel"
+        },
+        {
+          "id": "cartoon-player-video",
+          "schemes": ["https"],
+          "hosts": ["cartoonrewind.tv"],
+          "path": "/player.html",
+          "target": "item",
+          "query_param": "v"
+        }
+      ],
+      "groups": [
+        {
+          "id": "shows",
+          "name": "Cartoon Shows",
+          "order": 50
+        }
+      ],
+      "channels": [
+        {
+          "id": "heman",
+          "name": "He-Man",
+          "group_id": "shows",
+          "play_mode": "shuffle",
+          "order": 10
+        },
+        {
+          "id": "all",
+          "name": "All Cartoons",
+          "group_id": "shows",
+          "play_mode": "shuffle",
+          "order": 100
+        }
+      ]
+    }
+  ]
+}
