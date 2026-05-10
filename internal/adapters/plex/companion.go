@@ -213,6 +213,14 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
 		SeekOffsetMs: p.OffsetMs,
+		// FIXME(plex-orphan-transcode): including TranscodeSessionID here
+		// (e.g. p.MediaKey + ":" + p.TranscodeSessionID) would let
+		// core.Manager fire StopTranscodeSession on seek; see manager.go's
+		// genuinePreempt comment. Today, Plex seek mints a fresh
+		// TranscodeSessionID but reuses MediaKey, so the OnStop closure
+		// for the prior transcode is suppressed by the same-AdapterRef
+		// gate and the orphan transcode is reaped by PMS's idle timeout
+		// (~60–120 s). Tracked separately from Phase 3 DLNA scope.
 		AdapterRef:   p.MediaKey,
 		Title:        p.Title,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},

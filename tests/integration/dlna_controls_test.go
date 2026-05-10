@@ -290,11 +290,23 @@ func TestDLNAControls_FullSequence_SetURI_Play_Pause_Resume_Seek_Stop(t *testing
 	waitForState(t, f.mgr, core.StateIdle, 5*time.Second)
 }
 
-// TestDLNAControls_ForeignSessionRejection drives the ownership-guard
-// rejection path. A foreign (e.g. plex:) session is started directly
-// via core.Manager.StartSession; DLNA SOAP Pause/Stop/Seek must each
-// return 701 without disturbing the foreign session.
-func TestDLNAControls_ForeignSessionRejection(t *testing.T) {
+// TestDLNAControls_NoDLNASessionWithForeignActive_RejectsControlActions
+// covers the narrow no-DLNA-session-loaded shape of the ownership guard:
+// a foreign (e.g. plex:) session is started directly via
+// core.Manager.StartSession without DLNA ever calling SetAVTransportURI,
+// so the DLNA adapter's currentRef stays empty. SOAP Pause/Stop/Seek
+// then short-circuit on the empty-currentRef branch and return 701
+// without disturbing the foreign session.
+//
+// Note this does NOT exercise the "currentRef set AND foreign live core
+// ref" branch of the guard. Constructing that state requires a real
+// preempt sequence (DLNA Plays, then a foreign adapter calls
+// StartSession to take core, then user Pause/Stop/Seek hits DLNA before
+// DLNA's OnStop has cleared currentRef) which is racy to fixture and
+// would be a fragile flake. The user-visible promise that matters here
+// — a plex play cannot be paused by a DLNA controller — is fully
+// validated by the empty-currentRef path below.
+func TestDLNAControls_NoDLNASessionWithForeignActive_RejectsControlActions(t *testing.T) {
 	f := newDLNAIntegrationFixture(t, "5s.mp4")
 
 	// Foreign session — no DLNA involvement. plex: prefix is the
