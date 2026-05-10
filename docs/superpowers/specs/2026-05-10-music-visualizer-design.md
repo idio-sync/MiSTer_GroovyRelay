@@ -1,7 +1,7 @@
 # Music Visualizer Design
 
 **Date:** 2026-05-10  
-**Status:** Design approved; implementation plan not started  
+**Status:** Review fixes applied; implementation plan not started  
 **Scope:** Add CRT music visualization for audio-only Plex and Jellyfin casts, starting with a Retro Analyzer mode rendered through the existing MiSTer data plane.
 
 ## Problem
@@ -72,12 +72,19 @@ This keeps the timing-sensitive MiSTer sender boring. Once FFmpeg has synthesize
 
 ## Core Request Model
 
-Extend `core.SessionRequest` with a small visualizer block:
+Extend `core.SessionRequest` with a media kind and a small visualizer block:
 
 ```go
+type MediaKind string
+
+const (
+    MediaKindVideo MediaKind = "video"
+    MediaKindMusic MediaKind = "music"
+)
+
 type VisualizerRequest struct {
-    Enabled bool
-    Mode    VisualizerMode
+    Enabled  bool
+    Mode     VisualizerMode
     Metadata VisualizerMetadata
 }
 
@@ -95,26 +102,61 @@ type VisualizerMetadata struct {
 }
 ```
 
-`Title` on `SessionRequest` remains the short session label for status views. `Visualizer.Metadata` is the render-focused metadata consumed by the FFmpeg pipeline builder.
+`Title` on `SessionRequest` remains the short session label for status views. `MediaKind` tells status consumers and adapter reporters whether the active session is video or music. `Visualizer.Metadata` is the render-focused metadata consumed by the FFmpeg pipeline builder.
 
 Rules:
 
 - `Visualizer.Enabled=false` preserves today's behavior.
-- `Visualizer.Enabled=true` means the input may be audio-only and FFmpeg must synthesize video.
+- Empty `MediaKind` is treated as `video` for backward compatibility.
+- `Visualizer.Enabled=true` means `MediaKind=music`, the input may be audio-only, and FFmpeg must synthesize video.
+- Core rejects requests where `Visualizer.Enabled=true` and `MediaKind` is explicitly set to a non-music value.
 - V1 supports only `retro_analyzer`; unknown modes are rejected before spawning FFmpeg.
 - Empty metadata fields are allowed. The renderer falls back to `Title`, then `Now Playing`.
 - Duration may be zero when the server does not provide it; the visualizer omits duration/progress in that case.
 
+`core.SessionStatus` and `core.StatusHomeView` should carry the same `MediaKind`. `Manager` copies it from the active request when building status. This gives Plex's timeline broker and the web status page a code-owned signal instead of requiring them to infer music sessions from adapter refs or titles.
+
+## Probe Path
+
+Visualizer sessions still run `ffprobe` before acquiring `Manager.mu`, but they must not run crop probing:
+
+- `Probe` runs against `SessionRequest.StreamURL` as usual.
+- A visualizer session requires an audio stream. If `ProbeResult.AudioRate <= 0`, core rejects the request before spawning FFmpeg.
+- `ProbeCrop` is skipped for visualizer sessions, even when `bridge.video.aspect_mode = "auto"`.
+- `CropRect` is always nil for visualizer sessions.
+- Duration is resolved from adapter metadata first, then from `ProbeResult.Duration`.
+- Video width, height, frame rate, and interlace fields from probe are ignored for visualizer layout. The active modeline controls generated video size and cadence.
+
+This prevents the current video-only crop probe from running against audio-only URLs and preserves the existing video probe/crop behavior for normal casts.
+
 ## FFmpeg Pipeline
 
-Add visualizer fields to `ffmpeg.PipelineSpec` mirroring the core request. `BuildCommand` keeps the existing video path when visualizer is disabled. When enabled, it builds a filter graph that consumes audio and produces video.
+Add a concrete visualizer block to `ffmpeg.PipelineSpec`:
+
+```go
+type VisualizerSpec struct {
+    Enabled  bool
+    Mode     string
+    Metadata VisualizerMetadata
+}
+```
+
+`ffmpeg` should define package-local visualizer metadata types rather than importing `internal/core`. `core.Manager` maps the core request metadata into `ffmpeg.PipelineSpec` at the existing core-to-FFmpeg boundary.
+
+`BuildCommand` splits into two command shapes:
+
+- **Video sessions:** keep the existing `-map 0:v:0` plus `-vf buildFilterChain(s)` path. The existing `buildFilterChain` remains video-only: `yadif`, `fps`, aspect handling, anamorphic stretch, and subtitles.
+- **Visualizer sessions:** do not call `buildFilterChain` and do not pass `-vf`. Use `-filter_complex` to synthesize video from audio and label the generated video pad for `-map`.
+
+The visualizer graph must preserve the existing CRT aspect contract. It should render the analyzer into the square-pixel logical canvas returned by `logicalCanvas(OutputHeight)`, then anamorphic-stretch to `OutputWidth x OutputHeight` before raw output. This mirrors the video path's 4:3-visible CRT behavior instead of treating 720x480 as square pixels.
 
 V1 filter behavior:
 
 - Use the audio stream as input `0:a:0`.
 - Output audio as s16le PCM using the same sample rate and channel config as normal sessions.
 - Generate video with FFmpeg audio visualization filters such as `showfreqs` or another built-in spectrum filter selected during implementation testing.
-- Size the generated video to the active modeline's full frame size, for example `720x480` or `720x576`.
+- Generate at logical canvas size, then stretch to the active modeline's full frame size, for example `720x480` or `720x576`.
+- Terminate the video branch with `fps=<OutputFpsExpr>` so the data plane receives frames at the modeline's field cadence and does not continuously underrun.
 - Convert to `bgr24` rawvideo for the existing video pipe.
 - Overlay text using `drawtext` only if the bundled FFmpeg supports it.
 - Escape metadata before injecting it into filter arguments.
@@ -125,12 +167,24 @@ The command shape is conceptually:
 
 ```text
 ffmpeg -i <audio-url>
-  -filter_complex "<audio to spectrum video>,<metadata text>,<format/scale>"
+  -filter_complex "[0:a:0]<audio to logical-canvas spectrum>,<drawtext>,fps=<cadence>,scale=<outputW>:<outputH>,format=bgr24[visualizer_video]"
   -map "[visualizer_video]" -pix_fmt bgr24 -f rawvideo <video-pipe>
   -map 0:a:0 -ar <rate> -ac <channels> -f s16le <audio-pipe>
 ```
 
 The exact filter chain should be verified against the sidecar FFmpeg during implementation. The design intent is stable: audio in, two outputs out, no Go-side frame synthesis.
+
+### Metadata Escaping
+
+Add an `escapeFilterText` helper in the FFmpeg package and test it directly. It should:
+
+- replace ASCII control characters, including CR/LF/TAB, with spaces;
+- escape backslash (`\`) before any other character-specific escaping;
+- escape single quote (`'`) for single-quoted drawtext text values;
+- escape FFmpeg filter separators and expression characters used by this graph: colon (`:`), comma (`,`), semicolon (`;`), percent (`%`), left bracket (`[`), and right bracket (`]`);
+- preserve ordinary non-ASCII characters after escaping the ASCII syntax characters above.
+
+No adapter should construct drawtext fragments directly. Adapters pass raw metadata strings; only the FFmpeg package escapes them for filter use.
 
 ## Plex Adapter
 
@@ -144,7 +198,10 @@ Detection:
 
 Stream negotiation:
 
-- Build an audio-consumable PMS stream/transcode URL for the selected item.
+- Add a separate music transcode builder instead of reusing `BuildTranscodeURL`.
+- Target Plex's music transcode endpoint family: `/music/:/transcode/universal/start.mp3`.
+- Use audio-oriented query parameters: `path`, `protocol=http`, `directPlay=0`, `directStream=0`, `offset`, `transcodeSessionId`, Plex identity headers/query values, and an explicit audio codec/bitrate profile suitable for FFmpeg input.
+- Keep the existing video transcode builder pointed at `/video/:/transcode/universal/start.ts`.
 - Preserve seek offset and selected audio stream where Plex provides one.
 - Keep adapter capabilities `CanSeek=true` and `CanPause=true` when PMS can honor them.
 
@@ -156,9 +213,18 @@ Metadata:
 
 Timeline:
 
-- For visualizer sessions, Plex timeline XML should report the `music` timeline as playing/paused and the `video` timeline as stopped.
+- For visualizer sessions, Plex timeline XML reports the `music` timeline as playing/paused and the `video` timeline as stopped.
 - Existing video sessions continue reporting on the `video` timeline.
+- The timeline broker uses `core.SessionStatus.MediaKind` to choose which timeline is live. It must not infer media kind from `PlayMediaRequest.MediaKey`.
+- Music timelines carry the same key/ratingKey/container/queue metadata currently attached to video timelines where Plex supplies those values.
+- `location` should remain compatible with Plex controllers. If Plex music controllers ignore `fullScreenVideo`, omit the location field for music sessions rather than pretending the session is video.
 - Stop/preempt behavior must still notify Plex controllers promptly and stop PMS transcode sessions where applicable.
+
+Queue and track changes:
+
+- Each new Plex music track starts a new core session and a new FFmpeg process.
+- Next/previous/skip behavior follows the existing play queue restart pattern, but constructs a music visualizer session instead of a video session.
+- Same-track seek restarts the FFmpeg process at the requested offset, as current seek behavior does for video.
 
 ## Jellyfin Adapter
 
@@ -172,7 +238,11 @@ Detection:
 
 Stream negotiation:
 
-- Request an audio-capable PlaybackInfo response for audio items.
+- Add an audio-capable playback profile for audio items instead of using the current video-only `TranscodingProfile`.
+- The audio profile should include a `TranscodingProfile` with `Type: "Audio"`, `Container: "mp3"`, `AudioCodec: "mp3"`, `Protocol: "http"`, `Context: "Streaming"`, and `MaxAudioChannels: "2"`.
+- Adjust the profile structs so `VideoCodec` is omitted for audio profiles.
+- Keep the existing video profile unchanged for video items.
+- Request PlaybackInfo with the audio profile when the item is music/audio.
 - Build an absolute FFmpeg-consumable audio stream/transcode URL.
 - Preserve start position, seek, pause/resume, and reporting behavior.
 
@@ -187,6 +257,22 @@ Reporting:
 - Continue using Jellyfin playback start/progress/stop reporting.
 - Report position from core status as today.
 - Include the now-playing queue with the current music item first, matching existing reporter behavior.
+
+Queue and track changes:
+
+- Each new Jellyfin music item starts a new core session and a new FFmpeg process.
+- `PlayNext` and `PlayLast` continue to manage the adapter queue. When the current track ends, EOF advancement builds a new audio visualizer session for the next audio item.
+- Same-track seek restarts the FFmpeg process at the requested offset, as current seek behavior does for video.
+
+## Session Transitions
+
+Visualizer sessions use the same preemption semantics as every other core session:
+
+- Starting music while video is active preempts the video session and invokes the prior session's `OnStop("preempted")`.
+- Starting video while music is active preempts the music session and invokes the prior music cleanup.
+- Starting a different music track preempts the prior music track.
+- Seeking or resuming the same music track is a same-session replay only when the adapter intentionally keeps the same `AdapterRef`.
+- Adapters should include enough identity in `AdapterRef` to distinguish server-side transcode resources that require explicit cleanup. For Plex music, that means including or otherwise tracking `TranscodeSessionID`, not only media key.
 
 ## Config And UI
 
@@ -207,7 +293,11 @@ Apply scopes:
 | `music_visualizer.enabled` | `ScopeHotSwap` | Allows blocking new visualizer sessions without changing existing video playback. |
 | `music_visualizer.mode` | `ScopeRestartCast` | Affects the FFmpeg graph for future sessions. |
 
-When config is eventually added, the settings UI should render it as a small bridge-level section, not as a new adapter. No visualizer preview is required in v1.
+When config is eventually added, `music_visualizer.enabled` is a new-session gate only. It does not live-reconfigure, stop, or restart an already-running FFmpeg visualizer process. The settings UI should render future visualizer fields as a small bridge-level section, not as a new adapter. No visualizer preview is required in v1.
+
+## Spec Location
+
+This spec intentionally lives under `docs/superpowers/specs/` because it was produced through the current Superpowers brainstorming workflow. Older code comments still reference `docs/specs/` for earlier designs. New implementation comments for this feature should reference the actual path: `docs/superpowers/specs/2026-05-10-music-visualizer-design.md`.
 
 ## Error Handling
 
@@ -226,20 +316,25 @@ When config is eventually added, the settings UI should render it as a small bri
 Unit tests:
 
 - Core request/status tests for visualizer fields and default disabled behavior.
+- Core tests proving visualizer sessions skip `ProbeCrop` and reject sources without audio.
 - FFmpeg command tests for:
   - existing video command shape unchanged;
+  - visualizer command uses `-filter_complex`, not `-vf`;
   - visualizer command maps audio to PCM output;
   - visualizer command creates raw BGR video output;
+  - visualizer graph includes `fps=<OutputFpsExpr>`;
+  - visualizer graph preserves logical-canvas-to-output stretch;
   - visualizer command rejects unknown modes;
   - metadata escaping handles punctuation-heavy titles.
 - Plex adapter tests for:
   - music detection from metadata;
+  - music transcode URL uses `/music/:/transcode/universal/start.mp3`;
   - fallback to video path when media type is ambiguous;
   - title/artist/album/duration extraction;
   - music timeline playing while video timeline is stopped.
 - Jellyfin adapter tests for:
   - audio item detection;
-  - audio PlaybackInfo request construction;
+  - audio PlaybackInfo request uses an audio `TranscodingProfile`;
   - metadata extraction and fallback;
   - reporting still starts and advances.
 
@@ -277,5 +372,5 @@ These are verification tasks for the implementation plan, not unresolved product
 
 - Confirm which FFmpeg visualization filter gives the best Retro Analyzer output on the bundled sidecars.
 - Confirm bundled FFmpeg builds include `drawtext`; if not, implement bars-only fallback first.
-- Confirm Plex's best audio stream endpoint for music items and how Plexamp populates Companion play requests.
+- Smoke-test `/music/:/transcode/universal/start.mp3` against a live PMS and capture Plexamp Companion request fields.
 - Confirm Jellyfin audio PlaybackInfo response shape for music items across the supported server version range.
