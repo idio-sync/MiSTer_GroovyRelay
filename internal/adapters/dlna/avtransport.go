@@ -20,8 +20,12 @@ import (
 //     SetPlayMode (NORMAL ok; other modes → 712)
 //   Impl (validate + store) — Phase 2 P2.3:
 //     SetAVTransportURI
-//   Stub (return 501 Action Failed) — flip to Impl in P2.4 / P3:
-//     Play, Pause, Stop, Seek, Next, Previous
+//   Impl (P2.4):
+//     Play, Stop
+//   Impl (P3.1):
+//     Pause
+//   Stub (return 501 Action Failed) — flip to Impl in P3.2 / never:
+//     Seek, Next, Previous
 
 const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 
@@ -29,11 +33,10 @@ const avTransportServiceURN = "urn:schemas-upnp-org:service:AVTransport:1"
 // returns 501. Listed explicitly so the table is auditable and so the
 // dispatcher can branch on the action name without a per-action stub
 // function. SetAVTransportURI moved out of this set in P2.3 (real
-// validate+store handler); Play/Stop moved out in P2.4. The four
-// remaining stubs are the Pause/Seek pair (Phase 3) and the
+// validate+store handler); Play/Stop moved out in P2.4; Pause moved
+// out in P3.1. The remaining three are Seek (P3.2) and the
 // Next/Previous pair (queue model not implemented; v1 has no queue).
 var avtStubActions = map[string]struct{}{
-	"Pause":    {},
 	"Seek":     {},
 	"Next":     {},
 	"Previous": {},
@@ -83,8 +86,12 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		a.handleStop(w, extractStopArgs(args))
 		return
 	}
+	if action == "Pause" {
+		a.handlePause(w, extractPauseArgs(args))
+		return
+	}
 
-	// Stub actions return 501 (Pause/Seek will flip to Impl in P3;
+	// Stub actions return 501 (Seek will flip to Impl in P3.2;
 	// Next/Previous remain stubs — v1 has no queue model).
 	if _, isStub := avtStubActions[action]; isStub {
 		writeSOAPFault(w, upnpErrActionFailed)
@@ -203,31 +210,51 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 
 	case "GetCurrentTransportActions":
 		// Spec §Query Actions / GetCurrentTransportActions (lines
-		// 401-406). Phase 2's three reachable shapes:
+		// 401-406). Reachable shapes after P3.1:
 		//   - No URI: empty (controller knows there's nothing to do).
 		//   - STOPPED with URI: "Play".
-		//   - PLAYING (any source): "Stop".
-		// Phase 3 will add Pause / Seek based on probe Duration —
-		// noted in the spec at lines 366-369. Returning Pause/Seek
-		// here today would lie to the controller because we have no
-		// handler for them yet.
+		//   - PLAYING own seekable VOD: "Pause,Stop,Seek".
+		//   - PLAYING own live/unknown-duration: "Pause,Stop".
+		//   - PAUSED own seekable VOD: "Play,Stop,Seek".
+		//   - PAUSED own live/unknown-duration: "Play,Stop".
+		// Seek advertisement is gated on core.Status().Duration > 0
+		// AND own session — advertising Seek for a foreign session
+		// would lie to the controller (we wouldn't accept the call).
+		// Snapshot adapter state under mu, drop, call core.Status()
+		// outside mu (CLAUDE.md: never hold mu across core.* calls).
 		a.mu.Lock()
 		state := a.transportState
 		hasURI := a.loadedURI != ""
+		owned := a.currentRef
 		a.mu.Unlock()
+
+		st := a.core.Status()
+		// Seek can only honor an OWN session with known duration. The
+		// spec at line 367-369 derives seekability from probe Duration;
+		// foreign sessions are rejected by the ownership guard before
+		// any core.SeekTo call would run, so advertising Seek for them
+		// would be deceptive.
+		ownSession := owned != "" && st.AdapterRef == owned
+		canSeek := ownSession && st.Duration > 0
 
 		actions := ""
 		switch {
 		case !hasURI:
 			actions = ""
 		case state == transportStatePlaying:
-			actions = "Stop"
+			actions = "Pause,Stop"
+			if canSeek {
+				actions = "Pause,Stop,Seek"
+			}
 		case state == transportStateStopped:
 			actions = "Play"
+		case state == transportStatePausedPlayback:
+			actions = "Play,Stop"
+			if canSeek {
+				actions = "Play,Stop,Seek"
+			}
 		default:
-			// PAUSED_PLAYBACK or TRANSITIONING — not reachable in
-			// Phase 2 (Pause is 501, TRANSITIONING is Phase 4).
-			// Leave empty; Phase 3 fills this in.
+			// TRANSITIONING — Phase 4 eventing. Not reachable today.
 			actions = ""
 		}
 		writeSOAPResponse(w, avTransportServiceURN, action, []soapOutArg{

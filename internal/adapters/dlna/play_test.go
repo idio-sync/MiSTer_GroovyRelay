@@ -47,6 +47,10 @@ type captureSessionManager struct {
 	// PAUSED→Play branch's error path.
 	playErr error
 
+	// pauseErr lets a test inject a Pause error to exercise the
+	// 501-Action-Failed branch in handlePause.
+	pauseErr error
+
 	// Method counters mirror fakeSessionManager — useful for assertions
 	// like "core.Stop was called once."
 	startCalls int
@@ -75,7 +79,7 @@ func (c *captureSessionManager) Pause() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pauseCalls++
-	return nil
+	return c.pauseErr
 }
 
 func (c *captureSessionManager) Play() error {
@@ -128,6 +132,12 @@ func (c *captureSessionManager) snapshotPlayCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.playCalls
+}
+
+func (c *captureSessionManager) snapshotPauseCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pauseCalls
 }
 
 // avtPlayAdapter constructs an enabled adapter with a captureSessionManager
@@ -291,10 +301,11 @@ func TestPlay_AlreadyPlayingOwnSession_NoOp(t *testing.T) {
 }
 
 func TestPlay_PausedOwnSession_CallsCorePlay(t *testing.T) {
-	// Phase 2 has no Pause handler so this state isn't reachable from a
-	// controller, but the code path still needs to exist for Phase 3.
-	// Set up the state by directly mutating transportState to
-	// PAUSED_PLAYBACK and pointing Status() at our ref.
+	// PAUSED → core.Play() resume branch (VOD with known duration).
+	// Spec §Play line 358 splits on Duration: known-duration sources
+	// resume via core.Play(); live/unknown-duration rebuild at the
+	// live edge (covered by pause_test.go's live-edge test). This
+	// test pins the VOD branch.
 	a, fake := avtPlayAdapter(t)
 
 	ref := "dlna:abc123"
@@ -304,7 +315,8 @@ func TestPlay_PausedOwnSession_CallsCorePlay(t *testing.T) {
 	a.mu.Unlock()
 
 	fake.statusFn = func() core.SessionStatus {
-		return core.SessionStatus{AdapterRef: ref}
+		// Duration > 0 selects the VOD resume branch.
+		return core.SessionStatus{AdapterRef: ref, Duration: 1}
 	}
 
 	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
@@ -693,7 +705,10 @@ func TestPlay_Resume_CoreFailure_RedactsLastError(t *testing.T) {
 	a.mu.Unlock()
 
 	fake.statusFn = func() core.SessionStatus {
-		return core.SessionStatus{AdapterRef: ref}
+		// Duration > 0 selects the VOD resume branch — that's the one
+		// that calls core.Play() and has the redaction surface this
+		// test pins.
+		return core.SessionStatus{AdapterRef: ref, Duration: 1}
 	}
 	leakPayload := "/var/lib/groovy/socket: connection refused on 10.0.0.42:32100"
 	fake.playErr = errors.New("dataplane resume: " + leakPayload)
@@ -862,7 +877,11 @@ func TestGetCurrentTransportActions_StoppedWithURI_Play(t *testing.T) {
 	}
 }
 
-func TestGetCurrentTransportActions_Playing_Stop(t *testing.T) {
+func TestGetCurrentTransportActions_Playing_PauseStop(t *testing.T) {
+	// P3.1 advertises Pause for PLAYING (now reachable). Seek is not
+	// advertised here because the test's captureSessionManager returns
+	// zero-value Status (Duration=0 + empty AdapterRef), so ownSession
+	// is false.
 	a, _ := avtPlayAdapter(t)
 	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
 	if rr.Code != 200 {
@@ -873,8 +892,8 @@ func TestGetCurrentTransportActions_Playing_Stop(t *testing.T) {
 	if rr2.Code != 200 {
 		t.Fatalf("status = %d, want 200", rr2.Code)
 	}
-	if !strings.Contains(rr2.Body.String(), "<Actions>Stop</Actions>") {
-		t.Errorf("body missing <Actions>Stop</Actions>; got: %s", rr2.Body.String())
+	if !strings.Contains(rr2.Body.String(), "<Actions>Pause,Stop</Actions>") {
+		t.Errorf("body missing <Actions>Pause,Stop</Actions>; got: %s", rr2.Body.String())
 	}
 }
 

@@ -119,11 +119,14 @@ func extractStopArgs(args map[string]string) stopArgs {
 //   2. Speed == "1" (else 717). Empty Speed defaults to "1" — some
 //      controllers omit it on the assumption the renderer treats
 //      missing-Speed as 1, which matches AVTransport:1's default.
-//   3. Snapshot currentRef + transportState under mu, drop, call
-//      core.Status(), enforce ownership.
+//   3. Snapshot enabled + currentRef + transportState + startInFlight
+//      under mu, drop, call core.Status(), enforce ownership.
 //   4. Branch:
 //      a. Already PLAYING with own session → success no-op.
-//      b. PAUSED_PLAYBACK with own session → core.Play() (resume).
+//      b. PAUSED_PLAYBACK with own session → either core.Play() (VOD
+//         with known duration) or rebuild + StartSession with
+//         SeekOffsetMs=0 for live/unknown-duration (live-edge resume
+//         per spec §Play line 358).
 //      c. No active DLNA session AND a URI is loaded → fresh start
 //         via startFreshSession.
 //      d. No active DLNA session AND no URI loaded → 701.
@@ -145,12 +148,38 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 		return
 	}
 
-	// Snapshot adapter-side ownership state under mu.
+	// Snapshot adapter-side ownership state under mu. enabled and
+	// startInFlight are read here so the disabled-adapter gate (mirrors
+	// handleSetAVTransportURI's 701) and the concurrent-Play guard
+	// (symmetric with SetAVTransportURI's busy-reject) can short-circuit
+	// before any core.* call.
 	a.mu.Lock()
+	enabled := a.cfg.Enabled
 	owned := a.currentRef
 	state := a.transportState
 	hasURI := a.loadedURI != ""
+	inFlight := a.startInFlight
 	a.mu.Unlock()
+
+	// Disabled adapter: reject with 701. Same rationale as
+	// handleSetAVTransportURI (line 102-105) — 401 would imply the action
+	// is not in the SCPD, which is wrong; 701 communicates "this
+	// renderer is currently unavailable for transport control."
+	if !enabled {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
+
+	// Concurrent-Play guard. handleSetAVTransportURI already rejects on
+	// startInFlight (spec line 332); applying the same rule here keeps
+	// near-simultaneous Play calls from each minting their own ref. The
+	// compare-and-clear discipline would still preserve correctness, but
+	// short-circuiting is cleaner and matches the spec's symmetric
+	// treatment of the two admission gates.
+	if inFlight {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
 
 	// core.Status() enforces the ownership guard. Empty AdapterRef →
 	// no foreign session; matching ref → our session; otherwise 701.
@@ -166,27 +195,43 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 		return
 	}
 
-	// Sub-case (b): paused our session — call core.Play() to resume.
-	// Phase 2 has no Pause handler so this branch isn't reachable from
-	// a controller, but it remains correct for Phase 3 once Pause
-	// flips to Impl. The spec also describes a live-edge reconnect
-	// branch for unknown-duration sources (line 358) — that lives in
-	// Phase 3 alongside Pause.
+	// Sub-case (b): paused our session.
 	if state == transportStatePausedPlayback && owned != "" && st.AdapterRef == owned {
-		if err := a.core.Play(); err != nil {
-			// Don't echo err.Error() into lastError — a wrapped
-			// ffmpeg/dataplane error could surface container paths or
-			// internal hostnames into a SOAP GetTransportInfo response
-			// (TransportStatus=ERROR_OCCURRED) visible to any DLNA
-			// control point. Match the redaction discipline used at
-			// startFreshSession's StartSession failure path. Operators
-			// have bridge logs (slog below) for the underlying cause.
-			slog.Default().Warn("dlna: core.Play resume failed", "err", err, "ref", owned)
-			a.setLastError("Play resume failed (see bridge logs)")
-			writeSOAPFault(w, upnpErrActionFailed)
+		// Spec §Play line 358: "For seekable sources with known
+		// duration, call core.Play(). For live or unknown-duration
+		// sources, rebuild the same core.SessionRequest with
+		// SeekOffsetMs=0 and call core.StartSession to reconnect from
+		// the live edge."
+		if st.Duration > 0 {
+			if err := a.core.Play(); err != nil {
+				// Don't echo err.Error() into lastError — a wrapped
+				// ffmpeg/dataplane error could surface container paths
+				// or internal hostnames into a SOAP GetTransportInfo
+				// response (TransportStatus=ERROR_OCCURRED) visible to
+				// any DLNA control point. Match the redaction
+				// discipline used at buildAndStartSession's StartSession
+				// failure path. Operators have bridge logs (slog below)
+				// for the underlying cause.
+				slog.Default().Warn("dlna: core.Play resume failed", "err", err, "ref", owned)
+				a.setLastError("Play resume failed (see bridge logs)")
+				writeSOAPFault(w, upnpErrActionFailed)
+				return
+			}
+			a.setTransportState(transportStatePlaying)
+			writeSOAPResponse(w, avTransportServiceURN, "Play", nil)
 			return
 		}
-		a.setTransportState(transportStatePlaying)
+
+		// Live / unknown-duration resume: rebuild a fresh SessionRequest
+		// and reconnect at the live edge. The new markStartInFlight
+		// inside buildAndStartSession overwrites currentRef under mu;
+		// the prior session's OnStop closure still carries the OLD ref
+		// by value and will no-op on the compare-and-clear if it fires
+		// late (spec §Session Ref Lifecycle step 4).
+		if code := a.buildAndStartSession(0); code != 0 {
+			writeSOAPFault(w, code)
+			return
+		}
 		writeSOAPResponse(w, avTransportServiceURN, "Play", nil)
 		return
 	}
@@ -219,8 +264,24 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 // startFreshSession is the helper handlePlay's sub-case 4(c) and the
 // autoplay_on_set_uri branch in handleSetAVTransportURI both call.
 // Builds a SessionRequest from the loaded URI/metadata, mints a fresh
-// ref + OnStop closure, and calls core.StartSession with the lock
-// dropped. Returns 0 on success or a UPnP fault code on failure.
+// ref + OnStop closure, and calls core.StartSession at SeekOffsetMs=0.
+// Returns 0 on success or a UPnP fault code on failure.
+//
+// Thin wrapper over buildAndStartSession that encodes the "fresh start"
+// intent: SeekOffsetMs=0 from a STOPPED state. The PAUSED→live-edge
+// reconnect branch in handlePlay also calls buildAndStartSession(0) but
+// from a PAUSED state with an existing ref about to be superseded —
+// keeping these as two callers (rather than collapsing them) makes the
+// state-transition contract at the call site explicit.
+func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
+	return a.buildAndStartSession(0)
+}
+
+// buildAndStartSession is the shared core of startFreshSession and the
+// PAUSED→live-edge reconnect branch in handlePlay. Mints a fresh ref +
+// OnStop closure, builds the SessionRequest from the currently loaded
+// URI, and calls core.StartSession at the given SeekOffsetMs. Returns
+// 0 on success or a UPnP fault code on failure.
 //
 // Locking discipline (spec §Session Ref Lifecycle steps 1-6):
 //
@@ -233,19 +294,25 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, args playArgs) {
 //   5. On success: clearStartInFlight(ref, true) keeps currentRef and
 //      flips transportState to PLAYING.
 //   6. On failure: clearStartInFlight(ref, false) rolls back ref +
-//      records lastError + maps to 716 (the spec's catch-all for
-//      backend failures absent typed sentinels).
-func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
+//      records lastError + maps to 716 (probe unreachable) or 501
+//      (anything else) per the spec's fault mapping table.
+//
+// Why a shared helper: the live-edge reconnect path in handlePlay
+// rebuilds the same SessionRequest the fresh-start path builds, just
+// with the prior ref about to be replaced. Centralizing here keeps the
+// ref/OnStop mint, the SessionRequest shape, and the rollback discipline
+// in one place; the two callers differ only in which transport state
+// they enter the helper from.
+func (a *Adapter) buildAndStartSession(seekOffsetMs int) (faultCode upnpErrorCode) {
 	// Snapshot the loaded URI under mu. We DO NOT need to hold mu
 	// across the StartSession call — the URL is captured into a local.
 	a.mu.Lock()
 	loadedURI := a.loadedURI
 	a.mu.Unlock()
 	if loadedURI == "" {
-		// Defensive guard. Caller (handlePlay) already checked this
-		// path; autoplay also checks it before calling. If we somehow
-		// got here without a URI, return 701 rather than calling core
-		// with an empty StreamURL.
+		// Defensive guard. Callers already validated hasURI before
+		// reaching here; if we somehow got here without a URI, return
+		// 701 rather than calling core with an empty StreamURL.
 		return upnpErrTransitionNotAvail
 	}
 
@@ -269,8 +336,9 @@ func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
 		// DirectPlay=true: the validator approved a direct HTTP/HTTPS
 		// URL, which is what FFmpeg consumes via -ss for DirectPlay
 		// seeks. Live/unknown-duration sources still take this path —
-		// Seek advertisement is gated separately (Phase 3).
+		// Seek advertisement is gated separately via duration check.
 		DirectPlay:       true,
+		SeekOffsetMs:     seekOffsetMs,
 		OnStop:           onStop,
 		MediaInputPolicy: dlnaInputPolicy(),
 	}
@@ -291,8 +359,11 @@ func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
 		// for operator context.
 		a.setLastError("StartSession failed for " + redactURL(loadedURI))
 		// Stay in STOPPED — the spec at line 326 says "On failure,
-		// keep the prior transport state when possible." We never
-		// flipped to PLAYING; nothing to revert.
+		// keep the prior transport state when possible." For the
+		// fresh-start caller we never flipped to PLAYING; for the
+		// live-edge reconnect caller the prior session is already
+		// preempted by markStartInFlight, so STOPPED on failure is
+		// the cleanest observable state.
 		if errors.Is(err, core.ErrProbeUnreachable) {
 			return upnpErrResourceNotFound
 		}
@@ -380,8 +451,18 @@ func (a *Adapter) handleStop(w http.ResponseWriter, args stopArgs) {
 	}
 
 	a.mu.Lock()
+	enabled := a.cfg.Enabled
 	owned := a.currentRef
 	a.mu.Unlock()
+
+	// Disabled adapter: reject with 701. Same rationale as
+	// handleSetAVTransportURI's disabled-gate (control actions on a
+	// stale URI must fail cleanly rather than potentially preempt a
+	// valid Plex/Jellyfin session via core).
+	if !enabled {
+		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
 
 	st := a.core.Status()
 	if st.AdapterRef != "" && st.AdapterRef != owned {
