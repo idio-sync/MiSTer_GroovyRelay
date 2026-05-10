@@ -49,8 +49,8 @@
 - `OnStop` runs in a goroutine after core cancels the data plane. The adapter owns session cleanup by token/session id and must never assume the session is still current after `StartSession` returns.
 - Magnet logs keep only `xt=urn:btih:<first-8-hex>` or `magnet:<invalid>`. Drop `tr`, `dn`, `xs`, `ws`, `as`, and every other parameter.
 - Media serving accepts IPv4 and IPv6 loopback only via `net.ParseIP(host).IsLoopback()`, covering `127.0.0.0/8` and `::1`.
-- Cache deletion only touches marker-bearing directories under the adapter-owned storage root. Creation order is directory, marker file, data.
-- Persistent storage pruning only runs after the adapter has created and marked `<download_dir>/storage`; active info hashes are excluded from pruning.
+- Cache deletion only touches marker-bearing directories under the adapter-owned root. Creation order is directory, marker file, data.
+- Persistent storage pruning only runs after the adapter has created and marked `<download_dir-or-data_dir>/groovyrelay-torrent/storage`; active storage directory names are excluded from pruning.
 
 ---
 
@@ -72,6 +72,7 @@ package torrent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -120,27 +121,44 @@ func TestConfigValidateDownloadDirRejectsDangerousRoots(t *testing.T) {
 	cases := []string{
 		filepath.VolumeName(dataDir) + string(os.PathSeparator),
 		home,
-		filepath.Join(dataDir, ".."),
+		".." + string(os.PathSeparator) + "bad",
 	}
 	for _, dir := range cases {
 		cfg := DefaultConfig()
 		cfg.DownloadDir = dir
-		if err := cfg.Validate(dataDir); err == nil {
-			t.Fatalf("Validate(%q) succeeded, want error", dir)
+		if err := validateConfig(cfg, dataDir); err == nil {
+			t.Fatalf("validateConfig(%q) succeeded, want error", dir)
 		}
 	}
 }
 
-func TestConfigValidateDownloadDirAllowsOwnedChild(t *testing.T) {
+func TestValidateConfigDoesNotCreateDownloadDir(t *testing.T) {
 	dataDir := t.TempDir()
 	dir := filepath.Join(dataDir, "operator-selected-cache")
 	cfg := DefaultConfig()
 	cfg.DownloadDir = dir
-	if err := cfg.Validate(dataDir); err != nil {
-		t.Fatalf("Validate(%q): %v", dir, err)
+	if err := validateConfig(cfg, dataDir); err != nil {
+		t.Fatalf("validateConfig(%q): %v", dir, err)
 	}
-	if _, err := os.Stat(dir); err != nil {
-		t.Fatalf("Validate should create usable download_dir: %v", err)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("validateConfig created download_dir or stat failed differently: %v", err)
+	}
+}
+
+func TestProvisionDownloadRootCreatesOwnedChild(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.DownloadDir = filepath.Join(dataDir, "operator-selected-cache")
+	root, err := provisionDownloadRoot(cfg, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cfg.DownloadDir, "groovyrelay-torrent")
+	if root != want {
+		t.Fatalf("provisionDownloadRoot = %q, want %q", root, want)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("owned root missing: %v", err)
 	}
 }
 
@@ -170,13 +188,19 @@ func TestConfigChangeScope(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigChangeScopeCoversAllFields(t *testing.T) {
+	if got := reflect.TypeOf(Config{}).NumField(); got != torrentConfigFieldCount {
+		t.Fatalf("torrentConfigFieldCount = %d, Config fields = %d", torrentConfigFieldCount, got)
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests and verify the expected compile failure**
 
 Run: `go test ./internal/adapters/torrent`
 
-Expected: FAIL with errors containing `undefined: DefaultConfig`, `undefined: Config`, and `undefined: configChangeScope`.
+Expected: FAIL with errors containing `undefined: DefaultConfig`, `undefined: Config`, `undefined: validateConfig`, `undefined: provisionDownloadRoot`, and `undefined: configChangeScope`.
 
 - [ ] **Step 3: Implement config primitives**
 
@@ -189,11 +213,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
+
+const torrentConfigFieldCount = 10
 
 type Config struct {
 	Enabled                bool   `toml:"enabled"`
@@ -223,7 +250,7 @@ func DefaultConfig() Config {
 	}
 }
 
-func (c *Config) Validate(dataDir string) error {
+func validateConfig(c Config, dataDir string) error {
 	var errs adapters.FieldErrors
 	if dataDir == "" {
 		errs = append(errs, adapters.FieldError{Key: "download_dir", Msg: "bridge data_dir is required"})
@@ -231,8 +258,8 @@ func (c *Config) Validate(dataDir string) error {
 	if c.MaxCacheBytes < 0 {
 		errs = append(errs, adapters.FieldError{Key: "max_cache_bytes", Msg: "must be >= 0"})
 	}
-	if c.MetadataTimeoutSeconds < 5 || c.MetadataTimeoutSeconds > 300 {
-		errs = append(errs, adapters.FieldError{Key: "metadata_timeout_seconds", Msg: fmt.Sprintf("must be in [5, 300], got %d", c.MetadataTimeoutSeconds)})
+	if c.MetadataTimeoutSeconds < 5 || c.MetadataTimeoutSeconds > 600 {
+		errs = append(errs, adapters.FieldError{Key: "metadata_timeout_seconds", Msg: fmt.Sprintf("must be in [5, 600], got %d", c.MetadataTimeoutSeconds)})
 	}
 	if c.StartupBufferSeconds < 0 || c.StartupBufferSeconds > 120 {
 		errs = append(errs, adapters.FieldError{Key: "startup_buffer_seconds", Msg: fmt.Sprintf("must be in [0, 120], got %d", c.StartupBufferSeconds)})
@@ -246,13 +273,16 @@ func (c *Config) Validate(dataDir string) error {
 	if c.ListenPort != 0 && (c.ListenPort < 1024 || c.ListenPort > 65535) {
 		errs = append(errs, adapters.FieldError{Key: "listen_port", Msg: fmt.Sprintf("must be 0 or in [1024, 65535], got %d", c.ListenPort)})
 	}
-	if err := validateDownloadDir(c.DownloadDir, dataDir); err != nil {
+	if err := validateDownloadDirShape(c.DownloadDir, dataDir); err != nil {
 		errs = append(errs, adapters.FieldError{Key: "download_dir", Msg: err.Error()})
 	}
 	return errs.Err()
 }
 
 func configChangeScope(oldCfg, newCfg Config) adapters.ApplyScope {
+	if reflect.TypeOf(Config{}).NumField() != torrentConfigFieldCount {
+		return adapters.ScopeRestartCast
+	}
 	scope := adapters.ScopeHotSwap
 	if oldCfg.DownloadDir != newCfg.DownloadDir ||
 		oldCfg.MaxUploadRateKbps != newCfg.MaxUploadRateKbps ||
@@ -265,12 +295,28 @@ func configChangeScope(oldCfg, newCfg Config) adapters.ApplyScope {
 
 func effectiveDownloadDir(downloadDir, dataDir string) string {
 	if strings.TrimSpace(downloadDir) == "" {
-		return filepath.Join(dataDir, "torrent")
+		return dataDir
 	}
-	return filepath.Clean(downloadDir)
+	cleaned := filepath.Clean(downloadDir)
+	if filepath.IsAbs(cleaned) {
+		return cleaned
+	}
+	return filepath.Join(dataDir, cleaned)
 }
 
-func validateDownloadDir(downloadDir, dataDir string) error {
+func ownedDownloadRoot(downloadDir, dataDir string) string {
+	return filepath.Join(effectiveDownloadDir(downloadDir, dataDir), "groovyrelay-torrent")
+}
+
+func validateDownloadDirShape(downloadDir, dataDir string) error {
+	if strings.TrimSpace(downloadDir) != "" {
+		cleanedInput := filepath.Clean(downloadDir)
+		for _, part := range strings.Split(cleanedInput, string(os.PathSeparator)) {
+			if part == ".." {
+				return fmt.Errorf("must not contain '..' after cleaning")
+			}
+		}
+	}
 	dir := effectiveDownloadDir(downloadDir, dataDir)
 	if dir == "." || dir == "" {
 		return fmt.Errorf("must resolve to an absolute or data_dir-relative directory")
@@ -294,19 +340,30 @@ func validateDownloadDir(downloadDir, dataDir string) error {
 	if runtime.GOOS != "windows" && (samePath(abs, "/tmp") || samePath(abs, "/var") || samePath(abs, "/var/tmp")) {
 		return fmt.Errorf("must be an adapter-owned child directory, not a broad system directory")
 	}
-	if err := os.MkdirAll(abs, 0o755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
+	if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+		return fmt.Errorf("must be a directory")
 	}
-	probe := filepath.Join(abs, ".groovyrelay-write-test")
+	return nil
+}
+
+func provisionDownloadRoot(cfg Config, dataDir string) (string, error) {
+	if err := validateDownloadDirShape(cfg.DownloadDir, dataDir); err != nil {
+		return "", err
+	}
+	root := ownedDownloadRoot(cfg.DownloadDir, dataDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("create owned root: %w", err)
+	}
+	probe := filepath.Join(root, ".groovyrelay-write-test")
 	f, err := os.OpenFile(probe, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fmt.Errorf("directory is not writable: %w", err)
+		return "", fmt.Errorf("owned root is not writable: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close write probe: %w", err)
+		return "", fmt.Errorf("close write probe: %w", err)
 	}
 	_ = os.Remove(probe)
-	return nil
+	return root, nil
 }
 
 func isFilesystemRoot(path string) bool {
@@ -512,7 +569,7 @@ func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	if err := meta.PrimitiveDecode(raw, &cfg); err != nil {
 		return fmt.Errorf("torrent: decode config: %w", err)
 	}
-	if err := cfg.Validate(a.bridge.DataDir); err != nil {
+	if err := validateConfig(cfg, a.bridge.DataDir); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -526,7 +583,7 @@ func (a *Adapter) Validate(raw toml.Primitive, meta toml.MetaData) error {
 	if err := meta.PrimitiveDecode(raw, &cfg); err != nil {
 		return fmt.Errorf("torrent: decode config: %w", err)
 	}
-	return cfg.Validate(a.bridge.DataDir)
+	return validateConfig(cfg, a.bridge.DataDir)
 }
 
 func (a *Adapter) IsEnabled() bool {
@@ -562,7 +619,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	if err := meta.PrimitiveDecode(raw, &next); err != nil {
 		return 0, fmt.Errorf("torrent: decode apply config: %w", err)
 	}
-	if err := next.Validate(a.bridge.DataDir); err != nil {
+	if err := validateConfig(next, a.bridge.DataDir); err != nil {
 		a.setState(adapters.StateError, err.Error())
 		return 0, err
 	}
@@ -707,6 +764,9 @@ func TestRedactMagnetInvalid(t *testing.T) {
 	if got := redactMagnet("magnet:?dn=Movie"); got != "magnet:<invalid>" {
 		t.Fatalf("redactMagnet invalid = %q", got)
 	}
+	if got := redactMagnet("magnet:?xt=urn:btih:not-hex-at-all"); got != "magnet:<invalid>" {
+		t.Fatalf("redactMagnet non-hex = %q", got)
+	}
 }
 ```
 
@@ -746,6 +806,21 @@ func TestPickLargestPlayableTieBreaksByDisplayPath(t *testing.T) {
 	}
 }
 
+func TestPickLargestPlayableTieBreaksDuplicatePathByIndex(t *testing.T) {
+	files := []FileCandidate{
+		{DisplayPath: "movie.mkv", Length: 100, Index: 2},
+		{DisplayPath: "movie.mkv", Length: 100, Index: 1},
+	}
+	got, err := pickLargestPlayable(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Index != 1 {
+		t.Fatalf("selected index %d, want 1", got.Index)
+	}
+}
+
+
 func TestPickLargestPlayableReturnsTypedError(t *testing.T) {
 	_, err := pickLargestPlayable([]FileCandidate{{DisplayPath: "readme.txt", Length: 1}})
 	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrNoPlayableFile {
@@ -783,6 +858,7 @@ Create `internal/adapters/torrent/errors.go`:
 package torrent
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -864,13 +940,18 @@ func redactMagnet(raw string) string {
 		if !strings.HasPrefix(strings.ToLower(xt), prefix) {
 			continue
 		}
-		hash := xt[len(prefix):]
-		if len(hash) < 8 {
+		hash := strings.ToLower(xt[len(prefix):])
+		if len(hash) < 8 || !isHex(hash) {
 			return "magnet:<invalid>"
 		}
-		return fmt.Sprintf("magnet:?xt=urn:btih:%s", strings.ToLower(hash[:8]))
+		return fmt.Sprintf("magnet:?xt=urn:btih:%s", hash[:8])
 	}
 	return "magnet:<invalid>"
+}
+
+func isHex(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 ```
 
@@ -907,11 +988,14 @@ func pickLargestPlayable(files []FileCandidate) (FileCandidate, error) {
 	if len(playable) == 0 {
 		return FileCandidate{}, &TorrentError{Kind: ErrNoPlayableFile, Message: "torrent contains no playable video file"}
 	}
-	sort.Slice(playable, func(i, j int) bool {
+	sort.SliceStable(playable, func(i, j int) bool {
 		if playable[i].Length != playable[j].Length {
 			return playable[i].Length > playable[j].Length
 		}
-		return playable[i].DisplayPath < playable[j].DisplayPath
+		if playable[i].DisplayPath != playable[j].DisplayPath {
+			return playable[i].DisplayPath < playable[j].DisplayPath
+		}
+		return playable[i].Index < playable[j].Index
 	})
 	return playable[0], nil
 }
@@ -972,7 +1056,18 @@ func TestCacheRootUsesOwnedChild(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := DefaultConfig()
 	got := cacheRoot(cfg, dataDir)
-	want := filepath.Join(dataDir, "torrent", "storage")
+	want := filepath.Join(dataDir, "groovyrelay-torrent", "storage")
+	if got != want {
+		t.Fatalf("cacheRoot = %q, want %q", got, want)
+	}
+}
+
+func TestCacheRootWithConfiguredDownloadDirUsesOwnedChild(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.DownloadDir = filepath.Join(dataDir, "cache-parent")
+	got := cacheRoot(cfg, dataDir)
+	want := filepath.Join(cfg.DownloadDir, "groovyrelay-torrent", "storage")
 	if got != want {
 		t.Fatalf("cacheRoot = %q, want %q", got, want)
 	}
@@ -1040,13 +1135,14 @@ func TestPruneStorageCacheRequiresMarkedRoot(t *testing.T) {
 	}
 }
 
-func TestPruneStorageCacheDeletesOldInactiveChildren(t *testing.T) {
+func TestPruneStorageCacheSkipsActiveNewFileByInfoHashDir(t *testing.T) {
 	root := t.TempDir()
 	if err := ensureStorageRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	oldDir := filepath.Join(root, "oldhash")
-	activeDir := filepath.Join(root, "activehash")
+	oldDir := filepath.Join(root, infoHashStorageDirName("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+	activeKey := infoHashStorageDirName("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	activeDir := filepath.Join(root, activeKey)
 	if err := os.MkdirAll(oldDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1059,7 +1155,7 @@ func TestPruneStorageCacheDeletesOldInactiveChildren(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(activeDir, "data.bin"), []byte("active-data"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	active := map[string]struct{}{"activehash": {}}
+	active := map[string]struct{}{activeKey: {}}
 	if err := pruneStorageCache(root, int64(len("active-data")), active); err != nil {
 		t.Fatal(err)
 	}
@@ -1105,11 +1201,15 @@ type sessionMarker struct {
 }
 
 func cacheRoot(cfg Config, dataDir string) string {
-	return filepath.Join(effectiveDownloadDir(cfg.DownloadDir, dataDir), "storage")
+	return filepath.Join(ownedDownloadRoot(cfg.DownloadDir, dataDir), "storage")
 }
 
 func sessionRoot(cfg Config, dataDir string) string {
-	return filepath.Join(effectiveDownloadDir(cfg.DownloadDir, dataDir), "sessions")
+	return filepath.Join(ownedDownloadRoot(cfg.DownloadDir, dataDir), "sessions")
+}
+
+func infoHashStorageDirName(infoHash string) string {
+	return strings.ToLower(infoHash)
 }
 
 func createSessionDir(root, sessionID string) (string, error) {
@@ -1303,6 +1403,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"strings"
 	"testing"
 	"time"
@@ -1346,6 +1447,7 @@ type fakeTorrent struct {
 }
 
 func (f *fakeTorrent) InfoHash() string                        { return f.hash }
+func (f *fakeTorrent) StorageKey() string                      { return infoHashStorageDirName(f.hash) }
 func (f *fakeTorrent) Name() string                            { return f.name }
 func (f *fakeTorrent) WaitInfo(context.Context) error          { return nil }
 func (f *fakeTorrent) Files() []FileCandidate                  { return f.files }
@@ -1465,6 +1567,92 @@ func TestSameInfoHashReusesTorrentObject(t *testing.T) {
 		t.Fatalf("torrent refs = %d, want 2", got)
 	}
 }
+
+func TestActiveSessionSurvivesMidSessionGateToggle(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.TrafficAcknowledged = true
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	a := newStartedTestAdapter(t, cfg, client, core)
+	started, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.SetEnabled(false)
+	a.mu.Lock()
+	a.cfg.TrafficAcknowledged = false
+	_, stillActive := a.sessions[started.Token]
+	a.mu.Unlock()
+	if !stillActive {
+		t.Fatal("active session was removed after enabled/traffic_acknowledged gates changed")
+	}
+	_, err = a.startMagnet(context.Background(), "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrDisabled {
+		t.Fatalf("new session after disabled err = %#v, want ErrDisabled", err)
+	}
+}
+
+func TestOnStopCleanupIsIdempotentUnderConcurrentCalls(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.TrafficAcknowledged = true
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	a := newStartedTestAdapter(t, cfg, client, core)
+	started, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(core.reqs) != 1 || core.reqs[0].OnStop == nil {
+		t.Fatalf("core request missing OnStop: %#v", core.reqs)
+	}
+	var wg sync.WaitGroup
+	for _, reason := range []string{"stopped", "preempted", "error"} {
+		wg.Add(1)
+		go func(reason string) {
+			defer wg.Done()
+			core.reqs[0].OnStop(reason)
+		}(reason)
+	}
+	wg.Wait()
+	a.mu.Lock()
+	_, sessionExists := a.sessions[started.Token]
+	_, torrentExists := a.torrents["0123456789abcdef0123456789abcdef01234567"]
+	a.mu.Unlock()
+	if sessionExists {
+		t.Fatal("session still registered after concurrent OnStop cleanup")
+	}
+	if torrentExists {
+		t.Fatal("torrent ref still registered after concurrent OnStop cleanup")
+	}
+}
+
+func TestDifferentInfoHashStartsSecondCoreSession(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.TrafficAcknowledged = true
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	a := newStartedTestAdapter(t, cfg, client, core)
+	first, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AdapterRef == second.AdapterRef {
+		t.Fatalf("adapter refs equal: %q", first.AdapterRef)
+	}
+	if len(core.reqs) != 2 {
+		t.Fatalf("core StartSession calls = %d, want 2", len(core.reqs))
+	}
+	if core.reqs[0].AdapterRef == core.reqs[1].AdapterRef {
+		t.Fatalf("core adapter refs equal: %q", core.reqs[0].AdapterRef)
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -1506,6 +1694,7 @@ type TorrentClient interface {
 
 type TorrentHandle interface {
 	InfoHash() string
+	StorageKey() string
 	Name() string
 	WaitInfo(context.Context) error
 	Files() []FileCandidate
@@ -1550,6 +1739,7 @@ type Session struct {
 	ID          string
 	Token       string
 	InfoHash    string
+	StorageKey  string
 	FileIndex   int
 	Title       string
 	SessionDir  string
@@ -1618,6 +1808,9 @@ func (a *Adapter) ensureClient(cfg Config) (TorrentClient, error) {
 		return client, nil
 	}
 	root := cacheRoot(cfg, a.bridge.DataDir)
+	if _, err := provisionDownloadRoot(cfg, a.bridge.DataDir); err != nil {
+		return nil, err
+	}
 	if err := ensureStorageRoot(root); err != nil {
 		return nil, err
 	}
@@ -1658,6 +1851,7 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 		ID:         sessionID,
 		Token:      token,
 		InfoHash:   t.InfoHash(),
+		StorageKey: t.StorageKey(),
 		FileIndex:  file.Index,
 		Title:      sanitizeTitle(file.DisplayPath),
 		SessionDir: dir,
@@ -1726,9 +1920,9 @@ func (a *Adapter) cleanupSession(token, reason string) {
 		}
 	}
 	cfg := a.cfg
-	active := make(map[string]struct{}, len(a.torrents))
-	for hash := range a.torrents {
-		active[hash] = struct{}{}
+	active := make(map[string]struct{}, len(a.sessions))
+	for _, live := range a.sessions {
+		active[live.StorageKey] = struct{}{}
 	}
 	a.mu.Unlock()
 	if !s.KeepData {
@@ -2110,6 +2304,7 @@ import (
 )
 
 const maxTorrentUploadBytes = 4 * 1024 * 1024
+const maxTorrentMultipartOverheadBytes = 64 * 1024
 
 func (a *Adapter) UIRoutes() []adapters.Route {
 	return []adapters.Route{
@@ -2157,25 +2352,43 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Adapter) handleUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxTorrentUploadBytes)
-	if err := r.ParseMultipartForm(maxTorrentUploadBytes); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			a.respondRouteError(w, r, http.StatusRequestEntityTooLarge, "torrent file exceeds 4 MiB")
-			return
-		}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTorrentUploadBytes+maxTorrentMultipartOverheadBytes)
+	mr, err := r.MultipartReader()
+	if err != nil {
 		a.respondRouteError(w, r, http.StatusBadRequest, "parse upload: "+err.Error())
 		return
 	}
-	file, _, err := r.FormFile("torrent_file")
-	if err != nil {
-		a.respondRouteError(w, r, http.StatusBadRequest, "torrent_file is required")
-		return
+	var body []byte
+	found := false
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				a.respondRouteError(w, r, http.StatusRequestEntityTooLarge, "torrent upload exceeds 4 MiB")
+				return
+			}
+			a.respondRouteError(w, r, http.StatusBadRequest, "read multipart: "+err.Error())
+			return
+		}
+		if part.FormName() != "torrent_file" {
+			_ = part.Close()
+			continue
+		}
+		found = true
+		body, err = io.ReadAll(io.LimitReader(part, maxTorrentUploadBytes+1))
+		_ = part.Close()
+		if err != nil {
+			a.respondRouteError(w, r, http.StatusBadRequest, "read torrent_file: "+err.Error())
+			return
+		}
+		break
 	}
-	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, maxTorrentUploadBytes+1))
-	if err != nil {
-		a.respondRouteError(w, r, http.StatusBadRequest, "read torrent_file: "+err.Error())
+	if !found {
+		a.respondRouteError(w, r, http.StatusBadRequest, "torrent_file is required")
 		return
 	}
 	if len(body) > maxTorrentUploadBytes {
@@ -2280,7 +2493,7 @@ func (a *Adapter) renderPanel() string {
 	}
 	b.WriteString(`<p class="muted">Enable <code>traffic_acknowledged</code> before starting magnet links or torrent uploads.</p>`)
 	b.WriteString(`<form hx-post="/ui/adapter/torrent/play" hx-target="#torrent-panel" hx-swap="outerHTML" autocomplete="off">`)
-b.WriteString(`<label>Magnet <input type="text" name="magnet" required></label>`)
+	b.WriteString(`<label>Magnet <input type="text" name="magnet" required></label>`)
 	b.WriteString(`<button type="submit">Play Magnet</button>`)
 	b.WriteString(`</form>`)
 	b.WriteString(`<form hx-post="/ui/adapter/torrent/upload" hx-target="#torrent-panel" hx-swap="outerHTML" enctype="multipart/form-data">`)
@@ -2328,9 +2541,10 @@ Run:
 
 ```bash
 go get github.com/anacrolix/torrent@v1.61.0
+go mod tidy
 ```
 
-Expected: `go.mod` includes `github.com/anacrolix/torrent v1.61.0` and `go.sum` includes new module checksums.
+Expected: `go.mod` includes `github.com/anacrolix/torrent v1.61.0`, a direct requirement for `golang.org/x/time` if needed by the `rate` import, and `go.sum` includes new module checksums.
 
 - [ ] **Step 2: Write compile-focused real wrapper test**
 
@@ -2369,7 +2583,7 @@ import (
 )
 ```
 
-Delete the temporary `newRealClient` stub from Task 4, then append this implementation to `internal/adapters/torrent/client.go`:
+Delete the temporary `newRealClient` stub from Task 4, then append this implementation to `internal/adapters/torrent/client.go`. `Torrent.GotInfo()` returns `events.Done` in anacrolix/torrent v1.61.0; `waitDone(ctx, done <-chan struct{})` is the compile-time check that this remains selectable as a receive-only done channel.
 
 ```go
 
@@ -2444,13 +2658,21 @@ func (t *realTorrent) InfoHash() string {
 	return t.torrent.InfoHash().HexString()
 }
 
+func (t *realTorrent) StorageKey() string {
+	return infoHashStorageDirName(t.InfoHash())
+}
+
 func (t *realTorrent) Name() string {
 	return t.torrent.Name()
 }
 
 func (t *realTorrent) WaitInfo(ctx context.Context) error {
+	return waitDone(ctx, t.torrent.GotInfo())
+}
+
+func waitDone(ctx context.Context, done <-chan struct{}) error {
 	select {
-	case <-t.torrent.GotInfo():
+	case <-done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -2495,11 +2717,15 @@ func (t *realTorrent) Open(ctx context.Context, index int) (ReadSeekCloser, erro
 }
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [ ] **Step 4: Run focused tests and cross-platform build**
 
 Run: `go test ./internal/adapters/torrent`
 
 Expected: PASS.
+
+Run: `GOOS=windows GOARCH=amd64 go test -c ./internal/adapters/torrent -o /tmp/torrent-adapter-windows.test.exe`
+
+Expected: PASS build with exit code 0. This catches Windows-only anacrolix/uTP compile issues before the adapter is registered in `main.go`.
 
 - [ ] **Step 5: Commit**
 
@@ -2627,7 +2853,7 @@ The Torrent adapter can cast a magnet link or uploaded `.torrent` file through M
 
 Use it only for content you have the right to download and upload. BitTorrent traffic can be visible to peers and network operators. The default upload limit is 512 KiB/s; set `max_upload_rate_kbps = 0` for unlimited upload or a lower positive value for a stricter cap.
 
-Torrent media is served only to the local bridge process through `/torrent/session/{token}/media`, and that route rejects non-loopback clients. Session cache data is deleted after playback unless `keep_completed = true`.
+Torrent media is served only to the local bridge process through `/torrent/session/{token}/media`, and that route rejects non-loopback clients. Cache data lives under `<download_dir-or-data_dir>/groovyrelay-torrent/`; session cache data is deleted after playback unless `keep_completed = true`.
 ```
 
 - [ ] **Step 3: Update third-party notices**
@@ -2719,7 +2945,7 @@ If Steps 1-5 passed without changes, skip this commit.
 - [ ] A second same-info-hash session reuses the torrent handle and receives a new token.
 - [ ] Media route accepts `127.0.0.0/8` and `::1`, rejects LAN/non-IP hosts, and supports byte ranges.
 - [ ] Session cache deletion refuses roots, home directories, broad system directories, outside-root paths, and unmarked directories.
-- [ ] Persistent storage pruning respects `max_cache_bytes`, refuses unmarked storage roots, and skips active info hashes.
+- [ ] Persistent storage pruning respects `max_cache_bytes`, refuses unmarked storage roots, and skips active storage directory names.
 - [ ] `core.SessionRequest` sets `Source`, `AdapterRef`, `DirectPlay`, pause/seek capabilities, title, `OnStop`, and the required `MediaInputPolicy`.
 - [ ] Logs and errors never include raw magnet trackers or display names from magnet query params.
 - [ ] README and example config describe consent, legality/traffic visibility, upload limits, cache policy, and route scope.
