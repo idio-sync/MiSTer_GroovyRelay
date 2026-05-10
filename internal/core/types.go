@@ -68,6 +68,11 @@ type SessionRequest struct {
 	// goroutine after the data plane has been cancelled.
 	OnStop func(reason string)
 
+	// Title is a short human-readable label for the session, populated
+	// by the adapter (Plex item title / Jellyfin item Name / URL filename).
+	// Surfaced by the status home; never inspected by core. May be empty.
+	Title string
+
 	// MediaInputPolicy constrains how ffprobe / ffmpeg dereference the
 	// stream URL: protocol whitelist, reconnect/redirect behavior,
 	// blocked-header deny-list, and read/write timeout. Adapters that hand

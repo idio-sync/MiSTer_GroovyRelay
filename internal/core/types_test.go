@@ -131,3 +131,17 @@ func TestSessionStatus_PopulatedValues(t *testing.T) {
 		t.Errorf("StartedAt = %v, want %v", s.StartedAt, now)
 	}
 }
+
+func TestSessionRequest_Title(t *testing.T) {
+	r := SessionRequest{Title: "Game of Thrones · S01E03"}
+	if r.Title != "Game of Thrones · S01E03" {
+		t.Errorf("Title: got %q, want %q", r.Title, "Game of Thrones · S01E03")
+	}
+}
+
+func TestSessionRequest_Title_ZeroValue(t *testing.T) {
+	var r SessionRequest
+	if r.Title != "" {
+		t.Errorf("zero-value Title: got %q, want empty", r.Title)
+	}
+}
