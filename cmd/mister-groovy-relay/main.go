@@ -120,12 +120,11 @@ func main() {
 	}
 	defer sender.Close()
 
-	// SendPayload pacing. Defaults to 10 µs per chunk inside NewSender —
-	// empirically proven to hold steady 60 Hz on a wired LAN with no
-	// receiver-side packet loss. GROOVY_PACING_US overrides at any
-	// non-negative value: set to 0 to explicitly disable pacing (when
-	// profiling shows it's unnecessary on a dedicated link), or to a
-	// larger value (15-50) on Wi-Fi / power-line setups that need more
+	// SendPayload pacing. Defaults to 20 µs per chunk inside NewSender so
+	// full RAW-field bursts stay below gigabit line rate. GROOVY_PACING_US
+	// overrides at any non-negative value: set to 0 to explicitly disable
+	// pacing when profiling shows it's unnecessary on a dedicated link, or
+	// to a larger value (25-50) on Wi-Fi / power-line setups that need more
 	// receiver-buffer drain time per chunk.
 	if v := os.Getenv("GROOVY_PACING_US"); v != "" {
 		if us, parseErr := time.ParseDuration(v + "us"); parseErr == nil && us >= 0 {

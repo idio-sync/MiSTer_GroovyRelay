@@ -58,8 +58,9 @@ type PlaneConfig struct {
 // in-progress) given the invariant that ReadFramesFromPipePooled holds
 // at most one *FrameBuf outside the pool at any time.
 const (
-	videoChCap     = 8
-	framePoolSlots = videoChCap + 2
+	videoChCap               = 8
+	framePoolSlots           = videoChCap + 2
+	lz4FallbackDebugInterval = time.Second
 )
 
 // Startup prebuffer defaults. The field tick loop runs at 59.94 Hz;
@@ -140,6 +141,12 @@ type Plane struct {
 	// once per second. Owned by the tick goroutine; not safe for concurrent
 	// access (which never happens by construction).
 	lastBudgetWarn time.Time
+
+	// LZ4 fallback debug logging is also tick-goroutine owned. Some
+	// high-detail scenes can be incompressible for many consecutive fields,
+	// so aggregate the hot-path debug line instead of printing per field.
+	lastLZ4FallbackDebug       time.Time
+	lz4FallbackDebugSuppressed int
 }
 
 // NewPlane constructs a Plane that is ready to Run. The Sender inside cfg
@@ -748,7 +755,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			opts.CompressedSize = uint32(n)
 			compressedLen = n
 		} else {
-			slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", "size", len(raw))
+			p.logLZ4RawFallback(len(raw), time.Now())
 		}
 		lz4Elapsed = time.Since(t)
 	}
@@ -797,6 +804,21 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			"lz4_enabled", p.cfg.LZ4Enabled)
 	}
 	return fieldElapsed
+}
+
+func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
+	if !p.lastLZ4FallbackDebug.IsZero() && now.Sub(p.lastLZ4FallbackDebug) < lz4FallbackDebugInterval {
+		p.lz4FallbackDebugSuppressed++
+		return
+	}
+
+	attrs := []any{"size", size}
+	if p.lz4FallbackDebugSuppressed > 0 {
+		attrs = append(attrs, "suppressed_fields", p.lz4FallbackDebugSuppressed)
+		p.lz4FallbackDebugSuppressed = 0
+	}
+	slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", attrs...)
+	p.lastLZ4FallbackDebug = now
 }
 
 // sendDuplicate emits a 9-byte dup-BLIT header with no payload. Used on pipe

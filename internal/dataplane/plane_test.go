@@ -1,12 +1,15 @@
 package dataplane
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -144,6 +147,110 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 	}
 	if hdr[0] != groovy.CmdBlitFieldVSync {
 		t.Errorf("header[0] = %#x, want CmdBlitFieldVSync %#x", hdr[0], groovy.CmdBlitFieldVSync)
+	}
+}
+
+func TestSendField_DoesNotEmitDeltaLZ4ByDefault(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+
+	listener, err := fakemister.NewListener("127.0.0.1:0")
+	requireUDPSockets(t, err)
+
+	cmds := make(chan fakemister.Command, 8)
+	fields := make(chan fakemister.FieldEvent, 2)
+	audios := make(chan fakemister.AudioEvent, 1)
+	runDone := make(chan struct{})
+	go func() {
+		listener.RunWithFields(cmds, fields, audios, func() uint32 { return fieldBytes })
+		close(runDone)
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-runDone
+	})
+
+	addr := listener.Addr().(*net.UDPAddr)
+	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
+	requireUDPSockets(t, err)
+	defer sender.Close()
+
+	p := NewPlane(PlaneConfig{
+		Sender:        sender,
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+
+	base := make([]byte, fieldBytes)
+	if _, err := cryptorand.Read(base); err != nil {
+		t.Fatal(err)
+	}
+	next := append([]byte(nil), base...)
+	for i := 0; i < 64; i++ {
+		next[i*1024] ^= byte(i + 1)
+	}
+
+	p.sendField(1, 0, base)
+	first := awaitFieldEvent(t, fields)
+	if first.Header.Compressed || first.Header.Delta {
+		t.Fatalf("seed field header = %+v, want RAW full field", first.Header)
+	}
+
+	p.sendField(3, 0, next)
+	second := awaitFieldEvent(t, fields)
+	if second.Header.Compressed || second.Header.Delta {
+		t.Fatalf("second field header = %+v, want RAW full field", second.Header)
+	}
+
+	decoder := fakemister.NewFieldDecoder()
+	if _, err := decoder.Decode(first, fieldBytes); err != nil {
+		t.Fatalf("decode seed field: %v", err)
+	}
+	got, err := decoder.Decode(second, fieldBytes)
+	if err != nil {
+		t.Fatalf("decode delta field: %v", err)
+	}
+	if !bytes.Equal(got, next) {
+		t.Fatal("delta field decoded to different pixels")
+	}
+}
+
+func TestLZ4FallbackDebugLogIsThrottled(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	p := &Plane{}
+	now := time.Unix(1, 0)
+	p.logLZ4RawFallback(518400, now)
+	p.logLZ4RawFallback(518400, now.Add(10*time.Millisecond))
+	p.logLZ4RawFallback(518400, now.Add(20*time.Millisecond))
+
+	if got := strings.Count(buf.String(), "lz4 incompressible frame; falling back to RAW BLIT"); got != 1 {
+		t.Fatalf("debug logs before throttle interval = %d, want 1\n%s", got, buf.String())
+	}
+
+	p.logLZ4RawFallback(518400, now.Add(time.Second))
+
+	out := buf.String()
+	if got := strings.Count(out, "lz4 incompressible frame; falling back to RAW BLIT"); got != 2 {
+		t.Fatalf("debug logs after throttle interval = %d, want 2\n%s", got, out)
+	}
+	if !strings.Contains(out, "suppressed_fields=2") {
+		t.Fatalf("aggregate log missing suppressed_fields=2\n%s", out)
+	}
+}
+
+func awaitFieldEvent(t *testing.T, fields <-chan fakemister.FieldEvent) fakemister.FieldEvent {
+	t.Helper()
+	select {
+	case fe := <-fields:
+		return fe
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for field event")
+		return fakemister.FieldEvent{}
 	}
 }
 
