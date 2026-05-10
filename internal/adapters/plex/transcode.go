@@ -52,6 +52,29 @@ type TranscodeRequest struct {
 	TranscodeSessionID string
 }
 
+type MusicTranscodeRequest struct {
+	PlexServerURL      string
+	MediaPath          string
+	Token              string
+	OffsetMs           int
+	SessionID          string
+	ClientID           string
+	DeviceName         string
+	Product            string
+	Platform           string
+	Version            string
+	Provides           string
+	TranscodeSessionID string
+	MaxAudioBitrate    int
+}
+
+type MusicMetadata struct {
+	Title    string
+	Artist   string
+	Album    string
+	Duration time.Duration
+}
+
 func NewTranscodeSessionID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -83,6 +106,10 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 	return r.PlexServerURL + "/video/:/transcode/universal/start.ts?" + buildTranscodeQuery(r).Encode()
 }
 
+func BuildMusicTranscodeURL(r MusicTranscodeRequest) string {
+	return strings.TrimRight(r.PlexServerURL, "/") + "/music/:/transcode/universal/start.mp3?" + buildMusicTranscodeQuery(r).Encode()
+}
+
 // BuildDecisionURL targets PMS's /video/:/transcode/universal/decision endpoint
 // using the exact same query as BuildTranscodeURL. PMS returns an XML
 // MediaContainer describing what it would actually do (direct play, direct
@@ -90,6 +117,41 @@ func BuildTranscodeURL(r TranscodeRequest) string {
 // PMS's true decision when Tautulli reports something unexpected.
 func BuildDecisionURL(r TranscodeRequest) string {
 	return r.PlexServerURL + "/video/:/transcode/universal/decision?" + buildTranscodeQuery(r).Encode()
+}
+
+func buildMusicTranscodeQuery(r MusicTranscodeRequest) url.Values {
+	if r.MaxAudioBitrate == 0 {
+		r.MaxAudioBitrate = 320
+	}
+	if r.Product == "" {
+		r.Product = companionProduct
+	}
+	if r.Platform == "" {
+		r.Platform = companionPlatform
+	}
+	if r.Provides == "" {
+		r.Provides = companionProvides
+	}
+	q := url.Values{}
+	q.Set("path", r.MediaPath)
+	q.Set("protocol", "http")
+	q.Set("directPlay", "0")
+	q.Set("directStream", "0")
+	q.Set("audioCodec", "mp3")
+	q.Set("maxAudioBitrate", fmt.Sprintf("%d", r.MaxAudioBitrate))
+	q.Set("offset", fmt.Sprintf("%d", r.OffsetMs/1000))
+	if r.TranscodeSessionID != "" {
+		q.Set("transcodeSessionId", r.TranscodeSessionID)
+	}
+	q.Set("X-Plex-Session-Identifier", r.SessionID)
+	q.Set("X-Plex-Client-Identifier", r.ClientID)
+	q.Set("X-Plex-Device-Name", r.DeviceName)
+	q.Set("X-Plex-Product", r.Product)
+	q.Set("X-Plex-Platform", r.Platform)
+	q.Set("X-Plex-Version", r.Version)
+	q.Set("X-Plex-Provides", r.Provides)
+	q.Set("X-Plex-Token", r.Token)
+	return q
 }
 
 func buildTranscodeQuery(r TranscodeRequest) url.Values {
@@ -203,6 +265,20 @@ type pmsMediaContainer struct {
 			} `xml:"Part"`
 		} `xml:"Media"`
 	} `xml:"Video"`
+	Track []struct {
+		Key              string `xml:"key,attr"`
+		RatingKey        string `xml:"ratingKey,attr"`
+		Title            string `xml:"title,attr"`
+		GrandparentTitle string `xml:"grandparentTitle,attr"`
+		ParentTitle      string `xml:"parentTitle,attr"`
+		DurationMs       int64  `xml:"duration,attr"`
+		Media            []struct {
+			Part []struct {
+				ID  string `xml:"id,attr"`
+				Key string `xml:"key,attr"`
+			} `xml:"Part"`
+		} `xml:"Media"`
+	} `xml:"Track"`
 }
 
 func fetchMetadata(ctx context.Context, serverURL, mediaKey, token string) (*pmsMediaContainer, error) {
@@ -248,6 +324,23 @@ func PartIDFor(ctx context.Context, serverURL, mediaKey, token string) (string, 
 		}
 	}
 	return "", fmt.Errorf("part id not found under %s", mediaKey)
+}
+
+func MusicMetadataFor(ctx context.Context, serverURL, mediaKey, token string) (MusicMetadata, bool, error) {
+	mc, err := fetchMetadata(ctx, serverURL, mediaKey, token)
+	if err != nil {
+		return MusicMetadata{}, false, err
+	}
+	if len(mc.Track) == 0 {
+		return MusicMetadata{}, false, nil
+	}
+	tr := mc.Track[0]
+	return MusicMetadata{
+		Title:    tr.Title,
+		Artist:   tr.GrandparentTitle,
+		Album:    tr.ParentTitle,
+		Duration: time.Duration(tr.DurationMs) * time.Millisecond,
+	}, true, nil
 }
 
 func SetStreamSelection(ctx context.Context, serverURL, mediaKey, token, audioStreamID, subtitleStreamID string) error {
