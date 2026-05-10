@@ -88,8 +88,19 @@ type Manager struct {
 
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
-	plane    *dataplane.Plane // nil when idle
+	plane    planeRunner // nil when idle
 	active   *activeSession
+}
+
+type planeRunner interface {
+	Run(context.Context) error
+	Done() <-chan struct{}
+	Position() time.Duration
+	SetFieldOrder(string) error
+}
+
+var newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+	return dataplane.NewPlane(cfg)
 }
 
 // BinaryResolver is the manager's narrow view of an external binary resolver.
@@ -152,6 +163,50 @@ func (m *Manager) logPlaneExit(runErr error) {
 		return
 	}
 	slog.Warn("data plane exited", "err", runErr)
+}
+
+func (m *Manager) handlePlaneExit(plane planeRunner, runErr error) {
+	m.logPlaneExit(runErr)
+
+	var onStop func(string)
+	var reason string
+	var subtitlePath string
+
+	m.mu.Lock()
+	if m.plane != plane {
+		m.mu.Unlock()
+		return
+	}
+	m.plane = nil
+	switch {
+	case runErr == nil:
+		_ = m.fsm.Transition(EvEOF)
+		if m.active != nil {
+			reason = "eof"
+			onStop = m.active.req.OnStop
+			subtitlePath = m.active.req.SubtitlePath
+			m.active = nil
+			m.cancelFn = nil
+		}
+	case errors.Is(runErr, context.Canceled):
+		// Pause/Stop/preempt intentionally cancel the plane. Preserve
+		// session ownership here; the caller that canceled owns final cleanup.
+	default:
+		_ = m.fsm.Transition(EvError)
+		if m.active != nil {
+			reason = "error"
+			onStop = m.active.req.OnStop
+			subtitlePath = m.active.req.SubtitlePath
+			m.active = nil
+			m.cancelFn = nil
+		}
+	}
+	m.mu.Unlock()
+
+	removeSubtitleFile(subtitlePath)
+	if reason != "" {
+		notifySessionStop(onStop, reason)
+	}
 }
 
 // probeFn / probeCropFn are the package-private indirections through
@@ -287,7 +342,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		Policy:            req.MediaInputPolicy,
 	}
 
-	plane := dataplane.NewPlane(dataplane.PlaneConfig{
+	plane := newPlane(dataplane.PlaneConfig{
 		Sender:        m.sender,
 		SpawnSpec:     spec,
 		Modeline:      modeline,
@@ -310,50 +365,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 
 	go func() {
 		runErr := plane.Run(ctx)
-		m.logPlaneExit(runErr)
-
-		// Capture OnStop closure and subtitle path outside of the lock so
-		// we can fire / clean up without holding m.mu. notifySessionStop
-		// spawns its own goroutine, but we follow the discipline of
-		// "never call adapter code under Manager.mu," and the same goes
-		// for any IO like file removal.
-		var onStop func(string)
-		var subtitlePath string
-
-		m.mu.Lock()
-		if m.plane != plane {
-			m.mu.Unlock()
-			return
-		}
-		m.plane = nil
-		switch {
-		case runErr == nil:
-			_ = m.fsm.Transition(EvEOF)
-		case errors.Is(runErr, context.Canceled):
-			// Pause's intentional cancellation; preserve StatePaused, do not
-			// transition or fire OnStop.
-		default:
-			_ = m.fsm.Transition(EvError)
-			if m.active != nil {
-				onStop = m.active.req.OnStop
-				// Capture subtitle path BEFORE clearing m.active so the
-				// file gets cleaned up. Without this, a subsequent Stop
-				// would see m.active=nil and skip removeSubtitleFile —
-				// the subtitle file would leak on every plane error.
-				subtitlePath = m.active.req.SubtitlePath
-				// Clear m.active so a subsequent Stop() doesn't re-fire
-				// OnStop with reason "stopped" for the same session.
-				// Also clear m.cancelFn since the plane has already exited;
-				// leaving a stale cancelFn would let Stop() think there's
-				// something to cancel.
-				m.active = nil
-				m.cancelFn = nil
-			}
-		}
-		m.mu.Unlock()
-
-		removeSubtitleFile(subtitlePath)
-		notifySessionStop(onStop, "error")
+		m.handlePlaneExit(plane, runErr)
 	}()
 	return nil
 }

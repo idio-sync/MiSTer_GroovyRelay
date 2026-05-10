@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
@@ -71,6 +72,13 @@ func bogusRequest() SessionRequest {
 		Capabilities: Capabilities{CanSeek: true, CanPause: true},
 	}
 }
+
+type fakePlane struct{}
+
+func (f *fakePlane) Run(context.Context) error  { return nil }
+func (f *fakePlane) Done() <-chan struct{}      { ch := make(chan struct{}); close(ch); return ch }
+func (f *fakePlane) Position() time.Duration    { return 0 }
+func (f *fakePlane) SetFieldOrder(string) error { return nil }
 
 func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	m := newTestManager(t)
@@ -133,6 +141,79 @@ func TestManager_LogPlaneExit_InitACKTimeoutIsClear(t *testing.T) {
 	}
 	if !strings.Contains(got, "mister_port=32100") {
 		t.Fatalf("expected mister_port in log, got %q", got)
+	}
+}
+
+func TestManager_NaturalEOFFiresOnStopAndClearsActive(t *testing.T) {
+	m := newTestManager(t)
+	done := make(chan string, 1)
+
+	plane := &fakePlane{}
+	m.mu.Lock()
+	m.plane = plane
+	m.cancelFn = func() {}
+	m.active = &activeSession{req: SessionRequest{
+		OnStop: func(reason string) { done <- reason },
+	}}
+	m.mu.Unlock()
+
+	m.handlePlaneExit(plane, nil)
+
+	select {
+	case got := <-done:
+		if got != "eof" {
+			t.Fatalf("OnStop reason = %q, want eof", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called")
+	}
+	if st := m.Status(); st.State != StateIdle {
+		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active != nil || m.plane != nil || m.cancelFn != nil {
+		t.Fatalf("manager did not clear session: active=%v plane=%v cancelFnNil=%v", m.active, m.plane, m.cancelFn == nil)
+	}
+}
+
+func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
+	prevNewPlane := newPlane
+	t.Cleanup(func() { newPlane = prevNewPlane })
+
+	plane := &fakePlane{}
+	newPlane = func(dataplane.PlaneConfig) planeRunner { return plane }
+
+	m := newTestManager(t)
+	done := make(chan string, 1)
+	req := SessionRequest{
+		StreamURL:  "https://example.test/video.mp4",
+		DirectPlay: true,
+		OnStop:     func(reason string) { done <- reason },
+	}
+	probe := &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 48000, Duration: 1}
+
+	m.mu.Lock()
+	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg"); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("startPlaneLocked: %v", err)
+	}
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition play media: %v", err)
+	}
+	m.mu.Unlock()
+
+	select {
+	case got := <-done:
+		if got != "eof" {
+			t.Fatalf("OnStop reason = %q, want eof", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called via goroutine wrapper")
+	}
+	if st := m.Status(); st.State != StateIdle {
+		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
 	}
 }
 
