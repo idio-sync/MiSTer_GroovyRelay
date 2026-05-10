@@ -415,6 +415,37 @@ func (a *Adapter) IsEnabled() bool {
 	return a.plexCfg.Enabled
 }
 
+// IsLinked implements adapters.LinkAware. True when an auth token is
+// persisted; the wizard's Continue button gates on this. See PR2 spec §S8.
+func (a *Adapter) IsLinked() bool {
+	return a.snapshotToken() != ""
+}
+
+// LinkPhase implements adapters.LinkAware. Derived from the (token,
+// pending) tuple. Adapter-defined string; the shared UI emits it as a
+// CSS class hook only. See PR2 spec §S8.
+func (a *Adapter) LinkPhase() string {
+	if a.snapshotToken() != "" {
+		return "linked"
+	}
+	p := a.snapshotPending()
+	if p == nil {
+		return "idle"
+	}
+	if p.Done() {
+		// Race window: PIN flow completed but token snapshot hasn't
+		// been refreshed yet. Treat as terminal.
+		if p.Error() != "" {
+			return "error"
+		}
+		return "linked"
+	}
+	if p.Expired() {
+		return "error"
+	}
+	return "pin-issued"
+}
+
 func (a *Adapter) Status() adapters.Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
