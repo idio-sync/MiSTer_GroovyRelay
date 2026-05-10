@@ -198,6 +198,7 @@ func main() {
 		DeviceUUID: store.DeviceUUID,
 		HostIP:     hostIP,
 		HTTPPort:   sec.Bridge.UI.HTTPPort,
+		Core:       coreMgr,
 	})
 	if err != nil {
 		dieFriendly("dlna adapter init", err)

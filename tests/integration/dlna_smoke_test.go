@@ -10,7 +10,21 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+// dlnaStubCore is a no-op SessionManager for the Phase-1 HTTP-surface
+// smoke. SetAVTransportURI / Play / Stop still return Stub-501 in Phase
+// 2.1, so no method is actually invoked here; the stub exists only to
+// satisfy dlna.AdapterConfig.Core != nil.
+type dlnaStubCore struct{}
+
+func (*dlnaStubCore) StartSession(core.SessionRequest) error { return nil }
+func (*dlnaStubCore) Status() core.SessionStatus             { return core.SessionStatus{} }
+func (*dlnaStubCore) Pause() error                           { return nil }
+func (*dlnaStubCore) Play() error                            { return nil }
+func (*dlnaStubCore) Stop() error                            { return nil }
+func (*dlnaStubCore) SeekTo(int) error                       { return nil }
 
 // TestDLNA_Smoke_Phase1HTTPSurface exercises the full Phase 1 HTTP
 // surface end-to-end through a real httptest.Server: the four
@@ -35,6 +49,7 @@ func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 		DeviceUUID: fakeUUID,
 		HostIP:     fakeIP,
 		HTTPPort:   fakePort,
+		Core:       &dlnaStubCore{},
 	})
 	if err != nil {
 		t.Fatalf("dlna.New: %v", err)
