@@ -1,0 +1,59 @@
+{{define "diagnostics-panel.html"}}
+<div class="gr-panel-head">
+  <h1>Diagnostics</h1>
+  <span class="crumb">in-memory ring · {{.RingCapacity}} capacity · empties on restart</span>
+</div>
+
+<section class="gr-section">
+  <header class="gr-section-title">
+    <span class="num">01</span><span>Recent events</span>
+    <span class="desc">filterable; full ring buffer</span>
+  </header>
+  <div class="gr-activity">
+    <div class="gr-filter-row">
+      <span class="gr-chip active">all <span class="count">{{.Counts.All}}</span></span>
+      <span class="gr-chip">info <span class="count">{{.Counts.Info}}</span></span>
+      <span class="gr-chip">warn <span class="count">{{.Counts.Warn}}</span></span>
+      <span class="gr-chip">err <span class="count">{{.Counts.Err}}</span></span>
+      <span style="margin-left:auto;color:var(--gr-dim);font:400 12px var(--font-mono);">since boot · {{.Uptime}}</span>
+    </div>
+    {{if .EvictedMarker}}<p class="gr-eviction-marker">older entries evicted ({{.RingCapacity}}-entry ring)</p>{{end}}
+    <div class="gr-activity-body">
+      {{range .Events}}
+        <div class="gr-activity-entry">
+          <span class="time">{{.Time}}</span>
+          <span class="sev {{.SevClass}}">{{.Severity}}</span>
+          <span class="src">{{.Source}}</span>
+          <span class="msg">{{.Message}}</span>
+        </div>
+      {{end}}
+    </div>
+  </div>
+</section>
+
+<section class="gr-section">
+  <header class="gr-section-title">
+    <span class="num">02</span><span>Network probe</span>
+    <span class="desc">single UDP packet · 1s ack window</span>
+  </header>
+  <div class="gr-probe" id="probe-result">
+    <button class="gr-btn primary" type="button"
+            hx-post="/ui/diagnostics/probe"
+            hx-target="#probe-result"
+            hx-swap="outerHTML">
+      Test MiSTer connectivity
+    </button>
+    {{if .ProbeResult}}{{.ProbeResult}}{{end}}
+  </div>
+</section>
+
+<section class="gr-section">
+  <header class="gr-section-title">
+    <span class="num">03</span><span>Build info</span>
+    <span class="desc">paste into issue reports</span>
+  </header>
+  <dl class="gr-build-grid">
+    {{range .BuildInfo}}<div><dt>{{.Key}}</dt><dd>{{.Value}}</dd></div>{{end}}
+  </dl>
+</section>
+{{end}}

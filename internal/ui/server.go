@@ -180,6 +180,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// Sidebar dots fragment (per-adapter status indicators).
 	s.mountGET(mux, "/ui/sidebar/dots", s.handleSidebarDots)
 
+	// Diagnostics page.
+	s.mountGET(mux, "/ui/diagnostics", s.handleDiagnosticsGET)
+	s.mountPOST(mux, "/ui/diagnostics/probe", s.handleDiagnosticsProbe)
+
 	// Adapter panel.
 	s.mountGET(mux, "/ui/adapter/{name}", s.handleAdapterGET)
 	s.mountGET(mux, "/ui/adapter/{name}/status", s.handleAdapterStatus)
