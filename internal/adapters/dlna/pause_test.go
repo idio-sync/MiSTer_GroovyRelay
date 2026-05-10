@@ -2,6 +2,7 @@ package dlna
 
 import (
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -409,6 +410,117 @@ func TestPlay_PausedResume_LiveUnknownDuration_RebuildsAtLiveEdge(t *testing.T) 
 	}
 	if a.transportState != transportStatePlaying {
 		t.Errorf("transportState = %q after live-edge rebuild; want PLAYING", a.transportState)
+	}
+}
+
+// TestPlay_PausedResume_LiveEdgeFailure_GenericError_Returns501 mirrors
+// TestPlay_StartSessionFailure_RollsBackRef but enters the failure path
+// from the live-edge resume caller (PAUSED_PLAYBACK → live-edge rebuild)
+// instead of the fresh-start caller. P3.1 review issue 1: the
+// buildAndStartSession failure block must force transportState=STOPPED
+// unconditionally so both callers leave the same observable shape —
+// otherwise the live-edge caller would strand the adapter at
+// PAUSED_PLAYBACK with an empty currentRef, an "orphan PAUSED" state.
+func TestPlay_PausedResume_LiveEdgeFailure_GenericError_Returns501(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	originalRef := "dlna:live-edge-fail"
+	a.mu.Lock()
+	a.currentRef = originalRef
+	a.transportState = transportStatePausedPlayback
+	a.mu.Unlock()
+	fake.statusFn = func() core.SessionStatus {
+		// Duration=0 + AdapterRef=ours selects the live-edge rebuild
+		// branch in handlePlay's PAUSED_PLAYBACK sub-case.
+		return core.SessionStatus{AdapterRef: originalRef, Duration: 0}
+	}
+	// Generic error (no ErrProbeUnreachable in chain) → 501 mapping.
+	fake.startErr = errors.New("simulated rebuild failure")
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>501</errorCode>") {
+		t.Errorf("body missing errorCode 501: %s", rr.Body.String())
+	}
+	if fake.snapshotStartCalls() != 1 {
+		t.Errorf("StartSession called %d times, want 1 (live-edge rebuild attempt)",
+			fake.snapshotStartCalls())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Rollback discipline: ref cleared, in-flight cleared.
+	if a.currentRef != "" {
+		t.Errorf("currentRef = %q after live-edge rebuild failure; want empty (rollback)",
+			a.currentRef)
+	}
+	if a.startInFlight {
+		t.Error("startInFlight = true after live-edge rebuild failure; want false")
+	}
+	// The fix from issue 1: transportState must land at STOPPED, NOT
+	// stay at PAUSED_PLAYBACK. Without the unconditional set, the
+	// live-edge caller would strand at PAUSED_PLAYBACK with currentRef
+	// empty — the orphan-PAUSED bug.
+	if a.transportState != transportStateStopped {
+		t.Errorf("transportState = %q after live-edge rebuild failure; want STOPPED (orphan-PAUSED guard)",
+			a.transportState)
+	}
+	if a.lastError == "" {
+		t.Error("lastError empty after live-edge rebuild failure; want a redacted message")
+	}
+	// Redaction discipline (parallel to the fresh-start caller's
+	// redaction guarantee in TestPlay_Resume_CoreFailure_RedactsLastError):
+	// the raw err.Error() must NOT leak into lastError.
+	if strings.Contains(a.lastError, "simulated rebuild failure") {
+		t.Errorf("lastError = %q; raw err.Error() leaked into operator-visible field",
+			a.lastError)
+	}
+}
+
+// TestPlay_PausedResume_LiveEdgeFailure_ProbeUnreachable_Returns716 is
+// the parallel test for the ErrProbeUnreachable mapping on the live-edge
+// caller — matches TestPlay_StartSession_ProbeUnreachable_Returns716's
+// shape but enters from PAUSED_PLAYBACK.
+func TestPlay_PausedResume_LiveEdgeFailure_ProbeUnreachable_Returns716(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	originalRef := "dlna:live-edge-probe-fail"
+	a.mu.Lock()
+	a.currentRef = originalRef
+	a.transportState = transportStatePausedPlayback
+	a.mu.Unlock()
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: originalRef, Duration: 0}
+	}
+	// Mirror the wrap chain Manager.probeForStart produces so the test
+	// exercises the actual production errors.Is path.
+	fake.startErr = fmt.Errorf("probe source: %w: %w",
+		errors.New("dial tcp: connection refused"),
+		core.ErrProbeUnreachable)
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>716</errorCode>") {
+		t.Errorf("body missing errorCode 716 (Resource not found): %s", rr.Body.String())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRef != "" {
+		t.Errorf("currentRef = %q after live-edge probe-unreachable failure; want empty (rollback)",
+			a.currentRef)
+	}
+	if a.startInFlight {
+		t.Error("startInFlight = true after live-edge probe-unreachable failure; want false")
+	}
+	if a.transportState != transportStateStopped {
+		t.Errorf("transportState = %q after live-edge probe-unreachable failure; want STOPPED",
+			a.transportState)
+	}
+	if a.lastError == "" {
+		t.Error("lastError empty after live-edge probe-unreachable failure; want a redacted message")
 	}
 }
 

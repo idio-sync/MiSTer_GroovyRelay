@@ -358,12 +358,24 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int) (faultCode upnpErrorCod
 		// StartSession failed; redactURL gives a scheme+host snapshot
 		// for operator context.
 		a.setLastError("StartSession failed for " + redactURL(loadedURI))
-		// Stay in STOPPED — the spec at line 326 says "On failure,
-		// keep the prior transport state when possible." For the
-		// fresh-start caller we never flipped to PLAYING; for the
-		// live-edge reconnect caller the prior session is already
-		// preempted by markStartInFlight, so STOPPED on failure is
-		// the cleanest observable state.
+		// On failure: roll back the just-minted ref and force STOPPED
+		// so both callers (fresh-start from STOPPED, live-edge resume
+		// from PAUSED_PLAYBACK) observe the same post-failure shape —
+		// empty currentRef, transportState=STOPPED, ERROR_OCCURRED via
+		// lastError. Without this the live-edge caller would leave a
+		// controller-visible "orphan PAUSED" state. The compare-and-
+		// clear guard mirrors clearStartInFlight(ref, false): we only
+		// touch transportState if our ref was the latest at clear time.
+		// If a newer session has already overwritten currentRef before
+		// this lock, we leave its transportState untouched.
+		a.mu.Lock()
+		if a.currentRef == "" {
+			// clearStartInFlight just cleared it (success path of the
+			// compare-and-clear) — no newer session present, so set
+			// STOPPED to normalize across both call sites.
+			a.transportState = transportStateStopped
+		}
+		a.mu.Unlock()
 		if errors.Is(err, core.ErrProbeUnreachable) {
 			return upnpErrResourceNotFound
 		}
