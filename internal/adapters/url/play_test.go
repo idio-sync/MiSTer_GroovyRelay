@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // newTestAdapter wires the new AdapterConfig signature for the bulk of
@@ -736,5 +738,80 @@ func TestPlay_RecastSameURL_BumpsNotDuplicates(t *testing.T) {
 	list := a.history.List()
 	if list[0].URL != "https://a/" || list[1].URL != "https://b/" {
 		t.Errorf("after recast, list = %v, want [a, b]", list)
+	}
+}
+
+// ---- functional-options helpers for new F1 tests ----
+
+// testAdapterOption is a functional option for newTestAdapterOpts.
+type testAdapterOption func(*AdapterConfig)
+
+func withEventLog(log *eventlog.Log) testAdapterOption {
+	return func(cfg *AdapterConfig) { cfg.EventLog = log }
+}
+
+func withCore(c SessionManager) testAdapterOption {
+	return func(cfg *AdapterConfig) { cfg.Core = c }
+}
+
+// newTestAdapterOpts constructs an Adapter from a set of functional options.
+// The default Core is a zero-value fakeCore so the play handler can call
+// StartSession without panicking.
+func newTestAdapterOpts(t *testing.T, opts ...testAdapterOption) *Adapter {
+	t.Helper()
+	cfg := AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   &fakeCore{},
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return a
+}
+
+// postPlay is a convenience wrapper: POST the given url.Values to the
+// adapter's play handler and return the recorded response.
+func postPlay(t *testing.T, a *Adapter, vals neturl.Values) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/play",
+		strings.NewReader(vals.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+	return w.Result()
+}
+
+func TestPlay_EmitsCastRequested(t *testing.T) {
+	log := eventlog.New(16)
+	a := newTestAdapterOpts(t, withEventLog(log))
+	body := neturl.Values{"url": {"https://example.com/test.mp4"}}
+	resp := postPlay(t, a, body)
+	if resp.StatusCode >= 400 {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	entries := log.Snapshot()
+	if len(entries) == 0 {
+		t.Fatal("expected cast-requested entry")
+	}
+	if !strings.Contains(entries[0].Message, "cast-requested") {
+		t.Errorf("Message: %q", entries[0].Message)
+	}
+	if entries[0].Source != "url" {
+		t.Errorf("Source: %q", entries[0].Source)
+	}
+}
+
+func TestPlay_PopulatesTitle(t *testing.T) {
+	core := &fakeCore{}
+	a := newTestAdapterOpts(t, withCore(core))
+	body := neturl.Values{"url": {"https://example.com/clip.mp4"}}
+	postPlay(t, a, body)
+	want := "clip.mp4"
+	if core.lastReq.Title != want {
+		t.Errorf("Title: got %q, want %q", core.lastReq.Title, want)
 	}
 }
