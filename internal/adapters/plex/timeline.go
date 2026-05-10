@@ -339,6 +339,7 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 		XMLName           xml.Name `xml:"Timeline"`
 		Type              string   `xml:"type,attr"`
 		State             string   `xml:"state,attr"`
+		Location          string   `xml:"location,attr,omitempty"`
 		Time              int64    `xml:"time,attr"`
 		PlaybackTime      int64    `xml:"playbackTime,attr"`
 		Duration          int64    `xml:"duration,attr"`
@@ -376,6 +377,7 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 	video := Timeline{
 		Type:         "video",
 		State:        plexState,
+		Location:     location,
 		Time:         s.Position.Milliseconds(),
 		PlaybackTime: s.Position.Milliseconds(),
 		Duration:     s.Duration.Milliseconds(),

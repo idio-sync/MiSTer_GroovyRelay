@@ -1,6 +1,7 @@
 package plex
 
 import (
+	xmlpkg "encoding/xml"
 	"io"
 	"net"
 	"net/http"
@@ -159,6 +160,34 @@ func TestTimeline_BuildXML_IncludesPlexMetadata(t *testing.T) {
 			t.Errorf("xml missing %q: %s", want, got)
 		}
 	}
+}
+
+func TestTimeline_BuildXML_VideoTimelineCarriesLocation(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 12345 * time.Millisecond,
+		Duration: 60000 * time.Millisecond,
+	})
+
+	var parsed struct {
+		Timelines []struct {
+			Type     string `xml:"type,attr"`
+			Location string `xml:"location,attr"`
+		} `xml:"Timeline"`
+	}
+	if err := xmlpkg.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	for _, timeline := range parsed.Timelines {
+		if timeline.Type == "video" {
+			if timeline.Location != "fullScreenVideo" {
+				t.Errorf("video timeline location = %q, want fullScreenVideo; xml=%s", timeline.Location, got)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing video timeline: %s", got)
 }
 
 func TestTimeline_BuildXML_StateMapping(t *testing.T) {
