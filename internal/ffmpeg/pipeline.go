@@ -56,6 +56,19 @@ type PipelineSpec struct {
 	VideoPipePath string // "pipe:3", a named pipe path, or "-" for stdout
 	AudioPipePath string // "pipe:4", etc.
 	FFmpegPath    string // empty = "ffmpeg"
+
+	// Policy gates how ffmpeg dereferences InputURL (and AudioInputURL
+	// when set). Applied to BOTH inputs in the dual-input path so a DLNA
+	// adapter that only validated the primary URL cannot leak the policy
+	// at the secondary input. Zero value preserves historical argv shape.
+	// See MediaInputPolicy in policy.go.
+	//
+	// Note: BlockedHeaders is NOT applied here. The caller (core.Manager)
+	// is responsible for filtering InputHeaders / AudioInputHeaders before
+	// they reach this struct so that BuildCommand stays a pure argv
+	// builder over already-validated inputs (spec line 115 puts the
+	// header filter at the core/FFmpeg boundary).
+	Policy MediaInputPolicy
 }
 
 // audioOutputEnabled reports whether the ffmpeg command should emit the s16le
@@ -235,19 +248,26 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	dualInput := s.AudioInputURL != ""
 
 	// Input 0 (video). On direct-play seek, -ss precedes -i for fast-seek.
+	// Policy flags must immediately precede their input (FFmpeg input
+	// options apply to the next -i), so they go AFTER -ss but BEFORE
+	// -headers / -i. When Policy is the zero value, Apply is a no-op
+	// and argv is identical to the pre-policy implementation.
 	if s.UseSSSeek && s.SeekSeconds > 0 {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", s.SeekSeconds))
 	}
+	args = s.Policy.Apply(args)
 	args = appendHeadersArg(args, s.InputHeaders)
 	args = append(args, "-i", s.InputURL)
 
 	// Input 1 (audio), DASH path only. Repeat -ss before this -i so the
 	// audio stream starts at the same offset as video — without it the two
-	// streams would drift on every seek.
+	// streams would drift on every seek. Policy flags repeat too so the
+	// secondary input is constrained identically.
 	if dualInput {
 		if s.UseSSSeek && s.SeekSeconds > 0 {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", s.SeekSeconds))
 		}
+		args = s.Policy.Apply(args)
 		args = appendHeadersArg(args, s.AudioInputHeaders)
 		args = append(args, "-i", s.AudioInputURL)
 	}

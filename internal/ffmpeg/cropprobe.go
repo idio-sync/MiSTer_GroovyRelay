@@ -28,17 +28,24 @@ var cropRegex = regexp.MustCompile(`crop=(\d+):(\d+):(\d+):(\d+)`)
 // The probe always runs with a wall-clock timeout of duration + 5s; that's
 // enough headroom to let ffmpeg flush on short clips and to guarantee this
 // call does not hang forever if the input URL is unreachable.
-func ProbeCrop(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration) (*CropRect, error) {
+//
+// policy is applied before -i so its flags gate the crop probe's URL
+// dereference identically to the main pipeline (spec acceptance: same
+// policy gates ffprobe, crop probe, and ffmpeg playback). The caller is
+// responsible for filtering headers against policy.BlockedHeaders BEFORE
+// calling — headers passed in here are emitted as-is. core.Manager does
+// the filtering at its boundary so adapter callers stay naive.
+func ProbeCrop(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration, policy MediaInputPolicy) (*CropRect, error) {
 	if ffmpegPath == "" {
 		ffmpegPath = "ffmpeg"
 	}
-	return probeCropWithBinary(ctx, ffmpegPath, inputURL, headers, duration)
+	return probeCropWithBinary(ctx, ffmpegPath, inputURL, headers, duration, policy)
 }
 
 // probeCropWithBinary is the testable variant: callers can supply a full
 // ffmpeg path for environments where the binary isn't in the Go runtime's
 // view of PATH (e.g. Windows + Git-Bash wrapper scripts).
-func probeCropWithBinary(ctx context.Context, ffmpegBin, inputURL string, headers map[string]string, duration time.Duration) (*CropRect, error) {
+func probeCropWithBinary(ctx context.Context, ffmpegBin, inputURL string, headers map[string]string, duration time.Duration, policy MediaInputPolicy) (*CropRect, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, duration+5*time.Second)
 	defer cancel()
 
@@ -47,6 +54,7 @@ func probeCropWithBinary(ctx context.Context, ffmpegBin, inputURL string, header
 		"-loglevel", "info",
 		"-t", fmt.Sprintf("%.1f", duration.Seconds()),
 	}
+	args = policy.Apply(args)
 	if len(headers) > 0 {
 		keys := make([]string, 0, len(headers))
 		for k := range headers {

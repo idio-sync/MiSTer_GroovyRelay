@@ -2,11 +2,13 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -530,4 +532,155 @@ func TestManager_PlaneError_TransitionsIdleAndFiresOnStop(t *testing.T) {
 	// ffmpeg/ffprobe NOT being present OR returning quickly on bad URL.
 	// A more hermetic test is added in Task 11.1 once we have a fake plane.
 	t.Skip("hermetic test deferred to Task 11.1's integration harness")
+}
+
+// TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop is the policy-threading
+// proof: it constructs a SessionRequest with a non-zero MediaInputPolicy
+// and verifies the same policy reaches BOTH ffmpeg.Probe AND ffmpeg.ProbeCrop
+// via the package-private probeFn / probeCropFn seams. Spec acceptance:
+// the policy gates ffprobe, crop probe, and ffmpeg playback consistently.
+//
+// This test stubs the ffmpeg package entry points so it runs hermetically
+// on any platform — no external binaries required.
+func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
+	// Save and restore the package-level seams.
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+
+	var capturedProbe ffmpeg.MediaInputPolicy
+	var capturedCrop ffmpeg.MediaInputPolicy
+	var capturedCropHeaders map[string]string
+	var probeCalls, cropCalls int
+
+	probeFn = func(_ context.Context, _, _ string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		probeCalls++
+		capturedProbe = policy
+		// Return a synthetic probe result; the test does not need to drive
+		// the FSM further than probeForStart's return.
+		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
+	}
+	probeCropFn = func(_ context.Context, _, _ string, headers map[string]string, _ time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		cropCalls++
+		capturedCrop = policy
+		capturedCropHeaders = headers
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	// Force the auto-crop branch so probeCropFn is invoked.
+	m.bridge.Video.AspectMode = "auto"
+
+	wantPolicy := ffmpeg.MediaInputPolicy{
+		ProtocolWhitelist: []string{"file", "http", "https", "tcp", "tls", "crypto"},
+		DisableReconnect:  true,
+		RWTimeout:         5 * time.Second,
+		BlockedHeaders:    []string{"Referer", "Cookie"},
+	}
+	req := SessionRequest{
+		StreamURL: "https://example/clip.mp4",
+		// Includes a header that should be filtered out before reaching
+		// ffmpeg.ProbeCrop, plus one that should pass through.
+		InputHeaders: map[string]string{
+			"Cookie":     "session=abc",
+			"User-Agent": "groovyrelay",
+		},
+		MediaInputPolicy: wantPolicy,
+	}
+
+	probe, cropRect, _, err := m.probeForStart(req)
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+	if probe == nil {
+		t.Fatal("probe nil")
+	}
+	if cropRect != nil {
+		t.Errorf("crop rect should be nil from stub; got %+v", cropRect)
+	}
+	if probeCalls != 1 {
+		t.Errorf("probeFn calls = %d, want 1", probeCalls)
+	}
+	if cropCalls != 1 {
+		t.Errorf("probeCropFn calls = %d, want 1", cropCalls)
+	}
+
+	// Both call sites must receive the SAME policy by value.
+	if !reflect.DeepEqual(capturedProbe, wantPolicy) {
+		t.Errorf("Probe policy mismatch:\n got %+v\nwant %+v", capturedProbe, wantPolicy)
+	}
+	if !reflect.DeepEqual(capturedCrop, wantPolicy) {
+		t.Errorf("ProbeCrop policy mismatch:\n got %+v\nwant %+v", capturedCrop, wantPolicy)
+	}
+
+	// The crop probe must receive headers that have been FILTERED through
+	// BlockedHeaders — Cookie should be gone, User-Agent should remain.
+	// This proves the core/FFmpeg-boundary header filter is wired up.
+	if _, blocked := capturedCropHeaders["Cookie"]; blocked {
+		t.Errorf("Cookie header was not filtered before ProbeCrop: %v", capturedCropHeaders)
+	}
+	if got := capturedCropHeaders["User-Agent"]; got != "groovyrelay" {
+		t.Errorf("User-Agent should pass through filter; got %q (full=%v)", got, capturedCropHeaders)
+	}
+}
+
+// TestProbeForStart_ZeroPolicyPreservesBehavior is the backward-compat
+// guard: when req.MediaInputPolicy is the zero value, the ffmpeg package
+// receives the zero value verbatim — no filter, no flags, no behavioral
+// drift for existing Plex / Jellyfin / URL adapter call paths.
+func TestProbeForStart_ZeroPolicyPreservesBehavior(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+
+	var probePolicy ffmpeg.MediaInputPolicy
+	var cropPolicy ffmpeg.MediaInputPolicy
+	var capturedHeaders map[string]string
+
+	probeFn = func(_ context.Context, _, _ string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		probePolicy = policy
+		return &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 24}, nil
+	}
+	probeCropFn = func(_ context.Context, _, _ string, headers map[string]string, _ time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		cropPolicy = policy
+		capturedHeaders = headers
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	m.bridge.Video.AspectMode = "auto"
+
+	originalHeaders := map[string]string{
+		"X-Plex-Token": "abc",
+		"User-Agent":   "groovyrelay",
+	}
+	req := SessionRequest{
+		StreamURL:    "http://pms/transcode.m3u8",
+		InputHeaders: originalHeaders,
+		// MediaInputPolicy: zero value
+	}
+
+	if _, _, _, err := m.probeForStart(req); err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+
+	if !probePolicy.IsZero() {
+		t.Errorf("expected zero policy at Probe site, got %+v", probePolicy)
+	}
+	if !cropPolicy.IsZero() {
+		t.Errorf("expected zero policy at ProbeCrop site, got %+v", cropPolicy)
+	}
+	// With an empty BlockedHeaders, FilterHeaders returns the input
+	// unchanged — every header survives.
+	for k, v := range originalHeaders {
+		if got := capturedHeaders[k]; got != v {
+			t.Errorf("header %q lost or changed under zero policy: got %q want %q", k, got, v)
+		}
+	}
 }

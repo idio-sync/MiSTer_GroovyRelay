@@ -42,16 +42,23 @@ type ffprobeOutput struct {
 // responsible for supplying any authentication tokens via URL query params —
 // ffprobe's `-headers` is not threaded through here because the production
 // callers (Plex transcode URLs) already embed credentials in the URL.
-func Probe(ctx context.Context, ffprobePath, url string) (*ProbeResult, error) {
+//
+// policy gates how ffprobe dereferences the URL: an empty / zero-value
+// policy preserves the historical argv shape exactly. A non-zero policy
+// emits its flags before the URL so they apply to the probe input. See
+// MediaInputPolicy.Apply for the flag mapping.
+func Probe(ctx context.Context, ffprobePath, url string, policy MediaInputPolicy) (*ProbeResult, error) {
 	if ffprobePath == "" {
 		ffprobePath = "ffprobe"
 	}
-	cmd := exec.CommandContext(ctx, ffprobePath,
+	args := []string{
 		"-v", "error",
 		"-print_format", "json",
 		"-show_streams", "-show_format",
-		url,
-	)
+	}
+	args = policy.Apply(args)
+	args = append(args, url)
+	cmd := exec.CommandContext(ctx, ffprobePath, args...)
 	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.Output()
 	if err != nil {

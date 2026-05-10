@@ -22,6 +22,33 @@ func TestSessionRequest_ZeroValue(t *testing.T) {
 	if r.Capabilities.CanSeek || r.Capabilities.CanPause {
 		t.Errorf("Capabilities default = %+v, want both false", r.Capabilities)
 	}
+	// MediaInputPolicy zero value gates the backward-compat path: existing
+	// adapters (Plex / Jellyfin / URL) leave it zero-valued and FFmpeg argv
+	// must remain identical to the pre-refactor implementation.
+	if !r.MediaInputPolicy.IsZero() {
+		t.Errorf("MediaInputPolicy default should be zero, got %+v", r.MediaInputPolicy)
+	}
+}
+
+// TestSessionRequest_MediaInputPolicyIsAlias confirms core.MediaInputPolicy is
+// the same type as ffmpeg.MediaInputPolicy (a type alias). Adapters can build
+// a core.MediaInputPolicy literal and the Manager threads the same value
+// (no conversion) into ffmpeg.Probe / ffmpeg.ProbeCrop / ffmpeg.PipelineSpec.
+func TestSessionRequest_MediaInputPolicyAccepted(t *testing.T) {
+	// Build a non-zero policy via the core-side name. If the alias drifts,
+	// this won't compile.
+	r := SessionRequest{
+		MediaInputPolicy: MediaInputPolicy{
+			ProtocolWhitelist: []string{"file", "http", "https"},
+			DisableReconnect:  true,
+		},
+	}
+	if r.MediaInputPolicy.IsZero() {
+		t.Errorf("populated policy should not report IsZero")
+	}
+	if len(r.MediaInputPolicy.ProtocolWhitelist) != 3 {
+		t.Errorf("whitelist round-trip: got %v", r.MediaInputPolicy.ProtocolWhitelist)
+	}
 }
 
 func TestSessionRequest_CapabilityCombinations(t *testing.T) {

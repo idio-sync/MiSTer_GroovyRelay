@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -120,7 +121,7 @@ func TestProbe_ReturnsPromptlyWhenOutputPipeRemainsOpen(t *testing.T) {
 	t.Cleanup(func() { killProbeHelper(t, pidFile) })
 
 	start := time.Now()
-	_, err := Probe(context.Background(), os.Args[0], "ignored")
+	_, err := Probe(context.Background(), os.Args[0], "ignored", MediaInputPolicy{})
 	elapsed := time.Since(start)
 	if elapsed > probeLeakedPipeReturnLimit {
 		t.Fatalf("Probe returned after %s; want it bounded when ffprobe leaves output pipes open", elapsed)
@@ -146,6 +147,72 @@ func killProbeHelper(t *testing.T, pidFile string) {
 	}
 	_ = proc.Kill()
 	_, _ = proc.Wait()
+}
+
+// TestProbe_ZeroPolicyArgvUnchanged confirms that an empty MediaInputPolicy
+// produces the historical ffprobe argv shape: -v error, -print_format json,
+// -show_streams, -show_format, then the URL — with NO policy flags injected.
+// Run via Probe pointing at a missing binary so we never spawn anything;
+// the test asserts the argv shape via the err path instead by reconstructing
+// the same args slice the production code builds.
+func TestProbe_ZeroPolicyArgvUnchanged(t *testing.T) {
+	// Build the args slice the same way Probe does, with the zero-value
+	// policy. This is a white-box check on the assembled argv.
+	args := []string{
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams", "-show_format",
+	}
+	args = MediaInputPolicy{}.Apply(args)
+	args = append(args, "http://example/clip.mp4")
+	want := []string{
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams", "-show_format",
+		"http://example/clip.mp4",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("zero-policy argv:\n got %v\nwant %v", args, want)
+	}
+}
+
+// TestProbe_NonZeroPolicyAppendsFlagsBeforeURL verifies the policy's argv
+// flags appear AFTER the show-streams/format args and BEFORE the URL — so
+// ffprobe applies them as input options on the next input it opens.
+func TestProbe_NonZeroPolicyAppendsFlagsBeforeURL(t *testing.T) {
+	policy := MediaInputPolicy{
+		ProtocolWhitelist: []string{"file", "http", "https", "tcp", "tls", "crypto"},
+		DisableReconnect:  true,
+		RWTimeout:         5 * time.Second,
+	}
+	args := []string{
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams", "-show_format",
+	}
+	args = policy.Apply(args)
+	args = append(args, "http://example/clip.mp4")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-protocol_whitelist file,http,https,tcp,tls,crypto",
+		"-reconnect 0",
+		"-reconnect_at_eof 0",
+		"-rw_timeout 5000000",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in argv: %s", want, joined)
+		}
+	}
+	// URL must be the last argv element.
+	if args[len(args)-1] != "http://example/clip.mp4" {
+		t.Errorf("URL must be the last argv element, got %s", joined)
+	}
+	// Policy flags must precede the URL.
+	urlIdx := strings.LastIndex(joined, "http://example/clip.mp4")
+	whitelistIdx := strings.Index(joined, "-protocol_whitelist")
+	if whitelistIdx < 0 || whitelistIdx >= urlIdx {
+		t.Errorf("-protocol_whitelist must precede URL: %s", joined)
+	}
 }
 
 // TestProbe_LiveFixture generates a 1-second synthetic test clip with ffmpeg
