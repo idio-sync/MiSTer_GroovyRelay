@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +37,12 @@ import (
 func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte(testInterlaceConfig), 0o644); err != nil {
+	// data_dir lives in tempdir so artifacts (the .first-run-complete
+	// marker DismissFirstRun writes, etc.) get cleaned up with t.TempDir
+	// rather than leaking into tests/integration/.
+	dataDir := filepath.ToSlash(dir)
+	cfgBody := fmt.Sprintf(testInterlaceConfig, dataDir)
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +81,7 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 		t.Fatalf("initial interlace = %q, want tff", coreMgr.CurrentInterlaceOrder())
 	}
 
-	form := testBridgeFormBody("bff")
+	form := testBridgeFormBody("bff", dataDir)
 	req, _ := http.NewRequest("POST", ts.URL+"/ui/bridge/save", bytes.NewBufferString(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -113,9 +119,11 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	}
 }
 
+// testInterlaceConfig is a fmt template; the single %s slot is the
+// absolute path used for data_dir (test passes t.TempDir()).
 const testInterlaceConfig = `
 [bridge]
-data_dir = "."
+data_dir = "%s"
 
 [bridge.video]
 modeline = "NTSC_480i"
@@ -142,7 +150,7 @@ device_name = "TestBridge"
 profile_name = "Plex Home Theater"
 `
 
-func testBridgeFormBody(interlaceOrder string) string {
+func testBridgeFormBody(interlaceOrder, dataDir string) string {
 	return fmt.Sprintf(
 		"mister.host=127.0.0.1"+
 			"&mister.port=32100"+
@@ -155,6 +163,6 @@ func testBridgeFormBody(interlaceOrder string) string {
 			"&audio.sample_rate=48000"+
 			"&audio.channels=2"+
 			"&ui.http_port=32500"+
-			"&data_dir=.",
-		interlaceOrder)
+			"&data_dir=%s",
+		interlaceOrder, url.QueryEscape(dataDir))
 }
