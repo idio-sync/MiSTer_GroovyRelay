@@ -123,8 +123,9 @@ var templateFuncs = template.FuncMap{
 // reference to the adapter registry. Constructed once at startup and
 // mounted on the shared HTTP mux.
 type Server struct {
-	cfg  Config
-	tmpl *template.Template
+	cfg   Config
+	tmpl  *template.Template
+	guard func(http.Handler) http.Handler
 }
 
 func New(cfg Config) (*Server, error) {
@@ -135,7 +136,19 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ui: parse templates: %w", err)
 	}
-	return &Server{cfg: cfg, tmpl: tmpl}, nil
+	s := &Server{cfg: cfg, tmpl: tmpl}
+
+	// Build the first-run guard once. Guard against nil BridgeSaver before
+	// the type assertion — a naked assert on a nil interface panics.
+	var firstRun FirstRunAware
+	if cfg.BridgeSaver != nil {
+		if fra, ok := cfg.BridgeSaver.(FirstRunAware); ok {
+			firstRun = fra
+		}
+	}
+	s.guard = firstRunGuard(firstRun)
+
+	return s, nil
 }
 
 // Mount registers the UI routes on mux. The mux is expected to be the
@@ -155,15 +168,19 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// Static assets served out of embedded FS under /ui/static/.
 	// GETs don't pass through csrfMiddleware — reads have no side
 	// effects, and the middleware short-circuits on GET anyway.
+	// The guard passes /ui/static/* through unconditionally (rule 3),
+	// but we still wrap so the middleware chain is consistent.
 	staticSub, _ := fs.Sub(staticFS, "static")
 	staticSrv := http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub)))
-	mux.Handle("GET /ui/static/", extensionCORSMiddleware(staticSrv))
+	mux.Handle("GET /ui/static/", extensionCORSMiddleware(s.guard(staticSrv)))
 
 	// Root + shell. Use {$} to match "/" exactly — a bare "GET /"
 	// would be a catch-all that conflicts with adapter-owned prefix
 	// routes (e.g., Plex Companion's "/player/") under Go 1.22's
 	// method-aware mux.
-	s.mountGET(mux, "/{$}", s.handleRoot)
+	// Root redirect is unguarded: GET / → /ui/ must always work so the
+	// operator can reach /ui/setup even before first-run is complete.
+	s.mountGETUnguarded(mux, "/{$}", s.handleRoot)
 	s.mountGET(mux, "/ui/{$}", s.handleStatusHome)
 	s.mountGET(mux, "/ui/status/content", s.handleStatusContent)
 	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
@@ -202,29 +219,41 @@ func (s *Server) Mount(mux *http.ServeMux) {
 			handler := http.HandlerFunc(route.Handler)
 			switch route.Method {
 			case "GET":
-				mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
+				mux.Handle("GET "+pattern, extensionCORSMiddleware(s.guard(handler)))
 			case "POST":
-				mux.Handle("POST "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("POST "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			case "DELETE":
-				mux.Handle("DELETE "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("DELETE "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			case "PUT":
-				mux.Handle("PUT "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("PUT "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			case "PATCH":
-				mux.Handle("PATCH "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+				mux.Handle("PATCH "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 			}
 		}
 	}
 }
 
 // mountPOST is the canonical way to register a POST handler on the UI
-// mux. Wraps the handler in csrfMiddleware so every write endpoint
-// (bridge/save, adapter/save, plex/link/start, etc.) gets the same
-// cross-origin protection without each handler having to think about it.
+// mux. Wraps the handler in csrfMiddleware and firstRunGuard so every
+// write endpoint (bridge/save, adapter/save, plex/link/start, etc.)
+// gets cross-origin protection and first-run enforcement without each
+// handler having to think about it.
 func (s *Server) mountPOST(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
-	mux.Handle("POST "+pattern, extensionCORSMiddleware(csrfMiddleware(handler)))
+	mux.Handle("POST "+pattern, extensionCORSMiddleware(s.guard(csrfMiddleware(handler))))
 }
 
+// mountGET registers a guarded GET handler. All UI GET routes pass
+// through firstRunGuard so unauthenticated first-run state redirects
+// to /ui/setup.
 func (s *Server) mountGET(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	mux.Handle("GET "+pattern, extensionCORSMiddleware(s.guard(handler)))
+}
+
+// mountGETUnguarded registers a GET handler that bypasses firstRunGuard.
+// Use ONLY for the root redirect (GET /{$}) so that GET / always
+// redirects to /ui/ regardless of first-run state — the operator must
+// be able to reach /ui/setup from a bare host URL.
+func (s *Server) mountGETUnguarded(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
 	mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
 }
 
