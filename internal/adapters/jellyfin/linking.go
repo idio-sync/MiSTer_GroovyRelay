@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	jfClientName        = "MiSTer_GroovyRelay"
+	jfClientName        = "GroovyRelay"
 	defaultJFDeviceName = "MiSTer"
 )
 

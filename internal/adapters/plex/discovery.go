@@ -207,7 +207,7 @@ func (d *Discovery) descriptor(statusLine string) string {
 		"Name: %s\r\n"+
 		"Port: %d\r\n"+
 		"Resource-Identifier: %s\r\n"+
-		"Product: MiSTer_GroovyRelay\r\n"+
+		"Product: "+companionProduct+"\r\n"+
 		"Version: 1.0\r\n"+
 		"Content-Type: plex/media-player\r\n"+
 		"Protocol: plex\r\n"+

@@ -608,6 +608,16 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	if p.SessionID == "" {
 		p.SessionID = NewTranscodeSessionID()
 	}
+	if p.PlayQueueItemID == "" && p.ContainerKey != "" && p.MediaKey != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		items, err := c.fetchPlayQueue(ctx, p)
+		cancel()
+		if err != nil {
+			slog.Debug("plex play queue lookup failed", "container_key", p.ContainerKey, "media_key", p.MediaKey, "err", err)
+		} else if item, ok := playQueueItemByIDOrKey(items, "", p.MediaKey); ok {
+			p.PlayQueueItemID = item.PlayQueueItemID
+		}
+	}
 
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	preset, err := c.currentPreset()

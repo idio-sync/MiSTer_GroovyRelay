@@ -73,7 +73,7 @@ func TestPostCapabilities_BodyShape(t *testing.T) {
 		}
 	}
 	dp, _ := body["DeviceProfile"].(map[string]any)
-	if dp["Name"] != "MiSTer_GroovyRelay" {
+	if dp["Name"] != "GroovyRelay" {
 		t.Errorf("DeviceProfile.Name = %v", dp["Name"])
 	}
 	codecProfiles := dp["CodecProfiles"].([]any)

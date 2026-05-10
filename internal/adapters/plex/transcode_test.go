@@ -37,6 +37,8 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 		"audioStreamID=101", "subtitleStreamID=202",
 		"subtitles=burn", "advancedSubtitles=burn",
 		"transcodeSessionId=transcode-session-1",
+		"X-Plex-Product=GroovyRelay",
+		"X-Plex-Platform=Linux",
 	} {
 		if !strings.Contains(u, substr) {
 			t.Errorf("url missing %q: %s", substr, u)

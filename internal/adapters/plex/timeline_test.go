@@ -301,6 +301,12 @@ func TestTimeline_BroadcastPushesToPMSWithoutSubscribers(t *testing.T) {
 	if h.headers.Get("X-Plex-Device-Name") != "MiSTer" {
 		t.Errorf("X-Plex-Device-Name = %q, want MiSTer", h.headers.Get("X-Plex-Device-Name"))
 	}
+	if h.headers.Get("X-Plex-Product") != "GroovyRelay" {
+		t.Errorf("X-Plex-Product = %q, want GroovyRelay", h.headers.Get("X-Plex-Product"))
+	}
+	if h.headers.Get("X-Plex-Platform") != "Linux" {
+		t.Errorf("X-Plex-Platform = %q, want Linux", h.headers.Get("X-Plex-Platform"))
+	}
 	if h.headers.Get("X-Plex-Token") != "tok-123" {
 		t.Errorf("X-Plex-Token = %q, want tok-123", h.headers.Get("X-Plex-Token"))
 	}

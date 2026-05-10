@@ -11,7 +11,7 @@ import (
 func TestBuildAuthHeader_WithToken(t *testing.T) {
 	got := BuildAuthHeader(AuthHeaderInput{
 		Token:    "abc123",
-		Client:   "MiSTer_GroovyRelay",
+		Client:   "GroovyRelay",
 		Device:   "MiSTer",
 		DeviceID: "uuid-xyz",
 		Version:  "0.1.0",
@@ -19,7 +19,7 @@ func TestBuildAuthHeader_WithToken(t *testing.T) {
 	wantParts := []string{
 		`MediaBrowser`,
 		`Token="abc123"`,
-		`Client="MiSTer_GroovyRelay"`,
+		`Client="GroovyRelay"`,
 		`Device="MiSTer"`,
 		`DeviceId="uuid-xyz"`,
 		`Version="0.1.0"`,
@@ -33,7 +33,7 @@ func TestBuildAuthHeader_WithToken(t *testing.T) {
 
 func TestBuildAuthHeader_WithoutToken(t *testing.T) {
 	got := BuildAuthHeader(AuthHeaderInput{
-		Client:   "MiSTer_GroovyRelay",
+		Client:   "GroovyRelay",
 		Device:   "MiSTer",
 		DeviceID: "uuid-xyz",
 		Version:  "0.1.0",
@@ -41,7 +41,7 @@ func TestBuildAuthHeader_WithoutToken(t *testing.T) {
 	if strings.Contains(got, `Token=`) {
 		t.Errorf("BuildAuthHeader without token should omit Token=; got: %s", got)
 	}
-	if !strings.Contains(got, `Client="MiSTer_GroovyRelay"`) {
+	if !strings.Contains(got, `Client="GroovyRelay"`) {
 		t.Errorf("BuildAuthHeader without token: %s", got)
 	}
 }
