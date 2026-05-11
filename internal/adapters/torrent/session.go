@@ -118,10 +118,12 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 	metaCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.MetadataTimeoutSeconds)*time.Second)
 	defer cancel()
 	if err := t.WaitInfo(metaCtx); err != nil {
+		a.cleanupFailedStart(cfg, t)
 		return nil, &TorrentError{Kind: ErrMetadataTimeout, Message: "timed out waiting for torrent metadata", Err: err}
 	}
 	file, err := pickLargestPlayable(t.Files())
 	if err != nil {
+		a.cleanupFailedStart(cfg, t)
 		return nil, err
 	}
 	t.Prioritize(file.Index)
@@ -131,6 +133,7 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 	root := sessionRoot(cfg, a.bridge.DataDir)
 	dir, err := createSessionDir(root, sessionID)
 	if err != nil {
+		a.cleanupFailedStart(cfg, t)
 		return nil, err
 	}
 	s := &Session{
@@ -172,6 +175,17 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 		return nil, &TorrentError{Kind: ErrCoreStart, Message: "core start failed", Err: err}
 	}
 	return &StartedSession{Token: token, AdapterRef: req.AdapterRef, Title: s.Title}, nil
+}
+
+func (a *Adapter) cleanupFailedStart(cfg Config, t TorrentHandle) {
+	if t == nil {
+		return
+	}
+	storageKey := t.StorageKey()
+	t.Drop()
+	if !cfg.KeepCompleted && storageKey != "" {
+		_ = removeStorageDir(cacheRoot(cfg, a.bridge.DataDir), storageKey)
+	}
 }
 
 func (a *Adapter) registerSession(s *Session) {

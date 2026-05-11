@@ -20,6 +20,8 @@ type fakeTorrentClient struct {
 	metainfo [][]byte
 	byHash   map[string]*fakeTorrent
 	closes   int
+	files    []FileCandidate
+	waitErr  error
 }
 
 func (f *fakeTorrentClient) AddMagnet(ctx context.Context, raw string) (TorrentHandle, bool, error) {
@@ -34,12 +36,17 @@ func (f *fakeTorrentClient) AddMagnet(ctx context.Context, raw string) (TorrentH
 	if existing := f.byHash[hash]; existing != nil {
 		return existing, false, nil
 	}
-	t := &fakeTorrent{
-		hash: hash,
-		name: "movie",
-		files: []FileCandidate{
+	files := f.files
+	if files == nil {
+		files = []FileCandidate{
 			{DisplayPath: "movie.mkv", Length: 10, Index: 0},
-		},
+		}
+	}
+	t := &fakeTorrent{
+		hash:    hash,
+		name:    "movie",
+		files:   files,
+		waitErr: f.waitErr,
 	}
 	f.byHash[hash] = t
 	return t, true, nil
@@ -56,18 +63,24 @@ func (f *fakeTorrentClient) Close() error {
 }
 
 type fakeTorrent struct {
-	hash  string
-	name  string
-	files []FileCandidate
-	drops int
+	hash    string
+	name    string
+	files   []FileCandidate
+	waitErr error
+	drops   int
 }
 
-func (f *fakeTorrent) InfoHash() string               { return f.hash }
-func (f *fakeTorrent) StorageKey() string             { return infoHashStorageDirName(f.hash) }
-func (f *fakeTorrent) Name() string                   { return f.name }
-func (f *fakeTorrent) WaitInfo(context.Context) error { return nil }
-func (f *fakeTorrent) Files() []FileCandidate         { return f.files }
-func (f *fakeTorrent) Prioritize(int)                 {}
+func (f *fakeTorrent) InfoHash() string   { return f.hash }
+func (f *fakeTorrent) StorageKey() string { return infoHashStorageDirName(f.hash) }
+func (f *fakeTorrent) Name() string       { return f.name }
+func (f *fakeTorrent) WaitInfo(context.Context) error {
+	if f.waitErr != nil {
+		return f.waitErr
+	}
+	return nil
+}
+func (f *fakeTorrent) Files() []FileCandidate { return f.files }
+func (f *fakeTorrent) Prioritize(int)         {}
 func (f *fakeTorrent) BytesCompleted(index int) int64 {
 	if index < 0 || index >= len(f.files) {
 		return 0
@@ -318,6 +331,57 @@ func TestDifferentInfoHashStartsSecondCoreSession(t *testing.T) {
 	}
 	if core.reqs[0].AdapterRef == core.reqs[1].AdapterRef {
 		t.Fatalf("core adapter refs equal: %q", core.reqs[0].AdapterRef)
+	}
+}
+
+func TestStartMagnetDropsTorrentWhenWaitInfoFailsBeforeSession(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{waitErr: errors.New("metadata failed")}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, core)
+	_, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrMetadataTimeout {
+		t.Fatalf("startMagnet err = %#v, want ErrMetadataTimeout", err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	if client.byHash[hash].drops != 1 {
+		t.Fatalf("torrent drops = %d, want 1", client.byHash[hash].drops)
+	}
+	a.mu.Lock()
+	sessionCount := len(a.sessions)
+	_, torrentRef := a.torrents[hash]
+	a.mu.Unlock()
+	if sessionCount != 0 || torrentRef {
+		t.Fatalf("failed start left registered state: sessions=%d torrentRef=%v", sessionCount, torrentRef)
+	}
+}
+
+func TestStartMagnetDropsTorrentAndDeletesStorageWhenNoPlayableFileBeforeSession(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{
+		files: []FileCandidate{{DisplayPath: "notes.txt", Length: 10, Index: 0}},
+	}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, core)
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+
+	_, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrNoPlayableFile {
+		t.Fatalf("startMagnet err = %#v, want ErrNoPlayableFile", err)
+	}
+	if client.byHash[hash].drops != 1 {
+		t.Fatalf("torrent drops = %d, want 1", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); !os.IsNotExist(err) {
+		t.Fatalf("storage dir still exists or stat failed differently after no-playable failure: %v", err)
+	}
+	a.mu.Lock()
+	sessionCount := len(a.sessions)
+	_, torrentRef := a.torrents[hash]
+	a.mu.Unlock()
+	if sessionCount != 0 || torrentRef {
+		t.Fatalf("failed start left registered state: sessions=%d torrentRef=%v", sessionCount, torrentRef)
 	}
 }
 
