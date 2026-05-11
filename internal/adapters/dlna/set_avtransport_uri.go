@@ -188,9 +188,16 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	// and children are validated and cached locally below; other
 	// unsupported containers (DASH MPD, etc.) are rejected with 714.
 	// Empty / missing protocolInfo skips the check; the renderer trusts
-	// post-probe behavior to surface unsupported codecs later.
+	// post-probe behavior to surface unsupported codecs later, except
+	// path-classified child-resource manifests that v1 cannot validate.
 	mime := mimeFromProtocolInfo(parsed.ProtocolInfo)
 	isHLS := isHLSMIME(mime) || isHLSURLPath(validated.FinalURL)
+	if !isHLS && isUnsupportedManifestURLPath(validated.FinalURL) {
+		a.setLastError("SetAVTransportURI rejected: unsupported manifest")
+		a.publishAVTransportLastChange()
+		writeSOAPFault(w, upnpErrIllegalMIME)
+		return
+	}
 	if parsed.ProtocolInfo != "" && !protocolInfoMatchesSink(parsed.ProtocolInfo) {
 		a.setLastError("SetAVTransportURI rejected: unsupported protocolInfo")
 		a.publishAVTransportLastChange()
@@ -343,6 +350,14 @@ func isHLSURLPath(rawURL string) bool {
 		return false
 	}
 	return strings.HasSuffix(strings.ToLower(u.Path), ".m3u8")
+}
+
+func isUnsupportedManifestURLPath(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(u.Path), ".mpd")
 }
 
 // redactURL returns a controller-safe summary of a URL. Per the P2.3

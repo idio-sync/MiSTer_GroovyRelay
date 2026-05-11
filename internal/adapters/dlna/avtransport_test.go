@@ -173,6 +173,39 @@ func TestAVT_GetCurrentTransportActions_Empty(t *testing.T) {
 	}
 }
 
+func TestAVT_GetCurrentTransportActions_PlayingOwnUnseekableKnownDuration_PauseStop(t *testing.T) {
+	const ref = "dlna:hls-known-duration"
+	fake := &fakeSessionManager{
+		statusFn: func() core.SessionStatus {
+			return core.SessionStatus{AdapterRef: ref, Duration: 2 * time.Hour}
+		},
+	}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.loadedURI = "http://192.168.1.99/live.m3u8"
+	a.loadedCanSeek = false
+	a.currentRef = ref
+	a.transportState = transportStatePlaying
+	a.mu.Unlock()
+
+	req, rr := avtSOAPRequest(t, "GetCurrentTransportActions", "<InstanceID>0</InstanceID>")
+	a.handleAVTransportSOAP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<Actions>Pause,Stop</Actions>") {
+		t.Fatalf("body missing <Actions>Pause,Stop</Actions>; got: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "Seek") {
+		t.Fatalf("body advertises Seek for loadedCanSeek=false: %s", rr.Body.String())
+	}
+}
+
 // ---- SetNextAVTransportURI ----
 
 func TestAVT_SetNextAVTransportURI_Noop(t *testing.T) {

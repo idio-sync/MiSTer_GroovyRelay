@@ -382,7 +382,7 @@ func TestSetAVTransportURI_RejectsUnsupportedMIME(t *testing.T) {
 
 	didl := `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item><dc:title>DASH</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:application/dash+xml:*">http://x</res></item></DIDL-Lite>`
 	rr := avtSendSetURI(t, a, fmt.Sprintf(
-		`<InstanceID>0</InstanceID><CurrentURI>%s/v.mpd</CurrentURI>`+
+		`<InstanceID>0</InstanceID><CurrentURI>%s/v.bin</CurrentURI>`+
 			`<CurrentURIMetaData>%s</CurrentURIMetaData>`,
 		html.EscapeString(srv.URL),
 		html.EscapeString(didl),
@@ -460,6 +460,36 @@ func TestSetAVTransportURI_AcceptsM3U8WithEmptyMetadataAfterCachingChildren(t *t
 	}
 	if canSeek {
 		t.Error("loadedCanSeek = true, want false for URL-classified HLS")
+	}
+}
+
+func TestSetAVTransportURI_RejectsMPDWithEmptyMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/dash+xml")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(installResolverOverride(t, hostMappingResolver(t, nil)))
+
+	a := avtWithLoopbackResolver(t)
+	rr := avtSendSetURI(t, a, fmt.Sprintf(
+		`<InstanceID>0</InstanceID><CurrentURI>%s/manifest.mpd</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>`,
+		html.EscapeString(srv.URL),
+	))
+	if rr.Code != 500 {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>714</errorCode>") {
+		t.Fatalf("body missing errorCode 714: %s", rr.Body.String())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loadedURI != "" {
+		t.Errorf("loadedURI = %q after MPD rejection; want empty", a.loadedURI)
+	}
+	if a.loadedPlaybackURI != "" {
+		t.Errorf("loadedPlaybackURI = %q after MPD rejection; want empty", a.loadedPlaybackURI)
 	}
 }
 

@@ -252,14 +252,16 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		//   - PLAYING own live/unknown-duration: "Pause,Stop".
 		//   - PAUSED own seekable VOD: "Play,Stop,Seek".
 		//   - PAUSED own live/unknown-duration: "Play,Stop".
-		// Seek advertisement is gated on core.Status().Duration > 0
-		// AND own session — advertising Seek for a foreign session
-		// would lie to the controller (we wouldn't accept the call).
+		// Seek advertisement is gated on loadedCanSeek, our own session,
+		// and core.Status().Duration > 0 — advertising Seek for HLS or a
+		// foreign session would lie to the controller (we wouldn't accept
+		// the call).
 		// Snapshot adapter state under mu, drop, call core.Status()
 		// outside mu (CLAUDE.md: never hold mu across core.* calls).
 		a.mu.Lock()
 		state := a.transportState
 		hasURI := a.loadedURI != ""
+		loadedCanSeek := a.loadedCanSeek
 		owned := a.currentRef
 		a.mu.Unlock()
 
@@ -271,7 +273,7 @@ func (a *Adapter) handleAVTransportSOAP(w http.ResponseWriter, r *http.Request) 
 		// would be deceptive.
 		ownSession := owned != "" && st.AdapterRef == owned
 		foreignActive := st.AdapterRef != "" && !ownSession
-		canSeek := ownSession && st.Duration > 0
+		canSeek := loadedCanSeek && ownSession && st.Duration > 0
 
 		actions := ""
 		switch {
