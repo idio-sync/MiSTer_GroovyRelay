@@ -68,6 +68,7 @@ const (
 	videoChCap               = 8
 	framePoolSlots           = videoChCap + 2
 	lz4FallbackDebugInterval = time.Second
+	fieldDiagEnv             = "GROOVY_FIELD_DIAG"
 )
 
 // Startup prebuffer defaults. The field tick loop runs at 59.94 Hz;
@@ -139,6 +140,18 @@ type Plane struct {
 	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 
+	// Optional diagnostic state enabled by GROOVY_FIELD_DIAG=true. It is
+	// deliberately kept off the default hot path: when enabled, each sent
+	// field is copied into the previous same-parity slot so slow-field
+	// warnings can report whether a hypothetical delta-LZ4 payload would
+	// have been smaller. Owned by the tick goroutine.
+	fieldDiagEnabled      bool
+	fieldDiagPrev         [2][]byte
+	fieldDiagPrevValid    [2]bool
+	fieldDiagDeltaScratch []byte
+	fieldDiagLZ4Scratch   []byte
+	fieldDiagLZ4          lz4.Compressor
+
 	// Period of one field in milliseconds, as the rational
 	// periodMsNumer/periodMsDenom precomputed at NewPlane from
 	// cfg.Modeline.FieldRateRatio(). NTSC: 1001/60 (≈16.683 ms).
@@ -169,14 +182,22 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	videoHeight := cfg.resolveVideoHeight()
 	frameBytes := cfg.FieldWidth * videoHeight * cfg.BytesPerPixel
 	fieldBytes := cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
+	fieldDiagEnabled := envFieldDiagnostics()
 
 	p := &Plane{
-		cfg:           cfg,
-		done:          make(chan struct{}),
-		framePool:     NewFramePool(framePoolSlots, frameBytes),
-		fieldScratch:  make([]byte, fieldBytes),
-		lz4Scratch:    make([]byte, lz4.CompressBlockBound(fieldBytes)),
-		headerScratch: make([]byte, groovy.BlitHeaderLZ4Delta),
+		cfg:              cfg,
+		done:             make(chan struct{}),
+		framePool:        NewFramePool(framePoolSlots, frameBytes),
+		fieldScratch:     make([]byte, fieldBytes),
+		lz4Scratch:       make([]byte, lz4.CompressBlockBound(fieldBytes)),
+		headerScratch:    make([]byte, groovy.BlitHeaderLZ4Delta),
+		fieldDiagEnabled: fieldDiagEnabled,
+	}
+	if fieldDiagEnabled {
+		p.fieldDiagPrev[0] = make([]byte, fieldBytes)
+		p.fieldDiagPrev[1] = make([]byte, fieldBytes)
+		p.fieldDiagDeltaScratch = make([]byte, fieldBytes)
+		p.fieldDiagLZ4Scratch = make([]byte, lz4.CompressBlockBound(fieldBytes))
 	}
 	// Derive field period (in ms) as a rational from the modeline's
 	// FieldRateRatio: period_ms = 1000 / rate_hz, with rate_hz as
@@ -850,7 +871,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	budgetThreshold := fieldPeriodMs * 84 / 100
 	if fieldElapsed > budgetThreshold && time.Since(p.lastBudgetWarn) > time.Second {
 		p.lastBudgetWarn = time.Now()
-		slog.Warn("sendField exceeded 84% of field period",
+		attrs := []any{
 			"threshold_ms", budgetThreshold.Milliseconds(),
 			"total_ms", fieldElapsed.Milliseconds(),
 			"lz4_ms", lz4Elapsed.Milliseconds(),
@@ -858,9 +879,85 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			"send_ms", sendElapsed.Milliseconds(),
 			"raw_bytes", len(raw),
 			"compressed_bytes", compressedLen,
-			"lz4_enabled", p.cfg.LZ4Enabled)
+			"lz4_enabled", p.cfg.LZ4Enabled,
+		}
+		if p.fieldDiagEnabled {
+			diag := p.measureFieldDiagnostic(field, raw)
+			attrs = append(attrs,
+				"field_diag_enabled", true,
+				"field_diag_current_payload_bytes", len(payload),
+				"field_diag_current_payload_chunks", datagramChunks(len(payload)),
+				"field_diag_delta_available", diag.available)
+			if diag.available {
+				deltaSavingsBytes := 0
+				if diag.deltaLZ4OK {
+					deltaSavingsBytes = len(payload) - diag.deltaLZ4Bytes
+				}
+				attrs = append(attrs,
+					"field_diag_delta_lz4_ok", diag.deltaLZ4OK,
+					"field_diag_delta_lz4_bytes", diag.deltaLZ4Bytes,
+					"field_diag_delta_lz4_chunks", datagramChunks(diag.deltaLZ4Bytes),
+					"field_diag_delta_lz4_ms", diag.deltaLZ4Elapsed.Milliseconds(),
+					"field_diag_delta_savings_bytes", deltaSavingsBytes)
+			}
+		}
+		slog.Warn("sendField exceeded 84% of field period", attrs...)
 	}
+	p.rememberFieldDiagnostic(field, raw)
 	return fieldElapsed
+}
+
+type fieldDiagnostic struct {
+	available       bool
+	deltaLZ4OK      bool
+	deltaLZ4Bytes   int
+	deltaLZ4Elapsed time.Duration
+}
+
+func (p *Plane) measureFieldDiagnostic(field uint8, raw []byte) fieldDiagnostic {
+	slot := int(field & 1)
+	prev := p.fieldDiagPrev[slot]
+	if !p.fieldDiagPrevValid[slot] || len(prev) != len(raw) ||
+		len(p.fieldDiagDeltaScratch) < len(raw) || len(p.fieldDiagLZ4Scratch) == 0 {
+		return fieldDiagnostic{}
+	}
+
+	t := time.Now()
+	delta := p.fieldDiagDeltaScratch[:len(raw)]
+	writeFieldSubDeltaInto(delta, raw, prev)
+	n, ok := groovy.LZ4CompressInto(&p.fieldDiagLZ4, p.fieldDiagLZ4Scratch, delta)
+	return fieldDiagnostic{
+		available:       true,
+		deltaLZ4OK:      ok,
+		deltaLZ4Bytes:   n,
+		deltaLZ4Elapsed: time.Since(t),
+	}
+}
+
+func writeFieldSubDeltaInto(dst, current, previous []byte) {
+	for i := range current {
+		dst[i] = current[i] - previous[i]
+	}
+}
+
+func (p *Plane) rememberFieldDiagnostic(field uint8, raw []byte) {
+	if !p.fieldDiagEnabled {
+		return
+	}
+	slot := int(field & 1)
+	prev := p.fieldDiagPrev[slot]
+	if len(prev) != len(raw) {
+		return
+	}
+	copy(prev, raw)
+	p.fieldDiagPrevValid[slot] = true
+}
+
+func datagramChunks(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return (n + groovy.MaxDatagram - 1) / groovy.MaxDatagram
 }
 
 func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
@@ -1074,6 +1171,24 @@ func envPrebufferTimeout() time.Duration {
 		}
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func envFieldDiagnostics() bool {
+	v := os.Getenv(fieldDiagEnv)
+	if v == "" {
+		return false
+	}
+	enabled, err := strconv.ParseBool(v)
+	if err != nil {
+		slog.Warn("invalid GROOVY_FIELD_DIAG; diagnostics disabled",
+			"value", v)
+		return false
+	}
+	if enabled {
+		slog.Info("field diagnostics enabled",
+			"env", fieldDiagEnv)
+	}
+	return enabled
 }
 
 // rateCodeForHz maps the integer audio rate to the wire enum for INIT byte[2].

@@ -243,6 +243,86 @@ func TestLZ4FallbackDebugLogIsThrottled(t *testing.T) {
 	}
 }
 
+func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) {
+	t.Setenv("GROOVY_FIELD_DIAG", "1")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	requireUDPSockets(t, err)
+	defer conn.Close()
+	addr := conn.LocalAddr().(*net.UDPAddr)
+
+	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
+	requireUDPSockets(t, err)
+	defer sender.Close()
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		buf := make([]byte, 4096)
+		for {
+			_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			if _, _, err := conn.ReadFromUDP(buf); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = conn.Close()
+		<-drained
+	})
+
+	p := NewPlane(PlaneConfig{
+		Sender:        sender,
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	// Force sendField's budget warning path without depending on wall-clock
+	// jitter in the test runner.
+	p.periodMsNumer = 1
+	p.periodMsDenom = int64(time.Millisecond)
+
+	first := bytes.Repeat([]byte{0x11}, 720*240*3)
+	second := append([]byte(nil), first...)
+	second[0] = 0x12
+
+	p.sendField(1, 0, first)
+	p.lastBudgetWarn = time.Time{}
+	p.sendField(3, 0, second)
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"field_diag_enabled=true",
+		"field_diag_delta_available=true",
+		"field_diag_current_payload_bytes=",
+		"field_diag_delta_lz4_bytes=",
+		"field_diag_delta_lz4_ms=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diagnostic log missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteFieldSubDeltaInto_UsesByteWrapSubtraction(t *testing.T) {
+	current := []byte{0x12, 0x00, 0xff, 0x7f}
+	previous := []byte{0x10, 0xff, 0x00, 0x80}
+	dst := make([]byte, len(current))
+
+	writeFieldSubDeltaInto(dst, current, previous)
+
+	want := []byte{0x02, 0x01, 0xff, 0xff}
+	if !bytes.Equal(dst, want) {
+		t.Fatalf("delta = % x, want % x", dst, want)
+	}
+}
+
 func awaitFieldEvent(t *testing.T, fields <-chan fakemister.FieldEvent) fakemister.FieldEvent {
 	t.Helper()
 	select {
