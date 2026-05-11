@@ -164,7 +164,7 @@ func TestSendField_DoesNotEmitDeltaLZ4ByDefault(t *testing.T) {
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
 	})
-	p.sender = sender
+	p.fieldSender = sender
 
 	base := repeatedTileField(fieldBytes, deterministicTile(4096))
 	next := append([]byte(nil), base...)
@@ -212,7 +212,7 @@ func TestSendField_AdaptiveDeltaOptInEmitsDeltaWhenUseful(t *testing.T) {
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
 	})
-	p.sender = sender
+	p.fieldSender = sender
 
 	base := repeatedTileField(fieldBytes, deterministicTile(4096))
 	next := append([]byte(nil), base...)
@@ -256,7 +256,7 @@ func TestSendField_DeltaEnvWithLZ4DisabledSendsRaw(t *testing.T) {
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
 	})
-	p.sender = sender
+	p.fieldSender = sender
 
 	p.sendField(1, 0, repeatedTileField(fieldBytes, []byte{0x11, 0x22, 0x33}))
 
@@ -280,7 +280,7 @@ func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
 	})
-	p.sender = sender
+	p.fieldSender = sender
 
 	base := repeatedTileField(fieldBytes, []byte{0x10, 0x20, 0x30, 0x40, 0x50})
 	next := append([]byte(nil), base...)
@@ -408,7 +408,7 @@ func TestSendField_DeltaEnabledSlowWarningLogsSelectionFields(t *testing.T) {
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
 	})
-	p.sender = sender
+	p.fieldSender = sender
 	p.periodMsNumer = 1
 	p.periodMsDenom = int64(time.Millisecond)
 
@@ -467,7 +467,7 @@ func TestSendField_DeltaEnabledSlowWarningLogsUnavailableDelta(t *testing.T) {
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
 	})
-	p.sender = sender
+	p.fieldSender = sender
 	p.periodMsNumer = 1
 	p.periodMsDenom = int64(time.Millisecond)
 

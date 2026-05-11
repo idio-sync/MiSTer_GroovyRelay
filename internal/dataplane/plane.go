@@ -112,8 +112,16 @@ const (
 //  6. Pump loop: one BLIT per tick, AUDIO when ACK bit 6 is set.
 //  7. CLOSE on ctx cancel or ffmpeg exit.
 type Plane struct {
-	cfg            PlaneConfig
-	sender         fieldSender
+	cfg PlaneConfig
+	// fieldSender is the per-field write surface: WaitForCongestion / Send /
+	// SendPayload / MarkBlitSent. It is initialized from cfg.Sender at
+	// NewPlane time and is intentionally narrower than cfg.Sender (which
+	// also exposes INIT, SWITCHRES, CLOSE, ACK draining). The narrow
+	// interface exists so tests can substitute a scriptedFieldSender
+	// without re-implementing the full groovynet.Sender surface; production
+	// code outside sendField/sendDuplicate/sendAudio uses cfg.Sender
+	// directly for handshake and lifecycle packets.
+	fieldSender    fieldSender
 	proc           processHandle
 	positionFields atomic.Int64  // fields emitted since session start; Position() derives ms
 	framesTotal    atomic.Uint64 // ffmpeg frames consumed since session start
@@ -184,6 +192,15 @@ type Plane struct {
 	// so aggregate the hot-path debug line instead of printing per field.
 	lastLZ4FallbackDebug       time.Time
 	lz4FallbackDebugSuppressed int
+
+	// deltaSelectedTotal counts how many fields the adaptive selector chose
+	// to emit as 13-byte LZ4-delta BLITs since session start. Tick-goroutine
+	// owned (same single-writer discipline as the scratch slices above); the
+	// rolling 5-second stats log in Run snapshots this and reports the
+	// per-window delta count via simple subtraction. Counts selector intent
+	// regardless of subsequent send success — failed sends are visible as
+	// "blit payload send" WARNs.
+	deltaSelectedTotal uint64
 }
 
 // NewPlane constructs a Plane that is ready to Run. The Sender inside cfg
@@ -209,7 +226,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 
 	p := &Plane{
 		cfg:              cfg,
-		sender:           cfg.Sender,
+		fieldSender:      cfg.Sender,
 		done:             make(chan struct{}),
 		framePool:        NewFramePool(framePoolSlots, frameBytes),
 		fieldScratch:     make([]byte, fieldBytes),
@@ -562,6 +579,12 @@ func (p *Plane) Run(ctx context.Context) error {
 		statMaxFieldNs     int64
 		statMaxFramesAhead uint32
 
+		// Snapshot of p.deltaSelectedTotal at the start of the current
+		// window. The stats case below subtracts this from the live value
+		// to produce a per-window count, then updates the snapshot. Same
+		// tick-goroutine ownership as p.deltaSelectedTotal itself.
+		prevDeltaSelected uint64
+
 		// Cumulative counters for the session-end lifecycle marker.
 		// Incremented in tandem with the rolling-window counters but
 		// never reset — survives across stats-ticker fires.
@@ -623,7 +646,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			if frameNum > lastEcho {
 				currentFramesAhead = frameNum - lastEcho
 			}
-			slog.Debug("dataplane stats",
+			attrs := []any{
 				"window_s", 5,
 				"ticks", statTicks,
 				"fields_sent", statFieldsSent,
@@ -633,7 +656,16 @@ func (p *Plane) Run(ctx context.Context) error {
 				"current_frames_ahead", currentFramesAhead,
 				"enobuf_total", p.cfg.Sender.ENOBUFCount(),
 				"position_s", p.Position().Seconds(),
-				"audio_ready", p.audioReady.Load())
+				"audio_ready", p.audioReady.Load(),
+			}
+			if p.deltaLZ4Enabled {
+				curr := p.deltaSelectedTotal
+				attrs = append(attrs,
+					"delta_selected", curr-prevDeltaSelected,
+					"delta_selected_total", curr)
+				prevDeltaSelected = curr
+			}
+			slog.Debug("dataplane stats", attrs...)
 			statTicks, statFieldsSent, statDuplicates = 0, 0, 0
 			statMaxFieldNs = 0
 			statMaxFramesAhead = 0
@@ -858,6 +890,9 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			opts.CompressedSize = uint32(len(payload))
 			opts.Delta = choice.delta
 			compressedLen = len(payload)
+			if choice.delta {
+				p.deltaSelectedTotal++
+			}
 		} else {
 			p.logLZ4RawFallback(len(raw), time.Now())
 		}
@@ -865,22 +900,22 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	}
 
 	t := time.Now()
-	p.sender.WaitForCongestion()
+	p.fieldSender.WaitForCongestion()
 	congestionElapsed = time.Since(t)
 
 	t = time.Now()
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
-	if err := p.sender.Send(header); err != nil {
+	if err := p.fieldSender.Send(header); err != nil {
 		slog.Warn("blit header send", "err", err)
 		return time.Since(fieldStart)
 	}
 	p.wireBytes.Add(uint64(len(header)))
-	if err := p.sender.SendPayload(payload); err != nil {
+	if err := p.fieldSender.SendPayload(payload); err != nil {
 		slog.Warn("blit payload send", "err", err)
 		return time.Since(fieldStart)
 	}
 	p.wireBytes.Add(uint64(len(payload)))
-	p.sender.MarkBlitSent(len(payload))
+	p.fieldSender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
 
 	// Throttled budget-overrun warn. Threshold is 84% of the field
@@ -921,7 +956,9 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 				"delta_lz4_selected", choice.delta,
 				"delta_lz4_full_bytes", choice.fullLZ4Bytes,
 				"delta_lz4_bytes", choice.deltaLZ4Bytes,
-				"delta_lz4_savings_bytes", deltaSavingsBytes)
+				"delta_lz4_chunks", datagramChunks(choice.deltaLZ4Bytes),
+				"delta_lz4_savings_bytes", deltaSavingsBytes,
+				"delta_lz4_threshold_pct", deltaLZ4WinNumerator)
 		}
 		if p.fieldDiagEnabled {
 			diag := p.measureFieldDiagnostic(field, raw)
@@ -1118,12 +1155,12 @@ func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
 func (p *Plane) sendDuplicate(frame uint32, field uint8) {
 	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
-	if err := p.sender.Send(header); err != nil {
+	if err := p.fieldSender.Send(header); err != nil {
 		slog.Warn("duplicate blit header send", "err", err)
 		return
 	}
 	p.wireBytes.Add(uint64(len(header)))
-	p.sender.MarkBlitSent(0) // no payload, no congestion hit
+	p.fieldSender.MarkBlitSent(0) // no payload, no congestion hit
 }
 
 // sendAudio emits the 3-byte AUDIO header then the PCM payload. The wire
@@ -1135,12 +1172,12 @@ func (p *Plane) sendAudio(pcm []byte) {
 		pcm = pcm[:maxSoundSize]
 	}
 	audioHeader := groovy.BuildAudioHeader(uint16(len(pcm)))
-	if err := p.sender.Send(audioHeader); err != nil {
+	if err := p.fieldSender.Send(audioHeader); err != nil {
 		slog.Warn("audio header send", "err", err)
 		return
 	}
 	p.wireBytes.Add(uint64(len(audioHeader)))
-	if err := p.sender.SendPayload(pcm); err != nil {
+	if err := p.fieldSender.SendPayload(pcm); err != nil {
 		slog.Warn("audio payload send", "err", err)
 		return
 	}

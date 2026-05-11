@@ -286,6 +286,46 @@ host_ip = "192.168.1.20"
 
 Restart the bridge. Check the startup log for the `host_ip not set` warning. If it's gone, your override took effect.
 
+### Experimental: adaptive delta-LZ4 BLITs (`GROOVY_DELTA_LZ4`)
+
+The Groovy wire protocol defines a 13-byte BLIT variant carrying an LZ4-compressed
+**byte-wrap subtraction** of the current field against the previous same-polarity
+field (`delta[i] = current[i] - prev[i]` mod 256). The FPGA reconstructs the field
+by adding the previous framebuffer bytes back to the decompressed delta. On
+motion-light content the delta compresses far better than the full field, which
+reduces UDP chunk count and lowers the chance of hitting the 500 KB congestion
+backoff threshold.
+
+The bridge can opt in to emit 13-byte BLITs alongside the standard 12-byte LZ4
+path. The selector compares the two compressed sizes per field and chooses the
+delta variant only when it is at least 5% smaller (the same 95% win threshold
+the upstream Groovy_MiSTer reference uses).
+
+Set the env var on the bridge process to enable:
+
+```bash
+GROOVY_DELTA_LZ4=1 ./mister-groovy-relay --config /path/to/config.toml
+# or in Docker:
+docker run ... -e GROOVY_DELTA_LZ4=1 idiosync000/mister-groovy-relay:latest
+```
+
+The default is off. The feature has no effect unless `bridge.lz4_enabled` is also
+true (which is the default).
+
+**Known limitation: delta loss is silent.** UDP packet loss is structural in this
+protocol — there are no per-chunk sequence numbers and the receiver concatenates
+by arrival order. If a delta-LZ4 field is dropped on the wire, the sender's
+"previous field" history advances while the receiver's stays behind; subsequent
+delta fields will reconstruct against the wrong predecessor and produce pixel
+corruption until the next full BLIT (any 12-byte LZ4 or 8-byte raw field) resyncs
+the histories on both sides. On a stable LAN with motion-typical content full
+fields land often enough that brief corruption recovers within a few frames; on a
+lossy link delta-LZ4 can amplify visible artifacts. Leave it off if you see
+unexplained intermittent corruption.
+
+You can grep the bridge logs for `delta_selected` to see how often the adaptive
+selector picked the delta path in each 5-second window when the feature is on.
+
 ### CPU contention under Docker
 
 The data plane pushes fields at 59.94 Hz regardless of scheduling pressure.
