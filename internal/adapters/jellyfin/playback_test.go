@@ -241,7 +241,9 @@ func TestFetchPlaybackInfo_DecodesAudioMetadata(t *testing.T) {
 func TestFetchItemMetadata_DecodesAudioMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/Items/song-1" {
-			t.Fatalf("path = %q, want /Items/song-1", r.URL.Path)
+			t.Errorf("path = %q, want /Items/song-1", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{

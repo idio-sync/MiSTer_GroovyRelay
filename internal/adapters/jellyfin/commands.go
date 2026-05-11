@@ -132,7 +132,9 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 }
 
 func (a *Adapter) fetchItemMetadataBestEffort(ctx context.Context, cfg Config, tok Token, itemID string) ItemMetadataResult {
-	meta, err := FetchItemMetadata(ctx, ItemMetadataInput{
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	meta, err := FetchItemMetadata(lookupCtx, ItemMetadataInput{
 		ServerURL:  cfg.ServerURL,
 		Token:      tok.AccessToken,
 		DeviceID:   a.deviceID,
