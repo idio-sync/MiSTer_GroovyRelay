@@ -18,15 +18,21 @@ import (
 )
 
 type fakeTorrentClient struct {
-	magnets  []string
-	metainfo [][]byte
-	byHash   map[string]*fakeTorrent
-	closes   int
-	files    []FileCandidate
-	waitErr  error
+	magnets      []string
+	metainfo     [][]byte
+	byHash       map[string]*fakeTorrent
+	closes       int
+	files        []FileCandidate
+	waitErr      error
+	addMagnetErr func(raw string) error
 }
 
 func (f *fakeTorrentClient) AddMagnet(ctx context.Context, raw string) (TorrentHandle, bool, error) {
+	if f.addMagnetErr != nil {
+		if err := f.addMagnetErr(raw); err != nil {
+			return nil, false, err
+		}
+	}
 	if f.byHash == nil {
 		f.byHash = make(map[string]*fakeTorrent)
 	}
@@ -640,6 +646,96 @@ func TestNewIDFailsWhenEntropyUnavailable(t *testing.T) {
 
 	if _, err := newID("tok"); err == nil {
 		t.Fatal("newID succeeded, want entropy error")
+	}
+}
+
+func TestNewIDProvides128BitsOfEntropy(t *testing.T) {
+	id, err := newID("tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantHexLen = 32 // 128 bits = 16 bytes = 32 hex chars
+	hexPart := strings.TrimPrefix(id, "tok-")
+	if hexPart == id {
+		t.Fatalf("id %q missing prefix", id)
+	}
+	if len(hexPart) != wantHexLen {
+		t.Fatalf("hex entropy length = %d, want %d (128-bit token)", len(hexPart), wantHexLen)
+	}
+}
+
+func TestCleanupFailedStartPreservesActiveTorrentOnIsNewTrueRace(t *testing.T) {
+	rec := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, rec)
+	active, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+	handle := client.byHash[hash]
+
+	a.cleanupFailedStart(cfg, handle, true)
+
+	if handle.drops != 0 {
+		t.Fatalf("active torrent dropped by failed-start cleanup with isNew=true: drops=%d", handle.drops)
+	}
+	if _, err := os.Stat(storageDir); err != nil {
+		t.Fatalf("active storage dir deleted by failed-start cleanup: %v", err)
+	}
+	a.mu.Lock()
+	refs := a.torrents[hash].refs
+	_, liveSession := a.sessions[active.Token]
+	a.mu.Unlock()
+	if refs != 1 || !liveSession {
+		t.Fatalf("active session disrupted: refs=%d live=%v", refs, liveSession)
+	}
+}
+
+func TestStartMagnetErrorRedactsRawMagnetFromWrappedErr(t *testing.T) {
+	rec := &recordingCore{}
+	client := &fakeTorrentClient{
+		addMagnetErr: func(raw string) error {
+			return fmt.Errorf("anacrolix: failed to add %s", raw)
+		},
+	}
+	a := newStartedTestAdapter(t, startedTorrentConfig(), client, rec)
+	sensitiveMagnet := "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Sensitive%20Title&tr=http://tracker.example/secret&ws=http://ws.example&xs=http://xs.example"
+	_, err := a.startMagnet(context.Background(), sensitiveMagnet)
+	if err == nil {
+		t.Fatal("startMagnet succeeded, want injected AddMagnet failure")
+	}
+	var terr *TorrentError
+	if !errors.As(err, &terr) {
+		t.Fatalf("err type = %T, want *TorrentError", err)
+	}
+	if terr.Kind != ErrBadInput {
+		t.Fatalf("err kind = %s, want ErrBadInput", terr.Kind)
+	}
+	wrapped := ""
+	if terr.Err != nil {
+		wrapped = terr.Err.Error()
+	}
+	forbidden := []string{
+		sensitiveMagnet,
+		"Sensitive",
+		"tracker.example",
+		"ws.example",
+		"xs.example",
+		"dn=",
+		"tr=",
+		"ws=",
+		"xs=",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(wrapped, bad) {
+			t.Fatalf("wrapped err %q leaked %q from raw magnet", wrapped, bad)
+		}
+	}
+	if !strings.Contains(wrapped, "magnet:?xt=urn:btih:01234567") {
+		t.Fatalf("wrapped err %q should retain redacted magnet form", wrapped)
 	}
 }
 

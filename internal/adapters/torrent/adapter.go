@@ -55,6 +55,11 @@ type Adapter struct {
 	activeToken string
 
 	restartClientPending bool
+
+	// pruneWG tracks in-flight cache-prune goroutines spawned by
+	// cleanupSession. Stop() drains it so a slow disk doesn't outlive the
+	// process and leave a stranded walk pass on shutdown.
+	pruneWG sync.WaitGroup
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -152,12 +157,24 @@ func (a *Adapter) Start(ctx context.Context) error {
 }
 
 func (a *Adapter) Stop() error {
+	// Stop is the bridge-shutdown path (only caller is main.go on SIGTERM).
+	// Drain any still-registered sessions through the same cleanup path
+	// OnStop would invoke, then close the client. Gates affect new sessions
+	// only — they do not preserve an active cast past Stop, otherwise the
+	// session/storage dirs and the BitTorrent client would orphan when an
+	// operator toggled the adapter off mid-cast and the bridge then exited.
 	a.mu.Lock()
-	if !a.cfg.Enabled && len(a.sessions) > 0 && a.client != nil {
-		a.mu.Unlock()
-		a.setState(adapters.StateStopped, "")
-		return nil
+	tokens := make([]string, 0, len(a.sessions))
+	for tok := range a.sessions {
+		tokens = append(tokens, tok)
 	}
+	a.mu.Unlock()
+	for _, tok := range tokens {
+		a.cleanupSession(tok, "shutdown")
+	}
+	a.pruneWG.Wait()
+
+	a.mu.Lock()
 	client := a.client
 	a.mu.Unlock()
 

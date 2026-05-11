@@ -3,6 +3,7 @@ package torrent
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -204,35 +205,60 @@ func TestStopRetainsClientWhenCloseFails(t *testing.T) {
 	}
 }
 
-func TestStopAfterDisablePreservesActiveTorrentSession(t *testing.T) {
-	core := &recordingCore{}
+func TestStopDrainsActiveTorrentSessionEvenWhenAdapterDisabled(t *testing.T) {
+	// Stop is the bridge-shutdown path (only caller is main.go on SIGTERM).
+	// Gates affect new sessions only — they do NOT preserve an active cast
+	// past Stop. Without this drain the BitTorrent client, session dir, and
+	// storage dir leak across process exit when the operator toggled the
+	// adapter off mid-cast.
+	rec := &recordingCore{}
 	client := &fakeTorrentClient{}
-	a := newStartedTestAdapter(t, startedTorrentConfig(), client, core)
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, rec)
 	started, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
 	if err != nil {
 		t.Fatal(err)
 	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+	a.mu.Lock()
+	sessionDir := a.sessions[started.Token].SessionDir
+	a.mu.Unlock()
 
 	a.SetEnabled(false)
 	if err := a.Stop(); err != nil {
 		t.Fatalf("Stop after disable: %v", err)
 	}
-	if client.closes != 0 {
-		t.Fatalf("client closes after disable Stop = %d, want 0 while session is active", client.closes)
+
+	if client.closes != 1 {
+		t.Fatalf("client closes after disable+Stop = %d, want 1", client.closes)
+	}
+	if client.byHash[hash].drops != 1 {
+		t.Fatalf("torrent drops after disable+Stop = %d, want 1", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); !os.IsNotExist(err) {
+		t.Fatalf("storage dir still exists after Stop: %v", err)
+	}
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("session dir still exists after Stop: %v", err)
 	}
 	a.mu.Lock()
 	_, sessionLive := a.sessions[started.Token]
+	sessionCount := len(a.sessions)
 	a.mu.Unlock()
-	if !sessionLive {
-		t.Fatal("Stop after disable removed active session")
+	if sessionLive || sessionCount != 0 {
+		t.Fatalf("Stop did not clear active session: live=%v count=%d", sessionLive, sessionCount)
 	}
+
 	if _, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("new start after disable succeeded, want disabled gate error")
 	}
 
-	core.reqs[0].OnStop("stopped")
+	// Late OnStop from core after Stop already drained must be a no-op
+	// (idempotent via CleanupOnce), not a double-close on the same client.
+	rec.reqs[0].OnStop("stopped")
 	if client.closes != 1 {
-		t.Fatalf("client closes after final disabled-session cleanup = %d, want 1", client.closes)
+		t.Fatalf("client closes after late OnStop = %d, want 1 (idempotent)", client.closes)
 	}
 }
 

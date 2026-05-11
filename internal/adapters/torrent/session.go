@@ -57,7 +57,14 @@ func (a *Adapter) startMagnet(ctx context.Context, raw string) (*StartedSession,
 	}
 	t, isNew, err := client.AddMagnet(ctx, raw)
 	if err != nil {
-		return nil, &TorrentError{Kind: ErrBadInput, Message: "magnet could not be added", Err: err}
+		// Drop the raw anacrolix error — it can embed the full magnet URI
+		// (including dn/tr/ws/xs params). Keep only the redacted form so
+		// downstream loggers walking Unwrap() can't leak the magnet body.
+		return nil, &TorrentError{
+			Kind:    ErrBadInput,
+			Message: "magnet could not be added",
+			Err:     fmt.Errorf("add %s failed", redactMagnet(raw)),
+		}
 	}
 	return a.startTorrentHandle(ctx, cfg, t, isNew)
 }
@@ -197,7 +204,11 @@ func (a *Adapter) cleanupFailedStart(cfg Config, t TorrentHandle, isNew bool) {
 	if t == nil {
 		return
 	}
-	if !isNew && a.hasLiveTorrentRef(t.InfoHash()) {
+	// Skip drop/delete whenever any session is still using this info hash, even
+	// on the isNew=true branch — a concurrent same-hash start may have already
+	// registered and would otherwise lose its torrent and storage out from under
+	// it.
+	if a.hasLiveTorrentRef(t.InfoHash()) {
 		return
 	}
 	storageKey := t.StorageKey()
@@ -273,9 +284,17 @@ func (a *Adapter) cleanupSession(token, reason string) {
 	if removeStorage {
 		_ = removeStorageDir(s.StorageRoot, s.StorageKey)
 	}
-	if err := pruneStorageCache(s.StorageRoot, cfg.MaxCacheBytes, active); err != nil {
-		a.logSafe("torrent cache prune failed token=%s err=%s", token, err)
-	}
+	// Prune walks the cache dir on disk; offload so a slow disk doesn't
+	// delay a concurrent startMagnet waiting for post-cleanup state.
+	// Stop() drains a.pruneWG before exit so this goroutine completes
+	// before the process tears down.
+	a.pruneWG.Add(1)
+	go func() {
+		defer a.pruneWG.Done()
+		if err := pruneStorageCache(s.StorageRoot, cfg.MaxCacheBytes, active); err != nil {
+			a.logSafe("torrent cache prune failed token=%s err=%s", token, err)
+		}
+	}()
 	if closeClient != nil {
 		if err := closeClient.Close(); err != nil {
 			a.setState(adapters.StateError, err.Error())
@@ -312,7 +331,10 @@ func (a *Adapter) mediaURL(token string) string {
 }
 
 func newID(prefix string) (string, error) {
-	var b [8]byte
+	// 16 bytes = 128 bits of entropy. The token gates access to a tokenized
+	// loopback media URL; loopback enforcement is the primary defense, but a
+	// 64-bit token was below the 2026 norm for "high-entropy" identifiers.
+	var b [16]byte
 	if _, err := randRead(b[:]); err != nil {
 		return "", err
 	}

@@ -42,9 +42,14 @@ func createSessionDir(root, sessionID string) (string, error) {
 	marker := sessionMarker{SessionID: sessionID, CreatedAt: time.Now().UTC()}
 	body, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
+		// Roll back the just-created dir so it doesn't linger unmarked —
+		// removeSessionDir refuses unmarked dirs, so without rollback the
+		// orphan can only be cleaned up by an operator.
+		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(dir, markerFileName), body, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	return dir, nil

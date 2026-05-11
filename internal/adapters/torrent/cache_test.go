@@ -85,6 +85,25 @@ func TestCreateSessionDirRejectsUnsafeSessionID(t *testing.T) {
 	}
 }
 
+func TestCreateSessionDirRollsBackOnMarkerWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "session-blocked-marker"
+	dir := filepath.Join(root, sessionID)
+	// Pre-create a directory at the marker path so WriteFile fails
+	// (cross-platform: opening a directory for write fails on both
+	// POSIX with EISDIR and Windows with ERROR_ACCESS_DENIED).
+	if err := os.MkdirAll(filepath.Join(dir, markerFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := createSessionDir(root, sessionID); err == nil {
+		t.Fatal("createSessionDir succeeded, want marker write failure")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("partial session dir still exists after marker write failure: %v", err)
+	}
+}
+
 func TestRemoveSessionDirRefusesUnmarkedDirectory(t *testing.T) {
 	root := t.TempDir()
 	unmarked := filepath.Join(root, "session-a")
