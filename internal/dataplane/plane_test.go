@@ -153,68 +153,50 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 }
 
 func TestSendField_DoesNotEmitDeltaLZ4ByDefault(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "")
+
 	const fieldBytes = 720 * 240 * 3
-
-	listener, err := fakemister.NewListener("127.0.0.1:0")
-	requireUDPSockets(t, err)
-
-	cmds := make(chan fakemister.Command, 8)
-	fields := make(chan fakemister.FieldEvent, 2)
-	audios := make(chan fakemister.AudioEvent, 1)
-	runDone := make(chan struct{})
-	go func() {
-		listener.RunWithFields(cmds, fields, audios, func() uint32 { return fieldBytes })
-		close(runDone)
-	}()
-	t.Cleanup(func() {
-		_ = listener.Close()
-		<-runDone
-	})
-
-	addr := listener.Addr().(*net.UDPAddr)
-	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
-	requireUDPSockets(t, err)
-	defer sender.Close()
-
+	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		Sender:        sender,
 		LZ4Enabled:    true,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
 	})
+	p.sender = sender
 
-	base := make([]byte, fieldBytes)
-	if _, err := cryptorand.Read(base); err != nil {
-		t.Fatal(err)
-	}
+	base := repeatedTileField(fieldBytes, deterministicTile(4096))
 	next := append([]byte(nil), base...)
 	for i := 0; i < 64; i++ {
-		next[i*1024] ^= byte(i + 1)
+		next[i*4096] ^= byte(i + 1)
 	}
 
 	p.sendField(1, 0, base)
-	first := awaitFieldEvent(t, fields)
-	if first.Header.Compressed || first.Header.Delta {
-		t.Fatalf("seed field header = %+v, want RAW full field", first.Header)
-	}
-
 	p.sendField(3, 0, next)
-	second := awaitFieldEvent(t, fields)
-	if second.Header.Compressed || second.Header.Delta {
-		t.Fatalf("second field header = %+v, want RAW full field", second.Header)
+
+	if len(sender.headers) != 2 || len(sender.payloads) != 2 {
+		t.Fatalf("got %d headers and %d payloads, want 2 of each", len(sender.headers), len(sender.payloads))
+	}
+	for i, header := range sender.headers {
+		if got := blitPayloadType(header); got != groovy.BlitHeaderLZ4 {
+			t.Fatalf("header %d payload type = %d, want full LZ4 with delta disabled", i, got)
+		}
 	}
 
-	decoder := fakemister.NewFieldDecoder()
-	if _, err := decoder.Decode(first, fieldBytes); err != nil {
-		t.Fatalf("decode seed field: %v", err)
-	}
-	got, err := decoder.Decode(second, fieldBytes)
+	got, err := groovy.LZ4Decompress(sender.payloads[0], fieldBytes)
 	if err != nil {
-		t.Fatalf("decode delta field: %v", err)
+		t.Fatalf("decompress seed field: %v", err)
+	}
+	if !bytes.Equal(got, base) {
+		t.Fatal("seed field payload decoded to different pixels")
+	}
+	got, err = groovy.LZ4Decompress(sender.payloads[1], fieldBytes)
+	if err != nil {
+		t.Fatalf("decompress second field: %v", err)
 	}
 	if !bytes.Equal(got, next) {
-		t.Fatal("delta field decoded to different pixels")
+		t.Fatal("second field payload decoded to different pixels")
 	}
 }
 
@@ -468,7 +450,7 @@ func TestSendField_DeltaEnabledSlowWarningLogsSelectionFields(t *testing.T) {
 	}
 }
 
-func TestSendField_DeltaEnabledSlowWarningLogsFailedDeltaCompression(t *testing.T) {
+func TestSendField_DeltaEnabledSlowWarningLogsUnavailableDelta(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
 
 	var logBuf bytes.Buffer
@@ -546,20 +528,58 @@ func TestFieldHistoryInvalidatesOnLengthMismatch(t *testing.T) {
 	}
 }
 
-func TestFieldHistoryInvalidatesOnModeIdentityMismatch(t *testing.T) {
-	t.Setenv("GROOVY_DELTA_LZ4", "1")
-	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
-	raw := []byte{1, 2, 3, 4}
-	p.rememberFieldHistory(0, raw)
-	if !p.hasFieldHistory(0, raw) {
-		t.Fatal("history missing immediately after remember")
-	}
-	p.cfg.RGBMode = groovy.RGBMode565
-	if p.hasFieldHistory(0, raw) {
-		t.Fatal("history should be invalid after RGB mode changes")
-	}
-	if p.fieldPrevValid[0] {
-		t.Fatal("history validity bit should be cleared after mode mismatch")
+func TestFieldHistoryInvalidatesOnIdentityMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Plane)
+	}{
+		{
+			name: "width",
+			mutate: func(p *Plane) {
+				p.cfg.FieldWidth = 2
+			},
+		},
+		{
+			name: "height",
+			mutate: func(p *Plane) {
+				p.cfg.FieldHeight = 2
+			},
+		},
+		{
+			name: "bytes_per_pixel",
+			mutate: func(p *Plane) {
+				p.cfg.BytesPerPixel = 2
+			},
+		},
+		{
+			name: "rgb_mode",
+			mutate: func(p *Plane) {
+				p.cfg.RGBMode = groovy.RGBMode565
+			},
+		},
+		{
+			name: "interlace",
+			mutate: func(p *Plane) {
+				p.cfg.Modeline.Interlace = 1
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GROOVY_DELTA_LZ4", "1")
+			p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+			raw := []byte{1, 2, 3, 4}
+			p.rememberFieldHistory(0, raw)
+			if !p.hasFieldHistory(0, raw) {
+				t.Fatal("history missing immediately after remember")
+			}
+			tc.mutate(p)
+			if p.hasFieldHistory(0, raw) {
+				t.Fatalf("history should be invalid after %s changes", tc.name)
+			}
+			if p.fieldPrevValid[0] {
+				t.Fatal("history validity bit should be cleared after identity mismatch")
+			}
+		})
 	}
 }
 
