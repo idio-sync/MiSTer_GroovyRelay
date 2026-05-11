@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -405,9 +406,14 @@ func TestEventSubscribe_CapExhaustionRejectsNew(t *testing.T) {
 }
 
 func TestEventSubscribe_CapExhaustionSkipsCallbackResolution(t *testing.T) {
-	resolveCalls := 0
+	// Seeding the cap-exhausted state directly (rather than driving it via a
+	// first handleSubscribe call) avoids spawning the async NOTIFY delivery
+	// worker that also resolves the callback URL. The property under test is
+	// purely synchronous: the cap-rejection branch in handleNewSubscription
+	// must not invoke the resolver.
+	var resolveCalls atomic.Int64
 	resolver := func(_ context.Context, _ string) ([]net.IP, error) {
-		resolveCalls++
+		resolveCalls.Add(1)
 		return []net.IP{net.ParseIP("192.168.1.10")}, nil
 	}
 	em := newEventManager(eventManagerConfig{
@@ -419,28 +425,28 @@ func TestEventSubscribe_CapExhaustionSkipsCallbackResolution(t *testing.T) {
 	})
 	em.setSnapshot(serviceAVTransport, eventProperties{"LastChange": "initial"})
 
-	first := eventRequest("SUBSCRIBE", "/dlna/event/AVTransport")
-	first.Header.Set("CALLBACK", "<http://controller-one.local/cb>")
-	first.Header.Set("NT", "upnp:event")
-	rr := httptest.NewRecorder()
-	em.handleSubscribe(rr, first, serviceAVTransport)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("first subscribe status = %d, want 200", rr.Code)
+	em.mu.Lock()
+	const seededSID = "uuid:00000000-0000-0000-0000-000000000001"
+	em.subscriptions[serviceAVTransport][seededSID] = &eventSubscription{
+		SID:         seededSID,
+		Service:     serviceAVTransport,
+		CallbackURL: "http://controller-one.local/cb",
+		RemoteAddr:  "192.168.1.44",
+		ExpiresAt:   em.now().Add(time.Hour),
+		NextSeq:     1,
 	}
-	if resolveCalls != 1 {
-		t.Fatalf("resolve calls after first subscribe = %d, want 1", resolveCalls)
-	}
+	em.mu.Unlock()
 
-	second := eventRequest("SUBSCRIBE", "/dlna/event/AVTransport")
-	second.Header.Set("CALLBACK", "<http://controller-two.local/cb>")
-	second.Header.Set("NT", "upnp:event")
-	rr = httptest.NewRecorder()
-	em.handleSubscribe(rr, second, serviceAVTransport)
+	req := eventRequest("SUBSCRIBE", "/dlna/event/AVTransport")
+	req.Header.Set("CALLBACK", "<http://controller-two.local/cb>")
+	req.Header.Set("NT", "upnp:event")
+	rr := httptest.NewRecorder()
+	em.handleSubscribe(rr, req, serviceAVTransport)
 	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("second same-remote subscribe status = %d, want 503", rr.Code)
+		t.Fatalf("cap-exhausted subscribe status = %d, want 503", rr.Code)
 	}
-	if resolveCalls != 1 {
-		t.Fatalf("cap rejection performed callback DNS resolution: calls=%d, want 1", resolveCalls)
+	if got := resolveCalls.Load(); got != 0 {
+		t.Fatalf("cap rejection performed callback DNS resolution: calls=%d, want 0", got)
 	}
 }
 
