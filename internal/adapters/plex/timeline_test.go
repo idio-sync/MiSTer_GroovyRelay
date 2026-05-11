@@ -22,6 +22,33 @@ func newTestBroker(t *testing.T, status core.SessionStatus) *TimelineBroker {
 	return b
 }
 
+type parsedTimeline struct {
+	Type             string `xml:"type,attr"`
+	State            string `xml:"state,attr"`
+	Location         string `xml:"location,attr"`
+	Key              string `xml:"key,attr"`
+	AudioStreamID    string `xml:"audioStreamID,attr"`
+	SubtitleStreamID string `xml:"subtitleStreamID,attr"`
+	PlayQueueItemID  string `xml:"playQueueItemID,attr"`
+}
+
+func timelineByType(t *testing.T, xmlBody, typ string) parsedTimeline {
+	t.Helper()
+	var parsed struct {
+		Timelines []parsedTimeline `xml:"Timeline"`
+	}
+	if err := xmlpkg.Unmarshal([]byte(xmlBody), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	for _, timeline := range parsed.Timelines {
+		if timeline.Type == typ {
+			return timeline
+		}
+	}
+	t.Fatalf("missing %s timeline: %s", typ, xmlBody)
+	return parsedTimeline{}
+}
+
 func TestTimeline_SubscribeAddsSubscriber(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	b.Subscribe("client-a", "127.0.0.1", "32500", "http", 0)
@@ -159,6 +186,101 @@ func TestTimeline_BuildXML_IncludesPlexMetadata(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("xml missing %q: %s", want, got)
 		}
+	}
+}
+
+func TestTimeline_BuildXML_InactiveRowsAreBare(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			MediaKey:          "/library/metadata/42",
+			ContainerKey:      "/playQueues/99?own=1",
+			AudioStreamID:     "11",
+			SubtitleStreamID:  "22",
+			PlayQueueItemID:   "item-123",
+			PlexServerAddress: "192.168.1.10",
+			PlexServerPort:    "32400",
+			PlexServerScheme:  "http",
+		}
+	})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 12345 * time.Millisecond,
+		Duration: 60000 * time.Millisecond,
+	})
+	video := timelineByType(t, got, "video")
+	if video.Key != "/library/metadata/42" || video.AudioStreamID != "11" || video.SubtitleStreamID != "22" {
+		t.Fatalf("active video row missing metadata: %+v xml=%s", video, got)
+	}
+	music := timelineByType(t, got, "music")
+	if music.Key != "" || music.AudioStreamID != "" || music.SubtitleStreamID != "" || music.PlayQueueItemID != "" {
+		t.Fatalf("inactive music row should be bare: %+v xml=%s", music, got)
+	}
+}
+
+func TestTimeline_BuildXML_MusicInactiveVideoRowIsBare(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	b.SetPlayContextProvider(func() PlayMediaRequest {
+		return PlayMediaRequest{
+			MediaKey:          "/library/metadata/42",
+			ContainerKey:      "/playQueues/9",
+			AudioStreamID:     "101",
+			PlayQueueItemID:   "item-42",
+			PlexServerAddress: "192.168.1.10",
+			PlexServerPort:    "32400",
+			PlexServerScheme:  "http",
+		}
+	})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:     core.StatePlaying,
+		MediaKind: core.MediaKindMusic,
+		Position:  12 * time.Second,
+		Duration:  60 * time.Second,
+	})
+	music := timelineByType(t, got, "music")
+	if music.Key != "/library/metadata/42" || music.AudioStreamID != "101" {
+		t.Fatalf("active music row missing metadata: %+v xml=%s", music, got)
+	}
+	video := timelineByType(t, got, "video")
+	if video.Key != "" || video.AudioStreamID != "" || video.PlayQueueItemID != "" {
+		t.Fatalf("inactive video row should be bare: %+v xml=%s", video, got)
+	}
+}
+
+func TestTimeline_BuildXML_StoppedRowsPreserveActiveKindMetadata(t *testing.T) {
+	play := PlayMediaRequest{
+		MediaKey:         "/library/metadata/42",
+		ContainerKey:     "/playQueues/9",
+		AudioStreamID:    "101",
+		SubtitleStreamID: "0",
+		PlayQueueItemID:  "item-42",
+	}
+	b := newTestBroker(t, core.SessionStatus{})
+
+	videoXML := b.buildTimelineXMLWithCommandID(core.SessionStatus{
+		State:     core.StateIdle,
+		MediaKind: core.MediaKindVideo,
+	}, play, 0)
+	video := timelineByType(t, videoXML, "video")
+	if video.State != "stopped" || video.Key != "/library/metadata/42" || video.AudioStreamID != "101" {
+		t.Fatalf("stopped video row should preserve captured metadata: %+v xml=%s", video, videoXML)
+	}
+	music := timelineByType(t, videoXML, "music")
+	if music.Key != "" || music.AudioStreamID != "" || music.SubtitleStreamID != "" {
+		t.Fatalf("inactive music row should be bare for stopped video: %+v xml=%s", music, videoXML)
+	}
+
+	musicXML := b.buildTimelineXMLWithCommandID(core.SessionStatus{
+		State:     core.StateIdle,
+		MediaKind: core.MediaKindMusic,
+	}, play, 0)
+	music = timelineByType(t, musicXML, "music")
+	if music.State != "stopped" || music.Key != "/library/metadata/42" || music.AudioStreamID != "101" {
+		t.Fatalf("stopped music row should preserve captured metadata: %+v xml=%s", music, musicXML)
+	}
+	video = timelineByType(t, musicXML, "video")
+	if video.Key != "" || video.AudioStreamID != "" || video.SubtitleStreamID != "" {
+		t.Fatalf("inactive video row should be bare for stopped music: %+v xml=%s", video, musicXML)
 	}
 }
 

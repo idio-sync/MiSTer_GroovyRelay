@@ -542,7 +542,9 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 					parentTitle="Power Corruption &amp; Lies" duration="449000"/>
 			</MediaContainer>`))
 		default:
-			t.Fatalf("unexpected PMS path %q", r.URL.Path)
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+			return
 		}
 	}))
 	defer pms.Close()
@@ -625,7 +627,9 @@ func TestPlexCompanion_PlayMediaVideoTypeSkipsMusicMetadata(t *testing.T) {
 func TestPlexCompanion_PlayMediaMissingTypeUsesTrackMetadata(t *testing.T) {
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/library/metadata/42" {
-			t.Fatalf("unexpected PMS path %q", r.URL.Path)
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+			return
 		}
 		_, _ = w.Write([]byte(`<MediaContainer size="1">
 			<Track title="Blue Monday" grandparentTitle="New Order"
@@ -668,7 +672,9 @@ func TestPlexCompanion_PlayMediaMissingTypeUsesTrackMetadata(t *testing.T) {
 func TestPlexCompanion_PlayMediaMusicFallsBackToMediaKeyBasename(t *testing.T) {
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/library/metadata/42" {
-			t.Fatalf("unexpected PMS path %q", r.URL.Path)
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+			return
 		}
 		_, _ = w.Write([]byte(`<MediaContainer size="0"></MediaContainer>`))
 	}))
@@ -985,7 +991,9 @@ func TestSetStreams_MusicSessionSkipsVideoPartSelectionAndRebuildsVisualizer(t *
 				</Track>
 			</MediaContainer>`))
 		case "/library/parts/music-part-99":
-			t.Fatalf("music setStreams should not mutate PMS part selection")
+			t.Errorf("music setStreams should not mutate PMS part selection")
+			http.Error(w, "unexpected stream selection", http.StatusInternalServerError)
+			return
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}

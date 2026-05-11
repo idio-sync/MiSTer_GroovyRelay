@@ -411,19 +411,21 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 	}
 	musicState := "stopped"
 	videoState := "stopped"
-	if s.MediaKind == core.MediaKindMusic {
+	musicStatus := core.SessionStatus{}
+	videoStatus := core.SessionStatus{}
+	musicPlay := PlayMediaRequest{}
+	videoPlay := PlayMediaRequest{}
+	if core.NormalizeMediaKind(s.MediaKind) == core.MediaKindMusic {
 		musicState = plexState
+		musicStatus = s
+		musicPlay = play
 	} else {
 		videoState = plexState
+		videoStatus = s
+		videoPlay = play
 	}
-	music := timelineFor("music", musicState, s, play, "")
-	video := timelineFor("video", videoState, s, play, location)
-	if s.MediaKind == core.MediaKindMusic {
-		video = timelineFor("video", "stopped", s, play, "")
-	}
-	if s.MediaKind != core.MediaKindMusic {
-		music = timelineFor("music", "stopped", s, play, "")
-	}
+	music := timelineFor("music", musicState, musicStatus, musicPlay, "")
+	video := timelineFor("video", videoState, videoStatus, videoPlay, location)
 	mc := MediaContainer{
 		CommandID: cmd,
 		Location:  location,
