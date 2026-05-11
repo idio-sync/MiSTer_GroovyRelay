@@ -330,7 +330,7 @@ func TestPlayMedia_ResolvesPlayQueueItemIDFromContainerKey(t *testing.T) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.Query()
 		w.Header().Set("Content-Type", "application/xml")
-		_, _ = w.Write([]byte(`<MediaContainer size="3">
+		_, _ = w.Write([]byte(`<MediaContainer size="3" playQueueID="99" playQueueVersion="2">
 			<Video key="/library/metadata/41" ratingKey="41" playQueueItemID="1"/>
 			<Video key="/library/metadata/42" ratingKey="42" playQueueItemID="2"/>
 			<Video key="/library/metadata/43" ratingKey="43" playQueueItemID="3"/>
@@ -380,6 +380,12 @@ func TestPlayMedia_ResolvesPlayQueueItemIDFromContainerKey(t *testing.T) {
 	}
 	if got := c.lastPlaySession().PlayQueueItemID; got != "2" {
 		t.Errorf("remembered PlayQueueItemID = %q, want 2", got)
+	}
+	if got := c.lastPlaySession().PlayQueueID; got != "99" {
+		t.Errorf("remembered PlayQueueID = %q, want 99", got)
+	}
+	if got := c.lastPlaySession().PlayQueueVersion; got != "2" {
+		t.Errorf("remembered PlayQueueVersion = %q, want 2", got)
 	}
 }
 

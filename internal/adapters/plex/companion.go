@@ -268,17 +268,19 @@ type playQueueItem struct {
 }
 
 type playQueueContainer struct {
-	Items []playQueueItem `xml:",any"`
+	PlayQueueID      string          `xml:"playQueueID,attr"`
+	PlayQueueVersion string          `xml:"playQueueVersion,attr"`
+	Items            []playQueueItem `xml:",any"`
 }
 
-func (c *Companion) fetchPlayQueue(ctx context.Context, p PlayMediaRequest) ([]playQueueItem, error) {
+func (c *Companion) fetchPlayQueue(ctx context.Context, p PlayMediaRequest) (playQueueContainer, error) {
 	if p.ContainerKey == "" {
-		return nil, fmt.Errorf("no play queue container key")
+		return playQueueContainer{}, fmt.Errorf("no play queue container key")
 	}
 	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
 	reqURL, err := url.Parse(serverURL + p.ContainerKey)
 	if err != nil {
-		return nil, err
+		return playQueueContainer{}, err
 	}
 	q := reqURL.Query()
 	q.Set("includeBefore", "1")
@@ -289,24 +291,24 @@ func (c *Companion) fetchPlayQueue(ctx context.Context, p PlayMediaRequest) ([]p
 	reqURL.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
 	if err != nil {
-		return nil, err
+		return playQueueContainer{}, err
 	}
 	if p.PlexToken != "" {
 		req.Header.Set("X-Plex-Token", p.PlexToken)
 	}
 	resp, err := plexHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch play queue: %w", err)
+		return playQueueContainer{}, fmt.Errorf("fetch play queue: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("fetch play queue: %s", resp.Status)
+		return playQueueContainer{}, fmt.Errorf("fetch play queue: %s", resp.Status)
 	}
 	var pq playQueueContainer
 	if err := xml.NewDecoder(resp.Body).Decode(&pq); err != nil {
-		return nil, fmt.Errorf("parse play queue: %w", err)
+		return playQueueContainer{}, fmt.Errorf("parse play queue: %w", err)
 	}
-	return pq.Items, nil
+	return pq, nil
 }
 
 func nextPlayQueueItem(items []playQueueItem, currentID, currentKey string, delta int) (playQueueItem, bool) {
@@ -353,6 +355,15 @@ func playQueueItemByIDOrKey(items []playQueueItem, id, key string) (playQueueIte
 	return playQueueItem{}, false
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Request, selectItem func([]playQueueItem, PlayMediaRequest) (playQueueItem, bool)) bool {
 	prevStatus := core.SessionStatus{}
 	if c.core != nil {
@@ -365,12 +376,12 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	items, err := c.fetchPlayQueue(ctx, p)
+	pq, err := c.fetchPlayQueue(ctx, p)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	item, ok := selectItem(items, p)
+	item, ok := selectItem(pq.Items, p)
 	if !ok {
 		http.Error(w, "play queue item not found", 400)
 		return false
@@ -385,6 +396,8 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 	}
 	p.MediaKey = key
 	p.PlayQueueItemID = item.PlayQueueItemID
+	p.PlayQueueID = firstNonEmpty(p.PlayQueueID, pq.PlayQueueID)
+	p.PlayQueueVersion = firstNonEmpty(p.PlayQueueVersion, pq.PlayQueueVersion)
 	p.OffsetMs = 0
 	p.CommandID = queryOrHeader(r, "commandID")
 	p.TranscodeSessionID = NewTranscodeSessionID()
@@ -599,6 +612,8 @@ type PlayMediaRequest struct {
 	AudioStreamID      string
 	CommandID          string
 	PlayQueueItemID    string
+	PlayQueueID        string
+	PlayQueueVersion   string
 	TranscodeSessionID string
 	// Title is the human-readable label sent by the Plex controller on
 	// playMedia (the `title` query param). Empty for seek/setStreams
@@ -635,6 +650,8 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		AudioStreamID:      queryOrHeader(r, "audioStreamID"),
 		CommandID:          queryOrHeader(r, "commandID"),
 		PlayQueueItemID:    queryOrHeader(r, "playQueueItemID"),
+		PlayQueueID:        queryOrHeader(r, "playQueueID"),
+		PlayQueueVersion:   queryOrHeader(r, "playQueueVersion"),
 		TranscodeSessionID: NewTranscodeSessionID(),
 		Title:              queryOrHeader(r, "title"),
 	}
@@ -648,14 +665,20 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	if p.SessionID == "" {
 		p.SessionID = NewTranscodeSessionID()
 	}
-	if p.PlayQueueItemID == "" && p.ContainerKey != "" && p.MediaKey != "" {
+	if (p.PlayQueueItemID == "" || p.PlayQueueID == "" || p.PlayQueueVersion == "") && p.ContainerKey != "" && p.MediaKey != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		items, err := c.fetchPlayQueue(ctx, p)
+		pq, err := c.fetchPlayQueue(ctx, p)
 		cancel()
 		if err != nil {
 			slog.Debug("plex play queue lookup failed", "container_key", p.ContainerKey, "media_key", p.MediaKey, "err", err)
-		} else if item, ok := playQueueItemByIDOrKey(items, "", p.MediaKey); ok {
-			p.PlayQueueItemID = item.PlayQueueItemID
+		} else {
+			p.PlayQueueID = firstNonEmpty(p.PlayQueueID, pq.PlayQueueID)
+			p.PlayQueueVersion = firstNonEmpty(p.PlayQueueVersion, pq.PlayQueueVersion)
+			if p.PlayQueueItemID == "" {
+				if item, ok := playQueueItemByIDOrKey(pq.Items, "", p.MediaKey); ok {
+					p.PlayQueueItemID = item.PlayQueueItemID
+				}
+			}
 		}
 	}
 
@@ -1289,6 +1312,12 @@ func timelineChanged(oldSt core.SessionStatus, oldPlay PlayMediaRequest, newSt c
 		return true
 	}
 	if oldPlay.PlayQueueItemID != newPlay.PlayQueueItemID {
+		return true
+	}
+	if oldPlay.PlayQueueID != newPlay.PlayQueueID {
+		return true
+	}
+	if oldPlay.PlayQueueVersion != newPlay.PlayQueueVersion {
 		return true
 	}
 	if newSt.State == core.StatePlaying {

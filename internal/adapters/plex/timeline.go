@@ -177,6 +177,12 @@ func (t *TimelineBroker) postPMSTimeline(client *http.Client, urlStr string, st 
 	if play.PlayQueueItemID != "" {
 		q.Set("playQueueItemID", play.PlayQueueItemID)
 	}
+	if play.PlayQueueID != "" {
+		q.Set("playQueueID", play.PlayQueueID)
+	}
+	if play.PlayQueueVersion != "" {
+		q.Set("playQueueVersion", play.PlayQueueVersion)
+	}
 	if play.ContainerKey != "" {
 		q.Set("containerKey", play.ContainerKey)
 	}
@@ -354,6 +360,8 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 		AudioStreamID     string   `xml:"audioStreamID,attr,omitempty"`
 		SubtitleStreamID  string   `xml:"subtitleStreamID,attr,omitempty"`
 		PlayQueueItemID   string   `xml:"playQueueItemID,attr,omitempty"`
+		PlayQueueID       string   `xml:"playQueueID,attr,omitempty"`
+		PlayQueueVersion  string   `xml:"playQueueVersion,attr,omitempty"`
 		Controllable      string   `xml:"controllable,attr,omitempty"`
 	}
 	type MediaContainer struct {
@@ -393,6 +401,8 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 		video.AudioStreamID = play.AudioStreamID
 		video.SubtitleStreamID = play.SubtitleStreamID
 		video.PlayQueueItemID = play.PlayQueueItemID
+		video.PlayQueueID = play.PlayQueueID
+		video.PlayQueueVersion = play.PlayQueueVersion
 	}
 	if s.Duration > 0 {
 		video.SeekRange = fmt.Sprintf("0-%d", s.Duration.Milliseconds())
