@@ -39,10 +39,10 @@ type AdapterConfig struct {
 
 // Adapter implements adapters.Adapter for torrent-backed casts.
 type Adapter struct {
-	core          SessionManager
-	bridgeDataDir string
-	clientFactory ClientFactory
-	eventLog      *eventlog.Log
+	core     SessionManager
+	bridge   config.BridgeConfig
+	factory  ClientFactory
+	eventLog *eventlog.Log
 
 	mu         sync.Mutex
 	cfg        Config
@@ -65,15 +65,15 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		factory = newRealClient
 	}
 	return &Adapter{
-		core:          cfg.Core,
-		bridgeDataDir: cfg.Bridge.DataDir,
-		clientFactory: factory,
-		eventLog:      cfg.EventLog,
-		cfg:           DefaultConfig(),
-		state:         adapters.StateStopped,
-		stateSince:    time.Now(),
-		sessions:      map[string]*Session{},
-		torrents:      map[string]*torrentUse{},
+		core:       cfg.Core,
+		bridge:     cfg.Bridge,
+		factory:    factory,
+		eventLog:   cfg.EventLog,
+		cfg:        DefaultConfig(),
+		state:      adapters.StateStopped,
+		stateSince: time.Now(),
+		sessions:   map[string]*Session{},
+		torrents:   map[string]*torrentUse{},
 	}, nil
 }
 
@@ -112,7 +112,7 @@ func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	if err := meta.PrimitiveDecode(raw, &cfg); err != nil {
 		return fmt.Errorf("torrent: decode config: %w", err)
 	}
-	if err := validateConfig(cfg, a.bridgeDataDir); err != nil {
+	if err := validateConfig(cfg, a.bridge.DataDir); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -126,7 +126,7 @@ func (a *Adapter) Validate(raw toml.Primitive, meta toml.MetaData) error {
 	if err := meta.PrimitiveDecode(raw, &cfg); err != nil {
 		return fmt.Errorf("torrent: decode config: %w", err)
 	}
-	return validateConfig(cfg, a.bridgeDataDir)
+	return validateConfig(cfg, a.bridge.DataDir)
 }
 
 func (a *Adapter) IsEnabled() bool {
@@ -185,7 +185,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	if err := meta.PrimitiveDecode(raw, &newCfg); err != nil {
 		return 0, fmt.Errorf("torrent: decode apply config: %w", err)
 	}
-	if err := validateConfig(newCfg, a.bridgeDataDir); err != nil {
+	if err := validateConfig(newCfg, a.bridge.DataDir); err != nil {
 		return 0, err
 	}
 
@@ -225,7 +225,7 @@ func (a *Adapter) setState(s adapters.State, errMsg string) {
 	a.stateSince = time.Now()
 }
 
-func (a *Adapter) emit(msg string, args ...any) {
+func (a *Adapter) emit(msg string) {
 	if a.eventLog == nil {
 		return
 	}
@@ -233,14 +233,21 @@ func (a *Adapter) emit(msg string, args ...any) {
 		Time:     time.Now(),
 		Severity: eventlog.SeverityInfo,
 		Source:   torrentAdapterName,
-		Message:  a.logSafe(msg, args...),
+		Message:  sanitizeLogMessage(msg),
 	})
 }
 
-func (a *Adapter) logSafe(msg string, args ...any) string {
+func (a *Adapter) logSafe(msg string, args ...any) {
+	if a.eventLog == nil {
+		return
+	}
 	if len(args) > 0 {
 		msg = fmt.Sprintf(msg, args...)
 	}
+	a.emit(msg)
+}
+
+func sanitizeLogMessage(msg string) string {
 	msg = strings.ReplaceAll(msg, "\r", " ")
 	msg = strings.ReplaceAll(msg, "\n", " ")
 	return strings.TrimSpace(msg)

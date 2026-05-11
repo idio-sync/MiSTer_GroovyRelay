@@ -55,11 +55,22 @@ func TestNewRequiresBridgeDataDir(t *testing.T) {
 }
 
 func TestNewInitializesPlannedSessionStateShape(t *testing.T) {
-	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	dataDir := t.TempDir()
+	factory := func(ClientConfig) (TorrentClient, error) { return nil, nil }
+	a, err := New(AdapterConfig{
+		Bridge:        config.BridgeConfig{DataDir: dataDir},
+		ClientFactory: factory,
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
+	if a.bridge.DataDir != dataDir {
+		t.Fatalf("bridge.DataDir = %q, want %q", a.bridge.DataDir, dataDir)
+	}
+	if a.factory == nil {
+		t.Fatal("factory is nil")
+	}
 	if a.sessions == nil {
 		t.Fatal("sessions map is nil")
 	}
@@ -130,8 +141,10 @@ func TestEmitAndLogSafeUsePlannedSignatures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	var _ func(string) = a.emit
+	var _ func(string, ...any) = a.logSafe
 
-	a.emit("hello\n%s", "torrent")
+	a.emit("hello\nworld")
 	entries := log.Snapshot()
 	if len(entries) != 1 {
 		t.Fatalf("eventlog entries = %d, want 1", len(entries))
@@ -139,11 +152,16 @@ func TestEmitAndLogSafeUsePlannedSignatures(t *testing.T) {
 	if entries[0].Severity != eventlog.SeverityInfo {
 		t.Fatalf("eventlog severity = %v, want info", entries[0].Severity)
 	}
-	if entries[0].Message != "hello torrent" {
-		t.Fatalf("eventlog message = %q, want sanitized formatted message", entries[0].Message)
+	if entries[0].Message != "hello world" {
+		t.Fatalf("eventlog message = %q, want sanitized message", entries[0].Message)
 	}
-	if got := a.logSafe("bad\r\n%s", "news"); got != "bad  news" {
-		t.Fatalf("logSafe = %q, want sanitized formatted message", got)
+	a.logSafe("bad\r\n%s", "news")
+	entries = log.Snapshot()
+	if len(entries) != 2 {
+		t.Fatalf("eventlog entries after logSafe = %d, want 2", len(entries))
+	}
+	if entries[1].Message != "bad  news" {
+		t.Fatalf("logSafe message = %q, want sanitized formatted message", entries[1].Message)
 	}
 }
 
