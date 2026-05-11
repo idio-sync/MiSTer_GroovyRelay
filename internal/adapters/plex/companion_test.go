@@ -675,7 +675,11 @@ func TestPlexCompanion_PlayMediaMissingTypeUsesTrackMetadata(t *testing.T) {
 	}
 }
 
-func TestPlexCompanion_PlayMediaMusicFallsBackToMediaKeyBasename(t *testing.T) {
+// TestPlexCompanion_PlayMediaMusicEmptyMetadataFallsBackToNowPlaying covers
+// the case where PMS returns no Track metadata. Plex library URIs end in a
+// numeric ratingKey, so the prior basename fallback rendered "42" on the
+// CRT — worse than the generic "Now Playing" string, which is now used.
+func TestPlexCompanion_PlayMediaMusicEmptyMetadataFallsBackToNowPlaying(t *testing.T) {
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/library/metadata/42" {
 			t.Errorf("unexpected PMS path %q", r.URL.Path)
@@ -706,11 +710,11 @@ func TestPlexCompanion_PlayMediaMusicFallsBackToMediaKeyBasename(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if fc.lastReq.Title != "42" {
-		t.Fatalf("Title = %q, want media key basename", fc.lastReq.Title)
+	if fc.lastReq.Title != "Now Playing" {
+		t.Fatalf("Title = %q, want %q", fc.lastReq.Title, "Now Playing")
 	}
-	if fc.lastReq.Visualizer.Metadata.Title != "42" {
-		t.Fatalf("visualizer title = %q, want media key basename", fc.lastReq.Visualizer.Metadata.Title)
+	if fc.lastReq.Visualizer.Metadata.Title != "Now Playing" {
+		t.Fatalf("visualizer title = %q, want %q", fc.lastReq.Visualizer.Metadata.Title, "Now Playing")
 	}
 }
 
@@ -985,24 +989,16 @@ func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 	}
 }
 
-func TestSetStreams_MusicSessionSkipsVideoPartSelectionAndRebuildsVisualizer(t *testing.T) {
+// TestSetStreams_MusicSessionIsNoOp pins the contract that a setStreams hit
+// against a music cast never tears down the visualizer pipeline. Music has
+// no subtitle stream and no per-track audio-stream selection within a single
+// audio file; rebuilding for a `subtitleStreamID=0` nudge (the Plex Web
+// "no subtitles" default) or for the gear panel re-issuing the current
+// audio id would restart the song from the current position for no reason.
+func TestSetStreams_MusicSessionIsNoOp(t *testing.T) {
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/library/metadata/42":
-			w.Header().Set("Content-Type", "application/xml")
-			_, _ = w.Write([]byte(`<MediaContainer size="1">
-				<Track title="Blue Monday" grandparentTitle="New Order"
-					parentTitle="Power Corruption &amp; Lies" duration="449000">
-					<Media><Part id="music-part-99"/></Media>
-				</Track>
-			</MediaContainer>`))
-		case "/library/parts/music-part-99":
-			t.Errorf("music setStreams should not mutate PMS part selection")
-			http.Error(w, "unexpected stream selection", http.StatusInternalServerError)
-			return
-		default:
-			http.Error(w, "not found", http.StatusNotFound)
-		}
+		t.Errorf("music setStreams must not contact PMS: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected PMS call", http.StatusInternalServerError)
 	}))
 	defer pms.Close()
 	u, err := url.Parse(pms.URL)
@@ -1028,13 +1024,15 @@ func TestSetStreams_MusicSessionSkipsVideoPartSelectionAndRebuildsVisualizer(t *
 		ClientID:           "controller-uuid",
 		PlexToken:          "tok",
 		AudioStreamID:      "100",
-		TranscodeSessionID: "old-transcode-id",
+		TranscodeSessionID: "live-music-transcode",
 		Title:              "Controller Title",
 	})
 	ts := newLoopbackServer(t, c.Handler())
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/player/playback/setStreams?audioStreamID=101&commandID=21")
+	// The "no subtitles" nudge — different from current state, but
+	// inapplicable to a music session. Must not trigger a rebuild.
+	resp, err := http.Get(ts.URL + "/player/playback/setStreams?audioStreamID=101&subtitleStreamID=0&commandID=21")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1043,34 +1041,15 @@ func TestSetStreams_MusicSessionSkipsVideoPartSelectionAndRebuildsVisualizer(t *
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if fc.starts != 1 {
-		t.Fatalf("StartSession calls = %d, want 1", fc.starts)
-	}
-	got := fc.lastReq
-	if got.MediaKind != core.MediaKindMusic {
-		t.Fatalf("MediaKind = %q, want music", got.MediaKind)
-	}
-	if !got.Visualizer.Enabled {
-		t.Fatalf("Visualizer = %+v, want enabled", got.Visualizer)
-	}
-	if !strings.Contains(got.StreamURL, "/music/:/transcode/universal/start.mp3") {
-		t.Fatalf("StreamURL = %s, want music transcode endpoint", got.StreamURL)
-	}
-	if strings.Contains(got.StreamURL, "/video/:/") {
-		t.Fatalf("music setStreams used video endpoint: %s", got.StreamURL)
-	}
-	if !strings.Contains(got.StreamURL, "offset=83") {
-		t.Fatalf("music setStreams did not preserve current position: %s", got.StreamURL)
-	}
-	if !strings.Contains(got.StreamURL, "audioStreamID=101") {
-		t.Fatalf("music setStreams did not pass selected audio stream: %s", got.StreamURL)
+	if fc.starts != 0 {
+		t.Fatalf("StartSession calls = %d, want 0 (music setStreams is a no-op)", fc.starts)
 	}
 	remembered := c.lastPlaySession()
-	if remembered.AudioStreamID != "101" {
-		t.Fatalf("remembered AudioStreamID = %q, want 101", remembered.AudioStreamID)
+	if remembered.TranscodeSessionID != "live-music-transcode" {
+		t.Errorf("transcode session ID changed: %q (no-op should preserve it)", remembered.TranscodeSessionID)
 	}
-	if remembered.CommandID != "21" {
-		t.Fatalf("remembered CommandID = %q, want 21", remembered.CommandID)
+	if remembered.AudioStreamID != "100" {
+		t.Errorf("remembered AudioStreamID = %q, want 100 unchanged", remembered.AudioStreamID)
 	}
 }
 
@@ -1702,5 +1681,29 @@ func TestPlexCompanion_PlayMediaPopulatesTitle(t *testing.T) {
 	}
 	if got := fc.lastReq.Title; got != "S01E03 — The Lord of Light" {
 		t.Errorf("Title: got %q, want %q", got, "S01E03 — The Lord of Light")
+	}
+}
+
+func TestMediaKeyBasename(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace", "   ", ""},
+		{"single segment", "library", "library"},
+		{"trailing slash", "/library/metadata/songs/", "songs"},
+		{"named basename", "/music/library/Don't Stop", "Don't Stop"},
+		{"all-digit basename rejected", "/library/metadata/42", ""},
+		{"all-digit single segment rejected", "12345", ""},
+		{"digits-with-prefix kept", "track42", "track42"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mediaKeyBasename(tc.in); got != tc.want {
+				t.Fatalf("mediaKeyBasename(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

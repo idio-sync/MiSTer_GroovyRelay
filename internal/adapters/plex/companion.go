@@ -62,7 +62,19 @@ type CompanionConfig struct {
 	EventLog *eventlog.Log
 }
 
-// Companion is the Plex Companion HTTP adapter. One per process. Thread-safe.
+// Companion is the Plex Companion HTTP adapter. One per process.
+//
+// Concurrency invariant for cfg: every CompanionConfig field except the
+// two atomically mirrored ones (MaxVideoBitrateKbps via maxVideoBitrateKbps,
+// Modeline via modelineName) is frozen after NewCompanion returns. The
+// other ScopeRestartCast / ScopeRestartBridge fields (DeviceUUID,
+// DeviceName, ProfileName, ServerURL, Version, DataDir, EventLog) are
+// snapshot-at-finalize: Adapter.ApplyConfig mutates Adapter.plexCfg but
+// does NOT update Companion.cfg, so any field read off c.cfg sees the
+// value present at construction time. That makes lock-free reads from
+// request handlers safe — and means a UI save for one of those fields
+// needs a bridge restart to take effect (a pre-existing quirk tracked
+// separately; see scopeForPlexField in adapter.go).
 type Companion struct {
 	cfg      CompanionConfig
 	core     SessionManager // adapter-agnostic core.Manager
@@ -71,10 +83,7 @@ type Companion struct {
 	// maxVideoBitrateKbps mirrors CompanionConfig.MaxVideoBitrateKbps as
 	// an atomic so the UI's ApplyConfig (ScopeRestartCast) can update the
 	// live companion without racing concurrent sessionRequestFor reads.
-	// Other CompanionConfig fields (DeviceName, ProfileName, ...) remain
-	// snapshot-at-finalize: changing them today still requires a bridge
-	// restart despite their declared scopes — that's a pre-existing quirk
-	// tracked separately.
+	// See the type-level concurrency invariant for the other cfg fields.
 	maxVideoBitrateKbps atomic.Int64
 	modelineName        atomic.Pointer[string]
 
@@ -260,15 +269,36 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// mediaKeyBasename returns the last path segment of a Plex media key for
+// use as a human-readable title fallback. Plex library URIs typically end
+// in a numeric ratingKey (e.g. `/library/metadata/42`); rendering "42"
+// on the CRT as a song title is worse than the generic "Now Playing"
+// fallback, so all-digit basenames are rejected.
 func mediaKeyBasename(mediaKey string) string {
 	trimmed := strings.Trim(strings.TrimSpace(mediaKey), "/")
 	if trimmed == "" {
 		return ""
 	}
+	base := trimmed
 	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
-		return trimmed[i+1:]
+		base = trimmed[i+1:]
 	}
-	return trimmed
+	if isAllDigits(base) {
+		return ""
+	}
+	return base
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetadata) core.SessionRequest {
@@ -293,6 +323,15 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		AudioStreamID:      p.AudioStreamID,
 	})
 	title := firstNonEmpty(p.Title, md.Title, mediaKeyBasename(p.MediaKey), "Now Playing")
+	// AdapterRef includes TranscodeSessionID intentionally — and the
+	// opposite of the video path (sessionRequestForPreset). On seek, Plex
+	// Web mints a fresh TranscodeSessionID for the same MediaKey; we WANT
+	// core.Manager's genuinePreempt gate to fire so OnStop runs and
+	// StopTranscodeSession reaps the prior PMS music transcode. The video
+	// path's same-MediaKey AdapterRef intentionally suppresses that
+	// preempt to avoid client-visible flicker (see FIXME plex-orphan-
+	// transcode in sessionRequestForPreset); music has no such flicker
+	// concern because the visualizer pipeline restarts cleanly.
 	ref := p.MediaKey + ":" + p.TranscodeSessionID
 	req := core.SessionRequest{
 		StreamURL:    streamURL,
@@ -1014,14 +1053,22 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	if c.core != nil {
 		st = c.core.Status()
 	}
-	musicSession := core.NormalizeMediaKind(st.MediaKind) == core.MediaKindMusic || isPlexMusicType(p.MediaType)
-	if !musicSession {
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if err := SetStreamSelection(ctx, p.serverURL(), p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
+	// Music sessions have no subtitles, and Plex doesn't offer per-track
+	// audio-stream selection within a single audio file. A setStreams hit
+	// against a music cast is either (a) the Web client's gear-panel re-
+	// issuing current ids on open, or (b) a `subtitleStreamID=0` ("no
+	// subtitles") nudge — neither warrants rebuilding the visualizer
+	// pipeline, which would restart the song from its current position.
+	// Acknowledge and exit before the rebuild path runs.
+	if core.NormalizeMediaKind(st.MediaKind) == core.MediaKindMusic || isPlexMusicType(p.MediaType) {
+		writeOKResponse(w)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := SetStreamSelection(ctx, p.serverURL(), p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
 	}
 	if audioStreamID != "" {
 		p.AudioStreamID = audioStreamID

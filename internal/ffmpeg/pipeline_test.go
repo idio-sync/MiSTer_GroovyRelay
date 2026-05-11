@@ -120,6 +120,10 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 }
 
 func TestEscapeFilterText(t *testing.T) {
+	// Inside drawtext `text='...'`: filtergraph's single-quoted zone is
+	// literal, so `:`, `,`, `;`, `[`, `]` pass through untouched. Only `'`
+	// (filtergraph) and `\`, `%` (drawtext post-extraction expansion)
+	// need escaping. `'` uses the close-escape-reopen idiom `'\''`.
 	in := "Bob's [12\"]: 50%, line\nnext\\tail;end"
 	got := escapeFilterText(in)
 	for _, bad := range []string{"\n", "\r", "\t"} {
@@ -127,10 +131,46 @@ func TestEscapeFilterText(t *testing.T) {
 			t.Fatalf("escaped text contains control character %q: %q", bad, got)
 		}
 	}
-	for _, want := range []string{`Bob\'s`, `\[12"\]`, `\:`, `\,`, `\%`, `\\tail`, `\;`} {
+	for _, want := range []string{`Bob'\''s`, `[12"]`, `:`, `,`, `\%`, `\\tail`, `;`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("escaped text missing %q: %q", want, got)
 		}
+	}
+	// Regression: the previous implementation produced `\'` for `'`,
+	// which is malformed inside single-quoted filtergraph values.
+	if strings.Contains(got, `\'`) && !strings.Contains(got, `'\''`) {
+		t.Fatalf("escaped text uses broken `\\'` for apostrophe: %q", got)
+	}
+}
+
+// TestBuildVisualizerFilterChain_ApostropheInTitle pins the close-escape-reopen
+// idiom for `'` inside drawtext `text='...'`. Common track titles like
+// "Don't Stop Believin'" would have produced malformed argv under the prior
+// `\'` escape, causing ffmpeg to fail to start or render garbled text.
+func TestBuildVisualizerFilterChain_ApostropheInTitle(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr: "60000/1001",
+		Visualizer: VisualizerSpec{
+			Enabled:           true,
+			Mode:              VisualizerModeRetroAnalyzer,
+			DrawTextAvailable: true,
+			Metadata: VisualizerMetadata{
+				Title:  "Don't Stop Believin'",
+				Artist: "Journey",
+			},
+		},
+	}
+	graph, err := buildVisualizerFilterChain(spec)
+	if err != nil {
+		t.Fatalf("buildVisualizerFilterChain: %v", err)
+	}
+	if !strings.Contains(graph, `text='Don'\''t Stop Believin'\'''`) {
+		t.Fatalf("apostrophes not escaped via close-reopen idiom:\n%s", graph)
+	}
+	// And nothing crashed the trusted `%{pts\:hms}` expression path.
+	if strings.Contains(graph, `text='Don\'t`) {
+		t.Fatalf("graph contains pre-fix broken `\\'` escape:\n%s", graph)
 	}
 }
 

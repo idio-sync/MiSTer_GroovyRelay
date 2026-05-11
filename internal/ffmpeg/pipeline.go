@@ -252,15 +252,29 @@ func escapeSubtitlePathFor(goos, p string) string {
 	return p
 }
 
+// escapeFilterText escapes user-supplied metadata for inclusion inside a
+// drawtext `text='...'` value. FFmpeg's filtergraph parser treats the
+// single-quoted region as literal (backslash escapes are NOT processed
+// inside it), so the only character that needs special handling at the
+// filtergraph layer is `'` itself, which must close the quote, emit an
+// escaped apostrophe, and reopen: `'\''`. After the filtergraph parser
+// hands the extracted value to drawtext, drawtext runs its own `%{...}`
+// expansion and consumes backslash escapes, so `%` must be escaped as
+// `\%` and `\` as `\\` to render literally. Bracket / colon / comma /
+// semicolon are filtergraph metacharacters but are inert inside single
+// quotes, so they pass through unchanged.
 func escapeFilterText(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		switch r {
 		case '\r', '\n', '\t':
 			b.WriteByte(' ')
-		case '\\', '\'', ':', ',', ';', '%', '[', ']':
-			b.WriteByte('\\')
-			b.WriteRune(r)
+		case '\'':
+			b.WriteString(`'\''`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '%':
+			b.WriteString(`\%`)
 		default:
 			if r < 0x20 {
 				b.WriteByte(' ')
