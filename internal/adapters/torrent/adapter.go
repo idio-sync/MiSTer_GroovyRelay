@@ -253,18 +253,11 @@ func sanitizeLogMessage(msg string) string {
 	return strings.TrimSpace(msg)
 }
 
-type ClientConfig struct{}
-type TorrentClient interface{ Close() error }
-type TorrentHandle interface{}
 type torrentUse struct {
 	torrent TorrentHandle
 	refs    int
 }
-type Session struct{}
 
-func newRealClient(ClientConfig) (TorrentClient, error) {
-	return nil, fmt.Errorf("torrent client dependency not linked")
-}
 func (a *Adapter) renderPanel() string              { return `<section id="torrent-panel"></section>` }
 func (a *Adapter) UIRoutes() []adapters.Route       { return nil }
 func (a *Adapter) MountPublicRoutes(*http.ServeMux) {}

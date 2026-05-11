@@ -13,13 +13,19 @@ import (
 )
 
 type recordingCore struct {
-	starts int
-	stops  int
-	status core.SessionStatus
+	starts  int
+	stops   int
+	status  core.SessionStatus
+	reqs    []core.SessionRequest
+	onStart func(core.SessionRequest) error
 }
 
-func (c *recordingCore) StartSession(core.SessionRequest) error {
+func (c *recordingCore) StartSession(req core.SessionRequest) error {
 	c.starts++
+	c.reqs = append(c.reqs, req)
+	if c.onStart != nil {
+		return c.onStart(req)
+	}
 	return nil
 }
 
@@ -32,12 +38,20 @@ func (c *recordingCore) Stop() error {
 	return nil
 }
 
-type fakeTorrentClient struct {
+type closeOnlyTorrentClient struct {
 	closes   int
 	closeErr error
 }
 
-func (c *fakeTorrentClient) Close() error {
+func (c *closeOnlyTorrentClient) AddMagnet(context.Context, string) (TorrentHandle, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+
+func (c *closeOnlyTorrentClient) AddMetaInfo(context.Context, []byte) (TorrentHandle, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+
+func (c *closeOnlyTorrentClient) Close() error {
 	c.closes++
 	return c.closeErr
 }
@@ -167,7 +181,7 @@ func TestEmitAndLogSafeUsePlannedSignatures(t *testing.T) {
 
 func TestStopRetainsClientWhenCloseFails(t *testing.T) {
 	closeErr := errors.New("close failed")
-	client := &fakeTorrentClient{closeErr: closeErr}
+	client := &closeOnlyTorrentClient{closeErr: closeErr}
 	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
