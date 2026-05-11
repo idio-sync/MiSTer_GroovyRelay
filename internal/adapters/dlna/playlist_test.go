@@ -653,3 +653,74 @@ func assertPrepareHLSRejectsInlinePlaylist(t *testing.T, playlist string) {
 	}
 	assertNoNewHLSTempDirs(t, before)
 }
+
+func TestHLSDialContextForPolicyFallsBackToNextApprovedIP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	_, serverPort, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split server addr: %v", err)
+	}
+
+	firstIP := net.ParseIP("192.168.99.1")
+	secondIP := net.ParseIP("192.168.99.2")
+	t.Cleanup(installResolverOverride(t, func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{firstIP, secondIP}, nil
+	}))
+
+	var attempts []string
+	prev := hlsNetDialContext
+	hlsNetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		attempts = append(attempts, address)
+		host, _, _ := net.SplitHostPort(address)
+		if host == firstIP.String() {
+			return nil, errors.New("simulated unreachable")
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", serverPort))
+	}
+	t.Cleanup(func() { hlsNetDialContext = prev })
+
+	dialer := hlsDialContextForPolicy(PolicyPrivateOnly)
+	conn, err := dialer(context.Background(), "tcp", "host.invalid:"+serverPort)
+	if err != nil {
+		t.Fatalf("dialer err = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	if len(attempts) != 2 {
+		t.Fatalf("got %d dial attempts (%v), want 2", len(attempts), attempts)
+	}
+	if !strings.HasPrefix(attempts[0], firstIP.String()+":") {
+		t.Fatalf("attempt[0] = %q, want prefix %q:", attempts[0], firstIP)
+	}
+	if !strings.HasPrefix(attempts[1], secondIP.String()+":") {
+		t.Fatalf("attempt[1] = %q, want prefix %q:", attempts[1], secondIP)
+	}
+}
+
+func TestHLSDialContextForPolicyReportsAllDialFailures(t *testing.T) {
+	firstIP := net.ParseIP("192.168.99.1")
+	secondIP := net.ParseIP("192.168.99.2")
+	t.Cleanup(installResolverOverride(t, func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{firstIP, secondIP}, nil
+	}))
+
+	prev := hlsNetDialContext
+	hlsNetDialContext = func(_ context.Context, _, address string) (net.Conn, error) {
+		return nil, fmt.Errorf("simulated fail %s", address)
+	}
+	t.Cleanup(func() { hlsNetDialContext = prev })
+
+	dialer := hlsDialContextForPolicy(PolicyPrivateOnly)
+	_, err := dialer(context.Background(), "tcp", "host.invalid:443")
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, firstIP.String()) || !strings.Contains(msg, secondIP.String()) {
+		t.Fatalf("err = %v, want both %q and %q mentioned", err, firstIP, secondIP)
+	}
+}

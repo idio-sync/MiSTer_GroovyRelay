@@ -567,7 +567,22 @@ func hlsDialContextForPolicy(policy AddressPolicy) func(context.Context, string,
 				}
 			}
 		}
-		approvedAddr := net.JoinHostPort(ips[0].String(), port)
-		return hlsNetDialContext(ctx, network, approvedAddr)
+
+		// Try each approved IP in resolver order; fall back to the next
+		// if a connection attempt fails. Matches net.Dialer's behavior
+		// when given a hostname, but with the classifier applied first
+		// so no disallowed address is ever dialed. Without this loop a
+		// stale or unreachable ips[0] (e.g. an A record for a name that
+		// also resolves to a working B record) would fail the request
+		// even though a working approved address exists.
+		var dialErrs []error
+		for _, ip := range ips {
+			conn, err := hlsNetDialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			dialErrs = append(dialErrs, fmt.Errorf("%s: %w", ip, err))
+		}
+		return nil, errors.Join(dialErrs...)
 	}
 }
