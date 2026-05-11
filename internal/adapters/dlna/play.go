@@ -1,6 +1,7 @@
 package dlna
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -80,6 +81,21 @@ func dlnaInputPolicy() core.MediaInputPolicy {
 		BlockedHeaders:    []string{"Referer"},
 	}
 }
+
+func dlnaInputPolicyForSource(canSeek bool) core.MediaInputPolicy {
+	if canSeek {
+		return dlnaInputPolicy()
+	}
+	return core.MediaInputPolicy{
+		ProtocolWhitelist: []string{"file", "crypto"},
+		DisableReconnect:  true,
+		RWTimeout:         5 * time.Second,
+		BlockedHeaders:    []string{"Referer"},
+		DisablePlaylists:  true,
+	}
+}
+
+var playBeforeStartAdmissionHook func()
 
 // playArgs is the IN-argument set for AVTransport:1 Play. Speed is the
 // decimal-string speed value; UPnP defines this as A_ARG_TYPE_TransportPlaySpeed
@@ -310,16 +326,17 @@ func (a *Adapter) startFreshSession() (faultCode upnpErrorCode) {
 // capture, the SessionRequest shape, and the rollback discipline in one
 // place.
 func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string) (faultCode upnpErrorCode) {
-	// Snapshot the loaded URI under mu. We DO NOT need to hold mu
-	// across the StartSession call — the URL is captured into a local.
 	a.mu.Lock()
-	loadedURI := a.loadedURI
+	hasLoadedURI := a.loadedURI != ""
 	a.mu.Unlock()
-	if loadedURI == "" {
+	if !hasLoadedURI {
 		// Defensive guard. Callers already validated hasURI before
 		// reaching here; if we somehow got here without a URI, return
 		// 701 rather than calling core with an empty StreamURL.
 		return upnpErrTransitionNotAvail
+	}
+	if playBeforeStartAdmissionHook != nil {
+		playBeforeStartAdmissionHook()
 	}
 
 	// Admit this StartSession attempt atomically. Fresh starts mint a
@@ -329,26 +346,71 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 	if !admitted {
 		return upnpErrTransitionNotAvail
 	}
-	onStop := a.onStopForRef(ref)
+	rollbackAdmission := func() {
+		if expectedCoreRef == "" {
+			a.clearStartInFlight(ref, false)
+		} else {
+			a.clearStartInFlightPreserveRef(ref)
+		}
+	}
+
+	// Snapshot cleanup-capable playback state only after admission. While
+	// currentRef/startInFlight is set, SetAVTransportURI rejects and
+	// Adapter.Stop leaves loaded HLS caches alone, so the cache we hand to
+	// core cannot be deleted before this session's OnStop owns cleanup.
+	a.mu.Lock()
+	loadedURI := a.loadedURI
+	playbackURI := a.loadedPlaybackURI
+	canSeek := a.loadedCanSeek
+	allowPublic := a.cfg.AllowPublicSourceURLs
+	a.mu.Unlock()
+	if loadedURI == "" {
+		rollbackAdmission()
+		return upnpErrTransitionNotAvail
+	}
+	if playbackURI == "" && !canSeek {
+		policy := PolicyPrivateOnly
+		if allowPublic {
+			policy = PolicyAllowPublic
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hlsFetchTimeout)
+		hls, err := prepareHLSPlaybackForAdapter(ctx, loadedURI, policy)
+		cancel()
+		if err != nil {
+			rollbackAdmission()
+			a.setLastError("Play rejected: HLS validation failed")
+			a.publishAVTransportLastChange()
+			return upnpErrResourceNotFound
+		}
+		if !a.replaceLoadedPlaybackURIIfCurrent(loadedURI, hls.PlaybackURI, hls.Cleanup, false) {
+			rollbackAdmission()
+			_ = hls.Cleanup()
+			return upnpErrTransitionNotAvail
+		}
+		playbackURI = hls.PlaybackURI
+	}
+	if playbackURI == "" {
+		playbackURI = loadedURI
+	}
+
+	var sessionCleanup func() error
+	if !canSeek {
+		a.mu.Lock()
+		if a.loadedPlaybackURI == playbackURI {
+			sessionCleanup = a.loadedHLSCleanup
+		}
+		a.mu.Unlock()
+	}
+	onStop := a.onStopForRef(ref, playbackURI, sessionCleanup)
 
 	req := core.SessionRequest{
-		StreamURL: loadedURI,
-		// Per spec §Play line 361: CanSeek=true keeps the manager's
-		// capability gate permissive; the DLNA adapter itself is
-		// responsible for advertising / validating Seek to the
-		// controller via GetCurrentTransportActions (which reads the
-		// post-probe Duration). A stream that arrives without
-		// metadata can become seekable after probe completes.
-		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
-		AdapterRef:   ref,
-		// DirectPlay=true: the validator approved a direct HTTP/HTTPS
-		// URL, which is what FFmpeg consumes via -ss for DirectPlay
-		// seeks. Live/unknown-duration sources still take this path —
-		// Seek advertisement is gated separately via duration check.
-		DirectPlay:       true,
+		StreamURL:        playbackURI,
+		Capabilities:     core.Capabilities{CanSeek: canSeek, CanPause: true},
+		AdapterRef:       ref,
+		DirectPlay:       canSeek,
 		SeekOffsetMs:     seekOffsetMs,
 		OnStop:           onStop,
-		MediaInputPolicy: dlnaInputPolicy(),
+		MediaInputPolicy: dlnaInputPolicyForSource(canSeek),
 	}
 
 	matched, err := a.core.StartSessionIfAdapterRef(req, expectedCoreRef)
@@ -429,13 +491,18 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 // visible via lastError so query actions surface ERROR_OCCURRED.
 //
 // Phase 4 will add LastChange firing here once eventing lands.
-func (a *Adapter) onStopForRef(ref string) func(string) {
+func (a *Adapter) onStopForRef(ref string, playbackURI string, cleanup func() error) func(string) {
 	return func(reason string) {
 		a.mu.Lock()
 		// Compare-and-clear: only act on equality (spec line 303).
 		if a.currentRef != ref {
 			a.mu.Unlock()
 			return
+		}
+		if cleanup != nil && a.loadedPlaybackURI == playbackURI {
+			a.loadedPlaybackURI = ""
+			a.loadedHLSCleanup = nil
+			a.loadedCanSeek = false
 		}
 		a.currentRef = ""
 		a.startInFlight = false
@@ -448,6 +515,9 @@ func (a *Adapter) onStopForRef(ref string) func(string) {
 			a.lastError = "playback ended: " + reason
 		}
 		a.mu.Unlock()
+		if cleanup != nil {
+			_ = cleanup()
+		}
 		a.publishAVTransportLastChange()
 	}
 }

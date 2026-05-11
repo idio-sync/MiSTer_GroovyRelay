@@ -104,6 +104,7 @@ func (a *Adapter) handleSeek(w http.ResponseWriter, args seekArgs) {
 	a.mu.Lock()
 	enabled := a.cfg.Enabled
 	owned := a.currentRef
+	canSeek := a.loadedCanSeek
 	a.mu.Unlock()
 
 	// Disabled adapter: reject with 701. Same rationale as
@@ -125,6 +126,10 @@ func (a *Adapter) handleSeek(w http.ResponseWriter, args seekArgs) {
 	st := a.core.Status()
 	if st.AdapterRef != "" && st.AdapterRef != owned {
 		writeSOAPFault(w, upnpErrTransitionNotAvail)
+		return
+	}
+	if !canSeek {
+		writeSOAPFault(w, upnpErrIllegalSeekTarget)
 		return
 	}
 

@@ -92,7 +92,8 @@ func TestMediaInputPolicy_Apply_DisableRedirectsIsNoOp(t *testing.T) {
 }
 
 func TestMediaInputPolicy_Apply_DisablePlaylistsIsNoOp(t *testing.T) {
-	// Reserved for Phase 5; today, no behavioral effect.
+	// Adapter-enforced marker today: DLNA Phase 5 validates/caches HLS
+	// before FFmpeg, and DisablePlaylists still emits no argv.
 	p := MediaInputPolicy{DisablePlaylists: true}
 	got := p.Apply(nil)
 	if len(got) != 0 {

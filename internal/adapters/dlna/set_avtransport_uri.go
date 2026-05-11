@@ -41,6 +41,8 @@ type setAVTransportURIArgs struct {
 // shorter; we take the smaller of the two via context.WithTimeout.
 const setAVTransportURITimeout = validatorRequestTimeout * time.Duration(validatorMaxRedirects+1)
 
+var prepareHLSPlaybackForAdapter = prepareHLSPlayback
+
 // handleSetAVTransportURI implements the SetAVTransportURI SOAP action.
 // The dispatcher in handleAVTransportSOAP routes here after parsing the
 // envelope and asserting InstanceID==0. We re-validate InstanceID
@@ -89,6 +91,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	enabled := a.cfg.Enabled
 	allowPublic := a.cfg.AllowPublicSourceURLs
 	inFlight := a.startInFlight
+	activeRef := a.currentRef
 	a.mu.Unlock()
 
 	// Disabled adapter: reject with 701 (transition not available).
@@ -109,7 +112,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	// adapter does NOT block waiting for the in-flight start to
 	// finish — controllers retry on 701, and blocking would hold an
 	// HTTP goroutine across an unbounded core.Manager call.
-	if inFlight {
+	if inFlight || activeRef != "" {
 		writeSOAPFault(w, upnpErrTransitionNotAvail)
 		return
 	}
@@ -181,17 +184,35 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	// MIME / protocolInfo cross-check. If the metadata declared a
 	// protocolInfo, the third colon-delimited field is the MIME type
 	// (per UPnP A_ARG_TYPE_ProtocolInfo). We only render content types
-	// in sinkProtocolInfoEntries — the eight v1 sink entries from
-	// connection_manager.go. Anything else (HLS application/vnd.apple.
-	// mpegurl, DASH MPD, etc.) is rejected with 714 because the
-	// renderer cannot honor a container it doesn't advertise. Empty /
-	// missing protocolInfo skips the check; the renderer trusts
+	// in sinkProtocolInfoEntries. HLS is accepted only after the manifest
+	// and children are validated and cached locally below; other
+	// unsupported containers (DASH MPD, etc.) are rejected with 714.
+	// Empty / missing protocolInfo skips the check; the renderer trusts
 	// post-probe behavior to surface unsupported codecs later.
+	mime := mimeFromProtocolInfo(parsed.ProtocolInfo)
+	isHLS := isHLSMIME(mime) || isHLSURLPath(validated.FinalURL)
 	if parsed.ProtocolInfo != "" && !protocolInfoMatchesSink(parsed.ProtocolInfo) {
 		a.setLastError("SetAVTransportURI rejected: unsupported protocolInfo")
 		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrIllegalMIME)
 		return
+	}
+	var playbackURI string
+	var hlsCleanup func() error
+	canSeek := true
+	if isHLS {
+		hls, err := prepareHLSPlaybackForAdapter(ctx, validated.FinalURL, policy)
+		if err != nil {
+			a.setLastError("SetAVTransportURI rejected: HLS validation failed")
+			a.publishAVTransportLastChange()
+			writeSOAPFault(w, upnpErrResourceNotFound)
+			return
+		}
+		playbackURI = hls.PlaybackURI
+		hlsCleanup = hls.Cleanup
+		canSeek = false
+	} else {
+		playbackURI = validated.FinalURL
 	}
 
 	// All checks passed. Store the validated URI + metadata under mu,
@@ -203,17 +224,27 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	// host and potentially get a different redirect target than what
 	// the validator approved.
 	a.mu.Lock()
-	if !a.cfg.Enabled || a.startInFlight {
+	if !a.cfg.Enabled || a.startInFlight || a.currentRef != "" {
 		a.mu.Unlock()
+		if hlsCleanup != nil {
+			_ = hlsCleanup()
+		}
 		writeSOAPFault(w, upnpErrTransitionNotAvail)
 		return
 	}
+	oldCleanup := a.loadedHLSCleanup
 	a.loadedURI = validated.FinalURL
+	a.loadedPlaybackURI = playbackURI
+	a.loadedHLSCleanup = hlsCleanup
+	a.loadedCanSeek = canSeek
 	a.loadedMeta = parsed
 	a.loadedMetaRaw = args.CurrentURIMetaData
 	a.lastError = ""
 	autoplay := a.cfg.AutoplayOnSetURI
 	a.mu.Unlock()
+	if oldCleanup != nil {
+		_ = oldCleanup()
+	}
 	a.publishAVTransportLastChange()
 
 	// autoplay_on_set_uri (spec line 330 + line 395): "compatibility
@@ -304,6 +335,14 @@ func mimeFromProtocolInfo(s string) string {
 		mime = strings.TrimSpace(mime[:semi])
 	}
 	return strings.ToLower(mime)
+}
+
+func isHLSURLPath(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(u.Path), ".m3u8")
 }
 
 // redactURL returns a controller-safe summary of a URL. Per the P2.3

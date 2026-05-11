@@ -38,12 +38,13 @@ func (a *Adapter) avTransportEventState() avTransportEventState {
 	owned := a.currentRef
 	state := a.transportState
 	lastError := a.lastError
+	loadedCanSeek := a.loadedCanSeek
 	a.mu.Unlock()
 
 	st := a.core.Status()
 	ownSession := owned != "" && st.AdapterRef == owned
 	foreignActive := st.AdapterRef != "" && !ownSession
-	canSeek := ownSession && st.Duration > 0
+	canSeek := loadedCanSeek && ownSession && st.Duration > 0
 
 	status := "OK"
 	if lastError != "" {

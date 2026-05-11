@@ -1,11 +1,14 @@
 package dlna
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -267,6 +270,8 @@ func avtPlayAdapter(t *testing.T) (*Adapter, *captureSessionManager) {
 	a.SetEnabled(true)
 	a.mu.Lock()
 	a.loadedURI = "http://192.168.1.99/movie.mp4"
+	a.loadedPlaybackURI = a.loadedURI
+	a.loadedCanSeek = true
 	a.mu.Unlock()
 	return a, fake
 }
@@ -344,6 +349,9 @@ func TestPlay_FreshStart_StoresRefAndPlays(t *testing.T) {
 	if !contains(policy.BlockedHeaders, "Referer") {
 		t.Errorf("BlockedHeaders missing Referer: %v", policy.BlockedHeaders)
 	}
+	if policy.DisablePlaylists {
+		t.Error("DisablePlaylists = true for direct HTTP, want false")
+	}
 
 	// State and ref invariants.
 	a.mu.Lock()
@@ -359,6 +367,362 @@ func TestPlay_FreshStart_StoresRefAndPlays(t *testing.T) {
 	}
 	if a.lastError != "" {
 		t.Errorf("lastError = %q after success; want empty", a.lastError)
+	}
+}
+
+func TestPlay_StartSession_HLSUsesCachedManifestAndNoSeekPolicy(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(playbackURI)) })
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	req := fake.lastReq()
+	if req.StreamURL != playbackURI {
+		t.Errorf("StreamURL = %q, want cached playback URI %q", req.StreamURL, playbackURI)
+	}
+	if strings.HasPrefix(req.StreamURL, "http://") || strings.HasPrefix(req.StreamURL, "https://") {
+		t.Fatalf("StreamURL = %q, want local cached manifest", req.StreamURL)
+	}
+	if filepath.Ext(req.StreamURL) != ".m3u8" {
+		t.Errorf("StreamURL = %q, want .m3u8", req.StreamURL)
+	}
+	if req.DirectPlay {
+		t.Error("DirectPlay = true, want false for HLS")
+	}
+	if req.Capabilities.CanSeek {
+		t.Error("Capabilities.CanSeek = true, want false for HLS")
+	}
+	if !req.Capabilities.CanPause {
+		t.Error("Capabilities.CanPause = false, want true")
+	}
+	policy := req.MediaInputPolicy
+	if contains(policy.ProtocolWhitelist, "http") || contains(policy.ProtocolWhitelist, "https") {
+		t.Errorf("HLS MediaInputPolicy whitelist allows network protocols: %v", policy.ProtocolWhitelist)
+	}
+	for _, want := range []string{"file", "crypto"} {
+		if !contains(policy.ProtocolWhitelist, want) {
+			t.Errorf("HLS MediaInputPolicy whitelist missing %s: %v", want, policy.ProtocolWhitelist)
+		}
+	}
+	if !policy.DisableReconnect {
+		t.Error("DisableReconnect = false, want true for HLS")
+	}
+	if policy.RWTimeout != 5*time.Second {
+		t.Errorf("RWTimeout = %v, want 5s", policy.RWTimeout)
+	}
+	if !contains(policy.BlockedHeaders, "Referer") {
+		t.Errorf("BlockedHeaders missing Referer: %v", policy.BlockedHeaders)
+	}
+	if !policy.DisablePlaylists {
+		t.Error("DisablePlaylists = false, want true for HLS cached playback")
+	}
+}
+
+func TestPlay_StartSession_EmptyMetadataM3U8UsesCachedManifestAndNoSeekPolicy(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := avtSendSetURI(t, a, fmt.Sprintf(
+		`<InstanceID>0</InstanceID><CurrentURI>%s</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>`,
+		html.EscapeString(srv.URL+"/playlist.m3u8"),
+	))
+	if rrSet.Code != 200 {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(playbackURI)) })
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	req := fake.lastReq()
+	if req.StreamURL != playbackURI {
+		t.Errorf("StreamURL = %q, want cached playback URI %q", req.StreamURL, playbackURI)
+	}
+	if strings.HasPrefix(req.StreamURL, "http://") || strings.HasPrefix(req.StreamURL, "https://") {
+		t.Fatalf("StreamURL = %q, want local cached manifest", req.StreamURL)
+	}
+	if req.DirectPlay {
+		t.Error("DirectPlay = true, want false for URL-classified HLS")
+	}
+	if req.Capabilities.CanSeek {
+		t.Error("Capabilities.CanSeek = true, want false for URL-classified HLS")
+	}
+	if contains(req.MediaInputPolicy.ProtocolWhitelist, "http") || contains(req.MediaInputPolicy.ProtocolWhitelist, "https") {
+		t.Errorf("HLS MediaInputPolicy whitelist allows network protocols: %v", req.MediaInputPolicy.ProtocolWhitelist)
+	}
+	if !req.MediaInputPolicy.DisablePlaylists {
+		t.Error("DisablePlaylists = false, want true for HLS cached playback")
+	}
+}
+
+func TestPlay_StartSession_HLSRecachesWhenPlaybackURICleared(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	oldPlayback := a.loadedPlaybackURI
+	oldCleanup := a.loadedHLSCleanup
+	a.loadedPlaybackURI = ""
+	a.loadedHLSCleanup = nil
+	a.mu.Unlock()
+	if oldCleanup != nil {
+		if err := oldCleanup(); err != nil {
+			t.Fatalf("oldCleanup: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(oldPlayback)); !os.IsNotExist(err) {
+		t.Fatalf("old cache dir still present before Play recache; stat err=%v", err)
+	}
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	req := fake.lastReq()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(req.StreamURL)) })
+	if req.StreamURL == "" || req.StreamURL == oldPlayback {
+		t.Fatalf("StreamURL = %q, want newly cached manifest distinct from %q", req.StreamURL, oldPlayback)
+	}
+	if _, err := os.Stat(req.StreamURL); err != nil {
+		t.Fatalf("new cached manifest missing: %v", err)
+	}
+}
+
+func TestPlay_StartSession_HLSRecacheStaleStateCleansNewCacheAndDoesNotStart(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	oldCleanup := a.loadedHLSCleanup
+	a.loadedPlaybackURI = ""
+	a.loadedHLSCleanup = nil
+	a.mu.Unlock()
+	if oldCleanup != nil {
+		if err := oldCleanup(); err != nil {
+			t.Fatalf("oldCleanup: %v", err)
+		}
+	}
+
+	preparedDir := t.TempDir()
+	prepared := hlsPlayback{
+		PlaybackURI: filepath.Join(preparedDir, "playlist-000000.m3u8"),
+		tempDir:     preparedDir,
+	}
+	if err := os.WriteFile(prepared.PlaybackURI, []byte("#EXTM3U\n#EXT-X-ENDLIST\n"), 0o600); err != nil {
+		t.Fatalf("write prepared manifest: %v", err)
+	}
+	prev := prepareHLSPlaybackForAdapter
+	prepareHLSPlaybackForAdapter = func(ctx context.Context, rawURL string, policy AddressPolicy) (hlsPlayback, error) {
+		a.mu.Lock()
+		a.loadedURI = srv.URL + "/replacement.mp4"
+		a.loadedPlaybackURI = a.loadedURI
+		a.loadedCanSeek = true
+		a.mu.Unlock()
+		return prepared, nil
+	}
+	t.Cleanup(func() { prepareHLSPlaybackForAdapter = prev })
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 500 {
+		t.Fatalf("Play status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Fatalf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotStartCalls() != 0 {
+		t.Fatalf("StartSession called %d times for stale recache, want 0", fake.snapshotStartCalls())
+	}
+	if _, err := os.Stat(preparedDir); !os.IsNotExist(err) {
+		t.Fatalf("stale prepared HLS cache dir still present; stat err=%v", err)
+	}
+}
+
+func TestPlay_OnStopPreemptedCleansLoadedHLSCache(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	cacheDir := filepath.Dir(playbackURI)
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	onStop := fake.lastReq().OnStop
+	if onStop == nil {
+		t.Fatal("captured OnStop nil")
+	}
+	onStop("preempted")
+
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("HLS cache dir still present after preempted OnStop; stat err=%v", err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loadedURI == "" {
+		t.Error("loadedURI cleared after HLS OnStop; want controller-facing URI preserved")
+	}
+	if a.loadedPlaybackURI != "" {
+		t.Errorf("loadedPlaybackURI = %q after HLS OnStop, want cleared", a.loadedPlaybackURI)
+	}
+}
+
+func TestPlay_StartSession_AdapterStopDoesNotRemoveActiveHLSCacheBeforeOnStop(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	cacheDir := filepath.Dir(playbackURI)
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	onStop := fake.lastReq().OnStop
+	if onStop == nil {
+		t.Fatal("captured OnStop nil")
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Adapter.Stop: %v", err)
+	}
+	if _, err := os.Stat(playbackURI); err != nil {
+		t.Fatalf("active HLS cache was removed before session OnStop: %v", err)
+	}
+
+	onStop("stopped")
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("HLS cache dir still present after session OnStop; stat err=%v", err)
+	}
+}
+
+func TestPlay_StartSession_SetURIReplacementBeforeAdmissionDoesNotStartWithDeletedHLSCache(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/one.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("initial SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	oldPlaybackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	oldCacheDir := filepath.Dir(oldPlaybackURI)
+
+	prevHook := playBeforeStartAdmissionHook
+	hookCalls := 0
+	playBeforeStartAdmissionHook = func() {
+		hookCalls++
+		rrReplace := sendHLSSetURI(t, a, srv.URL+"/two.m3u8")
+		if rrReplace.Code != 200 {
+			t.Fatalf("replacement SetAVTransportURI status = %d, want 200; body=%s", rrReplace.Code, rrReplace.Body.String())
+		}
+	}
+	t.Cleanup(func() { playBeforeStartAdmissionHook = prevHook })
+
+	rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rr.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if hookCalls != 1 {
+		t.Fatalf("playBeforeStartAdmissionHook called %d times, want 1", hookCalls)
+	}
+	req := fake.lastReq()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(req.StreamURL)) })
+	if req.StreamURL == oldPlaybackURI {
+		t.Fatalf("StartSession used old HLS cache %q after SetURI replacement deleted it", req.StreamURL)
+	}
+	if _, err := os.Stat(oldCacheDir); !os.IsNotExist(err) {
+		t.Fatalf("old HLS cache dir should have been replaced before StartSession; stat err=%v", err)
+	}
+	if _, err := os.Stat(req.StreamURL); err != nil {
+		t.Fatalf("StartSession stream cache missing: %v", err)
 	}
 }
 

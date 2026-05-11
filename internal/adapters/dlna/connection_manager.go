@@ -17,11 +17,10 @@ import (
 
 const connectionManagerServiceURN = "urn:schemas-upnp-org:service:ConnectionManager:1"
 
-// sinkProtocolInfoEntries enumerates the eight HTTP MIME entries the
-// renderer accepts. Spec §ConnectionManager (lines 414-423). HLS and
-// M3U8 are deliberately omitted in v1 — they require playlist-child
-// URL validation (spec §ConnectionManager line 425) which lands in
-// Phase 5.
+// sinkProtocolInfoEntries enumerates the HTTP MIME entries the renderer
+// accepts. HLS entries are advertised only because Phase 5 validates and
+// caches every referenced child resource before playback; direct non-HLS
+// MIME broadening remains blocked on compatibility evidence.
 var sinkProtocolInfoEntries = []string{
 	"http-get:*:video/mp4:*",
 	"http-get:*:video/x-matroska:*",
@@ -31,6 +30,8 @@ var sinkProtocolInfoEntries = []string{
 	"http-get:*:audio/mp4:*",
 	"http-get:*:audio/flac:*",
 	"http-get:*:audio/x-flac:*",
+	"http-get:*:application/vnd.apple.mpegurl:*",
+	"http-get:*:application/x-mpegurl:*",
 }
 
 // sinkProtocolInfo is the comma-joined SinkProtocolInfo string. Built
