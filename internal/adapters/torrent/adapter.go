@@ -253,6 +253,7 @@ func sanitizeLogMessage(msg string) string {
 }
 
 type torrentUse struct {
-	torrent TorrentHandle
-	refs    int
+	torrent  TorrentHandle
+	refs     int
+	keepData bool
 }

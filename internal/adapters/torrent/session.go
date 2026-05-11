@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/url"
 	"time"
 
@@ -186,6 +185,7 @@ func (a *Adapter) registerSession(s *Session) {
 		a.torrents[s.InfoHash] = use
 	}
 	use.refs++
+	use.keepData = use.keepData || s.KeepData
 }
 
 func (a *Adapter) cleanupSession(token, reason string) {
@@ -200,10 +200,14 @@ func (a *Adapter) cleanupSession(token, reason string) {
 	if a.activeToken == token {
 		a.activeToken = ""
 	}
+	var dropTorrent TorrentHandle
+	removeStorage := false
 	if use := a.torrents[s.InfoHash]; use != nil {
 		use.refs--
 		if use.refs <= 0 {
 			delete(a.torrents, s.InfoHash)
+			dropTorrent = use.torrent
+			removeStorage = !use.keepData
 		}
 	}
 	cfg := a.cfg
@@ -214,6 +218,12 @@ func (a *Adapter) cleanupSession(token, reason string) {
 	a.mu.Unlock()
 	if !s.KeepData {
 		_ = removeSessionDir(sessionRoot(cfg, a.bridge.DataDir), s.SessionDir)
+	}
+	if dropTorrent != nil {
+		dropTorrent.Drop()
+	}
+	if removeStorage {
+		_ = removeStorageDir(cacheRoot(cfg, a.bridge.DataDir), s.StorageKey)
 	}
 	_ = pruneStorageCache(cacheRoot(cfg, a.bridge.DataDir), cfg.MaxCacheBytes, active)
 	a.logSafe("torrent session stopped token=%s reason=%s hash=%s", token, reason, shortHash(s.InfoHash))
@@ -242,11 +252,7 @@ func waitForStartupBuffer(ctx context.Context, cfg Config, t TorrentHandle, inde
 }
 
 func (a *Adapter) mediaURL(token string) string {
-	host := a.bridge.HostIP
-	if net.ParseIP(host) == nil {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("http://%s:%d/torrent/session/%s/media", host, a.bridge.UI.HTTPPort, token)
+	return fmt.Sprintf("http://127.0.0.1:%d/torrent/session/%s/media", a.bridge.UI.HTTPPort, token)
 }
 
 func newID(prefix string) string {

@@ -189,3 +189,53 @@ func TestPruneStorageCacheSkipsActiveNewFileByInfoHashDir(t *testing.T) {
 		t.Fatalf("active dir was removed: %v", err)
 	}
 }
+
+func TestRemoveStorageDirRequiresMarkedRoot(t *testing.T) {
+	root := t.TempDir()
+	key := infoHashStorageDirName("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err := os.MkdirAll(filepath.Join(root, key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeStorageDir(root, key); err == nil {
+		t.Fatal("removeStorageDir on unmarked root succeeded, want error")
+	}
+}
+
+func TestRemoveStorageDirRemovesOnlySafeChild(t *testing.T) {
+	root := t.TempDir()
+	if err := ensureStorageRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	key := infoHashStorageDirName("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	dir := filepath.Join(root, key)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeStorageDir(root, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("storage dir still exists or stat failed differently: %v", err)
+	}
+}
+
+func TestRemoveStorageDirRejectsUnsafeKey(t *testing.T) {
+	root := t.TempDir()
+	if err := ensureStorageRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(root), "outside")
+	for _, key := range []string{"", ".", "..", "../outside", "nested/hash", `nested\hash`, filepath.Join(root, "absolute")} {
+		t.Run(key, func(t *testing.T) {
+			if err := removeStorageDir(root, key); err == nil {
+				t.Fatal("removeStorageDir unsafe key succeeded, want error")
+			}
+		})
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside path exists or stat failed differently: %v", err)
+	}
+}

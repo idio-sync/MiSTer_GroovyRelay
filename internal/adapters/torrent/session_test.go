@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +59,7 @@ type fakeTorrent struct {
 	hash  string
 	name  string
 	files []FileCandidate
+	drops int
 }
 
 func (f *fakeTorrent) InfoHash() string               { return f.hash }
@@ -73,6 +76,9 @@ func (f *fakeTorrent) BytesCompleted(index int) int64 {
 }
 func (f *fakeTorrent) Open(context.Context, int) (ReadSeekCloser, error) {
 	return stringReadSeekCloser{Reader: strings.NewReader("video")}, nil
+}
+func (f *fakeTorrent) Drop() {
+	f.drops++
 }
 
 type stringReadSeekCloser struct{ *strings.Reader }
@@ -313,4 +319,140 @@ func TestDifferentInfoHashStartsSecondCoreSession(t *testing.T) {
 	if core.reqs[0].AdapterRef == core.reqs[1].AdapterRef {
 		t.Fatalf("core adapter refs equal: %q", core.reqs[0].AdapterRef)
 	}
+}
+
+func TestCleanupDropsTorrentAndDeletesStorageWhenLastRefStops(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, core)
+	started, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+
+	core.reqs[0].OnStop("stopped")
+
+	if client.byHash[hash].drops != 1 {
+		t.Fatalf("torrent drops = %d, want 1", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); !os.IsNotExist(err) {
+		t.Fatalf("storage dir still exists or stat failed differently after %s stopped: %v", started.Token, err)
+	}
+}
+
+func TestCleanupKeepsStorageWhenKeepCompleted(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	cfg.KeepCompleted = true
+	a := newStartedTestAdapter(t, cfg, client, core)
+	_, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+
+	core.reqs[0].OnStop("stopped")
+
+	if client.byHash[hash].drops != 1 {
+		t.Fatalf("torrent drops = %d, want 1", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); err != nil {
+		t.Fatalf("storage dir was removed with keep_completed=true: %v", err)
+	}
+}
+
+func TestCleanupDoesNotDropOrDeleteStorageUntilLastSameHashRefStops(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, core)
+	first, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+
+	core.reqs[0].OnStop("stopped")
+
+	if client.byHash[hash].drops != 0 {
+		t.Fatalf("torrent drops after first stop = %d, want 0", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); err != nil {
+		t.Fatalf("storage dir removed before final ref stopped: %v", err)
+	}
+	a.mu.Lock()
+	refs := a.torrents[hash].refs
+	_, firstLive := a.sessions[first.Token]
+	_, secondLive := a.sessions[second.Token]
+	a.mu.Unlock()
+	if refs != 1 || firstLive || !secondLive {
+		t.Fatalf("state after first stop: refs=%d firstLive=%v secondLive=%v", refs, firstLive, secondLive)
+	}
+
+	core.reqs[1].OnStop("stopped")
+
+	if client.byHash[hash].drops != 1 {
+		t.Fatalf("torrent drops after final stop = %d, want 1", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); !os.IsNotExist(err) {
+		t.Fatalf("storage dir still exists or stat failed differently after final stop: %v", err)
+	}
+}
+
+func TestMediaURLAlwaysUsesLoopbackEvenWhenBridgeHostIPIsLAN(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{
+			DataDir: t.TempDir(),
+			HostIP:  "192.168.1.50",
+			UI:      config.UIConfig{HTTPPort: 32500},
+		},
+		Core: core,
+		ClientFactory: func(ClientConfig) (TorrentClient, error) {
+			return client, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.cfg = cfg
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"); err != nil {
+		t.Fatal(err)
+	}
+	if len(core.reqs) != 1 {
+		t.Fatalf("core requests = %d, want 1", len(core.reqs))
+	}
+	if strings.Contains(core.reqs[0].StreamURL, "192.168.1.50") {
+		t.Fatalf("StreamURL = %q, want loopback not configured LAN HostIP", core.reqs[0].StreamURL)
+	}
+	if !strings.HasPrefix(core.reqs[0].StreamURL, "http://127.0.0.1:32500/") {
+		t.Fatalf("StreamURL = %q, want loopback URL", core.reqs[0].StreamURL)
+	}
+}
+
+func writeStorageDir(t *testing.T, a *Adapter, cfg Config, hash string) string {
+	t.Helper()
+	dir := filepath.Join(cacheRoot(cfg, a.bridge.DataDir), infoHashStorageDirName(hash))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data.bin"), []byte("torrent-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

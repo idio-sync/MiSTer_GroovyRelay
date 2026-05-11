@@ -51,17 +51,21 @@ func createSessionDir(root, sessionID string) (string, error) {
 }
 
 func validateSessionID(sessionID string) error {
-	if strings.TrimSpace(sessionID) == "" {
-		return fmt.Errorf("session id required")
+	return validateCacheChildName(sessionID, "session id")
+}
+
+func validateCacheChildName(name, label string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%s required", label)
 	}
-	if sessionID == "." || sessionID == ".." {
-		return fmt.Errorf("session id must be a single safe path element")
+	if name == "." || name == ".." {
+		return fmt.Errorf("%s must be a single safe path element", label)
 	}
-	if filepath.IsAbs(sessionID) || strings.ContainsAny(sessionID, `/\`) {
-		return fmt.Errorf("session id must be a single safe path element")
+	if filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("%s must be a single safe path element", label)
 	}
-	if filepath.Clean(sessionID) != sessionID {
-		return fmt.Errorf("session id must be a single safe path element")
+	if filepath.Clean(name) != name {
+		return fmt.Errorf("%s must be a single safe path element", label)
 	}
 	return nil
 }
@@ -113,6 +117,28 @@ func ensureStorageRoot(root string) error {
 func isMarkedStorageRoot(root string) bool {
 	info, err := os.Stat(filepath.Join(root, storageRootMarkerName))
 	return err == nil && !info.IsDir()
+}
+
+func removeStorageDir(root, storageKey string) error {
+	if err := validateCacheChildName(storageKey, "storage key"); err != nil {
+		return err
+	}
+	rootAbs, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return err
+	}
+	if !isMarkedStorageRoot(rootAbs) {
+		return fmt.Errorf("refuse to remove storage from unmarked torrent storage root")
+	}
+	dirAbs := filepath.Join(rootAbs, storageKey)
+	rel, err := filepath.Rel(rootAbs, dirAbs)
+	if err != nil {
+		return err
+	}
+	if rel != storageKey {
+		return fmt.Errorf("refuse to remove path outside torrent storage root")
+	}
+	return os.RemoveAll(dirAbs)
 }
 
 type cacheEntry struct {

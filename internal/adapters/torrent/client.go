@@ -41,6 +41,7 @@ type TorrentHandle interface {
 	Prioritize(index int)
 	BytesCompleted(index int) int64
 	Open(context.Context, int) (ReadSeekCloser, error)
+	Drop()
 }
 
 func newRealClient(cfg ClientConfig) (TorrentClient, error) {
@@ -167,6 +168,10 @@ func (t *realTorrent) Open(ctx context.Context, index int) (ReadSeekCloser, erro
 	reader.SetResponsive()
 	reader.SetReadahead(4 << 20)
 	return reader, nil
+}
+
+func (t *realTorrent) Drop() {
+	t.torrent.Drop()
 }
 
 func (t *realTorrent) file(index int) (*atorrent.File, bool) {
