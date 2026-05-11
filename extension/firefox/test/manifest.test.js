@@ -10,6 +10,21 @@ const extensionFiles = [
 ];
 
 describe("manifest data collection declaration", () => {
+  it("injects the Plex timeline bridge on Plex Web", () => {
+    expect(manifest.content_scripts).toContainEqual({
+      matches: ["https://app.plex.tv/desktop/*"],
+      js: ["src/content/plex-timeline-content.js"],
+      run_at: "document_start",
+    });
+  });
+
+  it("exposes the page-context Plex timeline shim to Plex Web", () => {
+    expect(manifest.web_accessible_resources).toContainEqual({
+      resources: ["src/content/plex-timeline-page.js"],
+      matches: ["https://app.plex.tv/*"],
+    });
+  });
+
   it("declares optional bridge host permissions for runtime requests", () => {
     expect(manifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
   });

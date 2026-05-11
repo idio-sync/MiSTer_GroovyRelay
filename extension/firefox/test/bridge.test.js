@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { http, HttpResponse, delay } from "msw";
 import { setupServer } from "msw/node";
+import * as bridge from "../src/lib/bridge.js";
 import {
   control,
   getBridgeURL,
@@ -203,6 +204,97 @@ describe("getStatus()", () => {
     expect(result.ok).toBe(true);
     expect(result.configured).toBe(true);
     expect(captured.headers["x-bridge-extension"]).toBe("1");
+  });
+});
+
+describe("plexTimelinePoll()", () => {
+  const targetID = "6e83bef1-a873-4a8f-b98d-b7fa46272b44";
+  const browserID = "37er4k14mzozjwaxf72oadqi";
+
+  function originalPollURL(target = targetID) {
+    return `https://192-168-50-137.example.plex.direct:32400/player/timeline/poll?wait=1&commandID=7&X-Plex-Client-Identifier=${browserID}&X-Plex-Target-Client-Identifier=${target}&X-Plex-Product=Plex%20Web`;
+  }
+
+  it("proxies MiSTer timeline polls to the configured bridge URL", async () => {
+    expect(bridge.plexTimelinePoll).toBeTypeOf("function");
+
+    let resourcesRequested = false;
+    let timelineRequested;
+    server.use(
+      http.get("http://192.168.50.138:32500/resources", () => {
+        resourcesRequested = true;
+        return new HttpResponse("<MediaContainer />", {
+          headers: {
+            "Content-Type": "text/xml",
+            "X-Plex-Client-Identifier": targetID,
+          },
+        });
+      }),
+      http.get("http://192.168.50.138:32500/player/timeline/poll", ({ request }) => {
+        const url = new URL(request.url);
+        timelineRequested = {
+          wait: url.searchParams.get("wait"),
+          commandID: url.searchParams.get("commandID"),
+          clientID: url.searchParams.get("X-Plex-Client-Identifier"),
+          targetID: url.searchParams.get("X-Plex-Target-Client-Identifier"),
+          product: url.searchParams.get("X-Plex-Product"),
+          headers: Object.fromEntries(request.headers),
+        };
+        return new HttpResponse(
+          `<MediaContainer commandID="7"><Timeline type="video" state="playing" time="1234" playbackTime="1234" duration="9000"></Timeline></MediaContainer>`,
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "text/xml",
+              "X-Plex-Client-Identifier": targetID,
+            },
+          }
+        );
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.50.138:32500" });
+
+    const result = await bridge.plexTimelinePoll(originalPollURL());
+
+    expect(resourcesRequested).toBe(true);
+    expect(timelineRequested).toMatchObject({
+      wait: "1",
+      commandID: "7",
+      clientID: browserID,
+      targetID,
+      product: "Plex Web",
+    });
+    expect(timelineRequested.headers["x-bridge-extension"]).toBe("1");
+    expect(result).toMatchObject({
+      ok: true,
+      handled: true,
+      status: 200,
+    });
+    expect(result.headers["x-plex-client-identifier"]).toBe(targetID);
+    expect(result.body).toContain('time="1234"');
+  });
+
+  it("leaves other Plex targets alone", async () => {
+    expect(bridge.plexTimelinePoll).toBeTypeOf("function");
+
+    let timelineCalled = false;
+    server.use(
+      http.get("http://192.168.50.138:32500/resources", () => {
+        return new HttpResponse("<MediaContainer />", {
+          headers: { "X-Plex-Client-Identifier": targetID },
+        });
+      }),
+      http.get("http://192.168.50.138:32500/player/timeline/poll", () => {
+        timelineCalled = true;
+        return HttpResponse.text("should not be called");
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.50.138:32500" });
+
+    const result = await bridge.plexTimelinePoll(originalPollURL("ps4-client-id"));
+
+    expect(result).toEqual({ ok: true, handled: false });
+    expect(timelineCalled).toBe(false);
   });
 });
 

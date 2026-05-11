@@ -1,5 +1,5 @@
 import "./lib/browser-polyfill.js";
-import { play, getBridgeURL, formatBridgeError } from "./lib/bridge.js";
+import { play, getBridgeURL, formatBridgeError, plexTimelinePoll } from "./lib/bridge.js";
 
 const MENU_LINK = "mgr-cast-link";
 const MENU_VIDEO = "mgr-cast-video";
@@ -45,6 +45,11 @@ browser.contextMenus.onClicked.addListener(async (info) => {
   } else {
     notify("error", formatBridgeError(result, "Cast failed"));
   }
+});
+
+browser.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "plexTimelinePoll") return undefined;
+  return plexTimelinePoll(message.url);
 });
 
 function notify(kind, message) {
