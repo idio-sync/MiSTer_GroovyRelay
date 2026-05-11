@@ -311,6 +311,54 @@ func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) 
 	}
 }
 
+func TestShouldUseDeltaLZ4_UsesStrictNinetyFivePercentThreshold(t *testing.T) {
+	if !shouldUseDeltaLZ4(100, 94) {
+		t.Fatal("94/100 should select delta")
+	}
+	if shouldUseDeltaLZ4(100, 95) {
+		t.Fatal("95/100 should not select delta because threshold is strict")
+	}
+	if shouldUseDeltaLZ4(100, 96) {
+		t.Fatal("96/100 should not select delta")
+	}
+	if shouldUseDeltaLZ4(0, 0) {
+		t.Fatal("zero sizes should not select delta")
+	}
+}
+
+func TestFieldHistoryInvalidatesOnLengthMismatch(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+	raw := []byte{1, 2, 3, 4}
+	p.rememberFieldHistory(0, raw)
+	if !p.hasFieldHistory(0, raw) {
+		t.Fatal("history missing immediately after remember")
+	}
+	if p.hasFieldHistory(0, []byte{1, 2, 3}) {
+		t.Fatal("history should be invalid for different raw length")
+	}
+	if p.fieldPrevValid[0] {
+		t.Fatal("history validity bit should be cleared after length mismatch")
+	}
+}
+
+func TestFieldHistoryInvalidatesOnModeIdentityMismatch(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+	raw := []byte{1, 2, 3, 4}
+	p.rememberFieldHistory(0, raw)
+	if !p.hasFieldHistory(0, raw) {
+		t.Fatal("history missing immediately after remember")
+	}
+	p.cfg.RGBMode = groovy.RGBMode565
+	if p.hasFieldHistory(0, raw) {
+		t.Fatal("history should be invalid after RGB mode changes")
+	}
+	if p.fieldPrevValid[0] {
+		t.Fatal("history validity bit should be cleared after mode mismatch")
+	}
+}
+
 func TestEnvDeltaLZ4DefaultsOff(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "")
 	if envDeltaLZ4() {

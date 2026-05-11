@@ -941,17 +941,62 @@ type fieldHistoryIdentity struct {
 	interlaced  bool
 }
 
-func (p *Plane) measureFieldDiagnostic(field uint8, raw []byte) fieldDiagnostic {
+func shouldUseDeltaLZ4(fullBytes, deltaBytes int) bool {
+	if fullBytes <= 0 || deltaBytes <= 0 {
+		return false
+	}
+	return deltaBytes*deltaLZ4WinDenominator < fullBytes*deltaLZ4WinNumerator
+}
+
+func (p *Plane) currentFieldHistoryIdentity(raw []byte) fieldHistoryIdentity {
+	return fieldHistoryIdentity{
+		bytes:       len(raw),
+		width:       p.cfg.FieldWidth,
+		height:      p.cfg.FieldHeight,
+		bytesPerPix: p.cfg.BytesPerPixel,
+		rgbMode:     p.cfg.RGBMode,
+		interlaced:  p.cfg.Modeline.Interlaced(),
+	}
+}
+
+func (p *Plane) hasFieldHistory(field uint8, raw []byte) bool {
+	slot := int(field & 1)
+	if !p.fieldPrevValid[slot] || len(p.fieldPrev[slot]) != len(raw) ||
+		p.fieldPrevID[slot] != p.currentFieldHistoryIdentity(raw) {
+		p.invalidateFieldHistory(field)
+		return false
+	}
+	return true
+}
+
+func (p *Plane) invalidateFieldHistory(field uint8) {
+	slot := int(field & 1)
+	p.fieldPrevValid[slot] = false
+	p.fieldPrevID[slot] = fieldHistoryIdentity{}
+}
+
+func (p *Plane) rememberFieldHistory(field uint8, raw []byte) {
 	slot := int(field & 1)
 	prev := p.fieldPrev[slot]
-	if !p.fieldPrevValid[slot] || len(prev) != len(raw) ||
+	if len(prev) != len(raw) {
+		p.invalidateFieldHistory(field)
+		return
+	}
+	copy(prev, raw)
+	p.fieldPrevID[slot] = p.currentFieldHistoryIdentity(raw)
+	p.fieldPrevValid[slot] = true
+}
+
+func (p *Plane) measureFieldDiagnostic(field uint8, raw []byte) fieldDiagnostic {
+	slot := int(field & 1)
+	if !p.hasFieldHistory(field, raw) ||
 		len(p.fieldDeltaScratch) < len(raw) || len(p.fieldDeltaLZ4Scratch) == 0 {
 		return fieldDiagnostic{}
 	}
 
 	t := time.Now()
 	delta := p.fieldDeltaScratch[:len(raw)]
-	writeFieldSubDeltaInto(delta, raw, prev)
+	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
 	n, ok := groovy.LZ4CompressInto(&p.fieldDeltaLZ4, p.fieldDeltaLZ4Scratch, delta)
 	return fieldDiagnostic{
 		available:       true,
@@ -971,13 +1016,7 @@ func (p *Plane) rememberFieldDiagnostic(field uint8, raw []byte) {
 	if !p.fieldDiagEnabled {
 		return
 	}
-	slot := int(field & 1)
-	prev := p.fieldPrev[slot]
-	if len(prev) != len(raw) {
-		return
-	}
-	copy(prev, raw)
-	p.fieldPrevValid[slot] = true
+	p.rememberFieldHistory(field, raw)
 }
 
 func datagramChunks(n int) int {
