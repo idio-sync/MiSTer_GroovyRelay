@@ -256,6 +256,3 @@ type torrentUse struct {
 	torrent TorrentHandle
 	refs    int
 }
-
-func (a *Adapter) renderPanel() string        { return `<section id="torrent-panel"></section>` }
-func (a *Adapter) UIRoutes() []adapters.Route { return nil }
