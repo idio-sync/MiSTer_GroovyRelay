@@ -2,13 +2,14 @@
 
 <img align="right" width="200" src=".github/screenshots/plex_dash.png">
 
-A video cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
+A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
 Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. Running on a different host adds networking overhead and is slightly less stable (but I'm working on it). 
 
-## Video Sources
+## Cast Sources
 - Plex
 - Jellyfin
+- Plex/Jellyfin music tracks with CRT visualizer output
 - YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
@@ -18,7 +19,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 ## Future Plans
 - Support for more relay sources:
   - Moonlight/Sunshine
-- Music visualizer
+- More music visualizer modes
 - Better webui/dashboard and setup wizard
 - Home Assistant integration
 
@@ -115,6 +116,14 @@ or `https://` URL into the **URL** panel in the settings UI and click
 
 Sessions are fire-and-forget: they run to EOF or until preempted by
 another POST. In-session pause/seek exists in a basic state in the web-ui, but I will polish it in a later pass.
+
+## Music visualizer
+
+Plex and Jellyfin music casts are supported automatically. Pick a song, album,
+or playlist from a Plex or Jellyfin client, cast it to the bridge, and audio-only
+items render a retro analyzer video on the CRT while PCM audio continues through
+the MiSTer. There are no v1 config fields for this; the existing Plex/Jellyfin
+adapter enable toggles are the control surface.
 
 ### Cookies for auth-walled content
 
@@ -248,7 +257,7 @@ the binary and reload.
 
 4. **Link Plex/JF.** Link servers as outlined above. The UI transitions to *Linked · RUN* within ~2 seconds and you're good to go.
 
-5. **First cast.** Open Plex/Jellyfin on your phone or browser, pick a video, tap the cast icon, pick your bridge from the target list. Video appears in 1–2 seconds.
+5. **First cast.** Open Plex/Jellyfin on your phone or browser, pick a video or music track, tap the cast icon, pick your bridge from the target list. Video or the music visualizer appears in 1–2 seconds.
 
 ## Operational notes
 
