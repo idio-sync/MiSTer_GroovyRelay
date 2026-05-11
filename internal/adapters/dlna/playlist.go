@@ -349,24 +349,27 @@ func (p *hlsCachePreparer) cacheResource(ctx context.Context, rawURL string, pre
 }
 
 func (p *hlsCachePreparer) fetchBytes(ctx context.Context, rawURL string, maxBytes int64) ([]byte, string, error) {
-	return p.fetchBytesRedirects(ctx, rawURL, maxBytes, 0)
+	// hlsFetchTimeout caps the cumulative time across the whole redirect chain
+	// for one resource, so a caller without a deadline (e.g. context.Background())
+	// can't hang. Per-hop header stalls are bounded by the transport's
+	// ResponseHeaderTimeout.
+	fetchCtx, cancel := context.WithTimeout(ctx, hlsFetchTimeout)
+	defer cancel()
+	return p.fetchBytesRedirects(fetchCtx, rawURL, maxBytes, 0)
 }
 
 func (p *hlsCachePreparer) fetchBytesRedirects(ctx context.Context, rawURL string, maxBytes int64, redirects int) ([]byte, string, error) {
 	if redirects > validatorMaxRedirects {
 		return nil, "", fmt.Errorf("%w: %w", errHLSInvalid, ErrTooManyRedirects)
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, hlsFetchTimeout)
-	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		cancel()
 		return nil, "", fmt.Errorf("%w: %v", errHLSInvalid, err)
 	}
 	req.Header.Set("User-Agent", "MiSTer_GroovyRelay-DLNA-HLS-cache/1")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		cancel()
 		return nil, "", fmt.Errorf("%w: fetch %s: %v", errHLSInvalid, rawURL, err)
 	}
 
@@ -374,7 +377,6 @@ func (p *hlsCachePreparer) fetchBytesRedirects(ctx context.Context, rawURL strin
 		location := resp.Header.Get("Location")
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 		_ = resp.Body.Close()
-		cancel()
 		if location == "" {
 			return nil, "", fmt.Errorf("%w: redirect without location", errHLSInvalid)
 		}
@@ -390,7 +392,6 @@ func (p *hlsCachePreparer) fetchBytesRedirects(ctx context.Context, rawURL strin
 	}
 	defer func() {
 		_ = resp.Body.Close()
-		cancel()
 	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
