@@ -32,8 +32,8 @@ func infoHashStorageDirName(infoHash string) string {
 }
 
 func createSessionDir(root, sessionID string) (string, error) {
-	if strings.TrimSpace(sessionID) == "" {
-		return "", fmt.Errorf("session id required")
+	if err := validateSessionID(sessionID); err != nil {
+		return "", err
 	}
 	dir := filepath.Join(root, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -48,6 +48,22 @@ func createSessionDir(root, sessionID string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+func validateSessionID(sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("session id required")
+	}
+	if sessionID == "." || sessionID == ".." {
+		return fmt.Errorf("session id must be a single safe path element")
+	}
+	if filepath.IsAbs(sessionID) || strings.ContainsAny(sessionID, `/\`) {
+		return fmt.Errorf("session id must be a single safe path element")
+	}
+	if filepath.Clean(sessionID) != sessionID {
+		return fmt.Errorf("session id must be a single safe path element")
+	}
+	return nil
 }
 
 func isMarkedSessionDir(dir string) bool {

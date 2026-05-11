@@ -57,6 +57,34 @@ func TestCreateSessionDirWritesMarkerBeforeData(t *testing.T) {
 	}
 }
 
+func TestCreateSessionDirRejectsUnsafeSessionID(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "outside")
+
+	for _, sessionID := range []string{
+		"",
+		".",
+		"..",
+		"../outside",
+		"nested/session",
+		`nested\session`,
+		filepath.Join(root, "absolute"),
+	} {
+		t.Run(sessionID, func(t *testing.T) {
+			if _, err := createSessionDir(root, sessionID); err == nil {
+				t.Fatal("createSessionDir succeeded, want error")
+			}
+		})
+	}
+
+	if _, err := os.Stat(filepath.Join(outside, markerFileName)); !os.IsNotExist(err) {
+		t.Fatalf("outside marker exists or stat failed differently: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "nested", "session", markerFileName)); !os.IsNotExist(err) {
+		t.Fatalf("nested marker exists or stat failed differently: %v", err)
+	}
+}
+
 func TestRemoveSessionDirRefusesUnmarkedDirectory(t *testing.T) {
 	root := t.TempDir()
 	unmarked := filepath.Join(root, "session-a")
