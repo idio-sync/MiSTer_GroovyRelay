@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestFetchPlaybackInfo_BodyShape(t *testing.T) {
@@ -86,6 +89,130 @@ func TestFetchPlaybackInfo_BodyShape(t *testing.T) {
 	}
 }
 
+func TestFetchPlaybackInfo_AudioBodyUsesAudioProfile(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src-audio","TranscodingUrl":"/audio/itm/universal?MediaSourceId=src-audio"}],
+			"PlaySessionId":"ps-audio",
+			"Item":{"Type":"Audio","Name":"Blue Monday"}
+		}`))
+	}))
+	defer srv.Close()
+
+	_, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "tok", DeviceID: "dev", Version: "v",
+		ItemID: "itm", UserID: "uid", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"), MediaKind: core.MediaKindMusic,
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+
+	var body struct {
+		DeviceProfile DeviceProfile `json:"DeviceProfile"`
+	}
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.DeviceProfile.TranscodingProfiles) != 1 {
+		t.Fatalf("TranscodingProfiles len = %d, want 1", len(body.DeviceProfile.TranscodingProfiles))
+	}
+	profile := body.DeviceProfile.TranscodingProfiles[0]
+	if profile.Type != "Audio" || profile.Container != "mp3" || profile.AudioCodec != "mp3" {
+		t.Fatalf("audio profile = %+v, want Audio/mp3/mp3", profile)
+	}
+	if strings.Contains(string(gotBody), "VideoCodec") {
+		t.Fatalf("audio PlaybackInfo body contains VideoCodec: %s", string(gotBody))
+	}
+}
+
+func TestFetchPlaybackInfo_RetriesWithAudioProfileWhenResponseIdentifiesAudio(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-video-profile","TranscodingUrl":"/videos/song-1/master.m3u8"}],
+				"PlaySessionId":"ps-video-profile",
+				"Item":{"Type":"Audio","Name":"Blue Monday"}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src-audio","TranscodingUrl":"/audio/song-1/universal?MediaSourceId=src-audio"}],
+			"PlaySessionId":"ps-audio",
+			"Item":{"Type":"Audio","Name":"Blue Monday"}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "tok", DeviceID: "dev", Version: "v",
+		ItemID: "song-1", UserID: "uid", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("PlaybackInfo calls = %d, want 2", len(bodies))
+	}
+	if !strings.Contains(string(bodies[0]), `"Type":"Video"`) {
+		t.Fatalf("first PlaybackInfo body did not use video profile: %s", bodies[0])
+	}
+	if !strings.Contains(string(bodies[1]), `"Type":"Audio"`) || strings.Contains(string(bodies[1]), "VideoCodec") {
+		t.Fatalf("second PlaybackInfo body did not use clean audio profile: %s", bodies[1])
+	}
+	if result.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", result.MediaKind)
+	}
+	if !strings.Contains(result.TranscodingURL, "/audio/song-1/universal") {
+		t.Fatalf("TranscodingURL = %q, want audio retry URL", result.TranscodingURL)
+	}
+}
+
+func TestFetchPlaybackInfo_RetriesAudioProfileOnNoCompatibleStreamWhenRetryIdentifiesAudio(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`{"ErrorCode":"NoCompatibleStream","MediaSources":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src-audio","TranscodingUrl":"/audio/song-1/universal?MediaSourceId=src-audio"}],
+			"PlaySessionId":"ps-audio",
+			"Item":{"Type":"Audio","Name":"Blue Monday"}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "tok", DeviceID: "dev", Version: "v",
+		ItemID: "song-1", UserID: "uid", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("PlaybackInfo calls = %d, want 2", len(bodies))
+	}
+	if !strings.Contains(string(bodies[1]), `"Type":"Audio"`) || strings.Contains(string(bodies[1]), "VideoCodec") {
+		t.Fatalf("retry PlaybackInfo body did not use clean audio profile: %s", bodies[1])
+	}
+	if result.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", result.MediaKind)
+	}
+}
+
 func TestFetchPlaybackInfo_ErrorCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -150,6 +277,95 @@ func TestFetchPlaybackInfo_DecodesTitle(t *testing.T) {
 	}
 	if result.Title != "Game of Thrones · S01E03" {
 		t.Errorf("Title: got %q, want %q", result.Title, "Game of Thrones · S01E03")
+	}
+}
+
+func TestFetchPlaybackInfo_DecodesAudioMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src1","Name":"Source 1","TranscodingUrl":"/audio/itm/universal?MediaSourceId=src1"}],
+			"PlaySessionId":"session-abc",
+			"Item":{
+				"Type":"Audio",
+				"Name":"Blue Monday",
+				"Artists":["New Order"],
+				"Album":"Power Corruption & Lies",
+				"RunTimeTicks":4500000000
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "x", DeviceID: "y", Version: "z",
+		ItemID: "i", UserID: "u", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"), MediaKind: core.MediaKindMusic,
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if result.MediaKind != core.MediaKindMusic {
+		t.Errorf("MediaKind = %q, want music", result.MediaKind)
+	}
+	if result.Title != "Blue Monday" {
+		t.Errorf("Title = %q, want Blue Monday", result.Title)
+	}
+	if result.Artist != "New Order" {
+		t.Errorf("Artist = %q, want New Order", result.Artist)
+	}
+	if result.Album != "Power Corruption & Lies" {
+		t.Errorf("Album = %q, want Power Corruption & Lies", result.Album)
+	}
+	if result.Duration != 7*time.Minute+30*time.Second {
+		t.Errorf("Duration = %v, want 7m30s", result.Duration)
+	}
+}
+
+func TestFetchItemMetadata_DecodesAudioMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Items/song-1" {
+			t.Errorf("path = %q, want /Items/song-1", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"Id":"song-1",
+			"Type":"Audio",
+			"Name":"Age of Consent",
+			"Artists":["New Order"],
+			"Album":"Power Corruption & Lies",
+			"RunTimeTicks":3150000000
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchItemMetadata(t.Context(), ItemMetadataInput{
+		ServerURL: srv.URL, Token: "tok", DeviceID: "dev", DeviceName: "Groovy",
+		Version: "v", UserID: "uid", ItemID: "song-1",
+	})
+	if err != nil {
+		t.Fatalf("FetchItemMetadata: %v", err)
+	}
+	if result.MediaKind != core.MediaKindMusic {
+		t.Errorf("MediaKind = %q, want music", result.MediaKind)
+	}
+	if result.Title != "Age of Consent" || result.Artist != "New Order" || result.Album != "Power Corruption & Lies" {
+		t.Errorf("metadata = %+v", result)
+	}
+	if result.Duration != 5*time.Minute+15*time.Second {
+		t.Errorf("Duration = %v, want 5m15s", result.Duration)
+	}
+}
+
+func TestMergePlaybackMetadata_ReplacesItemIDTitleFallback(t *testing.T) {
+	got := mergePlaybackMetadata(
+		PlaybackInfoResult{Title: "song-1", MediaKind: core.MediaKindMusic},
+		ItemMetadataResult{ItemID: "song-1", Title: "Age of Consent", MediaKind: core.MediaKindMusic},
+	)
+	if got.Title != "Age of Consent" {
+		t.Fatalf("Title = %q, want metadata title", got.Title)
 	}
 }
 

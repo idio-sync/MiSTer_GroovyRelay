@@ -146,6 +146,25 @@ func TestSessionRequest_Title_ZeroValue(t *testing.T) {
 	}
 }
 
+func TestMediaKindNormalizeDefaultsToVideo(t *testing.T) {
+	if got := NormalizeMediaKind(""); got != MediaKindVideo {
+		t.Fatalf("NormalizeMediaKind(empty) = %q, want %q", got, MediaKindVideo)
+	}
+	if got := NormalizeMediaKind(MediaKindMusic); got != MediaKindMusic {
+		t.Fatalf("NormalizeMediaKind(music) = %q, want %q", got, MediaKindMusic)
+	}
+}
+
+func TestVisualizerRequestZeroValueDisabled(t *testing.T) {
+	var req SessionRequest
+	if req.Visualizer.Enabled {
+		t.Fatal("zero-value SessionRequest should not enable visualizer")
+	}
+	if NormalizeMediaKind(req.MediaKind) != MediaKindVideo {
+		t.Fatalf("zero-value MediaKind should normalize to video")
+	}
+}
+
 func TestStatusHomeView_ZeroValue(t *testing.T) {
 	var v StatusHomeView
 	if v.State != "" {

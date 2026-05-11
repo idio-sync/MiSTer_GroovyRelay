@@ -54,6 +54,42 @@ func TestBuildTranscodeURL_ContainsExpectedParams(t *testing.T) {
 	}
 }
 
+func TestBuildMusicTranscodeURL_ContainsAudioEndpointAndParams(t *testing.T) {
+	u := BuildMusicTranscodeURL(MusicTranscodeRequest{
+		PlexServerURL:      "http://192.168.1.10:32400",
+		MediaPath:          "/library/metadata/42",
+		Token:              "tok",
+		OffsetMs:           12000,
+		SessionID:          "session-1",
+		ClientID:           "client-1",
+		DeviceName:         "MiSTer",
+		Version:            "dev",
+		TranscodeSessionID: "tsid-1",
+		MaxAudioBitrate:    320,
+		AudioStreamID:      "101",
+	})
+	for _, want := range []string{
+		"/music/:/transcode/universal/start.mp3",
+		"path=%2Flibrary%2Fmetadata%2F42",
+		"protocol=http",
+		"directPlay=0",
+		"directStream=0",
+		"audioCodec=mp3",
+		"maxAudioBitrate=320",
+		"offset=12",
+		"audioStreamID=101",
+		"transcodeSessionId=tsid-1",
+		"X-Plex-Token=tok",
+	} {
+		if !strings.Contains(u, want) {
+			t.Fatalf("music URL missing %q:\n%s", want, u)
+		}
+	}
+	if strings.Contains(u, "/video/:/") || strings.Contains(u, "videoResolution") || strings.Contains(u, "maxVideoBitrate") {
+		t.Fatalf("music URL contains video transcode params: %s", u)
+	}
+}
+
 func TestBuildTranscodeURL_DisablesSubtitlesForZeroStream(t *testing.T) {
 	u := BuildTranscodeURL(TranscodeRequest{
 		PlexServerURL:    "http://192.168.1.10:32400",
@@ -148,6 +184,49 @@ func TestBuildTranscodeURL_UsesPresetProfileAndTargetShape(t *testing.T) {
 	}
 	if strings.Contains(u, "videoResolution=720x288") {
 		t.Errorf("url must not ask PMS for non-4:3 progressive target: %s", u)
+	}
+}
+
+func TestMusicMetadataFor_DecodesTrack(t *testing.T) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/library/metadata/42" {
+			t.Fatalf("path = %q, want /library/metadata/42", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`<MediaContainer size="1">
+			<Track key="/library/metadata/42" ratingKey="42" title="Blue Monday"
+				grandparentTitle="New Order" parentTitle="Power Corruption &amp; Lies" duration="449000">
+				<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
+			</Track>
+		</MediaContainer>`))
+	}))
+	defer srv.Close()
+
+	got, ok, err := MusicMetadataFor(context.Background(), srv.URL, "/library/metadata/42", "tok")
+	if err != nil {
+		t.Fatalf("MusicMetadataFor: %v", err)
+	}
+	if !ok {
+		t.Fatal("MusicMetadataFor ok = false, want true")
+	}
+	if got.Title != "Blue Monday" || got.Artist != "New Order" || got.Album != "Power Corruption & Lies" {
+		t.Fatalf("metadata = %+v", got)
+	}
+	if got.Duration != 449*time.Second {
+		t.Fatalf("Duration = %v, want 449s", got.Duration)
+	}
+}
+
+func TestMusicMetadataFor_VideoMetadataReturnsFalse(t *testing.T) {
+	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<MediaContainer><Video title="Movie"/></MediaContainer>`))
+	}))
+	defer srv.Close()
+	_, ok, err := MusicMetadataFor(context.Background(), srv.URL, "/library/metadata/99", "tok")
+	if err != nil {
+		t.Fatalf("MusicMetadataFor: %v", err)
+	}
+	if ok {
+		t.Fatal("video metadata should not be detected as music")
 	}
 }
 

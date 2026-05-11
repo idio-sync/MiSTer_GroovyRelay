@@ -42,6 +42,41 @@ func TestDeviceProfile_StructureAndConditions(t *testing.T) {
 	}
 }
 
+func TestAudioDeviceProfile_UsesMP3TranscodeAndOmitsVideoCodec(t *testing.T) {
+	p := BuildAudioDeviceProfile(4000)
+	if len(p.TranscodingProfiles) != 1 {
+		t.Fatalf("TranscodingProfiles len = %d, want 1", len(p.TranscodingProfiles))
+	}
+	profile := p.TranscodingProfiles[0]
+	if profile.Type != "Audio" {
+		t.Errorf("Type = %q, want Audio", profile.Type)
+	}
+	if profile.Container != "mp3" {
+		t.Errorf("Container = %q, want mp3", profile.Container)
+	}
+	if profile.AudioCodec != "mp3" {
+		t.Errorf("AudioCodec = %q, want mp3", profile.AudioCodec)
+	}
+	if profile.Protocol != "http" {
+		t.Errorf("Protocol = %q, want http", profile.Protocol)
+	}
+	if profile.Context != "Streaming" {
+		t.Errorf("Context = %q, want Streaming", profile.Context)
+	}
+	if profile.MaxAudioChannels != "2" {
+		t.Errorf("MaxAudioChannels = %q, want 2", profile.MaxAudioChannels)
+	}
+
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if strings.Contains(got, "VideoCodec") {
+		t.Fatalf("audio profile JSON contains VideoCodec: %s", got)
+	}
+}
+
 func TestDeviceProfile_BitrateScaling(t *testing.T) {
 	cases := []struct {
 		kbps int

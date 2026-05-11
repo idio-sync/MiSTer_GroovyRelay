@@ -312,6 +312,42 @@ func probeErrorIsLikelyUnreachable(err error) bool {
 	return false
 }
 
+func validateVisualizerRequest(req SessionRequest) error {
+	if !req.Visualizer.Enabled {
+		return nil
+	}
+	if NormalizeMediaKind(req.MediaKind) != MediaKindMusic {
+		return fmt.Errorf("visualizer requires music media kind")
+	}
+	if req.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+		return fmt.Errorf("unsupported visualizer mode %q", req.Visualizer.Mode)
+	}
+	return nil
+}
+
+func visualizerDuration(req SessionRequest, probe *ffmpeg.ProbeResult) time.Duration {
+	if req.Visualizer.Enabled && req.Visualizer.Metadata.Duration > 0 {
+		return req.Visualizer.Metadata.Duration
+	}
+	return probeDuration(probe)
+}
+
+func ffmpegVisualizerSpec(v VisualizerRequest) ffmpeg.VisualizerSpec {
+	if !v.Enabled {
+		return ffmpeg.VisualizerSpec{}
+	}
+	return ffmpeg.VisualizerSpec{
+		Enabled: true,
+		Mode:    ffmpeg.VisualizerModeRetroAnalyzer,
+		Metadata: ffmpeg.VisualizerMetadata{
+			Title:    v.Metadata.Title,
+			Artist:   v.Metadata.Artist,
+			Album:    v.Metadata.Album,
+			Duration: v.Metadata.Duration,
+		},
+	}
+}
+
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
 // context so a stuck PMS cannot deadlock the control plane. Called by
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
@@ -338,6 +374,12 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 			return nil, nil, "", errors.Join(wrapped, ErrProbeUnreachable)
 		}
 		return nil, nil, "", wrapped
+	}
+	if req.Visualizer.Enabled {
+		if probe == nil || probe.AudioRate <= 0 {
+			return nil, nil, "", fmt.Errorf("visualizer source has no audio")
+		}
+		return probe, nil, ffmpegPath, nil
 	}
 	var cropRect *ffmpeg.CropRect
 	if m.bridge.Video.AspectMode == "auto" {
@@ -476,6 +518,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OutputFpsExpr:     preset.FpsExpr,
 		AspectMode:        m.bridge.Video.AspectMode,
 		CropRect:          cropRect,
+		Visualizer:        ffmpegVisualizerSpec(req.Visualizer),
 		SubtitleURL:       req.SubtitleURL,
 		SubtitlePath:      req.SubtitlePath,
 		SubtitleIndex:     req.SubtitleIndex,
@@ -504,7 +547,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		req:          req,
 		startedAt:    time.Now(),
 		baseOffsetMs: offsetMs,
-		duration:     probeDuration(probe),
+		duration:     visualizerDuration(req, probe),
 	}
 
 	go func() {
@@ -518,6 +561,9 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 // protocol-specific requests into a SessionRequest and call this. Any
 // existing session is preempted and the prior goroutine awaited.
 func (m *Manager) StartSession(req SessionRequest) error {
+	if err := validateVisualizerRequest(req); err != nil {
+		return err
+	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		return err
@@ -536,6 +582,9 @@ func (m *Manager) StartSession(req SessionRequest) error {
 // session only." The probe still runs before Manager.mu, then the ref is
 // checked under the lock immediately before mutating the plane.
 func (m *Manager) StartSessionIfAdapterRef(req SessionRequest, expectedRef string) (bool, error) {
+	if err := validateVisualizerRequest(req); err != nil {
+		return true, err
+	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		return true, err
@@ -655,6 +704,9 @@ func (m *Manager) playIfAdapterRef(expectedRef string) (bool, error) {
 	}
 	m.mu.Unlock()
 
+	if err := validateVisualizerRequest(req); err != nil {
+		return true, err
+	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		if expectedRef != "" {
@@ -848,6 +900,17 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 	req := a.req
 	m.mu.Unlock()
 
+	if err := validateVisualizerRequest(req); err != nil {
+		if expectedRef != "" {
+			m.mu.Lock()
+			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
+		return true, err
+	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		if expectedRef != "" {
@@ -879,8 +942,9 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 func (m *Manager) Status() SessionStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := SessionStatus{State: m.fsm.State()}
+	st := SessionStatus{State: m.fsm.State(), MediaKind: MediaKindVideo}
 	if m.active != nil {
+		st.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
 		st.AdapterRef = m.active.req.AdapterRef
 		st.StartedAt = m.active.startedAt
 		st.Duration = m.active.duration
@@ -903,8 +967,9 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	view := StatusHomeView{State: m.fsm.State()}
+	view := StatusHomeView{State: m.fsm.State(), MediaKind: MediaKindVideo}
 	if m.active != nil {
+		view.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
 		view.Title = m.active.req.Title
 		view.AdapterRef = m.active.req.AdapterRef
 		view.Source = m.active.req.Source

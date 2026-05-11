@@ -543,6 +543,31 @@ func TestManager_SeekRequiresActiveSession(t *testing.T) {
 	}
 }
 
+func TestManager_SeekValidatesVisualizerBeforeProbe(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("Probe must not run before seek visualizer validation")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		StreamURL:    "http://pms/music.mp3",
+		AdapterRef:   "plex:/library/metadata/42:tsid-1",
+		MediaKind:    MediaKindMusic,
+		Capabilities: Capabilities{CanSeek: true},
+		Visualizer:   VisualizerRequest{Enabled: true, Mode: VisualizerMode("unknown")},
+	}}
+	m.mu.Unlock()
+
+	err := m.SeekTo(5000)
+	if err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("SeekTo err = %v, want unsupported visualizer mode", err)
+	}
+}
+
 func TestManager_BogusModelineRejected(t *testing.T) {
 	m := newTestManager(t)
 	m.bridge.Video.Modeline = "bogus_modeline"
@@ -1077,6 +1102,190 @@ func TestManager_StatusHomeView_Casting(t *testing.T) {
 	}
 }
 
+func TestManager_StatusCarriesMediaKind(t *testing.T) {
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.active = &activeSession{
+		req: SessionRequest{
+			AdapterRef: "plex:/library/metadata/42:tsid-1",
+			Source:     "plex",
+			Title:      "Blue Monday",
+			MediaKind:  MediaKindMusic,
+			Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		},
+		startedAt: time.Now(),
+		duration:  4 * time.Minute,
+	}
+	_ = m.fsm.Transition(EvPlayMedia)
+	m.mu.Unlock()
+
+	st := m.Status()
+	if st.MediaKind != MediaKindMusic {
+		t.Fatalf("Status.MediaKind = %q, want %q", st.MediaKind, MediaKindMusic)
+	}
+	view := m.StatusHomeView()
+	if view.MediaKind != MediaKindMusic {
+		t.Fatalf("StatusHomeView.MediaKind = %q, want %q", view.MediaKind, MediaKindMusic)
+	}
+}
+
+func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	cropCalls := 0
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		cropCalls++
+		return &ffmpeg.CropRect{W: 1, H: 1}, nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Video.AspectMode = "auto"
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		AdapterRef: "plex:/library/metadata/42:tsid-1",
+		Source:     "plex",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{
+			Enabled: true,
+			Mode:    VisualizerModeRetroAnalyzer,
+			Metadata: VisualizerMetadata{
+				Title:    "Blue Monday",
+				Artist:   "New Order",
+				Album:    "Power Corruption & Lies",
+				Duration: 3 * time.Minute,
+			},
+		},
+		Capabilities: Capabilities{CanSeek: true, CanPause: true},
+	})
+	if err != nil {
+		t.Fatalf("StartSession visualizer: %v", err)
+	}
+	if cropCalls != 0 {
+		t.Fatalf("ProbeCrop calls = %d, want 0 for visualizer session", cropCalls)
+	}
+	if !captured.SpawnSpec.Visualizer.Enabled {
+		t.Fatalf("SpawnSpec.Visualizer.Enabled = false, want true")
+	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeRetroAnalyzer {
+		t.Fatalf("visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeRetroAnalyzer)
+	}
+	if captured.SpawnSpec.Visualizer.Metadata.Title != "Blue Monday" {
+		t.Fatalf("visualizer title = %q", captured.SpawnSpec.Visualizer.Metadata.Title)
+	}
+	if captured.SpawnSpec.Visualizer.Metadata.Artist != "New Order" {
+		t.Fatalf("visualizer artist = %q", captured.SpawnSpec.Visualizer.Metadata.Artist)
+	}
+	if captured.SpawnSpec.Visualizer.Metadata.Album != "Power Corruption & Lies" {
+		t.Fatalf("visualizer album = %q", captured.SpawnSpec.Visualizer.Metadata.Album)
+	}
+	if captured.SpawnSpec.Visualizer.Metadata.Duration != 3*time.Minute {
+		t.Fatalf("visualizer metadata duration = %v, want 3m", captured.SpawnSpec.Visualizer.Metadata.Duration)
+	}
+	if got := m.Status().Duration; got != 3*time.Minute {
+		t.Fatalf("Status duration = %v, want metadata duration", got)
+	}
+}
+
+func TestManager_VisualizerRejectsNilProbeWithoutPanic(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return nil, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		t.Fatal("ProbeCrop must not run after visualizer nil-probe audio validation fails")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/not-audio",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err == nil || !strings.Contains(err.Error(), "visualizer source has no audio") {
+		t.Fatalf("StartSession err = %v, want visualizer source has no audio", err)
+	}
+}
+
+func TestManager_VisualizerRejectsProbeWithoutAudio(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, Duration: 10}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		t.Fatal("ProbeCrop must not run after visualizer audio validation fails")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/not-audio",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err == nil || !strings.Contains(err.Error(), "visualizer source has no audio") {
+		t.Fatalf("StartSession err = %v, want visualizer source has no audio", err)
+	}
+}
+
+func TestManager_VisualizerRejectsNonMusicKind(t *testing.T) {
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		MediaKind:  MediaKindVideo,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err == nil || !strings.Contains(err.Error(), "visualizer requires music media kind") {
+		t.Fatalf("StartSession err = %v, want visualizer media kind validation", err)
+	}
+}
+
+func TestManager_VisualizerRejectsUnsupportedModeBeforeProbe(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("Probe must not run after visualizer mode validation fails")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerMode("unknown")},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("StartSession err = %v, want unsupported visualizer mode", err)
+	}
+}
+
 func TestManager_StatusHomeView_PausedKeepsSnapshot(t *testing.T) {
 	m := newTestManager(t)
 	if err := m.fsm.Transition(EvPlayMedia); err != nil {
@@ -1265,7 +1474,7 @@ func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
 			t.Errorf("OnStop reason = %q, want %q", reason, "preempted")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("expected OnStop with reason \"preempted\" on different-session replacement; "+
+		t.Fatal("expected OnStop with reason \"preempted\" on different-session replacement; " +
 			"never fired within 2s")
 	}
 }

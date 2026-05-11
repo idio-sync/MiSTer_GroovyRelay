@@ -177,7 +177,7 @@ func (c *Companion) restorePausedIfNeeded(w http.ResponseWriter, wasPaused bool)
 // that drives playback. Keep these two callers in sync — diagnostic accuracy
 // depends on it.
 func (c *Companion) transcodeRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) TranscodeRequest {
-	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	serverURL := p.serverURL()
 	streamClientID := c.cfg.DeviceUUID
 	if streamClientID == "" {
 		streamClientID = p.ClientID
@@ -204,6 +204,136 @@ func (c *Companion) transcodeRequestForPreset(p PlayMediaRequest, preset core.Mo
 		SubtitleStreamID:   p.SubtitleStreamID,
 		TranscodeSessionID: p.TranscodeSessionID,
 	}
+}
+
+func (p PlayMediaRequest) serverURL() string {
+	return fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+}
+
+func isPlexMusicType(t string) bool {
+	switch strings.ToLower(t) {
+	case "track", "music", "audio":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPlexKnownVideoType(t string) bool {
+	switch strings.ToLower(t) {
+	case "video", "movie", "episode", "clip":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Companion) musicMetadataForPlay(ctx context.Context, p PlayMediaRequest) (MusicMetadata, bool) {
+	if isPlexKnownVideoType(p.MediaType) {
+		return MusicMetadata{}, false
+	}
+	explicitMusic := isPlexMusicType(p.MediaType)
+	if p.MediaType != "" && !explicitMusic {
+		return MusicMetadata{}, false
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	md, ok, err := MusicMetadataFor(lookupCtx, p.serverURL(), p.MediaKey, p.PlexToken)
+	cancel()
+	if err != nil {
+		slog.Debug("plex music metadata lookup failed", "key", p.MediaKey, "err", err)
+	}
+	if ok {
+		return md, true
+	}
+	if explicitMusic {
+		return MusicMetadata{Title: p.Title}, true
+	}
+	return MusicMetadata{}, false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func mediaKeyBasename(mediaKey string) string {
+	trimmed := strings.Trim(strings.TrimSpace(mediaKey), "/")
+	if trimmed == "" {
+		return ""
+	}
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		return trimmed[i+1:]
+	}
+	return trimmed
+}
+
+func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetadata) core.SessionRequest {
+	serverURL := p.serverURL()
+	streamClientID := c.cfg.DeviceUUID
+	if streamClientID == "" {
+		streamClientID = p.ClientID
+	}
+	streamURL := BuildMusicTranscodeURL(MusicTranscodeRequest{
+		PlexServerURL:      serverURL,
+		MediaPath:          p.MediaKey,
+		Token:              p.PlexToken,
+		OffsetMs:           p.OffsetMs,
+		SessionID:          p.SessionID,
+		ClientID:           streamClientID,
+		DeviceName:         c.cfg.DeviceName,
+		Product:            companionProduct,
+		Platform:           companionPlatform,
+		Version:            c.cfg.Version,
+		Provides:           companionProvides,
+		TranscodeSessionID: p.TranscodeSessionID,
+		AudioStreamID:      p.AudioStreamID,
+	})
+	title := firstNonEmpty(p.Title, md.Title, mediaKeyBasename(p.MediaKey), "Now Playing")
+	ref := p.MediaKey + ":" + p.TranscodeSessionID
+	req := core.SessionRequest{
+		StreamURL:    streamURL,
+		SeekOffsetMs: p.OffsetMs,
+		AdapterRef:   ref,
+		Source:       "plex",
+		MediaKind:    core.MediaKindMusic,
+		DirectPlay:   false,
+		Title:        title,
+		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
+		Visualizer: core.VisualizerRequest{
+			Enabled: true,
+			Mode:    core.VisualizerModeRetroAnalyzer,
+			Metadata: core.VisualizerMetadata{
+				Title:    title,
+				Artist:   md.Artist,
+				Album:    md.Album,
+				Duration: md.Duration,
+			},
+		},
+	}
+	captured := p
+	req.OnStop = func(reason string) {
+		if c.timeline != nil {
+			c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle, MediaKind: core.MediaKindMusic}, captured)
+		}
+		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
+			slog.Debug("plex stop music transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
+		}
+	}
+	return req
+}
+
+func (c *Companion) sessionRequestForPlay(ctx context.Context, p PlayMediaRequest, preset core.ModelinePreset) core.SessionRequest {
+	if md, ok := c.musicMetadataForPlay(ctx, p); ok {
+		return c.musicSessionRequestForPlay(p, md)
+	}
+	return c.sessionRequestForPreset(p, preset)
 }
 
 func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) core.SessionRequest {
@@ -355,15 +485,6 @@ func playQueueItemByIDOrKey(items []playQueueItem, id, key string) (playQueueIte
 	return playQueueItem{}, false
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Request, selectItem func([]playQueueItem, PlayMediaRequest) (playQueueItem, bool)) bool {
 	prevStatus := core.SessionStatus{}
 	if c.core != nil {
@@ -395,6 +516,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 	p.MediaKey = key
+	p.Title = ""
 	p.PlayQueueItemID = item.PlayQueueItemID
 	p.PlayQueueID = firstNonEmpty(p.PlayQueueID, pq.PlayQueueID)
 	p.PlayQueueVersion = firstNonEmpty(p.PlayQueueVersion, pq.PlayQueueVersion)
@@ -406,7 +528,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
-	req := c.sessionRequestForPreset(p, preset)
+	req := c.sessionRequestForPlay(r.Context(), p, preset)
 	if prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
@@ -603,6 +725,7 @@ type PlayMediaRequest struct {
 	PlexServerScheme   string
 	PlexMachineID      string
 	MediaKey           string
+	MediaType          string
 	ContainerKey       string
 	OffsetMs           int
 	SessionID          string
@@ -637,6 +760,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		PlexServerScheme:  queryOrHeader(r, "protocol"),
 		PlexMachineID:     queryOrHeader(r, "machineIdentifier"),
 		MediaKey:          queryOrHeader(r, "key"),
+		MediaType:         strings.ToLower(queryOrHeader(r, "type", "metadataType")),
 		ContainerKey:      queryOrHeader(r, "containerKey"),
 		OffsetMs:          offset,
 		SessionID:         queryOrHeader(r, "X-Plex-Session-Identifier"),
@@ -682,10 +806,25 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
+	serverURL := p.serverURL()
 	preset, err := c.currentPreset()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if md, ok := c.musicMetadataForPlay(r.Context(), p); ok {
+		req := c.musicSessionRequestForPlay(p, md)
+		if prevPlay.MediaKey != "" && prevStatus.State != core.StateIdle {
+			c.notifyStoppedTimeline(prevStatus)
+		}
+		c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
+		if err := c.core.StartSession(req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		c.rememberPlaySession(p)
+		c.notifyTimeline()
+		writeOKResponse(w)
 		return
 	}
 	req := c.sessionRequestForPreset(p, preset)
@@ -781,7 +920,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	req := c.sessionRequestForPreset(p, preset)
+	req := c.sessionRequestForPlay(r.Context(), p, preset)
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -875,12 +1014,14 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	if c.core != nil {
 		st = c.core.Status()
 	}
-	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	if err := SetStreamSelection(ctx, serverURL, p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
+	musicSession := core.NormalizeMediaKind(st.MediaKind) == core.MediaKindMusic || isPlexMusicType(p.MediaType)
+	if !musicSession {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := SetStreamSelection(ctx, p.serverURL(), p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
 	}
 	if audioStreamID != "" {
 		p.AudioStreamID = audioStreamID
@@ -896,7 +1037,7 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	req := c.sessionRequestForPreset(p, preset)
+	req := c.sessionRequestForPlay(r.Context(), p, preset)
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
 		http.Error(w, err.Error(), 400)

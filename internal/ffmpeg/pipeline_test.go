@@ -119,6 +119,153 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 	}
 }
 
+func TestEscapeFilterText(t *testing.T) {
+	in := "Bob's [12\"]: 50%, line\nnext\\tail;end"
+	got := escapeFilterText(in)
+	for _, bad := range []string{"\n", "\r", "\t"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("escaped text contains control character %q: %q", bad, got)
+		}
+	}
+	for _, want := range []string{`Bob\'s`, `\[12"\]`, `\:`, `\,`, `\%`, `\\tail`, `\;`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("escaped text missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr: "60000/1001",
+		Visualizer: VisualizerSpec{
+			Enabled:           true,
+			Mode:              VisualizerModeRetroAnalyzer,
+			DrawTextAvailable: true,
+			Metadata: VisualizerMetadata{
+				Title:    "Blue Monday",
+				Artist:   "New Order",
+				Album:    "Power Corruption & Lies",
+				Duration: 7*time.Minute + 29*time.Second,
+			},
+		},
+	}
+	graph, err := buildVisualizerFilterChain(spec)
+	if err != nil {
+		t.Fatalf("buildVisualizerFilterChain: %v", err)
+	}
+	for _, want := range []string{
+		"showfreqs=s=640x480",
+		"colors=0x70ff70",
+		"drawtext=",
+		"Blue Monday",
+		"New Order",
+		"%{pts\\:hms}",
+		"fps=60000/1001",
+		"scale=w=720:h=480",
+		"format=bgr24",
+		"[visualizer_video]",
+	} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("graph missing %q:\n%s", want, graph)
+		}
+	}
+	if strings.Contains(graph, "format=rgb24") {
+		t.Fatalf("graph contains wasted intermediate format=rgb24:\n%s", graph)
+	}
+	for _, bad := range []string{`\%{pts`, "(w-48)*min", "drawbox="} {
+		if strings.Contains(graph, bad) {
+			t.Fatalf("graph contains invalid duration expression %q:\n%s", bad, graph)
+		}
+	}
+}
+
+func TestBuildVisualizerFilterChain_BarsOnlyWhenDrawTextUnavailable(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr: "60000/1001",
+		Visualizer: VisualizerSpec{
+			Enabled: true,
+			Mode:    VisualizerModeRetroAnalyzer,
+			Metadata: VisualizerMetadata{
+				Title:    "Blue Monday",
+				Artist:   "New Order",
+				Album:    "Power Corruption & Lies",
+				Duration: 7*time.Minute + 29*time.Second,
+			},
+		},
+	}
+	graph, err := buildVisualizerFilterChain(spec)
+	if err != nil {
+		t.Fatalf("buildVisualizerFilterChain: %v", err)
+	}
+	for _, want := range []string{
+		"showfreqs=s=640x480",
+		"colors=0x70ff70",
+		"fps=60000/1001",
+		"scale=w=720:h=480",
+		"format=bgr24",
+		"[visualizer_video]",
+	} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("graph missing %q:\n%s", want, graph)
+		}
+	}
+	for _, bad := range []string{"drawtext=", "drawbox=", "Blue Monday", "New Order", "format=rgb24"} {
+		if strings.Contains(graph, bad) {
+			t.Fatalf("bars-only fallback should not contain %q:\n%s", bad, graph)
+		}
+	}
+}
+
+func TestFilterAvailableParsesFFmpegFilterList(t *testing.T) {
+	out := `Filters:
+ T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.
+ ... showfreqs         A->V       Convert input audio to a frequencies video output.
+`
+	if !filterListContains(out, "drawtext") {
+		t.Fatalf("filterListContains did not find drawtext in:\n%s", out)
+	}
+	if filterListContains(out, "draw") {
+		t.Fatal("filterListContains matched partial filter name")
+	}
+}
+
+func TestWithVisualizerCapabilitiesSetsDrawTextAvailability(t *testing.T) {
+	orig := filterAvailableFn
+	t.Cleanup(func() { filterAvailableFn = orig })
+	filterAvailableFn = func(context.Context, string, string) (bool, error) {
+		return true, nil
+	}
+	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+		FFmpegPath: "/opt/ffmpeg",
+		Visualizer: VisualizerSpec{
+			Enabled: true,
+			Mode:    VisualizerModeRetroAnalyzer,
+		},
+	})
+	if !spec.Visualizer.DrawTextAvailable {
+		t.Fatal("DrawTextAvailable = false, want true")
+	}
+}
+
+func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextUnavailable(t *testing.T) {
+	orig := filterAvailableFn
+	t.Cleanup(func() { filterAvailableFn = orig })
+	filterAvailableFn = func(context.Context, string, string) (bool, error) {
+		return false, nil
+	}
+	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+		Visualizer: VisualizerSpec{
+			Enabled: true,
+			Mode:    VisualizerModeRetroAnalyzer,
+		},
+	})
+	if spec.Visualizer.DrawTextAvailable {
+		t.Fatal("DrawTextAvailable = true, want false")
+	}
+}
+
 // TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch verifies the PAR-aware
 // pipeline: the source is fitted into a 4:3 square-pixel canvas
 // (OutputHeight × 4/3, OutputHeight) and the chain ends with an anamorphic
@@ -560,6 +707,101 @@ func TestBuildCommand_OmitsAudioOutputWhenSourceHasNoAudio(t *testing.T) {
 	if !strings.Contains(joined, "-map 0:v:0") || !strings.Contains(joined, "pipe:3") {
 		t.Errorf("video output missing from argv: %s", joined)
 	}
+}
+
+func TestBuildCommand_VisualizerUsesFilterComplex(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:           true,
+			Mode:              VisualizerModeRetroAnalyzer,
+			DrawTextAvailable: true,
+			Metadata:          VisualizerMetadata{Title: "Blue Monday"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	joined := strings.Join(cmd.Args, " ")
+	for _, want := range []string{
+		"-filter_complex",
+		"-map [visualizer_video]",
+		"-f rawvideo pipe:3",
+		"-map 0:a:0",
+		"-f s16le pipe:4",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("argv missing %q:\n%s", want, joined)
+		}
+	}
+	for _, bad := range []string{"-vf ", "-map 0:v:0"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("visualizer argv must not contain %q:\n%s", bad, joined)
+		}
+	}
+}
+
+func TestBuildCommand_VisualizerDualInputMapsAudioInputOne(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:        "https://video.example/video-only.mp4",
+		AudioInputURL:   "https://audio.example/audio-only.m4a",
+		SourceProbe:     &ProbeResult{AudioRate: 0},
+		OutputWidth:     720,
+		OutputHeight:    480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:           true,
+			Mode:              VisualizerModeRetroAnalyzer,
+			DrawTextAvailable: true,
+			Metadata:          VisualizerMetadata{Title: "Blue Monday"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	graph := argAfter(cmd.Args, "-filter_complex")
+	if !strings.Contains(graph, "[1:a:0]showfreqs") {
+		t.Fatalf("visualizer graph must analyze input 1 audio, got:\n%s", graph)
+	}
+	if !argPairExists(cmd.Args, "-map", "1:a:0") {
+		t.Fatalf("visualizer argv missing PCM audio map 1:a:0:\n%v", cmd.Args)
+	}
+	if argPairExists(cmd.Args, "-map", "0:a:0") {
+		t.Fatalf("visualizer argv must not map input 0 audio in dual-input mode:\n%v", cmd.Args)
+	}
+}
+
+func TestBuildCommand_VisualizerRejectsUnknownMode(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		OutputWidth: 720, OutputHeight: 480,
+		Visualizer: VisualizerSpec{Enabled: true, Mode: "sparkle"},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("cmd.Err = %v, want unsupported visualizer mode", cmd.Err)
+	}
+}
+
+func argAfter(args []string, flag string) string {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func argPairExists(args []string, flag, value string) bool {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // TestBuildCommand_ZeroPolicyArgvUnchanged is the backward-compat guard:
