@@ -1,9 +1,9 @@
 package torrent
 
 import (
+	"encoding/base32"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -84,10 +84,21 @@ func redactMagnet(raw string) string {
 			continue
 		}
 		hash := strings.ToLower(xt[len(prefix):])
-		if len(hash) < 8 || !isHex(hash) {
+		switch len(hash) {
+		case 40:
+			if !isHex(hash) {
+				return "magnet:<invalid>"
+			}
+			return "magnet:?xt=urn:btih:" + hash[:8]
+		case 32:
+			decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(hash))
+			if err != nil || len(decoded) != 20 {
+				return "magnet:<invalid>"
+			}
+			return "magnet:?xt=urn:btih:" + hex.EncodeToString(decoded[:4])
+		default:
 			return "magnet:<invalid>"
 		}
-		return fmt.Sprintf("magnet:?xt=urn:btih:%s", hash[:8])
 	}
 	return "magnet:<invalid>"
 }

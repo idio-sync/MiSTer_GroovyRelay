@@ -41,14 +41,29 @@ func TestRedactMagnetKeepsOnlyShortInfoHash(t *testing.T) {
 	}
 }
 
+func TestRedactMagnetAcceptsBase32InfoHash(t *testing.T) {
+	raw := "magnet:?xt=urn:btih:AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQT&dn=Movie&tr=http://tracker.example/announce"
+	got := redactMagnet(raw)
+	want := "magnet:?xt=urn:btih:00010203"
+	if got != want {
+		t.Fatalf("redactMagnet base32 = %q, want %q", got, want)
+	}
+}
+
 func TestRedactMagnetInvalid(t *testing.T) {
-	if got := redactMagnet("magnet:?dn=Movie"); got != "magnet:<invalid>" {
-		t.Fatalf("redactMagnet invalid = %q", got)
-	}
-	if got := redactMagnet("magnet:?xt=urn:btih:not-hex-at-all"); got != "magnet:<invalid>" {
-		t.Fatalf("redactMagnet non-hex = %q", got)
-	}
-	if got := redactMagnet("https://example.invalid/?xt=urn:btih:01234567"); got != "magnet:<invalid>" {
-		t.Fatalf("redactMagnet wrong scheme = %q", got)
+	for _, raw := range []string{
+		"magnet:?dn=Movie",
+		"magnet:?xt=urn:btih:not-hex-at-all",
+		"magnet:?xt=urn:btih:01234567",
+		"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef0123456",
+		"magnet:?xt=urn:btih:AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQ!",
+		"magnet:?xt=urn:sha1:0123456789abcdef0123456789abcdef01234567",
+		"https://example.invalid/?xt=urn:btih:01234567",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if got := redactMagnet(raw); got != "magnet:<invalid>" {
+				t.Fatalf("redactMagnet invalid = %q", got)
+			}
+		})
 	}
 }
