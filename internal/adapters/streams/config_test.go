@@ -2,6 +2,7 @@ package streams
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -18,6 +19,16 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.YoutubeFormat == "" {
 		t.Fatal("YoutubeFormat must have an SD-biased default")
+	}
+}
+
+func TestDefaultConfigPrefersSingleInputYouTubeFormat(t *testing.T) {
+	cfg := DefaultConfig()
+	if !strings.HasPrefix(cfg.YoutubeFormat, "b[height<=480]/") {
+		t.Fatalf("YoutubeFormat = %q, want single-input 480p selector before DASH fallback", cfg.YoutubeFormat)
+	}
+	if !strings.Contains(cfg.YoutubeFormat, "bv*[height<=480]+ba") {
+		t.Fatalf("YoutubeFormat = %q, want DASH fallback for videos without a combined SD stream", cfg.YoutubeFormat)
 	}
 }
 

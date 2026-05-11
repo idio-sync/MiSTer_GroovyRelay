@@ -91,7 +91,7 @@ func DefaultConfig() Config {
 		MaxConsecutiveFailures:        5,
 		ManifestRequestTimeoutSeconds: 10,
 		CatalogRequestTimeoutSeconds:  20,
-		YoutubeFormat:                 "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b",
+		YoutubeFormat:                 "b[height<=480]/bv*[height<=480]+ba/bv*+ba/b",
 		AllowRemoteManifest:           true,
 		AllowCachedRemoteManifest:     false,
 		AllowLocalManifestURLs:        false,
