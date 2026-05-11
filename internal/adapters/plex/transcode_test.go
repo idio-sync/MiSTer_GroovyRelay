@@ -66,6 +66,7 @@ func TestBuildMusicTranscodeURL_ContainsAudioEndpointAndParams(t *testing.T) {
 		Version:            "dev",
 		TranscodeSessionID: "tsid-1",
 		MaxAudioBitrate:    320,
+		AudioStreamID:      "101",
 	})
 	for _, want := range []string{
 		"/music/:/transcode/universal/start.mp3",
@@ -76,6 +77,7 @@ func TestBuildMusicTranscodeURL_ContainsAudioEndpointAndParams(t *testing.T) {
 		"audioCodec=mp3",
 		"maxAudioBitrate=320",
 		"offset=12",
+		"audioStreamID=101",
 		"transcodeSessionId=tsid-1",
 		"X-Plex-Token=tok",
 	} {

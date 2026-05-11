@@ -575,11 +575,11 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 	if !got.Visualizer.Enabled || got.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
 		t.Fatalf("Visualizer = %+v", got.Visualizer)
 	}
-	if got.Title != "Blue Monday" {
-		t.Fatalf("Title = %q, want PMS metadata title", got.Title)
+	if got.Title != "Controller Title" {
+		t.Fatalf("Title = %q, want controller title", got.Title)
 	}
-	if got.Visualizer.Metadata.Title != "Blue Monday" {
-		t.Fatalf("visualizer title = %q, want PMS metadata title", got.Visualizer.Metadata.Title)
+	if got.Visualizer.Metadata.Title != "Controller Title" {
+		t.Fatalf("visualizer title = %q, want controller title", got.Visualizer.Metadata.Title)
 	}
 	if got.Visualizer.Metadata.Artist != "New Order" || got.Visualizer.Metadata.Album != "Power Corruption & Lies" {
 		t.Fatalf("metadata = %+v", got.Visualizer.Metadata)
@@ -656,6 +656,49 @@ func TestPlexCompanion_PlayMediaMissingTypeUsesTrackMetadata(t *testing.T) {
 	}
 	if fc.lastReq.MediaKind != core.MediaKindMusic || !fc.lastReq.Visualizer.Enabled {
 		t.Fatalf("missing-type track metadata did not use visualizer: %+v", fc.lastReq)
+	}
+	if fc.lastReq.Title != "Blue Monday" {
+		t.Fatalf("Title = %q, want PMS metadata title", fc.lastReq.Title)
+	}
+	if fc.lastReq.Visualizer.Metadata.Title != "Blue Monday" {
+		t.Fatalf("visualizer title = %q, want PMS metadata title", fc.lastReq.Visualizer.Metadata.Title)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMusicFallsBackToMediaKeyBasename(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/library/metadata/42" {
+			t.Fatalf("unexpected PMS path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`<MediaContainer size="0"></MediaContainer>`))
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=track"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.lastReq.Title != "42" {
+		t.Fatalf("Title = %q, want media key basename", fc.lastReq.Title)
+	}
+	if fc.lastReq.Visualizer.Metadata.Title != "42" {
+		t.Fatalf("visualizer title = %q, want media key basename", fc.lastReq.Visualizer.Metadata.Title)
 	}
 }
 
@@ -1004,6 +1047,9 @@ func TestSetStreams_MusicSessionSkipsVideoPartSelectionAndRebuildsVisualizer(t *
 	}
 	if !strings.Contains(got.StreamURL, "offset=83") {
 		t.Fatalf("music setStreams did not preserve current position: %s", got.StreamURL)
+	}
+	if !strings.Contains(got.StreamURL, "audioStreamID=101") {
+		t.Fatalf("music setStreams did not pass selected audio stream: %s", got.StreamURL)
 	}
 	remembered := c.lastPlaySession()
 	if remembered.AudioStreamID != "101" {

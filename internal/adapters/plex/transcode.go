@@ -66,6 +66,7 @@ type MusicTranscodeRequest struct {
 	Provides           string
 	TranscodeSessionID string
 	MaxAudioBitrate    int
+	AudioStreamID      string
 }
 
 type MusicMetadata struct {
@@ -140,6 +141,9 @@ func buildMusicTranscodeQuery(r MusicTranscodeRequest) url.Values {
 	q.Set("audioCodec", "mp3")
 	q.Set("maxAudioBitrate", fmt.Sprintf("%d", r.MaxAudioBitrate))
 	q.Set("offset", fmt.Sprintf("%d", r.OffsetMs/1000))
+	if r.AudioStreamID != "" {
+		q.Set("audioStreamID", r.AudioStreamID)
+	}
 	if r.TranscodeSessionID != "" {
 		q.Set("transcodeSessionId", r.TranscodeSessionID)
 	}

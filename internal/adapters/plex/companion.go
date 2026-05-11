@@ -260,6 +260,17 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func mediaKeyBasename(mediaKey string) string {
+	trimmed := strings.Trim(strings.TrimSpace(mediaKey), "/")
+	if trimmed == "" {
+		return ""
+	}
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		return trimmed[i+1:]
+	}
+	return trimmed
+}
+
 func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetadata) core.SessionRequest {
 	serverURL := p.serverURL()
 	streamClientID := c.cfg.DeviceUUID
@@ -279,8 +290,9 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		Version:            c.cfg.Version,
 		Provides:           companionProvides,
 		TranscodeSessionID: p.TranscodeSessionID,
+		AudioStreamID:      p.AudioStreamID,
 	})
-	title := firstNonEmpty(md.Title, p.Title, p.MediaKey, "Now Playing")
+	title := firstNonEmpty(p.Title, md.Title, mediaKeyBasename(p.MediaKey), "Now Playing")
 	ref := p.MediaKey + ":" + p.TranscodeSessionID
 	req := core.SessionRequest{
 		StreamURL:    streamURL,

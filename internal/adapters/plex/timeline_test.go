@@ -249,6 +249,24 @@ func TestTimeline_BuildXML_MusicSessionMakesMusicLive(t *testing.T) {
 	if !strings.Contains(got, `containerKey="/playQueues/9"`) {
 		t.Fatalf("music timeline missing container metadata: %s", got)
 	}
+	if strings.Contains(got, `location=`) {
+		t.Fatalf("music timeline should not advertise video location: %s", got)
+	}
+}
+
+func TestTimeline_BuildXML_VideoSessionKeepsTopLevelLocation(t *testing.T) {
+	b := newTestBroker(t, core.SessionStatus{})
+	got := b.buildTimelineXML(core.SessionStatus{
+		State:    core.StatePlaying,
+		Position: 12 * time.Second,
+		Duration: 60 * time.Second,
+	})
+	if !strings.Contains(got, `<MediaContainer location="fullScreenVideo"`) {
+		t.Fatalf("video timeline missing top-level location: %s", got)
+	}
+	if !strings.Contains(got, `<Timeline type="video" state="playing" location="fullScreenVideo"`) {
+		t.Fatalf("video timeline missing per-video location: %s", got)
+	}
 }
 
 func TestTimeline_BuildXML_StateMapping(t *testing.T) {

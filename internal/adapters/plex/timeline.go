@@ -392,16 +392,18 @@ func (t *TimelineBroker) buildTimelineXMLWithCommandID(s core.SessionStatus, pla
 	type MediaContainer struct {
 		XMLName   xml.Name   `xml:"MediaContainer"`
 		CommandID string     `xml:"commandID,attr,omitempty"`
-		Location  string     `xml:"location,attr"`
+		Location  string     `xml:"location,attr,omitempty"`
 		Timelines []Timeline `xml:"Timeline"`
 	}
 	plexState := plexStateFromCore(s.State)
 	location := ""
-	switch s.State {
-	case core.StatePlaying:
-		location = "fullScreenVideo"
-	case core.StatePaused:
-		location = "fullScreenVideo"
+	if s.MediaKind != core.MediaKindMusic {
+		switch s.State {
+		case core.StatePlaying:
+			location = "fullScreenVideo"
+		case core.StatePaused:
+			location = "fullScreenVideo"
+		}
 	}
 	cmd := play.CommandID
 	if commandID > 0 {
