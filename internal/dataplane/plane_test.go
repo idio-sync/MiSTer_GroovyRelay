@@ -19,6 +19,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/pierrec/lz4/v4"
 )
 
 func requireUDPSockets(t *testing.T, err error) {
@@ -307,6 +308,128 @@ func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) 
 		if !strings.Contains(out, want) {
 			t.Fatalf("diagnostic log missing %q\n%s", want, out)
 		}
+	}
+}
+
+func TestEnvDeltaLZ4DefaultsOff(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "")
+	if envDeltaLZ4() {
+		t.Fatal("envDeltaLZ4() = true, want false by default")
+	}
+}
+
+func TestEnvDeltaLZ4AcceptedValues(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{value: "1", want: true},
+		{value: "true", want: true},
+		{value: "t", want: true},
+		{value: "yes", want: true},
+		{value: "y", want: true},
+		{value: "on", want: true},
+		{value: "0", want: false},
+		{value: "false", want: false},
+		{value: "f", want: false},
+		{value: "no", want: false},
+		{value: "n", want: false},
+		{value: "off", want: false},
+	}
+	for _, c := range cases {
+		t.Run(c.value, func(t *testing.T) {
+			t.Setenv("GROOVY_DELTA_LZ4", c.value)
+			if got := envDeltaLZ4(); got != c.want {
+				t.Fatalf("envDeltaLZ4() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEnvDeltaLZ4DisabledValuesDoNotWarn(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	for _, value := range []string{"0", "false", "f", "no", "n", "off"} {
+		t.Run(value, func(t *testing.T) {
+			logBuf.Reset()
+			t.Setenv("GROOVY_DELTA_LZ4", value)
+			if envDeltaLZ4() {
+				t.Fatalf("envDeltaLZ4() = true for %q, want false", value)
+			}
+			if strings.Contains(logBuf.String(), "invalid GROOVY_DELTA_LZ4; delta-LZ4 disabled") {
+				t.Fatalf("disabled value %q warned unexpectedly\n%s", value, logBuf.String())
+			}
+		})
+	}
+}
+
+func TestEnvDeltaLZ4InvalidValueWarnsAndDisables(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "banana")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	if envDeltaLZ4() {
+		t.Fatal("envDeltaLZ4() = true for invalid value, want false")
+	}
+	if !strings.Contains(logBuf.String(), "invalid GROOVY_DELTA_LZ4; delta-LZ4 disabled") {
+		t.Fatalf("missing invalid env warning\n%s", logBuf.String())
+	}
+}
+
+func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "")
+	t.Setenv("GROOVY_FIELD_DIAG", "")
+
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	if p.deltaLZ4Enabled || p.fieldPrev[0] != nil || p.fieldDeltaScratch != nil {
+		t.Fatalf("default plane allocated delta history: enabled=%v prev=%v scratch=%v",
+			p.deltaLZ4Enabled, p.fieldPrev[0] != nil, p.fieldDeltaScratch != nil)
+	}
+
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+	p = NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	if !p.deltaLZ4Enabled {
+		t.Fatal("deltaLZ4Enabled = false, want true")
+	}
+	if len(p.fieldPrev[0]) != 720*240*3 || len(p.fieldPrev[1]) != 720*240*3 {
+		t.Fatalf("field history buffers not allocated to field size: %d %d",
+			len(p.fieldPrev[0]), len(p.fieldPrev[1]))
+	}
+	if len(p.fieldDeltaScratch) != 720*240*3 {
+		t.Fatalf("fieldDeltaScratch len = %d, want %d", len(p.fieldDeltaScratch), 720*240*3)
+	}
+	if len(p.fieldDeltaLZ4Scratch) != lz4.CompressBlockBound(720*240*3) {
+		t.Fatalf("fieldDeltaLZ4Scratch len = %d, want CompressBlockBound", len(p.fieldDeltaLZ4Scratch))
+	}
+}
+
+func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    false,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	if p.deltaLZ4Enabled {
+		t.Fatal("deltaLZ4Enabled = true with LZ4 disabled, want false")
 	}
 }
 
