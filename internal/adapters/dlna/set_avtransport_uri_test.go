@@ -5,6 +5,8 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,6 +57,39 @@ func avtSendSetURI(t *testing.T, a *Adapter, argsXML string) *httptest.ResponseR
 	return rr
 }
 
+func hlsDIDL(protocolInfo string) string {
+	return fmt.Sprintf(`<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item><dc:title>HLS</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo=%q>http://x</res></item></DIDL-Lite>`, protocolInfo)
+}
+
+func newHLSTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/playlist.m3u8", "/one.m3u8", "/two.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg.ts\n#EXT-X-ENDLIST\n")
+		case "/seg.ts":
+			w.Header().Set("Content-Type", "video/mp2t")
+			_, _ = w.Write([]byte("segment-bytes"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	installHLSTestNetwork(t, nil, srv.URL)
+	return srv
+}
+
+func sendHLSSetURI(t *testing.T, a *Adapter, rawURL string) *httptest.ResponseRecorder {
+	t.Helper()
+	return avtSendSetURI(t, a, fmt.Sprintf(
+		`<InstanceID>0</InstanceID><CurrentURI>%s</CurrentURI>`+
+			`<CurrentURIMetaData>%s</CurrentURIMetaData>`,
+		html.EscapeString(rawURL),
+		html.EscapeString(hlsDIDL("http-get:*:application/vnd.apple.mpegurl:*")),
+	))
+}
+
 // Each top-level test installs its own httptest server AND injects a
 // resolver mapping the server's hostname to a private IP via
 // installResolverOverride (testhelpers_resolver_test.go). The
@@ -86,6 +121,12 @@ func TestSetAVTransportURI_AcceptsValidPrivateURL(t *testing.T) {
 	}
 	if !strings.HasPrefix(a.loadedURI, srv.URL) {
 		t.Errorf("loadedURI = %q, want prefix %q", a.loadedURI, srv.URL)
+	}
+	if a.loadedPlaybackURI != a.loadedURI {
+		t.Errorf("loadedPlaybackURI = %q, want loadedURI %q for direct HTTP", a.loadedPlaybackURI, a.loadedURI)
+	}
+	if !a.loadedCanSeek {
+		t.Error("loadedCanSeek = false, want true for direct HTTP")
 	}
 	if a.lastError != "" {
 		t.Errorf("lastError = %q, want empty after success", a.lastError)
@@ -339,11 +380,9 @@ func TestSetAVTransportURI_RejectsUnsupportedMIME(t *testing.T) {
 
 	a := avtWithLoopbackResolver(t)
 
-	// HLS protocolInfo. Spec line 348: HLS is deferred to Phase 5; v1
-	// must reject application/vnd.apple.mpegurl with 714.
-	didl := `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item><dc:title>HLS</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:application/vnd.apple.mpegurl:*">http://x</res></item></DIDL-Lite>`
+	didl := `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item><dc:title>DASH</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:application/dash+xml:*">http://x</res></item></DIDL-Lite>`
 	rr := avtSendSetURI(t, a, fmt.Sprintf(
-		`<InstanceID>0</InstanceID><CurrentURI>%s/v.m3u8</CurrentURI>`+
+		`<InstanceID>0</InstanceID><CurrentURI>%s/v.bin</CurrentURI>`+
 			`<CurrentURIMetaData>%s</CurrentURIMetaData>`,
 		html.EscapeString(srv.URL),
 		html.EscapeString(didl),
@@ -353,6 +392,256 @@ func TestSetAVTransportURI_RejectsUnsupportedMIME(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "<errorCode>714</errorCode>") {
 		t.Errorf("body missing errorCode 714: %s", rr.Body.String())
+	}
+}
+
+func TestSetAVTransportURI_AcceptsHLSAfterCachingChildren(t *testing.T) {
+	srv := newHLSTestServer(t)
+	a := avtWithLoopbackResolver(t)
+
+	rawURL := srv.URL + "/playlist.m3u8"
+	rr := sendHLSSetURI(t, a, rawURL)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	a.mu.Lock()
+	loadedURI := a.loadedURI
+	playbackURI := a.loadedPlaybackURI
+	canSeek := a.loadedCanSeek
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(playbackURI)) })
+
+	if loadedURI != rawURL {
+		t.Errorf("loadedURI = %q, want controller-facing URL %q", loadedURI, rawURL)
+	}
+	if strings.HasPrefix(playbackURI, "http://") || strings.HasPrefix(playbackURI, "https://") {
+		t.Fatalf("loadedPlaybackURI = %q, want local cached manifest", playbackURI)
+	}
+	if filepath.Ext(playbackURI) != ".m3u8" {
+		t.Errorf("loadedPlaybackURI = %q, want .m3u8 manifest", playbackURI)
+	}
+	if _, err := os.Stat(playbackURI); err != nil {
+		t.Fatalf("cached manifest missing: %v", err)
+	}
+	if canSeek {
+		t.Error("loadedCanSeek = true, want false for cached HLS")
+	}
+}
+
+func TestSetAVTransportURI_AcceptsM3U8WithEmptyMetadataAfterCachingChildren(t *testing.T) {
+	srv := newHLSTestServer(t)
+	a := avtWithLoopbackResolver(t)
+
+	rawURL := srv.URL + "/playlist.m3u8"
+	rr := avtSendSetURI(t, a, fmt.Sprintf(
+		`<InstanceID>0</InstanceID><CurrentURI>%s</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>`,
+		html.EscapeString(rawURL),
+	))
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	a.mu.Lock()
+	loadedURI := a.loadedURI
+	playbackURI := a.loadedPlaybackURI
+	canSeek := a.loadedCanSeek
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(playbackURI)) })
+
+	if loadedURI != rawURL {
+		t.Errorf("loadedURI = %q, want controller-facing URL %q", loadedURI, rawURL)
+	}
+	if strings.HasPrefix(playbackURI, "http://") || strings.HasPrefix(playbackURI, "https://") {
+		t.Fatalf("loadedPlaybackURI = %q, want local cached manifest", playbackURI)
+	}
+	if filepath.Ext(playbackURI) != ".m3u8" {
+		t.Errorf("loadedPlaybackURI = %q, want .m3u8 manifest", playbackURI)
+	}
+	if canSeek {
+		t.Error("loadedCanSeek = true, want false for URL-classified HLS")
+	}
+}
+
+func TestSetAVTransportURI_HLSDoesNotIssuePreflightHEAD(t *testing.T) {
+	const playlist = `#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4,
+seg.ts
+#EXT-X-ENDLIST
+`
+	var headSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			headSeen = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		switch r.URL.Path {
+		case "/playlist.m3u8":
+			_, _ = w.Write([]byte(playlist))
+		case "/seg.ts":
+			_, _ = w.Write([]byte("segment"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	installHLSTestNetwork(t, nil, srv.URL)
+	a := avtWithLoopbackResolver(t)
+
+	rr := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(playbackURI)) })
+	if headSeen {
+		t.Fatal("SetAVTransportURI issued a preflight HEAD before HLS caching")
+	}
+}
+
+func TestSetAVTransportURI_RejectsMPDWithEmptyMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/dash+xml")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(installResolverOverride(t, hostMappingResolver(t, nil)))
+
+	a := avtWithLoopbackResolver(t)
+	rr := avtSendSetURI(t, a, fmt.Sprintf(
+		`<InstanceID>0</InstanceID><CurrentURI>%s/manifest.mpd</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>`,
+		html.EscapeString(srv.URL),
+	))
+	if rr.Code != 500 {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>714</errorCode>") {
+		t.Fatalf("body missing errorCode 714: %s", rr.Body.String())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loadedURI != "" {
+		t.Errorf("loadedURI = %q after MPD rejection; want empty", a.loadedURI)
+	}
+	if a.loadedPlaybackURI != "" {
+		t.Errorf("loadedPlaybackURI = %q after MPD rejection; want empty", a.loadedPlaybackURI)
+	}
+}
+
+func TestSetAVTransportURI_BackToBackHLSCleansOldCache(t *testing.T) {
+	srv := newHLSTestServer(t)
+	a := avtWithLoopbackResolver(t)
+
+	rr1 := sendHLSSetURI(t, a, srv.URL+"/one.m3u8")
+	if rr1.Code != 200 {
+		t.Fatalf("first status = %d, want 200; body=%s", rr1.Code, rr1.Body.String())
+	}
+	a.mu.Lock()
+	firstPlayback := a.loadedPlaybackURI
+	a.mu.Unlock()
+	firstDir := filepath.Dir(firstPlayback)
+	if _, err := os.Stat(firstPlayback); err != nil {
+		t.Fatalf("first cached manifest missing before replacement: %v", err)
+	}
+
+	rr2 := sendHLSSetURI(t, a, srv.URL+"/two.m3u8")
+	if rr2.Code != 200 {
+		t.Fatalf("second status = %d, want 200; body=%s", rr2.Code, rr2.Body.String())
+	}
+	a.mu.Lock()
+	secondPlayback := a.loadedPlaybackURI
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(secondPlayback)) })
+
+	if secondPlayback == firstPlayback {
+		t.Fatalf("second playback URI reused first cache path %q", secondPlayback)
+	}
+	if _, err := os.Stat(firstDir); !os.IsNotExist(err) {
+		t.Fatalf("old HLS cache dir still present after replacement; stat err=%v", err)
+	}
+	if _, err := os.Stat(secondPlayback); err != nil {
+		t.Fatalf("second cached manifest missing: %v", err)
+	}
+}
+
+func TestSetAVTransportURI_StopCleansLoadedHLSCache(t *testing.T) {
+	srv := newHLSTestServer(t)
+	a := avtWithLoopbackResolver(t)
+
+	rr := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	loadedURI := a.loadedURI
+	a.mu.Unlock()
+	cacheDir := filepath.Dir(playbackURI)
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("HLS cache dir still present after Stop; stat err=%v", err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loadedURI != loadedURI {
+		t.Errorf("loadedURI = %q after Stop, want preserved %q", a.loadedURI, loadedURI)
+	}
+	if a.loadedPlaybackURI != "" {
+		t.Errorf("loadedPlaybackURI = %q after Stop, want cleared", a.loadedPlaybackURI)
+	}
+}
+
+func TestSetAVTransportURI_RejectsWhileHLSPlayingKeepsActiveCache(t *testing.T) {
+	srv := newHLSTestServer(t)
+	fake := &captureSessionManager{}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+
+	rrSet := sendHLSSetURI(t, a, srv.URL+"/one.m3u8")
+	if rrSet.Code != 200 {
+		t.Fatalf("initial SetAVTransportURI status = %d, want 200; body=%s", rrSet.Code, rrSet.Body.String())
+	}
+	a.mu.Lock()
+	activePlaybackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	activeCacheDir := filepath.Dir(activePlaybackURI)
+
+	rrPlay := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+	if rrPlay.Code != 200 {
+		t.Fatalf("Play status = %d, want 200; body=%s", rrPlay.Code, rrPlay.Body.String())
+	}
+	onStop := fake.lastReq().OnStop
+	if onStop == nil {
+		t.Fatal("captured OnStop nil")
+	}
+
+	rrReplace := sendHLSSetURI(t, a, srv.URL+"/two.m3u8")
+	if rrReplace.Code != 500 {
+		t.Fatalf("replacement SetAVTransportURI status = %d, want 500; body=%s", rrReplace.Code, rrReplace.Body.String())
+	}
+	if !strings.Contains(rrReplace.Body.String(), "<errorCode>701</errorCode>") {
+		t.Fatalf("replacement body missing errorCode 701: %s", rrReplace.Body.String())
+	}
+	if _, err := os.Stat(activePlaybackURI); err != nil {
+		t.Fatalf("active HLS cache was removed by rejected replacement: %v", err)
+	}
+
+	onStop("stopped")
+	if _, err := os.Stat(activeCacheDir); !os.IsNotExist(err) {
+		t.Fatalf("active HLS cache dir still present after OnStop; stat err=%v", err)
 	}
 }
 
@@ -580,8 +869,8 @@ func TestProtocolInfoMatchesSink(t *testing.T) {
 	if !protocolInfoMatchesSink("") {
 		t.Error("empty protocolInfo should match (skipped check)")
 	}
-	if protocolInfoMatchesSink("http-get:*:application/vnd.apple.mpegurl:*") {
-		t.Error("HLS should NOT match sink")
+	if !protocolInfoMatchesSink("http-get:*:application/vnd.apple.mpegurl:*") {
+		t.Error("HLS should match sink after cached-HLS support")
 	}
 	if protocolInfoMatchesSink("http-get:*:application/dash+xml:*") {
 		t.Error("DASH should NOT match sink")

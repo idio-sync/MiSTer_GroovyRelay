@@ -139,10 +139,17 @@ type Adapter struct {
 	// The redaction discipline for lastError: never store userinfo or
 	// query strings — at most scheme + host (URLs go through redactURL
 	// before being included). DIDL parse errors store a generic message.
-	loadedURI     string
-	loadedMeta    DIDLMetadata
-	loadedMetaRaw string
-	lastError     string
+	loadedURI string
+	// loadedPlaybackURI is the URI handed to core.Manager. For direct
+	// HTTP(S) playback it matches loadedURI; for cached HLS it points at
+	// the local rewritten manifest while loadedURI remains the
+	// controller-facing URL.
+	loadedPlaybackURI string
+	loadedHLSCleanup  func() error
+	loadedCanSeek     bool
+	loadedMeta        DIDLMetadata
+	loadedMetaRaw     string
+	lastError         string
 
 	// transportState is the UPnP TransportState surfaced via
 	// GetTransportInfo. Values: "STOPPED" | "PLAYING" |
@@ -343,6 +350,44 @@ func (a *Adapter) clearStartInFlightPreserveRef(ref string) {
 	a.startInFlight = false
 }
 
+// replaceLoadedPlaybackURIIfCurrent is the Play-time HLS recache variant:
+// it only attaches the freshly prepared cache if the loaded source still
+// matches the snapshot that triggered recache.
+func (a *Adapter) replaceLoadedPlaybackURIIfCurrent(expectedLoadedURI string, uri string, cleanup func() error, canSeek bool) bool {
+	a.mu.Lock()
+	if a.loadedURI != expectedLoadedURI || a.loadedPlaybackURI != "" || a.loadedCanSeek {
+		a.mu.Unlock()
+		return false
+	}
+	oldCleanup := a.loadedHLSCleanup
+	a.loadedPlaybackURI = uri
+	a.loadedHLSCleanup = cleanup
+	a.loadedCanSeek = canSeek
+	a.mu.Unlock()
+	if oldCleanup != nil {
+		_ = oldCleanup()
+	}
+	return true
+}
+
+func (a *Adapter) clearLoadedPlaybackCacheIfIdle() {
+	a.mu.Lock()
+	if a.currentRef != "" {
+		a.mu.Unlock()
+		return
+	}
+	cleanup := a.loadedHLSCleanup
+	if cleanup != nil {
+		a.loadedPlaybackURI = ""
+		a.loadedHLSCleanup = nil
+		a.loadedCanSeek = false
+	}
+	a.mu.Unlock()
+	if cleanup != nil {
+		_ = cleanup()
+	}
+}
+
 // ownershipGuard is the read-only check Pause / Play / Stop / Seek run
 // before mutating core.Manager. Returns nil when the action is allowed
 // to proceed; errForeignSession when core has an active session whose
@@ -500,6 +545,7 @@ func (a *Adapter) Stop() error {
 	if a.events != nil {
 		a.events.resetSubscriptions()
 	}
+	a.clearLoadedPlaybackCacheIfIdle()
 	a.setState(adapters.StateStopped, "")
 	return nil
 }

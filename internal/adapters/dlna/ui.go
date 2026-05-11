@@ -20,7 +20,7 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 		{
 			Key:        "enabled",
 			Label:      "Enabled",
-			Help:       "Turn the DLNA / UPnP MediaRenderer on or off. When enabled the bridge appears as a cast target for DLNA controllers (VLC, BubbleUPnP, Kodi, Windows 'Cast to device').",
+			Help:       "Enable SSDP discovery and UPnP control on the trusted LAN. Uses UDP 1900; if the renderer does not appear, check README troubleshooting for bind conflicts.",
 			Kind:       adapters.KindBool,
 			Default:    defaults.Enabled,
 			ApplyScope: adapters.ScopeHotSwap,
@@ -28,7 +28,7 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 		{
 			Key:        "device_name",
 			Label:      "Device Name",
-			Help:       "Friendly name shown in DLNA control points. Restart-bridge: SSDP advertisements are baked at startup.",
+			Help:       "Friendly name shown in DLNA control points. Restart-bridge: controllers cache friendlyName and SSDP advertisements by device UUID.",
 			Kind:       adapters.KindText,
 			Default:    defaults.DeviceName,
 			Required:   true,
@@ -37,7 +37,7 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 		{
 			Key:        "autoplay_on_set_uri",
 			Label:      "Autoplay on SetAVTransportURI",
-			Help:       "Compatibility mode for controllers that send SetAVTransportURI without a follow-up Play.",
+			Help:       "Compatibility mode for controllers that send SetAVTransportURI without Play. Leave off for controllers that send explicit Play commands.",
 			Kind:       adapters.KindBool,
 			Default:    defaults.AutoplayOnSetURI,
 			ApplyScope: adapters.ScopeHotSwap,
@@ -45,7 +45,7 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 		{
 			Key:        "allow_public_source_urls",
 			Label:      "Allow Public Source URLs",
-			Help:       "Allow media URLs that resolve to public-internet addresses. Default false; private/LAN targets are always allowed.",
+			Help:       "Allow media URLs that resolve to public-internet addresses. SSRF risk; this still does not allow loopback or link-local targets.",
 			Kind:       adapters.KindBool,
 			Default:    defaults.AllowPublicSourceURLs,
 			ApplyScope: adapters.ScopeHotSwap,

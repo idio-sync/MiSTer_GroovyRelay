@@ -440,6 +440,23 @@ func TestFields_FourFieldsWithCorrectScopes(t *testing.T) {
 		"autoplay_on_set_uri":      adapters.KindBool,
 		"allow_public_source_urls": adapters.KindBool,
 	}
+	wantHelpSubstrings := map[string][]string{
+		"enabled": {
+			"UDP 1900",
+			"trusted LAN",
+		},
+		"device_name": {
+			"Restart-bridge",
+			"controllers cache",
+		},
+		"autoplay_on_set_uri": {
+			"send SetAVTransportURI without Play",
+		},
+		"allow_public_source_urls": {
+			"SSRF risk",
+			"does not allow loopback or link-local",
+		},
+	}
 	seen := map[string]bool{}
 	for _, f := range fields {
 		seen[f.Key] = true
@@ -448,6 +465,11 @@ func TestFields_FourFieldsWithCorrectScopes(t *testing.T) {
 		}
 		if got, ok := wantKind[f.Key]; ok && f.Kind != got {
 			t.Errorf("Fields[%q].Kind = %v, want %v", f.Key, f.Kind, got)
+		}
+		for _, want := range wantHelpSubstrings[f.Key] {
+			if !strings.Contains(f.Help, want) {
+				t.Errorf("Fields[%q].Help = %q, want substring %q", f.Key, f.Help, want)
+			}
 		}
 	}
 	for k := range wantScope {

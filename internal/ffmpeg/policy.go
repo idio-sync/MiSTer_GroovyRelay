@@ -92,12 +92,11 @@ type MediaInputPolicy struct {
 	// server (spec line 347, line 115).
 	BlockedHeaders []string
 
-	// DisablePlaylists is reserved for future demuxer constraints (e.g.
-	// rejecting HLS / DASH child-resource fetches at the input level).
-	// Phase 2 DLNA defers HLS/DASH protocolInfo to Phase 5 (spec line 348)
-	// and meanwhile relies on adapter-side metadata validation, so this
-	// field has no behavioral effect today. It is documented here so the
-	// shape of the policy surface stays stable when Phase 5 lands.
+	// DisablePlaylists is an adapter-enforced marker today and emits no
+	// FFmpeg argv. DLNA Phase 5 validates and caches HLS manifests and
+	// child resources before FFmpeg sees a local manifest, so this field
+	// documents that source-level contract without relying on a demuxer
+	// switch.
 	DisablePlaylists bool
 }
 

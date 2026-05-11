@@ -36,7 +36,7 @@ func runCM(t *testing.T, action, argsXML string) *httptest.ResponseRecorder {
 
 // ---- GetProtocolInfo ----
 
-func TestCM_GetProtocolInfo_EightSinkEntries(t *testing.T) {
+func TestCM_GetProtocolInfo_SinkEntries(t *testing.T) {
 	rr := runCM(t, "GetProtocolInfo", "")
 	if rr.Code != 200 {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
@@ -48,7 +48,7 @@ func TestCM_GetProtocolInfo_EightSinkEntries(t *testing.T) {
 		t.Errorf("body missing empty Source element; body=%s", body)
 	}
 
-	// Each of the eight sink entries must appear.
+	// Each advertised sink entry must appear.
 	for _, want := range sinkProtocolInfoEntries {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing sink entry %q", want)
@@ -56,15 +56,15 @@ func TestCM_GetProtocolInfo_EightSinkEntries(t *testing.T) {
 	}
 }
 
-func TestCM_GetProtocolInfo_NoHLSorM3U8(t *testing.T) {
+func TestCM_GetProtocolInfo_AdvertisesCachedHLSM3U8(t *testing.T) {
 	rr := runCM(t, "GetProtocolInfo", "")
 	body := rr.Body.String()
-	for _, forbidden := range []string{
-		"vnd.apple.mpegurl",
-		"x-mpegURL",
+	for _, want := range []string{
+		"http-get:*:application/vnd.apple.mpegurl:*",
+		"http-get:*:application/x-mpegurl:*",
 	} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("v1 must NOT advertise %q (deferred to Phase 5); body=%s", forbidden, body)
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing cached-HLS sink entry %q; body=%s", want, body)
 		}
 	}
 }

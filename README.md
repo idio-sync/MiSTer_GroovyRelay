@@ -296,6 +296,49 @@ If you see glitches cap container CPU with
 
 ## Troubleshooting
 
+**"The DLNA renderer does not appear."**
+
+DLNA discovery uses SSDP multicast on UDP `239.255.255.250:1900`. Confirm the DLNA adapter is enabled (`[adapters.dlna] enabled = true`) and `bridge.host_ip` is set to the LAN address that controllers can reach; when DLNA is enabled and the bridge cannot choose a usable host IP, startup fails with `StateError` instead of advertising a non-discoverable renderer.
+
+On Linux, check for another SSDP responder such as `minissdpd`, `minidlna`, or `gerbera` already bound to UDP 1900:
+
+```bash
+ss -ulpn | grep ':1900'
+systemctl status minissdpd
+systemctl status minidlna
+systemctl status gerbera
+```
+
+On Windows, check the SSDP Discovery service (`SSDPSRV`) and use `netstat` to see which process owns UDP 1900:
+
+```powershell
+Get-Service SSDPSRV
+netstat -ano -p udp | findstr :1900
+```
+
+Stop a conflicting service only on a trusted test machine where you understand the LAN exposure, then restart the bridge so it can bind and advertise cleanly.
+
+**"The DLNA renderer appears, but selecting it fails or controls never work."**
+
+This usually means a multi-NIC `LOCATION` mismatch. The bridge advertises its device description as a `device.xml` URL built from `bridge.host_ip` and `bridge.ui.http_port`; if that URL points at a VPN, Docker bridge, or different subnet, the controller can discover the renderer but cannot fetch or control it.
+
+Set `bridge.host_ip` to the address on the same subnet as the DLNA controller, then restart the bridge.
+
+**"The DLNA controller sets media, but playback never starts."**
+
+Some controllers send `SetAVTransportURI` without a follow-up `Play` command. For those controllers, enable autoplay compatibility mode:
+
+```toml
+[adapters.dlna]
+autoplay_on_set_uri = true
+```
+
+Leave it off for controllers that send explicit `Play` commands.
+
+**"The DLNA controller reports an illegal MIME-type."**
+
+Direct HTTP URLs must use one of the bridge's allow-listed MIME types before the DLNA adapter will pass them to playback. HLS/M3U8 URLs are accepted only after nested playlist and segment URLs pass validation, so a controller may reject or fail a cast when a playlist points at unsupported or unsafe media entries.
+
 **"The target didn't show up in Plex's cast menu."**
 
 The bridge uses GDM multicast discovery (port 32414). Confirm: `--network=host` is set; your LAN is not carving off mDNS/multicast between client and server; you linked successfully (`--link`); and the bridge process is running (`docker logs mister-groovy-relay`).

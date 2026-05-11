@@ -31,6 +31,7 @@ func TestAVTransportEventSnapshotReflectsAdapterAndCoreState(t *testing.T) {
 	a.loadedMeta = DIDLMetadata{Duration: 5 * time.Minute}
 	a.currentRef = ref
 	a.transportState = transportStatePlaying
+	a.loadedCanSeek = true
 	a.mu.Unlock()
 
 	a.publishAVTransportLastChange()
@@ -50,6 +51,41 @@ func TestAVTransportEventSnapshotReflectsAdapterAndCoreState(t *testing.T) {
 	}
 	if strings.Contains(got, `<CurrentTrackDuration val="00:05:00">`) {
 		t.Fatalf("AVTransport LastChange used metadata duration instead of active core duration:\n%s", got)
+	}
+}
+
+func TestAVTransportEventSnapshot_HLSDoesNotAdvertiseSeek(t *testing.T) {
+	const ref = "dlna:hls-ref"
+	fake := &captureSessionManager{
+		statusFn: func() core.SessionStatus {
+			return core.SessionStatus{
+				AdapterRef: ref,
+				Position:   12 * time.Second,
+				Duration:   9 * time.Minute,
+			}
+		},
+	}
+	cfg := validAdapterConfig()
+	cfg.Core = fake
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.loadedURI = "http://192.168.1.99/movie.m3u8"
+	a.loadedCanSeek = false
+	a.currentRef = ref
+	a.transportState = transportStatePlaying
+	a.mu.Unlock()
+
+	a.publishAVTransportLastChange()
+
+	got := eventSnapshot(t, a, serviceAVTransport)["LastChange"]
+	if !strings.Contains(got, `<CurrentTransportActions val="Pause,Stop"></CurrentTransportActions>`) {
+		t.Fatalf("AVTransport LastChange did not suppress Seek for HLS:\n%s", got)
+	}
+	if strings.Contains(got, `Pause,Stop,Seek`) {
+		t.Fatalf("AVTransport LastChange advertised Seek for HLS:\n%s", got)
 	}
 }
 
@@ -134,6 +170,7 @@ func TestSeekSuccessPublishesUpdatedAVTransportPosition(t *testing.T) {
 	a.loadedURI = "http://192.168.1.99/movie.mp4"
 	a.currentRef = ref
 	a.transportState = transportStatePlaying
+	a.loadedCanSeek = true
 	a.mu.Unlock()
 
 	a.publishAVTransportLastChange()

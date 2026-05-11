@@ -187,6 +187,34 @@ func TestSeek_ForeignSession_Returns701(t *testing.T) {
 	}
 }
 
+func TestSeek_ForeignSessionWithNonSeekableLoadedHLS_Returns701(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	a.mu.Lock()
+	a.currentRef = "dlna:ours"
+	a.transportState = transportStatePlaying
+	a.loadedCanSeek = false
+	a.mu.Unlock()
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{
+			AdapterRef: "plex:/library/metadata/1234",
+			Duration:   1 * time.Hour,
+		}
+	}
+
+	rr := avtSendSeek(t, a,
+		"<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:30</Target>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>701</errorCode>") {
+		t.Errorf("body missing errorCode 701: %s", rr.Body.String())
+	}
+	if fake.snapshotSeekCalls() != 0 {
+		t.Errorf("core.SeekTo called %d times on foreign HLS session; want 0",
+			fake.snapshotSeekCalls())
+	}
+}
+
 func TestSeek_RefMismatchAtCoreCall_Returns701(t *testing.T) {
 	a, fake, ref := seekPrimedAdapter(t)
 	fake.seekIfMismatch = true
@@ -286,6 +314,31 @@ func TestSeek_UnknownDuration_Returns711(t *testing.T) {
 	}
 	if fake.snapshotSeekCalls() != 0 {
 		t.Errorf("core.SeekTo called %d times on unknown-duration; want 0",
+			fake.snapshotSeekCalls())
+	}
+}
+
+func TestSeek_NonSeekableHLS_Returns711EvenWithKnownDuration(t *testing.T) {
+	a, fake := avtPlayAdapter(t)
+	a.mu.Lock()
+	a.currentRef = "dlna:hls"
+	a.transportState = transportStatePlaying
+	a.loadedCanSeek = false
+	a.mu.Unlock()
+	fake.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{AdapterRef: "dlna:hls", Duration: 1 * time.Hour}
+	}
+
+	rr := avtSendSeek(t, a,
+		"<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>00:00:30</Target>")
+	if rr.Code != 500 {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "<errorCode>711</errorCode>") {
+		t.Errorf("body missing errorCode 711: %s", rr.Body.String())
+	}
+	if fake.snapshotSeekCalls() != 0 {
+		t.Errorf("core.SeekTo called %d times on non-seekable HLS; want 0",
 			fake.snapshotSeekCalls())
 	}
 }
