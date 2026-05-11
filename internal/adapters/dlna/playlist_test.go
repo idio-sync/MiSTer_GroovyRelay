@@ -334,7 +334,7 @@ video.m3u8
 `)
 }
 
-func TestPrepareHLSPlaybackRejectsMasterPlaylistWithoutEndlist(t *testing.T) {
+func TestPrepareHLSPlaybackAcceptsMasterPlaylistWithoutEndlistWhenChildIsFinite(t *testing.T) {
 	const master = `#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=1280000
 video.m3u8
@@ -360,12 +360,14 @@ seg.ts
 	t.Cleanup(srv.Close)
 	installHLSTestNetwork(t, nil, srv.URL)
 
-	_, err := prepareHLSPlayback(context.Background(), srv.URL+"/master.m3u8", PolicyPrivateOnly)
-	if err == nil {
-		t.Fatalf("expected error, got nil")
+	playback, err := prepareHLSPlayback(context.Background(), srv.URL+"/master.m3u8", PolicyPrivateOnly)
+	if err != nil {
+		t.Fatalf("prepareHLSPlayback err = %v, want nil", err)
 	}
-	if !errors.Is(err, errHLSInvalid) {
-		t.Fatalf("err = %v, want errHLSInvalid", err)
+	t.Cleanup(func() { _ = playback.Cleanup() })
+	manifest := readCachedManifest(t, playback)
+	if !strings.Contains(manifest, "playlist-000001.m3u8") {
+		t.Fatalf("master manifest did not reference local child playlist:\n%s", manifest)
 	}
 }
 

@@ -463,6 +463,46 @@ func TestSetAVTransportURI_AcceptsM3U8WithEmptyMetadataAfterCachingChildren(t *t
 	}
 }
 
+func TestSetAVTransportURI_HLSDoesNotIssuePreflightHEAD(t *testing.T) {
+	const playlist = `#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4,
+seg.ts
+#EXT-X-ENDLIST
+`
+	var headSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			headSeen = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		switch r.URL.Path {
+		case "/playlist.m3u8":
+			_, _ = w.Write([]byte(playlist))
+		case "/seg.ts":
+			_, _ = w.Write([]byte("segment"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	installHLSTestNetwork(t, nil, srv.URL)
+	a := avtWithLoopbackResolver(t)
+
+	rr := sendHLSSetURI(t, a, srv.URL+"/playlist.m3u8")
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	a.mu.Lock()
+	playbackURI := a.loadedPlaybackURI
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(playbackURI)) })
+	if headSeen {
+		t.Fatal("SetAVTransportURI issued a preflight HEAD before HLS caching")
+	}
+}
+
 func TestSetAVTransportURI_RejectsMPDWithEmptyMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/dash+xml")

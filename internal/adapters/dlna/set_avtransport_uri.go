@@ -54,15 +54,15 @@ var prepareHLSPlaybackForAdapter = prepareHLSPlayback
 //     in-flight DLNA start. Either rejection returns 701 and the
 //     handler must NOT mutate any adapter state (loadedURI must read
 //     the same value before and after).
-//  2. URL prevalidation — runs validateMediaURL with the policy
-//     derived from cfg.AllowPublicSourceURLs. Errors map to UPnP
-//     faults via the table in the spec.
-//  3. Metadata parse — lenient. Empty metadata is fine; malformed XML
+//  2. Metadata parse — lenient. Empty metadata is fine; malformed XML
 //     is 402.
-//  4. Metadata MIME check — if metadata declared a protocolInfo, the
+//  3. Metadata MIME/path check — if metadata declared a protocolInfo, the
 //     MIME third field must be in sinkProtocolInfoEntries; otherwise
 //  714. The renderer can't honor a content type it doesn't
 //     advertise.
+//  4. URL validation/preparation — direct HTTP(S) runs validateMediaURL;
+//     HLS goes straight through the hardened HLS cache path so it never
+//     performs the generic validator's preflight HEAD.
 //
 // Only after all four succeed do we acquire a.mu and store the new
 // state (loadedURI = validated.FinalURL, loadedMeta = parsed,
@@ -117,56 +117,17 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// URL prevalidation. The validator chases redirects under a
-	// bounded context, re-classifies every Location target's resolved
-	// IP, and returns the final URL. Pass the request context so a
-	// controller-side cancel propagates through the validator's HTTP
-	// client. context.WithTimeout caps the chain wall-clock budget.
+	// URL validation/preparation below runs under a bounded context.
+	// Direct HTTP(S) uses validateMediaURL; HLS uses the hardened cache
+	// fetcher and intentionally bypasses validateMediaURL's preflight
+	// HEAD so every HLS network request uses the per-connection
+	// classifying dialer.
 	policy := PolicyPrivateOnly
 	if allowPublic {
 		policy = PolicyAllowPublic
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), setAVTransportURITimeout)
 	defer cancel()
-
-	validated, err := validateMediaURL(ctx, args.CurrentURI, policy)
-	if err != nil {
-		// Map typed validator errors to UPnP fault codes per spec table.
-		//   ErrInvalidURL        -> 402 Invalid Args
-		//   ErrSchemeNotAllowed  -> 716 Resource not found
-		//   ErrAddressNotAllowed -> 716
-		//   ErrTooManyRedirects  -> 716
-		//   ErrRedirectFetchFail -> 716
-		//   any other            -> 716 (defensive default — the validator
-		//                            should always wrap a typed sentinel,
-		//                            but if it doesn't we still hide
-		//                            internal-error specifics from the
-		//                            controller).
-		var code upnpErrorCode
-		switch {
-		case errors.Is(err, ErrInvalidURL):
-			code = upnpErrInvalidArgs
-		case errors.Is(err, ErrSchemeNotAllowed),
-			errors.Is(err, ErrAddressNotAllowed),
-			errors.Is(err, ErrTooManyRedirects),
-			errors.Is(err, ErrRedirectFetchFail):
-			code = upnpErrResourceNotFound
-		default:
-			code = upnpErrResourceNotFound
-		}
-		// Record the failure for query-action visibility (TransportStatus
-		// flips to ERROR_OCCURRED). Redact the URL aggressively — DLNA
-		// metadata can carry credentials in CurrentURI userinfo or query
-		// strings, and lastError is surfaced to operators via the UI
-		// status panel in later phases. Don't include the underlying
-		// validator error string here either; sinks could reproduce
-		// internal hostnames or IPs that the operator doesn't want
-		// echoed back to the controller via GetTransportInfo.
-		a.setLastError("SetAVTransportURI rejected URI " + redactURL(args.CurrentURI))
-		a.publishAVTransportLastChange()
-		writeSOAPFault(w, code)
-		return
-	}
 
 	// Parse metadata. parseDIDLMetadata is lenient — empty input
 	// returns a zero DIDLMetadata with nil error, well-formed but
@@ -191,8 +152,8 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	// post-probe behavior to surface unsupported codecs later, except
 	// path-classified child-resource manifests that v1 cannot validate.
 	mime := mimeFromProtocolInfo(parsed.ProtocolInfo)
-	isHLS := isHLSMIME(mime) || isHLSURLPath(validated.FinalURL)
-	if !isHLS && isUnsupportedManifestURLPath(validated.FinalURL) {
+	isHLS := isHLSMIME(mime) || isHLSURLPath(args.CurrentURI)
+	if !isHLS && isUnsupportedManifestURLPath(args.CurrentURI) {
 		a.setLastError("SetAVTransportURI rejected: unsupported manifest")
 		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrIllegalMIME)
@@ -207,8 +168,9 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	var playbackURI string
 	var hlsCleanup func() error
 	canSeek := true
+	finalURL := args.CurrentURI
 	if isHLS {
-		hls, err := prepareHLSPlaybackForAdapter(ctx, validated.FinalURL, policy)
+		hls, err := prepareHLSPlaybackForAdapter(ctx, args.CurrentURI, policy)
 		if err != nil {
 			a.setLastError("SetAVTransportURI rejected: HLS validation failed")
 			a.publishAVTransportLastChange()
@@ -219,7 +181,52 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 		hlsCleanup = hls.Cleanup
 		canSeek = false
 	} else {
-		playbackURI = validated.FinalURL
+		validated, err := validateMediaURL(ctx, args.CurrentURI, policy)
+		if err != nil {
+			// Map typed validator errors to UPnP fault codes per spec table.
+			//   ErrInvalidURL        -> 402 Invalid Args
+			//   ErrSchemeNotAllowed  -> 716 Resource not found
+			//   ErrAddressNotAllowed -> 716
+			//   ErrTooManyRedirects  -> 716
+			//   ErrRedirectFetchFail -> 716
+			//   any other            -> 716 (defensive default — the validator
+			//                            should always wrap a typed sentinel,
+			//                            but if it doesn't we still hide
+			//                            internal-error specifics from the
+			//                            controller).
+			var code upnpErrorCode
+			switch {
+			case errors.Is(err, ErrInvalidURL):
+				code = upnpErrInvalidArgs
+			case errors.Is(err, ErrSchemeNotAllowed),
+				errors.Is(err, ErrAddressNotAllowed),
+				errors.Is(err, ErrTooManyRedirects),
+				errors.Is(err, ErrRedirectFetchFail):
+				code = upnpErrResourceNotFound
+			default:
+				code = upnpErrResourceNotFound
+			}
+			// Record the failure for query-action visibility (TransportStatus
+			// flips to ERROR_OCCURRED). Redact the URL aggressively — DLNA
+			// metadata can carry credentials in CurrentURI userinfo or query
+			// strings, and lastError is surfaced to operators via the UI
+			// status panel in later phases. Don't include the underlying
+			// validator error string here either; sinks could reproduce
+			// internal hostnames or IPs that the operator doesn't want
+			// echoed back to the controller via GetTransportInfo.
+			a.setLastError("SetAVTransportURI rejected URI " + redactURL(args.CurrentURI))
+			a.publishAVTransportLastChange()
+			writeSOAPFault(w, code)
+			return
+		}
+		finalURL = validated.FinalURL
+		if isHLSURLPath(finalURL) || isUnsupportedManifestURLPath(finalURL) {
+			a.setLastError("SetAVTransportURI rejected: unsupported manifest")
+			a.publishAVTransportLastChange()
+			writeSOAPFault(w, upnpErrIllegalMIME)
+			return
+		}
+		playbackURI = finalURL
 	}
 
 	// All checks passed. Store the validated URI + metadata under mu,
@@ -240,7 +247,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 		return
 	}
 	oldCleanup := a.loadedHLSCleanup
-	a.loadedURI = validated.FinalURL
+	a.loadedURI = finalURL
 	a.loadedPlaybackURI = playbackURI
 	a.loadedHLSCleanup = hlsCleanup
 	a.loadedCanSeek = canSeek

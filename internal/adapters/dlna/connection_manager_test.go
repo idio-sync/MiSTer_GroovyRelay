@@ -48,7 +48,7 @@ func TestCM_GetProtocolInfo_SinkEntries(t *testing.T) {
 		t.Errorf("body missing empty Source element; body=%s", body)
 	}
 
-	// Each of the eight sink entries must appear.
+	// Each advertised sink entry must appear.
 	for _, want := range sinkProtocolInfoEntries {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing sink entry %q", want)

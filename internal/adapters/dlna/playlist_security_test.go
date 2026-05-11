@@ -108,6 +108,36 @@ file:///etc/passwd
 	assertNoNewHLSTempDirs(t, before)
 }
 
+func TestPrepareHLSPlaybackRejectsManifestLikeMediaSegment(t *testing.T) {
+	for _, segment := range []string{"nested.m3u8", "manifest.mpd"} {
+		t.Run(segment, func(t *testing.T) {
+			before := snapshotHLSTempDirs(t)
+			playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\n" + segment + "\n#EXT-X-ENDLIST\n"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/playlist.m3u8":
+					_, _ = w.Write([]byte(playlist))
+				case "/" + segment:
+					_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-ENDLIST\n"))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			installHLSTestNetwork(t, nil, srv.URL)
+
+			_, err := prepareHLSPlayback(context.Background(), srv.URL+"/playlist.m3u8", PolicyPrivateOnly)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !errors.Is(err, errHLSInvalid) {
+				t.Fatalf("err = %v, want errHLSInvalid", err)
+			}
+			assertNoNewHLSTempDirs(t, before)
+		})
+	}
+}
+
 func TestPrepareHLSPlaybackRejectsChildRedirectToLinkLocal(t *testing.T) {
 	const playlist = `#EXTM3U
 #EXT-X-TARGETDURATION:4
@@ -186,6 +216,42 @@ seg.ts
 	}
 	if !errors.Is(err, errHLSInvalid) {
 		t.Fatalf("err = %v, want errHLSInvalid", err)
+	}
+}
+
+func TestPrepareHLSPlaybackDoesNotIssuePreflightHEAD(t *testing.T) {
+	const playlist = `#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4,
+seg.ts
+#EXT-X-ENDLIST
+`
+	var headSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			headSeen = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		switch r.URL.Path {
+		case "/playlist.m3u8":
+			_, _ = w.Write([]byte(playlist))
+		case "/seg.ts":
+			_, _ = w.Write([]byte("segment"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	installHLSTestNetwork(t, nil, srv.URL)
+
+	playback, err := prepareHLSPlayback(context.Background(), srv.URL+"/playlist.m3u8", PolicyPrivateOnly)
+	if err != nil {
+		t.Fatalf("prepareHLSPlayback err = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = playback.Cleanup() })
+	if headSeen {
+		t.Fatal("prepareHLSPlayback issued a preflight HEAD outside the hardened HLS GET transport")
 	}
 }
 

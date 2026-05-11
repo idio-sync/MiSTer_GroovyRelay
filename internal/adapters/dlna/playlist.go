@@ -179,6 +179,8 @@ func (p *hlsCachePreparer) rewritePlaylist(ctx context.Context, body string, par
 	seenHeader := false
 	hasEndlist := false
 	expectVariantURI := false
+	sawVariant := false
+	sawMediaResource := false
 
 	for _, line := range lines {
 		line = strings.TrimSuffix(line, "\r")
@@ -237,6 +239,7 @@ func (p *hlsCachePreparer) rewritePlaylist(ctx context.Context, body string, par
 			if hasUnhandledHLSURIAttribute(upper) {
 				return "", fmt.Errorf("%w: STREAM-INF URI-bearing attributes are not supported", errHLSInvalid)
 			}
+			sawVariant = true
 			expectVariantURI = true
 			out.WriteString(line)
 			out.WriteByte('\n')
@@ -265,6 +268,7 @@ func (p *hlsCachePreparer) rewritePlaylist(ctx context.Context, body string, par
 			if err := p.countEntry(); err != nil {
 				return "", err
 			}
+			sawMediaResource = true
 			childURL, err := resolveHLSReference(parentURL, trimmed)
 			if err != nil {
 				return "", err
@@ -283,7 +287,7 @@ func (p *hlsCachePreparer) rewritePlaylist(ctx context.Context, body string, par
 	if expectVariantURI {
 		return "", fmt.Errorf("%w: missing variant playlist URI", errHLSInvalid)
 	}
-	if !hasEndlist {
+	if !hasEndlist && (!sawVariant || sawMediaResource) {
 		return "", fmt.Errorf("%w: live playlists are not supported", errHLSInvalid)
 	}
 	rewritten := out.String()
@@ -315,9 +319,15 @@ func (p *hlsCachePreparer) cacheResource(ctx context.Context, rawURL string, pre
 	if err != nil {
 		return "", err
 	}
+	if isManifestLikeHLSResourceURL(finalURL) {
+		return "", fmt.Errorf("%w: manifest URL is not a media resource", errHLSInvalid)
+	}
 	body, finalURL, err := p.fetchBytes(ctx, finalURL, p.limits.MaxResourceBytes)
 	if err != nil {
 		return "", err
+	}
+	if isManifestLikeHLSResourceURL(finalURL) {
+		return "", fmt.Errorf("%w: manifest URL is not a media resource", errHLSInvalid)
 	}
 
 	ext := sanitizedHLSExt(finalURL, fallbackExt)
@@ -414,11 +424,16 @@ func (p *hlsCachePreparer) writeCacheFile(name string, body []byte) error {
 }
 
 func validateHLSMediaURL(ctx context.Context, rawURL string, policy AddressPolicy) (string, error) {
-	validated, err := validateMediaURL(ctx, rawURL, policy)
+	v := &urlValidator{resolver: defaultDNSResolver}
+	finalURL, _, err := v.parseAndClassify(ctx, rawURL, policy)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errHLSInvalid, err)
 	}
-	return validated.FinalURL, nil
+	return finalURL, nil
+}
+
+func isManifestLikeHLSResourceURL(rawURL string) bool {
+	return isHLSURLPath(rawURL) || isUnsupportedManifestURLPath(rawURL)
 }
 
 func resolveHLSReference(parentURL string, ref string) (string, error) {
