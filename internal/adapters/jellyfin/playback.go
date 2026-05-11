@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -28,6 +29,7 @@ type PlaybackInfoInput struct {
 	MediaSourceID       string // optional
 	AudioStreamIndex    *int   // optional
 	SubtitleStreamIndex *int   // optional
+	MediaKind           core.MediaKind
 }
 
 // PlaybackInfoResult is the relevant slice of JF's
@@ -37,6 +39,10 @@ type PlaybackInfoResult struct {
 	PlaySessionID  string
 	TranscodingURL string // relative path with query string
 	Title          string // human title for status/eventlog; empty if unavailable
+	MediaKind      core.MediaKind
+	Artist         string
+	Album          string
+	Duration       time.Duration
 }
 
 type playbackInfoBody struct {
@@ -62,8 +68,45 @@ type playbackInfoResponseDTO struct {
 	PlaySessionID string `json:"PlaySessionId"`
 	ErrorCode     string `json:"ErrorCode"`
 	Item          struct {
-		Name string `json:"Name"`
+		Type         string   `json:"Type"`
+		Name         string   `json:"Name"`
+		Artists      []string `json:"Artists"`
+		Album        string   `json:"Album"`
+		RunTimeTicks int64    `json:"RunTimeTicks"`
 	} `json:"Item"`
+}
+
+// ItemMetadataInput is the request payload for FetchItemMetadata.
+type ItemMetadataInput struct {
+	ServerURL  string
+	Token      string
+	DeviceID   string
+	DeviceName string
+	Version    string
+	ItemID     string
+	UserID     string
+}
+
+// ItemMetadataResult carries Jellyfin item metadata used to hint audio
+// PlaybackInfo requests and fill music visualizer metadata when
+// PlaybackInfo omits it.
+type ItemMetadataResult struct {
+	ItemID    string
+	Type      string
+	MediaKind core.MediaKind
+	Title     string
+	Artist    string
+	Album     string
+	Duration  time.Duration
+}
+
+type itemMetadataDTO struct {
+	ID           string   `json:"Id"`
+	Type         string   `json:"Type"`
+	Name         string   `json:"Name"`
+	Artists      []string `json:"Artists"`
+	Album        string   `json:"Album"`
+	RunTimeTicks int64    `json:"RunTimeTicks"`
 }
 
 // FetchPlaybackInfo POSTs /Items/{ItemId}/PlaybackInfo and returns
@@ -85,7 +128,7 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 		EnableDirectStream:                  false,
 		EnableTranscoding:                   true,
 		AlwaysBurnInSubtitleWhenTranscoding: true,
-		DeviceProfile:                       BuildDeviceProfile(in.MaxVideoBitrateKbps, in.Preset),
+		DeviceProfile:                       playbackDeviceProfile(in),
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -128,12 +171,115 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 	if title == "" {
 		title = src.Name
 	}
+	if title == "" {
+		title = in.ItemID
+	}
+	if title == "" {
+		title = "Now Playing"
+	}
+	mediaKind := core.MediaKindVideo
+	if in.MediaKind == core.MediaKindMusic || isJellyfinAudioType(dto.Item.Type) {
+		mediaKind = core.MediaKindMusic
+	}
 	return PlaybackInfoResult{
 		MediaSourceID:  src.ID,
 		PlaySessionID:  dto.PlaySessionID,
 		TranscodingURL: src.TranscodingURL,
 		Title:          title,
+		MediaKind:      mediaKind,
+		Artist:         strings.Join(dto.Item.Artists, ", "),
+		Album:          dto.Item.Album,
+		Duration:       durationFromJellyfinTicks(dto.Item.RunTimeTicks),
 	}, nil
+}
+
+func playbackDeviceProfile(in PlaybackInfoInput) DeviceProfile {
+	if in.MediaKind == core.MediaKindMusic {
+		return BuildAudioDeviceProfile(in.MaxVideoBitrateKbps)
+	}
+	return BuildDeviceProfile(in.MaxVideoBitrateKbps, in.Preset)
+}
+
+// FetchItemMetadata fetches /Items/{ItemId} metadata. Callers use the result
+// best-effort: metadata failures should not block playback because
+// PlaybackInfo may still include enough information to start a session.
+func FetchItemMetadata(ctx context.Context, in ItemMetadataInput) (ItemMetadataResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(in.ServerURL, "/")+"/Items/"+url.PathEscape(in.ItemID),
+		nil)
+	if err != nil {
+		return ItemMetadataResult{}, fmt.Errorf("jellyfin: build item metadata request: %w", err)
+	}
+	q := req.URL.Query()
+	if in.UserID != "" {
+		q.Set("UserId", in.UserID)
+		req.URL.RawQuery = q.Encode()
+	}
+	req.Header.Set("Authorization", BuildAuthHeader(AuthHeaderInput{
+		Token: in.Token, Client: jfClientName, Device: effectiveDeviceName(in.DeviceName),
+		DeviceID: in.DeviceID, Version: in.Version,
+	}))
+
+	resp, err := jfHTTPClient.Do(req)
+	if err != nil {
+		return ItemMetadataResult{}, fmt.Errorf("jellyfin: item metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ItemMetadataResult{}, fmt.Errorf("jellyfin: item metadata: HTTP %d", resp.StatusCode)
+	}
+
+	var dto itemMetadataDTO
+	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
+		return ItemMetadataResult{}, fmt.Errorf("jellyfin: decode item metadata: %w", err)
+	}
+	return itemMetadataFromDTO(dto), nil
+}
+
+func itemMetadataFromDTO(dto itemMetadataDTO) ItemMetadataResult {
+	kind := core.MediaKindVideo
+	if isJellyfinAudioType(dto.Type) {
+		kind = core.MediaKindMusic
+	}
+	return ItemMetadataResult{
+		ItemID:    dto.ID,
+		Type:      dto.Type,
+		MediaKind: kind,
+		Title:     dto.Name,
+		Artist:    strings.Join(dto.Artists, ", "),
+		Album:     dto.Album,
+		Duration:  durationFromJellyfinTicks(dto.RunTimeTicks),
+	}
+}
+
+func mergePlaybackMetadata(info PlaybackInfoResult, meta ItemMetadataResult) PlaybackInfoResult {
+	if info.MediaKind != core.MediaKindMusic && meta.MediaKind == core.MediaKindMusic {
+		info.MediaKind = core.MediaKindMusic
+	}
+	if info.Title == "" && meta.Title != "" {
+		info.Title = meta.Title
+	}
+	if info.Artist == "" {
+		info.Artist = meta.Artist
+	}
+	if info.Album == "" {
+		info.Album = meta.Album
+	}
+	if info.Duration == 0 {
+		info.Duration = meta.Duration
+	}
+	return info
+}
+
+func isJellyfinAudioType(itemType string) bool {
+	return strings.EqualFold(itemType, "Audio")
+}
+
+func durationFromJellyfinTicks(ticks int64) time.Duration {
+	if ticks <= 0 {
+		return 0
+	}
+	return time.Duration(ticks) * 100 * time.Nanosecond
 }
 
 // BuildAbsoluteStreamURL converts a relative TranscodingUrl into an
@@ -173,7 +319,7 @@ type playRequestInput struct {
 // current key.
 func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 	refKey := in.ItemID + ":" + in.PlayInfo.PlaySessionID
-	return core.SessionRequest{
+	req := core.SessionRequest{
 		StreamURL:     BuildAbsoluteStreamURL(in.ServerURL, in.PlayInfo.TranscodingURL, in.Token),
 		InputHeaders:  nil,
 		SeekOffsetMs:  int(in.StartPositionTicks / 10_000),
@@ -185,7 +331,22 @@ func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 		Source:        "jellyfin",
 		DirectPlay:    false,
 		OnStop:        a.makeOnStop(refKey),
+		Title:         in.PlayInfo.Title,
 	}
+	if in.PlayInfo.MediaKind == core.MediaKindMusic {
+		req.MediaKind = core.MediaKindMusic
+		req.Visualizer = core.VisualizerRequest{
+			Enabled: true,
+			Mode:    core.VisualizerModeRetroAnalyzer,
+			Metadata: core.VisualizerMetadata{
+				Title:    in.PlayInfo.Title,
+				Artist:   in.PlayInfo.Artist,
+				Album:    in.PlayInfo.Album,
+				Duration: in.PlayInfo.Duration,
+			},
+		}
+	}
+	return req
 }
 
 // makeOnStop returns the OnStop closure to attach to a SessionRequest.

@@ -30,7 +30,7 @@ type DirectPlayProfile struct {
 type TranscodingProfile struct {
 	Container             string `json:"Container"`
 	Type                  string `json:"Type"`
-	VideoCodec            string `json:"VideoCodec"`
+	VideoCodec            string `json:"VideoCodec,omitempty"`
 	AudioCodec            string `json:"AudioCodec"`
 	Protocol              string `json:"Protocol"`
 	Context               string `json:"Context"`
@@ -105,6 +105,28 @@ func BuildDeviceProfile(maxVideoBitrateKbps int, preset core.ModelinePreset) Dev
 			{Format: "ass", Method: "Encode"},
 			{Format: "pgs", Method: "Encode"},
 		},
+		ContainerProfiles: []ContainerProfile{},
+	}
+}
+
+// BuildAudioDeviceProfile constructs the narrower profile used for
+// audio/music PlaybackInfo requests. Video PlaybackInfo continues to use
+// BuildDeviceProfile so existing video negotiation stays unchanged.
+func BuildAudioDeviceProfile(maxStreamingBitrateKbps int) DeviceProfile {
+	return DeviceProfile{
+		Name:                "GroovyRelay",
+		MaxStreamingBitrate: maxStreamingBitrateKbps * 1000,
+		DirectPlayProfiles:  []DirectPlayProfile{},
+		TranscodingProfiles: []TranscodingProfile{{
+			Container:        "mp3",
+			Type:             "Audio",
+			AudioCodec:       "mp3",
+			Protocol:         "http",
+			Context:          "Streaming",
+			MaxAudioChannels: "2",
+		}},
+		CodecProfiles:     []CodecProfile{},
+		SubtitleProfiles:  []SubtitleProfile{},
 		ContainerProfiles: []ContainerProfile{},
 	}
 }

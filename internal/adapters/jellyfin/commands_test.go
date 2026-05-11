@@ -106,6 +106,192 @@ func TestHandlePlay_PlayNow_CallsStartSession(t *testing.T) {
 	if !strings.Contains(req.StreamURL, "/videos/itm-1/master.m3u8") {
 		t.Errorf("StreamURL = %q", req.StreamURL)
 	}
+	if req.MediaKind == core.MediaKindMusic {
+		t.Errorf("MediaKind = %q, want video/default", req.MediaKind)
+	}
+	if req.Visualizer.Enabled {
+		t.Errorf("Visualizer.Enabled = true, want false for video")
+	}
+}
+
+func startTestAudioPlaybackInfoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/Items/song-1":
+			_, _ = w.Write([]byte(`{
+				"Id":"song-1",
+				"Type":"Audio",
+				"Name":"Age of Consent",
+				"Artists":["New Order"],
+				"Album":"Power Corruption & Lies",
+				"RunTimeTicks":3150000000
+			}`))
+		case strings.HasSuffix(r.URL.Path, "/PlaybackInfo"):
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-audio","Name":"Audio Source","TranscodingUrl":"/audio/song-1/universal?MediaSourceId=src-audio"}],
+				"PlaySessionId":"ps-audio",
+				"Item":{
+					"Type":"Audio",
+					"Name":"Age of Consent",
+					"Artists":["New Order"],
+					"Album":"Power Corruption & Lies",
+					"RunTimeTicks":3150000000
+				}
+			}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestHandlePlay_AudioItemStartsMusicVisualizerSession(t *testing.T) {
+	jfSrv := startTestAudioPlaybackInfoServer(t)
+
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":            []string{"song-1"},
+		"StartPositionTicks": 20_000_000,
+		"PlayCommand":        "PlayNow",
+	}))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		n := len(mgr.reqs)
+		mgr.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	req := mgr.lastReq()
+	if req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", req.MediaKind)
+	}
+	if !req.Visualizer.Enabled {
+		t.Fatalf("Visualizer.Enabled = false, want true")
+	}
+	if req.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
+		t.Errorf("Visualizer.Mode = %q, want retro analyzer", req.Visualizer.Mode)
+	}
+	if req.Title != "Age of Consent" {
+		t.Errorf("Title = %q, want Age of Consent", req.Title)
+	}
+	if req.Visualizer.Metadata.Title != "Age of Consent" {
+		t.Errorf("metadata title = %q, want Age of Consent", req.Visualizer.Metadata.Title)
+	}
+	if req.Visualizer.Metadata.Artist != "New Order" {
+		t.Errorf("metadata artist = %q, want New Order", req.Visualizer.Metadata.Artist)
+	}
+	if req.Visualizer.Metadata.Album != "Power Corruption & Lies" {
+		t.Errorf("metadata album = %q, want Power Corruption & Lies", req.Visualizer.Metadata.Album)
+	}
+	if req.Visualizer.Metadata.Duration != 5*time.Minute+15*time.Second {
+		t.Errorf("metadata duration = %v, want 5m15s", req.Visualizer.Metadata.Duration)
+	}
+	if req.SeekOffsetMs != 2000 {
+		t.Errorf("SeekOffsetMs = %d, want 2000", req.SeekOffsetMs)
+	}
+	if !req.Capabilities.CanSeek || !req.Capabilities.CanPause {
+		t.Errorf("Capabilities = %+v, want seek and pause", req.Capabilities)
+	}
+	if !strings.HasPrefix(req.StreamURL, jfSrv.URL+"/audio/song-1/universal") {
+		t.Errorf("StreamURL = %q, want absolute Jellyfin audio URL", req.StreamURL)
+	}
+	if !strings.Contains(req.StreamURL, "api_key=tok") {
+		t.Errorf("StreamURL missing api_key: %s", req.StreamURL)
+	}
+}
+
+func TestHandlePlaystate_NextTrackAudioItemStartsMusicVisualizerSession(t *testing.T) {
+	jfSrv := startTestAudioPlaybackInfoServer(t)
+
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.queue = []QueuedItem{{ItemID: "song-1"}}
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "NextTrack"}))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		n := len(mgr.reqs)
+		mgr.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	req := mgr.lastReq()
+	if req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", req.MediaKind)
+	}
+	if !req.Visualizer.Enabled {
+		t.Fatalf("Visualizer.Enabled = false, want true")
+	}
+	if !strings.Contains(req.StreamURL, "/audio/song-1/universal") {
+		t.Errorf("StreamURL = %q, want audio transcode URL", req.StreamURL)
+	}
+}
+
+func TestSetAudioStreamIndex_AudioTrackSwitchKeepsMusicVisualizerSession(t *testing.T) {
+	jfSrv := startTestAudioPlaybackInfoServer(t)
+
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePlaying,
+		Position:   42 * time.Second,
+		AdapterRef: "song-1:ps-old",
+	}}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "song-1:ps-old"
+
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetAudioStreamIndex",
+		"Arguments": map[string]string{"Index": "1"},
+	}))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		n := len(mgr.reqs)
+		mgr.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	req := mgr.lastReq()
+	if req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", req.MediaKind)
+	}
+	if !req.Visualizer.Enabled {
+		t.Fatalf("Visualizer.Enabled = false, want true")
+	}
+	if req.SeekOffsetMs != 42_000 {
+		t.Errorf("SeekOffsetMs = %d, want 42000", req.SeekOffsetMs)
+	}
 }
 
 func TestHandlePlay_PlaybackInfoErrorCode_NoStartSession(t *testing.T) {

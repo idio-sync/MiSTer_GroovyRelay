@@ -70,6 +70,7 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, p.ItemIDs[0])
 		info, err := FetchPlaybackInfo(ctx, PlaybackInfoInput{
 			ServerURL:           cfg.ServerURL,
 			Token:               tok.AccessToken,
@@ -84,11 +85,13 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			MediaSourceID:       p.MediaSourceID,
 			AudioStreamIndex:    p.AudioStreamIndex,
 			SubtitleStreamIndex: p.SubtitleStreamIndex,
+			MediaKind:           meta.MediaKind,
 		})
 		if err != nil {
 			slog.Error("jellyfin: PlaybackInfo failed", "err", err)
 			return
 		}
+		info = mergePlaybackMetadata(info, meta)
 
 		req := a.buildSessionRequest(playRequestInput{
 			ItemID:             p.ItemIDs[0],
@@ -97,7 +100,6 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			ServerURL:          cfg.ServerURL,
 			Token:              tok.AccessToken,
 		})
-		req.Title = info.Title
 
 		prev := a.beginSelfPreempt(req.AdapterRef)
 		if a.core == nil {
@@ -127,6 +129,23 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			},
 		})
 	}()
+}
+
+func (a *Adapter) fetchItemMetadataBestEffort(ctx context.Context, cfg Config, tok Token, itemID string) ItemMetadataResult {
+	meta, err := FetchItemMetadata(ctx, ItemMetadataInput{
+		ServerURL:  cfg.ServerURL,
+		Token:      tok.AccessToken,
+		DeviceID:   a.deviceID,
+		DeviceName: cfg.DeviceName,
+		Version:    linkVersion,
+		UserID:     tok.UserID,
+		ItemID:     itemID,
+	})
+	if err != nil {
+		slog.Debug("jellyfin: item metadata unavailable; continuing with PlaybackInfo", "item", itemID, "err", err)
+		return ItemMetadataResult{}
+	}
+	return meta
 }
 
 // snapshotNowPlayingQueue returns a QueueItem slice with the current
@@ -324,6 +343,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 		defer cancel()
 
 		// 2) Build new SessionRequest with SeekOffsetMs from the snapshot.
+		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, itemID)
 		info, err := FetchPlaybackInfo(ctx, PlaybackInfoInput{
 			ServerURL:           cfg.ServerURL,
 			Token:               tok.AccessToken,
@@ -337,11 +357,13 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 			StartPositionTicks:  posTicks,
 			AudioStreamIndex:    in.audioIdx,
 			SubtitleStreamIndex: in.subtitleIdx,
+			MediaKind:           meta.MediaKind,
 		})
 		if err != nil {
 			slog.Error("jellyfin: trackSwitch PlaybackInfo failed", "err", err)
 			return
 		}
+		info = mergePlaybackMetadata(info, meta)
 		req := a.buildSessionRequest(playRequestInput{
 			ItemID:             itemID,
 			StartPositionTicks: posTicks,
@@ -349,7 +371,6 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 			ServerURL:          cfg.ServerURL,
 			Token:              tok.AccessToken,
 		})
-		req.Title = info.Title
 
 		// 3) Reserve currentRefKey atomically (rollback on error).
 		prev := a.beginSelfPreempt(req.AdapterRef)
