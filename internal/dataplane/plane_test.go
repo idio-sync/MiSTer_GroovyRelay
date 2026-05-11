@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/pierrec/lz4/v4"
 )
 
 func requireUDPSockets(t *testing.T, err error) {
@@ -151,68 +153,147 @@ func TestSendField_RawFallbackOnIncompressible(t *testing.T) {
 }
 
 func TestSendField_DoesNotEmitDeltaLZ4ByDefault(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "")
+
 	const fieldBytes = 720 * 240 * 3
-
-	listener, err := fakemister.NewListener("127.0.0.1:0")
-	requireUDPSockets(t, err)
-
-	cmds := make(chan fakemister.Command, 8)
-	fields := make(chan fakemister.FieldEvent, 2)
-	audios := make(chan fakemister.AudioEvent, 1)
-	runDone := make(chan struct{})
-	go func() {
-		listener.RunWithFields(cmds, fields, audios, func() uint32 { return fieldBytes })
-		close(runDone)
-	}()
-	t.Cleanup(func() {
-		_ = listener.Close()
-		<-runDone
-	})
-
-	addr := listener.Addr().(*net.UDPAddr)
-	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
-	requireUDPSockets(t, err)
-	defer sender.Close()
-
+	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		Sender:        sender,
 		LZ4Enabled:    true,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
 	})
+	p.sender = sender
 
-	base := make([]byte, fieldBytes)
-	if _, err := cryptorand.Read(base); err != nil {
-		t.Fatal(err)
-	}
+	base := repeatedTileField(fieldBytes, deterministicTile(4096))
 	next := append([]byte(nil), base...)
 	for i := 0; i < 64; i++ {
-		next[i*1024] ^= byte(i + 1)
+		next[i*4096] ^= byte(i + 1)
 	}
 
 	p.sendField(1, 0, base)
-	first := awaitFieldEvent(t, fields)
-	if first.Header.Compressed || first.Header.Delta {
-		t.Fatalf("seed field header = %+v, want RAW full field", first.Header)
-	}
-
 	p.sendField(3, 0, next)
-	second := awaitFieldEvent(t, fields)
-	if second.Header.Compressed || second.Header.Delta {
-		t.Fatalf("second field header = %+v, want RAW full field", second.Header)
+
+	if len(sender.headers) != 2 || len(sender.payloads) != 2 {
+		t.Fatalf("got %d headers and %d payloads, want 2 of each", len(sender.headers), len(sender.payloads))
+	}
+	for i, header := range sender.headers {
+		if got := blitPayloadType(header); got != groovy.BlitHeaderLZ4 {
+			t.Fatalf("header %d payload type = %d, want full LZ4 with delta disabled", i, got)
+		}
 	}
 
-	decoder := fakemister.NewFieldDecoder()
-	if _, err := decoder.Decode(first, fieldBytes); err != nil {
-		t.Fatalf("decode seed field: %v", err)
-	}
-	got, err := decoder.Decode(second, fieldBytes)
+	got, err := groovy.LZ4Decompress(sender.payloads[0], fieldBytes)
 	if err != nil {
-		t.Fatalf("decode delta field: %v", err)
+		t.Fatalf("decompress seed field: %v", err)
+	}
+	if !bytes.Equal(got, base) {
+		t.Fatal("seed field payload decoded to different pixels")
+	}
+	got, err = groovy.LZ4Decompress(sender.payloads[1], fieldBytes)
+	if err != nil {
+		t.Fatalf("decompress second field: %v", err)
 	}
 	if !bytes.Equal(got, next) {
-		t.Fatal("delta field decoded to different pixels")
+		t.Fatal("second field payload decoded to different pixels")
+	}
+}
+
+func TestSendField_AdaptiveDeltaOptInEmitsDeltaWhenUseful(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+
+	base := repeatedTileField(fieldBytes, deterministicTile(4096))
+	next := append([]byte(nil), base...)
+	for i := 0; i < 64; i++ {
+		next[i*4096]++
+	}
+
+	p.sendField(1, 0, base)
+	p.sendField(3, 0, next)
+
+	if len(sender.headers) < 2 || len(sender.payloads) < 2 {
+		t.Fatalf("got %d headers and %d payloads, want at least 2 of each", len(sender.headers), len(sender.payloads))
+	}
+	if got := blitPayloadType(sender.headers[0]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("first payload type = %d, want LZ4 full", got)
+	}
+	if got := blitPayloadType(sender.headers[1]); got != groovy.BlitHeaderLZ4Delta {
+		t.Fatalf("second payload type = %d, want delta LZ4", got)
+	}
+
+	gotDelta, err := groovy.LZ4Decompress(sender.payloads[1], fieldBytes)
+	if err != nil {
+		t.Fatalf("decompress delta payload: %v", err)
+	}
+	wantDelta := make([]byte, fieldBytes)
+	writeFieldSubDeltaInto(wantDelta, next, base)
+	if !bytes.Equal(gotDelta, wantDelta) {
+		t.Fatal("delta payload is not byte-wrap subtraction against previous raw field")
+	}
+}
+
+func TestSendField_DeltaEnvWithLZ4DisabledSendsRaw(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    false,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+
+	p.sendField(1, 0, repeatedTileField(fieldBytes, []byte{0x11, 0x22, 0x33}))
+
+	if len(sender.headers) != 1 {
+		t.Fatalf("headers = %d, want 1", len(sender.headers))
+	}
+	if got := blitPayloadType(sender.headers[0]); got != groovy.BlitHeaderRaw {
+		t.Fatalf("payload type = %d, want RAW", got)
+	}
+}
+
+func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{failPayloadSend: 1}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+
+	base := repeatedTileField(fieldBytes, []byte{0x10, 0x20, 0x30, 0x40, 0x50})
+	next := append([]byte(nil), base...)
+	next[0]++
+
+	p.sendField(1, 0, base)
+	p.sendField(3, 0, next)
+
+	if len(sender.headers) < 2 {
+		t.Fatalf("headers = %d, want at least 2", len(sender.headers))
+	}
+	if got := blitPayloadType(sender.headers[1]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("second payload type = %d, want full LZ4 because failed send must not seed history", got)
 	}
 }
 
@@ -310,6 +391,331 @@ func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) 
 	}
 }
 
+func TestSendField_DeltaEnabledSlowWarningLogsSelectionFields(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{congestionDelay: time.Millisecond}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+	p.periodMsNumer = 1
+	p.periodMsDenom = int64(time.Millisecond)
+
+	base := repeatedTileField(fieldBytes, deterministicTile(4096))
+	next := append([]byte(nil), base...)
+	for i := 0; i < 64; i++ {
+		next[i*4096]++
+	}
+
+	p.sendField(1, 0, base)
+	p.lastBudgetWarn = time.Time{}
+	logBuf.Reset()
+	p.sendField(3, 0, next)
+
+	if len(sender.payloads) < 2 {
+		t.Fatalf("payloads = %d, want at least 2", len(sender.payloads))
+	}
+	deltaBytes := len(sender.payloads[1])
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"delta_lz4_enabled=true",
+		"delta_lz4_available=true",
+		"delta_lz4_ok=true",
+		"delta_lz4_selected=true",
+		"delta_lz4_bytes=",
+		"delta_lz4_savings_bytes=",
+		"compressed_bytes=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("slow warning missing %q\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "delta_lz4_bytes="+strconv.Itoa(deltaBytes)) {
+		t.Fatalf("slow warning delta_lz4_bytes does not match sent delta payload %d\n%s", deltaBytes, out)
+	}
+	if !strings.Contains(out, "compressed_bytes="+strconv.Itoa(deltaBytes)) {
+		t.Fatalf("slow warning compressed_bytes does not match sent payload %d\n%s", deltaBytes, out)
+	}
+}
+
+func TestSendField_DeltaEnabledSlowWarningLogsUnavailableDelta(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{congestionDelay: time.Millisecond}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+	p.periodMsNumer = 1
+	p.periodMsDenom = int64(time.Millisecond)
+
+	raw := repeatedTileField(fieldBytes, []byte{0x33, 0x44, 0x55, 0x66})
+	p.sendField(1, 0, raw)
+
+	if len(sender.payloads) != 1 {
+		t.Fatalf("payloads = %d, want 1", len(sender.payloads))
+	}
+	sentBytes := len(sender.payloads[0])
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"delta_lz4_enabled=true",
+		"delta_lz4_available=false",
+		"delta_lz4_ok=false",
+		"delta_lz4_selected=false",
+		"delta_lz4_bytes=0",
+		"compressed_bytes=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("slow warning missing %q\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "compressed_bytes="+strconv.Itoa(sentBytes)) {
+		t.Fatalf("slow warning compressed_bytes does not match sent payload %d\n%s", sentBytes, out)
+	}
+}
+
+func TestShouldUseDeltaLZ4_UsesStrictNinetyFivePercentThreshold(t *testing.T) {
+	if !shouldUseDeltaLZ4(100, 94) {
+		t.Fatal("94/100 should select delta")
+	}
+	if shouldUseDeltaLZ4(100, 95) {
+		t.Fatal("95/100 should not select delta because threshold is strict")
+	}
+	if shouldUseDeltaLZ4(100, 96) {
+		t.Fatal("96/100 should not select delta")
+	}
+	if shouldUseDeltaLZ4(0, 0) {
+		t.Fatal("zero sizes should not select delta")
+	}
+}
+
+func TestFieldHistoryInvalidatesOnLengthMismatch(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+	raw := []byte{1, 2, 3, 4}
+	p.rememberFieldHistory(0, raw)
+	if !p.hasFieldHistory(0, raw) {
+		t.Fatal("history missing immediately after remember")
+	}
+	if p.hasFieldHistory(0, []byte{1, 2, 3}) {
+		t.Fatal("history should be invalid for different raw length")
+	}
+	if p.fieldPrevValid[0] {
+		t.Fatal("history validity bit should be cleared after length mismatch")
+	}
+}
+
+func TestFieldHistoryInvalidatesOnIdentityMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Plane)
+	}{
+		{
+			name: "width",
+			mutate: func(p *Plane) {
+				p.cfg.FieldWidth = 2
+			},
+		},
+		{
+			name: "height",
+			mutate: func(p *Plane) {
+				p.cfg.FieldHeight = 2
+			},
+		},
+		{
+			name: "bytes_per_pixel",
+			mutate: func(p *Plane) {
+				p.cfg.BytesPerPixel = 2
+			},
+		},
+		{
+			name: "rgb_mode",
+			mutate: func(p *Plane) {
+				p.cfg.RGBMode = groovy.RGBMode565
+			},
+		},
+		{
+			name: "interlace",
+			mutate: func(p *Plane) {
+				p.cfg.Modeline.Interlace = 1
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GROOVY_DELTA_LZ4", "1")
+			p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+			raw := []byte{1, 2, 3, 4}
+			p.rememberFieldHistory(0, raw)
+			if !p.hasFieldHistory(0, raw) {
+				t.Fatal("history missing immediately after remember")
+			}
+			tc.mutate(p)
+			if p.hasFieldHistory(0, raw) {
+				t.Fatalf("history should be invalid after %s changes", tc.name)
+			}
+			if p.fieldPrevValid[0] {
+				t.Fatal("history validity bit should be cleared after identity mismatch")
+			}
+		})
+	}
+}
+
+func TestEnvDeltaLZ4DefaultsOff(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "")
+	if envDeltaLZ4() {
+		t.Fatal("envDeltaLZ4() = true, want false by default")
+	}
+}
+
+func TestEnvDeltaLZ4AcceptedValues(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{value: "1", want: true},
+		{value: "true", want: true},
+		{value: "t", want: true},
+		{value: "yes", want: true},
+		{value: "y", want: true},
+		{value: "on", want: true},
+		{value: "0", want: false},
+		{value: "false", want: false},
+		{value: "f", want: false},
+		{value: "no", want: false},
+		{value: "n", want: false},
+		{value: "off", want: false},
+	}
+	for _, c := range cases {
+		t.Run(c.value, func(t *testing.T) {
+			t.Setenv("GROOVY_DELTA_LZ4", c.value)
+			if got := envDeltaLZ4(); got != c.want {
+				t.Fatalf("envDeltaLZ4() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEnvDeltaLZ4DisabledValuesDoNotWarn(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	for _, value := range []string{"0", "false", "f", "no", "n", "off"} {
+		t.Run(value, func(t *testing.T) {
+			logBuf.Reset()
+			t.Setenv("GROOVY_DELTA_LZ4", value)
+			if envDeltaLZ4() {
+				t.Fatalf("envDeltaLZ4() = true for %q, want false", value)
+			}
+			if strings.Contains(logBuf.String(), "invalid GROOVY_DELTA_LZ4; delta-LZ4 disabled") {
+				t.Fatalf("disabled value %q warned unexpectedly\n%s", value, logBuf.String())
+			}
+		})
+	}
+}
+
+func TestEnvDeltaLZ4InvalidValueWarnsAndDisables(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "banana")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	if envDeltaLZ4() {
+		t.Fatal("envDeltaLZ4() = true for invalid value, want false")
+	}
+	if !strings.Contains(logBuf.String(), "invalid GROOVY_DELTA_LZ4; delta-LZ4 disabled") {
+		t.Fatalf("missing invalid env warning\n%s", logBuf.String())
+	}
+}
+
+func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "")
+	t.Setenv("GROOVY_FIELD_DIAG", "")
+
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	if p.deltaLZ4Enabled || p.fieldPrev[0] != nil || p.fieldDeltaScratch != nil {
+		t.Fatalf("default plane allocated delta history: enabled=%v prev=%v scratch=%v",
+			p.deltaLZ4Enabled, p.fieldPrev[0] != nil, p.fieldDeltaScratch != nil)
+	}
+
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+	p = NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	if !p.deltaLZ4Enabled {
+		t.Fatal("deltaLZ4Enabled = false, want true")
+	}
+	if len(p.fieldPrev[0]) != 720*240*3 || len(p.fieldPrev[1]) != 720*240*3 {
+		t.Fatalf("field history buffers not allocated to field size: %d %d",
+			len(p.fieldPrev[0]), len(p.fieldPrev[1]))
+	}
+	if len(p.fieldDeltaScratch) != 720*240*3 {
+		t.Fatalf("fieldDeltaScratch len = %d, want %d", len(p.fieldDeltaScratch), 720*240*3)
+	}
+	if len(p.fieldDeltaLZ4Scratch) != lz4.CompressBlockBound(720*240*3) {
+		t.Fatalf("fieldDeltaLZ4Scratch len = %d, want CompressBlockBound", len(p.fieldDeltaLZ4Scratch))
+	}
+}
+
+func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    false,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+	})
+	if p.deltaLZ4Enabled {
+		t.Fatal("deltaLZ4Enabled = true with LZ4 disabled, want false")
+	}
+	if strings.Contains(logBuf.String(), "adaptive delta-LZ4 enabled") {
+		t.Fatalf("delta-LZ4 logged as enabled with LZ4 disabled\n%s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "adaptive delta-LZ4 requested but LZ4 disabled") {
+		t.Fatalf("missing disabled-by-LZ4 log\n%s", logBuf.String())
+	}
+}
+
 func TestWriteFieldSubDeltaInto_UsesByteWrapSubtraction(t *testing.T) {
 	current := []byte{0x12, 0x00, 0xff, 0x7f}
 	previous := []byte{0x10, 0xff, 0x00, 0x80}
@@ -321,6 +727,56 @@ func TestWriteFieldSubDeltaInto_UsesByteWrapSubtraction(t *testing.T) {
 	if !bytes.Equal(dst, want) {
 		t.Fatalf("delta = % x, want % x", dst, want)
 	}
+}
+
+type scriptedFieldSender struct {
+	headers         [][]byte
+	payloads        [][]byte
+	failPayloadSend int
+	payloadSends    int
+	congestionDelay time.Duration
+}
+
+func (s *scriptedFieldSender) WaitForCongestion() {
+	if s.congestionDelay > 0 {
+		time.Sleep(s.congestionDelay)
+	}
+}
+
+func (s *scriptedFieldSender) Send(data []byte) error {
+	s.headers = append(s.headers, append([]byte(nil), data...))
+	return nil
+}
+
+func (s *scriptedFieldSender) SendPayload(data []byte) error {
+	s.payloadSends++
+	if s.failPayloadSend == s.payloadSends {
+		return errors.New("scripted payload send failure")
+	}
+	s.payloads = append(s.payloads, append([]byte(nil), data...))
+	return nil
+}
+
+func (s *scriptedFieldSender) MarkBlitSent(int) {}
+
+func repeatedTileField(length int, tile []byte) []byte {
+	out := make([]byte, length)
+	for i := range out {
+		out[i] = tile[i%len(tile)]
+	}
+	return out
+}
+
+func deterministicTile(length int) []byte {
+	tile := make([]byte, length)
+	for i := range tile {
+		tile[i] = byte(i*37 + i/7)
+	}
+	return tile
+}
+
+func blitPayloadType(header []byte) int {
+	return len(header)
 }
 
 func awaitFieldEvent(t *testing.T, fields <-chan fakemister.FieldEvent) fakemister.FieldEvent {

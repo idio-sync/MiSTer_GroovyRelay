@@ -298,7 +298,7 @@ type BlitOpts struct {
 //	 8 bytes — raw uncompressed, full field
 //	 9 bytes — duplicate-of-previous (no payload follows)
 //	12 bytes — LZ4, full field
-//	13 bytes — LZ4 delta (XOR vs previous)
+//	13 bytes — LZ4 delta (current - previous, modulo 256)
 func BuildBlitHeader(o BlitOpts) []byte {
 	var length int
 	switch {

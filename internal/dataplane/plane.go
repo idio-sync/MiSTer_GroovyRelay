@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +28,13 @@ type processHandle interface {
 	AudioPipe() io.Reader
 	Done() <-chan struct{}
 	Stop()
+}
+
+type fieldSender interface {
+	WaitForCongestion()
+	Send([]byte) error
+	SendPayload([]byte) error
+	MarkBlitSent(int)
 }
 
 // spawnProcess is the indirection Run uses to obtain its processHandle.
@@ -69,6 +77,9 @@ const (
 	framePoolSlots           = videoChCap + 2
 	lz4FallbackDebugInterval = time.Second
 	fieldDiagEnv             = "GROOVY_FIELD_DIAG"
+	deltaLZ4Env              = "GROOVY_DELTA_LZ4"
+	deltaLZ4WinNumerator     = 95
+	deltaLZ4WinDenominator   = 100
 )
 
 // Startup prebuffer defaults. The field tick loop runs at 59.94 Hz;
@@ -102,6 +113,7 @@ const (
 //  7. CLOSE on ctx cancel or ffmpeg exit.
 type Plane struct {
 	cfg            PlaneConfig
+	sender         fieldSender
 	proc           processHandle
 	positionFields atomic.Int64  // fields emitted since session start; Position() derives ms
 	framesTotal    atomic.Uint64 // ffmpeg frames consumed since session start
@@ -140,17 +152,18 @@ type Plane struct {
 	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 
-	// Optional diagnostic state enabled by GROOVY_FIELD_DIAG=true. It is
-	// deliberately kept off the default hot path: when enabled, each sent
-	// field is copied into the previous same-parity slot so slow-field
-	// warnings can report whether a hypothetical delta-LZ4 payload would
-	// have been smaller. Owned by the tick goroutine.
-	fieldDiagEnabled      bool
-	fieldDiagPrev         [2][]byte
-	fieldDiagPrevValid    [2]bool
-	fieldDiagDeltaScratch []byte
-	fieldDiagLZ4Scratch   []byte
-	fieldDiagLZ4          lz4.Compressor
+	// Optional delta/diagnostic state. Owned by the tick goroutine. Allocated
+	// only when GROOVY_DELTA_LZ4 or GROOVY_FIELD_DIAG is enabled so the default
+	// hot path keeps the existing buffer profile.
+	deltaLZ4Enabled  bool
+	fieldDiagEnabled bool
+	fieldPrev        [2][]byte
+	fieldPrevID      [2]fieldHistoryIdentity
+	fieldPrevValid   [2]bool
+
+	fieldDeltaScratch    []byte
+	fieldDeltaLZ4Scratch []byte
+	fieldDeltaLZ4        lz4.Compressor
 
 	// Period of one field in milliseconds, as the rational
 	// periodMsNumer/periodMsDenom precomputed at NewPlane from
@@ -183,21 +196,33 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	frameBytes := cfg.FieldWidth * videoHeight * cfg.BytesPerPixel
 	fieldBytes := cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
 	fieldDiagEnabled := envFieldDiagnostics()
+	deltaLZ4Requested := envDeltaLZ4()
+	deltaLZ4Enabled := cfg.LZ4Enabled && deltaLZ4Requested
+	if deltaLZ4Enabled {
+		slog.Info("adaptive delta-LZ4 enabled",
+			"env", deltaLZ4Env)
+	} else if deltaLZ4Requested && !cfg.LZ4Enabled {
+		slog.Info("adaptive delta-LZ4 requested but LZ4 disabled",
+			"env", deltaLZ4Env)
+	}
+	fieldHistoryEnabled := fieldDiagEnabled || deltaLZ4Enabled
 
 	p := &Plane{
 		cfg:              cfg,
+		sender:           cfg.Sender,
 		done:             make(chan struct{}),
 		framePool:        NewFramePool(framePoolSlots, frameBytes),
 		fieldScratch:     make([]byte, fieldBytes),
 		lz4Scratch:       make([]byte, lz4.CompressBlockBound(fieldBytes)),
 		headerScratch:    make([]byte, groovy.BlitHeaderLZ4Delta),
+		deltaLZ4Enabled:  deltaLZ4Enabled,
 		fieldDiagEnabled: fieldDiagEnabled,
 	}
-	if fieldDiagEnabled {
-		p.fieldDiagPrev[0] = make([]byte, fieldBytes)
-		p.fieldDiagPrev[1] = make([]byte, fieldBytes)
-		p.fieldDiagDeltaScratch = make([]byte, fieldBytes)
-		p.fieldDiagLZ4Scratch = make([]byte, lz4.CompressBlockBound(fieldBytes))
+	if fieldHistoryEnabled {
+		p.fieldPrev[0] = make([]byte, fieldBytes)
+		p.fieldPrev[1] = make([]byte, fieldBytes)
+		p.fieldDeltaScratch = make([]byte, fieldBytes)
+		p.fieldDeltaLZ4Scratch = make([]byte, lz4.CompressBlockBound(fieldBytes))
 	}
 	// Derive field period (in ms) as a rational from the modeline's
 	// FieldRateRatio: period_ms = 1000 / rate_hz, with rate_hz as
@@ -823,13 +848,16 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
+	choice := fieldPayloadChoice{payload: raw}
 	if p.cfg.LZ4Enabled {
 		t := time.Now()
 		if n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw); ok {
-			payload = p.lz4Scratch[:n]
+			choice = p.chooseFieldPayload(field, raw, p.lz4Scratch[:n], ok)
+			payload = choice.payload
 			opts.Compressed = true
-			opts.CompressedSize = uint32(n)
-			compressedLen = n
+			opts.CompressedSize = uint32(len(payload))
+			opts.Delta = choice.delta
+			compressedLen = len(payload)
 		} else {
 			p.logLZ4RawFallback(len(raw), time.Now())
 		}
@@ -837,22 +865,22 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	}
 
 	t := time.Now()
-	p.cfg.Sender.WaitForCongestion()
+	p.sender.WaitForCongestion()
 	congestionElapsed = time.Since(t)
 
 	t = time.Now()
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
-	if err := p.cfg.Sender.Send(header); err != nil {
+	if err := p.sender.Send(header); err != nil {
 		slog.Warn("blit header send", "err", err)
 		return time.Since(fieldStart)
 	}
 	p.wireBytes.Add(uint64(len(header)))
-	if err := p.cfg.Sender.SendPayload(payload); err != nil {
+	if err := p.sender.SendPayload(payload); err != nil {
 		slog.Warn("blit payload send", "err", err)
 		return time.Since(fieldStart)
 	}
 	p.wireBytes.Add(uint64(len(payload)))
-	p.cfg.Sender.MarkBlitSent(len(payload))
+	p.sender.MarkBlitSent(len(payload))
 	sendElapsed = time.Since(t)
 
 	// Throttled budget-overrun warn. Threshold is 84% of the field
@@ -881,6 +909,20 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			"compressed_bytes", compressedLen,
 			"lz4_enabled", p.cfg.LZ4Enabled,
 		}
+		if p.deltaLZ4Enabled {
+			deltaSavingsBytes := 0
+			if choice.deltaLZ4OK {
+				deltaSavingsBytes = choice.fullLZ4Bytes - choice.deltaLZ4Bytes
+			}
+			attrs = append(attrs,
+				"delta_lz4_enabled", true,
+				"delta_lz4_available", choice.deltaLZ4Available,
+				"delta_lz4_ok", choice.deltaLZ4OK,
+				"delta_lz4_selected", choice.delta,
+				"delta_lz4_full_bytes", choice.fullLZ4Bytes,
+				"delta_lz4_bytes", choice.deltaLZ4Bytes,
+				"delta_lz4_savings_bytes", deltaSavingsBytes)
+		}
 		if p.fieldDiagEnabled {
 			diag := p.measureFieldDiagnostic(field, raw)
 			attrs = append(attrs,
@@ -903,8 +945,17 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 		}
 		slog.Warn("sendField exceeded 84% of field period", attrs...)
 	}
-	p.rememberFieldDiagnostic(field, raw)
+	p.rememberSentFieldHistory(field, raw)
 	return fieldElapsed
+}
+
+type fieldPayloadChoice struct {
+	payload           []byte
+	delta             bool
+	fullLZ4Bytes      int
+	deltaLZ4Available bool
+	deltaLZ4OK        bool
+	deltaLZ4Bytes     int
 }
 
 type fieldDiagnostic struct {
@@ -914,18 +965,101 @@ type fieldDiagnostic struct {
 	deltaLZ4Elapsed time.Duration
 }
 
+type fieldHistoryIdentity struct {
+	bytes       int
+	width       int
+	height      int
+	bytesPerPix int
+	rgbMode     byte
+	interlaced  bool
+}
+
+func shouldUseDeltaLZ4(fullBytes, deltaBytes int) bool {
+	if fullBytes <= 0 || deltaBytes <= 0 {
+		return false
+	}
+	return deltaBytes*deltaLZ4WinDenominator < fullBytes*deltaLZ4WinNumerator
+}
+
+func (p *Plane) chooseFieldPayload(field uint8, raw []byte, fullLZ4 []byte, fullOK bool) fieldPayloadChoice {
+	choice := fieldPayloadChoice{
+		payload:      raw,
+		fullLZ4Bytes: len(fullLZ4),
+	}
+	if !fullOK {
+		return choice
+	}
+
+	choice.payload = fullLZ4
+	if !p.deltaLZ4Enabled || !p.hasFieldHistory(field, raw) ||
+		len(p.fieldDeltaScratch) < len(raw) || len(p.fieldDeltaLZ4Scratch) == 0 {
+		return choice
+	}
+
+	choice.deltaLZ4Available = true
+	slot := int(field & 1)
+	delta := p.fieldDeltaScratch[:len(raw)]
+	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
+	n, ok := groovy.LZ4CompressInto(&p.fieldDeltaLZ4, p.fieldDeltaLZ4Scratch, delta)
+	choice.deltaLZ4OK = ok
+	choice.deltaLZ4Bytes = n
+	if ok && shouldUseDeltaLZ4(len(fullLZ4), n) {
+		choice.payload = p.fieldDeltaLZ4Scratch[:n]
+		choice.delta = true
+	}
+	return choice
+}
+
+func (p *Plane) currentFieldHistoryIdentity(raw []byte) fieldHistoryIdentity {
+	return fieldHistoryIdentity{
+		bytes:       len(raw),
+		width:       p.cfg.FieldWidth,
+		height:      p.cfg.FieldHeight,
+		bytesPerPix: p.cfg.BytesPerPixel,
+		rgbMode:     p.cfg.RGBMode,
+		interlaced:  p.cfg.Modeline.Interlaced(),
+	}
+}
+
+func (p *Plane) hasFieldHistory(field uint8, raw []byte) bool {
+	slot := int(field & 1)
+	if !p.fieldPrevValid[slot] || len(p.fieldPrev[slot]) != len(raw) ||
+		p.fieldPrevID[slot] != p.currentFieldHistoryIdentity(raw) {
+		p.invalidateFieldHistory(field)
+		return false
+	}
+	return true
+}
+
+func (p *Plane) invalidateFieldHistory(field uint8) {
+	slot := int(field & 1)
+	p.fieldPrevValid[slot] = false
+	p.fieldPrevID[slot] = fieldHistoryIdentity{}
+}
+
+func (p *Plane) rememberFieldHistory(field uint8, raw []byte) {
+	slot := int(field & 1)
+	prev := p.fieldPrev[slot]
+	if len(prev) != len(raw) {
+		p.invalidateFieldHistory(field)
+		return
+	}
+	copy(prev, raw)
+	p.fieldPrevID[slot] = p.currentFieldHistoryIdentity(raw)
+	p.fieldPrevValid[slot] = true
+}
+
 func (p *Plane) measureFieldDiagnostic(field uint8, raw []byte) fieldDiagnostic {
 	slot := int(field & 1)
-	prev := p.fieldDiagPrev[slot]
-	if !p.fieldDiagPrevValid[slot] || len(prev) != len(raw) ||
-		len(p.fieldDiagDeltaScratch) < len(raw) || len(p.fieldDiagLZ4Scratch) == 0 {
+	if !p.hasFieldHistory(field, raw) ||
+		len(p.fieldDeltaScratch) < len(raw) || len(p.fieldDeltaLZ4Scratch) == 0 {
 		return fieldDiagnostic{}
 	}
 
 	t := time.Now()
-	delta := p.fieldDiagDeltaScratch[:len(raw)]
-	writeFieldSubDeltaInto(delta, raw, prev)
-	n, ok := groovy.LZ4CompressInto(&p.fieldDiagLZ4, p.fieldDiagLZ4Scratch, delta)
+	delta := p.fieldDeltaScratch[:len(raw)]
+	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
+	n, ok := groovy.LZ4CompressInto(&p.fieldDeltaLZ4, p.fieldDeltaLZ4Scratch, delta)
 	return fieldDiagnostic{
 		available:       true,
 		deltaLZ4OK:      ok,
@@ -944,13 +1078,15 @@ func (p *Plane) rememberFieldDiagnostic(field uint8, raw []byte) {
 	if !p.fieldDiagEnabled {
 		return
 	}
-	slot := int(field & 1)
-	prev := p.fieldDiagPrev[slot]
-	if len(prev) != len(raw) {
+	p.rememberFieldHistory(field, raw)
+}
+
+func (p *Plane) rememberSentFieldHistory(field uint8, raw []byte) {
+	if p.deltaLZ4Enabled {
+		p.rememberFieldHistory(field, raw)
 		return
 	}
-	copy(prev, raw)
-	p.fieldDiagPrevValid[slot] = true
+	p.rememberFieldDiagnostic(field, raw)
 }
 
 func datagramChunks(n int) int {
@@ -982,12 +1118,12 @@ func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
 func (p *Plane) sendDuplicate(frame uint32, field uint8) {
 	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
-	if err := p.cfg.Sender.Send(header); err != nil {
+	if err := p.sender.Send(header); err != nil {
 		slog.Warn("duplicate blit header send", "err", err)
 		return
 	}
 	p.wireBytes.Add(uint64(len(header)))
-	p.cfg.Sender.MarkBlitSent(0) // no payload, no congestion hit
+	p.sender.MarkBlitSent(0) // no payload, no congestion hit
 }
 
 // sendAudio emits the 3-byte AUDIO header then the PCM payload. The wire
@@ -999,12 +1135,12 @@ func (p *Plane) sendAudio(pcm []byte) {
 		pcm = pcm[:maxSoundSize]
 	}
 	audioHeader := groovy.BuildAudioHeader(uint16(len(pcm)))
-	if err := p.cfg.Sender.Send(audioHeader); err != nil {
+	if err := p.sender.Send(audioHeader); err != nil {
 		slog.Warn("audio header send", "err", err)
 		return
 	}
 	p.wireBytes.Add(uint64(len(audioHeader)))
-	if err := p.cfg.Sender.SendPayload(pcm); err != nil {
+	if err := p.sender.SendPayload(pcm); err != nil {
 		slog.Warn("audio payload send", "err", err)
 		return
 	}
@@ -1189,6 +1325,23 @@ func envFieldDiagnostics() bool {
 			"env", fieldDiagEnv)
 	}
 	return enabled
+}
+
+func envDeltaLZ4() bool {
+	v := os.Getenv(deltaLZ4Env)
+	if v == "" {
+		return false
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	default:
+		slog.Warn("invalid GROOVY_DELTA_LZ4; delta-LZ4 disabled",
+			"value", v)
+		return false
+	}
 }
 
 // rateCodeForHz maps the integer audio rate to the wire enum for INIT byte[2].

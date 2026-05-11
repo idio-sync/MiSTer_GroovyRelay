@@ -8,13 +8,12 @@ import (
 
 // FieldDecoder reconstructs the raw BGR bytes of a BLIT field, applying
 // LZ4 decompression and the optional delta-against-previous-same-polarity-
-// field reversal used by Plane.chooseBlitPayload (see internal/dataplane).
+// field reversal used by Groovy_MiSTer delta-LZ4.
 //
 // The decoder keeps one previous-field buffer per field polarity (top vs.
-// bottom) so that a delta-LZ4 payload can be XORed back into the actual
-// field. Without this reversal the dumper sees an XOR delta where it
-// expects pixels — a mostly-static frame round-trips as near-uniform
-// black, defeating any downstream variance / image check.
+// bottom). Delta-LZ4 payloads contain modulo-256 byte subtraction
+// (current - previous), and the FPGA reconstructs pixels by adding the
+// previous framebuffer bytes back to the decompressed delta.
 //
 // Not goroutine-safe: a FieldDecoder is owned by a single consumer of the
 // FieldEvent channel and mutated in place.
@@ -64,7 +63,7 @@ func (d *FieldDecoder) Decode(fe FieldEvent, fieldBytes int) ([]byte, error) {
 			return nil, fmt.Errorf("prev field size %d != delta size %d", len(d.prev[idx]), len(raw))
 		}
 		for i := range raw {
-			raw[i] ^= d.prev[idx][i]
+			raw[i] += d.prev[idx][i]
 		}
 	}
 
