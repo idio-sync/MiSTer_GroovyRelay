@@ -50,11 +50,11 @@ func (a *Adapter) startMagnet(ctx context.Context, raw string) (*StartedSession,
 	if err != nil {
 		return nil, err
 	}
-	t, _, err := client.AddMagnet(ctx, raw)
+	t, isNew, err := client.AddMagnet(ctx, raw)
 	if err != nil {
 		return nil, &TorrentError{Kind: ErrBadInput, Message: "magnet could not be added", Err: err}
 	}
-	return a.startTorrentHandle(ctx, cfg, t)
+	return a.startTorrentHandle(ctx, cfg, t, isNew)
 }
 
 func (a *Adapter) startTorrentBytes(ctx context.Context, body []byte) (*StartedSession, error) {
@@ -66,11 +66,11 @@ func (a *Adapter) startTorrentBytes(ctx context.Context, body []byte) (*StartedS
 	if err != nil {
 		return nil, err
 	}
-	t, _, err := client.AddMetaInfo(ctx, body)
+	t, isNew, err := client.AddMetaInfo(ctx, body)
 	if err != nil {
 		return nil, &TorrentError{Kind: ErrBadInput, Message: "torrent file could not be added", Err: err}
 	}
-	return a.startTorrentHandle(ctx, cfg, t)
+	return a.startTorrentHandle(ctx, cfg, t, isNew)
 }
 
 func (a *Adapter) snapshotForStart() (Config, error) {
@@ -114,16 +114,16 @@ func (a *Adapter) ensureClient(cfg Config) (TorrentClient, error) {
 	return newClient, nil
 }
 
-func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentHandle) (*StartedSession, error) {
+func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentHandle, isNew bool) (*StartedSession, error) {
 	metaCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.MetadataTimeoutSeconds)*time.Second)
 	defer cancel()
 	if err := t.WaitInfo(metaCtx); err != nil {
-		a.cleanupFailedStart(cfg, t)
+		a.cleanupFailedStart(cfg, t, isNew)
 		return nil, &TorrentError{Kind: ErrMetadataTimeout, Message: "timed out waiting for torrent metadata", Err: err}
 	}
 	file, err := pickLargestPlayable(t.Files())
 	if err != nil {
-		a.cleanupFailedStart(cfg, t)
+		a.cleanupFailedStart(cfg, t, isNew)
 		return nil, err
 	}
 	t.Prioritize(file.Index)
@@ -133,7 +133,7 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 	root := sessionRoot(cfg, a.bridge.DataDir)
 	dir, err := createSessionDir(root, sessionID)
 	if err != nil {
-		a.cleanupFailedStart(cfg, t)
+		a.cleanupFailedStart(cfg, t, isNew)
 		return nil, err
 	}
 	s := &Session{
@@ -177,8 +177,11 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 	return &StartedSession{Token: token, AdapterRef: req.AdapterRef, Title: s.Title}, nil
 }
 
-func (a *Adapter) cleanupFailedStart(cfg Config, t TorrentHandle) {
+func (a *Adapter) cleanupFailedStart(cfg Config, t TorrentHandle, isNew bool) {
 	if t == nil {
+		return
+	}
+	if !isNew && a.hasLiveTorrentRef(t.InfoHash()) {
 		return
 	}
 	storageKey := t.StorageKey()
@@ -186,6 +189,13 @@ func (a *Adapter) cleanupFailedStart(cfg Config, t TorrentHandle) {
 	if !cfg.KeepCompleted && storageKey != "" {
 		_ = removeStorageDir(cacheRoot(cfg, a.bridge.DataDir), storageKey)
 	}
+}
+
+func (a *Adapter) hasLiveTorrentRef(infoHash string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	use := a.torrents[infoHash]
+	return use != nil && use.refs > 0
 }
 
 func (a *Adapter) registerSession(s *Session) {

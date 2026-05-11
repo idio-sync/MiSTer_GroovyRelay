@@ -385,6 +385,45 @@ func TestStartMagnetDropsTorrentAndDeletesStorageWhenNoPlayableFileBeforeSession
 	}
 }
 
+func TestFailedSecondSameHashStartKeepsActiveReusedTorrent(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, core)
+	active, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+	badDownloadDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badDownloadDir, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.cfg.DownloadDir = badDownloadDir
+	a.mu.Unlock()
+
+	_, err = a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err == nil {
+		t.Fatal("second same-hash start succeeded, want session dir creation failure")
+	}
+	if client.byHash[hash].drops != 0 {
+		t.Fatalf("reused active torrent drops = %d, want 0", client.byHash[hash].drops)
+	}
+	if _, err := os.Stat(storageDir); err != nil {
+		t.Fatalf("active storage dir was removed: %v", err)
+	}
+	a.mu.Lock()
+	refs := a.torrents[hash].refs
+	_, activeLive := a.sessions[active.Token]
+	sessionCount := len(a.sessions)
+	a.mu.Unlock()
+	if refs != 1 || !activeLive || sessionCount != 1 {
+		t.Fatalf("active state after failed reused start: refs=%d activeLive=%v sessions=%d", refs, activeLive, sessionCount)
+	}
+}
+
 func TestCleanupDropsTorrentAndDeletesStorageWhenLastRefStops(t *testing.T) {
 	core := &recordingCore{}
 	client := &fakeTorrentClient{}
