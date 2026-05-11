@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"html/template"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -258,6 +257,5 @@ type torrentUse struct {
 	refs    int
 }
 
-func (a *Adapter) renderPanel() string              { return `<section id="torrent-panel"></section>` }
-func (a *Adapter) UIRoutes() []adapters.Route       { return nil }
-func (a *Adapter) MountPublicRoutes(*http.ServeMux) {}
+func (a *Adapter) renderPanel() string        { return `<section id="torrent-panel"></section>` }
+func (a *Adapter) UIRoutes() []adapters.Route { return nil }
