@@ -841,10 +841,11 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
+	choice := fieldPayloadChoice{payload: raw}
 	if p.cfg.LZ4Enabled {
 		t := time.Now()
 		if n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw); ok {
-			choice := p.chooseFieldPayload(field, raw, p.lz4Scratch[:n], ok)
+			choice = p.chooseFieldPayload(field, raw, p.lz4Scratch[:n], ok)
 			payload = choice.payload
 			opts.Compressed = true
 			opts.CompressedSize = uint32(len(payload))
@@ -901,6 +902,20 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			"compressed_bytes", compressedLen,
 			"lz4_enabled", p.cfg.LZ4Enabled,
 		}
+		if p.deltaLZ4Enabled {
+			deltaSavingsBytes := 0
+			if choice.deltaLZ4OK {
+				deltaSavingsBytes = choice.fullLZ4Bytes - choice.deltaLZ4Bytes
+			}
+			attrs = append(attrs,
+				"delta_lz4_enabled", true,
+				"delta_lz4_available", choice.deltaLZ4Available,
+				"delta_lz4_ok", choice.deltaLZ4OK,
+				"delta_lz4_selected", choice.delta,
+				"delta_lz4_full_bytes", choice.fullLZ4Bytes,
+				"delta_lz4_bytes", choice.deltaLZ4Bytes,
+				"delta_lz4_savings_bytes", deltaSavingsBytes)
+		}
 		if p.fieldDiagEnabled {
 			diag := p.measureFieldDiagnostic(field, raw)
 			attrs = append(attrs,
@@ -928,11 +943,12 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 }
 
 type fieldPayloadChoice struct {
-	payload       []byte
-	delta         bool
-	fullLZ4Bytes  int
-	deltaLZ4OK    bool
-	deltaLZ4Bytes int
+	payload           []byte
+	delta             bool
+	fullLZ4Bytes      int
+	deltaLZ4Available bool
+	deltaLZ4OK        bool
+	deltaLZ4Bytes     int
 }
 
 type fieldDiagnostic struct {
@@ -973,6 +989,7 @@ func (p *Plane) chooseFieldPayload(field uint8, raw []byte, fullLZ4 []byte, full
 		return choice
 	}
 
+	choice.deltaLZ4Available = true
 	slot := int(field & 1)
 	delta := p.fieldDeltaScratch[:len(raw)]
 	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -408,6 +409,112 @@ func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) 
 	}
 }
 
+func TestSendField_DeltaEnabledSlowWarningLogsSelectionFields(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{congestionDelay: time.Millisecond}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+	p.periodMsNumer = 1
+	p.periodMsDenom = int64(time.Millisecond)
+
+	base := repeatedTileField(fieldBytes, deterministicTile(4096))
+	next := append([]byte(nil), base...)
+	for i := 0; i < 64; i++ {
+		next[i*4096]++
+	}
+
+	p.sendField(1, 0, base)
+	p.lastBudgetWarn = time.Time{}
+	logBuf.Reset()
+	p.sendField(3, 0, next)
+
+	if len(sender.payloads) < 2 {
+		t.Fatalf("payloads = %d, want at least 2", len(sender.payloads))
+	}
+	deltaBytes := len(sender.payloads[1])
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"delta_lz4_enabled=true",
+		"delta_lz4_available=true",
+		"delta_lz4_ok=true",
+		"delta_lz4_selected=true",
+		"delta_lz4_bytes=",
+		"delta_lz4_savings_bytes=",
+		"compressed_bytes=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("slow warning missing %q\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "delta_lz4_bytes="+strconv.Itoa(deltaBytes)) {
+		t.Fatalf("slow warning delta_lz4_bytes does not match sent delta payload %d\n%s", deltaBytes, out)
+	}
+	if !strings.Contains(out, "compressed_bytes="+strconv.Itoa(deltaBytes)) {
+		t.Fatalf("slow warning compressed_bytes does not match sent payload %d\n%s", deltaBytes, out)
+	}
+}
+
+func TestSendField_DeltaEnabledSlowWarningLogsFailedDeltaCompression(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{congestionDelay: time.Millisecond}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+	p.periodMsNumer = 1
+	p.periodMsDenom = int64(time.Millisecond)
+
+	raw := repeatedTileField(fieldBytes, []byte{0x33, 0x44, 0x55, 0x66})
+	p.sendField(1, 0, raw)
+
+	if len(sender.payloads) != 1 {
+		t.Fatalf("payloads = %d, want 1", len(sender.payloads))
+	}
+	sentBytes := len(sender.payloads[0])
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"delta_lz4_enabled=true",
+		"delta_lz4_available=false",
+		"delta_lz4_ok=false",
+		"delta_lz4_selected=false",
+		"delta_lz4_bytes=0",
+		"compressed_bytes=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("slow warning missing %q\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "compressed_bytes="+strconv.Itoa(sentBytes)) {
+		t.Fatalf("slow warning compressed_bytes does not match sent payload %d\n%s", sentBytes, out)
+	}
+}
+
 func TestShouldUseDeltaLZ4_UsesStrictNinetyFivePercentThreshold(t *testing.T) {
 	if !shouldUseDeltaLZ4(100, 94) {
 		t.Fatal("94/100 should select delta")
@@ -596,9 +703,14 @@ type scriptedFieldSender struct {
 	payloads        [][]byte
 	failPayloadSend int
 	payloadSends    int
+	congestionDelay time.Duration
 }
 
-func (s *scriptedFieldSender) WaitForCongestion() {}
+func (s *scriptedFieldSender) WaitForCongestion() {
+	if s.congestionDelay > 0 {
+		time.Sleep(s.congestionDelay)
+	}
+}
 
 func (s *scriptedFieldSender) Send(data []byte) error {
 	s.headers = append(s.headers, append([]byte(nil), data...))
