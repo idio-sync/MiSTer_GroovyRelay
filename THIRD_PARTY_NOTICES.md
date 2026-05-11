@@ -31,6 +31,10 @@ https://ffmpeg.org/legal.html
 yt-dlp is distributed under The Unlicense. See:
 https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE
 
+### github.com/anacrolix/torrent
+
+MiSTer Groovy Relay uses `github.com/anacrolix/torrent` for BitTorrent magnet and metainfo handling in the optional Torrent adapter. It is distributed under the Mozilla Public License 2.0 (MPL-2.0); see the module's license in its upstream repository and the version pinned in `go.mod`.
+
 ## Bundled UI Fonts
 
 The bridge UI and companion extension bundle WOFF2 font assets for Space
