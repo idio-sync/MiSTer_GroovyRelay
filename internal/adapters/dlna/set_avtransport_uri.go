@@ -48,19 +48,19 @@ const setAVTransportURITimeout = validatorRequestTimeout * time.Duration(validat
 // table ever changes.
 //
 // Per spec the handler runs four conceptual steps:
-//   1. Admission check — adapter must be enabled and not have an
-//      in-flight DLNA start. Either rejection returns 701 and the
-//      handler must NOT mutate any adapter state (loadedURI must read
-//      the same value before and after).
-//   2. URL prevalidation — runs validateMediaURL with the policy
-//      derived from cfg.AllowPublicSourceURLs. Errors map to UPnP
-//      faults via the table in the spec.
-//   3. Metadata parse — lenient. Empty metadata is fine; malformed XML
-//      is 402.
-//   4. Metadata MIME check — if metadata declared a protocolInfo, the
-//      MIME third field must be in sinkProtocolInfoEntries; otherwise
-//      714. The renderer can't honor a content type it doesn't
-//      advertise.
+//  1. Admission check — adapter must be enabled and not have an
+//     in-flight DLNA start. Either rejection returns 701 and the
+//     handler must NOT mutate any adapter state (loadedURI must read
+//     the same value before and after).
+//  2. URL prevalidation — runs validateMediaURL with the policy
+//     derived from cfg.AllowPublicSourceURLs. Errors map to UPnP
+//     faults via the table in the spec.
+//  3. Metadata parse — lenient. Empty metadata is fine; malformed XML
+//     is 402.
+//  4. Metadata MIME check — if metadata declared a protocolInfo, the
+//     MIME third field must be in sinkProtocolInfoEntries; otherwise
+//  714. The renderer can't honor a content type it doesn't
+//     advertise.
 //
 // Only after all four succeed do we acquire a.mu and store the new
 // state (loadedURI = validated.FinalURL, loadedMeta = parsed,
@@ -160,6 +160,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 		// internal hostnames or IPs that the operator doesn't want
 		// echoed back to the controller via GetTransportInfo.
 		a.setLastError("SetAVTransportURI rejected URI " + redactURL(args.CurrentURI))
+		a.publishAVTransportLastChange()
 		writeSOAPFault(w, code)
 		return
 	}
@@ -172,6 +173,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	parsed, err := parseDIDLMetadata(args.CurrentURIMetaData)
 	if err != nil {
 		a.setLastError("SetAVTransportURI rejected: metadata parse failed")
+		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrInvalidArgs)
 		return
 	}
@@ -187,6 +189,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	// post-probe behavior to surface unsupported codecs later.
 	if parsed.ProtocolInfo != "" && !protocolInfoMatchesSink(parsed.ProtocolInfo) {
 		a.setLastError("SetAVTransportURI rejected: unsupported protocolInfo")
+		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrIllegalMIME)
 		return
 	}
@@ -211,6 +214,7 @@ func (a *Adapter) handleSetAVTransportURI(w http.ResponseWriter, r *http.Request
 	a.lastError = ""
 	autoplay := a.cfg.AutoplayOnSetURI
 	a.mu.Unlock()
+	a.publishAVTransportLastChange()
 
 	// autoplay_on_set_uri (spec line 330 + line 395): "compatibility
 	// mode for controllers that do not send Play." When enabled, kick

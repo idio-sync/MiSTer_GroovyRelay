@@ -110,15 +110,15 @@ func (s *dlnaStubCore) lastStartReq() core.SessionRequest {
 // TestDLNA_Smoke_Phase1HTTPSurface exercises the full Phase 1 HTTP
 // surface end-to-end through a real httptest.Server: the four
 // descriptor GETs, two query-only SOAP POSTs (one per service used in
-// this assertion), and an event-path SUBSCRIBE that should still
-// return 503 (eventing lands in Phase 4).
+// this assertion), and an event-path SUBSCRIBE that should reject
+// malformed event requests.
 //
 // SSDP / multicast is intentionally out of scope — that needs a
 // reachable network, root on POSIX, and is exercised by the SSDP unit
 // tests under internal/adapters/dlna. This smoke confirms only that
 // the adapter is wired into the shared mux correctly: routes register,
-// descriptors render, SOAP dispatch dispatches, and the Phase-1 stub
-// for events stays a stub.
+// descriptors render, SOAP dispatch dispatches, and GENA event routes
+// dispatch far enough to validate malformed subscription requests.
 func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 	const (
 		fakeUUID = "11111111-2222-3333-4444-555555555555"
@@ -276,8 +276,8 @@ func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 		}
 	})
 
-	// --- Event SUBSCRIBE still 503 (Phase 4 work) ---
-	t.Run("SUBSCRIBE event/AVTransport returns 503", func(t *testing.T) {
+	// --- Event SUBSCRIBE validates GENA headers ---
+	t.Run("SUBSCRIBE event/AVTransport missing CALLBACK/NT returns 400", func(t *testing.T) {
 		// http.Client lower-cases its method, but SUBSCRIBE rides through
 		// the client untouched. We construct the request manually so
 		// Method stays exactly "SUBSCRIBE" — same shape a UPnP control
@@ -287,8 +287,6 @@ func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}
-		req.Header.Set("CALLBACK", "<http://127.0.0.1:9999/cb>")
-		req.Header.Set("NT", "upnp:event")
 		req.Header.Set("TIMEOUT", "Second-1800")
 
 		resp, err := http.DefaultClient.Do(req)
@@ -297,8 +295,8 @@ func TestDLNA_Smoke_Phase1HTTPSurface(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusServiceUnavailable {
-			t.Fatalf("status = %d, want 503 (Phase 4 stub)", resp.StatusCode)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
 		}
 	})
 }

@@ -77,6 +77,7 @@ func (a *Adapter) handleRenderingControlSOAP(w http.ResponseWriter, r *http.Requ
 		a.volume = 100
 		a.muted = false
 		a.mu.Unlock()
+		a.publishRenderingControlLastChange()
 		writeSOAPResponse(w, renderingControlServiceURN, action, nil)
 
 	case "GetMute":
@@ -105,6 +106,7 @@ func (a *Adapter) handleRenderingControlSOAP(w http.ResponseWriter, r *http.Requ
 		a.mu.Lock()
 		a.muted = muted
 		a.mu.Unlock()
+		a.publishRenderingControlLastChange()
 		writeSOAPResponse(w, renderingControlServiceURN, action, nil)
 
 	case "GetVolume":
@@ -135,6 +137,7 @@ func (a *Adapter) handleRenderingControlSOAP(w http.ResponseWriter, r *http.Requ
 		a.mu.Lock()
 		a.volume = v
 		a.mu.Unlock()
+		a.publishRenderingControlLastChange()
 		writeSOAPResponse(w, renderingControlServiceURN, action, nil)
 
 	default:

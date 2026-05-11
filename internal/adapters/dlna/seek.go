@@ -52,29 +52,29 @@ func extractSeekArgs(args map[string]string) seekArgs {
 //
 // Decision tree:
 //
-//   1. InstanceID == 0 (else 718).
-//   2. Unit must be REL_TIME or empty (UPnP default for non-recording
-//      renderers); other values → 710. Anything we don't support
-//      explicitly (ABS_TIME, REL_COUNT, ABS_COUNT, TRACK_NR, CHAPTER,
-//      FRAME) is rejected — pretending to support them and silently
-//      coercing to REL_TIME would fool a controller into thinking its
-//      command worked.
-//   3. Target parses via parseUPnPDuration. Empty / unparseable /
-//      negative → 711.
-//   4. Disabled-adapter gate: read cfg.Enabled under mu; if false → 701.
-//   5. Per-spec ordering (lines 366-370):
-//      - Snapshot currentRef under mu, drop.
-//      - core.Status() outside mu enforces the foreign-session check
-//        (701) and surfaces live Duration.
-//      - Validate target against Duration: unknown duration → 711;
-//        target beyond duration → 711.
-//      - Re-acquire mu and re-check ownership: if currentRef changed
-//        OR startInFlight became true (a session-replacement won the
-//        race), return 701. Drop mu before calling core.SeekTo.
-//   6. core.SeekTo outside mu. On success, transportState is left
-//      unchanged (Seek does not transition the FSM — PLAYING stays
-//      PLAYING, PAUSED stays PAUSED). On failure: redacted setLastError
-//      and 501.
+//  1. InstanceID == 0 (else 718).
+//  2. Unit must be REL_TIME or empty (UPnP default for non-recording
+//     renderers); other values → 710. Anything we don't support
+//     explicitly (ABS_TIME, REL_COUNT, ABS_COUNT, TRACK_NR, CHAPTER,
+//     FRAME) is rejected — pretending to support them and silently
+//     coercing to REL_TIME would fool a controller into thinking its
+//     command worked.
+//  3. Target parses via parseUPnPDuration. Empty / unparseable /
+//     negative → 711.
+//  4. Disabled-adapter gate: read cfg.Enabled under mu; if false → 701.
+//  5. Per-spec ordering (lines 366-370):
+//     - Snapshot currentRef under mu, drop.
+//     - core.Status() outside mu enforces the foreign-session check
+//     (701) and surfaces live Duration.
+//     - Validate target against Duration: unknown duration → 711;
+//     target beyond duration → 711.
+//     - Re-acquire mu and re-check ownership: if currentRef changed
+//     OR startInFlight became true (a session-replacement won the
+//     race), return 701. Drop mu before calling core.SeekTo.
+//  6. core.SeekTo outside mu. On success, transportState is left
+//     unchanged (Seek does not transition the FSM — PLAYING stays
+//     PLAYING, PAUSED stays PAUSED). On failure: redacted setLastError
+//     and 501.
 //
 // Locking discipline: a.mu is never held across core.Status() or
 // core.SeekTo() calls (CLAUDE.md).
@@ -179,6 +179,7 @@ func (a *Adapter) handleSeek(w http.ResponseWriter, args seekArgs) {
 		slog.Default().Warn("dlna: core.SeekTo failed",
 			"err", err, "ref", owned, "offsetMs", offsetMs)
 		a.setLastError("Seek failed (see bridge logs)")
+		a.publishAVTransportLastChange()
 		writeSOAPFault(w, upnpErrActionFailed)
 		return
 	}
@@ -186,17 +187,18 @@ func (a *Adapter) handleSeek(w http.ResponseWriter, args seekArgs) {
 	// Seek leaves transportState unchanged. core.Manager.SeekTo keeps
 	// the FSM in its current state (PLAYING stays PLAYING, PAUSED
 	// stays PAUSED). The data plane re-seeks ffmpeg under the hood.
+	a.publishAVTransportLastChange()
 	writeSOAPResponse(w, avTransportServiceURN, "Seek", nil)
 }
 
 // parseUPnPDuration parses a UPnP REL_TIME target string. Two shapes
 // are accepted:
 //
-//   "HH:MM:SS"          — integer seconds
-//   "HH:MM:SS.FFF"      — fractional seconds, milliseconds precision
-//   "HH:MM:SS,FFF"      — same, with comma decimal (locale-affected
-//                         controllers — see metadata.go parseDIDLDuration
-//                         comment)
+//	"HH:MM:SS"          — integer seconds
+//	"HH:MM:SS.FFF"      — fractional seconds, milliseconds precision
+//	"HH:MM:SS,FFF"      — same, with comma decimal (locale-affected
+//	                      controllers — see metadata.go parseDIDLDuration
+//	                      comment)
 //
 // Distinct from parseDIDLDuration: this returns an error for
 // unparseable input rather than degrading to 0, because the Seek SOAP

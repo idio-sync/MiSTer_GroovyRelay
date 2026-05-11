@@ -220,9 +220,11 @@ allow_public_source_urls = false  # Default false; private/LAN targets always al
                                   # public-internet addresses (SSRF risk).
 ```
 
-**Compatibility testing pending** for VLC, BubbleUPnP, Kodi, and
-Windows "Cast to device". File issues with the controller name and
-bridge log output if a control point misbehaves.
+DLNA eventing (`SUBSCRIBE` / `UNSUBSCRIBE` / `NOTIFY`) is implemented for
+AVTransport, RenderingControl, and ConnectionManager. Real controller findings
+are tracked in [docs/dlna-compatibility.md](docs/dlna-compatibility.md);
+controller-specific quirks and broadened MIME support belong there first, then
+graduate into README troubleshooting once verified.
 
 ## Settings UI
 
