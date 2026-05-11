@@ -988,12 +988,14 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	if c.core != nil {
 		st = c.core.Status()
 	}
-	serverURL := fmt.Sprintf("%s://%s:%s", p.PlexServerScheme, p.PlexServerAddress, p.PlexServerPort)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	if err := SetStreamSelection(ctx, serverURL, p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
+	musicSession := core.NormalizeMediaKind(st.MediaKind) == core.MediaKindMusic || isPlexMusicType(p.MediaType)
+	if !musicSession {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := SetStreamSelection(ctx, p.serverURL(), p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
 	}
 	if audioStreamID != "" {
 		p.AudioStreamID = audioStreamID

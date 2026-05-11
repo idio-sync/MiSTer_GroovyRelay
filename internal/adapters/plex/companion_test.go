@@ -930,6 +930,90 @@ func TestSetStreams_SelectsStreamsAndRestartsAtCurrentPosition(t *testing.T) {
 	}
 }
 
+func TestSetStreams_MusicSessionSkipsVideoPartSelectionAndRebuildsVisualizer(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<Track title="Blue Monday" grandparentTitle="New Order"
+					parentTitle="Power Corruption &amp; Lies" duration="449000">
+					<Media><Part id="music-part-99"/></Media>
+				</Track>
+			</MediaContainer>`))
+		case "/library/parts/music-part-99":
+			t.Fatalf("music setStreams should not mutate PMS part selection")
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{
+		status: core.SessionStatus{
+			State:     core.StatePlaying,
+			MediaKind: core.MediaKindMusic,
+			Position:  83000 * time.Millisecond,
+			Duration:  449000 * time.Millisecond,
+		},
+	}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		PlexServerScheme:   "http",
+		MediaKey:           "/library/metadata/42",
+		MediaType:          "track",
+		ClientID:           "controller-uuid",
+		PlexToken:          "tok",
+		AudioStreamID:      "100",
+		TranscodeSessionID: "old-transcode-id",
+		Title:              "Controller Title",
+	})
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/player/playback/setStreams?audioStreamID=101&commandID=21")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.starts != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", fc.starts)
+	}
+	got := fc.lastReq
+	if got.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", got.MediaKind)
+	}
+	if !got.Visualizer.Enabled {
+		t.Fatalf("Visualizer = %+v, want enabled", got.Visualizer)
+	}
+	if !strings.Contains(got.StreamURL, "/music/:/transcode/universal/start.mp3") {
+		t.Fatalf("StreamURL = %s, want music transcode endpoint", got.StreamURL)
+	}
+	if strings.Contains(got.StreamURL, "/video/:/") {
+		t.Fatalf("music setStreams used video endpoint: %s", got.StreamURL)
+	}
+	if !strings.Contains(got.StreamURL, "offset=83") {
+		t.Fatalf("music setStreams did not preserve current position: %s", got.StreamURL)
+	}
+	remembered := c.lastPlaySession()
+	if remembered.AudioStreamID != "101" {
+		t.Fatalf("remembered AudioStreamID = %q, want 101", remembered.AudioStreamID)
+	}
+	if remembered.CommandID != "21" {
+		t.Fatalf("remembered CommandID = %q, want 21", remembered.CommandID)
+	}
+}
+
 // Plex Web's in-player gear panel re-issues setStreams with the current
 // audio + subtitle IDs whenever it opens. Treating that as a real change
 // rebuilt the ffmpeg pipeline and made PMS surface "There was an unexpected
