@@ -56,6 +56,18 @@ ytdlp_enabled = true              # Master switch for yt-dlp resolution. When tr
 # section. Saved to <data_dir>/url_cookies.txt mode 0600 — not configurable
 # in TOML by design.
 
+[adapters.torrent]
+enabled = false
+traffic_acknowledged = false
+download_dir = ""
+keep_completed = false
+max_cache_bytes = 21474836480
+metadata_timeout_seconds = 60
+startup_buffer_seconds = 10
+max_upload_rate_kbps = 512
+max_download_rate_kbps = 0
+listen_port = 0
+
 [adapters.dlna]
 enabled = false                   # Set to true to advertise as a DLNA / UPnP MediaRenderer.
                                   # WARNING: DLNA exposes unauthenticated LAN control —

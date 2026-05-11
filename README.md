@@ -179,6 +179,14 @@ Example links handled natively when Streams is enabled:
 - `https://wantmymtv.vercel.app/player.html?v=dQw4w9WgXcQ`
 - `https://cartoonrewind.tv/player.html?channel=heman`
 
+### Torrent adapter
+
+The Torrent adapter can cast a magnet link or uploaded `.torrent` file through MiSTer Groovy Relay. It is disabled by default and also requires `traffic_acknowledged = true` before any BitTorrent client is created or any BitTorrent listen port opens.
+
+Use it only for content you have the right to download and upload. BitTorrent traffic can be visible to peers and network operators. The default upload limit is 512 KiB/s; set `max_upload_rate_kbps = 0` for unlimited upload or a lower positive value for a stricter cap.
+
+Torrent media is served only to the local bridge process through `/torrent/session/{token}/media`, and that route rejects non-loopback clients. Cache data lives under `<download_dir-or-data_dir>/groovyrelay-torrent/`; session cache data is deleted after playback unless `keep_completed = true`.
+
 ## DLNA / UPnP adapter
 
 The DLNA adapter advertises the bridge as a UPnP `MediaRenderer:1`
