@@ -9,6 +9,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 type recordingCore struct {
@@ -53,6 +54,33 @@ func TestNewRequiresBridgeDataDir(t *testing.T) {
 	}
 }
 
+func TestNewInitializesPlannedSessionStateShape(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if a.sessions == nil {
+		t.Fatal("sessions map is nil")
+	}
+	if a.torrents == nil {
+		t.Fatal("torrents map is nil")
+	}
+	if a.activeToken != "" {
+		t.Fatalf("activeToken = %q, want empty", a.activeToken)
+	}
+
+	a.sessions["token"] = &Session{}
+	a.torrents["hash"] = &torrentUse{torrent: nil, refs: 1}
+	a.activeToken = "token"
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(a.sessions) != 0 || len(a.torrents) != 0 || a.activeToken != "" {
+		t.Fatalf("Stop did not clear planned state: sessions=%d torrents=%d activeToken=%q", len(a.sessions), len(a.torrents), a.activeToken)
+	}
+}
+
 func TestStartDoesNotCreateTorrentClient(t *testing.T) {
 	factoryCalls := 0
 	a, err := New(AdapterConfig{
@@ -90,6 +118,32 @@ func TestSetEnabledGatesIsEnabled(t *testing.T) {
 	a.SetEnabled(false)
 	if a.IsEnabled() {
 		t.Fatal("after SetEnabled(false), IsEnabled = true")
+	}
+}
+
+func TestEmitAndLogSafeUsePlannedSignatures(t *testing.T) {
+	log := eventlog.New(4)
+	a, err := New(AdapterConfig{
+		Bridge:   config.BridgeConfig{DataDir: t.TempDir()},
+		EventLog: log,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	a.emit("hello\n%s", "torrent")
+	entries := log.Snapshot()
+	if len(entries) != 1 {
+		t.Fatalf("eventlog entries = %d, want 1", len(entries))
+	}
+	if entries[0].Severity != eventlog.SeverityInfo {
+		t.Fatalf("eventlog severity = %v, want info", entries[0].Severity)
+	}
+	if entries[0].Message != "hello torrent" {
+		t.Fatalf("eventlog message = %q, want sanitized formatted message", entries[0].Message)
+	}
+	if got := a.logSafe("bad\r\n%s", "news"); got != "bad  news" {
+		t.Fatalf("logSafe = %q, want sanitized formatted message", got)
 	}
 }
 

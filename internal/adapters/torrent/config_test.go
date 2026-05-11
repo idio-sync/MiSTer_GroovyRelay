@@ -132,6 +132,47 @@ func TestProvisionDownloadRootResolvesRelativeDownloadDirUnderBridgeDataDir(t *t
 	}
 }
 
+func TestDownloadRootHelpersUseStringArguments(t *testing.T) {
+	dataDir := t.TempDir()
+
+	got := effectiveDownloadDir("cache", dataDir)
+	want := filepath.Join(dataDir, "cache")
+	if got != want {
+		t.Fatalf("effectiveDownloadDir = %q, want %q", got, want)
+	}
+
+	got = ownedDownloadRoot("cache", dataDir)
+	want = filepath.Join(dataDir, "cache", "groovyrelay-torrent")
+	if got != want {
+		t.Fatalf("ownedDownloadRoot = %q, want %q", got, want)
+	}
+}
+
+func TestValidateConfigInspectsRelativeDownloadDirUnderBridgeDataDir(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "cache"), []byte("cwd file"), 0o600); err != nil {
+		t.Fatalf("WriteFile cwd cache: %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("Chdir temp cwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	cfg := DefaultConfig()
+	cfg.DownloadDir = "cache"
+	if err := validateConfig(cfg, t.TempDir()); err != nil {
+		t.Fatalf("validateConfig inspected relative download_dir against cwd: %v", err)
+	}
+}
+
 func TestValidateConfigAcceptsZeroCacheBytes(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxCacheBytes = 0

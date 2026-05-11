@@ -51,8 +51,9 @@ type Adapter struct {
 	stateSince time.Time
 	client     TorrentClient
 
-	torrentHandles map[string]TorrentHandle
-	activeSessions map[string]*Session
+	sessions    map[string]*Session
+	torrents    map[string]*torrentUse
+	activeToken string
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -64,15 +65,15 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		factory = newRealClient
 	}
 	return &Adapter{
-		core:           cfg.Core,
-		bridgeDataDir:  cfg.Bridge.DataDir,
-		clientFactory:  factory,
-		eventLog:       cfg.EventLog,
-		cfg:            DefaultConfig(),
-		state:          adapters.StateStopped,
-		stateSince:     time.Now(),
-		torrentHandles: map[string]TorrentHandle{},
-		activeSessions: map[string]*Session{},
+		core:          cfg.Core,
+		bridgeDataDir: cfg.Bridge.DataDir,
+		clientFactory: factory,
+		eventLog:      cfg.EventLog,
+		cfg:           DefaultConfig(),
+		state:         adapters.StateStopped,
+		stateSince:    time.Now(),
+		sessions:      map[string]*Session{},
+		torrents:      map[string]*torrentUse{},
 	}, nil
 }
 
@@ -155,8 +156,9 @@ func (a *Adapter) Stop() error {
 	}
 	a.mu.Lock()
 	a.client = nil
-	a.torrentHandles = map[string]TorrentHandle{}
-	a.activeSessions = map[string]*Session{}
+	a.sessions = map[string]*Session{}
+	a.torrents = map[string]*torrentUse{}
+	a.activeToken = ""
 	a.mu.Unlock()
 	a.setState(adapters.StateStopped, "")
 	return nil
@@ -223,19 +225,22 @@ func (a *Adapter) setState(s adapters.State, errMsg string) {
 	a.stateSince = time.Now()
 }
 
-func (a *Adapter) emit(sev eventlog.Severity, msg string) {
+func (a *Adapter) emit(msg string, args ...any) {
 	if a.eventLog == nil {
 		return
 	}
 	a.eventLog.Append(eventlog.Entry{
 		Time:     time.Now(),
-		Severity: sev,
+		Severity: eventlog.SeverityInfo,
 		Source:   torrentAdapterName,
-		Message:  logSafe(msg),
+		Message:  a.logSafe(msg, args...),
 	})
 }
 
-func logSafe(msg string) string {
+func (a *Adapter) logSafe(msg string, args ...any) string {
+	if len(args) > 0 {
+		msg = fmt.Sprintf(msg, args...)
+	}
 	msg = strings.ReplaceAll(msg, "\r", " ")
 	msg = strings.ReplaceAll(msg, "\n", " ")
 	return strings.TrimSpace(msg)
@@ -244,6 +249,10 @@ func logSafe(msg string) string {
 type ClientConfig struct{}
 type TorrentClient interface{ Close() error }
 type TorrentHandle interface{}
+type torrentUse struct {
+	torrent TorrentHandle
+	refs    int
+}
 type Session struct{}
 
 func newRealClient(ClientConfig) (TorrentClient, error) {

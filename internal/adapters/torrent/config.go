@@ -102,8 +102,8 @@ func configChangeScope(oldCfg, newCfg Config) adapters.ApplyScope {
 	return adapters.ScopeHotSwap
 }
 
-func effectiveDownloadDir(cfg Config, bridgeDataDir string) string {
-	downloadDir := strings.TrimSpace(cfg.DownloadDir)
+func effectiveDownloadDir(downloadDir, bridgeDataDir string) string {
+	downloadDir = strings.TrimSpace(downloadDir)
 	if downloadDir == "" {
 		return filepath.Clean(bridgeDataDir)
 	}
@@ -113,8 +113,8 @@ func effectiveDownloadDir(cfg Config, bridgeDataDir string) string {
 	return filepath.Clean(filepath.Join(bridgeDataDir, downloadDir))
 }
 
-func ownedDownloadRoot(cfg Config, bridgeDataDir string) string {
-	return filepath.Join(effectiveDownloadDir(cfg, bridgeDataDir), "groovyrelay-torrent")
+func ownedDownloadRoot(downloadDir, bridgeDataDir string) string {
+	return filepath.Join(effectiveDownloadDir(downloadDir, bridgeDataDir), "groovyrelay-torrent")
 }
 
 func validateDownloadDirShape(downloadDir, bridgeDataDir string) error {
@@ -127,7 +127,10 @@ func validateDownloadDirShape(downloadDir, bridgeDataDir string) error {
 	if strings.TrimSpace(downloadDir) == "" {
 		return nil
 	}
-	return validatePathShape("download_dir", downloadDir)
+	if hasUnresolvedParent(downloadDir) {
+		return fmt.Errorf("download_dir must not contain unresolved .. segments")
+	}
+	return validatePathShape("download_dir", effectiveDownloadDir(downloadDir, bridgeDataDir))
 }
 
 func validatePathShape(label, path string) error {
@@ -156,7 +159,7 @@ func provisionDownloadRoot(cfg Config, bridgeDataDir string) (string, error) {
 	if err := validateConfig(cfg, bridgeDataDir); err != nil {
 		return "", err
 	}
-	root := ownedDownloadRoot(cfg, bridgeDataDir)
+	root := ownedDownloadRoot(cfg.DownloadDir, bridgeDataDir)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
