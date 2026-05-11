@@ -129,6 +129,90 @@ func TestFetchPlaybackInfo_AudioBodyUsesAudioProfile(t *testing.T) {
 	}
 }
 
+func TestFetchPlaybackInfo_RetriesWithAudioProfileWhenResponseIdentifiesAudio(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-video-profile","TranscodingUrl":"/videos/song-1/master.m3u8"}],
+				"PlaySessionId":"ps-video-profile",
+				"Item":{"Type":"Audio","Name":"Blue Monday"}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src-audio","TranscodingUrl":"/audio/song-1/universal?MediaSourceId=src-audio"}],
+			"PlaySessionId":"ps-audio",
+			"Item":{"Type":"Audio","Name":"Blue Monday"}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "tok", DeviceID: "dev", Version: "v",
+		ItemID: "song-1", UserID: "uid", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("PlaybackInfo calls = %d, want 2", len(bodies))
+	}
+	if !strings.Contains(string(bodies[0]), `"Type":"Video"`) {
+		t.Fatalf("first PlaybackInfo body did not use video profile: %s", bodies[0])
+	}
+	if !strings.Contains(string(bodies[1]), `"Type":"Audio"`) || strings.Contains(string(bodies[1]), "VideoCodec") {
+		t.Fatalf("second PlaybackInfo body did not use clean audio profile: %s", bodies[1])
+	}
+	if result.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", result.MediaKind)
+	}
+	if !strings.Contains(result.TranscodingURL, "/audio/song-1/universal") {
+		t.Fatalf("TranscodingURL = %q, want audio retry URL", result.TranscodingURL)
+	}
+}
+
+func TestFetchPlaybackInfo_RetriesAudioProfileOnNoCompatibleStreamWhenRetryIdentifiesAudio(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`{"ErrorCode":"NoCompatibleStream","MediaSources":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"MediaSources":[{"Id":"src-audio","TranscodingUrl":"/audio/song-1/universal?MediaSourceId=src-audio"}],
+			"PlaySessionId":"ps-audio",
+			"Item":{"Type":"Audio","Name":"Blue Monday"}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := FetchPlaybackInfo(t.Context(), PlaybackInfoInput{
+		ServerURL: srv.URL, Token: "tok", DeviceID: "dev", Version: "v",
+		ItemID: "song-1", UserID: "uid", MaxVideoBitrateKbps: 4000,
+		Preset: mustPreset(t, "NTSC_480i"),
+	})
+	if err != nil {
+		t.Fatalf("FetchPlaybackInfo: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("PlaybackInfo calls = %d, want 2", len(bodies))
+	}
+	if !strings.Contains(string(bodies[1]), `"Type":"Audio"`) || strings.Contains(string(bodies[1]), "VideoCodec") {
+		t.Fatalf("retry PlaybackInfo body did not use clean audio profile: %s", bodies[1])
+	}
+	if result.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", result.MediaKind)
+	}
+}
+
 func TestFetchPlaybackInfo_ErrorCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -272,6 +356,16 @@ func TestFetchItemMetadata_DecodesAudioMetadata(t *testing.T) {
 	}
 	if result.Duration != 5*time.Minute+15*time.Second {
 		t.Errorf("Duration = %v, want 5m15s", result.Duration)
+	}
+}
+
+func TestMergePlaybackMetadata_ReplacesItemIDTitleFallback(t *testing.T) {
+	got := mergePlaybackMetadata(
+		PlaybackInfoResult{Title: "song-1", MediaKind: core.MediaKindMusic},
+		ItemMetadataResult{ItemID: "song-1", Title: "Age of Consent", MediaKind: core.MediaKindMusic},
+	)
+	if got.Title != "Age of Consent" {
+		t.Fatalf("Title = %q, want metadata title", got.Title)
 	}
 }
 

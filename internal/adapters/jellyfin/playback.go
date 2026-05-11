@@ -40,6 +40,7 @@ type PlaybackInfoResult struct {
 	TranscodingURL string // relative path with query string
 	Title          string // human title for status/eventlog; empty if unavailable
 	MediaKind      core.MediaKind
+	ItemType       string
 	Artist         string
 	Album          string
 	Duration       time.Duration
@@ -74,6 +75,14 @@ type playbackInfoResponseDTO struct {
 		Album        string   `json:"Album"`
 		RunTimeTicks int64    `json:"RunTimeTicks"`
 	} `json:"Item"`
+}
+
+type playbackInfoServerError struct {
+	code string
+}
+
+func (e playbackInfoServerError) Error() string {
+	return fmt.Sprintf("jellyfin: PlaybackInfo error: %s", e.code)
 }
 
 // ItemMetadataInput is the request payload for FetchItemMetadata.
@@ -117,6 +126,29 @@ type itemMetadataDTO struct {
 // Returns an error if the server returns ErrorCode (NotAllowed /
 // NoCompatibleStream / RateLimitExceeded) or HTTP non-2xx.
 func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoResult, error) {
+	res, err := fetchPlaybackInfoOnce(ctx, in)
+	if err == nil {
+		if in.MediaKind != core.MediaKindMusic && isJellyfinAudioType(res.ItemType) {
+			audioIn := in
+			audioIn.MediaKind = core.MediaKindMusic
+			return fetchPlaybackInfoOnce(ctx, audioIn)
+		}
+		return res, nil
+	}
+
+	var serverErr playbackInfoServerError
+	if in.MediaKind != core.MediaKindMusic && errors.As(err, &serverErr) && serverErr.code == "NoCompatibleStream" {
+		audioIn := in
+		audioIn.MediaKind = core.MediaKindMusic
+		retry, retryErr := fetchPlaybackInfoOnce(ctx, audioIn)
+		if retryErr == nil && isJellyfinAudioType(retry.ItemType) {
+			return retry, nil
+		}
+	}
+	return PlaybackInfoResult{}, err
+}
+
+func fetchPlaybackInfoOnce(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoResult, error) {
 	body := playbackInfoBody{
 		UserID:                              in.UserID,
 		MaxStreamingBitrate:                 in.MaxVideoBitrateKbps * 1000,
@@ -161,7 +193,7 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 		return PlaybackInfoResult{}, fmt.Errorf("jellyfin: decode PlaybackInfo: %w", err)
 	}
 	if dto.ErrorCode != "" {
-		return PlaybackInfoResult{}, fmt.Errorf("jellyfin: PlaybackInfo error: %s", dto.ErrorCode)
+		return PlaybackInfoResult{}, playbackInfoServerError{code: dto.ErrorCode}
 	}
 	if len(dto.MediaSources) == 0 {
 		return PlaybackInfoResult{}, errors.New("jellyfin: PlaybackInfo returned no MediaSources")
@@ -187,6 +219,7 @@ func FetchPlaybackInfo(ctx context.Context, in PlaybackInfoInput) (PlaybackInfoR
 		TranscodingURL: src.TranscodingURL,
 		Title:          title,
 		MediaKind:      mediaKind,
+		ItemType:       dto.Item.Type,
 		Artist:         strings.Join(dto.Item.Artists, ", "),
 		Album:          dto.Item.Album,
 		Duration:       durationFromJellyfinTicks(dto.Item.RunTimeTicks),
@@ -256,7 +289,7 @@ func mergePlaybackMetadata(info PlaybackInfoResult, meta ItemMetadataResult) Pla
 	if info.MediaKind != core.MediaKindMusic && meta.MediaKind == core.MediaKindMusic {
 		info.MediaKind = core.MediaKindMusic
 	}
-	if info.Title == "" && meta.Title != "" {
+	if meta.Title != "" && (info.Title == "" || info.Title == meta.ItemID) {
 		info.Title = meta.Title
 	}
 	if info.Artist == "" {

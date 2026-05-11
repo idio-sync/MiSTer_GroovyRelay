@@ -161,7 +161,6 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 		"Blue Monday",
 		"New Order",
 		"%{pts\\:hms}",
-		"w='(iw-48)*min(t/449.000,1)'",
 		"fps=60000/1001",
 		"scale=w=720:h=480",
 		"format=bgr24",
@@ -174,7 +173,7 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 	if strings.Contains(graph, "format=rgb24") {
 		t.Fatalf("graph contains wasted intermediate format=rgb24:\n%s", graph)
 	}
-	for _, bad := range []string{`\%{pts`, "(w-48)*min"} {
+	for _, bad := range []string{`\%{pts`, "(w-48)*min", "drawbox="} {
 		if strings.Contains(graph, bad) {
 			t.Fatalf("graph contains invalid duration expression %q:\n%s", bad, graph)
 		}

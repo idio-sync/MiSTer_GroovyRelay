@@ -345,13 +345,6 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 				label, visualizerDrawText(line), y, next))
 			label = next
 		}
-		if s.Visualizer.Metadata.Duration > 0 {
-			next := "vizbar"
-			seconds := s.Visualizer.Metadata.Duration.Seconds()
-			parts = append(parts, fmt.Sprintf("[%s]drawbox=x=24:y=h-34:w='(iw-48)*min(t/%.3f,1)':h=8:color=0x70ff70:t=fill[%s]",
-				label, seconds, next))
-			label = next
-		}
 	}
 	parts = append(parts, fmt.Sprintf("[%s]fps=%s,scale=w=%d:h=%d,format=bgr24[visualizer_video]",
 		label, fpsExpr, s.OutputWidth, s.OutputHeight))
