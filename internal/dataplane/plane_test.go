@@ -217,6 +217,103 @@ func TestSendField_DoesNotEmitDeltaLZ4ByDefault(t *testing.T) {
 	}
 }
 
+func TestSendField_AdaptiveDeltaOptInEmitsDeltaWhenUseful(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+
+	base := repeatedTileField(fieldBytes, deterministicTile(4096))
+	next := append([]byte(nil), base...)
+	for i := 0; i < 64; i++ {
+		next[i*4096]++
+	}
+
+	p.sendField(1, 0, base)
+	p.sendField(3, 0, next)
+
+	if len(sender.headers) < 2 || len(sender.payloads) < 2 {
+		t.Fatalf("got %d headers and %d payloads, want at least 2 of each", len(sender.headers), len(sender.payloads))
+	}
+	if got := blitPayloadType(sender.headers[0]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("first payload type = %d, want LZ4 full", got)
+	}
+	if got := blitPayloadType(sender.headers[1]); got != groovy.BlitHeaderLZ4Delta {
+		t.Fatalf("second payload type = %d, want delta LZ4", got)
+	}
+
+	gotDelta, err := groovy.LZ4Decompress(sender.payloads[1], fieldBytes)
+	if err != nil {
+		t.Fatalf("decompress delta payload: %v", err)
+	}
+	wantDelta := make([]byte, fieldBytes)
+	writeFieldSubDeltaInto(wantDelta, next, base)
+	if !bytes.Equal(gotDelta, wantDelta) {
+		t.Fatal("delta payload is not byte-wrap subtraction against previous raw field")
+	}
+}
+
+func TestSendField_DeltaEnvWithLZ4DisabledSendsRaw(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    false,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+
+	p.sendField(1, 0, repeatedTileField(fieldBytes, []byte{0x11, 0x22, 0x33}))
+
+	if len(sender.headers) != 1 {
+		t.Fatalf("headers = %d, want 1", len(sender.headers))
+	}
+	if got := blitPayloadType(sender.headers[0]); got != groovy.BlitHeaderRaw {
+		t.Fatalf("payload type = %d, want RAW", got)
+	}
+}
+
+func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{failPayloadSend: 1}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.sender = sender
+
+	base := repeatedTileField(fieldBytes, []byte{0x10, 0x20, 0x30, 0x40, 0x50})
+	next := append([]byte(nil), base...)
+	next[0]++
+
+	p.sendField(1, 0, base)
+	p.sendField(3, 0, next)
+
+	if len(sender.headers) < 2 {
+		t.Fatalf("headers = %d, want at least 2", len(sender.headers))
+	}
+	if got := blitPayloadType(sender.headers[1]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("second payload type = %d, want full LZ4 because failed send must not seed history", got)
+	}
+}
+
 func TestLZ4FallbackDebugLogIsThrottled(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -492,6 +589,51 @@ func TestWriteFieldSubDeltaInto_UsesByteWrapSubtraction(t *testing.T) {
 	if !bytes.Equal(dst, want) {
 		t.Fatalf("delta = % x, want % x", dst, want)
 	}
+}
+
+type scriptedFieldSender struct {
+	headers         [][]byte
+	payloads        [][]byte
+	failPayloadSend int
+	payloadSends    int
+}
+
+func (s *scriptedFieldSender) WaitForCongestion() {}
+
+func (s *scriptedFieldSender) Send(data []byte) error {
+	s.headers = append(s.headers, append([]byte(nil), data...))
+	return nil
+}
+
+func (s *scriptedFieldSender) SendPayload(data []byte) error {
+	s.payloadSends++
+	if s.failPayloadSend == s.payloadSends {
+		return errors.New("scripted payload send failure")
+	}
+	s.payloads = append(s.payloads, append([]byte(nil), data...))
+	return nil
+}
+
+func (s *scriptedFieldSender) MarkBlitSent(int) {}
+
+func repeatedTileField(length int, tile []byte) []byte {
+	out := make([]byte, length)
+	for i := range out {
+		out[i] = tile[i%len(tile)]
+	}
+	return out
+}
+
+func deterministicTile(length int) []byte {
+	tile := make([]byte, length)
+	for i := range tile {
+		tile[i] = byte(i*37 + i/7)
+	}
+	return tile
+}
+
+func blitPayloadType(header []byte) int {
+	return len(header)
 }
 
 func awaitFieldEvent(t *testing.T, fields <-chan fakemister.FieldEvent) fakemister.FieldEvent {

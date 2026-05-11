@@ -844,10 +844,12 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	if p.cfg.LZ4Enabled {
 		t := time.Now()
 		if n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw); ok {
-			payload = p.lz4Scratch[:n]
+			choice := p.chooseFieldPayload(field, raw, p.lz4Scratch[:n], ok)
+			payload = choice.payload
 			opts.Compressed = true
-			opts.CompressedSize = uint32(n)
-			compressedLen = n
+			opts.CompressedSize = uint32(len(payload))
+			opts.Delta = choice.delta
+			compressedLen = len(payload)
 		} else {
 			p.logLZ4RawFallback(len(raw), time.Now())
 		}
@@ -921,8 +923,16 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 		}
 		slog.Warn("sendField exceeded 84% of field period", attrs...)
 	}
-	p.rememberFieldDiagnostic(field, raw)
+	p.rememberSentFieldHistory(field, raw)
 	return fieldElapsed
+}
+
+type fieldPayloadChoice struct {
+	payload       []byte
+	delta         bool
+	fullLZ4Bytes  int
+	deltaLZ4OK    bool
+	deltaLZ4Bytes int
 }
 
 type fieldDiagnostic struct {
@@ -946,6 +956,34 @@ func shouldUseDeltaLZ4(fullBytes, deltaBytes int) bool {
 		return false
 	}
 	return deltaBytes*deltaLZ4WinDenominator < fullBytes*deltaLZ4WinNumerator
+}
+
+func (p *Plane) chooseFieldPayload(field uint8, raw []byte, fullLZ4 []byte, fullOK bool) fieldPayloadChoice {
+	choice := fieldPayloadChoice{
+		payload:      raw,
+		fullLZ4Bytes: len(fullLZ4),
+	}
+	if !fullOK {
+		return choice
+	}
+
+	choice.payload = fullLZ4
+	if !p.deltaLZ4Enabled || !p.hasFieldHistory(field, raw) ||
+		len(p.fieldDeltaScratch) < len(raw) || len(p.fieldDeltaLZ4Scratch) == 0 {
+		return choice
+	}
+
+	slot := int(field & 1)
+	delta := p.fieldDeltaScratch[:len(raw)]
+	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
+	n, ok := groovy.LZ4CompressInto(&p.fieldDeltaLZ4, p.fieldDeltaLZ4Scratch, delta)
+	choice.deltaLZ4OK = ok
+	choice.deltaLZ4Bytes = n
+	if ok && shouldUseDeltaLZ4(len(fullLZ4), n) {
+		choice.payload = p.fieldDeltaLZ4Scratch[:n]
+		choice.delta = true
+	}
+	return choice
 }
 
 func (p *Plane) currentFieldHistoryIdentity(raw []byte) fieldHistoryIdentity {
@@ -1017,6 +1055,14 @@ func (p *Plane) rememberFieldDiagnostic(field uint8, raw []byte) {
 		return
 	}
 	p.rememberFieldHistory(field, raw)
+}
+
+func (p *Plane) rememberSentFieldHistory(field uint8, raw []byte) {
+	if p.deltaLZ4Enabled {
+		p.rememberFieldHistory(field, raw)
+		return
+	}
+	p.rememberFieldDiagnostic(field, raw)
 }
 
 func datagramChunks(n int) int {
