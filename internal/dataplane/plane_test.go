@@ -674,6 +674,11 @@ func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
 func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
 
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	p := NewPlane(PlaneConfig{
 		LZ4Enabled:    false,
 		FieldWidth:    720,
@@ -682,6 +687,12 @@ func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
 	})
 	if p.deltaLZ4Enabled {
 		t.Fatal("deltaLZ4Enabled = true with LZ4 disabled, want false")
+	}
+	if strings.Contains(logBuf.String(), "adaptive delta-LZ4 enabled") {
+		t.Fatalf("delta-LZ4 logged as enabled with LZ4 disabled\n%s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "adaptive delta-LZ4 requested but LZ4 disabled") {
+		t.Fatalf("missing disabled-by-LZ4 log\n%s", logBuf.String())
 	}
 }
 

@@ -198,6 +198,13 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	fieldDiagEnabled := envFieldDiagnostics()
 	deltaLZ4Requested := envDeltaLZ4()
 	deltaLZ4Enabled := cfg.LZ4Enabled && deltaLZ4Requested
+	if deltaLZ4Enabled {
+		slog.Info("adaptive delta-LZ4 enabled",
+			"env", deltaLZ4Env)
+	} else if deltaLZ4Requested && !cfg.LZ4Enabled {
+		slog.Info("adaptive delta-LZ4 requested but LZ4 disabled",
+			"env", deltaLZ4Env)
+	}
 	fieldHistoryEnabled := fieldDiagEnabled || deltaLZ4Enabled
 
 	p := &Plane{
@@ -1327,8 +1334,6 @@ func envDeltaLZ4() bool {
 	}
 	switch strings.ToLower(v) {
 	case "1", "true", "t", "yes", "y", "on":
-		slog.Info("adaptive delta-LZ4 enabled",
-			"env", deltaLZ4Env)
 		return true
 	case "0", "false", "f", "no", "n", "off":
 		return false
