@@ -53,6 +53,8 @@ type Adapter struct {
 	sessions    map[string]*Session
 	torrents    map[string]*torrentUse
 	activeToken string
+
+	restartClientPending bool
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -97,7 +99,14 @@ func torrentFields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeRestartCast,
 		},
 		{Key: "keep_completed", Label: "Keep Completed", Kind: adapters.KindBool, Default: defaults.KeepCompleted, ApplyScope: adapters.ScopeHotSwap},
-		{Key: "max_cache_bytes", Label: "Max Cache Bytes", Kind: adapters.KindInt, Default: defaults.MaxCacheBytes, ApplyScope: adapters.ScopeHotSwap},
+		{
+			Key:        "max_cache_bytes",
+			Label:      "Max Cache Bytes",
+			Help:       "Persistent cache budget from 1 GiB to 1 TiB.",
+			Kind:       adapters.KindInt,
+			Default:    defaults.MaxCacheBytes,
+			ApplyScope: adapters.ScopeHotSwap,
+		},
 		{Key: "metadata_timeout_seconds", Label: "Metadata Timeout Seconds", Kind: adapters.KindInt, Default: defaults.MetadataTimeoutSeconds, ApplyScope: adapters.ScopeHotSwap},
 		{Key: "startup_buffer_seconds", Label: "Startup Buffer Seconds", Kind: adapters.KindInt, Default: defaults.StartupBufferSeconds, ApplyScope: adapters.ScopeHotSwap},
 		{Key: "max_upload_rate_kbps", Label: "Max Upload Rate Kbps", Kind: adapters.KindInt, Default: defaults.MaxUploadRateKbps, ApplyScope: adapters.ScopeRestartCast},
@@ -144,6 +153,11 @@ func (a *Adapter) Start(ctx context.Context) error {
 
 func (a *Adapter) Stop() error {
 	a.mu.Lock()
+	if !a.cfg.Enabled && len(a.sessions) > 0 && a.client != nil {
+		a.mu.Unlock()
+		a.setState(adapters.StateStopped, "")
+		return nil
+	}
 	client := a.client
 	a.mu.Unlock()
 
@@ -158,6 +172,7 @@ func (a *Adapter) Stop() error {
 	a.sessions = map[string]*Session{}
 	a.torrents = map[string]*torrentUse{}
 	a.activeToken = ""
+	a.restartClientPending = false
 	a.mu.Unlock()
 	a.setState(adapters.StateStopped, "")
 	return nil
@@ -191,7 +206,39 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	a.mu.Lock()
 	scope := configChangeScope(a.cfg, newCfg)
 	a.cfg = newCfg
+	var closeClient TorrentClient
+	if scope == adapters.ScopeRestartCast && a.client != nil {
+		if len(a.sessions) > 0 {
+			a.restartClientPending = true
+		} else {
+			closeClient = a.client
+			a.client = nil
+			a.torrents = map[string]*torrentUse{}
+			a.activeToken = ""
+			a.restartClientPending = false
+		}
+	}
 	a.mu.Unlock()
+	if closeClient != nil {
+		if err := closeClient.Close(); err != nil {
+			a.mu.Lock()
+			if a.client == nil {
+				a.client = closeClient
+			}
+			a.mu.Unlock()
+			a.setState(adapters.StateError, err.Error())
+			return scope, err
+		}
+	}
+	if scope == adapters.ScopeRestartCast && a.core != nil {
+		status := a.core.Status()
+		if strings.HasPrefix(status.AdapterRef, "torrent:") {
+			if err := a.core.Stop(); err != nil {
+				a.setState(adapters.StateError, err.Error())
+				return scope, err
+			}
+		}
+	}
 	return scope, nil
 }
 

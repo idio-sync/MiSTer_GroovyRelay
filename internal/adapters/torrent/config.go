@@ -12,6 +12,8 @@ import (
 )
 
 const torrentConfigFieldCount = 10
+const minCacheBytes int64 = 1 << 30
+const maxCacheBytes int64 = 1 << 40
 
 // Config is the [adapters.torrent] TOML section.
 type Config struct {
@@ -49,10 +51,10 @@ func validateConfig(cfg Config, bridgeDataDir string) error {
 	if err := validateDownloadDirShape(cfg.DownloadDir, bridgeDataDir); err != nil {
 		errs = append(errs, adapters.FieldError{Key: "download_dir", Msg: err.Error()})
 	}
-	if cfg.MaxCacheBytes < 0 {
+	if cfg.MaxCacheBytes < minCacheBytes || cfg.MaxCacheBytes > maxCacheBytes {
 		errs = append(errs, adapters.FieldError{
 			Key: "max_cache_bytes",
-			Msg: fmt.Sprintf("must be non-negative, got %d", cfg.MaxCacheBytes),
+			Msg: fmt.Sprintf("must be in [%d, %d], got %d", minCacheBytes, maxCacheBytes, cfg.MaxCacheBytes),
 		})
 	}
 	if cfg.MetadataTimeoutSeconds < 5 || cfg.MetadataTimeoutSeconds > 600 {

@@ -150,7 +150,7 @@ type cacheEntry struct {
 
 func pruneStorageCache(root string, maxBytes int64, active map[string]struct{}) error {
 	if maxBytes <= 0 {
-		return nil
+		return fmt.Errorf("max cache bytes must be positive")
 	}
 	rootAbs, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {

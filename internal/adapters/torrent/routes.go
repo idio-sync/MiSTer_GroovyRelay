@@ -119,6 +119,11 @@ func (a *Adapter) handleStop(w http.ResponseWriter, r *http.Request) {
 		a.respondRouteError(w, r, http.StatusInternalServerError, "core not wired")
 		return
 	}
+	status := a.core.Status()
+	if status.AdapterRef != "" && !strings.HasPrefix(status.AdapterRef, "torrent:") {
+		a.respondRouteError(w, r, http.StatusConflict, "active session belongs to another adapter")
+		return
+	}
 	if err := a.core.Stop(); err != nil {
 		a.respondRouteError(w, r, http.StatusConflict, err.Error())
 		return

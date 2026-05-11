@@ -173,12 +173,23 @@ func TestValidateConfigInspectsRelativeDownloadDirUnderBridgeDataDir(t *testing.
 	}
 }
 
-func TestValidateConfigAcceptsZeroCacheBytes(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.MaxCacheBytes = 0
+func TestValidateConfigRejectsCacheBytesOutsideDesignBounds(t *testing.T) {
+	const oneGiB = int64(1024 * 1024 * 1024)
+	const oneTiB = int64(1024 * 1024 * 1024 * 1024)
 
-	if err := validateConfig(cfg, t.TempDir()); err != nil {
-		t.Fatalf("validateConfig with zero cache bytes: %v", err)
+	cfg := DefaultConfig()
+	for _, maxBytes := range []int64{oneGiB, oneTiB} {
+		cfg.MaxCacheBytes = maxBytes
+		if err := validateConfig(cfg, t.TempDir()); err != nil {
+			t.Fatalf("validateConfig with max_cache_bytes=%d: %v", maxBytes, err)
+		}
+	}
+
+	for _, maxBytes := range []int64{0, oneGiB - 1, oneTiB + 1} {
+		cfg.MaxCacheBytes = maxBytes
+		if err := validateConfig(cfg, t.TempDir()); err == nil {
+			t.Fatalf("validateConfig with max_cache_bytes=%d = nil, want error", maxBytes)
+		}
 	}
 }
 

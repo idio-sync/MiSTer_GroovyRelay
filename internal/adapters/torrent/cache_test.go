@@ -148,13 +148,18 @@ func TestPruneStorageCacheRequiresMarkedRoot(t *testing.T) {
 	}
 }
 
-func TestPruneStorageCacheNoOpsWhenDisabled(t *testing.T) {
+func TestPruneStorageCacheRejectsNonPositiveBudget(t *testing.T) {
 	root := t.TempDir()
+	if err := ensureStorageRoot(root); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "oldhash"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := pruneStorageCache(root, 0, nil); err != nil {
-		t.Fatalf("pruneStorageCache disabled: %v", err)
+	for _, maxBytes := range []int64{0, -1} {
+		if err := pruneStorageCache(root, maxBytes, nil); err == nil {
+			t.Fatalf("pruneStorageCache maxBytes=%d succeeded, want error", maxBytes)
+		}
 	}
 }
 

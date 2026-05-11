@@ -204,6 +204,71 @@ func TestStopRetainsClientWhenCloseFails(t *testing.T) {
 	}
 }
 
+func TestStopAfterDisablePreservesActiveTorrentSession(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	a := newStartedTestAdapter(t, startedTorrentConfig(), client, core)
+	started, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.SetEnabled(false)
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop after disable: %v", err)
+	}
+	if client.closes != 0 {
+		t.Fatalf("client closes after disable Stop = %d, want 0 while session is active", client.closes)
+	}
+	a.mu.Lock()
+	_, sessionLive := a.sessions[started.Token]
+	a.mu.Unlock()
+	if !sessionLive {
+		t.Fatal("Stop after disable removed active session")
+	}
+	if _, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
+		t.Fatal("new start after disable succeeded, want disabled gate error")
+	}
+
+	core.reqs[0].OnStop("stopped")
+	if client.closes != 1 {
+		t.Fatalf("client closes after final disabled-session cleanup = %d, want 1", client.closes)
+	}
+}
+
+func TestApplyConfigRestartCastClosesIdleClient(t *testing.T) {
+	client := &fakeTorrentClient{}
+	a, err := New(AdapterConfig{Bridge: testBridgeConfig(t)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.client = client
+	a.cfg = startedTorrentConfig()
+
+	raw, meta := torrentPrimitive(t, `
+[adapters.torrent]
+enabled = true
+traffic_acknowledged = true
+listen_port = 6881
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Fatalf("scope = %s, want restart-cast", scope)
+	}
+	if client.closes != 1 {
+		t.Fatalf("client closes = %d, want 1 for idle restart-cast config change", client.closes)
+	}
+	a.mu.Lock()
+	gotClient := a.client
+	a.mu.Unlock()
+	if gotClient != nil {
+		t.Fatal("client still set after idle restart-cast config change")
+	}
+}
+
 func TestApplyConfigValidationErrorDoesNotChangeStatus(t *testing.T) {
 	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	if err != nil {

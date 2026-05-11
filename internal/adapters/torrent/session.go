@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -25,10 +26,14 @@ type Session struct {
 	FileIndex   int
 	Title       string
 	SessionDir  string
+	SessionRoot string
+	StorageRoot string
 	Torrent     TorrentHandle
 	KeepData    bool
 	CleanupOnce cleanupOnce
 }
+
+var randRead = rand.Read
 
 type cleanupOnce struct {
 	done bool
@@ -128,24 +133,35 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 	}
 	t.Prioritize(file.Index)
 	waitForStartupBuffer(ctx, cfg, t, file.Index)
-	sessionID := newID("torrent")
-	token := newID("tok")
-	root := sessionRoot(cfg, a.bridge.DataDir)
-	dir, err := createSessionDir(root, sessionID)
+	sessionID, err := newID("torrent")
+	if err != nil {
+		a.cleanupFailedStart(cfg, t, isNew)
+		return nil, &TorrentError{Kind: ErrCoreStart, Message: "could not allocate torrent session id", Err: err}
+	}
+	token, err := newID("tok")
+	if err != nil {
+		a.cleanupFailedStart(cfg, t, isNew)
+		return nil, &TorrentError{Kind: ErrCoreStart, Message: "could not allocate torrent session token", Err: err}
+	}
+	sessionRootPath := sessionRoot(cfg, a.bridge.DataDir)
+	storageRootPath := cacheRoot(cfg, a.bridge.DataDir)
+	dir, err := createSessionDir(sessionRootPath, sessionID)
 	if err != nil {
 		a.cleanupFailedStart(cfg, t, isNew)
 		return nil, err
 	}
 	s := &Session{
-		ID:         sessionID,
-		Token:      token,
-		InfoHash:   t.InfoHash(),
-		StorageKey: t.StorageKey(),
-		FileIndex:  file.Index,
-		Title:      sanitizeTitle(file.DisplayPath),
-		SessionDir: dir,
-		Torrent:    t,
-		KeepData:   cfg.KeepCompleted,
+		ID:          sessionID,
+		Token:       token,
+		InfoHash:    t.InfoHash(),
+		StorageKey:  t.StorageKey(),
+		FileIndex:   file.Index,
+		Title:       sanitizeTitle(file.DisplayPath),
+		SessionDir:  dir,
+		SessionRoot: sessionRootPath,
+		StorageRoot: storageRootPath,
+		Torrent:     t,
+		KeepData:    cfg.KeepCompleted,
 	}
 	a.registerSession(s)
 	req := core.SessionRequest{
@@ -237,19 +253,35 @@ func (a *Adapter) cleanupSession(token, reason string) {
 	cfg := a.cfg
 	active := make(map[string]struct{}, len(a.sessions))
 	for _, live := range a.sessions {
-		active[live.StorageKey] = struct{}{}
+		if live.StorageRoot == s.StorageRoot {
+			active[live.StorageKey] = struct{}{}
+		}
+	}
+	var closeClient TorrentClient
+	if len(a.sessions) == 0 && a.client != nil && (!cfg.Enabled || a.restartClientPending) {
+		closeClient = a.client
+		a.client = nil
+		a.restartClientPending = false
 	}
 	a.mu.Unlock()
 	if !s.KeepData {
-		_ = removeSessionDir(sessionRoot(cfg, a.bridge.DataDir), s.SessionDir)
+		_ = removeSessionDir(s.SessionRoot, s.SessionDir)
 	}
 	if dropTorrent != nil {
 		dropTorrent.Drop()
 	}
 	if removeStorage {
-		_ = removeStorageDir(cacheRoot(cfg, a.bridge.DataDir), s.StorageKey)
+		_ = removeStorageDir(s.StorageRoot, s.StorageKey)
 	}
-	_ = pruneStorageCache(cacheRoot(cfg, a.bridge.DataDir), cfg.MaxCacheBytes, active)
+	if err := pruneStorageCache(s.StorageRoot, cfg.MaxCacheBytes, active); err != nil {
+		a.logSafe("torrent cache prune failed token=%s err=%s", token, err)
+	}
+	if closeClient != nil {
+		if err := closeClient.Close(); err != nil {
+			a.setState(adapters.StateError, err.Error())
+			return
+		}
+	}
 	a.logSafe("torrent session stopped token=%s reason=%s hash=%s", token, reason, shortHash(s.InfoHash))
 }
 
@@ -279,12 +311,12 @@ func (a *Adapter) mediaURL(token string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/torrent/session/%s/media", a.bridge.UI.HTTPPort, token)
 }
 
-func newID(prefix string) string {
+func newID(prefix string) (string, error) {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	if _, err := randRead(b[:]); err != nil {
+		return "", err
 	}
-	return prefix + "-" + hex.EncodeToString(b[:])
+	return prefix + "-" + hex.EncodeToString(b[:]), nil
 }
 
 func shortHash(hash string) string {

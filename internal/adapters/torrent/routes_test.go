@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestUIRoutes(t *testing.T) {
@@ -139,5 +140,26 @@ func TestHandleStopCallsCore(t *testing.T) {
 	}
 	if core.stops != 1 {
 		t.Fatalf("core stops = %d, want 1", core.stops)
+	}
+}
+
+func TestHandleStopRejectsForeignActiveSession(t *testing.T) {
+	rec := &recordingCore{status: core.SessionStatus{AdapterRef: "plex:123"}}
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   rec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/stop", nil)
+	req.Header.Set("Accept", "application/json")
+	rr := httptest.NewRecorder()
+	a.handleStop(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%q, want 409", rr.Code, rr.Body.String())
+	}
+	if rec.stops != 0 {
+		t.Fatalf("core stops = %d, want 0 for foreign session", rec.stops)
 	}
 }

@@ -3,6 +3,7 @@ package torrent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -545,6 +547,99 @@ func TestMediaURLAlwaysUsesLoopbackEvenWhenBridgeHostIPIsLAN(t *testing.T) {
 	}
 	if !strings.HasPrefix(core.reqs[0].StreamURL, "http://127.0.0.1:32500/") {
 		t.Fatalf("StreamURL = %q, want loopback URL", core.reqs[0].StreamURL)
+	}
+}
+
+func TestApplyConfigRestartCastStopsActiveTorrentAndClosesClientAfterOnStop(t *testing.T) {
+	rec := &recordingCore{}
+	client := &fakeTorrentClient{}
+	a := newStartedTestAdapter(t, startedTorrentConfig(), client, rec)
+	if _, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"); err != nil {
+		t.Fatal(err)
+	}
+	rec.status = core.SessionStatus{AdapterRef: rec.reqs[0].AdapterRef}
+
+	raw, meta := torrentPrimitive(t, `
+[adapters.torrent]
+enabled = true
+traffic_acknowledged = true
+listen_port = 6881
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Fatalf("scope = %s, want restart-cast", scope)
+	}
+	if rec.stops != 1 {
+		t.Fatalf("core stops = %d, want 1 for active torrent restart-cast config change", rec.stops)
+	}
+	if client.closes != 0 {
+		t.Fatalf("client closes before OnStop = %d, want 0 while session cleanup owns it", client.closes)
+	}
+
+	rec.reqs[0].OnStop("stopped")
+	if client.closes != 1 {
+		t.Fatalf("client closes after OnStop = %d, want 1", client.closes)
+	}
+	a.mu.Lock()
+	gotClient := a.client
+	a.mu.Unlock()
+	if gotClient != nil {
+		t.Fatal("client still set after restart-cast OnStop cleanup")
+	}
+}
+
+func TestCleanupUsesSessionRootsCapturedBeforeDownloadDirChange(t *testing.T) {
+	rec := &recordingCore{}
+	client := &fakeTorrentClient{}
+	oldParent := filepath.Join(t.TempDir(), "old-cache")
+	cfg := startedTorrentConfig()
+	cfg.DownloadDir = oldParent
+	a := newStartedTestAdapter(t, cfg, client, rec)
+	started, err := a.startMagnet(context.Background(), "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	storageDir := writeStorageDir(t, a, cfg, hash)
+	a.mu.Lock()
+	sessionDir := a.sessions[started.Token].SessionDir
+	a.mu.Unlock()
+	rec.status = core.SessionStatus{AdapterRef: rec.reqs[0].AdapterRef}
+
+	newParent := filepath.Join(t.TempDir(), "new-cache")
+	raw, meta := torrentPrimitive(t, fmt.Sprintf(`
+[adapters.torrent]
+enabled = true
+traffic_acknowledged = true
+download_dir = %q
+`, newParent))
+	if _, err := a.ApplyConfig(raw, meta); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+
+	rec.reqs[0].OnStop("stopped")
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("old session dir still exists or stat failed differently: %v", err)
+	}
+	if _, err := os.Stat(storageDir); !os.IsNotExist(err) {
+		t.Fatalf("old storage dir still exists or stat failed differently: %v", err)
+	}
+}
+
+func TestNewIDFailsWhenEntropyUnavailable(t *testing.T) {
+	original := randRead
+	randRead = func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	}
+	t.Cleanup(func() {
+		randRead = original
+	})
+
+	if _, err := newID("tok"); err == nil {
+		t.Fatal("newID succeeded, want entropy error")
 	}
 }
 
