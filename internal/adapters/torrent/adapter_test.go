@@ -43,6 +43,11 @@ type closeOnlyTorrentClient struct {
 	closeErr error
 }
 
+func testBridgeConfig(t *testing.T) config.BridgeConfig {
+	t.Helper()
+	return config.BridgeConfig{DataDir: t.TempDir(), UI: config.UIConfig{HTTPPort: 32500}, HostIP: "127.0.0.1"}
+}
+
 func (c *closeOnlyTorrentClient) AddMagnet(context.Context, string) (TorrentHandle, bool, error) {
 	return nil, false, errors.New("not implemented")
 }

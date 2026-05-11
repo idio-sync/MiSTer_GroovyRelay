@@ -28,6 +28,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
+	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -209,6 +210,18 @@ func main() {
 	}
 	if err := reg.Register(streamsAdapter); err != nil {
 		dieFriendly("registry register streams", err)
+	}
+
+	torrentAdapter, err := torrentadapter.New(torrentadapter.AdapterConfig{
+		Bridge:   sec.Bridge,
+		Core:     coreMgr,
+		EventLog: elog,
+	})
+	if err != nil {
+		dieFriendly("torrent adapter init", err)
+	}
+	if err := reg.Register(torrentAdapter); err != nil {
+		dieFriendly("registry register torrent", err)
 	}
 
 	// DLNA / UPnP MediaRenderer adapter (Phase 1: descriptors + SSDP +
