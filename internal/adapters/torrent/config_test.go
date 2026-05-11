@@ -109,6 +109,61 @@ func TestProvisionDownloadRootCreatesOwnedChild(t *testing.T) {
 	}
 }
 
+func TestProvisionDownloadRootResolvesRelativeDownloadDirUnderBridgeDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.DownloadDir = "cache"
+
+	got, err := provisionDownloadRoot(cfg, dataDir)
+	if err != nil {
+		t.Fatalf("provisionDownloadRoot: %v", err)
+	}
+	want := filepath.Join(dataDir, "cache", "groovyrelay-torrent")
+	if got != want {
+		t.Fatalf("provisionDownloadRoot = %q, want %q", got, want)
+	}
+	if filepath.Dir(filepath.Dir(got)) != dataDir {
+		t.Fatalf("provisionDownloadRoot parent = %q, want bridge data dir %q", filepath.Dir(filepath.Dir(got)), dataDir)
+	}
+	if info, err := os.Stat(want); err != nil {
+		t.Fatalf("owned root stat: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("owned root is not a directory: %q", want)
+	}
+}
+
+func TestValidateConfigAcceptsZeroCacheBytes(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxCacheBytes = 0
+
+	if err := validateConfig(cfg, t.TempDir()); err != nil {
+		t.Fatalf("validateConfig with zero cache bytes: %v", err)
+	}
+}
+
+func TestValidateConfigRejectsInvalidNumericBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{name: "negative cache bytes", mut: func(c *Config) { c.MaxCacheBytes = -1 }},
+		{name: "metadata timeout below minimum", mut: func(c *Config) { c.MetadataTimeoutSeconds = 4 }},
+		{name: "metadata timeout above maximum", mut: func(c *Config) { c.MetadataTimeoutSeconds = 601 }},
+		{name: "startup buffer below minimum", mut: func(c *Config) { c.StartupBufferSeconds = -1 }},
+		{name: "startup buffer above maximum", mut: func(c *Config) { c.StartupBufferSeconds = 121 }},
+		{name: "privileged listen port", mut: func(c *Config) { c.ListenPort = 1023 }},
+		{name: "listen port above maximum", mut: func(c *Config) { c.ListenPort = 65536 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tc.mut(&cfg)
+			if err := validateConfig(cfg, t.TempDir()); err == nil {
+				t.Fatal("validateConfig = nil, want error")
+			}
+		})
+	}
+}
+
 func TestConfigChangeScope(t *testing.T) {
 	base := DefaultConfig()
 

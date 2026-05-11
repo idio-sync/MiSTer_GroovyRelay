@@ -49,22 +49,22 @@ func validateConfig(cfg Config, bridgeDataDir string) error {
 	if err := validateDownloadDirShape(cfg.DownloadDir, bridgeDataDir); err != nil {
 		errs = append(errs, adapters.FieldError{Key: "download_dir", Msg: err.Error()})
 	}
-	if cfg.MaxCacheBytes <= 0 {
+	if cfg.MaxCacheBytes < 0 {
 		errs = append(errs, adapters.FieldError{
 			Key: "max_cache_bytes",
-			Msg: fmt.Sprintf("must be greater than 0, got %d", cfg.MaxCacheBytes),
+			Msg: fmt.Sprintf("must be non-negative, got %d", cfg.MaxCacheBytes),
 		})
 	}
-	if cfg.MetadataTimeoutSeconds <= 0 {
+	if cfg.MetadataTimeoutSeconds < 5 || cfg.MetadataTimeoutSeconds > 600 {
 		errs = append(errs, adapters.FieldError{
 			Key: "metadata_timeout_seconds",
-			Msg: fmt.Sprintf("must be greater than 0, got %d", cfg.MetadataTimeoutSeconds),
+			Msg: fmt.Sprintf("must be in [5, 600], got %d", cfg.MetadataTimeoutSeconds),
 		})
 	}
-	if cfg.StartupBufferSeconds < 0 {
+	if cfg.StartupBufferSeconds < 0 || cfg.StartupBufferSeconds > 120 {
 		errs = append(errs, adapters.FieldError{
 			Key: "startup_buffer_seconds",
-			Msg: fmt.Sprintf("must be non-negative, got %d", cfg.StartupBufferSeconds),
+			Msg: fmt.Sprintf("must be in [0, 120], got %d", cfg.StartupBufferSeconds),
 		})
 	}
 	if cfg.MaxUploadRateKbps < 0 {
@@ -79,10 +79,10 @@ func validateConfig(cfg Config, bridgeDataDir string) error {
 			Msg: fmt.Sprintf("must be non-negative, got %d", cfg.MaxDownloadRateKbps),
 		})
 	}
-	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 {
+	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 || (cfg.ListenPort > 0 && cfg.ListenPort < 1024) {
 		errs = append(errs, adapters.FieldError{
 			Key: "listen_port",
-			Msg: fmt.Sprintf("must be in [0, 65535], got %d", cfg.ListenPort),
+			Msg: fmt.Sprintf("must be 0 or in [1024, 65535], got %d", cfg.ListenPort),
 		})
 	}
 
@@ -103,10 +103,14 @@ func configChangeScope(oldCfg, newCfg Config) adapters.ApplyScope {
 }
 
 func effectiveDownloadDir(cfg Config, bridgeDataDir string) string {
-	if strings.TrimSpace(cfg.DownloadDir) != "" {
-		return filepath.Clean(cfg.DownloadDir)
+	downloadDir := strings.TrimSpace(cfg.DownloadDir)
+	if downloadDir == "" {
+		return filepath.Clean(bridgeDataDir)
 	}
-	return filepath.Clean(bridgeDataDir)
+	if filepath.IsAbs(downloadDir) {
+		return filepath.Clean(downloadDir)
+	}
+	return filepath.Clean(filepath.Join(bridgeDataDir, downloadDir))
 }
 
 func ownedDownloadRoot(cfg Config, bridgeDataDir string) string {

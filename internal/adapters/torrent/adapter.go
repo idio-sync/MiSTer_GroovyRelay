@@ -16,7 +16,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
-const torrentUse = "torrent"
+const torrentAdapterName = "torrent"
 
 // SessionManager is the adapter's narrow view of core.Manager.
 type SessionManager interface {
@@ -50,7 +50,9 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 	client     TorrentClient
-	session    *Session
+
+	torrentHandles map[string]TorrentHandle
+	activeSessions map[string]*Session
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -62,17 +64,19 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		factory = newRealClient
 	}
 	return &Adapter{
-		core:          cfg.Core,
-		bridgeDataDir: cfg.Bridge.DataDir,
-		clientFactory: factory,
-		eventLog:      cfg.EventLog,
-		cfg:           DefaultConfig(),
-		state:         adapters.StateStopped,
-		stateSince:    time.Now(),
+		core:           cfg.Core,
+		bridgeDataDir:  cfg.Bridge.DataDir,
+		clientFactory:  factory,
+		eventLog:       cfg.EventLog,
+		cfg:            DefaultConfig(),
+		state:          adapters.StateStopped,
+		stateSince:     time.Now(),
+		torrentHandles: map[string]TorrentHandle{},
+		activeSessions: map[string]*Session{},
 	}, nil
 }
 
-func (a *Adapter) Name() string        { return torrentUse }
+func (a *Adapter) Name() string        { return torrentAdapterName }
 func (a *Adapter) DisplayName() string { return "Torrent" }
 
 func (a *Adapter) Fields() []adapters.FieldDef {
@@ -141,8 +145,6 @@ func (a *Adapter) Start(ctx context.Context) error {
 func (a *Adapter) Stop() error {
 	a.mu.Lock()
 	client := a.client
-	a.client = nil
-	a.session = nil
 	a.mu.Unlock()
 
 	if client != nil {
@@ -151,6 +153,11 @@ func (a *Adapter) Stop() error {
 			return err
 		}
 	}
+	a.mu.Lock()
+	a.client = nil
+	a.torrentHandles = map[string]TorrentHandle{}
+	a.activeSessions = map[string]*Session{}
+	a.mu.Unlock()
 	a.setState(adapters.StateStopped, "")
 	return nil
 }
@@ -177,7 +184,6 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		return 0, fmt.Errorf("torrent: decode apply config: %w", err)
 	}
 	if err := validateConfig(newCfg, a.bridgeDataDir); err != nil {
-		a.setState(adapters.StateError, err.Error())
 		return 0, err
 	}
 
@@ -224,7 +230,7 @@ func (a *Adapter) emit(sev eventlog.Severity, msg string) {
 	a.eventLog.Append(eventlog.Entry{
 		Time:     time.Now(),
 		Severity: sev,
-		Source:   torrentUse,
+		Source:   torrentAdapterName,
 		Message:  logSafe(msg),
 	})
 }
