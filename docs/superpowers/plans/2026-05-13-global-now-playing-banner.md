@@ -364,6 +364,54 @@ func TestManager_StopIfSessionMatchesGeneration(t *testing.T) {
 		t.Fatalf("AdapterRef after stop = %q, want empty", got)
 	}
 }
+
+func TestManager_PlaySeekAndStartIfSessionRejectStaleGeneration(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		t.Fatal("stale guarded helper must not start a new plane")
+		return nil
+	}
+
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.active = &activeSession{
+		req:        SessionRequest{StreamURL: "http://example.test/current.mp4", AdapterRef: "url:same", Capabilities: Capabilities{CanPause: true, CanSeek: true}, DirectPlay: true},
+		generation: 7,
+	}
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition: %v", err)
+	}
+	m.mu.Unlock()
+
+	if matched, err := m.PlayIfSession("url:same", 6); err != nil || matched {
+		t.Fatalf("PlayIfSession stale matched=%v err=%v, want false nil", matched, err)
+	}
+	if matched, err := m.SeekToIfSession("url:same", 6, 12000); err != nil || matched {
+		t.Fatalf("SeekToIfSession stale matched=%v err=%v, want false nil", matched, err)
+	}
+	req := SessionRequest{StreamURL: "http://example.test/replacement.mp4", AdapterRef: "url:replacement", Capabilities: Capabilities{CanPause: true, CanSeek: true}, DirectPlay: true}
+	if matched, err := m.StartSessionIfSession(req, "url:same", 6); err != nil || matched {
+		t.Fatalf("StartSessionIfSession stale matched=%v err=%v, want false nil", matched, err)
+	}
+	st := m.Status()
+	if st.AdapterRef != "url:same" || st.Generation != 7 {
+		t.Fatalf("stale guarded helpers mutated active session: %+v", st)
+	}
+}
 ```
 
 - [ ] **Step 7: Run guarded-helper tests and verify they fail**
@@ -371,7 +419,7 @@ func TestManager_StopIfSessionMatchesGeneration(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/core -run "TestManager_StopIfSession" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/core -run "TestManager_.*IfSession" -count=1
 ```
 
 Expected: FAIL with undefined `StopIfSession`.
@@ -721,8 +769,10 @@ Create `internal/ui/playback_test.go` with the shared fakes:
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -856,6 +906,37 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaybackBannerRendersQuickCastRadioOptionsAndDisabledReason(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		tabs: []adapters.QuickCastTab{{
+			ID:             "url",
+			Label:          "URL",
+			Enabled:        false,
+			DisabledReason: "url adapter is disabled",
+			Encoding:       adapters.QuickCastEncodingForm,
+			Fields: []adapters.QuickCastField{{
+				Name: "mode", Label: "Mode", Type: "radio", Required: true,
+				Options: []adapters.QuickCastOption{{Value: "auto", Label: "Auto"}, {Value: "ytdlp", Label: "yt-dlp"}, {Value: "direct", Label: "Direct"}},
+			}},
+		}},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	for _, want := range []string{`type="radio"`, `name="mode" value="auto"`, `name="mode" value="ytdlp"`, `name="mode" value="direct"`, "url adapter is disabled"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("banner missing %q: %s", want, body)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: Run banner render tests and verify they fail**
@@ -863,7 +944,7 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ui -run "TestPlaybackBannerIdle|TestPlaybackBannerPlaying" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ui -run "TestPlaybackBanner" -count=1
 ```
 
 Expected: FAIL with 404 for `/ui/playback/banner` or missing template/data.
@@ -1054,9 +1135,9 @@ func (s *Server) quickCastTabs() []adapters.QuickCastTab {
 	return tabs
 }
 
-func (s *Server) quickCastProviderForTab(tabID string) (adapters.QuickCastProvider, bool) {
+func (s *Server) quickCastProviderForTab(tabID string) (adapters.QuickCastProvider, adapters.QuickCastTab, bool) {
 	if s.cfg.Registry == nil || tabID == "" {
-		return nil, false
+		return nil, adapters.QuickCastTab{}, false
 	}
 	for _, a := range s.cfg.Registry.List() {
 		p, ok := a.(adapters.QuickCastProvider)
@@ -1065,11 +1146,11 @@ func (s *Server) quickCastProviderForTab(tabID string) (adapters.QuickCastProvid
 		}
 		for _, tab := range p.QuickCastTabs() {
 			if tab.ID == tabID {
-				return p, true
+				return p, tab, true
 			}
 		}
 	}
-	return nil, false
+	return nil, adapters.QuickCastTab{}, false
 }
 
 func adapterRefBelongsTo(adapterName, ref string) bool {
@@ -1077,7 +1158,7 @@ func adapterRefBelongsTo(adapterName, ref string) bool {
 }
 ```
 
-- [ ] **Step 5: Add banner route and shell data field**
+- [ ] **Step 5: Add banner route, persistent panel target, and shell data field**
 
 Modify `internal/ui/server.go`:
 
@@ -1096,6 +1177,31 @@ Set it in `shellDataForPath`:
 ```go
 data.Playback = s.buildPlaybackBannerData(context.Background(), playbackRenderOptions{})
 ```
+
+Split the non-setup shell into persistent chrome plus a swappable content target. Keep `id="panel"` on `<main>` for existing CSS/tests, but move htmx panel swaps into `#panel-content` so sidebar navigation cannot replace the banner:
+
+```html
+<main class="{{if .SetupMode}}gr-wizard{{else}}{{.PanelClass}}{{end}}" id="panel">
+	{{if .SetupMode}}
+		<!-- existing setup brand, stepper, and panel body stay here -->
+		{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
+	{{else}}
+		{{template "now-playing-banner.html" .Playback}}
+		<div id="panel-content">
+			{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
+		</div>
+	{{end}}
+</main>
+```
+
+Update htmx targets that replace whole page panels from `#panel` to `#panel-content`:
+
+- sidebar links in `internal/ui/templates/shell.html`;
+- diagnostics filter chips in `internal/ui/templates/diagnostics-panel.html`;
+- bridge save/restart-cast targets in `internal/ui/templates/bridge-panel.html`;
+- adapter config form/action targets in `internal/ui/templates/adapter-panel.html`.
+
+Do not change nested fragment targets such as `#status-content`, `#url-panel`, `#streams-panel`, `#torrent-panel`, or `#gr-now-playing`.
 
 Add handler to `internal/ui/playback.go`:
 
@@ -1158,15 +1264,27 @@ Create `internal/ui/templates/now-playing-banner.html`:
 	<div class="gr-now-playing-drawer">
 		<div class="gr-quick-cast-tabs">
 			{{range $i, $tab := .QuickCastTabs}}
-			<button type="button" hx-get="/ui/playback/banner?drawer=cast&tab={{$tab.ID}}" hx-target="#gr-now-playing" hx-swap="outerHTML" {{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}aria-current="true"{{end}}>{{$tab.Label}}</button>
+			<button type="button" hx-get="/ui/playback/banner?drawer=cast&tab={{$tab.ID}}" hx-target="#gr-now-playing" hx-swap="outerHTML" title="{{$tab.DisabledReason}}" {{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}aria-current="true"{{end}} {{if not $tab.Enabled}}disabled{{end}}>{{$tab.Label}}</button>
 			{{end}}
 		</div>
 		{{range $i, $tab := .QuickCastTabs}}
 		{{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}
 		<form class="gr-quick-cast" hx-post="/ui/playback/quick-cast" hx-target="#gr-now-playing" hx-swap="outerHTML" {{if eq $tab.Encoding "multipart"}}enctype="multipart/form-data"{{end}}>
 			<input type="hidden" name="tab_id" value="{{$tab.ID}}">
-			{{range $tab.Fields}}
-			<label>{{.Label}}<input name="{{.Name}}" type="{{.Type}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}></label>
+			{{if $tab.DisabledReason}}<p class="gr-quick-cast-disabled">{{$tab.DisabledReason}}</p>{{end}}
+			{{range $field := $tab.Fields}}
+			{{if eq $field.Type "radio"}}
+			<fieldset>
+				<legend>{{$field.Label}}</legend>
+				{{range $field.Options}}
+				<label><input type="radio" name="{{$field.Name}}" value="{{.Value}}" {{if $field.Required}}required{{end}}> {{.Label}}</label>
+				{{end}}
+			</fieldset>
+			{{else if eq $field.Type "select"}}
+			<label>{{$field.Label}}<select name="{{$field.Name}}" {{if $field.Required}}required{{end}}>{{range $field.Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label>
+			{{else}}
+			<label>{{$field.Label}}<input name="{{$field.Name}}" type="{{$field.Type}}" placeholder="{{$field.Placeholder}}" {{if $field.Required}}required{{end}}></label>
+			{{end}}
 			{{end}}
 			<button type="submit" {{if not $tab.Enabled}}disabled{{end}}>Cast</button>
 		</form>
@@ -1176,12 +1294,6 @@ Create `internal/ui/templates/now-playing-banner.html`:
 	{{end}}
 </section>
 {{end}}
-```
-
-Update `internal/ui/templates/shell.html` inside the non-setup `<main>` before panel content:
-
-```html
-{{if not .SetupMode}}{{template "now-playing-banner.html" .Playback}}{{end}}
 ```
 
 - [ ] **Step 7: Teach `handlePlaybackBanner` to open drawer from query string**
@@ -1220,6 +1332,24 @@ func TestShellRendersNowPlayingBannerOnNonSetupPages(t *testing.T) {
 				t.Fatalf("missing now-playing banner on %s: %s", path, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestShellNavigationTargetsPanelContentSoBannerPersists(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	body := rr.Body.String()
+	for _, want := range []string{`id="gr-now-playing"`, `id="panel-content"`, `hx-target="#panel-content"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("shell missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `hx-target="#panel"`) {
+		t.Fatalf("shell still targets #panel and would replace the banner: %s", body)
 	}
 }
 
@@ -1307,7 +1437,7 @@ func TestPlaybackActionRejectsSameAdapterStaleGenerationBeforeDispatch(t *testin
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusConflict {
+	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	if len(fake.actionCalls) != 0 {
@@ -1367,7 +1497,7 @@ Add to `internal/ui/playback.go`:
 func (s *Server) handlePlaybackAction(w http.ResponseWriter, r *http.Request) {
 	req, err := parsePlaybackActionRequest(r, false)
 	if err != nil {
-		s.renderPlaybackMessage(w, r, http.StatusBadRequest, "err", err.Error(), false, "")
+		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
 		return
 	}
 	s.handlePlaybackMutation(w, r, req)
@@ -1376,7 +1506,7 @@ func (s *Server) handlePlaybackAction(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePlaybackSeek(w http.ResponseWriter, r *http.Request) {
 	req, err := parsePlaybackActionRequest(r, true)
 	if err != nil {
-		s.renderPlaybackMessage(w, r, http.StatusBadRequest, "err", err.Error(), false, "")
+		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
 		return
 	}
 	req.Action = adapters.PlaybackActionSeek
@@ -1415,20 +1545,20 @@ func parsePlaybackActionRequest(r *http.Request, requireOffset bool) (adapters.P
 func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, req adapters.PlaybackActionRequest) {
 	snap := s.currentPlaybackSnapshot()
 	if snap.AdapterRef != req.AdapterRef || snap.Generation != req.Generation {
-		s.renderPlaybackMessage(w, r, http.StatusConflict, "err", "active session changed", false, "")
+		s.renderPlaybackMessage(w, r, "err", "active session changed", false, "")
 		return
 	}
 	provider, ok := s.playbackProviderForSnapshot(snap)
 	if !ok {
-		s.renderPlaybackMessage(w, r, http.StatusConflict, "err", "active adapter does not expose playback controls", false, "")
+		s.renderPlaybackMessage(w, r, "err", "active adapter does not expose playback controls", false, "")
 		return
 	}
 	result, err := provider.HandlePlaybackAction(r.Context(), req)
 	if err != nil {
-		s.renderPlaybackMessage(w, r, http.StatusConflict, "err", err.Error(), false, "")
+		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
 		return
 	}
-	s.renderPlaybackMessage(w, r, http.StatusOK, "ok", result.Message, false, "")
+	s.renderPlaybackMessage(w, r, "ok", result.Message, false, "")
 }
 
 func (s *Server) currentPlaybackSnapshot() adapters.PlaybackBannerSnapshot {
@@ -1450,13 +1580,15 @@ func (s *Server) currentPlaybackSnapshot() adapters.PlaybackBannerSnapshot {
 	}
 }
 
-func (s *Server) renderPlaybackMessage(w http.ResponseWriter, r *http.Request, status int, kind, msg string, drawer bool, tab string) {
+func (s *Server) renderPlaybackMessage(w http.ResponseWriter, r *http.Request, kind, msg string, drawer bool, tab string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	opts := playbackRenderOptions{Message: msg, MessageKind: kind, CastDrawerOpen: drawer, ActiveQuickCast: tab}
 	_ = s.tmpl.ExecuteTemplate(w, "now-playing-banner.html", s.buildPlaybackBannerData(r.Context(), opts))
 }
 ```
+
+Return `200 OK` even for inline banner errors. htmx 2.x does not swap 4xx/5xx responses by default, so error state belongs in the rendered fragment body rather than the HTTP status for these UI-only endpoints.
 
 - [ ] **Step 5: Write failing quick-cast tests**
 
@@ -1514,13 +1646,86 @@ func TestQuickCastErrorKeepsDrawerOpen(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
-	if rr.Code != http.StatusConflict {
+	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	for _, want := range []string{"bad url", "gr-now-playing-drawer"} {
 		if !strings.Contains(rr.Body.String(), want) {
 			t.Fatalf("quick-cast error response missing %q: %s", want, rr.Body.String())
 		}
+	}
+}
+
+func TestQuickCastRejectsDisabledTabBeforeProviderDispatch(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		tabs: []adapters.QuickCastTab{{
+			ID:             "url",
+			Label:          "URL",
+			Enabled:        false,
+			DisabledReason: "url adapter is disabled",
+			Encoding:       adapters.QuickCastEncodingForm,
+		}},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	form := url.Values{"tab_id": {"url"}, "url": {"https://example.test/video.mp4"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.quickCalls) != 0 {
+		t.Fatalf("disabled quick-cast tab dispatched to provider: %#v", fake.quickCalls)
+	}
+	if !strings.Contains(rr.Body.String(), "url adapter is disabled") {
+		t.Fatalf("disabled reason missing: %s", rr.Body.String())
+	}
+}
+
+func TestQuickCastMultipartBodyIsCappedBeforeParsing(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "torrent",
+		enabled: true,
+		tabs: []adapters.QuickCastTab{{
+			ID:       "torrent-file",
+			Label:    "Torrent File",
+			Enabled:  true,
+			Encoding: adapters.QuickCastEncodingMultipart,
+		}},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("tab_id", "torrent-file")
+	part, err := mw.CreateFormFile("torrent_file", "huge.torrent")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	_, _ = part.Write(bytes.Repeat([]byte("x"), maxQuickCastMultipartBytes+1))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.quickCalls) != 0 {
+		t.Fatalf("oversized multipart dispatched to provider: %#v", fake.quickCalls)
+	}
+	if !strings.Contains(rr.Body.String(), "parse multipart") {
+		t.Fatalf("multipart cap error missing: %s", rr.Body.String())
 	}
 }
 ```
@@ -1531,32 +1736,43 @@ Add to `internal/ui/playback.go`:
 
 ```go
 func (s *Server) handlePlaybackQuickCast(w http.ResponseWriter, r *http.Request) {
-	req, err := parseQuickCastRequest(r)
+	req, err := parseQuickCastRequest(w, r)
 	if err != nil {
-		s.renderPlaybackMessage(w, r, http.StatusBadRequest, "err", err.Error(), true, "")
+		s.renderPlaybackMessage(w, r, "err", err.Error(), true, "")
 		return
 	}
-	provider, ok := s.quickCastProviderForTab(req.TabID)
+	provider, tab, ok := s.quickCastProviderForTab(req.TabID)
 	if !ok {
-		s.renderPlaybackMessage(w, r, http.StatusBadRequest, "err", "quick-cast provider unavailable", true, req.TabID)
+		s.renderPlaybackMessage(w, r, "err", "quick-cast provider unavailable", true, req.TabID)
+		return
+	}
+	if !tab.Enabled {
+		reason := tab.DisabledReason
+		if reason == "" {
+			reason = "quick-cast tab disabled"
+		}
+		s.renderPlaybackMessage(w, r, "err", reason, true, req.TabID)
 		return
 	}
 	result, err := provider.HandleQuickCast(r.Context(), req)
 	if err != nil {
-		s.renderPlaybackMessage(w, r, http.StatusConflict, "err", err.Error(), true, req.TabID)
+		s.renderPlaybackMessage(w, r, "err", err.Error(), true, req.TabID)
 		return
 	}
 	msg := result.Message
 	if msg == "" {
 		msg = "cast started"
 	}
-	s.renderPlaybackMessage(w, r, http.StatusOK, "ok", msg, false, "")
+	s.renderPlaybackMessage(w, r, "ok", msg, false, "")
 }
 
-func parseQuickCastRequest(r *http.Request) (adapters.QuickCastRequest, error) {
+const maxQuickCastMultipartBytes = 4*1024*1024 + 64*1024
+
+func parseQuickCastRequest(w http.ResponseWriter, r *http.Request) (adapters.QuickCastRequest, error) {
 	ct := r.Header.Get("Content-Type")
 	req := adapters.QuickCastRequest{Values: map[string]string{}}
 	if strings.HasPrefix(ct, "multipart/form-data") {
+		r.Body = http.MaxBytesReader(w, r.Body, maxQuickCastMultipartBytes)
 		if err := r.ParseMultipartForm(4 << 20); err != nil {
 			return req, fmt.Errorf("parse multipart: %w", err)
 		}
@@ -1619,6 +1835,8 @@ Expected: commit contains only generic UI route files.
 
 **Files:**
 - Modify: `internal/adapters/url/adapter.go`
+- Modify: `internal/adapters/url/play.go`
+- Modify: `internal/adapters/url/play_test.go`
 - Create: `internal/adapters/url/playback_provider.go`
 - Create: `internal/adapters/url/playback_provider_test.go`
 - Modify: `internal/adapters/url/ui.go`
@@ -1633,6 +1851,7 @@ package url
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -1710,6 +1929,38 @@ func TestURLPlaybackActionUsesFullSessionKey(t *testing.T) {
 		t.Fatalf("pause key = %q/%d", coreStub.pauseRef, coreStub.pauseGen)
 	}
 }
+
+func TestURLPlaybackActionRejectsStaleSameAdapterGeneration(t *testing.T) {
+	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 4}}
+	a := &Adapter{core: coreStub}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionPause, AdapterRef: "url:abc", Generation: 3})
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("stale generation err = %v, want active session changed", err)
+	}
+	if coreStub.pauseRef != "url:abc" || coreStub.pauseGen != 3 {
+		t.Fatalf("pause guard should receive stale key for recheck, got %q/%d", coreStub.pauseRef, coreStub.pauseGen)
+	}
+}
+
+func TestURLPlaybackActionRejectsForeignAdapterRef(t *testing.T) {
+	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "streams:abc", Generation: 4}}
+	a := &Adapter{core: coreStub}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "url:abc", Generation: 4})
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("foreign adapter err = %v, want active session changed", err)
+	}
+	if coreStub.stopRef != "url:abc" || coreStub.stopGen != 4 {
+		t.Fatalf("stop guard should receive submitted key for recheck, got %q/%d", coreStub.stopRef, coreStub.stopGen)
+	}
+}
+
+func TestURLQuickCastRejectsDisabledAdapter(t *testing.T) {
+	a := &Adapter{core: &providerCoreStub{}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{Values: map[string]string{"url": "https://example.test/video.mp4"}})
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("disabled quick-cast err = %v, want disabled", err)
+	}
+}
 ```
 
 - [ ] **Step 2: Run URL provider tests and verify they fail**
@@ -1739,6 +1990,46 @@ type SessionManager interface {
 	PlayIfSession(string, uint64) (bool, error)
 	StopIfSession(string, uint64) (bool, error)
 	SeekToIfSession(string, uint64, int) (bool, error)
+}
+```
+
+Update the existing `fakeCore` in `internal/adapters/url/play_test.go` so the extended interface does not break older URL tests:
+
+```go
+func (f *fakeCore) StartSessionIfSession(req core.SessionRequest, ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastReq = req
+	return true, f.startErr
+}
+
+func (f *fakeCore) PauseIfSession(string, uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pauseCalled = true
+	return true, f.pauseErr
+}
+
+func (f *fakeCore) PlayIfSession(string, uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.playCalled = true
+	return true, f.playErr
+}
+
+func (f *fakeCore) StopIfSession(string, uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalled = true
+	return true, f.stopErr
+}
+
+func (f *fakeCore) SeekToIfSession(_ string, _ uint64, offsetMs int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seekCalled = true
+	f.seekOffsetMs = offsetMs
+	return true, f.seekErr
 }
 ```
 
@@ -1958,6 +2249,9 @@ func (a *Adapter) QuickCastTabs() []adapters.QuickCastTab {
 }
 
 func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
+	if !a.IsEnabled() {
+		return adapters.QuickCastResult{}, fmt.Errorf("url adapter is disabled")
+	}
 	rawURL := strings.TrimSpace(req.Values["url"])
 	if rawURL == "" {
 		return adapters.QuickCastResult{}, fmt.Errorf("url is required")
@@ -2023,9 +2317,9 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/url/adapter.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
+cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
 cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -count=1
-git add internal/adapters/url/adapter.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
+git add internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
 git commit -m "feat(url): move playback controls to global banner"
 ```
 
@@ -2038,6 +2332,7 @@ Expected: commit contains only URL adapter files.
 **Files:**
 - Modify: `internal/adapters/streams/adapter.go`
 - Modify: `internal/adapters/streams/playback.go`
+- Modify: `internal/adapters/streams/test_helpers_test.go`
 - Create: `internal/adapters/streams/playback_provider.go`
 - Create: `internal/adapters/streams/playback_provider_test.go`
 - Modify: `internal/adapters/streams/ui.go`
@@ -2088,6 +2383,37 @@ func TestStreamsPlaybackBannerActions(t *testing.T) {
 	}
 }
 
+func TestStreamsPlaybackActionRejectsStaleCoreGeneration(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.mu.Lock()
+	a.active = &ActiveQueue{SessionID: "sess", ProviderID: "mtv", ProviderName: "MTV", ChannelID: "metal", ChannelName: "Metal", Items: []StreamItem{{ID: "one"}, {ID: "two"}}, baseItems: []StreamItem{{ID: "one"}, {ID: "two"}}, Index: 0, Generation: 4, ItemToken: 2}
+	a.mu.Unlock()
+	ref := "streams:mtv:metal:sess:2"
+	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: ref, Generation: 9}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: ref, Generation: 8})
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("stale streams action err = %v, want active session changed", err)
+	}
+	if fc.stopCalls != 0 {
+		t.Fatalf("stale streams action called core stop %d times", fc.stopCalls)
+	}
+}
+
+func TestStreamsPlaybackActionRejectsForeignAdapterRef(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.mu.Lock()
+	a.active = &ActiveQueue{SessionID: "sess", ProviderID: "mtv", ChannelID: "metal", Items: []StreamItem{{ID: "one"}}, Index: 0, Generation: 4, ItemToken: 2}
+	a.mu.Unlock()
+	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 8}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "streams:mtv:metal:sess:2", Generation: 8})
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("foreign streams action err = %v, want active session changed", err)
+	}
+	if fc.stopCalls != 0 {
+		t.Fatalf("foreign streams action called core stop %d times", fc.stopCalls)
+	}
+}
+
 func actionIDs(actions []adapters.PlaybackAction) string {
 	var ids []string
 	for _, a := range actions {
@@ -2119,6 +2445,40 @@ type SessionManager interface {
 	StopIfAdapterRef(string) (bool, error)
 	StopIfSession(string, uint64) (bool, error)
 	Status() core.SessionStatus
+}
+```
+
+Update `internal/adapters/streams/test_helpers_test.go` fake core so existing tests still compile:
+
+```go
+func (f *fakeCore) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.status.AdapterRef != "" {
+		return false, nil
+	}
+	f.lastReq = req
+	f.startCalls++
+	if f.startErr == nil {
+		f.status.AdapterRef = req.AdapterRef
+	}
+	return true, f.startErr
+}
+
+func (f *fakeCore) StopIfSession(ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	if ref == "" || f.status.AdapterRef != ref || f.status.Generation != generation {
+		f.mu.Unlock()
+		return false, nil
+	}
+	f.stopCalls++
+	f.status.AdapterRef = ""
+	stopHook := f.stopHook
+	f.mu.Unlock()
+	if stopHook != nil {
+		stopHook()
+	}
+	return true, nil
 }
 ```
 
@@ -2385,9 +2745,9 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go
+cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go
 cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -count=1
-git add internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go
+git add internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go
 git commit -m "feat(streams): expose playback controls through banner"
 ```
 
@@ -2399,6 +2759,7 @@ Expected: commit contains only Streams adapter files.
 
 **Files:**
 - Modify: `internal/adapters/torrent/adapter.go`
+- Modify: `internal/adapters/torrent/adapter_test.go`
 - Create: `internal/adapters/torrent/playback_provider.go`
 - Create: `internal/adapters/torrent/playback_provider_test.go`
 - Modify: `internal/adapters/torrent/ui.go`
@@ -2413,6 +2774,7 @@ package torrent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -2456,6 +2818,38 @@ func TestTorrentStopUsesFullSessionKey(t *testing.T) {
 		t.Fatalf("stop key = %q/%d", coreStub.stopRef, coreStub.stopGen)
 	}
 }
+
+func TestTorrentStopRejectsStaleGeneration(t *testing.T) {
+	coreStub := &torrentProviderCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "torrent:abc", Generation: 5}}
+	a := &Adapter{core: coreStub}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "torrent:abc", Generation: 4})
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("HandlePlaybackAction stale error = %v, want active session changed", err)
+	}
+	if coreStub.stopRef != "torrent:abc" || coreStub.stopGen != 4 {
+		t.Fatalf("stop key = %q/%d, want submitted stale key", coreStub.stopRef, coreStub.stopGen)
+	}
+}
+
+func TestTorrentStopRejectsForeignAdapterRef(t *testing.T) {
+	coreStub := &torrentProviderCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 4}}
+	a := &Adapter{core: coreStub}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "torrent:abc", Generation: 4})
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("HandlePlaybackAction foreign error = %v, want active session changed", err)
+	}
+	if coreStub.stopRef != "torrent:abc" || coreStub.stopGen != 4 {
+		t.Fatalf("stop key = %q/%d, want submitted foreign key", coreStub.stopRef, coreStub.stopGen)
+	}
+}
+
+func TestTorrentQuickCastRejectsDisabledAdapter(t *testing.T) {
+	a := &Adapter{cfg: Config{Enabled: false, TrafficAcknowledged: true}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{TabID: "torrent-magnet", Values: map[string]string{"magnet": "magnet:?xt=urn:btih:abc"}})
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("HandleQuickCast disabled error = %v, want disabled", err)
+	}
+}
 ```
 
 - [ ] **Step 2: Run Torrent provider tests and verify they fail**
@@ -2478,6 +2872,19 @@ type SessionManager interface {
 	Status() core.SessionStatus
 	Stop() error
 	StopIfSession(string, uint64) (bool, error)
+}
+```
+
+Update `recordingCore` in `internal/adapters/torrent/adapter_test.go`:
+
+```go
+func (c *recordingCore) StopIfSession(ref string, generation uint64) (bool, error) {
+	if c.status.AdapterRef != ref || c.status.Generation != generation {
+		return false, nil
+	}
+	c.stops++
+	c.status = core.SessionStatus{}
+	return true, nil
 }
 ```
 
@@ -2567,6 +2974,17 @@ func (a *Adapter) QuickCastTabs() []adapters.QuickCastTab {
 }
 
 func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
+	enabled := a.IsEnabled()
+	a.mu.Lock()
+	ack := a.cfg.TrafficAcknowledged
+	a.mu.Unlock()
+	if !enabled {
+		return adapters.QuickCastResult{}, fmt.Errorf("torrent adapter is disabled")
+	}
+	if !ack {
+		return adapters.QuickCastResult{}, fmt.Errorf("BitTorrent traffic acknowledgement required")
+	}
+
 	switch req.TabID {
 	case "torrent-magnet":
 		raw := strings.TrimSpace(req.Values["magnet"])
@@ -2652,9 +3070,9 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/torrent/adapter.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
+cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
 cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/torrent -count=1
-git add internal/adapters/torrent/adapter.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
+git add internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
 git commit -m "feat(torrent): expose banner stop and quick cast"
 ```
 
@@ -2926,7 +3344,7 @@ Expected:
 - active URL controls appear only in the banner;
 - active Streams previous/next/replay/stop appear only in the banner;
 - active Torrent Stop appears only in the banner;
-- read-only Plex/Jellyfin/DLNA sessions show status without controls;
+- Plex/Jellyfin/DLNA sessions show status without banner controls in this slice; existing integration-specific routes are out of scope;
 - narrow viewport wraps without button text overlap;
 - sticky top placement does not cover adapter save buttons.
 
@@ -2948,7 +3366,7 @@ Expected:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/adapters/url/adapter.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
+cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
 cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./... -count=1
 git diff --check
 git status --short
@@ -2965,7 +3383,7 @@ Expected:
 Run only if Step 6 created fixes:
 
 ```bash
-git add internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/ui/static/app.css internal/ui/templates/now-playing-banner.html internal/ui/templates/shell.html internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
+git add internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/ui/static/app.css internal/ui/templates/now-playing-banner.html internal/ui/templates/shell.html internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
 git commit -m "fix(ui): finish now playing banner integration"
 ```
 
