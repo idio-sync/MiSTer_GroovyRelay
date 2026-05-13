@@ -204,90 +204,169 @@ func (a *Adapter) renderPanel(req panelSelectionRequest) string {
 	if req.ErrorMessage != "" {
 		fmt.Fprintf(&b, `<div class="gr-callout err streams-error"><p>%s</p></div>`, esc(req.ErrorMessage))
 	}
-	b.WriteString(`<h3>Streams</h3>`)
-	b.WriteString(`<div class="controls">`)
-	button(&b, "/ui/adapter/streams/refresh", "Refresh", false)
-	b.WriteString(`</div>`)
-
-	if view.Active != nil {
-		fmt.Fprintf(&b, `<p class="status run">Playing: %s / %s</p>`,
-			esc(view.Active.ProviderName), esc(view.Active.ChannelName))
-		if view.Active.ItemTitle != "" {
-			fmt.Fprintf(&b, `<p class="streams-now-title">%s</p>`, esc(view.Active.ItemTitle))
-		}
-		if view.Active.DurationMS > 0 {
-			position := time.Duration(view.Active.PositionMS) * time.Millisecond
-			duration := time.Duration(view.Active.DurationMS) * time.Millisecond
-			fmt.Fprintf(&b, `<p class="position">%s / %s</p>`,
-				formatDuration(position), formatDuration(duration))
-		}
-		b.WriteString(`<div class="controls">`)
-		button(&b, "/ui/adapter/streams/previous", "Previous", !view.Capabilities.CanPrevious)
-		button(&b, "/ui/adapter/streams/next", "Next", !view.Capabilities.CanNext)
-		button(&b, "/ui/adapter/streams/replay", "Replay", !view.Capabilities.CanReplay)
-		button(&b, "/ui/adapter/streams/stop", "Stop", !view.Capabilities.CanStop)
-		b.WriteString(`</div>`)
-	} else {
-		b.WriteString(`<p class="status">Idle</p>`)
-	}
-
-	b.WriteString(renderProvidersFromViewWithSelection(view.Providers, selection))
+	renderFocusedGuide(&b, view, selection)
 	b.WriteString(`</section>`)
 	return b.String()
 }
 
-func (a *Adapter) renderProviders() string {
-	return renderProvidersFromView(a.statusView().Providers)
-}
-
 func renderProvidersFromView(providers []ProviderStatusView) string {
-	return renderProvidersFromViewWithSelection(providers, resolvedPanelSelection{})
-}
-
-func renderProvidersFromViewWithSelection(providers []ProviderStatusView, selection resolvedPanelSelection) string {
 	var b strings.Builder
 	b.WriteString(`<div class="streams-providers">`)
 	for _, p := range providers {
 		fmt.Fprintf(&b, `<section class="streams-provider"><h4>%s</h4>`, esc(p.Name))
-		renderProviderArtwork(&b, p)
 		if len(p.Channels) == 0 {
 			b.WriteString(`<p class="muted">No channels</p>`)
 		}
 		groups := groupedChannels(p)
-		if len(groups) != 0 {
-			b.WriteString(`<div class="streams-channel-groups">`)
-		}
 		for _, group := range groups {
-			fmt.Fprintf(&b, `<section class="streams-channel-group"><h5>%s</h5><table class="streams-channel-table"><tbody>`, esc(group.Name))
-			for i, ch := range group.Channels {
-				if i%streamsChannelsPerRow == 0 {
-					b.WriteString(`<tr>`)
-				}
-				fmt.Fprintf(&b,
-					`<td class="streams-channel-cell">`+
-						`<form class="streams-channel" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`+
-						`<input type="hidden" name="provider_id" value="%s">`+
-						`<input type="hidden" name="channel_id" value="%s">`+
-						`<input type="hidden" name="guide_provider_id" value="%s">`+
-						`<input type="hidden" name="guide_group_id" value="%s">`+
-						`<button type="submit">%s</button>`+
-						`<span class="muted">%d items</span>`+
-						`</form>`+
-						`</td>`,
-					escAttr(p.ID), escAttr(ch.ID), escAttr(selection.ProviderID), escAttr(selection.GroupID), esc(ch.Name), ch.ItemCount)
-				if i%streamsChannelsPerRow == streamsChannelsPerRow-1 || i == len(group.Channels)-1 {
-					b.WriteString(`</tr>`)
-				}
+			fmt.Fprintf(&b, `<section class="streams-channel-group"><h5>%s</h5>`, esc(group.Name))
+			for _, ch := range group.Channels {
+				fmt.Fprintf(&b, `<p class="streams-provider-channel">%s <span class="muted">%d items</span></p>`,
+					esc(ch.Name), ch.ItemCount)
 			}
-			b.WriteString(`</tbody></table></section>`)
-		}
-		if len(groups) != 0 {
-			b.WriteString(`</div>`)
+			b.WriteString(`</section>`)
 		}
 		b.WriteString(`</section>`)
 	}
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+func renderFocusedGuide(b *strings.Builder, view StatusView, selection resolvedPanelSelection) {
+	provider, ok := selectedProvider(view.Providers, selection.ProviderID)
+	b.WriteString(`<div class="streams-guide">`)
+	renderNowStrip(b, view, provider, selection)
+	renderProviderTabs(b, view.Providers, selection)
+	if !ok {
+		b.WriteString(`<div class="streams-guide-empty">No stream providers are available.</div>`)
+		b.WriteString(`</div>`)
+		return
+	}
+	groups := groupedChannels(provider)
+	if len(provider.Channels) == 0 {
+		b.WriteString(`<div class="streams-provider-empty">No playable channels are available for this provider.</div>`)
+		b.WriteString(`</div>`)
+		return
+	}
+	renderGuideBody(b, provider, groups, selection, view.Active)
+	b.WriteString(`</div>`)
+}
+
+func selectedProvider(providers []ProviderStatusView, providerID string) (ProviderStatusView, bool) {
+	for _, provider := range providers {
+		if provider.ID == providerID {
+			return provider, true
+		}
+	}
+	return ProviderStatusView{}, false
+}
+
+func renderProviderTabs(b *strings.Builder, providers []ProviderStatusView, selection resolvedPanelSelection) {
+	b.WriteString(`<div class="streams-provider-tabs" role="navigation" aria-label="Stream providers">`)
+	for _, provider := range providers {
+		active := provider.ID == selection.ProviderID
+		attrs := ""
+		if active {
+			attrs = ` aria-current="true"`
+		}
+		fmt.Fprintf(b,
+			`<button type="button" class="streams-provider-tab%s" hx-get="%s" hx-target="#streams-panel" hx-swap="outerHTML"%s>`+
+				`<span>%s</span><span class="streams-provider-count">%d</span></button>`,
+			activeClass(active), escAttr(panelURL(resolvedPanelSelection{ProviderID: provider.ID})), attrs,
+			esc(provider.Name), len(provider.Channels))
+	}
+	b.WriteString(`</div>`)
+}
+
+func renderGuideBody(b *strings.Builder, provider ProviderStatusView, groups []groupedChannelView, selection resolvedPanelSelection, active *QueueStatusView) {
+	b.WriteString(`<div class="streams-guide-body">`)
+	b.WriteString(`<div class="streams-category-rail" role="navigation" aria-label="Channel categories">`)
+	for _, group := range groups {
+		activeGroup := group.ID == selection.GroupID
+		attrs := ""
+		if activeGroup {
+			attrs = ` aria-current="true"`
+		}
+		fmt.Fprintf(b,
+			`<button type="button" class="streams-category-tab%s" hx-get="%s" hx-target="#streams-panel" hx-swap="outerHTML"%s>`+
+				`<span>%s</span><span class="streams-category-count">%d</span></button>`,
+			activeClass(activeGroup), escAttr(panelURL(resolvedPanelSelection{ProviderID: provider.ID, GroupID: group.ID})), attrs,
+			esc(group.Name), len(group.Channels))
+	}
+	b.WriteString(`</div>`)
+	b.WriteString(`<div class="streams-channel-grid">`)
+	for _, group := range groups {
+		if group.ID != selection.GroupID {
+			continue
+		}
+		for _, ch := range group.Channels {
+			renderChannelCard(b, provider, ch, selection, active)
+		}
+	}
+	b.WriteString(`</div></div>`)
+}
+
+func activeClass(active bool) string {
+	if active {
+		return " active"
+	}
+	return ""
+}
+
+func renderNowStrip(b *strings.Builder, view StatusView, provider ProviderStatusView, selection resolvedPanelSelection) {
+	b.WriteString(`<div class="streams-now-strip">`)
+	renderProviderArtwork(b, provider)
+	b.WriteString(`<div class="streams-now-copy">`)
+	if view.Active != nil {
+		fmt.Fprintf(b, `<div class="streams-kicker">Now Playing</div><div class="streams-now-line">%s / %s</div>`,
+			esc(view.Active.ProviderName), esc(view.Active.ChannelName))
+		if view.Active.ItemTitle != "" {
+			fmt.Fprintf(b, `<div class="streams-now-title">%s</div>`, esc(view.Active.ItemTitle))
+		}
+		if view.Active.DurationMS > 0 {
+			position := time.Duration(view.Active.PositionMS) * time.Millisecond
+			duration := time.Duration(view.Active.DurationMS) * time.Millisecond
+			fmt.Fprintf(b, `<div class="streams-position">%s / %s</div>`,
+				formatDuration(position), formatDuration(duration))
+		}
+	} else {
+		b.WriteString(`<div class="streams-kicker">Idle</div><div class="streams-now-line">Choose a channel to start playback.</div>`)
+	}
+	b.WriteString(`</div><div class="streams-now-controls">`)
+	button(b, "/ui/adapter/streams/refresh", "Refresh", false, selection)
+	if view.Active != nil {
+		button(b, "/ui/adapter/streams/previous", "Previous", !view.Capabilities.CanPrevious, selection)
+		button(b, "/ui/adapter/streams/next", "Next", !view.Capabilities.CanNext, selection)
+		button(b, "/ui/adapter/streams/replay", "Replay", !view.Capabilities.CanReplay, selection)
+		button(b, "/ui/adapter/streams/stop", "Stop", !view.Capabilities.CanStop, selection)
+	}
+	b.WriteString(`</div></div>`)
+}
+
+func renderChannelCard(b *strings.Builder, provider ProviderStatusView, ch ChannelStatusView, selection resolvedPanelSelection, active *QueueStatusView) {
+	tuned := active != nil && active.ProviderID == provider.ID && active.ChannelID == ch.ID
+	tunedClass := ""
+	if tuned {
+		tunedClass = " tuned"
+	}
+	fmt.Fprintf(b,
+		`<form class="streams-channel-card%s" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`,
+		tunedClass)
+	selectionInputs(b, selection)
+	fmt.Fprintf(b,
+		`<input type="hidden" name="provider_id" value="%s">`+
+			`<input type="hidden" name="channel_id" value="%s">`+
+			`<button type="submit"><span class="streams-channel-name">%s</span><span class="streams-channel-meta">%d items</span></button></form>`,
+		escAttr(provider.ID), escAttr(ch.ID), esc(ch.Name), ch.ItemCount)
+}
+
+func selectionInputs(b *strings.Builder, selection resolvedPanelSelection) {
+	if selection.ProviderID != "" {
+		fmt.Fprintf(b, `<input type="hidden" name="guide_provider_id" value="%s">`, escAttr(selection.ProviderID))
+	}
+	if selection.GroupID != "" {
+		fmt.Fprintf(b, `<input type="hidden" name="guide_group_id" value="%s">`, escAttr(selection.GroupID))
+	}
 }
 
 func renderProviderArtwork(b *strings.Builder, provider ProviderStatusView) {
@@ -307,8 +386,6 @@ func renderProviderArtwork(b *strings.Builder, provider ProviderStatusView) {
 	}
 	fmt.Fprintf(b, `<span class="streams-provider-wordmark">%s</span></div>`, esc(fallback))
 }
-
-const streamsChannelsPerRow = 3
 
 type groupedChannelView struct {
 	ID       string
@@ -457,13 +534,14 @@ func groupedChannels(provider ProviderStatusView) []groupedChannelView {
 	return out
 }
 
-func button(b *strings.Builder, path, label string, disabled bool) {
+func button(b *strings.Builder, path, label string, disabled bool, selection resolvedPanelSelection) {
 	dis := ""
 	if disabled {
 		dis = " disabled"
 	}
-	fmt.Fprintf(b, `<button type="button" hx-post="%s" hx-target="#streams-panel" hx-swap="outerHTML"%s>%s</button>`,
-		escAttr(path), dis, esc(label))
+	fmt.Fprintf(b, `<form class="streams-control-form" hx-post="%s" hx-target="#streams-panel" hx-swap="outerHTML">`, escAttr(path))
+	selectionInputs(b, selection)
+	fmt.Fprintf(b, `<button type="submit"%s>%s</button></form>`, dis, esc(label))
 }
 
 func (a *Adapter) respondPanel(w http.ResponseWriter, r *http.Request, status int) {

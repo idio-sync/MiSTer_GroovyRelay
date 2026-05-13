@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func TestExtraPanelHTMLContainsStreamsPanel(t *testing.T) {
 	}
 }
 
-func TestExtraPanelHTMLGroupsChannelsByCategory(t *testing.T) {
+func TestExtraPanelHTMLRendersFocusedGuideForSelectedCategory(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.replaceCatalogsForTest([]ProviderCatalog{{
 		ProviderID: "mtv-rewind",
@@ -32,18 +33,71 @@ func TestExtraPanelHTMLGroupsChannelsByCategory(t *testing.T) {
 			{ID: "80s", Name: "80s", GroupID: "decades", Order: 20, Items: []StreamItem{{ID: "BBBBBBBBBBB"}}},
 		},
 	}})
-	html := string(a.ExtraPanelHTML())
+
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "decades", ProviderExplicit: true, GroupExplicit: true})
 	for _, want := range []string{
-		`class="streams-channel-groups"`,
-		`class="streams-channel-table"`,
-		`<h5>MTV Shows</h5>`,
-		`<h5>By Decade</h5>`,
-		`120 Minutes`,
+		`class="streams-guide"`,
+		`class="streams-provider-tabs"`,
+		`class="streams-category-rail"`,
+		`class="streams-channel-grid"`,
+		`aria-current="true"`,
+		`By Decade`,
 		`80s`,
+		`name="provider_id" value="mtv-rewind"`,
+		`name="guide_group_id" value="decades"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel missing %q: %s", want, html)
 		}
+	}
+	for _, old := range []string{`streams-channel-table`, `<table`, `120 Minutes`} {
+		if strings.Contains(html, old) {
+			t.Fatalf("focused guide should not render old/unselected content %q: %s", old, html)
+		}
+	}
+}
+
+func TestExtraPanelHTMLRendersDenseMTVCategoryAsGrid(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	channels := make([]Channel, 0, 12)
+	for i := 0; i < 12; i++ {
+		channels = append(channels, Channel{
+			ID:      fmt.Sprintf("label-%02d", i),
+			Name:    fmt.Sprintf("Label %02d", i),
+			GroupID: "labels",
+			Items:   []StreamItem{{ID: fmt.Sprintf("item-%02d", i)}},
+		})
+	}
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Groups:     []ChannelGroup{{ID: "labels", Name: "Labels & Scenes", Order: 50}},
+		Channels:   channels,
+	}})
+
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "labels", ProviderExplicit: true, GroupExplicit: true})
+	if strings.Count(html, `class="streams-channel-card`) != 12 {
+		t.Fatalf("channel card count mismatch: %s", html)
+	}
+	if strings.Contains(html, `<table`) {
+		t.Fatalf("dense category should not render a table: %s", html)
+	}
+}
+
+func TestExtraPanelHTMLMarksActiveChannelInSelectedGrid(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.active = &ActiveQueue{
+		ProviderID:   "mtv-rewind",
+		ProviderName: "MTV Rewind",
+		ChannelID:    "metal",
+		ChannelName:  "Headbangers Ball",
+		Items:        []StreamItem{{ID: "dQw4w9WgXcQ"}},
+	}
+
+	html := a.renderPanel(panelSelectionRequest{})
+	if !strings.Contains(html, `streams-channel-card tuned`) ||
+		!strings.Contains(html, `Now Playing`) {
+		t.Fatalf("active channel treatment missing: %s", html)
 	}
 }
 
@@ -71,9 +125,9 @@ func TestExtraPanelHTMLRendersActiveTitleAndProgressUnderPlayingLine(t *testing.
 	}
 
 	html := string(a.ExtraPanelHTML())
-	statusIdx := strings.Index(html, `Playing: MTV Rewind / Metal`)
-	titleIdx := strings.Index(html, `<p class="streams-now-title">Ace of Spades</p>`)
-	progressIdx := strings.Index(html, `<p class="position">01:23 / 45:12</p>`)
+	statusIdx := strings.Index(html, `Now Playing`)
+	titleIdx := strings.Index(html, `<div class="streams-now-title">Ace of Spades</div>`)
+	progressIdx := strings.Index(html, `<div class="streams-position">01:23 / 45:12</div>`)
 	if statusIdx < 0 || titleIdx < 0 || progressIdx < 0 {
 		t.Fatalf("active panel missing status/title/progress: %s", html)
 	}
