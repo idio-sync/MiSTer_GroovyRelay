@@ -25,6 +25,7 @@ type AdapterConfig struct {
 
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	StartSessionIfSession(core.SessionRequest, string, uint64) (bool, error)
 	PauseIfAdapterRef(string) (bool, error)
 	StopIfAdapterRef(string) (bool, error)
 	Status() core.SessionStatus

@@ -64,6 +64,9 @@ type fakeCore struct {
 	startErr      error
 	startErrs     []error
 	startCalls    int
+	startIfCalls  int
+	startIfRef    string
+	startIfGen    uint64
 	stopCalls     int
 	pauseCalls    int
 	rawStopCalls  int
@@ -72,6 +75,7 @@ type fakeCore struct {
 	startHook     func(core.SessionRequest)
 	stopHook      func()
 	pauseIfHook   func(string)
+	statusHook    func()
 }
 
 func (f *fakeCore) StartSession(req core.SessionRequest) error {
@@ -99,6 +103,42 @@ func (f *fakeCore) StartSession(req core.SessionRequest) error {
 		f.status.AdapterRef = req.AdapterRef
 	}
 	return f.startErr
+}
+
+func (f *fakeCore) StartSessionIfSession(req core.SessionRequest, ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	f.startIfCalls++
+	f.startIfRef = ref
+	f.startIfGen = generation
+	if ref == "" || generation == 0 || f.status.AdapterRef != ref || f.status.Generation != generation {
+		f.mu.Unlock()
+		return false, nil
+	}
+	f.lastReq = req
+	f.startCalls++
+	startHook := f.startHook
+	f.mu.Unlock()
+
+	if startHook != nil {
+		startHook(req)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		if err == nil {
+			f.status.AdapterRef = req.AdapterRef
+			f.status.Generation = 0
+		}
+		return true, err
+	}
+	if f.startErr == nil {
+		f.status.AdapterRef = req.AdapterRef
+		f.status.Generation = 0
+	}
+	return true, f.startErr
 }
 
 func (f *fakeCore) Stop() error {
@@ -153,8 +193,14 @@ func (f *fakeCore) PauseIfAdapterRef(ref string) (bool, error) {
 
 func (f *fakeCore) Status() core.SessionStatus {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.status
+	status := f.status
+	statusHook := f.statusHook
+	f.mu.Unlock()
+
+	if statusHook != nil {
+		statusHook()
+	}
+	return status
 }
 
 type fakeResolver struct {

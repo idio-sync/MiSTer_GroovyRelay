@@ -18,33 +18,98 @@ func (a *Adapter) StartResolvedStream(ctx context.Context, res streamhandoff.Res
 		ctx = context.Background()
 	}
 
+	started, _, err := a.startResolvedStream(ctx, res, startCoreSession, true)
+	return started, err
+}
+
+func (a *Adapter) StartResolvedStreamIfSession(ctx context.Context, res streamhandoff.Resolution, expectedRef string, expectedGeneration uint64) (streamhandoff.StartResult, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if expectedRef == "" || expectedGeneration == 0 {
+		return streamhandoff.StartResult{}, false, nil
+	}
+	coreManager := a.core
+	if coreManager == nil {
+		return streamhandoff.StartResult{}, false, playbackError(res.ProviderID, "core playback manager is not configured")
+	}
+	status := coreManager.Status()
+	if status.AdapterRef != expectedRef || status.Generation != expectedGeneration {
+		return streamhandoff.StartResult{}, false, nil
+	}
+	return a.startResolvedStream(ctx, res, startCoreSessionIfSession(expectedRef, expectedGeneration), false)
+}
+
+func (a *Adapter) startResolvedStream(ctx context.Context, res streamhandoff.Resolution, starter streamCoreStarter, stopPrevious bool) (streamhandoff.StartResult, bool, error) {
 	q, err := a.queueFromResolution(res)
 	if err != nil {
-		return streamhandoff.StartResult{}, err
+		return streamhandoff.StartResult{}, false, err
 	}
 
-	if err := a.stopPreviousOwnedCore(nil, true, false); err != nil {
-		return streamhandoff.StartResult{}, err
+	if stopPrevious {
+		if err := a.stopPreviousOwnedCore(nil, true, false); err != nil {
+			return streamhandoff.StartResult{}, false, err
+		}
 	}
 
 	a.mu.Lock()
-	if a.active != nil && a.active.cancelResolve != nil {
-		a.active.cancelResolve()
-		a.active.cancelResolve = nil
+	previous := a.active
+	if stopPrevious && previous != nil && previous.cancelResolve != nil {
+		previous.cancelResolve()
+		previous.cancelResolve = nil
 	}
 	a.active = q
+	guard := queueVersionOf(q)
 	a.mu.Unlock()
 
-	started, err := a.playCurrent(ctx)
+	started, matched, err := a.playCurrentWithStarter(ctx, guard, starter)
 	if err != nil {
-		return streamhandoff.StartResult{}, err
+		if !stopPrevious {
+			a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
+		}
+		return streamhandoff.StartResult{}, false, err
+	}
+	if !matched {
+		if !stopPrevious {
+			a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
+		}
+		return streamhandoff.StartResult{}, false, nil
+	}
+	if !stopPrevious {
+		a.cancelDetachedQueueResolve(previous)
 	}
 	if res.ItemID == "" {
 		started.ItemID = ""
 	} else {
 		started.ItemID = res.ItemID
 	}
-	return started, nil
+	return started, true, nil
+}
+
+func (a *Adapter) restorePreviousQueueAfterUnmatchedStart(guard queueVersion, previous *ActiveQueue) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if guard.matches(a.active) {
+		a.clearActiveLocked()
+		a.active = previous
+		return
+	}
+	if a.active == nil {
+		a.active = previous
+	}
+}
+
+func (a *Adapter) cancelDetachedQueueResolve(q *ActiveQueue) {
+	if q == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.active == q || q.cancelResolve == nil {
+		return
+	}
+	q.cancelResolve()
+	q.cancelResolve = nil
 }
 
 func (a *Adapter) queueFromResolution(res streamhandoff.Resolution) (*ActiveQueue, error) {
@@ -125,11 +190,29 @@ func queueVersionOf(q *ActiveQueue) queueVersion {
 	return queueVersion{SessionID: q.SessionID, Generation: q.Generation}
 }
 
+type streamCoreStarter func(SessionManager, core.SessionRequest) (bool, error)
+
+func startCoreSession(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+	return true, coreManager.StartSession(req)
+}
+
+func startCoreSessionIfSession(expectedRef string, expectedGeneration uint64) streamCoreStarter {
+	return func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+		return coreManager.StartSessionIfSession(req, expectedRef, expectedGeneration)
+	}
+}
+
 func (a *Adapter) playCurrent(ctx context.Context) (streamhandoff.StartResult, error) {
-	return a.playCurrentGuarded(ctx, queueVersion{})
+	started, _, err := a.playCurrentWithStarter(ctx, queueVersion{}, startCoreSession)
+	return started, err
 }
 
 func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (streamhandoff.StartResult, error) {
+	started, _, err := a.playCurrentWithStarter(ctx, guard, startCoreSession)
+	return started, err
+}
+
+func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion, starter streamCoreStarter) (streamhandoff.StartResult, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -138,17 +221,17 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	q := a.active
 	if q == nil {
 		a.mu.Unlock()
-		return streamhandoff.StartResult{}, playbackError("", "no active streams queue")
+		return streamhandoff.StartResult{}, false, playbackError("", "no active streams queue")
 	}
 	if !guard.matches(q) {
 		a.mu.Unlock()
-		return streamhandoff.StartResult{}, playbackError("", "stream start was superseded")
+		return streamhandoff.StartResult{}, false, playbackError("", "stream start was superseded")
 	}
 	item, ok := q.currentItem()
 	if !ok {
 		a.clearActiveLocked()
 		a.mu.Unlock()
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "active streams queue is empty")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "active streams queue is empty")
 	}
 	resolver := a.resolver
 	coreManager := a.core
@@ -174,13 +257,13 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	if pageURL == "" {
 		cancel()
 		a.clearResolveIfCurrent(capture)
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream item is missing a playable URL")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream item is missing a playable URL")
 	}
 	if isDirectStreamItem(item) {
 		if coreManager == nil {
 			cancel()
 			a.clearResolveIfCurrent(capture)
-			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "core playback manager is not configured")
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "core playback manager is not configured")
 		}
 		title := streamSessionTitle(item, "")
 		if strings.TrimSpace(q.ProviderName) != "" && strings.TrimSpace(q.ChannelName) != "" {
@@ -201,15 +284,21 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		a.playbackMu.Lock()
 		if !a.captureStillActive(capture) {
 			a.playbackMu.Unlock()
-			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream start was superseded")
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream start was superseded")
 		}
-		if err := coreManager.StartSession(req); err != nil {
+		matched, err := starter(coreManager, req)
+		if err != nil {
 			a.playbackMu.Unlock()
 			if next, ok := a.recordStartFailureAndAdvance(capture, "failed to start stream playback"); ok {
 				a.runBeforeQueueContinuation()
-				return a.playCurrentGuarded(ctx, next)
+				return a.playCurrentWithStarter(ctx, next, starter)
 			}
-			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to start stream playback")
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to start stream playback")
+		}
+		if !matched {
+			a.playbackMu.Unlock()
+			a.clearQueueIfCurrent(capture)
+			return streamhandoff.StartResult{}, false, nil
 		}
 		a.playbackMu.Unlock()
 
@@ -227,17 +316,17 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 			ProviderID: q.ProviderID,
 			ChannelID:  q.ChannelID,
 			ItemID:     itemIdentity(item),
-		}, nil
+		}, true, nil
 	}
 	if resolver == nil {
 		cancel()
 		a.clearResolveIfCurrent(capture)
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream resolver is not configured")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver is not configured")
 	}
 	if coreManager == nil {
 		cancel()
 		a.clearResolveIfCurrent(capture)
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "core playback manager is not configured")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "core playback manager is not configured")
 	}
 
 	resolved, err := resolver.Resolve(resolveCtx, pageURL, format, cookiesPath)
@@ -245,16 +334,16 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	if err != nil {
 		if next, ok := a.recordStartFailureAndAdvance(capture, "failed to resolve stream item"); ok {
 			a.runBeforeQueueContinuation()
-			return a.playCurrentGuarded(ctx, next)
+			return a.playCurrentWithStarter(ctx, next, starter)
 		}
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to resolve stream item")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to resolve stream item")
 	}
 	if resolved == nil || strings.TrimSpace(resolved.URL) == "" {
 		if next, ok := a.recordStartFailureAndAdvance(capture, "stream resolver returned no playable media URL"); ok {
 			a.runBeforeQueueContinuation()
-			return a.playCurrentGuarded(ctx, next)
+			return a.playCurrentWithStarter(ctx, next, starter)
 		}
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
 	}
 	title := streamSessionTitle(item, resolved.Title)
 
@@ -273,15 +362,21 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	a.playbackMu.Lock()
 	if !a.captureStillActive(capture) {
 		a.playbackMu.Unlock()
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream start was superseded")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream start was superseded")
 	}
-	if err := coreManager.StartSession(req); err != nil {
+	matched, err := starter(coreManager, req)
+	if err != nil {
 		a.playbackMu.Unlock()
 		if next, ok := a.recordStartFailureAndAdvance(capture, "failed to start stream playback"); ok {
 			a.runBeforeQueueContinuation()
-			return a.playCurrentGuarded(ctx, next)
+			return a.playCurrentWithStarter(ctx, next, starter)
 		}
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to start stream playback")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to start stream playback")
+	}
+	if !matched {
+		a.playbackMu.Unlock()
+		a.clearQueueIfCurrent(capture)
+		return streamhandoff.StartResult{}, false, nil
 	}
 	a.playbackMu.Unlock()
 
@@ -299,7 +394,7 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		ProviderID: q.ProviderID,
 		ChannelID:  q.ChannelID,
 		ItemID:     itemIdentity(item),
-	}, nil
+	}, true, nil
 }
 
 func directHLSInputPolicy() core.MediaInputPolicy {
