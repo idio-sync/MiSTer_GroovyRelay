@@ -100,6 +100,34 @@ func TestServer_StaticFont(t *testing.T) {
 	}
 }
 
+func TestShellLoadsStreamsArtworkScript(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest("GET", "/ui/", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `<script src="/ui/static/streams-artwork.js" defer></script>`) {
+		t.Fatalf("shell missing streams artwork script: %s", body)
+	}
+}
+
+func TestStaticStreamsArtworkScriptServed(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/streams-artwork.js", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "data-streams-artwork") ||
+		!strings.Contains(rr.Body.String(), "streams-artwork-failed") {
+		t.Fatalf("unexpected artwork script body: %s", rr.Body.String())
+	}
+}
+
 // fakeRouteAdapter is the minimum adapter needed to exercise route mounting.
 // It implements adapters.Adapter + adapters.RouteProvider and registers
 // one route per HTTP method we expect the mounter to support.
