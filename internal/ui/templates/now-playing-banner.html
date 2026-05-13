@@ -1,5 +1,5 @@
 {{define "now-playing-banner.html"}}
-<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top" hx-get="/ui/playback/banner" hx-trigger="{{.PollTrigger}}" hx-swap="outerHTML">
+<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top" hx-get="/ui/playback/banner"{{if .PollTrigger}} hx-trigger="{{.PollTrigger}}"{{end}} hx-swap="outerHTML">
 	<div class="gr-now-playing-main">
 		<div class="gr-now-playing-copy">
 			<div class="gr-now-playing-state">{{.StateLabel}}</div>

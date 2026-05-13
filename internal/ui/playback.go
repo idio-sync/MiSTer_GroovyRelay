@@ -181,6 +181,9 @@ func playbackStateLabel(state core.State) string {
 }
 
 func playbackPollTrigger(data playbackBannerData) string {
+	if data.CastDrawerOpen {
+		return ""
+	}
 	if data.State == core.StateIdle || data.ReadOnly {
 		return "every 5s"
 	}

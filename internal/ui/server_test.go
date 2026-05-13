@@ -156,7 +156,7 @@ func TestStaticAppCSSScopesStreamsWidePanelToRegularAdapterPanel(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "#panel:has(> .gr-config-head):has(.streams-panel)") {
+	if !strings.Contains(body, "#panel:has(> #panel-content > .gr-config-head):has(.streams-panel)") {
 		t.Fatalf("streams wide panel rule should require the regular adapter header: %s", body)
 	}
 	if strings.Contains(body, "#panel:has(.streams-panel) {\n") {

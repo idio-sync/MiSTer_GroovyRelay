@@ -455,15 +455,15 @@ body {
 #panel:has(.gr-config-head) .adapter-extras .section {
 	margin: 0;
 }
-#panel:has(> .gr-config-head):has(.streams-panel) {
+#panel:has(> #panel-content > .gr-config-head):has(.streams-panel) {
 	max-width: min(1440px, 100%);
 }
-#panel:has(> .gr-config-head):has(.streams-panel) .gr-config-head,
-#panel:has(> .gr-config-head):has(.streams-panel) > .section,
-#panel:has(> .gr-config-head):has(.streams-panel) > form {
+#panel:has(> #panel-content > .gr-config-head):has(.streams-panel) #panel-content > .gr-config-head,
+#panel:has(> #panel-content > .gr-config-head):has(.streams-panel) #panel-content > .section,
+#panel:has(> #panel-content > .gr-config-head):has(.streams-panel) #panel-content > form {
 	max-width: 860px;
 }
-#panel:has(> .gr-config-head):has(.streams-panel) .adapter-extras {
+#panel:has(> #panel-content > .gr-config-head):has(.streams-panel) .adapter-extras {
 	width: min(100%, 1320px);
 	max-width: none;
 }

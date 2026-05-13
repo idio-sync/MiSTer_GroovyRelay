@@ -178,6 +178,36 @@ func TestPlaybackBannerRendersQuickCastRadioOptionsAndDisabledReason(t *testing.
 	}
 }
 
+func TestPlaybackBannerOpenDrawerDoesNotPollAwayForm(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		tabs: []adapters.QuickCastTab{{
+			ID:       "url",
+			Label:    "URL",
+			Enabled:  true,
+			Encoding: adapters.QuickCastEncodingForm,
+			Fields: []adapters.QuickCastField{{
+				Name: "url", Label: "URL", Type: "url", Required: true,
+			}},
+		}},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	if !strings.Contains(body, "gr-now-playing-drawer") {
+		t.Fatalf("drawer did not render: %s", body)
+	}
+	if strings.Contains(body, `hx-trigger="every`) {
+		t.Fatalf("open drawer should not poll and discard in-progress form input: %s", body)
+	}
+}
+
 func TestPlaybackBannerUsesAdapterRefFallbackWhenSourceMissing(t *testing.T) {
 	fake := &fakePlaybackAdapter{
 		name:    "url",
