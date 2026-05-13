@@ -18,6 +18,7 @@ func newTestAdapterWithCatalog(t *testing.T) *Adapter {
 	}
 	mtvDef := bundledMTVDefinition()
 	cartoonDef := bundledCartoonDefinition()
+	toonamiDef := bundledToonamiAftermathDefinition()
 	mtvCat := ProviderCatalog{
 		ProviderID: "mtv-rewind",
 		Name:       "MTV Rewind",
@@ -46,8 +47,12 @@ func newTestAdapterWithCatalog(t *testing.T) *Adapter {
 			}},
 		}},
 	}
-	a.replaceDefinitionsForTest([]ProviderDefinition{mtvDef, cartoonDef})
-	a.replaceCatalogsForTest([]ProviderCatalog{mtvCat, cartoonCat})
+	toonamiCat, err := buildDirectStreamsCatalog(toonamiDef)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{mtvDef, cartoonDef, toonamiDef})
+	a.replaceCatalogsForTest([]ProviderCatalog{mtvCat, cartoonCat, toonamiCat})
 	a.core = &fakeCore{}
 	a.resolver = &fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
 	return a

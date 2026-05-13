@@ -49,9 +49,7 @@ func TestStatusJSONIncludesCompanionFields(t *testing.T) {
 	if got.Capabilities.CanNext != false || got.Capabilities.CanSeek != false {
 		t.Fatalf("capabilities = %+v", got.Capabilities)
 	}
-	if len(got.Providers) != 2 {
-		t.Fatalf("providers = %d, want 2", len(got.Providers))
-	}
+	assertProviderIDs(t, got.Providers, "mtv-rewind", "cartoon-rewind", "toonami-aftermath")
 }
 
 func TestStatusJSONActiveQueueCapabilities(t *testing.T) {
@@ -128,7 +126,7 @@ func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
 		t.Fatalf("provider_id status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Cartoon Rewind") {
+	if !strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Cartoon Rewind") || strings.Contains(body, "Toonami Aftermath") {
 		t.Fatalf("provider_id HTML body = %q, want only MTV provider", body)
 	}
 
@@ -139,7 +137,7 @@ func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
 		t.Fatalf("q status = %d", rr.Code)
 	}
 	body = rr.Body.String()
-	if !strings.Contains(body, "Cartoon Rewind") || !strings.Contains(body, "He-Man") || strings.Contains(body, "MTV Rewind") {
+	if !strings.Contains(body, "Cartoon Rewind") || !strings.Contains(body, "He-Man") || strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Toonami Aftermath") {
 		t.Fatalf("q HTML body = %q, want only matching cartoon provider", body)
 	}
 }
@@ -395,7 +393,21 @@ func TestHandleProvidersJSON(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("providers = %d, want 2", len(got))
+	assertProviderIDs(t, got, "mtv-rewind", "cartoon-rewind", "toonami-aftermath")
+}
+
+func assertProviderIDs(t *testing.T, got []ProviderStatusView, want ...string) {
+	t.Helper()
+	seen := make(map[string]int, len(got))
+	for _, provider := range got {
+		seen[provider.ID]++
+	}
+	if len(got) != len(want) {
+		t.Fatalf("providers = %v, want exactly %v", seen, want)
+	}
+	for _, id := range want {
+		if seen[id] != 1 {
+			t.Fatalf("providers = %v, want exactly %v", seen, want)
+		}
 	}
 }
