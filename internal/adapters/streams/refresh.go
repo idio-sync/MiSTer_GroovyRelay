@@ -441,7 +441,7 @@ type remoteSnapshot struct {
 
 func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cached := loadCachedManifest(ctx, cfg, cacheDir)
-	manifest := mergeManifests(cfg, bundledManifest(), cached, nil, providerFactories())
+	manifest := mergeManifests(cfg, bundledManifest(), cached, nil, remoteProviderFactories())
 	return buildCachedOrSeedSnapshot(manifest.Providers, cfg, cacheDir)
 }
 
@@ -506,7 +506,7 @@ func (a *Adapter) definitionsForRefresh(providerIDs []string) ([]ProviderDefinit
 }
 
 func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {
-	manifest := mergeManifests(cfg, bundledManifest(), nil, &remote, providerFactories())
+	manifest := mergeManifests(cfg, bundledManifest(), nil, &remote, remoteProviderFactories())
 	out := remoteSnapshot{
 		Definitions:   manifest.Providers,
 		Catalogs:      make([]ProviderCatalog, 0, len(manifest.Providers)),
@@ -566,12 +566,6 @@ func bundledSeedPath(providerID string) (string, bool) {
 		return "testdata/cartoon-playlists.seed.json", true
 	default:
 		return "", false
-	}
-}
-
-func providerFactories() map[string]ProviderFactory {
-	return map[string]ProviderFactory{
-		youtubeChannelJSONProviderType: func(ProviderDefinition) (Provider, error) { return struct{}{}, nil },
 	}
 }
 
