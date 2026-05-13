@@ -40,6 +40,24 @@ func TestStartDisabledLoadsBundledAndDoesNotFetch(t *testing.T) {
 	}
 }
 
+func TestStartDisabledLoadsBundledToonamiCatalog(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	cat := a.catalogSnapshotForTest("toonami-aftermath")
+	if cat.ProviderID != "toonami-aftermath" || len(cat.Channels) != 4 {
+		t.Fatalf("Toonami catalog = %+v", cat)
+	}
+	if got := cat.Channel("east").Items[0].URL; got != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
+		t.Fatalf("east URL = %q", got)
+	}
+}
+
 func TestStartEnabledStartsRefreshLoopAndStopCancels(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.SetEnabled(true)
@@ -133,6 +151,51 @@ func TestRefreshOnceFallsBackToBundledCatalogsWhenManifestFetchFails(t *testing.
 	cartoon := a.catalogSnapshotForTest("cartoon-rewind")
 	if got := cartoon.Channel("heman").Items[0].SourceID; got != "AAAAAAAAAAA" {
 		t.Fatalf("cartoon catalog item = %q, want bundled playlist refresh", got)
+	}
+}
+
+func TestRefreshOnceWithRemoteManifestBuildsDirectStreamsLocally(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+	cfg.Providers["cartoon-rewind"] = ProviderConfig{Disabled: true}
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "remote-direct",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Remote Direct",
+		DefaultChannel:  "x",
+		DefaultPlayMode: PlaySequential,
+		Channels: []ChannelDefinition{{
+			ID:   "x",
+			Name: "X",
+			URL:  "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
+		}},
+	}}}
+
+	snapshot, err := buildRemoteSnapshot(t.Context(), cfg, remote, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildRemoteSnapshot: %v", err)
+	}
+	if _, ok := snapshot.CatalogBodies["toonami-aftermath"]; ok {
+		t.Fatal("direct-stream catalog body should not be cached")
+	}
+	if len(snapshot.CatalogBodies) != 0 || len(snapshot.CatalogMetas) != 0 {
+		t.Fatalf("direct-only snapshot wrote catalog caches: bodies=%v metas=%v", snapshot.CatalogBodies, snapshot.CatalogMetas)
+	}
+	for _, def := range snapshot.Definitions {
+		if def.ID == "remote-direct" {
+			t.Fatal("remote-only direct-streams provider appeared in snapshot definitions")
+		}
+	}
+	catByID := map[string]ProviderCatalog{}
+	for _, cat := range snapshot.Catalogs {
+		catByID[cat.ProviderID] = cat
+	}
+	if _, ok := catByID["remote-direct"]; ok {
+		t.Fatal("remote-only direct-streams provider appeared in snapshot catalogs")
+	}
+	toonami := catByID["toonami-aftermath"]
+	if toonami.ProviderID != "toonami-aftermath" || toonami.Channel("east") == nil {
+		t.Fatalf("direct bundled Toonami catalog missing from remote snapshot: %+v", snapshot.Catalogs)
 	}
 }
 
@@ -279,6 +342,66 @@ func TestRefreshScheduleCapsFailedOnlyRetryByNextHealthyProviderDue(t *testing.T
 	got := schedule.intervalAfterRefreshResult(retryNow, cfg, defs, retryJob, retryStatus, 6*time.Hour)
 	if got != 2*time.Hour {
 		t.Fatalf("failed-only retry interval = %s, want capped by cartoon remaining due time 2h", got)
+	}
+}
+
+func TestRefreshNowDirectStreamsBypassesPlaylistFetchWhenRemoteDisabled(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	toonami := bundledToonamiAftermathDefinition()
+	a.replaceDefinitionsForTest([]ProviderDefinition{bundledMTVDefinition(), bundledCartoonDefinition(), toonami})
+	a.replaceCatalogsForTest(nil)
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = false
+	a.mu.Unlock()
+
+	status := a.RefreshNow(t.Context(), "toonami-aftermath")
+	if status.Err != nil {
+		t.Fatalf("RefreshNow toonami: %v", status.Err)
+	}
+	cat := a.catalogSnapshotForTest("toonami-aftermath")
+	if cat.ProviderID != "toonami-aftermath" || len(cat.Channels) != 4 {
+		t.Fatalf("refreshed Toonami catalog = %+v", cat)
+	}
+}
+
+func TestRefreshNowRemoteDisabledNonDirectPreservesLastError(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = false
+	a.lastErr = "previous refresh failed"
+	a.mu.Unlock()
+
+	status := a.RefreshNow(t.Context(), "mtv-rewind")
+	if status.Err != nil {
+		t.Fatalf("RefreshNow mtv: %v", status.Err)
+	}
+	if len(status.refreshedProviderIDs) != 0 {
+		t.Fatalf("refreshed provider IDs = %#v, want none", status.refreshedProviderIDs)
+	}
+	if got := a.Status().LastError; got != "previous refresh failed" {
+		t.Fatalf("last error = %q, want previous refresh failed", got)
+	}
+}
+
+func TestRefreshCatalogsDirectStreamsDoesNotFetchPlaylist(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	toonami := bundledToonamiAftermathDefinition()
+	a.replaceDefinitionsForTest([]ProviderDefinition{toonami})
+	a.replaceCatalogsForTest(nil)
+	a.mu.Lock()
+	a.cfg.AllowRemoteManifest = true
+	a.mu.Unlock()
+
+	status := a.refreshCatalogsDefault(t.Context(), []string{"toonami-aftermath"}, "manual")
+	if status.Err != nil {
+		t.Fatalf("refreshCatalogsDefault: %v", status.Err)
+	}
+	if !reflect.DeepEqual(status.refreshedProviderIDs, []string{"toonami-aftermath"}) {
+		t.Fatalf("refreshed provider IDs = %#v", status.refreshedProviderIDs)
+	}
+	cat := a.catalogSnapshotForTest("toonami-aftermath")
+	if cat.Channel("radio") == nil {
+		t.Fatalf("radio channel missing from catalog: %+v", cat.Channels)
 	}
 }
 
