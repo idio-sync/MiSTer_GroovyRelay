@@ -65,9 +65,9 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 // session. Returns the AdapterRef, resolvedVia ("direct" or "ytdlp"),
 // the HTTP status to use on error, and the error.
 //
-// Used by handlePlay, handleReplay, handleResume's live-reconnect
-// branch, and handleHistoryPlay. Each of these re-resolves the URL
-// (yt-dlp tokens expire), so they all funnel through here.
+// Used by handlePlay, banner resume/replay actions, and handleHistoryPlay. Each
+// of these re-resolves the URL (yt-dlp tokens expire), so they all funnel
+// through here.
 type urlSessionStarter func(core.SessionRequest) (bool, error)
 type urlStreamStarter func(context.Context, streamhandoff.Resolver, streamhandoff.Resolution) (streamhandoff.StartResult, bool, error)
 

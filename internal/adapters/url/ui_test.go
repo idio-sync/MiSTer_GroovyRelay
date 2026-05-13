@@ -29,11 +29,11 @@ func TestUIRoutes_HasPlayAndPanel(t *testing.T) {
 	}
 }
 
-func TestUIRoutes_AllElevenRegistered(t *testing.T) {
+func TestUIRoutes_AllPanelRoutesRegistered(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	routes := a.UIRoutes()
-	if len(routes) != 11 {
-		t.Fatalf("UIRoutes count = %d, want 11", len(routes))
+	if len(routes) != 6 {
+		t.Fatalf("UIRoutes count = %d, want 6", len(routes))
 	}
 	have := map[string]string{}
 	for _, r := range routes {
@@ -41,11 +41,6 @@ func TestUIRoutes_AllElevenRegistered(t *testing.T) {
 	}
 	want := []string{
 		"POST play",
-		"POST pause",
-		"POST resume",
-		"POST stop",
-		"POST replay",
-		"POST seek",
 		"POST history/play",
 		"POST history/delete",
 		"GET panel",

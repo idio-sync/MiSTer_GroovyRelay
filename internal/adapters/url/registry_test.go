@@ -61,8 +61,8 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 			mounted++
 		}
 	}
-	if mounted != 11 {
-		t.Errorf("mounted %d url routes, want 11", mounted)
+	if mounted != 6 {
+		t.Errorf("mounted %d url routes, want 6", mounted)
 	}
 
 	// Sanity-check the GET /panel route is reachable via the mux.
