@@ -242,6 +242,41 @@ func TestExtraPanelHTMLRendersProviderArtworkFallbackWithoutEmptyImage(t *testin
 	}
 }
 
+func TestExtraPanelHTMLRendersProviderArtworkImageWithNoReferrerPolicy(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceDefinitionsForTest([]ProviderDefinition{{
+		ID:              "mtv-rewind",
+		Type:            youtubeChannelJSONProviderType,
+		DisplayName:     "MTV Rewind",
+		BaseURL:         "https://wantmymtv.vercel.app",
+		PlaylistURL:     "https://wantmymtv.vercel.app/public/mtv-playlists.json",
+		DefaultChannel:  "metal",
+		DefaultPlayMode: PlayShuffle,
+		LogoURL:         "https://wantmymtv.vercel.app/public/images/rewindlogo.png",
+		LogoAlt:         "MTV Rewind logo",
+		FallbackLabel:   "MTV REWIND",
+		URLRules: []URLRule{{
+			ID:         "mtv-player-channel",
+			Schemes:    []string{"https"},
+			Hosts:      []string{"wantmymtv.vercel.app"},
+			Path:       "/player.html",
+			Target:     "channel",
+			QueryParam: "channel",
+		}},
+	}})
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels:   []Channel{{ID: "metal", Name: "Metal", Items: []StreamItem{{ID: "dQw4w9WgXcQ"}}}},
+	}})
+
+	html := string(a.ExtraPanelHTML())
+	want := `<img class="streams-provider-art" src="https://wantmymtv.vercel.app/public/images/rewindlogo.png" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-streams-artwork>`
+	if !strings.Contains(html, want) {
+		t.Fatalf("provider artwork img missing privacy attrs: %s", html)
+	}
+}
+
 func TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.replaceCatalogsForTest([]ProviderCatalog{{

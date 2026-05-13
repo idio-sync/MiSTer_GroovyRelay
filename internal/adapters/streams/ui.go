@@ -381,7 +381,7 @@ func renderProviderArtwork(b *strings.Builder, provider ProviderStatusView) {
 	fmt.Fprintf(b, `<div class="streams-provider-art-shell" role="img" aria-label="%s">`, escAttr(label))
 	if strings.TrimSpace(provider.LogoURL) != "" {
 		fmt.Fprintf(b,
-			`<img class="streams-provider-art" src="%s" alt="" loading="lazy" decoding="async" data-streams-artwork>`,
+			`<img class="streams-provider-art" src="%s" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-streams-artwork>`,
 			escAttr(provider.LogoURL))
 	}
 	fmt.Fprintf(b, `<span class="streams-provider-wordmark">%s</span></div>`, esc(fallback))

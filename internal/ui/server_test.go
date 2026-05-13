@@ -128,6 +128,25 @@ func TestStaticStreamsArtworkScriptServed(t *testing.T) {
 	}
 }
 
+func TestStaticAppCSSHidesArtworkFallbackUntilImageFails(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		".streams-provider-art:not(.streams-artwork-failed) + .streams-provider-wordmark",
+		".streams-provider-art.streams-artwork-failed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app.css missing streams artwork fallback rule %q: %s", want, body)
+		}
+	}
+}
+
 // fakeRouteAdapter is the minimum adapter needed to exercise route mounting.
 // It implements adapters.Adapter + adapters.RouteProvider and registers
 // one route per HTTP method we expect the mounter to support.

@@ -1135,6 +1135,9 @@ body {
 .streams-provider-art.streams-artwork-failed {
 	display: none;
 }
+.streams-provider-art:not(.streams-artwork-failed) + .streams-provider-wordmark {
+	display: none;
+}
 .streams-provider-wordmark {
 	grid-area: 1 / 1;
 	padding: 12px;
