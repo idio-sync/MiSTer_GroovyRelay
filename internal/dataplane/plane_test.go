@@ -268,6 +268,45 @@ func TestSendField_DeltaEnvWithLZ4DisabledSendsRaw(t *testing.T) {
 	}
 }
 
+func TestSendField_ReturnsDetailedTelemetry(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.fieldSender = sender
+
+	field := repeatedTileField(fieldBytes, []byte{0x11, 0x22, 0x33, 0x44})
+	stats := p.sendField(1, 0, field)
+
+	if len(sender.headers) != 1 || len(sender.payloads) != 1 {
+		t.Fatalf("headers=%d payloads=%d, want 1/1", len(sender.headers), len(sender.payloads))
+	}
+	if stats.rawBytes != fieldBytes {
+		t.Fatalf("rawBytes = %d, want %d", stats.rawBytes, fieldBytes)
+	}
+	if stats.payloadBytes != len(sender.payloads[0]) {
+		t.Fatalf("payloadBytes = %d, want sent payload len %d", stats.payloadBytes, len(sender.payloads[0]))
+	}
+	if stats.compressedBytes != len(sender.payloads[0]) {
+		t.Fatalf("compressedBytes = %d, want sent payload len %d", stats.compressedBytes, len(sender.payloads[0]))
+	}
+	wantWireBytes := len(sender.headers[0]) + len(sender.payloads[0])
+	if stats.wireBytes != wantWireBytes {
+		t.Fatalf("wireBytes = %d, want header+payload %d", stats.wireBytes, wantWireBytes)
+	}
+	if stats.payloadChunks != datagramChunks(len(sender.payloads[0])) {
+		t.Fatalf("payloadChunks = %d, want %d", stats.payloadChunks, datagramChunks(len(sender.payloads[0])))
+	}
+	if stats.deltaSelected {
+		t.Fatal("deltaSelected = true, want false without prior same-field history")
+	}
+}
+
 func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
 
@@ -747,6 +786,112 @@ func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "adaptive delta-LZ4 requested but LZ4 disabled") {
 		t.Fatalf("missing disabled-by-LZ4 log\n%s", logBuf.String())
 	}
+}
+
+func TestDataplaneStatsAttrsIncludeDebugTelemetry(t *testing.T) {
+	window := dataplaneStatsWindow{
+		ticks:                    60,
+		fieldsSent:               55,
+		duplicates:               5,
+		fieldTotal:               550 * time.Millisecond,
+		maxField:                 17 * time.Millisecond,
+		maxLZ4:                   2 * time.Millisecond,
+		maxCongestion:            3 * time.Millisecond,
+		maxSend:                  4 * time.Millisecond,
+		sendBudgetOverruns:       2,
+		maxRawBytes:              518400,
+		maxPayloadBytes:          123456,
+		maxCompressedBytes:       120000,
+		maxPayloadChunks:         84,
+		videoQueueHigh:           7,
+		videoPrebufferHigh:       6,
+		videoBacklogAfterPull:    12,
+		videoBacklogAfterPullMax: 5,
+		audioQueueHigh:           10,
+		audioPrebufferHigh:       3,
+		audioRingHigh:            4,
+		wireBytesStart:           1000,
+		deltaSelectedStart:       3,
+	}
+	snapshot := dataplaneStatsSnapshot{
+		window:             5 * time.Second,
+		videoQueueLen:      2,
+		videoQueueCap:      8,
+		videoPrebufferLen:  1,
+		audioQueueLen:      4,
+		audioQueueCap:      16,
+		audioPrebufferLen:  2,
+		audioRingLen:       3,
+		audioRingCap:       5,
+		framesTotal:        200,
+		underrunsTotal:     9,
+		blitsTotal:         60,
+		maxFramesAhead:     9,
+		currentFramesAhead: 4,
+		enobufTotal:        1,
+		wireBytesTotal:     61000,
+		position:           2 * time.Second,
+		audioReady:         true,
+		deltaEnabled:       true,
+		deltaSelectedTotal: 8,
+	}
+
+	got := attrMap(dataplaneStatsAttrs(window, snapshot))
+
+	checks := map[string]any{
+		"window_s":                       int64(5),
+		"ticks":                          uint64(60),
+		"fields_sent":                    uint64(55),
+		"duplicates":                     uint64(5),
+		"avg_field_ms":                   int64(10),
+		"max_field_ms":                   int64(17),
+		"max_lz4_ms":                     int64(2),
+		"max_congestion_ms":              int64(3),
+		"max_send_ms":                    int64(4),
+		"send_budget_overruns":           uint64(2),
+		"max_raw_bytes":                  518400,
+		"max_payload_bytes":              123456,
+		"max_compressed_bytes":           120000,
+		"max_payload_chunks":             84,
+		"video_queue_len":                2,
+		"video_queue_cap":                8,
+		"video_queue_high":               7,
+		"video_prebuffer_len":            1,
+		"video_prebuffer_high":           6,
+		"video_backlog_after_pull_ticks": uint64(12),
+		"video_backlog_after_pull_max":   5,
+		"audio_queue_len":                4,
+		"audio_queue_cap":                16,
+		"audio_queue_high":               10,
+		"audio_prebuffer_len":            2,
+		"audio_prebuffer_high":           3,
+		"audio_ring_len":                 3,
+		"audio_ring_cap":                 5,
+		"audio_ring_high":                4,
+		"frames_total":                   uint64(200),
+		"underruns_total":                uint64(9),
+		"blits_total":                    uint64(60),
+		"wire_bytes_window":              uint64(60000),
+		"wire_bytes_total":               uint64(61000),
+		"delta_selected":                 uint64(5),
+		"delta_selected_total":           uint64(8),
+	}
+	for key, want := range checks {
+		if got[key] != want {
+			t.Fatalf("%s = %#v, want %#v\nattrs=%#v", key, got[key], want, got)
+		}
+	}
+}
+
+func attrMap(attrs []any) map[string]any {
+	out := make(map[string]any, len(attrs)/2)
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, ok := attrs[i].(string)
+		if ok {
+			out[key] = attrs[i+1]
+		}
+	}
+	return out
 }
 
 func TestWriteFieldSubDeltaInto_UsesByteWrapSubtraction(t *testing.T) {

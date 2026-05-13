@@ -37,6 +37,212 @@ type fieldSender interface {
 	MarkBlitSent(int)
 }
 
+type fieldSendStats struct {
+	total           time.Duration
+	lz4             time.Duration
+	congestion      time.Duration
+	send            time.Duration
+	rawBytes        int
+	payloadBytes    int
+	compressedBytes int
+	payloadChunks   int
+	wireBytes       int
+	deltaSelected   bool
+}
+
+type dataplaneStatsWindow struct {
+	ticks      uint64
+	fieldsSent uint64
+	duplicates uint64
+
+	fieldTotal         time.Duration
+	maxField           time.Duration
+	maxLZ4             time.Duration
+	maxCongestion      time.Duration
+	maxSend            time.Duration
+	sendBudgetOverruns uint64
+
+	maxRawBytes        int
+	maxPayloadBytes    int
+	maxCompressedBytes int
+	maxPayloadChunks   int
+
+	videoQueueHigh           int
+	videoPrebufferHigh       int
+	videoBacklogAfterPull    uint64
+	videoBacklogAfterPullMax int
+
+	audioQueueHigh     int
+	audioPrebufferHigh int
+	audioRingHigh      int
+
+	wireBytesStart     uint64
+	deltaSelectedStart uint64
+}
+
+type dataplaneStatsSnapshot struct {
+	window time.Duration
+
+	videoQueueLen     int
+	videoQueueCap     int
+	videoPrebufferLen int
+
+	audioQueueLen     int
+	audioQueueCap     int
+	audioPrebufferLen int
+	audioRingLen      int
+	audioRingCap      int
+
+	framesTotal    uint64
+	underrunsTotal uint64
+	blitsTotal     uint64
+
+	maxFramesAhead     uint32
+	currentFramesAhead uint32
+
+	enobufTotal    uint64
+	wireBytesTotal uint64
+	position       time.Duration
+	audioReady     bool
+
+	deltaEnabled       bool
+	deltaSelectedTotal uint64
+}
+
+func (w *dataplaneStatsWindow) observeField(stats fieldSendStats, budgetThreshold time.Duration) {
+	w.fieldTotal += stats.total
+	if stats.total > w.maxField {
+		w.maxField = stats.total
+	}
+	if stats.lz4 > w.maxLZ4 {
+		w.maxLZ4 = stats.lz4
+	}
+	if stats.congestion > w.maxCongestion {
+		w.maxCongestion = stats.congestion
+	}
+	if stats.send > w.maxSend {
+		w.maxSend = stats.send
+	}
+	if budgetThreshold > 0 && stats.total > budgetThreshold {
+		w.sendBudgetOverruns++
+	}
+	if stats.rawBytes > w.maxRawBytes {
+		w.maxRawBytes = stats.rawBytes
+	}
+	if stats.payloadBytes > w.maxPayloadBytes {
+		w.maxPayloadBytes = stats.payloadBytes
+	}
+	if stats.compressedBytes > w.maxCompressedBytes {
+		w.maxCompressedBytes = stats.compressedBytes
+	}
+	if stats.payloadChunks > w.maxPayloadChunks {
+		w.maxPayloadChunks = stats.payloadChunks
+	}
+}
+
+func (w *dataplaneStatsWindow) observeQueues(videoQueueLen, videoPrebufferLen, audioQueueLen, audioPrebufferLen, audioRingLen int) {
+	if videoQueueLen > w.videoQueueHigh {
+		w.videoQueueHigh = videoQueueLen
+	}
+	if videoPrebufferLen > w.videoPrebufferHigh {
+		w.videoPrebufferHigh = videoPrebufferLen
+	}
+	if audioQueueLen > w.audioQueueHigh {
+		w.audioQueueHigh = audioQueueLen
+	}
+	if audioPrebufferLen > w.audioPrebufferHigh {
+		w.audioPrebufferHigh = audioPrebufferLen
+	}
+	if audioRingLen > w.audioRingHigh {
+		w.audioRingHigh = audioRingLen
+	}
+}
+
+func (w *dataplaneStatsWindow) observeVideoBacklogAfterPull(backlog int) {
+	if backlog <= 0 {
+		return
+	}
+	w.videoBacklogAfterPull++
+	if backlog > w.videoBacklogAfterPullMax {
+		w.videoBacklogAfterPullMax = backlog
+	}
+}
+
+func (w *dataplaneStatsWindow) reset(wireBytesTotal, deltaSelectedTotal uint64) {
+	*w = dataplaneStatsWindow{
+		wireBytesStart:     wireBytesTotal,
+		deltaSelectedStart: deltaSelectedTotal,
+	}
+}
+
+func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapshot) []any {
+	var avgFieldMs int64
+	if window.fieldsSent > 0 {
+		avgFieldMs = (window.fieldTotal / time.Duration(window.fieldsSent)).Milliseconds()
+	}
+	var duplicatePct float64
+	if window.ticks > 0 {
+		duplicatePct = 100 * float64(window.duplicates) / float64(window.ticks)
+	}
+	wireBytesWindow := snap.wireBytesTotal
+	if snap.wireBytesTotal >= window.wireBytesStart {
+		wireBytesWindow = snap.wireBytesTotal - window.wireBytesStart
+	}
+
+	attrs := []any{
+		"window_s", int64(snap.window / time.Second),
+		"ticks", window.ticks,
+		"fields_sent", window.fieldsSent,
+		"duplicates", window.duplicates,
+		"duplicate_pct", duplicatePct,
+		"avg_field_ms", avgFieldMs,
+		"max_field_ms", window.maxField.Milliseconds(),
+		"max_lz4_ms", window.maxLZ4.Milliseconds(),
+		"max_congestion_ms", window.maxCongestion.Milliseconds(),
+		"max_send_ms", window.maxSend.Milliseconds(),
+		"send_budget_overruns", window.sendBudgetOverruns,
+		"max_raw_bytes", window.maxRawBytes,
+		"max_payload_bytes", window.maxPayloadBytes,
+		"max_compressed_bytes", window.maxCompressedBytes,
+		"max_payload_chunks", window.maxPayloadChunks,
+		"max_frames_ahead", snap.maxFramesAhead,
+		"current_frames_ahead", snap.currentFramesAhead,
+		"video_queue_len", snap.videoQueueLen,
+		"video_queue_cap", snap.videoQueueCap,
+		"video_queue_high", window.videoQueueHigh,
+		"video_prebuffer_len", snap.videoPrebufferLen,
+		"video_prebuffer_high", window.videoPrebufferHigh,
+		"video_backlog_after_pull_ticks", window.videoBacklogAfterPull,
+		"video_backlog_after_pull_max", window.videoBacklogAfterPullMax,
+		"audio_queue_len", snap.audioQueueLen,
+		"audio_queue_cap", snap.audioQueueCap,
+		"audio_queue_high", window.audioQueueHigh,
+		"audio_prebuffer_len", snap.audioPrebufferLen,
+		"audio_prebuffer_high", window.audioPrebufferHigh,
+		"audio_ring_len", snap.audioRingLen,
+		"audio_ring_cap", snap.audioRingCap,
+		"audio_ring_high", window.audioRingHigh,
+		"frames_total", snap.framesTotal,
+		"underruns_total", snap.underrunsTotal,
+		"blits_total", snap.blitsTotal,
+		"wire_bytes_window", wireBytesWindow,
+		"wire_bytes_total", snap.wireBytesTotal,
+		"enobuf_total", snap.enobufTotal,
+		"position_s", snap.position.Seconds(),
+		"audio_ready", snap.audioReady,
+	}
+	if snap.deltaEnabled {
+		deltaSelected := snap.deltaSelectedTotal
+		if snap.deltaSelectedTotal >= window.deltaSelectedStart {
+			deltaSelected = snap.deltaSelectedTotal - window.deltaSelectedStart
+		}
+		attrs = append(attrs,
+			"delta_selected", deltaSelected,
+			"delta_selected_total", snap.deltaSelectedTotal)
+	}
+	return attrs
+}
+
 // spawnProcess is the indirection Run uses to obtain its processHandle.
 // Default points at the production ffmpeg.Spawn; tests swap it for a stub
 // constructor. It is not part of the package's public API.
@@ -572,17 +778,8 @@ func (p *Plane) Run(ctx context.Context) error {
 		// Rolling 5-second stats. Reset each statsTicker fire. Gives the
 		// operator a "grep dataplane stats" view of the session evolving
 		// without waiting for threshold-triggered warns.
-		statTicks          uint64
-		statFieldsSent     uint64
-		statDuplicates     uint64
-		statMaxFieldNs     int64
+		statWindow         dataplaneStatsWindow
 		statMaxFramesAhead uint32
-
-		// Snapshot of p.deltaSelectedTotal at the start of the current
-		// window. The stats case below subtracts this from the live value
-		// to produce a per-window count, then updates the snapshot. Same
-		// tick-goroutine ownership as p.deltaSelectedTotal itself.
-		prevDeltaSelected uint64
 
 		// Cumulative counters for the session-end lifecycle marker.
 		// Incremented in tandem with the rolling-window counters but
@@ -592,6 +789,7 @@ func (p *Plane) Run(ctx context.Context) error {
 		sessionEndReason       = "unknown"
 	)
 	lastEcho = ack.FrameEcho
+	statWindow.reset(p.wireBytes.Load(), p.deltaSelectedTotal)
 	statsTicker := time.NewTicker(5 * time.Second)
 	defer statsTicker.Stop()
 
@@ -645,34 +843,40 @@ func (p *Plane) Run(ctx context.Context) error {
 			if frameNum > lastEcho {
 				currentFramesAhead = frameNum - lastEcho
 			}
-			attrs := []any{
-				"window_s", 5,
-				"ticks", statTicks,
-				"fields_sent", statFieldsSent,
-				"duplicates", statDuplicates,
-				"max_field_ms", time.Duration(statMaxFieldNs).Milliseconds(),
-				"max_frames_ahead", statMaxFramesAhead,
-				"current_frames_ahead", currentFramesAhead,
-				"enobuf_total", p.cfg.Sender.ENOBUFCount(),
-				"position_s", p.Position().Seconds(),
-				"audio_ready", p.audioReady.Load(),
+			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRingLen)
+			wireBytesTotal := p.wireBytes.Load()
+			snap := dataplaneStatsSnapshot{
+				window:             5 * time.Second,
+				videoQueueLen:      len(videoCh),
+				videoQueueCap:      cap(videoCh),
+				videoPrebufferLen:  len(videoPrebuffer),
+				audioQueueLen:      len(audioCh),
+				audioQueueCap:      cap(audioCh),
+				audioPrebufferLen:  len(audioPrebuffer),
+				audioRingLen:       audioRingLen,
+				audioRingCap:       len(audioRing),
+				framesTotal:        p.framesTotal.Load(),
+				underrunsTotal:     p.underruns.Load(),
+				blitsTotal:         p.BlitsTotal(),
+				maxFramesAhead:     statMaxFramesAhead,
+				currentFramesAhead: currentFramesAhead,
+				enobufTotal:        p.cfg.Sender.ENOBUFCount(),
+				wireBytesTotal:     wireBytesTotal,
+				position:           p.Position(),
+				audioReady:         p.audioReady.Load(),
+				deltaEnabled:       p.deltaLZ4Enabled,
+				deltaSelectedTotal: p.deltaSelectedTotal,
 			}
-			if p.deltaLZ4Enabled {
-				curr := p.deltaSelectedTotal
-				attrs = append(attrs,
-					"delta_selected", curr-prevDeltaSelected,
-					"delta_selected_total", curr)
-				prevDeltaSelected = curr
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				slog.Debug("dataplane stats", dataplaneStatsAttrs(statWindow, snap)...)
 			}
-			slog.Debug("dataplane stats", attrs...)
-			statTicks, statFieldsSent, statDuplicates = 0, 0, 0
-			statMaxFieldNs = 0
+			statWindow.reset(wireBytesTotal, p.deltaSelectedTotal)
 			statMaxFramesAhead = 0
 		case <-timer.C:
 			lastTick = time.Now()
 			frameNum++
 			ticksSinceEchoMoved++
-			statTicks++
+			statWindow.ticks++
 			if framesAhead := frameNum - lastEcho; frameNum > lastEcho && framesAhead > statMaxFramesAhead {
 				statMaxFramesAhead = framesAhead
 			}
@@ -701,6 +905,8 @@ func (p *Plane) Run(ctx context.Context) error {
 			// the header would send top-field pixels tagged as bottom-field.
 			emitField := p.emitField(nextField)
 			fb, fbOK, fbClosed := pullVideoFrame(&videoPrebuffer, videoCh)
+			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRingLen)
+			statWindow.observeVideoBacklogAfterPull(len(videoPrebuffer) + len(videoCh))
 			if fbClosed {
 				sessionEndReason = "video_pipe_eof"
 				_ = p.cfg.Sender.Send(groovy.BuildClose())
@@ -722,12 +928,10 @@ func (p *Plane) Run(ctx context.Context) error {
 				} else {
 					payload = fb.Data[:fb.N]
 				}
-				fieldElapsed := p.sendField(frameNum, emitField, payload)
-				statFieldsSent++
+				sendStats := p.sendField(frameNum, emitField, payload)
+				statWindow.fieldsSent++
+				statWindow.observeField(sendStats, p.fieldBudgetThreshold())
 				sessionTotalFields++
-				if ns := fieldElapsed.Nanoseconds(); ns > statMaxFieldNs {
-					statMaxFieldNs = ns
-				}
 				// Trailing Put — invariant (2): sendField does not return
 				// errors out of Run, so unconditional Put after sendField
 				// is safe. defer is reserved for panic-prone code paths.
@@ -746,7 +950,7 @@ func (p *Plane) Run(ctx context.Context) error {
 						"audio_ready", p.audioReady.Load())
 				}
 				p.sendDuplicate(frameNum, emitField)
-				statDuplicates++
+				statWindow.duplicates++
 				sessionTotalDuplicates++
 			}
 			if p.cfg.Modeline.Interlaced() {
@@ -778,6 +982,7 @@ func (p *Plane) Run(ctx context.Context) error {
 					}
 				}
 			}
+			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRingLen)
 			// Advance reported position by one field period.
 			p.advancePosition()
 			if correction, ok := rasterCorrection(latestACK, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
@@ -859,6 +1064,11 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 	return p.cfg.AudioRate, p.cfg.AudioChans
 }
 
+func (p *Plane) fieldBudgetThreshold() time.Duration {
+	fieldPeriodMs := time.Duration(p.periodMsNumer) * time.Millisecond / time.Duration(p.periodMsDenom)
+	return fieldPeriodMs * 84 / 100
+}
+
 // sendField sends one BLIT_FIELD_VSYNC header + payload using session-
 // lifetime scratch buffers (lz4Scratch for the compressed body, headerScratch
 // for the header bytes). All allocations are amortized to NewPlane time.
@@ -872,10 +1082,9 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 // incompressible — a RAW BLIT variant is emitted with the uncompressed
 // bytes. Emitting an LZ4 header with CompressedSize=0 would desync the
 // receiver.
-func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
+func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats {
 	fieldStart := time.Now()
-	var lz4Elapsed, congestionElapsed, sendElapsed time.Duration
-	var compressedLen int
+	stats := fieldSendStats{rawBytes: len(raw)}
 
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
@@ -888,34 +1097,41 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 			opts.Compressed = true
 			opts.CompressedSize = uint32(len(payload))
 			opts.Delta = choice.delta
-			compressedLen = len(payload)
+			stats.compressedBytes = len(payload)
+			stats.deltaSelected = choice.delta
 			if choice.delta {
 				p.deltaSelectedTotal++
 			}
 		} else {
 			p.logLZ4RawFallback(len(raw), time.Now())
 		}
-		lz4Elapsed = time.Since(t)
+		stats.lz4 = time.Since(t)
 	}
+	stats.payloadBytes = len(payload)
+	stats.payloadChunks = datagramChunks(len(payload))
 
 	t := time.Now()
 	p.fieldSender.WaitForCongestion()
-	congestionElapsed = time.Since(t)
+	stats.congestion = time.Since(t)
 
 	t = time.Now()
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
 	if err := p.fieldSender.Send(header); err != nil {
 		slog.Warn("blit header send", "err", err)
-		return time.Since(fieldStart)
+		stats.total = time.Since(fieldStart)
+		return stats
 	}
 	p.wireBytes.Add(uint64(len(header)))
+	stats.wireBytes += len(header)
 	if err := p.fieldSender.SendPayload(payload); err != nil {
 		slog.Warn("blit payload send", "err", err)
-		return time.Since(fieldStart)
+		stats.total = time.Since(fieldStart)
+		return stats
 	}
 	p.wireBytes.Add(uint64(len(payload)))
+	stats.wireBytes += len(payload)
 	p.fieldSender.MarkBlitSent(len(payload))
-	sendElapsed = time.Since(t)
+	stats.send = time.Since(t)
 
 	// Throttled budget-overrun warn. Threshold is 84% of the field
 	// period: NTSC (16.683 ms) => 14.0 ms; PAL (20 ms) => 16.8 ms.
@@ -928,19 +1144,18 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 	// then `/ time.Duration(periodMsDenom)` divides by 60-as-ns and the
 	// result is 16,683,333 ns = 16.683 ms — the correct field period.
 	// The * 84 / 100 scaling stays in time.Duration throughout.
-	fieldElapsed := time.Since(fieldStart)
-	fieldPeriodMs := time.Duration(p.periodMsNumer) * time.Millisecond / time.Duration(p.periodMsDenom)
-	budgetThreshold := fieldPeriodMs * 84 / 100
-	if fieldElapsed > budgetThreshold && time.Since(p.lastBudgetWarn) > time.Second {
+	stats.total = time.Since(fieldStart)
+	budgetThreshold := p.fieldBudgetThreshold()
+	if stats.total > budgetThreshold && time.Since(p.lastBudgetWarn) > time.Second {
 		p.lastBudgetWarn = time.Now()
 		attrs := []any{
 			"threshold_ms", budgetThreshold.Milliseconds(),
-			"total_ms", fieldElapsed.Milliseconds(),
-			"lz4_ms", lz4Elapsed.Milliseconds(),
-			"congestion_ms", congestionElapsed.Milliseconds(),
-			"send_ms", sendElapsed.Milliseconds(),
-			"raw_bytes", len(raw),
-			"compressed_bytes", compressedLen,
+			"total_ms", stats.total.Milliseconds(),
+			"lz4_ms", stats.lz4.Milliseconds(),
+			"congestion_ms", stats.congestion.Milliseconds(),
+			"send_ms", stats.send.Milliseconds(),
+			"raw_bytes", stats.rawBytes,
+			"compressed_bytes", stats.compressedBytes,
 			"lz4_enabled", p.cfg.LZ4Enabled,
 		}
 		if p.deltaLZ4Enabled {
@@ -982,7 +1197,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) time.Duration {
 		slog.Warn("sendField exceeded 84% of field period", attrs...)
 	}
 	p.rememberSentFieldHistory(field, raw)
-	return fieldElapsed
+	return stats
 }
 
 type fieldPayloadChoice struct {
