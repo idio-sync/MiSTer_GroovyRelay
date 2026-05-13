@@ -10,6 +10,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
 // newTestServer constructs a *Server + mux for tests. Pass option
@@ -368,5 +370,24 @@ func TestShell_RendersAddSourceLink(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="/ui/setup?step=adapters"`) {
 		t.Errorf("missing wizard link target")
+	}
+}
+
+func TestShell_ReadPagesUsePreviewMainLayout(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+		c.EventLog = eventlog.New(8)
+	})
+
+	for _, path := range []string{"/ui/", "/ui/diagnostics"} {
+		r := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("%s status = %d", path, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), `<main class="gr-main" id="panel">`) {
+			t.Errorf("%s should use preview gr-main panel layout: %s", path, w.Body.String())
+		}
 	}
 }

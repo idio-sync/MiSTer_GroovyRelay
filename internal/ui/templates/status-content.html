@@ -16,7 +16,7 @@
       <div>
         <div class="gr-hero-status"><span class="glyph">{{if eq .State "playing"}}●{{else}}‖{{end}}</span><span>{{if eq .State "playing"}}Live{{else}}Paused{{end}}</span></div>
         <h2 class="gr-hero-title">{{if .Title}}{{.Title}}{{else}}via {{.AdapterRef}}{{end}}</h2>
-        <p class="gr-hero-meta">via {{.AdapterDisplayName}}<span class="sep">·</span>{{.Modeline}}<span class="sep">·</span>{{.FieldOrder}}</p>
+        <p class="gr-hero-meta">via {{.AdapterDisplayName}}<span class="sep">·</span>{{.Modeline}}{{if .RefreshRate}}<span class="sep">·</span>{{.RefreshRate}}{{end}}<span class="sep">·</span>{{.FieldOrder}}</p>
       </div>
       <div class="gr-hero-stats">
         <div class="stat"><span class="label">fps</span><span class="value amber">{{.FPS}}</span></div>

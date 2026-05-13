@@ -54,4 +54,10 @@
 			setTimeout(function () { btn.textContent = original; }, 1500);
 		});
 	});
+
+	document.addEventListener('htmx:beforeSwap', function (ev) {
+		var target = ev.detail && ev.detail.target;
+		if (!target || target.id !== 'status-content') { return; }
+		target.setAttribute('data-status-refresh', 'true');
+	});
 })();

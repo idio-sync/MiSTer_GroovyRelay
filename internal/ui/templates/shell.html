@@ -15,7 +15,7 @@
 				{{template "sidebar-body" .}}
 			</aside>
 		{{end}}
-		<main class="{{if .SetupMode}}gr-wizard{{else}}panel{{end}}" id="panel">
+		<main class="{{if .SetupMode}}gr-wizard{{else}}{{.PanelClass}}{{end}}" id="panel">
 			{{if .SetupMode}}
 			<div class="gr-wizard-brand">
 				<span class="mark"></span>GroovyRelay
@@ -57,7 +57,7 @@
 	<h2>System</h2>
 	<a class="gr-nav-link{{if eq .CurrentPath "/ui/"}} active{{end}}" href="/ui/"
 	   hx-get="/ui/" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
-		<span class="dot off"></span><span class="label">Status</span>
+		<span class="dot {{.StatusDotClass}}"></span><span class="label">Status</span>{{if .StatusMeta}}<span class="meta">{{.StatusMeta}}</span>{{end}}
 	</a>
 	<a class="gr-nav-link{{if eq .CurrentPath "/ui/bridge"}} active{{end}}" href="/ui/bridge"
 	   hx-get="/ui/bridge" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">

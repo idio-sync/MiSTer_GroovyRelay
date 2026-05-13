@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -18,6 +19,7 @@ type statusPanelData struct {
 	AdapterDisplayName      string
 	AdapterListeningSummary string
 	Modeline                string
+	RefreshRate             string
 	FieldOrder              string
 	FPS                     string
 	ThroughputMBps          string
@@ -81,25 +83,30 @@ func (s *Server) buildStatusData() statusPanelData {
 		Uptime:           formatElapsed(time.Since(s.cfg.StartedAt)),
 	}
 
+	view := core.StatusHomeView{}
 	if s.cfg.StatusViewer != nil {
-		v := s.cfg.StatusViewer.StatusHomeView()
-		d.State = string(v.State)
-		d.Title = v.Title
-		d.AdapterRef = v.AdapterRef
-		d.Modeline = v.Modeline
-		d.AdapterDisplayName = displayNameForSource(s.cfg.Registry, v.Source, v.AdapterRef)
-		switch v.State {
+		view = s.cfg.StatusViewer.StatusHomeView()
+		d.State = string(view.State)
+		d.Title = view.Title
+		d.AdapterRef = view.AdapterRef
+		d.Modeline = view.Modeline
+		d.RefreshRate = formatRefreshRate(view.Modeline)
+		d.AdapterDisplayName = displayNameForSource(s.cfg.Registry, view.Source, view.AdapterRef)
+		switch view.State {
 		case core.StatePlaying:
-			d.FPS = formatFPS(v.BlitsTotal, time.Since(v.StartedAt))
-			d.ThroughputMBps = formatMBps(v.WireBytes, time.Since(v.StartedAt))
-			d.Elapsed = formatElapsed(time.Since(v.StartedAt))
+			d.FPS = formatFPS(view.BlitsTotal, time.Since(view.StartedAt))
+			d.ThroughputMBps = formatMBps(view.WireBytes, time.Since(view.StartedAt))
+			d.Elapsed = formatElapsed(time.Since(view.StartedAt))
 		case core.StatePaused:
 			d.FPS = "0"
 			d.ThroughputMBps = "0.0"
-			d.Elapsed = formatElapsed(v.Position)
+			d.Elapsed = formatElapsed(view.Position)
 		}
 	} else {
 		d.AdapterListeningSummary = "no live data"
+	}
+	if summary := adapterListeningSummary(s.cfg.Registry); summary != "" {
+		d.AdapterListeningSummary = summary
 	}
 
 	if s.cfg.BridgeSaver != nil {
@@ -108,7 +115,7 @@ func (s *Server) buildStatusData() statusPanelData {
 		d.FieldOrder = bc.Video.InterlaceFieldOrder
 	}
 
-	d.Tiles = buildStatusTiles(s.cfg, d.State)
+	d.Tiles = buildStatusTiles(s.cfg, d, view)
 
 	enabledCount := 0
 	if s.cfg.Registry != nil {
@@ -147,7 +154,14 @@ func (s *Server) buildStatusData() statusPanelData {
 	return d
 }
 
-func buildStatusTiles(cfg Config, _ string) []statusTile {
+func buildStatusTiles(cfg Config, d statusPanelData, view core.StatusHomeView) []statusTile {
+	if d.State == string(core.StatePlaying) || d.State == string(core.StatePaused) {
+		return buildLiveStatusTiles(cfg, d, view)
+	}
+	return buildIdleStatusTiles(cfg, d)
+}
+
+func buildIdleStatusTiles(cfg Config, d statusPanelData) []statusTile {
 	tiles := make([]statusTile, 0, 4)
 
 	bridgeTile := statusTile{
@@ -158,7 +172,8 @@ func buildStatusTiles(cfg Config, _ string) []statusTile {
 		bc := cfg.BridgeSaver.Current()
 		bridgeTile.Rows = []tileRow{
 			{"host", bc.MiSTer.Host},
-			{"src port", fmt.Sprintf("%d", bc.MiSTer.Port)},
+			{"src port", fmt.Sprintf("%d", bc.MiSTer.SourcePort)},
+			{"uptime", d.Uptime},
 			{"fields", bc.Video.InterlaceFieldOrder},
 		}
 	}
@@ -172,10 +187,78 @@ func buildStatusTiles(cfg Config, _ string) []statusTile {
 				Name:       a.DisplayName(),
 				BadgeClass: dotClass(st.State),
 				BadgeGlyph: statusBadgeGlyph(st.State),
-				BadgeLabel: statusBadgeLabel(st.State),
+				BadgeLabel: adapterBadgeLabel(a, st.State),
+				Rows: []tileRow{
+					{"mode", adapterModeLabel(a)},
+					{"state", adapterBadgeLabel(a, st.State)},
+					{"since", formatSince(st.Since)},
+					{"source", a.Name()},
+				},
+			}
+			if !a.IsEnabled() {
+				tile.BadgeClass = "off"
+				tile.BadgeGlyph = "○"
 			}
 			tiles = append(tiles, tile)
 		}
+	}
+	return tiles
+}
+
+func buildLiveStatusTiles(cfg Config, d statusPanelData, view core.StatusHomeView) []statusTile {
+	bc, hasBridge := currentBridgeConfig(cfg)
+	sourceName := d.AdapterDisplayName
+	if sourceName == "" {
+		sourceName = "Source"
+	}
+	command := "play"
+	bridgeLabel := "casting"
+	if d.State == string(core.StatePaused) {
+		command = "pause"
+		bridgeLabel = "paused"
+	}
+
+	tiles := []statusTile{
+		{
+			Num: "01", Name: "Bridge",
+			BadgeClass: "run", BadgeGlyph: "●", BadgeLabel: bridgeLabel,
+			Rows: []tileRow{
+				{"blits", formatCount(view.BlitsTotal)},
+				{"frames", formatCount(view.FramesTotal)},
+				{"under-runs", formatCount(view.Underruns)},
+				{"ack age", formatAge(view.LastACKAge)},
+			},
+		},
+		{
+			Num: "02", Name: sourceName,
+			BadgeClass: "live", BadgeGlyph: "▸", BadgeLabel: "active",
+			Rows: []tileRow{
+				{"command", command},
+				{"title", firstNonEmpty(d.Title, d.AdapterRef, "—")},
+				{"position", formatClock(firstNonZeroDuration(view.Position, time.Since(view.StartedAt)))},
+				{"timeline", "source ✓"},
+			},
+		},
+		{
+			Num: "03", Name: "MiSTer",
+			BadgeClass: "run", BadgeGlyph: "●", BadgeLabel: ackBadgeLabel(view.LastACKAge),
+			Rows: []tileRow{
+				{"switchres", switchresValue(d.Modeline)},
+				{"tx port", bridgeSourcePort(bc, hasBridge)},
+				{"last ack", formatAge(view.LastACKAge)},
+				{"echo stall", "none"},
+			},
+		},
+		{
+			Num: "04", Name: "Pipeline",
+			BadgeClass: "run", BadgeGlyph: "●", BadgeLabel: "nominal",
+			Rows: []tileRow{
+				{"ffmpeg", "running"},
+				{"video", pipelineVideoValue(bc, hasBridge, d.Modeline)},
+				{"audio", pipelineAudioValue(bc, hasBridge)},
+				{"lz4", lz4Value(bc, hasBridge)},
+			},
+		},
 	}
 	return tiles
 }
@@ -203,6 +286,175 @@ func statusBadgeLabel(s adapters.State) string {
 		return "error"
 	default:
 		return "off"
+	}
+}
+
+func adapterListeningSummary(reg *adapters.Registry) string {
+	if reg == nil {
+		return ""
+	}
+	parts := make([]string, 0)
+	for _, a := range reg.List() {
+		parts = append(parts, fmt.Sprintf("%s %s", a.DisplayName(), adapterBadgeLabel(a, a.Status().State)))
+	}
+	if len(parts) == 0 {
+		return "no source configured"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func adapterBadgeLabel(a adapters.Adapter, s adapters.State) string {
+	if !a.IsEnabled() {
+		return "disabled"
+	}
+	return statusBadgeLabel(s)
+}
+
+func adapterModeLabel(a adapters.Adapter) string {
+	if !a.IsEnabled() {
+		return "disabled"
+	}
+	return "enabled"
+}
+
+func currentBridgeConfig(cfg Config) (bc config.BridgeConfig, ok bool) {
+	if cfg.BridgeSaver == nil {
+		return bc, false
+	}
+	return cfg.BridgeSaver.Current(), true
+}
+
+func bridgeSourcePort(bc config.BridgeConfig, ok bool) string {
+	if !ok {
+		return "—"
+	}
+	return fmt.Sprintf("%d", bc.MiSTer.SourcePort)
+}
+
+func ackBadgeLabel(d time.Duration) string {
+	if d > 0 {
+		return "acked"
+	}
+	return "online"
+}
+
+func switchresValue(modeline string) string {
+	if modeline == "" {
+		return "—"
+	}
+	return modeline + " ✓"
+}
+
+func pipelineVideoValue(bc config.BridgeConfig, ok bool, modeline string) string {
+	if !ok {
+		return firstNonEmpty(modeline, "—")
+	}
+	pixFmt := bc.Video.RGBMode
+	if pixFmt == "rgb888" {
+		pixFmt = "rgb24"
+	}
+	return strings.TrimSpace(firstNonEmpty(pixFmt, "video") + " " + firstNonEmpty(modeline, bc.Video.Modeline))
+}
+
+func pipelineAudioValue(bc config.BridgeConfig, ok bool) string {
+	if !ok {
+		return "—"
+	}
+	return fmt.Sprintf("s16le %d · %dch", bc.Audio.SampleRate, bc.Audio.Channels)
+}
+
+func lz4Value(bc config.BridgeConfig, ok bool) string {
+	if !ok {
+		return "—"
+	}
+	if bc.Video.LZ4Enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func formatCount(n uint64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	prefix := len(s) % 3
+	if prefix == 0 {
+		prefix = 3
+	}
+	b.WriteString(s[:prefix])
+	for i := prefix; i < len(s); i += 3 {
+		b.WriteByte(',')
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
+
+func formatSince(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Format("15:04:05")
+}
+
+func formatAge(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms ago", d.Milliseconds())
+	}
+	return formatElapsed(d) + " ago"
+}
+
+func formatClock(d time.Duration) string {
+	if d <= 0 {
+		return "00:00"
+	}
+	total := int(d.Seconds())
+	h := total / 3600
+	m := (total / 60) % 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
+}
+
+func firstNonZeroDuration(vals ...time.Duration) time.Duration {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func formatRefreshRate(modeline string) string {
+	if modeline == "" {
+		return ""
+	}
+	preset, err := core.ResolvePreset(modeline)
+	if err != nil {
+		return ""
+	}
+	switch preset.FpsExpr {
+	case "60000/1001":
+		return "59.94 Hz"
+	case "50/1":
+		return "50.00 Hz"
+	default:
+		return preset.FpsExpr + " Hz"
 	}
 }
 

@@ -402,6 +402,19 @@ body {
 	gap: 32px;
 	max-width: 1080px;
 }
+#panel:has(#status-content),
+#panel:has(.gr-section) {
+	padding: 32px clamp(24px, 4vw, 48px);
+	display: flex;
+	flex-direction: column;
+	gap: 32px;
+	max-width: 1080px;
+}
+#status-content {
+	display: flex;
+	flex-direction: column;
+	gap: 32px;
+}
 .gr-panel-head {
 	display: flex;
 	align-items: baseline;
@@ -1121,6 +1134,10 @@ body {
 /* 6. Activity feed: stagger-fade entries on load — ring-buffer replay feel. */
 .gr-activity-body .gr-activity-entry {
 	animation: gr-feed-in 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+#status-content[data-status-refresh] .gr-hero::before,
+#status-content[data-status-refresh] .gr-activity-body .gr-activity-entry {
+	animation: none;
 }
 .gr-activity-body .gr-activity-entry:nth-child(1) { animation-delay:  60ms; }
 .gr-activity-body .gr-activity-entry:nth-child(2) { animation-delay: 100ms; }

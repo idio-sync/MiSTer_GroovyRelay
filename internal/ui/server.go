@@ -358,6 +358,7 @@ func (s *Server) renderTemplateHTML(name string, data any) (template.HTML, error
 func (s *Server) shellDataForPath(path string) shellTemplateData {
 	data := s.shellData()
 	data.CurrentPath = path
+	data.PanelClass = panelClassForPath(path)
 	return data
 }
 
@@ -381,15 +382,24 @@ func (s *Server) shellData() shellTemplateData {
 			DotClass:    dc,
 		})
 	}
-	return shellTemplateData{Adapters: adaptersData}
+	statusDot, statusMeta := s.statusSidebarState()
+	return shellTemplateData{
+		Adapters:       adaptersData,
+		PanelClass:     "panel",
+		StatusDotClass: statusDot,
+		StatusMeta:     statusMeta,
+	}
 }
 
 type shellTemplateData struct {
-	Adapters    []sidebarAdapter
-	PanelHTML   template.HTML
-	CurrentPath string
-	SetupMode   bool
-	Steps       []stepperItem
+	Adapters       []sidebarAdapter
+	PanelHTML      template.HTML
+	CurrentPath    string
+	PanelClass     string
+	StatusDotClass string
+	StatusMeta     string
+	SetupMode      bool
+	Steps          []stepperItem
 }
 
 type sidebarAdapter struct {
@@ -409,6 +419,29 @@ func dotClass(s adapters.State) string {
 		return "err"
 	default:
 		return "off"
+	}
+}
+
+func panelClassForPath(path string) string {
+	switch {
+	case path == "/ui/" || path == "/ui/diagnostics":
+		return "gr-main"
+	default:
+		return "panel"
+	}
+}
+
+func (s *Server) statusSidebarState() (dotClass, meta string) {
+	if s.cfg.StatusViewer == nil {
+		return "off", ""
+	}
+	switch s.cfg.StatusViewer.StatusHomeView().State {
+	case core.StatePlaying:
+		return "run", "live"
+	case core.StatePaused:
+		return "starting", "paused"
+	default:
+		return "off", ""
 	}
 }
 
