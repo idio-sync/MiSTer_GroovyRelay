@@ -143,6 +143,31 @@ func TestExtraPanelHTMLRendersActiveTitleAndProgressUnderPlayingLine(t *testing.
 	}
 }
 
+func TestStreamsPanelDoesNotRenderActiveTransportControls(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.mu.Lock()
+	a.active = &ActiveQueue{
+		SessionID:    "sess",
+		ProviderID:   "mtv-rewind",
+		ProviderName: "MTV Rewind",
+		ChannelID:    "metal",
+		ChannelName:  "Metal",
+		Items:        []StreamItem{{ID: "one"}, {ID: "two"}},
+		Index:        0,
+		ItemToken:    1,
+	}
+	a.mu.Unlock()
+	html := a.renderPanel(panelSelectionRequest{})
+	for _, forbidden := range []string{"/ui/adapter/streams/previous", "/ui/adapter/streams/next", "/ui/adapter/streams/replay", "/ui/adapter/streams/stop"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("streams panel still renders %q: %s", forbidden, html)
+		}
+	}
+	if !strings.Contains(html, "/ui/adapter/streams/refresh") {
+		t.Fatalf("streams panel lost refresh control: %s", html)
+	}
+}
+
 func TestExtraPanelHTMLEscapesProviderAndChannelNames(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.replaceCatalogsForTest([]ProviderCatalog{{

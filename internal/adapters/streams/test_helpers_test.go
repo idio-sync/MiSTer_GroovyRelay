@@ -59,23 +59,27 @@ func newTestAdapterWithCatalog(t *testing.T) *Adapter {
 }
 
 type fakeCore struct {
-	mu            sync.Mutex
-	lastReq       core.SessionRequest
-	startErr      error
-	startErrs     []error
-	startCalls    int
-	startIfCalls  int
-	startIfRef    string
-	startIfGen    uint64
-	stopCalls     int
-	pauseCalls    int
-	rawStopCalls  int
-	rawPauseCalls int
-	status        core.SessionStatus
-	startHook     func(core.SessionRequest)
-	stopHook      func()
-	pauseIfHook   func(string)
-	statusHook    func()
+	mu                 sync.Mutex
+	lastReq            core.SessionRequest
+	startErr           error
+	startErrs          []error
+	startCalls         int
+	startIdleCalls     int
+	startIfCalls       int
+	startIfRef         string
+	startIfGen         uint64
+	stopCalls          int
+	stopIfSessionCalls int
+	stopIfSessionRef   string
+	stopIfSessionGen   uint64
+	pauseCalls         int
+	rawStopCalls       int
+	rawPauseCalls      int
+	status             core.SessionStatus
+	startHook          func(core.SessionRequest)
+	stopHook           func()
+	pauseIfHook        func(string)
+	statusHook         func()
 }
 
 func (f *fakeCore) StartSession(req core.SessionRequest) error {
@@ -103,6 +107,40 @@ func (f *fakeCore) StartSession(req core.SessionRequest) error {
 		f.status.AdapterRef = req.AdapterRef
 	}
 	return f.startErr
+}
+
+func (f *fakeCore) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
+	f.mu.Lock()
+	if f.status.AdapterRef != "" {
+		f.mu.Unlock()
+		return false, nil
+	}
+	f.lastReq = req
+	f.startIdleCalls++
+	f.startCalls++
+	startHook := f.startHook
+	f.mu.Unlock()
+
+	if startHook != nil {
+		startHook(req)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		if err == nil {
+			f.status.AdapterRef = req.AdapterRef
+			f.status.Generation = 0
+		}
+		return true, err
+	}
+	if f.startErr == nil {
+		f.status.AdapterRef = req.AdapterRef
+		f.status.Generation = 0
+	}
+	return true, f.startErr
 }
 
 func (f *fakeCore) StartSessionIfSession(req core.SessionRequest, ref string, generation uint64) (bool, error) {
@@ -162,6 +200,26 @@ func (f *fakeCore) StopIfAdapterRef(ref string) (bool, error) {
 	}
 	f.stopCalls++
 	f.status.AdapterRef = ""
+	stopHook := f.stopHook
+	f.mu.Unlock()
+
+	if stopHook != nil {
+		stopHook()
+	}
+	return true, nil
+}
+
+func (f *fakeCore) StopIfSession(ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	f.stopIfSessionCalls++
+	f.stopIfSessionRef = ref
+	f.stopIfSessionGen = generation
+	if ref == "" || generation == 0 || f.status.AdapterRef != ref || f.status.Generation != generation {
+		f.mu.Unlock()
+		return false, nil
+	}
+	f.status.AdapterRef = ""
+	f.status.Generation = 0
 	stopHook := f.stopHook
 	f.mu.Unlock()
 

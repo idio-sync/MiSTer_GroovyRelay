@@ -336,12 +336,6 @@ func renderNowStrip(b *strings.Builder, view StatusView, provider ProviderStatus
 	}
 	b.WriteString(`</div><div class="streams-now-controls">`)
 	button(b, "/ui/adapter/streams/refresh", "Refresh", false, selection)
-	if view.Active != nil {
-		button(b, "/ui/adapter/streams/previous", "Previous", !view.Capabilities.CanPrevious, selection)
-		button(b, "/ui/adapter/streams/next", "Next", !view.Capabilities.CanNext, selection)
-		button(b, "/ui/adapter/streams/replay", "Replay", !view.Capabilities.CanReplay, selection)
-		button(b, "/ui/adapter/streams/stop", "Stop", !view.Capabilities.CanStop, selection)
-	}
 	b.WriteString(`</div></div>`)
 }
 
