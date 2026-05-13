@@ -51,7 +51,7 @@ The design should feel nostalgic through hierarchy, density, scanline texture, a
 
 The UI must treat each Streams source as a generic provider. More sources will be added.
 
-Provider tabs should be generated from `StatusView.Providers`. They should support more than two providers as a single horizontally scrollable row rather than fixed two-column assumptions. The tab label should show provider name and channel count.
+Provider tabs should be generated from `StatusView.Providers`. They should support more than two providers as a single horizontally scrollable row using plain CSS `overflow-x: auto`, rather than fixed two-column assumptions or JavaScript scroll controls. The tab label should show provider name and the post-filter playable channel count from `ProviderStatusView.Channels`; an enabled provider with no playable channels remains visible as `Provider Name (0)`.
 
 Each provider may expose:
 
@@ -66,18 +66,25 @@ Each provider may expose:
 
 The first implementation will add the artwork fields to the Streams manifest/provider definition model and thread them into `ProviderStatusView`. Providers without artwork still render cleanly with a text wordmark.
 
+Artwork fields are manifest/provider metadata, not adapter settings fields. Their apply scope is `ScopeHotSwap`: manifest reloads update them through the existing Streams hot-swap path, and artwork metadata never stops or restarts active playback. If a future implementation adds config override fields for artwork, those fields must be added to `scopeForField`/`fieldScopes` as `ScopeHotSwap`.
+
 Artwork URL validation applies to bundled and remote provider metadata before values reach `ProviderStatusView`:
 
+- implement a single Streams helper such as `validateProviderArtworkURL`, colocated with `validateRemoteDataURL`;
+- reuse or extend the existing Streams URL/IP validation pieces (`validateRemoteDataURL` parse checks, `resolveValidatedIP`, and `isPublicIP`) rather than writing a third independent validator;
+- if address classification is shared with DLNA later, extract a shared helper instead of copying `internal/adapters/dlna/urlvalidator.go` logic into Streams;
+- unlike `validateRemoteDataURL`, artwork validation always behaves as public-internet-only and must pass `allowLocal=false` regardless of `Config.AllowLocalManifestURLs`;
+- bound the raw manifest string with `len(raw) <= 2048` before URL parsing or normalization;
 - accept `https` URLs only;
 - require a hostname;
 - reject userinfo;
-- reject IP-literal, localhost, loopback, link-local, private, and otherwise non-global-unicast hosts;
-- bound the stored URL length to 2048 bytes;
+- reject IP-literal hosts before DNS;
+- require the resolved host to pass the existing Streams public-IP validation;
 - treat invalid artwork URLs as empty and render the fallback wordmark.
 
 Default selection rules:
 
-- If a queue is active, select its provider and channel group when possible.
+- If a queue is active and the request does not include an explicit provider/group selection, select the queue's provider and channel group when possible.
 - If there is no active queue, select the first provider in display order.
 - For the selected provider, select the first non-empty group.
 - If a requested provider or group no longer exists, fall back to the first available provider/group.
@@ -88,28 +95,30 @@ Provider ordering will continue to follow the current deterministic status order
 
 Provider artwork is referenced by URL, not vendored.
 
-Initial metadata:
+Initial metadata is illustrative. The bundled and remote manifest metadata are authoritative.
 
 | Provider | Logo URL | Fallback |
 |---|---|---|
 | MTV Rewind | `https://wantmymtv.vercel.app/public/images/rewindlogo.png` | `MTV REWIND` |
 | Cartoon Rewind | `https://cartoonrewind.tv/social.png` | `CARTOON REWIND` |
 
-The Now Playing preview box should render the selected provider artwork whether idle or tuned. If image loading fails, it should show the provider fallback label as a wordmark. This fallback must be part of the HTML behavior, not only a test assumption.
+The Now Playing preview box should render the selected provider artwork whether idle or tuned. If image loading fails, it should show the provider fallback label as a wordmark. This fallback must be an implemented browser behavior, not only a test assumption.
 
-Use an implementable no-JavaScript fallback pattern:
+Use an `<img>` shell with an always-present wordmark fallback. Do not use `<object>` for provider artwork; wrong-MIME `200 OK` responses and future `object-src` CSP rules make that path brittle.
 
 ```html
-<object class="streams-provider-art"
-        data="https://example.invalid/logo.png"
-        type="image/png"
-        role="img"
-        aria-label="Provider name">
+<div class="streams-provider-art-shell" role="img" aria-label="Provider name">
+  <img class="streams-provider-art"
+       src="https://example.invalid/logo.png"
+       alt=""
+       loading="lazy"
+       decoding="async"
+       data-streams-artwork>
   <span class="streams-provider-wordmark">PROVIDER NAME</span>
-</object>
+</div>
 ```
 
-The renderer may use `type="image/png"` for the initial providers. If a future provider needs another safe image type, add that image type deliberately and test it.
+The wordmark sits behind or below the image. A tiny same-origin image-error handler may hide `img[data-streams-artwork]` when it fails to decode, including the case where the remote server returns `200 text/html` or another non-image MIME type. Do not use inline `onerror`; put the handler in existing/static UI JavaScript so a future CSP can avoid inline script allowances. If `LogoURL` is empty or invalid, do not emit an `<img src="">` element.
 
 The implementation should keep remote image use optional. A missing or empty logo URL must not block provider rendering or playback.
 
@@ -146,7 +155,7 @@ Desktop guide behavior:
 - Use a category rail around 160-180px wide.
 - Use 4 channel columns at normal wide desktop sizes.
 - Allow 5 columns on very wide screens.
-- Keep cell heights stable so channel counts and hover states do not shift layout.
+- Keep cell heights stable with explicit `min-height` and either a fixed row grid, `aspect-ratio`, or line-clamped text so channel counts and hover states do not shift layout.
 
 Mobile/narrow behavior:
 
@@ -180,7 +189,7 @@ Channel cells remain playback forms posting to `/ui/adapter/streams/play` with:
 
 Refresh remains a POST to `/ui/adapter/streams/refresh`.
 
-The active channel, if present in the selected grid, should get a tuned/active treatment. If the active channel is in another provider/group, default selection should move the guide to that active provider/group.
+The active channel, if present in the selected grid, should get a tuned/active treatment. If the active channel is in another provider/group, the initial default selection may move the guide to that active provider/group. Once a request includes explicit `provider_id`/`group_id`, polling and POST responses preserve that explicit slice instead of auto-snapping across providers.
 
 Playback controls remain the existing routes:
 
@@ -216,6 +225,10 @@ The renderer should derive grouped channel views from `ProviderStatusView.Groups
 
 No playback or catalog semantics should depend on artwork metadata.
 
+## CSP Notes
+
+There is no Content-Security-Policy header today, but future deployment/preflight work may add one. This design keeps provider artwork on `<img>` so a future CSP only needs `img-src` allowances for approved artwork hosts such as `wantmymtv.vercel.app` and `cartoonrewind.tv`. It should not require `object-src`, `script-src`, `connect-src`, or frame allowances for provider metadata. The optional image-error handler must be same-origin static JavaScript, not a provider-controlled script URL.
+
 ## Error Handling
 
 - No providers: show a compact empty state inside the guide.
@@ -230,7 +243,7 @@ No playback or catalog semantics should depend on artwork metadata.
 - Provider tabs, category selectors, channel cells, refresh, and playback controls must be real buttons or forms.
 - Channel cells need clear text labels and visible focus states.
 - Provider tabs and category selectors should expose selected state with `aria-current="true"` on the selected control.
-- The artwork object should use provider-specific `aria-label` text.
+- The artwork shell should use provider-specific `aria-label` text.
 - The fallback wordmark should be text, not a background image.
 - Color should not be the only active-state signal; use border/position/treatment as well.
 
@@ -268,13 +281,16 @@ Update Streams UI tests to cover:
 - refresh and playback controls preserve their existing htmx routes;
 - panel polling preserves the selected `provider_id` and `group_id`;
 - playback, refresh, and transport controls preserve the selected guide slice;
-- provider artwork metadata renders the approved `<object>` fallback structure with `data`, `type`, and `aria-label`;
+- provider artwork metadata renders the approved image shell with `role="img"`, provider `aria-label`, `img[data-streams-artwork]`, and fallback wordmark text;
+- `LogoURL=""` or an invalid artwork URL does not emit `<img src="">`;
 - fallback wordmark renders when artwork metadata is absent;
-- unsafe or invalid artwork URLs are dropped and fall back to text;
+- an image response that is `200 text/html` or another non-image MIME type triggers the fallback wordmark in browser verification;
+- artwork URL validation reuses the Streams validation helper path and rejects `http://`, IP literals, `127.0.0.1`, `192.168.x.x`, userinfo, and raw inputs longer than 2048 bytes, while accepting valid public `https://` URLs;
 - enabled providers with zero playable channels still render a provider-level empty state;
 - selected provider/category controls expose selected state;
 - HTML escaping still protects provider, group, channel, and fallback text;
-- unknown selected provider/group falls back deterministically.
+- `?provider_id=bogus` and unknown selected groups fall back deterministically;
+- play, refresh, previous, next, replay, and stop responses all preserve `provider_id` and `group_id` in the polling fragment's `hx-get`.
 
 Manual visual checks should include:
 
@@ -284,10 +300,11 @@ Manual visual checks should include:
 - Cartoon Rewind decade groups;
 - idle state;
 - active/tuned state.
+- blocking `wantmymtv.vercel.app` in Chromium and Firefox to verify that the wordmark fallback appears.
 
 ## Implementation Notes
 
-This design can be implemented without adding JavaScript. Server-rendered htmx fragments are enough.
+Guide selection, playback, and refresh behavior can be implemented without client-side guide state. Server-rendered htmx fragments are enough for those interactions. The only permitted custom JavaScript in this design is the tiny same-origin provider-artwork image-error handler described above; htmx and existing UI scripts already ship with the page.
 
 The existing table renderer should be replaced with semantic sections/forms rather than restyled tables. The new guide should keep the same adapter route boundaries so implementation risk stays in rendering and CSS, not playback.
 
