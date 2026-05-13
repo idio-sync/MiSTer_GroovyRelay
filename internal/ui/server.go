@@ -426,6 +426,8 @@ func panelClassForPath(path string) string {
 	switch {
 	case path == "/ui/" || path == "/ui/diagnostics":
 		return "gr-main"
+	case path == "/ui/bridge" || strings.HasPrefix(path, "/ui/adapter/"):
+		return "gr-config"
 	default:
 		return "panel"
 	}

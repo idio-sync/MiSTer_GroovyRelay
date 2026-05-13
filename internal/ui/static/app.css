@@ -410,6 +410,51 @@ body {
 	gap: 32px;
 	max-width: 1080px;
 }
+.gr-config,
+#panel:has(.gr-config-head) {
+	padding: 32px clamp(24px, 4vw, 48px);
+	display: block;
+	gap: normal;
+	max-width: 860px;
+}
+.gr-config-head {
+	margin: 0 0 28px;
+}
+.gr-config-head h1 {
+	margin: 0;
+	font: 600 28px/1.15 var(--font-display);
+	letter-spacing: 0;
+	color: var(--gr-text);
+}
+.gr-config-head .subtitle {
+	margin: 6px 0 0;
+	color: var(--gr-dim);
+	font: 400 14px/1.45 var(--font-body);
+	max-width: 68ch;
+}
+.gr-config .section,
+#panel:has(.gr-config-head) .section {
+	margin: 28px 0;
+}
+.gr-config > .section:first-of-type,
+#panel:has(.gr-config-head) > .section:first-of-type,
+.gr-config form > .section:first-child,
+#panel:has(.gr-config-head) form > .section:first-child {
+	margin-top: 0;
+}
+.gr-config form,
+#panel:has(.gr-config-head) form {
+	margin: 0;
+}
+.gr-config .adapter-extras,
+#panel:has(.gr-config-head) .adapter-extras {
+	display: flow-root;
+	margin: 28px 0;
+}
+.gr-config .adapter-extras .section,
+#panel:has(.gr-config-head) .adapter-extras .section {
+	margin: 0;
+}
 #status-content {
 	display: flex;
 	flex-direction: column;

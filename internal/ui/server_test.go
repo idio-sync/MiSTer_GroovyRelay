@@ -295,7 +295,7 @@ func TestStaticAssets_AppCSSIncludesPR2cClasses(t *testing.T) {
 		t.Fatalf("status: %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, cls := range []string{".gr-stepper", ".gr-pick", ".gr-form-locked", ".gr-wizard-foot"} {
+	for _, cls := range []string{".gr-stepper", ".gr-pick", ".gr-form-locked", ".gr-wizard-foot", ".gr-config", ".gr-config-head", "#panel:has(.gr-config-head)"} {
 		if !strings.Contains(body, cls) {
 			t.Errorf("missing %q in app.css", cls)
 		}
@@ -388,6 +388,38 @@ func TestShell_ReadPagesUsePreviewMainLayout(t *testing.T) {
 		}
 		if !strings.Contains(w.Body.String(), `<main class="gr-main" id="panel">`) {
 			t.Errorf("%s should use preview gr-main panel layout: %s", path, w.Body.String())
+		}
+	}
+}
+
+func TestShell_ConfigPagesUsePreviewConfigLayout(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.BridgeSaver = &fakeBridgeSaver{}
+		c.Registry = adapters.NewRegistryWith(&uiStubAdapter{name: "jellyfin", displayName: "Jellyfin"})
+	})
+
+	for _, tc := range []struct {
+		path  string
+		title string
+	}{
+		{path: "/ui/bridge", title: "Bridge"},
+		{path: "/ui/adapter/jellyfin", title: "Jellyfin"},
+	} {
+		r := httptest.NewRequest("GET", tc.path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("%s status = %d", tc.path, w.Code)
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, `<main class="gr-config" id="panel">`) {
+			t.Errorf("%s should use preview gr-config panel layout: %s", tc.path, body)
+		}
+		if !strings.Contains(body, `<div class="gr-config-head">`) {
+			t.Errorf("%s should render the config header marker for HTMX-safe spacing: %s", tc.path, body)
+		}
+		if !strings.Contains(body, "<h1>"+tc.title+"</h1>") {
+			t.Errorf("%s missing title %q: %s", tc.path, tc.title, body)
 		}
 	}
 }

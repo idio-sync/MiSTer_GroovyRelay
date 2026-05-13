@@ -2,8 +2,10 @@
 <div id="toast-slot"></div>
 {{template "toast" .Toast}}
 
+<div class="gr-config-head">
 <h1>Bridge</h1>
 <p class="subtitle">Shared settings for every adapter: network destination, video pipeline, audio, and the HTTP listener.</p>
+</div>
 
 {{if .FirstRun}}
 <div class="toast" style="position: static; margin: 0 0 24px; border-left-color: var(--accent);">
