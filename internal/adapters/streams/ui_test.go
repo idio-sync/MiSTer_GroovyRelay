@@ -103,3 +103,87 @@ func TestExtraPanelHTMLEscapesProviderAndChannelNames(t *testing.T) {
 		t.Fatalf("panel missing escaped provider/channel text: %s", html)
 	}
 }
+
+func TestStatusViewIncludesArtworkMetadataAndEmptyEnabledProviders(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal",
+			PlayMode: PlayShuffle,
+			Items:    nil,
+		}},
+	}, {
+		ProviderID: "cartoon-rewind",
+		Name:       "Cartoon Rewind",
+		Channels: []Channel{{
+			ID:       "heman",
+			Name:     "He-Man",
+			PlayMode: PlayShuffle,
+			Items:    []StreamItem{{ID: "9bZkp7q19f0"}},
+		}},
+	}})
+
+	view := a.statusView()
+	if len(view.Providers) != 2 {
+		t.Fatalf("providers = %d, want empty enabled provider retained", len(view.Providers))
+	}
+	// statusView currently sorts provider IDs alphabetically before rendering.
+	if view.Providers[0].ID != "cartoon-rewind" || view.Providers[1].ID != "mtv-rewind" {
+		t.Fatalf("provider order = %+v", view.Providers)
+	}
+	var mtv ProviderStatusView
+	for _, provider := range view.Providers {
+		if provider.ID == "mtv-rewind" {
+			mtv = provider
+		}
+	}
+	if len(mtv.Channels) != 0 {
+		t.Fatalf("mtv channels = %d, want 0 post-filter playable channels", len(mtv.Channels))
+	}
+	if mtv.LogoURL != "https://wantmymtv.vercel.app/public/images/rewindlogo.png" ||
+		mtv.LogoAlt != "MTV Rewind logo" ||
+		mtv.FallbackLabel != "MTV REWIND" {
+		t.Fatalf("mtv artwork = %+v", mtv)
+	}
+}
+
+func TestExtraPanelHTMLRendersProviderArtworkFallbackWithoutEmptyImage(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceDefinitionsForTest([]ProviderDefinition{{
+		ID:              "mtv-rewind",
+		Type:            youtubeChannelJSONProviderType,
+		DisplayName:     "MTV Rewind",
+		BaseURL:         "https://wantmymtv.vercel.app",
+		PlaylistURL:     "https://wantmymtv.vercel.app/public/mtv-playlists.json",
+		DefaultChannel:  "metal",
+		DefaultPlayMode: PlayShuffle,
+		FallbackLabel:   `M<TV "REWIND"`,
+		URLRules: []URLRule{{
+			ID:         "mtv-player-channel",
+			Schemes:    []string{"https"},
+			Hosts:      []string{"wantmymtv.vercel.app"},
+			Path:       "/player.html",
+			Target:     "channel",
+			QueryParam: "channel",
+		}},
+	}})
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels:   []Channel{{ID: "metal", Name: "Metal", Items: []StreamItem{{ID: "dQw4w9WgXcQ"}}}},
+	}})
+
+	html := string(a.ExtraPanelHTML())
+	if strings.Contains(html, `<img class="streams-provider-art"`) || strings.Contains(html, `src=""`) {
+		t.Fatalf("empty logo URL should not render img src: %s", html)
+	}
+	if !strings.Contains(html, `class="streams-provider-art-shell"`) ||
+		!strings.Contains(html, `role="img"`) ||
+		!strings.Contains(html, `aria-label="MTV Rewind"`) ||
+		!strings.Contains(html, `M&lt;TV &#34;REWIND&#34;`) {
+		t.Fatalf("fallback artwork shell missing or unescaped: %s", html)
+	}
+}

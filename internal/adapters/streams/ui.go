@@ -16,11 +16,14 @@ type StatusView struct {
 }
 
 type ProviderStatusView struct {
-	ID        string              `json:"id"`
-	Name      string              `json:"name"`
-	Groups    []ChannelGroupView  `json:"groups,omitempty"`
-	Channels  []ChannelStatusView `json:"channels"`
-	UpdatedAt time.Time           `json:"updated_at,omitempty"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Groups        []ChannelGroupView  `json:"groups,omitempty"`
+	Channels      []ChannelStatusView `json:"channels"`
+	UpdatedAt     time.Time           `json:"updated_at,omitempty"`
+	LogoURL       string              `json:"logo_url,omitempty"`
+	LogoAlt       string              `json:"logo_alt,omitempty"`
+	FallbackLabel string              `json:"fallback_label,omitempty"`
 }
 
 type ChannelGroupView struct {
@@ -90,6 +93,13 @@ func (a *Adapter) statusView() StatusView {
 		if p.Name == "" {
 			p.Name = providerDisplayName(cat, a.definitions[id])
 		}
+		def := a.definitions[id]
+		p.LogoURL = strings.TrimSpace(def.LogoURL)
+		p.LogoAlt = strings.TrimSpace(def.LogoAlt)
+		p.FallbackLabel = strings.TrimSpace(def.FallbackLabel)
+		if p.FallbackLabel == "" {
+			p.FallbackLabel = strings.ToUpper(p.Name)
+		}
 		for _, group := range cat.Groups {
 			p.Groups = append(p.Groups, ChannelGroupView{
 				ID:   group.ID,
@@ -108,9 +118,6 @@ func (a *Adapter) statusView() StatusView {
 				ItemCount:   len(ch.Items),
 				PlayMode:    string(ch.PlayMode),
 			})
-		}
-		if len(p.Channels) == 0 {
-			continue
 		}
 		providers = append(providers, p)
 	}
@@ -219,6 +226,7 @@ func renderProvidersFromView(providers []ProviderStatusView) string {
 	b.WriteString(`<div class="streams-providers">`)
 	for _, p := range providers {
 		fmt.Fprintf(&b, `<section class="streams-provider"><h4>%s</h4>`, esc(p.Name))
+		renderProviderArtwork(&b, p)
 		if len(p.Channels) == 0 {
 			b.WriteString(`<p class="muted">No channels</p>`)
 		}
@@ -255,6 +263,24 @@ func renderProvidersFromView(providers []ProviderStatusView) string {
 	}
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+func renderProviderArtwork(b *strings.Builder, provider ProviderStatusView) {
+	label := strings.TrimSpace(provider.LogoAlt)
+	if label == "" {
+		label = provider.Name
+	}
+	fallback := strings.TrimSpace(provider.FallbackLabel)
+	if fallback == "" {
+		fallback = provider.Name
+	}
+	fmt.Fprintf(b, `<div class="streams-provider-art-shell" role="img" aria-label="%s">`, escAttr(label))
+	if strings.TrimSpace(provider.LogoURL) != "" {
+		fmt.Fprintf(b,
+			`<img class="streams-provider-art" src="%s" alt="" loading="lazy" decoding="async" data-streams-artwork>`,
+			escAttr(provider.LogoURL))
+	}
+	fmt.Fprintf(b, `<span class="streams-provider-wordmark">%s</span></div>`, esc(fallback))
 }
 
 const streamsChannelsPerRow = 3
