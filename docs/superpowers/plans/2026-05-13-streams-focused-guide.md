@@ -200,6 +200,9 @@ Add these helpers near `validateRemoteDataURL`:
 
 ```go
 func validateProviderArtworkURL(ctx context.Context, raw string, cfg Config) error {
+	// cfg is intentionally ignored: artwork is always public-HTTPS,
+	// even when allow_local_manifest_urls is true for manifest/catalog
+	// development.
 	_ = cfg
 	if raw == "" {
 		return nil
@@ -298,6 +301,11 @@ return manifest, meta, nil
 bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 manifest := mergeManifests(cfg, bundled, cached, nil, providerFactories())
 
+// In buildRemoteSnapshot, before mergeManifests:
+bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
+remote = sanitizeManifestArtwork(ctx, remote, cfg, validateProviderArtworkURL)
+manifest := mergeManifests(cfg, bundled, nil, &remote, providerFactories())
+
 // In loadCachedManifest, after validateCachedManifest succeeds:
 manifest = sanitizeManifestArtwork(ctx, manifest, cfg, validateProviderArtworkURLSyntax)
 return &manifest
@@ -389,6 +397,7 @@ func TestStatusViewIncludesArtworkMetadataAndEmptyEnabledProviders(t *testing.T)
 	if len(view.Providers) != 2 {
 		t.Fatalf("providers = %d, want empty enabled provider retained", len(view.Providers))
 	}
+	// statusView currently sorts provider IDs alphabetically before rendering.
 	if view.Providers[0].ID != "cartoon-rewind" || view.Providers[1].ID != "mtv-rewind" {
 		t.Fatalf("provider order = %+v", view.Providers)
 	}
@@ -1128,7 +1137,7 @@ renderFocusedGuide(&b, view, selection)
 
 - [ ] **Step 5: Keep providers endpoint compatible**
 
-Because `/ui/adapter/streams/providers` still calls `renderProvidersFromView`, keep this simple compatibility renderer:
+Remove the temporary `renderProviderArtwork(&b, p)` call that Task 2 added inside `renderProvidersFromView`; the focused guide owns artwork rendering now. Because `/ui/adapter/streams/providers` still calls `renderProvidersFromView`, keep this simple compatibility renderer. It intentionally includes enabled zero-channel providers with the existing "No channels" copy so the providers endpoint mirrors `StatusView.Providers`.
 
 ```go
 func renderProvidersFromView(providers []ProviderStatusView) string {
@@ -1155,6 +1164,14 @@ func renderProvidersFromView(providers []ProviderStatusView) string {
 }
 ```
 
+After replacing the renderer, check whether the old `a.renderProviders()` wrapper is dead:
+
+```bash
+rg -n "renderProvidersFromView|renderProviders\\b" internal/adapters/streams/ui.go internal/adapters/streams/routes.go
+```
+
+If the only `renderProviders` reference is the method definition, delete `func (a *Adapter) renderProviders() string`.
+
 - [ ] **Step 6: Run tests and verify GREEN**
 
 Run:
@@ -1172,20 +1189,22 @@ git add internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go
 git commit -m "feat(streams): render focused guide layout"
 ```
 
-## Task 5: Route Selection Preservation
+## Task 5: Route Selection Regression Pins
 
 **Files:**
 - Modify: `internal/adapters/streams/routes_test.go`
 - Modify: `internal/adapters/streams/routes.go`
 - Modify: `internal/adapters/streams/ui.go`
 
-- [ ] **Step 1: Write failing route preservation tests**
+- [ ] **Step 1: Add route preservation regression tests**
 
 Append this helper and test to `internal/adapters/streams/routes_test.go`:
 
 ```go
 func assertPanelSelectionPreserved(t *testing.T, body, providerID, groupID string) {
 	t.Helper()
+	// panelURL emits provider_id before group_id; escAttr renders the
+	// query separator as &amp; in HTML attributes.
 	want := `hx-get="/ui/adapter/streams/panel?provider_id=` + providerID + `&amp;group_id=` + groupID + `"`
 	if !strings.Contains(body, want) {
 		t.Fatalf("selection polling URL missing %q: %s", want, body)
@@ -1278,45 +1297,41 @@ func TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage(t *testing.T
 		})
 	}
 }
+
+func TestHandlePlayWithoutGuideFieldsFallsBackToPlaybackProviderSelection(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/play", strings.NewReader("provider_id=mtv-rewind&channel_id=metal"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	a.handlePlay(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	assertPanelSelectionPreserved(t, rr.Body.String(), "mtv-rewind", ungroupedGroupID)
+}
 ```
 
-- [ ] **Step 2: Run tests and verify RED or existing GREEN**
+- [ ] **Step 2: Run regression tests**
 
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage|TestHandlePlayWithoutGuideFieldsFallsBackToPlaybackProviderSelection"
 ```
 
-Expected: PASS if Task 3 and Task 4 already preserved selection everywhere and HTML errors are swappable `200 OK` panels. If this fails, the failure should show which route drops selection or error text.
+Expected: PASS. This is a regression pin for behavior implemented in Tasks 3 and 4; if it fails, stop and repair the earlier selection/error implementation before continuing.
 
-- [ ] **Step 3: Fix any route that drops selection**
-
-If the test fails, ensure every non-JSON route calls:
-
-```go
-a.respondPanel(w, r, http.StatusOK)
-```
-
-Ensure every HTML error route calls:
-
-```go
-a.respondPanelWithError(w, r, msg)
-```
-
-No JSON response shape should change.
-
-- [ ] **Step 4: Run tests and verify GREEN**
+- [ ] **Step 3: Run JSON compatibility tests**
 
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage|TestHandlePlayJSONReturnsStartResult|TestHandleNextJSONReturnsStatus|TestHandleRefreshRejectsUnknownProvider"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage|TestHandlePlayWithoutGuideFieldsFallsBackToPlaybackProviderSelection|TestHandlePlayJSONReturnsStartResult|TestHandleNextJSONReturnsStatus|TestHandleRefreshRejectsUnknownProvider"
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 5**
+- [ ] **Step 4: Commit Task 5**
 
 ```bash
 git add internal/adapters/streams/routes.go internal/adapters/streams/routes_test.go internal/adapters/streams/ui.go
@@ -1413,6 +1428,8 @@ Create `internal/ui/static/streams-artwork.js`:
 })();
 ```
 
+This is the design-approved JavaScript exception: guide state and controls remain server-rendered/htmx-driven, while this same-origin script only handles image-load failure. `htmx:afterSwap` is safe here because the listener lives on `document.body` and `event.target` is the newly swapped node. The shell already loads htmx with `defer`; adding this script after htmx preserves execution order.
+
 - [ ] **Step 4: Load the script**
 
 In `internal/ui/templates/shell.html`, add the script after `clipboard.js`:
@@ -1453,7 +1470,7 @@ Add this CSS immediately after the existing `.gr-config .adapter-extras, #panel:
 }
 #panel:has(.streams-panel) .gr-config-head,
 #panel:has(.streams-panel) > .section,
-#panel:has(.streams-panel) form {
+#panel:has(.streams-panel) > form {
 	max-width: 860px;
 }
 #panel:has(.streams-panel) .adapter-extras {
@@ -1461,6 +1478,8 @@ Add this CSS immediately after the existing `.gr-config .adapter-extras, #panel:
 	max-width: none;
 }
 ```
+
+The `> form` selector is intentional: it keeps the top-level settings form readable without clamping `.streams-channel-card` or `.streams-control-form` elements inside the wide guide. `:has()` support is acceptable for the current UI browser target; Task 8 still includes live browser verification.
 
 - [ ] **Step 2: Add focused guide CSS**
 
@@ -1703,9 +1722,9 @@ Append this CSS before the existing delight/reduced-motion section:
 Run:
 
 ```bash
-grep -n "streams-channel-grid" internal/ui/static/app.css
-grep -n "object-src" internal/ui/static/app.css
-grep -n "#panel:has(.streams-panel)" internal/ui/static/app.css
+bash -lc 'grep -n "streams-channel-grid" internal/ui/static/app.css'
+bash -lc 'grep -n "object-src" internal/ui/static/app.css'
+bash -lc 'grep -n "#panel:has(.streams-panel)" internal/ui/static/app.css'
 ```
 
 Expected: first command prints the grid selectors; second command exits 1 with no output because the CSS should not mention `object-src`; third command prints the Streams width override after the existing config-panel width block.
@@ -1774,12 +1793,13 @@ Verify:
 
 - The header, status section, and settings form keep the normal readable width.
 - The Streams guide fills the wider main column.
+- `.streams-channel-card` and `.streams-control-form` are not clamped to `max-width: 860px`.
 - Provider tabs scroll horizontally if there are more providers than fit.
 - MTV Rewind `Labels & Scenes` renders as stable channel cards, not a table.
 - Cartoon Rewind decade groups render with the selected group only.
 - Channel buttons post to playback.
 - Refresh, previous, next, replay, and stop preserve the selected provider/group after the htmx swap.
-- Blocking `wantmymtv.vercel.app` in Chromium and Firefox leaves the wordmark visible.
+- Blocking `wantmymtv.vercel.app` in Chromium and Firefox hides the failed `<img>` and leaves the wordmark visible after the htmx swap.
 - No text overlaps at desktop width and narrow/mobile width.
 
 - [ ] **Step 6: Commit any verification-only fixes**
