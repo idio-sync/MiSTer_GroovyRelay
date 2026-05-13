@@ -206,6 +206,9 @@ func TestPlaybackBannerOpenDrawerDoesNotPollAwayForm(t *testing.T) {
 	if strings.Contains(body, `hx-trigger="every`) {
 		t.Fatalf("open drawer should not poll and discard in-progress form input: %s", body)
 	}
+	if strings.Contains(body, `<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top" hx-get=`) {
+		t.Fatalf("open drawer should not have section-level htmx trigger defaults: %s", body)
+	}
 }
 
 func TestPlaybackBannerUsesAdapterRefFallbackWhenSourceMissing(t *testing.T) {
