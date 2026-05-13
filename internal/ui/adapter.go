@@ -69,7 +69,7 @@ func (s *Server) handleAdapterGET(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.buildAdapterPanelData(a, nil, nil)
 	if isHTMXRequest(r) {
-		s.renderPanel(w, "adapter-panel", data)
+		s.renderPanelWithSidebar(w, r, "adapter-panel", data)
 		return
 	}
 	s.renderShellWithPanel(w, r, "adapter-panel", data)

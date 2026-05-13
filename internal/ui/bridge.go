@@ -73,7 +73,7 @@ func (s *Server) handleBridgeGET(w http.ResponseWriter, r *http.Request) {
 		data.FirstRun = fra.IsFirstRun()
 	}
 	if isHTMXRequest(r) {
-		s.renderPanel(w, "bridge-panel", data)
+		s.renderPanelWithSidebar(w, r, "bridge-panel", data)
 		return
 	}
 	s.renderShellWithPanel(w, r, "bridge-panel", data)

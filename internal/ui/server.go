@@ -328,6 +328,22 @@ func (s *Server) renderShellWithPanel(w http.ResponseWriter, r *http.Request, pa
 	}
 }
 
+func (s *Server) renderPanelWithSidebar(w http.ResponseWriter, r *http.Request, panelName string, panelData any) {
+	panelHTML, err := s.renderTemplateHTML(panelName, panelData)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sidebarHTML, err := s.renderTemplateHTML("sidebar-body", s.shellDataForPath(r.URL.Path))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, panelHTML)
+	fmt.Fprintf(w, `<aside id="gr-sidebar" hx-swap-oob="innerHTML">%s</aside>`, sidebarHTML)
+}
+
 func (s *Server) renderTemplateHTML(name string, data any) (template.HTML, error) {
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, name, data); err != nil {

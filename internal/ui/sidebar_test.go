@@ -95,6 +95,60 @@ func TestShell_RendersActiveLinkServerSide(t *testing.T) {
 	}
 }
 
+func TestHTMXNavigationResponseCarriesActiveSidebarOOB(t *testing.T) {
+	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
+
+	fullReq := httptest.NewRequest("GET", "/ui/bridge", nil)
+	fullRW := httptest.NewRecorder()
+	mux.ServeHTTP(fullRW, fullReq)
+	if !strings.Contains(fullRW.Body.String(), `<aside id="gr-sidebar" class="gr-sidebar">`) {
+		t.Fatalf("full shell should expose #gr-sidebar as the OOB target; body=%s", fullRW.Body.String())
+	}
+
+	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req.Header.Set("HX-Request", "true")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	body := rw.Body.String()
+
+	if strings.Contains(body, "<!DOCTYPE html>") {
+		t.Fatal("htmx navigation response should not render a full document")
+	}
+	if !strings.Contains(body, "<h1>Bridge</h1>") {
+		t.Fatal("htmx navigation response missing bridge panel")
+	}
+	if !strings.Contains(body, `id="gr-sidebar"`) || !strings.Contains(body, `hx-swap-oob="innerHTML"`) {
+		t.Fatalf("htmx navigation response should carry an OOB sidebar refresh; body=%s", body)
+	}
+
+	bridgeLink := navLinkMarkup(t, body, `href="/ui/bridge"`)
+	if !strings.Contains(bridgeLink, "active") {
+		t.Fatalf("OOB sidebar bridge link should be active; link=%q", bridgeLink)
+	}
+	statusLink := navLinkMarkup(t, body, `href="/ui/"`)
+	if strings.Contains(statusLink, "active") {
+		t.Fatalf("OOB sidebar status link should not remain active; link=%q", statusLink)
+	}
+}
+
+func navLinkMarkup(t *testing.T, body, href string) string {
+	t.Helper()
+	idx := strings.Index(body, href)
+	if idx < 0 {
+		t.Fatalf("link %s not rendered in body: %s", href, body)
+	}
+	start := strings.LastIndex(body[:idx], "<a ")
+	if start < 0 {
+		t.Fatalf("link %s missing opening anchor: %s", href, body)
+	}
+	closeIdx := strings.Index(body[idx:], "</a>")
+	if closeIdx < 0 {
+		t.Fatalf("link %s missing closing anchor: %s", href, body)
+	}
+	end := idx + closeIdx + len("</a>")
+	return body[start:end]
+}
+
 // TestShell_LoadsClipboardScript guards the toast copy-to-clipboard
 // fallback. The shell must reference /ui/static/clipboard.js so that
 // plain-HTTP LAN deployments (where navigator.clipboard is gated on

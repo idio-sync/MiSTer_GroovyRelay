@@ -40,9 +40,10 @@ func (s *Server) handleDiagnosticsGET(w http.ResponseWriter, r *http.Request) {
 	panelData := s.buildDiagnosticsDataForSeverity(r.URL.Query().Get("severity"))
 	if isHTMXRequest(r) {
 		// Sidebar nav targets #panel with hx-swap=innerHTML; returning the
-		// full shell would nest a second sidebar inside the panel. Match
-		// the bridge/adapter handlers and emit panel-only here.
-		s.renderPanel(w, "diagnostics-panel.html", panelData)
+		// full shell would nest a second sidebar inside the panel. Emit the
+		// panel plus an OOB sidebar refresh so active-link state follows
+		// hx-pushed navigation without waiting for a full page reload.
+		s.renderPanelWithSidebar(w, r, "diagnostics-panel.html", panelData)
 		return
 	}
 	s.renderShellWithPanel(w, r, "diagnostics-panel.html", panelData)

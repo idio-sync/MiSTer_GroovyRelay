@@ -11,9 +11,9 @@
 <body hx-ext="">
 	<div class="{{if .SetupMode}}gr-shell gr-shell-fullpage{{else}}gr-shell{{end}}">
 		{{if not .SetupMode}}
-		<aside class="gr-sidebar">
-			{{template "sidebar-body" .}}
-		</aside>
+			<aside id="gr-sidebar" class="gr-sidebar">
+				{{template "sidebar-body" .}}
+			</aside>
 		{{end}}
 		<main class="{{if .SetupMode}}gr-wizard{{else}}panel{{end}}" id="panel">
 			{{if .SetupMode}}

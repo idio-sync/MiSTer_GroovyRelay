@@ -58,9 +58,10 @@ func (s *Server) handleStatusHome(w http.ResponseWriter, r *http.Request) {
 	panelData := s.buildStatusData()
 	if isHTMXRequest(r) {
 		// Sidebar nav targets #panel with hx-swap=innerHTML; returning the
-		// full shell would nest a second sidebar inside the panel. Match
-		// the bridge/adapter handlers and emit panel-only here.
-		s.renderPanel(w, "status-panel.html", panelData)
+		// full shell would nest a second sidebar inside the panel. Emit the
+		// panel plus an OOB sidebar refresh so active-link state follows
+		// hx-pushed navigation without waiting for a full page reload.
+		s.renderPanelWithSidebar(w, r, "status-panel.html", panelData)
 		return
 	}
 	s.renderShellWithPanel(w, r, "status-panel.html", panelData)
