@@ -34,6 +34,9 @@ func TestHostedProviderManifestFileValidates(t *testing.T) {
 	}
 
 	for _, want := range bundledManifest().Providers {
+		if want.Type == directStreamsProviderType {
+			continue
+		}
 		got, ok := manifest.Provider(want.ID)
 		if !ok {
 			t.Fatalf("hosted manifest missing bundled provider %q", want.ID)
@@ -384,6 +387,196 @@ func TestHostedProviderManifestIncludesArtworkMetadata(t *testing.T) {
 		cartoon.LogoAlt != "Cartoon Rewind logo" ||
 		cartoon.FallbackLabel != "CARTOON REWIND" {
 		t.Fatalf("cartoon artwork metadata = %+v", cartoon)
+	}
+}
+
+func TestHostedProviderManifestOmitsBundledOnlyDirectStreams(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "streams", "providers.json"))
+	if err != nil {
+		t.Fatalf("read hosted manifest: %v", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("parse hosted manifest: %v", err)
+	}
+	if _, ok := manifest.Provider("toonami-aftermath"); ok {
+		t.Fatal("hosted remote manifest must not include bundled-only direct streams provider")
+	}
+	for _, want := range bundledManifest().Providers {
+		if want.Type == directStreamsProviderType {
+			continue
+		}
+		if _, ok := manifest.Provider(want.ID); !ok {
+			t.Fatalf("hosted manifest missing remote-eligible bundled provider %q", want.ID)
+		}
+	}
+}
+
+func TestValidateManifestIgnoresRemoteDirectStreamsBeforePlaylistValidation(t *testing.T) {
+	m := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:          "remote-direct",
+		Type:        directStreamsProviderType,
+		DisplayName: "Remote Direct",
+		Channels: []ChannelDefinition{{
+			ID:   "x",
+			Name: "X",
+			URL:  "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
+		}},
+	}}}
+	if err := validateManifest(t.Context(), m, DefaultConfig()); err != nil {
+		t.Fatalf("remote direct-streams should be ignored before playlist validation: %v", err)
+	}
+}
+
+func TestMergeManifestsRejectsRemoteOnlyDirectStreamsProvider(t *testing.T) {
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "remote-direct",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Remote Direct",
+		DefaultChannel:  "x",
+		DefaultPlayMode: PlaySequential,
+		Channels: []ChannelDefinition{{
+			ID:   "x",
+			Name: "X",
+			URL:  "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
+		}},
+	}}}
+	got := mergeManifests(DefaultConfig(), bundledManifest(), nil, &remote, remoteProviderFactories())
+	if _, ok := got.Provider("remote-direct"); ok {
+		t.Fatal("remote-only direct-streams provider appeared in merged manifest")
+	}
+}
+
+func TestMergeManifestsRejectsRemoteAndCachedBundledProviderRemoval(t *testing.T) {
+	bundled := bundledManifest()
+	empty := Manifest{Version: 1}
+	for name, got := range map[string]Manifest{
+		"remote": mergeManifests(DefaultConfig(), bundled, nil, &empty, remoteProviderFactories()),
+		"cached": mergeManifests(DefaultConfig(), bundled, &empty, nil, remoteProviderFactories()),
+	} {
+		for _, want := range bundled.Providers {
+			if _, ok := got.Provider(want.ID); !ok {
+				t.Fatalf("%s manifest removed bundled provider %q", name, want.ID)
+			}
+		}
+	}
+}
+
+func TestMergeManifestsRejectsRemoteDirectStreamsOverlay(t *testing.T) {
+	bundled := bundledManifest()
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "toonami-aftermath",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Changed",
+		DefaultChannel:  "east",
+		DefaultPlayMode: PlaySequential,
+		Channels: []ChannelDefinition{{
+			ID:   "east",
+			Name: "East",
+			URL:  "http://api.toonamiaftermath.com:3000/pst/playlist.m3u8",
+		}},
+	}}}
+	got := mergeManifests(DefaultConfig(), bundled, nil, &remote, remoteProviderFactories())
+	provider, ok := got.Provider("toonami-aftermath")
+	if !ok {
+		t.Fatal("bundled Toonami provider missing")
+	}
+	if provider.DisplayName != "Toonami Aftermath" {
+		t.Fatalf("display name = %q, want bundled value", provider.DisplayName)
+	}
+	if len(provider.Channels) != 4 || provider.Channels[0].URL != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
+		t.Fatalf("remote overlay changed Toonami channels: %+v", provider.Channels)
+	}
+}
+
+func TestMergeManifestsRejectsRemoteTypeChangeFromDirectStreams(t *testing.T) {
+	bundled := bundledManifest()
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:          "toonami-aftermath",
+		Type:        youtubeChannelJSONProviderType,
+		DisplayName: "Toonami As YouTube",
+	}}}
+	got := mergeManifests(DefaultConfig(), bundled, nil, &remote, remoteProviderFactories())
+	provider, ok := got.Provider("toonami-aftermath")
+	if !ok {
+		t.Fatal("bundled Toonami provider missing")
+	}
+	if provider.Type != directStreamsProviderType || provider.DisplayName != "Toonami Aftermath" {
+		t.Fatalf("remote type change from direct-streams was applied: %+v", provider)
+	}
+}
+
+func TestMergeManifestsRejectsCachedDirectStreamsOverlay(t *testing.T) {
+	bundled := bundledManifest()
+	cached := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "toonami-aftermath",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Cached Changed",
+		DefaultChannel:  "east",
+		DefaultPlayMode: PlaySequential,
+		Channels: []ChannelDefinition{{
+			ID:   "east",
+			Name: "East",
+			URL:  "http://api.toonamiaftermath.com:3000/pst/playlist.m3u8",
+		}},
+	}}}
+	got := mergeManifests(DefaultConfig(), bundled, &cached, nil, remoteProviderFactories())
+	provider, ok := got.Provider("toonami-aftermath")
+	if !ok {
+		t.Fatal("bundled Toonami provider missing")
+	}
+	if provider.DisplayName != "Toonami Aftermath" || len(provider.Channels) != 4 {
+		t.Fatalf("cached overlay changed bundled provider: %+v", provider)
+	}
+}
+
+func TestMergeManifestsRejectsCachedTypeChangesToOrFromDirectStreams(t *testing.T) {
+	bundled := bundledManifest()
+	cached := Manifest{Version: 1, Providers: []ProviderDefinition{
+		{
+			ID:          "mtv-rewind",
+			Type:        directStreamsProviderType,
+			DisplayName: "MTV As Direct",
+		},
+		{
+			ID:          "toonami-aftermath",
+			Type:        youtubeChannelJSONProviderType,
+			DisplayName: "Toonami As YouTube",
+		},
+	}}
+	got := mergeManifests(DefaultConfig(), bundled, &cached, nil, remoteProviderFactories())
+	mtv, ok := got.Provider("mtv-rewind")
+	if !ok {
+		t.Fatal("bundled MTV provider missing")
+	}
+	if mtv.Type != youtubeChannelJSONProviderType {
+		t.Fatalf("cached type change to direct-streams was applied: %+v", mtv)
+	}
+	toonami, ok := got.Provider("toonami-aftermath")
+	if !ok {
+		t.Fatal("bundled Toonami provider missing")
+	}
+	if toonami.Type != directStreamsProviderType || toonami.DisplayName != "Toonami Aftermath" {
+		t.Fatalf("cached type change from direct-streams was applied: %+v", toonami)
+	}
+}
+
+func TestMergeManifestsRejectsRemoteTypeChangeToDirectStreams(t *testing.T) {
+	bundled := bundledManifest()
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "mtv-rewind",
+		Type:            directStreamsProviderType,
+		DisplayName:     "MTV As Direct",
+		DefaultChannel:  "east",
+		DefaultPlayMode: PlaySequential,
+	}}}
+	got := mergeManifests(DefaultConfig(), bundled, nil, &remote, remoteProviderFactories())
+	provider, ok := got.Provider("mtv-rewind")
+	if !ok {
+		t.Fatal("bundled MTV provider missing")
+	}
+	if provider.Type != youtubeChannelJSONProviderType {
+		t.Fatalf("provider type = %q, want %q", provider.Type, youtubeChannelJSONProviderType)
 	}
 }
 

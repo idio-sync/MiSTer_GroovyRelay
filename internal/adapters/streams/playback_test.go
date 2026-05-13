@@ -61,6 +61,83 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	}
 }
 
+func TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	resolver := &fakeResolver{res: &ytdlp.Resolution{
+		URL:     "https://media.example/should-not-be-used.m3u8",
+		Headers: map[string]string{"User-Agent": "yt-dlp"},
+	}}
+	a.resolver = resolver
+
+	_, err = a.StartResolvedStream(t.Context(), streamhandoff.Resolution{
+		ProviderID: "toonami-aftermath",
+		ChannelID:  "east",
+	})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("resolver calls = %d, want 0", resolver.calls)
+	}
+	req := c.lastReq
+	if req.StreamURL != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
+		t.Fatalf("StreamURL = %q", req.StreamURL)
+	}
+	if req.Title != "Toonami Aftermath / East" {
+		t.Fatalf("Title = %q, want Toonami Aftermath / East", req.Title)
+	}
+	if len(req.InputHeaders) != 0 || len(req.AudioInputHeaders) != 0 {
+		t.Fatalf("headers leaked into direct request: video=%v audio=%v", req.InputHeaders, req.AudioInputHeaders)
+	}
+	if req.Capabilities.CanPause || req.Capabilities.CanSeek {
+		t.Fatalf("capabilities = %+v, want no pause/seek", req.Capabilities)
+	}
+	wantProtocols := "file,http,https,tcp,tls,crypto"
+	if got := strings.Join(req.MediaInputPolicy.ProtocolWhitelist, ","); got != wantProtocols {
+		t.Fatalf("ProtocolWhitelist = %q, want %q", got, wantProtocols)
+	}
+	if !req.MediaInputPolicy.DisableRedirects || !req.MediaInputPolicy.DisableReconnect {
+		t.Fatalf("redirect/reconnect policy = %+v", req.MediaInputPolicy)
+	}
+	if req.MediaInputPolicy.RWTimeout != 5*time.Second {
+		t.Fatalf("RWTimeout = %s, want 5s", req.MediaInputPolicy.RWTimeout)
+	}
+	if got := strings.Join(req.MediaInputPolicy.BlockedHeaders, ","); got != "Cookie,Authorization,Proxy-Authorization,Referer" {
+		t.Fatalf("BlockedHeaders = %q", got)
+	}
+}
+
+func TestReplayDirectStreamRebuildsFromCatalogItem(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if err := a.Replay(t.Context()); err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if c.startCalls != 2 {
+		t.Fatalf("StartSession calls = %d, want 2", c.startCalls)
+	}
+	if c.lastReq.StreamURL != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
+		t.Fatalf("replay StreamURL = %q", c.lastReq.StreamURL)
+	}
+}
+
 func TestAdapterStopSerializesWithInFlightStart(t *testing.T) {
 	a, fc := newTestAdapterWithFakeCore(t)
 	startEntered := make(chan struct{})
@@ -97,6 +174,56 @@ func TestAdapterStopSerializesWithInFlightStart(t *testing.T) {
 	}
 	if got := fc.Status().AdapterRef; got != "" {
 		t.Fatalf("core AdapterRef after Stop = %q, want stopped", got)
+	}
+}
+
+func TestDirectStopQueueSerializesWithInFlightStart(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	fc.startHook = func(core.SessionRequest) {
+		close(startEntered)
+		<-releaseStart
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"})
+		startDone <- err
+	}()
+	<-startEntered
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- a.StopQueue(t.Context())
+	}()
+
+	select {
+	case err := <-stopDone:
+		t.Fatalf("StopQueue returned while direct StartSession was still in flight: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseStart)
+	if err := <-startDone; err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if err := <-stopDone; err != nil {
+		t.Fatalf("StopQueue: %v", err)
+	}
+	if got := fc.Status().AdapterRef; got != "" {
+		t.Fatalf("core AdapterRef after StopQueue = %q, want stopped", got)
+	}
+	if a.active != nil {
+		t.Fatalf("active queue after StopQueue = %+v, want nil", a.active)
 	}
 }
 

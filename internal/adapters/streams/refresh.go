@@ -330,9 +330,6 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 	if len(providerIDs) == 1 {
 		status.ProviderID = providerIDs[0]
 	}
-	if !cfg.AllowRemoteManifest {
-		return status
-	}
 
 	defs, err := a.definitionsForRefresh(providerIDs)
 	if err != nil {
@@ -340,8 +337,30 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 		status.Err = err
 		return status
 	}
+
+	remoteAllowed := cfg.AllowRemoteManifest
 	var errs []error
+	remoteRefreshed := false
 	for _, def := range defs {
+		if def.Type == directStreamsProviderType {
+			cat, err := buildProviderCatalog(def, nil, cfg)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("provider %q build catalog: %w", def.ID, err))
+				continue
+			}
+			a.mu.Lock()
+			a.catalogs[cat.ProviderID] = cat
+			if a.state != adapters.StateStopped {
+				a.state = adapters.StateRunning
+			}
+			a.stateSince = time.Now()
+			a.mu.Unlock()
+			status.refreshedProviderIDs = append(status.refreshedProviderIDs, def.ID)
+			continue
+		}
+		if !remoteAllowed {
+			continue
+		}
 		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, a.cacheDir)
 		if err != nil {
 			errs = append(errs, err)
@@ -365,17 +384,21 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 		a.stateSince = time.Now()
 		a.mu.Unlock()
 
+		remoteRefreshed = true
 		status.refreshedProviderIDs = append(status.refreshedProviderIDs, def.ID)
 		if meta.FetchedAt.After(status.FetchedAt) {
 			status.FetchedAt = meta.FetchedAt
 		}
 	}
-	if len(status.refreshedProviderIDs) != 0 {
+	if remoteRefreshed {
 		status.Source = "remote"
 	}
 	if len(errs) != 0 {
 		status.Err = errors.Join(errs...)
 		a.recordRefreshFailure(status.Err)
+		return status
+	}
+	if len(status.refreshedProviderIDs) == 0 {
 		return status
 	}
 
@@ -444,13 +467,21 @@ type remoteSnapshot struct {
 func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cached := loadCachedManifest(ctx, cfg, cacheDir)
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
-	manifest := mergeManifests(cfg, bundled, cached, nil, providerFactories())
+	manifest := mergeManifests(cfg, bundled, cached, nil, remoteProviderFactories())
 	return buildCachedOrSeedSnapshot(manifest.Providers, cfg, cacheDir)
 }
 
 func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
 	catalogs := make([]ProviderCatalog, 0, len(defs))
 	for _, def := range defs {
+		if def.Type == directStreamsProviderType {
+			cat, err := buildProviderCatalog(def, nil, cfg)
+			if err != nil {
+				return nil, nil, err
+			}
+			catalogs = append(catalogs, cat)
+			continue
+		}
 		if raw, _, ok := readConditionalCache(cacheDir, catalogCacheKey(def.ID), def.PlaylistURL); ok {
 			cat, err := buildProviderCatalog(def, raw, cfg)
 			if err == nil {
@@ -511,7 +542,7 @@ func (a *Adapter) definitionsForRefresh(providerIDs []string) ([]ProviderDefinit
 func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 	remote = sanitizeManifestArtwork(ctx, remote, cfg, validateProviderArtworkURL)
-	manifest := mergeManifests(cfg, bundled, nil, &remote, providerFactories())
+	manifest := mergeManifests(cfg, bundled, nil, &remote, remoteProviderFactories())
 	out := remoteSnapshot{
 		Definitions:   manifest.Providers,
 		Catalogs:      make([]ProviderCatalog, 0, len(manifest.Providers)),
@@ -519,6 +550,14 @@ func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cache
 		CatalogMetas:  map[string]CacheMetadata{},
 	}
 	for _, def := range manifest.Providers {
+		if def.Type == directStreamsProviderType {
+			cat, err := buildProviderCatalog(def, nil, cfg)
+			if err != nil {
+				return remoteSnapshot{}, fmt.Errorf("provider %q build catalog: %w", def.ID, err)
+			}
+			out.Catalogs = append(out.Catalogs, cat)
+			continue
+		}
 		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, cacheDir)
 		if err != nil {
 			return remoteSnapshot{}, err
@@ -558,6 +597,8 @@ func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (Provi
 	switch def.Type {
 	case youtubeChannelJSONProviderType:
 		return buildYouTubeChannelCatalog(def, raw, cfg)
+	case directStreamsProviderType:
+		return buildDirectStreamsCatalog(def)
 	default:
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
 	}
@@ -571,12 +612,6 @@ func bundledSeedPath(providerID string) (string, bool) {
 		return "testdata/cartoon-playlists.seed.json", true
 	default:
 		return "", false
-	}
-}
-
-func providerFactories() map[string]ProviderFactory {
-	return map[string]ProviderFactory{
-		youtubeChannelJSONProviderType: func(ProviderDefinition) (Provider, error) { return struct{}{}, nil },
 	}
 }
 

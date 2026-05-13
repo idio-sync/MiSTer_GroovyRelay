@@ -5,7 +5,10 @@ import "embed"
 //go:embed testdata/*.seed.json
 var seedFS embed.FS
 
-const youtubeChannelJSONProviderType = "youtube-channel-json"
+const (
+	youtubeChannelJSONProviderType = "youtube-channel-json"
+	directStreamsProviderType      = "direct-streams"
+)
 
 func bundledManifest() Manifest {
 	return Manifest{
@@ -13,6 +16,7 @@ func bundledManifest() Manifest {
 		Providers: []ProviderDefinition{
 			bundledMTVDefinition(),
 			bundledCartoonDefinition(),
+			bundledToonamiAftermathDefinition(),
 		},
 	}
 }
@@ -209,5 +213,25 @@ func cartoonChannels() []ChannelDefinition {
 		{ID: "animaniacs", Name: "Animaniacs", GroupID: "1990s", PlayMode: PlayShuffle, Order: 10},
 		{ID: "carmensandiego", Name: "Where on Earth Is Carmen Sandiego?", GroupID: "1990s", PlayMode: PlayShuffle, Order: 20},
 		{ID: "all", Name: "All Cartoons", GroupID: "all", PlayMode: PlayShuffle, Order: 10},
+	}
+}
+
+func bundledToonamiAftermathDefinition() ProviderDefinition {
+	return ProviderDefinition{
+		ID:              "toonami-aftermath",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Toonami Aftermath",
+		BaseURL:         "https://www.toonamiaftermath.com",
+		DefaultChannel:  "east",
+		DefaultPlayMode: PlaySequential,
+		Groups: []GroupDefinition{
+			{ID: "live", Name: "Live Channels", Order: 10},
+		},
+		Channels: []ChannelDefinition{
+			{ID: "east", Name: "East", GroupID: "live", URL: "http://api.toonamiaftermath.com:3000/est/playlist.m3u8", PlayMode: PlaySequential, Order: 10},
+			{ID: "west", Name: "West", GroupID: "live", URL: "http://api.toonamiaftermath.com:3000/pst/playlist.m3u8", PlayMode: PlaySequential, Order: 20},
+			{ID: "movies", Name: "Movies", GroupID: "live", URL: "http://api.toonamiaftermath.com:3000/movies/playlist.m3u8", PlayMode: PlaySequential, Order: 30},
+			{ID: "radio", Name: "Radio", GroupID: "live", URL: "http://api.toonamiaftermath.com:3000/radio/playlist.m3u8", PlayMode: PlaySequential, Order: 40},
+		},
 	}
 }

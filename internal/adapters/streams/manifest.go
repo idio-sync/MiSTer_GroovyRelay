@@ -65,8 +65,14 @@ func isUnsupportedProviderType(providerType string) bool {
 	if providerType == "" {
 		return false
 	}
-	_, ok := providerFactories()[providerType]
+	_, ok := remoteProviderFactories()[providerType]
 	return !ok
+}
+
+func remoteProviderFactories() map[string]ProviderFactory {
+	return map[string]ProviderFactory{
+		youtubeChannelJSONProviderType: func(ProviderDefinition) (Provider, error) { return struct{}{}, nil },
+	}
 }
 
 func validateProviderDefinition(ctx context.Context, provider ProviderDefinition, cfg Config, validateURL remoteDataURLValidator) error {
@@ -337,21 +343,26 @@ func mergeManifests(cfg Config, bundled Manifest, cached *Manifest, remote *Mani
 	bundledTypes := map[string]string{}
 
 	addProvider := func(provider ProviderDefinition, remoteOverlay bool) {
-		if provider.ID == "" {
+		if provider.ID == "" || provider.ID == reservedAdhocID {
 			return
 		}
-		if provider.ID == reservedAdhocID {
-			return
-		}
-		if factories != nil {
-			if _, ok := factories[provider.Type]; !ok {
+		if remoteOverlay {
+			if factories != nil {
+				if _, ok := factories[provider.Type]; !ok {
+					return
+				}
+			}
+			if bundledTypes[provider.ID] == directStreamsProviderType {
+				return
+			}
+			if bundledTypes[provider.ID] != "" && bundledTypes[provider.ID] != provider.Type {
+				return
+			}
+			if provider.Type == directStreamsProviderType {
 				return
 			}
 		}
 		if existingIndex, exists := index[provider.ID]; exists {
-			if remoteOverlay && bundledTypes[provider.ID] != "" && bundledTypes[provider.ID] != provider.Type {
-				return
-			}
 			out.Providers[existingIndex] = provider
 			return
 		}

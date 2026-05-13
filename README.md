@@ -15,7 +15,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
 - Torrent streaming (uploaded .torrent files and magnet links)
 - DLNA / UPnP MediaRenderer
-- Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind)
+- Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind, Toonami Aftermath; bundled-only, not user IPTV import)
 
 ## Future Plans
 - Support for more relay sources:
@@ -181,13 +181,14 @@ log a warning; the bundled version stays usable.
 
 ## Streams adapter
 
-The Streams adapter turns supported catalog sites into native relay queues. Right now only Cartoon Rewind and MTV Rewind are supported, but more will be coming. I have initial "channel" buttons but the URL adapter now also supprts links from these sites. 
+The Streams adapter turns supported catalog sites into native relay queues. Right now Cartoon Rewind, MTV Rewind, and Toonami Aftermath are supported, but more will be coming. Toonami Aftermath is bundled-only in this pass; remote manifests cannot add arbitrary direct HLS/IPTV sources. I have initial "channel" buttons but the URL adapter now also supports links from these sites.
 
 Example links handled natively when Streams is enabled:
 - `https://wantmymtv.vercel.app/player.html?channel=metal`
 - `https://wantmymtv.xyz/player.html?channel=metal`
 - `https://wantmymtv.vercel.app/player.html?v=dQw4w9WgXcQ`
 - `https://cartoonrewind.tv/player.html?channel=heman`
+- Toonami Aftermath appears as four bundled-only direct HLS channels: East, West, Movies, and Radio.
 
 ### Torrent adapter
 

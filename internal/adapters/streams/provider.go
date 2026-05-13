@@ -59,6 +59,7 @@ type ChannelDefinition struct {
 	Description string   `json:"description,omitempty"`
 	GroupID     string   `json:"group_id,omitempty"`
 	Icon        string   `json:"icon,omitempty"`
+	URL         string   `json:"url,omitempty"`
 	PlayMode    PlayMode `json:"play_mode,omitempty"`
 	Order       int      `json:"order"`
 }
@@ -102,6 +103,7 @@ type StreamItem struct {
 	Title    string
 	URL      string
 	SourceID string
+	Direct   bool
 }
 
 type PlayMode string

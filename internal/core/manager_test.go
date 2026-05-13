@@ -267,6 +267,60 @@ func TestManager_StartSession_ProbeFailLeavesIdle(t *testing.T) {
 	}
 }
 
+func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:         "http://example/clip.m3u8",
+		AudioStreamURL:    "http://example/audio.m3u8",
+		InputHeaders:      map[string]string{"Cookie": "session=abc", "Referer": "http://example", "User-Agent": "groovyrelay"},
+		AudioInputHeaders: map[string]string{"Authorization": "Bearer secret", "User-Agent": "audio-agent"},
+		MediaInputPolicy: MediaInputPolicy{
+			BlockedHeaders: []string{"Cookie", "Referer", "Authorization"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, ok := captured.SpawnSpec.InputHeaders["Cookie"]; ok {
+		t.Fatalf("Cookie reached pipeline argv inputs: %v", captured.SpawnSpec.InputHeaders)
+	}
+	if _, ok := captured.SpawnSpec.InputHeaders["Referer"]; ok {
+		t.Fatalf("Referer reached pipeline argv inputs: %v", captured.SpawnSpec.InputHeaders)
+	}
+	if got := captured.SpawnSpec.InputHeaders["User-Agent"]; got != "groovyrelay" {
+		t.Fatalf("User-Agent input header = %q", got)
+	}
+	if _, ok := captured.SpawnSpec.AudioInputHeaders["Authorization"]; ok {
+		t.Fatalf("Authorization reached pipeline argv audio inputs: %v", captured.SpawnSpec.AudioInputHeaders)
+	}
+	if got := captured.SpawnSpec.AudioInputHeaders["User-Agent"]; got != "audio-agent" {
+		t.Fatalf("User-Agent audio input header = %q", got)
+	}
+}
+
 func TestManager_StopWhenIdleIsIdempotent(t *testing.T) {
 	m := newTestManager(t)
 	// First stop from Idle.

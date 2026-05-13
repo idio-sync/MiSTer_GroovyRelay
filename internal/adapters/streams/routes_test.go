@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 )
 
 func TestUIRoutes(t *testing.T) {
@@ -47,9 +49,7 @@ func TestStatusJSONIncludesCompanionFields(t *testing.T) {
 	if got.Capabilities.CanNext != false || got.Capabilities.CanSeek != false {
 		t.Fatalf("capabilities = %+v", got.Capabilities)
 	}
-	if len(got.Providers) != 2 {
-		t.Fatalf("providers = %d, want 2", len(got.Providers))
-	}
+	assertProviderIDs(t, got.Providers, "mtv-rewind", "cartoon-rewind", "toonami-aftermath")
 }
 
 func TestStatusJSONActiveQueueCapabilities(t *testing.T) {
@@ -126,7 +126,7 @@ func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
 		t.Fatalf("provider_id status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Cartoon Rewind") {
+	if !strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Cartoon Rewind") || strings.Contains(body, "Toonami Aftermath") {
 		t.Fatalf("provider_id HTML body = %q, want only MTV provider", body)
 	}
 
@@ -137,7 +137,7 @@ func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
 		t.Fatalf("q status = %d", rr.Code)
 	}
 	body = rr.Body.String()
-	if !strings.Contains(body, "Cartoon Rewind") || !strings.Contains(body, "He-Man") || strings.Contains(body, "MTV Rewind") {
+	if !strings.Contains(body, "Cartoon Rewind") || !strings.Contains(body, "He-Man") || strings.Contains(body, "MTV Rewind") || strings.Contains(body, "Toonami Aftermath") {
 		t.Fatalf("q HTML body = %q, want only matching cartoon provider", body)
 	}
 }
@@ -169,8 +169,41 @@ func TestStatusJSONDisablesControlsForForeignOwner(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Capabilities.CanNext || got.Capabilities.CanPrevious || got.Capabilities.CanReplay || got.Capabilities.CanStop {
+	if got.Capabilities.CanNext || got.Capabilities.CanPrevious || got.Capabilities.CanReplay || got.Capabilities.CanStop || got.Capabilities.CanPause {
 		t.Fatalf("foreign-owner capabilities = %+v, want read-only controls", got.Capabilities)
+	}
+}
+
+func TestStatusJSONDirectStreamDoesNotAdvertisePauseOrAdvance(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	c.status.AdapterRef = activeAdapterRef(a.active)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req.Header.Set("Accept", "application/json")
+	rr := httptest.NewRecorder()
+	a.handleStatus(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var got StatusView
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if got.Capabilities.CanPause || got.Capabilities.CanNext || got.Capabilities.CanPrevious {
+		t.Fatalf("capabilities = %+v, want no pause/next/previous", got.Capabilities)
+	}
+	if !got.Capabilities.CanReplay || !got.Capabilities.CanStop {
+		t.Fatalf("capabilities = %+v, want replay and stop", got.Capabilities)
 	}
 }
 
@@ -363,8 +396,22 @@ func TestHandleProvidersJSON(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("providers = %d, want 2", len(got))
+	assertProviderIDs(t, got, "mtv-rewind", "cartoon-rewind", "toonami-aftermath")
+}
+
+func assertProviderIDs(t *testing.T, got []ProviderStatusView, want ...string) {
+	t.Helper()
+	seen := make(map[string]int, len(got))
+	for _, provider := range got {
+		seen[provider.ID]++
+	}
+	if len(got) != len(want) {
+		t.Fatalf("providers = %v, want exactly %v", seen, want)
+	}
+	for _, id := range want {
+		if seen[id] != 1 {
+			t.Fatalf("providers = %v, want exactly %v", seen, want)
+		}
 	}
 }
 

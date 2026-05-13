@@ -176,6 +176,59 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		a.clearResolveIfCurrent(capture)
 		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream item is missing a playable URL")
 	}
+	if isDirectStreamItem(item) {
+		if coreManager == nil {
+			cancel()
+			a.clearResolveIfCurrent(capture)
+			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "core playback manager is not configured")
+		}
+		title := streamSessionTitle(item, "")
+		if strings.TrimSpace(q.ProviderName) != "" && strings.TrimSpace(q.ChannelName) != "" {
+			title = strings.TrimSpace(q.ProviderName) + " / " + strings.TrimSpace(q.ChannelName)
+		}
+		req := core.SessionRequest{
+			StreamURL:    pageURL,
+			AdapterRef:   ref,
+			DirectPlay:   true,
+			Capabilities: core.Capabilities{CanPause: false, CanSeek: false},
+			// SECURITY/AUDIO: Toonami Radio currently advertises video HLS. If it becomes audio-only, add MediaKindMusic + VisualizerRequest or remove Radio.
+			MediaInputPolicy: directHLSInputPolicy(),
+			OnStop:           a.makeOnStop(capture),
+			Source:           a.Name(),
+			Title:            title,
+		}
+		cancel()
+		a.playbackMu.Lock()
+		if !a.captureStillActive(capture) {
+			a.playbackMu.Unlock()
+			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream start was superseded")
+		}
+		if err := coreManager.StartSession(req); err != nil {
+			a.playbackMu.Unlock()
+			if next, ok := a.recordStartFailureAndAdvance(capture, "failed to start stream playback"); ok {
+				a.runBeforeQueueContinuation()
+				return a.playCurrentGuarded(ctx, next)
+			}
+			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to start stream playback")
+		}
+		a.playbackMu.Unlock()
+
+		now := time.Now()
+		a.mu.Lock()
+		if capture.matches(a.active) {
+			a.active.LastResolvedAt = now
+			a.active.cancelResolve = nil
+			setActiveItemTitleLocked(a.active, capture.ItemID, title)
+		}
+		a.mu.Unlock()
+
+		return streamhandoff.StartResult{
+			AdapterRef: ref,
+			ProviderID: q.ProviderID,
+			ChannelID:  q.ChannelID,
+			ItemID:     itemIdentity(item),
+		}, nil
+	}
 	if resolver == nil {
 		cancel()
 		a.clearResolveIfCurrent(capture)
@@ -249,6 +302,22 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	}, nil
 }
 
+func directHLSInputPolicy() core.MediaInputPolicy {
+	return core.MediaInputPolicy{
+		// SECURITY: file is needed by FFmpeg HLS internals; this is safe only
+		// because direct-streams is bundled-only and host/path validated.
+		ProtocolWhitelist: []string{"file", "http", "https", "tcp", "tls", "crypto"},
+		DisableRedirects:  true,
+		DisableReconnect:  true,
+		RWTimeout:         5 * time.Second,
+		BlockedHeaders:    []string{"Cookie", "Authorization", "Proxy-Authorization", "Referer"},
+	}
+}
+
+func isDirectStreamItem(item StreamItem) bool {
+	return item.Direct
+}
+
 func streamSessionTitle(item StreamItem, resolvedTitle string) string {
 	if title := strings.TrimSpace(resolvedTitle); title != "" {
 		return title
@@ -306,8 +375,13 @@ func (a *Adapter) Replay(ctx context.Context) error {
 func (a *Adapter) Pause(ctx context.Context) error {
 	_ = ctx
 	a.mu.Lock()
-	ref := activeAdapterRef(a.active)
+	q := a.active
+	ref := activeAdapterRef(q)
 	coreManager := a.core
+	if item, ok := q.currentItem(); ok && item.Direct {
+		a.mu.Unlock()
+		return playbackError(q.ProviderID, "direct live streams do not support pause")
+	}
 	a.mu.Unlock()
 	if ref == "" {
 		return playbackError("", "no active streams queue")
@@ -518,18 +592,19 @@ func (a *Adapter) stopActiveQueue() error {
 	}
 	coreManager := a.core
 	hasInFlightResolve := a.active.cancelResolve != nil
-	if hasInFlightResolve {
+	directInFlightStart := hasInFlightResolve && item.Direct
+	if hasInFlightResolve && !directInFlightStart {
 		a.clearActiveLocked()
 	}
 	a.mu.Unlock()
 
-	if hasInFlightResolve {
+	if hasInFlightResolve && !directInFlightStart {
 		return nil
 	}
 	if coreManager == nil || capture.AdapterRef == "" {
 		return playbackError(providerID, "streams does not own the active core session")
 	}
-	if coreManager.Status().AdapterRef != capture.AdapterRef {
+	if !directInFlightStart && coreManager.Status().AdapterRef != capture.AdapterRef {
 		return playbackError(providerID, "streams does not own the active core session")
 	}
 
@@ -546,6 +621,9 @@ func (a *Adapter) stopActiveQueue() error {
 		return playbackError("", "failed to stop stream playback")
 	}
 	if !matched {
+		if directInFlightStart {
+			return nil
+		}
 		a.restoreQueueIfIdle(q)
 		return playbackError(providerID, "streams does not own the active core session")
 	}

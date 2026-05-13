@@ -12,7 +12,14 @@ import (
 func TestExtraPanelHTMLContainsStreamsPanel(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	html := string(a.ExtraPanelHTML())
-	for _, want := range []string{"streams-panel", "MTV Rewind", "Cartoon Rewind", `hx-post="/ui/adapter/streams/play"`, `hx-post="/ui/adapter/streams/refresh"`} {
+	for _, want := range []string{"streams-panel", "MTV Rewind", "Cartoon Rewind", "Toonami Aftermath", `hx-post="/ui/adapter/streams/play"`, `hx-post="/ui/adapter/streams/refresh"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("panel missing %q: %s", want, html)
+		}
+	}
+
+	html = a.renderPanel(panelSelectionRequest{ProviderID: "toonami-aftermath", ProviderExplicit: true})
+	for _, want := range []string{"Toonami Aftermath", "East", "West", "Movies", "Radio"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel missing %q: %s", want, html)
 		}
