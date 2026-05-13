@@ -137,6 +137,7 @@ var templateFuncs = template.FuncMap{
 	"sectionCtx": func(adapterName string, index int, section bridgeSection) sectionCtxData {
 		return sectionCtxData{AdapterName: adapterName, Index: index, Section: section}
 	},
+	"quickCastTabActive": quickCastTabActive,
 }
 
 // Server owns the parsed templates + embedded static assets + a
@@ -206,6 +207,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountGETUnguarded(mux, "/{$}", s.handleRoot)
 	s.mountGET(mux, "/ui/{$}", s.handleStatusHome)
 	s.mountGET(mux, "/ui/status/content", s.handleStatusContent)
+	s.mountGET(mux, "/ui/playback/banner", s.handlePlaybackBanner)
 	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
 	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash
 
@@ -359,6 +361,7 @@ func (s *Server) shellDataForPath(path string) shellTemplateData {
 	data := s.shellData()
 	data.CurrentPath = path
 	data.PanelClass = panelClassForPath(path)
+	data.Playback = s.buildPlaybackBannerData(context.Background(), playbackRenderOptions{})
 	return data
 }
 
@@ -400,6 +403,7 @@ type shellTemplateData struct {
 	StatusMeta     string
 	SetupMode      bool
 	Steps          []stepperItem
+	Playback       playbackBannerData
 }
 
 type sidebarAdapter struct {

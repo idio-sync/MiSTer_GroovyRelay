@@ -502,3 +502,51 @@ func TestShell_ConfigPagesUsePreviewConfigLayout(t *testing.T) {
 		}
 	}
 }
+
+func TestShellRendersNowPlayingBannerOnNonSetupPages(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.BridgeSaver = &fakeBridgeSaver{}
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	for _, path := range []string{"/ui/", "/ui/bridge", "/ui/diagnostics"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), `id="gr-now-playing"`) {
+				t.Fatalf("missing now-playing banner on %s: %s", path, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestShellNavigationTargetsPanelContentSoBannerPersists(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	body := rr.Body.String()
+	for _, want := range []string{`id="gr-now-playing"`, `id="panel-content"`, `hx-target="#panel-content"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("shell missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `hx-target="#panel"`) {
+		t.Fatalf("shell still targets #panel and would replace the banner: %s", body)
+	}
+}
+
+func TestSetupShellDoesNotRenderNowPlayingBanner(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/setup", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if strings.Contains(rr.Body.String(), `id="gr-now-playing"`) {
+		t.Fatalf("setup page rendered now-playing banner: %s", rr.Body.String())
+	}
+}

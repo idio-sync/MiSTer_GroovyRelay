@@ -59,8 +59,8 @@ type statusEvent struct {
 func (s *Server) handleStatusHome(w http.ResponseWriter, r *http.Request) {
 	panelData := s.buildStatusData()
 	if isHTMXRequest(r) {
-		// Sidebar nav targets #panel with hx-swap=innerHTML; returning the
-		// full shell would nest a second sidebar inside the panel. Emit the
+		// Sidebar nav targets #panel-content with hx-swap=innerHTML; returning
+		// the full shell would nest a second sidebar inside the panel. Emit the
 		// panel plus an OOB sidebar refresh so active-link state follows
 		// hx-pushed navigation without waiting for a full page reload.
 		s.renderPanelWithSidebar(w, r, "status-panel.html", panelData)
@@ -461,11 +461,11 @@ func formatRefreshRate(modeline string) string {
 // displayNameForSource resolves the human-readable display name for the
 // active session. Prefers the explicit Source field on SessionRequest
 // (the contract added in PR2 follow-up #10); falls back to the
-// AdapterRef's leading "name/" segment for sessions started before
+// AdapterRef's leading "name:" or "name/" segment for sessions started before
 // adapters were taught to populate Source.
 func displayNameForSource(reg *adapters.Registry, source, ref string) string {
 	if reg == nil {
-		return source
+		return firstNonEmpty(source, adapterNameFromRef(ref))
 	}
 	if source != "" {
 		if a, ok := reg.Get(source); ok {
@@ -476,7 +476,7 @@ func displayNameForSource(reg *adapters.Registry, source, ref string) string {
 	if ref == "" {
 		return ""
 	}
-	name, _, _ := strings.Cut(ref, "/")
+	name := adapterNameFromRef(ref)
 	if a, ok := reg.Get(name); ok {
 		return a.DisplayName()
 	}

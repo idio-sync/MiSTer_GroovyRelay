@@ -464,11 +464,18 @@ func adapterNameFromRef(adapterRef string) string {
 	if adapterRef == "" {
 		return ""
 	}
-	name, _, ok := strings.Cut(adapterRef, ":")
-	if !ok {
+	colon := strings.Index(adapterRef, ":")
+	slash := strings.Index(adapterRef, "/")
+	switch {
+	case colon >= 0 && slash >= 0 && colon < slash:
+		return adapterRef[:colon]
+	case colon >= 0 && slash < 0:
+		return adapterRef[:colon]
+	case slash >= 0:
+		return adapterRef[:slash]
+	default:
 		return adapterRef
 	}
-	return name
 }
 
 func companionBridgeURL(r *http.Request) string {
