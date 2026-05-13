@@ -266,6 +266,20 @@ func TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL(t *testing.T) 
 	}
 }
 
+func TestRenderPanelErrorPreservesExplicitUnresolvedGroup(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	html := a.renderPanel(panelSelectionRequest{
+		ProviderID:       "mtv-rewind",
+		GroupID:          "submitted-missing-group",
+		ProviderExplicit: true,
+		GroupExplicit:    true,
+		ErrorMessage:     "provider is not cataloged",
+	})
+	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=submitted-missing-group"`) {
+		t.Fatalf("error panel should preserve explicit unresolved group: %s", html)
+	}
+}
+
 func TestRenderPanelUnknownSelectionFallsBackDeterministically(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	html := a.renderPanel(panelSelectionRequest{ProviderID: "bogus", GroupID: "missing", ProviderExplicit: true, GroupExplicit: true})

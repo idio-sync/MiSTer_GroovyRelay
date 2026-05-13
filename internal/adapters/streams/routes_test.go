@@ -393,41 +393,52 @@ func assertPanelSelectionPreserved(t *testing.T, body, providerID, groupID strin
 }
 
 func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
-	a, core := newTestAdapterWithFakeCore(t)
-	a.active = &ActiveQueue{
-		SessionID:    "s1",
-		ProviderID:   "mtv-rewind",
-		ProviderName: "MTV Rewind",
-		ChannelID:    "metal",
-		ChannelName:  "Metal",
-		ItemToken:    1,
-		Items: []StreamItem{
-			{ID: "a", URL: "https://youtu.be/a"},
-			{ID: "b", URL: "https://youtu.be/b"},
-		},
-		loopMode: loopSequential,
+	newActive := func(t *testing.T) (*Adapter, *fakeCore) {
+		t.Helper()
+		a, core := newTestAdapterWithFakeCore(t)
+		a.replaceCatalogsForTest([]ProviderCatalog{{
+			ProviderID: "mtv-rewind",
+			Name:       "MTV Rewind",
+			Groups:     []ChannelGroup{{ID: "genres", Name: "Genres"}},
+			Channels:   []Channel{{ID: "metal", Name: "Metal", GroupID: "genres", Items: []StreamItem{{ID: "a", URL: "https://youtu.be/a"}}}},
+		}})
+		a.active = &ActiveQueue{
+			SessionID:    "s1",
+			ProviderID:   "mtv-rewind",
+			ProviderName: "MTV Rewind",
+			ChannelID:    "metal",
+			ChannelName:  "Metal",
+			ItemToken:    1,
+			Items: []StreamItem{
+				{ID: "a", URL: "https://youtu.be/a"},
+				{ID: "b", URL: "https://youtu.be/b"},
+			},
+			loopMode: loopSequential,
+		}
+		core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
+		return a, core
 	}
-	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
 
 	cases := []struct {
 		name    string
-		handler func(http.ResponseWriter, *http.Request)
+		handler func(*Adapter, http.ResponseWriter, *http.Request)
 		path    string
 		form    string
 	}{
-		{name: "refresh", handler: a.handleRefresh, path: "/ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "play", handler: a.handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
-		{name: "previous", handler: a.handlePrevious, path: "/ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "next", handler: a.handleNext, path: "/ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "replay", handler: a.handleReplay, path: "/ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "stop", handler: a.handleStop, path: "/ui/adapter/streams/stop", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "refresh", handler: (*Adapter).handleRefresh, path: "/ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "play", handler: (*Adapter).handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
+		{name: "previous", handler: (*Adapter).handlePrevious, path: "/ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "next", handler: (*Adapter).handleNext, path: "/ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "replay", handler: (*Adapter).handleReplay, path: "/ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "stop", handler: (*Adapter).handleStop, path: "/ui/adapter/streams/stop", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newActive(t)
 			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.form))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			rr := httptest.NewRecorder()
-			tc.handler(rr, req)
+			tc.handler(a, rr, req)
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 			}
