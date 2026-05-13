@@ -15,6 +15,7 @@ const maxTorrentMultipartOverheadBytes = 64 * 1024
 
 func (a *Adapter) UIRoutes() []adapters.Route {
 	return []adapters.Route{
+		{Method: http.MethodGet, Path: "live", Handler: a.handleLive},
 		{Method: http.MethodGet, Path: "panel", Handler: a.handlePanel},
 		{Method: http.MethodGet, Path: "status", Handler: a.handleStatus},
 		{Method: http.MethodPost, Path: "play", Handler: a.handlePlay},
@@ -26,6 +27,11 @@ func (a *Adapter) UIRoutes() []adapters.Route {
 func (a *Adapter) handlePanel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(a.renderPanel()))
+}
+
+func (a *Adapter) handleLive(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(a.renderLiveStatus()))
 }
 
 func (a *Adapter) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +138,7 @@ func (a *Adapter) handleStop(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, a.statusView())
 		return
 	}
-	a.handlePanel(w, r)
+	a.handleLive(w, r)
 }
 
 func wantsJSON(r *http.Request) bool {

@@ -17,6 +17,7 @@ func TestUIRoutes(t *testing.T) {
 	a := &Adapter{}
 	routes := a.UIRoutes()
 	want := map[string]bool{
+		"GET live":    false,
 		"GET panel":   false,
 		"GET status":  false,
 		"POST play":   false,
