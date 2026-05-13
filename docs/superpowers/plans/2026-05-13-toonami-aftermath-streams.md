@@ -6,7 +6,7 @@
 
 **Architecture:** Introduce `direct-streams` as a bundled-only Streams catalog type. It builds one direct `StreamItem` per channel from trusted bundled definitions, bypasses remote manifest/catalog fetching, skips yt-dlp during playback, and starts core sessions with a constrained HLS `MediaInputPolicy`. Remote/cached manifests remain limited to remote-eligible catalog providers and cannot add, remove, or override the bundled direct-stream provider.
 
-**Tech Stack:** Go 1.26.2, stdlib `net/url`, `strings`, `time`, existing `internal/adapters/streams`, `internal/core.MediaInputPolicy`, htmx-rendered Streams panel, Go unit tests via `cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test`.
+**Tech Stack:** Go 1.26.2, stdlib `net/url`, `strings`, `time`, existing `internal/adapters/streams`, `internal/core.MediaInputPolicy`, htmx-rendered Streams panel, Go unit tests via `cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test`.
 
 **Spec:** [docs/superpowers/specs/2026-05-13-toonami-aftermath-streams-design.md](../specs/2026-05-13-toonami-aftermath-streams-design.md)
 
@@ -15,7 +15,7 @@
 ## Files
 
 **Create:**
-- `internal/adapters/streams/provider_direct_streams.go` — bundled-only direct HLS catalog builder, Toonami URL validator, direct HLS input policy helper.
+- `internal/adapters/streams/provider_direct_streams.go` — bundled-only direct HLS catalog builder and Toonami URL validator.
 - `internal/adapters/streams/provider_direct_streams_test.go` — direct catalog, URL validation, and non-direct URL-field regression tests.
 
 **Modify:**
@@ -109,6 +109,8 @@ func TestBuildDirectStreamsCatalogRejectsBadURLs(t *testing.T) {
 		{name: "wrong host", url: "http://example.com/est/playlist.m3u8"},
 		{name: "wrong path", url: "http://api.toonamiaftermath.com:3000/evil/playlist.m3u8"},
 		{name: "wrong port", url: "http://api.toonamiaftermath.com/est/playlist.m3u8"},
+		{name: "query string", url: "http://api.toonamiaftermath.com:3000/est/playlist.m3u8?token=x"},
+		{name: "fragment", url: "http://api.toonamiaftermath.com:3000/est/playlist.m3u8#frag"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,6 +120,14 @@ func TestBuildDirectStreamsCatalogRejectsBadURLs(t *testing.T) {
 				t.Fatal("bad direct stream URL accepted")
 			}
 		})
+	}
+}
+
+func TestBuildDirectStreamsCatalogRejectsUnknownProviderWithoutValidator(t *testing.T) {
+	def := bundledToonamiAftermathDefinition()
+	def.ID = "future-direct"
+	if _, err := buildDirectStreamsCatalog(def); err == nil {
+		t.Fatal("direct-stream provider without validator accepted")
 	}
 }
 
@@ -148,7 +158,7 @@ func TestYouTubeChannelCatalogIgnoresChannelDefinitionURL(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestBuildDirectStreamsCatalog|TestYouTubeChannelCatalogIgnoresChannelDefinitionURL" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestBuildDirectStreamsCatalog|TestYouTubeChannelCatalogIgnoresChannelDefinitionURL" -count=1
 ```
 
 Expected: FAIL with undefined `bundledToonamiAftermathDefinition`, undefined `buildDirectStreamsCatalog`, and missing `URL`/`Direct` fields.
@@ -251,6 +261,10 @@ var toonamiAftermathPaths = map[string]struct{}{
 	"/radio/playlist.m3u8":  {},
 }
 
+var directStreamURLValidators = map[string]func(*url.URL) error{
+	"toonami-aftermath": validateToonamiAftermathURL,
+}
+
 func buildDirectStreamsCatalog(def ProviderDefinition) (ProviderCatalog, error) {
 	if def.Type != directStreamsProviderType {
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
@@ -297,7 +311,7 @@ func validateDirectStreamChannelURL(providerID, raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return fmt.Errorf("is required")
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return err
 	}
@@ -311,14 +325,26 @@ func validateDirectStreamChannelURL(providerID, raw string) error {
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("scheme %q is not allowed", scheme)
 	}
-	if providerID == "toonami-aftermath" {
-		host := strings.ToLower(u.Host)
-		if host != "api.toonamiaftermath.com:3000" {
-			return fmt.Errorf("host %q is not allowed", host)
-		}
-		if _, ok := toonamiAftermathPaths[u.EscapedPath()]; !ok {
-			return fmt.Errorf("path %q is not allowed", u.EscapedPath())
-		}
+	validate, ok := directStreamURLValidators[providerID]
+	if !ok {
+		return fmt.Errorf("provider %q has no direct-stream URL validator", providerID)
+	}
+	return validate(u)
+}
+
+func validateToonamiAftermathURL(u *url.URL) error {
+	host := strings.ToLower(u.Host)
+	if host != "api.toonamiaftermath.com:3000" {
+		return fmt.Errorf("host %q is not allowed", host)
+	}
+	if _, ok := toonamiAftermathPaths[u.EscapedPath()]; !ok {
+		return fmt.Errorf("path %q is not allowed", u.EscapedPath())
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("query string is not allowed")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("fragment is not allowed")
 	}
 	return nil
 }
@@ -329,7 +355,7 @@ func validateDirectStreamChannelURL(providerID, raw string) error {
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestBuildDirectStreamsCatalog|TestYouTubeChannelCatalogIgnoresChannelDefinitionURL" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestBuildDirectStreamsCatalog|TestYouTubeChannelCatalogIgnoresChannelDefinitionURL" -count=1
 ```
 
 Expected: PASS.
@@ -392,6 +418,25 @@ func TestValidateManifestIgnoresRemoteDirectStreamsBeforePlaylistValidation(t *t
 	}
 }
 
+func TestMergeManifestsRejectsRemoteOnlyDirectStreamsProvider(t *testing.T) {
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "remote-direct",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Remote Direct",
+		DefaultChannel:  "x",
+		DefaultPlayMode: PlaySequential,
+		Channels: []ChannelDefinition{{
+			ID:   "x",
+			Name: "X",
+			URL:  "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
+		}},
+	}}}
+	got := mergeManifests(DefaultConfig(), bundledManifest(), nil, &remote, remoteProviderFactories())
+	if _, ok := got.Provider("remote-direct"); ok {
+		t.Fatal("remote-only direct-streams provider appeared in merged manifest")
+	}
+}
+
 func TestMergeManifestsRejectsRemoteDirectStreamsOverlay(t *testing.T) {
 	bundled := bundledManifest()
 	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
@@ -419,6 +464,23 @@ func TestMergeManifestsRejectsRemoteDirectStreamsOverlay(t *testing.T) {
 	}
 }
 
+func TestMergeManifestsRejectsRemoteTypeChangeFromDirectStreams(t *testing.T) {
+	bundled := bundledManifest()
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:          "toonami-aftermath",
+		Type:        youtubeChannelJSONProviderType,
+		DisplayName: "Toonami As YouTube",
+	}}}
+	got := mergeManifests(DefaultConfig(), bundled, nil, &remote, remoteProviderFactories())
+	provider, ok := got.Provider("toonami-aftermath")
+	if !ok {
+		t.Fatal("bundled Toonami provider missing")
+	}
+	if provider.Type != directStreamsProviderType || provider.DisplayName != "Toonami Aftermath" {
+		t.Fatalf("remote type change from direct-streams was applied: %+v", provider)
+	}
+}
+
 func TestMergeManifestsRejectsCachedDirectStreamsOverlay(t *testing.T) {
 	bundled := bundledManifest()
 	cached := Manifest{Version: 1, Providers: []ProviderDefinition{{
@@ -440,6 +502,37 @@ func TestMergeManifestsRejectsCachedDirectStreamsOverlay(t *testing.T) {
 	}
 	if provider.DisplayName != "Toonami Aftermath" || len(provider.Channels) != 4 {
 		t.Fatalf("cached overlay changed bundled provider: %+v", provider)
+	}
+}
+
+func TestMergeManifestsRejectsCachedTypeChangesToOrFromDirectStreams(t *testing.T) {
+	bundled := bundledManifest()
+	cached := Manifest{Version: 1, Providers: []ProviderDefinition{
+		{
+			ID:          "mtv-rewind",
+			Type:        directStreamsProviderType,
+			DisplayName: "MTV As Direct",
+		},
+		{
+			ID:          "toonami-aftermath",
+			Type:        youtubeChannelJSONProviderType,
+			DisplayName: "Toonami As YouTube",
+		},
+	}}
+	got := mergeManifests(DefaultConfig(), bundled, &cached, nil, remoteProviderFactories())
+	mtv, ok := got.Provider("mtv-rewind")
+	if !ok {
+		t.Fatal("bundled MTV provider missing")
+	}
+	if mtv.Type != youtubeChannelJSONProviderType {
+		t.Fatalf("cached type change to direct-streams was applied: %+v", mtv)
+	}
+	toonami, ok := got.Provider("toonami-aftermath")
+	if !ok {
+		t.Fatal("bundled Toonami provider missing")
+	}
+	if toonami.Type != directStreamsProviderType || toonami.DisplayName != "Toonami Aftermath" {
+		t.Fatalf("cached type change from direct-streams was applied: %+v", toonami)
 	}
 }
 
@@ -479,7 +572,7 @@ for _, want := range bundledManifest().Providers {
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestHostedProviderManifest|TestValidateManifestIgnoresRemoteDirectStreams|TestMergeManifestsRejects" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHostedProviderManifest|TestValidateManifestIgnoresRemoteDirectStreams|TestMergeManifestsRejects" -count=1
 ```
 
 Expected: FAIL because `remoteProviderFactories` does not exist and manifest merge/validation still use one provider factory set.
@@ -564,7 +657,7 @@ Leave tests that pass explicit ad hoc factory maps unchanged; they intentionally
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestHostedProviderManifest|TestValidateManifestIgnoresRemoteDirectStreams|TestMergeManifestsRejects|TestValidateManifestStillRejectsKnownProviderMissingPlaylistURL|TestMergeManifestsRemoteChangingBundledTypeIgnored" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHostedProviderManifest|TestValidateManifestIgnoresRemoteDirectStreams|TestMergeManifestsRejects|TestValidateManifestStillRejectsKnownProviderMissingPlaylistURL|TestMergeManifestsRemoteChangingBundledTypeIgnored" -count=1
 ```
 
 Expected: PASS.
@@ -647,6 +740,51 @@ func TestRefreshCatalogsDirectStreamsDoesNotFetchPlaylist(t *testing.T) {
 		t.Fatalf("radio channel missing from catalog: %+v", cat.Channels)
 	}
 }
+
+func TestRefreshOnceWithRemoteManifestBuildsDirectStreamsLocally(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+	cfg.Providers["cartoon-rewind"] = ProviderConfig{Disabled: true}
+	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
+		ID:              "remote-direct",
+		Type:            directStreamsProviderType,
+		DisplayName:     "Remote Direct",
+		DefaultChannel:  "x",
+		DefaultPlayMode: PlaySequential,
+		Channels: []ChannelDefinition{{
+			ID:   "x",
+			Name: "X",
+			URL:  "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
+		}},
+	}}}
+
+	snapshot, err := buildRemoteSnapshot(t.Context(), cfg, remote, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildRemoteSnapshot: %v", err)
+	}
+	if _, ok := snapshot.CatalogBodies["toonami-aftermath"]; ok {
+		t.Fatal("direct-stream catalog body should not be cached")
+	}
+	if len(snapshot.CatalogBodies) != 0 || len(snapshot.CatalogMetas) != 0 {
+		t.Fatalf("direct-only snapshot wrote catalog caches: bodies=%v metas=%v", snapshot.CatalogBodies, snapshot.CatalogMetas)
+	}
+	for _, def := range snapshot.Definitions {
+		if def.ID == "remote-direct" {
+			t.Fatal("remote-only direct-streams provider appeared in snapshot definitions")
+		}
+	}
+	catByID := map[string]ProviderCatalog{}
+	for _, cat := range snapshot.Catalogs {
+		catByID[cat.ProviderID] = cat
+	}
+	if _, ok := catByID["remote-direct"]; ok {
+		t.Fatal("remote-only direct-streams provider appeared in snapshot catalogs")
+	}
+	toonami := catByID["toonami-aftermath"]
+	if toonami.ProviderID != "toonami-aftermath" || toonami.Channel("east") == nil {
+		t.Fatalf("direct bundled Toonami catalog missing from remote snapshot: %+v", snapshot.Catalogs)
+	}
+}
 ```
 
 - [ ] **Step 2: Run refresh tests and verify they fail**
@@ -654,10 +792,10 @@ func TestRefreshCatalogsDirectStreamsDoesNotFetchPlaylist(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestStartDisabledLoadsBundledToonamiCatalog|TestRefreshNowDirectStreams|TestRefreshCatalogsDirectStreams" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStartDisabledLoadsBundledToonamiCatalog|TestRefreshNowDirectStreams|TestRefreshCatalogsDirectStreams|TestRefreshOnceWithRemoteManifestBuildsDirectStreamsLocally" -count=1
 ```
 
-Expected: FAIL because startup has no direct seed path/build dispatch and refresh still calls `fetchProviderPlaylist`.
+Expected: FAIL because startup has no direct seed path/build dispatch and refresh/remote snapshot still call `fetchProviderPlaylist`.
 
 - [ ] **Step 3: Dispatch buildProviderCatalog by provider type**
 
@@ -696,7 +834,47 @@ for _, def := range defs {
 }
 ```
 
-- [ ] **Step 5: Bypass playlist fetch during catalog refresh**
+- [ ] **Step 5: Bypass playlist fetch during remote snapshot build**
+
+Modify `buildRemoteSnapshot` in `internal/adapters/streams/refresh.go` so merged direct-stream providers are built locally, not fetched or cached:
+
+```go
+func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {
+	manifest := mergeManifests(cfg, bundledManifest(), nil, &remote, remoteProviderFactories())
+	out := remoteSnapshot{
+		Definitions:   manifest.Providers,
+		Catalogs:      make([]ProviderCatalog, 0, len(manifest.Providers)),
+		CatalogBodies: map[string][]byte{},
+		CatalogMetas:  map[string]CacheMetadata{},
+	}
+	for _, def := range manifest.Providers {
+		if def.Type == directStreamsProviderType {
+			cat, err := buildProviderCatalog(def, nil, cfg)
+			if err != nil {
+				return remoteSnapshot{}, fmt.Errorf("provider %q build catalog: %w", def.ID, err)
+			}
+			out.Catalogs = append(out.Catalogs, cat)
+			continue
+		}
+		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, cacheDir)
+		if err != nil {
+			return remoteSnapshot{}, err
+		}
+		cat, err := buildProviderCatalog(def, raw, cfg)
+		if err != nil {
+			return remoteSnapshot{}, err
+		}
+		out.Catalogs = append(out.Catalogs, cat)
+		out.CatalogBodies[def.ID] = raw
+		out.CatalogMetas[def.ID] = meta
+	}
+	return out, nil
+}
+```
+
+This preserves bundled Toonami during remote manifest refresh and proves remote-only direct-stream providers do not become active snapshot definitions or catalogs.
+
+- [ ] **Step 6: Bypass playlist fetch during catalog refresh**
 
 Modify `refreshCatalogsDefault` in `internal/adapters/streams/refresh.go` so direct-stream providers are rebuilt locally before remote-fetch gating:
 
@@ -718,6 +896,7 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 
 	remoteAllowed := cfg.AllowRemoteManifest
 	var errs []error
+	remoteRefreshed := false
 	for _, def := range defs {
 		if def.Type == directStreamsProviderType {
 			cat, err := buildProviderCatalog(def, nil, cfg)
@@ -739,27 +918,62 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 			continue
 		}
 		raw, meta, err := fetchProviderPlaylist(ctx, def, cfg, a.cacheDir)
-		// keep existing fetch/build/cache/install logic for non-direct providers
-		_ = raw
-		_ = meta
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		cat, err := buildProviderCatalog(def, raw, cfg)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("provider %q build catalog: %w", def.ID, err))
+			continue
+		}
+		if err := writeCatalogCaches(a.cacheDir, map[string][]byte{def.ID: raw}, map[string]CacheMetadata{def.ID: meta}); err != nil {
+			errs = append(errs, fmt.Errorf("provider %q write catalog cache: %w", def.ID, err))
+			continue
+		}
+
+		a.mu.Lock()
+		a.catalogs[cat.ProviderID] = cat
+		if a.state != adapters.StateStopped {
+			a.state = adapters.StateRunning
+		}
+		a.stateSince = time.Now()
+		a.mu.Unlock()
+
+		remoteRefreshed = true
+		status.refreshedProviderIDs = append(status.refreshedProviderIDs, def.ID)
+		if meta.FetchedAt.After(status.FetchedAt) {
+			status.FetchedAt = meta.FetchedAt
+		}
 	}
-	// keep existing status.Source, error joining, and lastErr clearing logic
+	if remoteRefreshed {
+		status.Source = "remote"
+	}
+	if len(errs) != 0 {
+		status.Err = errors.Join(errs...)
+		a.recordRefreshFailure(status.Err)
+		return status
+	}
+
+	a.mu.Lock()
+	a.lastErr = ""
+	a.mu.Unlock()
+
+	return status
 }
 ```
 
-When applying this snippet, preserve the existing non-direct fetch/build/cache/install block instead of replacing it with `_ = raw`.
-
-- [ ] **Step 6: Run refresh tests and verify they pass**
+- [ ] **Step 7: Run refresh tests and verify they pass**
 
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestStartDisabledLoadsBundled|TestRefreshNowDirectStreams|TestRefreshCatalogsDirectStreams|TestRefreshOnceFallsBackToBundledCatalogsWhenManifestFetchFails" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStartDisabledLoadsBundled|TestRefreshNowDirectStreams|TestRefreshCatalogsDirectStreams|TestRefreshOnceWithRemoteManifestBuildsDirectStreamsLocally|TestRefreshOnceFallsBackToBundledCatalogsWhenManifestFetchFails" -count=1
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task 3**
+- [ ] **Step 8: Commit Task 3**
 
 ```bash
 git add internal/adapters/streams/refresh.go internal/adapters/streams/refresh_test.go
@@ -777,6 +991,7 @@ git commit -m "fix(streams): refresh direct catalogs locally"
 - Modify: `internal/adapters/streams/queue_test.go`
 - Modify: `internal/adapters/streams/playback_test.go`
 - Modify: `internal/adapters/streams/routes_test.go`
+- Modify: `internal/core/manager_test.go`
 
 - [ ] **Step 1: Write failing queue and playback tests**
 
@@ -838,6 +1053,9 @@ func TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy(t *testing.T) {
 	if req.StreamURL != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
 		t.Fatalf("StreamURL = %q", req.StreamURL)
 	}
+	if req.Title != "Toonami Aftermath / East" {
+		t.Fatalf("Title = %q, want Toonami Aftermath / East", req.Title)
+	}
 	if len(req.InputHeaders) != 0 || len(req.AudioInputHeaders) != 0 {
 		t.Fatalf("headers leaked into direct request: video=%v audio=%v", req.InputHeaders, req.AudioInputHeaders)
 	}
@@ -884,6 +1102,8 @@ func TestReplayDirectStreamRebuildsFromCatalogItem(t *testing.T) {
 }
 ```
 
+This Streams test proves the direct path populates `BlockedHeaders` and sends no yt-dlp headers. The core test below proves `BlockedHeaders` are filtered before headers reach the FFmpeg pipeline spec that builds argv.
+
 Add imports to `playback_test.go` as needed:
 
 ```go
@@ -895,12 +1115,70 @@ import (
 )
 ```
 
+Add this existing-boundary proof test to `internal/core/manager_test.go`:
+
+```go
+func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:       "http://example/clip.m3u8",
+		AudioStreamURL:  "http://example/audio.m3u8",
+		InputHeaders:    map[string]string{"Cookie": "session=abc", "Referer": "http://example", "User-Agent": "groovyrelay"},
+		AudioInputHeaders: map[string]string{"Authorization": "Bearer secret", "User-Agent": "audio-agent"},
+		MediaInputPolicy: MediaInputPolicy{
+			BlockedHeaders: []string{"Cookie", "Referer", "Authorization"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, ok := captured.SpawnSpec.InputHeaders["Cookie"]; ok {
+		t.Fatalf("Cookie reached pipeline argv inputs: %v", captured.SpawnSpec.InputHeaders)
+	}
+	if _, ok := captured.SpawnSpec.InputHeaders["Referer"]; ok {
+		t.Fatalf("Referer reached pipeline argv inputs: %v", captured.SpawnSpec.InputHeaders)
+	}
+	if got := captured.SpawnSpec.InputHeaders["User-Agent"]; got != "groovyrelay" {
+		t.Fatalf("User-Agent input header = %q", got)
+	}
+	if _, ok := captured.SpawnSpec.AudioInputHeaders["Authorization"]; ok {
+		t.Fatalf("Authorization reached pipeline argv audio inputs: %v", captured.SpawnSpec.AudioInputHeaders)
+	}
+	if got := captured.SpawnSpec.AudioInputHeaders["User-Agent"]; got != "audio-agent" {
+		t.Fatalf("User-Agent audio input header = %q", got)
+	}
+}
+```
+
 - [ ] **Step 2: Run queue/playback tests and verify they fail**
 
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestBuildQueueDirectSingleItemUsesLoopNone|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestReplayDirectStreamRebuildsFromCatalogItem" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestBuildQueueDirectSingleItemUsesLoopNone|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestReplayDirectStreamRebuildsFromCatalogItem" -count=1
 ```
 
 Expected: FAIL because direct queues still use sequential looping and playback still resolves through yt-dlp.
@@ -929,7 +1207,7 @@ if len(items) == 1 && items[0].Direct {
 
 - [ ] **Step 4: Add direct HLS policy helper and playback branch**
 
-Modify `internal/adapters/streams/playback.go` imports to include `time`.
+Ensure `internal/adapters/streams/playback.go` imports include `strings` and `time`.
 
 Add helper functions:
 
@@ -958,7 +1236,13 @@ if isDirectStreamItem(item) {
 		a.clearResolveIfCurrent(capture)
 		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "core playback manager is not configured")
 	}
-	title := streamSessionTitle(item, "")
+	title := strings.TrimSpace(q.ChannelName)
+	if strings.TrimSpace(q.ProviderName) != "" && title != "" {
+		title = strings.TrimSpace(q.ProviderName) + " / " + title
+	}
+	if title == "" {
+		title = streamSessionTitle(item, "")
+	}
 	req := core.SessionRequest{
 		StreamURL:         pageURL,
 		AdapterRef:        ref,
@@ -1021,17 +1305,24 @@ a.mu.Unlock()
 
 Retain the existing `ref == ""`, `coreManager == nil`, and `PauseIfAdapterRef` handling after this block.
 
-Modify `statusView` in `internal/adapters/streams/ui.go` so pause follows the active item:
+Modify `statusView` in `internal/adapters/streams/ui.go` so pause follows the active item only when the core session is owned by Streams:
 
 ```go
+currentDirect := false
 if item, ok := q.currentItem(); ok {
 	active.ItemID = itemIdentity(item)
 	active.ItemTitle = item.Title
-	caps.CanPause = !item.Direct
+	currentDirect = item.Direct
 }
 ```
 
-Then remove or avoid the later unconditional `caps.CanPause = true`.
+Inside the existing `if coreStatus.AdapterRef == activeRef` block, replace the unconditional pause assignment with:
+
+```go
+caps.CanPause = !currentDirect
+```
+
+Do not set `CanPause` outside the adapter-ref ownership block.
 
 - [ ] **Step 6: Add status capability test**
 
@@ -1077,12 +1368,21 @@ Add missing imports to `routes_test.go`:
 import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 ```
 
+Update the existing `TestStatusJSONDisablesControlsForForeignOwner` assertion so a foreign-owned core session also cannot advertise pause:
+
+```go
+if got.Capabilities.CanNext || got.Capabilities.CanPrevious || got.Capabilities.CanReplay || got.Capabilities.CanStop || got.Capabilities.CanPause {
+	t.Fatalf("foreign-owner capabilities = %+v, want read-only controls", got.Capabilities)
+}
+```
+
 - [ ] **Step 7: Run direct playback and capability tests**
 
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestBuildQueueDirectSingleItemUsesLoopNone|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestReplayDirectStreamRebuildsFromCatalogItem|TestStatusJSONDirectStreamDoesNotAdvertisePauseOrAdvance" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestBuildQueueDirectSingleItemUsesLoopNone|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestReplayDirectStreamRebuildsFromCatalogItem|TestStatusJSONDirectStreamDoesNotAdvertisePauseOrAdvance|TestStatusJSONDisablesControlsForForeignOwner" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/core -run TestManager_StartSessionFiltersBlockedHeadersBeforePipeline -count=1
 ```
 
 Expected: PASS.
@@ -1090,7 +1390,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit Task 4**
 
 ```bash
-git add internal/adapters/streams/queue.go internal/adapters/streams/playback.go internal/adapters/streams/ui.go internal/adapters/streams/queue_test.go internal/adapters/streams/playback_test.go internal/adapters/streams/routes_test.go
+git add internal/adapters/streams/queue.go internal/adapters/streams/playback.go internal/adapters/streams/ui.go internal/adapters/streams/queue_test.go internal/adapters/streams/playback_test.go internal/adapters/streams/routes_test.go internal/core/manager_test.go
 git commit -m "feat(streams): play direct HLS channels"
 ```
 
@@ -1134,7 +1434,7 @@ If the current test uses `newTestAdapterWithCatalog(t)`, update that helper or t
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run TestRenderPanelIncludesProvidersAndControls -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run TestRenderPanelIncludesProvidersAndControls -count=1
 ```
 
 Expected: FAIL until the test helper includes Toonami or startup loads the direct catalog.
@@ -1202,7 +1502,7 @@ Add an example line:
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -run "TestRenderPanelIncludesProvidersAndControls|TestStatusJSON" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestRenderPanelIncludesProvidersAndControls|TestStatusJSON" -count=1
 ```
 
 Expected: PASS.
@@ -1226,7 +1526,7 @@ git commit -m "docs(streams): surface toonami aftermath"
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/streams -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -count=1
 ```
 
 Expected: PASS.
@@ -1236,7 +1536,7 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/url -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -count=1
 ```
 
 Expected: PASS. This guards the URL adapter's existing stream resolver handoff path.
@@ -1246,10 +1546,10 @@ Expected: PASS. This guards the URL adapter's existing stream resolver handoff p
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/core ./internal/ffmpeg -run "MediaInputPolicy|Visualizer|PauseIfAdapterRef" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/core ./internal/ffmpeg -run "MediaInputPolicy|Visualizer|PauseIfAdapterRef|ProbeForStart_ThreadsPolicyToProbeAndProbeCrop|StartSessionFiltersBlockedHeadersBeforePipeline" -count=1
 ```
 
-Expected: PASS. This confirms the policy and pause surfaces used by direct HLS still behave as expected.
+Expected: PASS. `TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop` proves `BlockedHeaders` are filtered at the core/FFmpeg boundary before probe/crop calls receive headers; `TestManager_StartSessionFiltersBlockedHeadersBeforePipeline` proves blocked video/audio headers are filtered before the FFmpeg pipeline spec can render argv; the `MediaInputPolicy` tests prove the FFmpeg argv policy mapping remains intact.
 
 - [ ] **Step 4: Run workspace status and diff checks**
 
