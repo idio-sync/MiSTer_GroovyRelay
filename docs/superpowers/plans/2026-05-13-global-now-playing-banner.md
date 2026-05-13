@@ -31,6 +31,7 @@
 - `internal/core/types.go` — add `Generation uint64` to `SessionStatus` and `StatusHomeView`.
 - `internal/core/manager.go` — assign stable session generations and add full-key guarded helpers.
 - `internal/core/manager_test.go` — generation and guarded-helper tests.
+- `internal/adapters/streamhandoff/handoff.go` — optional guarded stream handoff interface for URL-to-Streams resumes.
 - `internal/ui/server.go` — mount `/ui/playback/*` routes and attach banner data to shell renders.
 - `internal/ui/templates/shell.html` — render `now-playing-banner.html` only outside setup mode.
 - `internal/ui/static/app.css` — top command band, drawer, timeline, action-row, and narrow-width styles.
@@ -466,7 +467,21 @@ func (m *Manager) PauseIfSession(ref string, generation uint64) (bool, error) {
 }
 ```
 
-Refactor `playIfAdapterRef` and `seekToIfAdapterRef` into internal helpers that accept an optional generation. The lock checks before probing and immediately before mutation must use:
+Refactor `playIfAdapterRef` and `seekToIfAdapterRef` into single shared internal helpers that accept an optional generation. Keep `Play`, `PlayIfAdapterRef`, `PlayIfSession`, `SeekTo`, `SeekToIfAdapterRef`, and `SeekToIfSession` as thin wrappers over those helpers; do not create parallel implementations that duplicate probe/start or plane teardown logic.
+
+The shared helpers should have this shape:
+
+```go
+func (m *Manager) playGuarded(expectedRef string, expectedGeneration uint64) (bool, error) {
+	// existing playIfAdapterRef body, with generation-aware guard checks
+}
+
+func (m *Manager) seekGuarded(expectedRef string, expectedGeneration uint64, offsetMs int) (bool, error) {
+	// existing seekToIfAdapterRef body, with generation-aware guard checks
+}
+```
+
+The lock checks before probing and immediately before mutation must use:
 
 ```go
 if expectedGeneration != 0 {
@@ -477,6 +492,17 @@ if expectedGeneration != 0 {
 } else if expectedRef != "" && a.req.AdapterRef != expectedRef {
 	m.mu.Unlock()
 	return false, nil
+}
+```
+
+When re-locking after `probeForStart`, after waiting on the previous plane, and immediately before calling `startPlaneLocked`, use the same guard helper so the mutex discipline remains identical for legacy adapter-ref guards and new full-session-key guards:
+
+```go
+func (m *Manager) guardedSessionStillMatchesLocked(expectedRef string, expectedGeneration uint64) bool {
+	if expectedGeneration != 0 {
+		return m.sessionMatchesLocked(expectedRef, expectedGeneration)
+	}
+	return expectedRef == "" || (m.active != nil && m.active.req.AdapterRef == expectedRef)
 }
 ```
 
@@ -518,6 +544,8 @@ func (m *Manager) StartSessionIfIdle(req SessionRequest) (bool, error) {
 ```
 
 Implement `startSessionGuarded` by reusing the current `StartSessionIfAdapterRef` structure: validate/probe outside `Manager.mu`, lock, run the supplied guard, allocate a new generation, call `startPlaneLocked`, then transition `EvPlayMedia`.
+
+Compatibility note: `Generation == 0` means "unguarded legacy caller" in read-only status structs, but all new full-session-key mutation helpers must reject zero generation with `(false, nil)`.
 
 - [ ] **Step 9: Run full core tests**
 
@@ -842,6 +870,31 @@ func (f *fakePlaybackAdapter) HandleQuickCast(ctx context.Context, req adapters.
 	return adapters.QuickCastResult{Message: f.quickMsg, AdapterRef: "fake:new"}, nil
 }
 
+type fakeBareAdapter struct {
+	name        string
+	displayName string
+	enabled     bool
+}
+
+func (f fakeBareAdapter) Name() string { return f.name }
+func (f fakeBareAdapter) DisplayName() string {
+	if f.displayName != "" {
+		return f.displayName
+	}
+	return f.name
+}
+func (f fakeBareAdapter) Fields() []adapters.FieldDef { return nil }
+func (f fakeBareAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error {
+	return nil
+}
+func (f fakeBareAdapter) IsEnabled() bool { return f.enabled }
+func (f fakeBareAdapter) Start(context.Context) error { return nil }
+func (f fakeBareAdapter) Stop() error                 { return nil }
+func (f fakeBareAdapter) Status() adapters.Status     { return adapters.Status{State: adapters.StateRunning} }
+func (f fakeBareAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeHotSwap, nil
+}
+
 func TestPlaybackBannerIdleRendersReadyAndQuickCast(t *testing.T) {
 	fake := &fakePlaybackAdapter{
 		name:    "url",
@@ -934,6 +987,58 @@ func TestPlaybackBannerRendersQuickCastRadioOptionsAndDisabledReason(t *testing.
 	for _, want := range []string{`type="radio"`, `name="mode" value="auto"`, `name="mode" value="ytdlp"`, `name="mode" value="direct"`, "url adapter is disabled"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("banner missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestPlaybackBannerUsesAdapterRefFallbackWhenSourceMissing(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		owns:    true,
+		view: adapters.PlaybackBannerAdapterView{
+			SourceDisplay: "URL",
+			Actions: []adapters.PlaybackAction{{
+				ID:      adapters.PlaybackActionStop,
+				Label:   "Stop",
+				Icon:    "stop",
+				Enabled: true,
+			}},
+		},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 11, Title: "Legacy URL"}}
+	})
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	for _, want := range []string{"Legacy URL", "URL", `name="action" value="stop"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("legacy fallback banner missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestPlaybackBannerActiveNonProviderIsReadOnly(t *testing.T) {
+	bare := fakeBareAdapter{name: "plex", displayName: "Plex", enabled: true}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(bare)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "plex", AdapterRef: "plex:/library/metadata/1", Generation: 12, Title: "Plex Movie"}}
+	})
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	for _, want := range []string{"Plex Movie", "Plex", `hx-trigger="every 5s"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("read-only banner missing %q: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`/ui/playback/action`, `gr-now-playing-seek`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("read-only banner rendered control %q: %s", forbidden, body)
 		}
 	}
 }
@@ -1203,6 +1308,8 @@ Update htmx targets that replace whole page panels from `#panel` to `#panel-cont
 
 Do not change nested fragment targets such as `#status-content`, `#url-panel`, `#streams-panel`, `#torrent-panel`, or `#gr-now-playing`.
 
+Execute the `#panel-content` migration before mounting new playback routes. If making smaller commits, commit this shell persistence slice first with only template/server tests. `templatesFS` already embeds `templates/*.html`, so adding `now-playing-banner.html` does not require an embed glob change.
+
 Add handler to `internal/ui/playback.go`:
 
 ```go
@@ -1448,6 +1555,26 @@ func TestPlaybackActionRejectsSameAdapterStaleGenerationBeforeDispatch(t *testin
 	}
 }
 
+func TestPlaybackActionRejectsActiveAdapterWithoutPlaybackProvider(t *testing.T) {
+	bare := fakeBareAdapter{name: "plex", displayName: "Plex", enabled: true}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(bare)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "plex", AdapterRef: "plex:/library/metadata/1", Generation: 10}}
+	})
+	form := url.Values{"action": {"stop"}, "adapter_ref": {"plex:/library/metadata/1"}, "generation": {"10"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "active adapter does not expose playback controls") {
+		t.Fatalf("missing non-provider error: %s", rr.Body.String())
+	}
+}
+
 func TestPlaybackSeekDispatchesOffset(t *testing.T) {
 	fake := &fakePlaybackAdapter{name: "url", enabled: true, owns: true}
 	_, mux := newTestServer(t, func(c *Config) {
@@ -1509,7 +1636,6 @@ func (s *Server) handlePlaybackSeek(w http.ResponseWriter, r *http.Request) {
 		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
 		return
 	}
-	req.Action = adapters.PlaybackActionSeek
 	s.handlePlaybackMutation(w, r, req)
 }
 
@@ -1521,15 +1647,19 @@ func parsePlaybackActionRequest(r *http.Request, requireOffset bool) (adapters.P
 	if err != nil || gen == 0 {
 		return adapters.PlaybackActionRequest{}, fmt.Errorf("generation required")
 	}
+	action := strings.TrimSpace(r.Form.Get("action"))
+	if requireOffset {
+		action = adapters.PlaybackActionSeek
+	}
 	req := adapters.PlaybackActionRequest{
-		Action:     strings.TrimSpace(r.Form.Get("action")),
+		Action:     action,
 		AdapterRef: strings.TrimSpace(r.Form.Get("adapter_ref")),
 		Generation: gen,
 	}
 	if req.AdapterRef == "" {
 		return adapters.PlaybackActionRequest{}, fmt.Errorf("adapter_ref required")
 	}
-	if req.Action == "" && !requireOffset {
+	if req.Action == "" {
 		return adapters.PlaybackActionRequest{}, fmt.Errorf("action required")
 	}
 	if requireOffset {
@@ -1690,6 +1820,7 @@ func TestQuickCastRejectsDisabledTabBeforeProviderDispatch(t *testing.T) {
 }
 
 func TestQuickCastMultipartBodyIsCappedBeforeParsing(t *testing.T) {
+	const oversizeQuickCastMultipartBytes = 4*1024*1024 + 64*1024 + 1
 	fake := &fakePlaybackAdapter{
 		name:    "torrent",
 		enabled: true,
@@ -1711,7 +1842,7 @@ func TestQuickCastMultipartBodyIsCappedBeforeParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateFormFile: %v", err)
 	}
-	_, _ = part.Write(bytes.Repeat([]byte("x"), maxQuickCastMultipartBytes+1))
+	_, _ = part.Write(bytes.Repeat([]byte("x"), oversizeQuickCastMultipartBytes))
 	_ = mw.Close()
 	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -1834,6 +1965,7 @@ Expected: commit contains only generic UI route files.
 ## Task 5: URL Playback Provider And Panel Control Removal
 
 **Files:**
+- Modify: `internal/adapters/streamhandoff/handoff.go`
 - Modify: `internal/adapters/url/adapter.go`
 - Modify: `internal/adapters/url/play.go`
 - Modify: `internal/adapters/url/play_test.go`
@@ -1963,17 +2095,73 @@ func TestURLQuickCastRejectsDisabledAdapter(t *testing.T) {
 }
 ```
 
+Append this guarded stream-handoff test to `internal/adapters/url/play_test.go` and extend the existing `fakeStreamResolver` with the fields/method shown:
+
+```go
+// Add to fakeStreamResolver:
+guardStarts  int
+guardRef     string
+guardGen     uint64
+guardMatched bool
+
+func (f *fakeStreamResolver) StartResolvedStreamIfSession(ctx context.Context, res streamhandoff.Resolution, ref string, gen uint64) (streamhandoff.StartResult, bool, error) {
+	f.guardStarts++
+	f.guardRef, f.guardGen = ref, gen
+	if f.startErr != nil {
+		return streamhandoff.StartResult{}, false, f.startErr
+	}
+	return streamhandoff.StartResult{
+		AdapterRef: res.AdapterRef,
+		ProviderID: res.ProviderID,
+		ChannelID:  res.ChannelID,
+		ItemID:     res.ItemID,
+	}, f.guardMatched, nil
+}
+
+func TestCastURLGuardedStreamsResolverUsesSessionGuard(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	f := &fakeStreamResolver{
+		matched:      true,
+		res:          streamhandoff.Resolution{AdapterRef: "streams:mtv:metal:sess:1", ProviderID: "mtv", ChannelID: "metal"},
+		guardMatched: false,
+	}
+	a.SetStreamResolver(f)
+	_, _, status, err := a.castURLGuarded(context.Background(), "https://wantmymtv.vercel.app/player.html?channel=metal", "auto", "url:old", 7)
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("castURLGuarded stream err = %v, want active session changed", err)
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
+	}
+	if f.starts != 0 {
+		t.Fatalf("unguarded stream start was called %d times", f.starts)
+	}
+	if f.guardStarts != 1 || f.guardRef != "url:old" || f.guardGen != 7 {
+		t.Fatalf("guarded stream key = starts:%d ref:%q gen:%d", f.guardStarts, f.guardRef, f.guardGen)
+	}
+}
+```
+
 - [ ] **Step 2: Run URL provider tests and verify they fail**
 
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestURLPlayback" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestURL(Playback|QuickCast)|TestCastURLGuardedStreamsResolverUsesSessionGuard" -count=1
 ```
 
-Expected: FAIL with undefined `PlaybackBanner` and `HandlePlaybackAction` or missing full-key methods on `SessionManager`.
+Expected: FAIL with undefined `PlaybackBanner`, `HandlePlaybackAction`, `castURLGuarded`, or missing full-key methods on `SessionManager`.
 
 - [ ] **Step 3: Extend URL core interface**
+
+Modify `internal/adapters/streamhandoff/handoff.go` with an optional guarded stream-start interface. URL will type-assert this only for guarded URL replay/resume; the existing unguarded resolver interface remains unchanged for normal URL casts:
+
+```go
+type GuardedResolver interface {
+	Resolver
+	StartResolvedStreamIfSession(ctx context.Context, res Resolution, expectedRef string, expectedGeneration uint64) (StartResult, bool, error)
+}
+```
 
 Modify `internal/adapters/url/adapter.go`:
 
@@ -2174,32 +2362,72 @@ func (a *Adapter) resumeBanner(ctx context.Context, action adapters.PlaybackActi
 }
 ```
 
-Refactor `castURL` so the session-start operation is injected. Keep all validation, history, resolver, title, `SessionRequest`, state, and logging behavior in one shared helper.
+Refactor `castURL` so both session-start operations are injected: direct URL core starts and stream-handoff starts. Keep all validation, history, resolver, title, `SessionRequest`, state, and logging behavior in one shared helper.
 
 Add this helper shape in `internal/adapters/url/play.go`:
 
 ```go
+// Add import:
+// "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
+
 type urlSessionStarter func(core.SessionRequest) (bool, error)
+type urlStreamStarter func(context.Context, streamhandoff.Resolver, streamhandoff.Resolution) (streamhandoff.StartResult, bool, error)
+
+type urlCastStarter struct {
+	startCore   urlSessionStarter
+	startStream urlStreamStarter
+}
 
 func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolvedVia string, status int, err error) {
-	return a.castURLWithStarter(ctx, rawURL, mode, func(req core.SessionRequest) (bool, error) {
-		return true, a.core.StartSession(req)
+	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
+		startCore: func(req core.SessionRequest) (bool, error) {
+			return true, a.core.StartSession(req)
+		},
+		startStream: func(ctx context.Context, r streamhandoff.Resolver, res streamhandoff.Resolution) (streamhandoff.StartResult, bool, error) {
+			started, err := r.StartResolvedStream(ctx, res)
+			return started, true, err
+		},
 	})
 }
 
 func (a *Adapter) castURLGuarded(ctx context.Context, rawURL, mode, expectedRef string, expectedGeneration uint64) (ref, resolvedVia string, status int, err error) {
-	return a.castURLWithStarter(ctx, rawURL, mode, func(req core.SessionRequest) (bool, error) {
-		return a.core.StartSessionIfSession(req, expectedRef, expectedGeneration)
+	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
+		startCore: func(req core.SessionRequest) (bool, error) {
+			return a.core.StartSessionIfSession(req, expectedRef, expectedGeneration)
+		},
+		startStream: func(ctx context.Context, r streamhandoff.Resolver, res streamhandoff.Resolution) (streamhandoff.StartResult, bool, error) {
+			guarded, ok := r.(streamhandoff.GuardedResolver)
+			if !ok {
+				return streamhandoff.StartResult{}, false, fmt.Errorf("stream resolver does not support guarded start")
+			}
+			return guarded.StartResolvedStreamIfSession(ctx, res, expectedRef, expectedGeneration)
+		},
 	})
 }
 
-func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, starter urlSessionStarter) (ref, resolvedVia string, status int, err error) {
+func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, starter urlCastStarter) (ref, resolvedVia string, status int, err error) {
 	// Move the existing castURL body here unchanged until the final core start.
-	// Replace the direct StartSession call with the starter block below.
+	// Replace streamResolver.StartResolvedStream and direct StartSession calls with the starter blocks below.
 }
 ```
 
-Inside `castURLWithStarter`, replace:
+Inside the existing stream-resolver branch, replace the unguarded `StartResolvedStream` call:
+
+```go
+started, matched, serr := starter.startStream(ctx, streamResolver, res)
+if serr != nil {
+	return "", "", http.StatusBadRequest, serr
+}
+if !matched {
+	return "", "", http.StatusConflict, fmt.Errorf("active session changed")
+}
+if started.AdapterRef == "" {
+	return "", "", http.StatusInternalServerError, fmt.Errorf("streams resolver returned empty adapter ref")
+}
+return started.AdapterRef, "streams", http.StatusOK, nil
+```
+
+Inside `castURLWithStarter`, replace the direct core start:
 
 ```go
 if serr := a.core.StartSession(req); serr != nil {
@@ -2210,7 +2438,7 @@ if serr := a.core.StartSession(req); serr != nil {
 with:
 
 ```go
-matched, serr := starter(req)
+matched, serr := starter.startCore(req)
 if serr != nil {
 	safeMsg := strings.ReplaceAll(serr.Error(), rawURL, redactURL(rawURL))
 	a.setState(adapters.StateError, safeMsg)
@@ -2317,9 +2545,9 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
+cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/adapters/streamhandoff/handoff.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
 cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -count=1
-git add internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
+git add internal/adapters/streamhandoff/handoff.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go
 git commit -m "feat(url): move playback controls to global banner"
 ```
 
@@ -2351,6 +2579,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -2414,6 +2643,21 @@ func TestStreamsPlaybackActionRejectsForeignAdapterRef(t *testing.T) {
 	}
 }
 
+func TestStartResolvedStreamIfSessionRejectsStaleCoreSession(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:old", Generation: 8}
+	started, matched, err := a.StartResolvedStreamIfSession(context.Background(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}, "url:old", 7)
+	if err != nil {
+		t.Fatalf("StartResolvedStreamIfSession stale err = %v, want nil", err)
+	}
+	if matched {
+		t.Fatalf("matched = true with stale key, started=%#v", started)
+	}
+	if fc.startCalls != 0 {
+		t.Fatalf("stale guarded stream handoff started core %d times", fc.startCalls)
+	}
+}
+
 func actionIDs(actions []adapters.PlaybackAction) string {
 	var ids []string
 	for _, a := range actions {
@@ -2428,7 +2672,7 @@ func actionIDs(actions []adapters.PlaybackAction) string {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsPlaybackBanner" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsPlayback|TestStartResolvedStreamIfSession" -count=1
 ```
 
 Expected: FAIL with undefined provider methods.
@@ -2440,6 +2684,7 @@ Modify `internal/adapters/streams/adapter.go`:
 ```go
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	StartSessionIfSession(core.SessionRequest, string, uint64) (bool, error)
 	StartSessionIfIdle(core.SessionRequest) (bool, error)
 	PauseIfAdapterRef(string) (bool, error)
 	StopIfAdapterRef(string) (bool, error)
@@ -2461,6 +2706,21 @@ func (f *fakeCore) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
 	f.startCalls++
 	if f.startErr == nil {
 		f.status.AdapterRef = req.AdapterRef
+	}
+	return true, f.startErr
+}
+
+func (f *fakeCore) StartSessionIfSession(req core.SessionRequest, ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ref == "" || f.status.AdapterRef != ref || f.status.Generation != generation {
+		return false, nil
+	}
+	f.lastReq = req
+	f.startCalls++
+	if f.startErr == nil {
+		f.status.AdapterRef = req.AdapterRef
+		f.status.Generation++
 	}
 	return true, f.startErr
 }
@@ -2544,6 +2804,8 @@ func firstNonEmpty(values ...string) string {
 }
 ```
 
+`a.canReplayLocked(q)` exists in the current Streams UI and is intentionally side-effect-free. Keep using that helper for banner capability calculation. If an executor is on a branch without it, add an equivalent read-only helper; do not call `prepareReplayStart` while rendering capabilities because it mutates queue state.
+
 - [ ] **Step 5: Add guarded Streams action handler**
 
 Add to `internal/adapters/streams/playback_provider.go`:
@@ -2612,15 +2874,41 @@ func (a *Adapter) moveGuarded(ctx context.Context, ref string, generation uint64
 		return playbackError("", "no active streams queue")
 	}
 	if !mutator(a.active) {
+		providerID := a.active.ProviderID
 		a.mu.Unlock()
-		return playbackError(a.active.ProviderID, "queue has no next item")
+		return playbackError(providerID, "queue has no next item")
 	}
 	a.active.Failures = nil
+	next := queueVersionOf(a.active)
 	a.mu.Unlock()
-	_, err := a.playCurrentGuarded(ctx, queueVersionOf(a.active))
+	_, err := a.playCurrentIfCoreIdle(ctx, next)
 	return err
 }
 ```
+
+Add guarded replay and stop by refactoring the existing helpers rather than duplicating their long bodies:
+
+```go
+func (a *Adapter) ReplayGuarded(ctx context.Context, ref string, generation uint64) error {
+	next, err := a.prepareReplayStartGuarded(ref, generation)
+	if err != nil {
+		return err
+	}
+	_, err = a.playCurrentIfCoreIdle(ctx, next)
+	return err
+}
+
+func (a *Adapter) StopQueueGuarded(ctx context.Context, ref string, generation uint64) error {
+	_ = ctx
+	return a.stopActiveQueueGuarded(ref, generation)
+}
+```
+
+Implementation details:
+
+- Extract the current `prepareReplayStart` into `prepareReplayStartWithStop(stop func(canProceed func(*ActiveQueue) bool, bumpGeneration bool, requireOwned bool) error) (queueVersion, error)`. Existing `Replay` uses the old `stopPreviousOwnedCore`; `ReplayGuarded` uses `stopPreviousOwnedCoreGuarded(ref, generation, ...)`.
+- Return the next `queueVersion` from replay preparation after installing the replacement queue, and pass it into `playCurrentIfCoreIdle`.
+- Extract `stopActiveQueueGuarded(ref, generation)` from the existing `stopActiveQueue` body. It should use the submitted full key, call `coreManager.StopIfSession(capture.AdapterRef, generation)`, clear the active queue only for the matching capture, restore the queue if core reports `matched == false`, and return `"active session changed"` for stale or foreign sessions.
 
 Add `stopPreviousOwnedCoreGuarded` next to `stopPreviousOwnedCore`:
 
@@ -2669,25 +2957,66 @@ func (a *Adapter) stopPreviousOwnedCoreGuarded(ref string, generation uint64, ca
 }
 ```
 
-Add a guarded start variant so a banner next/previous/replay cannot preempt a foreign session that appears after the guarded stop:
+Refactor the start path into one shared starter so direct-stream and resolver branches stay identical except for the final core guard. This prevents the direct branch, resolver branch, and recursive failure-advance branch from drifting apart.
 
 ```go
-func (a *Adapter) playCurrentIfCoreIdle(ctx context.Context) (streamhandoff.StartResult, error) {
-	return a.playCurrentWithStarter(ctx, queueVersion{}, func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+type streamCoreStarter func(SessionManager, core.SessionRequest) (bool, error)
+
+func (a *Adapter) playCurrent(ctx context.Context) (streamhandoff.StartResult, error) {
+	started, _, err := a.playCurrentWithStarter(ctx, queueVersion{}, func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+		return true, coreManager.StartSession(req)
+	})
+	return started, err
+}
+
+func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (streamhandoff.StartResult, error) {
+	started, _, err := a.playCurrentWithStarter(ctx, guard, func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+		return true, coreManager.StartSession(req)
+	})
+	return started, err
+}
+
+func (a *Adapter) playCurrentIfCoreIdle(ctx context.Context, guard queueVersion) (streamhandoff.StartResult, error) {
+	started, matched, err := a.playCurrentWithStarter(ctx, guard, func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
 		return coreManager.StartSessionIfIdle(req)
+	})
+	if err != nil {
+		return streamhandoff.StartResult{}, err
+	}
+	if !matched {
+		return streamhandoff.StartResult{}, playbackError("", "active session changed")
+	}
+	return started, nil
+}
+```
+
+Add guarded URL-to-Streams handoff support for `streamhandoff.GuardedResolver`:
+
+```go
+func (a *Adapter) StartResolvedStream(ctx context.Context, res streamhandoff.Resolution) (streamhandoff.StartResult, error) {
+	started, _, err := a.startResolvedStreamWithStarter(ctx, res, func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+		return true, coreManager.StartSession(req)
+	})
+	return started, err
+}
+
+func (a *Adapter) StartResolvedStreamIfSession(ctx context.Context, res streamhandoff.Resolution, expectedRef string, expectedGeneration uint64) (streamhandoff.StartResult, bool, error) {
+	return a.startResolvedStreamWithStarter(ctx, res, func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+		return coreManager.StartSessionIfSession(req, expectedRef, expectedGeneration)
 	})
 }
 ```
 
-Refactor `playCurrentGuarded` to call a shared `playCurrentWithStarter`. Existing non-banner code passes:
+Implementation details for the refactor:
 
-```go
-func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
-	return true, coreManager.StartSession(req)
-}
-```
-
-In `moveGuarded`, replace `a.playCurrentGuarded(ctx, queueVersionOf(a.active))` with `a.playCurrentIfCoreIdle(ctx)`.
+- Move the current `StartResolvedStream` body into `startResolvedStreamWithStarter(ctx, res, starter) (streamhandoff.StartResult, bool, error)`.
+- After installing the new queue, capture `guard := queueVersionOf(q)` and call `playCurrentWithStarter(ctx, guard, starter)`.
+- If `playCurrentWithStarter` returns `matched == false`, clear `a.active` only if `guard.matches(a.active)` and return `(streamhandoff.StartResult{}, false, nil)`.
+- Move the current `playCurrentGuarded` body into `playCurrentWithStarter(ctx, guard, starter) (streamhandoff.StartResult, bool, error)`.
+- Replace both direct-stream and resolved-stream `coreManager.StartSession(req)` call sites with `matched, err := starter(coreManager, req)`.
+- If `matched == false`, clear the current resolve state for the captured queue and return `(streamhandoff.StartResult{}, false, nil)`.
+- Every recursive retry after `recordStartFailureAndAdvance` must call `playCurrentWithStarter(ctx, next, starter)`, not `playCurrentGuarded`, so guarded banner actions do not become unguarded after skipping a failed item.
+- Existing EOF/on-stop continuation may continue to call `playCurrentGuarded`; that path is not a banner mutation and does not have a submitted session key.
 
 - [ ] **Step 7: Remove Streams local transport controls**
 
@@ -3137,9 +3466,9 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 	display: grid;
 	gap: 10px;
 	padding: 12px 16px;
-	border-bottom: 1px solid color-mix(in oklch, currentColor 16%, transparent);
-	background: oklch(0.17 0.018 250);
-	color: oklch(0.94 0.012 85);
+	border-bottom: 1px solid var(--gr-border);
+	background: var(--gr-surface);
+	color: var(--gr-text);
 }
 
 .gr-now-playing--top {
@@ -3149,7 +3478,7 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 .gr-now-playing--bottom {
 	top: auto;
 	bottom: 0;
-	border-top: 1px solid color-mix(in oklch, currentColor 16%, transparent);
+	border-top: 1px solid var(--gr-border);
 	border-bottom: 0;
 }
 
@@ -3169,7 +3498,7 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 .gr-now-playing-state {
 	font: 700 0.72rem/1.2 var(--font-mono, monospace);
 	text-transform: uppercase;
-	color: oklch(0.78 0.16 80);
+	color: var(--gr-amber);
 }
 
 .gr-now-playing-title,
@@ -3185,7 +3514,7 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 
 .gr-now-playing-source,
 .gr-now-playing-time {
-	color: oklch(0.72 0.018 85);
+	color: var(--gr-dim);
 }
 
 .gr-now-playing-time {
@@ -3211,22 +3540,22 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 	justify-content: space-between;
 	gap: 12px;
 	padding: 8px 10px;
-	border: 1px solid color-mix(in oklch, currentColor 20%, transparent);
+	border: 1px solid var(--gr-border);
 }
 
 .gr-now-playing-message.err {
-	color: oklch(0.82 0.16 30);
+	color: var(--gr-err);
 }
 
 .gr-now-playing-message.ok {
-	color: oklch(0.82 0.14 145);
+	color: var(--gr-ok);
 }
 
 .gr-now-playing-drawer {
 	display: grid;
 	gap: 10px;
 	padding-top: 10px;
-	border-top: 1px solid color-mix(in oklch, currentColor 14%, transparent);
+	border-top: 1px solid var(--gr-border);
 }
 
 .gr-quick-cast-tabs {
@@ -3258,7 +3587,7 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 }
 ```
 
-Keep the class names and top/bottom separation exactly as shown. During implementation, choose nearby existing `app.css` color tokens if these literal OKLCH values conflict with the surrounding palette.
+Keep the class names and top/bottom separation exactly as shown. Prefer existing `app.css` `--gr-*` tokens for component colors; add a new token only if the banner needs a reusable semantic color.
 
 - [ ] **Step 4: Run CSS marker test**
 
@@ -3323,6 +3652,8 @@ Expected: PASS.
 
 Manual browser checks are advisory in this repo because there is no committed Playwright/browser-test stage. Start the app with the operator's local config after the Go verification passes; if a local runnable config is not available, record that browser checks were not executed.
 
+Record the manual-check result in the final implementation commit message body under `Manual browser checks:`. If a PR description is created later, copy the same result there. Do not add a generated browser log file to the repo.
+
 Check these pages manually:
 
 ```text
@@ -3361,12 +3692,14 @@ Expected:
 - URL/Streams/Torrent panel render functions do not emit active transport controls;
 - `now-playing-banner.html` is the only UI template that emits active playback controls.
 
+If `rg` is unavailable, use `git grep -nE` with the same pattern.
+
 - [ ] **Step 6: Final verification before branch completion**
 
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
+cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/adapters/streamhandoff/handoff.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
 cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./... -count=1
 git diff --check
 git status --short
@@ -3383,7 +3716,7 @@ Expected:
 Run only if Step 6 created fixes:
 
 ```bash
-git add internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/ui/static/app.css internal/ui/templates/now-playing-banner.html internal/ui/templates/shell.html internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
+git add internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/adapters/playback.go internal/adapters/playback_test.go internal/adapters/streamhandoff/handoff.go internal/ui/playback.go internal/ui/playback_test.go internal/ui/server.go internal/ui/server_test.go internal/ui/static/app.css internal/ui/templates/now-playing-banner.html internal/ui/templates/shell.html internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/url/playback_provider.go internal/adapters/url/playback_provider_test.go internal/adapters/url/ui.go internal/adapters/url/ui_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/test_helpers_test.go internal/adapters/streams/playback_provider.go internal/adapters/streams/playback_provider_test.go internal/adapters/streams/ui.go internal/adapters/streams/ui_test.go internal/adapters/torrent/adapter.go internal/adapters/torrent/adapter_test.go internal/adapters/torrent/playback_provider.go internal/adapters/torrent/playback_provider_test.go internal/adapters/torrent/ui.go internal/adapters/torrent/ui_test.go
 git commit -m "fix(ui): finish now playing banner integration"
 ```
 
