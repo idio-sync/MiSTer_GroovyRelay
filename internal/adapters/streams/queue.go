@@ -56,6 +56,22 @@ func buildQueue(providerID string, ch Channel, rng *rand.Rand) (*ActiveQueue, er
 	}
 
 	baseItems := cloneStreamItems(items)
+	if len(items) == 1 && items[0].Direct {
+		return &ActiveQueue{
+			ProviderID:     providerID,
+			ChannelID:      ch.ID,
+			ChannelName:    ch.Name,
+			Items:          items,
+			baseItems:      baseItems,
+			loopMode:       loopNone,
+			StartedAt:      time.Now(),
+			Generation:     0,
+			ItemToken:      0,
+			LastResolvedAt: time.Time{},
+			cancelResolve:  nil,
+		}, nil
+	}
+
 	mode := ch.PlayMode
 	if mode == "" {
 		mode = PlayShuffle

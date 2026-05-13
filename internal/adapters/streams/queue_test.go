@@ -64,6 +64,28 @@ func TestBuildQueueFirstThenShuffleSingleItem(t *testing.T) {
 	}
 }
 
+func TestBuildQueueDirectSingleItemUsesLoopNone(t *testing.T) {
+	q, err := buildQueue("toonami-aftermath", Channel{
+		ID:       "east",
+		Name:     "East",
+		PlayMode: PlaySequential,
+		Items: []StreamItem{{
+			ID:     "east",
+			URL:    "http://api.toonamiaftermath.com:3000/est/playlist.m3u8",
+			Direct: true,
+		}},
+	}, rand.New(rand.NewSource(1)))
+	if err != nil {
+		t.Fatalf("buildQueue: %v", err)
+	}
+	if q.loopMode != loopNone {
+		t.Fatalf("loopMode = %v, want loopNone", q.loopMode)
+	}
+	if q.canAdvanceNext() || q.canAdvancePrevious() {
+		t.Fatal("direct single-item queue should not advance next/previous")
+	}
+}
+
 func TestReplaySequentialResetsToFirstItem(t *testing.T) {
 	q := &ActiveQueue{
 		Items: []StreamItem{

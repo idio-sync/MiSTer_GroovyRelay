@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 )
 
 func TestUIRoutes(t *testing.T) {
@@ -169,8 +171,41 @@ func TestStatusJSONDisablesControlsForForeignOwner(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Capabilities.CanNext || got.Capabilities.CanPrevious || got.Capabilities.CanReplay || got.Capabilities.CanStop {
+	if got.Capabilities.CanNext || got.Capabilities.CanPrevious || got.Capabilities.CanReplay || got.Capabilities.CanStop || got.Capabilities.CanPause {
 		t.Fatalf("foreign-owner capabilities = %+v, want read-only controls", got.Capabilities)
+	}
+}
+
+func TestStatusJSONDirectStreamDoesNotAdvertisePauseOrAdvance(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	c.status.AdapterRef = activeAdapterRef(a.active)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req.Header.Set("Accept", "application/json")
+	rr := httptest.NewRecorder()
+	a.handleStatus(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var got StatusView
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if got.Capabilities.CanPause || got.Capabilities.CanNext || got.Capabilities.CanPrevious {
+		t.Fatalf("capabilities = %+v, want no pause/next/previous", got.Capabilities)
+	}
+	if !got.Capabilities.CanReplay || !got.Capabilities.CanStop {
+		t.Fatalf("capabilities = %+v, want replay and stop", got.Capabilities)
 	}
 }
 
