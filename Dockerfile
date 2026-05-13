@@ -9,12 +9,13 @@
 # pipeline; ca-certificates is required for plex.tv TLS; tzdata makes
 # scheduled-recording log timestamps legible.
 #
-# Expected host-networking deployment: docker run --network=host so the
-# stable source UDP port (config.source_port, default 32101) is
-# reachable at the MiSTer's IP-level session key and GDM multicast on
-# 239.0.0.250:32414 works. The EXPOSE directives below document the
-# ports the bridge uses when someone chooses bridged networking — they
-# do not publish by themselves.
+# Expected deployment: docker run --network=host. Host networking avoids
+# Docker NAT on the stable Groovy UDP source port (config.source_port,
+# default 32101) and lets Plex GDM multicast participate on the LAN.
+# A macvlan/ipvlan network with its own LAN IP can also work; plain
+# bridge-mode port publishing is not equivalent for multicast/source
+# tuple behavior. The EXPOSE directives below are documentation only and
+# do not publish ports by themselves.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
@@ -78,5 +79,6 @@ ENV MISTER_GROOVY_LOG_FORMAT=text
 # by the operator's bind mount anyway.
 VOLUME /config
 EXPOSE 32500/tcp
+EXPOSE 32101/udp
 EXPOSE 32412/udp
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

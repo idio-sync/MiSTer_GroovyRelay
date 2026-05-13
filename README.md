@@ -17,13 +17,6 @@ Note: The primary deployment target is a Docker container running on the same ho
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind, Toonami Aftermath; bundled-only, not user IPTV import)
 
-## Future Plans
-- Support for more relay sources:
-  - Moonlight/Sunshine
-- More music visualizer modes
-- Better webui/dashboard and setup wizard
-- Home Assistant integration
-
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board or direct video adapter wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
@@ -62,7 +55,9 @@ docker run --rm -it --network=host \
   idiosync000/mister-groovy-relay:latest --link
 ```
 
-`--network=host` is required. The bridge needs a stable UDP source port for the MiSTer session and Plex GDM multicast on `239.0.0.250:32414`; bridged Docker networking breaks both.
+Host networking is the supported Docker path because it gives the bridge the host's LAN address, avoids Docker NAT on the MiSTer UDP source port, and lets Plex GDM multicast work normally. Simple bridge-mode port publishing is not equivalent: `-p 32500:32500/tcp -p 32101:32101/udp -p 32412:32412/udp` can expose unicast ports, but Docker still NATs outbound UDP and does not make LAN multicast membership reliable.
+
+Advanced L2 container networks can work. With macvlan/ipvlan on `br0` or another LAN-facing parent interface, give the container its own LAN IP, set `bridge.host_ip` to that IP, and make sure the MiSTer, Plex Media Server, and Plex controllers can reach it. In that layout you do not publish ports; the container owns `32500/tcp`, the configured `bridge.mister.source_port` (default `32101/udp`), and Plex GDM multicast (`239.0.0.250`, UDP `32412/32413`) directly.
 
 ## Native builds
 
@@ -121,7 +116,6 @@ Most installs only need the quick start. Use [docs/operations.md](docs/operation
 | Topic | When it matters |
 | --- | --- |
 | Multi-NIC hosts | Cast target appears, but commands never reach the bridge. |
-| Adaptive delta-LZ4 | You want to experiment with lower UDP payloads on motion-light content. |
 | Docker CPU contention | Playback shows motion glitches under host load. |
 | Fake MiSTer diagnostics | You need to prove the bridge is sending packets before debugging the real MiSTer path. |
 

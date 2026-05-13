@@ -34,9 +34,6 @@ Enable it with:
 
 ```bash
 GROOVY_DELTA_LZ4=1 ./mister-groovy-relay --config /path/to/config.toml
-
-# Docker
-docker run ... -e GROOVY_DELTA_LZ4=1 idiosync000/mister-groovy-relay:latest
 ```
 
 The default is off. The feature has no effect unless `bridge.lz4_enabled` is also true, which is the default.
@@ -61,11 +58,11 @@ Two cores is typically enough for one 480p transcode plus Groovy packet framing.
 
 **The target did not appear in Plex's cast menu.**
 
-The bridge uses GDM multicast discovery on port `32414`. Confirm `--network=host`, multicast is not blocked between client and server, linking succeeded, and the bridge process is running.
+The bridge uses Plex GDM multicast on `239.0.0.250`; this implementation listens on UDP `32412` and sends HELLO advertisements to UDP `32413`. Confirm host networking, or an L2 container network with its own LAN IP, multicast is not blocked between client and server, linking succeeded, and the bridge process is running.
 
 **Another Plex cast target overwrote this one.**
 
-Run the bridge from a different IP than the Plex Media Server. Plex cast discovery can confuse targets that appear to come from the same IP.
+Run the bridge from a different IP than the Plex Media Server. Plex cast discovery can confuse targets that appear to come from the same IP. Use macvlan/ipvlan Docker networking to give the container its own IP address if it runs on the same physical host as the Plex server.
 
 **No video appears on the CRT.**
 

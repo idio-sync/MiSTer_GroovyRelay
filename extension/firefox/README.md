@@ -60,22 +60,3 @@ npm run build
 ```
 
 The bridge-side change required to make this extension work is already in `main`. The extension sends `X-Bridge-Extension: 1` on POSTs; the bridge accepts it together with an `moz-extension://`, `chrome-extension://`, or `safari-web-extension://` Origin.
-
-## Release automation
-
-GitHub Actions uploads a signed XPI when a `v*` tag is pushed. If the signed
-extension payload (`manifest.json`, `src/`, or `icons/`) changed since the
-previous release tag, CI signs the new package through AMO. Otherwise, CI reuses
-the signed XPI from the previous release so native-only releases do not need an
-extension version bump.
-
-Repository secrets required:
-
-- `AMO_JWT_ISSUER`
-- `AMO_JWT_SECRET`
-
-Project release tags and extension versions are allowed to differ. Before tagging a release, keep the extension `package.json` and `manifest.json` versions in sync with each other. Bump the extension version when you need AMO to sign a new add-on package.
-
-## Spec
-
-Full design at [docs/specs/2026-04-25-companion-extension-design.md](../../docs/specs/2026-04-25-companion-extension-design.md).
