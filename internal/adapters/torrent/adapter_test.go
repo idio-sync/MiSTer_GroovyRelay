@@ -39,6 +39,15 @@ func (c *recordingCore) Stop() error {
 	return nil
 }
 
+func (c *recordingCore) StopIfSession(ref string, generation uint64) (bool, error) {
+	if c.status.AdapterRef != ref || c.status.Generation != generation {
+		return false, nil
+	}
+	c.stops++
+	c.status = core.SessionStatus{}
+	return true, nil
+}
+
 type closeOnlyTorrentClient struct {
 	closes   int
 	closeErr error

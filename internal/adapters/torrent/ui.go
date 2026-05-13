@@ -66,11 +66,6 @@ func renderLiveStatus(view statusView) string {
 	} else {
 		b.WriteString(`<p class="status">Idle</p>`)
 	}
-	if view.ActiveToken != "" {
-		b.WriteString(`<form hx-post="/ui/adapter/torrent/stop" hx-target="#torrent-live" hx-swap="outerHTML">`)
-		b.WriteString(`<button type="submit">Stop</button>`)
-		b.WriteString(`</form>`)
-	}
 	b.WriteString(`</div>`)
 	return b.String()
 }
