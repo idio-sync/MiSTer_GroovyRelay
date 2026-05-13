@@ -219,6 +219,7 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 			a.active.LastResolvedAt = now
 			a.active.cancelResolve = nil
 			setActiveItemTitleLocked(a.active, capture.ItemID, title)
+			a.markPlaybackRunningLocked()
 		}
 		a.mu.Unlock()
 
@@ -291,6 +292,7 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		a.active.LastResolvedAt = now
 		a.active.cancelResolve = nil
 		setActiveItemTitleLocked(a.active, capture.ItemID, title)
+		a.markPlaybackRunningLocked()
 	}
 	a.mu.Unlock()
 
@@ -765,6 +767,16 @@ func (a *Adapter) setStateLocked(state adapters.State, errMsg string) {
 	a.state = state
 	a.lastErr = errMsg
 	a.stateSince = time.Now()
+}
+
+func (a *Adapter) markPlaybackRunningLocked() {
+	if a.state == adapters.StateStopped {
+		return
+	}
+	if a.state == adapters.StateRunning && a.lastErr == "" {
+		return
+	}
+	a.setStateLocked(adapters.StateRunning, "")
 }
 
 func playbackError(providerID, message string) *StreamsError {

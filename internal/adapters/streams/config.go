@@ -88,7 +88,7 @@ func DefaultConfig() Config {
 		MaxManifestBytes:              1048576,
 		MaxCatalogBytes:               10485760,
 		MaxItemsPerChannel:            5000,
-		MaxConsecutiveFailures:        5,
+		MaxConsecutiveFailures:        25,
 		ManifestRequestTimeoutSeconds: 10,
 		CatalogRequestTimeoutSeconds:  20,
 		YoutubeFormat:                 "b[height<=480]/bv*[height<=480]+ba/bv*+ba/b",

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -302,6 +303,61 @@ func TestResolveFailureRecordsAndSkipsToNextItem(t *testing.T) {
 	}
 	if strings.Contains(a.active.Failures[0].Reason, "aaaaaaaaaaa") || strings.Contains(a.active.Failures[0].Reason, "secret") {
 		t.Fatalf("failure reason leaked resolver details: %q", a.active.Failures[0].Reason)
+	}
+}
+
+func TestDefaultFailureBudgetSkipsBadMTVRunAndContinuesQueue(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	items := []StreamItem{
+		{ID: "aaaaaaaaaaa", SourceID: "aaaaaaaaaaa", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+		{ID: "bbbbbbbbbbb", SourceID: "bbbbbbbbbbb", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+		{ID: "ccccccccccc", SourceID: "ccccccccccc", URL: "https://www.youtube.com/watch?v=ccccccccccc"},
+		{ID: "ddddddddddd", SourceID: "ddddddddddd", URL: "https://www.youtube.com/watch?v=ddddddddddd"},
+		{ID: "eeeeeeeeeee", SourceID: "eeeeeeeeeee", URL: "https://www.youtube.com/watch?v=eeeeeeeeeee"},
+		{ID: "ffffffffff0", SourceID: "ffffffffff0", URL: "https://www.youtube.com/watch?v=ffffffffff0"},
+		{ID: "ggggggggggg", SourceID: "ggggggggggg", URL: "https://www.youtube.com/watch?v=ggggggggggg"},
+	}
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal",
+			PlayMode: PlaySequential,
+			Items:    items,
+		}},
+	}})
+	responses := make([]fakeResolveResponse, 0, len(items))
+	for i := 0; i < len(items)-1; i++ {
+		responses = append(responses, fakeResolveResponse{err: fmt.Errorf("yt-dlp could not resolve item %d", i)})
+	}
+	responses = append(responses, fakeResolveResponse{res: &ytdlp.Resolution{URL: "https://media.example/seventh.mp4"}})
+	a.resolver = &fakeResolver{responses: responses}
+
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"})
+	if err != nil {
+		t.Fatalf("StartResolvedStream should continue past a short bad MTV run: %v", err)
+	}
+	if core.startCalls != 1 || core.lastReq.StreamURL != "https://media.example/seventh.mp4" {
+		t.Fatalf("core start calls=%d req=%+v", core.startCalls, core.lastReq)
+	}
+	if a.active == nil || a.active.Index != len(items)-1 {
+		t.Fatalf("active queue = %+v, want final playable item active", a.active)
+	}
+}
+
+func TestSuccessfulStartClearsPlaybackErrorState(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	a.state = adapters.StateError
+	a.lastErr = "streams playback failed"
+
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	status := a.Status()
+	if status.State != adapters.StateRunning || status.LastError != "" {
+		t.Fatalf("status after successful start = %+v, want running with no error", status)
 	}
 }
 
