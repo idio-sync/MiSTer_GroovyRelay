@@ -66,6 +66,15 @@ Each provider may expose:
 
 The first implementation will add the artwork fields to the Streams manifest/provider definition model and thread them into `ProviderStatusView`. Providers without artwork still render cleanly with a text wordmark.
 
+Artwork URL validation applies to bundled and remote provider metadata before values reach `ProviderStatusView`:
+
+- accept `https` URLs only;
+- require a hostname;
+- reject userinfo;
+- reject IP-literal, localhost, loopback, link-local, private, and otherwise non-global-unicast hosts;
+- bound the stored URL length to 2048 bytes;
+- treat invalid artwork URLs as empty and render the fallback wordmark.
+
 Default selection rules:
 
 - If a queue is active, select its provider and channel group when possible.
@@ -86,7 +95,21 @@ Initial metadata:
 | MTV Rewind | `https://wantmymtv.vercel.app/public/images/rewindlogo.png` | `MTV REWIND` |
 | Cartoon Rewind | `https://cartoonrewind.tv/social.png` | `CARTOON REWIND` |
 
-The Now Playing preview box should render the selected provider artwork whether idle or tuned. If image loading fails, it should show the provider fallback label as a wordmark. This fallback must be part of the HTML/CSS behavior, not only a test assumption.
+The Now Playing preview box should render the selected provider artwork whether idle or tuned. If image loading fails, it should show the provider fallback label as a wordmark. This fallback must be part of the HTML behavior, not only a test assumption.
+
+Use an implementable no-JavaScript fallback pattern:
+
+```html
+<object class="streams-provider-art"
+        data="https://example.invalid/logo.png"
+        type="image/png"
+        role="img"
+        aria-label="Provider name">
+  <span class="streams-provider-wordmark">PROVIDER NAME</span>
+</object>
+```
+
+The renderer may use `type="image/png"` for the initial providers. If a future provider needs another safe image type, add that image type deliberately and test it.
 
 The implementation should keep remote image use optional. A missing or empty logo URL must not block provider rendering or playback.
 
@@ -135,10 +158,20 @@ Mobile/narrow behavior:
 
 ## Interactions
 
-Provider and category controls should re-render `#streams-panel` with explicit selection state. Use htmx-friendly GET or form parameters such as:
+Provider and category controls should re-render `#streams-panel` with explicit selection state. Use htmx-friendly GET or form parameters:
 
 - `provider_id`
 - `group_id`
+
+Selection state contract:
+
+- `handlePanel` reads `provider_id` and `group_id` from the query string.
+- `renderPanel` accepts a resolved selection object instead of deriving selection implicitly from globals.
+- Provider tab controls call `/ui/adapter/streams/panel?provider_id=<id>` and let the server resolve that provider's active or first non-empty group.
+- Category controls call `/ui/adapter/streams/panel?provider_id=<id>&group_id=<id>`.
+- The root `streams-panel` polling `hx-get` includes the current resolved `provider_id` and `group_id` so refresh polling does not snap the guide back to a default selection.
+- Playback, refresh, previous, next, replay, and stop forms include hidden `provider_id` and `group_id` selection fields or otherwise call a response helper that preserves the current selection.
+- Error fragments that replace `#streams-panel` should include enough selection-preserving controls to recover back to the same guide slice.
 
 Channel cells remain playback forms posting to `/ui/adapter/streams/play` with:
 
@@ -161,6 +194,8 @@ The UI should not introduce client-side-only state that can get out of sync with
 ## Data Flow
 
 `Adapter.statusView` should continue to be the panel data source.
+
+`StatusView.Providers` should include enabled providers even when they currently have zero playable channels. The renderer owns provider-level empty states. This changes the current filtering behavior, which drops providers after channel filtering, so empty enabled providers do not disappear or masquerade as "no providers."
 
 Extend view data as needed:
 
@@ -194,7 +229,8 @@ No playback or catalog semantics should depend on artwork metadata.
 
 - Provider tabs, category selectors, channel cells, refresh, and playback controls must be real buttons or forms.
 - Channel cells need clear text labels and visible focus states.
-- The artwork image should use provider-specific alt text.
+- Provider tabs and category selectors should expose selected state with `aria-current="true"` on the selected control.
+- The artwork object should use provider-specific `aria-label` text.
 - The fallback wordmark should be text, not a background image.
 - Color should not be the only active-state signal; use border/position/treatment as well.
 
@@ -230,8 +266,13 @@ Update Streams UI tests to cover:
 - MTV Rewind dense categories, such as `Labels & Scenes`, render without a table layout;
 - channel cells preserve `hx-post="/ui/adapter/streams/play"` and hidden provider/channel inputs;
 - refresh and playback controls preserve their existing htmx routes;
-- provider artwork metadata renders `img` with `src` and `alt`;
+- panel polling preserves the selected `provider_id` and `group_id`;
+- playback, refresh, and transport controls preserve the selected guide slice;
+- provider artwork metadata renders the approved `<object>` fallback structure with `data`, `type`, and `aria-label`;
 - fallback wordmark renders when artwork metadata is absent;
+- unsafe or invalid artwork URLs are dropped and fall back to text;
+- enabled providers with zero playable channels still render a provider-level empty state;
+- selected provider/category controls expose selected state;
 - HTML escaping still protects provider, group, channel, and fallback text;
 - unknown selected provider/group falls back deterministically.
 
