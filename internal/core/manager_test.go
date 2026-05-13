@@ -94,6 +94,24 @@ func (f *fakePlane) Underruns() uint64          { return 0 }
 func (f *fakePlane) WireBytes() uint64          { return 0 }
 func (f *fakePlane) LastACKAge() time.Duration  { return 0 }
 
+type contextDonePlane struct {
+	done chan struct{}
+}
+
+func (f *contextDonePlane) Run(ctx context.Context) error {
+	<-ctx.Done()
+	close(f.done)
+	return ctx.Err()
+}
+func (f *contextDonePlane) Done() <-chan struct{}      { return f.done }
+func (f *contextDonePlane) Position() time.Duration    { return 0 }
+func (f *contextDonePlane) SetFieldOrder(string) error { return nil }
+func (f *contextDonePlane) BlitsTotal() uint64         { return 0 }
+func (f *contextDonePlane) FramesTotal() uint64        { return 0 }
+func (f *contextDonePlane) Underruns() uint64          { return 0 }
+func (f *contextDonePlane) WireBytes() uint64          { return 0 }
+func (f *contextDonePlane) LastACKAge() time.Duration  { return 0 }
+
 type blockingDonePlane struct {
 	done chan struct{}
 	pos  time.Duration
@@ -223,7 +241,7 @@ func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
 	probe := &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 48000, Duration: 1}
 
 	m.mu.Lock()
-	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg"); err != nil {
+	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg", 1); err != nil {
 		m.mu.Unlock()
 		t.Fatalf("startPlaneLocked: %v", err)
 	}
@@ -243,6 +261,92 @@ func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
 	}
 	if st := m.Status(); st.State != StateIdle {
 		t.Fatalf("state after EOF = %s, want %s", st.State, StateIdle)
+	}
+}
+
+func TestManager_SessionGenerationStatusIncrementsOnFreshStarts(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner { return &contextDonePlane{done: make(chan struct{})} }
+
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Stop() })
+	if err := m.StartSession(SessionRequest{StreamURL: "http://example.test/one.mp4", AdapterRef: "url:one", Source: "url", Capabilities: Capabilities{CanSeek: true, CanPause: true}, DirectPlay: true}); err != nil {
+		t.Fatalf("start one: %v", err)
+	}
+	first := m.Status()
+	if first.Generation == 0 {
+		t.Fatalf("first generation = 0, want non-zero")
+	}
+	if got := m.StatusHomeView().Generation; got != first.Generation {
+		t.Fatalf("home generation = %d, want %d", got, first.Generation)
+	}
+
+	if err := m.StartSession(SessionRequest{StreamURL: "http://example.test/two.mp4", AdapterRef: "url:two", Source: "url", Capabilities: Capabilities{CanSeek: true, CanPause: true}, DirectPlay: true}); err != nil {
+		t.Fatalf("start two: %v", err)
+	}
+	second := m.Status()
+	if second.Generation <= first.Generation {
+		t.Fatalf("second generation = %d, want > %d", second.Generation, first.Generation)
+	}
+}
+
+func TestManager_SessionGenerationStableAcrossPauseResumeAndSeek(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner { return &contextDonePlane{done: make(chan struct{})} }
+
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Stop() })
+	req := SessionRequest{StreamURL: "http://example.test/movie.mp4", AdapterRef: "url:movie", Source: "url", Capabilities: Capabilities{CanSeek: true, CanPause: true}, DirectPlay: true}
+	if err := m.StartSession(req); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	gen := m.Status().Generation
+
+	if err := m.Pause(); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if got := m.Status().Generation; got != gen {
+		t.Fatalf("generation after pause = %d, want %d", got, gen)
+	}
+	if err := m.Play(); err != nil {
+		t.Fatalf("play: %v", err)
+	}
+	if got := m.Status().Generation; got != gen {
+		t.Fatalf("generation after play = %d, want %d", got, gen)
+	}
+	if err := m.SeekTo(5000); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	if got := m.Status().Generation; got != gen {
+		t.Fatalf("generation after seek = %d, want %d", got, gen)
 	}
 }
 
@@ -403,6 +507,166 @@ func TestManager_StopIfAdapterRefMatchStopsActive(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("OnStop was not called")
+	}
+}
+
+func TestManager_StartSessionIfAdapterRefMismatchSkipsValidationAndProbe(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("mismatched StartSessionIfAdapterRef must not probe")
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{AdapterRef: "streams:owned"}}
+	m.mu.Unlock()
+
+	matched, err := m.StartSessionIfAdapterRef(SessionRequest{
+		StreamURL:  "http://example.test/movie.mp4",
+		AdapterRef: "streams:foreign",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerMode("unsupported")},
+	}, "streams:foreign")
+	if err != nil {
+		t.Fatalf("StartSessionIfAdapterRef mismatch err = %v, want nil", err)
+	}
+	if matched {
+		t.Fatal("StartSessionIfAdapterRef mismatch returned matched=true")
+	}
+}
+
+func TestManager_StopIfSessionRejectsStaleGeneration(t *testing.T) {
+	m := newTestManager(t)
+	stopped := make(chan string, 1)
+	cancelled := false
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef: "streams:owned",
+		OnStop:     func(reason string) { stopped <- reason },
+	}, generation: 7}
+	m.cancelFn = func() { cancelled = true }
+	m.mu.Unlock()
+
+	matched, err := m.StopIfSession("streams:owned", 6)
+	if err != nil {
+		t.Fatalf("StopIfSession stale generation: %v", err)
+	}
+	if matched {
+		t.Fatal("StopIfSession stale generation returned matched=true")
+	}
+	if cancelled {
+		t.Fatal("StopIfSession stale generation cancelled the active session")
+	}
+	if got := m.Status(); got.AdapterRef != "streams:owned" || got.Generation != 7 {
+		t.Fatalf("status after stale stop = %+v, want streams:owned generation 7", got)
+	}
+	select {
+	case reason := <-stopped:
+		t.Fatalf("OnStop fired on stale generation with reason %q", reason)
+	default:
+	}
+}
+
+func TestManager_StopIfSessionMatchesGeneration(t *testing.T) {
+	m := newTestManager(t)
+	stopped := make(chan string, 1)
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef: "streams:owned",
+		OnStop:     func(reason string) { stopped <- reason },
+	}, generation: 7}
+	m.mu.Unlock()
+
+	matched, err := m.StopIfSession("streams:owned", 7)
+	if err != nil {
+		t.Fatalf("StopIfSession match: %v", err)
+	}
+	if !matched {
+		t.Fatal("StopIfSession match returned matched=false")
+	}
+	if got := m.Status(); got.AdapterRef != "" || got.Generation != 0 {
+		t.Fatalf("status after stop = %+v, want idle with generation 0", got)
+	}
+	select {
+	case reason := <-stopped:
+		if reason != "stopped" {
+			t.Fatalf("OnStop reason = %q, want stopped", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnStop was not called")
+	}
+}
+
+func TestManager_PlaySeekAndStartIfSessionRejectStaleGeneration(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeCalls := 0
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		probeCalls++
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		t.Fatal("stale generation must not start a plane")
+		return nil
+	}
+
+	m := newTestManager(t)
+	req := SessionRequest{
+		StreamURL:    "http://example.test/movie.mp4",
+		AdapterRef:   "streams:owned",
+		Capabilities: Capabilities{CanSeek: true, CanPause: true},
+		DirectPlay:   true,
+	}
+	m.mu.Lock()
+	m.active = &activeSession{
+		req:            req,
+		generation:     7,
+		baseOffsetMs:   1000,
+		pausedPosition: 2 * time.Second,
+	}
+	m.mu.Unlock()
+
+	matched, err := m.PlayIfSession("streams:owned", 6)
+	if err != nil {
+		t.Fatalf("PlayIfSession stale generation: %v", err)
+	}
+	if matched {
+		t.Fatal("PlayIfSession stale generation returned matched=true")
+	}
+
+	matched, err = m.SeekToIfSession("streams:owned", 6, 5000)
+	if err != nil {
+		t.Fatalf("SeekToIfSession stale generation: %v", err)
+	}
+	if matched {
+		t.Fatal("SeekToIfSession stale generation returned matched=true")
+	}
+
+	matched, err = m.StartSessionIfSession(req, "streams:owned", 6)
+	if err != nil {
+		t.Fatalf("StartSessionIfSession stale generation: %v", err)
+	}
+	if matched {
+		t.Fatal("StartSessionIfSession stale generation returned matched=true")
+	}
+
+	if probeCalls != 0 {
+		t.Fatalf("stale generation called probe %d times, want 0", probeCalls)
+	}
+	if got := m.Status(); got.AdapterRef != "streams:owned" || got.Generation != 7 {
+		t.Fatalf("status after stale guarded calls = %+v, want streams:owned generation 7", got)
 	}
 }
 
@@ -1440,7 +1704,7 @@ func TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	err = m.startPlaneLocked(replayReq, 0, probe, cropRect, ffmpegPath)
+	err = m.startPlaneLocked(replayReq, 0, probe, cropRect, ffmpegPath, 1)
 	m.mu.Unlock()
 	if err != nil {
 		t.Fatalf("startPlaneLocked: %v", err)
@@ -1520,7 +1784,7 @@ func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	err = m.startPlaneLocked(newReq, 0, probe, cropRect, ffmpegPath)
+	err = m.startPlaneLocked(newReq, 0, probe, cropRect, ffmpegPath, 2)
 	m.mu.Unlock()
 	if err != nil {
 		t.Fatalf("startPlaneLocked: %v", err)
