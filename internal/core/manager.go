@@ -226,6 +226,13 @@ func (m *Manager) sessionGuardMatchesLocked(g sessionGuard) bool {
 	return g.ref != "" && m.active != nil && m.active.req.AdapterRef == g.ref
 }
 
+func (m *Manager) startGuardMatchesLocked(guard sessionGuard, requireIdle bool) bool {
+	if requireIdle {
+		return m.active == nil
+	}
+	return m.sessionGuardMatchesLocked(guard)
+}
+
 // NewManager constructs a Manager. The Sender must already be bound to the
 // MiSTer's address; Manager does not own its lifecycle (the sender is shared
 // across the process lifetime so its source UDP port remains stable).
@@ -444,7 +451,8 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 // already run Probe/ProbeCrop (passed in as probe + cropRect) — this
 // function must not perform network I/O while the mutex is held.
 func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
-	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect, ffmpegPath string, generation uint64) error {
+	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect, ffmpegPath string,
+	generation uint64, guard sessionGuard, requireIdle bool) error {
 	// 1. Preempt and await prior plane. Drop the lock while awaiting Done()
 	//    so the plane's exit goroutine (which re-acquires m.mu to clear
 	//    m.plane) is free to run.
@@ -512,6 +520,9 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 			m.mu.Unlock()
 			<-prev.Done()
 			m.mu.Lock()
+			if !m.startGuardMatchesLocked(guard, requireIdle) {
+				return errAdapterRefChanged
+			}
 		}
 	}
 	removeSubtitleFile(oldSubtitle)
@@ -619,7 +630,7 @@ func (m *Manager) StartSession(req SessionRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	generation := m.allocateGenerationLocked()
-	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation); err != nil {
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation, sessionGuard{}, false); err != nil {
 		return err
 	}
 	return m.fsm.Transition(EvPlayMedia)
@@ -652,7 +663,7 @@ func (m *Manager) StartSessionIfIdle(req SessionRequest) (bool, error) {
 
 func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGuard, requireIdle bool) (bool, error) {
 	m.mu.Lock()
-	matched := (requireIdle && m.active == nil) || (!requireIdle && m.sessionGuardMatchesLocked(guard))
+	matched := m.startGuardMatchesLocked(guard, requireIdle)
 	m.mu.Unlock()
 	if !matched {
 		return false, nil
@@ -660,7 +671,7 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 
 	if err := validateVisualizerRequest(req); err != nil {
 		m.mu.Lock()
-		stillMatched := (requireIdle && m.active == nil) || (!requireIdle && m.sessionGuardMatchesLocked(guard))
+		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
 		m.mu.Unlock()
 		if !stillMatched {
 			return false, nil
@@ -670,7 +681,7 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
 		m.mu.Lock()
-		stillMatched := (requireIdle && m.active == nil) || (!requireIdle && m.sessionGuardMatchesLocked(guard))
+		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
 		m.mu.Unlock()
 		if !stillMatched {
 			return false, nil
@@ -680,15 +691,14 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if requireIdle {
-		if m.active != nil {
-			return false, nil
-		}
-	} else if !m.sessionGuardMatchesLocked(guard) {
+	if !m.startGuardMatchesLocked(guard, requireIdle) {
 		return false, nil
 	}
 	generation := m.allocateGenerationLocked()
-	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation); err != nil {
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation, guard, requireIdle); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
 		return true, err
 	}
 	return true, m.fsm.Transition(EvPlayMedia)
@@ -856,7 +866,10 @@ func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
-	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath, generation); err != nil {
+	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath, generation, guard, false); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
 		return true, err
 	}
 	return true, m.fsm.Transition(EvPlay)
@@ -1092,7 +1105,10 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
-	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath, generation); err != nil {
+	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath, generation, guard, false); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
 		return true, err
 	}
 	// Seek keeps state=playing; FSM's Seek event is a no-op transition.

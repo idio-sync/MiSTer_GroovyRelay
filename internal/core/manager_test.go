@@ -241,7 +241,7 @@ func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
 	probe := &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 29.97, AudioRate: 48000, Duration: 1}
 
 	m.mu.Lock()
-	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg", 1); err != nil {
+	if err := m.startPlaneLocked(req, 0, probe, nil, "ffmpeg", 1, sessionGuard{}, false); err != nil {
 		m.mu.Unlock()
 		t.Fatalf("startPlaneLocked: %v", err)
 	}
@@ -667,6 +667,84 @@ func TestManager_PlaySeekAndStartIfSessionRejectStaleGeneration(t *testing.T) {
 	}
 	if got := m.Status(); got.AdapterRef != "streams:owned" || got.Generation != 7 {
 		t.Fatalf("status after stale guarded calls = %+v, want streams:owned generation 7", got)
+	}
+}
+
+func TestManager_StartSessionIfSessionPreservesNewSessionInstalledWhileOldPlaneDrains(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		return &contextDonePlane{done: make(chan struct{})}
+	}
+
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Stop() })
+	oldPlane := &blockingDonePlane{done: make(chan struct{})}
+	cancelled := make(chan struct{})
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		StreamURL:  "http://example.test/old.mp4",
+		AdapterRef: "streams:old",
+		DirectPlay: true,
+	}, generation: 7}
+	m.plane = oldPlane
+	m.cancelFn = func() { close(cancelled) }
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition to playing: %v", err)
+	}
+	m.mu.Unlock()
+
+	done := make(chan struct {
+		matched bool
+		err     error
+	}, 1)
+	go func() {
+		matched, err := m.StartSessionIfSession(SessionRequest{
+			StreamURL:  "http://example.test/replacement.mp4",
+			AdapterRef: "streams:old",
+			DirectPlay: true,
+		}, "streams:old", 7)
+		done <- struct {
+			matched bool
+			err     error
+		}{matched: matched, err: err}
+	}()
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("StartSessionIfSession did not cancel old plane")
+	}
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{AdapterRef: "streams:new"}, generation: 8}
+	m.plane = &blockingDonePlane{done: make(chan struct{})}
+	m.mu.Unlock()
+	close(oldPlane.done)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("StartSessionIfSession: %v", got.err)
+	}
+	if got.matched {
+		t.Fatal("StartSessionIfSession should report mismatch after a newer session is installed")
+	}
+	st := m.Status()
+	if st.AdapterRef != "streams:new" || st.Generation != 8 || st.State != StatePlaying {
+		t.Fatalf("status after guarded start race = %+v, want playing streams:new generation 8", st)
 	}
 }
 
@@ -1704,7 +1782,7 @@ func TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	err = m.startPlaneLocked(replayReq, 0, probe, cropRect, ffmpegPath, 1)
+	err = m.startPlaneLocked(replayReq, 0, probe, cropRect, ffmpegPath, 1, sessionGuard{}, false)
 	m.mu.Unlock()
 	if err != nil {
 		t.Fatalf("startPlaneLocked: %v", err)
@@ -1784,7 +1862,7 @@ func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	err = m.startPlaneLocked(newReq, 0, probe, cropRect, ffmpegPath, 2)
+	err = m.startPlaneLocked(newReq, 0, probe, cropRect, ffmpegPath, 2, sessionGuard{}, false)
 	m.mu.Unlock()
 	if err != nil {
 		t.Fatalf("startPlaneLocked: %v", err)
