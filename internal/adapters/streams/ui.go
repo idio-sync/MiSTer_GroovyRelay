@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -64,8 +65,21 @@ type ControlCapabilities struct {
 	CanSeek     bool `json:"can_seek"`
 }
 
+type panelSelectionRequest struct {
+	ProviderID       string
+	GroupID          string
+	ProviderExplicit bool
+	GroupExplicit    bool
+	ErrorMessage     string
+}
+
+type resolvedPanelSelection struct {
+	ProviderID string
+	GroupID    string
+}
+
 func (a *Adapter) ExtraPanelHTML() template.HTML {
-	return template.HTML(a.renderPanel())
+	return template.HTML(a.renderPanel(panelSelectionRequest{}))
 }
 
 func (a *Adapter) statusView() StatusView {
@@ -177,14 +191,19 @@ func (a *Adapter) canReplayLocked(q *ActiveQueue) bool {
 	return ch != nil && len(ch.Items) > 0
 }
 
-func (a *Adapter) renderPanel() string {
+func (a *Adapter) renderPanel(req panelSelectionRequest) string {
 	view := a.statusView()
+	selection := resolvePanelSelection(view, req)
 	var b strings.Builder
 	trigger := "every 5s"
 	if view.Active != nil {
 		trigger = "every 1s"
 	}
-	fmt.Fprintf(&b, `<section class="streams-panel" id="streams-panel" hx-get="/ui/adapter/streams/panel" hx-trigger="%s" hx-swap="outerHTML">`, trigger)
+	fmt.Fprintf(&b, `<section class="streams-panel" id="streams-panel" hx-get="%s" hx-trigger="%s" hx-swap="outerHTML">`,
+		escAttr(panelURL(selection)), trigger)
+	if req.ErrorMessage != "" {
+		fmt.Fprintf(&b, `<div class="gr-callout err streams-error"><p>%s</p></div>`, esc(req.ErrorMessage))
+	}
 	b.WriteString(`<h3>Streams</h3>`)
 	b.WriteString(`<div class="controls">`)
 	button(&b, "/ui/adapter/streams/refresh", "Refresh", false)
@@ -212,7 +231,7 @@ func (a *Adapter) renderPanel() string {
 		b.WriteString(`<p class="status">Idle</p>`)
 	}
 
-	b.WriteString(renderProvidersFromView(view.Providers))
+	b.WriteString(renderProvidersFromViewWithSelection(view.Providers, selection))
 	b.WriteString(`</section>`)
 	return b.String()
 }
@@ -222,6 +241,10 @@ func (a *Adapter) renderProviders() string {
 }
 
 func renderProvidersFromView(providers []ProviderStatusView) string {
+	return renderProvidersFromViewWithSelection(providers, resolvedPanelSelection{})
+}
+
+func renderProvidersFromViewWithSelection(providers []ProviderStatusView, selection resolvedPanelSelection) string {
 	var b strings.Builder
 	b.WriteString(`<div class="streams-providers">`)
 	for _, p := range providers {
@@ -245,11 +268,13 @@ func renderProvidersFromView(providers []ProviderStatusView) string {
 						`<form class="streams-channel" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`+
 						`<input type="hidden" name="provider_id" value="%s">`+
 						`<input type="hidden" name="channel_id" value="%s">`+
+						`<input type="hidden" name="guide_provider_id" value="%s">`+
+						`<input type="hidden" name="guide_group_id" value="%s">`+
 						`<button type="submit">%s</button>`+
 						`<span class="muted">%d items</span>`+
 						`</form>`+
 						`</td>`,
-					escAttr(p.ID), escAttr(ch.ID), esc(ch.Name), ch.ItemCount)
+					escAttr(p.ID), escAttr(ch.ID), escAttr(selection.ProviderID), escAttr(selection.GroupID), esc(ch.Name), ch.ItemCount)
 				if i%streamsChannelsPerRow == streamsChannelsPerRow-1 || i == len(group.Channels)-1 {
 					b.WriteString(`</tr>`)
 				}
@@ -289,6 +314,108 @@ type groupedChannelView struct {
 	ID       string
 	Name     string
 	Channels []ChannelStatusView
+}
+
+func selectionFromRequest(r *http.Request) panelSelectionRequest {
+	if r == nil {
+		return panelSelectionRequest{}
+	}
+	_ = r.ParseForm()
+	providerID, providerExplicit := selectionValue(r, "guide_provider_id", "provider_id")
+	groupID, groupExplicit := selectionValue(r, "guide_group_id", "group_id")
+	return panelSelectionRequest{
+		ProviderID:       providerID,
+		GroupID:          groupID,
+		ProviderExplicit: providerExplicit,
+		GroupExplicit:    groupExplicit,
+	}
+}
+
+func selectionValue(r *http.Request, primary, fallback string) (string, bool) {
+	if values, ok := r.Form[primary]; ok {
+		for _, value := range values {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed, true
+			}
+		}
+		return "", true
+	}
+	if values, ok := r.Form[fallback]; ok {
+		for _, value := range values {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed, true
+			}
+		}
+		return "", true
+	}
+	return "", false
+}
+
+func resolvePanelSelection(view StatusView, req panelSelectionRequest) resolvedPanelSelection {
+	if len(view.Providers) == 0 {
+		return resolvedPanelSelection{}
+	}
+	providerIdx := -1
+	if req.ProviderID != "" {
+		for i, provider := range view.Providers {
+			if provider.ID == req.ProviderID {
+				providerIdx = i
+				break
+			}
+		}
+	}
+	if providerIdx < 0 && !req.ProviderExplicit && view.Active != nil {
+		for i, provider := range view.Providers {
+			if provider.ID == view.Active.ProviderID {
+				providerIdx = i
+				break
+			}
+		}
+	}
+	if providerIdx < 0 {
+		providerIdx = 0
+	}
+
+	provider := view.Providers[providerIdx]
+	groups := groupedChannels(provider)
+	groupID := ""
+	if req.GroupID != "" {
+		for _, group := range groups {
+			if group.ID == req.GroupID {
+				groupID = group.ID
+				break
+			}
+		}
+	}
+	if groupID == "" && !req.GroupExplicit && view.Active != nil && view.Active.ProviderID == provider.ID {
+		for _, channel := range provider.Channels {
+			if channel.ID == view.Active.ChannelID {
+				groupID = channel.GroupID
+				if groupID == "" {
+					groupID = ungroupedGroupID
+				}
+				break
+			}
+		}
+	}
+	if groupID == "" && len(groups) > 0 {
+		groupID = groups[0].ID
+	}
+	return resolvedPanelSelection{ProviderID: provider.ID, GroupID: groupID}
+}
+
+func panelURL(selection resolvedPanelSelection) string {
+	parts := make([]string, 0, 2)
+	if selection.ProviderID != "" {
+		parts = append(parts, "provider_id="+url.QueryEscape(selection.ProviderID))
+	}
+	if selection.GroupID != "" {
+		parts = append(parts, "group_id="+url.QueryEscape(selection.GroupID))
+	}
+	if len(parts) != 0 {
+		return "/ui/adapter/streams/panel?" + strings.Join(parts, "&")
+	}
+	return "/ui/adapter/streams/panel"
 }
 
 func groupedChannels(provider ProviderStatusView) []groupedChannelView {
@@ -339,10 +466,18 @@ func button(b *strings.Builder, path, label string, disabled bool) {
 		escAttr(path), dis, esc(label))
 }
 
-func (a *Adapter) respondPanel(w http.ResponseWriter, status int) {
+func (a *Adapter) respondPanel(w http.ResponseWriter, r *http.Request, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(a.renderPanel()))
+	_, _ = w.Write([]byte(a.renderPanel(selectionFromRequest(r))))
+}
+
+func (a *Adapter) respondPanelWithError(w http.ResponseWriter, r *http.Request, msg string) {
+	req := selectionFromRequest(r)
+	req.ErrorMessage = msg
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(a.renderPanel(req)))
 }
 
 func (a *Adapter) respondControlError(w http.ResponseWriter, status int, msg string) {

@@ -187,3 +187,57 @@ func TestExtraPanelHTMLRendersProviderArtworkFallbackWithoutEmptyImage(t *testin
 		t.Fatalf("fallback artwork shell missing or unescaped: %s", html)
 	}
 }
+
+func TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Groups: []ChannelGroup{
+			{ID: "shows", Name: "MTV Shows", Order: 10},
+			{ID: "genres", Name: "Genres", Order: 20},
+		},
+		Channels: []Channel{
+			{ID: "120minutes", Name: "120 Minutes", GroupID: "shows", Items: []StreamItem{{ID: "AAAAAAAAAAA"}}},
+			{ID: "metal", Name: "Headbangers Ball", GroupID: "genres", Items: []StreamItem{{ID: "BBBBBBBBBBB"}}},
+		},
+	}})
+
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "genres", ProviderExplicit: true, GroupExplicit: true})
+	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
+		t.Fatalf("polling URL did not preserve selection: %s", html)
+	}
+	if !strings.Contains(html, `name="guide_group_id" value="genres"`) {
+		t.Fatalf("forms did not preserve group_id: %s", html)
+	}
+}
+
+func TestRenderPanelUnknownSelectionFallsBackDeterministically(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "bogus", GroupID: "missing", ProviderExplicit: true, GroupExplicit: true})
+	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=cartoon-rewind`) {
+		t.Fatalf("bogus provider should fall back to first provider by status order: %s", html)
+	}
+}
+
+func TestRenderPanelProviderOnlySelectionUsesActiveGroup(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Groups: []ChannelGroup{
+			{ID: "shows", Name: "MTV Shows", Order: 10},
+			{ID: "genres", Name: "Genres", Order: 20},
+		},
+		Channels: []Channel{
+			{ID: "120minutes", Name: "120 Minutes", GroupID: "shows", Items: []StreamItem{{ID: "AAAAAAAAAAA"}}},
+			{ID: "metal", Name: "Headbangers Ball", GroupID: "genres", Items: []StreamItem{{ID: "BBBBBBBBBBB"}}},
+		},
+	}})
+	a.active = &ActiveQueue{ProviderID: "mtv-rewind", ChannelID: "metal", Items: []StreamItem{{ID: "BBBBBBBBBBB"}}}
+
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", ProviderExplicit: true})
+	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
+		t.Fatalf("provider-only selection should resolve active group: %s", html)
+	}
+}

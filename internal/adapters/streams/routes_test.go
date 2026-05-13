@@ -250,8 +250,11 @@ func TestHandlePlayRejectsMalformedRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			rr := httptest.NewRecorder()
 			a.handlePlay(rr, req)
-			if rr.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusBadRequest, rr.Body.String())
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			if body := rr.Body.String(); !strings.Contains(body, `class="gr-callout err streams-error"`) {
+				t.Fatalf("HTML error response missing swappable callout: %s", body)
 			}
 		})
 	}
@@ -362,5 +365,19 @@ func TestHandleProvidersJSON(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("providers = %d, want 2", len(got))
+	}
+}
+
+func TestHandlePanelReadsSelectionQuery(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/panel?provider_id=mtv-rewind&group_id=genres", nil)
+	rr := httptest.NewRecorder()
+	a.handlePanel(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=`) {
+		t.Fatalf("panel did not read provider selection: %s", body)
 	}
 }

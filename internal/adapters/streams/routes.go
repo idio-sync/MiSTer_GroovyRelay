@@ -36,8 +36,7 @@ func (a *Adapter) UIRoutes() []adapters.Route {
 }
 
 func (a *Adapter) handlePanel(w http.ResponseWriter, r *http.Request) {
-	_ = r
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +44,7 @@ func (a *Adapter) handleStatus(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, a.statusView())
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handleProviders(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +116,7 @@ func (a *Adapter) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, refreshStatusView(status))
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +150,7 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, started)
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handleReplay(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +162,7 @@ func (a *Adapter) handleReplay(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, a.statusView())
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handleNext(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +174,7 @@ func (a *Adapter) handleNext(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, a.statusView())
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handlePrevious(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +186,7 @@ func (a *Adapter) handlePrevious(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, a.statusView())
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +198,7 @@ func (a *Adapter) handleStop(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, a.statusView())
 		return
 	}
-	a.respondPanel(w, http.StatusOK)
+	a.respondPanel(w, r, http.StatusOK)
 }
 
 func (a *Adapter) validateRefreshProvider(providerID string) error {
@@ -262,7 +261,7 @@ func (a *Adapter) respondRouteError(w http.ResponseWriter, r *http.Request, stat
 		respondJSON(w, status, routeErrorResponse{Error: msg})
 		return
 	}
-	a.respondControlError(w, status, msg)
+	a.respondPanelWithError(w, r, msg)
 }
 
 func refreshStatusView(status RefreshStatus) refreshStatusResponse {
