@@ -455,15 +455,15 @@ body {
 #panel:has(.gr-config-head) .adapter-extras .section {
 	margin: 0;
 }
-#panel:has(.streams-panel) {
+#panel:has(> .gr-config-head):has(.streams-panel) {
 	max-width: min(1440px, 100%);
 }
-#panel:has(.streams-panel) .gr-config-head,
-#panel:has(.streams-panel) > .section,
-#panel:has(.streams-panel) > form {
+#panel:has(> .gr-config-head):has(.streams-panel) .gr-config-head,
+#panel:has(> .gr-config-head):has(.streams-panel) > .section,
+#panel:has(> .gr-config-head):has(.streams-panel) > form {
 	max-width: 860px;
 }
-#panel:has(.streams-panel) .adapter-extras {
+#panel:has(> .gr-config-head):has(.streams-panel) .adapter-extras {
 	width: min(100%, 1320px);
 	max-width: none;
 }
@@ -1334,7 +1334,7 @@ body {
 		border-right: 0;
 		border-bottom: 1px solid var(--gr-border);
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
 	}
 	.streams-channel-grid {
 		grid-template-columns: 1fr;
