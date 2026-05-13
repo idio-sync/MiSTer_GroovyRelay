@@ -416,7 +416,7 @@ func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
 		form    string
 	}{
 		{name: "refresh", handler: a.handleRefresh, path: "/ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "play", handler: a.handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
+		{name: "play", handler: a.handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
 		{name: "previous", handler: a.handlePrevious, path: "/ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
 		{name: "next", handler: a.handleNext, path: "/ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
 		{name: "replay", handler: a.handleReplay, path: "/ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
@@ -449,7 +449,7 @@ func TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage(t *testing.T
 			name:    "bad play",
 			handler: a.handlePlay,
 			path:    "/ui/adapter/streams/play",
-			form:    "provider_id=mtv-rewind&guide_group_id=genres",
+			form:    "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres",
 			want:    "channel_id or item_id required",
 		},
 		{
