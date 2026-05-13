@@ -278,7 +278,15 @@ func TestPlaybackBannerActiveNonProviderIsReadOnly(t *testing.T) {
 }
 
 func TestPlaybackActionDispatchesToOwningProvider(t *testing.T) {
-	fake := &fakePlaybackAdapter{name: "url", enabled: true, owns: true, actionMsg: "paused"}
+	fake := &fakePlaybackAdapter{
+		name:      "url",
+		enabled:   true,
+		owns:      true,
+		actionMsg: "paused",
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{{ID: adapters.PlaybackActionPause, Label: "Pause", Enabled: true}},
+		},
+	}
 	_, mux := newTestServer(t, func(c *Config) {
 		c.Registry = adapters.NewRegistryWith(fake)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 9}}
@@ -343,8 +351,76 @@ func TestPlaybackActionRejectsActiveAdapterWithoutPlaybackProvider(t *testing.T)
 	}
 }
 
+func TestPlaybackActionRejectsProviderThatDoesNotOwnSnapshot(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		owns:    false,
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{{ID: adapters.PlaybackActionStop, Label: "Stop", Enabled: true}},
+		},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10}}
+	})
+	form := url.Values{"action": {"stop"}, "adapter_ref": {"url:abc"}, "generation": {"10"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.actionCalls) != 0 {
+		t.Fatalf("provider was called despite owns=false: %#v", fake.actionCalls)
+	}
+	if !strings.Contains(rr.Body.String(), "playback action unavailable") {
+		t.Fatalf("missing owns=false error: %s", rr.Body.String())
+	}
+}
+
+func TestPlaybackActionRejectsSeekOnActionRoute(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		owns:    true,
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{{ID: adapters.PlaybackActionSeek, Label: "Seek", Enabled: true}},
+			Seek:    &adapters.PlaybackSeek{Enabled: true, OffsetMS: 0, DurationMS: 60000},
+		},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10, Duration: time.Minute}}
+	})
+	form := url.Values{"action": {adapters.PlaybackActionSeek}, "adapter_ref": {"url:abc"}, "generation": {"10"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.actionCalls) != 0 {
+		t.Fatalf("seek dispatched through action route: %#v", fake.actionCalls)
+	}
+	if !strings.Contains(rr.Body.String(), "seek must use seek route") {
+		t.Fatalf("missing action-route seek error: %s", rr.Body.String())
+	}
+}
+
 func TestPlaybackSeekDispatchesOffset(t *testing.T) {
-	fake := &fakePlaybackAdapter{name: "url", enabled: true, owns: true}
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		owns:    true,
+		view: adapters.PlaybackBannerAdapterView{
+			Seek: &adapters.PlaybackSeek{Enabled: true, OffsetMS: 0, DurationMS: 60000},
+		},
+	}
 	_, mux := newTestServer(t, func(c *Config) {
 		c.Registry = adapters.NewRegistryWith(fake)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 12, Duration: time.Minute}}
@@ -454,6 +530,49 @@ func TestQuickCastRejectsDisabledTabBeforeProviderDispatch(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "url adapter is disabled") {
 		t.Fatalf("disabled reason missing: %s", rr.Body.String())
+	}
+}
+
+func TestQuickCastMultipartTempFileRemovedAfterProviderReturns(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:     "torrent",
+		enabled:  true,
+		quickMsg: "started",
+		tabs: []adapters.QuickCastTab{{
+			ID:       "torrent-file",
+			Label:    "Torrent File",
+			Enabled:  true,
+			Encoding: adapters.QuickCastEncodingMultipart,
+		}},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("tab_id", "torrent-file")
+	part, err := mw.CreateFormFile("torrent_file", "near-limit.torrent")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	_, _ = part.Write(bytes.Repeat([]byte("x"), (4<<20)+1))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.quickCalls) != 1 || fake.quickCalls[0].File == nil {
+		t.Fatalf("quick calls = %#v", fake.quickCalls)
+	}
+	file, err := fake.quickCalls[0].File.Header.Open()
+	if err == nil {
+		file.Close()
+		t.Fatalf("multipart temp file still opens after handler returned")
 	}
 }
 

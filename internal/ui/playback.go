@@ -95,6 +95,9 @@ func parsePlaybackActionRequest(r *http.Request, requireOffset bool) (adapters.P
 	if req.Action == "" {
 		return adapters.PlaybackActionRequest{}, fmt.Errorf("action required")
 	}
+	if !requireOffset && req.Action == adapters.PlaybackActionSeek {
+		return adapters.PlaybackActionRequest{}, fmt.Errorf("seek must use seek route")
+	}
 	if requireOffset {
 		offset, err := strconv.Atoi(strings.TrimSpace(r.Form.Get("offset_ms")))
 		if err != nil {
@@ -116,6 +119,11 @@ func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, 
 		s.renderPlaybackMessage(w, r, "err", "active adapter does not expose playback controls", false, "")
 		return
 	}
+	providerView, owns := provider.PlaybackBanner(r.Context(), snap)
+	if !owns || !playbackActionEnabled(providerView, req) {
+		s.renderPlaybackMessage(w, r, "err", "playback action unavailable", false, "")
+		return
+	}
 	result, err := provider.HandlePlaybackAction(r.Context(), req)
 	if err != nil {
 		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
@@ -126,6 +134,9 @@ func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, 
 
 func (s *Server) handlePlaybackQuickCast(w http.ResponseWriter, r *http.Request) {
 	req, err := parseQuickCastRequest(w, r)
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	if err != nil {
 		s.renderPlaybackMessage(w, r, "err", err.Error(), true, "")
 		return
@@ -153,6 +164,18 @@ func (s *Server) handlePlaybackQuickCast(w http.ResponseWriter, r *http.Request)
 		msg = "cast started"
 	}
 	s.renderPlaybackMessage(w, r, "ok", msg, false, "")
+}
+
+func playbackActionEnabled(view adapters.PlaybackBannerAdapterView, req adapters.PlaybackActionRequest) bool {
+	if req.Action == adapters.PlaybackActionSeek {
+		return view.Seek != nil && view.Seek.Enabled
+	}
+	for _, action := range view.Actions {
+		if action.ID == req.Action {
+			return action.Enabled
+		}
+	}
+	return false
 }
 
 const maxQuickCastMultipartBytes = 4*1024*1024 + 64*1024
