@@ -1,7 +1,7 @@
 # Global Now Playing Banner Design
 
 **Date:** 2026-05-13  
-**Status:** Design approved; code-review fixes applied; awaiting user review of written spec  
+**Status:** Design reviewed; fixes applied; awaiting user review of written spec
 **Scope:** Add one global now-playing and quick-cast command band to the non-setup web UI, and remove duplicated active playback controls from adapter settings pages.
 
 ## Problem
@@ -27,8 +27,9 @@ The UI should expose one predictable place for active playback state and control
 - No user-facing top/bottom placement setting in this pass.
 - No broad redesign of the sidebar, Status page, or adapter settings pages.
 - No new JavaScript framework.
-- No attempt to implement Plex, Jellyfin, or DLNA web-UI transport controls unless they opt into the new interface later.
+- No attempt to implement Plex, Jellyfin, or DLNA banner transport controls unless they opt into the new interface later. DLNA already supports protocol-level pause/seek/stop, but exposing those controls in the web banner is out of scope for the first pass.
 - No removal of source browsing controls such as Streams channel buttons.
+- No changes to Plex Companion timelines, Plex controller behavior, Jellyfin reporting, or DLNA eventing.
 
 ## Decisions
 
@@ -41,7 +42,7 @@ The UI should expose one predictable place for active playback state and control
 | Active controls | All active playback transport controls live only in the banner. |
 | Source launch | URL paste and Torrent magnet/upload are available from a Cast drawer in the banner. |
 | Adapter pages | Keep source setup, browsing, history, cookies, provider refresh, and channel-launch surfaces. Remove active transport controls. |
-| Adapter integration | Use a generic adapter opt-in interface, not UI hard-coding by adapter name. |
+| Adapter integration | Define generic adapter opt-in interfaces in `internal/adapters`, not in `internal/ui`, and avoid UI hard-coding by adapter name. |
 
 ## Layout
 
@@ -61,7 +62,7 @@ Open Cast drawer:
 
 - appears directly below the command band;
 - shows tabs or segmented controls for available quick-cast providers;
-- URL tab exposes the URL adapter's URL input and mode selection as needed;
+- URL tab exposes the URL adapter's URL input and its auto/yt-dlp/direct mode selector when yt-dlp mode selection is available;
 - Torrent tab exposes magnet input and .torrent upload;
 - submissions start playback through existing adapter logic and re-render the banner.
 
@@ -79,10 +80,12 @@ Core remains the source of truth for:
 - title;
 - position;
 - duration;
-- started-at timestamp for the current active session;
+- monotonic session generation for the current active session;
 - modeline and timing data already exposed to the Status page.
 
-The banner builder consumes `core.StatusHomeView`, not only `core.SessionStatus`, because the banner needs `Source` and `Title` as first-class fields. It derives a small `PlaybackBannerSnapshot` for providers, containing at least state, source, title, adapter ref, position, duration, started-at, media kind, and modeline.
+The banner builder consumes `core.StatusHomeView`, not only `core.SessionStatus`, because the banner needs `Source` and `Title` as first-class fields. It derives a small `PlaybackBannerSnapshot` for providers.
+
+Before banner control routes are implemented, core must expose a process-local monotonic session generation on `SessionStatus` and `StatusHomeView`. This generation increments only when a new logical session starts or preempts the current session. It must remain stable across pause/resume, seek, and same-session plane rebuilds. `StartedAt` is not sufficient because the current manager resets it when `startPlaneLocked` rebuilds the plane for resume and seek.
 
 Adapters remain the source of truth for adapter-specific commands and labels. The UI asks the active adapter for controls through an optional interface and dispatches actions back through that same interface.
 
@@ -113,6 +116,12 @@ It includes:
 - drawer open/closed state;
 - transient error or success message.
 
+### Shared Provider Types
+
+The playback provider interfaces and DTOs live in `internal/adapters`, beside optional interfaces such as `RouteProvider` and `LinkAware`. The UI discovers them by iterating the registry and type-asserting registered adapters. The types must not live in `internal/ui`, because concrete adapters cannot import UI without reversing the existing layering.
+
+If the DTOs need core enum types, `internal/adapters` may import `internal/core`; core must not import `internal/adapters`.
+
 ### `PlaybackControlProvider`
 
 Optional adapter interface for active playback controls.
@@ -126,9 +135,62 @@ type PlaybackControlProvider interface {
 }
 ```
 
-The boolean means the adapter owns the supplied session and can enrich or control it. Providers must recheck ownership before mutating playback, either under adapter locks or with core guarded methods such as `StopIfAdapterRef`, `PauseIfAdapterRef`, and `SeekToIfAdapterRef`.
+The boolean means the adapter owns the supplied session and can enrich or control it. Providers must recheck ownership before mutating playback, either under adapter locks or with full session-key guarded core methods.
 
-`PlaybackActionRequest` must include the submitted action ID, the expected active `AdapterRef`, and the expected active `StartedAt` timestamp rendered with the control. The generic route compares those expected values to a fresh core snapshot before dispatch. Providers repeat the same check before mutation. This prevents stale controls from an older session mutating a newer session from the same adapter.
+`PlaybackActionRequest` must include the submitted action ID and the expected active session key rendered with the control. A session key is `{adapter_ref, generation}`. The generic route compares the submitted key to a fresh core snapshot before dispatch. Providers repeat the same check before mutation. This prevents stale controls from an older session mutating a newer session from the same adapter.
+
+DTO field requirements:
+
+```go
+type PlaybackBannerSnapshot struct {
+    State       core.State
+    Source      string
+    Title       string
+    AdapterRef  string
+    Generation  uint64
+    Position    time.Duration
+    Duration    time.Duration
+    StartedAt   time.Time
+    MediaKind   core.MediaKind
+    Modeline    string
+}
+
+type PlaybackBannerAdapterView struct {
+    Title         string
+    Subtitle      string
+    SourceDisplay string
+    Actions       []PlaybackAction
+    Seek          *PlaybackSeek
+}
+
+type PlaybackAction struct {
+    ID             string
+    Label          string
+    Icon           string
+    Enabled        bool
+    DisabledReason string
+}
+
+type PlaybackActionRequest struct {
+    Action     string
+    AdapterRef string
+    Generation uint64
+    OffsetMS   int
+}
+
+type PlaybackActionResult struct {
+    Message string
+}
+
+type PlaybackSeek struct {
+    Enabled        bool
+    DisabledReason string
+    OffsetMS       int
+    DurationMS     int
+}
+```
+
+`PlaybackSeek` should carry the same enabled/disabled semantics as actions plus the current offset/duration needed to render a range input.
 
 ### `QuickCastProvider`
 
@@ -147,9 +209,59 @@ This keeps URL and Torrent launch logic owned by their adapters while allowing t
 
 `QuickCastTab` includes label, enabled state, disabled reason, and form encoding. URL quick-cast uses ordinary form encoding. Torrent upload requires multipart form handling for `.torrent` files, with the same upload limits and validation behavior as the existing Torrent adapter route.
 
+DTO field requirements:
+
+```go
+type QuickCastTab struct {
+    ID             string
+    Label          string
+    Enabled        bool
+    DisabledReason string
+    Encoding       string // "form" or "multipart"
+    Fields         []QuickCastField
+}
+
+type QuickCastRequest struct {
+    TabID  string
+    Values map[string]string
+    File   *QuickCastFile
+}
+
+type QuickCastResult struct {
+    Message    string
+    AdapterRef string
+}
+
+type QuickCastField struct {
+    Name        string
+    Label       string
+    Type        string // "url", "text", "file", "select", "radio"
+    Placeholder string
+    Required    bool
+    Options     []QuickCastOption
+}
+
+type QuickCastOption struct {
+    Value string
+    Label string
+}
+
+type QuickCastFile struct {
+    FieldName string
+    Header    *multipart.FileHeader
+}
+```
+
+Quick-cast starts a new session and may preempt the current active session, matching existing page-local URL play, Streams channel play, and Torrent start behavior. No confirmation prompt is required in the first pass.
+
 ### Shell Partial
 
-Add a template such as `now-playing-banner.html` and render it from `shell.html` for non-setup pages. It should poll lightly while idle and more frequently while playing or paused.
+Add a template such as `now-playing-banner.html` and render it from `shell.html` for non-setup pages. Polling cadence:
+
+- idle or read-only active sessions: every 5 seconds;
+- active unknown-duration sessions: every 3 seconds;
+- active sessions with a timeline/seek readout: every 1 second;
+- after a mutating action, re-render immediately from fresh state.
 
 ### Adapter Panel Changes
 
@@ -186,10 +298,17 @@ Plex/Jellyfin/DLNA:
 6. UI renders the banner with core state plus adapter enrichment.
 7. A transport button posts to a generic route such as `/ui/playback/action` with hidden expected session fields.
 8. The route is mounted through the existing UI POST/CSRF middleware.
-9. The route snapshots the active session and compares the submitted expected `AdapterRef` and `StartedAt` with the fresh snapshot.
+9. The route snapshots the active session and compares the submitted expected `AdapterRef` and `Generation` with the fresh snapshot.
 10. If the expected session still matches, the route resolves the owning provider and calls `HandlePlaybackAction`.
-11. The provider revalidates ownership and performs the action.
+11. The provider revalidates ownership and performs the action through adapter locks, full session-key guarded core methods, or both.
 12. The route re-renders the banner from fresh state.
+
+Stale-check boundary:
+
+- The generic UI route owns the first full session-key check and rejects stale submissions before adapter dispatch.
+- Core owns guarded mutations for core transport operations. Add or expose full-key methods such as `PauseIfSession`, `PlayIfSession`, `StopIfSession`, and `SeekToIfSession`, or an equivalent helper that checks `{adapter_ref, generation}` under `Manager.mu`.
+- Adapter-owned actions that are not direct core transport operations, such as Streams next/previous/replay, own their adapter-level full-key check under the adapter lock before changing queues.
+- Existing `*IfAdapterRef` methods are not sufficient for banner actions because they cannot distinguish two logical sessions from the same adapter when adapter refs are reused or stale DOM remains.
 
 Quick-cast flow:
 
@@ -199,6 +318,13 @@ Quick-cast flow:
 4. Generic quick-cast route dispatches to the selected provider.
 5. Provider reuses existing adapter launch logic.
 6. Banner re-renders with success or inline error.
+
+Route layout:
+
+- `GET /ui/playback/banner` renders only the banner partial for htmx polling.
+- `POST /ui/playback/action` handles button actions: pause, resume, stop, replay, previous, next.
+- `POST /ui/playback/seek` handles absolute seek submissions.
+- `POST /ui/playback/quick-cast` handles URL and Torrent quick-cast submissions, including multipart torrent uploads.
 
 ## Actions
 
@@ -224,7 +350,7 @@ Each action definition includes:
 
 Seek is represented separately from button actions because it carries an absolute `offset_ms` value.
 
-The expected session key is the pair of active `AdapterRef` and active `StartedAt` timestamp. If implementation later adds a monotonic core session generation, that generation should replace or augment `StartedAt`; the invariant is that a stale control must not match a newer active session, even when both sessions belong to the same adapter.
+The expected session key is the pair of active `AdapterRef` and active core session generation. The invariant is that a stale control must not match a newer active session, even when both sessions belong to the same adapter.
 
 ## Error Handling
 
@@ -264,6 +390,12 @@ Provider unavailable:
 - quick-cast tab is omitted or disabled with a reason;
 - active sessions remain visible read-only.
 
+Inline error clear/dismiss behavior:
+
+- action errors render in the banner once and are cleared by the next successful banner poll or successful action;
+- quick-cast validation/start errors keep the drawer open and remain visible until the next quick-cast submit, drawer close, or successful poll after playback state changes;
+- the banner includes a close control for manually dismissing the current transient message.
+
 ## Accessibility
 
 - Banner controls are real buttons or forms.
@@ -295,8 +427,12 @@ This design supersedes the local playback-control parts of the Streams focused g
 
 This design is related to the companion extension mini remote, but does not reuse its extension-gated JSON routes. The web UI remains server-rendered HTML with htmx and uses UI-local routes so extension security concerns do not leak into the shell.
 
+The banner does not own Plex Companion timelines, Jellyfin progress reporting, or DLNA eventing. Those adapter protocols keep their existing reporting/control paths.
+
 ## Implementation Invariants
 
+- Add and expose a monotonic core session generation before implementing banner controls.
+- Keep the generation stable across pause/resume, seek, and same-session plane rebuilds.
 - Build banner display from `core.StatusHomeView` or an equivalent richer snapshot, not only from `core.SessionStatus`.
 - Do not parse `AdapterRef` to identify the source except as a legacy fallback when `Source` is empty.
 - Do not add UI `switch` statements for adapter-specific playback controls; use provider interfaces.
@@ -317,13 +453,23 @@ Unit tests in `internal/ui`:
 - banner render uses source/title data from `StatusHomeView`;
 - banner appears on `/ui/`, `/ui/bridge`, `/ui/diagnostics`, and `/ui/adapter/{name}` shell renders;
 - banner is absent from `/ui/setup` and setup-step shell renders;
+- banner polling cadence is 5s idle/read-only, 3s unknown-duration active, and 1s active timeline;
 - fake playback providers can add previous/next/replay/stop;
 - generic action route dispatches only to the active owning provider;
 - stale-session action with changed `AdapterRef` returns an inline error and does not call the wrong provider;
-- stale-session action with the same adapter but a different `StartedAt` returns an inline error before provider dispatch;
+- stale-session action with the same adapter but a different generation returns an inline error before provider dispatch;
+- providers have acceptance tests proving they recheck session generation before mutation;
+- inline action errors clear on successful poll/action and can be dismissed;
 - quick-cast tabs render based on enabled providers;
 - quick-cast tabs expose disabled reasons;
 - quick-cast errors keep the drawer open and redact sensitive input.
+
+Core tests:
+
+- session generation increments on a fresh `StartSession` or genuine preempt;
+- session generation remains stable across pause/resume;
+- session generation remains stable across seek;
+- full-key guarded core methods reject stale generations even when `AdapterRef` matches.
 
 Adapter tests:
 
@@ -336,7 +482,7 @@ Adapter tests:
 - Torrent quick-cast upload preserves multipart handling and existing upload validation;
 - providers reject actions when ownership has changed.
 
-Browser checks with Playwright or an equivalent real-browser tool:
+Manual browser checks, or Playwright checks if the implementation adds browser-test scaffolding:
 
 - desktop idle, playing, paused, unknown-duration, and read-only active sessions;
 - mobile/narrow banner wrapping;
@@ -351,11 +497,13 @@ Browser checks with Playwright or an equivalent real-browser tool:
 
 Keep the implementation incremental:
 
-1. Add banner view model, template, routes, and fake-provider tests in `internal/ui`.
-2. Implement URL provider and remove URL panel transport duplication.
-3. Implement Streams provider and remove Streams panel transport duplication.
-4. Implement Torrent provider and remove Torrent panel active Stop duplication.
-5. Add quick-cast drawer provider support.
-6. Run UI and adapter tests, then browser-check desktop and mobile layouts.
+1. Add core session generation and full-key guarded control helpers.
+2. Add shared provider DTOs/interfaces in `internal/adapters/playback.go`.
+3. Add banner view model, template, routes, and fake-provider tests in `internal/ui`.
+4. Implement URL provider and remove URL panel transport duplication.
+5. Implement Streams provider and remove Streams panel transport duplication.
+6. Implement Torrent provider and remove Torrent panel active Stop duplication.
+7. Add quick-cast drawer provider support.
+8. Run UI, adapter, and core tests, then browser-check desktop and mobile layouts.
 
 Each adapter should own the final mutation logic. The UI route is a dispatcher, not a second playback implementation.
