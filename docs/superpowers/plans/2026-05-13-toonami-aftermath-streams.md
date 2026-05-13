@@ -437,6 +437,21 @@ func TestMergeManifestsRejectsRemoteOnlyDirectStreamsProvider(t *testing.T) {
 	}
 }
 
+func TestMergeManifestsRejectsRemoteAndCachedBundledProviderRemoval(t *testing.T) {
+	bundled := bundledManifest()
+	empty := Manifest{Version: 1}
+	for name, got := range map[string]Manifest{
+		"remote": mergeManifests(DefaultConfig(), bundled, nil, &empty, remoteProviderFactories()),
+		"cached": mergeManifests(DefaultConfig(), bundled, &empty, nil, remoteProviderFactories()),
+	} {
+		for _, want := range bundled.Providers {
+			if _, ok := got.Provider(want.ID); !ok {
+				t.Fatalf("%s manifest removed bundled provider %q", name, want.ID)
+			}
+		}
+	}
+}
+
 func TestMergeManifestsRejectsRemoteDirectStreamsOverlay(t *testing.T) {
 	bundled := bundledManifest()
 	remote := Manifest{Version: 1, Providers: []ProviderDefinition{{
@@ -556,7 +571,7 @@ func TestMergeManifestsRejectsRemoteTypeChangeToDirectStreams(t *testing.T) {
 }
 ```
 
-Update `TestHostedProviderManifestFileValidates` so the existing parity loop skips `directStreamsProviderType`:
+Update `TestHostedProviderManifestFileValidates` so the existing parity loop skips `directStreamsProviderType`. In the current file, this is the loop at `internal/adapters/streams/manifest_test.go:35`:
 
 ```go
 for _, want := range bundledManifest().Providers {
@@ -637,6 +652,8 @@ addProvider := func(provider ProviderDefinition, remoteOverlay bool) {
 ```
 
 Retain the existing disabled-provider filter after merging.
+
+Preserve the existing provider iteration and disabled-provider filtering below the helper. In the current file, keep the bundled/cached/remote loops at `internal/adapters/streams/manifest.go:287-300` and the disabled-provider filter at `internal/adapters/streams/manifest.go:302-312`; only change the helper body and the factory function used by call sites.
 
 - [ ] **Step 5: Update merge call sites**
 
@@ -1104,7 +1121,7 @@ func TestReplayDirectStreamRebuildsFromCatalogItem(t *testing.T) {
 
 This Streams test proves the direct path populates `BlockedHeaders` and sends no yt-dlp headers. The core test below proves `BlockedHeaders` are filtered before headers reach the FFmpeg pipeline spec that builds argv.
 
-Add imports to `playback_test.go` as needed:
+Confirm `internal/adapters/streams/playback_test.go` imports include these existing dependencies used by the new tests:
 
 ```go
 import (
@@ -1112,6 +1129,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 )
 ```
 
@@ -1173,6 +1191,8 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 }
 ```
 
+`internal/core/manager_test.go` already imports `context`, `time`, `internal/dataplane`, and `internal/ffmpeg`; keep those imports when adding this test.
+
 - [ ] **Step 2: Run queue/playback tests and verify they fail**
 
 Run:
@@ -1214,6 +1234,8 @@ Add helper functions:
 ```go
 func directHLSInputPolicy() core.MediaInputPolicy {
 	return core.MediaInputPolicy{
+		// SECURITY: file is needed by FFmpeg HLS internals; this is safe only
+		// because direct-streams is bundled-only and host/path validated.
 		ProtocolWhitelist: []string{"file", "http", "https", "tcp", "tls", "crypto"},
 		DisableRedirects:  true,
 		DisableReconnect:  true,
@@ -1249,6 +1271,8 @@ if isDirectStreamItem(item) {
 		DirectPlay:        true,
 		Capabilities:      core.Capabilities{CanPause: false, CanSeek: false},
 		MediaInputPolicy:  directHLSInputPolicy(),
+		// SECURITY/AUDIO: Toonami Radio currently advertises video HLS. If it
+		// becomes audio-only, add MediaKindMusic + VisualizerRequest or remove Radio.
 		OnStop:            a.makeOnStop(capture),
 		Source:            a.Name(),
 		Title:             title,
@@ -1362,7 +1386,7 @@ func TestStatusJSONDirectStreamDoesNotAdvertisePauseOrAdvance(t *testing.T) {
 }
 ```
 
-Add missing imports to `routes_test.go`:
+Add this missing import to `internal/adapters/streams/routes_test.go`:
 
 ```go
 import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
@@ -1406,7 +1430,7 @@ git commit -m "feat(streams): play direct HLS channels"
 
 - [ ] **Step 1: Update UI test expectations**
 
-Modify `internal/adapters/streams/ui_test.go` so `TestRenderPanelIncludesProvidersAndControls` expects Toonami:
+Modify `internal/adapters/streams/ui_test.go` so `TestExtraPanelHTMLContainsStreamsPanel` expects Toonami. In the current file this test starts at `internal/adapters/streams/ui_test.go:11`:
 
 ```go
 for _, want := range []string{
@@ -1434,7 +1458,7 @@ If the current test uses `newTestAdapterWithCatalog(t)`, update that helper or t
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run TestRenderPanelIncludesProvidersAndControls -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run TestExtraPanelHTMLContainsStreamsPanel -count=1
 ```
 
 Expected: FAIL until the test helper includes Toonami or startup loads the direct catalog.
@@ -1482,19 +1506,19 @@ Keep the existing provider-id and query filter assertions unchanged. The `provid
 Modify `README.md`:
 
 ```markdown
-- Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind, Toonami Aftermath)
+- Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind, Toonami Aftermath; bundled-only, not user IPTV import)
 ```
 
 In the Streams adapter section, update the first paragraph:
 
 ```markdown
-The Streams adapter turns supported catalog sites into native relay queues. Right now Cartoon Rewind, MTV Rewind, and Toonami Aftermath are supported, but more will be coming. I have initial "channel" buttons but the URL adapter now also supports links from these sites.
+The Streams adapter turns supported catalog sites into native relay queues. Right now Cartoon Rewind, MTV Rewind, and Toonami Aftermath are supported, but more will be coming. Toonami Aftermath is bundled-only in this pass; remote manifests cannot add arbitrary direct HLS/IPTV sources. I have initial "channel" buttons but the URL adapter now also supports links from these sites.
 ```
 
 Add an example line:
 
 ```markdown
-- Toonami Aftermath appears as four direct HLS channels: East, West, Movies, and Radio.
+- Toonami Aftermath appears as four bundled-only direct HLS channels: East, West, Movies, and Radio.
 ```
 
 - [ ] **Step 6: Run UI and README-related tests**
@@ -1502,7 +1526,7 @@ Add an example line:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestRenderPanelIncludesProvidersAndControls|TestStatusJSON" -count=1
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestExtraPanelHTMLContainsStreamsPanel|TestStatusJSON" -count=1
 ```
 
 Expected: PASS.
