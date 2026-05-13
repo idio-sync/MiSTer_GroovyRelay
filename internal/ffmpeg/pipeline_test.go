@@ -2,6 +2,9 @@ package ffmpeg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -272,9 +275,16 @@ func TestFilterAvailableParsesFFmpegFilterList(t *testing.T) {
 }
 
 func TestWithVisualizerCapabilitiesSetsDrawTextAvailability(t *testing.T) {
-	orig := filterAvailableFn
-	t.Cleanup(func() { filterAvailableFn = orig })
+	origFilter := filterAvailableFn
+	origDrawText := drawTextUsableFn
+	t.Cleanup(func() {
+		filterAvailableFn = origFilter
+		drawTextUsableFn = origDrawText
+	})
 	filterAvailableFn = func(context.Context, string, string) (bool, error) {
+		return true, nil
+	}
+	drawTextUsableFn = func(context.Context, string) (bool, error) {
 		return true, nil
 	}
 	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
@@ -290,10 +300,18 @@ func TestWithVisualizerCapabilitiesSetsDrawTextAvailability(t *testing.T) {
 }
 
 func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextUnavailable(t *testing.T) {
-	orig := filterAvailableFn
-	t.Cleanup(func() { filterAvailableFn = orig })
+	origFilter := filterAvailableFn
+	origDrawText := drawTextUsableFn
+	t.Cleanup(func() {
+		filterAvailableFn = origFilter
+		drawTextUsableFn = origDrawText
+	})
 	filterAvailableFn = func(context.Context, string, string) (bool, error) {
 		return false, nil
+	}
+	drawTextUsableFn = func(context.Context, string) (bool, error) {
+		t.Fatal("drawtext smoke check should not run when drawtext filter is unavailable")
+		return true, nil
 	}
 	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
 		Visualizer: VisualizerSpec{
@@ -304,6 +322,54 @@ func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextUnavailable(t *testing.T
 	if spec.Visualizer.DrawTextAvailable {
 		t.Fatal("DrawTextAvailable = true, want false")
 	}
+}
+
+func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextCannotRender(t *testing.T) {
+	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+		FFmpegPath: fakeFFmpegWithBrokenDrawText(t),
+		Visualizer: VisualizerSpec{
+			Enabled: true,
+			Mode:    VisualizerModeRetroAnalyzer,
+		},
+	})
+	if spec.Visualizer.DrawTextAvailable {
+		t.Fatal("DrawTextAvailable = true, want false when drawtext cannot resolve a font")
+	}
+}
+
+func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "ffmpeg.cmd")
+		script := "@echo off\r\n" +
+			"if \"%1\"==\"-hide_banner\" if \"%2\"==\"-filters\" (\r\n" +
+			"  echo Filters:\r\n" +
+			"  echo  T.C drawtext          V-^>V       Draw text on top of video frames using libfreetype library.\r\n" +
+			"  exit /b 0\r\n" +
+			")\r\n" +
+			"echo [Parsed_drawtext_0] Cannot find a valid font for the family Sans 1>&2\r\n" +
+			"exit /b 1\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := filepath.Join(dir, "ffmpeg")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-hide_banner\" ] && [ \"$2\" = \"-filters\" ]; then\n" +
+		"  printf 'Filters:\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"printf '%s\\n' '[Parsed_drawtext_0] Cannot find a valid font for the family Sans' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch verifies the PAR-aware

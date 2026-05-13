@@ -32,6 +32,28 @@ func filterListContains(output, filterName string) bool {
 
 var filterAvailableFn = FilterAvailable
 
+func DrawTextUsable(ctx context.Context, ffmpegPath string) (bool, error) {
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-hide_banner",
+		"-v", "error",
+		"-f", "lavfi",
+		"-i", "color=s=16x16:d=0.1",
+		"-vf", "drawtext=text=test",
+		"-frames:v", "1",
+		"-f", "null",
+		"-",
+	)
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("ffmpeg drawtext smoke: %w", err)
+	}
+	return true, nil
+}
+
+var drawTextUsableFn = DrawTextUsable
+
 func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpec {
 	if !s.Visualizer.Enabled {
 		return s
@@ -43,6 +65,9 @@ func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpe
 	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	ok, err := filterAvailableFn(checkCtx, ffmpegPath, "drawtext")
+	if err == nil && ok {
+		ok, err = drawTextUsableFn(checkCtx, ffmpegPath)
+	}
 	if err == nil && ok {
 		s.Visualizer.DrawTextAvailable = true
 		return s

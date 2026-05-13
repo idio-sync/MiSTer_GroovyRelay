@@ -31,7 +31,9 @@ FROM alpine:3.20
 # yt-dlp auto-detects deno/node/etc. from PATH; nodejs is the most reliable
 # choice on Alpine multi-arch (deno's apk package has spotty arm64 coverage).
 # +~30 MiB image growth.
-RUN apk add --no-cache ffmpeg ca-certificates tzdata curl nodejs
+# fontconfig + DejaVu provide a real Sans-family font for ffmpeg drawtext,
+# which the audio visualizer uses for now-playing metadata overlays.
+RUN apk add --no-cache ffmpeg ca-certificates tzdata curl nodejs fontconfig ttf-dejavu
 # Install the yt-dlp_linux static binary. Bundles its own Python via
 # zipapp + standalone interpreter — no python3/py3-pip apk packages
 # needed. Native `yt-dlp -U` works for in-place self-update (used by
