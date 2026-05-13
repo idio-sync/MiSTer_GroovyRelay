@@ -188,6 +188,9 @@ func validateRemoteDataURLSyntax(ctx context.Context, raw string, cfg Config) er
 func validateProviderArtworkURLSyntax(ctx context.Context, raw string, cfg Config) error {
 	_ = ctx
 	_ = cfg
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
 	if len([]byte(raw)) > maxArtworkURLBytes {
 		return fmt.Errorf("artwork URL exceeds %d bytes", maxArtworkURLBytes)
 	}
@@ -216,6 +219,9 @@ func validateProviderArtworkURLSyntax(ctx context.Context, raw string, cfg Confi
 }
 
 func validateProviderArtworkURL(ctx context.Context, raw string, cfg Config) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
 	if err := validateProviderArtworkURLSyntax(ctx, raw, cfg); err != nil {
 		return err
 	}
@@ -237,8 +243,12 @@ func sanitizeManifestArtwork(ctx context.Context, m Manifest, cfg Config, valida
 	if validateURL == nil {
 		return m
 	}
+	m.Providers = append([]ProviderDefinition(nil), m.Providers...)
 	for i := range m.Providers {
-		if strings.TrimSpace(m.Providers[i].LogoURL) == "" {
+		m.Providers[i].LogoURL = strings.TrimSpace(m.Providers[i].LogoURL)
+		m.Providers[i].LogoAlt = strings.TrimSpace(m.Providers[i].LogoAlt)
+		m.Providers[i].FallbackLabel = strings.TrimSpace(m.Providers[i].FallbackLabel)
+		if m.Providers[i].LogoURL == "" {
 			continue
 		}
 		if err := validateURL(ctx, m.Providers[i].LogoURL, cfg); err != nil {

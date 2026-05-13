@@ -298,6 +298,64 @@ func TestSanitizeManifestArtworkDropsInvalidOptionalLogoURLs(t *testing.T) {
 	})
 }
 
+func TestProviderArtworkURLValidatorsAllowEmptyOptionalURL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		validate artworkURLValidator
+	}{
+		{name: "syntax", validate: validateProviderArtworkURLSyntax},
+		{name: "remote", validate: validateProviderArtworkURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.validate(t.Context(), "", DefaultConfig()); err != nil {
+				t.Fatalf("empty optional artwork URL rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestSanitizeManifestArtworkTrimsMetadataAndKeepsValidLogoURL(t *testing.T) {
+	useManifestValidationResolver(t, staticResolver{
+		"wantmymtv.vercel.app": []string{"93.184.216.34"},
+	})
+	m := validManifestForTest()
+	m.Providers[0].LogoURL = "  https://wantmymtv.vercel.app/public/images/rewindlogo.png  "
+	m.Providers[0].LogoAlt = "  MTV Rewind logo  "
+	m.Providers[0].FallbackLabel = "  MTV REWIND  "
+
+	got := sanitizeManifestArtwork(t.Context(), m, DefaultConfig(), validateProviderArtworkURL)
+	if got.Providers[0].LogoURL != "https://wantmymtv.vercel.app/public/images/rewindlogo.png" {
+		t.Fatalf("logo URL was not trimmed and preserved: %+v", got.Providers[0])
+	}
+	if got.Providers[0].LogoAlt != "MTV Rewind logo" {
+		t.Fatalf("logo alt was not trimmed: %+v", got.Providers[0])
+	}
+	if got.Providers[0].FallbackLabel != "MTV REWIND" {
+		t.Fatalf("fallback label was not trimmed: %+v", got.Providers[0])
+	}
+}
+
+func TestSanitizeManifestArtworkDoesNotMutateSourceManifest(t *testing.T) {
+	m := validManifestForTest()
+	m.Providers[0].LogoURL = "http://wantmymtv.vercel.app/logo.png"
+	m.Providers[0].LogoAlt = "  MTV Rewind logo  "
+	m.Providers[0].FallbackLabel = "  MTV REWIND  "
+
+	got := sanitizeManifestArtwork(t.Context(), m, DefaultConfig(), validateProviderArtworkURLSyntax)
+	if got.Providers[0].LogoURL != "" {
+		t.Fatalf("invalid artwork URL survived sanitize: %+v", got.Providers[0])
+	}
+	if m.Providers[0].LogoURL != "http://wantmymtv.vercel.app/logo.png" {
+		t.Fatalf("source manifest was mutated: %+v", m.Providers[0])
+	}
+	if m.Providers[0].LogoAlt != "  MTV Rewind logo  " {
+		t.Fatalf("source logo alt was mutated: %+v", m.Providers[0])
+	}
+	if m.Providers[0].FallbackLabel != "  MTV REWIND  " {
+		t.Fatalf("source fallback label was mutated: %+v", m.Providers[0])
+	}
+}
+
 func TestHostedProviderManifestIncludesArtworkMetadata(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "streams", "providers.json"))
 	if err != nil {
