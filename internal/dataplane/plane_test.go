@@ -1411,6 +1411,41 @@ func TestEnvPrebufferFields(t *testing.T) {
 	}
 }
 
+func TestEnvAudioDelayFields_DefaultMatchesDisplayLatency(t *testing.T) {
+	t.Setenv("GROOVY_AUDIO_DELAY_FIELDS", "")
+
+	if got := envAudioDelayFields(groovy.NTSC480i60); got != 4 {
+		t.Errorf("NTSC default audio delay fields = %d, want 4", got)
+	}
+	if got := envAudioDelayFields(groovy.PAL576i50); got != 3 {
+		t.Errorf("PAL default audio delay fields = %d, want 3", got)
+	}
+}
+
+func TestEnvAudioDelayFields_EnvOverrideAndDisable(t *testing.T) {
+	t.Setenv("GROOVY_AUDIO_DELAY_FIELDS", "0")
+	if got := envAudioDelayFields(groovy.NTSC480i60); got != 0 {
+		t.Errorf("audio delay fields with env=0 = %d, want 0", got)
+	}
+
+	t.Setenv("GROOVY_AUDIO_DELAY_FIELDS", "2")
+	if got := envAudioDelayFields(groovy.NTSC480i60); got != 2 {
+		t.Errorf("audio delay fields with env=2 = %d, want 2", got)
+	}
+}
+
+func TestEnvAudioDelayFields_InvalidFallsBackToDefault(t *testing.T) {
+	t.Setenv("GROOVY_AUDIO_DELAY_FIELDS", "99")
+	if got := envAudioDelayFields(groovy.NTSC480i60); got != 4 {
+		t.Errorf("audio delay fields with env=99 = %d, want default 4", got)
+	}
+
+	t.Setenv("GROOVY_AUDIO_DELAY_FIELDS", "abc")
+	if got := envAudioDelayFields(groovy.NTSC480i60); got != 4 {
+		t.Errorf("audio delay fields with env=abc = %d, want default 4", got)
+	}
+}
+
 func TestEnvPrebufferTimeout(t *testing.T) {
 	cases := []struct {
 		env    string

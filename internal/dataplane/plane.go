@@ -96,6 +96,8 @@ const (
 const (
 	defaultPrebufferFields    = 6
 	defaultPrebufferTimeoutMs = 5000
+	defaultAudioDelay         = 67 * time.Millisecond
+	maxAudioDelayFields       = 16
 )
 
 // Plane streams one FFmpeg session to the MiSTer. One BLIT_FIELD_VSYNC per
@@ -402,6 +404,10 @@ func (p *Plane) Run(ctx context.Context) error {
 
 	audioRate, audioChans := p.effectiveAudioConfig()
 	audioEnabled := audioRate > 0 && audioChans > 0
+	audioDelayN := 0
+	if audioEnabled {
+		audioDelayN = envAudioDelayFields(p.cfg.Modeline)
+	}
 
 	// 1. INIT handshake (ACK-gated; 60 ms timeout). Must happen BEFORE the
 	//    Drainer goroutine starts reading from the socket — otherwise it
@@ -433,6 +439,8 @@ func (p *Plane) Run(ctx context.Context) error {
 		"audio_rate", audioRate,
 		"audio_chans", audioChans,
 		"audio_ready", p.audioReady.Load(),
+		"audio_delay_fields", audioDelayN,
+		"audio_delay_ms", float64(audioDelayN)*float64(p.periodMsNumer)/float64(p.periodMsDenom),
 		"field_width", p.cfg.FieldWidth,
 		"field_height", p.cfg.FieldHeight,
 		"interlaced", p.cfg.Modeline.Interlaced(),
@@ -480,20 +488,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	// some integer number of fields, perceptible as A/V desync.
 	//
 	// GROOVY_AUDIO_DELAY_FIELDS holds N field-periods of audio in a ring
-	// buffer before sending. N=0 (default) preserves today's behavior;
-	// N=2 ≈ 33 ms; N=4 ≈ 67 ms. Operators tune empirically until A/V
-	// matches.
-	audioDelayN := 0
-	if v := os.Getenv("GROOVY_AUDIO_DELAY_FIELDS"); v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 && n <= 16 {
-			audioDelayN = n
-			slog.Info("audio delay enabled", "delay_fields", n,
-				"delay_ms", float64(n)*float64(p.periodMsNumer)/float64(p.periodMsDenom))
-		} else {
-			slog.Warn("invalid GROOVY_AUDIO_DELAY_FIELDS; using 0",
-				"value", v, "err", perr)
-		}
-	}
+	// buffer before sending. The default is modeline-derived from roughly
+	// 67 ms of display latency (4 NTSC fields, 3 PAL fields). Set
+	// GROOVY_AUDIO_DELAY_FIELDS=0 to disable for diagnostics, or override
+	// with an empirically tuned field count.
 	audioRing := make([][]byte, audioDelayN+1)
 	audioRingHead, audioRingLen := 0, 0
 
@@ -1325,6 +1323,37 @@ func envPrebufferFields(max int) int {
 	}
 	if n > max {
 		n = max
+	}
+	return n
+}
+
+func defaultAudioDelayFieldsFor(ml groovy.Modeline) int {
+	period := fieldPeriodFromModeline(ml)
+	if period <= 0 {
+		period = time.Second * 1001 / 60000
+	}
+	fields := int((defaultAudioDelay + period/2) / period)
+	if fields < 0 {
+		return 0
+	}
+	if fields > maxAudioDelayFields {
+		return maxAudioDelayFields
+	}
+	return fields
+}
+
+func envAudioDelayFields(ml groovy.Modeline) int {
+	n := defaultAudioDelayFieldsFor(ml)
+	if v := os.Getenv("GROOVY_AUDIO_DELAY_FIELDS"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err == nil && parsed >= 0 && parsed <= maxAudioDelayFields {
+			return parsed
+		}
+		attrs := []any{"value", v, "default", n, "max", maxAudioDelayFields}
+		if err != nil {
+			attrs = append(attrs, "err", err)
+		}
+		slog.Warn("invalid GROOVY_AUDIO_DELAY_FIELDS; using default", attrs...)
 	}
 	return n
 }
