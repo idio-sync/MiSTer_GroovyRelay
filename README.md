@@ -13,6 +13,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
+- Torrent streaming (uploaded .torrent files and magnet links)
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind)
 
@@ -382,6 +383,10 @@ Direct HTTP URLs must use one of the bridge's allow-listed MIME types before the
 **"The target didn't show up in Plex's cast menu."**
 
 The bridge uses GDM multicast discovery (port 32414). Confirm: `--network=host` is set; your LAN is not carving off mDNS/multicast between client and server; you linked successfully (`--link`); and the bridge process is running (`docker logs mister-groovy-relay`).
+
+**"The target gets overwritten by another Plex cast target in the cast menu, creating a duplicate"**
+
+The GroovyRelay application (Docker or native app) needs to appear on the network having a different IP address than the Plex server. A cast IP appearing the same as the PMS IP seems to confuse the Plex cast target discovery sometimes. 
 
 **"No video on the CRT."**
 
