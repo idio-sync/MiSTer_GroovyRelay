@@ -22,7 +22,10 @@ const (
 )
 
 type PlaybackControlProvider interface {
-	PlaybackBanner(ctx context.Context, snap PlaybackBannerSnapshot) (PlaybackBannerAdapterView, bool)
+	// PlaybackBanner returns adapter-specific banner controls and true when
+	// the adapter owns the supplied active session. False means the shared UI
+	// should keep its default read-only rendering for that snapshot.
+	PlaybackBanner(ctx context.Context, snap PlaybackBannerSnapshot) (view PlaybackBannerAdapterView, owns bool)
 	HandlePlaybackAction(ctx context.Context, action PlaybackActionRequest) (PlaybackActionResult, error)
 }
 
@@ -114,5 +117,7 @@ type QuickCastOption struct {
 
 type QuickCastFile struct {
 	FieldName string
-	Header    *multipart.FileHeader
+	// Header is the parsed multipart file header supplied by the UI route so
+	// providers can reuse existing upload validation without re-parsing HTTP.
+	Header *multipart.FileHeader
 }
