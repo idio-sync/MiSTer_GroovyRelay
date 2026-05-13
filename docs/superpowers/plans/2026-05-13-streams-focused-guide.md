@@ -47,7 +47,7 @@
 Append these tests to `internal/adapters/streams/manifest_test.go`:
 
 ```go
-func TestValidateManifestValidatesProviderArtworkURL(t *testing.T) {
+func TestSanitizeManifestArtworkDropsInvalidOptionalLogoURLs(t *testing.T) {
 	useManifestValidationResolver(t, staticResolver{
 		"wantmymtv.vercel.app": []string{"93.184.216.34"},
 		"private.example":     []string{"192.168.1.10"},
@@ -69,10 +69,19 @@ func TestValidateManifestValidatesProviderArtworkURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := validManifestForTest()
 			m.Providers[0].LogoURL = tc.logo
+			m.Providers[0].LogoAlt = "MTV Rewind logo"
+			m.Providers[0].FallbackLabel = "MTV REWIND"
 			cfg := DefaultConfig()
 			cfg.AllowLocalManifestURLs = true
-			if err := validateManifest(t.Context(), m, cfg); err == nil {
-				t.Fatalf("artwork URL %q accepted", tc.logo)
+			if err := validateManifest(t.Context(), m, cfg); err != nil {
+				t.Fatalf("invalid optional artwork should not reject manifest: %v", err)
+			}
+			got := sanitizeManifestArtwork(t.Context(), m, cfg, validateProviderArtworkURL)
+			if got.Providers[0].LogoURL != "" {
+				t.Fatalf("invalid artwork URL %q survived as %q", tc.logo, got.Providers[0].LogoURL)
+			}
+			if got.Providers[0].FallbackLabel != "MTV REWIND" {
+				t.Fatalf("fallback label was not preserved: %+v", got.Providers[0])
 			}
 		})
 	}
@@ -82,6 +91,10 @@ func TestValidateManifestValidatesProviderArtworkURL(t *testing.T) {
 		m.Providers[0].LogoURL = "https://wantmymtv.vercel.app/public/images/rewindlogo.png"
 		if err := validateManifest(t.Context(), m, DefaultConfig()); err != nil {
 			t.Fatalf("valid artwork URL rejected: %v", err)
+		}
+		got := sanitizeManifestArtwork(t.Context(), m, DefaultConfig(), validateProviderArtworkURL)
+		if got.Providers[0].LogoURL != m.Providers[0].LogoURL {
+			t.Fatalf("valid artwork URL was scrubbed: %+v", got.Providers[0])
 		}
 	})
 }
@@ -125,7 +138,7 @@ Add `strings` to the `manifest_test.go` import list.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestValidateManifestValidatesProviderArtworkURL|TestHostedProviderManifestIncludesArtworkMetadata"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestSanitizeManifestArtworkDropsInvalidOptionalLogoURLs|TestHostedProviderManifestIncludesArtworkMetadata"
 ```
 
 Expected: FAIL because `ProviderDefinition` has no `LogoURL`, `LogoAlt`, or `FallbackLabel` fields.
@@ -153,7 +166,7 @@ type ProviderDefinition struct {
 }
 ```
 
-- [ ] **Step 4: Add artwork validation**
+- [ ] **Step 4: Add artwork validation and non-fatal sanitizer**
 
 In `internal/adapters/streams/manifest.go`, add a raw length constant:
 
@@ -168,52 +181,19 @@ const (
 )
 ```
 
-Still in `manifest.go`, extend the manifest validation function signatures so remote manifest validation can perform DNS checks while cached/hosted syntax validation stays network-free:
+Still in `manifest.go`, add an artwork validator type. Keep manifest validation fatal for structural provider fields and playback/catalog URLs only; optional artwork is scrubbed in a separate sanitizer so bad artwork cannot reject a provider.
 
 ```go
 type remoteDataURLValidator func(context.Context, string, Config) error
 type artworkURLValidator func(context.Context, string, Config) error
 
 func validateManifest(ctx context.Context, m Manifest, cfg Config) error {
-	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURL, validateProviderArtworkURL)
+	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURL)
 }
 
 func validateCachedManifest(ctx context.Context, m Manifest, cfg Config) error {
-	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURLSyntax, validateProviderArtworkURLSyntax)
+	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURLSyntax)
 }
-
-func validateManifestWithURLValidator(ctx context.Context, m Manifest, cfg Config, validateURL remoteDataURLValidator, validateArtwork artworkURLValidator) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if m.Version != 1 {
-		return fmt.Errorf("unsupported manifest version %d", m.Version)
-	}
-	if len(m.Providers) > maxManifestProviders {
-		return fmt.Errorf("manifest has %d providers, max %d", len(m.Providers), maxManifestProviders)
-	}
-
-	providerIDs := map[string]struct{}{}
-	for _, provider := range m.Providers {
-		if isUnsupportedProviderType(provider.Type) {
-			continue
-		}
-		if err := validateProviderDefinition(ctx, provider, cfg, validateURL, validateArtwork); err != nil {
-			return err
-		}
-		if _, ok := providerIDs[provider.ID]; ok {
-			return fmt.Errorf("duplicate provider id %q", provider.ID)
-		}
-		providerIDs[provider.ID] = struct{}{}
-	}
-	return nil
-}
-```
-
-Change `validateProviderDefinition` to accept the artwork validator:
-
-```go
-func validateProviderDefinition(ctx context.Context, provider ProviderDefinition, cfg Config, validateURL remoteDataURLValidator, validateArtwork artworkURLValidator) error {
 ```
 
 Add these helpers near `validateRemoteDataURL`:
@@ -281,16 +261,46 @@ func validateProviderArtworkURLSyntax(ctx context.Context, raw string, cfg Confi
 	}
 	return nil
 }
-```
 
-Then call it from `validateProviderDefinition` after optional `BaseURL` validation:
-
-```go
-	if strings.TrimSpace(provider.LogoURL) != "" {
-		if err := validateArtwork(ctx, provider.LogoURL, cfg); err != nil {
-			return fmt.Errorf("provider %q logo_url: %w", provider.ID, err)
+func sanitizeManifestArtwork(ctx context.Context, m Manifest, cfg Config, validateArtwork artworkURLValidator) Manifest {
+	out := m
+	out.Providers = append([]ProviderDefinition(nil), m.Providers...)
+	for i := range out.Providers {
+		raw := strings.TrimSpace(out.Providers[i].LogoURL)
+		out.Providers[i].LogoURL = raw
+		out.Providers[i].LogoAlt = strings.TrimSpace(out.Providers[i].LogoAlt)
+		out.Providers[i].FallbackLabel = strings.TrimSpace(out.Providers[i].FallbackLabel)
+		if raw == "" {
+			continue
+		}
+		if err := validateArtwork(ctx, raw, cfg); err != nil {
+			out.Providers[i].LogoURL = ""
 		}
 	}
+	return out
+}
+```
+
+Do not call artwork validation from `validateProviderDefinition`; invalid artwork is optional metadata and must not make `validateManifest` fail.
+
+In `internal/adapters/streams/refresh.go`, scrub artwork before manifests can reach `mergeManifests` or adapter definitions:
+
+```go
+// In fetchManifestDefault, after validateCachedManifest succeeds:
+manifest = sanitizeManifestArtwork(fetchCtx, manifest, cfg, validateProviderArtworkURLSyntax)
+return manifest, meta, nil
+
+// In fetchManifestDefault, after validateManifest succeeds:
+manifest = sanitizeManifestArtwork(fetchCtx, manifest, cfg, validateProviderArtworkURL)
+return manifest, meta, nil
+
+// In buildStartupSnapshot:
+bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
+manifest := mergeManifests(cfg, bundled, cached, nil, providerFactories())
+
+// In loadCachedManifest, after validateCachedManifest succeeds:
+manifest = sanitizeManifestArtwork(ctx, manifest, cfg, validateProviderArtworkURLSyntax)
+return &manifest
 ```
 
 - [ ] **Step 5: Populate bundled and hosted artwork metadata**
@@ -330,7 +340,7 @@ In `docs/streams/providers.json`, add the matching keys to both provider objects
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestValidateManifestValidatesProviderArtworkURL|TestHostedProviderManifestIncludesArtworkMetadata|TestHostedProviderManifestFileValidates"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestSanitizeManifestArtworkDropsInvalidOptionalLogoURLs|TestHostedProviderManifestIncludesArtworkMetadata|TestHostedProviderManifestFileValidates"
 ```
 
 Expected: PASS.
@@ -555,20 +565,42 @@ func TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL(t *testing.T) 
 		},
 	}})
 
-	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "genres", Explicit: true})
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "genres", ProviderExplicit: true, GroupExplicit: true})
 	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
 		t.Fatalf("polling URL did not preserve selection: %s", html)
 	}
-	if !strings.Contains(html, `name="group_id" value="genres"`) {
+	if !strings.Contains(html, `name="guide_group_id" value="genres"`) {
 		t.Fatalf("forms did not preserve group_id: %s", html)
 	}
 }
 
 func TestRenderPanelUnknownSelectionFallsBackDeterministically(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
-	html := a.renderPanel(panelSelectionRequest{ProviderID: "bogus", GroupID: "missing", Explicit: true})
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "bogus", GroupID: "missing", ProviderExplicit: true, GroupExplicit: true})
 	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=cartoon-rewind`) {
 		t.Fatalf("bogus provider should fall back to first provider by status order: %s", html)
+	}
+}
+
+func TestRenderPanelProviderOnlySelectionUsesActiveGroup(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Groups: []ChannelGroup{
+			{ID: "shows", Name: "MTV Shows", Order: 10},
+			{ID: "genres", Name: "Genres", Order: 20},
+		},
+		Channels: []Channel{
+			{ID: "120minutes", Name: "120 Minutes", GroupID: "shows", Items: []StreamItem{{ID: "AAAAAAAAAAA"}}},
+			{ID: "metal", Name: "Headbangers Ball", GroupID: "genres", Items: []StreamItem{{ID: "BBBBBBBBBBB"}}},
+		},
+	}})
+	a.active = &ActiveQueue{ProviderID: "mtv-rewind", ChannelID: "metal", Items: []StreamItem{{ID: "BBBBBBBBBBB"}}}
+
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", ProviderExplicit: true})
+	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
+		t.Fatalf("provider-only selection should resolve active group: %s", html)
 	}
 }
 ```
@@ -596,7 +628,7 @@ func TestHandlePanelReadsSelectionQuery(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL|TestRenderPanelUnknownSelectionFallsBackDeterministically|TestHandlePanelReadsSelectionQuery"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL|TestRenderPanelUnknownSelectionFallsBackDeterministically|TestRenderPanelProviderOnlySelectionUsesActiveGroup|TestHandlePanelReadsSelectionQuery"
 ```
 
 Expected: FAIL because `renderPanel` does not accept selection and `handlePanel` ignores query params.
@@ -607,9 +639,11 @@ In `internal/adapters/streams/ui.go`, add these types after `ControlCapabilities
 
 ```go
 type panelSelectionRequest struct {
-	ProviderID string
-	GroupID    string
-	Explicit   bool
+	ProviderID       string
+	GroupID          string
+	ProviderExplicit bool
+	GroupExplicit    bool
+	ErrorMessage     string
 }
 
 type resolvedPanelSelection struct {
@@ -625,13 +659,35 @@ func selectionFromRequest(r *http.Request) panelSelectionRequest {
 	if r == nil {
 		return panelSelectionRequest{}
 	}
-	providerID := strings.TrimSpace(r.FormValue("provider_id"))
-	groupID := strings.TrimSpace(r.FormValue("group_id"))
+	_ = r.ParseForm()
+	providerID, providerExplicit := selectionValue(r, "guide_provider_id", "provider_id")
+	groupID, groupExplicit := selectionValue(r, "guide_group_id", "group_id")
 	return panelSelectionRequest{
-		ProviderID: providerID,
-		GroupID:    groupID,
-		Explicit:   providerID != "" || groupID != "",
+		ProviderID:       providerID,
+		GroupID:          groupID,
+		ProviderExplicit: providerExplicit,
+		GroupExplicit:    groupExplicit,
 	}
+}
+
+func selectionValue(r *http.Request, primary, fallback string) (string, bool) {
+	if values, ok := r.Form[primary]; ok {
+		for _, value := range values {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed, true
+			}
+		}
+		return "", true
+	}
+	if values, ok := r.Form[fallback]; ok {
+		for _, value := range values {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed, true
+			}
+		}
+		return "", true
+	}
+	return "", false
 }
 
 func resolvePanelSelection(view StatusView, req panelSelectionRequest) resolvedPanelSelection {
@@ -647,7 +703,7 @@ func resolvePanelSelection(view StatusView, req panelSelectionRequest) resolvedP
 			}
 		}
 	}
-	if providerIdx < 0 && !req.Explicit && view.Active != nil {
+	if providerIdx < 0 && !req.ProviderExplicit && view.Active != nil {
 		for i, provider := range view.Providers {
 			if provider.ID == view.Active.ProviderID {
 				providerIdx = i
@@ -670,7 +726,7 @@ func resolvePanelSelection(view StatusView, req panelSelectionRequest) resolvedP
 			}
 		}
 	}
-	if groupID == "" && !req.Explicit && view.Active != nil && view.Active.ProviderID == provider.ID {
+	if groupID == "" && !req.GroupExplicit && view.Active != nil && view.Active.ProviderID == provider.ID {
 		for _, channel := range provider.Channels {
 			if channel.ID == view.Active.ChannelID {
 				groupID = channel.GroupID
@@ -725,6 +781,9 @@ func (a *Adapter) renderPanel(req panelSelectionRequest) string {
 	}
 	fmt.Fprintf(&b, `<section class="streams-panel" id="streams-panel" hx-get="%s" hx-trigger="%s" hx-swap="outerHTML">`,
 		escAttr(panelURL(selection)), trigger)
+	if req.ErrorMessage != "" {
+		fmt.Fprintf(&b, `<div class="gr-callout err streams-error"><p>%s</p></div>`, esc(req.ErrorMessage))
+	}
 ```
 
 Update `respondPanel`:
@@ -734,6 +793,14 @@ func (a *Adapter) respondPanel(w http.ResponseWriter, r *http.Request, status in
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(a.renderPanel(selectionFromRequest(r))))
+}
+
+func (a *Adapter) respondPanelWithError(w http.ResponseWriter, r *http.Request, msg string) {
+	req := selectionFromRequest(r)
+	req.ErrorMessage = msg
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(a.renderPanel(req)))
 }
 ```
 
@@ -753,7 +820,7 @@ Replace every HTML `a.respondPanel(w, http.StatusOK)` call with:
 a.respondPanel(w, r, http.StatusOK)
 ```
 
-In `respondRouteError`, preserve selection for htmx HTML responses by rendering the panel with the same request and the error status:
+In `respondRouteError`, preserve selection for htmx HTML responses by rendering a swappable `200 OK` panel with an error callout. Keep JSON errors on their real HTTP status.
 
 ```go
 func (a *Adapter) respondRouteError(w http.ResponseWriter, r *http.Request, status int, msg string) {
@@ -761,7 +828,7 @@ func (a *Adapter) respondRouteError(w http.ResponseWriter, r *http.Request, stat
 		respondJSON(w, status, routeErrorResponse{Error: msg})
 		return
 	}
-	a.respondPanel(w, r, status)
+	a.respondPanelWithError(w, r, msg)
 }
 ```
 
@@ -770,7 +837,7 @@ func (a *Adapter) respondRouteError(w http.ResponseWriter, r *http.Request, stat
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL|TestRenderPanelUnknownSelectionFallsBackDeterministically|TestHandlePanelReadsSelectionQuery"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL|TestRenderPanelUnknownSelectionFallsBackDeterministically|TestRenderPanelProviderOnlySelectionUsesActiveGroup|TestHandlePanelReadsSelectionQuery"
 ```
 
 Expected: PASS.
@@ -808,7 +875,7 @@ func TestExtraPanelHTMLRendersFocusedGuideForSelectedCategory(t *testing.T) {
 		},
 	}})
 
-	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "decades", Explicit: true})
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "decades", ProviderExplicit: true, GroupExplicit: true})
 	for _, want := range []string{
 		`class="streams-guide"`,
 		`class="streams-provider-tabs"`,
@@ -818,7 +885,7 @@ func TestExtraPanelHTMLRendersFocusedGuideForSelectedCategory(t *testing.T) {
 		`By Decade`,
 		`80s`,
 		`name="provider_id" value="mtv-rewind"`,
-		`name="group_id" value="decades"`,
+		`name="guide_group_id" value="decades"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel missing %q: %s", want, html)
@@ -853,7 +920,7 @@ func TestExtraPanelHTMLRendersDenseMTVCategoryAsGrid(t *testing.T) {
 		Channels:   channels,
 	}})
 
-	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "labels", Explicit: true})
+	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "labels", ProviderExplicit: true, GroupExplicit: true})
 	if strings.Count(html, `class="streams-channel-card`) != 12 {
 		t.Fatalf("channel card count mismatch: %s", html)
 	}
@@ -1019,9 +1086,7 @@ func renderChannelCard(b *strings.Builder, provider ProviderStatusView, ch Chann
 	fmt.Fprintf(b,
 		`<form class="streams-channel-card%s" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`,
 		activeClass(tuned))
-	if selection.GroupID != "" {
-		fmt.Fprintf(b, `<input type="hidden" name="group_id" value="%s">`, escAttr(selection.GroupID))
-	}
+	selectionInputs(b, selection)
 	fmt.Fprintf(b,
 		`<input type="hidden" name="provider_id" value="%s">`+
 			`<input type="hidden" name="channel_id" value="%s">`+
@@ -1031,13 +1096,15 @@ func renderChannelCard(b *strings.Builder, provider ProviderStatusView, ch Chann
 
 func selectionInputs(b *strings.Builder, selection resolvedPanelSelection) {
 	if selection.ProviderID != "" {
-		fmt.Fprintf(b, `<input type="hidden" name="provider_id" value="%s">`, escAttr(selection.ProviderID))
+		fmt.Fprintf(b, `<input type="hidden" name="guide_provider_id" value="%s">`, escAttr(selection.ProviderID))
 	}
 	if selection.GroupID != "" {
-		fmt.Fprintf(b, `<input type="hidden" name="group_id" value="%s">`, escAttr(selection.GroupID))
+		fmt.Fprintf(b, `<input type="hidden" name="guide_group_id" value="%s">`, escAttr(selection.GroupID))
 	}
 }
 ```
+
+Use `guide_provider_id` and `guide_group_id` for selection-preservation hidden fields. Do not use plain `provider_id` for Refresh or transport controls because `handleRefresh` already treats `provider_id` as the refresh target. Channel play forms still include plain `provider_id` for the playback action.
 
 Update `button` to a form-posting helper:
 
@@ -1148,12 +1215,12 @@ func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
 		path    string
 		form    string
 	}{
-		{name: "refresh", handler: a.handleRefresh, path: "/ui/adapter/streams/refresh", form: "provider_id=mtv-rewind&group_id=genres"},
-		{name: "play", handler: a.handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&group_id=genres&channel_id=metal"},
-		{name: "previous", handler: a.handlePrevious, path: "/ui/adapter/streams/previous", form: "provider_id=mtv-rewind&group_id=genres"},
-		{name: "next", handler: a.handleNext, path: "/ui/adapter/streams/next", form: "provider_id=mtv-rewind&group_id=genres"},
-		{name: "replay", handler: a.handleReplay, path: "/ui/adapter/streams/replay", form: "provider_id=mtv-rewind&group_id=genres"},
-		{name: "stop", handler: a.handleStop, path: "/ui/adapter/streams/stop", form: "provider_id=mtv-rewind&group_id=genres"},
+		{name: "refresh", handler: a.handleRefresh, path: "/ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "play", handler: a.handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
+		{name: "previous", handler: a.handlePrevious, path: "/ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "next", handler: a.handleNext, path: "/ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "replay", handler: a.handleReplay, path: "/ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "stop", handler: a.handleStop, path: "/ui/adapter/streams/stop", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1168,6 +1235,49 @@ func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	cases := []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		path    string
+		form    string
+		want    string
+	}{
+		{
+			name:    "bad play",
+			handler: a.handlePlay,
+			path:    "/ui/adapter/streams/play",
+			form:    "provider_id=mtv-rewind&guide_group_id=genres",
+			want:    "channel_id or item_id required",
+		},
+		{
+			name:    "unknown refresh target",
+			handler: a.handleRefresh,
+			path:    "/ui/adapter/streams/refresh",
+			form:    "provider_id=missing&guide_provider_id=mtv-rewind&guide_group_id=genres",
+			want:    "provider is not cataloged",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rr := httptest.NewRecorder()
+			tc.handler(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTML errors must be swappable 200 responses, got %d body=%s", rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			if !strings.Contains(body, `class="gr-callout err streams-error"`) || !strings.Contains(body, tc.want) {
+				t.Fatalf("error callout missing %q: %s", tc.want, body)
+			}
+			assertPanelSelectionPreserved(t, body, "mtv-rewind", "genres")
+		})
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests and verify RED or existing GREEN**
@@ -1175,10 +1285,10 @@ func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run TestHTMLRouteResponsesPreserveGuideSelection
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage"
 ```
 
-Expected: PASS if Task 3 and Task 4 already preserved selection everywhere. If this fails, the failure should show which route drops `group_id`.
+Expected: PASS if Task 3 and Task 4 already preserved selection everywhere and HTML errors are swappable `200 OK` panels. If this fails, the failure should show which route drops selection or error text.
 
 - [ ] **Step 3: Fix any route that drops selection**
 
@@ -1191,7 +1301,7 @@ a.respondPanel(w, r, http.StatusOK)
 Ensure every HTML error route calls:
 
 ```go
-a.respondPanel(w, r, status)
+a.respondPanelWithError(w, r, msg)
 ```
 
 No JSON response shape should change.
@@ -1201,7 +1311,7 @@ No JSON response shape should change.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHandlePlayJSONReturnsStartResult|TestHandleNextJSONReturnsStatus|TestHandleRefreshRejectsUnknownProvider"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestHTMLRouteResponsesPreserveGuideSelection|TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage|TestHandlePlayJSONReturnsStartResult|TestHandleNextJSONReturnsStatus|TestHandleRefreshRejectsUnknownProvider"
 ```
 
 Expected: PASS.
@@ -1335,7 +1445,7 @@ git commit -m "feat(ui): add streams artwork fallback handler"
 
 - [ ] **Step 1: Add width-scoped adapter extras rules**
 
-Add this CSS near the existing `.adapter-extras` rules:
+Add this CSS immediately after the existing `.gr-config .adapter-extras, #panel:has(.gr-config-head) .adapter-extras` block and its `.adapter-extras .section` companion rules. The order matters: these Streams-specific selectors must come after the existing `#panel:has(.gr-config-head)` `max-width: 860px` rule so the wide guide can override it.
 
 ```css
 #panel:has(.streams-panel) {
@@ -1595,9 +1705,10 @@ Run:
 ```bash
 grep -n "streams-channel-grid" internal/ui/static/app.css
 grep -n "object-src" internal/ui/static/app.css
+grep -n "#panel:has(.streams-panel)" internal/ui/static/app.css
 ```
 
-Expected: first command prints the grid selectors; second command exits 1 with no output because the CSS should not mention `object-src`.
+Expected: first command prints the grid selectors; second command exits 1 with no output because the CSS should not mention `object-src`; third command prints the Streams width override after the existing config-panel width block.
 
 - [ ] **Step 4: Commit Task 7**
 
