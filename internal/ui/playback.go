@@ -278,6 +278,10 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 		MessageKind:     opts.MessageKind,
 		QuickCastTabs:   s.quickCastTabs(),
 	}
+	if len(data.QuickCastTabs) == 0 {
+		data.CastDrawerOpen = false
+		data.ActiveQuickCast = ""
+	}
 	if data.SourceDisplay == "" && view.State == core.StateIdle && len(data.QuickCastTabs) > 0 {
 		data.SourceDisplay = data.QuickCastTabs[0].Label
 	}

@@ -21,12 +21,12 @@
 				<button type="submit" title="{{.DisabledReason}}" {{if not .Enabled}}disabled{{end}}>{{.Label}}</button>
 			</form>
 			{{end}}
-			<button type="button" hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>
+			{{if .QuickCastTabs}}<button type="button" hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>{{end}}
 		</div>
 	</div>
 	{{if .Seek}}
 	{{if .Seek.Enabled}}
-	<form class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-target="#gr-now-playing" hx-swap="outerHTML">
+	<form class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
 		<input type="hidden" name="adapter_ref" value="{{.AdapterRef}}">
 		<input type="hidden" name="generation" value="{{.Generation}}">
 		<input type="range" name="offset_ms" min="0" max="{{.Seek.DurationMS}}" value="{{.Seek.OffsetMS}}" aria-label="Playback position">

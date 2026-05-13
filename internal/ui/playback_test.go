@@ -154,9 +154,26 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
-	for _, want := range []string{"Now Playing", "Movie Night", "01:30", "10:00", `name="generation" value="11"`, "Pause", `hx-trigger="every 1s"`} {
+	for _, want := range []string{"Now Playing", "Movie Night", "01:30", "10:00", `name="generation" value="11"`, "Pause", `hx-trigger="every 1s"`, `class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("banner missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestPlaybackBannerWithoutQuickCastProviderDoesNotOpenCastDrawer(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fakeBareAdapter{name: "plex", displayName: "Plex", enabled: true})
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	for _, forbidden := range []string{`drawer=cast`, `>Cast<`, "gr-now-playing-drawer"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("banner without quick-cast provider rendered %q: %s", forbidden, body)
 		}
 	}
 }
