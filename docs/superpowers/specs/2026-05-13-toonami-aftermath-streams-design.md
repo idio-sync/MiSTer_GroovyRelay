@@ -1,7 +1,7 @@
 # Toonami Aftermath Streams Design
 
 **Date:** 2026-05-13  
-**Status:** Design approved; implementation plan not started  
+**Status:** Review fixes applied; implementation plan not started
 **Scope:** Add Toonami Aftermath to the Streams page as a bundled provider with four direct HLS channels.
 
 ## Problem
@@ -57,9 +57,11 @@ The design assumes these current public HLS endpoints:
 
 These were checked during design on 2026-05-13 with HTTP `HEAD` requests. Each returned `200 OK` and `Content-Type: application/vnd.apple.mpegurl`.
 
+The plain HTTP scheme and `:3000` port are intentional for this bundled provider because those are the current public Toonami Aftermath HLS endpoints. This exception is not a general permission for remote manifests or operator-provided direct streams. The bundled Toonami definition must use only `api.toonamiaftermath.com:3000` with the four paths listed above.
+
 ## Provider Model
 
-Add a new compiled provider type named `direct-streams`.
+Add a new compiled bundled provider type named `direct-streams`.
 
 Unlike `youtube-channel-json`, this type does not fetch a playlist JSON file and does not synthesize YouTube watch URLs. It builds a catalog directly from bundled provider/channel definitions. Each channel definition carries one fixed media URL and becomes a normal Streams `Channel` with a single `StreamItem`.
 
@@ -80,6 +82,8 @@ type ChannelDefinition struct {
 
 The Toonami provider definition should be bundled in `internal/adapters/streams/assets.go` and mirrored in `docs/streams/providers.json` for hosted manifest parity. Because remote direct-stream providers are not supported in v1, the hosted JSON entry is documentation/parity for bundled data, not a way to introduce arbitrary new direct media providers at runtime.
 
+Implementation must keep separate bundled and remote provider-type allowlists. `direct-streams` is valid when constructing bundled definitions and bundled startup catalogs, but remote manifest validation must continue to treat it as unsupported and skip it before applying the ordinary `playlist_url` and `url_rules` requirements used by catalog-fetch providers.
+
 Suggested bundled definition:
 
 ```text
@@ -87,7 +91,7 @@ Provider ID: toonami-aftermath
 Display name: Toonami Aftermath
 Type: direct-streams
 Default channel: east
-Default play mode: sequential
+Default play mode: sequential (metadata default; single direct queues still use internal loopNone)
 Groups: Live Channels
 Channels:
   east   -> East   -> http://api.toonamiaftermath.com:3000/est/playlist.m3u8
@@ -105,8 +109,9 @@ Add `provider_direct_streams.go` with a builder that:
 - accepts only `http` and `https` media URLs;
 - rejects userinfo in media URLs;
 - requires a host;
-- uses each channel's configured name, group, order, description, icon, and play mode;
-- creates one `StreamItem` per channel, using the channel ID as the item ID, the channel name as the title, and the channel URL as the item URL;
+- for the bundled Toonami provider, requires `api.toonamiaftermath.com:3000` and one of the four approved playlist paths;
+- records each channel's configured name, group, order, description, icon, and play mode;
+- creates one `StreamItem` per channel, using the channel ID as the item ID, the channel name as the title, the channel URL as the item URL, and `Direct: true`;
 - skips channels with invalid definitions by returning a provider build error, so broken bundled data is caught by tests and startup behavior rather than silently hidden.
 
 The builder should not fetch the HLS playlist during catalog build. The actual media probe/fetch remains FFmpeg/core playback's responsibility, matching direct URL playback behavior.
@@ -125,10 +130,29 @@ Current Streams playback always resolves a stream item through the yt-dlp resolv
    - `DirectPlay: true`;
    - `Source: "streams"`;
    - `Capabilities: core.Capabilities{CanPause: true, CanSeek: false}`;
+   - a non-zero `MediaInputPolicy` described below;
    - title set to `Toonami Aftermath / <Channel>`.
 6. Core starts FFmpeg against the HLS URL and streams through the existing Groovy data plane.
 
 The direct branch should be explicit. Add a `Direct bool` field to `StreamItem`, set it only from trusted catalog builders, and branch on that field during playback. Do not infer directness only from the URL string, because existing YouTube-backed items also carry page URLs.
+
+Single-item direct-stream queues should use the existing internal `loopNone` behavior rather than public `sequential` looping. Next and Previous stay disabled for Toonami channels; Replay restarts the current channel URL. Do not add a new public play mode only for this provider.
+
+## Direct HLS Input Policy
+
+Direct HLS playback must populate `core.SessionRequest.MediaInputPolicy` as defense in depth:
+
+```go
+core.MediaInputPolicy{
+    ProtocolWhitelist: []string{"http", "tcp"},
+    DisableRedirects:  true,
+    DisableReconnect:  true,
+    RWTimeout:         5 * time.Second,
+    BlockedHeaders:    []string{"Cookie", "Authorization", "Proxy-Authorization", "Referer"},
+}
+```
+
+`DisableRedirects` is a contract marker in the current FFmpeg policy and does not emit a redirect-disabling argv flag. This design does not claim full host-level validation of mutable HLS child resources. The safety boundary is that `direct-streams` is bundled-only, restricted to the known Toonami host and paths, carries no input headers, and is not available to remote manifests. Future untrusted direct-stream or IPTV support would need a validating HLS fetch/cache/proxy path before FFmpeg sees child playlists or segments.
 
 ## Remote Manifest Safety
 
@@ -139,6 +163,7 @@ Direct-stream providers are different: their item URLs are media inputs that FFm
 - remote-only providers with type `direct-streams` are ignored during manifest merge;
 - remote overlays must not change the provider type of a bundled provider;
 - remote overlays for `toonami-aftermath` are ignored entirely in v1;
+- cached remote manifests follow the same rules as freshly fetched remote manifests;
 - tests should prove a remote manifest cannot add a new `direct-streams` provider that appears in the active catalog.
 
 This keeps the new feature from becoming an untrusted FFmpeg URL injection path.
@@ -150,6 +175,7 @@ This keeps the new feature from becoming an untrusted FFmpeg URL injection path.
 - Because each channel queue has one item, Next and Previous can remain disabled for Toonami channels.
 - Replay should restart the current channel URL.
 - Radio may be audio-only. The existing core/audio behavior should handle that path; no Toonami-specific visualizer code is part of this design.
+- Endpoint availability checks are manual diagnostics only. Do not add live network tests for Toonami Aftermath URLs to the normal test suite.
 
 ## UI
 
@@ -178,10 +204,15 @@ Add focused tests for:
 - startup snapshot includes `toonami-aftermath`.
 - hosted `docs/streams/providers.json` remains in parity with bundled definitions.
 - remote manifests cannot introduce remote-only `direct-streams` providers.
+- remote manifests and cached remote manifests cannot change `toonami-aftermath` channel URLs.
+- remote manifests and cached remote manifests cannot change a bundled provider's type to or from `direct-streams`.
 - Streams playback for a direct item skips the yt-dlp resolver and passes the HLS URL to `core.StartSession`.
+- Streams playback for a direct item sets the expected `MediaInputPolicy`.
+- single-item direct-stream queues disable Next and Previous while keeping Replay available.
 - Existing YouTube-backed Streams playback still uses yt-dlp.
 - Streams UI includes `Toonami Aftermath`, `East`, `West`, `Movies`, and `Radio`.
 - README mentions Toonami Aftermath as a built-in Streams catalog source.
+- Toonami endpoint checks, if retained, are optional/manual and are not part of CI.
 
 ## Implementation Notes
 
