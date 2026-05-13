@@ -26,42 +26,35 @@ Note: The primary deployment target is a Docker container running on the same ho
 
 ## Hardware requirements
 
-- MiSTer FPGA with Analogue I/O board (or equivalent) wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
+- MiSTer FPGA with Analogue I/O board or direct video adapter wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
 - Groovy_MiSTer installed on your MiSTer, ideally the [44.1khz audio fix release](https://github.com/iequalshane/Groovy_MiSTer/releases/tag/0.8)
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a Raspberry Pi 4/5), anything with a few spare CPU cycles and gigabit-class networking.
 - A Plex/Jellyfin Media Server reachable from that host (optional)
 
 The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this container takes 480p from the server to 480i.
 
-## Companion Browser Extension
-
-A WIP browser is available at [`extension/firefox/`](extension/firefox/) for Firefox / Chrome / Edge / Brave / Opera. Cast a URL from your browser to the bridge with one click. See [`extension/firefox/README.md`](extension/firefox/README.md) for install and dev instructions.
-
 ## Quick start (Docker)
 
+Docker with host networking is the primary deployment path.
+
 ```bash
-# 1. Start the bridge. It auto-creates a default config.toml on first
-#    run if the file is missing, then exits. Edit that file to point at
-#    your MiSTer.
+# 1. Generate config.toml, then edit bridge.mister.host.
 mkdir -p /opt/mister-groovy-relay
 docker run --rm --network=host \
   -v /opt/mister-groovy-relay:/config \
   idiosync000/mister-groovy-relay:latest
-$EDITOR /opt/mister-groovy-relay/config.toml   # set bridge.mister.host
+$EDITOR /opt/mister-groovy-relay/config.toml
 
-# 2. Long-run: detach and let it broadcast.
+# 2. Run the bridge.
 docker run -d --name mister-groovy-relay --restart unless-stopped \
   --network=host \
   -v /opt/mister-groovy-relay:/config \
   idiosync000/mister-groovy-relay:latest
-
-# 3. Link Plex in your browser. Open http://<host>:32500/, click Plex
-#    in the sidebar, click Link Plex Account, enter the 4-character code
-#    at plex.tv/link. Done. The token persists in data.json inside
-#    data_dir so you only link once.
 ```
 
-The CLI `--link` flow for headless / automation setups:
+Open `http://<host>:32500/`, choose Plex or Jellyfin in the sidebar, and link your server. The token is saved in `data.json` under `data_dir`.
+
+For headless Plex linking:
 
 ```bash
 docker run --rm -it --network=host \
@@ -69,341 +62,97 @@ docker run --rm -it --network=host \
   idiosync000/mister-groovy-relay:latest --link
 ```
 
-`--network=host` is required. The bridge needs a stable source UDP port (the MiSTer keys its session by sender `IP:port`) and it needs to receive the Plex GDM multicast on `239.0.0.250:32414`. Bridged Docker networking does not pass multicast and would rewrite the source port on every restart, neither is workable.
+`--network=host` is required. The bridge needs a stable UDP source port for the MiSTer session and Plex GDM multicast on `239.0.0.250:32414`; bridged Docker networking breaks both.
 
 ## Native builds
 
-Native archives are built for Windows, macOS, and Linux. On first run the
-bridge writes a platform-specific config file and exits so you can set
-`bridge.mister.host`, then relaunch it.
+Native archives are built for Windows, macOS, and Linux. On first run, the bridge writes a platform-specific config file and exits so you can set `bridge.mister.host`, then relaunch it.
 
-Default config locations:
+| OS | Default config path |
+| --- | --- |
+| Windows | `%APPDATA%\mister-groovy-relay\config.toml` |
+| macOS | `~/Library/Application Support/mister-groovy-relay/config.toml` |
+| Linux | `$XDG_CONFIG_HOME/mister-groovy-relay/config.toml` or `~/.config/mister-groovy-relay/config.toml` |
 
-- Windows: `%APPDATA%\mister-groovy-relay\config.toml`
-- macOS: `~/Library/Application Support/mister-groovy-relay/config.toml`
-- Linux: `$XDG_CONFIG_HOME/mister-groovy-relay/config.toml`, or
-  `~/.config/mister-groovy-relay/config.toml`
+Release archives bundle `ffmpeg`, `ffprobe`, and `yt-dlp` beside the bridge binary. To use system-installed tools instead, set `bridge.ffmpeg_path`, `bridge.ffprobe_path`, or `bridge.ytdlp_path` in `config.toml`.
 
-Release archives bundle `ffmpeg`, `ffprobe`, and `yt-dlp`beside the bridge
-binary. If you prefer system-installed tools, set `bridge.ffmpeg_path`,
-`bridge.ffprobe_path`, or `bridge.ytdlp_path` in `config.toml`; blank means
-auto-resolve sidecar first, then `PATH`.
-
-On macOS, right-click the binary and choose **Open** the first time if Gatekeeper
-blocks a direct double-click. As a fallback, remove quarantine from the extracted
-folder:
+On macOS, right-click the binary and choose **Open** the first time if Gatekeeper blocks it. As a fallback:
 
 ```bash
 xattr -dr com.apple.quarantine /path/to/mister-groovy-relay-folder
 ```
 
-## URL adapter
+## First-time setup
 
-In addition to Plex and Jellyfin, the bridge ships a URL adapter: paste an `http://`
-or `https://` URL into the **URL** panel in the settings UI and click
-**Play**. The bridge supports two flavors of URL:
+1. Install the Docker image or native binary.
+2. Start once to generate `config.toml`.
+3. Set `bridge.mister.host` to your MiSTer's LAN IP.
+4. Restart the bridge.
+5. Open `http://<host-ip>:32500/` and link Plex or Jellyfin.
+6. Cast from Plex, Jellyfin, a URL, a supported streaming catalog, DLNA, or a torrent source.
 
-- **Direct media URLs** — anything `ffmpeg` can ingest natively over HTTP/HTTPS:
-  direct MP4/MKV files, HLS playlists (`.m3u8`), DASH manifests (`.mpd`).
-- **Page URLs from sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp)** —
-  ~1,800 sites including:
-  - YouTube videos (incl. Shorts, Live)
-  - Twitch VODs and live streams
-  - Vimeo, Dailymotion
-  - Internet Archive items
-  - SoundCloud, Bandcamp tracks
-  - Most other yt-dlp-supported sites (see "auto-resolves" list in
-    the panel for the curated default, can add more upon request)
+The settings UI labels whether a saved field applies live, restarts the current cast, or requires a bridge restart.
 
-Sessions are fire-and-forget: they run to EOF or until preempted by
-another POST. In-session pause/seek exists in a basic state in the web-ui, but I will polish it in a later pass.
+## Cast sources
 
-## Music visualizer
+The list above is the quick promise. This table shows the main control surface for each source.
 
-Plex and Jellyfin music casts are supported automatically. Pick a song, album,
-or playlist from a Plex or Jellyfin client, cast it to the bridge, and audio-only
-items render a retro analyzer video on the CRT while PCM audio continues through
-the MiSTer. There are no v1 config fields for this; the existing Plex/Jellyfin
-adapter enable toggles are the control surface.
+| Source | How to start | Notes |
+| --- | --- | --- |
+| Plex / Jellyfin video | Cast from the normal client picker | Requires server linking in the UI. |
+| Plex / Jellyfin music | Cast an album, playlist, or track | Renders a CRT visualizer while audio plays through the MiSTer. |
+| Direct media URL | Paste into the URL panel | Supports files, HLS, and DASH that FFmpeg can ingest. |
+| Site URL | Paste into the URL panel | Uses `yt-dlp` for supported pages. See [URL adapter](docs/url-adapter.md). |
+| Streaming catalogs | Use bundled channel entries or supported links | Includes Cartoon Rewind, MTV Rewind, and Toonami Aftermath bundled channels. |
+| Torrent | Upload `.torrent` or paste a magnet link | Disabled by default. See [Torrent adapter](docs/torrent.md). |
+| DLNA / UPnP | Choose the bridge from a DLNA controller | Disabled by default. See [DLNA adapter](docs/dlna.md). |
+| Browser extension | Cast a page URL from the browser | WIP extension lives in [`extension/firefox/`](extension/firefox/README.md). |
 
-### Cookies for auth-walled content
+## Adapters
 
-Age-gated YouTube videos, members-only Twitch VODs, and similar
-content require login cookies. The URL panel has a collapsed
-**Cookies** section that accepts a Netscape-format `cookies.txt`:
-
-1. Install a browser extension like
-   [Get cookies.txt LOCALLY](https://github.com/kairi003/Get-cookies.txt-LOCALLY)
-   (Chrome/Edge) or
-   [cookies.txt](https://addons.mozilla.org/firefox/addon/cookies-txt/)
-   (Firefox).
-2. Log in to the site you want to cast from.
-3. Click the extension and download the cookies file.
-4. Open the URL panel in the bridge, expand **Cookies**, paste the
-   file content, click **Save Cookies**.
-
-Cookies are saved to `<bridge.data_dir>/url_cookies.txt` (mode 0600
-on POSIX) and survive container restart through the operator's
-existing `data_dir` volume mount. The bridge reuses them on every
-yt-dlp resolve. Click **Clear** to remove them.
-
-The Cookies section never echoes saved content back into the
-textarea, and the form sets `autocomplete="off"` so password
-managers don't offer to save them.
-
-### Scripts can also POST a URL programmatically
-
-```bash
-# htmx form-style (matches what the panel sends)
-curl -X POST \
-  -H "Origin: http://<bridge-host>:32500" \
-  -d 'url=https://youtu.be/dQw4w9WgXcQ&mode=auto' \
-  http://<bridge-host>:32500/ui/adapter/url/play
-
-# JSON
-curl -X POST \
-  -H "Origin: http://<bridge-host>:32500" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","mode":"ytdlp"}' \
-  http://<bridge-host>:32500/ui/adapter/url/play
-```
-
-The `Origin` header is required because the adapter's POST endpoint runs through the bridge's CSRF middleware. Browsers (htmx) set `Sec-Fetch-Site` automatically and pass without ceremony; `curl` and other scripted clients must include `Origin` matching the bridge's host:port. Without it, the request returns 403. The response shape also branches: htmx callers (which set `HX-Request: true`) get an HTML fragment back; everyone else gets JSON.
-
-URL credentials in the form `https://user:pass@host/path` are redacted in the panel display, the success response body, and all log lines. The JSON response echoes the URL verbatim, the API caller already submitted it.
-
-### Yt-dlp self-update
-
-The Docker image bundles a recent yt-dlp binary at build time. On each
-container start, the entrypoint runs `yt-dlp -U` (gated by a daily
-marker file so hourly restarts don't hammer GitHub). Failed updates
-log a warning; the bundled version stays usable.
-
-## Streams adapter
-
-The Streams adapter turns supported catalog sites into native relay queues. Right now Cartoon Rewind, MTV Rewind, and Toonami Aftermath are supported, but more will be coming. Toonami Aftermath is bundled-only in this pass; remote manifests cannot add arbitrary direct HLS/IPTV sources. I have initial "channel" buttons but the URL adapter now also supports links from these sites.
-
-Example links handled natively when Streams is enabled:
-- `https://wantmymtv.vercel.app/player.html?channel=metal`
-- `https://wantmymtv.xyz/player.html?channel=metal`
-- `https://wantmymtv.vercel.app/player.html?v=dQw4w9WgXcQ`
-- `https://cartoonrewind.tv/player.html?channel=heman`
-- Toonami Aftermath appears as four bundled-only direct HLS channels: East, West, Movies, and Radio.
-
-### Torrent adapter
-
-The Torrent adapter can cast a magnet link or uploaded `.torrent` file through MiSTer Groovy Relay. It is disabled by default and also requires `traffic_acknowledged = true` before any BitTorrent client is created or any BitTorrent listen port opens.
-
-Use it only for content you have the right to download and upload. BitTorrent traffic can be visible to peers and network operators. The default upload limit is 512 KiB/s; set `max_upload_rate_kbps = 0` for unlimited upload or a lower positive value for a stricter cap.
-
-Torrent media is served only to the local bridge process through `/torrent/session/{token}/media`, and that route rejects non-loopback clients. Cache data lives under `<download_dir-or-data_dir>/groovyrelay-torrent/`; session cache data is deleted after playback unless `keep_completed = true`.
-
-## DLNA / UPnP adapter
-
-The DLNA adapter advertises the bridge as a UPnP `MediaRenderer:1`
-device on the LAN. Any DLNA control point (VLC, BubbleUPnP, Kodi,
-Windows "Cast to device", etc.) on the same subnet can pick the bridge
-as a render target and push media at it. The bridge then translates
-the controller's `SetAVTransportURI` + `Play` into a core session and
-streams to the MiSTer like any other adapter.
-
-> **WARNING:** DLNA exposes **unauthenticated LAN control**. The UPnP
-> spec has no notion of pairing or auth — any device on the LAN that
-> can reach the bridge's HTTP port can change what's playing. The
-> adapter is **disabled by default** for that reason. Only enable it on
-> trusted networks (home LAN, lab subnet) and never on a network shared
-> with untrusted clients.
-
-**Required configuration.** When DLNA is enabled the bridge must know
-its own LAN IP so it can advertise a reachable `LOCATION` URL in SSDP
-NOTIFY packets and the device descriptor. Set `bridge.host_ip`
-explicitly in `config.toml` (recommended), or rely on the default-route
-autodetect (the same logic used for the Plex `/resources` response —
-see [Multi-NIC hosts](#multi-nic-hosts)). If `bridge.host_ip` ends up
-empty when DLNA is enabled, `Start` fails with `StateError` and the
-sidebar entry shows the misconfig.
-
-**Config (`[adapters.dlna]`):**
-
-```toml
-[adapters.dlna]
-enabled = false                   # Set to true to advertise as a DLNA / UPnP MediaRenderer.
-                                  # WARNING: DLNA exposes unauthenticated LAN control —
-                                  # any device on the LAN can change what plays.
-device_name = "MiSTer"            # Friendly name shown in DLNA controllers.
-                                  # Restart-bridge: changes apply on next start.
-autoplay_on_set_uri = false       # Some controllers set a URI but never send Play.
-                                  # Enable for compatibility with those controllers.
-allow_public_source_urls = false  # Default false; private/LAN targets always allowed.
-                                  # When true, accepts media URLs that resolve to
-                                  # public-internet addresses (SSRF risk).
-```
-
-DLNA eventing (`SUBSCRIBE` / `UNSUBSCRIBE` / `NOTIFY`) is implemented for
-AVTransport, RenderingControl, and ConnectionManager. Real controller findings
-are tracked in [docs/dlna-compatibility.md](docs/dlna-compatibility.md);
-controller-specific quirks and broadened MIME support belong there first, then
-graduate into README troubleshooting once verified.
+| Adapter | Default | Deeper notes |
+| --- | --- | --- |
+| Plex | On after linking | Needs multicast discovery and stable bridge address. |
+| Jellyfin | On after linking | Link through the settings UI. |
+| URL | On | Cookies, scripted playback, and `yt-dlp` notes: [docs/url-adapter.md](docs/url-adapter.md). |
+| Streams | On | Bundled catalog channels only; not a user IPTV importer. |
+| Torrent | Off | Requires explicit traffic acknowledgement: [docs/torrent.md](docs/torrent.md). |
+| DLNA / UPnP | Off | Exposes unauthenticated LAN control: [docs/dlna.md](docs/dlna.md). |
 
 ## Settings UI
 
-Once the bridge is running, point a browser at `http://<host>:32500/` (or whatever `bridge.ui.http_port` is set to). The settings page lets you:
+Open `http://<host>:32500/` after the bridge starts. The UI lets you:
 
-- Flip `interlace_field_order` live — No cast drop, no restart. Flip, look at the CRT, flip back.
-- Link your Plex/Jellyfin account in-browser — Click **Link Plex/Jellyfin Account**, enter the 4-character code at plex.tv/link for Plex, your JF user/pass for JF.
-- Enable or disable adapters with a toggle
-- See at a glance which adapters are running (green dot), stopped (grey), or erroring (red + last error as tooltip).
+- Link Plex and Jellyfin accounts.
+- Enable or disable adapters.
+- Flip `interlace_field_order` live while watching the CRT.
+- See adapter state at a glance: running, stopped, or erroring.
+- Save bridge settings with clear apply scope.
 
-Each field is tagged with an apply scope so the UI tells you what it just did: *applied live* (hot-swap), *cast restarted* (next play rebuilds the pipeline), or *restart the container* (for bindable/identity fields where live propagation would produce split-brain state).
+## Operations
 
-## First-time setup walkthrough
+Most installs only need the quick start. Use [docs/operations.md](docs/operations.md) for the longer notes:
 
-1. **Install.** Pull the image (`docker pull idiosync000/mister-groovy-relay:latest`)
-   or download native binary.
+| Topic | When it matters |
+| --- | --- |
+| Multi-NIC hosts | Cast target appears, but commands never reach the bridge. |
+| Adaptive delta-LZ4 | You want to experiment with lower UDP payloads on motion-light content. |
+| Docker CPU contention | Playback shows motion glitches under host load. |
+| Fake MiSTer diagnostics | You need to prove the bridge is sending packets before debugging the real MiSTer path. |
 
-2. **Mount a config dir. (Docker Only)** `docker run -v /opt/mister-groovy-relay:/config …`.
-   The bridge auto-creates `config.toml` from defaults on first start if the file is missing.
-
-3. **Open the UI.** Browse to `http://<host-ip>:32500/`. You'll land on the Bridge panel with a quick-start banner. Fill in your MiSTer's IP under **Network → MiSTer Host**, click **Save Bridge**. Because `bridge.mister.host` is a restart-bridge field (the UDP sender is bound at startup), the UI tells you to restart the container. `docker restart mister-groovy-relay` or close and reopen
-the binary and reload.
-
-4. **Link Plex/JF.** Link servers as outlined above. The UI transitions to *Linked · RUN* within ~2 seconds and you're good to go.
-
-5. **First cast.** Open Plex/Jellyfin on your phone or browser, pick a video or music track, tap the cast icon, pick your bridge from the target list. Video or the music visualizer appears in 1–2 seconds.
-
-## Operational notes
-
-### Multi-NIC hosts
-
-The bridge advertises its own LAN address to Plex (in the `/resources` response and in the plex.tv device registration PUT). By default it auto-detects that
-address by asking the kernel which interface it would use to reach 8.8.8.8.
-
-On hosts with multiple network interfaces (typical combinations are LAN + WireGuard, LAN + Docker bridge, or LAN + secondary subnet) the default route may not be the Plex-facing one. Symptoms: the cast target shows up in the Plex picker but "commands never arrive." The controller is trying to reach the bridge on an unreachable NIC.
-
-Fix: set `host_ip` explicitly to the LAN IP the Plex controller can reach. Find it with `ip -4 addr show | grep inet` on the host; the `br0` or `eth0` interface IP on the same subnet as your Plex Media Server is what you want.
-
-```toml
-host_ip = "192.168.1.20"
-```
-
-Restart the bridge. Check the startup log for the `host_ip not set` warning. If it's gone, your override took effect.
-
-### Experimental: adaptive delta-LZ4 BLITs (`GROOVY_DELTA_LZ4`)
-
-The Groovy wire protocol defines a 13-byte BLIT variant carrying an LZ4-compressed
-**byte-wrap subtraction** of the current field against the previous same-polarity
-field (`delta[i] = current[i] - prev[i]` mod 256). The FPGA reconstructs the field
-by adding the previous framebuffer bytes back to the decompressed delta. On
-motion-light content the delta compresses far better than the full field, which
-reduces UDP chunk count and lowers the chance of hitting the 500 KB congestion
-backoff threshold.
-
-The bridge can opt in to emit 13-byte BLITs alongside the standard 12-byte LZ4
-path. The selector compares the two compressed sizes per field and chooses the
-delta variant only when it is at least 5% smaller (the same 95% win threshold
-the upstream Groovy_MiSTer reference uses).
-
-Set the env var on the bridge process to enable:
-
-```bash
-GROOVY_DELTA_LZ4=1 ./mister-groovy-relay --config /path/to/config.toml
-# or in Docker:
-docker run ... -e GROOVY_DELTA_LZ4=1 idiosync000/mister-groovy-relay:latest
-```
-
-The default is off. The feature has no effect unless `bridge.lz4_enabled` is also
-true (which is the default).
-
-**Known limitation: delta loss is silent.** UDP packet loss is structural in this
-protocol — there are no per-chunk sequence numbers and the receiver concatenates
-by arrival order. If a delta-LZ4 field is dropped on the wire, the sender's
-"previous field" history advances while the receiver's stays behind; subsequent
-delta fields will reconstruct against the wrong predecessor and produce pixel
-corruption until the next full BLIT (any 12-byte LZ4 or 8-byte raw field) resyncs
-the histories on both sides. On a stable LAN with motion-typical content full
-fields land often enough that brief corruption recovers within a few frames; on a
-lossy link delta-LZ4 can amplify visible artifacts. Leave it off if you see
-unexplained intermittent corruption.
-
-You can grep the bridge logs for `delta_selected` to see how often the adaptive
-selector picked the delta path in each 5-second window when the feature is on.
-
-### CPU contention under Docker
-
-The data plane pushes fields at 59.94 Hz regardless of scheduling pressure.
-Under heavy CPU contention the FFmpeg decoder can fall behind; the bridge covers with duplicate-field BLITs, which the FPGA rescans, so the symptom is visible motion glitches, not A/V drift. (This is by design, the clock-push architecture trades a graceful fallback against a hard drift bug.)
-
-If you see glitches cap container CPU with
-`docker run --cpus=2 ...` so the bridge has dedicated cores that aren't preempted. 2 cores is typically sufficient for a single 480p transcode plus Groovy packet framing.
+DLNA controller findings live in [docs/dlna-compatibility.md](docs/dlna-compatibility.md).
 
 ## Troubleshooting
 
-**"The DLNA renderer does not appear."**
-
-DLNA discovery uses SSDP multicast on UDP `239.255.255.250:1900`. Confirm the DLNA adapter is enabled (`[adapters.dlna] enabled = true`) and `bridge.host_ip` is set to the LAN address that controllers can reach; when DLNA is enabled and the bridge cannot choose a usable host IP, startup fails with `StateError` instead of advertising a non-discoverable renderer.
-
-On Linux, check for another SSDP responder such as `minissdpd`, `minidlna`, or `gerbera` already bound to UDP 1900:
-
-```bash
-ss -ulpn | grep ':1900'
-systemctl status minissdpd
-systemctl status minidlna
-systemctl status gerbera
-```
-
-On Windows, check the SSDP Discovery service (`SSDPSRV`) and use `netstat` to see which process owns UDP 1900:
-
-```powershell
-Get-Service SSDPSRV
-netstat -ano -p udp | findstr :1900
-```
-
-Stop a conflicting service only on a trusted test machine where you understand the LAN exposure, then restart the bridge so it can bind and advertise cleanly.
-
-**"The DLNA renderer appears, but selecting it fails or controls never work."**
-
-This usually means a multi-NIC `LOCATION` mismatch. The bridge advertises its device description as a `device.xml` URL built from `bridge.host_ip` and `bridge.ui.http_port`; if that URL points at a VPN, Docker bridge, or different subnet, the controller can discover the renderer but cannot fetch or control it.
-
-Set `bridge.host_ip` to the address on the same subnet as the DLNA controller, then restart the bridge.
-
-**"The DLNA controller sets media, but playback never starts."**
-
-Some controllers send `SetAVTransportURI` without a follow-up `Play` command. For those controllers, enable autoplay compatibility mode:
-
-```toml
-[adapters.dlna]
-autoplay_on_set_uri = true
-```
-
-Leave it off for controllers that send explicit `Play` commands.
-
-**"The DLNA controller reports an illegal MIME-type."**
-
-Direct HTTP URLs must use one of the bridge's allow-listed MIME types before the DLNA adapter will pass them to playback. HLS/M3U8 URLs are accepted only after nested playlist and segment URLs pass validation, so a controller may reject or fail a cast when a playlist points at unsupported or unsafe media entries.
-
-**"The target didn't show up in Plex's cast menu."**
-
-The bridge uses GDM multicast discovery (port 32414). Confirm: `--network=host` is set; your LAN is not carving off mDNS/multicast between client and server; you linked successfully (`--link`); and the bridge process is running (`docker logs mister-groovy-relay`).
-
-**"The target gets overwritten by another Plex cast target in the cast menu, creating a duplicate"**
-
-The GroovyRelay application (Docker or native app) needs to appear on the network having a different IP address than the Plex server. A cast IP appearing the same as the PMS IP seems to confuse the Plex cast target discovery sometimes. 
-
-**"No video on the CRT."**
-
-Check the MiSTer is running the Groovy_MiSTer core and is listening on the configured `mister_port` (default 32100). Try `fake-mister` locally to confirm the bridge is sending packets at all: `go run ./cmd/fake-mister -addr :32100` on the same host as the bridge, point `mister_host = "127.0.0.1"` at it, start a cast, and watch for `cmd 2/3/7/...` counts in the fake's summary output. If you see packets there but nothing on the real MiSTer, it's network routing or a Groovy core config issue, not the bridge.
-
-**"Audio drifts over long playback."**
-
-This bridge uses a single FFmpeg process with shared A/V timestamps, so long-term drift is structurally mitigated. Short-term offsets usually indicate host CPU contention.
-
-**"The picture shimmers / fields look wrong."**
-
-Flip `interlace_field_order` between `tff` and `bff`. The "correct" value depends on your MiSTer core + cable path; once you pick the right one it stays right.
-
-**"Plex says the target is offline moments after casting."**
-
-Almost always a `source_port` regression. If the bridge restarted and bound a different ephemeral port, the MiSTer's session key no longer matches. Make sure `source_port` is set to a fixed number in `config.toml` and that nothing else on the host is using it.
+| Symptom | First check | More detail |
+| --- | --- | --- |
+| Target missing from Plex | `--network=host`, multicast, server link, bridge logs | [Operations](docs/operations.md) |
+| Cast target duplicates another Plex target | Run the bridge from a different IP than the Plex server | [Operations](docs/operations.md) |
+| No video on CRT | MiSTer is running Groovy_MiSTer and listening on `mister_port` | [Operations](docs/operations.md) |
+| Audio drift or motion glitches | Host CPU contention | [Operations](docs/operations.md) |
+| Field shimmer | Flip `interlace_field_order` | Settings UI |
+| Plex reports target offline after cast | Fixed `source_port` and no port conflict | [Operations](docs/operations.md) |
+| DLNA renderer missing or uncontrollable | `bridge.host_ip`, UDP 1900, trusted LAN only | [DLNA adapter](docs/dlna.md) |
 
 ## License
 
