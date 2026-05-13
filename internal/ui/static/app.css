@@ -699,7 +699,9 @@ body {
 	font: 500 12px var(--font-body);
 	color: var(--gr-dim);
 	cursor: pointer;
+	text-decoration: none;
 }
+.gr-chip:hover, .gr-chip:focus-visible { border-color: var(--gr-border); color: var(--gr-text); }
 .gr-chip.active {
 	color: var(--gr-text);
 	background: var(--gr-surface);

@@ -39,6 +39,38 @@ func TestDiagnostics_RendersAllSections(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_FiltersEventsBySeverity(t *testing.T) {
+	log := eventlog.New(16)
+	log.Append(eventlog.Entry{Time: time.Now(), Severity: eventlog.SeverityInfo, Source: "core", Message: "info-only event"})
+	log.Append(eventlog.Entry{Time: time.Now(), Severity: eventlog.SeverityWarn, Source: "jellyfin", Message: "warn-only event"})
+	log.Append(eventlog.Entry{Time: time.Now(), Severity: eventlog.SeverityErr, Source: "plex", Message: "err-only event"})
+	srv, mux := newTestServer(t, func(c *Config) { c.EventLog = log })
+	_ = srv
+
+	r := httptest.NewRequest("GET", "/ui/diagnostics?severity=warn", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	body := w.Body.String()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+	if !strings.Contains(body, "warn-only event") {
+		t.Fatalf("filtered diagnostics should include warn event: %s", body)
+	}
+	for _, sub := range []string{"info-only event", "err-only event"} {
+		if strings.Contains(body, sub) {
+			t.Fatalf("filtered diagnostics should not include %q: %s", sub, body)
+		}
+	}
+	if !strings.Contains(body, `href="/ui/diagnostics?severity=warn" class="gr-chip active" aria-current="page"`) {
+		t.Fatalf("warn chip should be active: %s", body)
+	}
+	if strings.Contains(body, `href="/ui/diagnostics" class="gr-chip active" aria-current="page"`) {
+		t.Fatalf("all chip should not be active when warn is selected: %s", body)
+	}
+}
+
 func TestDiagnostics_RendersProcessUptime(t *testing.T) {
 	srv, _ := newTestServer(t, func(c *Config) {
 		c.StartedAt = time.Now().Add(-65 * time.Minute)

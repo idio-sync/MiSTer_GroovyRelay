@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -12,11 +13,12 @@ import (
 
 // diagnosticsPanelData is the template context for /ui/diagnostics.
 type diagnosticsPanelData struct {
-	RingCapacity  int
-	Uptime        string
-	EvictedMarker bool
-	Counts        struct{ All, Info, Warn, Err int }
-	Events        []statusEvent
+	RingCapacity   int
+	Uptime         string
+	EvictedMarker  bool
+	SeverityFilter string
+	Counts         struct{ All, Info, Warn, Err int }
+	Events         []statusEvent
 
 	ProbeResult probeResultData
 
@@ -35,7 +37,7 @@ type probeResultData struct {
 }
 
 func (s *Server) handleDiagnosticsGET(w http.ResponseWriter, r *http.Request) {
-	panelData := s.buildDiagnosticsData()
+	panelData := s.buildDiagnosticsDataForSeverity(r.URL.Query().Get("severity"))
 	if isHTMXRequest(r) {
 		// Sidebar nav targets #panel with hx-swap=innerHTML; returning the
 		// full shell would nest a second sidebar inside the panel. Match
@@ -70,9 +72,15 @@ func (s *Server) handleDiagnosticsProbe(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) buildDiagnosticsData() diagnosticsPanelData {
+	return s.buildDiagnosticsDataForSeverity("")
+}
+
+func (s *Server) buildDiagnosticsDataForSeverity(severity string) diagnosticsPanelData {
+	filter := normalizeDiagnosticsSeverityFilter(severity)
 	d := diagnosticsPanelData{
-		RingCapacity: 256,
-		Uptime:       formatElapsed(time.Since(s.cfg.StartedAt)),
+		RingCapacity:   256,
+		Uptime:         formatElapsed(time.Since(s.cfg.StartedAt)),
+		SeverityFilter: filter,
 	}
 	d.BuildInfo = []diagKV{
 		{"version", s.cfg.Version},
@@ -96,6 +104,9 @@ func (s *Server) buildDiagnosticsData() diagnosticsPanelData {
 		d.Events = make([]statusEvent, 0, len(all))
 		for i := len(all) - 1; i >= 0; i-- {
 			e := all[i]
+			if !diagnosticsSeverityMatches(e.Severity, filter) {
+				continue
+			}
 			d.Events = append(d.Events, statusEvent{
 				Time:     e.Time.Format("15:04:05"),
 				Severity: e.Severity.String(),
@@ -106,4 +117,27 @@ func (s *Server) buildDiagnosticsData() diagnosticsPanelData {
 		}
 	}
 	return d
+}
+
+func normalizeDiagnosticsSeverityFilter(severity string) string {
+	filter := strings.ToLower(strings.TrimSpace(severity))
+	switch filter {
+	case "info", "warn", "err":
+		return filter
+	default:
+		return "all"
+	}
+}
+
+func diagnosticsSeverityMatches(severity eventlog.Severity, filter string) bool {
+	switch filter {
+	case "info":
+		return severity == eventlog.SeverityInfo
+	case "warn":
+		return severity == eventlog.SeverityWarn
+	case "err":
+		return severity == eventlog.SeverityErr
+	default:
+		return true
+	}
 }
