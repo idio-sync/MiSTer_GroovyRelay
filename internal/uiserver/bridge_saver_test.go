@@ -66,6 +66,26 @@ func TestDiffBridgeConfig_LoggingDebug(t *testing.T) {
 	}
 }
 
+func TestDiffBridgeConfig_DeltaLZ4(t *testing.T) {
+	old := config.BridgeConfig{
+		Video: config.VideoConfig{DeltaLZ4Enabled: false},
+	}
+	newCfg := old
+	newCfg.Video.DeltaLZ4Enabled = true
+
+	keys := diffBridgeConfig(old, newCfg)
+	if !containsStr(keys, "video.delta_lz4_enabled") {
+		t.Errorf("expected video.delta_lz4_enabled in diff keys, got %v", keys)
+	}
+}
+
+func TestScopeForBridgeField_DeltaLZ4RestartCast(t *testing.T) {
+	got := scopeForBridgeField("video.delta_lz4_enabled")
+	if got != adapters.ScopeRestartCast {
+		t.Errorf("scopeForBridgeField(video.delta_lz4_enabled) = %v, want ScopeRestartCast", got)
+	}
+}
+
 // TestScopeForBridgeField_LoggingDebugHotSwap pins the scope for the
 // logging toggle: flipping it must NOT trigger a cast restart or
 // container restart — the operator wants to enable diagnostic logs

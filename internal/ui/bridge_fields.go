@@ -114,6 +114,15 @@ func bridgeFields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeRestartCast,
 			Section:    "Video",
 		},
+		{
+			Key:        "video.delta_lz4_enabled",
+			Label:      "Delta-LZ4",
+			Help:       "Use adaptive delta-compressed BLITs when they beat full-field LZ4.",
+			Kind:       adapters.KindBool,
+			Default:    true,
+			ApplyScope: adapters.ScopeRestartCast,
+			Section:    "Video",
+		},
 
 		// ---- Audio ----
 		{

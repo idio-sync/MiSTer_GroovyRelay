@@ -229,6 +229,27 @@ func TestDefaultBridge_SSHCredentials(t *testing.T) {
 	}
 }
 
+func TestDefaultBridge_DeltaLZ4Enabled(t *testing.T) {
+	b := defaultBridge()
+	if !b.Video.DeltaLZ4Enabled {
+		t.Error("default DeltaLZ4Enabled = false, want true")
+	}
+}
+
+func TestSectioned_RoundTripDeltaLZ4Enabled(t *testing.T) {
+	const input = `
+[bridge.video]
+delta_lz4_enabled = false
+`
+	s, _, err := loadSectionedFromBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("loadSectionedFromBytes: %v", err)
+	}
+	if s.Bridge.Video.DeltaLZ4Enabled {
+		t.Error("DeltaLZ4Enabled = true, want decoded false")
+	}
+}
+
 func TestSectioned_Validate_ExternalToolPaths(t *testing.T) {
 	tool := filepath.Join(t.TempDir(), "ffmpeg")
 	if runtime.GOOS == "windows" {

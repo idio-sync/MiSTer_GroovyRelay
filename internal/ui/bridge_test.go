@@ -27,6 +27,7 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			AspectMode:          "auto",
 			RGBMode:             "rgb888",
 			LZ4Enabled:          true,
+			DeltaLZ4Enabled:     true,
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 		MiSTer: config.MisterConfig{
@@ -133,6 +134,7 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 			"&video.interlace_field_order=bff" +
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
@@ -334,6 +336,7 @@ func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
 			"&video.interlace_field_order=tff" +
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
@@ -512,6 +515,7 @@ func TestBridgeSave_HotSwapRendersPipNoToast(t *testing.T) {
 			"&video.interlace_field_order=bff" +
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
@@ -564,6 +568,7 @@ func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
 			"&video.interlace_field_order=bff" +
 			"&video.aspect_mode=zoom" +
 			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
@@ -617,6 +622,7 @@ func TestToast_RestartBridge_HasCopyButton(t *testing.T) {
 			"&video.interlace_field_order=tff" +
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32600" +
@@ -664,6 +670,7 @@ func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
 			"&video.interlace_field_order=tff" +
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +

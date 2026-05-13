@@ -292,6 +292,8 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 	}
 
 	m := newTestManager(t)
+	m.bridge.Video.LZ4Enabled = true
+	m.bridge.Video.DeltaLZ4Enabled = true
 	err := m.StartSession(SessionRequest{
 		StreamURL:         "http://example/clip.m3u8",
 		AudioStreamURL:    "http://example/audio.m3u8",
@@ -318,6 +320,9 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 	}
 	if got := captured.SpawnSpec.AudioInputHeaders["User-Agent"]; got != "audio-agent" {
 		t.Fatalf("User-Agent audio input header = %q", got)
+	}
+	if !captured.DeltaLZ4Enabled {
+		t.Fatal("DeltaLZ4Enabled was not plumbed into PlaneConfig")
 	}
 }
 

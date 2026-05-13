@@ -419,6 +419,8 @@ func bridgeLookupBool(key string, cur config.BridgeConfig) bool {
 	switch key {
 	case "video.lz4_enabled":
 		return cur.Video.LZ4Enabled
+	case "video.delta_lz4_enabled":
+		return cur.Video.DeltaLZ4Enabled
 	case "logging.debug":
 		return cur.Logging.Debug
 	}

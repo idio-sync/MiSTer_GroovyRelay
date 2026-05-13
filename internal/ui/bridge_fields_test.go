@@ -94,6 +94,35 @@ func TestBridgeFields_HasExternalToolsSection(t *testing.T) {
 	}
 }
 
+func TestBridgeFields_HasDeltaLZ4Toggle(t *testing.T) {
+	fields := bridgeFields()
+	var found *adapters.FieldDef
+	for i := range fields {
+		if fields[i].Key == "video.delta_lz4_enabled" {
+			found = &fields[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("video.delta_lz4_enabled not found in bridgeFields()")
+	}
+	if found.Label != "Delta-LZ4" {
+		t.Errorf("label = %q, want Delta-LZ4", found.Label)
+	}
+	if found.Section != "Video" {
+		t.Errorf("section = %q, want Video", found.Section)
+	}
+	if found.Kind != adapters.KindBool {
+		t.Errorf("kind = %v, want KindBool", found.Kind)
+	}
+	if found.Default != true {
+		t.Errorf("default = %v, want true", found.Default)
+	}
+	if found.ApplyScope != adapters.ScopeRestartCast {
+		t.Errorf("scope = %v, want ScopeRestartCast", found.ApplyScope)
+	}
+}
+
 func TestRowFor_KindAction(t *testing.T) {
 	fd := adapters.FieldDef{
 		Key:     "mister/launch",

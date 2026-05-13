@@ -37,6 +37,7 @@ type Config struct {
 	AspectMode          string `toml:"aspect_mode"`           // "letterbox" | "zoom" | "auto"
 	RGBMode             string `toml:"rgb_mode"`              // v1: "rgb888" only (rgba8888 / rgb565 reserved for v2)
 	LZ4Enabled          bool   `toml:"lz4_enabled"`
+	DeltaLZ4Enabled     bool   `toml:"delta_lz4_enabled"`
 
 	// Audio
 	AudioSampleRate int `toml:"audio_sample_rate"`
@@ -61,6 +62,7 @@ func defaults() *Config {
 		AspectMode:          "auto",
 		RGBMode:             "rgb888",
 		LZ4Enabled:          true,
+		DeltaLZ4Enabled:     true,
 		AudioSampleRate:     48000,
 		AudioChannels:       2,
 		PlexProfileName:     "Plex Home Theater",
@@ -132,6 +134,7 @@ type VideoConfig struct {
 	AspectMode          string `toml:"aspect_mode"`
 	RGBMode             string `toml:"rgb_mode"`
 	LZ4Enabled          bool   `toml:"lz4_enabled"`
+	DeltaLZ4Enabled     bool   `toml:"delta_lz4_enabled"`
 }
 
 type AudioConfig struct {

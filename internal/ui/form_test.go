@@ -17,6 +17,7 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	form.Set("video.interlace_field_order", "bff")
 	form.Set("video.aspect_mode", "auto")
 	form.Set("video.lz4_enabled", "true")
+	form.Set("video.delta_lz4_enabled", "true")
 	form.Set("audio.sample_rate", "48000")
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")
@@ -40,6 +41,9 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	}
 	if !got.Video.LZ4Enabled {
 		t.Error("LZ4Enabled should be true")
+	}
+	if !got.Video.DeltaLZ4Enabled {
+		t.Error("DeltaLZ4Enabled should be true")
 	}
 	if got.Audio.Channels != 2 {
 		t.Errorf("Channels = %d", got.Audio.Channels)
@@ -97,6 +101,9 @@ func TestParseBridgeForm_BoolFalse(t *testing.T) {
 	}
 	if got.Video.LZ4Enabled {
 		t.Error("missing checkbox should parse as false, got true")
+	}
+	if got.Video.DeltaLZ4Enabled {
+		t.Error("missing delta checkbox should parse as false, got true")
 	}
 	_ = got
 	_ = config.BridgeConfig{} // ensure import
@@ -183,6 +190,7 @@ func TestParseBridgeForm_StripsExperimentalSuffix(t *testing.T) {
 	form.Set("video.interlace_field_order", "bff")
 	form.Set("video.aspect_mode", "auto")
 	form.Set("video.lz4_enabled", "true")
+	form.Set("video.delta_lz4_enabled", "true")
 	form.Set("audio.sample_rate", "48000")
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")

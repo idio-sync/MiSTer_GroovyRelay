@@ -529,18 +529,19 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	}
 
 	plane := newPlane(dataplane.PlaneConfig{
-		Sender:        m.sender,
-		SpawnSpec:     spec,
-		Modeline:      modeline,
-		FieldWidth:    int(modeline.HActive),
-		FieldHeight:   fieldH,
-		BytesPerPixel: bpp,
-		RGBMode:       rgbMode,
-		LZ4Enabled:    m.bridge.Video.LZ4Enabled,
-		AudioRate:     m.bridge.Audio.SampleRate,
-		AudioChans:    m.bridge.Audio.Channels,
-		SeekOffsetMs:  offsetMs,
-		OnInit:        m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
+		Sender:          m.sender,
+		SpawnSpec:       spec,
+		Modeline:        modeline,
+		FieldWidth:      int(modeline.HActive),
+		FieldHeight:     fieldH,
+		BytesPerPixel:   bpp,
+		RGBMode:         rgbMode,
+		LZ4Enabled:      m.bridge.Video.LZ4Enabled,
+		DeltaLZ4Enabled: m.bridge.Video.DeltaLZ4Enabled,
+		AudioRate:       m.bridge.Audio.SampleRate,
+		AudioChans:      m.bridge.Audio.Channels,
+		SeekOffsetMs:    offsetMs,
+		OnInit:          m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
 	m.active = &activeSession{

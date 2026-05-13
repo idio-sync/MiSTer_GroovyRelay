@@ -38,6 +38,7 @@ var legacyKeys = []string{
 	"aspect_mode",
 	"rgb_mode",
 	"lz4_enabled",
+	"delta_lz4_enabled",
 	"audio_sample_rate",
 	"audio_channels",
 	"plex_profile_name",
@@ -112,6 +113,7 @@ func Migrate(legacy []byte) ([]byte, error) {
 				AspectMode:          old.AspectMode,
 				RGBMode:             old.RGBMode,
 				LZ4Enabled:          old.LZ4Enabled,
+				DeltaLZ4Enabled:     old.DeltaLZ4Enabled,
 			},
 			Audio: AudioConfig{
 				SampleRate: old.AudioSampleRate,
@@ -262,6 +264,7 @@ func defaultBridge() BridgeConfig {
 			AspectMode:          d.AspectMode,
 			RGBMode:             d.RGBMode,
 			LZ4Enabled:          d.LZ4Enabled,
+			DeltaLZ4Enabled:     d.DeltaLZ4Enabled,
 		},
 		Audio: AudioConfig{
 			SampleRate: d.AudioSampleRate,

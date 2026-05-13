@@ -64,6 +64,7 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	out.Video.AspectMode = form.Get("video.aspect_mode")
 	out.Video.RGBMode = "rgb888" // v1 locked; not user-editable
 	out.Video.LZ4Enabled = parseBoolField(form, "video.lz4_enabled")
+	out.Video.DeltaLZ4Enabled = parseBoolField(form, "video.delta_lz4_enabled")
 
 	out.Audio.SampleRate = parseIntField(form, "audio.sample_rate", errs)
 	out.Audio.Channels = parseIntField(form, "audio.channels", errs)

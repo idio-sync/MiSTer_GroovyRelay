@@ -362,6 +362,9 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Video.LZ4Enabled != newCfg.Video.LZ4Enabled {
 		keys = append(keys, "video.lz4_enabled")
 	}
+	if oldCfg.Video.DeltaLZ4Enabled != newCfg.Video.DeltaLZ4Enabled {
+		keys = append(keys, "video.delta_lz4_enabled")
+	}
 	if oldCfg.Audio.SampleRate != newCfg.Audio.SampleRate {
 		keys = append(keys, "audio.sample_rate")
 	}
@@ -409,6 +412,7 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		"video.aspect_mode",
 		"video.rgb_mode",
 		"video.lz4_enabled",
+		"video.delta_lz4_enabled",
 		"audio.sample_rate",
 		"audio.channels":
 		return adapters.ScopeRestartCast

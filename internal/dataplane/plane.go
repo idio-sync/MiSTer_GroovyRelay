@@ -48,17 +48,18 @@ var spawnProcess = func(ctx context.Context, spec ffmpeg.PipelineSpec) (processH
 // Built by the control plane (core.Manager in Phase 7+) from a SessionRequest
 // plus a resolved PipelineSpec / Modeline / LZ4 toggle.
 type PlaneConfig struct {
-	Sender        *groovynet.Sender
-	SpawnSpec     ffmpeg.PipelineSpec
-	Modeline      groovy.Modeline // SWITCHRES modeline
-	FieldWidth    int             // hActive
-	FieldHeight   int             // per-field vActive (e.g. 240 for 480i)
-	BytesPerPixel int
-	RGBMode       byte // groovy.RGBMode888 etc.
-	LZ4Enabled    bool
-	AudioRate     int // Go-side integer (48000)
-	AudioChans    int // 2 for stereo
-	SeekOffsetMs  int // reported as session start position
+	Sender          *groovynet.Sender
+	SpawnSpec       ffmpeg.PipelineSpec
+	Modeline        groovy.Modeline // SWITCHRES modeline
+	FieldWidth      int             // hActive
+	FieldHeight     int             // per-field vActive (e.g. 240 for 480i)
+	BytesPerPixel   int
+	RGBMode         byte // groovy.RGBMode888 etc.
+	LZ4Enabled      bool
+	DeltaLZ4Enabled bool
+	AudioRate       int // Go-side integer (48000)
+	AudioChans      int // 2 for stereo
+	SeekOffsetMs    int // reported as session start position
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
@@ -163,7 +164,7 @@ type Plane struct {
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 
 	// Optional delta/diagnostic state. Owned by the tick goroutine. Allocated
-	// only when GROOVY_DELTA_LZ4 or GROOVY_FIELD_DIAG is enabled so the default
+	// only when delta-LZ4 or GROOVY_FIELD_DIAG is enabled so the default
 	// hot path keeps the existing buffer profile.
 	deltaLZ4Enabled  bool
 	fieldDiagEnabled bool
@@ -215,7 +216,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	frameBytes := cfg.FieldWidth * videoHeight * cfg.BytesPerPixel
 	fieldBytes := cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
 	fieldDiagEnabled := envFieldDiagnostics()
-	deltaLZ4Requested := envDeltaLZ4()
+	deltaLZ4Requested := resolveDeltaLZ4Enabled(cfg.DeltaLZ4Enabled)
 	deltaLZ4Enabled := cfg.LZ4Enabled && deltaLZ4Requested
 	if deltaLZ4Enabled {
 		slog.Info("adaptive delta-LZ4 enabled",
@@ -1393,20 +1394,32 @@ func envFieldDiagnostics() bool {
 	return enabled
 }
 
+func resolveDeltaLZ4Enabled(configEnabled bool) bool {
+	if envEnabled, ok := envDeltaLZ4Override(); ok {
+		return envEnabled
+	}
+	return configEnabled
+}
+
 func envDeltaLZ4() bool {
+	enabled, _ := envDeltaLZ4Override()
+	return enabled
+}
+
+func envDeltaLZ4Override() (bool, bool) {
 	v := os.Getenv(deltaLZ4Env)
 	if v == "" {
-		return false
+		return false, false
 	}
 	switch strings.ToLower(v) {
 	case "1", "true", "t", "yes", "y", "on":
-		return true
+		return true, true
 	case "0", "false", "f", "no", "n", "off":
-		return false
+		return false, true
 	default:
 		slog.Warn("invalid GROOVY_DELTA_LZ4; delta-LZ4 disabled",
 			"value", v)
-		return false
+		return false, true
 	}
 }
 

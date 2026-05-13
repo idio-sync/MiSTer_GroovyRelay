@@ -659,22 +659,23 @@ func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
 	t.Setenv("GROOVY_FIELD_DIAG", "")
 
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
-		FieldWidth:    720,
-		FieldHeight:   240,
-		BytesPerPixel: 3,
+		LZ4Enabled:      true,
+		DeltaLZ4Enabled: false,
+		FieldWidth:      720,
+		FieldHeight:     240,
+		BytesPerPixel:   3,
 	})
 	if p.deltaLZ4Enabled || p.fieldPrev[0] != nil || p.fieldDeltaScratch != nil {
 		t.Fatalf("default plane allocated delta history: enabled=%v prev=%v scratch=%v",
 			p.deltaLZ4Enabled, p.fieldPrev[0] != nil, p.fieldDeltaScratch != nil)
 	}
 
-	t.Setenv("GROOVY_DELTA_LZ4", "1")
 	p = NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
-		FieldWidth:    720,
-		FieldHeight:   240,
-		BytesPerPixel: 3,
+		LZ4Enabled:      true,
+		DeltaLZ4Enabled: true,
+		FieldWidth:      720,
+		FieldHeight:     240,
+		BytesPerPixel:   3,
 	})
 	if !p.deltaLZ4Enabled {
 		t.Fatal("deltaLZ4Enabled = false, want true")
@@ -689,6 +690,38 @@ func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
 	if len(p.fieldDeltaLZ4Scratch) != lz4.CompressBlockBound(720*240*3) {
 		t.Fatalf("fieldDeltaLZ4Scratch len = %d, want CompressBlockBound", len(p.fieldDeltaLZ4Scratch))
 	}
+}
+
+func TestNewPlane_DeltaEnvOverridesConfig(t *testing.T) {
+	t.Setenv("GROOVY_FIELD_DIAG", "")
+
+	t.Run("explicit-off-disables-config", func(t *testing.T) {
+		t.Setenv("GROOVY_DELTA_LZ4", "0")
+		p := NewPlane(PlaneConfig{
+			LZ4Enabled:      true,
+			DeltaLZ4Enabled: true,
+			FieldWidth:      720,
+			FieldHeight:     240,
+			BytesPerPixel:   3,
+		})
+		if p.deltaLZ4Enabled {
+			t.Fatal("deltaLZ4Enabled = true with GROOVY_DELTA_LZ4=0, want false")
+		}
+	})
+
+	t.Run("explicit-on-enables-config", func(t *testing.T) {
+		t.Setenv("GROOVY_DELTA_LZ4", "1")
+		p := NewPlane(PlaneConfig{
+			LZ4Enabled:      true,
+			DeltaLZ4Enabled: false,
+			FieldWidth:      720,
+			FieldHeight:     240,
+			BytesPerPixel:   3,
+		})
+		if !p.deltaLZ4Enabled {
+			t.Fatal("deltaLZ4Enabled = false with GROOVY_DELTA_LZ4=1, want true")
+		}
+	})
 }
 
 func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {

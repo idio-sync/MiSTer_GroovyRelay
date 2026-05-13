@@ -160,6 +160,7 @@ func testBridgeFormBody(interlaceOrder, dataDir string) string {
 			"&video.interlace_field_order=%s"+
 			"&video.aspect_mode=auto"+
 			"&video.lz4_enabled=true"+
+			"&video.delta_lz4_enabled=true"+
 			"&audio.sample_rate=48000"+
 			"&audio.channels=2"+
 			"&ui.http_port=32500"+
