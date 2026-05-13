@@ -307,21 +307,29 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 	if streamClientID == "" {
 		streamClientID = p.ClientID
 	}
-	streamURL := BuildMusicTranscodeURL(MusicTranscodeRequest{
-		PlexServerURL:      serverURL,
-		MediaPath:          p.MediaKey,
-		Token:              p.PlexToken,
-		OffsetMs:           p.OffsetMs,
-		SessionID:          p.SessionID,
-		ClientID:           streamClientID,
-		DeviceName:         c.cfg.DeviceName,
-		Product:            companionProduct,
-		Platform:           companionPlatform,
-		Version:            c.cfg.Version,
-		Provides:           companionProvides,
-		TranscodeSessionID: p.TranscodeSessionID,
-		AudioStreamID:      p.AudioStreamID,
-	})
+	directPlay := false
+	streamURL := ""
+	if md.PartKey != "" {
+		streamURL = BuildPlexMediaURL(serverURL, md.PartKey, p.PlexToken)
+		directPlay = true
+	}
+	if streamURL == "" {
+		streamURL = BuildMusicTranscodeURL(MusicTranscodeRequest{
+			PlexServerURL:      serverURL,
+			MediaPath:          p.MediaKey,
+			Token:              p.PlexToken,
+			OffsetMs:           p.OffsetMs,
+			SessionID:          p.SessionID,
+			ClientID:           streamClientID,
+			DeviceName:         c.cfg.DeviceName,
+			Product:            companionProduct,
+			Platform:           companionPlatform,
+			Version:            c.cfg.Version,
+			Provides:           companionProvides,
+			TranscodeSessionID: p.TranscodeSessionID,
+			AudioStreamID:      p.AudioStreamID,
+		})
+	}
 	title := firstNonEmpty(p.Title, md.Title, mediaKeyBasename(p.MediaKey), "Now Playing")
 	// AdapterRef includes TranscodeSessionID intentionally — and the
 	// opposite of the video path (sessionRequestForPreset). On seek, Plex
@@ -339,7 +347,7 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		AdapterRef:   ref,
 		Source:       "plex",
 		MediaKind:    core.MediaKindMusic,
-		DirectPlay:   false,
+		DirectPlay:   directPlay,
 		Title:        title,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
 		Visualizer: core.VisualizerRequest{
@@ -359,10 +367,12 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 			c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle, MediaKind: core.MediaKindMusic}, captured)
 		}
 		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
-			slog.Debug("plex stop music transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
+		if !directPlay {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
+				slog.Debug("plex stop music transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
+			}
 		}
 	}
 	return req

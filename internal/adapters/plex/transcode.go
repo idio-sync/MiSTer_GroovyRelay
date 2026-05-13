@@ -74,6 +74,7 @@ type MusicMetadata struct {
 	Artist   string
 	Album    string
 	Duration time.Duration
+	PartKey  string
 }
 
 func NewTranscodeSessionID() string {
@@ -339,12 +340,45 @@ func MusicMetadataFor(ctx context.Context, serverURL, mediaKey, token string) (M
 		return MusicMetadata{}, false, nil
 	}
 	tr := mc.Track[0]
+	partKey := ""
+	for _, media := range tr.Media {
+		for _, part := range media.Part {
+			if part.Key != "" {
+				partKey = part.Key
+				break
+			}
+		}
+		if partKey != "" {
+			break
+		}
+	}
 	return MusicMetadata{
 		Title:    tr.Title,
 		Artist:   tr.GrandparentTitle,
 		Album:    tr.ParentTitle,
 		Duration: time.Duration(tr.DurationMs) * time.Millisecond,
+		PartKey:  partKey,
 	}, true, nil
+}
+
+func BuildPlexMediaURL(serverURL, mediaPath, token string) string {
+	if mediaPath == "" {
+		return ""
+	}
+	raw := mediaPath
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		raw = strings.TrimRight(serverURL, "/") + mediaPath
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if token != "" && u.Query().Get("X-Plex-Token") == "" {
+		q := u.Query()
+		q.Set("X-Plex-Token", token)
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
 }
 
 func SetStreamSelection(ctx context.Context, serverURL, mediaKey, token, audioStreamID, subtitleStreamID string) error {

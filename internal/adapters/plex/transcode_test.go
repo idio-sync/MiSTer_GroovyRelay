@@ -214,6 +214,9 @@ func TestMusicMetadataFor_DecodesTrack(t *testing.T) {
 	if got.Duration != 449*time.Second {
 		t.Fatalf("Duration = %v, want 449s", got.Duration)
 	}
+	if got.PartKey != "/library/parts/99/file.mp3" {
+		t.Fatalf("PartKey = %q, want /library/parts/99/file.mp3", got.PartKey)
+	}
 }
 
 func TestMusicMetadataFor_VideoMetadataReturnsFalse(t *testing.T) {

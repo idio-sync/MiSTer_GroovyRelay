@@ -545,7 +545,9 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 		case "/library/metadata/42":
 			_, _ = w.Write([]byte(`<MediaContainer size="1">
 				<Track title="Blue Monday" grandparentTitle="New Order"
-					parentTitle="Power Corruption &amp; Lies" duration="449000"/>
+					parentTitle="Power Corruption &amp; Lies" duration="449000">
+					<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
+				</Track>
 			</MediaContainer>`))
 		default:
 			t.Errorf("unexpected PMS path %q", r.URL.Path)
@@ -595,11 +597,17 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 	if got.Visualizer.Metadata.Duration != 449*time.Second {
 		t.Fatalf("Duration = %v, want 449s", got.Visualizer.Metadata.Duration)
 	}
-	if !strings.Contains(got.StreamURL, "/music/:/transcode/universal/start.mp3") {
-		t.Fatalf("StreamURL = %s", got.StreamURL)
+	if !strings.HasPrefix(got.StreamURL, pms.URL+"/library/parts/99/file.mp3") {
+		t.Fatalf("StreamURL = %s, want direct Plex part URL", got.StreamURL)
 	}
-	if strings.Contains(got.StreamURL, "/video/:/") {
-		t.Fatalf("music stream URL used video endpoint: %s", got.StreamURL)
+	if !strings.Contains(got.StreamURL, "X-Plex-Token=tok") {
+		t.Fatalf("StreamURL missing Plex token: %s", got.StreamURL)
+	}
+	if strings.Contains(got.StreamURL, "/music/:/transcode/") || strings.Contains(got.StreamURL, "/video/:/") {
+		t.Fatalf("music stream URL should not use PMS transcode endpoint: %s", got.StreamURL)
+	}
+	if !got.DirectPlay {
+		t.Fatalf("DirectPlay = false, want true so core seeks direct audio with ffmpeg")
 	}
 	if got.AdapterRef == "/library/metadata/42" || !strings.Contains(got.AdapterRef, ":") {
 		t.Fatalf("AdapterRef should include transcode identity for music cleanup, got %q", got.AdapterRef)
