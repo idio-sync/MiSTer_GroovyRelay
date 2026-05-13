@@ -16,12 +16,14 @@ const (
 	maxManifestGroups    = 256
 	maxManifestChannels  = 1024
 	maxManifestURLRules  = 128
+	maxArtworkURLBytes   = 2048
 )
 
 var manifestIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 var manifestValidationResolver hostResolver = net.DefaultResolver
 
 type remoteDataURLValidator func(context.Context, string, Config) error
+type artworkURLValidator func(context.Context, string, Config) error
 
 func validateManifest(ctx context.Context, m Manifest, cfg Config) error {
 	return validateManifestWithURLValidator(ctx, m, cfg, validateRemoteDataURL)
@@ -181,6 +183,69 @@ func validateRemoteDataURLSyntax(ctx context.Context, raw string, cfg Config) er
 		return err
 	}
 	return nil
+}
+
+func validateProviderArtworkURLSyntax(ctx context.Context, raw string, cfg Config) error {
+	_ = ctx
+	_ = cfg
+	if len([]byte(raw)) > maxArtworkURLBytes {
+		return fmt.Errorf("artwork URL exceeds %d bytes", maxArtworkURLBytes)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo is not allowed")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "https" {
+		return fmt.Errorf("scheme %q is not allowed", scheme)
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return fmt.Errorf("IP literal hosts are not allowed")
+	}
+	if _, err := normalizeConfigHost(host); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProviderArtworkURL(ctx context.Context, raw string, cfg Config) error {
+	if err := validateProviderArtworkURLSyntax(ctx, raw, cfg); err != nil {
+		return err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	host, err := normalizeConfigHost(u.Hostname())
+	if err != nil {
+		return err
+	}
+	if _, err := resolveValidatedIP(ctx, manifestValidationResolver, host, false); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sanitizeManifestArtwork(ctx context.Context, m Manifest, cfg Config, validateURL artworkURLValidator) Manifest {
+	if validateURL == nil {
+		return m
+	}
+	for i := range m.Providers {
+		if strings.TrimSpace(m.Providers[i].LogoURL) == "" {
+			continue
+		}
+		if err := validateURL(ctx, m.Providers[i].LogoURL, cfg); err != nil {
+			m.Providers[i].LogoURL = ""
+		}
+	}
+	return m
 }
 
 func validateManifestID(label, id string) error {

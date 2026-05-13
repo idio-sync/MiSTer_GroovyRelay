@@ -424,11 +424,13 @@ func (a *Adapter) fetchManifestDefault(ctx context.Context) (Manifest, CacheMeta
 		if err := validateCachedManifest(fetchCtx, manifest, cfg); err != nil {
 			return Manifest{}, CacheMetadata{}, err
 		}
+		manifest = sanitizeManifestArtwork(fetchCtx, manifest, cfg, validateProviderArtworkURLSyntax)
 		return manifest, meta, nil
 	}
 	if err := validateManifest(fetchCtx, manifest, cfg); err != nil {
 		return Manifest{}, CacheMetadata{}, err
 	}
+	manifest = sanitizeManifestArtwork(fetchCtx, manifest, cfg, validateProviderArtworkURL)
 	return manifest, meta, nil
 }
 
@@ -441,7 +443,8 @@ type remoteSnapshot struct {
 
 func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cached := loadCachedManifest(ctx, cfg, cacheDir)
-	manifest := mergeManifests(cfg, bundledManifest(), cached, nil, providerFactories())
+	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
+	manifest := mergeManifests(cfg, bundled, cached, nil, providerFactories())
 	return buildCachedOrSeedSnapshot(manifest.Providers, cfg, cacheDir)
 }
 
@@ -506,7 +509,9 @@ func (a *Adapter) definitionsForRefresh(providerIDs []string) ([]ProviderDefinit
 }
 
 func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {
-	manifest := mergeManifests(cfg, bundledManifest(), nil, &remote, providerFactories())
+	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
+	remote = sanitizeManifestArtwork(ctx, remote, cfg, validateProviderArtworkURL)
+	manifest := mergeManifests(cfg, bundled, nil, &remote, providerFactories())
 	out := remoteSnapshot{
 		Definitions:   manifest.Providers,
 		Catalogs:      make([]ProviderCatalog, 0, len(manifest.Providers)),
@@ -590,6 +595,7 @@ func loadCachedManifest(ctx context.Context, cfg Config, cacheDir string) *Manif
 	if err := validateCachedManifest(ctx, manifest, cfg); err != nil {
 		return nil
 	}
+	manifest = sanitizeManifestArtwork(ctx, manifest, cfg, validateProviderArtworkURLSyntax)
 	return &manifest
 }
 
