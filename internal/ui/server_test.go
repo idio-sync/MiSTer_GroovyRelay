@@ -179,6 +179,29 @@ func TestStaticAppCSSKeepsStreamsMobileCategoryTabsReadable(t *testing.T) {
 	}
 }
 
+func TestStaticAppCSSIncludesNowPlayingBannerRules(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	css := rr.Body.String()
+	for _, want := range []string{
+		".gr-now-playing",
+		".gr-now-playing--top",
+		".gr-now-playing--bottom",
+		".gr-now-playing-drawer",
+		".gr-playback-actions",
+		".gr-quick-cast",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("app.css missing %q", want)
+		}
+	}
+}
+
 // fakeRouteAdapter is the minimum adapter needed to exercise route mounting.
 // It implements adapters.Adapter + adapters.RouteProvider and registers
 // one route per HTTP method we expect the mounter to support.
