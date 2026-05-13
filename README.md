@@ -93,31 +93,16 @@ xattr -dr com.apple.quarantine /path/to/mister-groovy-relay-folder
 
 The settings UI labels whether a saved field applies live, restarts the current cast, or requires a bridge restart.
 
-## Cast sources
-
-The list above is the quick promise. This table shows the main control surface for each source.
-
-| Source | How to start | Notes |
-| --- | --- | --- |
-| Plex / Jellyfin video | Cast from the normal client picker | Requires server linking in the UI. |
-| Plex / Jellyfin music | Cast an album, playlist, or track | Renders a CRT visualizer while audio plays through the MiSTer. |
-| Direct media URL | Paste into the URL panel | Supports files, HLS, and DASH that FFmpeg can ingest. |
-| Site URL | Paste into the URL panel | Uses `yt-dlp` for supported pages. See [URL adapter](docs/url-adapter.md). |
-| Streaming catalogs | Use bundled channel entries or supported links | Includes Cartoon Rewind, MTV Rewind, and Toonami Aftermath bundled channels. |
-| Torrent | Upload `.torrent` or paste a magnet link | Disabled by default. See [Torrent adapter](docs/torrent.md). |
-| DLNA / UPnP | Choose the bridge from a DLNA controller | Disabled by default. See [DLNA adapter](docs/dlna.md). |
-| Browser extension | Cast a page URL from the browser | WIP extension lives in [`extension/firefox/`](extension/firefox/README.md). |
-
 ## Adapters
 
-| Adapter | Default | Deeper notes |
-| --- | --- | --- |
-| Plex | On after linking | Needs multicast discovery and stable bridge address. |
-| Jellyfin | On after linking | Link through the settings UI. |
-| URL | On | Cookies, scripted playback, and `yt-dlp` notes: [docs/url-adapter.md](docs/url-adapter.md). |
-| Streams | On | Bundled catalog channels only; not a user IPTV importer. |
-| Torrent | Off | Requires explicit traffic acknowledgement: [docs/torrent.md](docs/torrent.md). |
-| DLNA / UPnP | Off | Exposes unauthenticated LAN control: [docs/dlna.md](docs/dlna.md). |
+| Adapter | Starts from | Default | Notes |
+| --- | --- | --- | --- |
+| Plex | Plex cast picker | On after linking | Needs multicast discovery and a stable bridge address. |
+| Jellyfin | Jellyfin cast picker | On after linking | Link through the settings UI. |
+| URL | URL panel or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
+| Streams | Bundled catalog entries | On | Includes Cartoon Rewind, MTV Rewind, and Toonami Aftermath bundled channels; not a user IPTV importer. |
+| Torrent | Magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
+| DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
 
 ## Settings UI
 
