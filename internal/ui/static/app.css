@@ -455,6 +455,18 @@ body {
 #panel:has(.gr-config-head) .adapter-extras .section {
 	margin: 0;
 }
+#panel:has(> .gr-config-head):has(.streams-panel) {
+	max-width: min(1440px, 100%);
+}
+#panel:has(> .gr-config-head):has(.streams-panel) .gr-config-head,
+#panel:has(> .gr-config-head):has(.streams-panel) > .section,
+#panel:has(> .gr-config-head):has(.streams-panel) > form {
+	max-width: 860px;
+}
+#panel:has(> .gr-config-head):has(.streams-panel) .adapter-extras {
+	width: min(100%, 1320px);
+	max-width: none;
+}
 #status-content {
 	display: flex;
 	flex-direction: column;
@@ -1084,6 +1096,250 @@ body {
 .gr-strip .sep { color: oklch(0.40 0.010 80); }
 .gr-strip .mono { font-family: var(--font-mono); font-size: 12px; color: var(--gr-text); }
 .gr-strip .mono.dim { color: var(--gr-dim); }
+
+.streams-panel {
+	width: 100%;
+}
+.streams-guide {
+	position: relative;
+	overflow: hidden;
+	border: 1px solid var(--gr-border);
+	border-radius: 6px;
+	background:
+		repeating-linear-gradient(180deg, transparent 0, transparent 3px, oklch(0.04 0 0 / 0.18) 3px, oklch(0.04 0 0 / 0.18) 4px),
+		oklch(0.19 0.010 80);
+}
+.streams-now-strip {
+	display: grid;
+	grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
+	gap: 18px;
+	align-items: center;
+	padding: 18px;
+	border-bottom: 1px solid var(--gr-border);
+}
+.streams-provider-art-shell {
+	min-height: 94px;
+	display: grid;
+	place-items: center;
+	border: 1px solid oklch(0.38 0.015 80);
+	border-radius: 4px;
+	background: oklch(0.15 0.008 80);
+	overflow: hidden;
+}
+.streams-provider-art {
+	max-width: 88%;
+	max-height: 74px;
+	object-fit: contain;
+	grid-area: 1 / 1;
+}
+.streams-provider-art.streams-artwork-failed {
+	display: none;
+}
+.streams-provider-art:not(.streams-artwork-failed) + .streams-provider-wordmark {
+	display: none;
+}
+.streams-provider-wordmark {
+	grid-area: 1 / 1;
+	padding: 12px;
+	text-align: center;
+	font: 600 17px/1.15 var(--font-display);
+	letter-spacing: 0.08em;
+	color: var(--gr-amber);
+}
+.streams-kicker {
+	font: 400 11px var(--font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.10em;
+	color: var(--gr-dim);
+}
+.streams-now-line {
+	margin-top: 4px;
+	font: 600 20px/1.2 var(--font-display);
+	color: var(--gr-text);
+}
+.streams-now-title,
+.streams-position {
+	margin-top: 4px;
+	font: 400 13px var(--font-mono);
+	color: var(--gr-dim);
+}
+.streams-now-controls {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 8px;
+}
+.streams-control-form {
+	margin: 0;
+}
+.streams-control-form button,
+.streams-provider-tab,
+.streams-category-tab,
+.streams-channel-card button {
+	font: 500 13px var(--font-body);
+	border: 1px solid var(--gr-border);
+	background: transparent;
+	color: var(--gr-text);
+	cursor: pointer;
+}
+.streams-control-form button {
+	min-height: 34px;
+	padding: 7px 12px;
+	border-color: oklch(0.46 0.035 80);
+	color: var(--gr-amber);
+	border-radius: 3px;
+}
+.streams-control-form button:hover:not(:disabled) {
+	background: var(--gr-amber);
+	color: var(--gr-bg);
+}
+.streams-control-form button:disabled {
+	cursor: not-allowed;
+	opacity: 0.45;
+}
+.streams-provider-tabs {
+	display: flex;
+	gap: 8px;
+	overflow-x: auto;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--gr-border);
+}
+.streams-provider-tab {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 36px;
+	padding: 8px 12px;
+	border-radius: 3px;
+}
+.streams-provider-tab.active,
+.streams-provider-tab:hover {
+	border-color: var(--gr-amber);
+	color: var(--gr-amber);
+	background: oklch(0.25 0.018 80);
+}
+.streams-provider-count,
+.streams-category-count {
+	font: 400 11px var(--font-mono);
+	color: var(--gr-dim);
+}
+.streams-guide-body {
+	display: grid;
+	grid-template-columns: minmax(160px, 180px) minmax(0, 1fr);
+	min-height: 360px;
+}
+.streams-category-rail {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 12px;
+	border-right: 1px solid var(--gr-border);
+	background: oklch(0.17 0.008 80);
+}
+.streams-category-tab {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 10px;
+	min-height: 36px;
+	padding: 8px 10px;
+	text-align: left;
+	border-radius: 3px;
+}
+.streams-category-tab.active,
+.streams-category-tab:hover {
+	border-color: var(--gr-amber);
+	color: var(--gr-amber);
+	background: oklch(0.24 0.015 80);
+}
+.streams-channel-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 10px;
+	align-content: start;
+	padding: 14px;
+}
+.streams-channel-card {
+	margin: 0;
+	min-height: 86px;
+}
+.streams-channel-card button {
+	width: 100%;
+	min-height: 86px;
+	padding: 12px;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 8px;
+	border-radius: 4px;
+	text-align: left;
+	transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+.streams-channel-card button:hover,
+.streams-channel-card.tuned button {
+	border-color: var(--gr-amber);
+	background: oklch(0.24 0.016 80);
+	transform: translateY(-1px);
+}
+.streams-channel-card.tuned button {
+	box-shadow: inset 3px 0 0 var(--gr-amber);
+}
+.streams-channel-name {
+	max-width: 100%;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+}
+.streams-channel-meta {
+	font: 400 12px var(--font-mono);
+	color: var(--gr-dim);
+}
+.streams-guide-empty,
+.streams-provider-empty {
+	padding: 28px;
+	color: var(--gr-dim);
+	font: 400 14px var(--font-body);
+}
+@media (min-width: 1280px) {
+	.streams-channel-grid {
+		grid-template-columns: repeat(5, minmax(0, 1fr));
+	}
+}
+@media (max-width: 760px) {
+	#panel:has(.streams-panel),
+	#panel:has(.streams-panel) .adapter-extras,
+	.streams-guide,
+	.streams-now-strip,
+	.streams-provider-tabs,
+	.streams-guide-body,
+	.streams-category-rail,
+	.streams-channel-grid,
+	.streams-channel-card {
+		min-width: 0;
+	}
+	.streams-now-strip {
+		grid-template-columns: 1fr;
+	}
+	.streams-now-controls {
+		justify-content: flex-start;
+	}
+	.streams-guide-body {
+		grid-template-columns: 1fr;
+	}
+	.streams-category-rail {
+		border-right: 0;
+		border-bottom: 1px solid var(--gr-border);
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
+	}
+	.streams-channel-grid {
+		grid-template-columns: 1fr;
+	}
+}
 
 /* ============================================================
    S11a — DELIGHT: CRT phosphor + electron-beam trace.

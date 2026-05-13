@@ -100,6 +100,85 @@ func TestServer_StaticFont(t *testing.T) {
 	}
 }
 
+func TestShellLoadsStreamsArtworkScript(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest("GET", "/ui/", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `<script src="/ui/static/streams-artwork.js" defer></script>`) {
+		t.Fatalf("shell missing streams artwork script: %s", body)
+	}
+}
+
+func TestStaticStreamsArtworkScriptServed(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/streams-artwork.js", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "data-streams-artwork") ||
+		!strings.Contains(rr.Body.String(), "streams-artwork-failed") {
+		t.Fatalf("unexpected artwork script body: %s", rr.Body.String())
+	}
+}
+
+func TestStaticAppCSSHidesArtworkFallbackUntilImageFails(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		".streams-provider-art:not(.streams-artwork-failed) + .streams-provider-wordmark",
+		".streams-provider-art.streams-artwork-failed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app.css missing streams artwork fallback rule %q: %s", want, body)
+		}
+	}
+}
+
+func TestStaticAppCSSScopesStreamsWidePanelToRegularAdapterPanel(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "#panel:has(> .gr-config-head):has(.streams-panel)") {
+		t.Fatalf("streams wide panel rule should require the regular adapter header: %s", body)
+	}
+	if strings.Contains(body, "#panel:has(.streams-panel) {\n") {
+		t.Fatalf("streams wide panel rule should not match setup wizard panels: %s", body)
+	}
+}
+
+func TestStaticAppCSSKeepsStreamsMobileCategoryTabsReadable(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	want := "grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));"
+	if !strings.Contains(body, want) {
+		t.Fatalf("mobile streams category rail should keep readable tab minimum %q: %s", want, body)
+	}
+}
+
 // fakeRouteAdapter is the minimum adapter needed to exercise route mounting.
 // It implements adapters.Adapter + adapters.RouteProvider and registers
 // one route per HTTP method we expect the mounter to support.

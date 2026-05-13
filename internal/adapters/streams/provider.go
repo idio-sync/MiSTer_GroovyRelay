@@ -24,6 +24,9 @@ type ProviderDefinition struct {
 	ID                  string              `json:"id"`
 	Type                string              `json:"type"`
 	DisplayName         string              `json:"display_name"`
+	LogoURL             string              `json:"logo_url,omitempty"`
+	LogoAlt             string              `json:"logo_alt,omitempty"`
+	FallbackLabel       string              `json:"fallback_label,omitempty"`
 	BaseURL             string              `json:"base_url"`
 	PlaylistURL         string              `json:"playlist_url"`
 	URLRules            []URLRule           `json:"url_rules"`

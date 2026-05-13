@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -242,6 +243,147 @@ func TestMergeManifestsRemoteCanReplaceCachedOnlyProviderType(t *testing.T) {
 	}
 	if provider.Type != "other-known" {
 		t.Fatalf("remote-only provider type = %q, want other-known", provider.Type)
+	}
+}
+
+func TestSanitizeManifestArtworkDropsInvalidOptionalLogoURLs(t *testing.T) {
+	useManifestValidationResolver(t, staticResolver{
+		"wantmymtv.vercel.app": []string{"93.184.216.34"},
+		"private.example":      []string{"192.168.1.10"},
+	})
+
+	cases := []struct {
+		name string
+		logo string
+	}{
+		{name: "http", logo: "http://wantmymtv.vercel.app/logo.png"},
+		{name: "ip literal", logo: "https://93.184.216.34/logo.png"},
+		{name: "loopback", logo: "https://127.0.0.1/logo.png"},
+		{name: "private resolved host", logo: "https://private.example/logo.png"},
+		{name: "userinfo", logo: "https://user@wantmymtv.vercel.app/logo.png"},
+		{name: "raw length", logo: "https://wantmymtv.vercel.app/" + strings.Repeat("a", 2049)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validManifestForTest()
+			m.Providers[0].LogoURL = tc.logo
+			m.Providers[0].LogoAlt = "MTV Rewind logo"
+			m.Providers[0].FallbackLabel = "MTV REWIND"
+			cfg := DefaultConfig()
+			cfg.AllowLocalManifestURLs = true
+			if err := validateManifest(t.Context(), m, cfg); err != nil {
+				t.Fatalf("invalid optional artwork should not reject manifest: %v", err)
+			}
+			got := sanitizeManifestArtwork(t.Context(), m, cfg, validateProviderArtworkURL)
+			if got.Providers[0].LogoURL != "" {
+				t.Fatalf("invalid artwork URL %q survived as %q", tc.logo, got.Providers[0].LogoURL)
+			}
+			if got.Providers[0].FallbackLabel != "MTV REWIND" {
+				t.Fatalf("fallback label was not preserved: %+v", got.Providers[0])
+			}
+		})
+	}
+
+	t.Run("valid public https", func(t *testing.T) {
+		m := validManifestForTest()
+		m.Providers[0].LogoURL = "https://wantmymtv.vercel.app/public/images/rewindlogo.png"
+		if err := validateManifest(t.Context(), m, DefaultConfig()); err != nil {
+			t.Fatalf("valid artwork URL rejected: %v", err)
+		}
+		got := sanitizeManifestArtwork(t.Context(), m, DefaultConfig(), validateProviderArtworkURL)
+		if got.Providers[0].LogoURL != m.Providers[0].LogoURL {
+			t.Fatalf("valid artwork URL was scrubbed: %+v", got.Providers[0])
+		}
+	})
+}
+
+func TestProviderArtworkURLValidatorsAllowEmptyOptionalURL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		validate artworkURLValidator
+	}{
+		{name: "syntax", validate: validateProviderArtworkURLSyntax},
+		{name: "remote", validate: validateProviderArtworkURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.validate(t.Context(), "", DefaultConfig()); err != nil {
+				t.Fatalf("empty optional artwork URL rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestSanitizeManifestArtworkTrimsMetadataAndKeepsValidLogoURL(t *testing.T) {
+	useManifestValidationResolver(t, staticResolver{
+		"wantmymtv.vercel.app": []string{"93.184.216.34"},
+	})
+	m := validManifestForTest()
+	m.Providers[0].LogoURL = "  https://wantmymtv.vercel.app/public/images/rewindlogo.png  "
+	m.Providers[0].LogoAlt = "  MTV Rewind logo  "
+	m.Providers[0].FallbackLabel = "  MTV REWIND  "
+
+	got := sanitizeManifestArtwork(t.Context(), m, DefaultConfig(), validateProviderArtworkURL)
+	if got.Providers[0].LogoURL != "https://wantmymtv.vercel.app/public/images/rewindlogo.png" {
+		t.Fatalf("logo URL was not trimmed and preserved: %+v", got.Providers[0])
+	}
+	if got.Providers[0].LogoAlt != "MTV Rewind logo" {
+		t.Fatalf("logo alt was not trimmed: %+v", got.Providers[0])
+	}
+	if got.Providers[0].FallbackLabel != "MTV REWIND" {
+		t.Fatalf("fallback label was not trimmed: %+v", got.Providers[0])
+	}
+}
+
+func TestSanitizeManifestArtworkDoesNotMutateSourceManifest(t *testing.T) {
+	m := validManifestForTest()
+	m.Providers[0].LogoURL = "http://wantmymtv.vercel.app/logo.png"
+	m.Providers[0].LogoAlt = "  MTV Rewind logo  "
+	m.Providers[0].FallbackLabel = "  MTV REWIND  "
+
+	got := sanitizeManifestArtwork(t.Context(), m, DefaultConfig(), validateProviderArtworkURLSyntax)
+	if got.Providers[0].LogoURL != "" {
+		t.Fatalf("invalid artwork URL survived sanitize: %+v", got.Providers[0])
+	}
+	if m.Providers[0].LogoURL != "http://wantmymtv.vercel.app/logo.png" {
+		t.Fatalf("source manifest was mutated: %+v", m.Providers[0])
+	}
+	if m.Providers[0].LogoAlt != "  MTV Rewind logo  " {
+		t.Fatalf("source logo alt was mutated: %+v", m.Providers[0])
+	}
+	if m.Providers[0].FallbackLabel != "  MTV REWIND  " {
+		t.Fatalf("source fallback label was mutated: %+v", m.Providers[0])
+	}
+}
+
+func TestHostedProviderManifestIncludesArtworkMetadata(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "streams", "providers.json"))
+	if err != nil {
+		t.Fatalf("read hosted manifest: %v", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("parse hosted manifest: %v", err)
+	}
+
+	mtv, ok := manifest.Provider("mtv-rewind")
+	if !ok {
+		t.Fatal("hosted manifest missing mtv-rewind")
+	}
+	if mtv.LogoURL != "https://wantmymtv.vercel.app/public/images/rewindlogo.png" ||
+		mtv.LogoAlt != "MTV Rewind logo" ||
+		mtv.FallbackLabel != "MTV REWIND" {
+		t.Fatalf("mtv artwork metadata = %+v", mtv)
+	}
+
+	cartoon, ok := manifest.Provider("cartoon-rewind")
+	if !ok {
+		t.Fatal("hosted manifest missing cartoon-rewind")
+	}
+	if cartoon.LogoURL != "https://cartoonrewind.tv/social.png" ||
+		cartoon.LogoAlt != "Cartoon Rewind logo" ||
+		cartoon.FallbackLabel != "CARTOON REWIND" {
+		t.Fatalf("cartoon artwork metadata = %+v", cartoon)
 	}
 }
 
