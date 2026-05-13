@@ -480,12 +480,6 @@ func (a *Adapter) respondPanelWithError(w http.ResponseWriter, r *http.Request, 
 	_, _ = w.Write([]byte(a.renderPanel(req)))
 }
 
-func (a *Adapter) respondControlError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	fmt.Fprintf(w, `<div class="gr-callout err" id="streams-panel"><p>%s</p></div>`, esc(msg))
-}
-
 func formatDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
