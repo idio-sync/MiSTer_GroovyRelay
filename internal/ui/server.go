@@ -208,6 +208,9 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountGET(mux, "/ui/{$}", s.handleStatusHome)
 	s.mountGET(mux, "/ui/status/content", s.handleStatusContent)
 	s.mountGET(mux, "/ui/playback/banner", s.handlePlaybackBanner)
+	s.mountPOST(mux, "/ui/playback/action", s.handlePlaybackAction)
+	s.mountPOST(mux, "/ui/playback/seek", s.handlePlaybackSeek)
+	s.mountPOST(mux, "/ui/playback/quick-cast", s.handlePlaybackQuickCast)
 	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
 	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash
 
