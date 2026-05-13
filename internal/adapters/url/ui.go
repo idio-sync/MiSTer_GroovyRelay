@@ -8,12 +8,10 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // handlePanel renders the htmx fragment shown inside the URL adapter
-// card on the settings page. Polling cadence and visible controls
-// depend on core.Manager state — read on every render.
+// card on the settings page.
 func (a *Adapter) handlePanel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(a.renderPanel()))
@@ -27,23 +25,17 @@ func (a *Adapter) ExtraPanelHTML() template.HTML {
 
 // renderPanel produces the panel fragment.
 //
-// **Two distinct "states".** The URL adapter has its own a.state
-// (adapters.State, lifecycle) and core.Manager has a separate FSM
-// state via core.Status().State (StateIdle / StatePlaying /
-// StatePaused). Conditional rules below use **manager state**;
-// a.state only drives the lifecycle status line ("Idle / Playing:
-// <url> / Error: …"). Spec §"Panel layout".
+// The URL adapter's lifecycle state drives only the local status line
+// ("Idle / Playing: <url> / Error: ..."). Active playback transport
+// controls are rendered by the global now-playing banner.
 //
 // Layout order:
 //  1. Status line (lifecycle)
 //  2. URL form + optional mode-radio
-//  3. Position line + scrub bar (manager Playing/Paused, Duration > 0)
-//  4. Control row Pause/Stop/Replay (manager Playing/Paused)
-//  5. Hosts line (yt-dlp auto-resolve list)
-//  6. yt-dlp version line
-//  7. Cookies section (collapsed details)
-//  8. Recent history list (when ≥1 entry)
-//  9. Inline drag-protection script (when control row rendered)
+//  3. Hosts line (yt-dlp auto-resolve list)
+//  4. yt-dlp version line
+//  5. Cookies section (collapsed details)
+//  6. Recent history list (when >=1 entry)
 func (a *Adapter) renderPanel() string {
 	a.mu.Lock()
 	lifecycle := a.state
@@ -53,26 +45,13 @@ func (a *Adapter) renderPanel() string {
 	probe := a.ytdlpProbe
 	a.mu.Unlock()
 
-	// Tests construct adapters with Core: nil (e.g. registry-boundary
-	// + the older renderPanel tests that predate the manager FSM
-	// integration). Treat absence of core as zero-value SessionStatus
-	// so all conditional rules below collapse to the Idle layout.
-	var st core.SessionStatus
-	if a.core != nil {
-		st = a.core.Status()
-	}
 	hist := a.history.List()
 
 	var b strings.Builder
 
-	// Outer section + dynamic poll cadence.
-	trigger := "every 5s"
-	if st.State == core.StatePlaying || st.State == core.StatePaused {
-		trigger = "every 1s"
-	}
 	fmt.Fprintf(&b,
 		`<section class="url-panel" id="url-panel" hx-get="/ui/adapter/url/panel" hx-trigger="%s" hx-swap="outerHTML">`,
-		trigger)
+		"every 5s")
 	b.WriteString(`<h3>Play URL</h3>`)
 
 	// Lifecycle status line (driven by a.state).
@@ -107,48 +86,6 @@ func (a *Adapter) renderPanel() string {
     <button type="submit">Play</button>
   </form>`, modeRadio)
 
-	// Active-session UI: position, scrub, control row. State takes
-	// precedence over Duration (state-precedence rule, spec §"Probe-
-	// driven control gating") so an EOF that left m.active populated
-	// doesn't render a stale frozen scrub bar.
-	active := st.State == core.StatePlaying || st.State == core.StatePaused
-	foreign := st.AdapterRef != "" && !strings.HasPrefix(st.AdapterRef, "url:")
-
-	if active && st.Duration > 0 {
-		fmt.Fprintf(&b, `<p class="position">%s / %s</p>`,
-			formatDuration(st.Position), formatDuration(st.Duration))
-
-		durMs := int(st.Duration / time.Millisecond)
-		posMs := int(st.Position / time.Millisecond)
-		fmt.Fprintf(&b,
-			`<input type="range" class="scrub" min="0" max="%d" value="%d" `+
-				`name="offset_ms" `+
-				`hx-post="/ui/adapter/url/seek" hx-trigger="change" hx-target="#url-panel" hx-swap="outerHTML">`,
-			durMs, posMs)
-	}
-
-	if active {
-		// Control row: Pause/Resume + Stop + Replay. All three
-		// disabled when ownership belongs to another adapter.
-		disabled := ""
-		if foreign {
-			disabled = " disabled"
-		}
-		pauseLabel := "Pause"
-		pausePath := "/ui/adapter/url/pause"
-		if st.State == core.StatePaused {
-			pauseLabel = "Resume"
-			pausePath = "/ui/adapter/url/resume"
-		}
-		fmt.Fprintf(&b,
-			`<div class="controls">`+
-				`<button type="button" hx-post="%s" hx-target="#url-panel" hx-swap="outerHTML"%s>%s</button>`+
-				`<button type="button" hx-post="/ui/adapter/url/stop" hx-target="#url-panel" hx-swap="outerHTML"%s>Stop</button>`+
-				`<button type="button" hx-post="/ui/adapter/url/replay" hx-target="#url-panel" hx-swap="outerHTML"%s>Replay</button>`+
-				`</div>`,
-			pausePath, disabled, pauseLabel, disabled, disabled)
-	}
-
 	// Existing yt-dlp surface: hosts, version, cookies — preserved verbatim.
 	b.WriteString(renderHostsLine(cfg.YtdlpHosts))
 	b.WriteString(renderVersionLine(probe))
@@ -179,18 +116,6 @@ func (a *Adapter) renderPanel() string {
 				i, i)
 		}
 		b.WriteString(`</ul></div>`)
-	}
-
-	// Inline drag-protection script (only when control row + scrub are
-	// rendered together, since we have a slider DOM element to guard).
-	if active && st.Duration > 0 {
-		b.WriteString(`<script>(function(){var p=document.getElementById('url-panel');if(!p||p.dataset.scrubGuard==='1')return;` +
-			`var s=p.querySelector('input.scrub');if(!s)return;` +
-			`p.dataset.scrubGuard='1';var paused=false;` +
-			`s.addEventListener('pointerdown',function(){paused=true;});` +
-			`s.addEventListener('pointerup',function(){paused=false;});` +
-			`p.addEventListener('htmx:beforeSwap',function(e){if(paused)e.preventDefault();});` +
-			`})();</script>`)
 	}
 
 	b.WriteString(`</section>`)

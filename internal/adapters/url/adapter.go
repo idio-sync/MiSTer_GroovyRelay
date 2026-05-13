@@ -19,17 +19,20 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
-// SessionManager is the adapter's narrow view of core.Manager. v1.5
-// extends from {StartSession, Status} to add the four operations the
-// new control endpoints need. core.Manager satisfies this via
-// structural typing (manager.go:223,239,268,363,394,425).
+// SessionManager is the adapter's narrow view of core.Manager.
+// core.Manager satisfies this via structural typing.
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	StartSessionIfSession(core.SessionRequest, string, uint64) (bool, error)
 	Status() core.SessionStatus
 	Pause() error
 	Play() error
 	Stop() error
 	SeekTo(offsetMs int) error
+	PauseIfSession(string, uint64) (bool, error)
+	PlayIfSession(string, uint64) (bool, error)
+	StopIfSession(string, uint64) (bool, error)
+	SeekToIfSession(string, uint64, int) (bool, error)
 }
 
 // resolverIface is the adapter's narrow view of *ytdlp.Resolver. Lets

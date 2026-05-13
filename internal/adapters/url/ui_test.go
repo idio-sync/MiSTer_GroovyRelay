@@ -261,7 +261,7 @@ func renderForTest(t *testing.T, a *Adapter) string {
 	return w.Body.String()
 }
 
-func TestPanel_StatePlaying_RendersPauseRow(t *testing.T) {
+func TestPanel_StatePlaying_HidesTransportRow(t *testing.T) {
 	fc := withStatus(core.SessionStatus{
 		State:      core.StatePlaying,
 		Duration:   1 * time.Hour,
@@ -274,18 +274,14 @@ func TestPanel_StatePlaying_RendersPauseRow(t *testing.T) {
 	if !strings.Contains(body, "Playing:") || !strings.Contains(body, "example.com/v.mp4") {
 		t.Errorf("lifecycle status line missing/incorrect: %s", body)
 	}
-	if !strings.Contains(body, ">Pause<") {
-		t.Errorf("playing panel should have Pause button: %s", body)
-	}
-	if !strings.Contains(body, ">Stop<") {
-		t.Errorf("playing panel should have Stop button: %s", body)
-	}
-	if !strings.Contains(body, ">Replay<") {
-		t.Errorf("playing panel should have Replay button: %s", body)
+	for _, label := range []string{">Pause<", ">Stop<", ">Replay<"} {
+		if strings.Contains(body, label) {
+			t.Errorf("playing panel should not have transport button %s: %s", label, body)
+		}
 	}
 }
 
-func TestPanel_StatePaused_RendersResumeRow(t *testing.T) {
+func TestPanel_StatePaused_HidesResumeRow(t *testing.T) {
 	fc := withStatus(core.SessionStatus{
 		State:      core.StatePaused,
 		Duration:   1 * time.Hour,
@@ -295,11 +291,10 @@ func TestPanel_StatePaused_RendersResumeRow(t *testing.T) {
 	a := newTestAdapter(t, fc)
 	a.markRunning("https://example.com/v.mp4")
 	body := renderForTest(t, a)
-	if !strings.Contains(body, ">Resume<") {
-		t.Errorf("paused panel should have Resume button: %s", body)
-	}
-	if strings.Contains(body, ">Pause<") {
-		t.Errorf("paused panel should NOT have Pause button: %s", body)
+	for _, label := range []string{">Resume<", ">Pause<"} {
+		if strings.Contains(body, label) {
+			t.Errorf("paused panel should not have transport button %s: %s", label, body)
+		}
 	}
 }
 
@@ -314,7 +309,7 @@ func TestPanel_StateIdle_NoControlRow(t *testing.T) {
 	}
 }
 
-func TestPanel_PositionRenderedWhenDurationPositive(t *testing.T) {
+func TestPanel_PositionHiddenWhenDurationPositive(t *testing.T) {
 	fc := withStatus(core.SessionStatus{
 		State:      core.StatePlaying,
 		Duration:   45*time.Minute + 12*time.Second,
@@ -324,12 +319,12 @@ func TestPanel_PositionRenderedWhenDurationPositive(t *testing.T) {
 	a := newTestAdapter(t, fc)
 	a.markRunning("https://example.com/v.mp4")
 	body := renderForTest(t, a)
-	if !strings.Contains(body, "01:23 / 45:12") {
-		t.Errorf("position line missing/incorrect: %s", body)
+	if strings.Contains(body, "01:23 / 45:12") {
+		t.Errorf("URL panel should not render active position line: %s", body)
 	}
 }
 
-func TestPanel_PositionFormatHHMMSS_OverOneHour(t *testing.T) {
+func TestPanel_PositionFormatHHMMSS_OverOneHourHidden(t *testing.T) {
 	fc := withStatus(core.SessionStatus{
 		State:      core.StatePlaying,
 		Duration:   2 * time.Hour,
@@ -339,12 +334,12 @@ func TestPanel_PositionFormatHHMMSS_OverOneHour(t *testing.T) {
 	a := newTestAdapter(t, fc)
 	a.markRunning("https://example.com/v.mp4")
 	body := renderForTest(t, a)
-	if !strings.Contains(body, "01:23:45 / 02:00:00") {
-		t.Errorf("HH:MM:SS format missing/incorrect: %s", body)
+	if strings.Contains(body, "01:23:45 / 02:00:00") {
+		t.Errorf("URL panel should not render active position line: %s", body)
 	}
 }
 
-func TestPanel_ScrubBarRenderedWhenDurationPositive(t *testing.T) {
+func TestPanel_ScrubBarHiddenWhenDurationPositive(t *testing.T) {
 	fc := withStatus(core.SessionStatus{
 		State:      core.StatePlaying,
 		Duration:   1 * time.Hour,
@@ -354,11 +349,8 @@ func TestPanel_ScrubBarRenderedWhenDurationPositive(t *testing.T) {
 	a := newTestAdapter(t, fc)
 	a.markRunning("https://example.com/v.mp4")
 	body := renderForTest(t, a)
-	if !strings.Contains(body, `type="range"`) {
-		t.Errorf("playing panel with Duration > 0 must render <input type=range>: %s", body)
-	}
-	if !strings.Contains(body, `hx-post="/ui/adapter/url/seek"`) {
-		t.Errorf("scrub bar must hx-post to seek: %s", body)
+	if strings.Contains(body, `type="range"`) || strings.Contains(body, `hx-post="/ui/adapter/url/seek"`) {
+		t.Errorf("URL panel should not render scrub controls: %s", body)
 	}
 }
 
@@ -397,18 +389,18 @@ func TestPanel_ForeignAdapterRef_StopButtonDisabled(t *testing.T) {
 	})
 	a := newTestAdapter(t, fc)
 	body := renderForTest(t, a)
-	if !strings.Contains(body, "disabled") {
-		t.Errorf("foreign AdapterRef should disable the control row: %s", body)
+	if strings.Contains(body, `/ui/adapter/url/stop`) {
+		t.Errorf("foreign AdapterRef should not render URL panel transport controls: %s", body)
 	}
 }
 
-func TestPanel_HXTrigger_FastWhenActive(t *testing.T) {
+func TestPanel_HXTrigger_SlowWhenActive(t *testing.T) {
 	fc := withStatus(core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc"})
 	a := newTestAdapter(t, fc)
 	a.markRunning("https://example.com/v.mp4")
 	body := renderForTest(t, a)
-	if !strings.Contains(body, `hx-trigger="every 1s"`) {
-		t.Errorf("active panel should poll every 1s: %s", body)
+	if !strings.Contains(body, `hx-trigger="every 5s"`) {
+		t.Errorf("URL panel should keep slow polling when active: %s", body)
 	}
 }
 
@@ -495,5 +487,21 @@ func TestPanel_RedactsCredentialsInDisplay(t *testing.T) {
 	}
 	if !strings.Contains(body, "example.com") {
 		t.Errorf("host stripped from redacted display: %s", body)
+	}
+}
+
+func TestURLPanelDoesNotRenderActiveTransportControls(t *testing.T) {
+	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 3, Duration: time.Minute}}
+	a := &Adapter{core: coreStub, history: LoadHistory("")}
+	html := a.renderPanel()
+	for _, forbidden := range []string{"/ui/adapter/url/pause", "/ui/adapter/url/resume", "/ui/adapter/url/stop", "/ui/adapter/url/replay", "/ui/adapter/url/seek", `class="scrub"`} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("URL panel still renders %q: %s", forbidden, html)
+		}
+	}
+	for _, want := range []string{`hx-post="/ui/adapter/url/play"`, "yt-dlp", "cookies"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("URL panel lost expected %q: %s", want, html)
+		}
 	}
 }
