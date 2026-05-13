@@ -5,11 +5,11 @@
 #     Linux, Windows, and macOS.
 #   - Installs ffmpeg (required by integration tests — the sample-clip
 #     generator and live Plane scenarios both shell out).
-#   - go vet + go test (unit) + go test -tags=integration across the whole
-#     module. Race tests run on Linux/macOS; Windows Go race builds require
+#   - go vet + go test (unit) + verbose go test -tags=integration for the
+#     integration package. Race tests run on Linux/macOS; Windows Go race builds require
 #     CGO plus a C compiler, which the stock runner/dev setup does not have.
-#     The integration glob is ./... (not just tests/integration/...) so any
-#     //go:build integration test in another package also runs.
+#     Integration tests currently live under tests/integration; running that
+#     package directly lets Go stream -v output instead of buffering behind ./...
 #   - Runs the sidecar fetch script guard test on Linux. That check asserts
 #     macOS FFmpeg/FFprobe source-build requests fail before downloads when
 #     invoked outside a macOS release runner.
@@ -64,7 +64,8 @@ jobs:
       - name: Race tests
         if: runner.os != 'Windows'
         run: go test -race ./...
-      - run: go test -tags=integration ./...
+      - name: Integration tests
+        run: go test -tags=integration -v -timeout=5m ./tests/integration
 
   build-image:
     runs-on: ubuntu-latest
