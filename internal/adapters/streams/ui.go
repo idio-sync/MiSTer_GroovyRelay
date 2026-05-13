@@ -475,6 +475,9 @@ func resolvePanelSelection(view StatusView, req panelSelectionRequest) resolvedP
 			}
 		}
 	}
+	if groupID == "" && req.GroupExplicit && req.ErrorMessage != "" && req.GroupID != "" {
+		groupID = req.GroupID
+	}
 	if groupID == "" && len(groups) > 0 {
 		groupID = groups[0].ID
 	}

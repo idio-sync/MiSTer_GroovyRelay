@@ -381,3 +381,112 @@ func TestHandlePanelReadsSelectionQuery(t *testing.T) {
 		t.Fatalf("panel did not read provider selection: %s", body)
 	}
 }
+
+func assertPanelSelectionPreserved(t *testing.T, body, providerID, groupID string) {
+	t.Helper()
+	// panelURL emits provider_id before group_id; escAttr renders the
+	// query separator as &amp; in HTML attributes.
+	want := `hx-get="/ui/adapter/streams/panel?provider_id=` + providerID + `&amp;group_id=` + groupID + `"`
+	if !strings.Contains(body, want) {
+		t.Fatalf("selection polling URL missing %q: %s", want, body)
+	}
+}
+
+func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:    "s1",
+		ProviderID:   "mtv-rewind",
+		ProviderName: "MTV Rewind",
+		ChannelID:    "metal",
+		ChannelName:  "Metal",
+		ItemToken:    1,
+		Items: []StreamItem{
+			{ID: "a", URL: "https://youtu.be/a"},
+			{ID: "b", URL: "https://youtu.be/b"},
+		},
+		loopMode: loopSequential,
+	}
+	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
+
+	cases := []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		path    string
+		form    string
+	}{
+		{name: "refresh", handler: a.handleRefresh, path: "/ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "play", handler: a.handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
+		{name: "previous", handler: a.handlePrevious, path: "/ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "next", handler: a.handleNext, path: "/ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "replay", handler: a.handleReplay, path: "/ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "stop", handler: a.handleStop, path: "/ui/adapter/streams/stop", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rr := httptest.NewRecorder()
+			tc.handler(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+			}
+			assertPanelSelectionPreserved(t, rr.Body.String(), "mtv-rewind", "genres")
+		})
+	}
+}
+
+func TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	cases := []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		path    string
+		form    string
+		want    string
+	}{
+		{
+			name:    "bad play",
+			handler: a.handlePlay,
+			path:    "/ui/adapter/streams/play",
+			form:    "provider_id=mtv-rewind&guide_group_id=genres",
+			want:    "channel_id or item_id required",
+		},
+		{
+			name:    "unknown refresh target",
+			handler: a.handleRefresh,
+			path:    "/ui/adapter/streams/refresh",
+			form:    "provider_id=missing&guide_provider_id=mtv-rewind&guide_group_id=genres",
+			want:    "provider is not cataloged",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rr := httptest.NewRecorder()
+			tc.handler(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTML errors must be swappable 200 responses, got %d body=%s", rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			if !strings.Contains(body, `class="gr-callout err streams-error"`) || !strings.Contains(body, tc.want) {
+				t.Fatalf("error callout missing %q: %s", tc.want, body)
+			}
+			assertPanelSelectionPreserved(t, body, "mtv-rewind", "genres")
+		})
+	}
+}
+
+func TestHandlePlayWithoutGuideFieldsFallsBackToPlaybackProviderSelection(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/play", strings.NewReader("provider_id=mtv-rewind&channel_id=metal"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	a.handlePlay(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	assertPanelSelectionPreserved(t, rr.Body.String(), "mtv-rewind", ungroupedGroupID)
+}
