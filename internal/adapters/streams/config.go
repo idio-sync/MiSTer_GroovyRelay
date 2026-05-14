@@ -30,8 +30,14 @@ type Config struct {
 }
 
 type ProviderConfig struct {
-	Disabled            bool `toml:"disabled"`
-	CatalogRefreshHours int  `toml:"catalog_refresh_hours"`
+	Disabled            bool                     `toml:"disabled"`
+	CatalogRefreshHours int                      `toml:"catalog_refresh_hours"`
+	HLSBufferDisabled   bool                     `toml:"hls_buffer_disabled"`
+	Channels            map[string]ChannelConfig `toml:"channels"`
+}
+
+type ChannelConfig struct {
+	HLSBufferDisabled bool `toml:"hls_buffer_disabled"`
 }
 
 type configWire struct {
@@ -146,6 +152,14 @@ func (c *Config) Validate() error {
 				Msg: "must be in [1, 168]",
 			})
 		}
+		for channelID := range provider.Channels {
+			if strings.TrimSpace(channelID) == "" {
+				errs = append(errs, adapters.FieldError{
+					Key: fmt.Sprintf("providers.%s.channels", id),
+					Msg: "channel id must not be empty",
+				})
+			}
+		}
 	}
 	return errs.Err()
 }
@@ -240,7 +254,14 @@ func scopeForField(key string) (adapters.ApplyScope, bool) {
 		return scope, true
 	}
 	if strings.HasPrefix(key, "providers.") &&
-		(strings.HasSuffix(key, ".disabled") || strings.HasSuffix(key, ".catalog_refresh_hours")) {
+		(strings.HasSuffix(key, ".disabled") ||
+			strings.HasSuffix(key, ".catalog_refresh_hours") ||
+			strings.HasSuffix(key, ".hls_buffer_disabled")) {
+		return adapters.ScopeHotSwap, true
+	}
+	if strings.HasPrefix(key, "providers.") &&
+		strings.Contains(key, ".channels.") &&
+		strings.HasSuffix(key, ".hls_buffer_disabled") {
 		return adapters.ScopeHotSwap, true
 	}
 	return 0, false

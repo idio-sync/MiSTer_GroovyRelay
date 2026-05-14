@@ -12,6 +12,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
@@ -217,6 +218,7 @@ func TestStartResolvedStreamIfSessionRaceRestoresPreviousQueueOnResolveError(t *
 
 func TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy(t *testing.T) {
 	a, c := newTestAdapterWithFakeCore(t)
+	a.bridge.HLSBuffer.Enabled = false
 	def := bundledToonamiAftermathDefinition()
 	cat, err := buildDirectStreamsCatalog(def)
 	if err != nil {
@@ -268,8 +270,147 @@ func TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy(t *testing.T) {
 	}
 }
 
+func TestStreamsDirectHLSUsesBufferByDefault(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	enableBridgeHLSBufferForTest(a)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	var gotOpts hlsbuffer.SessionOptions
+	var closeCalls int
+	a.hlsBufferOpen = func(ctx context.Context, opts hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		gotOpts = opts
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/local-buffered.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close: func() error {
+				closeCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	_, err = a.StartResolvedStream(t.Context(), streamhandoff.Resolution{
+		ProviderID: "toonami-aftermath",
+		ChannelID:  "east",
+	})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if gotOpts.SourceURL != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
+		t.Fatalf("hls SourceURL = %q", gotOpts.SourceURL)
+	}
+	if gotOpts.TrustMode != hlsbuffer.TrustModeBundledToonami {
+		t.Fatalf("TrustMode = %v, want bundled Toonami", gotOpts.TrustMode)
+	}
+	if gotOpts.CacheRoot == "" || gotOpts.Config.StartSegments != 2 || gotOpts.Config.LiveEdgeSegments != 3 {
+		t.Fatalf("hls options = %+v", gotOpts)
+	}
+	req := c.lastReq
+	if req.StreamURL != "/tmp/local-buffered.m3u8" {
+		t.Fatalf("StreamURL = %q, want buffered local playlist", req.StreamURL)
+	}
+	if got := strings.Join(req.MediaInputPolicy.ProtocolWhitelist, ","); got != "file" {
+		t.Fatalf("ProtocolWhitelist = %q, want file", got)
+	}
+	if req.MediaKind != core.MediaKindVideo {
+		t.Fatalf("MediaKind = %q, want video", req.MediaKind)
+	}
+	req.OnStop("stopped")
+	if closeCalls != 1 {
+		t.Fatalf("buffer Close calls after OnStop = %d, want 1", closeCalls)
+	}
+}
+
+func TestStreamsDirectHLSOptOutUsesDirectPath(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	a.cfg.Providers["toonami-aftermath"] = ProviderConfig{
+		Channels: map[string]ChannelConfig{
+			"east": {HLSBufferDisabled: true},
+		},
+	}
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		t.Fatal("hlsBufferOpen should not be called when channel opts out")
+		return nil, nil
+	}
+
+	_, err = a.StartResolvedStream(t.Context(), streamhandoff.Resolution{
+		ProviderID: "toonami-aftermath",
+		ChannelID:  "east",
+	})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.lastReq.StreamURL != "http://api.toonamiaftermath.com:3000/est/playlist.m3u8" {
+		t.Fatalf("StreamURL = %q, want direct path", c.lastReq.StreamURL)
+	}
+}
+
+func TestStreamsDirectHLSCleansBufferWhenCoreStartFails(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	enableBridgeHLSBufferForTest(a)
+	c.startErr = fmt.Errorf("core start failed")
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	var closeCalls int
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/local-buffered.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close: func() error {
+				closeCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	_, err = a.StartResolvedStream(t.Context(), streamhandoff.Resolution{
+		ProviderID: "toonami-aftermath",
+		ChannelID:  "east",
+	})
+	if err == nil {
+		t.Fatal("StartResolvedStream error = nil, want core start failure")
+	}
+	if closeCalls != 1 {
+		t.Fatalf("buffer Close calls = %d, want 1", closeCalls)
+	}
+}
+
+func enableBridgeHLSBufferForTest(a *Adapter) {
+	a.bridge.HLSBuffer.Enabled = true
+	a.bridge.HLSBuffer.LiveEdgeSegments = 3
+	a.bridge.HLSBuffer.StartSegments = 2
+	a.bridge.HLSBuffer.MaxCachedSegments = 6
+	a.bridge.HLSBuffer.MaxCacheBytes = 268435456
+	a.bridge.HLSBuffer.MaxPlaylistBytes = 1048576
+	a.bridge.HLSBuffer.MaxSegmentBytes = 52428800
+	a.bridge.HLSBuffer.SegmentTimeoutSeconds = 10
+	a.bridge.HLSBuffer.PlaylistTimeoutSeconds = 10
+	a.bridge.HLSBuffer.MaxVariantHeight = 720
+	a.bridge.HLSBuffer.StaleCacheReapHours = 24
+}
+
 func TestReplayDirectStreamRebuildsFromCatalogItem(t *testing.T) {
 	a, c := newTestAdapterWithFakeCore(t)
+	a.bridge.HLSBuffer.Enabled = false
 	def := bundledToonamiAftermathDefinition()
 	cat, err := buildDirectStreamsCatalog(def)
 	if err != nil {
