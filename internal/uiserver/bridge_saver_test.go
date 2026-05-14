@@ -262,6 +262,31 @@ func TestBridgeSaver_VisualizerModeNextCastDoesNotDrop(t *testing.T) {
 	}
 }
 
+func TestBridgeSaver_VisualizerModePersistsVisualizerTable(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	path := testConfigPath(t)
+	s := NewBridgeSaver(path, &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	next := old
+	next.Visualizer.Mode = config.VisualizerModeStereoScope
+	if _, err := s.Save(next); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "[bridge.visualizer]") {
+		t.Fatalf("rewritten TOML missing [bridge.visualizer]:\n%s", text)
+	}
+	if !strings.Contains(text, `mode = "stereo_scope"`) {
+		t.Fatalf("rewritten TOML missing stereo visualizer mode:\n%s", text)
+	}
+}
+
 func TestBridgeSaver_VisualizerModeMixedRestartCastDropsAndUpdates(t *testing.T) {
 	core := &fakeBridgeCore{}
 	old := testBridgeConfig(t, "NTSC_480i")

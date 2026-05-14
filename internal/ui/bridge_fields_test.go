@@ -159,6 +159,22 @@ func TestBridgeFields_HasVisualizerMode(t *testing.T) {
 	}
 }
 
+func TestBuildBridgeSections_NormalizesEmptyVisualizerMode(t *testing.T) {
+	sections := buildBridgeSections(config.BridgeConfig{}, nil)
+	for _, sec := range sections {
+		for _, row := range sec.Rows {
+			if row.Key != "visualizer.mode" {
+				continue
+			}
+			if row.StringValue != config.VisualizerModeRetroAnalyzer {
+				t.Fatalf("visualizer.mode StringValue = %q, want %q", row.StringValue, config.VisualizerModeRetroAnalyzer)
+			}
+			return
+		}
+	}
+	t.Fatal("visualizer.mode row not found")
+}
+
 func TestRowFor_KindAction(t *testing.T) {
 	fd := adapters.FieldDef{
 		Key:     "mister/launch",

@@ -213,6 +213,46 @@ func TestHandleBridge_POST_PreservesVisualizerModeOnUnrelatedSave(t *testing.T) 
 	}
 }
 
+func TestHandleBridge_POST_PreservesVisualizerModeWhenFormKeyAbsent(t *testing.T) {
+	cur := (&fakeBridgeSaver{}).Current()
+	cur.Visualizer.Mode = config.VisualizerModeStereoScope
+	saver := &fakeBridgeSaver{current: &cur}
+	mux := newBridgeTestServer(t, saver)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=alice" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	if saver.got.Visualizer.Mode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.Mode = %q, want preserved %q", saver.got.Visualizer.Mode, config.VisualizerModeStereoScope)
+	}
+}
+
 func TestHandleBridge_POST_ValidationError(t *testing.T) {
 	saver := &fakeBridgeSaver{}
 	mux := newBridgeTestServer(t, saver)
