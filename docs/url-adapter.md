@@ -8,9 +8,11 @@ Sessions run until EOF or until another cast starts. Basic pause and seek contro
 
 | URL type | Examples | Resolver |
 | --- | --- | --- |
-| Direct media | MP4, MKV, HLS `.m3u8`, DASH `.mpd` | FFmpeg |
+| Direct media | MP4, MKV, HLS `.m3u8`, DASH `.mpd`, Owncast homepage URLs | FFmpeg |
 | Supported pages | YouTube, Twitch, Vimeo, Internet Archive, SoundCloud, Bandcamp | `yt-dlp` |
 | Streaming catalogs | Cartoon Rewind, MTV Rewind, Toonami Aftermath bundled channels | URL/Streams adapters |
+
+Owncast sites can be pasted as their homepage URL. The adapter detects Owncast through the same-origin `/api/status` endpoint and plays `/hls/stream.m3u8`.
 
 The curated auto-resolve list lives in the URL panel. More `yt-dlp` sites can be added as the bridge grows.
 
