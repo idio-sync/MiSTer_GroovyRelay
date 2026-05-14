@@ -326,6 +326,8 @@ body {
 	top: 0;
 	z-index: 20;
 	display: grid;
+	width: 100%;
+	box-sizing: border-box;
 	border-bottom: 1px solid var(--gr-border);
 	background: oklch(0.27 0.012 80);
 	color: var(--gr-text);
@@ -520,7 +522,8 @@ body {
 	display: grid;
 	gap: 10px;
 	grid-template-columns: auto minmax(0, 1fr);
-	align-items: start;
+	align-items: center;
+	min-height: 52px;
 	padding: 10px 18px;
 	border-top: 1px solid var(--gr-border);
 	background: oklch(0.23 0.010 80);
@@ -528,6 +531,7 @@ body {
 
 .gr-quick-cast-tabs {
 	display: flex;
+	align-self: center;
 	overflow: hidden;
 	border: 1px solid var(--gr-border);
 	border-radius: 4px;
@@ -548,12 +552,14 @@ body {
 
 .gr-quick-cast {
 	display: grid;
-	grid-template-columns: minmax(160px, 1fr) auto;
-	gap: 8px;
-	align-items: end;
+	grid-template-columns: minmax(240px, 1fr) auto minmax(168px, max-content);
+	column-gap: 8px;
+	row-gap: 6px;
+	align-items: center;
+	min-height: 34px;
 }
 
-.gr-quick-cast label {
+.gr-quick-cast-field {
 	min-width: 0;
 	display: grid;
 	gap: 3px;
@@ -561,10 +567,16 @@ body {
 	color: var(--gr-dim);
 }
 
-.gr-quick-cast input,
-.gr-quick-cast select {
-	min-height: 29px;
+.gr-quick-cast-field--input {
+	grid-column: 1;
+	grid-row: 1;
+}
+
+.gr-quick-cast-field--input input,
+.gr-quick-cast-field--input select {
+	height: 32px;
 	width: 100%;
+	box-sizing: border-box;
 	border: 1px solid oklch(0.42 0.018 80);
 	border-radius: 4px;
 	background: oklch(0.19 0.008 80);
@@ -573,10 +585,22 @@ body {
 	font: 400 12px/1.2 var(--font-mono);
 }
 
-.gr-quick-cast fieldset {
+.gr-quick-cast-submit {
+	grid-column: 2;
+	grid-row: 1;
+	align-self: center;
+	height: 32px;
+	min-height: 32px;
+}
+
+.gr-quick-cast-field--radio {
+	grid-column: 3;
+	grid-row: 1;
 	display: flex;
 	flex-wrap: wrap;
-	gap: 8px;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 5px;
 	min-width: 0;
 	margin: 0;
 	padding: 0;
@@ -584,12 +608,43 @@ body {
 }
 
 .gr-quick-cast legend {
-	width: 100%;
+	width: auto;
+	margin: 0 2px 0 0;
 	color: var(--gr-dim);
 	font: 500 11px/1.2 var(--font-body);
 }
 
+.gr-quick-cast-option {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 52px;
+	height: 24px;
+	padding: 0 7px;
+	border: 1px solid oklch(0.42 0.018 80);
+	border-radius: 4px;
+	color: var(--gr-dim);
+	font: 600 11px/1 var(--font-body);
+	cursor: pointer;
+}
+
+.gr-quick-cast-option input {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
+
+.gr-quick-cast-option:has(input:checked) {
+	border-color: var(--gr-amber);
+	background: oklch(0.31 0.035 80);
+	color: var(--gr-amber);
+}
+
 .gr-quick-cast-disabled {
+	grid-column: 1 / -1;
 	margin: 0;
 	color: var(--gr-err);
 }
@@ -612,6 +667,17 @@ body {
 
 	.gr-quick-cast {
 		grid-template-columns: 1fr;
+	}
+
+	.gr-quick-cast-field--input,
+	.gr-quick-cast-field--radio,
+	.gr-quick-cast-submit {
+		grid-column: auto;
+		grid-row: auto;
+	}
+
+	.gr-quick-cast-field--radio {
+		justify-content: flex-start;
 	}
 
 	.gr-now-playing-drawer {
@@ -713,6 +779,14 @@ body {
 	padding: 32px clamp(24px, 4vw, 48px);
 	display: block;
 	gap: normal;
+	max-width: 1080px;
+}
+.gr-config > .gr-now-playing,
+#panel:has(.gr-config-head) > .gr-now-playing {
+	margin-bottom: 24px;
+}
+.gr-config > #panel-content,
+#panel:has(.gr-config-head) > #panel-content {
 	max-width: 860px;
 }
 .gr-config-head {
@@ -755,6 +829,9 @@ body {
 }
 #panel:has(> #panel-content > .gr-config-head):has(.streams-panel) {
 	max-width: min(1440px, 100%);
+}
+#panel:has(> #panel-content > .gr-config-head):has(.streams-panel) > #panel-content {
+	max-width: none;
 }
 #panel:has(> #panel-content > .gr-config-head):has(.streams-panel) #panel-content > .gr-config-head,
 #panel:has(> #panel-content > .gr-config-head):has(.streams-panel) #panel-content > .section,

@@ -260,6 +260,53 @@ func TestPlaybackBannerOpenDrawerDoesNotPollAwayForm(t *testing.T) {
 	if strings.Contains(body, `<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top" hx-get=`) {
 		t.Fatalf("open drawer should not have section-level htmx trigger defaults: %s", body)
 	}
+	if !strings.Contains(body, `aria-expanded="true"`) || !strings.Contains(body, `hx-get="/ui/playback/banner"`) {
+		t.Fatalf("open drawer Cast button should close the drawer: %s", body)
+	}
+	if strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>`) {
+		t.Fatalf("open drawer Cast button still points at open drawer route: %s", body)
+	}
+}
+
+func TestPlaybackBannerQuickCastDefaultsFirstRadioOption(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		tabs: []adapters.QuickCastTab{{
+			ID:       "url",
+			Label:    "URL",
+			Enabled:  true,
+			Encoding: adapters.QuickCastEncodingForm,
+			Fields: []adapters.QuickCastField{
+				{Name: "url", Label: "URL", Type: "url", Required: true},
+				{
+					Name: "mode", Label: "Mode", Type: "radio", Required: true,
+					Options: []adapters.QuickCastOption{{Value: "auto", Label: "Auto"}, {Value: "ytdlp", Label: "yt-dlp"}, {Value: "direct", Label: "Direct"}},
+				},
+			},
+		}},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+	for _, want := range []string{
+		`class="gr-quick-cast-field gr-quick-cast-field--input"`,
+		`class="gr-quick-cast-field gr-quick-cast-field--radio"`,
+		`class="gr-quick-cast-option"`,
+		`name="mode" value="auto" required checked`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("quick-cast form missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `name="mode" value="ytdlp" required checked`) || strings.Contains(body, `name="mode" value="direct" required checked`) {
+		t.Fatalf("only the first radio option should default checked: %s", body)
+	}
 }
 
 func TestPlaybackBannerUsesAdapterRefFallbackWhenSourceMissing(t *testing.T) {

@@ -39,7 +39,7 @@
 				</button>
 			</form>
 			{{end}}
-			{{if .QuickCastTabs}}<button class="gr-playback-action gr-playback-action--primary" type="button" hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>{{end}}
+			{{if .QuickCastTabs}}<button class="gr-playback-action gr-playback-action--primary" type="button" hx-get="{{if .CastDrawerOpen}}/ui/playback/banner{{else}}/ui/playback/banner?drawer=cast{{end}}" hx-target="#gr-now-playing" hx-swap="outerHTML" aria-expanded="{{if .CastDrawerOpen}}true{{else}}false{{end}}">Cast</button>{{end}}
 		</div>
 	</div>
 	{{if .Message}}
@@ -62,16 +62,16 @@
 			{{if $tab.DisabledReason}}<p class="gr-quick-cast-disabled">{{$tab.DisabledReason}}</p>{{end}}
 			{{range $field := $tab.Fields}}
 			{{if eq $field.Type "radio"}}
-			<fieldset>
+			<fieldset class="gr-quick-cast-field gr-quick-cast-field--radio">
 				<legend>{{$field.Label}}</legend>
-				{{range $field.Options}}
-				<label><input type="radio" name="{{$field.Name}}" value="{{.Value}}" {{if $field.Required}}required{{end}}> {{.Label}}</label>
+				{{range $j, $option := $field.Options}}
+				<label class="gr-quick-cast-option"><input type="radio" name="{{$field.Name}}" value="{{$option.Value}}" {{if $field.Required}}required{{end}} {{if eq $j 0}}checked{{end}}> <span>{{$option.Label}}</span></label>
 				{{end}}
 			</fieldset>
 			{{else if eq $field.Type "select"}}
-			<label>{{$field.Label}}<select name="{{$field.Name}}" {{if $field.Required}}required{{end}}>{{range $field.Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label>
+			<label class="gr-quick-cast-field gr-quick-cast-field--input">{{$field.Label}}<select name="{{$field.Name}}" {{if $field.Required}}required{{end}}>{{range $field.Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label>
 			{{else}}
-			<label>{{$field.Label}}<input name="{{$field.Name}}" type="{{$field.Type}}" placeholder="{{$field.Placeholder}}" {{if $field.Required}}required{{end}}></label>
+			<label class="gr-quick-cast-field gr-quick-cast-field--input">{{$field.Label}}<input name="{{$field.Name}}" type="{{$field.Type}}" placeholder="{{$field.Placeholder}}" {{if $field.Required}}required{{end}}></label>
 			{{end}}
 			{{end}}
 			<button class="gr-quick-cast-submit" type="submit" {{if not $tab.Enabled}}disabled{{end}}>Play</button>
