@@ -7,6 +7,11 @@ type Resolver interface {
 	StartResolvedStream(ctx context.Context, res Resolution) (StartResult, error)
 }
 
+type GuardedResolver interface {
+	Resolver
+	StartResolvedStreamIfSession(ctx context.Context, res Resolution, expectedRef string, expectedGeneration uint64) (StartResult, bool, error)
+}
+
 type Resolution struct {
 	AdapterRef string
 	ProviderID string

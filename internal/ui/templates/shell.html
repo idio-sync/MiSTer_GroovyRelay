@@ -8,6 +8,7 @@
 	<script src="/ui/static/htmx.min.js" defer></script>
 	<script src="/ui/static/clipboard.js" defer></script>
 	<script src="/ui/static/streams-artwork.js" defer></script>
+	<script src="/ui/static/now-playing.js" defer></script>
 </head>
 <body hx-ext="">
 	<div class="{{if .SetupMode}}gr-shell gr-shell-fullpage{{else}}gr-shell{{end}}">
@@ -30,8 +31,13 @@
 				</li>
 				{{end}}
 			</ol>
-			{{end}}
 			{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
+			{{else}}
+			{{template "now-playing-banner.html" .Playback}}
+			<div id="panel-content">
+				{{if .PanelHTML}}{{.PanelHTML}}{{else}}{{template "panel-body" .}}{{end}}
+			</div>
+			{{end}}
 		</main>
 	</div>
 <script>
@@ -57,15 +63,15 @@
 <nav class="gr-nav-group">
 	<h2>System</h2>
 	<a class="gr-nav-link{{if eq .CurrentPath "/ui/"}} active{{end}}" href="/ui/"
-	   hx-get="/ui/" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+	   hx-get="/ui/" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">
 		<span class="dot {{.StatusDotClass}}"></span><span class="label">Status</span>{{if .StatusMeta}}<span class="meta">{{.StatusMeta}}</span>{{end}}
 	</a>
 	<a class="gr-nav-link{{if eq .CurrentPath "/ui/bridge"}} active{{end}}" href="/ui/bridge"
-	   hx-get="/ui/bridge" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+	   hx-get="/ui/bridge" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">
 		<span id="dot-bridge" class="dot off"></span><span class="label">Bridge</span>
 	</a>
 	<a class="gr-nav-link{{if eq .CurrentPath "/ui/diagnostics"}} active{{end}}" href="/ui/diagnostics"
-	   hx-get="/ui/diagnostics" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+	   hx-get="/ui/diagnostics" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">
 		<span class="dot off"></span><span class="label">Diagnostics</span>
 	</a>
 </nav>
@@ -73,7 +79,7 @@
 	<h2>Adapters</h2>
 	{{range .Adapters}}
 	<a class="gr-nav-link{{if eq $.CurrentPath (printf "/ui/adapter/%s" .Name)}} active{{end}}" href="/ui/adapter/{{.Name}}"
-	   hx-get="/ui/adapter/{{.Name}}" hx-target="#panel" hx-swap="innerHTML" hx-push-url="true">
+	   hx-get="/ui/adapter/{{.Name}}" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">
 		<span id="dot-{{.Name}}" class="dot {{.DotClass}}"></span>
 		<span class="label">{{.DisplayName}}</span>
 	</a>

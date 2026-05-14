@@ -159,6 +159,7 @@ type SessionStatus struct {
 	Duration   time.Duration
 	AdapterRef string
 	StartedAt  time.Time
+	Generation uint64
 }
 
 // StatusHomeView is the aggregated read-only view consumed by the
@@ -170,6 +171,7 @@ type StatusHomeView struct {
 	Title       string // empty when idle
 	AdapterRef  string // empty when idle
 	Source      string // adapter name ("plex", "jellyfin", "url"); empty when idle
+	Generation  uint64
 	Modeline    string // e.g. "NTSC_480i"; empty when idle
 	Position    time.Duration
 	Duration    time.Duration

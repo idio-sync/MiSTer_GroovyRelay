@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -64,10 +65,52 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 // session. Returns the AdapterRef, resolvedVia ("direct" or "ytdlp"),
 // the HTTP status to use on error, and the error.
 //
-// Used by handlePlay, handleReplay, handleResume's live-reconnect
-// branch, and handleHistoryPlay. Each of these re-resolves the URL
-// (yt-dlp tokens expire), so they all funnel through here.
+// Used by handlePlay, banner resume/replay actions, and handleHistoryPlay. Each
+// of these re-resolves the URL (yt-dlp tokens expire), so they all funnel
+// through here.
+type urlSessionStarter func(core.SessionRequest) (bool, error)
+type urlStreamStarter func(context.Context, streamhandoff.Resolver, streamhandoff.Resolution) (streamhandoff.StartResult, bool, error)
+
+type urlCastStarter struct {
+	startCore   urlSessionStarter
+	startStream urlStreamStarter
+}
+
 func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolvedVia string, status int, err error) {
+	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
+		startCore: func(req core.SessionRequest) (bool, error) {
+			return true, a.core.StartSession(req)
+		},
+		startStream: func(ctx context.Context, r streamhandoff.Resolver, res streamhandoff.Resolution) (streamhandoff.StartResult, bool, error) {
+			started, err := r.StartResolvedStream(ctx, res)
+			return started, true, err
+		},
+	})
+}
+
+func (a *Adapter) castURLGuarded(ctx context.Context, rawURL, mode, expectedRef string, expectedGeneration uint64) (ref, resolvedVia string, status int, err error) {
+	if a.core == nil {
+		return "", "", http.StatusInternalServerError, fmt.Errorf("core not wired")
+	}
+	st := a.core.Status()
+	if st.AdapterRef != expectedRef || st.Generation != expectedGeneration {
+		return "", "", http.StatusConflict, fmt.Errorf("active session changed")
+	}
+	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
+		startCore: func(req core.SessionRequest) (bool, error) {
+			return a.core.StartSessionIfSession(req, expectedRef, expectedGeneration)
+		},
+		startStream: func(ctx context.Context, r streamhandoff.Resolver, res streamhandoff.Resolution) (streamhandoff.StartResult, bool, error) {
+			guarded, ok := r.(streamhandoff.GuardedResolver)
+			if !ok {
+				return streamhandoff.StartResult{}, false, nil
+			}
+			return guarded.StartResolvedStreamIfSession(ctx, res, expectedRef, expectedGeneration)
+		},
+	})
+}
+
+func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, starter urlCastStarter) (ref, resolvedVia string, status int, err error) {
 	parsed, perr := stdurl.Parse(rawURL)
 	if perr != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", "", http.StatusBadRequest, fmt.Errorf("not a valid URL")
@@ -108,9 +151,12 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 			if rerr != nil {
 				return "", "", http.StatusBadRequest, rerr
 			}
-			started, serr := streamResolver.StartResolvedStream(ctx, res)
+			started, matched, serr := starter.startStream(ctx, streamResolver, res)
 			if serr != nil {
 				return "", "", http.StatusBadRequest, serr
+			}
+			if !matched {
+				return "", "", http.StatusConflict, fmt.Errorf("active session changed")
 			}
 			if started.AdapterRef == "" {
 				return "", "", http.StatusInternalServerError, fmt.Errorf("streams resolver returned empty adapter ref")
@@ -208,11 +254,15 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 	// even if the manager rejects the request (e.g. probe failure).
 	// Spec PR2 §S7, Source "url", Severity Info.
 	a.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
-	if serr := a.core.StartSession(req); serr != nil {
+	matched, serr := starter.startCore(req)
+	if serr != nil {
 		safeMsg := strings.ReplaceAll(serr.Error(), rawURL, redactURL(rawURL))
 		a.setState(adapters.StateError, safeMsg)
 		slog.Warn("url cast failed", "url", redactURL(rawURL), "err", serr)
 		return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
+	}
+	if !matched {
+		return "", "", http.StatusConflict, fmt.Errorf("active session changed")
 	}
 
 	a.markRunning(rawURL)

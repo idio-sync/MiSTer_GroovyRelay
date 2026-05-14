@@ -209,7 +209,7 @@ func scopeToast(scope adapters.ApplyScope) *toastData {
 }
 
 // renderPanel renders a template into a panel-fragment response.
-// Content-Type is text/html so htmx swaps it verbatim into #panel.
+// Content-Type is text/html so htmx swaps it verbatim into the panel target.
 func (s *Server) renderPanel(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {

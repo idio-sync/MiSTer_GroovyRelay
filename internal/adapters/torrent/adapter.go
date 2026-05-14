@@ -22,6 +22,7 @@ type SessionManager interface {
 	StartSession(core.SessionRequest) error
 	Status() core.SessionStatus
 	Stop() error
+	StopIfSession(string, uint64) (bool, error)
 }
 
 // ClientFactory creates the torrent client. Start deliberately does not

@@ -52,3 +52,13 @@ func TestRenderPanelPollsOnlyLiveStatusWhenActive(t *testing.T) {
 		t.Fatalf("active torrent panel should poll only the live status block: %s", html)
 	}
 }
+
+func TestTorrentPanelDoesNotRenderActiveStop(t *testing.T) {
+	html := renderLiveStatus(statusView{Enabled: true, TrafficAcknowledged: true, ActiveTitle: "Movie", ActiveToken: "tok-1"})
+	if strings.Contains(html, "/ui/adapter/torrent/stop") || strings.Contains(html, ">Stop<") {
+		t.Fatalf("torrent live status still renders Stop: %s", html)
+	}
+	if !strings.Contains(html, "Playing") {
+		t.Fatalf("torrent live status lost active text: %s", html)
+	}
+}

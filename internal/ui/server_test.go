@@ -128,6 +128,36 @@ func TestStaticStreamsArtworkScriptServed(t *testing.T) {
 	}
 }
 
+func TestShellLoadsNowPlayingScript(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest("GET", "/ui/", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `<script src="/ui/static/now-playing.js" defer></script>`) {
+		t.Fatalf("shell missing now-playing script: %s", body)
+	}
+}
+
+func TestStaticNowPlayingScriptSuppressesSeekPollSwaps(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/now-playing.js", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"htmx:beforeSwap", "data-seek-interacting", "/ui/playback/banner", "preventDefault"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("now-playing script missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestStaticAppCSSHidesArtworkFallbackUntilImageFails(t *testing.T) {
 	_, mux := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
@@ -156,7 +186,7 @@ func TestStaticAppCSSScopesStreamsWidePanelToRegularAdapterPanel(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "#panel:has(> .gr-config-head):has(.streams-panel)") {
+	if !strings.Contains(body, "#panel:has(> #panel-content > .gr-config-head):has(.streams-panel)") {
 		t.Fatalf("streams wide panel rule should require the regular adapter header: %s", body)
 	}
 	if strings.Contains(body, "#panel:has(.streams-panel) {\n") {
@@ -176,6 +206,29 @@ func TestStaticAppCSSKeepsStreamsMobileCategoryTabsReadable(t *testing.T) {
 	want := "grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));"
 	if !strings.Contains(body, want) {
 		t.Fatalf("mobile streams category rail should keep readable tab minimum %q: %s", want, body)
+	}
+}
+
+func TestStaticAppCSSIncludesNowPlayingBannerRules(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	css := rr.Body.String()
+	for _, want := range []string{
+		".gr-now-playing",
+		".gr-now-playing--top",
+		".gr-now-playing--bottom",
+		".gr-now-playing-drawer",
+		".gr-playback-actions",
+		".gr-quick-cast",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("app.css missing %q", want)
+		}
 	}
 }
 
@@ -500,5 +553,53 @@ func TestShell_ConfigPagesUsePreviewConfigLayout(t *testing.T) {
 		if !strings.Contains(body, "<h1>"+tc.title+"</h1>") {
 			t.Errorf("%s missing title %q: %s", tc.path, tc.title, body)
 		}
+	}
+}
+
+func TestShellRendersNowPlayingBannerOnNonSetupPages(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.BridgeSaver = &fakeBridgeSaver{}
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	for _, path := range []string{"/ui/", "/ui/bridge", "/ui/diagnostics"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), `id="gr-now-playing"`) {
+				t.Fatalf("missing now-playing banner on %s: %s", path, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestShellNavigationTargetsPanelContentSoBannerPersists(t *testing.T) {
+	_, mux := newTestServer(t, func(c *Config) {
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	body := rr.Body.String()
+	for _, want := range []string{`id="gr-now-playing"`, `id="panel-content"`, `hx-target="#panel-content"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("shell missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `hx-target="#panel"`) {
+		t.Fatalf("shell still targets #panel and would replace the banner: %s", body)
+	}
+}
+
+func TestSetupShellDoesNotRenderNowPlayingBanner(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/setup", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if strings.Contains(rr.Body.String(), `id="gr-now-playing"`) {
+		t.Fatalf("setup page rendered now-playing banner: %s", rr.Body.String())
 	}
 }

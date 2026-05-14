@@ -62,6 +62,159 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	}
 }
 
+func TestStartResolvedStreamIfSessionUsesCoreGenerationGuard(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	fc.status = core.SessionStatus{AdapterRef: "url:https://example.test/watch", Generation: 7}
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
+
+	started, matched, err := a.StartResolvedStreamIfSession(
+		t.Context(),
+		streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"},
+		"url:https://example.test/watch",
+		7,
+	)
+	if err != nil {
+		t.Fatalf("StartResolvedStreamIfSession: %v", err)
+	}
+	if !matched {
+		t.Fatal("StartResolvedStreamIfSession matched = false, want true")
+	}
+	if fc.startIfCalls != 1 || fc.startIfRef != "url:https://example.test/watch" || fc.startIfGen != 7 {
+		t.Fatalf("guard calls=%d ref=%q gen=%d", fc.startIfCalls, fc.startIfRef, fc.startIfGen)
+	}
+	if fc.lastReq.AdapterRef == "" || fc.lastReq.AdapterRef != started.AdapterRef {
+		t.Fatalf("last request AdapterRef=%q started=%+v", fc.lastReq.AdapterRef, started)
+	}
+}
+
+func TestStartResolvedStreamIfSessionStaleGuardDoesNotStopCurrentStream(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:  "streams-session",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "existing", SourceID: "existing", URL: "https://www.youtube.com/watch?v=existing001"}},
+	}
+	existingRef := queueAdapterRef(a.active, a.active.ItemToken)
+	fc.status = core.SessionStatus{AdapterRef: existingRef, Generation: 11}
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
+
+	started, matched, err := a.StartResolvedStreamIfSession(
+		t.Context(),
+		streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"},
+		"url:https://example.test/old",
+		7,
+	)
+	if err != nil {
+		t.Fatalf("StartResolvedStreamIfSession: %v", err)
+	}
+	if matched {
+		t.Fatal("StartResolvedStreamIfSession matched = true, want false")
+	}
+	if started != (streamhandoff.StartResult{}) {
+		t.Fatalf("StartResult = %+v, want zero", started)
+	}
+	if fc.stopCalls != 0 || fc.startIfCalls != 0 || fc.startCalls != 0 {
+		t.Fatalf("core calls stop=%d startIf=%d start=%d, want no mutation", fc.stopCalls, fc.startIfCalls, fc.startCalls)
+	}
+	if a.active == nil || a.active.SessionID != "streams-session" {
+		t.Fatalf("active queue = %+v, want existing queue preserved", a.active)
+	}
+	if got := fc.Status().AdapterRef; got != existingRef {
+		t.Fatalf("core AdapterRef = %q, want existing %q", got, existingRef)
+	}
+}
+
+func TestStartResolvedStreamIfSessionRaceDoesNotStopNewerStream(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:  "streams-session",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "existing", SourceID: "existing", URL: "https://www.youtube.com/watch?v=existing001"}},
+	}
+	existingQueue := a.active
+	existingRef := queueAdapterRef(existingQueue, existingQueue.ItemToken)
+	fc.status = core.SessionStatus{AdapterRef: "url:https://example.test/watch", Generation: 7}
+	fc.statusHook = func() {
+		fc.mu.Lock()
+		fc.statusHook = nil
+		fc.status = core.SessionStatus{AdapterRef: existingRef, Generation: 11}
+		fc.mu.Unlock()
+	}
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{URL: "https://media.example/video.mp4"}}
+
+	started, matched, err := a.StartResolvedStreamIfSession(
+		t.Context(),
+		streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"},
+		"url:https://example.test/watch",
+		7,
+	)
+	if err != nil {
+		t.Fatalf("StartResolvedStreamIfSession: %v", err)
+	}
+	if matched {
+		t.Fatal("StartResolvedStreamIfSession matched = true, want false")
+	}
+	if started != (streamhandoff.StartResult{}) {
+		t.Fatalf("StartResult = %+v, want zero", started)
+	}
+	if fc.stopCalls != 0 || fc.startIfCalls != 1 || fc.startCalls != 0 {
+		t.Fatalf("core calls stop=%d startIf=%d start=%d, want guarded miss without stop", fc.stopCalls, fc.startIfCalls, fc.startCalls)
+	}
+	if a.active != existingQueue {
+		t.Fatalf("active queue = %+v, want existing queue preserved", a.active)
+	}
+	if got := fc.Status().AdapterRef; got != existingRef {
+		t.Fatalf("core AdapterRef = %q, want existing %q", got, existingRef)
+	}
+}
+
+func TestStartResolvedStreamIfSessionRaceRestoresPreviousQueueOnResolveError(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.active = &ActiveQueue{
+		SessionID:  "streams-session",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "existing", SourceID: "existing", URL: "https://www.youtube.com/watch?v=existing001"}},
+	}
+	existingQueue := a.active
+	existingRef := queueAdapterRef(existingQueue, existingQueue.ItemToken)
+	fc.status = core.SessionStatus{AdapterRef: "url:https://example.test/watch", Generation: 7}
+	fc.statusHook = func() {
+		fc.mu.Lock()
+		fc.statusHook = nil
+		fc.status = core.SessionStatus{AdapterRef: existingRef, Generation: 11}
+		fc.mu.Unlock()
+	}
+	a.resolver = &fakeResolver{err: fmt.Errorf("resolver failed")}
+
+	_, matched, err := a.StartResolvedStreamIfSession(
+		t.Context(),
+		streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"},
+		"url:https://example.test/watch",
+		7,
+	)
+	if err == nil {
+		t.Fatal("StartResolvedStreamIfSession err = nil, want resolver error")
+	}
+	if matched {
+		t.Fatal("StartResolvedStreamIfSession matched = true, want false")
+	}
+	if fc.stopCalls != 0 || fc.startIfCalls != 0 || fc.startCalls != 0 {
+		t.Fatalf("core calls stop=%d startIf=%d start=%d, want no core mutation", fc.stopCalls, fc.startIfCalls, fc.startCalls)
+	}
+	if a.active != existingQueue {
+		t.Fatalf("active queue = %+v, want existing queue preserved", a.active)
+	}
+	if got := fc.Status().AdapterRef; got != existingRef {
+		t.Fatalf("core AdapterRef = %q, want existing %q", got, existingRef)
+	}
+}
+
 func TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy(t *testing.T) {
 	a, c := newTestAdapterWithFakeCore(t)
 	def := bundledToonamiAftermathDefinition()

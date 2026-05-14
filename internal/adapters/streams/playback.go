@@ -18,33 +18,98 @@ func (a *Adapter) StartResolvedStream(ctx context.Context, res streamhandoff.Res
 		ctx = context.Background()
 	}
 
+	started, _, err := a.startResolvedStream(ctx, res, startCoreSession, true)
+	return started, err
+}
+
+func (a *Adapter) StartResolvedStreamIfSession(ctx context.Context, res streamhandoff.Resolution, expectedRef string, expectedGeneration uint64) (streamhandoff.StartResult, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if expectedRef == "" || expectedGeneration == 0 {
+		return streamhandoff.StartResult{}, false, nil
+	}
+	coreManager := a.core
+	if coreManager == nil {
+		return streamhandoff.StartResult{}, false, playbackError(res.ProviderID, "core playback manager is not configured")
+	}
+	status := coreManager.Status()
+	if status.AdapterRef != expectedRef || status.Generation != expectedGeneration {
+		return streamhandoff.StartResult{}, false, nil
+	}
+	return a.startResolvedStream(ctx, res, startCoreSessionIfSession(expectedRef, expectedGeneration), false)
+}
+
+func (a *Adapter) startResolvedStream(ctx context.Context, res streamhandoff.Resolution, starter streamCoreStarter, stopPrevious bool) (streamhandoff.StartResult, bool, error) {
 	q, err := a.queueFromResolution(res)
 	if err != nil {
-		return streamhandoff.StartResult{}, err
+		return streamhandoff.StartResult{}, false, err
 	}
 
-	if err := a.stopPreviousOwnedCore(nil, true, false); err != nil {
-		return streamhandoff.StartResult{}, err
+	if stopPrevious {
+		if err := a.stopPreviousOwnedCore(nil, true, false); err != nil {
+			return streamhandoff.StartResult{}, false, err
+		}
 	}
 
 	a.mu.Lock()
-	if a.active != nil && a.active.cancelResolve != nil {
-		a.active.cancelResolve()
-		a.active.cancelResolve = nil
+	previous := a.active
+	if stopPrevious && previous != nil && previous.cancelResolve != nil {
+		previous.cancelResolve()
+		previous.cancelResolve = nil
 	}
 	a.active = q
+	guard := queueVersionOf(q)
 	a.mu.Unlock()
 
-	started, err := a.playCurrent(ctx)
+	started, matched, err := a.playCurrentWithStarter(ctx, guard, starter)
 	if err != nil {
-		return streamhandoff.StartResult{}, err
+		if !stopPrevious {
+			a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
+		}
+		return streamhandoff.StartResult{}, false, err
+	}
+	if !matched {
+		if !stopPrevious {
+			a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
+		}
+		return streamhandoff.StartResult{}, false, nil
+	}
+	if !stopPrevious {
+		a.cancelDetachedQueueResolve(previous)
 	}
 	if res.ItemID == "" {
 		started.ItemID = ""
 	} else {
 		started.ItemID = res.ItemID
 	}
-	return started, nil
+	return started, true, nil
+}
+
+func (a *Adapter) restorePreviousQueueAfterUnmatchedStart(guard queueVersion, previous *ActiveQueue) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if guard.matches(a.active) {
+		a.clearActiveLocked()
+		a.active = previous
+		return
+	}
+	if a.active == nil {
+		a.active = previous
+	}
+}
+
+func (a *Adapter) cancelDetachedQueueResolve(q *ActiveQueue) {
+	if q == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.active == q || q.cancelResolve == nil {
+		return
+	}
+	q.cancelResolve()
+	q.cancelResolve = nil
 }
 
 func (a *Adapter) queueFromResolution(res streamhandoff.Resolution) (*ActiveQueue, error) {
@@ -125,11 +190,44 @@ func queueVersionOf(q *ActiveQueue) queueVersion {
 	return queueVersion{SessionID: q.SessionID, Generation: q.Generation}
 }
 
+type streamCoreStarter func(SessionManager, core.SessionRequest) (bool, error)
+
+func startCoreSession(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+	return true, coreManager.StartSession(req)
+}
+
+func startCoreSessionIfSession(expectedRef string, expectedGeneration uint64) streamCoreStarter {
+	return func(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+		return coreManager.StartSessionIfSession(req, expectedRef, expectedGeneration)
+	}
+}
+
+func startCoreSessionIfIdle(coreManager SessionManager, req core.SessionRequest) (bool, error) {
+	return coreManager.StartSessionIfIdle(req)
+}
+
 func (a *Adapter) playCurrent(ctx context.Context) (streamhandoff.StartResult, error) {
-	return a.playCurrentGuarded(ctx, queueVersion{})
+	started, _, err := a.playCurrentWithStarter(ctx, queueVersion{}, startCoreSession)
+	return started, err
 }
 
 func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (streamhandoff.StartResult, error) {
+	started, _, err := a.playCurrentWithStarter(ctx, guard, startCoreSession)
+	return started, err
+}
+
+func (a *Adapter) playCurrentIfCoreIdle(ctx context.Context, guard queueVersion) (streamhandoff.StartResult, error) {
+	started, matched, err := a.playCurrentWithStarter(ctx, guard, startCoreSessionIfIdle)
+	if err != nil {
+		return streamhandoff.StartResult{}, err
+	}
+	if !matched {
+		return streamhandoff.StartResult{}, playbackError("", "active session changed")
+	}
+	return started, nil
+}
+
+func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion, starter streamCoreStarter) (streamhandoff.StartResult, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -138,17 +236,17 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	q := a.active
 	if q == nil {
 		a.mu.Unlock()
-		return streamhandoff.StartResult{}, playbackError("", "no active streams queue")
+		return streamhandoff.StartResult{}, false, playbackError("", "no active streams queue")
 	}
 	if !guard.matches(q) {
 		a.mu.Unlock()
-		return streamhandoff.StartResult{}, playbackError("", "stream start was superseded")
+		return streamhandoff.StartResult{}, false, playbackError("", "stream start was superseded")
 	}
 	item, ok := q.currentItem()
 	if !ok {
 		a.clearActiveLocked()
 		a.mu.Unlock()
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "active streams queue is empty")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "active streams queue is empty")
 	}
 	resolver := a.resolver
 	coreManager := a.core
@@ -174,13 +272,13 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	if pageURL == "" {
 		cancel()
 		a.clearResolveIfCurrent(capture)
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream item is missing a playable URL")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream item is missing a playable URL")
 	}
 	if isDirectStreamItem(item) {
 		if coreManager == nil {
 			cancel()
 			a.clearResolveIfCurrent(capture)
-			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "core playback manager is not configured")
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "core playback manager is not configured")
 		}
 		title := streamSessionTitle(item, "")
 		if strings.TrimSpace(q.ProviderName) != "" && strings.TrimSpace(q.ChannelName) != "" {
@@ -201,15 +299,21 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		a.playbackMu.Lock()
 		if !a.captureStillActive(capture) {
 			a.playbackMu.Unlock()
-			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream start was superseded")
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream start was superseded")
 		}
-		if err := coreManager.StartSession(req); err != nil {
+		matched, err := starter(coreManager, req)
+		if err != nil {
 			a.playbackMu.Unlock()
 			if next, ok := a.recordStartFailureAndAdvance(capture, "failed to start stream playback"); ok {
 				a.runBeforeQueueContinuation()
-				return a.playCurrentGuarded(ctx, next)
+				return a.playCurrentWithStarter(ctx, next, starter)
 			}
-			return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to start stream playback")
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to start stream playback")
+		}
+		if !matched {
+			a.playbackMu.Unlock()
+			a.clearQueueIfCurrent(capture)
+			return streamhandoff.StartResult{}, false, nil
 		}
 		a.playbackMu.Unlock()
 
@@ -228,17 +332,17 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 			ProviderID: q.ProviderID,
 			ChannelID:  q.ChannelID,
 			ItemID:     itemIdentity(item),
-		}, nil
+		}, true, nil
 	}
 	if resolver == nil {
 		cancel()
 		a.clearResolveIfCurrent(capture)
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream resolver is not configured")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver is not configured")
 	}
 	if coreManager == nil {
 		cancel()
 		a.clearResolveIfCurrent(capture)
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "core playback manager is not configured")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "core playback manager is not configured")
 	}
 
 	resolved, err := resolver.Resolve(resolveCtx, pageURL, format, cookiesPath)
@@ -246,16 +350,16 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	if err != nil {
 		if next, ok := a.recordStartFailureAndAdvance(capture, "failed to resolve stream item"); ok {
 			a.runBeforeQueueContinuation()
-			return a.playCurrentGuarded(ctx, next)
+			return a.playCurrentWithStarter(ctx, next, starter)
 		}
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to resolve stream item")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to resolve stream item")
 	}
 	if resolved == nil || strings.TrimSpace(resolved.URL) == "" {
 		if next, ok := a.recordStartFailureAndAdvance(capture, "stream resolver returned no playable media URL"); ok {
 			a.runBeforeQueueContinuation()
-			return a.playCurrentGuarded(ctx, next)
+			return a.playCurrentWithStarter(ctx, next, starter)
 		}
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
 	}
 	title := streamSessionTitle(item, resolved.Title)
 
@@ -274,15 +378,21 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 	a.playbackMu.Lock()
 	if !a.captureStillActive(capture) {
 		a.playbackMu.Unlock()
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "stream start was superseded")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream start was superseded")
 	}
-	if err := coreManager.StartSession(req); err != nil {
+	matched, err := starter(coreManager, req)
+	if err != nil {
 		a.playbackMu.Unlock()
 		if next, ok := a.recordStartFailureAndAdvance(capture, "failed to start stream playback"); ok {
 			a.runBeforeQueueContinuation()
-			return a.playCurrentGuarded(ctx, next)
+			return a.playCurrentWithStarter(ctx, next, starter)
 		}
-		return streamhandoff.StartResult{}, playbackError(q.ProviderID, "failed to start stream playback")
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to start stream playback")
+	}
+	if !matched {
+		a.playbackMu.Unlock()
+		a.clearQueueIfCurrent(capture)
+		return streamhandoff.StartResult{}, false, nil
 	}
 	a.playbackMu.Unlock()
 
@@ -301,7 +411,7 @@ func (a *Adapter) playCurrentGuarded(ctx context.Context, guard queueVersion) (s
 		ProviderID: q.ProviderID,
 		ChannelID:  q.ChannelID,
 		ItemID:     itemIdentity(item),
-	}, nil
+	}, true, nil
 }
 
 func directHLSInputPolicy() core.MediaInputPolicy {
@@ -354,6 +464,14 @@ func (a *Adapter) Next(ctx context.Context) error {
 	return err
 }
 
+func (a *Adapter) NextGuarded(ctx context.Context, ref string, generation uint64) error {
+	return a.moveGuarded(ctx, ref, generation, func(q *ActiveQueue) bool {
+		return q.canAdvanceNext()
+	}, func(q *ActiveQueue) bool {
+		return q.advanceNext(a.rng)
+	})
+}
+
 func (a *Adapter) Previous(ctx context.Context) error {
 	if err := a.prepareManualStart(func(q *ActiveQueue) bool {
 		return q.canAdvancePrevious()
@@ -366,11 +484,55 @@ func (a *Adapter) Previous(ctx context.Context) error {
 	return err
 }
 
-func (a *Adapter) Replay(ctx context.Context) error {
-	if err := a.prepareReplayStart(); err != nil {
+func (a *Adapter) PreviousGuarded(ctx context.Context, ref string, generation uint64) error {
+	return a.moveGuarded(ctx, ref, generation, func(q *ActiveQueue) bool {
+		return q.canAdvancePrevious()
+	}, func(q *ActiveQueue) bool {
+		return q.advancePrevious()
+	})
+}
+
+func (a *Adapter) moveGuarded(ctx context.Context, ref string, generation uint64, canMove, mutator func(*ActiveQueue) bool) error {
+	expected, err := a.stopPreviousOwnedCoreGuarded(ref, generation, canMove, true, true)
+	if err != nil {
 		return err
 	}
-	_, err := a.playCurrent(ctx)
+	a.mu.Lock()
+	if a.active == nil {
+		a.mu.Unlock()
+		return playbackError("", "no active streams queue")
+	}
+	if expected.SessionID != "" && !expected.matches(a.active) {
+		a.mu.Unlock()
+		return playbackError("", "active session changed")
+	}
+	if !mutator(a.active) {
+		providerID := a.active.ProviderID
+		a.mu.Unlock()
+		return playbackError(providerID, "queue has no next item")
+	}
+	a.active.Failures = nil
+	next := queueVersionOf(a.active)
+	a.mu.Unlock()
+	_, err = a.playCurrentIfCoreIdle(ctx, next)
+	return err
+}
+
+func (a *Adapter) Replay(ctx context.Context) error {
+	next, err := a.prepareReplayStart()
+	if err != nil {
+		return err
+	}
+	_, err = a.playCurrentGuarded(ctx, next)
+	return err
+}
+
+func (a *Adapter) ReplayGuarded(ctx context.Context, ref string, generation uint64) error {
+	next, err := a.prepareReplayStartGuarded(ref, generation)
+	if err != nil {
+		return err
+	}
+	_, err = a.playCurrentIfCoreIdle(ctx, next)
 	return err
 }
 
@@ -406,6 +568,11 @@ func (a *Adapter) StopQueue(ctx context.Context) error {
 	return a.stopActiveQueue()
 }
 
+func (a *Adapter) StopQueueGuarded(ctx context.Context, ref string, generation uint64) error {
+	_ = ctx
+	return a.stopActiveQueueGuarded(ref, generation)
+}
+
 func (a *Adapter) makeOnStop(capture queueCapture) func(string) {
 	return func(reason string) {
 		var next queueVersion
@@ -415,6 +582,10 @@ func (a *Adapter) makeOnStop(capture queueCapture) func(string) {
 		a.mu.Lock()
 		q := a.active
 		if !capture.matches(q) {
+			a.mu.Unlock()
+			return
+		}
+		if (reason == "preempted" || reason == "stopped") && a.consumeExpectedStopLocked(capture) {
 			a.mu.Unlock()
 			return
 		}
@@ -463,17 +634,31 @@ func (a *Adapter) makeOnStop(capture queueCapture) func(string) {
 }
 
 func (a *Adapter) prepareManualStart(canMove, mutator func(*ActiveQueue) bool) error {
-	if err := a.stopPreviousOwnedCore(canMove, true, true); err != nil {
-		return err
-	}
+	_, err := a.prepareManualStartWithStop(a.stopPreviousOwnedCoreForStart, canMove, mutator)
+	return err
+}
 
+type stopPreviousCoreFunc func(canProceed func(*ActiveQueue) bool, bumpGeneration bool, requireOwned bool) (queueVersion, error)
+
+func (a *Adapter) stopPreviousOwnedCoreForStart(canProceed func(*ActiveQueue) bool, bumpGeneration bool, requireOwned bool) (queueVersion, error) {
+	return queueVersion{}, a.stopPreviousOwnedCore(canProceed, bumpGeneration, requireOwned)
+}
+
+func (a *Adapter) prepareManualStartWithStop(stopPrevious stopPreviousCoreFunc, canMove, mutator func(*ActiveQueue) bool) (queueVersion, error) {
+	expected, err := stopPrevious(canMove, true, true)
+	if err != nil {
+		return queueVersion{}, err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.active == nil {
-		return playbackError("", "no active streams queue")
+		return queueVersion{}, playbackError("", "no active streams queue")
 	}
 	if !canMove(a.active) {
-		return playbackError(a.active.ProviderID, "queue has no next item")
+		return queueVersion{}, playbackError(a.active.ProviderID, "queue has no next item")
+	}
+	if expected.SessionID != "" && !expected.matches(a.active) {
+		return queueVersion{}, playbackError(a.active.ProviderID, "active session changed")
 	}
 	if a.active.cancelResolve != nil {
 		a.active.cancelResolve()
@@ -481,17 +666,27 @@ func (a *Adapter) prepareManualStart(canMove, mutator func(*ActiveQueue) bool) e
 	}
 	a.active.Failures = nil
 	if !mutator(a.active) {
-		return playbackError(a.active.ProviderID, "queue has no next item")
+		return queueVersion{}, playbackError(a.active.ProviderID, "queue has no next item")
 	}
-	return nil
+	return queueVersionOf(a.active), nil
 }
 
-func (a *Adapter) prepareReplayStart() error {
+func (a *Adapter) prepareReplayStart() (queueVersion, error) {
+	return a.prepareReplayStartWithStop(a.stopPreviousOwnedCoreForStart)
+}
+
+func (a *Adapter) prepareReplayStartGuarded(ref string, generation uint64) (queueVersion, error) {
+	return a.prepareReplayStartWithStop(func(canProceed func(*ActiveQueue) bool, bumpGeneration bool, requireOwned bool) (queueVersion, error) {
+		return a.stopPreviousOwnedCoreGuarded(ref, generation, canProceed, bumpGeneration, requireOwned)
+	})
+}
+
+func (a *Adapter) prepareReplayStartWithStop(stopPrevious stopPreviousCoreFunc) (queueVersion, error) {
 	a.mu.Lock()
 	q := a.active
 	if q == nil {
 		a.mu.Unlock()
-		return playbackError("", "no active streams queue")
+		return queueVersion{}, playbackError("", "no active streams queue")
 	}
 	providerID := q.ProviderID
 	channelID := q.ChannelID
@@ -502,22 +697,22 @@ func (a *Adapter) prepareReplayStart() error {
 		cat, ok := a.catalogs[providerID]
 		if !ok {
 			a.mu.Unlock()
-			return playbackError(providerID, "provider is not cataloged")
+			return queueVersion{}, playbackError(providerID, "provider is not cataloged")
 		}
 		ch := cat.Channel(channelID)
 		if ch == nil {
 			a.mu.Unlock()
-			return playbackError(providerID, "active channel is not in latest catalog")
+			return queueVersion{}, playbackError(providerID, "active channel is not in latest catalog")
 		}
 		if len(ch.Items) == 0 {
 			a.mu.Unlock()
-			return playbackError(providerID, "active channel has no playable items")
+			return queueVersion{}, playbackError(providerID, "active channel has no playable items")
 		}
 	}
 	a.mu.Unlock()
 
 	if useSnapshot {
-		return a.prepareManualStart(func(q *ActiveQueue) bool {
+		return a.prepareManualStartWithStop(stopPrevious, func(q *ActiveQueue) bool {
 			return q != nil && len(q.Items) > 0
 		}, func(q *ActiveQueue) bool {
 			q.resetForReplay(a.rng)
@@ -525,14 +720,15 @@ func (a *Adapter) prepareReplayStart() error {
 		})
 	}
 
-	if err := a.stopPreviousOwnedCore(func(q *ActiveQueue) bool {
+	_, err := stopPrevious(func(q *ActiveQueue) bool {
 		return q != nil &&
 			q.ProviderID == providerID &&
 			q.ChannelID == channelID &&
 			q.SessionID == capturedSessionID &&
 			q.Generation == capturedGeneration
-	}, true, true); err != nil {
-		return err
+	}, true, true)
+	if err != nil {
+		return queueVersion{}, err
 	}
 
 	if a.beforeReplayReplace != nil {
@@ -542,33 +738,33 @@ func (a *Adapter) prepareReplayStart() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.active == nil {
-		return playbackError("", "no active streams queue")
+		return queueVersion{}, playbackError("", "no active streams queue")
 	}
 	if a.active.ProviderID != providerID ||
 		a.active.ChannelID != channelID ||
 		a.active.SessionID != capturedSessionID ||
 		a.active.Generation != capturedGeneration+1 {
-		return playbackError(providerID, "stream replay was superseded")
+		return queueVersion{}, playbackError(providerID, "stream replay was superseded")
 	}
 	cat, ok := a.catalogs[providerID]
 	if !ok {
-		return playbackError(providerID, "provider is not cataloged")
+		return queueVersion{}, playbackError(providerID, "provider is not cataloged")
 	}
 	ch := cat.Channel(channelID)
 	if ch == nil {
-		return playbackError(providerID, "active channel is not in latest catalog")
+		return queueVersion{}, playbackError(providerID, "active channel is not in latest catalog")
 	}
 	channel := *ch
 	providerName := providerDisplayName(cat, a.definitions[providerID])
 	newQueue, err := buildQueue(providerID, channel, a.rng)
 	if err != nil {
-		return playbackError(providerID, err.Error())
+		return queueVersion{}, playbackError(providerID, err.Error())
 	}
 	newQueue.ProviderName = providerName
 	newQueue.SessionID = newQueueSessionID()
 	newQueue.StartedAt = time.Now()
 	a.active = newQueue
-	return nil
+	return queueVersionOf(a.active), nil
 }
 
 func (a *Adapter) stopActiveQueue() error {
@@ -632,6 +828,76 @@ func (a *Adapter) stopActiveQueue() error {
 	return nil
 }
 
+func (a *Adapter) stopActiveQueueGuarded(ref string, generation uint64) error {
+	a.mu.Lock()
+	q := a.active
+	if q == nil {
+		a.mu.Unlock()
+		return playbackError("", "no active streams queue")
+	}
+	providerID := q.ProviderID
+	item, ok := q.currentItem()
+	if !ok {
+		a.clearActiveLocked()
+		a.mu.Unlock()
+		return playbackError(providerID, "active streams queue is empty")
+	}
+	capture := queueCapture{
+		Generation: q.Generation,
+		ItemToken:  q.ItemToken,
+		SessionID:  q.SessionID,
+		ItemID:     itemIdentity(item),
+		AdapterRef: activeAdapterRef(q),
+	}
+	coreManager := a.core
+	hasInFlightResolve := a.active.cancelResolve != nil
+	directInFlightStart := hasInFlightResolve && item.Direct
+	if hasInFlightResolve && !directInFlightStart {
+		a.clearActiveLocked()
+	}
+	a.mu.Unlock()
+
+	if capture.AdapterRef != ref {
+		if hasInFlightResolve && !directInFlightStart {
+			a.restoreQueueIfIdle(q)
+		}
+		return playbackError(providerID, "active session changed")
+	}
+	if hasInFlightResolve && !directInFlightStart {
+		return nil
+	}
+	if coreManager == nil || ref == "" {
+		return playbackError(providerID, "streams does not own the active core session")
+	}
+	if !directInFlightStart {
+		status := coreManager.Status()
+		if status.AdapterRef != ref || status.Generation != generation {
+			return playbackError(providerID, "active session changed")
+		}
+	}
+
+	a.clearQueueIfCurrent(capture)
+
+	if a.beforeStopQueuePlaybackLock != nil {
+		a.beforeStopQueuePlaybackLock(capture)
+	}
+
+	a.playbackMu.Lock()
+	matched, err := coreManager.StopIfSession(ref, generation)
+	a.playbackMu.Unlock()
+	if err != nil {
+		return playbackError("", "failed to stop stream playback")
+	}
+	if !matched {
+		if directInFlightStart {
+			return nil
+		}
+		a.restoreQueueIfIdle(q)
+		return playbackError(providerID, "active session changed")
+	}
+	return nil
+}
+
 func (a *Adapter) restoreQueueIfIdle(q *ActiveQueue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -649,6 +915,7 @@ func (a *Adapter) clearActiveLocked() {
 		a.active.cancelResolve = nil
 	}
 	a.active = nil
+	a.expectedStops = nil
 }
 
 func (a *Adapter) captureStillActive(capture queueCapture) bool {
@@ -671,6 +938,39 @@ func (a *Adapter) clearQueueIfCurrent(capture queueCapture) {
 	if capture.matches(a.active) {
 		a.clearActiveLocked()
 	}
+}
+
+func (a *Adapter) markExpectedStopIfCurrent(capture queueCapture) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !capture.matches(a.active) {
+		return false
+	}
+	if a.expectedStops == nil {
+		a.expectedStops = map[queueCapture]struct{}{}
+	}
+	a.expectedStops[capture] = struct{}{}
+	return true
+}
+
+func (a *Adapter) clearExpectedStop(capture queueCapture) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.expectedStops == nil {
+		return
+	}
+	delete(a.expectedStops, capture)
+}
+
+func (a *Adapter) consumeExpectedStopLocked(capture queueCapture) bool {
+	if a.expectedStops == nil {
+		return false
+	}
+	if _, ok := a.expectedStops[capture]; !ok {
+		return false
+	}
+	delete(a.expectedStops, capture)
+	return true
 }
 
 func (a *Adapter) recordStartFailureAndAdvance(capture queueCapture, reason string) (queueVersion, bool) {
@@ -746,6 +1046,67 @@ func (a *Adapter) stopPreviousOwnedCore(canProceed func(*ActiveQueue) bool, bump
 		return playbackError(providerID, "streams does not own the active core session")
 	}
 	return nil
+}
+
+func (a *Adapter) stopPreviousOwnedCoreGuarded(ref string, generation uint64, canProceed func(*ActiveQueue) bool, bumpGeneration bool, requireOwned bool) (queueVersion, error) {
+	a.mu.Lock()
+	q := a.active
+	if q == nil {
+		a.mu.Unlock()
+		return queueVersion{}, nil
+	}
+	if canProceed != nil && !canProceed(q) {
+		providerID := q.ProviderID
+		a.mu.Unlock()
+		return queueVersion{}, playbackError(providerID, "queue has no next item")
+	}
+	item, ok := q.currentItem()
+	if !ok {
+		providerID := q.ProviderID
+		a.mu.Unlock()
+		return queueVersion{}, playbackError(providerID, "active streams queue is empty")
+	}
+	activeRef := activeAdapterRef(q)
+	capture := queueCapture{
+		Generation: q.Generation,
+		ItemToken:  q.ItemToken,
+		SessionID:  q.SessionID,
+		ItemID:     itemIdentity(item),
+		AdapterRef: activeRef,
+	}
+	providerID := q.ProviderID
+	coreManager := a.core
+	hasInFlightResolve := q.cancelResolve != nil
+	a.mu.Unlock()
+
+	if activeRef != ref {
+		return queueVersion{}, playbackError(providerID, "active session changed")
+	}
+	if coreManager == nil || ref == "" {
+		if requireOwned && !hasInFlightResolve {
+			return queueVersion{}, playbackError(providerID, "streams does not own the active core session")
+		}
+		a.cancelAndBumpQueueIfCurrent(q, bumpGeneration)
+		return queueVersionOf(q), nil
+	}
+
+	if !a.markExpectedStopIfCurrent(capture) {
+		return queueVersion{}, playbackError(providerID, "active session changed")
+	}
+
+	a.playbackMu.Lock()
+	matched, err := coreManager.StopIfSession(ref, generation)
+	a.playbackMu.Unlock()
+	if err != nil {
+		a.clearExpectedStop(capture)
+		return queueVersion{}, playbackError(providerID, "failed to stop previous stream playback")
+	}
+	if !matched {
+		a.clearExpectedStop(capture)
+		return queueVersion{}, playbackError(providerID, "active session changed")
+	}
+	a.cancelAndBumpQueueIfCurrent(q, bumpGeneration)
+	return queueVersionOf(q), nil
 }
 
 func (a *Adapter) cancelAndBumpQueueIfCurrent(q *ActiveQueue, bumpGeneration bool) {

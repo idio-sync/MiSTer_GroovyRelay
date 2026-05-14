@@ -69,6 +69,13 @@ func (f *fakeCore) StartSession(req core.SessionRequest) error {
 	return f.startErr
 }
 
+func (f *fakeCore) StartSessionIfSession(req core.SessionRequest, ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastReq = req
+	return true, f.startErr
+}
+
 func (f *fakeCore) Status() core.SessionStatus {
 	f.mu.Lock()
 	fn := f.statusFn
@@ -86,6 +93,13 @@ func (f *fakeCore) Pause() error {
 	return f.pauseErr
 }
 
+func (f *fakeCore) PauseIfSession(string, uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pauseCalled = true
+	return true, f.pauseErr
+}
+
 func (f *fakeCore) Play() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -93,11 +107,25 @@ func (f *fakeCore) Play() error {
 	return f.playErr
 }
 
+func (f *fakeCore) PlayIfSession(string, uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.playCalled = true
+	return true, f.playErr
+}
+
 func (f *fakeCore) Stop() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopCalled = true
 	return f.stopErr
+}
+
+func (f *fakeCore) StopIfSession(string, uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalled = true
+	return true, f.stopErr
 }
 
 func (f *fakeCore) SeekTo(offsetMs int) error {
@@ -108,6 +136,14 @@ func (f *fakeCore) SeekTo(offsetMs int) error {
 	return f.seekErr
 }
 
+func (f *fakeCore) SeekToIfSession(_ string, _ uint64, offsetMs int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seekCalled = true
+	f.seekOffsetMs = offsetMs
+	return true, f.seekErr
+}
+
 func (f *fakeCore) snapshot() core.SessionRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -115,11 +151,15 @@ func (f *fakeCore) snapshot() core.SessionRequest {
 }
 
 type fakeStreamResolver struct {
-	matched  bool
-	res      streamhandoff.Resolution
-	err      error
-	startErr error
-	starts   int
+	matched      bool
+	res          streamhandoff.Resolution
+	err          error
+	startErr     error
+	starts       int
+	guardStarts  int
+	guardRef     string
+	guardGen     uint64
+	guardMatched bool
 }
 
 func (f *fakeStreamResolver) ResolveStreamURL(ctx context.Context, rawURL string) (streamhandoff.Resolution, bool, error) {
@@ -137,6 +177,20 @@ func (f *fakeStreamResolver) StartResolvedStream(ctx context.Context, res stream
 		ChannelID:  res.ChannelID,
 		ItemID:     res.ItemID,
 	}, nil
+}
+
+func (f *fakeStreamResolver) StartResolvedStreamIfSession(ctx context.Context, res streamhandoff.Resolution, ref string, gen uint64) (streamhandoff.StartResult, bool, error) {
+	f.guardStarts++
+	f.guardRef, f.guardGen = ref, gen
+	if f.startErr != nil {
+		return streamhandoff.StartResult{}, false, f.startErr
+	}
+	return streamhandoff.StartResult{
+		AdapterRef: res.AdapterRef,
+		ProviderID: res.ProviderID,
+		ChannelID:  res.ChannelID,
+		ItemID:     res.ItemID,
+	}, f.guardMatched, nil
 }
 
 func TestCastURL_StreamsHandoffBeforeYTDLP(t *testing.T) {
@@ -165,6 +219,69 @@ func TestCastURL_StreamsHandoffBeforeYTDLP(t *testing.T) {
 	}
 	if got := a.core.(*fakeCore).snapshot().StreamURL; got != "" {
 		t.Fatalf("URL core should not be started for streams handoff; StreamURL=%q", got)
+	}
+}
+
+func TestCastURLGuardedStreamsResolverUsesSessionGuard(t *testing.T) {
+	fc := &fakeCore{}
+	fc.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:old", Generation: 7}
+	}
+	a := newTestAdapter(t, fc)
+	f := &fakeStreamResolver{
+		matched:      true,
+		res:          streamhandoff.Resolution{AdapterRef: "streams:mtv:metal:sess:1", ProviderID: "mtv", ChannelID: "metal"},
+		guardMatched: false,
+	}
+	a.SetStreamResolver(f)
+	_, _, status, err := a.castURLGuarded(context.Background(), "https://wantmymtv.vercel.app/player.html?channel=metal", "auto", "url:old", 7)
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("castURLGuarded stream err = %v, want active session changed", err)
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
+	}
+	if f.starts != 0 {
+		t.Fatalf("unguarded stream start was called %d times", f.starts)
+	}
+	if f.guardStarts != 1 || f.guardRef != "url:old" || f.guardGen != 7 {
+		t.Fatalf("guarded stream key = starts:%d ref:%q gen:%d", f.guardStarts, f.guardRef, f.guardGen)
+	}
+}
+
+func TestCastURLGuardedRejectsStaleBeforeSideEffects(t *testing.T) {
+	log := eventlog.New(16)
+	coreStub := &providerCoreStub{
+		status:       core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:new", Generation: 8},
+		startMatched: false,
+	}
+	fr := &fakeResolver{res: &ytdlp.Resolution{URL: "https://cdn.example/video.mp4"}}
+	a := newTestAdapterOpts(t, withCore(coreStub), withEventLog(log))
+	a.cfg.Enabled = true
+	a.cfg.YtdlpEnabled = true
+	a.cfg.YtdlpHosts = []string{"youtu.be"}
+	a.cfg.YtdlpFormat = "best"
+	a.resolver = fr
+	a.ytdlpProbe = ytdlpProbe{OK: true}
+
+	_, _, status, err := a.castURLGuarded(context.Background(), "https://youtu.be/abc", "ytdlp", "url:old", 7)
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("castURLGuarded err = %v, want active session changed", err)
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
+	}
+	if got := a.history.Len(); got != 0 {
+		t.Fatalf("history Len = %d, want 0 for stale action", got)
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("yt-dlp resolver was called before stale guard: %#v", fr.calls)
+	}
+	if entries := log.Snapshot(); len(entries) != 0 {
+		t.Fatalf("event log entries = %#v, want none for stale action", entries)
+	}
+	if coreStub.startReq.StreamURL != "" {
+		t.Fatalf("StartSessionIfSession request = %#v, want no guarded start before stale guard", coreStub.startReq)
 	}
 }
 

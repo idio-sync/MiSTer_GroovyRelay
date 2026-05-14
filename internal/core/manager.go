@@ -87,10 +87,11 @@ type Manager struct {
 	ffmpegResolver  BinaryResolver
 	ffprobeResolver BinaryResolver
 
-	mu       sync.Mutex
-	cancelFn context.CancelFunc
-	plane    planeRunner // nil when idle
-	active   *activeSession
+	mu             sync.Mutex
+	cancelFn       context.CancelFunc
+	plane          planeRunner // nil when idle
+	active         *activeSession
+	nextGeneration uint64
 
 	eventLog *eventlog.Log // nilable; nil disables event emission
 }
@@ -173,12 +174,64 @@ func (m *Manager) makeOnInitCallback(adapterRef, modelineName string) func(error
 type activeSession struct {
 	req            SessionRequest
 	startedAt      time.Time
+	generation     uint64
 	baseOffsetMs   int           // offset the plane was spawned with
 	pausedPosition time.Duration // snapshot from plane at Pause
 	duration       time.Duration
 }
 
 var errAdapterRefChanged = errors.New("adapter ref changed")
+
+type sessionGuard struct {
+	ref            string
+	generation     uint64
+	fullSessionKey bool
+}
+
+func adapterRefGuard(ref string) sessionGuard {
+	return sessionGuard{ref: ref}
+}
+
+func fullSessionGuard(ref string, generation uint64) sessionGuard {
+	return sessionGuard{ref: ref, generation: generation, fullSessionKey: true}
+}
+
+func (g sessionGuard) enabled() bool {
+	return g.ref != "" || g.fullSessionKey
+}
+
+func (m *Manager) allocateGenerationLocked() uint64 {
+	m.nextGeneration++
+	if m.nextGeneration == 0 {
+		m.nextGeneration = 1
+	}
+	return m.nextGeneration
+}
+
+func (m *Manager) sessionMatchesLocked(ref string, generation uint64) bool {
+	return ref != "" &&
+		generation != 0 &&
+		m.active != nil &&
+		m.active.req.AdapterRef == ref &&
+		m.active.generation == generation
+}
+
+func (m *Manager) sessionGuardMatchesLocked(g sessionGuard) bool {
+	if !g.enabled() {
+		return true
+	}
+	if g.fullSessionKey {
+		return m.sessionMatchesLocked(g.ref, g.generation)
+	}
+	return g.ref != "" && m.active != nil && m.active.req.AdapterRef == g.ref
+}
+
+func (m *Manager) startGuardMatchesLocked(guard sessionGuard, requireIdle bool) bool {
+	if requireIdle {
+		return m.active == nil
+	}
+	return m.sessionGuardMatchesLocked(guard)
+}
 
 // NewManager constructs a Manager. The Sender must already be bound to the
 // MiSTer's address; Manager does not own its lifecycle (the sender is shared
@@ -398,7 +451,8 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 // already run Probe/ProbeCrop (passed in as probe + cropRect) — this
 // function must not perform network I/O while the mutex is held.
 func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
-	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect, ffmpegPath string) error {
+	probe *ffmpeg.ProbeResult, cropRect *ffmpeg.CropRect, ffmpegPath string,
+	generation uint64, guard sessionGuard, requireIdle bool) error {
 	// 1. Preempt and await prior plane. Drop the lock while awaiting Done()
 	//    so the plane's exit goroutine (which re-acquires m.mu to clear
 	//    m.plane) is free to run.
@@ -466,6 +520,9 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 			m.mu.Unlock()
 			<-prev.Done()
 			m.mu.Lock()
+			if !m.startGuardMatchesLocked(guard, requireIdle) {
+				return errAdapterRefChanged
+			}
 		}
 	}
 	removeSubtitleFile(oldSubtitle)
@@ -547,6 +604,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	m.active = &activeSession{
 		req:          req,
 		startedAt:    time.Now(),
+		generation:   generation,
 		baseOffsetMs: offsetMs,
 		duration:     visualizerDuration(req, probe),
 	}
@@ -571,7 +629,8 @@ func (m *Manager) StartSession(req SessionRequest) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath); err != nil {
+	generation := m.allocateGenerationLocked()
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation, sessionGuard{}, false); err != nil {
 		return err
 	}
 	return m.fsm.Transition(EvPlayMedia)
@@ -580,25 +639,66 @@ func (m *Manager) StartSession(req SessionRequest) error {
 // StartSessionIfAdapterRef starts req only when the active session still
 // matches expectedRef. expectedRef == "" means "there must be no active
 // session"; a non-empty expectedRef means "replace/replay this same adapter
-// session only." The probe still runs before Manager.mu, then the ref is
-// checked under the lock immediately before mutating the plane.
+// session only."
 func (m *Manager) StartSessionIfAdapterRef(req SessionRequest, expectedRef string) (bool, error) {
+	if expectedRef == "" {
+		return m.startSessionIfSessionGuard(req, sessionGuard{}, true)
+	}
+	return m.startSessionIfSessionGuard(req, adapterRefGuard(expectedRef), false)
+}
+
+// StartSessionIfSession starts req only when both AdapterRef and Generation
+// still match the caller's full session key.
+func (m *Manager) StartSessionIfSession(req SessionRequest, expectedRef string, generation uint64) (bool, error) {
+	if expectedRef == "" || generation == 0 {
+		return false, nil
+	}
+	return m.startSessionIfSessionGuard(req, fullSessionGuard(expectedRef, generation), false)
+}
+
+// StartSessionIfIdle starts req only when no session is active.
+func (m *Manager) StartSessionIfIdle(req SessionRequest) (bool, error) {
+	return m.startSessionIfSessionGuard(req, sessionGuard{}, true)
+}
+
+func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGuard, requireIdle bool) (bool, error) {
+	m.mu.Lock()
+	matched := m.startGuardMatchesLocked(guard, requireIdle)
+	m.mu.Unlock()
+	if !matched {
+		return false, nil
+	}
+
 	if err := validateVisualizerRequest(req); err != nil {
+		m.mu.Lock()
+		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
+		m.mu.Unlock()
+		if !stillMatched {
+			return false, nil
+		}
 		return true, err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
+		m.mu.Lock()
+		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
+		m.mu.Unlock()
+		if !stillMatched {
+			return false, nil
+		}
 		return true, err
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	switch {
-	case expectedRef == "" && m.active != nil:
-		return false, nil
-	case expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef):
+	if !m.startGuardMatchesLocked(guard, requireIdle) {
 		return false, nil
 	}
-	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath); err != nil {
+	generation := m.allocateGenerationLocked()
+	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation, guard, requireIdle); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
 		return true, err
 	}
 	return true, m.fsm.Transition(EvPlayMedia)
@@ -610,7 +710,7 @@ func (m *Manager) StartSessionIfAdapterRef(req SessionRequest, expectedRef strin
 func (m *Manager) Pause() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.pauseLocked("")
+	return m.pauseLocked(sessionGuard{})
 }
 
 // PauseIfAdapterRef pauses the active session only when the current
@@ -622,10 +722,11 @@ func (m *Manager) PauseIfAdapterRef(ref string) (bool, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active == nil || m.active.req.AdapterRef != ref {
+	guard := adapterRefGuard(ref)
+	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
-	if err := m.pauseLocked(ref); err != nil {
+	if err := m.pauseLocked(guard); err != nil {
 		if errors.Is(err, errAdapterRefChanged) {
 			return false, nil
 		}
@@ -634,11 +735,32 @@ func (m *Manager) PauseIfAdapterRef(ref string) (bool, error) {
 	return true, nil
 }
 
-func (m *Manager) pauseLocked(expectedRef string) error {
+// PauseIfSession pauses the active session only when both AdapterRef and
+// Generation still match the caller's full session key.
+func (m *Manager) PauseIfSession(ref string, generation uint64) (bool, error) {
+	if ref == "" || generation == 0 {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	guard := fullSessionGuard(ref, generation)
+	if !m.sessionGuardMatchesLocked(guard) {
+		return false, nil
+	}
+	if err := m.pauseLocked(guard); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func (m *Manager) pauseLocked(guard sessionGuard) error {
 	if m.active == nil {
 		return fmt.Errorf("no session to pause")
 	}
-	if expectedRef != "" && m.active.req.AdapterRef != expectedRef {
+	if !m.sessionGuardMatchesLocked(guard) {
 		return errAdapterRefChanged
 	}
 	if !m.active.req.Capabilities.CanPause {
@@ -657,7 +779,7 @@ func (m *Manager) pauseLocked(expectedRef string) error {
 			m.mu.Unlock()
 			<-prev.Done()
 			m.mu.Lock()
-			if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+			if !m.sessionGuardMatchesLocked(guard) {
 				return errAdapterRefChanged
 			}
 		}
@@ -668,7 +790,7 @@ func (m *Manager) pauseLocked(expectedRef string) error {
 // Play resumes a paused session by respawning the data plane at the
 // snapshotted pause position.
 func (m *Manager) Play() error {
-	_, err := m.playIfAdapterRef("")
+	_, err := m.playIfSessionGuard(sessionGuard{})
 	return err
 }
 
@@ -679,26 +801,36 @@ func (m *Manager) PlayIfAdapterRef(ref string) (bool, error) {
 	if ref == "" {
 		return false, nil
 	}
-	return m.playIfAdapterRef(ref)
+	return m.playIfSessionGuard(adapterRefGuard(ref))
 }
 
-func (m *Manager) playIfAdapterRef(expectedRef string) (bool, error) {
+// PlayIfSession resumes the active paused session only when both AdapterRef
+// and Generation still match the caller's full session key.
+func (m *Manager) PlayIfSession(ref string, generation uint64) (bool, error) {
+	if ref == "" || generation == 0 {
+		return false, nil
+	}
+	return m.playIfSessionGuard(fullSessionGuard(ref, generation))
+}
+
+func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 	// Capture the active request outside the lock so we can probe against
 	// the same URL without holding the mutex.
 	m.mu.Lock()
 	a := m.active
 	if a == nil {
 		m.mu.Unlock()
-		if expectedRef != "" {
+		if guard.enabled() {
 			return false, nil
 		}
 		return true, fmt.Errorf("no session to resume")
 	}
-	if expectedRef != "" && a.req.AdapterRef != expectedRef {
+	if !m.sessionGuardMatchesLocked(guard) {
 		m.mu.Unlock()
 		return false, nil
 	}
 	req := a.req
+	generation := a.generation
 	resumeMs := int(a.pausedPosition / time.Millisecond)
 	if resumeMs <= 0 {
 		resumeMs = a.baseOffsetMs
@@ -706,13 +838,21 @@ func (m *Manager) playIfAdapterRef(expectedRef string) (bool, error) {
 	m.mu.Unlock()
 
 	if err := validateVisualizerRequest(req); err != nil {
+		if guard.enabled() {
+			m.mu.Lock()
+			matched := m.sessionGuardMatchesLocked(guard)
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
 		return true, err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
-		if expectedRef != "" {
+		if guard.enabled() {
 			m.mu.Lock()
-			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			matched := m.sessionGuardMatchesLocked(guard)
 			m.mu.Unlock()
 			if !matched {
 				return false, nil
@@ -723,10 +863,13 @@ func (m *Manager) playIfAdapterRef(expectedRef string) (bool, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
-	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath); err != nil {
+	if err := m.startPlaneLocked(req, resumeMs, probe, cropRect, ffmpegPath, generation, guard, false); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
 		return true, err
 	}
 	return true, m.fsm.Transition(EvPlay)
@@ -801,7 +944,7 @@ func (m *Manager) DropActiveCast(reason string) error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.stopLocked("")
+	return m.stopLocked(sessionGuard{})
 }
 
 // StopIfAdapterRef stops the active session only when the current AdapterRef
@@ -813,10 +956,11 @@ func (m *Manager) StopIfAdapterRef(ref string) (bool, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.active == nil || m.active.req.AdapterRef != ref {
+	guard := adapterRefGuard(ref)
+	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
-	if err := m.stopLocked(ref); err != nil {
+	if err := m.stopLocked(guard); err != nil {
 		if errors.Is(err, errAdapterRefChanged) {
 			return false, nil
 		}
@@ -825,11 +969,32 @@ func (m *Manager) StopIfAdapterRef(ref string) (bool, error) {
 	return true, nil
 }
 
-func (m *Manager) stopLocked(expectedRef string) error {
+// StopIfSession stops the active session only when both AdapterRef and
+// Generation still match the caller's full session key.
+func (m *Manager) StopIfSession(ref string, generation uint64) (bool, error) {
+	if ref == "" || generation == 0 {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	guard := fullSessionGuard(ref, generation)
+	if !m.sessionGuardMatchesLocked(guard) {
+		return false, nil
+	}
+	if err := m.stopLocked(guard); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func (m *Manager) stopLocked(guard sessionGuard) error {
 	var subtitlePath string
 	var onStop func(string)
 	var adapterRef string
-	if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+	if !m.sessionGuardMatchesLocked(guard) {
 		return errAdapterRefChanged
 	}
 	if m.active != nil {
@@ -848,7 +1013,7 @@ func (m *Manager) stopLocked(expectedRef string) error {
 			m.mu.Unlock()
 			<-prev.Done()
 			m.mu.Lock()
-			if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+			if !m.sessionGuardMatchesLocked(guard) {
 				return errAdapterRefChanged
 			}
 		}
@@ -866,7 +1031,7 @@ func (m *Manager) stopLocked(expectedRef string) error {
 // stays in Playing (or Paused) per the Seek semantics; only the data plane
 // changes. Requires an active session whose adapter advertises CanSeek.
 func (m *Manager) SeekTo(offsetMs int) error {
-	_, err := m.seekToIfAdapterRef("", offsetMs)
+	_, err := m.seekToIfSessionGuard(sessionGuard{}, offsetMs)
 	return err
 }
 
@@ -877,20 +1042,29 @@ func (m *Manager) SeekToIfAdapterRef(ref string, offsetMs int) (bool, error) {
 	if ref == "" {
 		return false, nil
 	}
-	return m.seekToIfAdapterRef(ref, offsetMs)
+	return m.seekToIfSessionGuard(adapterRefGuard(ref), offsetMs)
 }
 
-func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, error) {
+// SeekToIfSession seeks the active session only when both AdapterRef and
+// Generation still match the caller's full session key.
+func (m *Manager) SeekToIfSession(ref string, generation uint64, offsetMs int) (bool, error) {
+	if ref == "" || generation == 0 {
+		return false, nil
+	}
+	return m.seekToIfSessionGuard(fullSessionGuard(ref, generation), offsetMs)
+}
+
+func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, error) {
 	m.mu.Lock()
 	a := m.active
 	if a == nil {
 		m.mu.Unlock()
-		if expectedRef != "" {
+		if guard.enabled() {
 			return false, nil
 		}
 		return true, fmt.Errorf("no session")
 	}
-	if expectedRef != "" && a.req.AdapterRef != expectedRef {
+	if !m.sessionGuardMatchesLocked(guard) {
 		m.mu.Unlock()
 		return false, nil
 	}
@@ -899,12 +1073,13 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 		return true, fmt.Errorf("adapter does not support seek")
 	}
 	req := a.req
+	generation := a.generation
 	m.mu.Unlock()
 
 	if err := validateVisualizerRequest(req); err != nil {
-		if expectedRef != "" {
+		if guard.enabled() {
 			m.mu.Lock()
-			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			matched := m.sessionGuardMatchesLocked(guard)
 			m.mu.Unlock()
 			if !matched {
 				return false, nil
@@ -914,9 +1089,9 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
-		if expectedRef != "" {
+		if guard.enabled() {
 			m.mu.Lock()
-			matched := m.active != nil && m.active.req.AdapterRef == expectedRef
+			matched := m.sessionGuardMatchesLocked(guard)
 			m.mu.Unlock()
 			if !matched {
 				return false, nil
@@ -927,10 +1102,13 @@ func (m *Manager) seekToIfAdapterRef(expectedRef string, offsetMs int) (bool, er
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if expectedRef != "" && (m.active == nil || m.active.req.AdapterRef != expectedRef) {
+	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
-	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath); err != nil {
+	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath, generation, guard, false); err != nil {
+		if errors.Is(err, errAdapterRefChanged) {
+			return false, nil
+		}
 		return true, err
 	}
 	// Seek keeps state=playing; FSM's Seek event is a no-op transition.
@@ -949,6 +1127,7 @@ func (m *Manager) Status() SessionStatus {
 		st.AdapterRef = m.active.req.AdapterRef
 		st.StartedAt = m.active.startedAt
 		st.Duration = m.active.duration
+		st.Generation = m.active.generation
 		if m.plane != nil {
 			st.Position = m.plane.Position()
 		} else {
@@ -976,6 +1155,7 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		view.Source = m.active.req.Source
 		view.StartedAt = m.active.startedAt
 		view.Duration = m.active.duration
+		view.Generation = m.active.generation
 		view.Modeline = m.bridge.Video.Modeline
 		view.Position = m.active.pausedPosition
 	}

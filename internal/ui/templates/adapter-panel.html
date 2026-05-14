@@ -72,7 +72,7 @@
 <div class="adapter-extras">{{.ExtraHTML}}</div>
 {{end}}
 
-<form hx-post="/ui/adapter/{{.Name}}/save" hx-target="#panel" hx-swap="innerHTML">
+<form hx-post="/ui/adapter/{{.Name}}/save" hx-target="#panel-content" hx-swap="innerHTML">
 
   {{if .GateForm}}
   <section class="gr-form-locked" aria-disabled="true">

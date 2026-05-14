@@ -12,12 +12,12 @@
 	<strong>Quick start:</strong> (1) set your MiSTer's IP below, (2) save, (3) go to Plex and link your account.
 	<button class="btn ghost" style="margin-left: 12px;"
 		hx-post="/ui/bridge/dismiss-first-run"
-		hx-target="#panel" hx-swap="innerHTML"
+		hx-target="#panel-content" hx-swap="innerHTML"
 		hx-headers='{"Sec-Fetch-Site":"same-origin"}'>Dismiss</button>
 </div>
 {{end}}
 
-<form hx-post="/ui/bridge/save" hx-target="#panel" hx-swap="innerHTML">
+<form hx-post="/ui/bridge/save" hx-target="#panel-content" hx-swap="innerHTML">
 	{{range $i, $section := .Sections}}
 	<div class="section">
 		<h3><span class="num">{{printf "%02d" (inc $i)}} —</span> {{$section.Name}}</h3>

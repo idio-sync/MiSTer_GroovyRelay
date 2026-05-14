@@ -25,8 +25,11 @@ type AdapterConfig struct {
 
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	StartSessionIfIdle(core.SessionRequest) (bool, error)
+	StartSessionIfSession(core.SessionRequest, string, uint64) (bool, error)
 	PauseIfAdapterRef(string) (bool, error)
 	StopIfAdapterRef(string) (bool, error)
+	StopIfSession(string, uint64) (bool, error)
 	Status() core.SessionStatus
 }
 
@@ -59,6 +62,7 @@ type Adapter struct {
 	lastErr             string
 	stateSince          time.Time
 	rng                 *rand.Rand
+	expectedStops       map[queueCapture]struct{}
 	definitions         map[string]ProviderDefinition
 	definitionOrder     []string
 	catalogs            map[string]ProviderCatalog
