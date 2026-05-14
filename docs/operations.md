@@ -42,6 +42,28 @@ The default is off. The feature has no effect unless `bridge.lz4_enabled` is als
 
 Grep logs for `delta_selected` to see how often the adaptive selector chose the delta path in each 5-second window.
 
+## Live HLS buffering
+
+The bridge buffers eligible live HLS before FFmpeg sees it. V1 is default-on for:
+
+- bundled Streams direct HLS entries, including Toonami Aftermath;
+- URL adapter direct public HTTP(S) URLs whose path ends in `.m3u8`.
+
+The buffer fetches playlists and segments into the bridge data directory, publishes a local playlist, and keeps refreshing the playlist in the background. FFmpeg reads local files instead of chasing remote HLS children itself. Expect a small live delay: the default target starts around three HLS segments behind the live edge and keeps a small rolling cache, capped by both segment count and bytes.
+
+Useful controls:
+
+- Set `enabled = false` under `[bridge.hls_buffer]` to disable the shared buffer through config.
+- Set `GROOVY_HLS_BUFFER=0` on the bridge process for a quick diagnostic or rollback bypass.
+- Use the URL panel **HLS buffer** selector or scripted `hls_buffer=off` for one URL cast.
+- For bundled Streams, provider/channel `hls_buffer_disabled` settings can opt out a direct stream without disabling the whole catalog.
+
+Cache roots live under `<bridge.data_dir>/streams/hls` and `<bridge.data_dir>/url/hls`. Startup reaps stale session directories older than `stale_cache_reap_hours`, while active sessions keep a lock marker so they are left alone.
+
+Unsupported HLS features such as encrypted streams, byte ranges, discontinuities, alternate audio renditions, low-latency parts, fragmented MP4 init maps, and audio-only HLS fail clearly. Use the per-cast or global bypass if you need to fall back to the old direct-FFmpeg path for a specific stream.
+
+The TV-side `BUFFERING...` slate is deferred. If a live source stops publishing long enough to drain the local cache, the existing dataplane underrun behavior still applies.
+
 ## CPU contention under Docker
 
 The data plane pushes fields at 59.94 Hz regardless of scheduling pressure. Under heavy CPU contention, FFmpeg can fall behind; the bridge covers with duplicate-field BLITs, so the symptom is visible motion glitches rather than A/V drift.

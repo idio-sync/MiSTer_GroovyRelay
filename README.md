@@ -12,7 +12,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Plex/Jellyfin music tracks with CRT visualizer output
 - YouTube/Twitch/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
-- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.)
+- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.); public live `.m3u8` casts use the HLS buffer by default.
 - Torrent streaming (uploaded .torrent files and magnet links)
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming channels
@@ -116,6 +116,7 @@ Most installs only need the quick start. Use [docs/operations.md](docs/operation
 | Topic | When it matters |
 | --- | --- |
 | Multi-NIC hosts | Cast target appears, but commands never reach the bridge. |
+| Live HLS buffering | Public `.m3u8` or Toonami Aftermath freezes, unsupported HLS, or live-delay questions. |
 | Docker CPU contention | Playback shows motion glitches under host load. |
 | Fake MiSTer diagnostics | You need to prove the bridge is sending packets before debugging the real MiSTer path. |
 

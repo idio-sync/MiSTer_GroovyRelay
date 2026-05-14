@@ -1,7 +1,7 @@
 # Live HLS Buffering Design
 
 Date: 2026-05-14
-Status: Design approved; review fixes applied; pending implementation plan
+Status: V1 implemented on feature branch; dataplane slate/audio follow-up pending
 
 ## Context
 
@@ -67,7 +67,7 @@ Exclude for v1:
 
 ## Architecture
 
-Add a shared internal HLS buffering package, tentatively `internal/hlsbuffer`.
+Add a shared internal HLS buffering package, `internal/hlsbuffer`.
 
 The package owns these responsibilities:
 
@@ -102,7 +102,7 @@ Streams adapter:
 
 URL adapter:
 
-- Direct mode or auto mode that resolves to direct playback is eligible when the original URL path looks like `.m3u8` or the response/content probe identifies HLS.
+- Direct mode or auto mode that resolves to direct playback is eligible when the original URL path ends in `.m3u8`. Response/content probing is deferred.
 - Generic URL `.m3u8` buffering is default-on for public remote HTTP(S) URLs.
 - The URL play surface must expose an HLS buffering mode, default `auto`, with `off` bypassing the buffer for that cast/history replay.
 - Private or local network URLs should initially bypass to the old direct-FFmpeg path unless explicitly enabled later. This avoids expanding the URL adapter into a LAN proxy surface by accident.
@@ -169,7 +169,7 @@ Startup for an eligible HLS cast:
 5. `hlsbuffer` prefetches until at least `start_segments` are available locally.
 6. Adapter starts `core.Manager` with `StreamURL` pointing to the local rewritten playlist file and a local-only media input policy for FFmpeg.
 7. FFmpeg reads the local playlist and local segment files.
-8. `hlsbuffer` continues playlist reload and segment prefetch in the background.
+8. `hlsbuffer` continues media playlist reload and segment prefetch in the background for the selected media playlist.
 9. On stop/preempt/error, adapter calls the cleanup function. If core rejects the start, the guarded start loses its session, or another cast preempts during warmup, the adapter must clean up the opened buffer immediately.
 
 Mid-playback:
@@ -261,37 +261,26 @@ Do not implement slate rendering or audio hold from this spec alone.
 
 ## Observability
 
-Log one session-start line for the HLS buffer:
+V1 exposes an `hlsbuffer.Stats` snapshot with explicit units:
 
-- source adapter;
-- redacted source URL;
-- selected variant bitrate/resolution if available;
-- live edge segment count;
-- start segment count;
-- cache directory or session id;
-- whether buffering was enabled by config or bypassed.
+- `CachedSegments`: count of cached segments observed by the session;
+- `CachedMediaDuration`: media duration represented by cached segments;
+- `CacheBytes`: bytes on disk;
+- `PlaylistReloadsTotal`: count;
+- `SegmentDownloadsTotal`: count;
+- `SelectedVariant`: selected master-playlist variant metadata when applicable;
+- `FailureReason`: latest refresh or startup failure reason.
 
-Log periodic or state-change stats:
+Follow-up logging should add a session-start line and periodic or state-change stats for source adapter, redacted URL, cache directory or session id, variant metadata, download timings in milliseconds, downloaded bytes, stale reloads, retries, unsupported tag errors, and cache underruns.
 
-- `cached_segments` count;
-- `cached_bytes` bytes on disk;
-- `cached_media_seconds` seconds ahead of the local playlist cursor;
-- `playlist_reload_ms` milliseconds;
-- `segment_download_ms` milliseconds;
-- `segment_download_bytes` bytes;
-- `stale_playlist_reloads_total` count;
-- `segment_retries_total` count;
-- `unsupported_tag_errors_total` count;
-- `cache_underruns_total` count.
-
-Existing dataplane logs should continue to report underruns, duplicates, and frame echo stalls. Add enough context to tell whether an underrun happened while the HLS buffer was empty or while FFmpeg/dataplane was otherwise behind.
+Existing dataplane logs continue to report underruns, duplicates, and frame echo stalls. A later dataplane phase can add enough context to tell whether an underrun happened while the HLS buffer was empty or while FFmpeg/dataplane was otherwise behind.
 
 ## Error Handling
 
 - If initial playlist fetch fails, return the adapter's existing playback error path.
-- If startup cache warmup cannot reach the start threshold before timeout, either start with partial cache and log warning or fail depending on config. Default should start with partial cache only if at least one valid segment is available.
-- If a segment fails once, retry with a bounded count and timeout.
-- If a live playlist stops advancing, keep retrying for a bounded stale-playlist window, then surface a playback error or let FFmpeg reach EOF from the local playlist.
+- If startup cache warmup cannot fetch the selected start segments, v1 fails before starting FFmpeg.
+- If a segment or refresh fails mid-session, v1 records the latest failure reason and keeps the previous local playlist available while the refresh loop retries on the next interval.
+- A bounded stale-playlist window and explicit retry counters are deferred.
 - If cleanup fails, log a warning and continue session teardown.
 - If the session cache directory or local playlist file cannot be created, fail before starting FFmpeg.
 - On bridge startup, reap stale HLS buffer session directories older than `stale_cache_reap_hours`. Active sessions should use a lock or owner marker so startup cleanup never removes a live session from another bridge process.
@@ -305,7 +294,7 @@ Unit tests:
 - parser rejects unsupported tags listed above;
 - parser rejects audio-only HLS manifests for v1;
 - variant selection follows the documented resolution/bandwidth fallback order;
-- selected variant changes that require FFmpeg rebuild are detected deterministically;
+- selected variant changes that require FFmpeg rebuild are detected deterministically; deferred until variant reload is implemented;
 - URL resolver rewrites relative and absolute segment URIs safely;
 - bundled Toonami child URLs outside the known host or expected channel path are rejected;
 - child media playlist and segment URLs are rejected when they resolve to loopback, link-local, metadata, private LAN, `file:`, or other local resources;
@@ -313,7 +302,8 @@ Unit tests:
 - public/private URL eligibility matches the security rules;
 - local playlist writes are atomic and never reference evicted segment files;
 - segment-count and byte-count cache limits are enforced together;
-- stale playlist reload and segment retry state transitions are deterministic;
+- live playlist reload publishes newly cached segments;
+- stale playlist reload and segment retry state transitions are deterministic; deferred with explicit retry counters;
 - stale session cache reaping removes only expired inactive sessions;
 - config defaults enable the buffer;
 - bridge fields and `scopeForBridgeField` declare `ScopeRestartCast` for every `hls_buffer.*` field.
@@ -336,7 +326,7 @@ Integration-style tests with `httptest`:
 2. Add shared `hlsbuffer` package and tests.
 3. Integrate Streams bundled direct HLS through the buffer, including provider/channel opt-out.
 4. Integrate URL adapter direct pasted `.m3u8` through the buffer, including per-cast opt-out.
-5. Add logs, kill switch, stale-cache reaping, and documentation.
+5. Add kill switch, stale-cache reaping, docs, and stats units; defer detailed periodic logs.
 6. Write a separate dataplane spec for `BUFFERING...` slate and audio-hold behavior.
 
 This order lets the cache prove itself before dataplane display and A/V state work grows the blast radius.

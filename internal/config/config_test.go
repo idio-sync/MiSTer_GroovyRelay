@@ -206,6 +206,44 @@ func TestDefaultBridge_HLSBufferDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadSectioned_MissingHLSBufferGetsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	body := fmt.Sprintf(`
+[bridge]
+data_dir = %q
+
+[bridge.video]
+modeline = "NTSC_480i"
+interlace_field_order = "tff"
+aspect_mode = "auto"
+rgb_mode = "rgb888"
+lz4_enabled = true
+
+[bridge.audio]
+sample_rate = 48000
+channels = 2
+
+[bridge.mister]
+host = "127.0.0.1"
+port = 32100
+source_port = 32101
+
+[bridge.ui]
+http_port = 32500
+`, dir)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sec, err := LoadSectioned(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadSectioned: %v", err)
+	}
+	if got, want := sec.Bridge.HLSBuffer, defaultHLSBufferConfig(); got != want {
+		t.Fatalf("HLSBuffer = %+v, want defaults %+v", got, want)
+	}
+}
+
 func TestSectioned_Validate_HLSBuffer(t *testing.T) {
 	valid := validSectioned()
 	if err := valid.Validate(); err != nil {

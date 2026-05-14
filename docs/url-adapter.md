@@ -14,6 +14,25 @@ Sessions run until EOF or until another cast starts. Basic pause and seek contro
 
 The curated auto-resolve list lives in the URL panel. More `yt-dlp` sites can be added as the bridge grows.
 
+## Live HLS buffering
+
+Direct public HTTP(S) URLs whose path ends in `.m3u8` use the shared live HLS buffer by default. The adapter fetches the playlist and media segments into `<bridge.data_dir>/url/hls`, starts a few segments behind the live edge, and hands FFmpeg a local playlist with a local-only media policy. That adds a small live delay, but helps absorb uneven remote playlist reloads and segment downloads.
+
+Use the **HLS buffer** selector in the URL panel to choose `off` for one cast. History replay preserves the stored mode, so a stream that was cast with buffering off will replay that way until it is cast again with `auto`.
+
+Scripted callers can send `hls_buffer=off` in form posts, or `"hls_buffer":"off"` in JSON:
+
+```bash
+curl -X POST \
+  -H "Origin: http://<bridge-host>:32500" \
+  -d 'url=https://public.example/live.m3u8&mode=direct&hls_buffer=off' \
+  http://<bridge-host>:32500/ui/adapter/url/play
+```
+
+Set `GROOVY_HLS_BUFFER=0` on the bridge process to bypass the buffer globally for diagnostics or rollback. Unsupported HLS features fail clearly rather than silently falling back through FFmpeg.
+
+The CRT `BUFFERING...` slate is not part of this v1 path yet; the current behavior still relies on the existing dataplane underrun handling if a source runs dry.
+
 ## Cookies for auth-walled content
 
 Age-gated YouTube videos, members-only Twitch VODs, and similar content require login cookies. The URL panel has a collapsed **Cookies** section that accepts a Netscape-format `cookies.txt`.
@@ -42,7 +61,7 @@ curl -X POST \
 curl -X POST \
   -H "Origin: http://<bridge-host>:32500" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","mode":"ytdlp"}' \
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","mode":"ytdlp","hls_buffer":"auto"}' \
   http://<bridge-host>:32500/ui/adapter/url/play
 ```
 

@@ -95,6 +95,25 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	return out, nil
 }
 
+func ensureHLSBufferFormFields(form url.Values, cur config.HLSBufferConfig) {
+	for key := range form {
+		if strings.HasPrefix(key, "hls_buffer.") {
+			return
+		}
+	}
+	form.Set("hls_buffer.enabled", strconv.FormatBool(cur.Enabled))
+	form.Set("hls_buffer.live_edge_segments", strconv.Itoa(cur.LiveEdgeSegments))
+	form.Set("hls_buffer.start_segments", strconv.Itoa(cur.StartSegments))
+	form.Set("hls_buffer.max_cached_segments", strconv.Itoa(cur.MaxCachedSegments))
+	form.Set("hls_buffer.max_cache_bytes", strconv.FormatInt(cur.MaxCacheBytes, 10))
+	form.Set("hls_buffer.max_playlist_bytes", strconv.FormatInt(cur.MaxPlaylistBytes, 10))
+	form.Set("hls_buffer.max_segment_bytes", strconv.FormatInt(cur.MaxSegmentBytes, 10))
+	form.Set("hls_buffer.segment_timeout_seconds", strconv.Itoa(cur.SegmentTimeoutSeconds))
+	form.Set("hls_buffer.playlist_timeout_seconds", strconv.Itoa(cur.PlaylistTimeoutSeconds))
+	form.Set("hls_buffer.max_variant_height", strconv.Itoa(cur.MaxVariantHeight))
+	form.Set("hls_buffer.stale_cache_reap_hours", strconv.Itoa(cur.StaleCacheReapHours))
+}
+
 // parseIntField reads form[key] as int. On parse error, records an
 // error in errs and returns zero. Empty string is treated as "not
 // provided" and also records an error — every int field in the

@@ -199,6 +199,36 @@ func TestParseBridgeForm_HLSBufferFields(t *testing.T) {
 	}
 }
 
+func TestEnsureHLSBufferFormFieldsPreservesCurrentWhenSectionAbsent(t *testing.T) {
+	form := url.Values{}
+	cur := config.HLSBufferConfig{
+		Enabled:                false,
+		LiveEdgeSegments:       4,
+		StartSegments:          3,
+		MaxCachedSegments:      8,
+		MaxCacheBytes:          536870912,
+		MaxPlaylistBytes:       2097152,
+		MaxSegmentBytes:        104857600,
+		SegmentTimeoutSeconds:  11,
+		PlaylistTimeoutSeconds: 12,
+		MaxVariantHeight:       1080,
+		StaleCacheReapHours:    48,
+	}
+	ensureHLSBufferFormFields(form, cur)
+	if got := form.Get("hls_buffer.enabled"); got != "false" {
+		t.Fatalf("hls_buffer.enabled = %q, want false", got)
+	}
+	if got := form.Get("hls_buffer.max_cache_bytes"); got != "536870912" {
+		t.Fatalf("hls_buffer.max_cache_bytes = %q, want current value", got)
+	}
+
+	form.Set("hls_buffer.live_edge_segments", "9")
+	ensureHLSBufferFormFields(form, cur)
+	if got := form.Get("hls_buffer.live_edge_segments"); got != "9" {
+		t.Fatalf("present hls_buffer field should not be overwritten, got %q", got)
+	}
+}
+
 func cloneValues(v url.Values) url.Values {
 	out := url.Values{}
 	for k, vs := range v {

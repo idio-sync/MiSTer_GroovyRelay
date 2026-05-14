@@ -111,6 +111,7 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	ensureHLSBufferFormFields(r.Form, s.cfg.BridgeSaver.Current().HLSBuffer)
 	candidate, parseErr := parseBridgeForm(r.Form)
 	if parseErr != nil {
 		if fe, ok := parseErr.(FormErrors); ok {
