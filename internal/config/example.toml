@@ -31,6 +31,19 @@ ssh_password = "1"                # MiSTer's stock password. Change here if you'
 [bridge.ui]
 http_port = 32500                 # Bridge/UI HTTP port
 
+[bridge.hls_buffer]
+enabled = true                    # Buffer eligible live .m3u8 casts through a local segment cache
+live_edge_segments = 3            # Stay this many segments behind the live edge
+start_segments = 2                # Warm this many segments before starting FFmpeg
+max_cached_segments = 6           # Rolling segment count retained per active cast
+max_cache_bytes = 268435456       # Per-session cache byte ceiling
+max_playlist_bytes = 1048576      # Maximum playlist response size accepted from origin
+max_segment_bytes = 52428800      # Maximum segment response size accepted from origin
+segment_timeout_seconds = 10      # HTTP timeout for segment downloads
+playlist_timeout_seconds = 10     # HTTP timeout for playlist refreshes
+max_variant_height = 720          # Highest master-playlist variant height eligible for buffering
+stale_cache_reap_hours = 24       # Remove abandoned HLS cache directories after this age
+
 # bridge.host_ip is the LAN IP this bridge advertises to Plex (/resources, plex.tv register).
 # Leave it absent to auto-detect; set it explicitly on multi-NIC hosts where the
 # Plex-facing NIC is not the default route.

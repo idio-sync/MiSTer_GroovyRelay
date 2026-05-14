@@ -86,6 +86,47 @@ func TestScopeForBridgeField_DeltaLZ4RestartCast(t *testing.T) {
 	}
 }
 
+func TestDiffBridgeConfig_HLSBufferFieldsRestartCast(t *testing.T) {
+	old := config.BridgeConfig{HLSBuffer: config.HLSBufferConfig{
+		Enabled:                true,
+		LiveEdgeSegments:       3,
+		StartSegments:          2,
+		MaxCachedSegments:      6,
+		MaxCacheBytes:          268435456,
+		MaxPlaylistBytes:       1048576,
+		MaxSegmentBytes:        52428800,
+		SegmentTimeoutSeconds:  10,
+		PlaylistTimeoutSeconds: 10,
+		MaxVariantHeight:       720,
+		StaleCacheReapHours:    24,
+	}}
+	mutations := map[string]func(*config.BridgeConfig){
+		"hls_buffer.enabled":                  func(c *config.BridgeConfig) { c.HLSBuffer.Enabled = false },
+		"hls_buffer.live_edge_segments":       func(c *config.BridgeConfig) { c.HLSBuffer.LiveEdgeSegments = 4 },
+		"hls_buffer.start_segments":           func(c *config.BridgeConfig) { c.HLSBuffer.StartSegments = 3 },
+		"hls_buffer.max_cached_segments":      func(c *config.BridgeConfig) { c.HLSBuffer.MaxCachedSegments = 7 },
+		"hls_buffer.max_cache_bytes":          func(c *config.BridgeConfig) { c.HLSBuffer.MaxCacheBytes++ },
+		"hls_buffer.max_playlist_bytes":       func(c *config.BridgeConfig) { c.HLSBuffer.MaxPlaylistBytes++ },
+		"hls_buffer.max_segment_bytes":        func(c *config.BridgeConfig) { c.HLSBuffer.MaxSegmentBytes++ },
+		"hls_buffer.segment_timeout_seconds":  func(c *config.BridgeConfig) { c.HLSBuffer.SegmentTimeoutSeconds++ },
+		"hls_buffer.playlist_timeout_seconds": func(c *config.BridgeConfig) { c.HLSBuffer.PlaylistTimeoutSeconds++ },
+		"hls_buffer.max_variant_height":       func(c *config.BridgeConfig) { c.HLSBuffer.MaxVariantHeight++ },
+		"hls_buffer.stale_cache_reap_hours":   func(c *config.BridgeConfig) { c.HLSBuffer.StaleCacheReapHours++ },
+	}
+	for key, mutate := range mutations {
+		t.Run(key, func(t *testing.T) {
+			next := old
+			mutate(&next)
+			if !containsStr(diffBridgeConfig(old, next), key) {
+				t.Fatalf("diffBridgeConfig missing %s", key)
+			}
+			if got := scopeForBridgeField(key); got != adapters.ScopeRestartCast {
+				t.Fatalf("scopeForBridgeField(%q) = %v, want ScopeRestartCast", key, got)
+			}
+		})
+	}
+}
+
 // TestScopeForBridgeField_LoggingDebugHotSwap pins the scope for the
 // logging toggle: flipping it must NOT trigger a cast restart or
 // container restart — the operator wants to enable diagnostic logs

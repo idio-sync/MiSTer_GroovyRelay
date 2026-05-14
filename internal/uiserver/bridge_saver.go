@@ -389,6 +389,39 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.UI.HTTPPort != newCfg.UI.HTTPPort {
 		keys = append(keys, "ui.http_port")
 	}
+	if oldCfg.HLSBuffer.Enabled != newCfg.HLSBuffer.Enabled {
+		keys = append(keys, "hls_buffer.enabled")
+	}
+	if oldCfg.HLSBuffer.LiveEdgeSegments != newCfg.HLSBuffer.LiveEdgeSegments {
+		keys = append(keys, "hls_buffer.live_edge_segments")
+	}
+	if oldCfg.HLSBuffer.StartSegments != newCfg.HLSBuffer.StartSegments {
+		keys = append(keys, "hls_buffer.start_segments")
+	}
+	if oldCfg.HLSBuffer.MaxCachedSegments != newCfg.HLSBuffer.MaxCachedSegments {
+		keys = append(keys, "hls_buffer.max_cached_segments")
+	}
+	if oldCfg.HLSBuffer.MaxCacheBytes != newCfg.HLSBuffer.MaxCacheBytes {
+		keys = append(keys, "hls_buffer.max_cache_bytes")
+	}
+	if oldCfg.HLSBuffer.MaxPlaylistBytes != newCfg.HLSBuffer.MaxPlaylistBytes {
+		keys = append(keys, "hls_buffer.max_playlist_bytes")
+	}
+	if oldCfg.HLSBuffer.MaxSegmentBytes != newCfg.HLSBuffer.MaxSegmentBytes {
+		keys = append(keys, "hls_buffer.max_segment_bytes")
+	}
+	if oldCfg.HLSBuffer.SegmentTimeoutSeconds != newCfg.HLSBuffer.SegmentTimeoutSeconds {
+		keys = append(keys, "hls_buffer.segment_timeout_seconds")
+	}
+	if oldCfg.HLSBuffer.PlaylistTimeoutSeconds != newCfg.HLSBuffer.PlaylistTimeoutSeconds {
+		keys = append(keys, "hls_buffer.playlist_timeout_seconds")
+	}
+	if oldCfg.HLSBuffer.MaxVariantHeight != newCfg.HLSBuffer.MaxVariantHeight {
+		keys = append(keys, "hls_buffer.max_variant_height")
+	}
+	if oldCfg.HLSBuffer.StaleCacheReapHours != newCfg.HLSBuffer.StaleCacheReapHours {
+		keys = append(keys, "hls_buffer.stale_cache_reap_hours")
+	}
 	if oldCfg.Logging.Debug != newCfg.Logging.Debug {
 		keys = append(keys, "logging.debug")
 	}
@@ -414,7 +447,18 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		"video.lz4_enabled",
 		"video.delta_lz4_enabled",
 		"audio.sample_rate",
-		"audio.channels":
+		"audio.channels",
+		"hls_buffer.enabled",
+		"hls_buffer.live_edge_segments",
+		"hls_buffer.start_segments",
+		"hls_buffer.max_cached_segments",
+		"hls_buffer.max_cache_bytes",
+		"hls_buffer.max_playlist_bytes",
+		"hls_buffer.max_segment_bytes",
+		"hls_buffer.segment_timeout_seconds",
+		"hls_buffer.playlist_timeout_seconds",
+		"hls_buffer.max_variant_height",
+		"hls_buffer.stale_cache_reap_hours":
 		return adapters.ScopeRestartCast
 	default:
 		// mister.host, mister.port, mister.source_port, host_ip,

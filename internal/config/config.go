@@ -116,16 +116,17 @@ func (c *Config) Validate() error {
 // pipeline settings, MiSTer destination, bridge-level HTTP port,
 // data directory. Every adapter shares these.
 type BridgeConfig struct {
-	DataDir     string        `toml:"data_dir"`
-	FFmpegPath  string        `toml:"ffmpeg_path"`
-	FFprobePath string        `toml:"ffprobe_path"`
-	YTDLPPath   string        `toml:"ytdlp_path"`
-	HostIP      string        `toml:"host_ip"`
-	Video       VideoConfig   `toml:"video"`
-	Audio       AudioConfig   `toml:"audio"`
-	MiSTer      MisterConfig  `toml:"mister"`
-	UI          UIConfig      `toml:"ui"`
-	Logging     LoggingConfig `toml:"logging"`
+	DataDir     string          `toml:"data_dir"`
+	FFmpegPath  string          `toml:"ffmpeg_path"`
+	FFprobePath string          `toml:"ffprobe_path"`
+	YTDLPPath   string          `toml:"ytdlp_path"`
+	HostIP      string          `toml:"host_ip"`
+	Video       VideoConfig     `toml:"video"`
+	Audio       AudioConfig     `toml:"audio"`
+	MiSTer      MisterConfig    `toml:"mister"`
+	UI          UIConfig        `toml:"ui"`
+	HLSBuffer   HLSBufferConfig `toml:"hls_buffer"`
+	Logging     LoggingConfig   `toml:"logging"`
 }
 
 type VideoConfig struct {
@@ -152,6 +153,36 @@ type MisterConfig struct {
 
 type UIConfig struct {
 	HTTPPort int `toml:"http_port"`
+}
+
+type HLSBufferConfig struct {
+	Enabled                bool  `toml:"enabled"`
+	LiveEdgeSegments       int   `toml:"live_edge_segments"`
+	StartSegments          int   `toml:"start_segments"`
+	MaxCachedSegments      int   `toml:"max_cached_segments"`
+	MaxCacheBytes          int64 `toml:"max_cache_bytes"`
+	MaxPlaylistBytes       int64 `toml:"max_playlist_bytes"`
+	MaxSegmentBytes        int64 `toml:"max_segment_bytes"`
+	SegmentTimeoutSeconds  int   `toml:"segment_timeout_seconds"`
+	PlaylistTimeoutSeconds int   `toml:"playlist_timeout_seconds"`
+	MaxVariantHeight       int   `toml:"max_variant_height"`
+	StaleCacheReapHours    int   `toml:"stale_cache_reap_hours"`
+}
+
+func defaultHLSBufferConfig() HLSBufferConfig {
+	return HLSBufferConfig{
+		Enabled:                true,
+		LiveEdgeSegments:       3,
+		StartSegments:          2,
+		MaxCachedSegments:      6,
+		MaxCacheBytes:          268435456,
+		MaxPlaylistBytes:       1048576,
+		MaxSegmentBytes:        52428800,
+		SegmentTimeoutSeconds:  10,
+		PlaylistTimeoutSeconds: 10,
+		MaxVariantHeight:       720,
+		StaleCacheReapHours:    24,
+	}
 }
 
 // LoggingConfig is the bridge's runtime logging knob set. v1 has one
@@ -228,6 +259,9 @@ func (s *Sectioned) Validate() error {
 	if b.HostIP != "" && net.ParseIP(b.HostIP) == nil {
 		return fmt.Errorf("bridge.host_ip must be a valid IP address, got %q", b.HostIP)
 	}
+	if err := validateHLSBufferConfig(b.HLSBuffer); err != nil {
+		return err
+	}
 	if err := validateExternalToolPath("bridge.ffmpeg_path", b.FFmpegPath); err != nil {
 		return err
 	}
@@ -236,6 +270,40 @@ func (s *Sectioned) Validate() error {
 	}
 	if err := validateExternalToolPath("bridge.ytdlp_path", b.YTDLPPath); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateHLSBufferConfig(c HLSBufferConfig) error {
+	if c.LiveEdgeSegments < 1 || c.LiveEdgeSegments > 12 || c.LiveEdgeSegments < c.StartSegments {
+		return fmt.Errorf("bridge.hls_buffer.live_edge_segments must be in [1, 12] and >= start_segments")
+	}
+	if c.StartSegments < 1 || c.StartSegments > 6 {
+		return fmt.Errorf("bridge.hls_buffer.start_segments must be in [1, 6]")
+	}
+	if c.MaxCachedSegments < 2 || c.MaxCachedSegments > 24 || c.MaxCachedSegments < c.StartSegments {
+		return fmt.Errorf("bridge.hls_buffer.max_cached_segments must be in [2, 24] and >= start_segments")
+	}
+	if c.MaxCacheBytes < 16777216 || c.MaxCacheBytes > 2147483648 {
+		return fmt.Errorf("bridge.hls_buffer.max_cache_bytes must be in [16777216, 2147483648]")
+	}
+	if c.MaxPlaylistBytes < 4096 || c.MaxPlaylistBytes > 8388608 {
+		return fmt.Errorf("bridge.hls_buffer.max_playlist_bytes must be in [4096, 8388608]")
+	}
+	if c.MaxSegmentBytes < 1048576 || c.MaxSegmentBytes > 536870912 {
+		return fmt.Errorf("bridge.hls_buffer.max_segment_bytes must be in [1048576, 536870912]")
+	}
+	if c.SegmentTimeoutSeconds < 1 || c.SegmentTimeoutSeconds > 60 {
+		return fmt.Errorf("bridge.hls_buffer.segment_timeout_seconds must be in [1, 60]")
+	}
+	if c.PlaylistTimeoutSeconds < 1 || c.PlaylistTimeoutSeconds > 60 {
+		return fmt.Errorf("bridge.hls_buffer.playlist_timeout_seconds must be in [1, 60]")
+	}
+	if c.MaxVariantHeight < 240 || c.MaxVariantHeight > 2160 {
+		return fmt.Errorf("bridge.hls_buffer.max_variant_height must be in [240, 2160]")
+	}
+	if c.StaleCacheReapHours < 1 || c.StaleCacheReapHours > 168 {
+		return fmt.Errorf("bridge.hls_buffer.stale_cache_reap_hours must be in [1, 168]")
 	}
 	return nil
 }

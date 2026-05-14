@@ -410,6 +410,26 @@ func bridgeLookupInt(key string, cur config.BridgeConfig) int {
 		return cur.MiSTer.SourcePort
 	case "ui.http_port":
 		return cur.UI.HTTPPort
+	case "hls_buffer.live_edge_segments":
+		return cur.HLSBuffer.LiveEdgeSegments
+	case "hls_buffer.start_segments":
+		return cur.HLSBuffer.StartSegments
+	case "hls_buffer.max_cached_segments":
+		return cur.HLSBuffer.MaxCachedSegments
+	case "hls_buffer.max_cache_bytes":
+		return int(cur.HLSBuffer.MaxCacheBytes)
+	case "hls_buffer.max_playlist_bytes":
+		return int(cur.HLSBuffer.MaxPlaylistBytes)
+	case "hls_buffer.max_segment_bytes":
+		return int(cur.HLSBuffer.MaxSegmentBytes)
+	case "hls_buffer.segment_timeout_seconds":
+		return cur.HLSBuffer.SegmentTimeoutSeconds
+	case "hls_buffer.playlist_timeout_seconds":
+		return cur.HLSBuffer.PlaylistTimeoutSeconds
+	case "hls_buffer.max_variant_height":
+		return cur.HLSBuffer.MaxVariantHeight
+	case "hls_buffer.stale_cache_reap_hours":
+		return cur.HLSBuffer.StaleCacheReapHours
 	}
 	return 0
 }
@@ -423,6 +443,8 @@ func bridgeLookupBool(key string, cur config.BridgeConfig) bool {
 		return cur.Video.DeltaLZ4Enabled
 	case "logging.debug":
 		return cur.Logging.Debug
+	case "hls_buffer.enabled":
+		return cur.HLSBuffer.Enabled
 	}
 	return false
 }

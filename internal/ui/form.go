@@ -77,6 +77,18 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 
 	out.Logging.Debug = parseBoolField(form, "logging.debug")
 
+	out.HLSBuffer.Enabled = parseBoolField(form, "hls_buffer.enabled")
+	out.HLSBuffer.LiveEdgeSegments = parseIntField(form, "hls_buffer.live_edge_segments", errs)
+	out.HLSBuffer.StartSegments = parseIntField(form, "hls_buffer.start_segments", errs)
+	out.HLSBuffer.MaxCachedSegments = parseIntField(form, "hls_buffer.max_cached_segments", errs)
+	out.HLSBuffer.MaxCacheBytes = parseInt64Field(form, "hls_buffer.max_cache_bytes", errs)
+	out.HLSBuffer.MaxPlaylistBytes = parseInt64Field(form, "hls_buffer.max_playlist_bytes", errs)
+	out.HLSBuffer.MaxSegmentBytes = parseInt64Field(form, "hls_buffer.max_segment_bytes", errs)
+	out.HLSBuffer.SegmentTimeoutSeconds = parseIntField(form, "hls_buffer.segment_timeout_seconds", errs)
+	out.HLSBuffer.PlaylistTimeoutSeconds = parseIntField(form, "hls_buffer.playlist_timeout_seconds", errs)
+	out.HLSBuffer.MaxVariantHeight = parseIntField(form, "hls_buffer.max_variant_height", errs)
+	out.HLSBuffer.StaleCacheReapHours = parseIntField(form, "hls_buffer.stale_cache_reap_hours", errs)
+
 	if len(errs) > 0 {
 		return out, errs
 	}
@@ -94,6 +106,20 @@ func parseIntField(form url.Values, key string, errs FormErrors) int {
 		return 0
 	}
 	n, err := strconv.Atoi(raw)
+	if err != nil {
+		errs[key] = fmt.Sprintf("not a whole number: %q", raw)
+		return 0
+	}
+	return n
+}
+
+func parseInt64Field(form url.Values, key string, errs FormErrors) int64 {
+	raw := form.Get(key)
+	if raw == "" {
+		errs[key] = "required"
+		return 0
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		errs[key] = fmt.Sprintf("not a whole number: %q", raw)
 		return 0
