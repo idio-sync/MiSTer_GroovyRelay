@@ -17,6 +17,7 @@ type playbackBannerData struct {
 	State           core.State
 	SourceDisplay   string
 	Title           string
+	Subtitle        string
 	AdapterRef      string
 	Generation      uint64
 	Position        string
@@ -265,6 +266,7 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 		StateLabel:      playbackStateLabel(view.State),
 		SourceDisplay:   displayNameForSource(s.cfg.Registry, view.Source, view.AdapterRef),
 		Title:           firstNonEmpty(view.Title, view.AdapterRef, "Ready"),
+		Subtitle:        view.Modeline,
 		AdapterRef:      view.AdapterRef,
 		Generation:      view.Generation,
 		Position:        formatClock(view.Position),
@@ -292,6 +294,9 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 		if providerView, owns := provider.PlaybackBanner(ctx, snap); owns {
 			if providerView.Title != "" {
 				data.Title = providerView.Title
+			}
+			if providerView.Subtitle != "" {
+				data.Subtitle = providerView.Subtitle
 			}
 			if providerView.SourceDisplay != "" {
 				data.SourceDisplay = providerView.SourceDisplay
@@ -393,6 +398,25 @@ func quickCastTabActive(tab adapters.QuickCastTab, active string, first bool) bo
 		return tab.ID == active
 	}
 	return first
+}
+
+func playbackActionGlyph(action adapters.PlaybackAction) string {
+	switch firstNonEmpty(action.Icon, action.ID) {
+	case "previous":
+		return "⏮"
+	case "pause":
+		return "Ⅱ"
+	case "resume", "play":
+		return "▶"
+	case "stop":
+		return "■"
+	case "replay":
+		return "↻"
+	case "next":
+		return "⏭"
+	default:
+		return action.Label
+	}
 }
 
 func adapterRefBelongsTo(adapterName, ref string) bool {

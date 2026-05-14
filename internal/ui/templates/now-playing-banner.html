@@ -2,53 +2,62 @@
 <section id="gr-now-playing" class="gr-now-playing gr-now-playing--top"{{if .PollTrigger}} hx-get="/ui/playback/banner" hx-trigger="{{.PollTrigger}}" hx-swap="outerHTML"{{end}}>
 	<div class="gr-now-playing-main">
 		<div class="gr-now-playing-copy">
-			<div class="gr-now-playing-state">{{.StateLabel}}</div>
+			<div class="gr-now-playing-kicker">{{.StateLabel}}{{if .SourceDisplay}} · {{.SourceDisplay}}{{end}}</div>
 			<div class="gr-now-playing-title" title="{{.Title}}">{{.Title}}</div>
-			<div class="gr-now-playing-source">{{.SourceDisplay}}</div>
+			{{if .Subtitle}}<div class="gr-now-playing-subtitle">{{.Subtitle}}</div>{{end}}
 		</div>
 		{{if .HasTimeline}}
-		<div class="gr-now-playing-time">
-			<span>{{.Position}}</span>
-			<span>{{.Duration}}</span>
+		<div class="gr-now-playing-progress">
+			<div class="gr-now-playing-time">
+				<span>{{.Position}}</span>
+				<span>{{.Duration}}</span>
+			</div>
+			{{if .Seek}}
+			{{if .Seek.Enabled}}
+			<form class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
+				<input type="hidden" name="adapter_ref" value="{{.AdapterRef}}">
+				<input type="hidden" name="generation" value="{{.Generation}}">
+				<input type="range" name="offset_ms" min="0" max="{{.Seek.DurationMS}}" value="{{.Seek.OffsetMS}}" aria-label="Playback position">
+			</form>
+			{{else}}
+			<div class="gr-now-playing-track" aria-hidden="true"><span></span></div>
+			{{end}}
+			{{else}}
+			<div class="gr-now-playing-track" aria-hidden="true"><span></span></div>
+			{{end}}
 		</div>
 		{{end}}
 		<div class="gr-playback-actions">
 			{{range .Actions}}
-			<form hx-post="/ui/playback/action" hx-target="#gr-now-playing" hx-swap="outerHTML">
+			<form class="gr-playback-action-form" hx-post="/ui/playback/action" hx-target="#gr-now-playing" hx-swap="outerHTML">
 				<input type="hidden" name="action" value="{{.ID}}">
 				<input type="hidden" name="adapter_ref" value="{{$.AdapterRef}}">
 				<input type="hidden" name="generation" value="{{$.Generation}}">
-				<button type="submit" title="{{.DisabledReason}}" {{if not .Enabled}}disabled{{end}}>{{.Label}}</button>
+				<button class="gr-playback-action" type="submit" aria-label="{{.Label}}" title="{{if .DisabledReason}}{{.DisabledReason}}{{else}}{{.Label}}{{end}}" {{if not .Enabled}}disabled{{end}}>
+					<span aria-hidden="true">{{playbackActionGlyph .}}</span>
+					<span class="gr-sr-only">{{.Label}}</span>
+				</button>
 			</form>
 			{{end}}
-			{{if .QuickCastTabs}}<button type="button" hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>{{end}}
+			{{if .QuickCastTabs}}<button class="gr-playback-action gr-playback-action--primary" type="button" hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>{{end}}
 		</div>
 	</div>
-	{{if .Seek}}
-	{{if .Seek.Enabled}}
-	<form class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
-		<input type="hidden" name="adapter_ref" value="{{.AdapterRef}}">
-		<input type="hidden" name="generation" value="{{.Generation}}">
-		<input type="range" name="offset_ms" min="0" max="{{.Seek.DurationMS}}" value="{{.Seek.OffsetMS}}" aria-label="Playback position">
-	</form>
-	{{end}}
-	{{end}}
 	{{if .Message}}
 	<div class="gr-now-playing-message {{.MessageKind}}">
 		<span>{{.Message}}</span>
-		<button type="button" hx-get="/ui/playback/banner" hx-target="#gr-now-playing" hx-swap="outerHTML">Dismiss</button>
+		<button class="gr-playback-action" type="button" hx-get="/ui/playback/banner" hx-target="#gr-now-playing" hx-swap="outerHTML">Dismiss</button>
 	</div>
 	{{end}}
 	{{if .CastDrawerOpen}}
 	<div class="gr-now-playing-drawer">
 		<div class="gr-quick-cast-tabs">
 			{{range $i, $tab := .QuickCastTabs}}
-			<button type="button" hx-get="/ui/playback/banner?drawer=cast&tab={{$tab.ID}}" hx-target="#gr-now-playing" hx-swap="outerHTML" title="{{$tab.DisabledReason}}" {{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}aria-current="true"{{end}} {{if not $tab.Enabled}}disabled{{end}}>{{$tab.Label}}</button>
+			<button class="gr-quick-cast-tab" type="button" hx-get="/ui/playback/banner?drawer=cast&tab={{$tab.ID}}" hx-target="#gr-now-playing" hx-swap="outerHTML" title="{{$tab.DisabledReason}}" {{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}aria-current="true"{{end}} {{if not $tab.Enabled}}disabled{{end}}>{{$tab.Label}}</button>
 			{{end}}
 		</div>
 		{{range $i, $tab := .QuickCastTabs}}
 		{{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}
-		<form class="gr-quick-cast" hx-post="/ui/playback/quick-cast" hx-target="#gr-now-playing" hx-swap="outerHTML" {{if eq $tab.Encoding "multipart"}}enctype="multipart/form-data"{{end}}>
+		<form class="gr-quick-cast gr-quick-cast-panel" hx-post="/ui/playback/quick-cast" hx-target="#gr-now-playing" hx-swap="outerHTML" {{if eq $tab.Encoding "multipart"}}enctype="multipart/form-data"{{end}}>
 			<input type="hidden" name="tab_id" value="{{$tab.ID}}">
 			{{if $tab.DisabledReason}}<p class="gr-quick-cast-disabled">{{$tab.DisabledReason}}</p>{{end}}
 			{{range $field := $tab.Fields}}
@@ -65,7 +74,7 @@
 			<label>{{$field.Label}}<input name="{{$field.Name}}" type="{{$field.Type}}" placeholder="{{$field.Placeholder}}" {{if $field.Required}}required{{end}}></label>
 			{{end}}
 			{{end}}
-			<button type="submit" {{if not $tab.Enabled}}disabled{{end}}>Cast</button>
+			<button class="gr-quick-cast-submit" type="submit" {{if not $tab.Enabled}}disabled{{end}}>Play</button>
 		</form>
 		{{end}}
 		{{end}}

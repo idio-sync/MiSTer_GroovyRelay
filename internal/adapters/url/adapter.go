@@ -181,7 +181,7 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 		{
 			Key:        "enabled",
 			Label:      "Enabled",
-			Help:       "Turn the URL adapter on or off. When enabled, the Play URL form below accepts http(s) media URLs.",
+			Help:       "Turn the URL adapter on or off. When enabled, the global Cast drawer accepts http(s) media URLs.",
 			Kind:       adapters.KindBool,
 			Default:    false,
 			ApplyScope: adapters.ScopeHotSwap,

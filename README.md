@@ -1,6 +1,6 @@
 # MiSTer_GroovyRelay
 
-<img align="right" width="200" src=".github/screenshots/plex_dash.png">
+<img align="right" width="220" src=".github/screenshots/plex_dash.png">
 
 A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
@@ -94,9 +94,9 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | --- | --- | --- | --- |
 | Plex | Plex cast picker | On after linking | Needs multicast discovery and a stable bridge address. |
 | Jellyfin | Jellyfin cast picker | On after linking | Link through the settings UI. |
-| URL | URL panel or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
-| Streams | Bundled catalog entries | On | Includes Cartoon Rewind, MTV Rewind, and Toonami Aftermath bundled channels; not a user IPTV importer. |
-| Torrent | Magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
+| URL | Global Cast drawer or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
+| Streams | Bundled catalog entries | On | Includes Toonami Aftermath and other bundled channels. |
+| Torrent | Global Cast drawer magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
 
 ## Settings UI

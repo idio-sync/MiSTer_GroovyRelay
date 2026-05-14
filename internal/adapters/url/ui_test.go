@@ -66,8 +66,8 @@ func TestPanel_RendersIdle(t *testing.T) {
 	if !strings.Contains(body, "Idle") {
 		t.Errorf("idle panel missing 'Idle' text: %s", body)
 	}
-	if !strings.Contains(body, `hx-post="/ui/adapter/url/play"`) {
-		t.Errorf("panel form should hx-post to /ui/adapter/url/play: %s", body)
+	if strings.Contains(body, `hx-post="/ui/adapter/url/play"`) || strings.Contains(body, `name="url"`) {
+		t.Errorf("URL panel should not render the page-local launch form: %s", body)
 	}
 }
 
@@ -106,20 +106,25 @@ func TestExtraPanelHTML_EmbedsPanel(t *testing.T) {
 	}
 }
 
-func TestRenderPanel_IncludesModeRadio(t *testing.T) {
+func TestRenderPanel_DoesNotRenderLaunchModeRadio(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	a.cfg.YtdlpEnabled = true
 	a.ytdlpProbe = ytdlpProbe{Path: "/usr/local/bin/yt-dlp", Version: "2026.04.20", OK: true}
 
 	html := a.renderPanel()
-	for _, want := range []string{
+	for _, forbidden := range []string{
 		`name="mode"`,
 		`value="auto"`,
 		`value="ytdlp"`,
 		`value="direct"`,
 	} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("URL panel should not render launch mode control %q\n%s", forbidden, html)
+		}
+	}
+	for _, want := range []string{"Auto-resolves", "yt-dlp 2026.04.20"} {
 		if !strings.Contains(html, want) {
-			t.Errorf("panel missing %q\n%s", want, html)
+			t.Errorf("panel lost expected status text %q\n%s", want, html)
 		}
 	}
 }
@@ -416,8 +421,8 @@ func TestPanel_HistoryListRendered(t *testing.T) {
 	if !strings.Contains(body, "a.example/1") || !strings.Contains(body, "b.example/2") {
 		t.Errorf("history list should render both URLs: %s", body)
 	}
-	if !strings.Contains(body, `hx-post="/ui/adapter/url/history/play"`) {
-		t.Errorf("history Cast button should hx-post to history/play: %s", body)
+	if strings.Contains(body, `hx-post="/ui/adapter/url/history/play"`) || strings.Contains(body, ">Cast<") {
+		t.Errorf("history list should not render page-local recast controls: %s", body)
 	}
 	if !strings.Contains(body, `hx-post="/ui/adapter/url/history/delete"`) {
 		t.Errorf("history delete button should hx-post to history/delete: %s", body)
@@ -489,12 +494,24 @@ func TestURLPanelDoesNotRenderActiveTransportControls(t *testing.T) {
 	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 3, Duration: time.Minute}}
 	a := &Adapter{core: coreStub, history: LoadHistory("")}
 	html := a.renderPanel()
-	for _, forbidden := range []string{"/ui/adapter/url/pause", "/ui/adapter/url/resume", "/ui/adapter/url/stop", "/ui/adapter/url/replay", "/ui/adapter/url/seek", `class="scrub"`} {
+	for _, forbidden := range []string{
+		"/ui/adapter/url/pause",
+		"/ui/adapter/url/resume",
+		"/ui/adapter/url/stop",
+		"/ui/adapter/url/replay",
+		"/ui/adapter/url/seek",
+		`hx-post="/ui/adapter/url/play"`,
+		`hx-post="/ui/adapter/url/history/play"`,
+		`name="url"`,
+		">Play<",
+		">Cast<",
+		`class="scrub"`,
+	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("URL panel still renders %q: %s", forbidden, html)
 		}
 	}
-	for _, want := range []string{`hx-post="/ui/adapter/url/play"`, "yt-dlp", "cookies"} {
+	for _, want := range []string{"yt-dlp", "cookies"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("URL panel lost expected %q: %s", want, html)
 		}

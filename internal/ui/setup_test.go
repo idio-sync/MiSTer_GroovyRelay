@@ -256,6 +256,44 @@ func TestSetup_StepAdapters_Renders(t *testing.T) {
 	}
 }
 
+func TestSetup_StepAdapters_UsesStackedPickerLayout(t *testing.T) {
+	reg := adapters.NewRegistry()
+	for _, a := range []*uiStubAdapter{
+		{name: "plex", displayName: "Plex"},
+		{name: "jellyfin", displayName: "Jellyfin"},
+		{name: "url", displayName: "URL"},
+		{name: "dlna", displayName: "DLNA / UPnP"},
+	} {
+		if err := reg.Register(a); err != nil {
+			t.Fatalf("Register %s: %v", a.name, err)
+		}
+	}
+	_, mux, _ := newTestServerWithFirstRun(t, true, func(c *Config) {
+		c.Registry = reg
+	})
+
+	req := httptest.NewRequest("GET", "/ui/setup/step/adapters", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%q", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `class="gr-pick-grid"`) {
+		t.Fatal("adapter picker should render the stacked pick grid")
+	}
+	if got := strings.Count(body, `gr-pick-name`); got != 4 {
+		t.Fatalf("adapter picker rendered %d pick rows, want 4", got)
+	}
+	if strings.Contains(body, "gr-adapter-card") {
+		t.Fatal("adapter picker should not render legacy unstyled adapter card classes")
+	}
+	if !strings.Contains(body, `class="gr-wizard-foot"`) {
+		t.Fatal("adapter picker should use the wizard footer layout")
+	}
+}
+
 // TestSetup_Done_DismissesFlagAndRedirects verifies POST /ui/setup/done
 // clears the first-run flag and redirects to /ui/.
 func TestSetup_Done_DismissesFlagAndRedirects(t *testing.T) {
@@ -589,6 +627,30 @@ func TestSetup_StepperIncludesActiveUnenabledAdapter(t *testing.T) {
 		}
 	}
 	t.Fatalf("active Plex step missing from stepper: %#v", items)
+}
+
+func TestSetup_StepperDoesNotListEnabledAdaptersOnPicker(t *testing.T) {
+	reg := adapters.NewRegistry()
+	for _, a := range []*uiStubAdapter{
+		{name: "plex", displayName: "Plex", enabled: true, enabledSet: true},
+		{name: "jellyfin", displayName: "Jellyfin", enabled: true, enabledSet: true},
+		{name: "url", displayName: "URL", enabled: true, enabledSet: true},
+		{name: "dlna", displayName: "DLNA / UPnP", enabled: true, enabledSet: true},
+	} {
+		if err := reg.Register(a); err != nil {
+			t.Fatalf("Register %s: %v", a.name, err)
+		}
+	}
+
+	items := stepperFor("adapters", reg)
+	labels := make([]string, 0, len(items))
+	for _, item := range items {
+		labels = append(labels, item.Label)
+	}
+	want := []string{"Bridge basics", "Pick sources", "Done"}
+	if strings.Join(labels, "|") != strings.Join(want, "|") {
+		t.Fatalf("step labels = %#v, want %#v", labels, want)
+	}
 }
 
 // TestSetup_AdaptersStep_RejectsInvalidName verifies an unknown adapter

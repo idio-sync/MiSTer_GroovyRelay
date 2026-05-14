@@ -137,7 +137,8 @@ var templateFuncs = template.FuncMap{
 	"sectionCtx": func(adapterName string, index int, section bridgeSection) sectionCtxData {
 		return sectionCtxData{AdapterName: adapterName, Index: index, Section: section}
 	},
-	"quickCastTabActive": quickCastTabActive,
+	"quickCastTabActive":  quickCastTabActive,
+	"playbackActionGlyph": playbackActionGlyph,
 }
 
 // Server owns the parsed templates + embedded static assets + a

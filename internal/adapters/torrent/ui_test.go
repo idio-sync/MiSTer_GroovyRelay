@@ -5,12 +5,17 @@ import (
 	"testing"
 )
 
-func TestExtraPanelHTMLContainsConsentAndUpload(t *testing.T) {
+func TestExtraPanelHTMLContainsConsentWithoutLaunchForms(t *testing.T) {
 	a := &Adapter{cfg: DefaultConfig(), sessions: map[string]*Session{}}
 	html := string(a.ExtraPanelHTML())
-	for _, want := range []string{"torrent-panel", `name="magnet"`, `name="torrent_file"`, "traffic_acknowledged"} {
+	for _, want := range []string{"torrent-panel", "traffic_acknowledged"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel missing %q: %s", want, html)
+		}
+	}
+	for _, forbidden := range []string{`name="magnet"`, `name="torrent_file"`, "/ui/adapter/torrent/play", "/ui/adapter/torrent/upload", "Play Magnet", "Upload Torrent"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("torrent panel still renders launch control %q: %s", forbidden, html)
 		}
 	}
 }

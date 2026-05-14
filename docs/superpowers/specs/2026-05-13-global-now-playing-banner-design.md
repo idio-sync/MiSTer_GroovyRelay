@@ -8,7 +8,7 @@
 
 Playback controls currently live inside adapter-specific settings panels. URL, Streams, and Torrent each render their own active-session controls, while the Status page has a separate live summary. This makes playback feel like an adapter-page concern even though the bridge only has one active core session at a time.
 
-The UI should expose one predictable place for active playback state and controls from every page. Adapter pages should focus on configuration, source browsing, and source launch workflows, not duplicate transport controls.
+The UI should expose one predictable place for active playback state and controls from every page. Adapter pages should focus on configuration and source browsing. URL/Torrent launch workflows belong in the global Cast drawer, not in adapter panels.
 
 ## Goals
 
@@ -268,7 +268,8 @@ Add a template such as `now-playing-banner.html` and render it from `shell.html`
 URL:
 
 - remove active position, scrub, pause/resume, stop, and replay controls from the panel;
-- keep URL history, cookies, yt-dlp status, mode help, and the existing page-local URL launch form in the first implementation;
+- keep URL history display/delete, cookies, and yt-dlp status;
+- remove the page-local URL launch form, mode selector, and history recast buttons;
 - expose URL quick-cast through the banner.
 
 Streams:
@@ -280,7 +281,8 @@ Streams:
 Torrent:
 
 - remove active Stop from the panel;
-- keep configuration and existing page-local launch forms in the first implementation;
+- keep configuration and status text;
+- remove page-local magnet and torrent upload launch forms;
 - expose magnet and .torrent launch through the banner.
 
 Plex/Jellyfin/DLNA:
@@ -475,10 +477,12 @@ Adapter tests:
 
 - URL exposes pause/resume/stop/replay/seek and URL quick-cast;
 - URL panel no longer renders active transport controls;
+- URL panel no longer renders the URL launch form or history recast buttons;
 - Streams exposes previous/next/replay/stop for an owned queue;
 - Streams panel no longer renders active transport controls;
 - Torrent exposes stop and magnet/upload quick-cast;
 - Torrent panel no longer renders active Stop;
+- Torrent panel no longer renders magnet or torrent-file launch forms;
 - Torrent quick-cast upload preserves multipart handling and existing upload validation;
 - providers reject actions when ownership has changed.
 

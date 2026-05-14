@@ -326,10 +326,8 @@ body {
 	top: 0;
 	z-index: 20;
 	display: grid;
-	gap: 10px;
-	padding: 12px 16px;
 	border-bottom: 1px solid var(--gr-border);
-	background: var(--gr-surface);
+	background: oklch(0.27 0.012 80);
 	color: var(--gr-text);
 }
 
@@ -346,63 +344,168 @@ body {
 
 .gr-now-playing-main {
 	display: grid;
-	grid-template-columns: minmax(180px, 1fr) auto auto;
-	gap: 14px;
+	grid-template-columns: minmax(0, 1.25fr) minmax(180px, 0.75fr) auto;
+	gap: 18px;
 	align-items: center;
+	padding: 13px 18px 12px;
 }
 
 .gr-now-playing-copy {
+	grid-column: 1;
 	min-width: 0;
 	display: grid;
-	gap: 2px;
+	gap: 3px;
 }
 
-.gr-now-playing-state {
-	font: 700 0.72rem/1.2 var(--font-mono, monospace);
+.gr-now-playing-kicker {
+	font: 500 10px/1.2 var(--font-body);
 	text-transform: uppercase;
+	letter-spacing: 0.14em;
 	color: var(--gr-amber);
 }
 
 .gr-now-playing-title,
-.gr-now-playing-source {
+.gr-now-playing-subtitle {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .gr-now-playing-title {
-	font-weight: 700;
+	font: 600 16px/1.2 var(--font-display);
+	color: var(--gr-text);
 }
 
-.gr-now-playing-source,
+.gr-now-playing-subtitle,
 .gr-now-playing-time {
 	color: var(--gr-dim);
 }
 
-.gr-now-playing-time {
+.gr-now-playing-subtitle {
+	font: 400 11px/1.2 var(--font-mono);
+}
+
+.gr-now-playing-progress {
+	grid-column: 2;
+	min-width: 0;
 	display: grid;
-	grid-auto-flow: column;
-	gap: 8px;
-	font: 600 0.82rem/1.2 var(--font-mono, monospace);
+	gap: 5px;
+}
+
+.gr-now-playing-time {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	font: 400 11px/1.2 var(--font-mono);
+	color: oklch(0.80 0.025 80);
 }
 
 .gr-playback-actions {
+	grid-column: 3;
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: flex-end;
-	gap: 8px;
+	gap: 6px;
+}
+
+.gr-playback-action-form {
+	margin: 0;
+}
+
+.gr-playback-action,
+.gr-quick-cast-tab,
+.gr-quick-cast-submit {
+	min-height: 30px;
+	border: 1px solid oklch(0.46 0.035 80);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--gr-text);
+	font: 600 13px/1 var(--font-body);
+	cursor: pointer;
+}
+
+.gr-playback-action {
+	min-width: 32px;
+	padding: 6px 8px;
+}
+
+.gr-playback-action--primary,
+.gr-quick-cast-submit {
+	border-color: var(--gr-amber);
+	background: var(--gr-amber);
+	color: oklch(0.20 0.030 80);
+}
+
+.gr-playback-action:hover:not(:disabled),
+.gr-quick-cast-tab:hover:not(:disabled),
+.gr-quick-cast-submit:hover:not(:disabled) {
+	border-color: var(--gr-amber);
+	background: oklch(0.30 0.030 80);
+	color: var(--gr-amber);
+}
+
+.gr-playback-action--primary:hover:not(:disabled),
+.gr-quick-cast-submit:hover:not(:disabled) {
+	background: oklch(0.82 0.16 80);
+	color: oklch(0.18 0.030 80);
+}
+
+.gr-playback-action:disabled,
+.gr-quick-cast-tab:disabled,
+.gr-quick-cast-submit:disabled {
+	cursor: not-allowed;
+	opacity: 0.45;
+}
+
+.gr-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.gr-now-playing-track,
+.gr-now-playing-seek {
+	width: 100%;
+	margin: 0;
+}
+
+.gr-now-playing-track {
+	height: 7px;
+	overflow: hidden;
+	border-radius: 999px;
+	background: oklch(0.33 0.016 80);
+}
+
+.gr-now-playing-track span {
+	display: block;
+	width: 0;
+	height: 100%;
+	border-radius: inherit;
+	background: var(--gr-amber);
 }
 
 .gr-now-playing-seek input[type="range"] {
 	width: 100%;
+	height: 7px;
+	display: block;
+	margin: 0;
+	accent-color: var(--gr-amber);
 }
 
 .gr-now-playing-message {
 	display: flex;
 	justify-content: space-between;
 	gap: 12px;
-	padding: 8px 10px;
-	border: 1px solid var(--gr-border);
+	align-items: center;
+	padding: 9px 18px;
+	border-top: 1px solid var(--gr-border);
+	background: oklch(0.23 0.010 80);
 }
 
 .gr-now-playing-message.err {
@@ -416,21 +519,79 @@ body {
 .gr-now-playing-drawer {
 	display: grid;
 	gap: 10px;
-	padding-top: 10px;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: start;
+	padding: 10px 18px;
 	border-top: 1px solid var(--gr-border);
+	background: oklch(0.23 0.010 80);
 }
 
 .gr-quick-cast-tabs {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
+	overflow: hidden;
+	border: 1px solid var(--gr-border);
+	border-radius: 4px;
+}
+
+.gr-quick-cast-tab {
+	min-height: 29px;
+	border: 0;
+	border-radius: 0;
+	padding: 6px 9px;
+	color: var(--gr-dim);
+}
+
+.gr-quick-cast-tab[aria-current="true"] {
+	background: var(--gr-amber);
+	color: oklch(0.20 0.030 80);
 }
 
 .gr-quick-cast {
 	display: grid;
 	grid-template-columns: minmax(160px, 1fr) auto;
-	gap: 10px;
+	gap: 8px;
 	align-items: end;
+}
+
+.gr-quick-cast label {
+	min-width: 0;
+	display: grid;
+	gap: 3px;
+	font: 500 11px/1.2 var(--font-body);
+	color: var(--gr-dim);
+}
+
+.gr-quick-cast input,
+.gr-quick-cast select {
+	min-height: 29px;
+	width: 100%;
+	border: 1px solid oklch(0.42 0.018 80);
+	border-radius: 4px;
+	background: oklch(0.19 0.008 80);
+	color: var(--gr-text);
+	padding: 5px 8px;
+	font: 400 12px/1.2 var(--font-mono);
+}
+
+.gr-quick-cast fieldset {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.gr-quick-cast legend {
+	width: 100%;
+	color: var(--gr-dim);
+	font: 500 11px/1.2 var(--font-body);
+}
+
+.gr-quick-cast-disabled {
+	margin: 0;
+	color: var(--gr-err);
 }
 
 @media (max-width: 760px) {
@@ -439,11 +600,21 @@ body {
 		align-items: stretch;
 	}
 
+	.gr-now-playing-copy,
+	.gr-now-playing-progress,
+	.gr-playback-actions {
+		grid-column: auto;
+	}
+
 	.gr-playback-actions {
 		justify-content: flex-start;
 	}
 
 	.gr-quick-cast {
+		grid-template-columns: 1fr;
+	}
+
+	.gr-now-playing-drawer {
 		grid-template-columns: 1fr;
 	}
 }
@@ -1032,8 +1203,10 @@ body {
 }
 .gr-stepper {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 0;
+	row-gap: 12px;
 	margin-bottom: 48px;
 	padding-bottom: 24px;
 	border-bottom: 1px solid var(--gr-border);
@@ -1044,6 +1217,7 @@ body {
 	gap: 10px;
 	color: var(--gr-dim);
 	font: 500 13px var(--font-body);
+	min-width: 0;
 }
 .gr-step + .gr-step::before {
 	content: "";
@@ -1078,6 +1252,7 @@ body {
 	letter-spacing: -0.018em;
 	color: var(--gr-text);
 }
+.gr-wizard .subtitle,
 .gr-wizard .lede {
 	color: var(--gr-dim);
 	margin: 0 0 32px;
@@ -1104,8 +1279,23 @@ body {
 	transition: border-color 140ms ease, background 140ms ease;
 }
 .gr-pick:hover { border-color: oklch(0.45 0.020 80); }
-.gr-pick.checked { border-color: var(--gr-amber); background: oklch(0.27 0.018 80); }
+.gr-pick:focus-within {
+	border-color: var(--gr-amber);
+	box-shadow: 0 0 0 1px oklch(0.78 0.16 80 / 0.35);
+}
+.gr-pick.checked,
+.gr-pick:has(input:checked) {
+	border-color: var(--gr-amber);
+	background: oklch(0.27 0.018 80);
+}
 .gr-pick.dimmed { opacity: 0.62; }
+.gr-pick input[type="checkbox"] {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
 .gr-pick .check {
 	width: 20px; height: 20px;
 	border-radius: 3px;
@@ -1119,13 +1309,23 @@ body {
 	flex: 0 0 auto;
 	background: oklch(0.20 0.008 80);
 }
-.gr-pick.checked .check { background: var(--gr-amber); border-color: var(--gr-amber); }
+.gr-pick.checked .check,
+.gr-pick:has(input:checked) .check {
+	background: var(--gr-amber);
+	border-color: var(--gr-amber);
+}
+.gr-pick.checked .check::before,
+.gr-pick:has(input:checked) .check::before {
+	content: "✓";
+}
+.gr-pick-copy { min-width: 0; }
 .gr-pick-name {
 	font: 600 16px var(--font-display);
-	letter-spacing: -0.005em;
+	letter-spacing: 0;
 	color: var(--gr-text);
 	display: flex;
 	align-items: baseline;
+	flex-wrap: wrap;
 	gap: 10px;
 }
 .gr-pick-flag {
@@ -1139,6 +1339,7 @@ body {
 }
 .gr-pick-flag.new { color: var(--gr-amber); border-color: oklch(0.55 0.10 80); }
 .gr-pick-desc {
+	display: block;
 	margin: 4px 0 6px;
 	color: var(--gr-dim);
 	font-size: 13px;
@@ -1178,7 +1379,37 @@ body {
 	text-decoration-color: oklch(0.40 0.010 80);
 }
 .gr-skip:hover { color: var(--gr-text); }
-.gr-wizard-foot .actions { display: flex; gap: 8px; }
+.gr-wizard-foot .actions { display: flex; gap: 8px; margin-left: auto; }
+
+@media (max-width: 640px) {
+	.gr-wizard {
+		padding: 36px 18px 56px;
+	}
+	.gr-wizard-brand {
+		margin-bottom: 36px;
+	}
+	.gr-stepper {
+		margin-bottom: 32px;
+		padding-bottom: 18px;
+		row-gap: 10px;
+	}
+	.gr-step + .gr-step::before {
+		width: 14px;
+		margin: 0 8px;
+	}
+	.gr-pick {
+		grid-template-columns: 22px minmax(0, 1fr);
+		gap: 14px;
+		padding: 16px;
+	}
+	.gr-wizard-foot {
+		align-items: stretch;
+		flex-direction: column-reverse;
+	}
+	.gr-wizard-foot .actions {
+		margin-left: 0;
+	}
+}
 
 /* ============================================================
    PR 2c — form-gating overlay (used by wizard adapter step

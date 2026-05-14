@@ -1,5 +1,5 @@
 // Package url is the URL-input cast adapter. It accepts an http(s) media
-// URL via POST or via the settings UI's "Play URL" form, builds a
+// URL via POST or via the global Cast drawer, builds a
 // core.SessionRequest, and delegates to core.Manager.StartSession.
 //
 // Spec: docs/specs/2026-04-25-url-adapter-design.md

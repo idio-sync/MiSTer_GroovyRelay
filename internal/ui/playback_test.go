@@ -133,8 +133,9 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 		enabled: true,
 		owns:    true,
 		view: adapters.PlaybackBannerAdapterView{
-			Actions: []adapters.PlaybackAction{{ID: adapters.PlaybackActionPause, Label: "Pause", Icon: "pause", Enabled: true}},
-			Seek:    &adapters.PlaybackSeek{Enabled: true, OffsetMS: 90000, DurationMS: 600000},
+			Actions:  []adapters.PlaybackAction{{ID: adapters.PlaybackActionPause, Label: "Pause", Icon: "pause", Enabled: true}},
+			Seek:     &adapters.PlaybackSeek{Enabled: true, OffsetMS: 90000, DurationMS: 600000},
+			Subtitle: "NTSC_480i",
 		},
 	}
 	_, mux := newTestServer(t, func(c *Config) {
@@ -154,7 +155,21 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
-	for _, want := range []string{"Now Playing", "Movie Night", "01:30", "10:00", `name="generation" value="11"`, "Pause", `hx-trigger="every 1s"`, `class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change"`} {
+	for _, want := range []string{
+		`class="gr-now-playing-kicker"`,
+		"Now Playing",
+		"Movie Night",
+		"NTSC_480i",
+		"01:30",
+		"10:00",
+		`class="gr-now-playing-progress"`,
+		`class="gr-playback-action-form"`,
+		`class="gr-playback-action"`,
+		`name="generation" value="11"`,
+		"Pause",
+		`hx-trigger="every 1s"`,
+		`class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change"`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("banner missing %q: %s", want, body)
 		}
@@ -233,6 +248,11 @@ func TestPlaybackBannerOpenDrawerDoesNotPollAwayForm(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "gr-now-playing-drawer") {
 		t.Fatalf("drawer did not render: %s", body)
+	}
+	for _, want := range []string{`gr-quick-cast-panel`, `class="gr-quick-cast-tab"`, `class="gr-quick-cast-submit"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("drawer missing preview structure %q: %s", want, body)
+		}
 	}
 	if strings.Contains(body, `hx-trigger="every`) {
 		t.Fatalf("open drawer should not poll and discard in-progress form input: %s", body)

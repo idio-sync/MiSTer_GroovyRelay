@@ -31,11 +31,10 @@ func (a *Adapter) ExtraPanelHTML() template.HTML {
 //
 // Layout order:
 //  1. Status line (lifecycle)
-//  2. URL form + optional mode-radio
-//  3. Hosts line (yt-dlp auto-resolve list)
-//  4. yt-dlp version line
-//  5. Cookies section (collapsed details)
-//  6. Recent history list (when >=1 entry)
+//  2. Hosts line (yt-dlp auto-resolve list)
+//  3. yt-dlp version line
+//  4. Cookies section (collapsed details)
+//  5. Recent history list (when >=1 entry)
 func (a *Adapter) renderPanel() string {
 	a.mu.Lock()
 	lifecycle := a.state
@@ -52,7 +51,7 @@ func (a *Adapter) renderPanel() string {
 	fmt.Fprintf(&b,
 		`<section class="url-panel" id="url-panel" hx-get="/ui/adapter/url/panel" hx-trigger="%s" hx-swap="outerHTML">`,
 		"every 5s")
-	b.WriteString(`<h3>Play URL</h3>`)
+	b.WriteString(`<h3>URL</h3>`)
 
 	// Lifecycle status line (driven by a.state).
 	switch lifecycle {
@@ -69,22 +68,6 @@ func (a *Adapter) renderPanel() string {
 	default:
 		b.WriteString(`<p class="status">Idle</p>`)
 	}
-
-	// URL form (with optional mode-radio for yt-dlp).
-	modeRadio := ""
-	if cfg.YtdlpEnabled && probe.OK {
-		modeRadio = `<fieldset class="url-mode">
-  <legend>Mode</legend>
-  <label><input type="radio" name="mode" value="auto" checked> Auto</label>
-  <label><input type="radio" name="mode" value="ytdlp"> yt-dlp</label>
-  <label><input type="radio" name="mode" value="direct"> Direct</label>
-</fieldset>`
-	}
-	fmt.Fprintf(&b, `<form hx-post="/ui/adapter/url/play" hx-target="#url-panel" hx-swap="outerHTML" autocomplete="off">
-    %s
-    <input type="url" name="url" placeholder="https://example.com/video.mp4 or https://youtu.be/..." required>
-    <button type="submit">Play</button>
-  </form>`, modeRadio)
 
 	// Existing yt-dlp surface: hosts, version, cookies — preserved verbatim.
 	b.WriteString(renderHostsLine(cfg.YtdlpHosts))
@@ -110,10 +93,9 @@ func (a *Adapter) renderPanel() string {
 					template.HTMLEscapeString(redactURL(e.URL)))
 			}
 			fmt.Fprintf(&b,
-				`<button type="button" hx-post="/ui/adapter/url/history/play" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">Cast</button> `+
-					`<button type="button" hx-post="/ui/adapter/url/history/delete" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">✕</button>`+
+				`<button type="button" hx-post="/ui/adapter/url/history/delete" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">✕</button>`+
 					`</li>`,
-				i, i)
+				i)
 		}
 		b.WriteString(`</ul></div>`)
 	}

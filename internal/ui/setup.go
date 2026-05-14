@@ -356,7 +356,7 @@ func setupTemplateName(step string) string {
 }
 
 // stepperFor builds the ordered stepper items for the wizard progress bar.
-// The steps are: Bridge → Adapters → per-adapter configure steps → Done.
+// The steps are: Bridge → Adapters → active adapter configure step → Done.
 func stepperFor(activeStep string, reg *adapters.Registry) []stepperItem {
 	type namedStep struct {
 		name  string
@@ -368,11 +368,11 @@ func stepperFor(activeStep string, reg *adapters.Registry) []stepperItem {
 		{"adapters", "Pick sources"},
 	}
 
-	// Add enabled adapters as individual configure steps. While actively
-	// configuring an adapter, include it even before enabled=true has been
-	// saved so the stepper can highlight the current step.
-	for _, a := range reg.List() {
-		if a.IsEnabled() || a.Name() == activeStep {
+	// Keep the progress rail compact. The picker can be revisited after many
+	// sources are enabled, so only the adapter currently being configured gets
+	// its own step.
+	if activeStep != "bridge" && activeStep != "adapters" && activeStep != "done" {
+		if a, ok := reg.Get(activeStep); ok {
 			steps = append(steps, namedStep{a.Name(), a.DisplayName()})
 		}
 	}

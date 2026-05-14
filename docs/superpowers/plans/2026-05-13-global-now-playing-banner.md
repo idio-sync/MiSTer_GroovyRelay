@@ -38,15 +38,15 @@
 - `internal/ui/server_test.go` — shell inclusion/exclusion tests.
 - `internal/adapters/url/adapter.go` — extend URL `SessionManager` narrow interface for full-key helpers.
 - `internal/adapters/url/ui.go` — remove active position/scrub/pause/resume/stop/replay controls from the URL panel.
-- `internal/adapters/url/ui_test.go` — assert URL panel keeps launch/history/cookies and omits active controls.
+- `internal/adapters/url/ui_test.go` — assert URL panel keeps history/cookies/status and omits launch, recast, and active controls.
 - `internal/adapters/streams/adapter.go` — extend Streams `SessionManager` narrow interface for full-key helpers.
 - `internal/adapters/streams/playback.go` — add guarded action helpers used by the provider.
 - `internal/adapters/streams/ui.go` — keep focused guide/status/refresh; remove previous/next/replay/stop from local now strip.
 - `internal/adapters/streams/ui_test.go` — assert Streams panel no longer renders active transport controls.
 - `internal/adapters/torrent/adapter.go` — extend Torrent `SessionManager` narrow interface for full-key stop.
 - `internal/adapters/torrent/ui.go` — remove active Stop from `renderLiveStatus`.
-- `internal/adapters/torrent/routes.go` — keep existing page-local magnet/upload/stop routes for compatibility, but banner provider owns global controls.
-- `internal/adapters/torrent/ui_test.go` — assert Torrent panel no longer renders active Stop.
+- `internal/adapters/torrent/routes.go` — keep existing magnet/upload/stop routes for compatibility, but banner provider owns visible launch/control UI.
+- `internal/adapters/torrent/ui_test.go` — assert Torrent panel no longer renders active Stop or launch forms.
 
 **Do not modify:**
 - Plex Companion timeline/control routes.
@@ -1330,9 +1330,9 @@ Create `internal/ui/templates/now-playing-banner.html`:
 <section id="gr-now-playing" class="gr-now-playing gr-now-playing--top" hx-get="/ui/playback/banner" hx-trigger="{{.PollTrigger}}" hx-swap="outerHTML">
 	<div class="gr-now-playing-main">
 		<div class="gr-now-playing-copy">
-			<div class="gr-now-playing-state">{{.StateLabel}}</div>
+			<div class="gr-now-playing-kicker">{{.StateLabel}}{{if .SourceDisplay}} · {{.SourceDisplay}}{{end}}</div>
 			<div class="gr-now-playing-title" title="{{.Title}}">{{.Title}}</div>
-			<div class="gr-now-playing-source">{{.SourceDisplay}}</div>
+			{{if .Subtitle}}<div class="gr-now-playing-subtitle">{{.Subtitle}}</div>{{end}}
 		</div>
 		{{if .HasTimeline}}
 		<div class="gr-now-playing-time">
@@ -2517,12 +2517,12 @@ func TestURLPanelDoesNotRenderActiveTransportControls(t *testing.T) {
 	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 3, Duration: time.Minute}}
 	a := &Adapter{core: coreStub, history: LoadHistory("")}
 	html := a.renderPanel()
-	for _, forbidden := range []string{"/ui/adapter/url/pause", "/ui/adapter/url/resume", "/ui/adapter/url/stop", "/ui/adapter/url/replay", "/ui/adapter/url/seek", `class="scrub"`} {
+	for _, forbidden := range []string{"/ui/adapter/url/pause", "/ui/adapter/url/resume", "/ui/adapter/url/stop", "/ui/adapter/url/replay", "/ui/adapter/url/seek", `hx-post="/ui/adapter/url/play"`, `hx-post="/ui/adapter/url/history/play"`, `name="url"`, `class="scrub"`} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("URL panel still renders %q: %s", forbidden, html)
 		}
 	}
-	for _, want := range []string{`hx-post="/ui/adapter/url/play"`, "yt-dlp", "cookies"} {
+	for _, want := range []string{"yt-dlp", "cookies"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("URL panel lost expected %q: %s", want, html)
 		}
@@ -3495,14 +3495,14 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 	gap: 2px;
 }
 
-.gr-now-playing-state {
+.gr-now-playing-kicker {
 	font: 700 0.72rem/1.2 var(--font-mono, monospace);
 	text-transform: uppercase;
 	color: var(--gr-amber);
 }
 
 .gr-now-playing-title,
-.gr-now-playing-source {
+.gr-now-playing-subtitle {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -3512,7 +3512,7 @@ Append to `internal/ui/static/app.css` near shell layout rules:
 	font-weight: 700;
 }
 
-.gr-now-playing-source,
+.gr-now-playing-subtitle,
 .gr-now-playing-time {
 	color: var(--gr-dim);
 }

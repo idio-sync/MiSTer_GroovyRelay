@@ -7,25 +7,28 @@
 
 	<form method="POST" action="/ui/setup/step/adapters" class="gr-wizard-form">
 
-		<div class="gr-adapter-cards">
+		<div class="gr-pick-grid">
 			{{range .AdapterCards}}
-			<label class="gr-adapter-card" for="adapter-{{.Name}}">
+			<label class="gr-pick{{if .Picked}} checked{{end}}" for="adapter-{{.Name}}">
 				<input type="checkbox"
 					name="adapters"
 					value="{{.Name}}"
 					id="adapter-{{.Name}}"
 					{{if .Picked}}checked{{end}}>
-				<div class="gr-adapter-card-body">
-					<div class="gr-adapter-card-title">{{.DisplayName}}</div>
-					{{if .Description}}<div class="gr-adapter-card-desc">{{.Description}}</div>{{end}}
-				</div>
+				<span class="check" aria-hidden="true"></span>
+				<span class="gr-pick-copy">
+					<span class="gr-pick-name">{{.DisplayName}}</span>
+					{{if .Description}}<span class="gr-pick-desc">{{.Description}}</span>{{end}}
+				</span>
 			</label>
 			{{end}}
 		</div>
 
-		<div class="gr-wizard-actions">
+		<div class="gr-wizard-foot">
 			<a href="/ui/setup/step/done" class="gr-skip">Skip — finish without adapters</a>
-			<button type="submit" class="btn">Continue ▸</button>
+			<div class="actions">
+				<button type="submit" class="btn">Continue ▸</button>
+			</div>
 		</div>
 	</form>
 </section>
