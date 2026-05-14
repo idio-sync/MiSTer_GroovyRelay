@@ -89,6 +89,13 @@ func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolv
 }
 
 func (a *Adapter) castURLGuarded(ctx context.Context, rawURL, mode, expectedRef string, expectedGeneration uint64) (ref, resolvedVia string, status int, err error) {
+	if a.core == nil {
+		return "", "", http.StatusInternalServerError, fmt.Errorf("core not wired")
+	}
+	st := a.core.Status()
+	if st.AdapterRef != expectedRef || st.Generation != expectedGeneration {
+		return "", "", http.StatusConflict, fmt.Errorf("active session changed")
+	}
 	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
 		startCore: func(req core.SessionRequest) (bool, error) {
 			return a.core.StartSessionIfSession(req, expectedRef, expectedGeneration)

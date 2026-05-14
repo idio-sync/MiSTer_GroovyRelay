@@ -128,6 +128,36 @@ func TestStaticStreamsArtworkScriptServed(t *testing.T) {
 	}
 }
 
+func TestShellLoadsNowPlayingScript(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest("GET", "/ui/", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `<script src="/ui/static/now-playing.js" defer></script>`) {
+		t.Fatalf("shell missing now-playing script: %s", body)
+	}
+}
+
+func TestStaticNowPlayingScriptSuppressesSeekPollSwaps(t *testing.T) {
+	_, mux := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/now-playing.js", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"htmx:beforeSwap", "data-seek-interacting", "/ui/playback/banner", "preventDefault"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("now-playing script missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestStaticAppCSSHidesArtworkFallbackUntilImageFails(t *testing.T) {
 	_, mux := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)

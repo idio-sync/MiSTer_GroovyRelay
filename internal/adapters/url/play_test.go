@@ -223,7 +223,11 @@ func TestCastURL_StreamsHandoffBeforeYTDLP(t *testing.T) {
 }
 
 func TestCastURLGuardedStreamsResolverUsesSessionGuard(t *testing.T) {
-	a := newTestAdapter(t, &fakeCore{})
+	fc := &fakeCore{}
+	fc.statusFn = func() core.SessionStatus {
+		return core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:old", Generation: 7}
+	}
+	a := newTestAdapter(t, fc)
 	f := &fakeStreamResolver{
 		matched:      true,
 		res:          streamhandoff.Resolution{AdapterRef: "streams:mtv:metal:sess:1", ProviderID: "mtv", ChannelID: "metal"},
@@ -242,6 +246,42 @@ func TestCastURLGuardedStreamsResolverUsesSessionGuard(t *testing.T) {
 	}
 	if f.guardStarts != 1 || f.guardRef != "url:old" || f.guardGen != 7 {
 		t.Fatalf("guarded stream key = starts:%d ref:%q gen:%d", f.guardStarts, f.guardRef, f.guardGen)
+	}
+}
+
+func TestCastURLGuardedRejectsStaleBeforeSideEffects(t *testing.T) {
+	log := eventlog.New(16)
+	coreStub := &providerCoreStub{
+		status:       core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:new", Generation: 8},
+		startMatched: false,
+	}
+	fr := &fakeResolver{res: &ytdlp.Resolution{URL: "https://cdn.example/video.mp4"}}
+	a := newTestAdapterOpts(t, withCore(coreStub), withEventLog(log))
+	a.cfg.Enabled = true
+	a.cfg.YtdlpEnabled = true
+	a.cfg.YtdlpHosts = []string{"youtu.be"}
+	a.cfg.YtdlpFormat = "best"
+	a.resolver = fr
+	a.ytdlpProbe = ytdlpProbe{OK: true}
+
+	_, _, status, err := a.castURLGuarded(context.Background(), "https://youtu.be/abc", "ytdlp", "url:old", 7)
+	if err == nil || !strings.Contains(err.Error(), "active session changed") {
+		t.Fatalf("castURLGuarded err = %v, want active session changed", err)
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
+	}
+	if got := a.history.Len(); got != 0 {
+		t.Fatalf("history Len = %d, want 0 for stale action", got)
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("yt-dlp resolver was called before stale guard: %#v", fr.calls)
+	}
+	if entries := log.Snapshot(); len(entries) != 0 {
+		t.Fatalf("event log entries = %#v, want none for stale action", entries)
+	}
+	if coreStub.startReq.StreamURL != "" {
+		t.Fatalf("StartSessionIfSession request = %#v, want no guarded start before stale guard", coreStub.startReq)
 	}
 }
 
