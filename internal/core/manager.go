@@ -906,7 +906,7 @@ func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 		m.mu.Unlock()
 		return false, nil
 	}
-	req := m.normalizeVisualizerRequestLocked(a.req)
+	req := a.req
 	generation := a.generation
 	resumeMs := int(a.pausedPosition / time.Millisecond)
 	if resumeMs <= 0 {
@@ -1163,7 +1163,7 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 		m.mu.Unlock()
 		return true, fmt.Errorf("adapter does not support seek")
 	}
-	req := m.normalizeVisualizerRequestLocked(a.req)
+	req := a.req
 	generation := a.generation
 	m.mu.Unlock()
 
