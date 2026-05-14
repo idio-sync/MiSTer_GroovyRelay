@@ -17,6 +17,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 // newTestAdapter wires the new AdapterConfig signature for the bulk of
@@ -763,6 +764,104 @@ func TestPlay_ModeAuto_HostNotInAllowlist_GoesDirect(t *testing.T) {
 	}
 }
 
+func TestURLDirectM3U8UsesBufferByDefault(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+	enableURLHLSBufferForTest(a)
+	var gotOpts hlsbuffer.SessionOptions
+	var closeCalls int
+	a.hlsBufferOpen = func(ctx context.Context, opts hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		gotOpts = opts
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/url-buffered.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close: func() error {
+				closeCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	ref, via, status, err := a.castURL(t.Context(), "https://public.example/live.m3u8", "direct")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if ref == "" || via != "direct" || status != http.StatusOK {
+		t.Fatalf("ref=%q via=%q status=%d", ref, via, status)
+	}
+	if gotOpts.SourceURL != "https://public.example/live.m3u8" {
+		t.Fatalf("SourceURL = %q", gotOpts.SourceURL)
+	}
+	if gotOpts.TrustMode != hlsbuffer.TrustModeGenericPublic {
+		t.Fatalf("TrustMode = %v, want generic public", gotOpts.TrustMode)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if req.StreamURL != "/tmp/url-buffered.m3u8" {
+		t.Fatalf("StreamURL = %q, want buffered local playlist", req.StreamURL)
+	}
+	if got := strings.Join(req.MediaInputPolicy.ProtocolWhitelist, ","); got != "file" {
+		t.Fatalf("ProtocolWhitelist = %q, want file", got)
+	}
+	if req.MediaKind != core.MediaKindVideo {
+		t.Fatalf("MediaKind = %q, want video", req.MediaKind)
+	}
+	req.OnStop("stopped")
+	if closeCalls != 1 {
+		t.Fatalf("buffer Close calls after OnStop = %d, want 1", closeCalls)
+	}
+}
+
+func TestURLDirectM3U8OffBypassesBuffer(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+	enableURLHLSBufferForTest(a)
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		t.Fatal("hlsBufferOpen should not be called when hls_buffer=off")
+		return nil, nil
+	}
+
+	body := strings.NewReader("url=https%3A%2F%2Fpublic.example%2Flive.m3u8&mode=direct&hls_buffer=off")
+	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handlePlay(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	got := a.core.(*fakeCore).snapshot()
+	if got.StreamURL != "https://public.example/live.m3u8" {
+		t.Fatalf("StreamURL = %q, want direct URL", got.StreamURL)
+	}
+}
+
+func TestURLBufferedM3U8CleansBufferOnStartFailure(t *testing.T) {
+	fr := &fakeResolver{}
+	a := newAdapterWithResolver(t, fr)
+	enableURLHLSBufferForTest(a)
+	a.core.(*fakeCore).startErr = errors.New("core start failed")
+	var closeCalls int
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/url-buffered.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close: func() error {
+				closeCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	_, _, _, err := a.castURL(t.Context(), "https://public.example/live.m3u8", "direct")
+	if err == nil {
+		t.Fatal("castURL error = nil, want start failure")
+	}
+	if closeCalls != 1 {
+		t.Fatalf("buffer Close calls = %d, want 1", closeCalls)
+	}
+}
+
 func TestPlay_ModeYtdlp_AlwaysRoutesThroughResolver(t *testing.T) {
 	fr := &fakeResolver{
 		res: &ytdlp.Resolution{URL: "https://resolved.example/v.mp4"},
@@ -781,6 +880,20 @@ func TestPlay_ModeYtdlp_AlwaysRoutesThroughResolver(t *testing.T) {
 	if len(fr.calls) != 1 {
 		t.Fatalf("resolver calls = %d, want 1 (forced)", len(fr.calls))
 	}
+}
+
+func enableURLHLSBufferForTest(a *Adapter) {
+	a.bridge.HLSBuffer.Enabled = true
+	a.bridge.HLSBuffer.LiveEdgeSegments = 3
+	a.bridge.HLSBuffer.StartSegments = 2
+	a.bridge.HLSBuffer.MaxCachedSegments = 6
+	a.bridge.HLSBuffer.MaxCacheBytes = 268435456
+	a.bridge.HLSBuffer.MaxPlaylistBytes = 1048576
+	a.bridge.HLSBuffer.MaxSegmentBytes = 52428800
+	a.bridge.HLSBuffer.SegmentTimeoutSeconds = 10
+	a.bridge.HLSBuffer.PlaylistTimeoutSeconds = 10
+	a.bridge.HLSBuffer.MaxVariantHeight = 720
+	a.bridge.HLSBuffer.StaleCacheReapHours = 24
 }
 
 func TestPlay_ModeDirect_NeverRoutesThroughResolver(t *testing.T) {

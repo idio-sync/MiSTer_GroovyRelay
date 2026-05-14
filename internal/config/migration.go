@@ -127,6 +127,7 @@ func Migrate(legacy []byte) ([]byte, error) {
 			UI: UIConfig{
 				HTTPPort: old.HTTPPort,
 			},
+			HLSBuffer: defaultHLSBufferConfig(),
 		},
 		Adapters: map[string]map[string]interface{}{
 			"plex": {
@@ -279,6 +280,7 @@ func defaultBridge() BridgeConfig {
 		UI: UIConfig{
 			HTTPPort: d.HTTPPort,
 		},
+		HLSBuffer: defaultHLSBufferConfig(),
 	}
 }
 

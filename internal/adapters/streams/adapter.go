@@ -15,6 +15,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 type AdapterConfig struct {
@@ -37,14 +38,18 @@ type streamResolver interface {
 	Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error)
 }
 
+type hlsBufferOpener func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error)
+
 const defaultYTDLPResolveTimeout = 30 * time.Second
 
 type Adapter struct {
-	core        SessionManager
-	cookiesPath string
-	cacheDir    string
-	ytdlpBinary ytdlp.BinaryResolver
-	resolver    streamResolver
+	core          SessionManager
+	bridge        config.BridgeConfig
+	cookiesPath   string
+	cacheDir      string
+	ytdlpBinary   ytdlp.BinaryResolver
+	resolver      streamResolver
+	hlsBufferOpen hlsBufferOpener
 
 	fetchManifest func(context.Context) (Manifest, CacheMetadata, error)
 	refreshOnce   func(ctx context.Context, reason string) RefreshStatus
@@ -78,16 +83,18 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		return nil, fmt.Errorf("streams: AdapterConfig.Bridge.DataDir is required")
 	}
 	a := &Adapter{
-		core:        cfg.Core,
-		cookiesPath: filepath.Join(cfg.Bridge.DataDir, "streams_cookies.txt"),
-		cacheDir:    filepath.Join(cfg.Bridge.DataDir, "streams"),
-		ytdlpBinary: cfg.YTDLPResolver,
-		cfg:         DefaultConfig(),
-		state:       adapters.StateStopped,
-		stateSince:  time.Now(),
-		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
-		definitions: map[string]ProviderDefinition{},
-		catalogs:    map[string]ProviderCatalog{},
+		core:          cfg.Core,
+		bridge:        cfg.Bridge,
+		cookiesPath:   filepath.Join(cfg.Bridge.DataDir, "streams_cookies.txt"),
+		cacheDir:      filepath.Join(cfg.Bridge.DataDir, "streams"),
+		ytdlpBinary:   cfg.YTDLPResolver,
+		hlsBufferOpen: hlsbuffer.OpenSession,
+		cfg:           DefaultConfig(),
+		state:         adapters.StateStopped,
+		stateSince:    time.Now(),
+		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
+		definitions:   map[string]ProviderDefinition{},
+		catalogs:      map[string]ProviderCatalog{},
 	}
 	a.fetchManifest = a.fetchManifestDefault
 	a.refreshOnce = a.refreshOnceDefault
@@ -140,6 +147,14 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 				Label:      fmt.Sprintf("%s Catalog Refresh Hours", id),
 				Kind:       adapters.KindInt,
 				Default:    0,
+				ApplyScope: adapters.ScopeHotSwap,
+				Section:    "Provider Overrides",
+			},
+			adapters.FieldDef{
+				Key:        fmt.Sprintf("providers.%s.hls_buffer_disabled", id),
+				Label:      fmt.Sprintf("%s HLS Buffer Disabled", id),
+				Kind:       adapters.KindBool,
+				Default:    false,
 				ApplyScope: adapters.ScopeHotSwap,
 				Section:    "Provider Overrides",
 			},

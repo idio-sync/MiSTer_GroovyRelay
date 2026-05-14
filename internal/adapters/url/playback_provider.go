@@ -140,6 +140,16 @@ func (a *Adapter) QuickCastTabs() []adapters.QuickCastTab {
 	a.mu.Unlock()
 
 	fields := []adapters.QuickCastField{{Name: "url", Label: "URL", Type: "url", Placeholder: "https://example.com/video.mp4", Required: true}}
+	fields = append(fields, adapters.QuickCastField{
+		Name:     "hls_buffer",
+		Label:    "HLS buffer",
+		Type:     "select",
+		Required: true,
+		Options: []adapters.QuickCastOption{
+			{Value: "auto", Label: "Auto"},
+			{Value: "off", Label: "Off"},
+		},
+	})
 	if cfg.YtdlpEnabled && probe.OK {
 		fields = append(fields, adapters.QuickCastField{
 			Name:     "mode",
@@ -174,7 +184,11 @@ func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastReq
 	if mode == "" {
 		mode = "auto"
 	}
-	ref, _, _, err := a.castURL(ctx, rawURL, mode)
+	hlsBufferMode := strings.TrimSpace(req.Values["hls_buffer"])
+	if hlsBufferMode == "" {
+		hlsBufferMode = "auto"
+	}
+	ref, _, _, err := a.castURLWithHLSBuffer(ctx, rawURL, mode, hlsBufferMode)
 	if err != nil {
 		return adapters.QuickCastResult{}, err
 	}

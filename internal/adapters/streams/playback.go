@@ -5,12 +5,16 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 func (a *Adapter) StartResolvedStream(ctx context.Context, res streamhandoff.Resolution) (streamhandoff.StartResult, error) {
@@ -284,14 +288,41 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		if strings.TrimSpace(q.ProviderName) != "" && strings.TrimSpace(q.ChannelName) != "" {
 			title = strings.TrimSpace(q.ProviderName) + " / " + strings.TrimSpace(q.ChannelName)
 		}
+		playbackURL := pageURL
+		mediaPolicy := directHLSInputPolicy()
+		onStop := a.makeOnStop(capture)
+		var hlsSession *hlsbuffer.Session
+		if a.shouldBufferDirectHLS(q, item) {
+			open := a.hlsBufferOpen
+			if open == nil {
+				open = hlsbuffer.OpenSession
+			}
+			var err error
+			hlsSession, err = open(resolveCtx, hlsbuffer.SessionOptions{
+				SourceURL:    pageURL,
+				CacheRoot:    a.hlsBufferCacheRoot(),
+				Config:       hlsConfigFromBridge(a.bridge.HLSBuffer),
+				TrustMode:    hlsbuffer.TrustModeBundledToonami,
+				OutputHeight: a.hlsOutputHeight(),
+			})
+			if err != nil {
+				cancel()
+				a.clearResolveIfCurrent(capture)
+				return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to buffer HLS stream")
+			}
+			playbackURL = hlsSession.PlaybackPath
+			mediaPolicy = hlsSession.Policy
+			onStop = withHLSBufferCleanup(onStop, hlsSession)
+		}
 		req := core.SessionRequest{
-			StreamURL:    pageURL,
+			StreamURL:    playbackURL,
 			AdapterRef:   ref,
 			DirectPlay:   true,
 			Capabilities: core.Capabilities{CanPause: false, CanSeek: false},
 			// SECURITY/AUDIO: Toonami Radio currently advertises video HLS. If it becomes audio-only, add MediaKindMusic + VisualizerRequest or remove Radio.
-			MediaInputPolicy: directHLSInputPolicy(),
-			OnStop:           a.makeOnStop(capture),
+			MediaKind:        core.MediaKindVideo,
+			MediaInputPolicy: mediaPolicy,
+			OnStop:           onStop,
 			Source:           a.Name(),
 			Title:            title,
 		}
@@ -299,11 +330,13 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		a.playbackMu.Lock()
 		if !a.captureStillActive(capture) {
 			a.playbackMu.Unlock()
+			closeHLSSession(hlsSession)
 			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream start was superseded")
 		}
 		matched, err := starter(coreManager, req)
 		if err != nil {
 			a.playbackMu.Unlock()
+			closeHLSSession(hlsSession)
 			if next, ok := a.recordStartFailureAndAdvance(capture, "failed to start stream playback"); ok {
 				a.runBeforeQueueContinuation()
 				return a.playCurrentWithStarter(ctx, next, starter)
@@ -312,6 +345,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		}
 		if !matched {
 			a.playbackMu.Unlock()
+			closeHLSSession(hlsSession)
 			a.clearQueueIfCurrent(capture)
 			return streamhandoff.StartResult{}, false, nil
 		}
@@ -423,6 +457,69 @@ func directHLSInputPolicy() core.MediaInputPolicy {
 		DisableReconnect:  true,
 		RWTimeout:         5 * time.Second,
 		BlockedHeaders:    []string{"Cookie", "Authorization", "Proxy-Authorization", "Referer"},
+	}
+}
+
+func (a *Adapter) shouldBufferDirectHLS(q *ActiveQueue, item StreamItem) bool {
+	if !item.Direct || !a.bridge.HLSBuffer.Enabled {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("GROOVY_HLS_BUFFER")) == "0" {
+		return false
+	}
+	providerCfg, ok := a.cfg.Providers[q.ProviderID]
+	if ok {
+		if providerCfg.HLSBufferDisabled {
+			return false
+		}
+		if channelCfg, ok := providerCfg.Channels[q.ChannelID]; ok && channelCfg.HLSBufferDisabled {
+			return false
+		}
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(streamItemURL(item))), ".m3u8")
+}
+
+func (a *Adapter) hlsBufferCacheRoot() string {
+	return filepath.Join(a.cacheDir, "hls")
+}
+
+func (a *Adapter) hlsOutputHeight() int {
+	switch a.bridge.Video.Modeline {
+	case "PAL_576i", "PAL_288p":
+		return 576
+	default:
+		return 480
+	}
+}
+
+func hlsConfigFromBridge(c config.HLSBufferConfig) hlsbuffer.Config {
+	return hlsbuffer.Config{
+		Enabled:                c.Enabled,
+		LiveEdgeSegments:       c.LiveEdgeSegments,
+		StartSegments:          c.StartSegments,
+		MaxCachedSegments:      c.MaxCachedSegments,
+		MaxCacheBytes:          c.MaxCacheBytes,
+		MaxPlaylistBytes:       c.MaxPlaylistBytes,
+		MaxSegmentBytes:        c.MaxSegmentBytes,
+		SegmentTimeout:         time.Duration(c.SegmentTimeoutSeconds) * time.Second,
+		PlaylistTimeout:        time.Duration(c.PlaylistTimeoutSeconds) * time.Second,
+		MaxVariantHeight:       c.MaxVariantHeight,
+		StaleCacheReapInterval: time.Duration(c.StaleCacheReapHours) * time.Hour,
+	}
+}
+
+func withHLSBufferCleanup(base func(string), session *hlsbuffer.Session) func(string) {
+	return func(reason string) {
+		if base != nil {
+			base(reason)
+		}
+		closeHLSSession(session)
+	}
+}
+
+func closeHLSSession(session *hlsbuffer.Session) {
+	if session != nil && session.Close != nil {
+		_ = session.Close()
 	}
 }
 

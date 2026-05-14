@@ -62,10 +62,11 @@ func validHistoryID(id string) bool {
 // leave it empty. omitempty keeps the on-disk JSON tidy for entries
 // that never acquired a title.
 type HistoryEntry struct {
-	ID           string    `json:"id,omitempty"`
-	URL          string    `json:"url"`
-	LastPlayedAt time.Time `json:"last_played_at"`
-	Title        string    `json:"title,omitempty"`
+	ID            string    `json:"id,omitempty"`
+	URL           string    `json:"url"`
+	LastPlayedAt  time.Time `json:"last_played_at"`
+	Title         string    `json:"title,omitempty"`
+	HLSBufferMode string    `json:"hls_buffer_mode,omitempty"`
 }
 
 // historyFile is the on-disk envelope. Version is reserved for forward
@@ -139,6 +140,7 @@ func LoadHistory(path string) *History {
 			deduped[i].ID = newHistoryID()
 			backfilled = true
 		}
+		deduped[i].HLSBufferMode = normalizeStoredHLSBufferMode(deduped[i].HLSBufferMode)
 	}
 	h.mu.Lock()
 	h.entries = deduped
@@ -158,6 +160,14 @@ func LoadHistory(path string) *History {
 // inserted at position 0; older entries shift down; entries beyond the
 // max are evicted. Persists to disk if path is set.
 func (h *History) AddOrBump(rawURL string) {
+	h.addOrBump(rawURL, "", false)
+}
+
+func (h *History) AddOrBumpWithHLSMode(rawURL, mode string) {
+	h.addOrBump(rawURL, normalizeStoredHLSBufferMode(mode), true)
+}
+
+func (h *History) addOrBump(rawURL, hlsBufferMode string, setHLSBufferMode bool) {
 	key := dedupeKey(rawURL)
 	if key == "" {
 		return // unparseable; caller should validate first
@@ -167,13 +177,15 @@ func (h *History) AddOrBump(rawURL string) {
 	now := time.Now().UTC()
 
 	// Remove existing entry with the same dedupe key, if any. Carry
-	// its title forward so the bump doesn't drop metadata.
+	// its title and HLS mode forward so the bump doesn't drop metadata.
 	var carriedID string
 	var carriedTitle string
+	var carriedHLSBufferMode string
 	for i, e := range h.entries {
 		if dedupeKey(e.URL) == key {
 			carriedID = e.ID
 			carriedTitle = e.Title
+			carriedHLSBufferMode = normalizeStoredHLSBufferMode(e.HLSBufferMode)
 			h.entries = append(h.entries[:i], h.entries[i+1:]...)
 			break
 		}
@@ -181,18 +193,39 @@ func (h *History) AddOrBump(rawURL string) {
 	if !validHistoryID(carriedID) {
 		carriedID = newHistoryID()
 	}
+	if !setHLSBufferMode {
+		hlsBufferMode = carriedHLSBufferMode
+	}
 
 	// Prepend the new entry, then enforce the cap unconditionally.
 	h.entries = append([]HistoryEntry{{
-		ID:           carriedID,
-		URL:          rawURL,
-		LastPlayedAt: now,
-		Title:        carriedTitle,
+		ID:            carriedID,
+		URL:           rawURL,
+		LastPlayedAt:  now,
+		Title:         carriedTitle,
+		HLSBufferMode: hlsBufferMode,
 	}}, h.entries...)
 	if len(h.entries) > historyMaxEntries {
 		h.entries = h.entries[:historyMaxEntries]
 	}
 	h.saveLocked()
+}
+
+func normalizeStoredHLSBufferMode(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	switch raw {
+	case "auto", "off":
+		return raw
+	default:
+		return ""
+	}
+}
+
+func historyEntryHLSBufferMode(e HistoryEntry) string {
+	if mode := normalizeStoredHLSBufferMode(e.HLSBufferMode); mode != "" {
+		return mode
+	}
+	return "auto"
 }
 
 // SetTitle attaches a title to the entry whose dedupe key matches

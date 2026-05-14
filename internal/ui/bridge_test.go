@@ -30,6 +30,19 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			DeltaLZ4Enabled:     true,
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
+		HLSBuffer: config.HLSBufferConfig{
+			Enabled:                true,
+			LiveEdgeSegments:       3,
+			StartSegments:          2,
+			MaxCachedSegments:      6,
+			MaxCacheBytes:          268435456,
+			MaxPlaylistBytes:       1048576,
+			MaxSegmentBytes:        52428800,
+			SegmentTimeoutSeconds:  10,
+			PlaylistTimeoutSeconds: 10,
+			MaxVariantHeight:       720,
+			StaleCacheReapHours:    24,
+		},
 		MiSTer: config.MisterConfig{
 			Host: "192.168.1.42", Port: 32100, SourcePort: 32101,
 			SSHUser: "alice", SSHPassword: "hunter2",
@@ -56,6 +69,20 @@ func newBridgeTestServer(t *testing.T, saver *fakeBridgeSaver) *http.ServeMux {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	return mux
+}
+
+func hlsBufferFormDefaults() string {
+	return "&hls_buffer.enabled=true" +
+		"&hls_buffer.live_edge_segments=3" +
+		"&hls_buffer.start_segments=2" +
+		"&hls_buffer.max_cached_segments=6" +
+		"&hls_buffer.max_cache_bytes=268435456" +
+		"&hls_buffer.max_playlist_bytes=1048576" +
+		"&hls_buffer.max_segment_bytes=52428800" +
+		"&hls_buffer.segment_timeout_seconds=10" +
+		"&hls_buffer.playlist_timeout_seconds=10" +
+		"&hls_buffer.max_variant_height=720" +
+		"&hls_buffer.stale_cache_reap_hours=24"
 }
 
 func TestHandleBridge_GET_RendersAllFields(t *testing.T) {
@@ -138,7 +165,8 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -183,7 +211,8 @@ func TestHandleBridge_POST_ValidationError(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -340,7 +369,8 @@ func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -519,7 +549,8 @@ func TestBridgeSave_HotSwapRendersPipNoToast(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -572,7 +603,8 @@ func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -626,7 +658,8 @@ func TestToast_RestartBridge_HasCopyButton(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32600" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -674,7 +707,8 @@ func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
-			"&data_dir=/config")
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
 
 	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

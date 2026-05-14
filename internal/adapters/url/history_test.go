@@ -54,6 +54,26 @@ func TestHistory_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestURLHistoryReplayPreservesHLSBufferMode(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "h.json")
+	h := LoadHistory(tmp)
+	h.AddOrBumpWithHLSMode("https://example.com/live.m3u8", "off")
+
+	h2 := LoadHistory(tmp)
+	list := h2.List()
+	if len(list) != 1 {
+		t.Fatalf("history len = %d, want 1", len(list))
+	}
+	if list[0].HLSBufferMode != "off" {
+		t.Fatalf("HLSBufferMode = %q, want off", list[0].HLSBufferMode)
+	}
+
+	h2.AddOrBumpWithHLSMode("https://example.com/live.m3u8", "auto")
+	if got := h2.List()[0].HLSBufferMode; got != "auto" {
+		t.Fatalf("bumped HLSBufferMode = %q, want auto", got)
+	}
+}
+
 func TestHistory_LRUBump(t *testing.T) {
 	h := LoadHistory("")
 	h.AddOrBump("https://a/")

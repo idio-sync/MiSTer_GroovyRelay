@@ -25,6 +25,7 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	form.Set("ffmpeg_path", "/tools/ffmpeg")
 	form.Set("ffprobe_path", "/tools/ffprobe")
 	form.Set("ytdlp_path", "/tools/yt-dlp")
+	addHLSBufferFormDefaults(form)
 
 	got, err := parseBridgeForm(form)
 	if err != nil {
@@ -65,6 +66,7 @@ func TestParseBridgeForm_BadInt(t *testing.T) {
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
+	addHLSBufferFormDefaults(form)
 
 	_, err := parseBridgeForm(form)
 	if err == nil {
@@ -94,6 +96,7 @@ func TestParseBridgeForm_BoolFalse(t *testing.T) {
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
+	addHLSBufferFormDefaults(form)
 
 	got, err := parseBridgeForm(form)
 	if err != nil {
@@ -124,6 +127,7 @@ func TestParseBridgeForm_LoggingDebug(t *testing.T) {
 	base.Set("audio.channels", "2")
 	base.Set("ui.http_port", "32500")
 	base.Set("data_dir", "/config")
+	addHLSBufferFormDefaults(base)
 
 	t.Run("checked", func(t *testing.T) {
 		form := cloneValues(base)
@@ -149,12 +153,102 @@ func TestParseBridgeForm_LoggingDebug(t *testing.T) {
 	})
 }
 
+func TestParseBridgeForm_HLSBufferFields(t *testing.T) {
+	form := url.Values{}
+	form.Set("mister.host", "192.168.1.42")
+	form.Set("mister.port", "32100")
+	form.Set("mister.source_port", "32101")
+	form.Set("video.modeline", "NTSC_480i")
+	form.Set("video.interlace_field_order", "bff")
+	form.Set("video.aspect_mode", "auto")
+	form.Set("audio.sample_rate", "48000")
+	form.Set("audio.channels", "2")
+	form.Set("ui.http_port", "32500")
+	form.Set("data_dir", "/config")
+	form.Set("hls_buffer.enabled", "true")
+	form.Set("hls_buffer.live_edge_segments", "4")
+	form.Set("hls_buffer.start_segments", "3")
+	form.Set("hls_buffer.max_cached_segments", "8")
+	form.Set("hls_buffer.max_cache_bytes", "536870912")
+	form.Set("hls_buffer.max_playlist_bytes", "2097152")
+	form.Set("hls_buffer.max_segment_bytes", "104857600")
+	form.Set("hls_buffer.segment_timeout_seconds", "11")
+	form.Set("hls_buffer.playlist_timeout_seconds", "12")
+	form.Set("hls_buffer.max_variant_height", "1080")
+	form.Set("hls_buffer.stale_cache_reap_hours", "48")
+
+	got, err := parseBridgeForm(form)
+	if err != nil {
+		t.Fatalf("parseBridgeForm: %v", err)
+	}
+	want := config.HLSBufferConfig{
+		Enabled:                true,
+		LiveEdgeSegments:       4,
+		StartSegments:          3,
+		MaxCachedSegments:      8,
+		MaxCacheBytes:          536870912,
+		MaxPlaylistBytes:       2097152,
+		MaxSegmentBytes:        104857600,
+		SegmentTimeoutSeconds:  11,
+		PlaylistTimeoutSeconds: 12,
+		MaxVariantHeight:       1080,
+		StaleCacheReapHours:    48,
+	}
+	if got.HLSBuffer != want {
+		t.Fatalf("HLSBuffer = %+v, want %+v", got.HLSBuffer, want)
+	}
+}
+
+func TestEnsureHLSBufferFormFieldsPreservesCurrentWhenSectionAbsent(t *testing.T) {
+	form := url.Values{}
+	cur := config.HLSBufferConfig{
+		Enabled:                false,
+		LiveEdgeSegments:       4,
+		StartSegments:          3,
+		MaxCachedSegments:      8,
+		MaxCacheBytes:          536870912,
+		MaxPlaylistBytes:       2097152,
+		MaxSegmentBytes:        104857600,
+		SegmentTimeoutSeconds:  11,
+		PlaylistTimeoutSeconds: 12,
+		MaxVariantHeight:       1080,
+		StaleCacheReapHours:    48,
+	}
+	ensureHLSBufferFormFields(form, cur)
+	if got := form.Get("hls_buffer.enabled"); got != "false" {
+		t.Fatalf("hls_buffer.enabled = %q, want false", got)
+	}
+	if got := form.Get("hls_buffer.max_cache_bytes"); got != "536870912" {
+		t.Fatalf("hls_buffer.max_cache_bytes = %q, want current value", got)
+	}
+
+	form.Set("hls_buffer.live_edge_segments", "9")
+	ensureHLSBufferFormFields(form, cur)
+	if got := form.Get("hls_buffer.live_edge_segments"); got != "9" {
+		t.Fatalf("present hls_buffer field should not be overwritten, got %q", got)
+	}
+}
+
 func cloneValues(v url.Values) url.Values {
 	out := url.Values{}
 	for k, vs := range v {
 		out[k] = append([]string(nil), vs...)
 	}
 	return out
+}
+
+func addHLSBufferFormDefaults(form url.Values) {
+	form.Set("hls_buffer.enabled", "true")
+	form.Set("hls_buffer.live_edge_segments", "3")
+	form.Set("hls_buffer.start_segments", "2")
+	form.Set("hls_buffer.max_cached_segments", "6")
+	form.Set("hls_buffer.max_cache_bytes", "268435456")
+	form.Set("hls_buffer.max_playlist_bytes", "1048576")
+	form.Set("hls_buffer.max_segment_bytes", "52428800")
+	form.Set("hls_buffer.segment_timeout_seconds", "10")
+	form.Set("hls_buffer.playlist_timeout_seconds", "10")
+	form.Set("hls_buffer.max_variant_height", "720")
+	form.Set("hls_buffer.stale_cache_reap_hours", "24")
 }
 
 func TestStripExperimentalSuffix(t *testing.T) {
@@ -195,6 +289,7 @@ func TestParseBridgeForm_StripsExperimentalSuffix(t *testing.T) {
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
+	addHLSBufferFormDefaults(form)
 
 	cfg, err := parseBridgeForm(form)
 	if err != nil {
@@ -222,6 +317,7 @@ func TestParseBridgeForm_SSHFields(t *testing.T) {
 	form.Set("audio.channels", "2")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
+	addHLSBufferFormDefaults(form)
 
 	got, err := parseBridgeForm(form)
 	if err != nil {

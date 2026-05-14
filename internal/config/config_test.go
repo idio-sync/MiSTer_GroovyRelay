@@ -186,6 +186,100 @@ func validSectioned() *Sectioned {
 	return &Sectioned{Bridge: b}
 }
 
+func TestDefaultBridge_HLSBufferDefaults(t *testing.T) {
+	b := defaultBridge()
+	want := HLSBufferConfig{
+		Enabled:                true,
+		LiveEdgeSegments:       3,
+		StartSegments:          2,
+		MaxCachedSegments:      6,
+		MaxCacheBytes:          268435456,
+		MaxPlaylistBytes:       1048576,
+		MaxSegmentBytes:        52428800,
+		SegmentTimeoutSeconds:  10,
+		PlaylistTimeoutSeconds: 10,
+		MaxVariantHeight:       720,
+		StaleCacheReapHours:    24,
+	}
+	if b.HLSBuffer != want {
+		t.Fatalf("HLSBuffer defaults = %+v, want %+v", b.HLSBuffer, want)
+	}
+}
+
+func TestLoadSectioned_MissingHLSBufferGetsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	body := fmt.Sprintf(`
+[bridge]
+data_dir = %q
+
+[bridge.video]
+modeline = "NTSC_480i"
+interlace_field_order = "tff"
+aspect_mode = "auto"
+rgb_mode = "rgb888"
+lz4_enabled = true
+
+[bridge.audio]
+sample_rate = 48000
+channels = 2
+
+[bridge.mister]
+host = "127.0.0.1"
+port = 32100
+source_port = 32101
+
+[bridge.ui]
+http_port = 32500
+`, dir)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sec, err := LoadSectioned(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadSectioned: %v", err)
+	}
+	if got, want := sec.Bridge.HLSBuffer, defaultHLSBufferConfig(); got != want {
+		t.Fatalf("HLSBuffer = %+v, want defaults %+v", got, want)
+	}
+}
+
+func TestSectioned_Validate_HLSBuffer(t *testing.T) {
+	valid := validSectioned()
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("default HLSBuffer should validate: %v", err)
+	}
+	cases := []struct {
+		name string
+		mut  func(*HLSBufferConfig)
+		key  string
+	}{
+		{"live edge below start", func(c *HLSBufferConfig) { c.LiveEdgeSegments = 1; c.StartSegments = 2 }, "live_edge_segments"},
+		{"start segments below one", func(c *HLSBufferConfig) { c.StartSegments = 0 }, "start_segments"},
+		{"cached segments below start", func(c *HLSBufferConfig) { c.MaxCachedSegments = 1; c.StartSegments = 2 }, "max_cached_segments"},
+		{"cache bytes too small", func(c *HLSBufferConfig) { c.MaxCacheBytes = 1 }, "max_cache_bytes"},
+		{"playlist bytes too small", func(c *HLSBufferConfig) { c.MaxPlaylistBytes = 1 }, "max_playlist_bytes"},
+		{"segment bytes too small", func(c *HLSBufferConfig) { c.MaxSegmentBytes = 1 }, "max_segment_bytes"},
+		{"segment timeout too small", func(c *HLSBufferConfig) { c.SegmentTimeoutSeconds = 0 }, "segment_timeout_seconds"},
+		{"playlist timeout too small", func(c *HLSBufferConfig) { c.PlaylistTimeoutSeconds = 0 }, "playlist_timeout_seconds"},
+		{"variant height too small", func(c *HLSBufferConfig) { c.MaxVariantHeight = 1 }, "max_variant_height"},
+		{"reap hours too small", func(c *HLSBufferConfig) { c.StaleCacheReapHours = 0 }, "stale_cache_reap_hours"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := validSectioned()
+			tc.mut(&s.Bridge.HLSBuffer)
+			err := s.Validate()
+			if err == nil {
+				t.Fatalf("Validate() error = nil, want %s error", tc.key)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("Validate() error = %q, want mention %q", err, tc.key)
+			}
+		})
+	}
+}
+
 // TestSectioned_RoundTripSSHFields confirms the new SSH credential
 // fields decode + re-encode through BurntSushi/toml without loss.
 // Catches a forgotten struct tag or a missed migration helper if

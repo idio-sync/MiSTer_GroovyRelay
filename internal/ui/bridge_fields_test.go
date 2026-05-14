@@ -123,6 +123,80 @@ func TestBridgeFields_HasDeltaLZ4Toggle(t *testing.T) {
 	}
 }
 
+func TestBridgeFields_HLSBufferFieldsRestartCast(t *testing.T) {
+	want := map[string]bool{
+		"hls_buffer.enabled":                  false,
+		"hls_buffer.live_edge_segments":       false,
+		"hls_buffer.start_segments":           false,
+		"hls_buffer.max_cached_segments":      false,
+		"hls_buffer.max_cache_bytes":          false,
+		"hls_buffer.max_playlist_bytes":       false,
+		"hls_buffer.max_segment_bytes":        false,
+		"hls_buffer.segment_timeout_seconds":  false,
+		"hls_buffer.playlist_timeout_seconds": false,
+		"hls_buffer.max_variant_height":       false,
+		"hls_buffer.stale_cache_reap_hours":   false,
+	}
+	for _, f := range bridgeFields() {
+		seen, ok := want[f.Key]
+		if !ok {
+			continue
+		}
+		if seen {
+			t.Fatalf("duplicate bridge field %q", f.Key)
+		}
+		if f.Section != "HLS Buffer" {
+			t.Errorf("%s section = %q, want HLS Buffer", f.Key, f.Section)
+		}
+		if f.ApplyScope != adapters.ScopeRestartCast {
+			t.Errorf("%s scope = %v, want ScopeRestartCast", f.Key, f.ApplyScope)
+		}
+		want[f.Key] = true
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("%s not found in bridgeFields()", k)
+		}
+	}
+}
+
+func TestBridgeLookup_HLSBufferValues(t *testing.T) {
+	cur := config.BridgeConfig{HLSBuffer: config.HLSBufferConfig{
+		Enabled:                true,
+		LiveEdgeSegments:       4,
+		StartSegments:          3,
+		MaxCachedSegments:      8,
+		MaxCacheBytes:          536870912,
+		MaxPlaylistBytes:       2097152,
+		MaxSegmentBytes:        104857600,
+		SegmentTimeoutSeconds:  11,
+		PlaylistTimeoutSeconds: 12,
+		MaxVariantHeight:       1080,
+		StaleCacheReapHours:    48,
+	}}
+
+	ints := map[string]int{
+		"hls_buffer.live_edge_segments":       4,
+		"hls_buffer.start_segments":           3,
+		"hls_buffer.max_cached_segments":      8,
+		"hls_buffer.max_cache_bytes":          536870912,
+		"hls_buffer.max_playlist_bytes":       2097152,
+		"hls_buffer.max_segment_bytes":        104857600,
+		"hls_buffer.segment_timeout_seconds":  11,
+		"hls_buffer.playlist_timeout_seconds": 12,
+		"hls_buffer.max_variant_height":       1080,
+		"hls_buffer.stale_cache_reap_hours":   48,
+	}
+	for key, want := range ints {
+		if got := bridgeLookupInt(key, cur); got != want {
+			t.Errorf("bridgeLookupInt(%q) = %d, want %d", key, got, want)
+		}
+	}
+	if !bridgeLookupBool("hls_buffer.enabled", cur) {
+		t.Error("bridgeLookupBool(hls_buffer.enabled) = false, want true")
+	}
+}
+
 func TestRowFor_KindAction(t *testing.T) {
 	fd := adapters.FieldDef{
 		Key:     "mister/launch",

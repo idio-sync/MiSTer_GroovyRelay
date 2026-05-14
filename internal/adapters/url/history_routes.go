@@ -58,10 +58,8 @@ func (a *Adapter) handleHistoryPlay(w http.ResponseWriter, r *http.Request) {
 		a.respondControlError(w, http.StatusBadRequest, fmt.Sprintf("idx %d out of range", idx))
 		return
 	}
-	// Bump to position 0 before casting; the operator's intent is to use this
-	// URL most recently. The bump persists even if castURL fails.
-	a.history.AddOrBump(entry.URL)
-	_, _, status, cerr := a.castURL(r.Context(), entry.URL, "auto")
+	hlsBufferMode := historyEntryHLSBufferMode(entry)
+	_, _, status, cerr := a.castURLWithHLSBuffer(r.Context(), entry.URL, "auto", hlsBufferMode)
 	if cerr != nil {
 		a.respondControlError(w, status, cerr.Error())
 		return

@@ -129,6 +129,29 @@ func TestRenderPanel_DoesNotRenderLaunchModeRadio(t *testing.T) {
 	}
 }
 
+func TestQuickCastTabsRendersHLSBufferModeControl(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	tabs := a.QuickCastTabs()
+	if len(tabs) != 1 {
+		t.Fatalf("QuickCastTabs len = %d, want 1", len(tabs))
+	}
+	for _, field := range tabs[0].Fields {
+		if field.Name != "hls_buffer" {
+			continue
+		}
+		if field.Type != "select" || field.Label != "HLS buffer" {
+			t.Fatalf("hls_buffer field = %+v, want select labeled HLS buffer", field)
+		}
+		if len(field.Options) != 2 ||
+			field.Options[0].Value != "auto" ||
+			field.Options[1].Value != "off" {
+			t.Fatalf("hls_buffer options = %+v, want auto/off", field.Options)
+		}
+		return
+	}
+	t.Fatalf("QuickCastTabs missing hls_buffer field: %+v", tabs[0].Fields)
+}
+
 func TestRenderPanel_HidesModeRadio_WhenYtdlpDisabled(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	a.cfg.YtdlpEnabled = false

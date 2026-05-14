@@ -35,6 +35,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/extbin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
@@ -72,6 +73,9 @@ func main() {
 	}
 	if err := config.EnsureDataDirWritable(sec.Bridge.DataDir); err != nil {
 		dieFriendly("data_dir preflight", err)
+	}
+	if err := reapHLSBufferCaches(sec.Bridge, time.Now()); err != nil {
+		slog.Warn("hls buffer cache reap failed", "err", err)
 	}
 
 	selfDir := executableDir()
@@ -366,6 +370,26 @@ func main() {
 			slog.Warn("adapter stop", "name", a.Name(), "err", err)
 		}
 	}
+}
+
+func reapHLSBufferCaches(bridge config.BridgeConfig, now time.Time) error {
+	if bridge.DataDir == "" {
+		return nil
+	}
+	reapHours := bridge.HLSBuffer.StaleCacheReapHours
+	if reapHours <= 0 {
+		reapHours = 24
+	}
+	maxAge := time.Duration(reapHours) * time.Hour
+	for _, root := range []string{
+		filepath.Join(bridge.DataDir, "streams", "hls"),
+		filepath.Join(bridge.DataDir, "url", "hls"),
+	} {
+		if err := hlsbuffer.ReapStaleSessions(root, maxAge, now); err != nil {
+			return fmt.Errorf("reap %s: %w", root, err)
+		}
+	}
+	return nil
 }
 
 // newUUID returns a crypto/rand-based UUID v4 string. Panics on rand
