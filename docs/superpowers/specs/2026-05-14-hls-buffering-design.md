@@ -68,7 +68,7 @@ The package owns these responsibilities:
 - Start playback behind the live edge.
 - Prefetch upcoming media segments.
 - Store a bounded rolling cache on disk under the bridge data directory or a session temp directory.
-- Maintain a local rewritten playlist file and local segment files for FFmpeg.
+- Maintain a local rewritten playlist file and local segment files for FFmpeg, using atomic replace for playlist updates so FFmpeg never observes a partial playlist.
 - Track cache depth, segment download duration, playlist reload count, stale playlist count, and failure reason.
 - Clean up session files when playback stops.
 
@@ -131,10 +131,10 @@ Startup for an eligible HLS cast:
 3. `hlsbuffer` validates the top-level URL for the adapter trust level.
 4. `hlsbuffer` loads the playlist, follows one supported master-to-media playlist path when needed, and starts around `hls_live_edge_segments` behind the live edge.
 5. `hlsbuffer` prefetches until at least `hls_start_segments` are available locally.
-6. Adapter starts `core.Manager` with `StreamURL` pointing to the local rewritten playlist file.
+6. Adapter starts `core.Manager` with `StreamURL` pointing to the local rewritten playlist file and a local-only media input policy for FFmpeg.
 7. FFmpeg reads the local playlist and local segment files.
 8. `hlsbuffer` continues playlist reload and segment prefetch in the background.
-9. On stop/preempt/error, adapter calls the cleanup function.
+9. On stop/preempt/error, adapter calls the cleanup function. If core rejects the start, the guarded start loses its session, or another cast preempts during warmup, the adapter must clean up the opened buffer immediately.
 
 Mid-playback:
 
@@ -151,13 +151,14 @@ Supported HLS v1 subset:
 - finite media playlists if encountered through eligible URL direct casts
 - simple master playlists with one selected variant
 - relative and absolute segment URIs
-- ordinary `.ts`, `.m4s`, `.mp4`, `.aac`, `.mp3`, or similar segment resources after validation
+- ordinary MPEG-TS or simple audio segment resources such as `.ts`, `.aac`, or `.mp3` after validation
 
 Unsupported in v1:
 
 - `#EXT-X-KEY`
 - `#EXT-X-BYTERANGE`
 - `#EXT-X-DISCONTINUITY`
+- `#EXT-X-MAP` and fragmented MP4 streams that require initialization segments
 - alternate media playlists via `#EXT-X-MEDIA:URI=...`
 - multiple audio/subtitle renditions
 - low-latency HLS parts/preload hints
@@ -176,7 +177,7 @@ Bundled Streams HLS:
 
 - URLs come from compiled bundled definitions.
 - Toonami Aftermath remains constrained to the known host and approved paths.
-- Child playlist and segment fetches still need redirect limits, timeouts, and byte limits.
+- Child playlist and segment fetches still need provider-specific validation, redirect limits, timeouts, and byte limits. For Toonami Aftermath v1, child resources should remain on the known host and inside the expected channel path prefix unless an explicit provider allowlist says otherwise.
 
 Generic URL HLS:
 
@@ -184,11 +185,15 @@ Generic URL HLS:
 - Userinfo is rejected.
 - Public remote URLs are eligible by default.
 - Loopback, link-local, metadata, private LAN, and other local addresses should bypass buffering in v1 unless explicitly enabled later.
+- Child media playlist URLs and segment URLs must pass the same public-remote validation before fetch. A public top-level playlist must not be able to point the buffer at loopback, link-local, metadata, private LAN, `file:`, or other local resources.
 - Redirects must be chased by our fetcher with validation at each hop.
 - Request headers should be minimal. Do not forward cookies, authorization, proxy authorization, or referer headers through the buffer.
 - Segment and playlist byte limits must be enforced.
 - Cache filenames must be generated, not derived directly from remote paths.
 - Local playlist output must not contain remote URLs.
+- Buffered sessions should pass a local-only `MediaInputPolicy` to core/FFmpeg, for example a protocol whitelist limited to local file access, so a rewrite bug cannot make FFmpeg fetch remote playlist children directly.
+
+The local rolling cache must not evict any segment still referenced by the playlist FFmpeg can read. Eviction should happen only after a segment has aged out of the published local playlist plus a small grace window, or after the session has stopped.
 
 The buffer should reduce FFmpeg's direct remote fetching surface for eligible public HLS because FFmpeg reads local rewritten resources. It should not create a broader SSRF surface.
 
@@ -257,8 +262,11 @@ Unit tests:
 - playlist parser accepts a simple master playlist and selects a variant;
 - parser rejects unsupported tags listed above;
 - URL resolver rewrites relative and absolute segment URIs safely;
+- bundled Toonami child URLs outside the known host or expected channel path are rejected;
+- child media playlist and segment URLs are rejected when they resolve to loopback, link-local, metadata, private LAN, `file:`, or other local resources;
 - generated cache filenames cannot escape the cache root;
 - public/private URL eligibility matches the security rules;
+- local playlist writes are atomic and never reference evicted segment files;
 - stale playlist reload and segment retry state transitions are deterministic;
 - config defaults enable the buffer.
 
