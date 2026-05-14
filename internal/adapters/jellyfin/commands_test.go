@@ -185,8 +185,11 @@ func TestHandlePlay_AudioItemStartsMusicVisualizerSession(t *testing.T) {
 	if !req.Visualizer.Enabled {
 		t.Fatalf("Visualizer.Enabled = false, want true")
 	}
+	// Jellyfin stays neutral about the user's visualizer choice. It supplies
+	// the legacy compatibility mode here; core.Manager resolves the configured
+	// bridge visualizer mode when the session starts.
 	if req.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
-		t.Errorf("Visualizer.Mode = %q, want retro analyzer", req.Visualizer.Mode)
+		t.Errorf("Visualizer.Mode = %q, want compatibility retro analyzer", req.Visualizer.Mode)
 	}
 	if req.Title != "Age of Consent" {
 		t.Errorf("Title = %q, want Age of Consent", req.Title)

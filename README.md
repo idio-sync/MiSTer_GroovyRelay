@@ -17,6 +17,21 @@ Note: The primary deployment target is a Docker container running on the same ho
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming channels
 
+## Music visualizer modes
+
+Plex and Jellyfin music casts automatically render a CRT visualizer for audio-only items. The adapters provide track metadata and a compatibility visualizer request, while the bridge applies the global visualizer mode when each music cast starts.
+
+Set the global mode in `config.toml`:
+
+```toml
+[bridge.visualizer]
+mode = "retro_analyzer"
+```
+
+Supported modes are `retro_analyzer`, `oscilloscope_wave`, `radial_spectrum`, and `stereo_scope`.
+
+Changing only the visualizer mode does not interrupt the current cast; the new mode applies to the next music cast.
+
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board or direct video adapter wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
