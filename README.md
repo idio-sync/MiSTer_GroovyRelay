@@ -10,12 +10,12 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Plex
 - Jellyfin
 - Plex/Jellyfin music tracks with CRT visualizer output
-- YouTube/Vimeo/etc. URL (and other sites supported by yt-dlp)
+- YouTube/Twitch/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
-- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), etc.)
+- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.)
 - Torrent streaming (uploaded .torrent files and magnet links)
 - DLNA / UPnP MediaRenderer
-- Built-in catalog of streaming "channels" (Cartoon Rewind, MTV Rewind, Toonami Aftermath; bundled-only, not user IPTV import)
+- Built-in catalog of streaming channels
 
 ## Hardware requirements
 
@@ -24,7 +24,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - A host on the same LAN running Docker (Linux, Unraid, Synology, a Raspberry Pi 4/5), anything with a few spare CPU cycles and gigabit-class networking.
 - A Plex/Jellyfin Media Server reachable from that host (optional)
 
-The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this container takes 480p from the server to 480i.
+The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this app takes 480p from the server to 480i.
 
 ## Quick start (Docker)
 
@@ -61,7 +61,7 @@ Advanced L2 container networks can work. With macvlan/ipvlan on `br0` or another
 
 ## Native builds
 
-Native archives are built for Windows, macOS, and Linux. On first run, the bridge writes a platform-specific config file and exits so you can set `bridge.mister.host`, then relaunch it.
+Native archives are built for Windows, macOS, and Linux. On first run, the bridge writes a platform-specific config file and exits so you can set `bridge.mister.host`, then relaunch it. These builds are supported but are not the primary target and may lag a bit in terms of features/fixes.
 
 | OS | Default config path |
 | --- | --- |
