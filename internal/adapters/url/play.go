@@ -13,14 +13,17 @@ import (
 	stdurl "net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 // handlePlay accepts a paste from the UI form or a JSON POST. Routes
@@ -38,12 +41,12 @@ import (
 // docs/specs/2026-04-25-url-adapter-controls-design.md §"Capability
 // and DirectPlay flips".
 func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
-	rawURL, mode, err := extractURLAndMode(r)
+	rawURL, mode, hlsBufferMode, err := extractURLAndMode(r)
 	if err != nil {
 		a.respondError(w, r, http.StatusBadRequest, err.Error(), "url")
 		return
 	}
-	ref, resolvedVia, status, err := a.castURL(r.Context(), rawURL, mode)
+	ref, resolvedVia, status, err := a.castURLWithHLSBuffer(r.Context(), rawURL, mode, hlsBufferMode)
 	if err != nil {
 		field := ""
 		if status == http.StatusBadRequest {
@@ -77,7 +80,11 @@ type urlCastStarter struct {
 }
 
 func (a *Adapter) castURL(ctx context.Context, rawURL, mode string) (ref, resolvedVia string, status int, err error) {
-	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
+	return a.castURLWithHLSBuffer(ctx, rawURL, mode, "auto")
+}
+
+func (a *Adapter) castURLWithHLSBuffer(ctx context.Context, rawURL, mode, hlsBufferMode string) (ref, resolvedVia string, status int, err error) {
+	return a.castURLWithStarter(ctx, rawURL, mode, hlsBufferMode, urlCastStarter{
 		startCore: func(req core.SessionRequest) (bool, error) {
 			return true, a.core.StartSession(req)
 		},
@@ -96,7 +103,7 @@ func (a *Adapter) castURLGuarded(ctx context.Context, rawURL, mode, expectedRef 
 	if st.AdapterRef != expectedRef || st.Generation != expectedGeneration {
 		return "", "", http.StatusConflict, fmt.Errorf("active session changed")
 	}
-	return a.castURLWithStarter(ctx, rawURL, mode, urlCastStarter{
+	return a.castURLWithStarter(ctx, rawURL, mode, "auto", urlCastStarter{
 		startCore: func(req core.SessionRequest) (bool, error) {
 			return a.core.StartSessionIfSession(req, expectedRef, expectedGeneration)
 		},
@@ -110,7 +117,7 @@ func (a *Adapter) castURLGuarded(ctx context.Context, rawURL, mode, expectedRef 
 	})
 }
 
-func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, starter urlCastStarter) (ref, resolvedVia string, status int, err error) {
+func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBufferMode string, starter urlCastStarter) (ref, resolvedVia string, status int, err error) {
 	parsed, perr := stdurl.Parse(rawURL)
 	if perr != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", "", http.StatusBadRequest, fmt.Errorf("not a valid URL")
@@ -122,12 +129,16 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 		return "", "", http.StatusBadRequest,
 			fmt.Errorf("scheme not supported in v1: %s (only http and https)", parsed.Scheme)
 	}
+	hlsBufferMode, herr := normalizeHLSBufferMode(hlsBufferMode)
+	if herr != nil {
+		return "", "", http.StatusBadRequest, herr
+	}
 
 	// Record into history regardless of dispatch / cast outcome, so
 	// the operator can re-try a typo URL with one click. Spec §"History
 	// / Constraints". MUST come BEFORE the dispatch decision so a
 	// resolver failure still records.
-	a.history.AddOrBump(rawURL)
+	a.history.AddOrBumpWithHLSMode(rawURL, hlsBufferMode)
 
 	// Decide the route. Snapshot resolver under the same lock as cfg
 	// and probe — Start writes a.resolver under a.mu, so the read
@@ -137,6 +148,8 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 	probe := a.ytdlpProbe
 	resolver := a.resolver
 	streamResolver := a.streamResolver
+	bridge := a.bridge
+	hlsBufferOpen := a.hlsBufferOpen
 	a.mu.Unlock()
 	if resolver != nil {
 		// The production resolver resolves the current sidecar/PATH override
@@ -177,6 +190,9 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 	var audioStreamURL string
 	var audioHeaders map[string]string
 	var resolvedTitle string
+	var mediaPolicy core.MediaInputPolicy
+	var mediaKind core.MediaKind
+	var hlsSession *hlsbuffer.Session
 
 	if useYtdlp {
 		if resolver == nil {
@@ -207,6 +223,18 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 		// shortlink. SetTitle no-ops on empty title and on missing
 		// entries, so this is safe to call unconditionally here.
 		a.history.SetTitle(rawURL, resolvedTitle)
+	} else if shouldBufferDirectM3U8(parsed, hlsBufferMode, bridge) {
+		var berr error
+		hlsSession, berr = a.openURLHLSBuffer(ctx, rawURL, bridge, hlsBufferOpen)
+		if berr != nil {
+			safeMsg := strings.ReplaceAll(berr.Error(), rawURL, redactURL(rawURL))
+			a.setState(adapters.StateError, safeMsg)
+			slog.Warn("url hls buffer failed", "url", redactURL(rawURL), "err", safeMsg)
+			return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
+		}
+		streamURL = hlsSession.PlaybackPath
+		mediaPolicy = hlsSession.Policy
+		mediaKind = core.MediaKindVideo
 	}
 
 	ref = newAdapterRef()
@@ -225,6 +253,11 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 		}
 	}
 
+	onStop := a.makeOnStop(rawURL, resolvedTitle)
+	if hlsSession != nil {
+		onStop = withHLSBufferCleanup(onStop, hlsSession)
+	}
+
 	req := core.SessionRequest{
 		StreamURL:         streamURL,
 		InputHeaders:      headers,
@@ -235,19 +268,22 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 		// panel (Duration > 0 gating) and by the Resume handler's
 		// Duration-based branching. Spec §"Capability and DirectPlay
 		// flips".
-		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
-		AdapterRef:   ref,
-		Source:       "url",
-		DirectPlay:   true,
-		Title:        title,
+		Capabilities:     core.Capabilities{CanSeek: true, CanPause: true},
+		AdapterRef:       ref,
+		Source:           "url",
+		DirectPlay:       true,
+		Title:            title,
+		MediaKind:        mediaKind,
+		MediaInputPolicy: mediaPolicy,
 		// OnStop captures rawURL + resolvedTitle at request-construction
 		// time, NOT inside the closure body — by the time OnStop runs,
 		// adapter state may have been overwritten by a preempting
 		// session.
-		OnStop: a.makeOnStop(rawURL, resolvedTitle),
+		OnStop: onStop,
 	}
 
 	if a.core == nil {
+		closeHLSSession(hlsSession)
 		return "", "", http.StatusInternalServerError, fmt.Errorf("core not wired")
 	}
 	// Emit cast-requested before StartSession so the event is recorded
@@ -256,12 +292,14 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 	a.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	matched, serr := starter.startCore(req)
 	if serr != nil {
+		closeHLSSession(hlsSession)
 		safeMsg := strings.ReplaceAll(serr.Error(), rawURL, redactURL(rawURL))
 		a.setState(adapters.StateError, safeMsg)
 		slog.Warn("url cast failed", "url", redactURL(rawURL), "err", serr)
 		return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
 	}
 	if !matched {
+		closeHLSSession(hlsSession)
 		return "", "", http.StatusConflict, fmt.Errorf("active session changed")
 	}
 
@@ -276,43 +314,139 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 	return ref, resolvedVia, http.StatusOK, nil
 }
 
-// extractURLAndMode parses both fields from form-encoded or JSON bodies.
-// mode defaults to "auto" if absent.
-func extractURLAndMode(r *http.Request) (rawURL, mode string, err error) {
+// extractURLAndMode parses URL dispatch and HLS-buffer fields from form-encoded
+// or JSON bodies. mode and hls_buffer both default to "auto" if absent.
+func extractURLAndMode(r *http.Request) (rawURL, mode, hlsBufferMode string, err error) {
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "application/json") {
 		body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 4096))
 		if err != nil {
-			return "", "", fmt.Errorf("read body: %w", err)
+			return "", "", "", fmt.Errorf("read body: %w", err)
 		}
 		var payload struct {
-			URL  string `json:"url"`
-			Mode string `json:"mode"`
+			URL           string `json:"url"`
+			Mode          string `json:"mode"`
+			HLSBuffer     string `json:"hls_buffer"`
+			HLSBufferMode string `json:"hls_buffer_mode"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return "", "", fmt.Errorf("invalid JSON: %w", err)
+			return "", "", "", fmt.Errorf("invalid JSON: %w", err)
 		}
 		if payload.URL == "" {
-			return "", "", fmt.Errorf("url is required")
+			return "", "", "", fmt.Errorf("url is required")
 		}
 		m := strings.ToLower(strings.TrimSpace(payload.Mode))
 		if m == "" {
 			m = "auto"
 		}
-		return strings.TrimSpace(payload.URL), m, nil
+		hlsRaw := payload.HLSBuffer
+		if strings.TrimSpace(hlsRaw) == "" {
+			hlsRaw = payload.HLSBufferMode
+		}
+		hlsMode, err := normalizeHLSBufferMode(hlsRaw)
+		if err != nil {
+			return "", "", "", err
+		}
+		return strings.TrimSpace(payload.URL), m, hlsMode, nil
 	}
 	if err := r.ParseForm(); err != nil {
-		return "", "", fmt.Errorf("parse form: %w", err)
+		return "", "", "", fmt.Errorf("parse form: %w", err)
 	}
 	v := strings.TrimSpace(r.Form.Get("url"))
 	if v == "" {
-		return "", "", fmt.Errorf("url is required")
+		return "", "", "", fmt.Errorf("url is required")
 	}
 	m := strings.ToLower(strings.TrimSpace(r.Form.Get("mode")))
 	if m == "" {
 		m = "auto"
 	}
-	return v, m, nil
+	hlsMode, err := normalizeHLSBufferMode(r.Form.Get("hls_buffer"))
+	if err != nil {
+		return "", "", "", err
+	}
+	return v, m, hlsMode, nil
+}
+
+func normalizeHLSBufferMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
+	case "", "auto":
+		return "auto", nil
+	case "off":
+		return "off", nil
+	default:
+		return "", fmt.Errorf("hls_buffer must be one of auto, off (got %q)", raw)
+	}
+}
+
+func shouldBufferDirectM3U8(parsed *stdurl.URL, hlsBufferMode string, bridge config.BridgeConfig) bool {
+	if parsed == nil || hlsBufferMode == "off" || !bridge.HLSBuffer.Enabled {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("GROOVY_HLS_BUFFER")) == "0" {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(parsed.Path)), ".m3u8")
+}
+
+func (a *Adapter) openURLHLSBuffer(ctx context.Context, rawURL string, bridge config.BridgeConfig, open hlsBufferOpener) (*hlsbuffer.Session, error) {
+	if bridge.DataDir == "" {
+		return nil, fmt.Errorf("url hls buffer: bridge data_dir is required")
+	}
+	cacheRoot := filepath.Join(bridge.DataDir, "url", "hls")
+	if err := os.MkdirAll(cacheRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("url hls buffer: create cache root: %w", err)
+	}
+	if open == nil {
+		open = hlsbuffer.OpenSession
+	}
+	return open(ctx, hlsbuffer.SessionOptions{
+		SourceURL:    rawURL,
+		CacheRoot:    cacheRoot,
+		Config:       hlsConfigFromBridge(bridge.HLSBuffer),
+		TrustMode:    hlsbuffer.TrustModeGenericPublic,
+		OutputHeight: hlsOutputHeightFromBridge(bridge),
+	})
+}
+
+func hlsOutputHeightFromBridge(bridge config.BridgeConfig) int {
+	switch bridge.Video.Modeline {
+	case "PAL_576i", "PAL_288p":
+		return 576
+	default:
+		return 480
+	}
+}
+
+func hlsConfigFromBridge(c config.HLSBufferConfig) hlsbuffer.Config {
+	return hlsbuffer.Config{
+		Enabled:                c.Enabled,
+		LiveEdgeSegments:       c.LiveEdgeSegments,
+		StartSegments:          c.StartSegments,
+		MaxCachedSegments:      c.MaxCachedSegments,
+		MaxCacheBytes:          c.MaxCacheBytes,
+		MaxPlaylistBytes:       c.MaxPlaylistBytes,
+		MaxSegmentBytes:        c.MaxSegmentBytes,
+		SegmentTimeout:         time.Duration(c.SegmentTimeoutSeconds) * time.Second,
+		PlaylistTimeout:        time.Duration(c.PlaylistTimeoutSeconds) * time.Second,
+		MaxVariantHeight:       c.MaxVariantHeight,
+		StaleCacheReapInterval: time.Duration(c.StaleCacheReapHours) * time.Hour,
+	}
+}
+
+func withHLSBufferCleanup(base func(string), session *hlsbuffer.Session) func(string) {
+	return func(reason string) {
+		if base != nil {
+			base(reason)
+		}
+		closeHLSSession(session)
+	}
+}
+
+func closeHLSSession(session *hlsbuffer.Session) {
+	if session != nil && session.Close != nil {
+		_ = session.Close()
+	}
 }
 
 // decideRoute is pure: returns whether to invoke yt-dlp, or an error

@@ -80,11 +80,16 @@ func (a *Adapter) renderPanel() string {
   <label><input type="radio" name="mode" value="direct"> Direct</label>
 </fieldset>`
 	}
+	hlsBufferSelect := `<select name="hls_buffer" aria-label="HLS buffer">
+      <option value="auto" selected>HLS buffer: auto</option>
+      <option value="off">HLS buffer: off</option>
+    </select>`
 	fmt.Fprintf(&b, `<form hx-post="/ui/adapter/url/play" hx-target="#url-panel" hx-swap="outerHTML" autocomplete="off">
+    %s
     %s
     <input type="url" name="url" placeholder="https://example.com/video.mp4 or https://youtu.be/..." required>
     <button type="submit">Play</button>
-  </form>`, modeRadio)
+  </form>`, modeRadio, hlsBufferSelect)
 
 	// Existing yt-dlp surface: hosts, version, cookies — preserved verbatim.
 	b.WriteString(renderHostsLine(cfg.YtdlpHosts))

@@ -17,6 +17,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 // SessionManager is the adapter's narrow view of core.Manager.
@@ -41,6 +42,8 @@ type resolverIface interface {
 	Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error)
 }
 
+type hlsBufferOpener func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error)
+
 // ytdlpProbe is the cached result of probing yt-dlp at adapter Start.
 // Computed once; read-only afterward, so no mu protection needed.
 type ytdlpProbe struct {
@@ -57,6 +60,9 @@ type ytdlpProbe struct {
 // share the same lock so the panel fragment never observes a torn read.
 type Adapter struct {
 	core SessionManager
+	// bridge is the bridge-level config snapshot used for URL-owned cache
+	// roots and shared HLS buffer defaults.
+	bridge config.BridgeConfig
 
 	// cookiesPath is computed once from cfg.Bridge.DataDir at New()
 	// and is read-only thereafter — does not need mu.
@@ -74,6 +80,8 @@ type Adapter struct {
 	// probeFn returns the result of probing for yt-dlp. Defaults to
 	// realProbeYtdlp; tests inject stubs.
 	probeFn func() ytdlpProbe
+
+	hlsBufferOpen hlsBufferOpener
 
 	ytdlpBinaryResolver ytdlp.BinaryResolver
 	streamResolver      streamhandoff.Resolver
@@ -137,10 +145,12 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	}
 	return &Adapter{
 		core:                cfg.Core,
+		bridge:              cfg.Bridge,
 		state:               adapters.StateStopped,
 		stateSince:          time.Now(),
 		cookiesPath:         filepath.Join(cfg.Bridge.DataDir, "url_cookies.txt"),
 		probeFn:             probeFn,
+		hlsBufferOpen:       hlsbuffer.OpenSession,
 		history:             LoadHistory(historyPath),
 		ytdlpBinaryResolver: cfg.YTDLPResolver,
 		eventLog:            cfg.EventLog,

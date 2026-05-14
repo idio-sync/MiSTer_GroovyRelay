@@ -186,7 +186,7 @@ func (a *Adapter) CompanionHistoryPlay(ctx context.Context, id string) (companio
 	if !ok {
 		return companion.CompanionPlayResult{}, companionMsg(http.StatusNotFound, "history entry no longer exists")
 	}
-	ref, resolvedVia, status, err := a.castURL(ctx, entry.URL, "auto")
+	ref, resolvedVia, status, err := a.castURLWithHLSBuffer(ctx, entry.URL, "auto", historyEntryHLSBufferMode(entry))
 	if err != nil {
 		return companion.CompanionPlayResult{}, companionErr(status, err)
 	}

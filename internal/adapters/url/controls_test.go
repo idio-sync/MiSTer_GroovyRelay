@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
 // withStatus returns a fakeCore whose Status returns the given value.
@@ -124,6 +125,29 @@ func TestHistoryPlay_ValidIdx_CallsStartSession(t *testing.T) {
 	list := a.history.List()
 	if list[0].URL != "https://a.example/1" {
 		t.Errorf("after history-play, list[0] = %q, want a bumped", list[0].URL)
+	}
+}
+
+func TestHistoryPlay_UsesStoredHLSBufferMode(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	enableURLHLSBufferForTest(a)
+	a.history.AddOrBumpWithHLSMode("https://example.com/live.m3u8", "off")
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		t.Fatal("hlsBufferOpen should not be called for history entry with hls_buffer=off")
+		return nil, nil
+	}
+
+	body := strings.NewReader("idx=0")
+	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.handleHistoryPlay(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if fc.lastReq.StreamURL != "https://example.com/live.m3u8" {
+		t.Fatalf("StreamURL = %q, want direct history URL", fc.lastReq.StreamURL)
 	}
 }
 

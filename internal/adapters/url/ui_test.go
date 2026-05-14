@@ -124,6 +124,22 @@ func TestRenderPanel_IncludesModeRadio(t *testing.T) {
 	}
 }
 
+func TestURLPanelRendersHLSBufferModeControl(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	html := a.renderPanel()
+	for _, want := range []string{
+		`name="hls_buffer"`,
+		`value="auto"`,
+		`value="off"`,
+		`HLS buffer: auto`,
+		`HLS buffer: off`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("panel missing %q\n%s", want, html)
+		}
+	}
+}
+
 func TestRenderPanel_HidesModeRadio_WhenYtdlpDisabled(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	a.cfg.YtdlpEnabled = false
