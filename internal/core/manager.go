@@ -325,6 +325,7 @@ var (
 	probeCropFn = func(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
 		return ffmpeg.ProbeCrop(ctx, ffmpegPath, inputURL, headers, duration, policy)
 	}
+	checkVisualizerFiltersFn = ffmpeg.CheckVisualizerFilters
 )
 
 func probeErrorIsLikelyUnreachable(err error) bool {
@@ -372,10 +373,55 @@ func validateVisualizerRequest(req SessionRequest) error {
 	if NormalizeMediaKind(req.MediaKind) != MediaKindMusic {
 		return fmt.Errorf("visualizer requires music media kind")
 	}
-	if req.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+	switch req.Visualizer.Mode {
+	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeRadialSpectrum, VisualizerModeStereoScope:
+	default:
 		return fmt.Errorf("unsupported visualizer mode %q", req.Visualizer.Mode)
 	}
 	return nil
+}
+
+func coreVisualizerModeFromConfig(mode string) VisualizerMode {
+	normalized := config.NormalizeVisualizerMode(mode)
+	switch normalized {
+	case config.VisualizerModeRetroAnalyzer:
+		return VisualizerModeRetroAnalyzer
+	case config.VisualizerModeOscilloscopeWave:
+		return VisualizerModeOscilloscopeWave
+	case config.VisualizerModeRadialSpectrum:
+		return VisualizerModeRadialSpectrum
+	case config.VisualizerModeStereoScope:
+		return VisualizerModeStereoScope
+	default:
+		return VisualizerMode(normalized)
+	}
+}
+
+func (m *Manager) normalizeVisualizerRequestLocked(req SessionRequest) SessionRequest {
+	if !req.Visualizer.Enabled {
+		return req
+	}
+	if m.active != nil && req.AdapterRef != "" && req.AdapterRef == m.active.req.AdapterRef {
+		req.Visualizer.Mode = m.active.req.Visualizer.Mode
+		return req
+	}
+	req.Visualizer.Mode = coreVisualizerModeFromConfig(m.bridge.Visualizer.Mode)
+	return req
+}
+
+func ffmpegVisualizerMode(mode VisualizerMode) ffmpeg.VisualizerMode {
+	switch mode {
+	case VisualizerModeRetroAnalyzer:
+		return ffmpeg.VisualizerModeRetroAnalyzer
+	case VisualizerModeOscilloscopeWave:
+		return ffmpeg.VisualizerModeOscilloscopeWave
+	case VisualizerModeRadialSpectrum:
+		return ffmpeg.VisualizerModeRadialSpectrum
+	case VisualizerModeStereoScope:
+		return ffmpeg.VisualizerModeStereoScope
+	default:
+		return ffmpeg.VisualizerMode(mode)
+	}
 }
 
 func visualizerDuration(req SessionRequest, probe *ffmpeg.ProbeResult) time.Duration {
@@ -391,7 +437,7 @@ func ffmpegVisualizerSpec(v VisualizerRequest) ffmpeg.VisualizerSpec {
 	}
 	return ffmpeg.VisualizerSpec{
 		Enabled: true,
-		Mode:    ffmpeg.VisualizerModeRetroAnalyzer,
+		Mode:    ffmpegVisualizerMode(v.Mode),
 		Metadata: ffmpeg.VisualizerMetadata{
 			Title:    v.Metadata.Title,
 			Artist:   v.Metadata.Artist,
@@ -399,6 +445,13 @@ func ffmpegVisualizerSpec(v VisualizerRequest) ffmpeg.VisualizerSpec {
 			Duration: v.Metadata.Duration,
 		},
 	}
+}
+
+func checkVisualizerFiltersForStart(ctx context.Context, ffmpegPath string, req SessionRequest) error {
+	if !req.Visualizer.Enabled {
+		return nil
+	}
+	return checkVisualizerFiltersFn(ctx, ffmpegPath, ffmpegVisualizerMode(req.Visualizer.Mode))
 }
 
 // probeForStart runs Probe and (conditionally) ProbeCrop with a bounded
@@ -620,10 +673,19 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 // protocol-specific requests into a SessionRequest and call this. Any
 // existing session is preempted and the prior goroutine awaited.
 func (m *Manager) StartSession(req SessionRequest) error {
+	m.mu.Lock()
+	req = m.normalizeVisualizerRequestLocked(req)
+	m.mu.Unlock()
 	if err := validateVisualizerRequest(req); err != nil {
 		return err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
+	if err != nil {
+		return err
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err = checkVisualizerFiltersForStart(checkCtx, ffmpegPath, req)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -664,6 +726,9 @@ func (m *Manager) StartSessionIfIdle(req SessionRequest) (bool, error) {
 func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGuard, requireIdle bool) (bool, error) {
 	m.mu.Lock()
 	matched := m.startGuardMatchesLocked(guard, requireIdle)
+	if matched {
+		req = m.normalizeVisualizerRequestLocked(req)
+	}
 	m.mu.Unlock()
 	if !matched {
 		return false, nil
@@ -679,6 +744,18 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 		return true, err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
+	if err != nil {
+		m.mu.Lock()
+		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
+		m.mu.Unlock()
+		if !stillMatched {
+			return false, nil
+		}
+		return true, err
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err = checkVisualizerFiltersForStart(checkCtx, ffmpegPath, req)
+	cancel()
 	if err != nil {
 		m.mu.Lock()
 		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
@@ -829,7 +906,7 @@ func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 		m.mu.Unlock()
 		return false, nil
 	}
-	req := a.req
+	req := m.normalizeVisualizerRequestLocked(a.req)
 	generation := a.generation
 	resumeMs := int(a.pausedPosition / time.Millisecond)
 	if resumeMs <= 0 {
@@ -849,6 +926,20 @@ func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 		return true, err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
+	if err != nil {
+		if guard.enabled() {
+			m.mu.Lock()
+			matched := m.sessionGuardMatchesLocked(guard)
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
+		return true, err
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err = checkVisualizerFiltersForStart(checkCtx, ffmpegPath, req)
+	cancel()
 	if err != nil {
 		if guard.enabled() {
 			m.mu.Lock()
@@ -1072,7 +1163,7 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 		m.mu.Unlock()
 		return true, fmt.Errorf("adapter does not support seek")
 	}
-	req := a.req
+	req := m.normalizeVisualizerRequestLocked(a.req)
 	generation := a.generation
 	m.mu.Unlock()
 
@@ -1088,6 +1179,20 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 		return true, err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
+	if err != nil {
+		if guard.enabled() {
+			m.mu.Lock()
+			matched := m.sessionGuardMatchesLocked(guard)
+			m.mu.Unlock()
+			if !matched {
+				return false, nil
+			}
+		}
+		return true, err
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err = checkVisualizerFiltersForStart(checkCtx, ffmpegPath, req)
+	cancel()
 	if err != nil {
 		if guard.enabled() {
 			m.mu.Lock()

@@ -1534,14 +1534,19 @@ func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
 	origProbe := probeFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
 		probeFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
 	})
 
 	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
 	}
 	cropCalls := 0
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -1601,6 +1606,389 @@ func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
 	}
 	if got := m.Status().Duration; got != 3*time.Minute {
 		t.Fatalf("Status duration = %v, want metadata duration", got)
+	}
+}
+
+func TestManager_VisualizerUsesConfiguredBridgeMode(t *testing.T) {
+	origProbe := probeFn
+	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Visualizer.Mode = config.VisualizerModeStereoScope
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		AdapterRef: "plex:/library/metadata/42:tsid-1",
+		Source:     "plex",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		Capabilities: Capabilities{
+			CanSeek:  true,
+			CanPause: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession visualizer: %v", err)
+	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeStereoScope {
+		t.Fatalf("ffmpeg visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeStereoScope)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil {
+		t.Fatal("active session is nil")
+	}
+	if m.active.req.Visualizer.Mode != VisualizerModeStereoScope {
+		t.Fatalf("active visualizer mode = %q, want %q", m.active.req.Visualizer.Mode, VisualizerModeStereoScope)
+	}
+}
+
+func TestManager_VisualizerSameAdapterRefInheritsSnapshottedMode(t *testing.T) {
+	m := newTestManager(t)
+	m.bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	const ref = "plex:/library/metadata/42:tsid-1"
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		AdapterRef: ref,
+		Visualizer: VisualizerRequest{
+			Enabled: true,
+			Mode:    VisualizerModeStereoScope,
+		},
+	}}
+	got := m.normalizeVisualizerRequestLocked(SessionRequest{
+		AdapterRef: ref,
+		Visualizer: VisualizerRequest{
+			Enabled: true,
+			Mode:    VisualizerModeRetroAnalyzer,
+		},
+	})
+	m.mu.Unlock()
+
+	if got.Visualizer.Mode != VisualizerModeStereoScope {
+		t.Fatalf("normalized visualizer mode = %q, want %q", got.Visualizer.Mode, VisualizerModeStereoScope)
+	}
+}
+
+func TestManager_VisualizerGuardedReplayKeepsSnapshottedMode(t *testing.T) {
+	origProbe := probeFn
+	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	const ref = "plex:/library/metadata/42:tsid-1"
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		AdapterRef: ref,
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{
+			Enabled: true,
+			Mode:    VisualizerModeStereoScope,
+		},
+		Capabilities: Capabilities{CanSeek: true, CanPause: true},
+	}}
+	m.mu.Unlock()
+	m.bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+
+	matched, err := m.StartSessionIfAdapterRef(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		AdapterRef: ref,
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		Capabilities: Capabilities{
+			CanSeek:  true,
+			CanPause: true,
+		},
+	}, ref)
+	if err != nil {
+		t.Fatalf("StartSessionIfAdapterRef: %v", err)
+	}
+	if !matched {
+		t.Fatal("StartSessionIfAdapterRef matched = false, want true")
+	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeStereoScope {
+		t.Fatalf("ffmpeg visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeStereoScope)
+	}
+}
+
+func TestManager_VisualizerUnknownConfiguredModeRejectedAfterNormalization(t *testing.T) {
+	origProbe := probeFn
+	t.Cleanup(func() { probeFn = origProbe })
+	probeRan := false
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		probeRan = true
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	m.bridge.Visualizer.Mode = "sparkle"
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("StartSession err = %v, want unsupported visualizer mode", err)
+	}
+	if probeRan {
+		t.Fatal("probeFn ran before configured visualizer mode validation failed")
+	}
+}
+
+func TestManager_VisualizerModeAdoptsBridgeAfterDrop(t *testing.T) {
+	origProbe := probeFn
+	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	stereoBridge := testBridgeConfig(t)
+	stereoBridge.Visualizer.Mode = config.VisualizerModeStereoScope
+	m.UpdateBridge(stereoBridge)
+	m.mu.Lock()
+	m.active = &activeSession{req: SessionRequest{
+		StreamURL:  "http://pms/old.mp3",
+		AdapterRef: "plex:old",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeStereoScope},
+	}}
+	m.mu.Unlock()
+
+	oscBridge := stereoBridge
+	oscBridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	oscBridge.Video.InterlaceFieldOrder = "bff"
+	m.UpdateBridge(oscBridge)
+	if err := m.DropActiveCast("restart visualizer mode"); err != nil {
+		t.Fatalf("DropActiveCast: %v", err)
+	}
+
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/new.mp3",
+		AdapterRef: "plex:new",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		Capabilities: Capabilities{
+			CanSeek:  true,
+			CanPause: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession visualizer: %v", err)
+	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeOscilloscopeWave {
+		t.Fatalf("ffmpeg visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeOscilloscopeWave)
+	}
+}
+
+func TestManager_VisualizerPlayKeepsSnapshottedMode(t *testing.T) {
+	origProbe := probeFn
+	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	const ref = "plex:/library/metadata/42:tsid-1"
+	m.mu.Lock()
+	m.active = &activeSession{
+		req: SessionRequest{
+			StreamURL:  "http://pms/music.mp3",
+			AdapterRef: ref,
+			MediaKind:  MediaKindMusic,
+			Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeStereoScope},
+			Capabilities: Capabilities{
+				CanSeek:  true,
+				CanPause: true,
+			},
+		},
+		generation:     7,
+		baseOffsetMs:   1234,
+		pausedPosition: 2 * time.Second,
+	}
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition play: %v", err)
+	}
+	if err := m.fsm.Transition(EvPause); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition pause: %v", err)
+	}
+	m.mu.Unlock()
+
+	matched, err := m.PlayIfAdapterRef(ref)
+	if err != nil {
+		t.Fatalf("PlayIfAdapterRef: %v", err)
+	}
+	if !matched {
+		t.Fatal("PlayIfAdapterRef matched = false, want true")
+	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeStereoScope {
+		t.Fatalf("ffmpeg visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeStereoScope)
+	}
+}
+
+func TestManager_VisualizerSeekKeepsSnapshottedMode(t *testing.T) {
+	origProbe := probeFn
+	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	const ref = "plex:/library/metadata/42:tsid-1"
+	m.mu.Lock()
+	m.active = &activeSession{
+		req: SessionRequest{
+			StreamURL:  "http://pms/music.mp3",
+			AdapterRef: ref,
+			MediaKind:  MediaKindMusic,
+			Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeStereoScope},
+			Capabilities: Capabilities{
+				CanSeek:  true,
+				CanPause: true,
+			},
+		},
+		generation: 7,
+	}
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("transition play: %v", err)
+	}
+	m.mu.Unlock()
+
+	matched, err := m.SeekToIfAdapterRef(ref, 42_000)
+	if err != nil {
+		t.Fatalf("SeekToIfAdapterRef: %v", err)
+	}
+	if !matched {
+		t.Fatal("SeekToIfAdapterRef matched = false, want true")
+	}
+	if captured.SpawnSpec.Visualizer.Mode != ffmpeg.VisualizerModeStereoScope {
+		t.Fatalf("ffmpeg visualizer mode = %q, want %q", captured.SpawnSpec.Visualizer.Mode, ffmpeg.VisualizerModeStereoScope)
+	}
+}
+
+func TestManager_VisualizerMissingRequiredFilterFailsBeforePlaneStart(t *testing.T) {
+	origProbe := probeFn
+	origNewPlane := newPlane
+	origCheck := checkVisualizerFiltersFn
+	t.Cleanup(func() {
+		probeFn = origProbe
+		newPlane = origNewPlane
+		checkVisualizerFiltersFn = origCheck
+	})
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return fmt.Errorf("requires ffmpeg filter avectorscope")
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		t.Fatal("newPlane must not be called when visualizer filter preflight fails")
+		return nil
+	}
+
+	m := newTestManager(t)
+	m.bridge.Visualizer.Mode = config.VisualizerModeStereoScope
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://pms/music.mp3",
+		AdapterRef: "plex:/library/metadata/42:tsid-1",
+		MediaKind:  MediaKindMusic,
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		Capabilities: Capabilities{
+			CanSeek:  true,
+			CanPause: true,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires ffmpeg filter") {
+		t.Fatalf("StartSession err = %v, want requires ffmpeg filter", err)
 	}
 }
 
@@ -1668,22 +2056,14 @@ func TestManager_VisualizerRejectsNonMusicKind(t *testing.T) {
 	}
 }
 
-func TestManager_VisualizerRejectsUnsupportedModeBeforeProbe(t *testing.T) {
-	origProbe := probeFn
-	t.Cleanup(func() { probeFn = origProbe })
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
-		t.Fatal("Probe must not run after visualizer mode validation fails")
-		return nil, nil
-	}
-
-	m := newTestManager(t)
-	err := m.StartSession(SessionRequest{
+func TestValidateVisualizerRequestRejectsUnsupportedMode(t *testing.T) {
+	err := validateVisualizerRequest(SessionRequest{
 		StreamURL:  "http://pms/music.mp3",
 		MediaKind:  MediaKindMusic,
 		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerMode("unknown")},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
-		t.Fatalf("StartSession err = %v, want unsupported visualizer mode", err)
+		t.Fatalf("validateVisualizerRequest err = %v, want unsupported visualizer mode", err)
 	}
 }
 
