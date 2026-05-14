@@ -178,6 +178,12 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode string, s
 	var audioHeaders map[string]string
 	var resolvedTitle string
 
+	if !useYtdlp {
+		if owncastURL, ok := resolveOwncastHomepageURL(ctx, parsed); ok {
+			streamURL = owncastURL
+		}
+	}
+
 	if useYtdlp {
 		if resolver == nil {
 			return "", "", http.StatusInternalServerError, fmt.Errorf("resolver not configured")

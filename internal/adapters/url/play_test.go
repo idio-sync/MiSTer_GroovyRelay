@@ -346,6 +346,106 @@ func TestCastURL_StreamsStartErrorDoesNotFallBack(t *testing.T) {
 	}
 }
 
+func TestCastURL_OwncastHomepageResolvesToHLS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" {
+			t.Fatalf("unexpected probe path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverTime":"2026-05-14T00:00:00Z","versionNumber":"0.2.3","online":true}`))
+	}))
+	t.Cleanup(server.Close)
+	a := newTestAdapter(t, &fakeCore{})
+
+	ref, via, status, err := a.castURL(t.Context(), server.URL+"/", "auto")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if ref == "" || via != "direct" || status != http.StatusOK {
+		t.Fatalf("ref=%q via=%q status=%d", ref, via, status)
+	}
+	if got, want := a.core.(*fakeCore).snapshot().StreamURL, server.URL+"/hls/stream.m3u8"; got != want {
+		t.Fatalf("StreamURL = %q, want %q", got, want)
+	}
+	if got, want := a.snapshotLastURL(), server.URL+"/"; got != want {
+		t.Fatalf("lastURL = %q, want operator-submitted URL %q", got, want)
+	}
+}
+
+func TestCastURL_OwncastDirectHLSIsUntouched(t *testing.T) {
+	probes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes++
+		http.Error(w, "should not probe direct hls", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	a := newTestAdapter(t, &fakeCore{})
+	raw := server.URL + "/hls/stream.m3u8"
+
+	_, _, _, err := a.castURL(t.Context(), raw, "auto")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != raw {
+		t.Fatalf("StreamURL = %q, want %q", got, raw)
+	}
+	if probes != 0 {
+		t.Fatalf("Owncast probe count = %d, want 0", probes)
+	}
+}
+
+func TestCastURL_NonOwncastHomepageFallsThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"not owncast"}`))
+	}))
+	t.Cleanup(server.Close)
+	a := newTestAdapter(t, &fakeCore{})
+	raw := server.URL + "/"
+
+	_, _, _, err := a.castURL(t.Context(), raw, "auto")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != raw {
+		t.Fatalf("StreamURL = %q, want %q", got, raw)
+	}
+}
+
+func TestCastURL_OwncastProbeFailureFallsThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	a := newTestAdapter(t, &fakeCore{})
+	raw := server.URL + "/"
+
+	_, _, _, err := a.castURL(t.Context(), raw, "auto")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if got := a.core.(*fakeCore).snapshot().StreamURL; got != raw {
+		t.Fatalf("StreamURL = %q, want %q", got, raw)
+	}
+}
+
+func TestCastURL_OwncastForcedDirectStillResolves(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverTime":"2026-05-14T00:00:00Z","versionNumber":"0.2.3","online":false}`))
+	}))
+	t.Cleanup(server.Close)
+	a := newTestAdapter(t, &fakeCore{})
+
+	_, _, _, err := a.castURL(t.Context(), server.URL+"/", "direct")
+	if err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if got, want := a.core.(*fakeCore).snapshot().StreamURL, server.URL+"/hls/stream.m3u8"; got != want {
+		t.Fatalf("StreamURL = %q, want %q", got, want)
+	}
+}
+
 func TestPlay_RejectsMalformedURL(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	req := httptest.NewRequest(http.MethodPost, "/play",
