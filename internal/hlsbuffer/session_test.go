@@ -53,6 +53,30 @@ func TestOpenSessionWarmsStartSegmentsAndPublishesLocalPlaylist(t *testing.T) {
 	}
 }
 
+func TestOpenSessionReloadsPlaylistAndPublishesNewSegments(t *testing.T) {
+	var mediaSequence atomic.Int64
+	mediaSequence.Store(100)
+	srv := newHLSSessionTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/live.m3u8":
+			_, _ = fmt.Fprint(w, livePlaylist(int(mediaSequence.Load()), 4, 1))
+		case "/seg-101.ts", "/seg-102.ts", "/seg-103.ts", "/seg-104.ts", "/seg-105.ts":
+			_, _ = fmt.Fprintf(w, "body-%s", r.URL.Path)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	sess, err := OpenSession(context.Background(), sessionTestOptions(t, srv.URL+"/live.m3u8"))
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	mediaSequence.Store(102)
+	waitForLocalPlaylist(t, sess.PlaybackPath, "segment-000103.ts")
+}
+
 func TestOpenSessionUsesLocalOnlyMediaPolicy(t *testing.T) {
 	srv := newHLSSessionTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -277,4 +301,17 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
+}
+
+func waitForLocalPlaylist(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		body := readFile(t, path)
+		if strings.Contains(body, want) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for local playlist %s to contain %q; last body:\n%s", path, want, readFile(t, path))
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +71,23 @@ func OpenSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 		return nil, err
 	}
 
+	loopCtx, loopCancel := context.WithCancel(context.Background())
+	loopDone := make(chan struct{})
+	refresh := &refreshState{
+		mediaURL:     mediaURL,
+		cfg:          cfg,
+		trustMode:    opts.TrustMode,
+		validator:    validator,
+		cache:        cache,
+		stats:        stats,
+		playbackPath: playbackPath,
+		cachedBySeq:  cachedBySequence(cached),
+	}
+	go func() {
+		defer close(loopDone)
+		runRefreshLoop(loopCtx, refresh, playlist)
+	}()
+
 	var closeOnce sync.Once
 	var closeErr error
 	return &Session{
@@ -83,6 +101,8 @@ func OpenSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 		Stats: stats.snapshot,
 		Close: func() error {
 			closeOnce.Do(func() {
+				loopCancel()
+				<-loopDone
 				closeErr = cleanup()
 			})
 			return closeErr
@@ -211,7 +231,7 @@ func warmSegmentCache(ctx context.Context, mediaURL string, segments []Segment, 
 
 	cached := make([]cachedSegment, 0, len(segments))
 	for i, segment := range segments {
-		name := fmt.Sprintf("segment-%06d.ts", segment.Sequence)
+		name := segmentCacheName(segment.Sequence)
 		if err := cache.Put(name, bodies[i]); err != nil {
 			return nil, err
 		}
@@ -222,6 +242,140 @@ func warmSegmentCache(ctx context.Context, mediaURL string, segments []Segment, 
 		})
 	}
 	return cached, nil
+}
+
+type refreshState struct {
+	mediaURL     string
+	cfg          Config
+	trustMode    TrustMode
+	validator    URLValidator
+	cache        *SegmentCache
+	stats        *sessionStats
+	playbackPath string
+	cachedBySeq  map[int64]cachedSegment
+}
+
+func runRefreshLoop(ctx context.Context, state *refreshState, playlist Playlist) {
+	interval := playlistReloadInterval(playlist)
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		next, err := refreshPlaylist(ctx, state)
+		if err != nil {
+			state.stats.setFailure(err.Error())
+		} else {
+			playlist = next
+			interval = playlistReloadInterval(playlist)
+		}
+		timer.Reset(interval)
+	}
+}
+
+func playlistReloadInterval(playlist Playlist) time.Duration {
+	if playlist.Target <= 0 {
+		return time.Second
+	}
+	interval := playlist.Target / 2
+	if interval < 100*time.Millisecond {
+		return 100 * time.Millisecond
+	}
+	return interval
+}
+
+func refreshPlaylist(ctx context.Context, state *refreshState) (Playlist, error) {
+	body, finalURL, err := fetchBytes(ctx, state.mediaURL, state.cfg.MaxPlaylistBytes, state.cfg.PlaylistTimeout, state.trustMode, state.validator)
+	if err != nil {
+		return Playlist{}, err
+	}
+	playlist, err := ParsePlaylist(body)
+	if err != nil {
+		return Playlist{}, err
+	}
+	if playlist.Kind != PlaylistMedia {
+		return Playlist{}, fmt.Errorf("hls session: refreshed playlist is not a media playlist")
+	}
+	state.mediaURL = finalURL
+	state.stats.addPlaylistReload()
+
+	segments := segmentsMissingFromCache(playlist.Segments, state.cachedBySeq)
+	cached, err := warmSegmentCache(ctx, state.mediaURL, segments, state.cfg, state.trustMode, state.validator, state.cache)
+	if err != nil {
+		return Playlist{}, err
+	}
+	for _, item := range cached {
+		state.cachedBySeq[item.segment.Sequence] = item
+		state.stats.addSegment(item.segment.Duration, item.size)
+	}
+	pruneCachedByEntries(state.cachedBySeq, state.cache.Entries())
+	if err := writeLocalPlaylist(state.playbackPath, playlist, cachedWindow(state.cachedBySeq)); err != nil {
+		return Playlist{}, err
+	}
+	return playlist, nil
+}
+
+func segmentsMissingFromCache(segments []Segment, cached map[int64]cachedSegment) []Segment {
+	if len(segments) == 0 {
+		return nil
+	}
+	minCached := int64(0)
+	haveCached := false
+	for seq := range cached {
+		if !haveCached || seq < minCached {
+			minCached = seq
+			haveCached = true
+		}
+	}
+	out := make([]Segment, 0, len(segments))
+	for _, segment := range segments {
+		if haveCached && segment.Sequence < minCached {
+			continue
+		}
+		if _, ok := cached[segment.Sequence]; ok {
+			continue
+		}
+		out = append(out, segment)
+	}
+	return out
+}
+
+func cachedBySequence(items []cachedSegment) map[int64]cachedSegment {
+	out := make(map[int64]cachedSegment, len(items))
+	for _, item := range items {
+		out[item.segment.Sequence] = item
+	}
+	return out
+}
+
+func pruneCachedByEntries(cached map[int64]cachedSegment, entries []CacheEntry) {
+	names := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		names[entry.Name] = struct{}{}
+	}
+	for seq, item := range cached {
+		if _, ok := names[item.name]; !ok {
+			delete(cached, seq)
+		}
+	}
+}
+
+func cachedWindow(cached map[int64]cachedSegment) []cachedSegment {
+	out := make([]cachedSegment, 0, len(cached))
+	for _, item := range cached {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].segment.Sequence < out[j].segment.Sequence
+	})
+	return out
+}
+
+func segmentCacheName(sequence int64) string {
+	return fmt.Sprintf("segment-%06d.ts", sequence)
 }
 
 func fetchBytes(ctx context.Context, rawURL string, maxBytes int64, timeout time.Duration, trustMode TrustMode, validator URLValidator) ([]byte, string, error) {
