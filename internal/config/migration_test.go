@@ -130,6 +130,16 @@ func TestMigrate_FullRoundTrip(t *testing.T) {
 	if s.Bridge.Video.LZ4Enabled {
 		t.Error("lz4_enabled should have round-tripped as false")
 	}
+	raw := string(out)
+	if !strings.Contains(raw, "[bridge.visualizer]") {
+		t.Fatalf("migrated TOML missing [bridge.visualizer]:\n%s", raw)
+	}
+	if !strings.Contains(raw, `mode = "retro_analyzer"`) {
+		t.Fatalf("migrated TOML missing explicit retro visualizer mode:\n%s", raw)
+	}
+	if s.Bridge.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+		t.Errorf("visualizer.mode = %q, want %q", s.Bridge.Visualizer.Mode, VisualizerModeRetroAnalyzer)
+	}
 }
 
 func TestMigrate_RejectsSectioned(t *testing.T) {

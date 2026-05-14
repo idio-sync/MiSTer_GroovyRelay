@@ -51,6 +51,34 @@ type Config struct {
 	DataDir string `toml:"data_dir"`
 }
 
+const (
+	VisualizerModeRetroAnalyzer    = "retro_analyzer"
+	VisualizerModeOscilloscopeWave = "oscilloscope_wave"
+	VisualizerModeRadialSpectrum   = "radial_spectrum"
+	VisualizerModeStereoScope      = "stereo_scope"
+)
+
+var supportedVisualizerModes = []string{
+	VisualizerModeRetroAnalyzer,
+	VisualizerModeOscilloscopeWave,
+	VisualizerModeRadialSpectrum,
+	VisualizerModeStereoScope,
+}
+
+func NormalizeVisualizerMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return VisualizerModeRetroAnalyzer
+	}
+	return mode
+}
+
+func SupportedVisualizerModes() []string {
+	out := make([]string, len(supportedVisualizerModes))
+	copy(out, supportedVisualizerModes)
+	return out
+}
+
 func defaults() *Config {
 	return &Config{
 		DeviceName:          "MiSTer",
@@ -116,16 +144,17 @@ func (c *Config) Validate() error {
 // pipeline settings, MiSTer destination, bridge-level HTTP port,
 // data directory. Every adapter shares these.
 type BridgeConfig struct {
-	DataDir     string        `toml:"data_dir"`
-	FFmpegPath  string        `toml:"ffmpeg_path"`
-	FFprobePath string        `toml:"ffprobe_path"`
-	YTDLPPath   string        `toml:"ytdlp_path"`
-	HostIP      string        `toml:"host_ip"`
-	Video       VideoConfig   `toml:"video"`
-	Audio       AudioConfig   `toml:"audio"`
-	MiSTer      MisterConfig  `toml:"mister"`
-	UI          UIConfig      `toml:"ui"`
-	Logging     LoggingConfig `toml:"logging"`
+	DataDir     string           `toml:"data_dir"`
+	FFmpegPath  string           `toml:"ffmpeg_path"`
+	FFprobePath string           `toml:"ffprobe_path"`
+	YTDLPPath   string           `toml:"ytdlp_path"`
+	HostIP      string           `toml:"host_ip"`
+	Video       VideoConfig      `toml:"video"`
+	Audio       AudioConfig      `toml:"audio"`
+	Visualizer  VisualizerConfig `toml:"visualizer"`
+	MiSTer      MisterConfig     `toml:"mister"`
+	UI          UIConfig         `toml:"ui"`
+	Logging     LoggingConfig    `toml:"logging"`
 }
 
 type VideoConfig struct {
@@ -140,6 +169,10 @@ type VideoConfig struct {
 type AudioConfig struct {
 	SampleRate int `toml:"sample_rate"`
 	Channels   int `toml:"channels"`
+}
+
+type VisualizerConfig struct {
+	Mode string `toml:"mode"`
 }
 
 type MisterConfig struct {
@@ -224,6 +257,12 @@ func (s *Sectioned) Validate() error {
 	}
 	if b.Audio.Channels != 1 && b.Audio.Channels != 2 {
 		return fmt.Errorf("bridge.audio.channels must be 1 or 2, got %d", b.Audio.Channels)
+	}
+	b.Visualizer.Mode = NormalizeVisualizerMode(b.Visualizer.Mode)
+	switch b.Visualizer.Mode {
+	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeRadialSpectrum, VisualizerModeStereoScope:
+	default:
+		return fmt.Errorf("bridge.visualizer.mode must be one of %s, got %q", strings.Join(SupportedVisualizerModes(), ", "), b.Visualizer.Mode)
 	}
 	if b.HostIP != "" && net.ParseIP(b.HostIP) == nil {
 		return fmt.Errorf("bridge.host_ip must be a valid IP address, got %q", b.HostIP)

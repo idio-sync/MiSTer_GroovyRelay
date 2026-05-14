@@ -20,6 +20,9 @@ delta_lz4_enabled = true          # Adaptive delta-LZ4 BLITs (recommended)
 sample_rate = 48000
 channels = 2
 
+[bridge.visualizer]
+mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, radial_spectrum, stereo_scope
+
 [bridge.mister]
 host = "192.168.1.50"             # MiSTer IP or hostname (required)
 port = 32100                      # Groovy UDP port on the MiSTer (default 32100)
