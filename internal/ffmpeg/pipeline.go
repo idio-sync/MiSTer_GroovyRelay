@@ -19,7 +19,10 @@ type CropRect struct {
 type VisualizerMode string
 
 const (
-	VisualizerModeRetroAnalyzer VisualizerMode = "retro_analyzer"
+	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
+	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
+	VisualizerModeRadialSpectrum   VisualizerMode = "radial_spectrum"
+	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
 )
 
 type VisualizerMetadata struct {
@@ -37,7 +40,8 @@ type VisualizerSpec struct {
 	// DrawTextAvailable is populated by ffmpeg.Spawn after probing the
 	// resolved FFmpeg binary. BuildCommand stays pure and renders bars-only
 	// when this is false.
-	DrawTextAvailable bool
+	DrawTextAvailable        bool
+	RequiredFiltersAvailable bool
 }
 
 // PipelineSpec is the full set of knobs the filter-chain/command builder needs.
@@ -338,9 +342,70 @@ func formatDurationClock(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
+func RequiredVisualizerFilters(mode VisualizerMode) []string {
+	switch mode {
+	case VisualizerModeRetroAnalyzer:
+		return []string{"showfreqs"}
+	case VisualizerModeOscilloscopeWave:
+		return []string{"showwaves"}
+	case VisualizerModeRadialSpectrum:
+		return []string{"showfreqs", "geq"}
+	case VisualizerModeStereoScope:
+		return []string{"avectorscope"}
+	default:
+		return nil
+	}
+}
+
+func isSupportedVisualizerMode(mode VisualizerMode) bool {
+	return len(RequiredVisualizerFilters(mode)) > 0
+}
+
+func visualizerCoreFilter(mode VisualizerMode, logicalW, logicalH int) string {
+	switch mode {
+	case VisualizerModeRetroAnalyzer:
+		return fmt.Sprintf("showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70", logicalW, logicalH)
+	case VisualizerModeOscilloscopeWave:
+		return fmt.Sprintf("showwaves=s=%dx%d:mode=line:colors=0x58e8ff", logicalW, logicalH)
+	case VisualizerModeRadialSpectrum:
+		return fmt.Sprintf("showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0xfff06b,format=rgba,geq=%s", logicalW, logicalH, radialSpectrumGEQ())
+	case VisualizerModeStereoScope:
+		return fmt.Sprintf("avectorscope=s=%dx%d:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba", logicalW, logicalH)
+	default:
+		return ""
+	}
+}
+
+func radialSpectrumGEQ() string {
+	return fmt.Sprintf("r='%s':g='%s':b='%s':a='255'",
+		radialSpectrumChannelExpr("r"),
+		radialSpectrumChannelExpr("g"),
+		radialSpectrumChannelExpr("b"),
+	)
+}
+
+func radialSpectrumChannelExpr(channel string) string {
+	radius := "hypot(X-W/2,Y-H/2)"
+	angleX := "mod((atan2(Y-H/2,X-W/2)+PI)/(2*PI)*W,W)"
+	angleY := "H-hypot(X-W/2,Y-H/2)/(min(W,H)/2)*H"
+	return fmt.Sprintf("if(lte(%s,min(W,H)/2),%s(%s,%s),0)", radius, channel, angleX, angleY)
+}
+
+func visualizerTextY(mode VisualizerMode, line int) string {
+	switch mode {
+	case VisualizerModeRadialSpectrum, VisualizerModeStereoScope:
+		return fmt.Sprintf("h-%d", 96-line*30)
+	default:
+		return fmt.Sprintf("%d", 24+line*30)
+	}
+}
+
 func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
-	if s.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+	if !isSupportedVisualizerMode(s.Visualizer.Mode) {
 		return "", fmt.Errorf("unsupported visualizer mode %q", s.Visualizer.Mode)
+	}
+	if !s.Visualizer.RequiredFiltersAvailable {
+		return "", fmt.Errorf("required visualizer filter unavailable for mode %q", s.Visualizer.Mode)
 	}
 	fpsExpr := s.OutputFpsExpr
 	if fpsExpr == "" {
@@ -348,15 +413,14 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 	}
 	logicalW, logicalH := logicalCanvas(s.OutputHeight)
 	parts := []string{
-		fmt.Sprintf("[%s]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]", audioInputMap(s), logicalW, logicalH),
+		fmt.Sprintf("[%s]%s[viz0]", audioInputMap(s), visualizerCoreFilter(s.Visualizer.Mode, logicalW, logicalH)),
 	}
 	label := "viz0"
 	if s.Visualizer.DrawTextAvailable {
 		for i, line := range visualizerTextLines(s) {
 			next := fmt.Sprintf("viztext%d", i)
-			y := 24 + i*30
-			parts = append(parts, fmt.Sprintf("[%s]drawtext=text='%s':x=24:y=%d:fontsize=24:fontcolor=0x9dff9d:box=1:boxcolor=0x00000099[%s]",
-				label, visualizerDrawText(line), y, next))
+			parts = append(parts, fmt.Sprintf("[%s]drawtext=text='%s':x=24:y=%s:fontsize=24:fontcolor=0x9dff9d:box=1:boxcolor=0x00000099[%s]",
+				label, visualizerDrawText(line), visualizerTextY(s.Visualizer.Mode, i), next))
 			label = next
 		}
 	}

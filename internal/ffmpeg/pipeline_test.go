@@ -155,9 +155,10 @@ func TestBuildVisualizerFilterChain_ApostropheInTitle(t *testing.T) {
 		OutputWidth: 720, OutputHeight: 480,
 		OutputFpsExpr: "60000/1001",
 		Visualizer: VisualizerSpec{
-			Enabled:           true,
-			Mode:              VisualizerModeRetroAnalyzer,
-			DrawTextAvailable: true,
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			DrawTextAvailable:        true,
+			RequiredFiltersAvailable: true,
 			Metadata: VisualizerMetadata{
 				Title:  "Don't Stop Believin'",
 				Artist: "Journey",
@@ -182,9 +183,10 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 		OutputWidth: 720, OutputHeight: 480,
 		OutputFpsExpr: "60000/1001",
 		Visualizer: VisualizerSpec{
-			Enabled:           true,
-			Mode:              VisualizerModeRetroAnalyzer,
-			DrawTextAvailable: true,
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			DrawTextAvailable:        true,
+			RequiredFiltersAvailable: true,
 			Metadata: VisualizerMetadata{
 				Title:    "Blue Monday",
 				Artist:   "New Order",
@@ -201,6 +203,9 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 		"showfreqs=s=640x480",
 		"colors=0x70ff70",
 		"drawtext=",
+		"x=24:y=24",
+		"x=24:y=54",
+		"x=24:y=84",
 		"Blue Monday",
 		"New Order",
 		"%{pts\\:hms}",
@@ -228,8 +233,9 @@ func TestBuildVisualizerFilterChain_BarsOnlyWhenDrawTextUnavailable(t *testing.T
 		OutputWidth: 720, OutputHeight: 480,
 		OutputFpsExpr: "60000/1001",
 		Visualizer: VisualizerSpec{
-			Enabled: true,
-			Mode:    VisualizerModeRetroAnalyzer,
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			RequiredFiltersAvailable: true,
 			Metadata: VisualizerMetadata{
 				Title:    "Blue Monday",
 				Artist:   "New Order",
@@ -257,6 +263,160 @@ func TestBuildVisualizerFilterChain_BarsOnlyWhenDrawTextUnavailable(t *testing.T
 	for _, bad := range []string{"drawtext=", "drawbox=", "Blue Monday", "New Order", "format=rgb24"} {
 		if strings.Contains(graph, bad) {
 			t.Fatalf("bars-only fallback should not contain %q:\n%s", bad, graph)
+		}
+	}
+}
+
+func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
+	cases := []struct {
+		name string
+		mode VisualizerMode
+		want []string
+	}{
+		{
+			name: "retro analyzer",
+			mode: VisualizerModeRetroAnalyzer,
+			want: []string{
+				"[0:a:0]showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]",
+				"x=24:y=24",
+				"x=24:y=54",
+				"x=24:y=84",
+			},
+		},
+		{
+			name: "oscilloscope wave",
+			mode: VisualizerModeOscilloscopeWave,
+			want: []string{
+				"[0:a:0]showwaves=s=640x480:mode=line:colors=0x58e8ff[viz0]",
+				"x=24:y=24",
+				"x=24:y=54",
+				"x=24:y=84",
+			},
+		},
+		{
+			name: "radial spectrum",
+			mode: VisualizerModeRadialSpectrum,
+			want: []string{
+				"showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0xfff06b,format=rgba,geq=",
+				"atan2(Y-H/2,X-W/2)",
+				"hypot(X-W/2,Y-H/2)",
+				"x=24:y=h-96",
+				"x=24:y=h-66",
+				"x=24:y=h-36",
+			},
+		},
+		{
+			name: "stereo scope",
+			mode: VisualizerModeStereoScope,
+			want: []string{
+				"[0:a:0]avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba[viz0]",
+				"x=24:y=h-96",
+				"x=24:y=h-66",
+				"x=24:y=h-36",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := PipelineSpec{
+				OutputWidth:   720,
+				OutputHeight:  480,
+				OutputFpsExpr: "60000/1001",
+				Visualizer: VisualizerSpec{
+					Enabled:                  true,
+					Mode:                     tc.mode,
+					DrawTextAvailable:        true,
+					RequiredFiltersAvailable: true,
+					Metadata: VisualizerMetadata{
+						Title:    "Blue Monday",
+						Artist:   "New Order",
+						Album:    "Power Corruption & Lies",
+						Duration: 7*time.Minute + 29*time.Second,
+					},
+				},
+			}
+			graph, err := buildVisualizerFilterChain(spec)
+			if err != nil {
+				t.Fatalf("buildVisualizerFilterChain: %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(graph, want) {
+					t.Fatalf("graph missing %q:\n%s", want, graph)
+				}
+			}
+			for _, want := range []string{
+				"fps=60000/1001",
+				"scale=w=720:h=480",
+				"format=bgr24[visualizer_video]",
+			} {
+				if !strings.Contains(graph, want) {
+					t.Fatalf("graph missing final stage %q:\n%s", want, graph)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildVisualizerFilterChain_AllModesBarsOnlyWhenDrawTextUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		mode VisualizerMode
+		core string
+	}{
+		{"retro analyzer", VisualizerModeRetroAnalyzer, "showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0x70ff70"},
+		{"oscilloscope wave", VisualizerModeOscilloscopeWave, "showwaves=s=640x480:mode=line:colors=0x58e8ff"},
+		{"radial spectrum", VisualizerModeRadialSpectrum, "showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0xfff06b,format=rgba,geq="},
+		{"stereo scope", VisualizerModeStereoScope, "avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := PipelineSpec{
+				OutputWidth:   720,
+				OutputHeight:  480,
+				OutputFpsExpr: "60000/1001",
+				Visualizer: VisualizerSpec{
+					Enabled:                  true,
+					Mode:                     tc.mode,
+					DrawTextAvailable:        false,
+					RequiredFiltersAvailable: true,
+					Metadata: VisualizerMetadata{
+						Title:    "Blue Monday",
+						Artist:   "New Order",
+						Album:    "Power Corruption & Lies",
+						Duration: 7*time.Minute + 29*time.Second,
+					},
+				},
+			}
+			graph, err := buildVisualizerFilterChain(spec)
+			if err != nil {
+				t.Fatalf("buildVisualizerFilterChain: %v", err)
+			}
+			if !strings.Contains(graph, tc.core) {
+				t.Fatalf("graph missing core filter %q:\n%s", tc.core, graph)
+			}
+			for _, bad := range []string{"drawtext=", "Blue Monday", "New Order"} {
+				if strings.Contains(graph, bad) {
+					t.Fatalf("bars-only fallback should not contain %q:\n%s", bad, graph)
+				}
+			}
+		})
+	}
+}
+
+func TestVisualizerRequiredFilters(t *testing.T) {
+	cases := []struct {
+		mode VisualizerMode
+		want []string
+	}{
+		{VisualizerModeRetroAnalyzer, []string{"showfreqs"}},
+		{VisualizerModeOscilloscopeWave, []string{"showwaves"}},
+		{VisualizerModeRadialSpectrum, []string{"showfreqs", "geq"}},
+		{VisualizerModeStereoScope, []string{"avectorscope"}},
+	}
+	for _, tc := range cases {
+		got := RequiredVisualizerFilters(tc.mode)
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("RequiredVisualizerFilters(%q) = %v, want %v", tc.mode, got, tc.want)
 		}
 	}
 }
@@ -297,6 +457,9 @@ func TestWithVisualizerCapabilitiesSetsDrawTextAvailability(t *testing.T) {
 	if !spec.Visualizer.DrawTextAvailable {
 		t.Fatal("DrawTextAvailable = false, want true")
 	}
+	if !spec.Visualizer.RequiredFiltersAvailable {
+		t.Fatal("RequiredFiltersAvailable = false, want true")
+	}
 }
 
 func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextUnavailable(t *testing.T) {
@@ -306,8 +469,8 @@ func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextUnavailable(t *testing.T
 		filterAvailableFn = origFilter
 		drawTextUsableFn = origDrawText
 	})
-	filterAvailableFn = func(context.Context, string, string) (bool, error) {
-		return false, nil
+	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+		return filter != "drawtext", nil
 	}
 	drawTextUsableFn = func(context.Context, string) (bool, error) {
 		t.Fatal("drawtext smoke check should not run when drawtext filter is unavailable")
@@ -322,6 +485,9 @@ func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextUnavailable(t *testing.T
 	if spec.Visualizer.DrawTextAvailable {
 		t.Fatal("DrawTextAvailable = true, want false")
 	}
+	if !spec.Visualizer.RequiredFiltersAvailable {
+		t.Fatal("RequiredFiltersAvailable = false, want true")
+	}
 }
 
 func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextCannotRender(t *testing.T) {
@@ -335,6 +501,71 @@ func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextCannotRender(t *testing.
 	if spec.Visualizer.DrawTextAvailable {
 		t.Fatal("DrawTextAvailable = true, want false when drawtext cannot resolve a font")
 	}
+	if !spec.Visualizer.RequiredFiltersAvailable {
+		t.Fatal("RequiredFiltersAvailable = false, want true")
+	}
+}
+
+func TestWithVisualizerCapabilitiesRejectsMissingRequiredFilter(t *testing.T) {
+	origFilter := filterAvailableFn
+	origDrawText := drawTextUsableFn
+	t.Cleanup(func() {
+		filterAvailableFn = origFilter
+		drawTextUsableFn = origDrawText
+	})
+	checked := []string{}
+	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+		checked = append(checked, filter)
+		return filter == "showfreqs" || filter == "drawtext", nil
+	}
+	drawTextUsableFn = func(context.Context, string) (bool, error) {
+		return true, nil
+	}
+	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+		Visualizer: VisualizerSpec{
+			Enabled: true,
+			Mode:    VisualizerModeRadialSpectrum,
+		},
+	})
+	if spec.Visualizer.RequiredFiltersAvailable {
+		t.Fatal("RequiredFiltersAvailable = true, want false")
+	}
+	if !spec.Visualizer.DrawTextAvailable {
+		t.Fatal("DrawTextAvailable = false, want true; drawtext probing must be independent")
+	}
+	if strings.Join(checked, ",") != "showfreqs,geq,drawtext" {
+		t.Fatalf("checked filters = %v, want showfreqs, geq, drawtext", checked)
+	}
+
+	spec.OutputWidth = 720
+	spec.OutputHeight = 480
+	if _, err := buildVisualizerFilterChain(spec); err == nil || !strings.Contains(err.Error(), "required visualizer filter unavailable") {
+		t.Fatalf("buildVisualizerFilterChain err = %v, want unavailable required-filter error", err)
+	}
+}
+
+func TestCheckVisualizerFiltersRejectsUnknownMode(t *testing.T) {
+	origFilter := filterAvailableFn
+	t.Cleanup(func() { filterAvailableFn = origFilter })
+	filterAvailableFn = func(context.Context, string, string) (bool, error) {
+		t.Fatal("unknown modes must be rejected before probing filters")
+		return true, nil
+	}
+	if err := CheckVisualizerFilters(t.Context(), "ffmpeg", "sparkle"); err == nil || !strings.Contains(err.Error(), "unsupported visualizer mode") {
+		t.Fatalf("CheckVisualizerFilters err = %v, want unsupported visualizer mode", err)
+	}
+}
+
+func TestCheckVisualizerFiltersRejectsMissingRequiredFilter(t *testing.T) {
+	origFilter := filterAvailableFn
+	t.Cleanup(func() { filterAvailableFn = origFilter })
+	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+		return filter == "showfreqs", nil
+	}
+	err := CheckVisualizerFilters(t.Context(), "ffmpeg", VisualizerModeRadialSpectrum)
+	if err == nil || !strings.Contains(err.Error(), `required visualizer filter "geq" unavailable`) {
+		t.Fatalf("CheckVisualizerFilters err = %v, want missing geq error", err)
+	}
 }
 
 func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
@@ -345,6 +576,7 @@ func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
 		script := "@echo off\r\n" +
 			"if \"%1\"==\"-hide_banner\" if \"%2\"==\"-filters\" (\r\n" +
 			"  echo Filters:\r\n" +
+			"  echo  ... showfreqs         A-^>V       Convert input audio to a frequencies video output.\r\n" +
 			"  echo  T.C drawtext          V-^>V       Draw text on top of video frames using libfreetype library.\r\n" +
 			"  exit /b 0\r\n" +
 			")\r\n" +
@@ -358,7 +590,7 @@ func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
 	path := filepath.Join(dir, "ffmpeg")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"-hide_banner\" ] && [ \"$2\" = \"-filters\" ]; then\n" +
-		"  printf 'Filters:\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n'\n" +
+		"  printf 'Filters:\\n ... showfreqs         A->V       Convert input audio to a frequencies video output.\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n'\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"printf '%s\\n' '[Parsed_drawtext_0] Cannot find a valid font for the family Sans' >&2\n" +
@@ -824,10 +1056,11 @@ func TestBuildCommand_VisualizerUsesFilterComplex(t *testing.T) {
 		AudioSampleRate: 48000, AudioChannels: 2,
 		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
 		Visualizer: VisualizerSpec{
-			Enabled:           true,
-			Mode:              VisualizerModeRetroAnalyzer,
-			DrawTextAvailable: true,
-			Metadata:          VisualizerMetadata{Title: "Blue Monday"},
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			DrawTextAvailable:        true,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{Title: "Blue Monday"},
 		},
 	}
 	cmd := BuildCommand(context.Background(), spec)
@@ -861,10 +1094,11 @@ func TestBuildCommand_VisualizerDualInputMapsAudioInputOne(t *testing.T) {
 		AudioSampleRate: 48000, AudioChannels: 2,
 		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
 		Visualizer: VisualizerSpec{
-			Enabled:           true,
-			Mode:              VisualizerModeRetroAnalyzer,
-			DrawTextAvailable: true,
-			Metadata:          VisualizerMetadata{Title: "Blue Monday"},
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			DrawTextAvailable:        true,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{Title: "Blue Monday"},
 		},
 	}
 	cmd := BuildCommand(context.Background(), spec)
