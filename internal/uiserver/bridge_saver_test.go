@@ -79,6 +79,22 @@ func TestDiffBridgeConfig_DeltaLZ4(t *testing.T) {
 	}
 }
 
+func TestDiffBridgeConfig_VisualizerMode(t *testing.T) {
+	old := config.BridgeConfig{
+		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
+	}
+	newCfg := old
+	newCfg.Visualizer.Mode = config.VisualizerModeRadialSpectrum
+
+	keys := diffBridgeConfig(old, newCfg)
+	if !containsStr(keys, "visualizer.mode") {
+		t.Errorf("expected visualizer.mode in diff keys, got %v", keys)
+	}
+	if got := scopeForBridgeField("visualizer.mode"); got != adapters.ScopeNextCast {
+		t.Errorf("scopeForBridgeField(visualizer.mode) = %v, want ScopeNextCast", got)
+	}
+}
+
 func TestScopeForBridgeField_DeltaLZ4RestartCast(t *testing.T) {
 	got := scopeForBridgeField("video.delta_lz4_enabled")
 	if got != adapters.ScopeRestartCast {
@@ -221,6 +237,80 @@ func TestBridgeSaver_ModelineDropErrorStillNotifiesSubscribers(t *testing.T) {
 	}
 }
 
+func TestBridgeSaver_VisualizerModeNextCastDoesNotDrop(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	next := old
+	next.Visualizer.Mode = config.VisualizerModeRadialSpectrum
+	scope, err := s.Save(next)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if scope != adapters.ScopeNextCast {
+		t.Fatalf("scope = %v, want next-cast", scope)
+	}
+	if core.drops != 0 {
+		t.Fatalf("DropActiveCast calls = %d, want 0", core.drops)
+	}
+	if core.updated.Visualizer.Mode != config.VisualizerModeRadialSpectrum {
+		t.Errorf("core updated visualizer mode = %q, want %q", core.updated.Visualizer.Mode, config.VisualizerModeRadialSpectrum)
+	}
+	if s.Current().Visualizer.Mode != config.VisualizerModeRadialSpectrum {
+		t.Errorf("current visualizer mode = %q, want %q", s.Current().Visualizer.Mode, config.VisualizerModeRadialSpectrum)
+	}
+}
+
+func TestBridgeSaver_VisualizerModeMixedRestartCastDropsAndUpdates(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	next := old
+	next.Visualizer.Mode = config.VisualizerModeStereoScope
+	next.Video.AspectMode = "zoom"
+	scope, err := s.Save(next)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Fatalf("scope = %v, want restart-cast", scope)
+	}
+	if core.drops != 1 {
+		t.Fatalf("DropActiveCast calls = %d, want 1", core.drops)
+	}
+	if core.updated.Visualizer.Mode != config.VisualizerModeStereoScope {
+		t.Errorf("core updated visualizer mode = %q, want %q", core.updated.Visualizer.Mode, config.VisualizerModeStereoScope)
+	}
+}
+
+func TestBridgeSaver_VisualizerModeMixedHotSwapAppliesHotSwapNoDrop(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	next := old
+	next.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	next.Video.InterlaceFieldOrder = "tff"
+	scope, err := s.Save(next)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if scope != adapters.ScopeNextCast {
+		t.Fatalf("scope = %v, want next-cast", scope)
+	}
+	if core.drops != 0 {
+		t.Fatalf("DropActiveCast calls = %d, want 0", core.drops)
+	}
+	if len(core.interlaceOrders) != 1 || core.interlaceOrders[0] != "tff" {
+		t.Fatalf("SetInterlaceFieldOrder calls = %v, want [tff]", core.interlaceOrders)
+	}
+	if core.updated.Visualizer.Mode != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("core updated visualizer mode = %q, want %q", core.updated.Visualizer.Mode, config.VisualizerModeOscilloscopeWave)
+	}
+}
+
 func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
 	t.Helper()
 	return config.BridgeConfig{
@@ -232,9 +322,10 @@ func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
 			RGBMode:             "rgb888",
 			LZ4Enabled:          true,
 		},
-		Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
-		MiSTer: config.MisterConfig{Port: 32100, SourcePort: 32101},
-		UI:     config.UIConfig{HTTPPort: 32500},
+		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2},
+		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
+		MiSTer:     config.MisterConfig{Port: 32100, SourcePort: 32101},
+		UI:         config.UIConfig{HTTPPort: 32500},
 	}
 }
 
@@ -248,16 +339,18 @@ func testConfigPath(t *testing.T) string {
 }
 
 type fakeBridgeCore struct {
-	updated config.BridgeConfig
-	drops   int
-	dropErr error
+	updated         config.BridgeConfig
+	interlaceOrders []string
+	drops           int
+	dropErr         error
 }
 
 func (f *fakeBridgeCore) UpdateBridge(b config.BridgeConfig) {
 	f.updated = b
 }
 
-func (f *fakeBridgeCore) SetInterlaceFieldOrder(string) error {
+func (f *fakeBridgeCore) SetInterlaceFieldOrder(order string) error {
+	f.interlaceOrders = append(f.interlaceOrders, order)
 	return nil
 }
 

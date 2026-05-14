@@ -16,9 +16,13 @@ import (
 type fakeBridgeSaver struct {
 	got     *config.BridgeConfig
 	failErr error
+	current *config.BridgeConfig
 }
 
 func (f *fakeBridgeSaver) Current() config.BridgeConfig {
+	if f.current != nil {
+		return *f.current
+	}
 	return config.BridgeConfig{
 		DataDir: "/config",
 		Video: config.VideoConfig{
@@ -34,7 +38,8 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			Host: "192.168.1.42", Port: 32100, SourcePort: 32101,
 			SSHUser: "alice", SSHPassword: "hunter2",
 		},
-		UI: config.UIConfig{HTTPPort: 32500},
+		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
+		UI:         config.UIConfig{HTTPPort: 32500},
 	}
 }
 
@@ -135,6 +140,7 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
 			"&video.delta_lz4_enabled=true" +
+			"&visualizer.mode=retro_analyzer" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
@@ -163,6 +169,47 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 	}
 	if saver.got.MiSTer.SSHPassword != "hunter2" {
 		t.Errorf("expected preserve-on-empty to retain prior password, got %q", saver.got.MiSTer.SSHPassword)
+	}
+}
+
+func TestHandleBridge_POST_PreservesVisualizerModeOnUnrelatedSave(t *testing.T) {
+	cur := (&fakeBridgeSaver{}).Current()
+	cur.Visualizer.Mode = config.VisualizerModeStereoScope
+	saver := &fakeBridgeSaver{current: &cur}
+	mux := newBridgeTestServer(t, saver)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=alice" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
+			"&visualizer.mode=stereo_scope" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	if saver.got.Visualizer.Mode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.Mode = %q, want preserved %q", saver.got.Visualizer.Mode, config.VisualizerModeStereoScope)
 	}
 }
 
@@ -590,6 +637,68 @@ func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
 	out := rw.Body.String()
 	if !strings.Contains(out, "cast restarted") {
 		t.Errorf("expected restart-cast toast in body; got: %s", out)
+	}
+}
+
+type fakeNextCastSaver struct {
+	fakeBridgeSaver
+}
+
+func (f *fakeNextCastSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
+	f.got = &newCfg
+	return adapters.ScopeNextCast, nil
+}
+
+func TestBridgeSave_NextCastToastKeepsHotSwapPip(t *testing.T) {
+	cur := (&fakeBridgeSaver{}).Current()
+	cur.Visualizer.Mode = config.VisualizerModeRetroAnalyzer
+	cur.Video.InterlaceFieldOrder = "tff"
+	saver := &fakeNextCastSaver{fakeBridgeSaver: fakeBridgeSaver{current: &cur}}
+
+	reg := adapters.NewRegistry()
+	s, err := New(Config{Registry: reg, BridgeSaver: saver})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	body := strings.NewReader(
+		"mister.host=192.168.1.42" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=alice" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=bff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
+			"&visualizer.mode=radial_spectrum" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config")
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	out := rw.Body.String()
+	if !strings.Contains(out, "Saved — applies to the next music cast.") {
+		t.Errorf("expected next-cast toast in body; got: %s", out)
+	}
+	if !strings.Contains(out, `data-pip-key="video.interlace_field_order"`) {
+		t.Error("next-cast save should still render applied-live pip for hot-swap field")
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called")
+	}
+	if saver.got.Visualizer.Mode != config.VisualizerModeRadialSpectrum {
+		t.Errorf("Visualizer.Mode = %q, want %q", saver.got.Visualizer.Mode, config.VisualizerModeRadialSpectrum)
 	}
 }
 

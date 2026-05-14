@@ -120,13 +120,18 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	current := s.cfg.BridgeSaver.Current()
+
 	// Preserve the stored ssh_password when the operator submits with
 	// the field empty. Mirrors the "Leave empty to keep existing"
 	// placeholder shown in rowFor's KindSecret case. Without this, any
 	// save touching an unrelated field would silently clear the
 	// password every time.
 	if candidate.MiSTer.SSHPassword == "" {
-		candidate.MiSTer.SSHPassword = s.cfg.BridgeSaver.Current().MiSTer.SSHPassword
+		candidate.MiSTer.SSHPassword = current.MiSTer.SSHPassword
+	}
+	if _, ok := r.Form["visualizer.mode"]; !ok {
+		candidate.Visualizer.Mode = current.Visualizer.Mode
 	}
 	if candidate.DataDir == "" {
 		dataDir, err := config.ResolveDataDir("")
@@ -153,8 +158,9 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		s.renderPanel(w, "bridge-panel", data)
 		return
 	}
+	candidate = sec.Bridge
 
-	old := s.cfg.BridgeSaver.Current()
+	old := current
 	scope, err := s.cfg.BridgeSaver.Save(candidate)
 	if err != nil {
 		data := bridgePanelData{
@@ -174,6 +180,9 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 	}
 	switch scope {
 	case adapters.ScopeHotSwap:
+		data.AppliedPipKeys = hotSwapDiffKeys(old, candidate)
+	case adapters.ScopeNextCast:
+		data.Toast = scopeToast(scope)
 		data.AppliedPipKeys = hotSwapDiffKeys(old, candidate)
 	case adapters.ScopeRestartCast, adapters.ScopeRestartBridge:
 		data.Toast = scopeToast(scope)
@@ -197,6 +206,8 @@ func scopeToast(scope adapters.ApplyScope) *toastData {
 	switch scope {
 	case adapters.ScopeHotSwap:
 		return &toastData{Message: "Saved — applied live."}
+	case adapters.ScopeNextCast:
+		return &toastData{Message: "Saved — applies to the next music cast."}
 	case adapters.ScopeRestartCast:
 		return &toastData{Message: "Saved — cast restarted."}
 	case adapters.ScopeRestartBridge:
@@ -387,6 +398,8 @@ func bridgeLookupString(key string, cur config.BridgeConfig) string {
 		return fmt.Sprintf("%d", cur.Audio.SampleRate)
 	case "audio.channels":
 		return fmt.Sprintf("%d", cur.Audio.Channels)
+	case "visualizer.mode":
+		return config.NormalizeVisualizerMode(cur.Visualizer.Mode)
 	case "data_dir":
 		return cur.DataDir
 	case "ffmpeg_path":

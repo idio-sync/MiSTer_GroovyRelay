@@ -69,6 +69,8 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	out.Audio.SampleRate = parseIntField(form, "audio.sample_rate", errs)
 	out.Audio.Channels = parseIntField(form, "audio.channels", errs)
 
+	out.Visualizer.Mode = form.Get("visualizer.mode")
+
 	out.UI.HTTPPort = parseIntField(form, "ui.http_port", errs)
 	out.DataDir = form.Get("data_dir")
 	out.FFmpegPath = form.Get("ffmpeg_path")
