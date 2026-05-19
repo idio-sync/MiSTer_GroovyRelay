@@ -45,7 +45,7 @@
 	{{if .Message}}
 	<div class="gr-now-playing-message {{.MessageKind}}">
 		<span>{{.Message}}</span>
-		<button class="gr-playback-action" type="button" hx-get="/ui/playback/banner" hx-target="#gr-now-playing" hx-swap="outerHTML">Dismiss</button>
+		<button class="gr-playback-action" type="button" hx-get="/ui/playback/banner{{if .CastDrawerOpen}}?drawer=cast{{if .ActiveQuickCast}}&tab={{.ActiveQuickCast}}{{end}}{{end}}" hx-target="#gr-now-playing" hx-swap="outerHTML">Dismiss</button>
 	</div>
 	{{end}}
 	{{if .CastDrawerOpen}}
@@ -69,9 +69,9 @@
 				{{end}}
 			</fieldset>
 			{{else if eq $field.Type "select"}}
-			<label class="gr-quick-cast-field gr-quick-cast-field--input">{{$field.Label}}<select name="{{$field.Name}}" {{if $field.Required}}required{{end}}>{{range $field.Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label>
+			<label class="gr-quick-cast-field gr-quick-cast-field--input"><span class="gr-sr-only">{{$field.Label}}</span><select name="{{$field.Name}}" aria-label="{{$field.Label}}" {{if $field.Required}}required{{end}}>{{range $field.Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label>
 			{{else}}
-			<label class="gr-quick-cast-field gr-quick-cast-field--input">{{$field.Label}}<input name="{{$field.Name}}" type="{{$field.Type}}" placeholder="{{$field.Placeholder}}" {{if $field.Required}}required{{end}}></label>
+			<label class="gr-quick-cast-field gr-quick-cast-field--input"><span class="gr-sr-only">{{$field.Label}}</span><input name="{{$field.Name}}" type="{{$field.Type}}" placeholder="{{$field.Placeholder}}" aria-label="{{$field.Label}}" {{if $field.Required}}required{{end}}></label>
 			{{end}}
 			{{end}}
 			<button class="gr-quick-cast-submit" type="submit" {{if not $tab.Enabled}}disabled{{end}}>Play</button>
