@@ -28,7 +28,6 @@ type VisualizerMode string
 const (
 	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
 	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
-	VisualizerModeRadialSpectrum   VisualizerMode = "radial_spectrum"
 	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
 )
 

@@ -84,7 +84,7 @@ func TestDiffBridgeConfig_VisualizerMode(t *testing.T) {
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
 	}
 	newCfg := old
-	newCfg.Visualizer.Mode = config.VisualizerModeRadialSpectrum
+	newCfg.Visualizer.Mode = config.VisualizerModeStereoScope
 
 	keys := diffBridgeConfig(old, newCfg)
 	if !containsStr(keys, "visualizer.mode") {
@@ -243,7 +243,7 @@ func TestBridgeSaver_VisualizerModeNextCastDoesNotDrop(t *testing.T) {
 	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
 
 	next := old
-	next.Visualizer.Mode = config.VisualizerModeRadialSpectrum
+	next.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
 	scope, err := s.Save(next)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -254,11 +254,11 @@ func TestBridgeSaver_VisualizerModeNextCastDoesNotDrop(t *testing.T) {
 	if core.drops != 0 {
 		t.Fatalf("DropActiveCast calls = %d, want 0", core.drops)
 	}
-	if core.updated.Visualizer.Mode != config.VisualizerModeRadialSpectrum {
-		t.Errorf("core updated visualizer mode = %q, want %q", core.updated.Visualizer.Mode, config.VisualizerModeRadialSpectrum)
+	if core.updated.Visualizer.Mode != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("core updated visualizer mode = %q, want %q", core.updated.Visualizer.Mode, config.VisualizerModeOscilloscopeWave)
 	}
-	if s.Current().Visualizer.Mode != config.VisualizerModeRadialSpectrum {
-		t.Errorf("current visualizer mode = %q, want %q", s.Current().Visualizer.Mode, config.VisualizerModeRadialSpectrum)
+	if s.Current().Visualizer.Mode != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("current visualizer mode = %q, want %q", s.Current().Visualizer.Mode, config.VisualizerModeOscilloscopeWave)
 	}
 }
 

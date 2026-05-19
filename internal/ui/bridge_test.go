@@ -715,7 +715,7 @@ func TestBridgeSave_NextCastToastKeepsHotSwapPip(t *testing.T) {
 			"&video.aspect_mode=auto" +
 			"&video.lz4_enabled=true" +
 			"&video.delta_lz4_enabled=true" +
-			"&visualizer.mode=radial_spectrum" +
+			"&visualizer.mode=stereo_scope" +
 			"&audio.sample_rate=48000" +
 			"&audio.channels=2" +
 			"&ui.http_port=32500" +
@@ -737,8 +737,8 @@ func TestBridgeSave_NextCastToastKeepsHotSwapPip(t *testing.T) {
 	if saver.got == nil {
 		t.Fatal("saver.Save not called")
 	}
-	if saver.got.Visualizer.Mode != config.VisualizerModeRadialSpectrum {
-		t.Errorf("Visualizer.Mode = %q, want %q", saver.got.Visualizer.Mode, config.VisualizerModeRadialSpectrum)
+	if saver.got.Visualizer.Mode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.Mode = %q, want %q", saver.got.Visualizer.Mode, config.VisualizerModeStereoScope)
 	}
 }
 

@@ -294,18 +294,6 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 			},
 		},
 		{
-			name: "radial spectrum",
-			mode: VisualizerModeRadialSpectrum,
-			want: []string{
-				"showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0xfff06b,format=rgba,geq=",
-				"atan2(Y-H/2,X-W/2)",
-				"hypot(X-W/2,Y-H/2)",
-				"x=24:y=h-96",
-				"x=24:y=h-66",
-				"x=24:y=h-36",
-			},
-		},
-		{
 			name: "stereo scope",
 			mode: VisualizerModeStereoScope,
 			want: []string{
@@ -365,7 +353,6 @@ func TestBuildVisualizerFilterChain_AllModesBarsOnlyWhenDrawTextUnavailable(t *t
 	}{
 		{"retro analyzer", VisualizerModeRetroAnalyzer, "showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0x70ff70"},
 		{"oscilloscope wave", VisualizerModeOscilloscopeWave, "showwaves=s=640x480:mode=line:colors=0x58e8ff"},
-		{"radial spectrum", VisualizerModeRadialSpectrum, "showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0xfff06b,format=rgba,geq="},
 		{"stereo scope", VisualizerModeStereoScope, "avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba"},
 	}
 	for _, tc := range cases {
@@ -410,7 +397,6 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 	}{
 		{VisualizerModeRetroAnalyzer, []string{"showfreqs"}},
 		{VisualizerModeOscilloscopeWave, []string{"showwaves"}},
-		{VisualizerModeRadialSpectrum, []string{"showfreqs", "geq"}},
 		{VisualizerModeStereoScope, []string{"avectorscope"}},
 	}
 	for _, tc := range cases {
@@ -513,10 +499,8 @@ func TestWithVisualizerCapabilitiesRejectsMissingRequiredFilter(t *testing.T) {
 		filterAvailableFn = origFilter
 		drawTextUsableFn = origDrawText
 	})
-	checked := []string{}
 	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
-		checked = append(checked, filter)
-		return filter == "showfreqs" || filter == "drawtext", nil
+		return filter != "avectorscope", nil
 	}
 	drawTextUsableFn = func(context.Context, string) (bool, error) {
 		return true, nil
@@ -524,7 +508,7 @@ func TestWithVisualizerCapabilitiesRejectsMissingRequiredFilter(t *testing.T) {
 	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
 		Visualizer: VisualizerSpec{
 			Enabled: true,
-			Mode:    VisualizerModeRadialSpectrum,
+			Mode:    VisualizerModeStereoScope,
 		},
 	})
 	if spec.Visualizer.RequiredFiltersAvailable {
@@ -532,15 +516,6 @@ func TestWithVisualizerCapabilitiesRejectsMissingRequiredFilter(t *testing.T) {
 	}
 	if !spec.Visualizer.DrawTextAvailable {
 		t.Fatal("DrawTextAvailable = false, want true; drawtext probing must be independent")
-	}
-	if strings.Join(checked, ",") != "showfreqs,geq,drawtext" {
-		t.Fatalf("checked filters = %v, want showfreqs, geq, drawtext", checked)
-	}
-
-	spec.OutputWidth = 720
-	spec.OutputHeight = 480
-	if _, err := buildVisualizerFilterChain(spec); err == nil || !strings.Contains(err.Error(), "required visualizer filter unavailable") {
-		t.Fatalf("buildVisualizerFilterChain err = %v, want unavailable required-filter error", err)
 	}
 }
 
@@ -560,11 +535,11 @@ func TestCheckVisualizerFiltersRejectsMissingRequiredFilter(t *testing.T) {
 	origFilter := filterAvailableFn
 	t.Cleanup(func() { filterAvailableFn = origFilter })
 	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
-		return filter == "showfreqs", nil
+		return filter != "avectorscope", nil
 	}
-	err := CheckVisualizerFilters(t.Context(), "ffmpeg", VisualizerModeRadialSpectrum)
-	if err == nil || !strings.Contains(err.Error(), `required visualizer filter "geq" unavailable`) {
-		t.Fatalf("CheckVisualizerFilters err = %v, want missing geq error", err)
+	err := CheckVisualizerFilters(t.Context(), "ffmpeg", VisualizerModeStereoScope)
+	if err == nil || !strings.Contains(err.Error(), "avectorscope") {
+		t.Fatalf("CheckVisualizerFilters err = %v, want missing avectorscope error", err)
 	}
 }
 

@@ -28,9 +28,11 @@ Set the global mode in `config.toml`:
 mode = "retro_analyzer"
 ```
 
-Supported modes are `retro_analyzer`, `oscilloscope_wave`, `radial_spectrum`, and `stereo_scope`.
+Supported modes are `retro_analyzer`, `oscilloscope_wave`, and `stereo_scope`.
 
 Changing only the visualizer mode does not interrupt the current cast; the new mode applies to the next music cast.
+
+**Note:** A `radial_spectrum` mode was prototyped but deferred from v1; the lightweight FFmpeg polar transform did not produce a satisfactory circular display. It may return in a future release.
 
 ## Hardware requirements
 

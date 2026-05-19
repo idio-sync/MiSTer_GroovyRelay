@@ -266,7 +266,6 @@ func TestNormalizeVisualizerMode(t *testing.T) {
 		{"   ", VisualizerModeRetroAnalyzer},
 		{" retro_analyzer ", VisualizerModeRetroAnalyzer},
 		{"oscilloscope_wave", VisualizerModeOscilloscopeWave},
-		{"radial_spectrum", VisualizerModeRadialSpectrum},
 		{"stereo_scope", VisualizerModeStereoScope},
 	}
 	for _, c := range cases {
@@ -281,7 +280,6 @@ func TestSupportedVisualizerModes_ReturnsDefensiveCopy(t *testing.T) {
 	want := []string{
 		VisualizerModeRetroAnalyzer,
 		VisualizerModeOscilloscopeWave,
-		VisualizerModeRadialSpectrum,
 		VisualizerModeStereoScope,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -300,7 +298,6 @@ func TestSectioned_Validate_VisualizerMode(t *testing.T) {
 		"",
 		VisualizerModeRetroAnalyzer,
 		VisualizerModeOscilloscopeWave,
-		VisualizerModeRadialSpectrum,
 		VisualizerModeStereoScope,
 	}
 	for _, mode := range valid {
@@ -316,7 +313,7 @@ func TestSectioned_Validate_VisualizerMode(t *testing.T) {
 		})
 	}
 
-	invalid := []string{"retro", "milkdrop", "spectrogram", "RADIAL_SPECTRUM"}
+	invalid := []string{"retro", "milkdrop", "spectrogram", "RETRO_ANALYZER"}
 	for _, mode := range invalid {
 		t.Run("invalid/"+mode, func(t *testing.T) {
 			s := validSectioned()

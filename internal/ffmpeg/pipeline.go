@@ -21,7 +21,6 @@ type VisualizerMode string
 const (
 	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
 	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
-	VisualizerModeRadialSpectrum   VisualizerMode = "radial_spectrum"
 	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
 )
 
@@ -348,8 +347,6 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 		return []string{"showfreqs"}
 	case VisualizerModeOscilloscopeWave:
 		return []string{"showwaves"}
-	case VisualizerModeRadialSpectrum:
-		return []string{"showfreqs", "geq"}
 	case VisualizerModeStereoScope:
 		return []string{"avectorscope"}
 	default:
@@ -367,8 +364,6 @@ func visualizerCoreFilter(mode VisualizerMode, logicalW, logicalH int) string {
 		return fmt.Sprintf("showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70", logicalW, logicalH)
 	case VisualizerModeOscilloscopeWave:
 		return fmt.Sprintf("showwaves=s=%dx%d:mode=line:colors=0x58e8ff", logicalW, logicalH)
-	case VisualizerModeRadialSpectrum:
-		return fmt.Sprintf("showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0xfff06b,format=rgba,geq=%s", logicalW, logicalH, radialSpectrumGEQ())
 	case VisualizerModeStereoScope:
 		return fmt.Sprintf("avectorscope=s=%dx%d:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba", logicalW, logicalH)
 	default:
@@ -376,24 +371,9 @@ func visualizerCoreFilter(mode VisualizerMode, logicalW, logicalH int) string {
 	}
 }
 
-func radialSpectrumGEQ() string {
-	return fmt.Sprintf("r='%s':g='%s':b='%s':a='255'",
-		radialSpectrumChannelExpr("r"),
-		radialSpectrumChannelExpr("g"),
-		radialSpectrumChannelExpr("b"),
-	)
-}
-
-func radialSpectrumChannelExpr(channel string) string {
-	radius := "hypot(X-W/2,Y-H/2)"
-	angleX := "mod((atan2(Y-H/2,X-W/2)+PI)/(2*PI)*W,W)"
-	angleY := "H-hypot(X-W/2,Y-H/2)/(min(W,H)/2)*H"
-	return fmt.Sprintf("if(lte(%s,min(W,H)/2),%s(%s,%s),0)", radius, channel, angleX, angleY)
-}
-
 func visualizerTextY(mode VisualizerMode, line int) string {
 	switch mode {
-	case VisualizerModeRadialSpectrum, VisualizerModeStereoScope:
+	case VisualizerModeStereoScope:
 		return fmt.Sprintf("h-%d", 96-line*30)
 	default:
 		return fmt.Sprintf("%d", 24+line*30)

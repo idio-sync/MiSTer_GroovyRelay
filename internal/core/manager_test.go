@@ -2065,7 +2065,6 @@ func TestValidateVisualizerRequestModes(t *testing.T) {
 	for _, mode := range []VisualizerMode{
 		VisualizerModeRetroAnalyzer,
 		VisualizerModeOscilloscopeWave,
-		VisualizerModeRadialSpectrum,
 		VisualizerModeStereoScope,
 	} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -2103,7 +2102,6 @@ func TestFFmpegVisualizerSpecMapsModes(t *testing.T) {
 	}{
 		{VisualizerModeRetroAnalyzer, ffmpeg.VisualizerModeRetroAnalyzer},
 		{VisualizerModeOscilloscopeWave, ffmpeg.VisualizerModeOscilloscopeWave},
-		{VisualizerModeRadialSpectrum, ffmpeg.VisualizerModeRadialSpectrum},
 		{VisualizerModeStereoScope, ffmpeg.VisualizerModeStereoScope},
 	}
 	for _, c := range cases {

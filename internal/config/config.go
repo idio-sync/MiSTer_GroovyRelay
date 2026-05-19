@@ -54,14 +54,12 @@ type Config struct {
 const (
 	VisualizerModeRetroAnalyzer    = "retro_analyzer"
 	VisualizerModeOscilloscopeWave = "oscilloscope_wave"
-	VisualizerModeRadialSpectrum   = "radial_spectrum"
 	VisualizerModeStereoScope      = "stereo_scope"
 )
 
 var supportedVisualizerModes = []string{
 	VisualizerModeRetroAnalyzer,
 	VisualizerModeOscilloscopeWave,
-	VisualizerModeRadialSpectrum,
 	VisualizerModeStereoScope,
 }
 
@@ -260,7 +258,7 @@ func (s *Sectioned) Validate() error {
 	}
 	b.Visualizer.Mode = NormalizeVisualizerMode(b.Visualizer.Mode)
 	switch b.Visualizer.Mode {
-	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeRadialSpectrum, VisualizerModeStereoScope:
+	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeStereoScope:
 	default:
 		return fmt.Errorf("bridge.visualizer.mode must be one of %s, got %q", strings.Join(SupportedVisualizerModes(), ", "), b.Visualizer.Mode)
 	}
