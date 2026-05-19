@@ -308,7 +308,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			if err != nil {
 				cancel()
 				a.clearResolveIfCurrent(capture)
-				return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to buffer HLS stream")
+				return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, fmt.Sprintf("failed to buffer HLS stream: %v", err))
 			}
 			playbackURL = hlsSession.PlaybackPath
 			mediaPolicy = hlsSession.Policy

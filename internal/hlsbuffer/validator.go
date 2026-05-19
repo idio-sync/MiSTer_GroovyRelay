@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -164,19 +165,67 @@ func defaultResolver(ctx context.Context, host string) ([]net.IP, error) {
 	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
 
+// toonamiOriginHostRE matches the Wowza streaming-origin hosts that
+// Toonami Aftermath returns inside its master playlists. The digit in
+// `aspN` rotates across the load-balanced pool, so the regex covers any
+// digit on the fixed port 1934.
+var toonamiOriginHostRE = regexp.MustCompile(`^asp\d+\.toonamiaftermath\.com:1934$`)
+
+var toonamiAPIChannelPrefixes = []string{"/est/", "/pst/", "/movies/", "/radio/"}
+
+var toonamiOriginChannelPrefixes = []string{
+	"/livehttporigin/est/",
+	"/livehttporigin/pst/",
+	"/livehttporigin/movies/",
+	"/livehttporigin/radio/",
+}
+
 func validateBundledToonamiURL(u *url.URL) error {
-	if u.Host != "api.toonamiaftermath.com:3000" {
-		return fmt.Errorf("hls url: Toonami Aftermath host must be api.toonamiaftermath.com:3000")
+	if u.Fragment != "" {
+		return fmt.Errorf("hls url: Toonami Aftermath URL fragment is not allowed")
 	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("hls url: Toonami Aftermath URL query and fragment are not allowed")
+	host := strings.ToLower(u.Host)
+	switch {
+	case host == "api.toonamiaftermath.com:3000":
+		if u.RawQuery != "" {
+			return fmt.Errorf("hls url: Toonami Aftermath API URL query is not allowed")
+		}
+		return checkToonamiPathPrefix(u, toonamiAPIChannelPrefixes)
+	case toonamiOriginHostRE.MatchString(host):
+		if err := checkToonamiOriginQuery(u); err != nil {
+			return err
+		}
+		return checkToonamiPathPrefix(u, toonamiOriginChannelPrefixes)
 	}
-	for _, prefix := range []string{"/est/", "/pst/", "/movies/", "/radio/"} {
-		if strings.HasPrefix(u.EscapedPath(), prefix) {
+	return fmt.Errorf("hls url: Toonami Aftermath host %q is not allowed", host)
+}
+
+func checkToonamiPathPrefix(u *url.URL, prefixes []string) error {
+	path := u.EscapedPath()
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
 			return nil
 		}
 	}
-	return fmt.Errorf("hls url: Toonami Aftermath path is not in an approved channel prefix")
+	return fmt.Errorf("hls url: Toonami Aftermath path %q is not in an approved channel prefix", path)
+}
+
+// checkToonamiOriginQuery permits at most a single `streamDelay`
+// parameter on the Wowza origin host — Toonami's `pst` channel ships
+// with `?streamDelay=180` on its variant URL, and nothing else has ever
+// appeared in production.
+func checkToonamiOriginQuery(u *url.URL) error {
+	if u.RawQuery == "" {
+		return nil
+	}
+	q := u.Query()
+	if len(q) != 1 {
+		return fmt.Errorf("hls url: Toonami Aftermath origin allows only the streamDelay query parameter")
+	}
+	if _, ok := q["streamDelay"]; !ok {
+		return fmt.Errorf("hls url: Toonami Aftermath origin allows only the streamDelay query parameter")
+	}
+	return nil
 }
 
 func resolveURLReference(parentURL, ref string) (string, error) {

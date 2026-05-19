@@ -394,6 +394,32 @@ func TestStreamsDirectHLSCleansBufferWhenCoreStartFails(t *testing.T) {
 	}
 }
 
+func TestStreamsDirectHLSSurfacesBufferOpenError(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	enableBridgeHLSBufferForTest(a)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		return nil, fmt.Errorf("hls url: Toonami Aftermath host must be api.toonamiaftermath.com:3000")
+	}
+
+	_, err = a.StartResolvedStream(t.Context(), streamhandoff.Resolution{
+		ProviderID: "toonami-aftermath",
+		ChannelID:  "east",
+	})
+	if err == nil {
+		t.Fatal("StartResolvedStream error = nil, want hls buffer open error")
+	}
+	if !strings.Contains(err.Error(), "Toonami Aftermath host must be") {
+		t.Fatalf("err = %q, want underlying hls buffer message to be surfaced", err)
+	}
+}
+
 func enableBridgeHLSBufferForTest(a *Adapter) {
 	a.bridge.HLSBuffer.Enabled = true
 	a.bridge.HLSBuffer.LiveEdgeSegments = 3
