@@ -19,6 +19,12 @@ const (
 
 	QuickCastEncodingForm      = "form"
 	QuickCastEncodingMultipart = "multipart"
+
+	// ErrActiveSessionChangedMessage is the canonical error string providers
+	// and the UI route return when a guarded action's session key no longer
+	// matches the live session. Surfaced through the banner's transient
+	// message slot.
+	ErrActiveSessionChangedMessage = "active session changed"
 )
 
 type PlaybackControlProvider interface {

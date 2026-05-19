@@ -26,6 +26,7 @@ type fakePlaybackAdapter struct {
 	tabs        []adapters.QuickCastTab
 	actionCalls []adapters.PlaybackActionRequest
 	actionMsg   string
+	actionErr   error
 	quickCalls  []adapters.QuickCastRequest
 	quickMsg    string
 	quickErr    error
@@ -58,6 +59,9 @@ func (f *fakePlaybackAdapter) PlaybackBanner(context.Context, adapters.PlaybackB
 }
 func (f *fakePlaybackAdapter) HandlePlaybackAction(_ context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
 	f.actionCalls = append(f.actionCalls, req)
+	if f.actionErr != nil {
+		return adapters.PlaybackActionResult{}, f.actionErr
+	}
 	return adapters.PlaybackActionResult{Message: f.actionMsg}, nil
 }
 func (f *fakePlaybackAdapter) QuickCastTabs() []adapters.QuickCastTab { return f.tabs }
@@ -435,7 +439,12 @@ func TestPlaybackActionRejectsActiveAdapterWithoutPlaybackProvider(t *testing.T)
 	}
 }
 
-func TestPlaybackActionRejectsProviderThatDoesNotOwnSnapshot(t *testing.T) {
+// TestPlaybackActionDispatchesToProviderForSelfValidation verifies that the
+// route trusts providers to self-validate ownership and action eligibility
+// via their HandlePlaybackAction (which the real adapters back with guarded
+// core calls). The route does NOT pre-check ownership by calling
+// PlaybackBanner first, so it issues only one provider call per click.
+func TestPlaybackActionDispatchesToProviderForSelfValidation(t *testing.T) {
 	fake := &fakePlaybackAdapter{
 		name:    "url",
 		enabled: true,
@@ -443,6 +452,7 @@ func TestPlaybackActionRejectsProviderThatDoesNotOwnSnapshot(t *testing.T) {
 		view: adapters.PlaybackBannerAdapterView{
 			Actions: []adapters.PlaybackAction{{ID: adapters.PlaybackActionStop, Label: "Stop", Enabled: true}},
 		},
+		actionErr: errors.New(adapters.ErrActiveSessionChangedMessage),
 	}
 	_, mux := newTestServer(t, func(c *Config) {
 		c.Registry = adapters.NewRegistryWith(fake)
@@ -457,11 +467,11 @@ func TestPlaybackActionRejectsProviderThatDoesNotOwnSnapshot(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	if len(fake.actionCalls) != 0 {
-		t.Fatalf("provider was called despite owns=false: %#v", fake.actionCalls)
+	if len(fake.actionCalls) != 1 {
+		t.Fatalf("expected exactly one provider action call, got %d: %#v", len(fake.actionCalls), fake.actionCalls)
 	}
-	if !strings.Contains(rr.Body.String(), "playback action unavailable") {
-		t.Fatalf("missing owns=false error: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), adapters.ErrActiveSessionChangedMessage) {
+		t.Fatalf("missing provider error message: %s", rr.Body.String())
 	}
 }
 
@@ -581,6 +591,77 @@ func TestQuickCastErrorKeepsDrawerOpen(t *testing.T) {
 		if !strings.Contains(rr.Body.String(), want) {
 			t.Fatalf("quick-cast error response missing %q: %s", want, rr.Body.String())
 		}
+	}
+}
+
+// TestBannerDismissButtonPreservesDrawerState verifies that when the
+// banner shows a transient message while the Cast drawer is open, the
+// Dismiss button's hx-get URL carries drawer=cast (and active tab) so
+// dismissing the message keeps the drawer open with the operator's
+// selected tab intact. Otherwise dismissing a quick-cast error would also
+// close the drawer and lose the operator's form context.
+func TestBannerDismissButtonPreservesDrawerState(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:     "url",
+		enabled:  true,
+		quickErr: errors.New("bad url"),
+		tabs: []adapters.QuickCastTab{
+			{ID: "url", Label: "URL", Enabled: true, Encoding: adapters.QuickCastEncodingForm},
+			{ID: "torrent-magnet", Label: "Magnet", Enabled: true, Encoding: adapters.QuickCastEncodingForm},
+		},
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+	form := url.Values{"tab_id": {"torrent-magnet"}, "magnet": {"x"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// Dismiss button URL should preserve drawer=cast and the active tab.
+	if !strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast&tab=torrent-magnet"`) {
+		t.Fatalf("Dismiss button should preserve drawer+tab in hx-get: %s", body)
+	}
+}
+
+// TestBannerDismissCollapsesDrawerWhenNotOpen verifies the inverse: with no
+// drawer open, the Dismiss button does NOT add drawer=cast to its hx-get,
+// so dismissing a non-quick-cast error doesn't accidentally open the drawer.
+func TestBannerDismissCollapsesDrawerWhenNotOpen(t *testing.T) {
+	fake := &fakePlaybackAdapter{
+		name:    "url",
+		enabled: true,
+		owns:    true,
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{{ID: adapters.PlaybackActionStop, Label: "Stop", Enabled: true}},
+		},
+		actionErr: errors.New("provider error"),
+	}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.Registry = adapters.NewRegistryWith(fake)
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10}}
+	})
+	form := url.Values{"action": {"stop"}, "adapter_ref": {"url:abc"}, "generation": {"10"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `hx-get="/ui/playback/banner"`) {
+		t.Fatalf("Dismiss button should not carry drawer params when drawer is closed: %s", body)
+	}
+	if strings.Contains(body, "drawer=cast") {
+		t.Fatalf("Dismiss button leaked drawer=cast when drawer was closed: %s", body)
 	}
 }
 

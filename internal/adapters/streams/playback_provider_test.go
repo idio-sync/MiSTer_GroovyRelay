@@ -45,6 +45,50 @@ func TestStreamsPlaybackBannerActions(t *testing.T) {
 	}
 }
 
+// TestStreamsPlaybackBannerSurrenderOwnershipWhenQueueMismatched verifies
+// that the streams provider returns owns=false when its source claim
+// matches but the active queue does not — e.g. queue cleared, or a
+// different streams session was preempted in. The semantics of owns=true
+// is "this adapter owns the supplied session"; conflating it with "I
+// claim this source name" would let the UI surface streams-specific
+// enrichment for a session the adapter no longer controls.
+func TestStreamsPlaybackBannerSurrenderOwnershipWhenQueueMismatched(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	// No active queue.
+	view, owns := a.PlaybackBanner(context.Background(), adapters.PlaybackBannerSnapshot{
+		State:      core.StatePlaying,
+		Source:     "streams",
+		AdapterRef: "streams:mtv:metal:sess:2",
+		Generation: 8,
+	})
+	if owns {
+		t.Fatalf("streams provider should not own snapshot when active queue is nil, view=%+v", view)
+	}
+	if view.SourceDisplay != "" || len(view.Actions) != 0 {
+		t.Fatalf("expected empty view when surrendering ownership, got %+v", view)
+	}
+
+	// Different streams session active — ref mismatch.
+	a.mu.Lock()
+	a.active = &ActiveQueue{
+		SessionID:  "other",
+		ProviderID: "mtv",
+		ChannelID:  "rock",
+		Items:      []StreamItem{{ID: "x"}},
+		baseItems:  []StreamItem{{ID: "x"}},
+	}
+	a.mu.Unlock()
+	view, owns = a.PlaybackBanner(context.Background(), adapters.PlaybackBannerSnapshot{
+		State:      core.StatePlaying,
+		Source:     "streams",
+		AdapterRef: "streams:mtv:metal:sess:2",
+		Generation: 8,
+	})
+	if owns {
+		t.Fatalf("streams provider should not own snapshot when ref mismatched, view=%+v", view)
+	}
+}
+
 func TestStreamsPlaybackActionRejectsStaleCoreGeneration(t *testing.T) {
 	a, fc := newTestAdapterWithFakeCore(t)
 	a.mu.Lock()
