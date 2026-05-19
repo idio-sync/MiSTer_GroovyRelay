@@ -36,7 +36,7 @@ func (a *Adapter) HandlePlaybackAction(ctx context.Context, req adapters.Playbac
 		return adapters.PlaybackActionResult{}, err
 	}
 	if !matched {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("active session changed")
+		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
 	}
 	return adapters.PlaybackActionResult{Message: "stopped"}, nil
 }

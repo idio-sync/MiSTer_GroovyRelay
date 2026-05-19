@@ -14,17 +14,19 @@ func (a *Adapter) PlaybackBanner(ctx context.Context, snap adapters.PlaybackBann
 		return adapters.PlaybackBannerAdapterView{}, false
 	}
 
-	view := adapters.PlaybackBannerAdapterView{SourceDisplay: "Streams"}
 	a.mu.Lock()
 	q := a.active
 	if q == nil || activeAdapterRef(q) != snap.AdapterRef {
 		a.mu.Unlock()
-		if snap.Title != "" {
-			view.Title = snap.Title
-		}
-		return view, true
+		// Source claim is "streams" but the adapter no longer owns this
+		// session (e.g. the queue was cleared or a different streams session
+		// is active). Surrender ownership so the UI renders the banner as
+		// read-only and routes its actions through the source-display
+		// fallback rather than calling HandlePlaybackAction.
+		return adapters.PlaybackBannerAdapterView{}, false
 	}
 
+	view := adapters.PlaybackBannerAdapterView{SourceDisplay: "Streams"}
 	title := q.ChannelName
 	subtitle := q.ProviderName
 	itemTitle := ""
@@ -77,7 +79,7 @@ func (a *Adapter) ensureOwnsCoreSession(ref string, generation uint64) error {
 	}
 	st := a.core.Status()
 	if st.AdapterRef != ref || st.Generation != generation {
-		return playbackError("", "active session changed")
+		return playbackError("", adapters.ErrActiveSessionChangedMessage)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
