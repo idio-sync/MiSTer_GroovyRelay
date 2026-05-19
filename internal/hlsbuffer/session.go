@@ -201,6 +201,13 @@ func chooseWarmSegments(segments []Segment, cfg Config) []Segment {
 }
 
 func warmSegmentCache(ctx context.Context, mediaURL string, segments []Segment, cfg Config, trustMode TrustMode, validator URLValidator, cache *SegmentCache) ([]cachedSegment, error) {
+	// Derive a cancellable context so that returning on the first error
+	// also tears down sibling segment fetches still in flight. Without
+	// this, a single fail forces the remaining goroutines to wait out
+	// SegmentTimeout while keeping connections open.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	type result struct {
 		idx  int
 		body []byte
@@ -459,6 +466,9 @@ func writeLocalPlaylist(path string, source Playlist, cached []cachedSegment) er
 		fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", cached[0].segment.Sequence)
 	}
 	for _, item := range cached {
+		if item.segment.Discontinuity {
+			b.WriteString("#EXT-X-DISCONTINUITY\n")
+		}
 		fmt.Fprintf(&b, "#EXTINF:%s,\n%s\n", formatHLSDuration(item.segment.Duration), item.name)
 	}
 	tmp := path + ".tmp"

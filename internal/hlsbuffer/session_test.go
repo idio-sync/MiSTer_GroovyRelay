@@ -227,6 +227,112 @@ live.m3u8
 	}
 }
 
+func TestWarmSegmentCacheCancelsSiblingsOnError(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/seg-fail.ts":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/seg-slow.ts":
+			select {
+			case requested <- struct{}{}:
+			default:
+			}
+			select {
+			case <-r.Context().Done():
+				select {
+				case cancelled <- struct{}{}:
+				default:
+				}
+			case <-time.After(30 * time.Second):
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	v := URLValidator{
+		Resolver: staticResolver(map[string][]net.IP{
+			"public.example": {net.ParseIP("93.184.216.34")},
+		}),
+		Client: rewriteHostClient(t, srv),
+	}
+	cache := NewSegmentCache(t.TempDir(), 6, 1<<20)
+	cfg := Config{
+		MaxSegmentBytes: 1 << 20,
+		// Make per-segment timeout much longer than the test deadline so
+		// the only way the slow request gets cancelled is through sibling
+		// propagation, not its own timeout.
+		SegmentTimeout: 30 * time.Second,
+	}
+	mediaURL := publicHostURL(srv.URL + "/")
+
+	_, err := warmSegmentCache(context.Background(), mediaURL,
+		[]Segment{
+			{URI: "seg-slow.ts", Sequence: 1, Duration: time.Second},
+			{URI: "seg-fail.ts", Sequence: 2, Duration: time.Second},
+		},
+		cfg, TrustModeGenericPublic, v, cache)
+	if err == nil {
+		t.Fatal("warmSegmentCache error = nil, want fail")
+	}
+
+	select {
+	case <-requested:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow segment was never requested")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sibling fetch was not cancelled after sibling error")
+	}
+}
+
+func TestOpenSessionPreservesDiscontinuityMarker(t *testing.T) {
+	srv := newHLSSessionTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/live.m3u8":
+			_, _ = fmt.Fprint(w, `#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:60
+#EXTINF:4,
+seg-060.ts
+#EXT-X-DISCONTINUITY
+#EXTINF:4,
+seg-061.ts
+`)
+		case "/seg-060.ts", "/seg-061.ts":
+			_, _ = fmt.Fprint(w, "segment")
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	sess, err := OpenSession(context.Background(), sessionTestOptions(t, srv.URL+"/live.m3u8"))
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	manifest := readFile(t, sess.PlaybackPath)
+	if !strings.Contains(manifest, "#EXT-X-DISCONTINUITY") {
+		t.Fatalf("local playlist missing discontinuity marker:\n%s", manifest)
+	}
+	idxDisc := strings.Index(manifest, "#EXT-X-DISCONTINUITY")
+	idx60 := strings.Index(manifest, "segment-000060.ts")
+	idx61 := strings.Index(manifest, "segment-000061.ts")
+	if idx60 < 0 || idx61 < 0 {
+		t.Fatalf("local playlist missing one of the segments:\n%s", manifest)
+	}
+	if !(idx60 < idxDisc && idxDisc < idx61) {
+		t.Fatalf("discontinuity placed incorrectly: idx60=%d idxDisc=%d idx61=%d\n%s",
+			idx60, idxDisc, idx61, manifest)
+	}
+}
+
 func sessionTestOptions(t *testing.T, rawURL string) SessionOptions {
 	t.Helper()
 	return SessionOptions{

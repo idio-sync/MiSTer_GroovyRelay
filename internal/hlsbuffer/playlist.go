@@ -19,6 +19,11 @@ type Segment struct {
 	URI      string
 	Duration time.Duration
 	Sequence int64
+	// Discontinuity is true when the source playlist placed an
+	// #EXT-X-DISCONTINUITY tag immediately before this segment's
+	// #EXTINF. ffmpeg needs the marker to handle PTS jumps at ad
+	// breaks; without it, the decoder may stall or glitch.
+	Discontinuity bool
 }
 
 type Variant struct {
@@ -45,6 +50,7 @@ func ParsePlaylist(body []byte) (Playlist, error) {
 	expectVariantURI := false
 	var pendingVariant Variant
 	var pendingDuration *time.Duration
+	pendingDiscontinuity := false
 	nextSequence := int64(0)
 
 	for _, line := range lines {
@@ -85,6 +91,8 @@ func ParsePlaylist(body []byte) (Playlist, error) {
 					return Playlist{}, err
 				}
 				pendingDuration = &dur
+			case upper == "#EXT-X-DISCONTINUITY":
+				pendingDiscontinuity = true
 			case strings.HasPrefix(upper, "#EXT-X-STREAM-INF:"):
 				v, err := parseStreamInf(trimmed)
 				if err != nil {
@@ -110,12 +118,14 @@ func ParsePlaylist(body []byte) (Playlist, error) {
 			return Playlist{}, fmt.Errorf("hls playlist: audio-only media segments are not supported: %s", trimmed)
 		}
 		p.Segments = append(p.Segments, Segment{
-			URI:      trimmed,
-			Duration: *pendingDuration,
-			Sequence: nextSequence,
+			URI:           trimmed,
+			Duration:      *pendingDuration,
+			Sequence:      nextSequence,
+			Discontinuity: pendingDiscontinuity,
 		})
 		nextSequence++
 		pendingDuration = nil
+		pendingDiscontinuity = false
 	}
 
 	if !seenHeader {
@@ -142,7 +152,6 @@ func rejectUnsupportedTag(line, upper string) error {
 	unsupportedPrefixes := []string{
 		"#EXT-X-KEY",
 		"#EXT-X-BYTERANGE",
-		"#EXT-X-DISCONTINUITY",
 		"#EXT-X-MAP",
 		"#EXT-X-PART",
 		"#EXT-X-PRELOAD-HINT",
