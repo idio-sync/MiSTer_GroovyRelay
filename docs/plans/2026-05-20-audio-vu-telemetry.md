@@ -655,6 +655,14 @@ UI endpoint, and manager source. Task 7 wires `main.go` startup/shutdown. Task
 test. Each task is independently committable; reverting any of 1–2 leaves the
 running data plane untouched.
 
+> **Task 8 is BLOCKED on the receiver-v24 UI redesign landing.** The browser
+> JS targets `.tr-vu .ch-bar .s` selectors that do not exist in the current
+> `now-playing-banner.html`. Tasks 1–7 (Go side) + Task 9 (integration test)
+> stand alone and produce a working, verifiable SSE endpoint at
+> `/ui/telemetry/audio` independent of any UI work. **Do Tasks 1–7 + 9 now;
+> do Task 8 when the receiver-v24 chassis lands in `internal/ui/templates/`.**
+> See the "Execution gating" section at the bottom of this plan for details.
+
 ---
 
 ## Task 1: `dataplane.AudioMeter` — DSP primitive + atomic snapshot
@@ -1566,6 +1574,11 @@ func (b *AudioBroker) unsubscribe(s *subscriber) {
     b.mu.Unlock()
 }
 
+// shutdown closes every subscriber's channel and clears the map.
+// Held-lock invariant: both unsubscribe and shutdown operate on b.subs
+// under b.mu — that serialization is what prevents a double-close on
+// s.ch when ctx cancellation races with a subscriber's own write-error
+// teardown. Do not drop the lock from either path.
 func (b *AudioBroker) shutdown() {
     b.mu.Lock()
     defer b.mu.Unlock()
@@ -1728,8 +1741,16 @@ func TestAudioBroker_UnsubscribesOnWriteError(t *testing.T) {
     }
 }
 
-// failingWriter returns io.ErrClosedPipe on the Nth Write call.
-// Subscribe is expected to detect this and unregister the subscriber.
+// failingWriter returns io.ErrClosedPipe after the SSE preamble has gone
+// out. Subscribe is expected to detect the error on its next WriteEvent
+// call and unregister the subscriber.
+//
+// Write-count budget: sseWriter.WriteHeaders performs exactly one Write
+// (the `fmt.Fprint(s.w, "retry: 2000\n\n")` — WriteHeader sets status
+// without going through Write). The next WriteEvent does three Writes
+// (`"data: "`, payload, `"\n\n"`); we fail on the second of those
+// (writes==3), causing WriteEvent to return an error before the payload
+// completes. If the SSE preamble ever changes, retune this threshold.
 type failingWriter struct {
     *httptest.ResponseRecorder
     writes int
@@ -1737,7 +1758,7 @@ type failingWriter struct {
 
 func (f *failingWriter) Write(p []byte) (int, error) {
     f.writes++
-    if f.writes > 2 { // allow headers + the SSE "retry:" line
+    if f.writes > 2 {
         return 0, io.ErrClosedPipe
     }
     return f.ResponseRecorder.Write(p)
@@ -2079,7 +2100,23 @@ git commit -m "feat(cmd): start AudioBroker and wire it into the UI server"
 
 ---
 
-## Task 8: Browser-side `vu-meter.js`
+## Task 8: Browser-side `vu-meter.js` — **BLOCKED until receiver-v24 UI lands**
+
+> ⛔ **Do not execute this task yet.** The JS module below targets
+> `.tr-vu .ch-bar .s` selectors that live in the receiver-v24 chassis mockup
+> (`.superpowers/brainstorm/1973-1779237107/receiver-v24.html`) — not in the
+> currently-shipped `now-playing-banner.html`. Running this task today would:
+>
+> 1. Add a `<script src="/ui/static/vu-meter.js" defer>` tag that opens an
+>    `EventSource` connection on every page load.
+> 2. Have the JS find no `.tr-vu` element via `findBars()`, return silently,
+>    and leak a permanent open SSE connection per tab with nothing to paint.
+>
+> Tasks 1–7 (Go side) + Task 9 (integration test) already deliver a fully
+> working SSE endpoint at `/ui/telemetry/audio` that any future UI can
+> subscribe to. Defer this task until the receiver-v24 chassis is merged
+> into `internal/ui/templates/`, at which point this task is implementable
+> as-written (the selectors are stable in the mockup).
 
 **Files:**
 
@@ -2450,6 +2487,48 @@ Expected: all green.
 git add tests/integration/audio_meter_test.go
 git commit -m "test(integration): end-to-end audio meter SSE smoke"
 ```
+
+---
+
+## Execution gating
+
+This plan splits cleanly into two waves. **Implementers running today should
+do Wave 1 only.** Wave 2 unblocks when the receiver-v24 UI lands.
+
+**Wave 1 — Go side + integration test (do now):**
+
+- Task 1: `dataplane.AudioMeter` DSP primitive
+- Task 2: `Plane.AudioLevels()` accessor
+- Task 3: Hook `Observe` into the tick loop
+- Task 4: `telemetry.AudioBroker` SSE fan-out
+- Task 5: Mount `/ui/telemetry/audio` (unguarded)
+- Task 6: `Manager.AudioLevels()` source
+- Task 7: Wire broker into `main.go`
+- Task 9: Integration test (`tests/integration/audio_meter_test.go`)
+
+After Wave 1, the SSE endpoint serves accurate JSON frames. Verify with:
+
+```
+curl --no-buffer http://localhost:8080/ui/telemetry/audio
+```
+
+while casting — you should see one `data:` line ~every 33 ms.
+
+**Wave 2 — Browser side (do when receiver-v24 UI is merged):**
+
+- Task 8: `vu-meter.js` + template/CSS edits
+
+The receiver-v24 chassis HTML/CSS is currently a design mockup in
+`.superpowers/brainstorm/`. When it's promoted into `internal/ui/templates/`
+(likely as a successor to `now-playing-banner.html` or a sibling shell
+template), Task 8 becomes executable as-written — the `.tr-vu .ch-bar .s`
+selectors in the mockup are stable.
+
+**Why split:** Wave 1 produces a complete, testable subsystem. Wave 2 is
+purely a presentation-layer add-on. Shipping Wave 2 before the chassis lands
+would create a JS file that opens an SSE connection per tab with no DOM to
+paint — wasteful, and the kind of thing that ages badly if the chassis
+selectors evolve between now and then.
 
 ---
 
