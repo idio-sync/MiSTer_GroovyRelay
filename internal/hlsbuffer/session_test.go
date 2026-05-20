@@ -97,8 +97,12 @@ func TestOpenSessionUsesLocalOnlyMediaPolicy(t *testing.T) {
 	if got := strings.Join(sess.Policy.ProtocolWhitelist, ","); got != "file" {
 		t.Fatalf("ProtocolWhitelist = %q, want file", got)
 	}
-	if !sess.Policy.DisableReconnect {
-		t.Fatal("DisableReconnect = false, want true")
+	// DisableReconnect MUST stay false: -reconnect* are HTTP-demuxer-only
+	// options. With ProtocolWhitelist=["file"], ffmpeg (<= 6.x in the
+	// project's bundled Alpine image) rejects argv parsing with
+	// "Option reconnect not found." and exits before reading any frames.
+	if sess.Policy.DisableReconnect {
+		t.Fatal("DisableReconnect = true, want false (HTTP-only flag breaks file:// inputs on Alpine ffmpeg 6.x)")
 	}
 }
 

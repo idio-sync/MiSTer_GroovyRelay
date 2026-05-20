@@ -93,9 +93,14 @@ func OpenSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 	return &Session{
 		PlaybackPath: playbackPath,
 		Policy: core.MediaInputPolicy{
+			// ffmpeg's -reconnect* flags are HTTP-demuxer-private options;
+			// combined with ProtocolWhitelist=["file"] they have nothing to
+			// bind to and Alpine ffmpeg 6.x exits with "Option reconnect not
+			// found." before any frames flow. The local playlist + cached
+			// .ts segments are file:// reads only, so reconnect behavior is
+			// already moot. Do NOT add DisableReconnect here.
 			ProtocolWhitelist: []string{"file"},
 			DisableRedirects:  true,
-			DisableReconnect:  true,
 			DisablePlaylists:  true,
 		},
 		Stats: stats.snapshot,
