@@ -50,12 +50,6 @@ func (a *Adapter) startResolvedStream(ctx context.Context, res streamhandoff.Res
 		return streamhandoff.StartResult{}, false, err
 	}
 
-	if stopPrevious {
-		if err := a.stopPreviousOwnedCore(nil, true, false); err != nil {
-			return streamhandoff.StartResult{}, false, err
-		}
-	}
-
 	a.mu.Lock()
 	previous := a.active
 	if stopPrevious && previous != nil && previous.cancelResolve != nil {
@@ -68,13 +62,17 @@ func (a *Adapter) startResolvedStream(ctx context.Context, res streamhandoff.Res
 
 	started, matched, err := a.playCurrentWithStarter(ctx, guard, starter)
 	if err != nil {
-		if !stopPrevious {
+		if stopPrevious {
+			a.restorePreviousQueueAfterFailedReplacement(guard, previous)
+		} else {
 			a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
 		}
 		return streamhandoff.StartResult{}, false, err
 	}
 	if !matched {
-		if !stopPrevious {
+		if stopPrevious {
+			a.restorePreviousQueueAfterFailedReplacement(guard, previous)
+		} else {
 			a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
 		}
 		return streamhandoff.StartResult{}, false, nil
@@ -90,6 +88,20 @@ func (a *Adapter) startResolvedStream(ctx context.Context, res streamhandoff.Res
 	return started, true, nil
 }
 
+func (a *Adapter) restorePreviousQueueAfterFailedReplacement(guard queueVersion, previous *ActiveQueue) {
+	if previous == nil {
+		a.clearQueueIfGuardMatches(guard)
+		return
+	}
+	if coreManager := a.core; coreManager != nil {
+		if previousRef := activeAdapterRef(previous); previousRef != "" && coreManager.Status().AdapterRef != previousRef {
+			a.clearQueueIfGuardMatches(guard)
+			return
+		}
+	}
+	a.restorePreviousQueueAfterUnmatchedStart(guard, previous)
+}
+
 func (a *Adapter) restorePreviousQueueAfterUnmatchedStart(guard queueVersion, previous *ActiveQueue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -100,6 +112,14 @@ func (a *Adapter) restorePreviousQueueAfterUnmatchedStart(guard queueVersion, pr
 	}
 	if a.active == nil {
 		a.active = previous
+	}
+}
+
+func (a *Adapter) clearQueueIfGuardMatches(guard queueVersion) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if guard.matches(a.active) {
+		a.clearActiveLocked()
 	}
 }
 
@@ -318,6 +338,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			StreamURL:    playbackURL,
 			AdapterRef:   ref,
 			DirectPlay:   true,
+			AspectMode:   streamSessionAspectMode(q.ProviderID),
 			Capabilities: core.Capabilities{CanPause: false, CanSeek: false},
 			// SECURITY/AUDIO: Toonami Radio currently advertises video HLS. If it becomes audio-only, add MediaKindMusic + VisualizerRequest or remove Radio.
 			MediaKind:        core.MediaKindVideo,
@@ -404,6 +425,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		AudioInputHeaders: resolved.AudioHeaders,
 		AdapterRef:        ref,
 		DirectPlay:        true,
+		AspectMode:        streamSessionAspectMode(q.ProviderID),
 		Capabilities:      core.Capabilities{CanPause: true, CanSeek: false},
 		OnStop:            a.makeOnStop(capture),
 		Source:            a.Name(),
@@ -525,6 +547,15 @@ func closeHLSSession(session *hlsbuffer.Session) {
 
 func isDirectStreamItem(item StreamItem) bool {
 	return item.Direct
+}
+
+func streamSessionAspectMode(providerID string) string {
+	switch providerID {
+	case "mtv-rewind", "cartoon-rewind":
+		return "zoom"
+	default:
+		return ""
+	}
 }
 
 func streamSessionTitle(item StreamItem, resolvedTitle string) string {

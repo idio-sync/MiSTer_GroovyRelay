@@ -45,6 +45,9 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	if req.Source != "streams" || req.Title != "Clip" {
 		t.Fatalf("SessionRequest source/title = %q/%q, want streams/Clip", req.Source, req.Title)
 	}
+	if req.AspectMode != "zoom" {
+		t.Fatalf("SessionRequest AspectMode = %q, want zoom for MTV Rewind", req.AspectMode)
+	}
 	if req.OnStop == nil {
 		t.Fatal("streams sessions should install OnStop")
 	}
@@ -60,6 +63,16 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	item, ok := a.active.currentItem()
 	if !ok || item.Title != "Clip" {
 		t.Fatalf("active item title = %+v, want Clip", item)
+	}
+}
+
+func TestStartResolvedStreamCartoonRewindUsesZoomAspectOverride(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "cartoon-rewind", ChannelID: "heman"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if core.lastReq.AspectMode != "zoom" {
+		t.Fatalf("SessionRequest AspectMode = %q, want zoom for Cartoon Rewind", core.lastReq.AspectMode)
 	}
 }
 
@@ -248,6 +261,9 @@ func TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy(t *testing.T) {
 	}
 	if req.Title != "Toonami Aftermath / East" {
 		t.Fatalf("Title = %q, want Toonami Aftermath / East", req.Title)
+	}
+	if req.AspectMode != "" {
+		t.Fatalf("AspectMode = %q, want bridge default for non-Rewind stream", req.AspectMode)
 	}
 	if len(req.InputHeaders) != 0 || len(req.AudioInputHeaders) != 0 {
 		t.Fatalf("headers leaked into direct request: video=%v audio=%v", req.InputHeaders, req.AudioInputHeaders)
@@ -835,9 +851,9 @@ func TestResolveFailureContinuationDoesNotStartNewerQueue(t *testing.T) {
 	}
 }
 
-func TestStartResolvedStreamReplacementFailureStopsPreviousOwnedSession(t *testing.T) {
+func TestStartResolvedStreamReplacementResolveFailureKeepsPreviousOwnedSession(t *testing.T) {
 	a, core := newTestAdapterWithFakeCore(t)
-	a.active = &ActiveQueue{
+	oldQueue := &ActiveQueue{
 		SessionID:    "old-session",
 		ProviderID:   "mtv-rewind",
 		ProviderName: "MTV Rewind",
@@ -846,6 +862,7 @@ func TestStartResolvedStreamReplacementFailureStopsPreviousOwnedSession(t *testi
 		Items:        []StreamItem{{ID: "old", SourceID: "old"}},
 		ItemToken:    1,
 	}
+	a.active = oldQueue
 	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
 	a.resolver = &fakeResolver{err: fmt.Errorf("resolver failed before replacement start")}
 
@@ -853,11 +870,14 @@ func TestStartResolvedStreamReplacementFailureStopsPreviousOwnedSession(t *testi
 	if err == nil {
 		t.Fatal("StartResolvedStream replacement should fail")
 	}
-	if core.stopCalls != 1 {
-		t.Fatalf("core stop calls = %d, want previous session stopped", core.stopCalls)
+	if core.stopCalls != 0 {
+		t.Fatalf("core stop calls = %d, want previous session left running", core.stopCalls)
 	}
-	if got := core.Status().AdapterRef; got != "" {
-		t.Fatalf("core AdapterRef after failed replacement = %q, want stopped", got)
+	if got, want := core.Status().AdapterRef, queueAdapterRef(oldQueue, oldQueue.ItemToken); got != want {
+		t.Fatalf("core AdapterRef after failed replacement = %q, want previous %q", got, want)
+	}
+	if a.active != oldQueue {
+		t.Fatalf("active queue after failed replacement = %+v, want previous queue", a.active)
 	}
 }
 

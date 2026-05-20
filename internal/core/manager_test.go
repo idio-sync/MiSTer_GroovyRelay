@@ -430,6 +430,51 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 	}
 }
 
+func TestManager_SessionAspectModeOverrideSkipsAutoCropAndReachesPipeline(t *testing.T) {
+	origProbe := probeFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+
+	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
+	}
+	cropCalls := 0
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		cropCalls++
+		return nil, nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Video.AspectMode = "auto"
+	err := m.StartSession(SessionRequest{
+		StreamURL:  "http://example/clip.mp4",
+		AdapterRef: "streams:mtv-rewind:test",
+		AspectMode: "zoom",
+		DirectPlay: true,
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if cropCalls != 0 {
+		t.Fatalf("crop probe calls = %d, want 0 for zoom override", cropCalls)
+	}
+	if captured.SpawnSpec.AspectMode != "zoom" {
+		t.Fatalf("pipeline aspect mode = %q, want zoom", captured.SpawnSpec.AspectMode)
+	}
+}
+
 func TestManager_StopWhenIdleIsIdempotent(t *testing.T) {
 	m := newTestManager(t)
 	// First stop from Idle.

@@ -378,6 +378,32 @@ func validateVisualizerRequest(req SessionRequest) error {
 	return nil
 }
 
+func validateSessionRequest(req SessionRequest) error {
+	if err := validateVisualizerRequest(req); err != nil {
+		return err
+	}
+	return validateAspectModeOverride(req.AspectMode)
+}
+
+func validateAspectModeOverride(mode string) error {
+	switch mode {
+	case "", "letterbox", "zoom", "auto":
+		return nil
+	default:
+		return fmt.Errorf("aspect_mode override must be letterbox, zoom, or auto, got %q", mode)
+	}
+}
+
+func (m *Manager) effectiveAspectMode(req SessionRequest) (string, error) {
+	if req.AspectMode != "" {
+		if err := validateAspectModeOverride(req.AspectMode); err != nil {
+			return "", err
+		}
+		return req.AspectMode, nil
+	}
+	return m.bridge.Video.AspectMode, nil
+}
+
 func visualizerDuration(req SessionRequest, probe *ffmpeg.ProbeResult) time.Duration {
 	if req.Visualizer.Enabled && req.Visualizer.Metadata.Duration > 0 {
 		return req.Visualizer.Metadata.Duration
@@ -408,6 +434,10 @@ func ffmpegVisualizerSpec(v VisualizerRequest) ffmpeg.VisualizerSpec {
 func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpeg.CropRect, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	aspectMode, err := m.effectiveAspectMode(req)
+	if err != nil {
+		return nil, nil, "", err
+	}
 	ffmpegPath, err := resolveBinary(m.ffmpegResolver, "ffmpeg")
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("resolve ffmpeg: %w", err)
@@ -435,7 +465,7 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		return probe, nil, ffmpegPath, nil
 	}
 	var cropRect *ffmpeg.CropRect
-	if m.bridge.Video.AspectMode == "auto" {
+	if aspectMode == "auto" {
 		// ProbeCrop failures degrade gracefully to letterbox — ignore the error.
 		// Filter headers through the policy's BlockedHeaders before they reach
 		// ffmpeg so a forgotten "Referer" / "Cookie" can't leak via the crop
@@ -560,6 +590,10 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	// constrained-input policy.
 	inputHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
 	audioInputHeaders := req.MediaInputPolicy.FilterHeaders(req.AudioInputHeaders)
+	aspectMode, err := m.effectiveAspectMode(req)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPlaneError, err)
+	}
 
 	spec := ffmpeg.PipelineSpec{
 		InputURL:          req.StreamURL,
@@ -573,7 +607,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OutputHeight:      int(modeline.VActive),
 		FieldOrder:        m.bridge.Video.InterlaceFieldOrder,
 		OutputFpsExpr:     preset.FpsExpr,
-		AspectMode:        m.bridge.Video.AspectMode,
+		AspectMode:        aspectMode,
 		CropRect:          cropRect,
 		Visualizer:        ffmpegVisualizerSpec(req.Visualizer),
 		SubtitleURL:       req.SubtitleURL,
@@ -620,7 +654,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 // protocol-specific requests into a SessionRequest and call this. Any
 // existing session is preempted and the prior goroutine awaited.
 func (m *Manager) StartSession(req SessionRequest) error {
-	if err := validateVisualizerRequest(req); err != nil {
+	if err := validateSessionRequest(req); err != nil {
 		return err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
@@ -669,7 +703,7 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 		return false, nil
 	}
 
-	if err := validateVisualizerRequest(req); err != nil {
+	if err := validateSessionRequest(req); err != nil {
 		m.mu.Lock()
 		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
 		m.mu.Unlock()
@@ -837,7 +871,7 @@ func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 	}
 	m.mu.Unlock()
 
-	if err := validateVisualizerRequest(req); err != nil {
+	if err := validateSessionRequest(req); err != nil {
 		if guard.enabled() {
 			m.mu.Lock()
 			matched := m.sessionGuardMatchesLocked(guard)
@@ -1076,7 +1110,7 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 	generation := a.generation
 	m.mu.Unlock()
 
-	if err := validateVisualizerRequest(req); err != nil {
+	if err := validateSessionRequest(req); err != nil {
 		if guard.enabled() {
 			m.mu.Lock()
 			matched := m.sessionGuardMatchesLocked(guard)

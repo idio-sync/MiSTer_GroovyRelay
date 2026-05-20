@@ -19,6 +19,9 @@ func TestSessionRequest_ZeroValue(t *testing.T) {
 	if r.DirectPlay {
 		t.Errorf("DirectPlay default = true, want false (transcode path)")
 	}
+	if r.AspectMode != "" {
+		t.Errorf("AspectMode = %q, want empty bridge default", r.AspectMode)
+	}
 	if r.Capabilities.CanSeek || r.Capabilities.CanPause {
 		t.Errorf("Capabilities default = %+v, want both false", r.Capabilities)
 	}

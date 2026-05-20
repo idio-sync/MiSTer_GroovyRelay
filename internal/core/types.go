@@ -108,6 +108,11 @@ type SessionRequest struct {
 	// offset is encoded server-side. Adapters set this per-session. See §5.3.
 	DirectPlay bool
 
+	// AspectMode overrides bridge.video.aspect_mode for this one session.
+	// Empty preserves the bridge-level setting; valid overrides are
+	// "letterbox", "zoom", and "auto".
+	AspectMode string
+
 	// OnStop is an optional adapter cleanup hook invoked when this session is
 	// stopped or preempted. It must not block core; Manager calls it from a
 	// goroutine after the data plane has been cancelled.
