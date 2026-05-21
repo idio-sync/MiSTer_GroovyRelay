@@ -1,11 +1,13 @@
 package chassis
 
 import (
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -66,7 +68,11 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 				}
 
 				for _, imp := range file.Imports {
-					importPath := strings.Trim(imp.Path.Value, `"`)
+					importPath, err := importPathFromLiteral(imp.Path.Value)
+					if err != nil {
+						pos := fset.Position(imp.Pos())
+						return fmt.Errorf("decode import literal %s at %s: %w", imp.Path.Value, pos, err)
+					}
 					for _, forbidden := range rule.forbidden {
 						if importPath == forbidden {
 							pos := fset.Position(imp.Pos())
@@ -82,6 +88,33 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProductionImports_DecodesRawStringImportLiterals(t *testing.T) {
+	t.Parallel()
+
+	const source = "package sample\n\nimport `github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis`\n"
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "raw_import.go", source, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if len(file.Imports) != 1 {
+		t.Fatalf("imports = %d, want 1", len(file.Imports))
+	}
+
+	got, err := importPathFromLiteral(file.Imports[0].Path.Value)
+	if err != nil {
+		t.Fatalf("importPathFromLiteral: %v", err)
+	}
+	const want = "github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
+	if got != want {
+		t.Fatalf("import path = %q, want %q", got, want)
+	}
+}
+
+func importPathFromLiteral(literal string) (string, error) {
+	return strconv.Unquote(literal)
 }
 
 func repoRootFromWD(t *testing.T) string {
