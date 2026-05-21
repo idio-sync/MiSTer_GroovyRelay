@@ -501,6 +501,71 @@ func TestHandleStatic_CSS_VersionedFontURLs(t *testing.T) {
 	}
 }
 
+func TestHandleStatic_Fonts_Served(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	for _, font := range []string{
+		"DSEG7Classic-Regular.woff2",
+		"DSEG7Classic-Bold.woff2",
+		"DSEG7Modern-Regular.woff2",
+		"DSEG7Modern-Bold.woff2",
+		"DSEG14Classic-Regular.woff2",
+		"DSEG14Classic-Bold.woff2",
+		"DSEG14Modern-Regular.woff2",
+		"DSEG14Modern-Bold.woff2",
+		"Inter-Variable.woff2",
+	} {
+		font := font
+		t.Run(font, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, "/receiver/static/fonts/"+font, nil)
+			rr := httptest.NewRecorder()
+
+			mux.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+			}
+			if got := rr.Header().Get("Content-Type"); got != "font/woff2" {
+				t.Fatalf("Content-Type = %q, want font/woff2", got)
+			}
+			if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "max-age=31536000") {
+				t.Fatalf("Cache-Control = %q, want max-age=31536000", got)
+			}
+		})
+	}
+}
+
+func TestHandleStatic_LICENSE_Served(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/fonts/LICENSE", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"DSEG Font License (MIT)",
+		"Copyright (c) 2017 Keshikan",
+		"Permission is hereby granted",
+		"SIL OPEN FONT LICENSE Version 1.1",
+		"Copyright (c) 2016 The Inter Project Authors.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("LICENSE body missing %q", want)
+		}
+	}
+}
+
 func TestHandleStatic_UnknownAsset404(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
