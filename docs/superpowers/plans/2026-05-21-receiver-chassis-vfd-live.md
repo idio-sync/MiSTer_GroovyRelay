@@ -1,6 +1,7 @@
 # Receiver Chassis VFD Live (Phase 1 / Spec 2) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Import hygiene:** When snippets show imports for an existing Go file, merge the new names into the existing import block and run `gofmt`; do not create a second `import` declaration.
 
 **Goal:** Wire the chassis VFD to real bridge session state via an SSE stream at `GET /receiver/events`. Server reads `core.Manager.StatusHomeView()`, emits `state` + `vfd` JSON events; the client (`vfd-live.js`) toggles `body.receiver.<state>` and updates VFD `data-vfd-*` spans in place. Phase 0's idle preview becomes a session-aware live display without changing chassis CSS.
 
@@ -29,7 +30,7 @@
 
 | Path | Change |
 |---|---|
-| `internal/chassis/server.go` | Add `Session SessionViewer` field to `Config`; store on `Server`; start snapshot-cache refresher in `New`; add `Close()`; mount `/receiver/events` route |
+| `internal/chassis/server.go` | Add `Session SessionViewer` field to `Config`; store on `Server`; seed snapshot cache synchronously in `New`; start snapshot-cache refresher in `Mount`; add `Close()`; mount `/receiver/events` route |
 | `internal/chassis/data.go` | `VFDData` gains a `Uptime` change-tracked already; no struct churn. Extract `idleSnapshot()` body — unchanged behavior, but exposed so `snapshotFromSession()` can layer over it |
 | `internal/chassis/handler.go` | `handleIndex` calls `snapshotFromSession(s.cfg, s.session, time.Now())` instead of `idleSnapshot` |
 | `internal/chassis/templates/vfd.html` | Add `data-vfd-title`, `data-vfd-marquee`, `data-vfd-queue`, `data-vfd-uptime` on the `seg-text` spans only (overlay `seg-ghost` siblings untouched) |
@@ -541,17 +542,19 @@ Append to `internal/chassis/chassis_test.go`:
 ```go
 func TestHandleIndex_RendersLiveStateFromSession(t *testing.T) {
 	t.Parallel()
-	s, err := New(nonZeroConfig())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	s.session = &fakeSessionViewer{view: core.StatusHomeView{
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State:    core.StatePlaying,
 		Title:    "Burning Down the House",
 		Source:   "plex",
 		Position: 8 * time.Second,
 		Duration: 4*time.Minute + 1*time.Second,
 	}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
@@ -1124,10 +1127,13 @@ Expected: FAIL — `handleEvents` undefined.
 
 - [ ] **Step 3: Implement the static surface of handleEvents**
 
-Append to `internal/chassis/events.go`:
+Extend the existing `internal/chassis/events.go` import block from Task 5 with `net/http` and `time` (the file already imports `io`, which `handleEvents` also uses), then append only the handler below the existing helpers:
 
 ```go
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -1229,12 +1235,17 @@ func (m *mutableSessionViewer) set(view core.StatusHomeView) {
 
 func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
 	t.Parallel()
-	s, err := New(nonZeroConfig())
+	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	s.session = sv
+	// Mount is called even though this test invokes handleEvents directly:
+	// Task 13 makes Mount start the shared snapshot-cache refresher that
+	// Task 14's handleEvents path reads. Task 13 also adds Close cleanup.
+	s.Mount(http.NewServeMux())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1243,11 +1254,13 @@ func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
 
 	// Trigger a state transition shortly after the handler boots.
 	go func() {
-		time.Sleep(120 * time.Millisecond) // > one diff tick (100ms in tests)
+		time.Sleep(150 * time.Millisecond) // > one diff tick (100ms in tests)
 		sv.set(core.StatusHomeView{
 			State: core.StatePlaying, Title: "T", Source: "plex",
 		})
-		time.Sleep(120 * time.Millisecond)
+		// Leave room for both the shared cache refresher and the per-handler
+		// diff ticker to observe the mutation after Task 14.
+		time.Sleep(350 * time.Millisecond)
 		cancel()
 	}()
 	s.handleEvents(w, req)
@@ -1285,8 +1298,9 @@ Add a test-only override at the top of `events_test.go`:
 ```go
 func init() {
 	// Shorten diff ticker for tests so transition detection completes
-	// quickly without making the tick so fast it races with the
-	// `set()` call.
+	// quickly. This assignment happens before any tests run, so no test
+	// mutates package-level timing vars at runtime (race-safe under
+	// go test -race).
 	chassisTickInterval = 100 * time.Millisecond
 }
 ```
@@ -1352,14 +1366,18 @@ Append to `internal/chassis/events_test.go`:
 ```go
 func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	t.Parallel()
-	s, err := New(nonZeroConfig())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	sv := &mutableSessionViewer{view: core.StatusHomeView{
 		State: core.StatePlaying, Title: "First Track", Source: "plex",
 	}}
-	s.session = sv
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mount starts the shared snapshot-cache refresher once Task 13 lands;
+	// before that it is harmless and keeps this test linearly valid.
+	s.Mount(http.NewServeMux())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1367,11 +1385,11 @@ func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
 
 	go func() {
-		time.Sleep(120 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 		sv.set(core.StatusHomeView{
 			State: core.StatePlaying, Title: "Second Track", Source: "plex",
 		})
-		time.Sleep(120 * time.Millisecond)
+		time.Sleep(350 * time.Millisecond)
 		cancel()
 	}()
 	s.handleEvents(w, req)
@@ -1449,18 +1467,14 @@ Append to `internal/chassis/events_test.go`:
 
 ```go
 // chassisHeartbeatInterval is a package-level var for the same reason
-// chassisTickInterval is — tests need to shorten it to keep the suite
-// fast. Set in the init() below.
+// chassisTickInterval is — tests shorten it once during package init to
+// keep the suite fast without runtime races.
 //
 // We assert heartbeat by leaving the handler running for 3x the
 // (shortened) interval and counting `: heartbeat\n\n` occurrences.
 
 func TestHandleEvents_EmitsHeartbeatComments(t *testing.T) {
 	t.Parallel()
-	prev := chassisHeartbeatInterval
-	chassisHeartbeatInterval = 50 * time.Millisecond
-	defer func() { chassisHeartbeatInterval = prev }()
-
 	s, err := New(nonZeroConfig())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1498,6 +1512,15 @@ In `internal/chassis/events.go`, add the package-level interval:
 // `: heartbeat` SSE comments to defeat reverse-proxy idle timeouts.
 // Production default 30s; tests override.
 var chassisHeartbeatInterval = 30 * time.Second
+```
+
+Update the existing `events_test.go` `init()` from Task 8 to also set the test heartbeat interval once before any tests run:
+
+```go
+func init() {
+	chassisTickInterval = 100 * time.Millisecond
+	chassisHeartbeatInterval = 50 * time.Millisecond
+}
 ```
 
 Add a heartbeat ticker to `handleEvents`. After the existing `tick := time.NewTicker(...)` line, add:
@@ -1642,12 +1665,14 @@ Append to `internal/chassis/events_test.go`:
 ```go
 func TestHandleEvents_MultipleConcurrentConnections(t *testing.T) {
 	t.Parallel()
-	s, err := New(nonZeroConfig())
+	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	s.session = sv
+	s.Mount(http.NewServeMux()) // starts the shared cache refresher after Task 13
 
 	const n = 5
 	bodies := make([]*flushRecorder, n)
@@ -1669,7 +1694,7 @@ func TestHandleEvents_MultipleConcurrentConnections(t *testing.T) {
 	// Drive a state transition; every connected handler should observe it.
 	time.Sleep(150 * time.Millisecond)
 	sv.set(core.StatusHomeView{State: core.StatePlaying, Title: "X", Source: "plex"})
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(350 * time.Millisecond)
 	for _, cancel := range ctxs {
 		cancel()
 	}
@@ -1788,61 +1813,6 @@ func (c *countingViewer) Calls() int {
 	return c.calls
 }
 
-func TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs(t *testing.T) {
-	t.Parallel()
-	prev := chassisTickInterval
-	chassisTickInterval = 100 * time.Millisecond
-	defer func() { chassisTickInterval = prev }()
-
-	cv := &countingViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	cfg := nonZeroConfig()
-	cfg.Session = cv
-	s, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	mux := http.NewServeMux()
-	s.Mount(mux) // starts the refresher goroutine
-	t.Cleanup(func() { _ = s.Close() })
-
-	// Open 5 SSE handlers; let them run for ~5 cache ticks; cancel.
-	const tabs = 5
-	const ticks = 5
-	var wg sync.WaitGroup
-	ctxs := make([]context.CancelFunc, tabs)
-	for i := 0; i < tabs; i++ {
-		i := i
-		ctx, cancel := context.WithCancel(context.Background())
-		ctxs[i] = cancel
-		req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
-		w := newFlushRecorder()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s.handleEvents(w, req)
-			_ = i
-		}()
-	}
-	time.Sleep(time.Duration(ticks) * chassisTickInterval)
-	for _, c := range ctxs {
-		c()
-	}
-	wg.Wait()
-
-	got := cv.Calls()
-	// One call from New's synchronous seed + ~one per tick. Allow
-	// generous slack for scheduler jitter on slow CI; still vastly
-	// less than the per-tab-polling worst case of tabs * ticks = 25.
-	maxAllowed := ticks*2 + 2
-	if got > maxAllowed {
-		t.Errorf("StatusHomeView called %d times across %d tabs over %d ticks; want <= %d (single shared refresher, not per-tab polling)",
-			got, tabs, ticks, maxAllowed)
-	}
-	if got < 1 {
-		t.Errorf("StatusHomeView never called; expected at least the New-time seed call")
-	}
-}
-
 func TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE(t *testing.T) {
 	t.Parallel()
 	// A New-only server (no Mount) should already have a valid cached
@@ -1873,10 +1843,6 @@ func TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE(t *testing.T) {
 
 func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
 	t.Parallel()
-	prev := chassisTickInterval
-	chassisTickInterval = 50 * time.Millisecond
-	defer func() { chassisTickInterval = prev }()
-
 	cv := &countingViewer{view: core.StatusHomeView{State: core.StateIdle}}
 	cfg := nonZeroConfig()
 	cfg.Session = cv
@@ -1888,7 +1854,7 @@ func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
 	s.Mount(mux)
 
 	// Let the refresher tick a few times.
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(350 * time.Millisecond)
 	preClose := cv.Calls()
 
 	if err := s.Close(); err != nil {
@@ -1896,7 +1862,7 @@ func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
 	}
 	// Subsequent ticks (if the goroutine hadn't actually stopped) would
 	// increment the call counter; pin down by sleeping > 3 intervals.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	postClose := cv.Calls()
 
 	// Allow at most one in-flight tick to land between Close and the
@@ -2076,13 +2042,20 @@ func (s *Server) Mount(mux *http.ServeMux) {
 
 - [ ] **Step 5: Run the snapshot cache + close tests**
 
-Run: `go test ./internal/chassis/ -run 'TestSnapshotCache|TestServerClose'`
-Expected: PASS — `TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE` validates the synchronous seed; `TestServerClose_StopsSnapshotCacheRefresher` validates cancel + wait + idempotence; `TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs` will still FAIL because `handleEvents` still calls `snapshotFromSession` per-tab. Task 14 wires the cache in.
+Run: `go test ./internal/chassis/ -run 'TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE|TestServerClose_StopsSnapshotCacheRefresher'`
+Expected: PASS — the synchronous seed and Close lifecycle tests are green. The tab-fanout cache test is introduced in Task 14, after `handleEvents` is routed through the cache, so this task does not commit a known-red test.
+
+Also update existing chassis tests that call `s.Mount(...)` only to start the server lifecycle (for example the state-transition, vfd-title-change, and concurrent-connection tests added above) to register cleanup now that `Close()` exists:
+
+```go
+s.Mount(http.NewServeMux())
+t.Cleanup(func() { _ = s.Close() })
+```
 
 - [ ] **Step 6: Run the full chassis test suite to confirm Phase 0 stability**
 
 Run: `go test ./internal/chassis/...`
-Expected: PASS — all Phase 0 tests still green. Phase 0 tests that call `New()` but never `Mount()` don't leak goroutines because the refresher only starts on `Mount`.
+Expected: PASS — all Phase 0 tests still green. Tests that call `New()` but never `Mount()` don't leak goroutines because the refresher only starts on `Mount`; tests that do call `Mount()` now register `Close()` cleanup.
 
 - [ ] **Step 7: Commit**
 
@@ -2105,9 +2078,6 @@ Tests:
   live SessionViewer's state before returning.
 - StopsSnapshotCacheRefresher: Close stops the goroutine + is
   idempotent across double-calls.
-- SingleStatusHomeViewCallPerTickRegardlessOfTabs: 5 tabs share one
-  upstream call per tick (validated after Task 14 wires the cache into
-  handleEvents).
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -2120,8 +2090,70 @@ EOF
 
 **Files:**
 - Modify: `internal/chassis/events.go`
+- Modify: `internal/chassis/events_test.go`
 
-- [ ] **Step 1: Replace direct snapshotFromSession calls with cache reads in handleEvents**
+- [ ] **Step 1: Write the failing cache fan-out test**
+
+Append to `internal/chassis/events_test.go`:
+
+```go
+func TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs(t *testing.T) {
+	t.Parallel()
+
+	cv := &countingViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = cv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux) // starts the refresher goroutine
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Open 5 SSE handlers; let them run for ~5 cache ticks; cancel.
+	const tabs = 5
+	const ticks = 5
+	var wg sync.WaitGroup
+	ctxs := make([]context.CancelFunc, tabs)
+	for i := 0; i < tabs; i++ {
+		i := i
+		ctx, cancel := context.WithCancel(context.Background())
+		ctxs[i] = cancel
+		req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+		w := newFlushRecorder()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handleEvents(w, req)
+			_ = i
+		}()
+	}
+	time.Sleep(time.Duration(ticks) * chassisTickInterval)
+	for _, c := range ctxs {
+		c()
+	}
+	wg.Wait()
+
+	got := cv.Calls()
+	// One call from New's synchronous seed + ~one per tick. Allow
+	// generous slack for scheduler jitter on slow CI; still vastly
+	// less than the per-tab-polling worst case of tabs*ticks plus seed.
+	maxAllowed := ticks*2 + 2
+	if got > maxAllowed {
+		t.Errorf("StatusHomeView called %d times across %d tabs over %d ticks; want <= %d (single shared refresher, not per-tab polling)",
+			got, tabs, ticks, maxAllowed)
+	}
+	if got < 1 {
+		t.Errorf("StatusHomeView never called; expected at least the New-time seed call")
+	}
+}
+```
+
+Run: `go test ./internal/chassis/ -run TestSnapshotCache_SingleStatusHomeView`
+Expected: FAIL — `handleEvents` still calls `snapshotFromSession` per connected handler.
+
+- [ ] **Step 2: Replace direct snapshotFromSession calls with cache reads in handleEvents**
 
 Edit `internal/chassis/events.go` `handleEvents`. Replace the two `snapshotFromSession(s.cfg, s.session, time.Now())` call sites (one for the initial snapshot, one inside the tick branch) with `s.cache.Get()`:
 
@@ -2168,20 +2200,20 @@ Edit `internal/chassis/events.go` `handleEvents`. Replace the two `snapshotFromS
 	}
 ```
 
-- [ ] **Step 2: Run the snapshot cache test**
+- [ ] **Step 3: Run the snapshot cache test**
 
 Run: `go test ./internal/chassis/ -run TestSnapshotCache_SingleStatusHomeView`
 Expected: PASS — `StatusHomeView` calls are now bounded by the refresher (≈ 1 per tick) regardless of tab count.
 
-- [ ] **Step 3: Run the full chassis test suite to confirm no regression**
+- [ ] **Step 4: Run the full chassis test suite to confirm no regression**
 
 Run: `go test ./internal/chassis/...`
 Expected: PASS — all events tests still green; state-transition and vfd-change tests now route through the cache; concurrent test still observes events on every connection.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/chassis/events.go
+git add internal/chassis/events.go internal/chassis/events_test.go
 git commit -m "$(cat <<'EOF'
 feat(chassis): handleEvents reads from snapshotCache instead of direct
 
@@ -2420,7 +2452,6 @@ Create `internal/chassis/static/vfd-live.js`:
   }
 
   let source = null;
-  let backoffMs = 1000;
 
   function handleStateEvent(ev) {
     try {
@@ -2453,12 +2484,8 @@ Create `internal/chassis/static/vfd-live.js`:
     source = new EventSource('/receiver/events');
     source.addEventListener('state', handleStateEvent);
     source.addEventListener('vfd', handleVfdEvent);
-    source.addEventListener('open', () => { backoffMs = 1000; });
     source.addEventListener('error', () => {
-      if (source.readyState === EventSource.CLOSED) {
-        backoffMs = Math.min(backoffMs * 2, 30000);
-        console.info(`vfd-live: stream closed, browser will retry; backoff ${backoffMs}ms`);
-      }
+      console.info('vfd-live: stream interrupted; browser will retry using the SSE retry directive');
     });
   }
 
@@ -2492,6 +2519,7 @@ func TestHandleStatic_VfdLiveJSServed(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
 	rec := httptest.NewRecorder()
@@ -2577,8 +2605,7 @@ if err != nil {
 }
 defer func() {
     if err := chassisSrv.Close(); err != nil {
-        // Best-effort shutdown; log via the existing emit pattern.
-        _ = err
+        slog.Warn("chassis close", "err", err)
     }
 }()
 chassisSrv.Mount(mux)
@@ -2612,7 +2639,7 @@ In a browser open `http://localhost:32500/receiver`. Expected:
 Trigger a real cast (Plex push or equivalent). Within ~500ms the chassis should:
 - Body class flips to `live`
 - VFD title shows the cast title
-- VFD marquee shows `<SOURCE> · <pos>/<dur>`
+- VFD marquee shows `<SOURCE> · <pos> / <dur>`
 
 Stop the cast. Body flips back to `idle`, title back to `STANDBY`.
 
@@ -2646,17 +2673,11 @@ The file `tests/integration/chassis_test.go` already exists (added during Phase 
 
 - [ ] **Step 2: Add the SSE end-to-end test**
 
-Append to `tests/integration/chassis_test.go`:
+Extend the existing `tests/integration/chassis_test.go` import block with `bufio` and `context` (the file already imports `net/http`, `net/http/httptest`, `strings`, and `time`). Also add `defer chassisSrv.Close()` to the existing `TestReceiverEndToEnd` after `chassis.New(...)`, because `Mount` starts the snapshot-cache refresher once this spec lands.
+
+Then append these tests and helper types below the existing tests:
 
 ```go
-import (
-	"bufio"
-	"context"
-	"net/http"
-	"strings"
-	"time"
-)
-
 func TestReceiverEvents_EndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2914,11 +2935,11 @@ Open the chassis at `http://<bridge-host>:<http_port>/receiver` and confirm each
 |---|---|---|
 | 1 | First load (no cast) | `<body class="receiver idle">`; VFD reads `STANDBY` + the idle marquee hint |
 | 2 | Browser DevTools → Network → EventStream | `retry: 3000` directive visible; `event: state {"state":"idle"}` + `event: vfd` followed by periodic `: heartbeat` comments every ~30 s |
-| 3 | Start a Plex cast (push a known title) | Within ~1 s: body class flips to `live`; VFD title shows the real cast title; marquee shows `PLEX · <pos>/<dur>` updating each tick |
+| 3 | Start a Plex cast (push a known title) | Within ~1 s: body class flips to `live`; VFD title shows the real cast title; marquee shows `PLEX · <pos> / <dur>` updating each tick |
 | 4 | Pause the cast | Body stays `live`; transport-row pause indicator is Spec 3 territory and not exercised here |
 | 5 | Stop the cast | Within ~1 s: body flips back to `idle`; VFD reads `STANDBY`; marquee back to idle hint |
 | 6 | Open `/receiver?dev=1` | Phase 0 floating toggle button visible; clicking it flips `body` between idle/live when no real cast is active. Starting a real cast then ending it overrides the manual toggle on the next `state` event |
-| 7 | Simulate disconnect via DevTools → Network → Offline | After ~3 s the EventStream tab shows the connection reconnect attempt; console shows `vfd-live: stream closed... backoff Nms`. Restore Online and the stream resumes; state re-syncs |
+| 7 | Simulate disconnect via DevTools → Network → Offline | After ~3 s the EventStream tab shows the connection reconnect attempt; console shows `vfd-live: stream interrupted...`. Restore Online and the stream resumes; state re-syncs |
 | 8 | Open 3+ chassis tabs simultaneously | Each tab independently shows the same live state during a cast; bridge logs do not show goroutine-count growth proportional to tabs (per-server snapshot cache decouples lock pressure) |
 
 - [ ] **Step 4: Capture screenshots for the PR description**
@@ -2928,7 +2949,7 @@ For each of the following states, attach a screenshot to the PR:
 1. Idle preview at 1920px (matches Phase 0 visual; sanity check)
 2. Live state during an active cast at 1920px (VFD shows real title + marquee)
 3. DevTools EventStream tab during a cast (visible `state` + `vfd` events)
-4. DevTools Console showing the `vfd-live: stream closed` backoff log line after simulated disconnect
+4. DevTools Console showing the `vfd-live: stream interrupted` log line after simulated disconnect
 
 - [ ] **Step 5: Draft the PR description**
 
@@ -2962,7 +2983,7 @@ Performed at 1920px in Chrome current. Screenshots attached:
 - [ ] Idle preview
 - [ ] Live during an active cast
 - [ ] DevTools EventStream tab
-- [ ] DevTools Console showing backoff log after simulated disconnect
+- [ ] DevTools Console showing reconnect log after simulated disconnect
 
 State transitions observed within <1s of cast start/stop. SSE reconnect within ~3s of DevTools Offline toggle. Five-tab concurrent test (`/receiver` open in 5 tabs simultaneously) shows synchronized live state.
 
@@ -3041,7 +3062,7 @@ Cross-checking the spec sections against tasks:
 - `SessionViewer` interface defined in Task 1, referenced in Tasks 2-4, 7, 13. Signature is `StatusHomeView() core.StatusHomeView` throughout.
 - `chassis.Config.Session SessionViewer` consistent.
 - `Server.session` field consistent.
-- `snapshotCache` / `Server.cache` / `Server.cacheStop` / `Server.Close()` consistent across Tasks 13-14, 18.
+- `snapshotCache` / `Server.cache` / `Server.cacheCancel` / `Server.cacheDone` / `Server.Close()` consistent across Tasks 13-14, 18.
 - `chassisTickInterval` and `chassisHeartbeatInterval` package vars consistent.
 - `stateEnvelope.State`, `vfdEnvelope.Title/Marquee/QueueCurrent/QueueTotal/Uptime` consistent across Tasks 5, 7-9, 14.
 - `vfdChanged(a, b VFDData) bool` signature consistent across Task 6 and its consumer in Task 9.
