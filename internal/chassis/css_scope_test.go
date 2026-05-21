@@ -124,6 +124,22 @@ func TestChassisCSS_HistoryEventLogSettingsContracts(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_HistoryRowsDoNotAdvertiseMissingInteractivity(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	rowRule := cssRuleBlock(t, text, "body.receiver .history-row")
+	if strings.Contains(rowRule, "cursor: pointer;") {
+		t.Fatalf("plain history rows are divs; base .history-row must not use cursor: pointer")
+	}
+	if strings.Contains(text, "body.receiver .history-row:hover") {
+		t.Fatalf("plain history rows are divs; hover affordance must be gated to semantic/actionable rows")
+	}
+}
+
 func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
@@ -220,6 +236,19 @@ func cssGrammarText(p *css.Parser, data []byte) string {
 		b.Write(token.Data)
 	}
 	return b.String()
+}
+
+func cssRuleBlock(t *testing.T, text, selector string) string {
+	t.Helper()
+	start := strings.Index(text, selector+" {")
+	if start == -1 {
+		t.Fatalf("missing CSS selector block %q", selector)
+	}
+	end := strings.Index(text[start:], "\n}")
+	if end == -1 {
+		t.Fatalf("CSS selector block %q is not closed", selector)
+	}
+	return text[start : start+end]
 }
 
 func isSelectorExemptAtRule(at string) bool {

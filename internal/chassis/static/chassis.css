@@ -3024,7 +3024,6 @@ body.receiver .history-row {
   padding: 8px 14px;
   color: #b0b0b8;
   border-bottom: 1px solid oklch(0.10 0.005 80);
-  cursor: pointer;
   transition: background 120ms, color 120ms;
   min-width: 0;
 }
@@ -3033,7 +3032,15 @@ body.receiver .history-row:last-child {
   border-bottom: 0;
 }
 
-body.receiver .history-row:hover {
+body.receiver a.history-row,
+body.receiver button.history-row,
+body.receiver .history-row[role="button"] {
+  cursor: pointer;
+}
+
+body.receiver a.history-row:hover,
+body.receiver button.history-row:hover,
+body.receiver .history-row[role="button"]:hover {
   background: oklch(0.14 0.04 175 / 0.35);
   color: #d4d4d8;
 }
