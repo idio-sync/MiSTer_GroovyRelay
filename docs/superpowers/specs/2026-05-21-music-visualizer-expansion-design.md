@@ -188,16 +188,22 @@ following constraints apply to every adapter that sets `ArtworkPath`:
 3. **Origin pinning for artwork URLs.** Plex `thumb` values may be relative
    paths or absolute URLs (PMS forwards upstream URLs verbatim for some
    providers). Adapters MUST confine artwork fetches to the configured server
-   origin (host and port match). An absolute URL whose origin does not match
-   the configured Plex/Jellyfin server is dropped and the graph uses the
-   placeholder branch. This prevents the bridge from issuing authenticated
-   outbound HTTP to attacker-controlled hosts.
+   origin: scheme, host, and effective port must match after canonical URL
+   parsing. Default ports count as their scheme defaults (`https` = 443,
+   `http` = 80). An absolute URL whose origin does not match the configured
+   Plex/Jellyfin server is dropped and the graph uses the placeholder branch.
+   This prevents the bridge from issuing authenticated outbound HTTP to
+   attacker-controlled hosts or downgrading credentials from HTTPS to HTTP.
 4. **Token append after origin pinning.** The Plex token (or Jellyfin API key)
    may only be attached to a request URL after the request has been
    re-anchored to the configured server origin. Composing this rule with (3)
-   guarantees the token cannot leak to a third-party host. Existing
-   `redactURL` discipline in `internal/core/manager.go` applies to any log
-   site that prints these URLs.
+   guarantees the token cannot leak to a third-party host. URL logging for
+   artwork fetches must use a shared redaction helper, for example
+   `artworkcache.RedactURL`, that strips userinfo and redacts token-bearing
+   query keys such as `X-Plex-Token`, `api_key`, `X-Emby-Token`,
+   `AccessToken`, and `token` before any URL is logged. Do not rely on
+   `internal/core/manager.go`'s unexported `redactURL`; adapter and artwork
+   cache packages cannot call it directly.
 5. **Decode bounds.** Decoded images larger than 4096×4096 pixels or 8 MiB on
    disk are rejected (decode-bomb mitigation). Successful decodes are resized
    to fit the visible CRT area before FFmpeg use; the exact target dimensions
@@ -215,8 +221,9 @@ preference order:
 For each candidate the adapter:
 
 1. Parses the value. Relative paths are joined against the configured Plex
-   server URL. Absolute URLs are accepted only if their origin matches the
-   configured Plex server; otherwise the candidate is discarded.
+   server URL. Absolute URLs are accepted only if their scheme, host, and
+   effective port match the configured Plex server; otherwise the candidate is
+   discarded.
 2. Appends the `X-Plex-Token` query parameter after the URL is anchored to
    the Plex origin (never before).
 3. Issues a GET with a 2 s bounded timeout (matching the existing
@@ -268,20 +275,20 @@ already attach `OnStop` handlers for transcode cleanup and reporting; artwork
 cleanup wraps the existing handler. The wrapper has a precise contract:
 
 ```go
-// withArtworkCleanup returns an OnStop closure that invokes original and
+// WithCleanup returns an OnStop closure that invokes original and
 // removes path, with these guarantees:
 //
 //   - artwork removal runs even if original panics (defer ordering),
 //   - empty path is a no-op,
-//   - removeArtwork tolerates os.IsNotExist so the returned closure is safe
+//   - Remove tolerates os.IsNotExist so the returned closure is safe
 //     to invoke more than once,
 //   - if original is nil, only artwork removal runs.
 //
-// Adapters wrap their existing OnStop with this helper rather than assigning
-// OnStop directly from multiple sites.
-func withArtworkCleanup(path string, original func(reason string)) func(reason string) {
+// Adapters call artworkcache.WithCleanup around their existing OnStop rather
+// than assigning OnStop directly from multiple sites.
+func WithCleanup(path string, original func(reason string)) func(reason string) {
     return func(reason string) {
-        defer removeArtwork(path)
+        defer Remove(path)
         if original != nil {
             original(reason)
         }
@@ -289,9 +296,9 @@ func withArtworkCleanup(path string, original func(reason string)) func(reason s
 }
 ```
 
-`removeArtwork` mirrors `removeSubtitleFile` in `internal/core/manager.go`:
-empty paths are a no-op, `os.IsNotExist` is swallowed, all other errors are
-logged at debug.
+`artworkcache.Remove` mirrors `removeSubtitleFile` in
+`internal/core/manager.go`: empty paths are a no-op, `os.IsNotExist` is
+swallowed, all other errors are logged at debug.
 
 ## FFmpeg Graph Shape
 
@@ -404,7 +411,7 @@ Two enums live in the codebase and must be kept distinct:
   A mode appears here only when its FFmpeg graph and validation path are
   implemented end-to-end.
 
-After Phase 3 (album-art modes shipped) the Go constant set is:
+After Phase 2 (album-art modes shipped) the Go constant set is:
 
 - `retro_analyzer`
 - `oscilloscope_wave`
@@ -423,7 +430,7 @@ No separate album-art enable toggle is needed in this wave. Album-art modes
 implicitly request artwork; when artwork is unavailable they use placeholders.
 
 `cover_vu` and `cover_spectrum` MUST NOT appear in the UI-exposed enum or in
-`config.example.toml` until Phase 3 lands (Phase 3 is the merged
+`config.example.toml` until Phase 2 lands (Phase 2 is the merged
 artwork-plus-album-art phase; see Implementation Phasing below).
 
 ### Unknown-Mode Handling Across Phase Rollbacks
@@ -464,7 +471,7 @@ Add or update unit tests for:
 - `NormalizeVisualizerMode` preserving unknown values verbatim
 - `ValidateVisualizerMode` rejecting unknown modes with a clear error
 - Bridge UI enum rendering and form parsing for the new modes (UI-exposed
-  subset only; album-art modes excluded until Phase 3)
+  subset only; album-art modes excluded until Phase 2)
 - BridgeSaver invalid mode rejection before persisting
 - manager mapping from core modes to FFmpeg modes
 - same-session replay, seek, and resume preserving the snapshotted mode
@@ -480,16 +487,18 @@ Add or update unit tests for:
 - path validation: rejecting `ArtworkPath` values that resolve outside the
   artwork cache root (including symlink escapes via `EvalSymlinks`)
 - origin pinning: Plex/Jellyfin adapters discarding absolute artwork URLs
-  whose origin does not match the configured server
+  whose scheme, host, and effective port do not match the configured server
 - token-append ordering: tokens are never attached to URLs that still point
   at a non-server origin
+- URL redaction: `artworkcache.RedactURL` removes userinfo and token-bearing
+  query keys before log sites receive artwork URLs
 - Plex metadata extraction for title, artist, album, duration, and artwork
 - Jellyfin metadata extraction for title, artist, album, duration, and artwork
 - artwork download/cache failure falling back without blocking playback
 - artwork fetch 2 s timeout falling back without blocking playback
 - decode-bound enforcement: oversize image rejected, playback continues with
   placeholder
-- `withArtworkCleanup` invoking both artwork removal and the wrapped `OnStop`
+- `artworkcache.WithCleanup` invoking both artwork removal and the wrapped `OnStop`
   even when the wrapped handler panics
 - repeated invocation of the wrapped `OnStop` being a no-op on the second call
 - startup reaper removing files older than 24 h in
@@ -504,7 +513,8 @@ unit tests over argv alone do not exercise. Under `tests/integration/`
 1. Spawns the real `ffmpeg` and `ffprobe` binaries (PATH-resolved, mirroring
    `make test-integration` preconditions).
 2. Feeds a 1 s lavfi-generated stereo audio source plus, for album-art modes,
-   a 1 s lavfi-generated test pattern as the artwork input.
+   a temporary PNG or JPEG fixture generated by ffmpeg and passed through the
+   production `ArtworkPath` / `-loop 1 -i <artwork-path>` path.
 3. Asserts at least one BGR video frame and at least one s16le PCM block reach
    the data-plane output pipes.
 
@@ -518,28 +528,27 @@ on a host with `ffmpeg`/`ffprobe` on `PATH`. CI already runs both.
 
 ## Implementation Phasing
 
-### Phase 1: Mode Constants And Validation
+### Phase 1: CRT Arcade Modes End To End
 
-Add the CRT arcade mode names (`vu_cabinet`, `neon_grid`, `raster_pulse`)
-through config, core, UI, manager mapping, FFmpeg mode definitions, and the
-required-filter table. The UI-exposed enum gains only these three. Album-art
-mode IDs are NOT added in Phase 1 — neither to the Go constant set nor to the
-UI — so an operator cannot select an option whose graph does not yet exist.
+Ship the three CRT arcade modes (`vu_cabinet`, `neon_grid`, `raster_pulse`)
+end to end. This phase adds each mode through config, core, UI, manager
+mapping, FFmpeg mode definitions, the required-filter table, and the concrete
+FFmpeg graph in one change set. A mode is not exposed in the UI, accepted by
+config validation, or returned from `RequiredVisualizerFilters` until its graph
+and tests exist.
 
-### Phase 2: CRT Arcade Graphs
+No artwork plumbing lands in Phase 1. Each graph ships with unit tests for
+argv shape and one integration test that spawns ffmpeg.
 
-Implement the three CRT arcade graphs end-to-end against the existing
-visualizer metadata path. No artwork plumbing. Each graph ships with unit
-tests for argv shape and one integration test that spawns ffmpeg.
+### Phase 2: Artwork Plumbing + Album-Art Graphs
 
-### Phase 3: Artwork Plumbing + Album-Art Graphs
+Artwork plumbing and cover-art graphs ship together. Shipping artwork plumbing
+without consumers would land dead code (an artwork cache filling during every
+music cast for no rendering benefit), so this phase ships:
 
-Phase 3 and the originally-planned Phase 4 are merged. Shipping artwork
-plumbing without consumers would land dead code (an artwork cache filling
-during every music cast for no rendering benefit), so this phase ships:
-
-- `internal/artworkcache` package: cache root creation, `withArtworkCleanup`
-  helper, `removeArtwork` helper, startup reaper.
+- `internal/artworkcache` package: cache root creation,
+  `artworkcache.WithCleanup` helper, `artworkcache.Remove` helper,
+  `artworkcache.RedactURL` helper, startup reaper.
 - `ArtworkPath` field on both `core.VisualizerMetadata` and
   `ffmpeg.VisualizerMetadata`.
 - Plex and Jellyfin adapter changes to download artwork before
@@ -550,11 +559,13 @@ during every music cast for no rendering benefit), so this phase ships:
 - Cover-art FFmpeg graphs with placeholder fallback when `ArtworkPath` is
   empty or rejected.
 
-### Phase 4: Documentation And Polish
+### Phase 3: Documentation And Polish
 
-Update README and example config to reflect the supported modes. The README
-also briefly notes which previously discussed mode IDs are intentionally not
-shipped (`chiptune_equalizer`, `radial_spectrum`) so users searching past
+Update README and any non-example narrative docs to reflect the supported
+modes. `config.example.toml` is updated in the same phase that exposes each
+mode publicly, so Phase 3 does not make another example-config change. The
+README also briefly notes which previously discussed mode IDs are intentionally
+not shipped (`chiptune_equalizer`, `radial_spectrum`) so users searching past
 design docs do not assume they were dropped silently.
 
 ## Out Of Scope
