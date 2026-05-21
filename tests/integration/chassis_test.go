@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,26 @@ func TestReceiverEndToEnd(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("GET /receiver status = %d, body = %s", resp.StatusCode, body)
 	}
-	doc, err := html.Parse(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read /receiver body: %v", err)
+	}
+	for _, want := range []string{
+		`<!-- chassis:shell -->`,
+		`<!-- chassis:vfd -->`,
+		`<!-- chassis:meter -->`,
+		`<!-- chassis:transport -->`,
+		`<!-- chassis:visualizer-bank -->`,
+		`<!-- chassis:source-cluster -->`,
+		`<!-- chassis:input-row -->`,
+		`<!-- chassis:preset-bank -->`,
+		`<!-- chassis:history -->`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("GET /receiver HTML missing marker %q", want)
+		}
+	}
+	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("parse /receiver HTML: %v", err)
 	}
@@ -98,13 +118,31 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	for _, tc := range []struct {
-		path string
-		want string
+		path              string
+		contentTypePrefix string
+		want              []string
+		notWant           []string
 	}{
-		{path: "/ui", want: `class="gr-shell"`},
-		{path: "/ui/static/app.css"},
-		{path: "/receiver", want: `<!-- chassis:shell -->`},
-		{path: "/receiver/static/chassis.css"},
+		{
+			path: "/ui",
+			want: []string{`class="gr-shell"`},
+		},
+		{
+			path:              "/ui/static/app.css",
+			contentTypePrefix: "text/css",
+			want:              []string{".gr-shell {", ".gr-sidebar {"},
+			notWant:           []string{`class="gr-shell"`, `<!-- chassis:shell -->`},
+		},
+		{
+			path: "/receiver",
+			want: []string{`<!-- chassis:shell -->`},
+		},
+		{
+			path:              "/receiver/static/chassis.css",
+			contentTypePrefix: "text/css",
+			want:              []string{"body.receiver .meter-screen", "body.receiver .transport-strip"},
+			notWant:           []string{`class="gr-shell"`, `<!-- chassis:shell -->`},
+		},
 	} {
 		resp, err := http.Get(ts.URL + tc.path)
 		if err != nil {
@@ -121,8 +159,21 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s status = %d, body = %s", tc.path, resp.StatusCode, body)
 		}
-		if tc.want != "" && !strings.Contains(string(body), tc.want) {
-			t.Fatalf("GET %s body missing %q", tc.path, tc.want)
+		if tc.contentTypePrefix != "" {
+			if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, tc.contentTypePrefix) {
+				t.Fatalf("GET %s Content-Type = %q, want prefix %q", tc.path, got, tc.contentTypePrefix)
+			}
+		}
+		bodyText := string(body)
+		for _, want := range tc.want {
+			if !strings.Contains(bodyText, want) {
+				t.Fatalf("GET %s body missing %q", tc.path, want)
+			}
+		}
+		for _, notWant := range tc.notWant {
+			if strings.Contains(bodyText, notWant) {
+				t.Fatalf("GET %s body unexpectedly contained %q", tc.path, notWant)
+			}
 		}
 	}
 }
