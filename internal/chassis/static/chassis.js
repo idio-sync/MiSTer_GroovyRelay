@@ -12,6 +12,9 @@
       return document.body.classList.contains('live') ? State.LIVE : State.IDLE;
     },
     set(next) {
+      if (next !== State.IDLE && next !== State.LIVE) {
+        return;
+      }
       document.body.classList.remove('idle', 'live');
       document.body.classList.add(next);
       animators.notify(next);
@@ -31,7 +34,7 @@
       }
     },
     notify(state) {
-      this.items.forEach((animator) => {
+      this.items.slice().forEach((animator) => {
         if (animator && typeof animator.handleState === 'function') {
           animator.handleState(state);
         }
@@ -52,11 +55,14 @@
 
     tick();
 
-    const msUntilNextMinute = 60_000 - (Date.now() % 60_000);
-    setTimeout(() => {
-      tick();
-      setInterval(tick, 60_000);
-    }, msUntilNextMinute);
+    const scheduleNextTick = () => {
+      const msUntilNextMinute = 60_000 - (Date.now() % 60_000);
+      setTimeout(() => {
+        tick();
+        scheduleNextTick();
+      }, msUntilNextMinute);
+    };
+    scheduleNextTick();
   }
 
   function pad(value) {

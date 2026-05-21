@@ -402,6 +402,7 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 		"current()",
 		"document.body.classList.contains('live')",
 		"set(next)",
+		"if (next !== State.IDLE && next !== State.LIVE) {",
 		"document.body.classList.remove('idle', 'live')",
 		"document.body.classList.add(next)",
 		"animators.notify(next)",
@@ -410,10 +411,13 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 		"register(animator)",
 		"animator.handleState(State.current())",
 		"notify(state)",
+		"this.items.slice().forEach((animator) => {",
 		"document.querySelector('[data-system-time]')",
 		"if (!el) {",
+		"const scheduleNextTick = () => {",
+		"const msUntilNextMinute = 60_000 - (Date.now() % 60_000);",
 		"setTimeout(() => {",
-		"setInterval(tick, 60_000)",
+		"scheduleNextTick();",
 		"new URLSearchParams(location.search).get('dev') === '1'",
 		"btn.id = 'chassis-dev-state-toggle'",
 		"[dev] state:",
@@ -421,6 +425,13 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("static/chassis.js missing runtime contract %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"setInterval(tick, 60_000)",
+	} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("static/chassis.js contains obsolete runtime contract %q", unwanted)
 		}
 	}
 }
