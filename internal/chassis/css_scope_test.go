@@ -82,6 +82,48 @@ func TestChassisCSS_PresetLivePulseHonorsReducedMotionCascade(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_HistoryEventLogSettingsContracts(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"/* ---- 12. History + event log ---- */",
+		"/* ---- 13. Settings drawer ---- */",
+		"body.receiver .history-section",
+		"body.receiver .history-row",
+		"body.receiver .history-row .artwork",
+		"body.receiver .history-row .title",
+		"body.receiver .history-row .source",
+		"body.receiver .history-row .when",
+		"body.receiver .history-empty",
+		"body.receiver .event-log-section",
+		"body.receiver .event-log-row",
+		"body.receiver .event-log-severity",
+		"body.receiver .event-log-filter",
+		"body.receiver[data-event-filter=\"info\"] .event-log-row:not(.info)",
+		"body.receiver .settings-panel",
+		"body.receiver .settings-panel.open",
+		"body.receiver.settings-open .settings-panel",
+		"body.receiver .settings-tabs",
+		"body.receiver .settings-body",
+		"body.receiver .settings-pane",
+		"body.receiver .settings-pane.active",
+		"body.receiver .settings-pane.single-col.active",
+		"body.receiver .settings-row",
+		"body.receiver .settings-field",
+		"body.receiver .settings-placeholder",
+		"max-height: 0;",
+		"opacity: 0;",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("chassis.css missing Task 22 contract %q", want)
+		}
+	}
+}
+
 func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
