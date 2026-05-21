@@ -84,11 +84,9 @@ front panel or cabinet display:
 The mode should be visually distinct from the existing scopes by focusing on
 loudness/level rather than waveform shape, frequency, or stereo phase.
 
-Likely FFmpeg building blocks include `showvolume`, `showwaves`, generated
-backgrounds, `drawbox`, `drawgrid`, `drawtext`, and palette/format filters.
-If `showvolume` is unavailable in a target FFmpeg build, implementation may
-fall back to a simplified stereo waveform-meter graph as long as the visual
-intent remains a cabinet-style level meter.
+FFmpeg building blocks: `showvolume` (required), `drawbox`, `drawgrid`, and
+optional `drawtext`. See the required-filters table below; `showvolume` is
+non-optional for this mode.
 
 ### `neon_grid`
 
@@ -104,9 +102,8 @@ This mode overlaps with `retro_analyzer` at the signal level, but not at the
 presentation level. `retro_analyzer` remains the plain utility analyzer;
 `neon_grid` becomes the high-energy arcade analyzer.
 
-Likely FFmpeg building blocks include `showfreqs` or `showspectrum`, generated
-backgrounds, `drawgrid`, `drawbox`, `drawtext`, `hue`, and format/scale
-filters.
+FFmpeg building blocks: `showfreqs` (required), `drawgrid`, `hue`, optional
+`drawtext`. See the required-filters table below.
 
 ### `raster_pulse`
 
@@ -122,9 +119,9 @@ This mode should be clearly different from `oscilloscope_wave`: less literal
 waveform, more reactive motion. The implementation should avoid fragile filter
 graphs that depend on unusual FFmpeg builds.
 
-Likely FFmpeg building blocks include `showwaves`, `showspectrum`,
-`aphasemeter` only if useful, `split`, `hflip`, `vflip`, `blend`, `tmix`,
-`hue`, `drawtext`, and format/scale filters.
+FFmpeg building blocks: `showwaves` (required), `split`, `hflip`, `blend`,
+optional `hue` and `drawtext`. See the required-filters table below.
+`aphasemeter` and `tmix` are not used by this mode.
 
 ### `cover_vu`
 
@@ -168,36 +165,84 @@ type VisualizerMetadata struct {
 ```
 
 The core-to-FFmpeg boundary should carry this local path rather than raw
-provider URLs.
+provider URLs. The artwork download happens entirely inside the adapter,
+before `Manager.StartSession` is called, using the adapter's own HTTP client.
+This mirrors the existing `SubtitlePath` precedent (see `internal/core/types.go`)
+and preserves the CLAUDE.md invariant that `Manager.mu` is never held across
+network I/O.
+
+### Path And URL Validation Contract
+
+Artwork plumbing crosses an adapter / FFmpeg trust boundary. All five of the
+following constraints apply to every adapter that sets `ArtworkPath`:
+
+1. **Allowed cache root.** Artwork files must live under
+   `<bridge.data_dir>/artwork-cache/`. Adapters create files only via a shared
+   `internal/artworkcache` helper that returns paths anchored under this root.
+2. **Validation at the core-to-FFmpeg boundary.** Before FFmpeg builds the
+   graph, `ArtworkPath` is canonicalised with `filepath.EvalSymlinks` and
+   rejected unless the result is a descendant of the canonical cache root. A
+   rejected path is treated as missing — the graph falls through to the
+   placeholder branch and a warning is logged. Provider metadata can never
+   inject an arbitrary local path into the FFmpeg command.
+3. **Origin pinning for artwork URLs.** Plex `thumb` values may be relative
+   paths or absolute URLs (PMS forwards upstream URLs verbatim for some
+   providers). Adapters MUST confine artwork fetches to the configured server
+   origin (host and port match). An absolute URL whose origin does not match
+   the configured Plex/Jellyfin server is dropped and the graph uses the
+   placeholder branch. This prevents the bridge from issuing authenticated
+   outbound HTTP to attacker-controlled hosts.
+4. **Token append after origin pinning.** The Plex token (or Jellyfin API key)
+   may only be attached to a request URL after the request has been
+   re-anchored to the configured server origin. Composing this rule with (3)
+   guarantees the token cannot leak to a third-party host. Existing
+   `redactURL` discipline in `internal/core/manager.go` applies to any log
+   site that prints these URLs.
+5. **Decode bounds.** Decoded images larger than 4096×4096 pixels or 8 MiB on
+   disk are rejected (decode-bomb mitigation). Successful decodes are resized
+   to fit the visible CRT area before FFmpeg use; the exact target dimensions
+   are chosen by the mode builder.
 
 ### Plex
 
-Plex metadata fetches should decode artwork candidates from PMS track metadata.
-Preferred candidates:
+Plex metadata fetches decode artwork candidates from PMS track metadata, in
+preference order:
 
 1. track `thumb`
 2. album/parent thumb where available
 3. artist/grandparent thumb where available
 
-Resolve relative PMS artwork paths against the Plex server URL and authenticate
-them with the Plex token. Download to a per-session or cache-scoped local image
-file before starting FFmpeg. Artwork fetches must use a short bounded timeout
-with fail-open behavior; on timeout, cancellation, network error, non-2xx
-response, or decode failure, start playback with placeholder art instead of
-waiting further.
+For each candidate the adapter:
+
+1. Parses the value. Relative paths are joined against the configured Plex
+   server URL. Absolute URLs are accepted only if their origin matches the
+   configured Plex server; otherwise the candidate is discarded.
+2. Appends the `X-Plex-Token` query parameter after the URL is anchored to
+   the Plex origin (never before).
+3. Issues a GET with a 2 s bounded timeout (matching the existing
+   `musicMetadataForPlay` timeout for parity).
+4. On 2xx, decodes and validates the image against the decode bounds, then
+   writes it under the artwork cache root and stores the resulting path on
+   `SessionRequest.Visualizer.Metadata.ArtworkPath`.
+
+Any failure — timeout, cancellation, network error, non-2xx, decode error,
+oversize rejection — is logged at debug level and `ArtworkPath` is left empty.
+Playback starts with the placeholder branch in that case.
 
 ### Jellyfin
 
-Jellyfin metadata should derive a primary image URL from the item ID first:
+Jellyfin metadata derives a primary image URL from the item ID first:
 
 ```text
 /Items/{itemId}/Images/Primary
 ```
 
-Include the API key or Jellyfin auth material using the same safe request path
-the adapter already uses for metadata. Download to a local image file before
-starting FFmpeg. If track-level primary art is missing, implementation may look
-for album/parent art if that metadata is available.
+The URL is built against the configured Jellyfin server origin and authenticated
+using the same `api_key` material the adapter already threads through metadata
+requests. If track-level primary art is missing, the adapter may look for
+album/parent art if the metadata path exposes it. The same 2 s timeout, decode
+bounds, fail-open behaviour, and origin pinning rules from the validation
+contract apply.
 
 ### Cache Rules
 
@@ -206,19 +251,47 @@ Artwork download is best-effort:
 - network failure does not block playback
 - HTTP non-2xx does not block playback
 - unsupported image format does not block playback
-- oversized images are rejected or resized before FFmpeg use
+- oversized images are rejected per the decode bounds above
 - cache cleanup follows the existing data directory conventions
 
-The first implementation can keep the cache simple: session-scoped files under
-the bridge data directory with cleanup through the session `OnStop` path or a
-startup reaper. A content-addressed persistent cache can be added later if
-repeated downloads become a problem.
+The cache layout is session-scoped: each successful download produces one file
+under `<bridge.data_dir>/artwork-cache/`. A startup reaper removes files in
+that directory whose `mtime` is older than 24 h. The reaper runs once during
+adapter startup (after config load, before HTTP bind), failures are logged at
+warn and ignored, and the directory is created on demand. The reaper lives in
+`internal/artworkcache` and is called from each adapter's startup so it does
+not violate the no-cross-adapter-imports invariant. A content-addressed
+persistent cache can be added later if repeated downloads become a problem.
 
 Artwork cleanup must compose with existing adapter cleanup. Plex and Jellyfin
 already attach `OnStop` handlers for transcode cleanup and reporting; artwork
-cleanup must wrap the existing handler and always invoke it. A helper such as
-`withArtworkCleanup(original, cleanup)` is preferred over assigning `OnStop`
-directly in multiple adapters.
+cleanup wraps the existing handler. The wrapper has a precise contract:
+
+```go
+// withArtworkCleanup returns an OnStop closure that invokes original and
+// removes path, with these guarantees:
+//
+//   - artwork removal runs even if original panics (defer ordering),
+//   - empty path is a no-op,
+//   - removeArtwork tolerates os.IsNotExist so the returned closure is safe
+//     to invoke more than once,
+//   - if original is nil, only artwork removal runs.
+//
+// Adapters wrap their existing OnStop with this helper rather than assigning
+// OnStop directly from multiple sites.
+func withArtworkCleanup(path string, original func(reason string)) func(reason string) {
+    return func(reason string) {
+        defer removeArtwork(path)
+        if original != nil {
+            original(reason)
+        }
+    }
+}
+```
+
+`removeArtwork` mirrors `removeSubtitleFile` in `internal/core/manager.go`:
+empty paths are a no-op, `os.IsNotExist` is swallowed, all other errors are
+logged at debug.
 
 ## FFmpeg Graph Shape
 
@@ -232,34 +305,106 @@ ffmpeg -i <audio-url> -loop 1 -i <artwork-path>
   -map 0:a:0 ...
 ```
 
-The input-indexing contract must be explicit:
+### Input-Indexing Contract
 
 - input `0` is always the primary media input
 - when `AudioInputURL` is empty, visualizer audio comes from `0:a:0`
 - when `AudioInputURL` is present, input `1` is the separate audio input and
   visualizer audio comes from `1:a:0`
-- when `ArtworkPath` is present, artwork is appended after media/audio inputs:
-  index `1` without `AudioInputURL`, or index `2` with `AudioInputURL`
+- when `ArtworkPath` is present and valid (passes the validation contract
+  above), artwork is appended after media/audio inputs: index `1` without
+  `AudioInputURL`, or index `2` with `AudioInputURL`
+- when `ArtworkPath` is empty or rejected, no image input is appended and the
+  graph uses the placeholder branch (see below)
 
-Implementation should centralize these labels in helpers such as
-`visualizerAudioInputMap` and `visualizerArtworkInputMap` rather than spreading
-literal input indexes through mode builders.
+Implementation centralises these decisions in two helpers:
+
+```go
+// visualizerAudioInputMap returns "[0:a]" or "[1:a]" depending on AudioInputURL.
+func visualizerAudioInputMap(s PipelineSpec) string
+
+// visualizerArtworkInput returns the input-args extension and the filter-graph
+// label for the artwork branch. When ArtworkPath is empty or invalid, args is
+// nil and label is "" — mode builders interpret this as the placeholder case
+// and emit a generated panel instead of an image input.
+func visualizerArtworkInput(s PipelineSpec) (args []string, label string)
+```
+
+Mode builders never reference literal input indexes; they consume these
+helpers as the single source of truth so that the input contract above and
+the constructed argv stay in lockstep.
+
+### Cadence For The Image Branch
+
+The existing visualizer graph rate-locks the audio-reactive branch to
+`OutputFpsExpr` (default `60000/1001`) via the terminal `fps=...,format=bgr24`
+clause in `buildVisualizerFilterChain`. The image branch produced by a
+`-loop 1 -i <artwork>` input is not implicitly rate-limited — without an
+explicit `fps=` clause the loop emits as fast as it can and starves audio /
+desyncs `overlay`/`blend`/`tmix` joins. Cover-art graphs MUST therefore start
+the image branch with:
+
+```text
+[<artwork-label>]fps=<OutputFpsExpr>,format=bgr24,scale=...:flags=lanczos[cover]
+```
+
+so the image and audio branches share one cadence before any join.
+
+### Album-Art Filter Requirements
 
 Album-art filters should:
 
-- scale/crop art to a square region
-- preserve aspect ratio
-- avoid stretching cover art
+- scale/crop art to a square region within the safe visible area
+- preserve aspect ratio (no stretch)
 - composite the art with generated backgrounds and audio-reactive elements
 - finish with the same output cadence, output size, and `bgr24` conversion as
   current visualizer modes
 
-If artwork is absent, the graph should use a generated placeholder panel rather
-than adding the image input.
+### Placeholder Branch
+
+When `ArtworkPath` is empty or rejected, cover-art modes MUST still produce a
+recognisable layout. The placeholder branch uses a generated solid-color panel
+(via `color=` source) with the same dimensions the image branch would have
+produced. The placeholder is produced inside the filter graph rather than as
+an extra `-i` input, so the input index contract collapses to "no image input
+appended". Both `cover_vu` and `cover_spectrum` MUST share one placeholder
+helper so the two modes render identical panels when artwork is absent.
+
+### Required-Filters Table
+
+`RequiredVisualizerFilters` in `internal/ffmpeg/pipeline.go` gates plane spawn
+through `CheckVisualizerFilters`. Each new mode adds the following entries.
+Implementation MUST fail-fast before plane spawn if any required filter is
+missing in the runtime ffmpeg build:
+
+| Mode             | Required filters                                       |
+|------------------|--------------------------------------------------------|
+| `vu_cabinet`     | `showvolume`, `drawbox`, `drawgrid`                    |
+| `neon_grid`      | `showfreqs`, `drawgrid`, `hue`                         |
+| `raster_pulse`   | `showwaves`, `split`, `hflip`, `blend`                 |
+| `cover_vu`       | `showvolume`, `overlay`, `scale`                       |
+| `cover_spectrum` | `showfreqs`, `overlay`, `scale`                        |
+
+`drawtext` remains optional across all modes (current behaviour): when
+unavailable, metadata strings are dropped and the visual element still
+renders. `showvolume` for `vu_cabinet`/`cover_vu` is required, not optional —
+the earlier "fall back to a simplified waveform-meter" suggestion is removed
+to keep `RequiredVisualizerFilters` a single-valued table. `aphasemeter` is
+not in the required set for any mode and is not used by `raster_pulse`.
 
 ## Configuration And UI
 
-Extend the existing `bridge.visualizer.mode` enum with the new modes:
+Two enums live in the codebase and must be kept distinct:
+
+- **Go constant set** (`internal/config/config.go` plus
+  `internal/ffmpeg/pipeline.go`) — the canonical list of mode IDs the manager,
+  saver, and graph builder recognise. New modes are added here first.
+- **UI-exposed enum** (`internal/ui/bridge_fields.go`) — the subset surfaced as
+  selectable options in the Settings UI and emitted in `config.example.toml`.
+  A mode appears here only when its FFmpeg graph and validation path are
+  implemented end-to-end.
+
+After Phase 3 (album-art modes shipped) the Go constant set is:
 
 - `retro_analyzer`
 - `oscilloscope_wave`
@@ -270,16 +415,28 @@ Extend the existing `bridge.visualizer.mode` enum with the new modes:
 - `cover_vu`
 - `cover_spectrum`
 
-Mode changes continue to use the existing visualizer apply behavior: they are
+Mode changes continue to use the existing visualizer apply behaviour: they are
 persisted, update manager bridge state, and apply to the next music cast or to
 whatever restart is triggered by stronger mixed-scope changes.
 
 No separate album-art enable toggle is needed in this wave. Album-art modes
 implicitly request artwork; when artwork is unavailable they use placeholders.
 
-The public enum may grow incrementally during implementation. Do not expose
-`cover_vu` or `cover_spectrum` in config examples or the UI until artwork
-plumbing and their FFmpeg graphs are implemented.
+`cover_vu` and `cover_spectrum` MUST NOT appear in the UI-exposed enum or in
+`config.example.toml` until Phase 3 lands (Phase 3 is the merged
+artwork-plus-album-art phase; see Implementation Phasing below).
+
+### Unknown-Mode Handling Across Phase Rollbacks
+
+A config file written under a newer phase (e.g. `cover_vu` selected) might be
+read by an older binary. `NormalizeVisualizerMode` in
+`internal/config/config.go` today returns its input verbatim for non-empty
+values (only empty falls back to `retro_analyzer`). That behaviour MUST be
+preserved: unknown modes pass through normalisation unchanged and are caught
+by `ValidateVisualizerMode` at config-load. The validator MUST reject unknown
+modes with a clear error rather than silently coercing them — an operator who
+downgrades the binary should see a hard config error, not a silently lost UI
+selection.
 
 ## Error Handling
 
@@ -289,65 +446,116 @@ plumbing and their FFmpeg graphs are implemented.
 - Missing album art degrades to generated placeholder art.
 - Artwork fetch/decode/cache errors are logged at debug or warning level and do
   not fail music playback.
-- Artwork paths passed to FFmpeg must be files created by GroovyRelay under the
-  bridge data/cache directory. Provider metadata must never be allowed to inject
-  arbitrary local paths into the FFmpeg command.
+- Artwork path, origin, token, and decode-bound rules are enumerated in the
+  "Path And URL Validation Contract" section above. Any violation maps to "no
+  artwork" and falls through to the placeholder branch — it never aborts
+  music playback or surfaces to the operator.
 - If a mode-specific graph cannot be built for reasons unrelated to artwork,
   session startup fails with an explicit error rather than silently switching
   to a different mode.
 
 ## Testing
 
-Add or update tests for:
+### Unit Tests
+
+Add or update unit tests for:
 
 - config defaults and validation for all added mode names
-- Bridge UI enum rendering and form parsing for the new modes
+- `NormalizeVisualizerMode` preserving unknown values verbatim
+- `ValidateVisualizerMode` rejecting unknown modes with a clear error
+- Bridge UI enum rendering and form parsing for the new modes (UI-exposed
+  subset only; album-art modes excluded until Phase 3)
 - BridgeSaver invalid mode rejection before persisting
 - manager mapping from core modes to FFmpeg modes
 - same-session replay, seek, and resume preserving the snapshotted mode
-- FFmpeg required-filter lists for each new mode
-- FFmpeg command graph shape for each new mode
+- FFmpeg required-filter table values for each new mode
+- FFmpeg command argv shape for each new mode (CRT and album-art)
+- `visualizerArtworkInput` returning empty args/label when `ArtworkPath` is
+  empty, and non-empty args/label when set
 - album-art modes adding an artwork input only when `ArtworkPath` is present
-- album-art modes using generated placeholders when `ArtworkPath` is empty
+- album-art modes using the shared placeholder helper when `ArtworkPath` is
+  empty or fails validation
 - album-art command input mapping when both `AudioInputURL` and `ArtworkPath`
   are present
+- path validation: rejecting `ArtworkPath` values that resolve outside the
+  artwork cache root (including symlink escapes via `EvalSymlinks`)
+- origin pinning: Plex/Jellyfin adapters discarding absolute artwork URLs
+  whose origin does not match the configured server
+- token-append ordering: tokens are never attached to URLs that still point
+  at a non-server origin
 - Plex metadata extraction for title, artist, album, duration, and artwork
 - Jellyfin metadata extraction for title, artist, album, duration, and artwork
 - artwork download/cache failure falling back without blocking playback
-- artwork fetch timeout falling back without blocking playback
-- artwork cleanup wrapping existing `OnStop` handlers without suppressing them
-- stale artwork cache reaping at startup
+- artwork fetch 2 s timeout falling back without blocking playback
+- decode-bound enforcement: oversize image rejected, playback continues with
+  placeholder
+- `withArtworkCleanup` invoking both artwork removal and the wrapped `OnStop`
+  even when the wrapped handler panics
+- repeated invocation of the wrapped `OnStop` being a no-op on the second call
+- startup reaper removing files older than 24 h in
+  `<DataDir>/artwork-cache/` and ignoring failures
 
-The final verification remains `go test ./...`.
+### Integration Tests
+
+The CRT arcade graphs and album-art graphs introduce new filter chains that
+unit tests over argv alone do not exercise. Under `tests/integration/`
+(`go test -tags=integration`), add one test per new mode that:
+
+1. Spawns the real `ffmpeg` and `ffprobe` binaries (PATH-resolved, mirroring
+   `make test-integration` preconditions).
+2. Feeds a 1 s lavfi-generated stereo audio source plus, for album-art modes,
+   a 1 s lavfi-generated test pattern as the artwork input.
+3. Asserts at least one BGR video frame and at least one s16le PCM block reach
+   the data-plane output pipes.
+
+Without this layer a missing filter or a desynced image-branch cadence will
+not be caught by CI until a user opens a real cast.
+
+### Verification
+
+The final verification remains `go test ./...` plus `make test-integration`
+on a host with `ffmpeg`/`ffprobe` on `PATH`. CI already runs both.
 
 ## Implementation Phasing
 
 ### Phase 1: Mode Constants And Validation
 
-Add the CRT arcade mode names through config, core, UI, manager mapping,
-FFmpeg mode definitions, and required-filter declarations. Keep album-art modes
-out of the public config/UI enum until Phase 4, though internal constants may
-be introduced earlier if useful for tests.
+Add the CRT arcade mode names (`vu_cabinet`, `neon_grid`, `raster_pulse`)
+through config, core, UI, manager mapping, FFmpeg mode definitions, and the
+required-filter table. The UI-exposed enum gains only these three. Album-art
+mode IDs are NOT added in Phase 1 — neither to the Go constant set nor to the
+UI — so an operator cannot select an option whose graph does not yet exist.
 
 ### Phase 2: CRT Arcade Graphs
 
-Implement `vu_cabinet`, `neon_grid`, and `raster_pulse` without artwork. These
-should be independently testable using the current visualizer metadata path.
+Implement the three CRT arcade graphs end-to-end against the existing
+visualizer metadata path. No artwork plumbing. Each graph ships with unit
+tests for argv shape and one integration test that spawns ffmpeg.
 
-### Phase 3: Artwork Plumbing
+### Phase 3: Artwork Plumbing + Album-Art Graphs
 
-Extend visualizer metadata and adapter metadata fetches to include local cached
-artwork paths. Keep all artwork failures non-fatal.
+Phase 3 and the originally-planned Phase 4 are merged. Shipping artwork
+plumbing without consumers would land dead code (an artwork cache filling
+during every music cast for no rendering benefit), so this phase ships:
 
-### Phase 4: Album-Art Graphs
+- `internal/artworkcache` package: cache root creation, `withArtworkCleanup`
+  helper, `removeArtwork` helper, startup reaper.
+- `ArtworkPath` field on both `core.VisualizerMetadata` and
+  `ffmpeg.VisualizerMetadata`.
+- Plex and Jellyfin adapter changes to download artwork before
+  `StartSession`, honouring the path & URL validation contract.
+- `visualizerArtworkInput` helper in `internal/ffmpeg`.
+- `cover_vu` and `cover_spectrum` mode IDs added to the Go constant set, the
+  required-filter table, the UI-exposed enum, and the example config.
+- Cover-art FFmpeg graphs with placeholder fallback when `ArtworkPath` is
+  empty or rejected.
 
-Implement `cover_vu` and `cover_spectrum` using the shared artwork input and
-placeholder fallback.
+### Phase 4: Documentation And Polish
 
-### Phase 5: Documentation And Polish
-
-Update README and example config with the supported modes. Keep the README
-clear that `radial_spectrum` and `chiptune_equalizer` are not shipped modes.
+Update README and example config to reflect the supported modes. The README
+also briefly notes which previously discussed mode IDs are intentionally not
+shipped (`chiptune_equalizer`, `radial_spectrum`) so users searching past
+design docs do not assume they were dropped silently.
 
 ## Out Of Scope
 
