@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"mime"
+	"reflect"
 	"testing"
 	"time"
 
@@ -80,5 +81,163 @@ func TestInit_RegistersWoffMIME(t *testing.T) {
 	got := mime.TypeByExtension(".woff")
 	if got != "font/woff" {
 		t.Fatalf(`TypeByExtension(".woff") = %q, want "font/woff"`, got)
+	}
+}
+
+func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.UI.HTTPPort = 32500
+	cfg.Bridge.Visualizer.Mode = config.VisualizerModeStereoScope
+	got := idleSnapshot(cfg, fixedNow)
+
+	want := ReceiverPageData{
+		Version:   "test-1.0.0",
+		BrandName: "GROOVY · RELAY",
+		State:     StateIdle,
+		HostInfo: HostInfo{
+			HostIP:   "10.0.0.5",
+			HTTPPort: 32500,
+		},
+		VFD: VFDData{
+			State:        string(StateIdle),
+			Title:        "STANDBY",
+			Marquee:      "MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET",
+			QueueCurrent: 0,
+			QueueTotal:   0,
+			SystemTime:   "22:47",
+			Uptime:       "10H 47M",
+		},
+		Source: SourceData{
+			Buttons: []SourceButton{
+				{Label: "STREAMS", Active: true, Lit: false},
+				{Label: "PLEX", Active: false, Lit: false},
+				{Label: "JELLYFIN", Active: false, Lit: false},
+				{Label: "DLNA", Active: false, Lit: false},
+			},
+		},
+		Meter: MeterData{
+			State: string(StateIdle),
+			SourceStrip: SourceStripIdleData{
+				AudioIn:   "---",
+				AudioOut:  "---",
+				Src:       "---",
+				Crop:      "---",
+				HLSBuffer: "0 / 0 SEG",
+				Drops:     "0.0",
+			},
+			MidRow: MidRowIdleData{
+				BitrateMbps:   "0.0",
+				FreqKHz:       "---",
+				Mode:          "---",
+				StandardNTSC:  true,
+				StandardPAL:   false,
+				FieldFlip:     "idle",
+				ThroughputMBs: "0.0",
+				MSAck:         "--",
+			},
+			Readout: ReadoutIdleData{
+				LRBars:      0,
+				PhaseNeedle: "0",
+				LUFS:        "---",
+				Output:      "---",
+				Aspect:      "---",
+				Pipe:        "---",
+				Speed:       "---",
+				Link:        "---",
+			},
+		},
+		Transport: TransportData{
+			PlayState:       "stopped",
+			ElapsedTime:     "--:--",
+			TotalTime:       "--:--",
+			PercentPlayed:   "---",
+			SeekFillPercent: 0,
+		},
+		Visualizer: VisualizerData{
+			ActiveMode: config.VisualizerModeStereoScope,
+			Buttons: []VisualizerButton{
+				{Mode: "retro_analyzer", Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+				{Mode: "oscilloscope_wave", Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+				{Mode: "stereo_scope", Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+			},
+		},
+		Input: InputData{
+			PastePlaceholder: "Paste URL or magnet",
+			DetectedKind:     "URL",
+			CastEnabled:      false,
+		},
+		Presets: PresetsData{
+			ModeLabel: "Memory · 0 / 12 slots",
+			Count:     "★ 0",
+		},
+		History: HistoryData{
+			Rows:         nil,
+			EmptyMessage: "No recent casts",
+		},
+		Settings: SettingsData{
+			Open: false,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("idleSnapshot() = %+v, want %+v", got, want)
+	}
+}
+
+func TestIdleSnapshot_DeterministicGivenSameNow(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	a := idleSnapshot(cfg, fixedNow)
+	b := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(a, b) {
+		t.Errorf("idleSnapshot is not deterministic: a=%+v b=%+v", a, b)
+	}
+}
+
+func TestIdleSnapshot_EmptyHostIPRendersAsOFFLINE(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.HostIP = ""
+	got := idleSnapshot(cfg, fixedNow)
+	if got.HostInfo.HostIP != "OFFLINE" {
+		t.Errorf("HostInfo.HostIP with empty cfg.HostIP = %q, want OFFLINE", got.HostInfo.HostIP)
+	}
+}
+
+func TestIdleSnapshot_InvalidVisualizerModeFallsBack(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = "bogus"
+	got := idleSnapshot(cfg, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
+	}
+}
+
+func TestIdleSnapshot_RadialPreviewModeFallsBack(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = "radial_spectrum"
+	got := idleSnapshot(cfg, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q for preview-only radial_spectrum", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
+	}
+}
+
+func TestIdleSnapshot_UptimeFromStartedAt(t *testing.T) {
+	t.Parallel()
+	startedAt := time.Date(2026, 5, 21, 18, 35, 0, 0, time.UTC)
+	now := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.StartedAt = startedAt
+	got := idleSnapshot(cfg, now)
+	if got.VFD.Uptime != "4H 12M" {
+		t.Errorf("VFD.Uptime = %q, want 4H 12M", got.VFD.Uptime)
 	}
 }

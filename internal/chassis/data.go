@@ -1,5 +1,12 @@
 package chassis
 
+import (
+	"fmt"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+)
+
 // ReceiverPageData is the page-level struct shell.html renders against.
 // Each sub-struct holds the smallest set of fields its partial needs;
 // live-state fields stay zero/empty in Phase 0. Subsequent specs
@@ -178,4 +185,129 @@ type HistoryRow struct {
 // SettingsData is the settings drawer, closed in Phase 0.
 type SettingsData struct {
 	Open bool
+}
+
+// idleSnapshot returns a fully populated ReceiverPageData with State =
+// StateIdle and placeholder content matching the mockup's idle state.
+// Later live-state specs replace this with session-derived snapshots.
+func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
+	hostIP := cfg.HostIP
+	if hostIP == "" {
+		hostIP = "OFFLINE"
+	}
+
+	return ReceiverPageData{
+		Version:   cfg.Version,
+		BrandName: "GROOVY · RELAY",
+		State:     StateIdle,
+		HostInfo: HostInfo{
+			HostIP:   hostIP,
+			HTTPPort: cfg.Bridge.UI.HTTPPort,
+		},
+		VFD: VFDData{
+			State:        string(StateIdle),
+			Title:        "STANDBY",
+			Marquee:      "MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET",
+			QueueCurrent: 0,
+			QueueTotal:   0,
+			SystemTime:   fmt.Sprintf("%02d:%02d", now.Hour(), now.Minute()),
+			Uptime:       formatUptime(now.Sub(cfg.StartedAt)),
+		},
+		Source: SourceData{
+			Buttons: []SourceButton{
+				{Label: "STREAMS", Active: true, Lit: false},
+				{Label: "PLEX", Active: false, Lit: false},
+				{Label: "JELLYFIN", Active: false, Lit: false},
+				{Label: "DLNA", Active: false, Lit: false},
+			},
+		},
+		Meter: MeterData{
+			State: string(StateIdle),
+			SourceStrip: SourceStripIdleData{
+				AudioIn:   "---",
+				AudioOut:  "---",
+				Src:       "---",
+				Crop:      "---",
+				HLSBuffer: "0 / 0 SEG",
+				Drops:     "0.0",
+			},
+			MidRow: MidRowIdleData{
+				BitrateMbps:   "0.0",
+				FreqKHz:       "---",
+				Mode:          "---",
+				StandardNTSC:  true,
+				StandardPAL:   false,
+				FieldFlip:     "idle",
+				ThroughputMBs: "0.0",
+				MSAck:         "--",
+			},
+			Readout: ReadoutIdleData{
+				LRBars:      0,
+				PhaseNeedle: "0",
+				LUFS:        "---",
+				Output:      "---",
+				Aspect:      "---",
+				Pipe:        "---",
+				Speed:       "---",
+				Link:        "---",
+			},
+		},
+		Transport: TransportData{
+			PlayState:       "stopped",
+			ElapsedTime:     "--:--",
+			TotalTime:       "--:--",
+			PercentPlayed:   "---",
+			SeekFillPercent: 0,
+		},
+		Visualizer: VisualizerData{
+			ActiveMode: defaultVisualizerMode(cfg),
+			Buttons: []VisualizerButton{
+				{Mode: "retro_analyzer", Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+				{Mode: "oscilloscope_wave", Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+				{Mode: "stereo_scope", Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+			},
+		},
+		Input: InputData{
+			PastePlaceholder: "Paste URL or magnet",
+			DetectedKind:     "URL",
+			CastEnabled:      false,
+		},
+		Presets: PresetsData{
+			ModeLabel: "Memory · 0 / 12 slots",
+			Count:     "★ 0",
+		},
+		History: HistoryData{
+			Rows:         nil,
+			EmptyMessage: "No recent casts",
+		},
+		Settings: SettingsData{
+			Open: false,
+		},
+	}
+}
+
+// formatUptime turns a duration into the "NH NM" string used by the VFD.
+// Zero or negative durations render as "0H 0M".
+func formatUptime(d time.Duration) string {
+	if d <= 0 {
+		return "0H 0M"
+	}
+	total := int(d / time.Minute)
+	hours := total / 60
+	minutes := total % 60
+	return fmt.Sprintf("%dH %dM", hours, minutes)
+}
+
+// defaultVisualizerMode returns the configured visualizer mode when it is
+// renderable in Phase 0, otherwise it falls back to retro_analyzer.
+func defaultVisualizerMode(cfg Config) string {
+	switch mode := cfg.Bridge.Visualizer.Mode; mode {
+	case config.VisualizerModeRetroAnalyzer,
+		config.VisualizerModeOscilloscopeWave,
+		config.VisualizerModeStereoScope:
+		return mode
+	default:
+		return config.VisualizerModeRetroAnalyzer
+	}
 }
