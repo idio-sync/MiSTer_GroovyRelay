@@ -331,6 +331,25 @@ func TestPreprocessCSS_LeavesCSSCommentsAlone(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_UsesOnlyHostedFontFamilies(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	for _, banned := range []string{
+		"fonts.googleapis.com",
+		"fonts.gstatic.com",
+		"Orbitron",
+		"Major Mono",
+		"JetBrains",
+	} {
+		if strings.Contains(string(css), banned) {
+			t.Errorf("static/chassis.css contains banned font reference %q", banned)
+		}
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)

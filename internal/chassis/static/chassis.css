@@ -1,5 +1,68 @@
-/* Receiver chassis stylesheet. Sections + content land in Tasks 17-25.
-   Phase 0 stub: just enough for embed + preprocessor to round-trip. */
+/* Fonts */
+@font-face {
+  font-family: 'DSEG7-Classic';
+  src: url('/receiver/static/fonts/DSEG7Classic-Regular.woff2?v={{.Version}}') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG7-Classic';
+  src: url('/receiver/static/fonts/DSEG7Classic-Bold.woff2?v={{.Version}}') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG14-Classic';
+  src: url('/receiver/static/fonts/DSEG14Classic-Regular.woff2?v={{.Version}}') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG14-Classic';
+  src: url('/receiver/static/fonts/DSEG14Classic-Bold.woff2?v={{.Version}}') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG7-Modern';
+  src: url('/receiver/static/fonts/DSEG7Modern-Regular.woff2?v={{.Version}}') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG7-Modern';
+  src: url('/receiver/static/fonts/DSEG7Modern-Bold.woff2?v={{.Version}}') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG14-Modern';
+  src: url('/receiver/static/fonts/DSEG14Modern-Regular.woff2?v={{.Version}}') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'DSEG14-Modern';
+  src: url('/receiver/static/fonts/DSEG14Modern-Bold.woff2?v={{.Version}}') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 @font-face {
   font-family: 'Inter';
   src: url('/receiver/static/fonts/Inter-Variable.woff2?v={{.Version}}') format('woff2-variations');
@@ -7,3 +70,119 @@
   font-style: normal;
   font-display: swap;
 }
+
+/* Tokens */
+:root {
+  --vfd: oklch(0.92 0.20 175);
+  --vfd-bright: oklch(0.96 0.18 175);
+  --vfd-glow: oklch(0.85 0.22 175 / 0.75);
+  --vfd-glow-soft: oklch(0.85 0.22 175 / 0.32);
+  --vfd-dim: oklch(0.55 0.16 175 / 0.78);
+  --vfd-faded: oklch(0.55 0.16 175 / 0.35);
+  --vfd-ghost: oklch(0.42 0.12 175 / 0.18);
+  --lock-amber: oklch(0.82 0.18 75);
+}
+
+/* Reset and base */
+body.receiver,
+body.receiver *,
+body.receiver *::before,
+body.receiver *::after {
+  box-sizing: border-box;
+}
+
+body.receiver {
+  margin: 0;
+  padding: 0;
+  background: #0a0a0b;
+  color: #c0c0c4;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  scrollbar-color: var(--vfd-dim) oklch(0.08 0.02 250);
+  scrollbar-width: thin;
+}
+
+body.receiver h1,
+body.receiver h2,
+body.receiver h3,
+body.receiver h4,
+body.receiver h5,
+body.receiver h6,
+body.receiver p,
+body.receiver figure,
+body.receiver blockquote,
+body.receiver dl,
+body.receiver dd {
+  margin: 0;
+}
+
+body.receiver button,
+body.receiver input,
+body.receiver textarea,
+body.receiver select {
+  font: inherit;
+}
+
+body.receiver button {
+  color: inherit;
+}
+
+body.receiver img,
+body.receiver svg,
+body.receiver canvas,
+body.receiver video {
+  display: block;
+  max-width: 100%;
+}
+
+body.receiver ::selection {
+  background: var(--vfd-glow-soft);
+  color: var(--vfd-bright);
+}
+
+body.receiver::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+body.receiver::-webkit-scrollbar-track {
+  background: #0a0a0b;
+}
+
+body.receiver::-webkit-scrollbar-thumb {
+  background: #2a2a2e;
+  border-radius: 5px;
+}
+
+body.receiver::-webkit-scrollbar-thumb:hover {
+  background: #3a3a3e;
+}
+
+/* Layout placeholders */
+
+/* Status bar */
+
+/* Masthead */
+
+/* VFD source row */
+
+/* VFD display */
+
+/* Source cluster */
+
+/* Meter panel */
+
+/* Transport */
+
+/* Visualizer bank */
+
+/* Input row */
+
+/* Preset bank */
+
+/* History */
+
+/* Settings drawer */
