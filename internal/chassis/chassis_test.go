@@ -356,6 +356,38 @@ func TestHandleIndex_RendersShell200(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`<!-- chassis:status-bar -->`,
+		`<!-- chassis:masthead -->`,
+		`<!-- chassis:vfd-source-row -->`,
+		`<!-- chassis:vfd -->`,
+		`<!-- chassis:source-cluster -->`,
+		`<!-- chassis:meter -->`,
+		`<!-- chassis:transport -->`,
+		`<!-- chassis:visualizer-bank -->`,
+		`<!-- chassis:input-row -->`,
+		`<!-- chassis:preset-bank -->`,
+		`<!-- chassis:history -->`,
+		`<!-- chassis:settings-drawer -->`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
 func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
