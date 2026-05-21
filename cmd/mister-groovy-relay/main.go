@@ -30,6 +30,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -309,6 +310,19 @@ func main() {
 		dieFriendly("ui init", err)
 	}
 	uiSrv.Mount(mux)
+
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:    sec.Bridge,
+		Manager:   coreMgr,
+		Registry:  reg,
+		Version:   version,
+		StartedAt: startedAt,
+		HostIP:    hostIP,
+	})
+	if err != nil {
+		dieFriendly("chassis init", err)
+	}
+	chassisSrv.Mount(mux)
 
 	addr := fmt.Sprintf(":%d", sec.Bridge.UI.HTTPPort)
 	httpSrv := &http.Server{
