@@ -286,3 +286,33 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 		}
 	}
 }
+
+func TestPreprocessCSS_SubstitutesVersionPlaceholder(t *testing.T) {
+	t.Parallel()
+	src := []byte(`@font-face { src: url('/receiver/static/fonts/Inter-Variable.woff2?v={{.Version}}'); }`)
+	got, err := preprocessCSS(src, "test-1.2.3")
+	if err != nil {
+		t.Fatalf("preprocessCSS: %v", err)
+	}
+	want := "?v=test-1.2.3"
+	if !strings.Contains(string(got), want) {
+		t.Errorf("preprocessCSS output = %s, want substring %s", got, want)
+	}
+	if strings.Contains(string(got), "{{.Version}}") {
+		t.Errorf("preprocessCSS left a raw placeholder in output: %s", got)
+	}
+}
+
+func TestPreprocessCSS_LeavesCSSCommentsAlone(t *testing.T) {
+	t.Parallel()
+	// html/template would mangle "<=" inside CSS comments; text/template
+	// must not. This test locks that distinction in.
+	src := []byte(`/* breakpoint <= 1180px */`)
+	got, err := preprocessCSS(src, "v1")
+	if err != nil {
+		t.Fatalf("preprocessCSS: %v", err)
+	}
+	if !strings.Contains(string(got), `<=`) {
+		t.Errorf("preprocessCSS escaped <= in CSS comment: %s", got)
+	}
+}

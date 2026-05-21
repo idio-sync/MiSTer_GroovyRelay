@@ -23,8 +23,9 @@ type Config struct {
 
 // Server owns the chassis runtime state.
 type Server struct {
-	cfg  Config
-	tmpl *template.Template
+	cfg      Config
+	tmpl     *template.Template
+	cssBytes []byte // chassis.css with {{.Version}} substituted, cached
 }
 
 // New builds a Server from cfg, validating fields required at startup.
@@ -39,7 +40,15 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, tmpl: tmpl}, nil
+	cssSrc, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		return nil, fmt.Errorf("chassis: read embedded chassis.css: %w", err)
+	}
+	cssBytes, err := preprocessCSS(cssSrc, cfg.Version)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{cfg: cfg, tmpl: tmpl, cssBytes: cssBytes}, nil
 }
 
 // Mount registers chassis routes on mux. Route wiring lands in Task 7.

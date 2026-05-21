@@ -1,10 +1,12 @@
 package chassis
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"html/template"
 	"strings"
+	textTemplate "text/template"
 )
 
 // chassisTemplatesFS holds the html/template files used to render the
@@ -64,4 +66,19 @@ func parseTemplates() (*template.Template, error) {
 		return nil, fmt.Errorf("chassis: parse templates: %w", err)
 	}
 	return tmpl, nil
+}
+
+// preprocessCSS substitutes {{.Version}} placeholders inside the
+// embedded chassis.css and returns the result. Uses text/template
+// because CSS is not HTML and must not receive context-aware escaping.
+func preprocessCSS(src []byte, version string) ([]byte, error) {
+	tmpl, err := textTemplate.New("chassis.css").Parse(string(src))
+	if err != nil {
+		return nil, fmt.Errorf("chassis: parse CSS template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, map[string]string{"Version": version}); err != nil {
+		return nil, fmt.Errorf("chassis: execute CSS template: %w", err)
+	}
+	return buf.Bytes(), nil
 }
