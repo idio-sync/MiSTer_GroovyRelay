@@ -51,7 +51,9 @@ func New(cfg Config) (*Server, error) {
 	return &Server{cfg: cfg, tmpl: tmpl, cssBytes: cssBytes}, nil
 }
 
-// Mount registers chassis routes on mux. Route wiring lands in Task 7.
+// Mount registers chassis routes on mux.
 func (s *Server) Mount(mux *http.ServeMux) {
-	// Implemented in Task 7.
+	mux.HandleFunc("GET /receiver", s.handleIndex)
+	mux.HandleFunc("GET /receiver/{$}", s.handleIndex)
+	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
 }

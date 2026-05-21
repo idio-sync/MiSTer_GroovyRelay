@@ -1,6 +1,12 @@
 package chassis
 
-import "mime"
+import (
+	"bytes"
+	"io/fs"
+	"mime"
+	"net/http"
+	"time"
+)
 
 // Register woff2/woff content types at package init. http.FileServer
 // falls back to mime.TypeByExtension when serving embedded assets, and
@@ -11,4 +17,31 @@ import "mime"
 func init() {
 	mime.AddExtensionType(".woff2", "font/woff2")
 	mime.AddExtensionType(".woff", "font/woff")
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	data := idleSnapshot(s.cfg, time.Now())
+	var buf bytes.Buffer
+	if err := s.tmpl.ExecuteTemplate(&buf, "shell.html", data); err != nil {
+		http.Error(w, "template execute failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	if r.URL.Path == "/receiver/static/chassis.css" {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write(s.cssBytes)
+		return
+	}
+
+	staticSub, err := fs.Sub(chassisStaticFS, "static")
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	http.StripPrefix("/receiver/static/", http.FileServer(http.FS(staticSub))).ServeHTTP(w, r)
 }

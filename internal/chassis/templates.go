@@ -29,6 +29,8 @@ var chassisStaticFS embed.FS
 // coupling-by-import. The final cutover spec deduplicates.
 //
 // Chassis-specific helpers:
+//   - htmlComment: emits trusted sentinel comments for composition tests.
+//     html/template strips literal HTML comments from template output.
 //   - pad2: zero-padded two-digit strings for clock display.
 //   - dim: returns the CSS class string for inactive lamps.
 //   - list: constructs a string slice for small template membership probes.
@@ -54,6 +56,9 @@ var templateFuncs = template.FuncMap{
 			return ""
 		}
 		return "dim"
+	},
+	"htmlComment": func(s string) template.HTML {
+		return template.HTML("<!-- " + s + " -->")
 	},
 	"list": func(args ...string) []string { return args },
 }

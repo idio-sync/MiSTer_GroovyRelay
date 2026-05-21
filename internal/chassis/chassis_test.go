@@ -1,7 +1,10 @@
 package chassis
 
 import (
+	"html/template"
 	"mime"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,6 +26,15 @@ func nonZeroConfig() Config {
 		StartedAt: time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC),
 		HostIP:    "10.0.0.5",
 	}
+}
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
 }
 
 func TestNew_ReturnsServerWithValidConfig(t *testing.T) {
@@ -272,6 +284,7 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 		{"replaceAll", `{{replaceAll "a/b" "/" "-"}}`},
 		{"pad2", `{{pad2 5}}`},
 		{"dim", `{{dim true}}`},
+		{"htmlComment", `{{htmlComment "chassis:test"}}`},
 	}
 	for _, p := range probes {
 		_, err := tmpl.New("probe-" + p.name).Parse(p.src)
@@ -314,5 +327,161 @@ func TestPreprocessCSS_LeavesCSSCommentsAlone(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `<=`) {
 		t.Errorf("preprocessCSS escaped <= in CSS comment: %s", got)
+	}
+}
+
+func TestHandleIndex_RendersShell200(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html prefix", got)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`<body class="receiver idle">`,
+		`GROOVY · RELAY`,
+		`<!-- chassis:shell -->`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`/receiver/static/chassis.css?v=test-1.0.0`,
+		`/receiver/static/chassis.js?v=test-1.0.0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleIndex_TemplateErrorReturns500WithoutPartialBody(t *testing.T) {
+	t.Parallel()
+	tmpl := template.Must(template.New("chassis").Parse(`{{define "shell.html"}}partial body {{.MissingField}}{{end}}`))
+	s := &Server{cfg: nonZeroConfig(), tmpl: tmpl}
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(rr.Body.String(), "partial body") {
+		t.Errorf("response leaked partial template output: %q", rr.Body.String())
+	}
+}
+
+func TestHandleStatic_CSS_Served(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Fatalf("Content-Type = %q, want text/css prefix", got)
+	}
+	if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "max-age=31536000") {
+		t.Fatalf("Cache-Control = %q, want max-age=31536000", got)
+	}
+}
+
+func TestHandleStatic_CSS_VersionedFontURLs(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "?v=test-1.0.0") {
+		t.Errorf("CSS missing version query param: %s", body)
+	}
+	if strings.Contains(body, "{{.Version}}") {
+		t.Errorf("CSS contains raw version placeholder: %s", body)
+	}
+}
+
+func TestHandleStatic_UnknownAsset404(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/nonexistent.css", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleStatic_PathTraversalBlocked(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/../config.toml", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusOK {
+		t.Fatal("path traversal returned 200")
+	}
+}
+
+func TestMount_TrailingSlashIndex(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	for _, path := range []string{"/receiver", "/receiver/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Errorf("%s status = %d, want %d", path, rr.Code, http.StatusOK)
+		}
 	}
 }
