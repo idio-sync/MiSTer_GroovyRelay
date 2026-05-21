@@ -573,13 +573,347 @@ body.receiver .masthead .name {
   }
 }
 
-/* Layout placeholders */
+/* ---- 6. VFD + source cluster --------------------------------------- */
+/* Mockup source: receiver-v24.html .vfd, .seg-display, .hw-btn,
+   .source-cluster, and .vfd-source-row rules. */
+body.receiver .vfd-state {
+  display: contents;
+}
 
-/* VFD source row */
+body.receiver.idle .vfd-state--live {
+  display: none;
+}
 
-/* VFD display */
+body.receiver:not(.idle) .vfd-state--idle {
+  display: none;
+}
 
-/* Source cluster */
+body.receiver .vfd-source-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: stretch;
+}
+
+body.receiver .vfd-source-row > .screen-frame,
+body.receiver .vfd-source-row > *,
+body.receiver .source-cluster {
+  min-width: 0;
+}
+
+body.receiver .screen-frame {
+  padding: 4px;
+  background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
+  border: 1px solid #000;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.8),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+body.receiver .screen {
+  position: relative;
+  overflow: hidden;
+  color: var(--vfd);
+  text-shadow: 0 0 3px var(--vfd-glow), 0 0 1px var(--vfd-bright);
+  background: radial-gradient(ellipse at center, oklch(0.14 0.04 175) 0%, oklch(0.08 0.03 175) 80%);
+  border-radius: 2px;
+}
+
+body.receiver .screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 2px, rgba(0, 0, 0, 0.25) 2px 3px),
+    repeating-linear-gradient(90deg, transparent 0 2px, rgba(0, 0, 0, 0.12) 2px 3px);
+  mix-blend-mode: multiply;
+}
+
+body.receiver .screen.vfd::after {
+  background: none;
+}
+
+body.receiver .screen > * {
+  position: relative;
+  z-index: 1;
+}
+
+body.receiver .screen.vfd,
+body.receiver .vfd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  min-height: 110px;
+  padding: 16px 20px 14px;
+  container-type: inline-size;
+  container-name: vfd;
+}
+
+body.receiver .vfd > .vfd-state > div:first-child,
+body.receiver .vfd > div:not(.right-panel):not(.tuning-overlay):not(.lock-flash):not(.self-test-screen) {
+  min-width: 0;
+}
+
+body.receiver .seg-display {
+  position: relative;
+  display: inline-block;
+}
+
+body.receiver .seg-display::before {
+  content: attr(data-ghost);
+  position: absolute;
+  inset: 0;
+  color: var(--vfd-ghost);
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  text-shadow: none;
+  white-space: pre;
+  pointer-events: none;
+  user-select: none;
+}
+
+body.receiver .vfd .title-line {
+  display: block;
+  max-width: 100%;
+  margin-bottom: 8px;
+  overflow: hidden;
+  font-family: 'DSEG14-Classic', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+body.receiver .vfd .marquee-line {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--vfd-dim);
+  font-family: 'DSEG14-Classic', monospace;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+body.receiver .vfd .title-line.seg-display,
+body.receiver .vfd .marquee-line.seg-display {
+  position: relative;
+}
+
+body.receiver .vfd .right-panel {
+  display: grid;
+  gap: 4px;
+  padding-left: 24px;
+  margin-left: -12px;
+  text-align: right;
+  border-left: 1px solid oklch(0.16 0.04 175 / 0.55);
+}
+
+body.receiver .vfd .right-panel .lbl {
+  color: var(--vfd-dim);
+  font: 500 9px 'Inter', sans-serif;
+  letter-spacing: 0.24em;
+  text-shadow: none;
+  text-transform: uppercase;
+}
+
+body.receiver .vfd .right-panel .time-row {
+  display: flex;
+  gap: 28px;
+  align-items: baseline;
+  justify-content: flex-end;
+}
+
+body.receiver .vfd .right-panel .queue-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+}
+
+body.receiver .vfd .right-panel .queue-stack .queue-v {
+  color: var(--vfd);
+  font: 700 28px/1 'DSEG7-Classic', monospace;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 4px var(--vfd-glow), 0 0 1px var(--vfd-bright);
+}
+
+body.receiver .vfd .right-panel .queue-stack .queue-k {
+  color: var(--vfd-dim);
+  font: 600 13px/1.2 'Inter', sans-serif;
+  letter-spacing: 0.22em;
+  text-shadow: none;
+  text-transform: uppercase;
+}
+
+body.receiver .vfd .right-panel .big-time {
+  font-family: 'DSEG7-Classic', monospace;
+  font-size: 38px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+
+body.receiver .vfd .right-panel .freq {
+  color: var(--vfd-dim);
+  font-family: 'DSEG7-Classic', monospace;
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+}
+
+body.receiver .source-cluster {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(108px, 1fr));
+  grid-template-rows: 1fr;
+  gap: 6px;
+  align-items: stretch;
+}
+
+body.receiver .source-cluster .hw-btn {
+  position: relative;
+  min-width: 108px;
+  min-height: 0;
+  padding: 12px 14px 12px 26px;
+  color: #c0c0c4;
+  font: 600 10px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 50%, #1a1a1c 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  transition: background 220ms;
+}
+
+body.receiver .source-cluster .hw-btn::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  width: 5px;
+  height: 5px;
+  background: #1a1a1c;
+  border-radius: 50%;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+  transform: translateY(-50%);
+  transition: background 280ms, box-shadow 280ms;
+}
+
+body.receiver .source-cluster .hw-btn.active {
+  color: var(--vfd);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
+  background: linear-gradient(180deg, #5a5a60 0%, #3a3a3e 50%, #2a2a2e 100%);
+}
+
+body.receiver .source-cluster .hw-btn.lit::before {
+  background: #00ff66;
+  box-shadow: 0 0 5px #00ff66cc;
+}
+
+body.receiver .source-cluster .hw-btn.lit.live::before {
+  animation: rec-pulse 1.6s ease-in-out infinite;
+}
+
+body.receiver.idle .source-cluster .hw-btn {
+  color: var(--vfd-faded);
+}
+
+body.receiver.idle .source-cluster .hw-btn::before {
+  background: #1a1a1c;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+}
+
+body.receiver.idle .source-cluster .hw-btn.active {
+  color: #c0c0c4;
+  text-shadow: none;
+  background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 50%, #1a1a1c 100%);
+}
+
+@container vfd (max-width: 720px) {
+  body.receiver .vfd .right-panel {
+    display: none;
+  }
+}
+
+@container chassis (max-width: 1180px) {
+  body.receiver .vfd-source-row .source-cluster {
+    grid-template-columns: repeat(2, minmax(110px, auto));
+    grid-template-rows: 1fr 1fr;
+  }
+
+  body.receiver .vfd-source-row .source-cluster .hw-btn {
+    padding: 10px 14px 10px 26px;
+  }
+}
+
+@container chassis (max-width: 900px) {
+  body.receiver .vfd-source-row {
+    grid-template-columns: 1fr;
+  }
+
+  body.receiver .vfd-source-row .source-cluster {
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: 1fr;
+  }
+
+  body.receiver .vfd-source-row .source-cluster .hw-btn {
+    min-width: 76px;
+    padding: 7px 10px 7px 20px;
+  }
+}
+
+@container chassis (max-width: 600px) {
+  body.receiver .vfd-source-row .source-cluster {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  body.receiver .vfd-source-row .source-cluster .hw-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+@container chassis (max-width: 420px) {
+  body.receiver .vfd {
+    gap: 12px;
+    padding: 10px 12px 8px;
+  }
+
+  body.receiver .vfd .title-line {
+    font-size: 22px;
+  }
+
+  body.receiver .vfd .marquee-line {
+    font-size: 11px;
+  }
+
+  body.receiver .vfd-source-row .source-cluster {
+    flex-wrap: wrap;
+  }
+
+  body.receiver .vfd-source-row .source-cluster .hw-btn {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    padding: 8px 6px 8px 18px;
+    font-size: 9px;
+  }
+}
 
 /* Meter panel */
 
