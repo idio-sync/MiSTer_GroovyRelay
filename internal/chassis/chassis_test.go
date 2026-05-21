@@ -524,6 +524,33 @@ func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_RendersTransportAndVisualizerAccessibilityHooks(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`<button class="trn" type="button" aria-label="Previous" title="Previous">`,
+		`<button class="trn" type="button" aria-label="Next" title="Next">`,
+		`<button class="trn primary" type="button" aria-label="Pause or resume" title="Pause / Resume">`,
+		`<button class="trn" type="button" aria-label="Stop" title="Stop">`,
+		`<button class="trn" type="button" aria-label="Replay" title="Replay">`,
+		`class="seek-bar" role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"`,
+		`class="hw-btn viz-btn viz-btn--preview" type="button" role="radio" aria-checked="false" aria-disabled="true" disabled`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing transport/visualizer accessibility hook %q", want)
+		}
+	}
+}
+
 func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)

@@ -1885,7 +1885,6 @@ body.receiver .seek-bar {
     inset 0 2px 5px rgba(0,0,0,0.8),
     inset 0 -1px 0 rgba(255,255,255,0.03),
     0 1px 0 rgba(255,255,255,0.04);
-  cursor: pointer;
   overflow: hidden;
 }
 
@@ -2091,13 +2090,20 @@ body.receiver.settings-open .gear-btn {
 
 @container chassis (max-width: 420px) {
   body.receiver .transport-strip {
-    grid-template-columns: 48px auto 1fr auto;
+    grid-template-columns: 48px 1fr auto;
     gap: 6px;
   }
 
+  body.receiver .transport-row {
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+
   body.receiver .trn {
-    width: 48px;
-    height: 44px;
+    flex: 1 1 34px;
+    width: auto;
+    min-width: 34px;
+    height: 36px;
   }
 
   body.receiver .gear-btn {
@@ -2266,8 +2272,9 @@ body.receiver .viz-btn--preview {
   filter: saturate(0.6);
 }
 
-body.receiver .viz-btn--preview:hover {
-  opacity: 0.72;
+body.receiver .viz-btn--preview:hover,
+body.receiver .viz-btn--preview:disabled {
+  opacity: 0.55;
 }
 
 body.receiver .viz-btn--preview .viz-badge {
