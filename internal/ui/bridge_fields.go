@@ -149,7 +149,7 @@ func bridgeFields() []adapters.FieldDef {
 		{
 			Key:        "audio.output_volume",
 			Label:      "Output Volume",
-			Help:       "Global software volume sent to the MiSTer. 0 mutes; 100 is unchanged.",
+			Help:       "Global software volume sent to the MiSTer (0..100). 0 mutes; 100 is unchanged. Linear scale — low values are louder than they look.",
 			Kind:       adapters.KindInt,
 			Default:    100,
 			ApplyScope: adapters.ScopeHotSwap,

@@ -97,6 +97,9 @@ func (s *Server) handlePlaybackVolume(w http.ResponseWriter, r *http.Request) {
 	if saver, ok := s.cfg.BridgeSaver.(OutputVolumeSaver); ok {
 		_, saveErr = saver.SaveOutputVolume(volume)
 	} else {
+		// Fallback for test fakes that don't implement OutputVolumeSaver.
+		// The production *uiserver.BridgeSaver always does, so the
+		// read-modify-write race here is acceptable.
 		next := s.cfg.BridgeSaver.Current()
 		next.Audio.OutputVolume = volume
 		_, saveErr = s.cfg.BridgeSaver.Save(next)

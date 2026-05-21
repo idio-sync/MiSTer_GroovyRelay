@@ -127,6 +127,9 @@ func TestMigrate_FullRoundTrip(t *testing.T) {
 	if s.Bridge.Audio.Channels != 1 {
 		t.Errorf("audio.channels = %d, want 1", s.Bridge.Audio.Channels)
 	}
+	if s.Bridge.Audio.OutputVolume != 100 {
+		t.Errorf("audio.output_volume = %d, want default 100 when absent from legacy config", s.Bridge.Audio.OutputVolume)
+	}
 	if s.Bridge.Video.LZ4Enabled {
 		t.Error("lz4_enabled should have round-tripped as false")
 	}
@@ -139,6 +142,19 @@ func TestMigrate_FullRoundTrip(t *testing.T) {
 	}
 	if s.Bridge.Visualizer.Mode != VisualizerModeRetroAnalyzer {
 		t.Errorf("visualizer.mode = %q, want %q", s.Bridge.Visualizer.Mode, VisualizerModeRetroAnalyzer)
+	}
+}
+
+func TestLoadSectioned_DefaultsOutputVolumeWhenAbsent(t *testing.T) {
+	// sectionedTOML deliberately omits [bridge.audio].output_volume.
+	// The loader must fall back to the defaultBridge() value (100)
+	// so existing deployments don't silently mute after upgrade.
+	s, _, err := loadSectionedFromBytes([]byte(sectionedTOML))
+	if err != nil {
+		t.Fatalf("loadSectionedFromBytes: %v", err)
+	}
+	if s.Bridge.Audio.OutputVolume != 100 {
+		t.Errorf("audio.output_volume = %d, want default 100 when absent from sectioned config", s.Bridge.Audio.OutputVolume)
 	}
 }
 
