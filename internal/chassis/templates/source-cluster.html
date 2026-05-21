@@ -1,0 +1,6 @@
+{{define "source-cluster"}}
+{{htmlComment "chassis:source-cluster"}}
+<div class="source-cluster" role="radiogroup" aria-label="Media source">
+  {{range .Buttons}}<button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}" type="button" role="radio" aria-checked="{{if .Active}}true{{else}}false{{end}}" aria-label="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}" title="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}">{{.Label}}</button>{{end}}
+</div>
+{{end}}

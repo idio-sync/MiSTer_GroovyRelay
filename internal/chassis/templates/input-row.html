@@ -1,0 +1,17 @@
+{{define "input-row"}}
+{{htmlComment "chassis:input-row"}}
+<div class="section-strip input-section">
+  <span class="strip-label">Input</span>
+  <div style="display:flex; gap:6px;">
+    <div class="input-panel" style="flex:1">
+      <label class="glyph" for="paste-input">&#9656;</label>
+      <input class="paste-input" id="paste-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="{{.PastePlaceholder}}">
+      <button class="paste-clear" id="paste-clear" type="button" aria-label="Clear input" style="display:none;">&times;</button>
+      <span class="chip" id="paste-chip">{{.DetectedKind}}</span>
+    </div>
+    <button class="cast-btn{{if not .CastEnabled}} disabled{{end}}" id="cast-btn" type="button"{{if not .CastEnabled}} disabled{{end}}>CAST</button>
+    <button class="upload-btn" id="upload-btn" type="button">&uarr; .TORRENT</button>
+    <input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" style="display:none;">
+  </div>
+</div>
+{{end}}

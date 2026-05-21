@@ -1,0 +1,155 @@
+{{define "meter"}}
+{{htmlComment "chassis:meter"}}
+<div class="meter-source-row">
+  <div class="screen-frame meter-screen-frame">
+    <div class="screen meter-screen meter-screen--compact">
+      <div class="meter-source-strip meter-row">
+        <div class="audio-grp">
+          <span class="grp codec-grp">
+            <span class="key">AUDIO IN</span>
+            <span class="val">{{.SourceStrip.AudioIn}}</span>
+          </span>
+          <span class="grp">
+            <span class="key">AUDIO OUT</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~ ~ ~~~</span><span class="seg-text">{{.SourceStrip.AudioOut}}</span></span>
+          </span>
+        </div>
+        <div class="video-grp">
+          <span class="grp">
+            <span class="key">SRC</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~ ~ ~~ ~ ~~~~</span><span class="seg-text">{{.SourceStrip.Src}}</span></span>
+          </span>
+          <span class="grp">
+            <span class="key">CROP</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~ ~~~~~~</span><span class="seg-text">{{.SourceStrip.Crop}}</span></span>
+          </span>
+        </div>
+        <div class="net-grp">
+          <span class="grp">
+            <span class="key">HLS BUF</span>
+            <span class="buf-bar" title="HLS segments cached">
+              {{range until 12}}<span class="seg"></span>{{end}}
+            </span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~</span><span class="seg-text">{{.SourceStrip.HLSBuffer}}</span></span>
+          </span>
+          <span class="grp">
+            <span class="key">DROPS</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.SourceStrip.Drops}}</span></span>
+            <span style="font:600 9px 'Inter',sans-serif;letter-spacing:0.2em;color:var(--vfd-faded);text-shadow:none;">%</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="meter-mid-row meter-row">
+        <div class="audio-grp">
+          <div class="spectrum" id="spectrum" aria-hidden="true">
+            {{range $i, $_ := until 6}}
+            <div class="spectrum-band">
+              <div class="stack">
+                {{range until 8}}<div class="seg"></div>{{end}}
+                <span class="peak-dot"></span>
+              </div>
+              <div class="lbl">{{if eq $i 0}}60{{else if eq $i 1}}250{{else if eq $i 2}}1K{{else if eq $i 3}}4K{{else if eq $i 4}}8K{{else}}16K{{end}}</div>
+            </div>
+            {{end}}
+          </div>
+          <div class="gonio-wrap aux-scope" title="Stereo phase scope (goniometer) &middot; L vs R">
+            <div class="gonio" id="gonio">
+              <canvas id="gonio-canvas" width="172" height="172" role="img" aria-labelledby="gonio-lbl">Stereo phase scope</canvas>
+              <span class="lbl t">+</span>
+              <span class="lbl b">&minus;</span>
+              <span class="lbl l">L</span>
+              <span class="lbl r">R</span>
+            </div>
+            <span class="gonio-lbl aux-lbl" id="gonio-lbl">PHASE &middot; X/Y</span>
+          </div>
+        </div>
+
+        <div class="video-grp">
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.BitrateMbps}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">Mbps</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.FreqKHz}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">kHz</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">888</span><span class="seg-text">{{.MidRow.Mode}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MODE</span></div></div>
+          <div class="std-lamps std-lamps--stack" title="Output analog standard">
+            <span class="std-ind{{if .MidRow.StandardNTSC}} active{{end}} seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">NTSC</span></span>
+            <span class="std-ind{{if .MidRow.StandardPAL}} active{{end}} seg-display"><span class="seg-ghost" aria-hidden="true">~~~</span><span class="seg-text">PAL</span></span>
+          </div>
+          <div class="field-flip" title="Interlace field interleave &middot; field order &middot; lock">
+            <div class="row"><span class="dot odd"></span><span class="lbl">ODD</span></div>
+            <div class="row"><span class="dot even"></span><span class="lbl">EVEN</span></div>
+            <span class="lock">{{.MidRow.FieldFlip}}</span>
+          </div>
+        </div>
+
+        <div class="net-grp">
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.ThroughputMBs}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MB/S</span></div></div>
+          <div class="throughput-wrap aux-scope" title="Network throughput &middot; last 30 seconds">
+            <div class="aux-screen">
+              <canvas id="throughput-canvas" width="220" height="120" role="img" aria-labelledby="throughput-lbl">Network throughput graph</canvas>
+            </div>
+            <span class="aux-lbl" id="throughput-lbl">NET &middot; {{.MidRow.ThroughputMBs}} MB/S</span>
+          </div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.MSAck}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">MS ACK</span></div></div>
+          <div class="ack-wrap aux-scope" title="ACK latency &middot; last 128 frames">
+            <div class="aux-screen">
+              <canvas id="ack-canvas" width="220" height="120" role="img" aria-labelledby="ack-lbl">ACK latency graph</canvas>
+            </div>
+            <span class="aux-lbl" id="ack-lbl">ACK &middot; {{.MidRow.MSAck}} MS</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="meter-readout-line meter-row">
+        <div class="audio-grp">
+          <div class="tr-vu" title="Audio out &middot; L/R level &middot; stereo phase correlation &middot; LUFS short-term loudness">
+            <div class="vu-lr">
+              <span class="ch-lbl">L</span>
+              <span class="ch-bar">
+                {{range $i, $_ := until 12}}<span class="s {{if lt $i 6}}g{{else if lt $i 10}}y{{else}}r{{end}}{{if lt $i $.Readout.LRBars}} on{{end}}"></span>{{end}}
+              </span>
+              <span class="ch-lbl">R</span>
+              <span class="ch-bar">
+                {{range $i, $_ := until 12}}<span class="s {{if lt $i 6}}g{{else if lt $i 10}}y{{else}}r{{end}}{{if lt $i $.Readout.LRBars}} on{{end}}"></span>{{end}}
+              </span>
+            </div>
+            <span class="vu-sep"></span>
+            <div class="vu-phase" title="Stereo phase correlation &middot; -1 anti-phase / 0 mono / +1 in phase">
+              <span class="lbl">PHASE</span>
+              <div class="bar"><div class="needle" id="phase-needle" data-phase="{{.Readout.PhaseNeedle}}"></div></div>
+              <div class="scale"><span>-1</span><span>0</span><span>+1</span></div>
+            </div>
+            <span class="vu-sep"></span>
+            <div class="vu-lufs" title="Short-term loudness (EBU R128 &middot; 3 s window)">
+              <span class="lbl">LUFS &middot; ST</span>
+              <span class="val seg-display" id="lufs-val"><span class="seg-ghost" aria-hidden="true">~88.8</span><span class="seg-text">{{.Readout.LUFS}}</span></span>
+            </div>
+          </div>
+        </div>
+        <div class="video-grp">
+          <span class="grp">
+            <span class="key">OUTPUT</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~~ ~~~~ ~ ~~~~~~</span><span class="seg-text">{{.Readout.Output}}</span></span>
+          </span>
+          <span class="grp">
+            <span class="key">ASPECT</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~ ~~~~~~~~~~</span><span class="seg-text">{{.Readout.Aspect}}</span></span>
+          </span>
+        </div>
+        <div class="net-grp">
+          <span class="grp">
+            <span class="key">PIPE</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~</span><span class="seg-text">{{.Readout.Pipe}}</span></span>
+          </span>
+          <span class="grp speed-grp">
+            <span class="key">SPEED</span>
+            <span class="val seg-display locked"><span class="seg-ghost" aria-hidden="true">8.88~ ~~~~</span><span class="seg-text">{{.Readout.Speed}}</span></span>
+          </span>
+          <span class="grp link-grp">
+            <span class="key">LINK</span>
+            <span class="val seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~ ~~~~~~~</span><span class="seg-text">{{.Readout.Link}}</span></span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}

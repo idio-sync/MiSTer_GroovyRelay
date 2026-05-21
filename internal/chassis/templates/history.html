@@ -1,0 +1,20 @@
+{{define "history"}}
+{{htmlComment "chassis:history"}}
+<div class="history-section section-strip">
+  <span class="strip-label">History</span>
+  <div>
+    {{if .Rows}}
+      {{range .Rows}}
+      <div class="history-row">
+        <div class="artwork">{{.Artwork}}</div>
+        <div class="title">{{.Title}}</div>
+        <div class="source">{{.Source}}</div>
+        <div class="when">{{.When}}</div>
+      </div>
+      {{end}}
+    {{else}}
+      <div class="history-empty">{{.EmptyMessage}}</div>
+    {{end}}
+  </div>
+</div>
+{{end}}

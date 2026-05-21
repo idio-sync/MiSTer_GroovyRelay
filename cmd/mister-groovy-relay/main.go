@@ -30,6 +30,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -256,10 +257,11 @@ func main() {
 		}
 	}
 
-	// Shared HTTP mux: Plex Companion handlers + Settings UI. One
-	// listener, one port (bridge.ui.http_port), disjoint path prefixes
-	// (design §7.1). Plex adapter mounts /resources + /player/* ;
-	// ui.Server mounts /ui/* and the root redirect.
+	// Shared HTTP mux: Plex Companion handlers, Settings UI, and receiver
+	// chassis routes. One listener, one port (bridge.ui.http_port),
+	// disjoint path prefixes (design §7.1). Plex adapter mounts
+	// /resources + /player/*; ui.Server mounts /ui/* and the root
+	// redirect; chassis.Server mounts /receiver/*.
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
 
@@ -309,6 +311,19 @@ func main() {
 		dieFriendly("ui init", err)
 	}
 	uiSrv.Mount(mux)
+
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:    sec.Bridge,
+		Manager:   coreMgr,
+		Registry:  reg,
+		Version:   version,
+		StartedAt: startedAt,
+		HostIP:    hostIP,
+	})
+	if err != nil {
+		dieFriendly("chassis init", err)
+	}
+	chassisSrv.Mount(mux)
 
 	addr := fmt.Sprintf(":%d", sec.Bridge.UI.HTTPPort)
 	httpSrv := &http.Server{

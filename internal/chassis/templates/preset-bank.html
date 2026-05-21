@@ -1,0 +1,23 @@
+{{define "preset-bank"}}
+{{htmlComment "chassis:preset-bank"}}
+<div class="preset-strip preset-section">
+  <span class="strip-label">Presets</span>
+  <div>
+    <div class="preset-header">
+      <span class="title" id="preset-mode-label">{{.ModeLabel}}</span>
+      <span class="count" id="preset-count">{{.Count}}</span>
+    </div>
+    <div class="preset-bank">
+      {{range $i, $slot := .Slots}}
+      <button class="preset{{if not $slot.Filled}} empty{{end}}" type="button">
+        <div class="num">{{pad2 (inc $i)}}</div>
+        {{if $slot.Filled}}
+        <div class="name">{{$slot.Title}}</div>
+        <div class="badge">{{$slot.Subtitle}}</div>
+        {{end}}
+      </button>
+      {{end}}
+    </div>
+  </div>
+</div>
+{{end}}

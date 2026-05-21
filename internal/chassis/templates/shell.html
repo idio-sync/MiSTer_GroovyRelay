@@ -1,0 +1,31 @@
+{{define "shell.html"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.BrandName}}</title>
+  <link rel="stylesheet" href="/receiver/static/chassis.css?v={{.Version}}">
+  <script defer src="/receiver/static/chassis.js?v={{.Version}}"></script>
+</head>
+<body class="receiver {{.State}}">
+  {{htmlComment "chassis:shell"}}
+  <div class="receiver">
+    <span class="screw tl" aria-hidden="true"></span>
+    <span class="screw tr" aria-hidden="true"></span>
+    <span class="screw bl" aria-hidden="true"></span>
+    <span class="screw br" aria-hidden="true"></span>
+    {{template "status-bar" .HostInfo}}
+    {{template "masthead" .BrandName}}
+    <div class="receiver-inner">
+      {{template "vfd-source-row" .}}
+      {{template "meter" .Meter}}
+      {{template "transport" .Transport}}
+      {{template "visualizer-bank" .Visualizer}}
+      {{template "input-row" .Input}}
+      {{template "preset-bank" .Presets}}
+      {{template "history" .History}}
+    </div>
+    {{template "settings-drawer" .Settings}}
+  </div>
+</body>
+</html>{{end}}
