@@ -330,6 +330,13 @@ func TestDefaultBridge_DeltaLZ4Enabled(t *testing.T) {
 	}
 }
 
+func TestDefaultBridge_VisualizerMode(t *testing.T) {
+	b := defaultBridge()
+	if b.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+		t.Errorf("default visualizer mode = %q, want %q", b.Visualizer.Mode, VisualizerModeRetroAnalyzer)
+	}
+}
+
 func TestSectioned_RoundTripDeltaLZ4Enabled(t *testing.T) {
 	const input = `
 [bridge.video]
@@ -341,6 +348,122 @@ delta_lz4_enabled = false
 	}
 	if s.Bridge.Video.DeltaLZ4Enabled {
 		t.Error("DeltaLZ4Enabled = true, want decoded false")
+	}
+}
+
+func TestNormalizeVisualizerMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", VisualizerModeRetroAnalyzer},
+		{"   ", VisualizerModeRetroAnalyzer},
+		{" retro_analyzer ", VisualizerModeRetroAnalyzer},
+		{"oscilloscope_wave", VisualizerModeOscilloscopeWave},
+		{"stereo_scope", VisualizerModeStereoScope},
+	}
+	for _, c := range cases {
+		if got := NormalizeVisualizerMode(c.in); got != c.want {
+			t.Errorf("NormalizeVisualizerMode(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestSupportedVisualizerModes_ReturnsDefensiveCopy(t *testing.T) {
+	got := SupportedVisualizerModes()
+	want := []string{
+		VisualizerModeRetroAnalyzer,
+		VisualizerModeOscilloscopeWave,
+		VisualizerModeStereoScope,
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("SupportedVisualizerModes() = %#v, want %#v", got, want)
+	}
+
+	got[0] = "mutated"
+	again := SupportedVisualizerModes()
+	if again[0] != VisualizerModeRetroAnalyzer {
+		t.Errorf("SupportedVisualizerModes returned shared backing array; got first value %q", again[0])
+	}
+}
+
+func TestSectioned_Validate_VisualizerMode(t *testing.T) {
+	valid := []string{
+		"",
+		VisualizerModeRetroAnalyzer,
+		VisualizerModeOscilloscopeWave,
+		VisualizerModeStereoScope,
+	}
+	for _, mode := range valid {
+		t.Run("valid/"+mode, func(t *testing.T) {
+			s := validSectioned()
+			s.Bridge.Visualizer.Mode = mode
+			if err := s.Validate(); err != nil {
+				t.Fatalf("visualizer mode %q: expected OK, got %v", mode, err)
+			}
+			if s.Bridge.Visualizer.Mode != NormalizeVisualizerMode(mode) {
+				t.Errorf("visualizer mode normalized to %q, want %q", s.Bridge.Visualizer.Mode, NormalizeVisualizerMode(mode))
+			}
+		})
+	}
+
+	invalid := []string{"retro", "milkdrop", "spectrogram", "RETRO_ANALYZER"}
+	for _, mode := range invalid {
+		t.Run("invalid/"+mode, func(t *testing.T) {
+			s := validSectioned()
+			s.Bridge.Visualizer.Mode = mode
+			err := s.Validate()
+			if err == nil {
+				t.Fatalf("visualizer mode %q: expected validation error, got nil", mode)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "bridge.visualizer.mode") {
+				t.Errorf("error %q should mention bridge.visualizer.mode", msg)
+			}
+			for _, supported := range SupportedVisualizerModes() {
+				if !strings.Contains(msg, supported) {
+					t.Errorf("error %q should mention supported value %q", msg, supported)
+				}
+			}
+		})
+	}
+}
+
+func TestExampleTOML_ContainsVisualizerAndValidates(t *testing.T) {
+	data := ExampleTOML()
+	text := string(data)
+	if !strings.Contains(text, "[bridge.visualizer]") {
+		t.Fatalf("example TOML missing [bridge.visualizer]:\n%s", text)
+	}
+	if !strings.Contains(text, `mode = "retro_analyzer"`) {
+		t.Fatalf("example TOML missing explicit retro visualizer mode:\n%s", text)
+	}
+
+	s, _, err := loadSectionedFromBytes(data)
+	if err != nil {
+		t.Fatalf("load example TOML: %v", err)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("validate example TOML: %v", err)
+	}
+}
+
+func TestSectioned_MissingVisualizerDefaultsToRetro(t *testing.T) {
+	const input = `
+[bridge.mister]
+host = "192.168.1.42"
+port = 32100
+source_port = 32101
+`
+	s, _, err := loadSectionedFromBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("loadSectionedFromBytes: %v", err)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if s.Bridge.Visualizer.Mode != VisualizerModeRetroAnalyzer {
+		t.Errorf("visualizer mode = %q, want %q", s.Bridge.Visualizer.Mode, VisualizerModeRetroAnalyzer)
 	}
 }
 

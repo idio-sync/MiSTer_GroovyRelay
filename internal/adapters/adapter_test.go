@@ -31,14 +31,37 @@ func TestStubAdapter_Conforms(t *testing.T) {
 func TestApplyScope_MaxWins(t *testing.T) {
 	cases := []struct{ a, b, want ApplyScope }{
 		{ScopeHotSwap, ScopeHotSwap, ScopeHotSwap},
+		{ScopeHotSwap, ScopeNextCast, ScopeNextCast},
 		{ScopeHotSwap, ScopeRestartCast, ScopeRestartCast},
+		{ScopeNextCast, ScopeHotSwap, ScopeNextCast},
+		{ScopeNextCast, ScopeRestartCast, ScopeRestartCast},
 		{ScopeRestartCast, ScopeHotSwap, ScopeRestartCast},
+		{ScopeRestartCast, ScopeNextCast, ScopeRestartCast},
 		{ScopeRestartCast, ScopeRestartBridge, ScopeRestartBridge},
+		{ScopeNextCast, ScopeRestartBridge, ScopeRestartBridge},
 		{ScopeRestartBridge, ScopeHotSwap, ScopeRestartBridge},
 	}
 	for _, c := range cases {
 		if got := MaxScope(c.a, c.b); got != c.want {
 			t.Errorf("MaxScope(%v,%v) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestApplyScope_String(t *testing.T) {
+	cases := []struct {
+		scope ApplyScope
+		want  string
+	}{
+		{ScopeHotSwap, "hot-swap"},
+		{ScopeNextCast, "next-cast"},
+		{ScopeRestartCast, "restart-cast"},
+		{ScopeRestartBridge, "restart-bridge"},
+		{ApplyScope(99), "unknown"},
+	}
+	for _, c := range cases {
+		if got := c.scope.String(); got != c.want {
+			t.Errorf("%v.String() = %q, want %q", c.scope, got, c.want)
 		}
 	}
 }

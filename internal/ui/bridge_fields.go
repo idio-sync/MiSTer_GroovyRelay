@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -144,6 +145,18 @@ func bridgeFields() []adapters.FieldDef {
 			Default:    "2",
 			ApplyScope: adapters.ScopeRestartCast,
 			Section:    "Audio",
+		},
+
+		// ---- Visualizer ----
+		{
+			Key:        "visualizer.mode",
+			Label:      "Mode",
+			Help:       "Music visualizer mode for the next music cast.",
+			Kind:       adapters.KindEnum,
+			Enum:       config.SupportedVisualizerModes(),
+			Default:    config.VisualizerModeRetroAnalyzer,
+			ApplyScope: adapters.ScopeNextCast,
+			Section:    "Visualizer",
 		},
 
 		// ---- Server ----

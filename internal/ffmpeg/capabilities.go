@@ -32,6 +32,22 @@ func filterListContains(output, filterName string) bool {
 
 var filterAvailableFn = FilterAvailable
 
+func CheckVisualizerFilters(ctx context.Context, ffmpegPath string, mode VisualizerMode) error {
+	if !isSupportedVisualizerMode(mode) {
+		return fmt.Errorf("unsupported visualizer mode %q", mode)
+	}
+	for _, filter := range RequiredVisualizerFilters(mode) {
+		ok, err := filterAvailableFn(ctx, ffmpegPath, filter)
+		if err != nil {
+			return fmt.Errorf("check visualizer filter %q: %w", filter, err)
+		}
+		if !ok {
+			return fmt.Errorf("required visualizer filter %q unavailable for mode %q", filter, mode)
+		}
+	}
+	return nil
+}
+
 func DrawTextUsable(ctx context.Context, ffmpegPath string) (bool, error) {
 	if ffmpegPath == "" {
 		ffmpegPath = "ffmpeg"
@@ -64,6 +80,20 @@ func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpe
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+
+	requiredOK := false
+	if isSupportedVisualizerMode(s.Visualizer.Mode) {
+		requiredOK = true
+		for _, filter := range RequiredVisualizerFilters(s.Visualizer.Mode) {
+			ok, err := filterAvailableFn(checkCtx, ffmpegPath, filter)
+			if err != nil || !ok {
+				requiredOK = false
+				break
+			}
+		}
+	}
+	s.Visualizer.RequiredFiltersAvailable = requiredOK
+
 	ok, err := filterAvailableFn(checkCtx, ffmpegPath, "drawtext")
 	if err == nil && ok {
 		ok, err = drawTextUsableFn(checkCtx, ffmpegPath)

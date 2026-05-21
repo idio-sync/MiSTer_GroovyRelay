@@ -136,6 +136,12 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	candidate := &config.Sectioned{Bridge: newCfg}
+	if err := candidate.Validate(); err != nil {
+		return 0, fmt.Errorf("validate bridge config: %w", err)
+	}
+	newCfg = candidate.Bridge
+
 	old := r.sec.Bridge
 	changed := diffBridgeConfig(old, newCfg)
 
@@ -212,17 +218,13 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	// Apply per scope.
 	switch scope {
 	case adapters.ScopeHotSwap:
-		if containsStr(changed, "video.interlace_field_order") {
-			if err := r.core.SetInterlaceFieldOrder(newCfg.Video.InterlaceFieldOrder); err != nil {
-				return scope, fmt.Errorf("interlace hot-swap: %w", err)
-			}
+		if err := r.applyHotSwapSideEffects(changed, newCfg); err != nil {
+			return scope, err
 		}
-		if containsStr(changed, "logging.debug") {
-			if newCfg.Logging.Debug {
-				logging.SetLevel("debug")
-			} else {
-				logging.SetLevel("info")
-			}
+
+	case adapters.ScopeNextCast:
+		if err := r.applyHotSwapSideEffects(changed, newCfg); err != nil {
+			return scope, err
 		}
 
 	case adapters.ScopeRestartCast:
@@ -244,6 +246,22 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 		return scope, dropErr
 	}
 	return scope, nil
+}
+
+func (r *BridgeSaver) applyHotSwapSideEffects(changed []string, newCfg config.BridgeConfig) error {
+	if containsStr(changed, "video.interlace_field_order") {
+		if err := r.core.SetInterlaceFieldOrder(newCfg.Video.InterlaceFieldOrder); err != nil {
+			return fmt.Errorf("interlace hot-swap: %w", err)
+		}
+	}
+	if containsStr(changed, "logging.debug") {
+		if newCfg.Logging.Debug {
+			logging.SetLevel("debug")
+		} else {
+			logging.SetLevel("info")
+		}
+	}
+	return nil
 }
 
 // notifyVideoConfigSubscribers fans the new modeline name out to every adapter
@@ -371,6 +389,9 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Audio.Channels != newCfg.Audio.Channels {
 		keys = append(keys, "audio.channels")
 	}
+	if oldCfg.Visualizer.Mode != newCfg.Visualizer.Mode {
+		keys = append(keys, "visualizer.mode")
+	}
 	if oldCfg.MiSTer.Host != newCfg.MiSTer.Host {
 		keys = append(keys, "mister.host")
 	}
@@ -430,6 +451,8 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 
 func scopeForBridgeField(key string) adapters.ApplyScope {
 	switch key {
+	case "visualizer.mode":
+		return adapters.ScopeNextCast
 	case "video.interlace_field_order":
 		return adapters.ScopeHotSwap
 	case "mister.ssh_user", "mister.ssh_password":

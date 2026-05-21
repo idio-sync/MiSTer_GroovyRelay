@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -54,7 +55,7 @@ func TestBuildBridgeSections_OrdersBySectionOrder(t *testing.T) {
 
 	// Pre-existing bridge fields all have SectionOrder=0, so they
 	// appear in registration order. Confirm that order survives.
-	wantPrefix := []string{"Network", "Video", "Audio", "Server", "External Tools", "MiSTer Control"}
+	wantPrefix := []string{"Network", "Video", "Audio", "Visualizer", "Server", "External Tools", "MiSTer Control"}
 	if len(got) < len(wantPrefix) {
 		t.Fatalf("got %d sections, want at least %d", len(got), len(wantPrefix))
 	}
@@ -195,6 +196,57 @@ func TestBridgeLookup_HLSBufferValues(t *testing.T) {
 	if !bridgeLookupBool("hls_buffer.enabled", cur) {
 		t.Error("bridgeLookupBool(hls_buffer.enabled) = false, want true")
 	}
+}
+
+func TestBridgeFields_HasVisualizerMode(t *testing.T) {
+	fields := bridgeFields()
+	var found *adapters.FieldDef
+	for i := range fields {
+		if fields[i].Key == "visualizer.mode" {
+			found = &fields[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("visualizer.mode not found in bridgeFields()")
+	}
+	if found.Label != "Mode" {
+		t.Errorf("label = %q, want Mode", found.Label)
+	}
+	if found.Help != "Music visualizer mode for the next music cast." {
+		t.Errorf("help = %q", found.Help)
+	}
+	if found.Section != "Visualizer" {
+		t.Errorf("section = %q, want Visualizer", found.Section)
+	}
+	if found.Kind != adapters.KindEnum {
+		t.Errorf("kind = %v, want KindEnum", found.Kind)
+	}
+	if !reflect.DeepEqual(found.Enum, config.SupportedVisualizerModes()) {
+		t.Errorf("enum = %v, want %v", found.Enum, config.SupportedVisualizerModes())
+	}
+	if found.Default != config.VisualizerModeRetroAnalyzer {
+		t.Errorf("default = %v, want %q", found.Default, config.VisualizerModeRetroAnalyzer)
+	}
+	if found.ApplyScope != adapters.ScopeNextCast {
+		t.Errorf("scope = %v, want ScopeNextCast", found.ApplyScope)
+	}
+}
+
+func TestBuildBridgeSections_NormalizesEmptyVisualizerMode(t *testing.T) {
+	sections := buildBridgeSections(config.BridgeConfig{}, nil)
+	for _, sec := range sections {
+		for _, row := range sec.Rows {
+			if row.Key != "visualizer.mode" {
+				continue
+			}
+			if row.StringValue != config.VisualizerModeRetroAnalyzer {
+				t.Fatalf("visualizer.mode StringValue = %q, want %q", row.StringValue, config.VisualizerModeRetroAnalyzer)
+			}
+			return
+		}
+	}
+	t.Fatal("visualizer.mode row not found")
 }
 
 func TestRowFor_KindAction(t *testing.T) {

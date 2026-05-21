@@ -582,8 +582,11 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 	if got.MediaKind != core.MediaKindMusic {
 		t.Fatalf("MediaKind = %q, want music", got.MediaKind)
 	}
+	// Plex stays neutral about the user's visualizer choice. It supplies the
+	// legacy compatibility mode here; core.Manager resolves the configured
+	// bridge visualizer mode when the session starts.
 	if !got.Visualizer.Enabled || got.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
-		t.Fatalf("Visualizer = %+v", got.Visualizer)
+		t.Fatalf("Visualizer = %+v, want enabled compatibility retro analyzer", got.Visualizer)
 	}
 	if got.Title != "Controller Title" {
 		t.Fatalf("Title = %q, want controller title", got.Title)

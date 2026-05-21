@@ -72,12 +72,14 @@ func (s State) String() string {
 
 // ApplyScope ranks how disruptive a config change is. The save path
 // computes the max across changed fields and dispatches accordingly
-// (hot-swap inside the live stream, drop the active cast, or restart
-// the bridge listener). Higher int = more disruptive; never reorder.
+// (hot-swap inside the live stream, apply on next cast, drop the active
+// cast, or restart the bridge listener). Higher int = more disruptive;
+// never reorder.
 type ApplyScope int
 
 const (
 	ScopeHotSwap ApplyScope = iota
+	ScopeNextCast
 	ScopeRestartCast
 	ScopeRestartBridge
 )
@@ -86,6 +88,8 @@ func (s ApplyScope) String() string {
 	switch s {
 	case ScopeHotSwap:
 		return "hot-swap"
+	case ScopeNextCast:
+		return "next-cast"
 	case ScopeRestartCast:
 		return "restart-cast"
 	case ScopeRestartBridge:

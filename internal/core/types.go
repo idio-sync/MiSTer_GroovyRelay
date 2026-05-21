@@ -26,7 +26,9 @@ func NormalizeMediaKind(k MediaKind) MediaKind {
 type VisualizerMode string
 
 const (
-	VisualizerModeRetroAnalyzer VisualizerMode = "retro_analyzer"
+	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
+	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
+	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
 )
 
 type VisualizerMetadata struct {

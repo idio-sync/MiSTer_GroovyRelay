@@ -4,7 +4,7 @@
 
 A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
-Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. Running on a different host adds networking overhead and is slightly less stable (but I'm working on it). 
+Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. Running on a different host adds networking overhead and is slightly less stable (but I'm working on it).
 
 ## Cast Sources
 - Plex
@@ -16,6 +16,23 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Torrent streaming (uploaded .torrent files and magnet links)
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming channels
+
+## Music visualizer modes
+
+Plex and Jellyfin music casts automatically render a CRT visualizer for audio-only items. The adapters provide track metadata and a compatibility visualizer request, while the bridge applies the global visualizer mode when each music cast starts.
+
+Set the global mode in `config.toml`:
+
+```toml
+[bridge.visualizer]
+mode = "retro_analyzer"
+```
+
+Supported modes are `retro_analyzer`, `oscilloscope_wave`, and `stereo_scope`.
+
+Changing only the visualizer mode does not interrupt the current cast; the new mode applies to the next music cast.
+
+**Note:** A `radial_spectrum` mode was prototyped but deferred from v1; the lightweight FFmpeg polar transform did not produce a satisfactory circular display. It may return in a future release.
 
 ## Hardware requirements
 

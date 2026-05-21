@@ -54,6 +54,30 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	}
 }
 
+func TestParseBridgeForm_VisualizerMode(t *testing.T) {
+	form := url.Values{}
+	form.Set("mister.host", "192.168.1.42")
+	form.Set("mister.port", "32100")
+	form.Set("mister.source_port", "32101")
+	form.Set("video.modeline", "NTSC_480i")
+	form.Set("video.interlace_field_order", "bff")
+	form.Set("video.aspect_mode", "auto")
+	form.Set("audio.sample_rate", "48000")
+	form.Set("audio.channels", "2")
+	form.Set("ui.http_port", "32500")
+	form.Set("data_dir", "/config")
+	form.Set("visualizer.mode", config.VisualizerModeOscilloscopeWave)
+	addHLSBufferFormDefaults(form)
+
+	got, err := parseBridgeForm(form)
+	if err != nil {
+		t.Fatalf("parseBridgeForm: %v", err)
+	}
+	if got.Visualizer.Mode != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("Visualizer.Mode = %q, want %q", got.Visualizer.Mode, config.VisualizerModeOscilloscopeWave)
+	}
+}
+
 func TestParseBridgeForm_BadInt(t *testing.T) {
 	form := url.Values{}
 	form.Set("mister.host", "192.168.1.42")

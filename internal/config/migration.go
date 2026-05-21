@@ -119,6 +119,9 @@ func Migrate(legacy []byte) ([]byte, error) {
 				SampleRate: old.AudioSampleRate,
 				Channels:   old.AudioChannels,
 			},
+			Visualizer: VisualizerConfig{
+				Mode: VisualizerModeRetroAnalyzer,
+			},
 			MiSTer: MisterConfig{
 				Host:       old.MisterHost,
 				Port:       old.MisterPort,
@@ -270,6 +273,9 @@ func defaultBridge() BridgeConfig {
 		Audio: AudioConfig{
 			SampleRate: d.AudioSampleRate,
 			Channels:   d.AudioChannels,
+		},
+		Visualizer: VisualizerConfig{
+			Mode: VisualizerModeRetroAnalyzer,
 		},
 		MiSTer: MisterConfig{
 			Port:        d.MisterPort,
