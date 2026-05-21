@@ -140,6 +140,80 @@ func TestChassisCSS_HistoryRowsDoNotAdvertiseMissingInteractivity(t *testing.T) 
 	}
 }
 
+func TestChassisCSS_Task23IdleLiveStateOverrideContracts(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"/* ---- 14. Idle / live state overrides ---- */",
+		"body.receiver.idle .history-row.last-cast",
+		"body.receiver.idle .history-row.last-cast .title",
+		"body.receiver.idle .history-row.last-cast .name",
+		"body.receiver.idle .aux-lbl",
+		"body.receiver.idle .aux-screen",
+		"body.receiver.browse-open .preset-header .browse-btn",
+		"body.receiver.browse-open .preset-header .browse-btn::before",
+		"body.receiver.browse-open .catalog-drawer",
+		"body.receiver.browse-open .catalog-browser",
+		"body.receiver.catalog-scanning .vfd::after",
+		"@keyframes scan-blink",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("chassis.css missing Task 23 state override contract %q", want)
+		}
+	}
+
+	lastCastRule := cssRuleBlock(t, text, "body.receiver.idle .history-row.last-cast")
+	if !strings.Contains(lastCastRule, "background: transparent;") {
+		t.Fatalf("idle last-cast history rule must clear the active background: %s", lastCastRule)
+	}
+
+	scanRule := cssRuleBlock(t, text, "body.receiver.catalog-scanning .vfd::after")
+	for _, want := range []string{
+		"CATALOG SCAN",
+		"animation: scan-blink",
+		"pointer-events: none;",
+	} {
+		if !strings.Contains(scanRule, want) {
+			t.Fatalf("catalog scan rule missing %q: %s", want, scanRule)
+		}
+	}
+}
+
+func TestChassisCSS_CatalogScanHonorsReducedMotionCascade(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	baseRule := "body.receiver.catalog-scanning .vfd::after"
+	baseIdx := strings.Index(text, baseRule)
+	if baseIdx == -1 {
+		t.Fatalf("chassis.css missing %q", baseRule)
+	}
+	baseAnimationIdx := strings.Index(text[baseIdx:], "animation: scan-blink")
+	if baseAnimationIdx == -1 {
+		t.Fatalf("chassis.css missing scan-blink animation in %q rule", baseRule)
+	}
+	afterScanRule := text[baseIdx+baseAnimationIdx:]
+	reduceIdx := strings.Index(afterScanRule, "@media (prefers-reduced-motion: reduce)")
+	if reduceIdx == -1 {
+		t.Fatalf("chassis.css must place a reduced-motion override after %q so it wins the cascade", baseRule)
+	}
+	overrideIdx := strings.Index(afterScanRule[reduceIdx:], baseRule)
+	if overrideIdx == -1 {
+		t.Fatalf("reduced-motion block after %q must override the catalog scan animation", baseRule)
+	}
+	overrideSnippet := afterScanRule[reduceIdx+overrideIdx:]
+	if !strings.Contains(overrideSnippet, "animation: none;") || !strings.Contains(overrideSnippet, "opacity: 0;") {
+		t.Fatalf("reduced-motion override for %q must set animation: none and opacity: 0", baseRule)
+	}
+}
+
 func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

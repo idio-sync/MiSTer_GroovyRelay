@@ -3589,3 +3589,91 @@ body.receiver .settings-placeholder {
     transition: none;
   }
 }
+
+/* ---- 14. Idle / live state overrides ---- */
+body.receiver.idle .history-row.last-cast {
+  background: transparent;
+}
+
+body.receiver.idle .history-row.last-cast .title,
+body.receiver.idle .history-row.last-cast .name {
+  color: oklch(0.82 0.18 175);
+  text-shadow: 0 0 2px oklch(0.78 0.18 175 / 0.45);
+}
+
+body.receiver.idle .aux-lbl {
+  color: oklch(0.32 0.04 175 / 0.6);
+  text-shadow: none;
+}
+
+body.receiver.idle .aux-screen {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+body.receiver.browse-open .preset-header .browse-btn {
+  color: var(--vfd);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
+  background: linear-gradient(180deg, #5a5a60 0%, #3a3a3e 50%, #2a2a2e 100%);
+}
+
+body.receiver.browse-open .preset-header .browse-btn::before {
+  background: var(--vfd);
+  box-shadow: 0 0 5px var(--vfd-glow);
+}
+
+body.receiver.browse-open .catalog-drawer {
+  max-height: 720px;
+  margin-top: 10px;
+  opacity: 1;
+}
+
+body.receiver.browse-open .catalog-browser {
+  transform: translateY(0);
+}
+
+body.receiver.catalog-scanning .vfd::after {
+  content: "\25B8  CATALOG SCAN";
+  position: absolute;
+  inset: auto 20px 14px;
+  z-index: 5;
+  padding: 6px 12px;
+  border: 1px solid oklch(0.30 0.06 175);
+  border-radius: 2px;
+  background: oklch(0.10 0.04 175);
+  color: var(--vfd-bright);
+  font: 700 13px 'DSEG14-Classic', monospace;
+  letter-spacing: 0.22em;
+  text-shadow: 0 0 6px var(--vfd-glow), 0 0 2px var(--vfd-bright);
+  pointer-events: none;
+  mix-blend-mode: normal;
+  animation: scan-blink 540ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes scan-blink {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scaleX(0.92);
+  }
+
+  20% {
+    opacity: 1;
+    transform: translateY(0) scaleX(1.02);
+  }
+
+  80% {
+    opacity: 1;
+    transform: translateY(0) scaleX(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver.catalog-scanning .vfd::after {
+    animation: none;
+    opacity: 0;
+  }
+}
