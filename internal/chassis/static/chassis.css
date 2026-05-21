@@ -2524,8 +2524,7 @@ body.receiver .input-panel .chip.resolving {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  body.receiver .input-panel .chip.resolving,
-  body.receiver .preset.live::after {
+  body.receiver .input-panel .chip.resolving {
     animation: none;
   }
 }
@@ -2719,6 +2718,12 @@ body.receiver .preset.live::after {
   background: #ff3030;
   box-shadow: 0 0 5px #ff3030cc;
   animation: rec-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .preset.live::after {
+    animation: none;
+  }
 }
 
 body.receiver .preset.lit .num {

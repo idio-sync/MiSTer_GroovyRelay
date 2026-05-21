@@ -51,6 +51,37 @@ func TestChassisCSS_LeakProneSelectorsAreScoped(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_PresetLivePulseHonorsReducedMotionCascade(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	baseRule := "body.receiver .preset.live::after"
+	baseIdx := strings.Index(text, baseRule)
+	if baseIdx == -1 {
+		t.Fatalf("chassis.css missing %q", baseRule)
+	}
+	baseAnimationIdx := strings.Index(text[baseIdx:], "animation: rec-pulse")
+	if baseAnimationIdx == -1 {
+		t.Fatalf("chassis.css missing rec-pulse animation in %q rule", baseRule)
+	}
+	afterPulseRule := text[baseIdx+baseAnimationIdx:]
+	reduceIdx := strings.Index(afterPulseRule, "@media (prefers-reduced-motion: reduce)")
+	if reduceIdx == -1 {
+		t.Fatalf("chassis.css must place a reduced-motion override after %q so it wins the cascade", baseRule)
+	}
+	overrideIdx := strings.Index(afterPulseRule[reduceIdx:], baseRule)
+	if overrideIdx == -1 {
+		t.Fatalf("reduced-motion block after %q must override the preset live pulse", baseRule)
+	}
+	overrideSnippet := afterPulseRule[reduceIdx+overrideIdx:]
+	if !strings.Contains(overrideSnippet, "animation: none;") {
+		t.Fatalf("reduced-motion override for %q must set animation: none", baseRule)
+	}
+}
+
 func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
