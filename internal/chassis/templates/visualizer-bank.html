@@ -1,4 +1,22 @@
 {{define "visualizer-bank"}}
 {{htmlComment "chassis:visualizer-bank"}}
-<div class="section-strip viz-section"></div>
+<div class="section-strip viz-section">
+  <span class="strip-label viz-strip-label">CRT<br>Visualizer</span>
+  <div class="viz-bank" role="radiogroup" aria-label="CRT visualizer mode">
+    {{range .Buttons}}
+    {{if .IsPreview}}
+    <button class="hw-btn viz-btn viz-btn--preview" type="button" role="radio" aria-checked="false" aria-disabled="true" data-viz="{{.Mode}}" title="{{.Label}} (preview &mdash; deferred from v1)">
+      <span class="viz-icon viz-icon--{{.IconKind}}" aria-hidden="true"></span>
+      <span class="viz-label">{{.Label}}</span>
+      <span class="viz-badge">Preview</span>
+    </button>
+    {{else}}
+    <button class="hw-btn viz-btn{{if eq .Mode $.ActiveMode}} active lit{{end}}" type="button" role="radio" aria-checked="{{if eq .Mode $.ActiveMode}}true{{else}}false{{end}}" data-viz="{{.Mode}}" title="{{.Label}}">
+      <span class="viz-icon viz-icon--{{.IconKind}}" aria-hidden="true"></span>
+      <span class="viz-label">{{.Label}}</span>
+    </button>
+    {{end}}
+    {{end}}
+  </div>
+</div>
 {{end}}

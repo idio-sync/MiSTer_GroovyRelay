@@ -1,4 +1,24 @@
 {{define "transport"}}
 {{htmlComment "chassis:transport"}}
-<div class="transport-strip"></div>
+<div class="transport-strip" aria-label="Transport controls">
+  <span class="strip-label">Transport</span>
+  <div class="transport-row">
+    <button class="trn" title="Previous">&#x23ee;</button>
+    <button class="trn" title="Next">&#x23ed;</button>
+    <button class="trn primary" title="Pause / Resume">&#x23f8;</button>
+    <button class="trn" title="Stop">&#x23f9;</button>
+    <button class="trn" title="Replay">&#x27f2;</button>
+  </div>
+  <div class="seek-bar" title="Cast position">
+    <div class="fill" style="width: {{.SeekFillPercent}}%"></div>
+    <div class="head"><span class="grip"></span></div>
+  </div>
+  <div class="seek-time">
+    <span class="seg-display" data-ghost="88:88">{{.ElapsedTime}}</span>
+    <span class="sep">/</span>
+    <span class="total seg-display" data-ghost="88:88">{{.TotalTime}}</span>
+    <span class="pct" title="Playback position">{{.PercentPlayed}}</span>
+  </div>
+  <button class="gear-btn" id="gear-btn">&#x2699; Setup</button>
+</div>
 {{end}}
