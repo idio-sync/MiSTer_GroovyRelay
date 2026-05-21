@@ -372,9 +372,12 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 		`@container chassis (max-width: 420px)`,
 		`"label controls controls"`,
 		`"label seek gear"`,
+		`grid-area: label;`,
 		`grid-area: controls;`,
 		`grid-area: seek;`,
 		`grid-area: gear;`,
+		`body.receiver .seek-time`,
+		`display: none;`,
 		`body.receiver .viz-btn--preview:disabled`,
 		`cursor: not-allowed;`,
 	} {
