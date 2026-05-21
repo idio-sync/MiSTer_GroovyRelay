@@ -79,6 +79,32 @@ func TestValidate_AcceptsSupportedAudioChannels(t *testing.T) {
 	}
 }
 
+func TestSectioned_Validate_OutputVolumeBounds(t *testing.T) {
+	for _, volume := range []int{0, 1, 50, 100} {
+		t.Run(fmt.Sprintf("valid/%d", volume), func(t *testing.T) {
+			s := validSectioned()
+			s.Bridge.Audio.OutputVolume = volume
+			if err := s.Validate(); err != nil {
+				t.Fatalf("output_volume=%d: expected OK, got %v", volume, err)
+			}
+		})
+	}
+
+	for _, volume := range []int{-1, 101} {
+		t.Run(fmt.Sprintf("invalid/%d", volume), func(t *testing.T) {
+			s := validSectioned()
+			s.Bridge.Audio.OutputVolume = volume
+			err := s.Validate()
+			if err == nil {
+				t.Fatalf("output_volume=%d: expected validation error, got nil", volume)
+			}
+			if !strings.Contains(err.Error(), "bridge.audio.output_volume") {
+				t.Fatalf("output_volume=%d: error %q should mention bridge.audio.output_volume", volume, err)
+			}
+		})
+	}
+}
+
 func TestValidate_RejectsNonRGB888(t *testing.T) {
 	for _, mode := range []string{"rgba8888", "rgb565", "rgb16"} {
 		c := defaults()
@@ -327,6 +353,13 @@ func TestDefaultBridge_DeltaLZ4Enabled(t *testing.T) {
 	b := defaultBridge()
 	if !b.Video.DeltaLZ4Enabled {
 		t.Error("default DeltaLZ4Enabled = false, want true")
+	}
+}
+
+func TestDefaultBridge_OutputVolume(t *testing.T) {
+	b := defaultBridge()
+	if b.Audio.OutputVolume != 100 {
+		t.Errorf("default output volume = %d, want 100", b.Audio.OutputVolume)
 	}
 }
 

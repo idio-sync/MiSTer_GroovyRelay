@@ -34,6 +34,8 @@ type playbackBannerData struct {
 	MessageKind     string
 	PollTrigger     string
 	ReadOnly        bool
+	HasOutputVolume bool
+	OutputVolume    int
 }
 
 type playbackRenderOptions struct {
@@ -71,6 +73,42 @@ func (s *Server) handlePlaybackSeek(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handlePlaybackMutation(w, r, req)
+}
+
+func (s *Server) handlePlaybackVolume(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.BridgeSaver == nil {
+		http.Error(w, "bridge saver not wired", http.StatusInternalServerError)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
+		return
+	}
+	volume, err := strconv.Atoi(strings.TrimSpace(r.Form.Get("output_volume")))
+	if err != nil {
+		s.renderPlaybackMessage(w, r, "err", "output_volume must be an integer", false, "")
+		return
+	}
+	if volume < 0 || volume > 100 {
+		s.renderPlaybackMessage(w, r, "err", "output_volume must be in 0..100", false, "")
+		return
+	}
+	var saveErr error
+	if saver, ok := s.cfg.BridgeSaver.(OutputVolumeSaver); ok {
+		_, saveErr = saver.SaveOutputVolume(volume)
+	} else {
+		next := s.cfg.BridgeSaver.Current()
+		next.Audio.OutputVolume = volume
+		_, saveErr = s.cfg.BridgeSaver.Save(next)
+	}
+	if saveErr != nil {
+		s.renderPlaybackMessage(w, r, "err", saveErr.Error(), false, "")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "now-playing-banner.html", s.buildPlaybackBannerData(r.Context(), playbackRenderOptions{})); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func parsePlaybackActionRequest(r *http.Request, requireOffset bool) (adapters.PlaybackActionRequest, error) {
@@ -313,6 +351,10 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 	}
 	if view.State != core.StateIdle && len(data.Actions) == 0 && data.Seek == nil {
 		data.ReadOnly = true
+	}
+	if s.cfg.BridgeSaver != nil {
+		data.HasOutputVolume = true
+		data.OutputVolume = s.cfg.BridgeSaver.Current().Audio.OutputVolume
 	}
 	data.PollTrigger = playbackPollTrigger(data)
 	return data

@@ -30,6 +30,12 @@ type BridgeSaver interface {
 	Save(new config.BridgeConfig) (adapters.ApplyScope, error)
 }
 
+// OutputVolumeSaver is an optional BridgeSaver extension for atomic
+// single-field volume writes from the global Now Playing banner.
+type OutputVolumeSaver interface {
+	SaveOutputVolume(volume int) (adapters.ApplyScope, error)
+}
+
 // FirstRunAware is an optional extension of BridgeSaver — implement
 // it to drive the first-run banner in the Bridge panel. IsFirstRun
 // returns true when the dismissal marker is missing (fresh install);
@@ -211,6 +217,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountGET(mux, "/ui/playback/banner", s.handlePlaybackBanner)
 	s.mountPOST(mux, "/ui/playback/action", s.handlePlaybackAction)
 	s.mountPOST(mux, "/ui/playback/seek", s.handlePlaybackSeek)
+	s.mountPOST(mux, "/ui/playback/volume", s.handlePlaybackVolume)
 	s.mountPOST(mux, "/ui/playback/quick-cast", s.handlePlaybackQuickCast)
 	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
 	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash

@@ -35,6 +35,7 @@ const FirstRunMarker = ".first-run-complete"
 type Core interface {
 	UpdateBridge(b config.BridgeConfig)
 	SetInterlaceFieldOrder(order string) error
+	SetOutputVolume(volume int) error
 	DropActiveCast(reason string) error
 }
 
@@ -135,7 +136,21 @@ func (r *BridgeSaver) DismissFirstRun() error {
 func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.saveLocked(newCfg)
+}
 
+// SaveOutputVolume atomically persists only bridge.audio.output_volume against
+// the latest in-memory bridge snapshot. This keeps the Now Playing banner
+// slider from overwriting unrelated settings with a stale full-config copy.
+func (r *BridgeSaver) SaveOutputVolume(volume int) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.sec.Bridge
+	next.Audio.OutputVolume = volume
+	return r.saveLocked(next)
+}
+
+func (r *BridgeSaver) saveLocked(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
 	candidate := &config.Sectioned{Bridge: newCfg}
 	if err := candidate.Validate(); err != nil {
 		return 0, fmt.Errorf("validate bridge config: %w", err)
@@ -252,6 +267,11 @@ func (r *BridgeSaver) applyHotSwapSideEffects(changed []string, newCfg config.Br
 	if containsStr(changed, "video.interlace_field_order") {
 		if err := r.core.SetInterlaceFieldOrder(newCfg.Video.InterlaceFieldOrder); err != nil {
 			return fmt.Errorf("interlace hot-swap: %w", err)
+		}
+	}
+	if containsStr(changed, "audio.output_volume") {
+		if err := r.core.SetOutputVolume(newCfg.Audio.OutputVolume); err != nil {
+			return fmt.Errorf("output volume hot-swap: %w", err)
 		}
 	}
 	if containsStr(changed, "logging.debug") {
@@ -389,6 +409,9 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Audio.Channels != newCfg.Audio.Channels {
 		keys = append(keys, "audio.channels")
 	}
+	if oldCfg.Audio.OutputVolume != newCfg.Audio.OutputVolume {
+		keys = append(keys, "audio.output_volume")
+	}
 	if oldCfg.Visualizer.Mode != newCfg.Visualizer.Mode {
 		keys = append(keys, "visualizer.mode")
 	}
@@ -454,6 +477,8 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 	case "visualizer.mode":
 		return adapters.ScopeNextCast
 	case "video.interlace_field_order":
+		return adapters.ScopeHotSwap
+	case "audio.output_volume":
 		return adapters.ScopeHotSwap
 	case "mister.ssh_user", "mister.ssh_password":
 		return adapters.ScopeHotSwap

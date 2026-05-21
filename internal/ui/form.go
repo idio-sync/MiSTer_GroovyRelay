@@ -68,6 +68,7 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 
 	out.Audio.SampleRate = parseIntField(form, "audio.sample_rate", errs)
 	out.Audio.Channels = parseIntField(form, "audio.channels", errs)
+	out.Audio.OutputVolume = parseIntField(form, "audio.output_volume", errs)
 
 	out.Visualizer.Mode = form.Get("visualizer.mode")
 
@@ -114,6 +115,13 @@ func ensureHLSBufferFormFields(form url.Values, cur config.HLSBufferConfig) {
 	form.Set("hls_buffer.playlist_timeout_seconds", strconv.Itoa(cur.PlaylistTimeoutSeconds))
 	form.Set("hls_buffer.max_variant_height", strconv.Itoa(cur.MaxVariantHeight))
 	form.Set("hls_buffer.stale_cache_reap_hours", strconv.Itoa(cur.StaleCacheReapHours))
+}
+
+func ensureAudioFormFields(form url.Values, cur config.AudioConfig) {
+	if _, ok := form["audio.output_volume"]; ok {
+		return
+	}
+	form.Set("audio.output_volume", strconv.Itoa(cur.OutputVolume))
 }
 
 // parseIntField reads form[key] as int. On parse error, records an

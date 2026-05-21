@@ -66,6 +66,22 @@ func TestDiffBridgeConfig_LoggingDebug(t *testing.T) {
 	}
 }
 
+func TestDiffBridgeConfig_OutputVolume(t *testing.T) {
+	old := config.BridgeConfig{
+		Audio: config.AudioConfig{OutputVolume: 100},
+	}
+	newCfg := old
+	newCfg.Audio.OutputVolume = 25
+
+	keys := diffBridgeConfig(old, newCfg)
+	if !containsStr(keys, "audio.output_volume") {
+		t.Errorf("expected audio.output_volume in diff keys, got %v", keys)
+	}
+	if got := scopeForBridgeField("audio.output_volume"); got != adapters.ScopeHotSwap {
+		t.Errorf("scopeForBridgeField(audio.output_volume) = %v, want ScopeHotSwap", got)
+	}
+}
+
 func TestDiffBridgeConfig_DeltaLZ4(t *testing.T) {
 	old := config.BridgeConfig{
 		Video: config.VideoConfig{DeltaLZ4Enabled: false},
@@ -303,6 +319,64 @@ func TestBridgeSaver_VisualizerModeNextCastDoesNotDrop(t *testing.T) {
 	}
 }
 
+func TestBridgeSaver_OutputVolumeHotSwapsNoDrop(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	old.Audio.OutputVolume = 100
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	next := old
+	next.Audio.OutputVolume = 33
+	scope, err := s.Save(next)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Fatalf("scope = %v, want hot-swap", scope)
+	}
+	if core.drops != 0 {
+		t.Fatalf("DropActiveCast calls = %d, want 0", core.drops)
+	}
+	if len(core.outputVolumes) != 1 || core.outputVolumes[0] != 33 {
+		t.Fatalf("SetOutputVolume calls = %v, want [33]", core.outputVolumes)
+	}
+	if got := s.Current().Audio.OutputVolume; got != 33 {
+		t.Fatalf("current output volume = %d, want 33", got)
+	}
+}
+
+func TestBridgeSaver_SaveOutputVolumePreservesLatestBridgeFields(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	path := testConfigPath(t)
+	s := NewBridgeSaver(path, &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	s.sec.Bridge.MiSTer.Host = "198.51.100.9"
+	scope, err := s.SaveOutputVolume(44)
+	if err != nil {
+		t.Fatalf("SaveOutputVolume: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Fatalf("scope = %v, want hot-swap", scope)
+	}
+	if got := s.Current().MiSTer.Host; got != "198.51.100.9" {
+		t.Fatalf("host = %q, want latest in-memory host", got)
+	}
+	if got := s.Current().Audio.OutputVolume; got != 44 {
+		t.Fatalf("output volume = %d, want 44", got)
+	}
+	if core.updated.MiSTer.Host != "198.51.100.9" {
+		t.Fatalf("core updated host = %q, want latest host", core.updated.MiSTer.Host)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `host = "198.51.100.9"`) {
+		t.Fatalf("persisted config did not preserve latest host:\n%s", string(data))
+	}
+}
+
 func TestBridgeSaver_VisualizerModePersistsVisualizerTable(t *testing.T) {
 	core := &fakeBridgeCore{}
 	old := testBridgeConfig(t, "NTSC_480i")
@@ -422,7 +496,7 @@ func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
 			RGBMode:             "rgb888",
 			LZ4Enabled:          true,
 		},
-		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2},
+		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
 		MiSTer:     config.MisterConfig{Host: "192.0.2.10", Port: 32100, SourcePort: 32101},
 		UI:         config.UIConfig{HTTPPort: 32500},
@@ -455,6 +529,7 @@ type fakeBridgeCore struct {
 	updated         config.BridgeConfig
 	updates         int
 	interlaceOrders []string
+	outputVolumes   []int
 	drops           int
 	dropErr         error
 }
@@ -466,6 +541,11 @@ func (f *fakeBridgeCore) UpdateBridge(b config.BridgeConfig) {
 
 func (f *fakeBridgeCore) SetInterlaceFieldOrder(order string) error {
 	f.interlaceOrders = append(f.interlaceOrders, order)
+	return nil
+}
+
+func (f *fakeBridgeCore) SetOutputVolume(volume int) error {
+	f.outputVolumes = append(f.outputVolumes, volume)
 	return nil
 }
 

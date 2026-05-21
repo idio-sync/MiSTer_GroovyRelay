@@ -146,6 +146,15 @@ func bridgeFields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeRestartCast,
 			Section:    "Audio",
 		},
+		{
+			Key:        "audio.output_volume",
+			Label:      "Output Volume",
+			Help:       "Global software volume sent to the MiSTer. 0 mutes; 100 is unchanged.",
+			Kind:       adapters.KindInt,
+			Default:    100,
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "Audio",
+		},
 
 		// ---- Visualizer ----
 		{

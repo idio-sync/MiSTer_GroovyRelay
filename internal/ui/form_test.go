@@ -20,6 +20,7 @@ func TestParseBridgeForm_HappyPath(t *testing.T) {
 	form.Set("video.delta_lz4_enabled", "true")
 	form.Set("audio.sample_rate", "48000")
 	form.Set("audio.channels", "2")
+	form.Set("audio.output_volume", "100")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
 	form.Set("ffmpeg_path", "/tools/ffmpeg")
@@ -64,6 +65,7 @@ func TestParseBridgeForm_VisualizerMode(t *testing.T) {
 	form.Set("video.aspect_mode", "auto")
 	form.Set("audio.sample_rate", "48000")
 	form.Set("audio.channels", "2")
+	form.Set("audio.output_volume", "100")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
 	form.Set("visualizer.mode", config.VisualizerModeOscilloscopeWave)
@@ -187,6 +189,7 @@ func TestParseBridgeForm_HLSBufferFields(t *testing.T) {
 	form.Set("video.aspect_mode", "auto")
 	form.Set("audio.sample_rate", "48000")
 	form.Set("audio.channels", "2")
+	form.Set("audio.output_volume", "100")
 	form.Set("ui.http_port", "32500")
 	form.Set("data_dir", "/config")
 	form.Set("hls_buffer.enabled", "true")
@@ -262,6 +265,7 @@ func cloneValues(v url.Values) url.Values {
 }
 
 func addHLSBufferFormDefaults(form url.Values) {
+	form.Set("audio.output_volume", "100")
 	form.Set("hls_buffer.enabled", "true")
 	form.Set("hls_buffer.live_edge_segments", "3")
 	form.Set("hls_buffer.start_segments", "2")

@@ -27,6 +27,13 @@
 			{{end}}
 		</div>
 		{{end}}
+		{{if .HasOutputVolume}}
+		<form class="gr-output-volume" hx-post="/ui/playback/volume" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
+			<label for="gr-output-volume-range">Vol</label>
+			<input id="gr-output-volume-range" type="range" name="output_volume" min="0" max="100" value="{{.OutputVolume}}" aria-label="Output volume">
+			<output for="gr-output-volume-range">{{.OutputVolume}}%</output>
+		</form>
+		{{end}}
 		<div class="gr-playback-actions">
 			{{range .Actions}}
 			<form class="gr-playback-action-form" hx-post="/ui/playback/action" hx-target="#gr-now-playing" hx-swap="outerHTML">

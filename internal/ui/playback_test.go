@@ -131,6 +131,63 @@ func TestPlaybackBannerIdleRendersReadyAndQuickCast(t *testing.T) {
 	}
 }
 
+func TestPlaybackBannerRendersGlobalOutputVolume(t *testing.T) {
+	cur := (&fakeBridgeSaver{}).Current()
+	cur.Audio.OutputVolume = 73
+	saver := &fakeBridgeSaver{current: &cur}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.BridgeSaver = saver
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body := w.Body.String()
+
+	for _, want := range []string{
+		`class="gr-output-volume"`,
+		`hx-post="/ui/playback/volume"`,
+		`name="output_volume"`,
+		`value="73"`,
+		`73%`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("banner missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestPlaybackVolumePostPersistsGlobalOutputVolume(t *testing.T) {
+	cur := (&fakeBridgeSaver{}).Current()
+	cur.Audio.OutputVolume = 100
+	saver := &fakeBridgeSaver{current: &cur}
+	_, mux := newTestServer(t, func(c *Config) {
+		c.BridgeSaver = saver
+		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
+	})
+
+	form := url.Values{"output_volume": {"42"}}
+	req := httptest.NewRequest(http.MethodPost, "/ui/playback/volume", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if saver.got == nil {
+		t.Fatal("BridgeSaver.Save not called")
+	}
+	if saver.got.Audio.OutputVolume != 42 {
+		t.Fatalf("saved output volume = %d, want 42", saver.got.Audio.OutputVolume)
+	}
+	if !strings.Contains(w.Body.String(), `value="42"`) {
+		t.Fatalf("response should re-render updated volume: %s", w.Body.String())
+	}
+}
+
 func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 	fake := &fakePlaybackAdapter{
 		name:    "url",

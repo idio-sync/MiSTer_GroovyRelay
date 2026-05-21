@@ -124,6 +124,42 @@ func TestBridgeFields_HasDeltaLZ4Toggle(t *testing.T) {
 	}
 }
 
+func TestBridgeFields_HasOutputVolumeHotSwap(t *testing.T) {
+	fields := bridgeFields()
+	var found *adapters.FieldDef
+	for i := range fields {
+		if fields[i].Key == "audio.output_volume" {
+			found = &fields[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("audio.output_volume not found in bridgeFields()")
+	}
+	if found.Label != "Output Volume" {
+		t.Errorf("label = %q, want Output Volume", found.Label)
+	}
+	if found.Section != "Audio" {
+		t.Errorf("section = %q, want Audio", found.Section)
+	}
+	if found.Kind != adapters.KindInt {
+		t.Errorf("kind = %v, want KindInt", found.Kind)
+	}
+	if found.Default != 100 {
+		t.Errorf("default = %v, want 100", found.Default)
+	}
+	if found.ApplyScope != adapters.ScopeHotSwap {
+		t.Errorf("scope = %v, want ScopeHotSwap", found.ApplyScope)
+	}
+}
+
+func TestBridgeLookup_OutputVolume(t *testing.T) {
+	cur := config.BridgeConfig{Audio: config.AudioConfig{OutputVolume: 64}}
+	if got := bridgeLookupInt("audio.output_volume", cur); got != 64 {
+		t.Errorf("bridgeLookupInt(audio.output_volume) = %d, want 64", got)
+	}
+}
+
 func TestBridgeFields_HLSBufferFieldsRestartCast(t *testing.T) {
 	want := map[string]bool{
 		"hls_buffer.enabled":                  false,

@@ -41,6 +41,7 @@ var legacyKeys = []string{
 	"delta_lz4_enabled",
 	"audio_sample_rate",
 	"audio_channels",
+	"audio_output_volume",
 	"plex_profile_name",
 	"plex_server_url",
 	"data_dir",
@@ -116,8 +117,9 @@ func Migrate(legacy []byte) ([]byte, error) {
 				DeltaLZ4Enabled:     old.DeltaLZ4Enabled,
 			},
 			Audio: AudioConfig{
-				SampleRate: old.AudioSampleRate,
-				Channels:   old.AudioChannels,
+				SampleRate:   old.AudioSampleRate,
+				Channels:     old.AudioChannels,
+				OutputVolume: old.AudioOutputVolume,
 			},
 			Visualizer: VisualizerConfig{
 				Mode: VisualizerModeRetroAnalyzer,
@@ -271,8 +273,9 @@ func defaultBridge() BridgeConfig {
 			DeltaLZ4Enabled:     d.DeltaLZ4Enabled,
 		},
 		Audio: AudioConfig{
-			SampleRate: d.AudioSampleRate,
-			Channels:   d.AudioChannels,
+			SampleRate:   d.AudioSampleRate,
+			Channels:     d.AudioChannels,
+			OutputVolume: d.AudioOutputVolume,
 		},
 		Visualizer: VisualizerConfig{
 			Mode: VisualizerModeRetroAnalyzer,

@@ -19,6 +19,7 @@ delta_lz4_enabled = true          # Adaptive delta-LZ4 BLITs (recommended)
 [bridge.audio]
 sample_rate = 48000
 channels = 2
+output_volume = 100              # Global output gain sent to the MiSTer, 0..100
 
 [bridge.visualizer]
 mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_scope

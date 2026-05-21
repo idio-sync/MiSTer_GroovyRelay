@@ -111,7 +111,9 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	ensureHLSBufferFormFields(r.Form, s.cfg.BridgeSaver.Current().HLSBuffer)
+	current := s.cfg.BridgeSaver.Current()
+	ensureHLSBufferFormFields(r.Form, current.HLSBuffer)
+	ensureAudioFormFields(r.Form, current.Audio)
 	candidate, parseErr := parseBridgeForm(r.Form)
 	if parseErr != nil {
 		if fe, ok := parseErr.(FormErrors); ok {
@@ -120,8 +122,6 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	current := s.cfg.BridgeSaver.Current()
 
 	// Preserve the stored ssh_password when the operator submits with
 	// the field empty. Mirrors the "Leave empty to keep existing"
@@ -422,6 +422,8 @@ func bridgeLookupInt(key string, cur config.BridgeConfig) int {
 		return cur.MiSTer.Port
 	case "mister.source_port":
 		return cur.MiSTer.SourcePort
+	case "audio.output_volume":
+		return cur.Audio.OutputVolume
 	case "ui.http_port":
 		return cur.UI.HTTPPort
 	case "hls_buffer.live_edge_segments":

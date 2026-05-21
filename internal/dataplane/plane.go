@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
@@ -265,6 +266,7 @@ type PlaneConfig struct {
 	DeltaLZ4Enabled bool
 	AudioRate       int // Go-side integer (48000)
 	AudioChans      int // 2 for stereo
+	OutputVolume    int // global output gain, 0..100
 	SeekOffsetMs    int // reported as session start position
 
 	// OnInit is fired exactly once after the INIT handshake completes.
@@ -338,6 +340,7 @@ type Plane struct {
 	wireBytes      atomic.Uint64 // post-LZ4 bytes sent since session start
 	lastACKUnix    atomic.Int64  // unix nanos of last received ACK; 0 = never
 	audioReady     atomic.Bool
+	outputVolume   atomic.Int32
 	fpgaFrame      atomic.Uint32
 	done           chan struct{}
 
@@ -444,6 +447,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		deltaLZ4Enabled:  deltaLZ4Enabled,
 		fieldDiagEnabled: fieldDiagEnabled,
 	}
+	p.outputVolume.Store(int32(clampOutputVolume(cfg.OutputVolume)))
 	if fieldHistoryEnabled {
 		p.fieldPrev[0] = make([]byte, fieldBytes)
 		p.fieldPrev[1] = make([]byte, fieldBytes)
@@ -483,6 +487,17 @@ func (p *Plane) SetFieldOrder(order string) error {
 	default:
 		return fmt.Errorf("plane: invalid field order %q (want tff or bff)", order)
 	}
+}
+
+// SetOutputVolume changes the software gain applied to outgoing PCM audio.
+// Safe to call concurrently with Run; the pump loop reads the value atomically
+// immediately before each AUDIO packet is emitted.
+func (p *Plane) SetOutputVolume(volume int) error {
+	if volume < 0 || volume > 100 {
+		return fmt.Errorf("output volume must be in 0..100, got %d", volume)
+	}
+	p.outputVolume.Store(int32(volume))
+	return nil
 }
 
 // Position returns the current playback offset since start. Seeded with
@@ -1385,6 +1400,7 @@ func (p *Plane) sendAudio(pcm []byte) {
 	if len(pcm) > maxSoundSize {
 		pcm = pcm[:maxSoundSize]
 	}
+	scalePCMVolumeInPlace(pcm, int(p.outputVolume.Load()))
 	audioHeader := groovy.BuildAudioHeader(uint16(len(pcm)))
 	if err := p.fieldSender.Send(audioHeader); err != nil {
 		slog.Warn("audio header send", "err", err)
@@ -1396,6 +1412,34 @@ func (p *Plane) sendAudio(pcm []byte) {
 		return
 	}
 	p.wireBytes.Add(uint64(len(pcm)))
+}
+
+func clampOutputVolume(volume int) int {
+	if volume < 0 {
+		return 0
+	}
+	if volume > 100 {
+		return 100
+	}
+	return volume
+}
+
+func scalePCMVolumeInPlace(pcm []byte, volume int) {
+	volume = clampOutputVolume(volume)
+	if volume >= 100 || len(pcm) == 0 {
+		return
+	}
+	if volume <= 0 {
+		for i := range pcm {
+			pcm[i] = 0
+		}
+		return
+	}
+	for i := 0; i+1 < len(pcm); i += bytesPerSample {
+		sample := int32(int16(binary.LittleEndian.Uint16(pcm[i : i+bytesPerSample])))
+		scaled := sample * int32(volume) / 100
+		binary.LittleEndian.PutUint16(pcm[i:i+bytesPerSample], uint16(int16(scaled)))
+	}
 }
 
 // prebuffer blocks until videoCh has accumulated `target` frames or a

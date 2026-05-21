@@ -346,7 +346,7 @@ body {
 
 .gr-now-playing-main {
 	display: grid;
-	grid-template-columns: minmax(0, 1.25fr) minmax(180px, 0.75fr) auto;
+	grid-template-columns: minmax(0, 1.15fr) minmax(180px, 0.65fr) minmax(150px, 190px) auto;
 	gap: 18px;
 	align-items: center;
 	padding: 13px 18px 12px;
@@ -408,6 +408,31 @@ body {
 	flex-wrap: wrap;
 	justify-content: flex-end;
 	gap: 6px;
+}
+
+.gr-now-playing-main:has(.gr-output-volume) .gr-playback-actions {
+	grid-column: 4;
+}
+
+.gr-output-volume {
+	grid-column: 3;
+	min-width: 0;
+	display: grid;
+	grid-template-columns: auto minmax(72px, 1fr) 38px;
+	gap: 8px;
+	align-items: center;
+	margin: 0;
+}
+
+.gr-output-volume label,
+.gr-output-volume output {
+	color: oklch(0.80 0.025 80);
+	font: 500 11px/1.2 var(--font-body);
+}
+
+.gr-output-volume output {
+	text-align: right;
+	font-family: var(--font-mono);
 }
 
 .gr-playback-action-form {
@@ -492,7 +517,8 @@ body {
 	background: var(--gr-amber);
 }
 
-.gr-now-playing-seek input[type="range"] {
+.gr-now-playing-seek input[type="range"],
+.gr-output-volume input[type="range"] {
 	width: 100%;
 	height: 7px;
 	display: block;
@@ -657,6 +683,7 @@ body {
 
 	.gr-now-playing-copy,
 	.gr-now-playing-progress,
+	.gr-output-volume,
 	.gr-playback-actions {
 		grid-column: auto;
 	}

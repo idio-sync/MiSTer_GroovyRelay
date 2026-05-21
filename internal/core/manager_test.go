@@ -43,8 +43,9 @@ func testBridgeConfig(t *testing.T) config.BridgeConfig {
 			LZ4Enabled:          false,
 		},
 		Audio: config.AudioConfig{
-			SampleRate: 48000,
-			Channels:   2,
+			SampleRate:   48000,
+			Channels:     2,
+			OutputVolume: 100,
 		},
 	}
 }
@@ -88,6 +89,7 @@ func (f *fakePlane) Run(context.Context) error  { return nil }
 func (f *fakePlane) Done() <-chan struct{}      { ch := make(chan struct{}); close(ch); return ch }
 func (f *fakePlane) Position() time.Duration    { return 0 }
 func (f *fakePlane) SetFieldOrder(string) error { return nil }
+func (f *fakePlane) SetOutputVolume(int) error  { return nil }
 func (f *fakePlane) BlitsTotal() uint64         { return 0 }
 func (f *fakePlane) FramesTotal() uint64        { return 0 }
 func (f *fakePlane) Underruns() uint64          { return 0 }
@@ -106,6 +108,7 @@ func (f *contextDonePlane) Run(ctx context.Context) error {
 func (f *contextDonePlane) Done() <-chan struct{}      { return f.done }
 func (f *contextDonePlane) Position() time.Duration    { return 0 }
 func (f *contextDonePlane) SetFieldOrder(string) error { return nil }
+func (f *contextDonePlane) SetOutputVolume(int) error  { return nil }
 func (f *contextDonePlane) BlitsTotal() uint64         { return 0 }
 func (f *contextDonePlane) FramesTotal() uint64        { return 0 }
 func (f *contextDonePlane) Underruns() uint64          { return 0 }
@@ -121,11 +124,22 @@ func (f *blockingDonePlane) Run(context.Context) error  { <-f.done; return nil }
 func (f *blockingDonePlane) Done() <-chan struct{}      { return f.done }
 func (f *blockingDonePlane) Position() time.Duration    { return f.pos }
 func (f *blockingDonePlane) SetFieldOrder(string) error { return nil }
+func (f *blockingDonePlane) SetOutputVolume(int) error  { return nil }
 func (f *blockingDonePlane) BlitsTotal() uint64         { return 0 }
 func (f *blockingDonePlane) FramesTotal() uint64        { return 0 }
 func (f *blockingDonePlane) Underruns() uint64          { return 0 }
 func (f *blockingDonePlane) WireBytes() uint64          { return 0 }
 func (f *blockingDonePlane) LastACKAge() time.Duration  { return 0 }
+
+type volumePlane struct {
+	fakePlane
+	volumes []int
+}
+
+func (f *volumePlane) SetOutputVolume(volume int) error {
+	f.volumes = append(f.volumes, volume)
+	return nil
+}
 
 func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	m := newTestManager(t)
@@ -134,6 +148,33 @@ func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	}
 	if m.Status().State != StateIdle {
 		t.Errorf("state should remain Idle after no-op drop")
+	}
+}
+
+func TestManager_SetOutputVolumeUpdatesActivePlane(t *testing.T) {
+	m := newTestManager(t)
+	vp := &volumePlane{}
+	m.mu.Lock()
+	m.plane = vp
+	m.mu.Unlock()
+
+	if err := m.SetOutputVolume(37); err != nil {
+		t.Fatalf("SetOutputVolume: %v", err)
+	}
+	if got := m.bridge.Audio.OutputVolume; got != 37 {
+		t.Fatalf("manager bridge output volume = %d, want 37", got)
+	}
+	if len(vp.volumes) != 1 || vp.volumes[0] != 37 {
+		t.Fatalf("active plane volumes = %v, want [37]", vp.volumes)
+	}
+}
+
+func TestManager_SetOutputVolumeRejectsOutOfRange(t *testing.T) {
+	m := newTestManager(t)
+	for _, volume := range []int{-1, 101} {
+		if err := m.SetOutputVolume(volume); err == nil {
+			t.Fatalf("SetOutputVolume(%d) error = nil, want range error", volume)
+		}
 	}
 }
 

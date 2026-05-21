@@ -1,12 +1,12 @@
-// Protect the global now-playing seek slider from htmx poll swaps while the
-// operator is actively dragging or keyboard-adjusting it.
+// Protect the global now-playing range controls from htmx poll swaps while the
+// operator is actively dragging or keyboard-adjusting them.
 (function () {
 	var activeRange = null;
 
-	function seekRangeFromEvent(ev) {
+	function playbackRangeFromEvent(ev) {
 		var target = ev.target;
 		if (!target || !target.closest) { return null; }
-		return target.closest('#gr-now-playing .gr-now-playing-seek input[type="range"]');
+		return target.closest('#gr-now-playing .gr-now-playing-seek input[type="range"], #gr-now-playing .gr-output-volume input[type="range"]');
 	}
 
 	function bannerFor(input) {
@@ -39,12 +39,12 @@
 	}
 
 	document.addEventListener('pointerdown', function (ev) {
-		var input = seekRangeFromEvent(ev);
+		var input = playbackRangeFromEvent(ev);
 		if (input) { markInteracting(input); }
 	}, true);
 
 	document.addEventListener('focusin', function (ev) {
-		var input = seekRangeFromEvent(ev);
+		var input = playbackRangeFromEvent(ev);
 		if (input) { markInteracting(input); }
 	}, true);
 
@@ -52,11 +52,11 @@
 	document.addEventListener('pointercancel', clearActiveSoon, true);
 
 	document.addEventListener('change', function (ev) {
-		if (seekRangeFromEvent(ev)) { clearActiveSoon(); }
+		if (playbackRangeFromEvent(ev)) { clearActiveSoon(); }
 	}, true);
 
 	document.addEventListener('blur', function (ev) {
-		if (seekRangeFromEvent(ev)) { clearActiveSoon(); }
+		if (playbackRangeFromEvent(ev)) { clearActiveSoon(); }
 	}, true);
 
 	document.addEventListener('htmx:beforeSwap', function (ev) {

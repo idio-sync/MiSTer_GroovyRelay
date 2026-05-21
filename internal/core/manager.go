@@ -101,6 +101,7 @@ type planeRunner interface {
 	Done() <-chan struct{}
 	Position() time.Duration
 	SetFieldOrder(string) error
+	SetOutputVolume(int) error
 	BlitsTotal() uint64
 	FramesTotal() uint64
 	Underruns() uint64
@@ -680,6 +681,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		DeltaLZ4Enabled: m.bridge.Video.DeltaLZ4Enabled,
 		AudioRate:       m.bridge.Audio.SampleRate,
 		AudioChans:      m.bridge.Audio.Channels,
+		OutputVolume:    m.bridge.Audio.OutputVolume,
 		SeekOffsetMs:    offsetMs,
 		OnInit:          m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
@@ -1018,6 +1020,22 @@ func (m *Manager) SetInterlaceFieldOrder(order string) error {
 	m.bridge.Video.InterlaceFieldOrder = order
 	if m.plane != nil {
 		return m.plane.SetFieldOrder(order)
+	}
+	return nil
+}
+
+// SetOutputVolume changes the global software gain live and stores it for
+// future session rebuilds. The dataplane applies the gain immediately before
+// each outgoing PCM AUDIO packet.
+func (m *Manager) SetOutputVolume(volume int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if volume < 0 || volume > 100 {
+		return fmt.Errorf("audio.output_volume must be in 0..100, got %d", volume)
+	}
+	m.bridge.Audio.OutputVolume = volume
+	if m.plane != nil {
+		return m.plane.SetOutputVolume(volume)
 	}
 	return nil
 }

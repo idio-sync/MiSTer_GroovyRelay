@@ -307,6 +307,59 @@ func TestSendField_ReturnsDetailedTelemetry(t *testing.T) {
 	}
 }
 
+func TestSendAudioAppliesOutputVolume(t *testing.T) {
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		FieldWidth:    1,
+		FieldHeight:   1,
+		BytesPerPixel: 1,
+		OutputVolume:  50,
+	})
+	p.fieldSender = sender
+
+	pcm := []byte{
+		0xe8, 0x03, // 1000
+		0x18, 0xfc, // -1000
+		0xff, 0x7f, // 32767
+		0x00, 0x80, // -32768
+	}
+	p.sendAudio(pcm)
+
+	if len(sender.payloads) != 1 {
+		t.Fatalf("payloads = %d, want 1", len(sender.payloads))
+	}
+	want := []byte{
+		0xf4, 0x01, // 500
+		0x0c, 0xfe, // -500
+		0xff, 0x3f, // 16383
+		0x00, 0xc0, // -16384
+	}
+	if !bytes.Equal(sender.payloads[0], want) {
+		t.Fatalf("scaled PCM = % x, want % x", sender.payloads[0], want)
+	}
+}
+
+func TestSetOutputVolumeChangesSubsequentAudio(t *testing.T) {
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		FieldWidth:    1,
+		FieldHeight:   1,
+		BytesPerPixel: 1,
+		OutputVolume:  100,
+	})
+	p.fieldSender = sender
+
+	p.SetOutputVolume(0)
+	p.sendAudio([]byte{0xe8, 0x03})
+
+	if len(sender.payloads) != 1 {
+		t.Fatalf("payloads = %d, want 1", len(sender.payloads))
+	}
+	if want := []byte{0x00, 0x00}; !bytes.Equal(sender.payloads[0], want) {
+		t.Fatalf("muted PCM = % x, want % x", sender.payloads[0], want)
+	}
+}
+
 func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
 

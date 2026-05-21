@@ -33,7 +33,7 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			LZ4Enabled:          true,
 			DeltaLZ4Enabled:     true,
 		},
-		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
 		HLSBuffer: config.HLSBufferConfig{
 			Enabled:                true,
 			LiveEdgeSegments:       3,
@@ -61,7 +61,18 @@ func (f *fakeBridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope,
 		return 0, f.failErr
 	}
 	f.got = &newCfg
+	if f.current != nil {
+		*f.current = newCfg
+	} else {
+		f.current = &newCfg
+	}
 	return adapters.ScopeHotSwap, nil
+}
+
+func (f *fakeBridgeSaver) SaveOutputVolume(volume int) (adapters.ApplyScope, error) {
+	next := f.Current()
+	next.Audio.OutputVolume = volume
+	return f.Save(next)
 }
 
 func newBridgeTestServer(t *testing.T, saver *fakeBridgeSaver) *http.ServeMux {

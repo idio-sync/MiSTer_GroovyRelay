@@ -40,8 +40,9 @@ type Config struct {
 	DeltaLZ4Enabled     bool   `toml:"delta_lz4_enabled"`
 
 	// Audio
-	AudioSampleRate int `toml:"audio_sample_rate"`
-	AudioChannels   int `toml:"audio_channels"`
+	AudioSampleRate   int `toml:"audio_sample_rate"`
+	AudioChannels     int `toml:"audio_channels"`
+	AudioOutputVolume int `toml:"audio_output_volume"`
 
 	// Plex
 	PlexProfileName string `toml:"plex_profile_name"`
@@ -91,6 +92,7 @@ func defaults() *Config {
 		DeltaLZ4Enabled:     true,
 		AudioSampleRate:     48000,
 		AudioChannels:       2,
+		AudioOutputVolume:   100,
 		PlexProfileName:     "Plex Home Theater",
 		DataDir:             "",
 	}
@@ -125,6 +127,9 @@ func (c *Config) Validate() error {
 	case 1, 2:
 	default:
 		return fmt.Errorf("audio_channels must be 1 or 2, got %d", c.AudioChannels)
+	}
+	if c.AudioOutputVolume < 0 || c.AudioOutputVolume > 100 {
+		return fmt.Errorf("audio_output_volume must be in 0..100, got %d", c.AudioOutputVolume)
 	}
 	// host_ip is optional (empty → auto-detect in main.go). When set, it must
 	// parse as a valid IP address. Catches fat-fingered CIDR (/24 suffix),
@@ -166,8 +171,9 @@ type VideoConfig struct {
 }
 
 type AudioConfig struct {
-	SampleRate int `toml:"sample_rate"`
-	Channels   int `toml:"channels"`
+	SampleRate   int `toml:"sample_rate"`
+	Channels     int `toml:"channels"`
+	OutputVolume int `toml:"output_volume"`
 }
 
 type VisualizerConfig struct {
@@ -286,6 +292,9 @@ func (s *Sectioned) Validate() error {
 	}
 	if b.Audio.Channels != 1 && b.Audio.Channels != 2 {
 		return fmt.Errorf("bridge.audio.channels must be 1 or 2, got %d", b.Audio.Channels)
+	}
+	if b.Audio.OutputVolume < 0 || b.Audio.OutputVolume > 100 {
+		return fmt.Errorf("bridge.audio.output_volume must be in 0..100, got %d", b.Audio.OutputVolume)
 	}
 	b.Visualizer.Mode = NormalizeVisualizerMode(b.Visualizer.Mode)
 	switch b.Visualizer.Mode {
