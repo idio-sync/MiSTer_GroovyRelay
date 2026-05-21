@@ -153,7 +153,9 @@ recognizable music-library art plus an obvious audio-reactive element.
 ## Album-Art Metadata And Cache
 
 Extend visualizer metadata with `ArtworkPath`, a local artwork file path
-available by the time FFmpeg builds the graph:
+available by the time FFmpeg builds the graph. Add the field to both
+`core.VisualizerMetadata` and `ffmpeg.VisualizerMetadata`, preserving the
+existing core-to-FFmpeg mapping boundary:
 
 ```go
 type VisualizerMetadata struct {
@@ -179,7 +181,10 @@ Preferred candidates:
 
 Resolve relative PMS artwork paths against the Plex server URL and authenticate
 them with the Plex token. Download to a per-session or cache-scoped local image
-file before starting FFmpeg.
+file before starting FFmpeg. Artwork fetches must use a short bounded timeout
+with fail-open behavior; on timeout, cancellation, network error, non-2xx
+response, or decode failure, start playback with placeholder art instead of
+waiting further.
 
 ### Jellyfin
 
@@ -209,6 +214,12 @@ the bridge data directory with cleanup through the session `OnStop` path or a
 startup reaper. A content-addressed persistent cache can be added later if
 repeated downloads become a problem.
 
+Artwork cleanup must compose with existing adapter cleanup. Plex and Jellyfin
+already attach `OnStop` handlers for transcode cleanup and reporting; artwork
+cleanup must wrap the existing handler and always invoke it. A helper such as
+`withArtworkCleanup(original, cleanup)` is preferred over assigning `OnStop`
+directly in multiple adapters.
+
 ## FFmpeg Graph Shape
 
 The existing visualizer graph builder should grow mode-specific branches. For
@@ -221,10 +232,18 @@ ffmpeg -i <audio-url> -loop 1 -i <artwork-path>
   -map 0:a:0 ...
 ```
 
-The exact input ordering is implementation detail, but tests should pin it once
-chosen so audio mapping remains stable. Audio-only DASH paths already use a
-second audio input in some command shapes, so implementation must avoid
-ambiguous input indexing by centralizing visualizer input map construction.
+The input-indexing contract must be explicit:
+
+- input `0` is always the primary media input
+- when `AudioInputURL` is empty, visualizer audio comes from `0:a:0`
+- when `AudioInputURL` is present, input `1` is the separate audio input and
+  visualizer audio comes from `1:a:0`
+- when `ArtworkPath` is present, artwork is appended after media/audio inputs:
+  index `1` without `AudioInputURL`, or index `2` with `AudioInputURL`
+
+Implementation should centralize these labels in helpers such as
+`visualizerAudioInputMap` and `visualizerArtworkInputMap` rather than spreading
+literal input indexes through mode builders.
 
 Album-art filters should:
 
@@ -258,6 +277,10 @@ whatever restart is triggered by stronger mixed-scope changes.
 No separate album-art enable toggle is needed in this wave. Album-art modes
 implicitly request artwork; when artwork is unavailable they use placeholders.
 
+The public enum may grow incrementally during implementation. Do not expose
+`cover_vu` or `cover_spectrum` in config examples or the UI until artwork
+plumbing and their FFmpeg graphs are implemented.
+
 ## Error Handling
 
 - Unsupported mode values fail bridge config validation and UI save validation.
@@ -266,6 +289,9 @@ implicitly request artwork; when artwork is unavailable they use placeholders.
 - Missing album art degrades to generated placeholder art.
 - Artwork fetch/decode/cache errors are logged at debug or warning level and do
   not fail music playback.
+- Artwork paths passed to FFmpeg must be files created by GroovyRelay under the
+  bridge data/cache directory. Provider metadata must never be allowed to inject
+  arbitrary local paths into the FFmpeg command.
 - If a mode-specific graph cannot be built for reasons unrelated to artwork,
   session startup fails with an explicit error rather than silently switching
   to a different mode.
@@ -283,9 +309,14 @@ Add or update tests for:
 - FFmpeg command graph shape for each new mode
 - album-art modes adding an artwork input only when `ArtworkPath` is present
 - album-art modes using generated placeholders when `ArtworkPath` is empty
+- album-art command input mapping when both `AudioInputURL` and `ArtworkPath`
+  are present
 - Plex metadata extraction for title, artist, album, duration, and artwork
 - Jellyfin metadata extraction for title, artist, album, duration, and artwork
 - artwork download/cache failure falling back without blocking playback
+- artwork fetch timeout falling back without blocking playback
+- artwork cleanup wrapping existing `OnStop` handlers without suppressing them
+- stale artwork cache reaping at startup
 
 The final verification remains `go test ./...`.
 
@@ -293,8 +324,10 @@ The final verification remains `go test ./...`.
 
 ### Phase 1: Mode Constants And Validation
 
-Add the selected mode names through config, core, UI, manager mapping, FFmpeg
-mode definitions, and required-filter declarations.
+Add the CRT arcade mode names through config, core, UI, manager mapping,
+FFmpeg mode definitions, and required-filter declarations. Keep album-art modes
+out of the public config/UI enum until Phase 4, though internal constants may
+be introduced earlier if useful for tests.
 
 ### Phase 2: CRT Arcade Graphs
 
