@@ -14,9 +14,9 @@
     <div class="head"><span class="grip"></span></div>
   </div>
   <div class="seek-time">
-    <span class="seg-display" data-ghost="88:88">{{.ElapsedTime}}</span>
+    <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">{{.ElapsedTime}}</span></span>
     <span class="sep">/</span>
-    <span class="total seg-display" data-ghost="88:88">{{.TotalTime}}</span>
+    <span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">{{.TotalTime}}</span></span>
     <span class="pct" title="Playback position">{{.PercentPlayed}}</span>
   </div>
   <button class="gear-btn" id="gear-btn" type="button">&#x2699; Setup</button>

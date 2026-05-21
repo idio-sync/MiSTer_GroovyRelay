@@ -493,6 +493,37 @@ func TestHandleIndex_RendersMeterGhostSegmentsAccessibly(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	transportStart := strings.Index(body, `<!-- chassis:transport -->`)
+	transportEnd := strings.Index(body, `<!-- chassis:visualizer-bank -->`)
+	if transportStart == -1 || transportEnd == -1 || transportEnd <= transportStart {
+		t.Fatalf("rendered body missing ordered transport/visualizer markers")
+	}
+	transportHTML := body[transportStart:transportEnd]
+	for _, want := range []string{
+		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">--:--</span></span>`,
+		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">--:--</span></span>`,
+	} {
+		if !strings.Contains(transportHTML, want) {
+			t.Errorf("body missing accessible transport ghost markup %q", want)
+		}
+	}
+	if strings.Contains(transportHTML, `data-ghost=`) {
+		t.Fatal("rendered transport markup must not contain legacy data-ghost attributes")
+	}
+}
+
 func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
