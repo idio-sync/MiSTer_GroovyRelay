@@ -2091,12 +2091,25 @@ body.receiver.settings-open .gear-btn {
 @container chassis (max-width: 420px) {
   body.receiver .transport-strip {
     grid-template-columns: 48px 1fr auto;
+    grid-template-areas:
+      "label controls controls"
+      "label seek gear";
     gap: 6px;
   }
 
+  body.receiver .transport-strip .strip-label {
+    grid-area: label;
+  }
+
   body.receiver .transport-row {
+    grid-area: controls;
     flex-wrap: wrap;
     gap: 3px;
+  }
+
+  body.receiver .seek-bar {
+    grid-area: seek;
+    min-width: 0;
   }
 
   body.receiver .trn {
@@ -2107,7 +2120,9 @@ body.receiver.settings-open .gear-btn {
   }
 
   body.receiver .gear-btn {
+    grid-area: gear;
     min-height: 40px;
+    padding: 8px 10px;
   }
 }
 

@@ -361,6 +361,29 @@ func TestChassisCSS_DoesNotGenerateReadableGhostSegments(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(css)
+	for _, want := range []string{
+		`@container chassis (max-width: 420px)`,
+		`"label controls controls"`,
+		`"label seek gear"`,
+		`grid-area: controls;`,
+		`grid-area: seek;`,
+		`grid-area: gear;`,
+		`body.receiver .viz-btn--preview:disabled`,
+		`cursor: not-allowed;`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("chassis.css missing transport/preview contract %q", want)
+		}
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
