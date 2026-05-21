@@ -452,6 +452,38 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_RendersMeterGhostSegmentsAccessibly(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	meterStart := strings.Index(body, `<!-- chassis:meter -->`)
+	meterEnd := strings.Index(body, `<!-- chassis:transport -->`)
+	if meterStart == -1 || meterEnd == -1 || meterEnd <= meterStart {
+		t.Fatalf("rendered body missing ordered meter/transport markers")
+	}
+	meterHTML := body[meterStart:meterEnd]
+	for _, want := range []string{
+		`class="seg-ghost" aria-hidden="true">~88.8</span><span class="seg-text">---</span></span>`,
+		`<span class="val seg-display" id="lufs-val">`,
+		`<span class="val seg-display locked">`,
+	} {
+		if !strings.Contains(meterHTML, want) {
+			t.Errorf("body missing accessible meter ghost markup %q", want)
+		}
+	}
+	if strings.Contains(meterHTML, `data-ghost=`) {
+		t.Fatal("rendered meter markup must not contain legacy data-ghost attributes")
+	}
+}
+
 func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)

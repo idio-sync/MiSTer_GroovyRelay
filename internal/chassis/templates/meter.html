@@ -11,17 +11,17 @@
           </span>
           <span class="grp">
             <span class="key">AUDIO OUT</span>
-            <span class="seg-display" data-ghost="~~~~~ ~ ~~~">{{.SourceStrip.AudioOut}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~ ~ ~~~</span><span class="seg-text">{{.SourceStrip.AudioOut}}</span></span>
           </span>
         </div>
         <div class="video-grp">
           <span class="grp">
             <span class="key">SRC</span>
-            <span class="seg-display" data-ghost="~~~~ ~ ~~~ ~ ~~ ~ ~~~~">{{.SourceStrip.Src}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~ ~ ~~ ~ ~~~~</span><span class="seg-text">{{.SourceStrip.Src}}</span></span>
           </span>
           <span class="grp">
             <span class="key">CROP</span>
-            <span class="seg-display" data-ghost="~~~~ ~ ~~~~ ~~~~~~">{{.SourceStrip.Crop}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~ ~~~~~~</span><span class="seg-text">{{.SourceStrip.Crop}}</span></span>
           </span>
         </div>
         <div class="net-grp">
@@ -30,11 +30,11 @@
             <span class="buf-bar" title="HLS segments cached">
               {{range until 12}}<span class="seg"></span>{{end}}
             </span>
-            <span class="seg-display" data-ghost="~~~~~~~~~">{{.SourceStrip.HLSBuffer}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~</span><span class="seg-text">{{.SourceStrip.HLSBuffer}}</span></span>
           </span>
           <span class="grp">
             <span class="key">DROPS</span>
-            <span class="seg-display" data-ghost="88.8">{{.SourceStrip.Drops}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.SourceStrip.Drops}}</span></span>
             <span style="font:600 9px 'Inter',sans-serif;letter-spacing:0.2em;color:var(--vfd-faded);text-shadow:none;">%</span>
           </span>
         </div>
@@ -66,12 +66,12 @@
         </div>
 
         <div class="video-grp">
-          <div class="stat"><div class="v seg-display" data-ghost="88.8">{{.MidRow.BitrateMbps}}</div><div class="k seg-display" data-ghost="~~~~">Mbps</div></div>
-          <div class="stat"><div class="v seg-display" data-ghost="88.8">{{.MidRow.FreqKHz}}</div><div class="k seg-display" data-ghost="~~~~">kHz</div></div>
-          <div class="stat"><div class="v seg-display" data-ghost="888">{{.MidRow.Mode}}</div><div class="k seg-display" data-ghost="~~~~">MODE</div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.BitrateMbps}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">Mbps</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.FreqKHz}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">kHz</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">888</span><span class="seg-text">{{.MidRow.Mode}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MODE</span></div></div>
           <div class="std-lamps std-lamps--stack" title="Output analog standard">
-            <span class="std-ind{{if .MidRow.StandardNTSC}} active{{end}} seg-display" data-ghost="~~~~">NTSC</span>
-            <span class="std-ind{{if .MidRow.StandardPAL}} active{{end}} seg-display" data-ghost="~~~">PAL</span>
+            <span class="std-ind{{if .MidRow.StandardNTSC}} active{{end}} seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">NTSC</span></span>
+            <span class="std-ind{{if .MidRow.StandardPAL}} active{{end}} seg-display"><span class="seg-ghost" aria-hidden="true">~~~</span><span class="seg-text">PAL</span></span>
           </div>
           <div class="field-flip" title="Interlace field interleave &middot; field order &middot; lock">
             <div class="row"><span class="dot odd"></span><span class="lbl">ODD</span></div>
@@ -81,14 +81,14 @@
         </div>
 
         <div class="net-grp">
-          <div class="stat"><div class="v seg-display" data-ghost="88.8">{{.MidRow.ThroughputMBs}}</div><div class="k seg-display" data-ghost="~~~~">MB/S</div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.ThroughputMBs}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MB/S</span></div></div>
           <div class="throughput-wrap aux-scope" title="Network throughput &middot; last 30 seconds">
             <div class="aux-screen">
               <canvas id="throughput-canvas" width="220" height="120"></canvas>
             </div>
             <span class="aux-lbl" id="throughput-lbl">NET &middot; {{.MidRow.ThroughputMBs}} MB/S</span>
           </div>
-          <div class="stat"><div class="v seg-display" data-ghost="88.8">{{.MidRow.MSAck}}</div><div class="k seg-display" data-ghost="~~~~~~">MS ACK</div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.MSAck}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">MS ACK</span></div></div>
           <div class="ack-wrap aux-scope" title="ACK latency &middot; last 128 frames">
             <div class="aux-screen">
               <canvas id="ack-canvas" width="220" height="120"></canvas>
@@ -120,32 +120,32 @@
             <span class="vu-sep"></span>
             <div class="vu-lufs" title="Short-term loudness (EBU R128 &middot; 3 s window)">
               <span class="lbl">LUFS &middot; ST</span>
-              <span class="val seg-display" id="lufs-val" data-ghost="~88.8">{{.Readout.LUFS}}</span>
+              <span class="val seg-display" id="lufs-val"><span class="seg-ghost" aria-hidden="true">~88.8</span><span class="seg-text">{{.Readout.LUFS}}</span></span>
             </div>
           </div>
         </div>
         <div class="video-grp">
           <span class="grp">
             <span class="key">OUTPUT</span>
-            <span class="seg-display" data-ghost="~~~~~~~~~~ ~~~~ ~ ~~~~~~">{{.Readout.Output}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~~ ~~~~ ~ ~~~~~~</span><span class="seg-text">{{.Readout.Output}}</span></span>
           </span>
           <span class="grp">
             <span class="key">ASPECT</span>
-            <span class="seg-display" data-ghost="~~~ ~~~~~~~~~~">{{.Readout.Aspect}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~ ~~~~~~~~~~</span><span class="seg-text">{{.Readout.Aspect}}</span></span>
           </span>
         </div>
         <div class="net-grp">
           <span class="grp">
             <span class="key">PIPE</span>
-            <span class="seg-display" data-ghost="~~~~ ~ ~~~~">{{.Readout.Pipe}}</span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~</span><span class="seg-text">{{.Readout.Pipe}}</span></span>
           </span>
           <span class="grp speed-grp">
             <span class="key">SPEED</span>
-            <span class="val seg-display locked" data-ghost="8.88~ ~~~~">{{.Readout.Speed}}</span>
+            <span class="val seg-display locked"><span class="seg-ghost" aria-hidden="true">8.88~ ~~~~</span><span class="seg-text">{{.Readout.Speed}}</span></span>
           </span>
           <span class="grp link-grp">
             <span class="key">LINK</span>
-            <span class="val seg-display" data-ghost="~~~~~~ ~ ~~~~~~~">{{.Readout.Link}}</span>
+            <span class="val seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~ ~~~~~~~</span><span class="seg-text">{{.Readout.Link}}</span></span>
           </span>
         </div>
       </div>
