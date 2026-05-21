@@ -58,12 +58,12 @@ internal/chassis/
 
 ### Files modified
 
-- `internal/chassis/server.go` — Add `Session SessionViewer` field to `Config`. Optional (nil → idle-only mode). Store on `Server` for handlers.
+- `internal/chassis/server.go` — Add `Session SessionViewer` field to `Config`. Optional (nil → idle-only mode). Store on `Server` for handlers. Add the snapshot-cache fields plus `Close()` lifecycle hook described below.
 - `internal/chassis/data.go` — Move `idleSnapshot` body into a private helper. Add `snapshotFromSession(cfg, sv, now)` that calls `sv.StatusHomeView()`, maps to `ReceiverPageData`, falls back to `idleSnapshot` when `sv == nil` or state is idle.
 - `internal/chassis/handler.go` — `handleIndex` now calls `snapshotFromSession` instead of `idleSnapshot` directly.
 - `internal/chassis/templates/vfd.html` — Add `data-vfd-title`, `data-vfd-marquee`, `data-vfd-queue` attribute hooks. CSS-equivalent classes stay in place for styling.
 - `internal/chassis/templates/shell.html` — Add `<script defer src="/receiver/static/vfd-live.js?v={{.Version}}">` after the existing `chassis.js` tag.
-- `cmd/mister-groovy-relay/main.go` — Pass `Session: coreMgr` into `chassis.Config`.
+- `cmd/mister-groovy-relay/main.go` — Pass `Session: coreMgr` into `chassis.Config` and defer `chassisSrv.Close()` after construction.
 
 ### `SessionViewer` interface
 
@@ -92,11 +92,22 @@ Chassis already imports `internal/core` via Phase 0's `chassis.Config.Manager`. 
 |---|---|---|
 | `State` | derived from `StatusHomeView.State` per the mapping table below | mirrors `ReceiverPageData.State`; see Issue note on naming |
 | `Title` | `StatusHomeView.Title` when live; `"STANDBY"` when idle | direct field |
-| `Marquee` | when live: server-formatted string `<UPPER(Source)> · <formatted Position>/<formatted Duration>` (e.g., `"PLEX · 04:23 / 09:56"`); when idle: the Phase 0 marquee hint | composed server-side in `snapshotFromSession`; later specs (3+) may extend with track-title / artist / etc. once available |
+| `Marquee` | when live: server-formatted string `<UPPER(Source)> · <formatted position> / <formatted duration>` (e.g., `"PLEX · 04:23 / 09:56"`); when idle: the Phase 0 marquee hint | composed server-side in `snapshotFromSession`; later specs (3+) may extend with track-title / artist / etc. once available |
 | `QueueCurrent` | `0` (placeholder for Phase 1) | Queue data is not on `StatusHomeView` today. Spec 3 (transport) or Spec 5 may surface real queue counts; the chassis wire format stays stable, only the source mapping changes. |
 | `QueueTotal` | `0` (placeholder for Phase 1) | same as above |
 | `SystemTime` | `now.Format("15:04")` (server-rendered for first paint; client ticker updates) | unchanged from Phase 0 |
 | `Uptime` | `formatUptime(now.Sub(cfg.StartedAt))` (server-rendered + included in the `vfd` event payload — see Section 3) | unchanged from Phase 0 for initial render; the wire-format inclusion is what's new in Spec 2 |
+
+### Playback clock formatting
+
+Chassis owns its clock-formatting helpers locally; it must not import private helpers from `internal/ui`.
+
+- `formatPlaybackPosition(d time.Duration)` renders the current position. Negative durations clamp to `00:00`; non-negative durations truncate to whole seconds. Durations below one hour render as `MM:SS`; durations of one hour or more render as `H:MM:SS`.
+- `formatPlaybackDuration(d time.Duration)` renders the total duration. `d <= 0` means unknown and renders as `--:--`; positive durations use the same `MM:SS` / `H:MM:SS` formatting as position.
+- Live marquee source is `strings.ToUpper(StatusHomeView.Source)`, falling back to `BRIDGE` when `Source` is empty.
+- Live marquee format is exactly `<SOURCE> · <position> / <duration>`, with single spaces around `/`.
+
+Examples: `0` position + unknown duration → `PLEX · 00:00 / --:--`; `64m05s` duration → `1:04:05`.
 
 ### `core.State` → chassis `ReceiverState` mapping
 
@@ -114,12 +125,13 @@ Spec 3 (transport controls) will add a separate `transport` event carrying the p
 
 `core.Manager.StatusHomeView()` acquires `m.mu.Lock()` (per `internal/core/manager.go` § StatusHomeView; the CLAUDE.md invariant "Manager.mu is never held across network I/O" is honored because the method is purely an in-memory snapshot read).
 
-With one SSE connection per browser tab and a 250 ms diff ticker, each open tab acquires the lock 4×/sec. The Phase 1 expected load (≤5 simultaneous chassis viewers) keeps this comfortably bounded, but to decouple the cost from the tab fan-out, **Spec 2 adds a per-server snapshot cache:**
+With one SSE connection per browser tab and a 250 ms diff ticker, each open tab would otherwise acquire the lock 4×/sec. The Phase 1 expected load (≤5 simultaneous chassis viewers) keeps this comfortably bounded, but to decouple the cost from the tab fan-out, **Spec 2 adds a per-server snapshot cache with an explicit lifecycle:**
 
-- `Server` gains a `snapshotCache` field with a single `ReceiverPageData` + last-update timestamp.
-- A single background goroutine (started on `New`, stopped on a context-cancel hook from `Mount`) refreshes the cache every 250 ms by calling `s.session.StatusHomeView()` once and storing the resulting `ReceiverPageData`.
+- `Server` gains a `snapshotCache` field with a single `ReceiverPageData` + last-update timestamp, guarded by `sync.RWMutex`.
+- `New` seeds the cache synchronously with `snapshotFromSession(cfg, cfg.Session, time.Now())`. It does **not** start a goroutine, so tests and unmounted servers do not leak background work. This guarantees the first `/receiver/events` connection can emit a valid initial snapshot.
+- `Mount` starts the cache refresher exactly once via `sync.Once`. The refresher ticks every 250 ms, calls `snapshotFromSession(...)`, and stores the result. Production calls `defer chassisSrv.Close()` after `New`; tests call `t.Cleanup(s.Close)`. `Close()` cancels the refresher and waits for it to exit.
 - All SSE handler goroutines read the cache (with a short `sync.RWMutex` `RLock`) rather than calling `StatusHomeView()` per-tab.
-- Result: lock acquisitions on `core.Manager.mu` are 4/sec total regardless of tab count. Adding telemetry consumers in Spec 5 doesn't multiply lock pressure.
+- Result: lock acquisitions on `core.Manager.mu` are 4/sec total regardless of tab count while the chassis server is mounted. Adding telemetry consumers in Spec 5 doesn't multiply lock pressure.
 
 The cache is implementation-only — the wire format and external behaviour are identical. Tests can either use the cache (production path) or call `snapshotFromSession` directly for unit assertions.
 
@@ -141,10 +153,14 @@ Method-aware Go 1.22+ mux; non-GET requests fall through to a default 405.
 
 ```go
 type Server struct {
-    cfg      Config
-    session  SessionViewer   // nil → idle-only mode
-    tmpl     *template.Template
-    cssBytes []byte
+    cfg           Config
+    session       SessionViewer   // nil → idle-only mode
+    tmpl          *template.Template
+    cssBytes      []byte
+    snapshotCache *snapshotCache
+    cacheOnce     sync.Once
+    cacheCancel   context.CancelFunc
+    cacheDone     chan struct{}
 }
 ```
 
@@ -153,7 +169,7 @@ type Server struct {
 1. Tests that exercise rendering without wiring up a fake `SessionViewer`.
 2. Offline / degraded modes where the bridge is up but session reporting isn't available.
 
-`handleIndex` and `handleEvents` both check `s.session == nil` and produce idle output.
+`handleIndex` and `handleEvents` both check `s.session == nil` and produce idle output. `Close()` is idempotent; it is safe to call even when `Mount` never started the refresher.
 
 ### Mount order
 
@@ -191,7 +207,7 @@ data: {"title":"STANDBY","marquee":"MISTER LINK OK · 4MS · ...","queueCurrent"
 |---|---|---|---|
 | `state` | `state` | `"idle"` \| `"live"` | Triggers `window.Chassis.State.set(...)` on the client. |
 | `vfd` | `title` | string | `"STANDBY"` in idle; cast title (`core.StatusHomeView.Title`) when live. |
-| `vfd` | `marquee` | string | Idle hint message in idle; server-formatted progress string in live (`"<SOURCE> · <Position>/<Duration>"`). Server-rendered (no client formatting). |
+| `vfd` | `marquee` | string | Idle hint message in idle; server-formatted progress string in live (`"<SOURCE> · <position> / <duration>"`). Server-rendered (no client formatting). |
 | `vfd` | `queueCurrent` | integer | `0` for Phase 1 (placeholder — `StatusHomeView` does not surface queue data yet). |
 | `vfd` | `queueTotal` | integer | `0` for Phase 1 (placeholder). |
 | `vfd` | `uptime` | string | `formatUptime(now - cfg.StartedAt)` (e.g. `"4H 12M"`). Included in every `vfd` event so the displayed uptime advances even when the page sits open for hours. |
@@ -224,7 +240,7 @@ event: state
 data: {"state":"<current>"}
 
 event: vfd
-data: {"title":"...","marquee":"...","queueCurrent":N,"queueTotal":M}
+data: {"title":"...","marquee":"...","queueCurrent":N,"queueTotal":M,"uptime":"..."}
 
 ```
 
@@ -252,10 +268,10 @@ No broker in `core.Manager`. The chassis SSE handler runs a 250 ms diff ticker. 
 
 ```go
 // handleEvents serves a long-lived SSE stream. The handler reads
-// snapshots from the per-server cache (refreshed by a single
-// background goroutine every 250 ms — see Architecture § Locking and
-// concurrency) so N connected tabs don't multiply lock pressure on
-// core.Manager.mu.
+// snapshots from the per-server cache (seeded synchronously by New and
+// refreshed by a single goroutine while the mounted Server is open —
+// see Architecture § Locking and concurrency) so N connected tabs don't
+// multiply lock pressure on core.Manager.mu.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
     flusher, ok := w.(http.Flusher)
     if !ok {
@@ -327,7 +343,7 @@ func emit(w io.Writer, name string, payload any) error {
 }
 ```
 
-250 ms tick → worst case 4 events / sec (state + vfd both changing). Realistic cadence: changes are usually one field at a time on the order of seconds apart. CPU and network cost: negligible. **Lock pressure on `core.Manager.mu` is constant at 4 Hz regardless of how many tabs are open**, because the snapshot cache is refreshed by a single goroutine and read-shared across all connected SSE handlers (see Architecture § Locking and concurrency).
+250 ms tick → worst case 4 events / sec per open tab (state + vfd both changing). Realistic cadence: changes are usually one field at a time on the order of seconds apart. CPU and network cost: negligible. **Lock pressure on `core.Manager.mu` is constant at 4 Hz regardless of how many tabs are open**, because the snapshot cache is refreshed by a single goroutine and read-shared across all connected SSE handlers (see Architecture § Locking and concurrency).
 
 Mid-write disconnects (TCP RST during `io.WriteString`) propagate through the `error` return on `emit` / `WriteString`. The handler returns immediately on any write error rather than continuing to push to a dead connection.
 
@@ -415,7 +431,6 @@ data: {"title":"BURNING DOWN THE HOUSE","marquee":"PLEX · 00:08 / 04:01","queue
   }
 
   let source = null;
-  let backoffMs = 1000;
 
   function handleStateEvent(ev) {
     try {
@@ -448,12 +463,8 @@ data: {"title":"BURNING DOWN THE HOUSE","marquee":"PLEX · 00:08 / 04:01","queue
     source = new EventSource('/receiver/events');
     source.addEventListener('state', handleStateEvent);
     source.addEventListener('vfd', handleVfdEvent);
-    source.addEventListener('open', () => { backoffMs = 1000; });
     source.addEventListener('error', () => {
-      if (source.readyState === EventSource.CLOSED) {
-        backoffMs = Math.min(backoffMs * 2, 30000);
-        console.info(`vfd-live: stream closed, browser will retry; backoff ${backoffMs}ms`);
-      }
+      console.info('vfd-live: stream interrupted; browser will retry using the SSE retry directive');
     });
   }
 
@@ -520,10 +531,10 @@ This is the right behaviour for the dev toggle's purpose (design iteration witho
 ### Error handling philosophy
 
 - JSON parse errors → console warning, skip the event. Connection stays open.
-- `EventSource` `error` → browser-native retry; we add only logging.
+- `EventSource` `error` → browser-native retry; the server's `retry: 3000` directive controls reconnect cadence. The client adds only logging.
 - `chassis.js` not loaded → log and bail.
 
-No retry-with-exponential-backoff on top of `EventSource` (the browser already retries). No catch-all `try/finally` wrapping every callback (the runtime handles unhandled errors gracefully and the operator sees them in DevTools).
+No retry-with-exponential-backoff on top of `EventSource` (the browser already retries according to the SSE `retry:` directive). No catch-all `try/finally` wrapping every callback (the runtime handles unhandled errors gracefully and the operator sees them in DevTools).
 
 ## Testing Approach
 
@@ -548,7 +559,9 @@ TestHandleEvents_NilSessionStreamsIdleOnly
 TestHandleEvents_MultipleConcurrentConnections
 TestHandleEvents_EmitsRetryDirectiveOnConnect
 TestHandleEvents_BailsOnMidWriteDisconnect
+TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE
 TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs
+TestServerClose_StopsSnapshotCacheRefresher
 
 TestVfdChanged_DetectsEveryFieldDelta
 TestEmit_FormatsValidSSERecord
@@ -556,14 +569,16 @@ TestEmit_FormatsValidSSERecord
 
 Notes:
 
-- `TestHandleEvents_EmitsInitialSnapshotOnConnect` uses a custom `bytes.Buffer`-backed `ResponseWriter` that implements `http.Flusher`. Reads the buffer, asserts each SSE record.
-- `TestHandleEvents_EmitsStateEventOnTransition` uses a `SessionViewer` mock that toggles between idle and live snapshots. Injects a controllable ticker (10 ms during tests) and runs the handler in a goroutine; captures the buffer after 50 ms.
+- `TestHandleEvents_EmitsInitialSnapshotOnConnect` uses a synchronized `ResponseWriter` that implements `http.Flusher` and exposes flushed records over a channel. The test cancels the request context, waits for the handler goroutine to exit, then asserts the captured SSE records. It never reads a shared buffer while the handler can still write to it.
+- `TestHandleEvents_EmitsStateEventOnTransition` uses a `SessionViewer` mock that toggles between idle and live snapshots. Injects a controllable ticker (10 ms during tests), runs the handler in a goroutine, waits for the expected record via the writer channel, then cancels and joins before reading accumulated bytes.
 - `TestHandleEvents_TerminatesOnClientDisconnect` cancels the request context and asserts the handler goroutine returns within 100 ms.
 - `TestHandleEvents_NilSessionStreamsIdleOnly` guards the offline-friendly mode — chassis serves a usable preview even when no real `SessionViewer` is wired.
 - `TestHandleEvents_MultipleConcurrentConnections` spins 5 SSE handler goroutines against the same `Server`, drives a state transition on the shared fake `SessionViewer`, and asserts every connection observes the transition. Catches accidental shared-state mutations and exposes the goroutine-per-tab cost in CI rather than production.
 - `TestHandleEvents_EmitsRetryDirectiveOnConnect` asserts the first bytes the server writes are `retry: 3000\n\n` so browser reconnect cadence is pinned uniformly (Firefox otherwise defaults to ~5 s).
 - `TestHandleEvents_BailsOnMidWriteDisconnect` injects a writer that returns `io.ErrClosedPipe` mid-stream and asserts the handler goroutine returns within 100 ms instead of continuing to push to a dead connection.
-- `TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs` mocks `SessionViewer` with a call-counter and verifies the cache refresher invokes `StatusHomeView()` exactly 4×/sec total even with 5 connected SSE handlers (the lock-contention guard described in Architecture § Locking and concurrency).
+- `TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE` uses a fake live session and asserts the first `vfd` event on a new SSE connection contains that live title, proving the cache cannot emit a zero-value or stale first frame.
+- `TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs` mocks `SessionViewer` with a call-counter and verifies the cache refresher invokes `StatusHomeView()` once per injected tick total even with 5 connected SSE handlers (the lock-contention guard described in Architecture § Locking and concurrency).
+- `TestServerClose_StopsSnapshotCacheRefresher` starts the mounted cache refresher with an injected ticker, calls `Close()`, and asserts no further `StatusHomeView()` calls occur. Also call `Close()` twice to prove idempotence.
 
 ### Layer 2 — Template tests
 
@@ -573,7 +588,7 @@ Notes:
 TestVfdTemplate_RendersDataAttributeHooks
 ```
 
-Renders the VFD partial with synthetic `VFDData`, asserts the output contains `data-vfd-title`, `data-vfd-marquee`, `data-vfd-queue`. Catches a regression where attributes are accidentally removed during a future CSS-only refactor — without them, `vfd-live.js` silently no-ops on update events.
+Renders the VFD partial with synthetic `VFDData`, asserts the output contains `data-vfd-title`, `data-vfd-marquee`, `data-vfd-queue`, and `data-vfd-uptime`. Catches a regression where attributes are accidentally removed during a future CSS-only refactor — without them, `vfd-live.js` silently no-ops on update events.
 
 ### Layer 3 — Integration coverage
 
@@ -593,8 +608,8 @@ The PR description's invariant-based checklist extends Phase 0's:
 
 - Start a cast (Plex push of a known title). Within ~1 s, `/receiver` flips `<body>` to `live` and the VFD shows the real title.
 - Stop the cast. Within ~1 s, `/receiver` flips back to `idle` and the VFD shows `STANDBY`.
-- Open `/receiver?dev=1`. The floating toggle still works when no cast is active. Once a cast starts, the server overrides the manual toggle on the next event.
-- Simulate a network disconnect while `/receiver` is open: DevTools Network panel → Throttling dropdown → "Offline", or alternatively kill and restart the bridge process. Wait for the browser's native EventSource retry (~3 s with the pinned `retry: 3000` directive). The DevTools console shows the `vfd-live: stream closed... backoff` log line. Restore the network (or the bridge) — the stream reconnects, the server sends a fresh initial snapshot, and state re-syncs.
+- Open `/receiver?dev=1`. The floating toggle still works when no cast is active. The manual body-class flip persists until a real server-side transition emits a different `state` event; for example, a manually toggled `live` view stays visually live when a cast starts, then flips back to `idle` when that cast ends.
+- Simulate a network disconnect while `/receiver` is open: DevTools Network panel → Throttling dropdown → "Offline", or alternatively kill and restart the bridge process. Wait for the browser's native EventSource retry (~3 s with the pinned `retry: 3000` directive). The DevTools console shows the `vfd-live: stream interrupted...` log line. Restore the network (or the bridge) — the stream reconnects, the server sends a fresh initial snapshot, and state re-syncs.
 - DevTools Network → EventStream tab: confirm wire format matches the protocol section (state and vfd event names, JSON payloads, periodic `: heartbeat` comments).
 
 ### Explicitly out of scope
@@ -618,7 +633,7 @@ Same as Phase 0 — `go vet`, `go test`, `go test -race`, `go test -tags=integra
 
 ### Coexistence invariants
 
-- `/ui/*` routes still return byte-identical responses; the existing now-playing banner continues to poll `/ui/playback/banner` independently.
+- `/ui/*` route behavior and key responses remain unchanged; the existing now-playing banner continues to poll `/ui/playback/banner` independently.
 - `internal/chassis/` adds two production Go files (`events.go`, `session.go`) plus `events_test.go` and one JS asset (`vfd-live.js`). Continues to import only `internal/core`, `internal/config`, `internal/adapters`. **No imports of `internal/ui` or `internal/uiserver`.**
 - Mount order in `cmd/mister-groovy-relay/main.go` unchanged: `ui.Server.Mount(mux)` first, `chassisSrv.Mount(mux)` second.
 - `chassis.Config.Manager *core.Manager` (Phase 0) remains threaded in. Spec 2 doesn't add new method calls on Manager; Spec 3 (transport) is the first spec that calls `Manager.Pause()` / `Play()` / `Stop()` / `SeekTo()`.
@@ -635,7 +650,7 @@ Still no cross-link from `/ui/*` to `/receiver/*`. The chassis is preview-only f
 
 ### Config & flags
 
-No new config fields. `/receiver/events` is unconditionally mounted.
+No new user-facing config fields or flags. `/receiver/events` is unconditionally mounted.
 
 ### Docs
 
@@ -652,7 +667,7 @@ Spec 2 is additive. Revert = revert the merge commit; nothing in `/ui/*`, the br
 |---|---|
 | SSE connection leaks goroutines if `r.Context().Done()` doesn't fire | Defer-cleanup pattern in the handler. `TestHandleEvents_TerminatesOnClientDisconnect` is the structural guard. |
 | Reverse-proxy buffering breaks SSE (nginx default) | `X-Accel-Buffering: no` in response headers; `Cache-Control: no-cache, no-store`. Documented in PR; operators deploying behind nginx informed via README troubleshooting section. |
-| Browser EventSource silently retrying every 3 s against a permanently-broken endpoint | Console logging in `vfd-live.js` `error` handler with exponential backoff tracking. The browser still retries every 3 s, but the operator sees one log line per backoff increment so unhealthy streams are diagnosable from DevTools. |
+| Browser EventSource silently retrying every 3 s against a permanently-broken endpoint | Console logging in `vfd-live.js` `error` handler. Retry cadence stays browser-native and is pinned by the server's `retry: 3000` directive, so unhealthy streams are diagnosable from DevTools without duplicating retry logic in JS. |
 | `core.Manager.StatusHomeView()` returns slow/inconsistent data under contention | Already production code as of /ui's status home. Spec 2 uses the same path; if the existing consumer is fine, so is this one. |
 | Test flakiness from goroutine + ticker timing in SSE handler tests | Use a controllable clock or inject a ticker channel. Existing `internal/dataplane` package already follows this pattern; mirror it. |
 | `vfd-live.js` loads before `chassis.js` (deferred script ordering) | `<script defer>` preserves document-order across deferred scripts (HTML spec). The shell template declares `chassis.js` first, `vfd-live.js` second. The runtime also explicitly checks `window.Chassis` exists and bails with a warning if not. |
