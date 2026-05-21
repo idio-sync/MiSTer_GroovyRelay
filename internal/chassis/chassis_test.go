@@ -285,6 +285,7 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 		{"pad2", `{{pad2 5}}`},
 		{"dim", `{{dim true}}`},
 		{"htmlComment", `{{htmlComment "chassis:test"}}`},
+		{"until", `{{range until 3}}x{{end}}`},
 	}
 	for _, p := range probes {
 		_, err := tmpl.New("probe-" + p.name).Parse(p.src)

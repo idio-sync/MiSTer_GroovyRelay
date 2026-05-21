@@ -34,6 +34,7 @@ var chassisStaticFS embed.FS
 //   - pad2: zero-padded two-digit strings for clock display.
 //   - dim: returns the CSS class string for inactive lamps.
 //   - list: constructs a string slice for small template membership probes.
+//   - until: returns n placeholders for repeated template elements.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
@@ -60,7 +61,8 @@ var templateFuncs = template.FuncMap{
 	"htmlComment": func(s string) template.HTML {
 		return template.HTML("<!-- " + s + " -->")
 	},
-	"list": func(args ...string) []string { return args },
+	"list":  func(args ...string) []string { return args },
+	"until": func(n int) []struct{} { return make([]struct{}, n) },
 }
 
 // parseTemplates parses the embedded chassis templates with the helper
