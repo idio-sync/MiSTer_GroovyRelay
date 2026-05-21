@@ -1,6 +1,6 @@
 {{define "source-cluster"}}
 {{htmlComment "chassis:source-cluster"}}
 <div class="source-cluster">
-  {{range .Buttons}}<button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}" title="{{.Label}} adapter">{{.Label}}</button>{{end}}
+  {{range .Buttons}}<button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}" type="button" title="{{.Label}} adapter">{{.Label}}</button>{{end}}
 </div>
 {{end}}

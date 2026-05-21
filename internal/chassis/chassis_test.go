@@ -19,7 +19,7 @@ import (
 // want to assert error paths shadow individual fields with zero values.
 func nonZeroConfig() Config {
 	return Config{
-		Bridge:    config.BridgeConfig{},
+		Bridge:    config.BridgeConfig{UI: config.UIConfig{HTTPPort: 32500}},
 		Manager:   &core.Manager{},
 		Registry:  adapters.NewRegistry(),
 		Version:   "test-1.0.0",
@@ -385,6 +385,36 @@ func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
+	}
+}
+
+func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`class="host-readout"`,
+		`10.0.0.5:32500`,
+		`<div class="input-panel" style="flex:1">`,
+		`id="paste-clear" type="button"`,
+		`id="torrent-file-input"`,
+		`class="hw-btn active" type="button"`,
+		`class="preset empty" type="button"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing stable hook %q", want)
+		}
+	}
+	if strings.Contains(body, `<label class="input-panel"`) {
+		t.Errorf("input panel must not be a label containing interactive children")
 	}
 }
 

@@ -9,7 +9,7 @@
     </div>
     <div class="preset-bank">
       {{range $i, $slot := .Slots}}
-      <button class="preset{{if not $slot.Filled}} empty{{end}}">
+      <button class="preset{{if not $slot.Filled}} empty{{end}}" type="button">
         <div class="num">{{pad2 (inc $i)}}</div>
         {{if $slot.Filled}}
         <div class="name">{{$slot.Title}}</div>
