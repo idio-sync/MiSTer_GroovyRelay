@@ -559,6 +559,20 @@ body.receiver .masthead .name {
   }
 }
 
+@container chassis (min-width: 601px) and (max-width: 900px) {
+  body.receiver .load-core-btn {
+    min-width: 84px;
+  }
+
+  body.receiver .load-core-btn .label-text {
+    display: inline;
+  }
+
+  body.receiver .load-core-btn::after {
+    content: none;
+  }
+}
+
 @container chassis (max-width: 420px) {
   body.receiver .receiver {
     padding: 8px 8px 12px;
@@ -890,6 +904,17 @@ body.receiver.idle .source-cluster .hw-btn.active {
   body.receiver .vfd-source-row .source-cluster .hw-btn {
     flex: 1 1 auto;
     min-width: 0;
+  }
+}
+
+@container chassis (max-width: 520px) {
+  body.receiver .vfd {
+    padding: 10px 12px 8px;
+  }
+
+  body.receiver .vfd .marquee-line {
+    font-size: 10px;
+    letter-spacing: 0.04em;
   }
 }
 
@@ -1780,7 +1805,7 @@ body.receiver.idle .meter-screen--compact .meter-mid-row .stat .v {
 }
 
 @container chassis (max-width: 600px) {
-  body.receiver .meter-screen--compact .meter-source-strip,
+  body.receiver .meter-screen.meter-screen--compact .meter-source-strip,
   body.receiver .field-flip {
     display: none;
   }
@@ -2584,6 +2609,17 @@ body.receiver .upload-btn {
 
   body.receiver .input-section .input-panel {
     width: 100%;
+  }
+}
+
+@container chassis (max-width: 520px) {
+  body.receiver .input-section > div {
+    flex-wrap: wrap;
+  }
+
+  body.receiver .input-section .input-panel {
+    flex: 1 1 100% !important;
+    flex-basis: 100% !important;
   }
 }
 

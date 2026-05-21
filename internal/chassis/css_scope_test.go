@@ -343,8 +343,38 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 		{
 			name:     "600 hides meter source strip and field flip",
 			atRule:   "@container chassis (max-width: 600px)",
-			selector: "body.receiver .meter-screen--compact .meter-source-strip,\n  body.receiver .field-flip",
+			selector: "body.receiver .meter-screen.meter-screen--compact .meter-source-strip,\n  body.receiver .field-flip",
 			want:     []string{"display: none;"},
+		},
+		{
+			name:     "520 wraps input controls below source buttons",
+			atRule:   "@container chassis (max-width: 520px)",
+			selector: "body.receiver .input-section > div",
+			want:     []string{"flex-wrap: wrap;"},
+		},
+		{
+			name:     "520 lets input prompt use a full row",
+			atRule:   "@container chassis (max-width: 520px)",
+			selector: "body.receiver .input-section .input-panel",
+			want:     []string{"flex: 1 1 100% !important;", "flex-basis: 100% !important;"},
+		},
+		{
+			name:     "520 tightens VFD marquee readability",
+			atRule:   "@container chassis (max-width: 520px)",
+			selector: "body.receiver .vfd .marquee-line",
+			want:     []string{"font-size: 10px;", "letter-spacing: 0.04em;"},
+		},
+		{
+			name:     "601-900 keeps full load core label",
+			atRule:   "@container chassis (min-width: 601px) and (max-width: 900px)",
+			selector: "body.receiver .load-core-btn .label-text",
+			want:     []string{"display: inline;"},
+		},
+		{
+			name:     "601-900 removes compact synthetic core label",
+			atRule:   "@container chassis (min-width: 601px) and (max-width: 900px)",
+			selector: "body.receiver .load-core-btn::after",
+			want:     []string{"content: none;"},
 		},
 		{
 			name:     "600 collapses transport controls",
