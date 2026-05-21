@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"time"
 
@@ -22,8 +23,8 @@ type Config struct {
 
 // Server owns the chassis runtime state.
 type Server struct {
-	cfg Config
-	// tmpl and cssBytes land in later tasks.
+	cfg  Config
+	tmpl *template.Template
 }
 
 // New builds a Server from cfg, validating fields required at startup.
@@ -34,7 +35,11 @@ func New(cfg Config) (*Server, error) {
 	if cfg.StartedAt.IsZero() {
 		return nil, fmt.Errorf("chassis: Config.StartedAt is required")
 	}
-	return &Server{cfg: cfg}, nil
+	tmpl, err := parseTemplates()
+	if err != nil {
+		return nil, err
+	}
+	return &Server{cfg: cfg, tmpl: tmpl}, nil
 }
 
 // Mount registers chassis routes on mux. Route wiring lands in Task 7.

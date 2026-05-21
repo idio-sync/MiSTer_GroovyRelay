@@ -1,0 +1,9 @@
+/* Receiver chassis stylesheet. Sections + content land in Tasks 17-25.
+   Phase 0 stub: just enough for embed + preprocessor to round-trip. */
+@font-face {
+  font-family: 'Inter';
+  src: url('/receiver/static/fonts/Inter-Variable.woff2?v={{.Version}}') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

@@ -3,6 +3,7 @@ package chassis
 import (
 	"mime"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,5 +240,49 @@ func TestIdleSnapshot_UptimeFromStartedAt(t *testing.T) {
 	got := idleSnapshot(cfg, now)
 	if got.VFD.Uptime != "4H 12M" {
 		t.Errorf("VFD.Uptime = %q, want 4H 12M", got.VFD.Uptime)
+	}
+}
+
+func TestTemplatesParse(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	if tmpl.Lookup("shell.html") == nil {
+		t.Error("shell.html not found in parsed templates")
+	}
+}
+
+func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	// Render a tiny harness that exercises each helper. If a helper is
+	// missing or renamed, html/template fails to execute and we see it
+	// here instead of in a later handler test where the failure mode
+	// is harder to diagnose.
+	probes := []struct {
+		name, src string
+	}{
+		{"inc", `{{inc 0}}`},
+		{"hasString", `{{hasString (list "a" "b") "b"}}`},
+		{"replaceAll", `{{replaceAll "a/b" "/" "-"}}`},
+		{"pad2", `{{pad2 5}}`},
+		{"dim", `{{dim true}}`},
+	}
+	for _, p := range probes {
+		_, err := tmpl.New("probe-" + p.name).Parse(p.src)
+		if err != nil {
+			t.Fatalf("probe parse %s: %v", p.name, err)
+		}
+	}
+	for _, p := range probes {
+		var sb strings.Builder
+		if err := tmpl.ExecuteTemplate(&sb, "probe-"+p.name, nil); err != nil {
+			t.Errorf("helper %q execute: %v", p.name, err)
+		}
 	}
 }
