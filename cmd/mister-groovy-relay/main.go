@@ -257,10 +257,11 @@ func main() {
 		}
 	}
 
-	// Shared HTTP mux: Plex Companion handlers + Settings UI. One
-	// listener, one port (bridge.ui.http_port), disjoint path prefixes
-	// (design §7.1). Plex adapter mounts /resources + /player/* ;
-	// ui.Server mounts /ui/* and the root redirect.
+	// Shared HTTP mux: Plex Companion handlers, Settings UI, and receiver
+	// chassis routes. One listener, one port (bridge.ui.http_port),
+	// disjoint path prefixes (design §7.1). Plex adapter mounts
+	// /resources + /player/*; ui.Server mounts /ui/* and the root
+	// redirect; chassis.Server mounts /receiver/*.
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
 
