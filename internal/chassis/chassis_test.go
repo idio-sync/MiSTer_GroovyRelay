@@ -474,6 +474,9 @@ func TestHandleIndex_RendersMeterGhostSegmentsAccessibly(t *testing.T) {
 		`class="seg-ghost" aria-hidden="true">~88.8</span><span class="seg-text">---</span></span>`,
 		`<span class="val seg-display" id="lufs-val">`,
 		`<span class="val seg-display locked">`,
+		`<canvas id="gonio-canvas" width="172" height="172" role="img" aria-labelledby="gonio-lbl">`,
+		`<canvas id="throughput-canvas" width="220" height="120" role="img" aria-labelledby="throughput-lbl">`,
+		`<canvas id="ack-canvas" width="220" height="120" role="img" aria-labelledby="ack-lbl">`,
 	} {
 		if !strings.Contains(meterHTML, want) {
 			t.Errorf("body missing accessible meter ghost markup %q", want)

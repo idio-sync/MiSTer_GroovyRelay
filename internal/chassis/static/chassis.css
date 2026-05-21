@@ -1529,16 +1529,6 @@ body.receiver.idle .gonio-wrap .gonio-lbl {
   color: oklch(0.32 0.04 175 / 0.6);
 }
 
-body.receiver .meter-screen.meter-screen--compact .aux-cluster {
-  display: flex;
-  grid-row: 2;
-  grid-column: 3;
-  gap: 14px;
-  align-items: center;
-  justify-content: center;
-  justify-self: center;
-}
-
 body.receiver .aux-screen {
   position: relative;
   overflow: hidden;
@@ -1756,12 +1746,7 @@ body.receiver.idle .tr-vu .vu-lufs .val {
   text-shadow: none;
 }
 
-body.receiver.idle .meter-screen--compact .bargraph .seg {
-  background: oklch(0.10 0.04 175);
-  box-shadow: none;
-}
-
-body.receiver.idle .meter-screen--compact .stat-cluster .stat .v {
+body.receiver.idle .meter-screen--compact .meter-mid-row .stat .v {
   color: var(--vfd-faded);
   text-shadow: none;
 }
@@ -1785,6 +1770,7 @@ body.receiver.idle .meter-screen--compact .stat-cluster .stat .v {
 
   body.receiver .tr-vu .ch-bar {
     width: 64px;
+    min-width: 64px;
   }
 
   body.receiver .tr-vu {
@@ -1805,7 +1791,7 @@ body.receiver.idle .meter-screen--compact .stat-cluster .stat .v {
 }
 
 @container chassis (max-width: 420px) {
-  body.receiver .meter-screen--compact .stat-cluster .stat:nth-child(3),
+  body.receiver .meter-screen--compact .meter-mid-row .video-grp .stat:nth-child(3),
   body.receiver .meter-screen--compact .meter-readout-line {
     display: none;
   }

@@ -55,13 +55,13 @@
           </div>
           <div class="gonio-wrap aux-scope" title="Stereo phase scope (goniometer) &middot; L vs R">
             <div class="gonio" id="gonio">
-              <canvas id="gonio-canvas" width="172" height="172"></canvas>
+              <canvas id="gonio-canvas" width="172" height="172" role="img" aria-labelledby="gonio-lbl">Stereo phase scope</canvas>
               <span class="lbl t">+</span>
               <span class="lbl b">&minus;</span>
               <span class="lbl l">L</span>
               <span class="lbl r">R</span>
             </div>
-            <span class="gonio-lbl aux-lbl">PHASE &middot; X/Y</span>
+            <span class="gonio-lbl aux-lbl" id="gonio-lbl">PHASE &middot; X/Y</span>
           </div>
         </div>
 
@@ -84,14 +84,14 @@
           <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.ThroughputMBs}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MB/S</span></div></div>
           <div class="throughput-wrap aux-scope" title="Network throughput &middot; last 30 seconds">
             <div class="aux-screen">
-              <canvas id="throughput-canvas" width="220" height="120"></canvas>
+              <canvas id="throughput-canvas" width="220" height="120" role="img" aria-labelledby="throughput-lbl">Network throughput graph</canvas>
             </div>
             <span class="aux-lbl" id="throughput-lbl">NET &middot; {{.MidRow.ThroughputMBs}} MB/S</span>
           </div>
           <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.MSAck}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">MS ACK</span></div></div>
           <div class="ack-wrap aux-scope" title="ACK latency &middot; last 128 frames">
             <div class="aux-screen">
-              <canvas id="ack-canvas" width="220" height="120"></canvas>
+              <canvas id="ack-canvas" width="220" height="120" role="img" aria-labelledby="ack-lbl">ACK latency graph</canvas>
             </div>
             <span class="aux-lbl" id="ack-lbl">ACK &middot; {{.MidRow.MSAck}} MS</span>
           </div>
