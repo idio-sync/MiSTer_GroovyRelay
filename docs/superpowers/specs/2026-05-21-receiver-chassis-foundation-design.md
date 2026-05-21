@@ -2,6 +2,7 @@
 
 **Status:** Brainstormed; awaiting implementation plan.
 **Scope:** First sub-project of the receiver chassis UI rollout. Stands up the `/receiver` route, the chassis chrome, design tokens, fonts, base templates, CSS architecture, and a minimal JS runtime so subsequent specs can wire live behaviour into a pre-laid-out idle chassis.
+**Repo location:** Committed under `docs/superpowers/specs/`. That directory is normally gitignored (`.gitignore` line 35); this spec was force-added intentionally so the rollout's foundational design is reviewable from the repo. Subsequent spec docs in this rollout should follow the same `git add -f` convention until the gitignore is revisited as a process decision.
 
 ## Background
 
@@ -96,6 +97,8 @@ internal/ui/static/               # UNCHANGED if it exists; not touched by Phase
 
 Co-locating templates and static under the package lets `go:embed` reference them with package-local paths. Cross-package embed is not supported by the Go toolchain.
 
+**Integration tests that mount both packages** (`TestMount_DoesNotShadowUIRoutes` and `TestReceiverEndToEnd`) live under `tests/integration/` with the existing `//go:build integration` tag. They are not part of the `internal/chassis/` package because they need to import both `internal/chassis` and `internal/ui`, which would violate the production cross-import rule if done from inside either package. See [Testing → Layer 3](#layer-3--integration-coverage) for the test list.
+
 ### Go package — `internal/chassis/`
 
 New package, no imports of `internal/ui` or `internal/uiserver`. Mirrors the HTTP/template/static shape of `internal/ui`, while leaving `internal/uiserver` as save/config plumbing:
@@ -152,7 +155,7 @@ chassisSrv, err := chassis.New(chassis.Config{
     HostIP:    hostIP,
 })
 if err != nil {
-    dieFriendly("chassis init", err)
+    dieFriendly("chassis init", err) // reuses the existing helper in cmd/mister-groovy-relay/banner.go
 }
 chassisSrv.Mount(mux)
 ```
@@ -160,7 +163,18 @@ chassisSrv.Mount(mux)
 `Mount` attaches:
 
 - `GET /receiver` and `GET /receiver/{$}` → both render `shell.html` with idle placeholder data. Go 1.22's method-aware mux treats these as distinct patterns; mirror the existing `internal/ui/server.go` `/ui` + `/ui/{$}` registration to avoid a 301 redirect dance.
-- `GET /receiver/static/` → serves embedded CSS/JS/fonts via `http.StripPrefix("/receiver/static/", ...)`, content-type lookup by extension, and `Cache-Control: public, max-age=31536000, immutable`. Do not use `GET /receiver/static/*`; Go `ServeMux` treats `*` as a literal path segment, not a subtree wildcard. `GET /receiver/static/{path...}` is also valid if the implementation prefers explicit wildcards.
+- `GET /receiver/static/` → serves embedded CSS/JS/fonts via `http.StripPrefix("/receiver/static/", http.FileServer(http.FS(...)))`, content-type lookup by extension, and `Cache-Control: public, max-age=31536000, immutable`. Do not use `GET /receiver/static/*`; Go `ServeMux` treats `*` as a literal path segment, not a subtree wildcard. `GET /receiver/static/{path...}` is also valid if the implementation prefers explicit wildcards.
+
+  **MIME-type discipline:** `http.FileServer` falls back to `mime.TypeByExtension`, which on some Windows hosts and minimal Linux containers (Alpine, scratch images) returns `""` for `.woff2`, yielding `application/octet-stream` and tripping strict CSP rules. Register the type explicitly at package init:
+
+  ```go
+  func init() {
+      mime.AddExtensionType(".woff2", "font/woff2")
+      mime.AddExtensionType(".woff",  "font/woff")
+  }
+  ```
+
+  Add a Layer 1 test (`TestStaticAssets_Fonts_HaveCorrectMIME`) that asserts the served `Content-Type` for `Inter-Variable.woff2` is `font/woff2`.
 
 Mount order in `main.go`: existing `ui.Server` first, then `chassis.Server`. Path prefixes are disjoint so collision is structurally impossible, but the order is documented and tested.
 
@@ -217,7 +231,7 @@ Single source of truth for Phase 0's default page content:
 func idleSnapshot(cfg Config, now time.Time) ReceiverPageData
 ```
 
-Returns a fully populated `ReceiverPageData` with `State = "idle"` and placeholder strings matching the mockup's idle state. It reads `cfg.Bridge`, `cfg.Version`, `cfg.HostIP`, and `cfg.StartedAt` so the status bar and uptime are deterministic under test; an empty `cfg.HostIP` renders as an explicit unavailable/unknown display value rather than failing server startup. `handleIndex` calls it directly. Spec 2 (VFD live) replaces this with `snapshotFromSession()` that reads real session state, falling back to `idleSnapshot()` when no session is active.
+Returns a fully populated `ReceiverPageData` with `State = "idle"` and placeholder strings matching the mockup's idle state. It reads `cfg.Bridge`, `cfg.Version`, `cfg.HostIP`, and `cfg.StartedAt` so the status bar and uptime are deterministic under test; an empty `cfg.HostIP` renders as the literal display string `"OFFLINE"` (see Appendix A) rather than failing server startup. `handleIndex` calls it directly. Spec 2 (VFD live) replaces this with `snapshotFromSession()` that reads real session state, falling back to `idleSnapshot()` when no session is active.
 
 ### Template composition
 
@@ -253,6 +267,19 @@ Returns a fully populated `ReceiverPageData` with `State = "idle"` and placehold
 ```
 
 Each partial is parsed from its own `.html` file via `template.ParseFS(chassisTemplatesFS, "templates/*.html")` at server startup. Standard Go html/template pattern. The handler executes `"shell.html"` directly; partial files contain `{{define "partial-name"}}` blocks. The `vfd-source-row` partial receives `.` (the full page data) because it composes VFD + source-cluster; every other partial receives its narrowly-scoped sub-struct.
+
+**`vfd-source-row.html` structure:** the file contains exactly one `{{define "vfd-source-row"}}` block which wraps a layout container and invokes the two component partials with their narrow sub-structs:
+
+```html
+{{define "vfd-source-row"}}
+<div class="vfd-source-row">
+  {{template "vfd" .VFD}}
+  {{template "source-cluster" .Source}}
+</div>
+{{end}}
+```
+
+This keeps the VFD and source-cluster partials independently testable and scope-isolated to their sub-structs; `vfd-source-row` exists solely to compose them onto a single chassis row.
 
 ### Helper FuncMap
 
@@ -327,6 +354,8 @@ TestChassisCSS_AllSelectorsScoped
 
 The test scans full selector blocks, including multi-line selector lists and nested selectors inside `@container` / `@media`, and fails any element/class/id/attribute selector that is not either explicitly allowlisted (`:root`, `@font-face`, `@keyframes`, keyframe percentage selectors) or rooted at `body.receiver`. It also has explicit fixture assertions for the leak-prone mockup selectors: `body:not(.idle)`, `body.settings-open`, `body.browse-open`, `body.catalog-scanning`, `body[data-event-filter]`, bare `html`, bare `body`, and bare `*`.
 
+**CSS parser implementation:** Use `github.com/tdewolff/parse/v2/css` (~MIT-licensed, single-purpose CSS tokenizer + parser, widely used in the Go ecosystem including Hugo). This adds one transitive dependency to `go.mod` — call it out in the Phase 0 PR description for review visibility. The tokenizer correctly handles multi-line selector lists, nested at-rules, comments, and string escapes — all of which the chassis CSS uses. Hand-rolling a brace-counting scanner was considered (no new dep, ~80 lines Go) but rejected because the mockup CSS is large enough that edge cases like `[attr*="x{y"]` selectors will accumulate; a real parser eliminates that whole class of false negatives. If a future dependency audit objects to `tdewolff/parse`, the fallback is to inline a vendored copy of just the `css` subpackage.
+
 **Reasons for scope-by-body-class over class prefixing:**
 
 - Single entry gate. Chassis CSS has zero effect on `/ui/*` pages even if assets are accidentally double-loaded.
@@ -365,9 +394,11 @@ All fonts self-hosted under `/receiver/static/fonts/`. No `<link>` to fonts.goog
 | DSEG7-Modern | 400 + 700 (two woff2) | `block` | Same reasoning. |
 | DSEG14-Classic | 400 + 700 (two woff2) | `block` | Same reasoning. |
 | DSEG14-Modern | 400 + 700 (two woff2) | `block` | Same reasoning. |
-| Inter | variable font (one woff2) | `swap` | Shipped as `Inter-Variable.woff2` (variable font supporting full weight axis 100-900). Subset to Latin range, ~150 kB. Covers the only Inter weight the mockup actually uses (`font-weight: 800` at line 1427) along with any weight subsequent specs add without per-weight binary growth. |
+| Inter | variable font (one woff2) | `swap` | Shipped as `Inter-Variable.woff2` (variable font supporting `wght` axis 100-900; `slnt` axis excluded from the Latin subset to keep file size down). Subset to Latin range, ~110-180 kB. Covers the only Inter weight the mockup actually uses (`font-weight: 800` at `.preset .num`) along with any weight subsequent specs add without per-weight binary growth. If a future spec needs italic Inter, a separate `Inter-Variable-Italic.woff2` is required — not in Phase 0 scope. |
 
 DSEG fonts are MIT-licensed by [keshikan/DSEG](https://github.com/keshikan/DSEG). Inter is SIL OFL by [rsms/inter](https://github.com/rsms/inter). Both license texts and attributions get committed to `internal/chassis/static/fonts/LICENSE`. `internal/chassis/static/fonts/SOURCES.md` records the exact upstream release/tag, download URL, local filename, and SHA-256 checksum for every committed woff2 so the asset set is reproducible.
+
+**License files are intentionally served as public static assets** via the `/receiver/static/fonts/LICENSE` and `/receiver/static/fonts/SOURCES.md` URLs (`//go:embed static` includes the entire subtree). This is the attribution-display mechanism — SIL OFL § 2 and the DSEG MIT clause both require that license text travel with redistributed copies, and embedding-then-serving is the lightest-weight way to comply for a single-binary distribution. The README mention in the deploy section should hyperlink to `/receiver/static/fonts/LICENSE` once the route is live. Do not exclude these files from the embed pattern.
 
 **Why variable Inter instead of enumerated weights:** the mockup only uses 800 today, but porting it to a four-static-weight set (400/500/600/700) — which an earlier draft of this spec proposed — would miss 800 entirely and silently downgrade `.preset .num` numerals to the closest available weight. A variable font sidesteps this class of bug for the entire chassis rollout: every weight Phase 1-5 might want is already supported, with one woff2 file and one `@font-face` declaration.
 
@@ -381,6 +412,8 @@ Port from the mockup unchanged:
 - `vfd ≤ 720px` — hide VFD right panel (time / queue / uptime).
 
 Each breakpoint's rules cluster in section 15 of the stylesheet.
+
+**`container-type` and `container-name` declarations from the mockup must be ported alongside the breakpoint rules.** The mockup declares `container-name: chassis; container-type: inline-size` on the chassis shell element and `container-name: vfd; container-type: inline-size` on the `.vfd` element. Without these declarations, `@container chassis (max-width: ...)` rules silently never match — the responsive breakpoints stop firing. Verify post-port by visually checking that the goniometer drops out at 900px viewport in the PR screenshots.
 
 ### Reset and base typography
 
@@ -488,7 +521,7 @@ TestStaticAssets_UnknownAsset404
 TestChassisCSS_AllSelectorsScoped
 ```
 
-Each partial renders a unique sentinel HTML comment (`<!-- chassis:vfd -->`, etc.). `TestHandleIndex_IncludesEveryPartialMarker` asserts every marker appears in the response body. Time-dependent tests inject a fixed `time.Time` via function argument — no `time.Now()` calls outside handler entry.
+Each partial renders a unique sentinel HTML comment (`<!-- chassis:vfd -->`, etc.). `TestHandleIndex_IncludesEveryPartialMarker` asserts every marker appears in the response body. Time-dependent tests inject a fixed `time.Time` via function argument — no `time.Now()` calls outside handler entry. Sentinel comments survive `html/template` rendering unchanged (only `<script>`-context comments are stripped); the test locks in that behaviour and would catch a regression if a future build step introduces a comment-stripping minifier.
 
 `TestStaticAssets_CSS_VersionedFontURLs` asserts served CSS has substituted `?v=<Version>` font URLs and no raw `{{.Version}}` placeholders left behind. `TestChassisCSS_AllSelectorsScoped` enforces the scope rules described above, including multi-line selector lists and nested `@container` / `@media` selectors.
 
@@ -568,7 +601,7 @@ Phase 0 makes `/receiver` reachable but does not link to it from `/ui/*`, and `/
 
 The handler ignores `?v=` — purely a cache buster. Font URLs in `chassis.css` are likewise versioned via a one-time template pre-processing step at server startup (~20 lines, well within Phase 0 scope) that substitutes `{{.Version}}` placeholders inside the embedded `chassis.css` and caches the result.
 
-**Use `text/template`, not `html/template`, for the `chassis.css` substitution pass.** CSS is not HTML and must not be context-aware-escaped — `html/template` will mis-escape characters like `<` inside `@container vfd (max-width: 720px)` and break the stylesheet in subtle ways.
+**Use `text/template`, not `html/template`, for the `chassis.css` substitution pass.** CSS is not HTML and must not be context-aware-escaped. The concrete failure case is `<` and `>` characters inside CSS comments — e.g., a comment like `/* breakpoint <= 1180px hides scopes */` becomes `/* breakpoint &lt;= 1180px hides scopes */` under `html/template`, which silently corrupts the source and confuses any later CSS minifier or hand-grep for breakpoint comments. Use `text/template` for CSS, reserve `html/template` for `shell.html` and partials.
 
 Hash-based filenames (`chassis.a3b1c2.css`) considered and rejected: cleaner cache semantics but adds a build step or filesystem rename dance the embed-FS distribution does not need.
 
@@ -589,6 +622,13 @@ A build tag (`//go:build !chassis`) is available if asset embedding ever becomes
 - `internal/chassis/doc.go` — Go package doc explaining the parallel-replacement strategy, the relationship to `internal/ui`, and the slice ownership of subsequent specs.
 - This design doc.
 
+### Security considerations
+
+Phase 0 ships no backend POST handlers, no user-input forms, and no session cookies, so the security surface is narrow. Two notes worth recording now so they don't get re-discovered in later specs:
+
+- **`BrandName` and any future user-configurable template inputs.** Phase 0 hardcodes `BrandName` to `"GROOVY · RELAY"` in `idleSnapshot()`. If a later spec (Spec 8 — settings drawer) wires this to a bridge config field, validate the value against a printable-Unicode subset at the config layer rather than relying on `html/template` auto-escaping alone. `html/template` correctly escapes HTML contexts, but emoji, control characters, and overlong-length values can still produce unhappy `<title>` rendering across browsers.
+- **CSP / framing.** Phase 0 inherits whatever Content-Security-Policy the bridge currently sets (none today). The chassis JS at `/receiver/static/chassis.js` is self-hosted and would be compatible with `script-src 'self'`; the inline `chassis.js` runtime uses `'use strict'` and no `eval`, `Function(...)`, or template `{{...}}`-style JS interpolation. If a future deployment adds a strict CSP, Phase 0 imposes no requirement for `'unsafe-inline'` or `'unsafe-eval'`. Spec 5 (telemetry SSE) should re-evaluate when adding `connect-src` requirements.
+
 ### Rollback strategy
 
 `/receiver` is additive. Rollback = revert the merge commit; nothing in `/ui/*`, the bridge dataplane, or adapters is touched. No data migration, no config field, no persistent state to undo.
@@ -598,7 +638,7 @@ A build tag (`//go:build !chassis`) is available if asset embedding ever becomes
 | Risk | Mitigation |
 |---|---|
 | Asset path collision with the existing `/ui/static/` route | `/ui/static/` already serves `app.css`, `htmx.min.js`, `now-playing.js`, `clipboard.js`, `streams-artwork.js`, and a `fonts/` subtree. Chassis assets use a different prefix (`/receiver/static/`); the prefix discipline is enforced by `TestMount_DoesNotShadowUIRoutes`. Font files are **duplicated**, not shared — per-package embed discipline trumps DRY during the parallel period. |
-| `go:embed` for fonts inflates binary | woff2 fonts roughly 150 kB total for DSEG + ~150 kB for the Inter variable font (Latin subset). Negligible at current binary size. |
+| `go:embed` for fonts inflates binary | 8 DSEG woff2 files (~15-25 kB each) ≈ 120-200 kB + Inter variable font Latin subset ≈ 110-180 kB. Combined ≈ 230-380 kB. Negligible at current binary size. |
 | Font license issues | DSEG MIT, Inter SIL OFL. Licenses + attributions committed alongside woff2 files. |
 | `chassis.css` grows too large to template-preprocess at startup | ~3,200 lines, ~80 kB minified. Substitution result cached in memory once at boot. Not a real concern at this size. |
 | Subsequent specs accidentally introduce `/ui/*` ↔ `chassis` cross-imports | A production-file import-check asserts no cross-package import paths between `uiserver`/`ui` and `chassis`. Shipped in Phase 0 because the invariant is load-bearing for the eight follow-up specs and the lint cost is trivial. |
@@ -650,37 +690,39 @@ A focused checklist for the implementation plan to expand. Each item maps to a d
 
 ## Appendix A — `idleSnapshot()` Content Map
 
-The implementer should populate every sub-struct field with the values below. Mockup line numbers refer to `.superpowers/brainstorm/1973-1779237107/receiver-v24.html`; quoted strings are the on-screen text the chassis must render in its idle state.
+The implementer should populate every sub-struct field with the values below. Mockup references use **CSS selector anchors** rather than line numbers because the mockup is still iterating; selectors survive edits, line numbers don't. All anchors refer to elements in `.superpowers/brainstorm/1973-1779237107/receiver-v24.html`.
+
+The `idleSnapshot()` helper is responsible for converting empty/zero config values to display strings — e.g., `cfg.HostIP == ""` becomes `"OFFLINE"` for `HostInfo.HostIP`. Keep these conversions in `idleSnapshot()`, not in templates, so the templates stay pure data renderers.
 
 ### Top-level `ReceiverPageData`
 
-| Field | Go type | Idle value | Source |
+| Field | Go type | Idle value | Mockup anchor |
 |---|---|---|---|
-| Version | string | from `main.version`, passed into `chassis.Config.Version` by `cmd/mister-groovy-relay/main.go` | runtime |
-| BrandName | string | `"GROOVY · RELAY"` | mockup line 4180 |
+| Version | string | from `main.version`, passed via `chassis.Config.Version` | runtime |
+| BrandName | string | `"GROOVY · RELAY"` | `.brand-plate .name` |
 | State | string | `"idle"` | always for Phase 0 |
-| HostInfo.HostIP | string | `cfg.HostIP` when non-empty, otherwise `"unknown"` | runtime/config |
+| HostInfo.HostIP | string | `cfg.HostIP` when non-empty, otherwise `"OFFLINE"` | runtime/config |
 | HostInfo.HTTPPort | int | `cfg.Bridge.UI.HTTPPort` | config |
 
 ### `VFDData`
 
-| Field | Go type | Idle value | Source |
+| Field | Go type | Idle value | Mockup anchor |
 |---|---|---|---|
 | State | string | `"idle"` | matches body class |
-| Title | string | `"STANDBY"` | mockup line 4321 |
-| Marquee | string | `"MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET"` | mockup line 4322 |
+| Title | string | `"STANDBY"` | `.vfd-state--idle .title-line` |
+| Marquee | string | `"MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET"` | `.vfd-state--idle .marquee-line` |
 | QueueCurrent | int | `0` | idle has no queue |
 | QueueTotal | int | `0` | idle has no queue |
-| SystemTime | string | `"HH:MM"` from `now` (server-rendered; client ticker updates) | mockup line 4329 |
-| Uptime | string | `"Nh Nm"` from `now - start` | mockup line 4332 (`"4H 12M"`) |
+| SystemTime | string | `"HH:MM"` from `now` (server-rendered; client ticker updates) | `.vfd .big-time .seg-display` |
+| Uptime | string | `"Nh Nm"` from `now - cfg.StartedAt` | `.vfd .freq` (live mockup shows `"4H 12M"`) |
 
 ### `SourceData`
 
 The four hardware buttons. Phase 0 ships all four with one (STREAMS) marked active by default — matches the mockup's standby state.
 
-| Field | Go type | Idle value | Source |
+| Field | Go type | Idle value | Mockup anchor |
 |---|---|---|---|
-| Buttons | `[]SourceButton` | four entries below | mockup lines 4348-4351 |
+| Buttons | `[]SourceButton` | four entries below | `.source-cluster .hw-btn` |
 
 Each `SourceButton`:
 
@@ -697,90 +739,90 @@ Three sub-rows. Every field placeholder is the dim/empty version of its live cou
 
 `MeterData.SourceStrip` (row 1):
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor (live value for reference) |
 |---|---|---|
-| AudioIn | `"---"` | mockup line ~3457 (live: `"AAC LC · STEREO"`) |
-| AudioOut | `"---"` | live: `"S16LE · 48k"` |
-| Src | `"---"` | mockup line ~3461 |
-| Crop | `"---"` | mockup line ~3462 |
-| HLSBuffer | `"0 / 0 SEG"` | mockup line ~3464 |
-| Drops | `"0.0"` | mockup line ~3465 |
+| AudioIn | `"---"` | `.meter-source-strip .audio-grp .codec-grp .val` (live: `"AAC LC · STEREO"`) |
+| AudioOut | `"---"` | `.meter-source-strip .audio-grp .grp:nth-child(2) .seg-display` (live: `"S16LE · 48k"`) |
+| Src | `"---"` | `.meter-source-strip .video-grp .grp:nth-child(1) .seg-display` (live: `"1280×720@30 · H.264"`) |
+| Crop | `"---"` | `.meter-source-strip .video-grp .grp:nth-child(2) .seg-display` (live: `"NONE · 16:9 NATIVE"`) |
+| HLSBuffer | `"0 / 0 SEG"` | `.meter-source-strip .net-grp .grp:nth-child(1) .seg-display` |
+| Drops | `"0.0"` | `.meter-source-strip .net-grp .grp:nth-child(2) .seg-display` |
 
 `MeterData.MidRow` (row 2):
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| BitrateMbps | `"0.0"` | mockup line ~5302 |
-| FreqKHz | `"---"` | mockup line ~5303 |
-| Mode | `"---"` | mockup line ~5304 |
-| StandardNTSC | `bool true` | NTSC is the v1 standard |
-| StandardPAL | `bool false` | dim in idle |
-| FieldFlip | `string "idle"` | freezes ODD/EVEN animation |
-| ThroughputMBs | `"0.0"` | mockup line ~5307 |
-| MSAck | `"--"` | mockup line ~5308 |
+| BitrateMbps | `"0.0"` | `.meter-mid-row .video-grp .stat:nth-child(1) .v` |
+| FreqKHz | `"---"` | `.meter-mid-row .video-grp .stat:nth-child(2) .v` |
+| Mode | `"---"` | `.meter-mid-row .video-grp .stat:nth-child(3) .v` |
+| StandardNTSC | `bool true` | `.meter-mid-row .std-lamps--stack .std-ind.active` |
+| StandardPAL | `bool false` | `.meter-mid-row .std-lamps--stack .std-ind:not(.active)` |
+| FieldFlip | `string "idle"` | `.meter-mid-row .field-flip` (freezes ODD/EVEN animation) |
+| ThroughputMBs | `"0.0"` | `.meter-mid-row .net-grp .stat:nth-child(1) .v` |
+| MSAck | `"--"` | `.meter-mid-row .net-grp .stat:nth-child(3) .v` |
 
 `MeterData.Readout` (row 3):
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| LRBars | 0 / 12 segments lit | mockup `.tr-vu .ch-bar` idle |
-| PhaseNeedle | string `"0"` (center) | mockup `.vu-phase` idle |
-| LUFS | `"---"` | mockup line ~5328 |
-| Output | `"---"` | mockup line ~5365 (live: `"INTERLACE 480i · BT.601"`) |
-| Aspect | `"---"` | mockup line ~5366 (live: `"4:3 PILLARBOX"`) |
-| Pipe | `"---"` | mockup line ~5367 |
-| Speed | `"---"` | mockup line ~5368 |
-| Link | `"---"` | mockup line ~5369 |
+| LRBars | 0 / 12 segments lit | `.meter-readout-line .tr-vu .ch-bar` (idle: no `.on` class on segments) |
+| PhaseNeedle | string `"0"` (center) | `.meter-readout-line .vu-phase .needle` |
+| LUFS | `"---"` | `#lufs-val` (live: `"-16.2"`) |
+| Output | `"---"` | `.meter-readout-line .video-grp .grp:nth-child(1) .seg-display` (live: `"INTERLACE 480i · BT.601"`) |
+| Aspect | `"---"` | `.meter-readout-line .video-grp .grp:nth-child(2) .seg-display` (live: `"4:3 PILLARBOX"`) |
+| Pipe | `"---"` | `.meter-readout-line .net-grp .grp:nth-child(1) .seg-display` |
+| Speed | `"---"` | `.meter-readout-line .net-grp .grp.speed-grp .val` |
+| Link | `"---"` | `.meter-readout-line .net-grp .grp.link-grp .val` |
 
 ### `TransportData`
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| PlayState | `"stopped"` | controls dim |
-| ElapsedTime | `"--:--"` | mockup line ~5324 |
-| TotalTime | `"--:--"` | mockup line ~5325 |
-| PercentPlayed | `"---"` | mockup line ~5326 |
-| SeekFillPercent | `0` | bar empty |
+| PlayState | `"stopped"` | `.transport-row .trn.primary` (idle: no `.active`) |
+| ElapsedTime | `"--:--"` | `.seek-time > .seg-display:first-of-type` |
+| TotalTime | `"--:--"` | `.seek-time .total` |
+| PercentPlayed | `"---"` | `.seek-time .pct` |
+| SeekFillPercent | `0` | `.seek-bar .fill` (idle: width 0) |
 
 ### `VisualizerData`
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| ActiveMode | `cfg.Visualizer.Mode` (default `"retro_analyzer"`) | `internal/config` default |
-| Buttons | 4 entries: `retro_analyzer`, `oscilloscope_wave`, `stereo_scope`, `radial_spectrum` (preview) | mockup viz-bank |
+| ActiveMode | `cfg.Bridge.Visualizer.Mode` (default `"retro_analyzer"`) | `.viz-bank .viz-btn.active` |
+| Buttons | 4 entries: `retro_analyzer`, `oscilloscope_wave`, `stereo_scope`, `radial_spectrum` (preview) | `.viz-bank .viz-btn[data-viz=…]` |
 
-Each viz button: `{Mode, Label, IconKind, IsPreview}`. `radial_spectrum` has `IsPreview: true` and renders the deferred-state badge. The handler reads `cfg.Visualizer.Mode` to determine which button is active+lit at first render.
+Each viz button: `{Mode, Label, IconKind, IsPreview}`. `radial_spectrum` has `IsPreview: true` and renders the deferred-state badge. The handler reads `cfg.Bridge.Visualizer.Mode` to determine which button is active+lit at first render.
 
 ### `InputData`
 
-| Field | Idle value |
-|---|---|
-| PastePlaceholder | `"Paste URL or magnet"` (mockup line ~3628) |
-| DetectedKind | `"URL"` (mockup chip default) |
-| CastEnabled | `false` (CAST button disabled in idle) |
+| Field | Idle value | Mockup anchor |
+|---|---|---|
+| PastePlaceholder | `"Paste URL or magnet"` | `#paste-input[placeholder]` |
+| DetectedKind | `"URL"` | `#paste-chip` |
+| CastEnabled | `false` (CAST button disabled in idle) | `#cast-btn.disabled` |
 
 ### `PresetsData`
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| ModeLabel | `"Memory · 0 / 12 slots"` | mockup line ~3672, decremented to 0 |
-| Count | `"★ 0"` | mockup line ~3673 |
-| Slots | `[12]PresetSlot{}` all empty | mockup preset-bank repeats 12 |
+| ModeLabel | `"Memory · 0 / 12 slots"` | `#preset-mode-label` (live mockup shows `"Memory · 12 / 12 slots"`; idle = 0 filled) |
+| Count | `"★ 0"` | `#preset-count` (live: `"★ 12"`) |
+| Slots | `[12]PresetSlot{}` all empty | `.preset-bank .preset` (12-slot grid) |
 
 Each empty `PresetSlot`: `{Filled: false, Title: "", Subtitle: ""}`. The slot still renders a numbered placeholder.
 
 ### `HistoryData`
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| Rows | `[]HistoryRow{}` (empty) | mockup shows last-N rows; idle has none |
+| Rows | `[]HistoryRow{}` (empty) | `.history-section .history-row` (idle: none) |
 | EmptyMessage | `"No recent casts"` | new for chassis (mockup elides this) |
 
 ### `SettingsData`
 
-| Field | Idle value | Source |
+| Field | Idle value | Mockup anchor |
 |---|---|---|
-| Open | `false` | drawer closed by default |
+| Open | `false` | `.settings-panel` (drawer closed by default) |
 
 The drawer markup is rendered with `display: none` (or analogous CSS) so the closed state has zero visual footprint. Spec 8 wires the open/close behaviour.
 
