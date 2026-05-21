@@ -49,10 +49,10 @@ The chassis is built in parallel at `/receiver/*`. The existing `/ui/*` routes s
 
 ### File & directory layout
 
-The chassis package owns its own assets so Go `embed` directives are local. Existing `internal/uiserver/` and `internal/ui/` are untouched.
+The chassis package owns its own assets so Go `embed` directives are local. Existing `internal/ui/` templates/static assets and `internal/uiserver/` saver plumbing are untouched.
 
 ```
-internal/chassis/                 # NEW package, no imports from uiserver
+internal/chassis/                 # NEW package, no imports from ui or uiserver
 ├── server.go
 ├── data.go
 ├── handler.go
@@ -73,7 +73,7 @@ internal/chassis/                 # NEW package, no imports from uiserver
 │   ├── preset-bank.html
 │   ├── history.html
 │   └── settings-drawer.html
-└── static/                       # served at /receiver/static/* via go:embed static
+└── static/                       # served at /receiver/static/ via go:embed static
     ├── chassis.css               # single stylesheet, ~3,200 lines
     ├── chassis.js                # ~150-line runtime
     └── fonts/
@@ -86,9 +86,10 @@ internal/chassis/                 # NEW package, no imports from uiserver
         ├── DSEG14Modern-Regular.woff2
         ├── DSEG14Modern-Bold.woff2
         ├── Inter-Variable.woff2  # variable font, full weight axis, Latin subset
-        └── LICENSE               # DSEG + Inter attribution
+        ├── LICENSE               # DSEG + Inter attribution
+        └── SOURCES.md            # upstream versions, URLs, and checksums
 
-internal/uiserver/                # UNCHANGED
+internal/uiserver/                # UNCHANGED — save/config plumbing only
 internal/ui/templates/            # UNCHANGED — existing /ui templates stay here
 internal/ui/static/               # UNCHANGED if it exists; not touched by Phase 0
 ```
@@ -97,14 +98,14 @@ Co-locating templates and static under the package lets `go:embed` reference the
 
 ### Go package — `internal/chassis/`
 
-New package, no imports of `internal/uiserver`. Mirrors the structure of `internal/uiserver`:
+New package, no imports of `internal/ui` or `internal/uiserver`. Mirrors the HTTP/template/static shape of `internal/ui`, while leaving `internal/uiserver` as save/config plumbing:
 
-- `server.go` — `Server` struct holding deps (`config.BridgeConfig`, `*core.Manager`, adapter registry), `Mount(mux *http.ServeMux)` method.
+- `server.go` — `Config` and `Server` structs, `New(Config) (*Server, error)`, `Mount(mux *http.ServeMux)` method.
 - `data.go` — Go structs templates render against (`ReceiverPageData` + sub-structs) and the `idleSnapshot()` helper.
 - `handler.go` — HTTP handler funcs. Phase 0 ships only `handleIndex` for `GET /receiver` plus the static asset handler.
 - `templates.go` — parses embedded templates at startup, registers helper FuncMap.
 - `chassis_test.go` — unit + handler tests.
-- `doc.go` — package-level Go doc explaining the parallel-replacement strategy and the relationship to `internal/uiserver`.
+- `doc.go` — package-level Go doc explaining the parallel-replacement strategy and the relationship to `internal/ui`.
 
 ### Asset embedding
 
@@ -118,21 +119,48 @@ var chassisTemplatesFS embed.FS
 var chassisStaticFS embed.FS
 ```
 
-The bare `static` form (not `static/**`) matches the existing `internal/ui/assets.go` pattern and recursively includes the `fonts/` subtree. Existing `embed.FS` in `internal/uiserver/` unchanged.
+The bare `static` form (not `static/**`) matches the existing `internal/ui/assets.go` pattern and recursively includes the `fonts/` subtree. Existing `embed.FS` in `internal/ui/` unchanged.
+
+### Server config
+
+Mirror `internal/ui.New(ui.Config{...})` rather than introducing a positional constructor. `cmd/mister-groovy-relay/main.go` already has the resolved values this route needs:
+
+```go
+type Config struct {
+    Bridge    config.BridgeConfig
+    Manager   *core.Manager
+    Registry  *adapters.Registry
+    Version   string
+    StartedAt time.Time
+    HostIP    string // already resolved/autodetected by main.go
+}
+```
+
+`Version`, `StartedAt`, and `HostIP` are required even in Phase 0: asset URLs use the build version, idle VFD uptime uses `StartedAt`, and the status bar uses the resolved host address. `New` validates required fields and returns an error for zero `StartedAt`; tests should pass a fixed time for deterministic uptime assertions.
 
 ### Route mounting
 
 `cmd/mister-groovy-relay/main.go` adds:
 
 ```go
-chassisSrv := chassis.NewServer(cfg, manager, registry)
+chassisSrv, err := chassis.New(chassis.Config{
+    Bridge:    sec.Bridge,
+    Manager:   coreMgr,
+    Registry:  reg,
+    Version:   version,
+    StartedAt: startedAt,
+    HostIP:    hostIP,
+})
+if err != nil {
+    dieFriendly("chassis init", err)
+}
 chassisSrv.Mount(mux)
 ```
 
 `Mount` attaches:
 
 - `GET /receiver` and `GET /receiver/{$}` → both render `shell.html` with idle placeholder data. Go 1.22's method-aware mux treats these as distinct patterns; mirror the existing `internal/ui/server.go` `/ui` + `/ui/{$}` registration to avoid a 301 redirect dance.
-- `GET /receiver/static/*` → serves embedded CSS/JS/fonts with content-type lookup by extension and `Cache-Control: public, max-age=31536000, immutable`.
+- `GET /receiver/static/` → serves embedded CSS/JS/fonts via `http.StripPrefix("/receiver/static/", ...)`, content-type lookup by extension, and `Cache-Control: public, max-age=31536000, immutable`. Do not use `GET /receiver/static/*`; Go `ServeMux` treats `*` as a literal path segment, not a subtree wildcard. `GET /receiver/static/{path...}` is also valid if the implementation prefers explicit wildcards.
 
 Mount order in `main.go`: existing `ui.Server` first, then `chassis.Server`. Path prefixes are disjoint so collision is structurally impossible, but the order is documented and tested.
 
@@ -186,27 +214,27 @@ type MeterData struct {
 Single source of truth for Phase 0's default page content:
 
 ```go
-func idleSnapshot(cfg config.BridgeConfig, version string, now time.Time) ReceiverPageData
+func idleSnapshot(cfg Config, now time.Time) ReceiverPageData
 ```
 
-Returns a fully populated `ReceiverPageData` with `State = "idle"` and placeholder strings matching the mockup's idle state. `handleIndex` calls it directly. Spec 2 (VFD live) replaces this with `snapshotFromSession()` that reads real session state, falling back to `idleSnapshot()` when no session is active.
+Returns a fully populated `ReceiverPageData` with `State = "idle"` and placeholder strings matching the mockup's idle state. It reads `cfg.Bridge`, `cfg.Version`, `cfg.HostIP`, and `cfg.StartedAt` so the status bar and uptime are deterministic under test. `handleIndex` calls it directly. Spec 2 (VFD live) replaces this with `snapshotFromSession()` that reads real session state, falling back to `idleSnapshot()` when no session is active.
 
 ### Template composition
 
-`shell.html` is the only template the handler renders by name. It composes partials via `{{template …}}`:
+`shell.html` is the only template the handler renders by name. It is top-level document markup, matching the existing `internal/ui/templates/shell.html` convention, and composes partials via `{{template …}}`:
 
 ```html
-{{define "shell"}}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.BrandName}}</title>
   <link rel="stylesheet" href="/receiver/static/chassis.css?v={{.Version}}">
   <script defer src="/receiver/static/chassis.js?v={{.Version}}"></script>
 </head>
 <body class="receiver {{.State}}">
-  <div class="chassis">
+  <div class="receiver">
     {{template "status-bar" .HostInfo}}
     {{template "masthead" .BrandName}}
     <div class="receiver-inner">
@@ -222,14 +250,13 @@ Returns a fully populated `ReceiverPageData` with `State = "idle"` and placehold
   </div>
 </body>
 </html>
-{{end}}
 ```
 
-Each partial is parsed from its own `.html` file via `template.ParseFS(chassisTemplatesFS, "templates/*.html")` at server startup. Standard Go html/template pattern. The `vfd-source-row` partial receives `.` (the full page data) because it composes VFD + source-cluster; every other partial receives its narrowly-scoped sub-struct.
+Each partial is parsed from its own `.html` file via `template.ParseFS(chassisTemplatesFS, "templates/*.html")` at server startup. Standard Go html/template pattern. The handler executes `"shell.html"` directly; partial files contain `{{define "partial-name"}}` blocks. The `vfd-source-row` partial receives `.` (the full page data) because it composes VFD + source-cluster; every other partial receives its narrowly-scoped sub-struct.
 
 ### Helper FuncMap
 
-The existing `inc`, `hasString`, and `replaceAll` helpers in `internal/ui/server.go` are unexported, and the parallel-replacement strategy prefers no cross-package coupling during the rollout. Phase 0 **duplicates** these three helpers verbatim into `internal/chassis/templates.go` rather than importing or re-exporting. Coupling-by-copy across two parallel UIs is preferable to coupling-by-import; the final cutover spec can deduplicate when `internal/uiserver` retires.
+The existing `inc`, `hasString`, and `replaceAll` helpers in `internal/ui/server.go` are unexported, and the parallel-replacement strategy prefers no cross-package coupling during the rollout. Phase 0 **duplicates** these three helpers verbatim into `internal/chassis/templates.go` rather than importing or re-exporting. Coupling-by-copy across two parallel UIs is preferable to coupling-by-import; the final cutover spec can deduplicate when `internal/ui` retires or is folded into the chassis package.
 
 Add chassis-specific helpers:
 
@@ -264,18 +291,23 @@ This matches the logical order the mockup already uses. Section banners are sear
 
 ### Scope isolation
 
-Every chassis rule lives under `body.receiver`. The mockup uses bare selectors (`.chassis`, `.vfd`, etc.); the Phase 0 CSS port is a mechanical transformation pass with the rules below. The pass is explicit because subtle mistakes break the `/ui/*` isolation invariant.
+Every chassis rule lives under `body.receiver`. The mockup uses bare selectors (`.receiver`, `.vfd`, etc.); the Phase 0 CSS port is a mechanical transformation pass with the rules below. The pass is explicit because subtle mistakes break the `/ui/*` isolation invariant. The body gets the `receiver` class as the CSS scope gate; the mockup's physical chassis shell keeps its inner `<div class="receiver">` class so mechanical selector porting still matches the original markup vocabulary.
 
 **Porting rules** (apply in order; first matching rule wins):
 
 1. **Leave untouched:** `:root` blocks, `@font-face`, `@container`, `@keyframes`, `@media`, comments. These do not select DOM elements, so no scoping is needed.
 
-2. **Compound rewrite for state classes.** Replace descendant `body.idle` and `body.live` selectors with compound `body.receiver.idle` / `body.receiver.live`:
+2. **Compound rewrite for body-rooted state selectors.** Any selector rooted at `body` becomes the same selector rooted at `body.receiver`:
    - `body.idle .foo` → `body.receiver.idle .foo`
    - `body.live .foo` → `body.receiver.live .foo`
+   - `body:not(.idle) .foo` → `body.receiver:not(.idle) .foo`
+   - `body.settings-open .foo` → `body.receiver.settings-open .foo`
+   - `body.browse-open .foo` → `body.receiver.browse-open .foo`
+   - `body.catalog-scanning .foo` → `body.receiver.catalog-scanning .foo`
+   - `body[data-event-filter="warn"] .foo` → `body.receiver[data-event-filter="warn"] .foo`
    - `body.idle` (bare body selector) → `body.receiver.idle`
 
-   The mockup uses descendant `body.idle ...` in ~50 places. Without this rewrite, any future `/ui/*` page that ever sets `<body class="idle">` would inherit chassis idle overrides — the precise leak the scoping strategy is meant to prevent.
+   The mockup uses descendant `body.idle ...` in ~50 places and also uses `body:not(.idle)`, `body.settings-open`, `body.browse-open`, `body.catalog-scanning`, and `body[data-event-filter=...]`. Without this rewrite, any future `/ui/*` page that ever sets one of those body states would inherit chassis overrides — the precise leak the scoping strategy is meant to prevent.
 
 3. **Scope global element selectors.** The mockup contains a small custom reset that targets bare elements: `*`, `html`, `body`, scrollbar pseudo-elements. Scope each one under `body.receiver`:
    - `* { box-sizing: ... }` → `body.receiver, body.receiver * { box-sizing: ... }`
@@ -287,15 +319,13 @@ Every chassis rule lives under `body.receiver`. The mockup uses bare selectors (
 
 5. **Inside `@container`, `@media`, and similar at-rules:** apply rules 2-4 to the nested selectors.
 
-**Sanity-check grep** (runs in CI or as a one-shot at port time):
+**Scope assertion test** (runs in `go test ./internal/chassis/...`):
 
 ```
-# Fails if any top-level selector lacks the body.receiver scope.
-# Allowed: :root, @font-face, @container, @keyframes, @media, comments,
-# selectors that start with `body.receiver` or are inside an at-rule block.
-grep -nP '^[^@/:}\s]\S+\s*{' internal/chassis/static/chassis.css \
-  | grep -v 'body\.receiver'
+TestChassisCSS_AllSelectorsScoped
 ```
+
+The test scans full selector blocks, including multi-line selector lists and nested selectors inside `@container` / `@media`, and fails any element/class/id/attribute selector that is not either explicitly allowlisted (`:root`, `@font-face`, `@keyframes`, keyframe percentage selectors) or rooted at `body.receiver`. It also has explicit fixture assertions for the leak-prone mockup selectors: `body:not(.idle)`, `body.settings-open`, `body.browse-open`, `body.catalog-scanning`, `body[data-event-filter]`, bare `html`, bare `body`, and bare `*`.
 
 **Reasons for scope-by-body-class over class prefixing:**
 
@@ -337,7 +367,7 @@ All fonts self-hosted under `/receiver/static/fonts/`. No `<link>` to fonts.goog
 | DSEG14-Modern | 400 + 700 (two woff2) | `block` | Same reasoning. |
 | Inter | variable font (one woff2) | `swap` | Shipped as `Inter-Variable.woff2` (variable font supporting full weight axis 100-900). Subset to Latin range, ~150 kB. Covers the only Inter weight the mockup actually uses (`font-weight: 800` at line 1427) along with any weight subsequent specs add without per-weight binary growth. |
 
-DSEG fonts are MIT-licensed by [keshikan/DSEG](https://github.com/keshikan/DSEG). Inter is SIL OFL by [rsms/inter](https://github.com/rsms/inter). Both license texts and attributions get committed to `internal/chassis/static/fonts/LICENSE`.
+DSEG fonts are MIT-licensed by [keshikan/DSEG](https://github.com/keshikan/DSEG). Inter is SIL OFL by [rsms/inter](https://github.com/rsms/inter). Both license texts and attributions get committed to `internal/chassis/static/fonts/LICENSE`. `internal/chassis/static/fonts/SOURCES.md` records the exact upstream release/tag, download URL, local filename, and SHA-256 checksum for every committed woff2 so the asset set is reproducible.
 
 **Why variable Inter instead of enumerated weights:** the mockup only uses 800 today, but porting it to a four-static-weight set (400/500/600/700) — which an earlier draft of this spec proposed — would miss 800 entirely and silently downgrade `.preset .num` numerals to the closest available weight. A variable font sidesteps this class of bug for the entire chassis rollout: every weight Phase 1-5 might want is already supported, with one woff2 file and one `@font-face` declaration.
 
@@ -450,18 +480,19 @@ TestHandleIndex_IncludesEveryPartialMarker
 TestHandleIndex_ExposesCorrectAssetPaths
 TestHandleIndex_AssetURLsCarryVersionQueryParam
 TestStaticAssets_CSS_Served
+TestStaticAssets_CSS_VersionedFontURLs
 TestStaticAssets_JS_Served
 TestStaticAssets_Fonts_Served
 TestStaticAssets_PathTraversalBlocked
 TestStaticAssets_UnknownAsset404
-TestMount_DoesNotShadowUIRoutes
+TestChassisCSS_AllSelectorsScoped
 ```
 
 Each partial renders a unique sentinel HTML comment (`<!-- chassis:vfd -->`, etc.). `TestHandleIndex_IncludesEveryPartialMarker` asserts every marker appears in the response body. Time-dependent tests inject a fixed `time.Time` via function argument — no `time.Now()` calls outside handler entry.
 
-`TestMount_DoesNotShadowUIRoutes` constructs a fresh `http.ServeMux`, mounts `ui.Server` first then `chassis.Server`, and asserts: `GET /ui/` returns the existing UI shell (not chassis content, not 404), `GET /ui/static/app.css` returns the existing stylesheet, `GET /receiver` returns chassis shell content, `GET /receiver/static/chassis.css` returns chassis CSS. The mount order in `main.go` is documented and structurally enforced by this test.
+`TestStaticAssets_CSS_VersionedFontURLs` asserts served CSS has substituted `?v=<Version>` font URLs and no raw `{{.Version}}` placeholders left behind. `TestChassisCSS_AllSelectorsScoped` enforces the scope rules described above, including multi-line selector lists and nested `@container` / `@media` selectors.
 
-Phase 0 also adds a 3-line CI grep step (or `go test ./internal/chassis/...` import-check) asserting `internal/chassis` does not import `internal/uiserver` or `internal/ui` and vice versa. The risk register lists this as ship-in-Phase-0 work rather than the earlier "optional nicety" framing — the cross-package isolation invariant is load-bearing across all eight follow-up specs and the lint cost is trivial.
+Phase 0 also adds a small `go test` import-check asserting production files in `internal/chassis` do not import `internal/ui` or `internal/uiserver`, and production files in `internal/ui` / `internal/uiserver` do not import `internal/chassis`. The check explicitly ignores `_test.go` files so integration-style coexistence tests can mount both packages without violating the production dependency rule. The risk register lists this as ship-in-Phase-0 work rather than the earlier "optional nicety" framing — the cross-package isolation invariant is load-bearing across all eight follow-up specs and the lint cost is trivial.
 
 ### Layer 2 — Template compilation tests
 
@@ -477,13 +508,16 @@ Catches syntax errors, missing `{{define …}}`, unknown function references, an
 ```
 //go:build integration
 TestReceiverEndToEnd
+TestMount_DoesNotShadowUIRoutes
 ```
 
 Spins a full bridge server matching the existing `tests/integration/` pattern. Parses the response body as HTML using `golang.org/x/net/html` and asserts presence of every section's root element (`.vfd`, `.meter-screen`, `.transport-strip`, `.viz-bank`, etc.). Guards "the chassis still renders" through every later spec's structural changes.
 
+`TestMount_DoesNotShadowUIRoutes` constructs or boots the same mux shape as `main.go`, mounts the existing `ui.Server` first then `chassis.Server`, and asserts: `GET /ui/` returns the existing UI shell (not chassis content, not 404), `GET /ui/static/app.css` returns the existing stylesheet, `GET /receiver` returns chassis shell content, `GET /receiver/static/chassis.css` returns chassis CSS. The mount order in `main.go` is documented and structurally enforced by this test outside the `internal/chassis` package so the production no-cross-import invariant remains intact.
+
 ### Visual verification (manual checklist)
 
-Phase 0's PR description includes a verification checklist for the merge reviewer:
+Phase 0's PR description includes a verification checklist for the merge reviewer. The checklist is invariant-based rather than a vague "pixel perfect" claim:
 
 - Chrome / Edge / Firefox at 1920px — full chassis with all sections visible, matches mockup.
 - 1440px — wide-desktop layout integrity.
@@ -493,7 +527,7 @@ Phase 0's PR description includes a verification checklist for the merge reviewe
 - 480px — degraded but readable (full mobile polish is Phase 5).
 - Safari (current macOS) at 1920px and 600px — container queries + OKLCH render correctly.
 
-Screenshots at the desktop breakpoints attached to the PR. The Playwright tooling already configured for the brainstorm preview drives the WebKit smoke check.
+Required invariants at every checked viewport: no body-level horizontal scroll, status bar/masthead/VFD/meter/transport/visualizer/input/preset/history regions visible unless that breakpoint explicitly hides the region, DSEG glyphs loaded for VFD/meter numerals, Inter loaded for non-segmented UI text, and focus rings visible on buttons/inputs. Screenshots at the desktop breakpoints attached to the PR. The Playwright tooling already configured for the brainstorm preview drives the WebKit smoke check.
 
 **Decision on automated visual regression deferred to Phase 2.** If the manual checklist becomes noisy as live data lands, that is when we adopt Percy / Chromatic / reg-cli. Phase 0 does not need it.
 
@@ -505,7 +539,7 @@ Screenshots at the desktop breakpoints attached to the PR. The Playwright toolin
 
 - Automated screenshot regression (see decision above).
 - JS unit tests. Phase 0 runtime is ~150 lines, trivial state machinery. Spec 5 (telemetry) is where JS test infrastructure pays off.
-- Cross-browser CI. Manual pre-merge smoke check per the visual verification checklist.
+- Cross-browser CI. Manual pre-merge smoke check per the visual verification checklist and attached screenshots.
 
 ### CI integration
 
@@ -516,7 +550,7 @@ No new CI jobs. The existing `.github/workflows/ci.yml` pipeline picks up `inter
 ### Coexistence invariants
 
 - `/ui/*` routes return byte-identical responses before vs. after the Phase 0 merge. Existing snapshot and integration tests pass unchanged.
-- `internal/chassis/` has zero imports from `internal/uiserver/`, and vice versa. Both packages depend only on `internal/config/`, `internal/core/`, and the adapter registry — read-only consumers of bridge state.
+- Production files in `internal/chassis/` have zero imports from `internal/ui/` or `internal/uiserver/`, and production files in `internal/ui/` / `internal/uiserver/` have zero imports from `internal/chassis/`. `cmd/mister-groovy-relay/main.go` is the composition root that wires both.
 - Mount order in `cmd/mister-groovy-relay/main.go`: existing `ui.Server` first, then `chassis.Server`. `TestMount_DoesNotShadowUIRoutes` enforces this.
 
 ### Discovery and navigation
@@ -543,6 +577,7 @@ Hash-based filenames (`chassis.a3b1c2.css`) considered and rejected: cleaner cac
 No new config fields. `/receiver` is unconditionally mounted because:
 
 - It serves an idle preview only — no behaviour changes for non-chassis users.
+- It is intentionally outside the existing `/ui/*` first-run guard. The preview is read-only in Phase 0, exposes no secret configuration values, and must not mutate or depend on setup state.
 - A `bridge.ui.enable_chassis = true` toggle would have to be removed during cutover.
 - The existing UI is unaffected.
 
@@ -551,7 +586,7 @@ A build tag (`//go:build !chassis`) is available if asset embedding ever becomes
 ### Docs
 
 - `README.md` — one paragraph under deployment noting the new `/receiver` route exists and is preview-only. No screenshots until Phase 1+ lands real content.
-- `internal/chassis/doc.go` — Go package doc explaining the parallel-replacement strategy, the relationship to `internal/uiserver`, and the slice ownership of subsequent specs.
+- `internal/chassis/doc.go` — Go package doc explaining the parallel-replacement strategy, the relationship to `internal/ui`, and the slice ownership of subsequent specs.
 - This design doc.
 
 ### Rollback strategy
@@ -562,11 +597,11 @@ A build tag (`//go:build !chassis`) is available if asset embedding ever becomes
 
 | Risk | Mitigation |
 |---|---|
-| Asset path collision with the existing `/ui/static/*` route | `/ui/static/*` already serves `app.css`, `htmx.min.js`, `now-playing.js`, `clipboard.js`, `streams-artwork.js`, and a `fonts/` subtree. Chassis assets use a different prefix (`/receiver/static/*`); the prefix discipline is enforced by `TestMount_DoesNotShadowUIRoutes`. Font files are **duplicated**, not shared — per-package embed discipline trumps DRY during the parallel period. |
+| Asset path collision with the existing `/ui/static/` route | `/ui/static/` already serves `app.css`, `htmx.min.js`, `now-playing.js`, `clipboard.js`, `streams-artwork.js`, and a `fonts/` subtree. Chassis assets use a different prefix (`/receiver/static/`); the prefix discipline is enforced by `TestMount_DoesNotShadowUIRoutes`. Font files are **duplicated**, not shared — per-package embed discipline trumps DRY during the parallel period. |
 | `go:embed` for fonts inflates binary | woff2 fonts roughly 150 kB total for DSEG + ~150 kB for the Inter variable font (Latin subset). Negligible at current binary size. |
 | Font license issues | DSEG MIT, Inter SIL OFL. Licenses + attributions committed alongside woff2 files. |
 | `chassis.css` grows too large to template-preprocess at startup | ~3,200 lines, ~80 kB minified. Substitution result cached in memory once at boot. Not a real concern at this size. |
-| Subsequent specs accidentally introduce `/ui/*` ↔ `chassis` cross-imports | A grep-based CI step asserts no cross-package import paths between `uiserver`/`ui` and `chassis`. Shipped in Phase 0 because the invariant is load-bearing for the eight follow-up specs and the lint cost is trivial. |
+| Subsequent specs accidentally introduce `/ui/*` ↔ `chassis` cross-imports | A production-file import-check asserts no cross-package import paths between `uiserver`/`ui` and `chassis`. Shipped in Phase 0 because the invariant is load-bearing for the eight follow-up specs and the lint cost is trivial. |
 | Test flakiness from time-dependent idle snapshots | All snapshot tests inject a fixed `time.Time` via function argument. |
 | Safari-specific container-query or OKLCH bug | Manual Safari smoke check is in the verification checklist. Container queries require Safari ≥ 16; OKLCH requires Safari ≥ 15.4. Both are current. |
 
@@ -575,7 +610,7 @@ A build tag (`//go:build !chassis`) is available if asset embedding ever becomes
 The final cutover spec at the end of Phase 5 will:
 
 - Replace `/ui/*` registrations to forward to `/receiver/*` equivalents, or
-- Remove `/ui/*` entirely and rename `/receiver/*` → `/ui/*`, retiring `internal/uiserver/` after a deprecation cycle.
+- Remove `/ui/*` entirely and rename `/receiver/*` → `/ui/*`, retiring or folding `internal/ui/` after a deprecation cycle while preserving any still-needed saver plumbing from `internal/uiserver/`.
 
 Phase 0 does not preempt that decision.
 
@@ -583,9 +618,9 @@ Phase 0 does not preempt that decision.
 
 These are calls that are reasonable but not obviously correct. The spec documents them so reviewers know what is settled vs. what is a judgment call.
 
-### Separate `internal/chassis/` package vs. extending `internal/uiserver/`
+### Separate `internal/chassis/` package vs. extending `internal/ui/`
 
-Roughly a 60/40 call in favour of separate package. Reasons for separation: clean isolation during the parallel period, no risk of accidental cross-coupling, and a clear seam for the eventual collapse (which can either fold `chassis` into `uiserver` or rename `uiserver` out of existence). Reasons against: duplicates plumbing (server struct, mount, embed FS, helper registration). A reviewer who prefers a single `internal/uiserver/` housing both UIs has a defensible case. Decision rationale: parallel-clean code is more valuable than de-duplicated plumbing during a multi-spec rollout.
+Roughly a 60/40 call in favour of separate package. Reasons for separation: clean isolation during the parallel period, no risk of accidental cross-coupling, and a clear boundary for the eventual collapse (which can either fold `chassis` into `internal/ui` or rename the chassis package into the primary UI package). Reasons against: duplicates plumbing (server struct, mount, embed FS, helper registration). A reviewer who prefers a single `internal/ui/` housing both UIs has a defensible case. Decision rationale: parallel-clean code is more valuable than de-duplicated plumbing during a multi-spec rollout.
 
 ### Dev-mode toggle via `?dev=1` query parameter
 
@@ -598,18 +633,18 @@ A focused checklist for the implementation plan to expand. Each item maps to a d
 1. Create `internal/chassis/` package skeleton: `server.go`, `data.go`, `handler.go`, `templates.go`, `doc.go`, `chassis_test.go`.
 2. Add `embed.FS` declarations for `templates/*.html` and `static` inside `templates.go`. Use `text/template` for the `chassis.css` substitution pass; reserve `html/template` for `shell.html` and its partials.
 3. Define `ReceiverPageData` struct and all sub-structs in `data.go`.
-4. Implement `idleSnapshot(cfg, version, now)` populating every sub-struct with placeholder content matching the mockup's idle state.
+4. Implement `idleSnapshot(cfg Config, now)` populating every sub-struct with placeholder content matching the mockup's idle state.
 5. Implement `handleIndex` and the static asset handler. Wire `Mount(mux)`.
 6. Port mockup HTML into the 13 partial files under `internal/chassis/templates/` (12 component partials plus `vfd-source-row.html`, which is its own file containing a `{{define "vfd-source-row"}}` that composes the `vfd` and `source-cluster` partials onto the same row). Add `{{define …}}` blocks, sentinel comment markers (`<!-- chassis:<partial-name> -->`), and partial-scoped data references. The `vfd-source-row` partial is the only one that receives the full page data `.` instead of a narrow sub-struct, because it composes two siblings.
-7. Port mockup CSS into `internal/chassis/static/chassis.css`. Run the `body.receiver` scope-prefix pass. Verify with a grep sanity check.
-8. Copy the eight DSEG woff2 files from `.superpowers/brainstorm/1973-1779237107/` to `internal/chassis/static/fonts/`. Add a Latin-subset Inter variable font (`Inter-Variable.woff2`) from [rsms/inter](https://github.com/rsms/inter) releases to the same directory — one file, full weight axis. Commit the LICENSE file with DSEG MIT and Inter SIL OFL attributions.
+7. Port mockup CSS into `internal/chassis/static/chassis.css`. Run the `body.receiver` scope-prefix pass. Verify with `TestChassisCSS_AllSelectorsScoped`.
+8. Copy the eight DSEG woff2 files from `.superpowers/brainstorm/1973-1779237107/` to `internal/chassis/static/fonts/`. Add a Latin-subset Inter variable font (`Inter-Variable.woff2`) from [rsms/inter](https://github.com/rsms/inter) releases to the same directory — one file, full weight axis. Commit `LICENSE` plus `SOURCES.md` with DSEG/Inter attributions, release URLs, and SHA-256 checksums.
 9. Implement `chassis.js` with the `Chassis.State`, animator registry, minute-aligned system time ticker, and `?dev=1` toggle.
 10. Implement the startup-time `{{.Version}}` substitution for `internal/chassis/static/chassis.css` font URLs.
-11. Wire `chassis.NewServer(...)` into `cmd/mister-groovy-relay/main.go` after the existing `ui.Server` mount.
+11. Wire `chassis.New(chassis.Config{...})` into `cmd/mister-groovy-relay/main.go` after the existing `ui.Server` mount.
 12. Write Layer 1 tests in `chassis_test.go`.
 13. Write Layer 2 template-parse tests.
 14. Write the integration test under `tests/integration/`.
-15. Add the cross-package import lint to CI (`go test` import-check or `grep`-based step) asserting `internal/chassis` does not import `internal/uiserver` or `internal/ui`, and vice versa.
+15. Add the production-file cross-package import check asserting `internal/chassis` does not import `internal/uiserver` or `internal/ui`, and production files in those packages do not import `internal/chassis`.
 16. Update `README.md` with the one-line preview note.
 17. Run manual visual verification checklist at all breakpoints + Safari smoke. Attach screenshots to PR.
 
@@ -751,7 +786,7 @@ The drawer markup is rendered with `display: none` (or analogous CSS) so the clo
 
 ## Appendix B — Visual Verification Reference
 
-The visual checklist in the Testing section references "matches mockup" at each breakpoint. Concretely, the implementer renders `/receiver` at each breakpoint and compares against the mockup served from `.superpowers/brainstorm/1973-1779237107/receiver-v24.html?idle=1` (idle toggle on). A diff that's purely text content (`STANDBY` vs `FIRST DAY ON MTV`) is expected for fields that come from `idleSnapshot()`; any structural or styling difference is a regression.
+The visual checklist in the Testing section references "matches mockup" at each breakpoint. Concretely, the implementer renders `/receiver` at each breakpoint and compares against the mockup served from `.superpowers/brainstorm/1973-1779237107/receiver-v24.html?idle=1` (idle toggle on) while also attaching screenshots to the PR. Because `.superpowers/` is a brainstorm workspace rather than a durable product source, the implementation PR must either commit a frozen reference copy under `docs/superpowers/reference/` or attach the exact mockup artifact used for comparison. A diff that's purely text content (`STANDBY` vs `FIRST DAY ON MTV`) is expected for fields that come from `idleSnapshot()`; the required review gate is the invariant checklist in the Testing section, not an undefined pixel-perfect threshold.
 
 ## Open Questions for Subsequent Specs
 
