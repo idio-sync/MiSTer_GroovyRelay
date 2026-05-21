@@ -1,6 +1,7 @@
 package chassis
 
 import (
+	"mime"
 	"testing"
 	"time"
 
@@ -60,5 +61,24 @@ func TestNew_AllowsEmptyHostIP(t *testing.T) {
 	_, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New should accept empty HostIP, got: %v", err)
+	}
+}
+
+func TestInit_RegistersWoff2MIME(t *testing.T) {
+	t.Parallel()
+	// Package init must register font/woff2 so http.FileServer's
+	// content-type lookup succeeds on hosts where the system MIME
+	// database doesn't know woff2 (Alpine, scratch containers).
+	got := mime.TypeByExtension(".woff2")
+	if got != "font/woff2" {
+		t.Fatalf(`TypeByExtension(".woff2") = %q, want "font/woff2"`, got)
+	}
+}
+
+func TestInit_RegistersWoffMIME(t *testing.T) {
+	t.Parallel()
+	got := mime.TypeByExtension(".woff")
+	if got != "font/woff" {
+		t.Fatalf(`TypeByExtension(".woff") = %q, want "font/woff"`, got)
 	}
 }
