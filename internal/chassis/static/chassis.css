@@ -304,8 +304,7 @@ body.receiver .led {
   gap: 5px;
 }
 
-body.receiver .led .dot,
-body.receiver .led .light {
+body.receiver .led .dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -314,22 +313,18 @@ body.receiver .led .light {
 }
 
 body.receiver .led.on .dot,
-body.receiver .led.on .light,
-body.receiver .led.on.green .dot,
-body.receiver .led.on.green .light {
+body.receiver .led.on.green .dot {
   background: #00ff66;
   box-shadow: 0 0 6px #00ff66cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
 }
 
-body.receiver .led.on.red .dot,
-body.receiver .led.on.red .light {
+body.receiver .led.on.red .dot {
   background: #ff3030;
   box-shadow: 0 0 6px #ff3030cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
   animation: rec-pulse 1.6s ease-in-out infinite;
 }
 
-body.receiver .led.on.aqua .dot,
-body.receiver .led.on.aqua .light {
+body.receiver .led.on.aqua .dot {
   background: oklch(0.90 0.22 175);
   box-shadow: 0 0 5px oklch(0.90 0.22 175 / 0.9), inset 0 0 2px rgba(255, 255, 255, 0.4);
 }
@@ -357,9 +352,7 @@ body.receiver .led.on .lbl {
 }
 
 body.receiver.idle .led.on.aqua .dot,
-body.receiver.idle .led.on.aqua .light,
-body.receiver.idle .led.on.red .dot,
-body.receiver.idle .led.on.red .light {
+body.receiver.idle .led.on.red .dot {
   background: #2a2a2c;
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
   animation: none;
