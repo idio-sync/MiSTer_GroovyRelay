@@ -2588,7 +2588,8 @@ body.receiver .upload-btn {
 }
 
 /* ---- 11. Preset bank + catalog ---- */
-body.receiver .preset-strip {
+body.receiver .preset-strip,
+body.receiver .preset-section {
   display: grid;
   grid-template-columns: 80px 1fr;
   gap: 14px;
@@ -2885,11 +2886,13 @@ body.receiver .catalog-empty {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  body.receiver .preset-strip {
+  body.receiver .preset-strip,
+  body.receiver .preset-section {
     grid-template-columns: 60px 1fr;
   }
 
-  body.receiver .preset-strip .strip-label {
+  body.receiver .preset-strip .strip-label,
+  body.receiver .preset-section .strip-label {
     font-size: 8px;
     padding-right: 8px;
   }
@@ -2911,7 +2914,8 @@ body.receiver .catalog-empty {
 
 @container chassis (max-width: 420px) {
   body.receiver .section-strip,
-  body.receiver .preset-strip {
+  body.receiver .preset-strip,
+  body.receiver .preset-section {
     grid-template-columns: 48px 1fr;
     gap: 6px;
   }
