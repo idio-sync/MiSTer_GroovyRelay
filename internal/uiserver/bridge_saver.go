@@ -136,6 +136,12 @@ func (r *BridgeSaver) Save(newCfg config.BridgeConfig) (adapters.ApplyScope, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	candidate := &config.Sectioned{Bridge: newCfg}
+	if err := candidate.Validate(); err != nil {
+		return 0, fmt.Errorf("validate bridge config: %w", err)
+	}
+	newCfg = candidate.Bridge
+
 	old := r.sec.Bridge
 	changed := diffBridgeConfig(old, newCfg)
 

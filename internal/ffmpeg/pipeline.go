@@ -260,7 +260,7 @@ func escapeSubtitlePathFor(goos, p string) string {
 // single-quoted region as literal (backslash escapes are NOT processed
 // inside it), so the only character that needs special handling at the
 // filtergraph layer is `'` itself, which must close the quote, emit an
-// escaped apostrophe, and reopen: `'\''`. After the filtergraph parser
+// escaped apostrophe, and reopen: `'\”`. After the filtergraph parser
 // hands the extracted value to drawtext, drawtext runs its own `%{...}`
 // expansion and consumes backslash escapes, so `%` must be escaped as
 // `\%` and `\` as `\\` to render literally. Bracket / colon / comma /

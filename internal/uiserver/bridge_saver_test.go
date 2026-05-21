@@ -287,6 +287,40 @@ func TestBridgeSaver_VisualizerModePersistsVisualizerTable(t *testing.T) {
 	}
 }
 
+func TestBridgeSaver_InvalidVisualizerModeRejectsBeforePersisting(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	path := testConfigPath(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read before config: %v", err)
+	}
+	s := NewBridgeSaver(path, &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	next := old
+	next.Visualizer.Mode = "sparkle"
+	_, err = s.Save(next)
+	if err == nil {
+		t.Fatal("Save error = nil, want invalid visualizer mode error")
+	}
+	if !strings.Contains(err.Error(), "bridge.visualizer.mode") {
+		t.Fatalf("Save error = %v, want bridge.visualizer.mode", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after config: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("config file changed after rejected save:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if got := s.Current().Visualizer.Mode; got != old.Visualizer.Mode {
+		t.Fatalf("current visualizer mode = %q, want unchanged %q", got, old.Visualizer.Mode)
+	}
+	if core.updates != 0 {
+		t.Fatalf("UpdateBridge calls = %d, want 0", core.updates)
+	}
+}
+
 func TestBridgeSaver_VisualizerModeMixedRestartCastDropsAndUpdates(t *testing.T) {
 	core := &fakeBridgeCore{}
 	old := testBridgeConfig(t, "NTSC_480i")
@@ -349,7 +383,7 @@ func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
 		},
 		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
-		MiSTer:     config.MisterConfig{Port: 32100, SourcePort: 32101},
+		MiSTer:     config.MisterConfig{Host: "192.0.2.10", Port: 32100, SourcePort: 32101},
 		UI:         config.UIConfig{HTTPPort: 32500},
 	}
 }
@@ -365,12 +399,14 @@ func testConfigPath(t *testing.T) string {
 
 type fakeBridgeCore struct {
 	updated         config.BridgeConfig
+	updates         int
 	interlaceOrders []string
 	drops           int
 	dropErr         error
 }
 
 func (f *fakeBridgeCore) UpdateBridge(b config.BridgeConfig) {
+	f.updates++
 	f.updated = b
 }
 
