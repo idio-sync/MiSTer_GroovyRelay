@@ -350,6 +350,17 @@ func TestChassisCSS_UsesOnlyHostedFontFamilies(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_DoesNotGenerateReadableGhostSegments(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	if strings.Contains(string(css), "attr(data-ghost)") {
+		t.Fatal("CSS must not generate decorative segment ghost text from data-ghost")
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
@@ -427,6 +438,9 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 		`id="paste-clear" type="button"`,
 		`id="torrent-file-input"`,
 		`class="hw-btn active" type="button"`,
+		`class="source-cluster" role="radiogroup" aria-label="Media source"`,
+		`class="hw-btn active" type="button" role="radio" aria-checked="true" aria-label="STREAMS selected"`,
+		`class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>`,
 		`class="preset empty" type="button"`,
 	} {
 		if !strings.Contains(body, want) {

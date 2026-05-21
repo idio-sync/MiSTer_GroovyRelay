@@ -663,8 +663,7 @@ body.receiver .seg-display {
   display: inline-block;
 }
 
-body.receiver .seg-display::before {
-  content: attr(data-ghost);
+body.receiver .seg-ghost {
   position: absolute;
   inset: 0;
   color: var(--vfd-ghost);
@@ -677,6 +676,11 @@ body.receiver .seg-display::before {
   white-space: pre;
   pointer-events: none;
   user-select: none;
+}
+
+body.receiver .seg-text {
+  position: relative;
+  z-index: 1;
 }
 
 body.receiver .vfd .title-line {
