@@ -51,6 +51,23 @@ func TestChassisCSS_LeakProneSelectorsAreScoped(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_RulesetCountSanity(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	count := countRulesets(src)
+	// The original full-mockup plan suggested 600+ rulesets, but this
+	// branch is a staged Phase 0 port. The current parser count is 476
+	// scoped non-keyframe rulesets, so 450 leaves room for small cleanup
+	// while still catching accidental truncation or a dropped CSS section.
+	const minRulesets = 450
+	if count < minRulesets {
+		t.Errorf("chassis.css has %d rulesets, want at least %d for the staged Phase 0 port", count, minRulesets)
+	}
+}
+
 func TestChassisCSS_PresetLivePulseHonorsReducedMotionCascade(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
@@ -467,6 +484,33 @@ func findUnscopedSelectors(src []byte) []string {
 					continue
 				}
 				leaks = append(leaks, part)
+			}
+		}
+	}
+}
+
+func countRulesets(src []byte) int {
+	src = bytes.ReplaceAll(src, []byte("@container"), []byte("@media"))
+	p := css.NewParser(parse.NewInput(bytes.NewReader(src)), false)
+	count := 0
+	skipAtRuleDepth := 0
+	for {
+		gt, _, data := p.Next()
+		switch gt {
+		case css.ErrorGrammar:
+			return count
+		case css.BeginAtRuleGrammar:
+			at := strings.TrimSpace(cssGrammarText(p, data))
+			if isSelectorExemptAtRule(at) || skipAtRuleDepth > 0 {
+				skipAtRuleDepth++
+			}
+		case css.EndAtRuleGrammar:
+			if skipAtRuleDepth > 0 {
+				skipAtRuleDepth--
+			}
+		case css.BeginRulesetGrammar:
+			if skipAtRuleDepth == 0 {
+				count++
 			}
 		}
 	}
