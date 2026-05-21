@@ -24,7 +24,7 @@
 | `internal/chassis/server.go` | `Config` + `Server` structs, `New(Config) (*Server, error)`, `Mount(*http.ServeMux)` |
 | `internal/chassis/data.go` | `ReceiverPageData` + sub-structs, `idleSnapshot(Config, time.Time)` helper |
 | `internal/chassis/handler.go` | `handleIndex`, `handleStatic`, MIME init |
-| `internal/chassis/templates.go` | Template parser, helper FuncMap (`inc`, `hasString`, `replaceAll`, `pad2`, `dim`), `chassis.css` `{{.Version}}` substitution |
+| `internal/chassis/templates.go` | Template parser, helper FuncMap (`inc`, `hasString`, `replaceAll`, `pad2`, `dim`, `list`, `until`), `chassis.css` `{{.Version}}` substitution |
 | `internal/chassis/chassis_test.go` | Layer 1 unit + handler tests |
 | `internal/chassis/css_scope_test.go` | `TestChassisCSS_AllSelectorsScoped` (separate file for clarity) |
 | `internal/chassis/import_check_test.go` | Cross-package import-isolation lint |
@@ -648,6 +648,28 @@ func TestIdleSnapshot_EmptyHostIPRendersAsOFFLINE(t *testing.T) {
 	}
 }
 
+func TestIdleSnapshot_InvalidVisualizerModeFallsBack(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = "bogus"
+	got := idleSnapshot(cfg, fixedNow)
+	if got.Visualizer.ActiveMode != "retro_analyzer" {
+		t.Errorf("Visualizer.ActiveMode = %q, want retro_analyzer", got.Visualizer.ActiveMode)
+	}
+}
+
+func TestIdleSnapshot_RadialPreviewModeFallsBack(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = "radial_spectrum"
+	got := idleSnapshot(cfg, fixedNow)
+	if got.Visualizer.ActiveMode != "retro_analyzer" {
+		t.Errorf("Visualizer.ActiveMode = %q, want retro_analyzer for preview-only radial_spectrum", got.Visualizer.ActiveMode)
+	}
+}
+
 func TestIdleSnapshot_UptimeFromStartedAt(t *testing.T) {
 	t.Parallel()
 	startedAt := time.Date(2026, 5, 21, 18, 35, 0, 0, time.UTC)
@@ -680,14 +702,20 @@ Expected: FAIL — `undefined: idleSnapshot`.
 
 - [ ] **Step 3: Implement `idleSnapshot` in `data.go`**
 
-Append to `internal/chassis/data.go`:
+Merge the imports into `internal/chassis/data.go` immediately after `package chassis`, then append the helper functions below the existing type declarations. Do not append an `import` block after declarations; Go imports must stay directly under the package clause.
 
 ```go
 import (
 	"fmt"
 	"time"
-)
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+)
+```
+
+Append the helper functions below the existing type declarations:
+
+```go
 // idleSnapshot returns a fully populated ReceiverPageData with State =
 // StateIdle and placeholder content matching the mockup's idle state.
 // Spec 2 (VFD live) will replace this with snapshotFromSession that
@@ -809,20 +837,23 @@ func formatUptime(d time.Duration) string {
 
 // defaultVisualizerMode reads the active visualizer mode from the
 // bridge config, falling back to retro_analyzer if the config field
-// is empty or invalid. Spec 4 (visualizer wiring) replaces this with
-// a real validation against config.SupportedVisualizerModes().
+// is empty, invalid, or preview-only.
 func defaultVisualizerMode(cfg Config) string {
-	if mode := cfg.Bridge.Visualizer.Mode; mode != "" {
+	switch mode := cfg.Bridge.Visualizer.Mode; mode {
+	case config.VisualizerModeRetroAnalyzer,
+		config.VisualizerModeOscilloscopeWave,
+		config.VisualizerModeStereoScope:
 		return mode
+	default:
+		return config.VisualizerModeRetroAnalyzer
 	}
-	return "retro_analyzer"
 }
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./internal/chassis/ -run TestIdleSnapshot`
-Expected: PASS — 4 tests.
+Expected: PASS — 6 tests.
 
 - [ ] **Step 5: Run the full chassis package test suite**
 
@@ -883,7 +914,7 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 		name, src string
 	}{
 		{"inc", `{{inc 0}}`},
-		{"hasString", `{{hasString (slice "a" "b") "b"}}`},
+		{"hasString", `{{hasString (list "a" "b") "b"}}`},
 		{"replaceAll", `{{replaceAll "a/b" "/" "-"}}`},
 		{"pad2", `{{pad2 5}}`},
 		{"dim", `{{dim true}}`},
@@ -924,7 +955,32 @@ Create `internal/chassis/templates/shell.html`:
 </html>{{end}}
 ```
 
-- [ ] **Step 3: Create `templates.go` with embed FS + parser + helper FuncMap**
+- [ ] **Step 3: Create the minimal static CSS and JS stubs required by `go:embed` and `shell.html`**
+
+Task 5 embeds the `static` directory, so the directory must exist before the package can compile. `shell.html` also links `chassis.js`, so create both static placeholders now. Task 6 preprocesses the CSS; Task 26 replaces the JS stub with the real runtime.
+
+Create `internal/chassis/static/chassis.css`:
+
+```css
+/* Receiver chassis stylesheet. Sections + content land in Tasks 17-25.
+   Phase 0 stub: just enough for embed + preprocessor to round-trip. */
+@font-face {
+  font-family: 'Inter';
+  src: url('/receiver/static/fonts/Inter-Variable.woff2?v={{.Version}}') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+```
+
+Create `internal/chassis/static/chassis.js`:
+
+```js
+// Receiver chassis runtime stub. Replaced by Task 26.
+window.Chassis = window.Chassis || {};
+```
+
+- [ ] **Step 4: Create `templates.go` with embed FS + parser + helper FuncMap**
 
 Create `internal/chassis/templates.go`:
 
@@ -960,6 +1016,7 @@ var chassisStaticFS embed.FS
 // Chassis-specific helpers:
 //   pad2 — zero-padded two-digit strings for clock display.
 //   dim  — returns the CSS class string for inactive lamps.
+//   list — constructs a string slice for small template membership probes.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
@@ -983,6 +1040,7 @@ var templateFuncs = template.FuncMap{
 		}
 		return "dim"
 	},
+	"list": func(args ...string) []string { return args },
 }
 
 // parseTemplates parses the embedded chassis templates with the helper
@@ -996,7 +1054,7 @@ func parseTemplates() (*template.Template, error) {
 }
 ```
 
-- [ ] **Step 4: Wire `parseTemplates` into `New` in `server.go`**
+- [ ] **Step 5: Wire `parseTemplates` into `New` in `server.go`**
 
 Modify the `New` function in `internal/chassis/server.go` to add template parsing. Replace the existing body:
 
@@ -1027,22 +1085,24 @@ type Server struct {
 
 Add `"html/template"` to the `server.go` imports.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `go test ./internal/chassis/...`
 Expected: PASS — `TestTemplatesParse`, `TestTemplatesExpectedHelpersAvailable`, plus all prior tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add internal/chassis/templates.go internal/chassis/templates/shell.html internal/chassis/server.go internal/chassis/chassis_test.go
+git add internal/chassis/templates.go internal/chassis/templates/shell.html internal/chassis/static/chassis.css internal/chassis/static/chassis.js internal/chassis/server.go internal/chassis/chassis_test.go
 git commit -m "feat(chassis): add embed FS + template parser + helper FuncMap
 
 Two go:embed declarations (templates and static), one template.Funcs
 binding for inc/hasString/replaceAll (duplicated verbatim from
 internal/ui per the parallel-replacement isolation contract) plus
-chassis-specific pad2 and dim. New() now parses templates at startup
-so handler tests can render shell.html in later tasks.
+chassis-specific pad2, dim, and list. New() now parses templates at
+startup so handler tests can render shell.html in later tasks. Adds
+minimal CSS/JS static stubs so shell-linked assets do not 404 before
+the full stylesheet/runtime land.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -1141,9 +1201,9 @@ func preprocessCSS(src []byte, version string) ([]byte, error) {
 }
 ```
 
-- [ ] **Step 4: Create a minimal `chassis.css` stub for embed**
+- [ ] **Step 4: Verify the minimal `chassis.css` stub for CSS preprocessing**
 
-Create `internal/chassis/static/chassis.css`:
+Task 5 created `internal/chassis/static/chassis.css` so `//go:embed static` had a match. Ensure it still has the version placeholder that `preprocessCSS` tests exercise (replace it with this content if needed):
 
 ```css
 /* Receiver chassis stylesheet. Sections + content land in Tasks 17-25.
@@ -1169,7 +1229,7 @@ type Server struct {
 }
 ```
 
-Add an import for `io/fs` if not already present, then update `New`:
+No new `server.go` imports are needed for `ReadFile`; update `New`:
 
 ```go
 func New(cfg Config) (*Server, error) {
@@ -1228,15 +1288,9 @@ Now wire the handler. Both routes (index and static) plus the Mount registration
 
 - [ ] **Step 1: Add the failing handler tests**
 
-Append to `internal/chassis/chassis_test.go`:
+Merge the new standard-library packages (`io`, `net/http`, `net/http/httptest`) into the existing `internal/chassis/chassis_test.go` import block, then append the tests below the existing tests:
 
 ```go
-import (
-	"io"
-	"net/http"
-	"net/http/httptest"
-)
-
 // newTestServer builds a Server with a deterministic Config so handler
 // responses are stable across test runs. Tests should not call New
 // directly because it requires non-trivial config wiring.
@@ -1384,10 +1438,11 @@ Expected: FAIL — `s.handleIndex undefined`, `Mount has empty body`.
 
 - [ ] **Step 3: Implement `handleIndex` in `handler.go`**
 
-Append to `internal/chassis/handler.go`:
+Replace the top of `internal/chassis/handler.go` with one consolidated import block (preserving the MIME init from Task 2), then append `handleIndex` below the existing `init` function:
 
 ```go
 import (
+	"mime"
 	"net/http"
 	"time"
 )
@@ -1409,13 +1464,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 - [ ] **Step 4: Implement `handleStatic` for the embedded asset subtree**
 
-Append to `internal/chassis/handler.go`:
+Add `io/fs` to the same `handler.go` import block, then append `handleStatic` below `handleIndex`. The final import block after this step should contain `io/fs`, `mime`, `net/http`, and `time`.
 
 ```go
-import (
-	"io/fs"
-)
-
 // handleStatic serves the embedded chassis static assets under
 // /receiver/static/. CSS goes through the cached preprocessed bytes
 // (with {{.Version}} substituted); everything else (JS, fonts) is
@@ -1958,9 +2009,9 @@ Replace `internal/chassis/templates/meter.html`. The partial receives `.Meter` w
 
 The `until N` template helper repeats a block N times. It is not in the chassis FuncMap yet — add it next.
 
-- [ ] **Step 3: Add `until` and `list` helpers to the existing FuncMap**
+- [ ] **Step 3: Add the `until` helper to the existing FuncMap**
 
-The mockup uses `{{range until 6}}...{{end}}` and `{{index (list "60" "250" ...) $i}}` to render N copies of a band element. Edit `internal/chassis/templates.go`: inside the existing `templateFuncs` map (introduced in Task 5), append two entries immediately before the closing brace. Find the existing map:
+The mockup uses `{{range until 6}}...{{end}}` and `{{index (list "60" "250" ...) $i}}` to render N copies of a band element. Task 5 already added `list`; this task adds `until`. Edit `internal/chassis/templates.go`: inside the existing `templateFuncs` map, append `until` immediately before the closing brace. Find the existing map:
 
 ```go
 var templateFuncs = template.FuncMap{
@@ -1986,6 +2037,7 @@ var templateFuncs = template.FuncMap{
 		}
 		return "dim"
 	},
+	"list": func(args ...string) []string { return args },
 }
 ```
 
@@ -2015,20 +2067,19 @@ var templateFuncs = template.FuncMap{
 		}
 		return "dim"
 	},
-	"until": func(n int) []struct{} { return make([]struct{}, n) },
 	"list":  func(args ...string) []string { return args },
+	"until": func(n int) []struct{} { return make([]struct{}, n) },
 }
 ```
 
 `index` is already a built-in template function. No need to add it.
 
-- [ ] **Step 4: Update the helpers-available test to cover `until` and `list`**
+- [ ] **Step 4: Update the helpers-available test to cover `until`**
 
-In `internal/chassis/chassis_test.go`, append two more probes to `TestTemplatesExpectedHelpersAvailable`:
+In `internal/chassis/chassis_test.go`, append one more probe to `TestTemplatesExpectedHelpersAvailable` (`list` is already covered by the `hasString` probe from Task 5):
 
 ```go
 		{"until", `{{range until 3}}x{{end}}`},
-		{"list", `{{index (list "a" "b") 1}}`},
 ```
 
 - [ ] **Step 5: Run tests**
@@ -2333,8 +2384,12 @@ func TestHandleStatic_Fonts_Served(t *testing.T) {
 	cases := []string{
 		"DSEG7Classic-Regular.woff2",
 		"DSEG7Classic-Bold.woff2",
+		"DSEG7Modern-Regular.woff2",
+		"DSEG7Modern-Bold.woff2",
 		"DSEG14Classic-Regular.woff2",
 		"DSEG14Classic-Bold.woff2",
+		"DSEG14Modern-Regular.woff2",
+		"DSEG14Modern-Bold.woff2",
 		"Inter-Variable.woff2",
 	}
 	for _, name := range cases {
@@ -2387,14 +2442,33 @@ cp .superpowers/brainstorm/1973-1779237107/DSEG14Modern-Regular.woff2  internal/
 cp .superpowers/brainstorm/1973-1779237107/DSEG14Modern-Bold.woff2     internal/chassis/static/fonts/
 ```
 
-- [ ] **Step 4: Download Inter variable font**
+PowerShell equivalent for the default Codex workspace on Windows:
 
-Download the Latin-subset Inter variable font from the [rsms/inter releases](https://github.com/rsms/inter/releases) (current latest, e.g. v4.0). Place it at `internal/chassis/static/fonts/Inter-Variable.woff2`. If a Latin subset is not directly available from upstream, use the full variable font — file size impact is acceptable (~150-250 kB).
+```powershell
+New-Item -ItemType Directory -Force -Path internal/chassis/static/fonts | Out-Null
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG7Classic-Regular.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG7Classic-Bold.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG7Modern-Regular.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG7Modern-Bold.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG14Classic-Regular.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG14Classic-Bold.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG14Modern-Regular.woff2 internal/chassis/static/fonts/
+Copy-Item .superpowers/brainstorm/1973-1779237107/DSEG14Modern-Bold.woff2 internal/chassis/static/fonts/
+```
+
+- [ ] **Step 4: Download the pinned Inter variable font**
+
+Download the Inter variable font from the pinned upstream release declared in `SOURCES.md`: `rsms/inter` `v4.0`. Place it at `internal/chassis/static/fonts/Inter-Variable.woff2`. If this URL changes in a future release, update the download URL, release field, and checksum in `SOURCES.md` in the same commit.
 
 ```bash
-# Example — adjust URL to the current release:
 curl -L -o internal/chassis/static/fonts/Inter-Variable.woff2 \
   "https://github.com/rsms/inter/releases/download/v4.0/InterVariable.woff2"
+```
+
+PowerShell equivalent:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/rsms/inter/releases/download/v4.0/InterVariable.woff2" -OutFile internal/chassis/static/fonts/Inter-Variable.woff2
 ```
 
 - [ ] **Step 5: Compute SHA-256 checksums**
@@ -2403,6 +2477,17 @@ curl -L -o internal/chassis/static/fonts/Inter-Variable.woff2 \
 cd internal/chassis/static/fonts/
 sha256sum *.woff2 > /tmp/font-checksums.txt
 cat /tmp/font-checksums.txt
+```
+
+PowerShell equivalent:
+
+```powershell
+Get-ChildItem internal/chassis/static/fonts -Filter *.woff2 |
+  Sort-Object Name |
+  ForEach-Object {
+    "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
+  } | Set-Content -Encoding ascii font-checksums.txt
+Get-Content font-checksums.txt
 ```
 
 Keep the checksums; you'll paste them into `SOURCES.md` in the next step.
@@ -2459,7 +2544,7 @@ Project: https://github.com/rsms/inter
 
 Create `internal/chassis/static/fonts/SOURCES.md`. Paste the SHA-256 values from Step 5 into the Checksum column:
 
-```markdown
+````markdown
 # Chassis Font Sources
 
 Reproducibility manifest for the woff2 files committed alongside
@@ -2501,9 +2586,26 @@ Download URL: https://github.com/rsms/inter/releases/download/v4.0/InterVariable
 cd internal/chassis/static/fonts/
 sha256sum -c <(grep -E '\| \S+\.woff2 \|' SOURCES.md | awk -F'[ |]+' '{ print $4 "  " $3 }')
 ```
+
+PowerShell verification:
+
+```powershell
+$expected = @{}
+Get-Content internal/chassis/static/fonts/SOURCES.md |
+  Where-Object { $_ -match '^\| .*\.woff2 \|' } |
+  ForEach-Object {
+    $parts = $_ -split '\|'
+    $expected[$parts[1].Trim()] = $parts[2].Trim().ToLowerInvariant()
+  }
+foreach ($name in $expected.Keys) {
+  $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath "internal/chassis/static/fonts/$name").Hash.ToLowerInvariant()
+  if ($actual -ne $expected[$name]) { throw "$name checksum mismatch: $actual != $($expected[$name])" }
+}
 ```
+````
 
 Replace each `<PASTE-SHA-256-HERE>` with the actual checksums from `/tmp/font-checksums.txt`.
+On PowerShell, use the `font-checksums.txt` file produced in the workspace by the Step 5 command.
 
 - [ ] **Step 8: Verify embed picks up the new files**
 
@@ -2531,6 +2633,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `internal/chassis/static/chassis.css`
+- Modify: `internal/chassis/chassis_test.go`
 
 Replace the stub with the foundational CSS — design tokens (verbatim from mockup), all `@font-face` declarations, and the custom reset. Per-section CSS lands in Tasks 17-24.
 
@@ -2577,12 +2680,40 @@ body.receiver ::-webkit-scrollbar-thumb:hover { background: #3a3a3e; }
 /* ── 15. Responsive container queries land in Task 25 ───────────────── */
 ```
 
-- [ ] **Step 2: Run tests**
+- [ ] **Step 2: Add a hosted-font audit test**
+
+Add this audit test to `internal/chassis/chassis_test.go` so the CSS port cannot keep mockup-only or externally hosted font references:
+
+```go
+func TestChassisCSS_UsesOnlyHostedFontFamilies(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("read chassis.css: %v", err)
+	}
+	text := string(src)
+	for _, banned := range []string{
+		"fonts.googleapis.com",
+		"fonts.gstatic.com",
+		"Orbitron",
+		"Major Mono",
+		"JetBrains",
+	} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("chassis.css contains unhosted/mockup-only font reference %q", banned)
+		}
+	}
+}
+```
+
+`internal/chassis/chassis_test.go` should already import `strings` from earlier template tests; if not, merge it into the existing import block.
+
+- [ ] **Step 3: Run tests**
 
 Run: `go test ./internal/chassis/...`
-Expected: PASS — CSS still preprocesses, all font URLs carry `?v=`, no template error.
+Expected: PASS — CSS still preprocesses, all font URLs carry `?v=`, no template error, and no external/unhosted font references remain.
 
-- [ ] **Step 3: Verify the page renders in a browser**
+- [ ] **Step 4: Verify the page renders in a browser**
 
 Build and run the bridge with a manual exec:
 
@@ -2591,12 +2722,19 @@ go build -o bin/mister-groovy-relay ./cmd/mister-groovy-relay
 ./bin/mister-groovy-relay --config /path/to/config.toml &
 ```
 
+PowerShell equivalent:
+
+```powershell
+go build -o bin\mister-groovy-relay.exe .\cmd\mister-groovy-relay
+Start-Process -FilePath .\bin\mister-groovy-relay.exe -ArgumentList "--config", "C:\path\to\config.toml" -WindowStyle Hidden
+```
+
 Visit `http://localhost:32500/receiver` in a browser. Expected: a black page (no per-section CSS yet) with no console errors. Tabs/title show `GROOVY · RELAY`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/chassis/static/chassis.css
+git add internal/chassis/static/chassis.css internal/chassis/chassis_test.go
 git commit -m "feat(chassis): add chassis.css scaffold (fonts + tokens + reset)
 
 8 DSEG @font-face declarations with font-display: block (matching
@@ -2627,6 +2765,12 @@ Each task ends with the scope assertion test (Task 25) being green for the chunk
 
 ```bash
 grep -nE '^\s*\.<selector>\s*[\{,]' .superpowers/brainstorm/1973-1779237107/receiver-v24.html
+```
+
+PowerShell / ripgrep equivalent:
+
+```powershell
+rg -n '^\s*\.<selector>\s*[\{,]' .superpowers/brainstorm/1973-1779237107/receiver-v24.html
 ```
 
 The brace at end of line means "rule definition"; the comma means "comma-separated multi-selector rule list" — both yield the rule starts.
@@ -3092,29 +3236,29 @@ body.receiver .receiver { container-name: chassis; container-type: inline-size; 
 body.receiver .vfd { container-name: vfd; container-type: inline-size; }
 
 @container chassis (max-width: 1180px) {
-  .meter-screen--compact .throughput-wrap,
-  .meter-screen--compact .ack-wrap { display: none; }
+  body.receiver .meter-screen--compact .throughput-wrap,
+  body.receiver .meter-screen--compact .ack-wrap { display: none; }
   /* ...rest of the 1180px rules from the mockup... */
 }
 
 @container chassis (max-width: 900px) {
-  .meter-screen--compact .gonio-wrap { display: none; }
-  .vfd-source-row { grid-template-columns: 1fr; }
+  body.receiver .meter-screen--compact .gonio-wrap { display: none; }
+  body.receiver .vfd-source-row { grid-template-columns: 1fr; }
   /* ...rest of the 900px rules... */
 }
 
 @container chassis (max-width: 600px) {
-  .meter-screen--compact .meter-source-strip { display: none; }
-  .field-flip { display: none; }
+  body.receiver .meter-screen--compact .meter-source-strip { display: none; }
+  body.receiver .field-flip { display: none; }
   /* ...rest of the 600px rules... */
 }
 
 @container vfd (max-width: 720px) {
-  .vfd .right-panel { display: none; }
+  body.receiver .vfd .right-panel { display: none; }
 }
 ```
 
-Note: selectors inside `@container` rules are scoped contextually by the container itself (the chassis or VFD). They do not need the `body.receiver` prefix because the container only contains chassis elements. Rule 5 of the porting rules (scope rules 2-4 inside at-rules) still applies to descendant `body.idle ...`-style rules nested inside `@container` blocks — but these breakpoint rules use bare class selectors which are already implicitly scoped to the container's subtree.
+Note: selectors inside `@container` rules still need the `body.receiver` prefix. Container queries decide when a rule applies; they do not scope the selector to the queried container. Apply the same scope-prefix rules inside `@container` / `@media` blocks as top-level CSS, while leaving `@font-face` and `@keyframes` internals exempt.
 
 - [ ] **Step 3: Run tests + manual visual check at every breakpoint**
 
@@ -3155,7 +3299,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 Run:
 
 ```bash
-go get github.com/tdewolff/parse/v2/css@latest
+go get github.com/tdewolff/parse/v2/css@v2.8.12
 go mod tidy
 ```
 
@@ -3232,34 +3376,37 @@ func TestChassisCSS_LeakProneSelectorsAreScoped(t *testing.T) {
 	}
 }
 
-// findUnscopedSelectors parses css and returns any top-level selectors
-// that aren't allowlisted or scoped under body.receiver. Selectors
-// inside @container, @media, @keyframes, and @font-face are scoped
-// by their containing at-rule and are not flagged.
+// findUnscopedSelectors parses css and returns any selectors that are
+// not allowlisted or scoped under body.receiver. Selectors inside
+// @media and @container are still checked; those at-rules are
+// conditional, not scoping boundaries. @font-face and @keyframes
+// internals are exempt because they do not select page elements.
 func findUnscopedSelectors(src []byte) []string {
 	var leaks []string
 	p := css.NewParser(parse.NewInput(bytes.NewReader(src)), false)
-	atRuleDepth := 0
+	skipAtRuleDepth := 0
 	for {
 		gt, _, data := p.Next()
 		switch gt {
 		case css.ErrorGrammar:
 			return leaks
-		case css.AtRuleGrammar, css.BeginAtRuleGrammar:
-			atRuleDepth++
+		case css.BeginAtRuleGrammar:
+			at := strings.TrimSpace(string(data))
+			if isSelectorExemptAtRule(at) || skipAtRuleDepth > 0 {
+				skipAtRuleDepth++
+			}
 		case css.EndAtRuleGrammar:
-			atRuleDepth--
+			if skipAtRuleDepth > 0 {
+				skipAtRuleDepth--
+			}
 		case css.BeginRulesetGrammar:
-			if atRuleDepth > 0 {
-				// Inside @container/@media — scoped by container, allowed.
+			if skipAtRuleDepth > 0 {
 				continue
 			}
 			sel := strings.TrimSpace(string(data))
-			if isAllowlistedSelector(sel) || strings.HasPrefix(sel, "body.receiver") {
-				continue
-			}
-			// Split comma-separated selector list; flag any individual
-			// selector that isn't allowlisted or scoped.
+			// Split comma-separated selector lists before checking prefix.
+			// Otherwise `body.receiver .ok, .leak {}` would incorrectly
+			// pass because the full selector starts with body.receiver.
 			for _, part := range strings.Split(sel, ",") {
 				part = strings.TrimSpace(part)
 				if part == "" || isAllowlistedSelector(part) || strings.HasPrefix(part, "body.receiver") {
@@ -3269,6 +3416,11 @@ func findUnscopedSelectors(src []byte) []string {
 			}
 		}
 	}
+}
+
+func isSelectorExemptAtRule(at string) bool {
+	at = strings.TrimPrefix(strings.TrimSpace(at), "@")
+	return strings.HasPrefix(at, "font-face") || strings.HasPrefix(at, "keyframes")
 }
 
 func isAllowlistedSelector(sel string) bool {
@@ -3339,8 +3491,12 @@ func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 body.receiver .foo { color: red; }
 body.receiver.idle .bar { opacity: 0.5; }
 body.receiver .foo, body.receiver .baz { color: blue; }
+body.receiver .ok, body.receiver .also-ok { color: green; }
 @container chassis (max-width: 900px) {
-  .foo { display: none; }
+  body.receiver .foo { display: none; }
+}
+@media (max-width: 900px) {
+  body.receiver .bar { display: none; }
 }
 @keyframes spin { 0% { transform: rotate(0); } 100% { transform: rotate(360deg); } }
 `)
@@ -3356,16 +3512,23 @@ func TestFindUnscopedSelectors_FixtureBad(t *testing.T) {
 .foo { color: red; }
 body.idle .bar { opacity: 0.5; }
 .foo, body.receiver .baz { color: blue; }
+body.receiver .ok, .leak-after-scoped { color: red; }
+@container chassis (max-width: 900px) { .inside-container { display: none; } }
+@media (max-width: 900px) { .inside-media { display: none; } }
 `)
 	leaks := findUnscopedSelectors(src)
 	want := map[string]bool{
-		".foo":          true,
-		"body.idle .bar": true,
+		".foo":               true,
+		"body.idle .bar":     true,
+		".leak-after-scoped": true,
+		".inside-container":  true,
+		".inside-media":      true,
 	}
-	// ".foo" (in the comma-list) is the only bad selector in the third rule;
-	// "body.receiver .baz" is fine. Expect exactly two leaks.
-	if len(leaks) != 3 { // ".foo" appears twice (rules 1 and 3)
-		t.Errorf("expected 3 leaks for fixture, got %d: %v", len(leaks), leaks)
+	// ".foo" appears twice (rules 1 and 3); a scoped-first mixed list
+	// must still flag its unscoped second selector; nested @container/@media
+	// selectors must also be checked, while "body.receiver .baz" is fine.
+	if len(leaks) != 6 {
+		t.Errorf("expected 6 leaks for fixture, got %d: %v", len(leaks), leaks)
 	}
 	for _, leak := range leaks {
 		if !want[leak] && leak != ".foo" {
@@ -3375,7 +3538,7 @@ body.idle .bar { opacity: 0.5; }
 }
 ```
 
-These fixtures lock in the parser's behaviour so a refactor of `findUnscopedSelectors` cannot accidentally make the whole test no-op. The good fixture covers: `:root`, `@font-face`, `@container`, `@keyframes`, percentage keyframe selectors, compound state selectors, comma-separated multi-selector lists. The bad fixture covers: bare class, descendant `body.idle`, mixed-comma list with one bad selector.
+These fixtures lock in the parser's behaviour so a refactor of `findUnscopedSelectors` cannot accidentally make the whole test no-op. The good fixture covers: `:root`, `@font-face`, scoped selectors inside `@container` and `@media`, `@keyframes`, percentage keyframe selectors, compound state selectors, comma-separated multi-selector lists. The bad fixture covers: bare class, descendant `body.idle`, mixed-comma list with the unscoped selector first, scoped-first mixed-comma list with the unscoped selector second, and unscoped selectors nested inside `@container` / `@media`.
 
 - [ ] **Step 4: Run all CSS-scope tests**
 
@@ -3391,8 +3554,9 @@ git add internal/chassis/css_scope_test.go go.mod go.sum
 git commit -m "test(chassis): assert all CSS selectors scoped under body.receiver
 
 Uses github.com/tdewolff/parse/v2/css to parse chassis.css and verify
-every top-level selector is either :root / @font-face / @keyframes /
-keyframe percentage, or rooted at body.receiver. Also asserts explicit
+every page selector, including selectors nested under @media/@container,
+is either allowlisted (:root / @font-face / @keyframes / keyframe
+percentage) or rooted at body.receiver. Also asserts explicit
 absence of leak-prone mockup forms (body.idle, body:not(.idle),
 body.settings-open, etc.) in bare unscoped form. Adds tdewolff/parse
 as a new dependency — call out in PR description.
@@ -3560,18 +3724,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 Production files in `internal/chassis/`, `internal/ui/`, and `internal/uiserver/` must not import each other. Test files (`*_test.go`) are exempt so integration tests can mount both surfaces.
 
-- [ ] **Step 1: Add the `golang.org/x/tools/go/packages` dependency**
-
-Run:
-
-```bash
-go get golang.org/x/tools/go/packages@latest
-go mod tidy
-```
-
-`packages.Load` is the modern modules-aware replacement for `go/build.Import`. The legacy `go/build` package can fail in modules-world when the module cache is cold; `packages.Load` driver handles module resolution correctly.
-
-- [ ] **Step 2: Write the import-check test**
+- [ ] **Step 1: Write the import-check test**
 
 Create `internal/chassis/import_check_test.go`:
 
@@ -3579,10 +3732,13 @@ Create `internal/chassis/import_check_test.go`:
 package chassis
 
 import (
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/tools/go/packages"
 )
 
 // TestProductionImports_NoCrossPackageCoupling asserts the parallel-
@@ -3591,51 +3747,82 @@ import (
 // other. _test.go files are exempt because integration tests in
 // tests/integration/ legitimately need to mount both packages.
 //
-// Uses packages.Load with NeedImports — that returns only production
-// imports (test files are loaded as separate packages with the
-// "<pkg>.test" suffix and are not consulted here).
+// Uses parser.ImportsOnly to avoid adding a dependency solely for this
+// lint. The filepath walker skips *_test.go files, so integration tests
+// remain free to mount both surfaces.
 func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 	t.Parallel()
 	const modBase = "github.com/idio-sync/MiSTer_GroovyRelay"
-	pairs := []struct {
-		from   string
+	rules := []struct {
+		fromDir string
+		fromPkg string
 		banned []string
 	}{
-		{modBase + "/internal/chassis", []string{modBase + "/internal/ui", modBase + "/internal/uiserver"}},
-		{modBase + "/internal/ui", []string{modBase + "/internal/chassis"}},
-		{modBase + "/internal/uiserver", []string{modBase + "/internal/chassis"}},
+		{"internal/chassis", modBase + "/internal/chassis", []string{modBase + "/internal/ui", modBase + "/internal/uiserver"}},
+		{"internal/ui", modBase + "/internal/ui", []string{modBase + "/internal/chassis"}},
+		{"internal/uiserver", modBase + "/internal/uiserver", []string{modBase + "/internal/chassis"}},
 	}
-	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedImports}
-	for _, p := range pairs {
-		pkgs, err := packages.Load(cfg, p.from)
-		if err != nil {
-			t.Fatalf("packages.Load %s: %v", p.from, err)
-		}
-		if len(pkgs) == 0 {
-			t.Fatalf("packages.Load %s: no packages returned", p.from)
-		}
-		pkg := pkgs[0]
-		if len(pkg.Errors) > 0 {
-			t.Fatalf("packages.Load %s errors: %v", p.from, pkg.Errors)
-		}
-		for imp := range pkg.Imports {
-			for _, banned := range p.banned {
-				if imp == banned {
-					t.Errorf("forbidden production import: %s -> %s (run `go vet ./%s` for source line)",
-						p.from, imp, strings.TrimPrefix(p.from, modBase+"/"))
+	root := repoRootFromWD(t)
+	for _, rule := range rules {
+		dir := filepath.Join(root, filepath.FromSlash(rule.fromDir))
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(d.Name(), ".go") || strings.HasSuffix(d.Name(), "_test.go") {
+				return nil
+			}
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+			if err != nil {
+				return err
+			}
+			for _, imp := range f.Imports {
+				importPath := strings.Trim(imp.Path.Value, `"`)
+				for _, banned := range rule.banned {
+					if importPath == banned {
+						pos := fset.Position(imp.Pos())
+						t.Errorf("forbidden production import: %s -> %s at %s",
+							rule.fromPkg, importPath, pos)
+					}
 				}
 			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", rule.fromDir, err)
 		}
+	}
+}
+
+func repoRootFromWD(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(wd, "go.mod")); err == nil {
+			return wd
+		}
+		parent := filepath.Dir(wd)
+		if parent == wd {
+			t.Fatalf("could not find repo root from %s", wd)
+		}
+		wd = parent
 	}
 }
 ```
 
-- [ ] **Step 3: Run the test to verify it passes**
+- [ ] **Step 2: Run the test to verify it passes**
 
 Run: `go test ./internal/chassis/ -run TestProductionImports`
 Expected: PASS — no cross-imports currently exist.
 
-- [ ] **Step 4: Verify the test catches a deliberate violation**
+- [ ] **Step 3: Verify the test catches a deliberate violation**
 
 Temporarily add to `internal/chassis/server.go`:
 
@@ -3648,17 +3835,17 @@ Expected: FAIL with `forbidden production import: ...chassis -> ...ui`.
 
 Remove the deliberate import and re-run — back to PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add internal/chassis/import_check_test.go go.mod go.sum
+git add internal/chassis/import_check_test.go
 git commit -m "test(chassis): assert no cross-imports between chassis/ui/uiserver
 
 Production-file import-check protecting the parallel-replacement
-isolation invariant. Uses golang.org/x/tools/go/packages (modules-
-aware) rather than legacy go/build. Test files exempt —
-tests/integration/ can legitimately mount both packages. Caught a
-deliberate violation in manual verification.
+isolation invariant. Uses stdlib parser.ImportsOnly to scan production
+Go files only; test files are exempt — tests/integration/ can
+legitimately mount both packages. Caught a deliberate violation in
+manual verification.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -3708,6 +3895,13 @@ make build
 ./mister-groovy-relay --config path/to/config.toml
 ```
 
+PowerShell equivalent when `make` is unavailable:
+
+```powershell
+go build -o mister-groovy-relay.exe .\cmd\mister-groovy-relay
+.\mister-groovy-relay.exe --config path\to\config.toml
+```
+
 Expected: bridge starts successfully. `/ui` and `/receiver` both reachable.
 
 - [ ] **Step 4: Manual route check**
@@ -3716,6 +3910,14 @@ Expected: bridge starts successfully. `/ui` and `/receiver` both reachable.
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:32500/ui     # 200
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:32500/receiver # 200
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:32500/receiver/static/chassis.css # 200
+```
+
+PowerShell equivalent:
+
+```powershell
+(Invoke-WebRequest -UseBasicParsing http://localhost:32500/ui).StatusCode
+(Invoke-WebRequest -UseBasicParsing http://localhost:32500/receiver).StatusCode
+(Invoke-WebRequest -UseBasicParsing http://localhost:32500/receiver/static/chassis.css).StatusCode
 ```
 
 Expected: 200 for all three.
@@ -3912,16 +4114,16 @@ func collectClasses(n *html.Node) map[string]bool {
 }
 ```
 
-- [ ] **Step 3: Add `golang.org/x/net` if not already in the module**
+- [ ] **Step 3: Confirm `golang.org/x/net/html` is already available**
 
-Run:
+The repo already requires `golang.org/x/net` in `go.mod`, so `golang.org/x/net/html` should be available without a new dependency change. If a future branch lacks it, add the same pinned module version already used by this repo family:
 
 ```bash
-go get golang.org/x/net/html@latest
+go get golang.org/x/net@v0.52.0
 go mod tidy
 ```
 
-(This may be a no-op if the dependency is already transitively pulled in by other integration tests.)
+Expected for the current branch: no `go get` needed.
 
 - [ ] **Step 4: Run the integration tests**
 
@@ -3952,6 +4154,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `README.md`
+- Create: `docs/superpowers/reference/2026-05-21-receiver-v24.html`
 
 - [ ] **Step 1: Locate the deployment section in README**
 
@@ -3968,7 +4171,23 @@ Insert a single paragraph after the existing UI documentation:
 > attributions for the bundled fonts: `/receiver/static/fonts/LICENSE`.
 ```
 
-- [ ] **Step 3: Manual visual verification at all breakpoints**
+- [ ] **Step 3: Freeze the visual reference artifact**
+
+The brainstorm directory is not durable product source. Before manual verification, commit the exact mockup artifact used for comparison:
+
+```powershell
+New-Item -ItemType Directory -Force -Path docs/superpowers/reference | Out-Null
+Copy-Item .superpowers/brainstorm/1973-1779237107/receiver-v24.html docs/superpowers/reference/2026-05-21-receiver-v24.html
+```
+
+Git Bash / WSL equivalent:
+
+```bash
+mkdir -p docs/superpowers/reference
+cp .superpowers/brainstorm/1973-1779237107/receiver-v24.html docs/superpowers/reference/2026-05-21-receiver-v24.html
+```
+
+- [ ] **Step 4: Manual visual verification at all breakpoints**
 
 With the bridge running, open `http://localhost:32500/receiver` in a browser and resize / take screenshots at each breakpoint. For each, confirm the visual matches the brainstorm mockup at the same width:
 
@@ -3987,21 +4206,22 @@ For each breakpoint, also verify the **required invariants** from the spec:
 - Inter loaded for non-segmented UI text (status bar label, source button labels, etc.).
 - Focus rings visible on buttons / inputs (Tab through and confirm).
 
-Attach screenshots to the PR description for each desktop breakpoint.
+Compare against `docs/superpowers/reference/2026-05-21-receiver-v24.html` and attach screenshots to the PR description for each desktop breakpoint.
 
-- [ ] **Step 4: Commit the README change**
+- [ ] **Step 5: Commit the README + reference artifact change**
 
 ```bash
 git add README.md
+git add -f docs/superpowers/reference/2026-05-21-receiver-v24.html
 git commit -m "docs: note the new /receiver preview UI
 
-One-paragraph mention under the deployment section. Visual content
-will be added in Phase 1+ as live data lands.
+One-paragraph mention under the deployment section plus the exact
+receiver-v24 mockup artifact used for Phase 0 visual comparison.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 5: Open the PR**
+- [ ] **Step 6: Open the PR**
 
 The PR description should include:
 
@@ -4110,7 +4330,7 @@ Run through the spec's section list against this plan:
 
 **Appendix A (`idleSnapshot()` Content Map):** Used directly to derive Task 4's struct population. Test cases in Task 4 spot-check the mapping.
 
-No placeholders in the plan body. No `TBD` / `TODO` / `FIXME` markers. Types and method signatures are consistent across tasks (e.g., `chassis.Config`, `chassis.New`, `s.handleIndex`, `s.handleStatic`, `s.cssBytes`, `s.tmpl` are all used consistently).
+No `TBD` / `TODO` / `FIXME` markers. The only explicit placeholders are the `<PASTE-SHA-256-HERE>` entries inside the `SOURCES.md` template, and Task 15 requires replacing them before commit. Types and method signatures are consistent across tasks (e.g., `chassis.Config`, `chassis.New`, `s.handleIndex`, `s.handleStatic`, `s.cssBytes`, `s.tmpl` are all used consistently).
 
 ---
 
