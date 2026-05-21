@@ -132,11 +132,11 @@ type Config struct {
     Registry  *adapters.Registry
     Version   string
     StartedAt time.Time
-    HostIP    string // already resolved/autodetected by main.go
+    HostIP    string // resolved/autodetected by main.go when available; may be empty on offline hosts
 }
 ```
 
-`Version`, `StartedAt`, and `HostIP` are required even in Phase 0: asset URLs use the build version, idle VFD uptime uses `StartedAt`, and the status bar uses the resolved host address. `New` validates required fields and returns an error for zero `StartedAt`; tests should pass a fixed time for deterministic uptime assertions.
+`Version` and `StartedAt` are required even in Phase 0: asset URLs use the build version and idle VFD uptime uses `StartedAt`. `HostIP` is display-only and must be allowed to remain empty because `main.go` already keeps the bridge running when `outboundIP()` cannot resolve a route on offline hosts. `New` validates required fields and returns an error for zero `StartedAt`; tests should pass a fixed time for deterministic uptime assertions.
 
 ### Route mounting
 
@@ -217,7 +217,7 @@ Single source of truth for Phase 0's default page content:
 func idleSnapshot(cfg Config, now time.Time) ReceiverPageData
 ```
 
-Returns a fully populated `ReceiverPageData` with `State = "idle"` and placeholder strings matching the mockup's idle state. It reads `cfg.Bridge`, `cfg.Version`, `cfg.HostIP`, and `cfg.StartedAt` so the status bar and uptime are deterministic under test. `handleIndex` calls it directly. Spec 2 (VFD live) replaces this with `snapshotFromSession()` that reads real session state, falling back to `idleSnapshot()` when no session is active.
+Returns a fully populated `ReceiverPageData` with `State = "idle"` and placeholder strings matching the mockup's idle state. It reads `cfg.Bridge`, `cfg.Version`, `cfg.HostIP`, and `cfg.StartedAt` so the status bar and uptime are deterministic under test; an empty `cfg.HostIP` renders as an explicit unavailable/unknown display value rather than failing server startup. `handleIndex` calls it directly. Spec 2 (VFD live) replaces this with `snapshotFromSession()` that reads real session state, falling back to `idleSnapshot()` when no session is active.
 
 ### Template composition
 
@@ -656,11 +656,11 @@ The implementer should populate every sub-struct field with the values below. Mo
 
 | Field | Go type | Idle value | Source |
 |---|---|---|---|
-| Version | string | from `build.Version` | runtime |
+| Version | string | from `main.version`, passed into `chassis.Config.Version` by `cmd/mister-groovy-relay/main.go` | runtime |
 | BrandName | string | `"GROOVY · RELAY"` | mockup line 4180 |
 | State | string | `"idle"` | always for Phase 0 |
-| HostInfo.HostIP | string | `cfg.HostIP` or autodetect fallback | config |
-| HostInfo.HTTPPort | int | `cfg.UI.HTTPPort` | config |
+| HostInfo.HostIP | string | `cfg.HostIP` when non-empty, otherwise `"unknown"` | runtime/config |
+| HostInfo.HTTPPort | int | `cfg.Bridge.UI.HTTPPort` | config |
 
 ### `VFDData`
 
