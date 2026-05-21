@@ -387,6 +387,73 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 	}
 }
 
+func TestChassisJS_RuntimeContracts(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/chassis.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.js): %v", err)
+	}
+	text := string(js)
+	for _, want := range []string{
+		"window.Chassis = { State, animators };",
+		"const State = {",
+		"IDLE: 'idle'",
+		"LIVE: 'live'",
+		"current()",
+		"document.body.classList.contains('live')",
+		"set(next)",
+		"document.body.classList.remove('idle', 'live')",
+		"document.body.classList.add(next)",
+		"animators.notify(next)",
+		"const animators = {",
+		"items: []",
+		"register(animator)",
+		"animator.handleState(State.current())",
+		"notify(state)",
+		"document.querySelector('[data-system-time]')",
+		"if (!el) {",
+		"setTimeout(() => {",
+		"setInterval(tick, 60_000)",
+		"new URLSearchParams(location.search).get('dev') === '1'",
+		"btn.id = 'chassis-dev-state-toggle'",
+		"[dev] state:",
+		"document.addEventListener('DOMContentLoaded'",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("static/chassis.js missing runtime contract %q", want)
+		}
+	}
+}
+
+func TestHandleStatic_JS_Served(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") && !strings.HasPrefix(got, "application/javascript") {
+		t.Fatalf("Content-Type = %q, want JavaScript content type", got)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"window.Chassis = { State, animators };",
+		"document.querySelector('[data-system-time]')",
+		"URLSearchParams(location.search)",
+		"chassis-dev-state-toggle",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served chassis.js missing %q", want)
+		}
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
