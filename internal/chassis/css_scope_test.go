@@ -214,6 +214,175 @@ func TestChassisCSS_CatalogScanHonorsReducedMotionCascade(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := strings.ReplaceAll(string(src), "\r\n", "\n")
+
+	for _, want := range []string{
+		"/* ---- 15. Responsive (container queries) ---- */",
+		"@container chassis (max-width: 1180px)",
+		"@container chassis (max-width: 900px)",
+		"@container chassis (max-width: 600px)",
+		"@container vfd (max-width: 720px)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("chassis.css missing Task 24 responsive contract %q", want)
+		}
+	}
+
+	receiverRule := cssRuleBlock(t, text, "body.receiver .receiver")
+	for _, want := range []string{
+		"container-name: chassis;",
+		"container-type: inline-size;",
+	} {
+		if !strings.Contains(receiverRule, want) {
+			t.Fatalf("receiver container declaration missing %q: %s", want, receiverRule)
+		}
+	}
+
+	vfdRule := cssRuleBlock(t, text, "body.receiver .screen.vfd,\nbody.receiver .vfd")
+	for _, want := range []string{
+		"container-name: vfd;",
+		"container-type: inline-size;",
+	} {
+		if !strings.Contains(vfdRule, want) {
+			t.Fatalf("vfd container declaration missing %q: %s", want, vfdRule)
+		}
+	}
+
+	contracts := []struct {
+		name     string
+		atRule   string
+		selector string
+		want     []string
+	}{
+		{
+			name:     "1180 hides throughput and ack scopes",
+			atRule:   "@container chassis (max-width: 1180px)",
+			selector: "body.receiver .meter-screen--compact .throughput-wrap,\n  body.receiver .meter-screen--compact .ack-wrap",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "1180 drops speed and link readout groups",
+			atRule:   "@container chassis (max-width: 1180px)",
+			selector: "body.receiver .meter-screen--compact .meter-readout-line .net-grp .grp.speed-grp,\n  body.receiver .meter-screen--compact .meter-readout-line .net-grp .grp.link-grp",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "1180 source cluster becomes a 2x2 footprint",
+			atRule:   "@container chassis (max-width: 1180px)",
+			selector: "body.receiver .vfd-source-row .source-cluster",
+			want: []string{
+				"grid-template-columns: repeat(2, minmax(110px, auto));",
+				"grid-template-rows: 1fr 1fr;",
+			},
+		},
+		{
+			name:     "900 hides the goniometer",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .meter-screen--compact .gonio-wrap",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "900 stacks vfd and source row",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .vfd-source-row",
+			want:     []string{"grid-template-columns: 1fr;"},
+		},
+		{
+			name:     "900 keeps source cluster as a horizontal strip",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .vfd-source-row .source-cluster",
+			want:     []string{"grid-template-columns: repeat(4, 1fr);"},
+		},
+		{
+			name:     "900 tightens the chassis chrome",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .receiver .screw",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "900 adjusts history rows",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .history-row .source",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "900 adjusts settings tabs",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .settings-tabs",
+			want:     []string{"overflow-x: auto;"},
+		},
+		{
+			name:     "900 adjusts catalog body",
+			atRule:   "@container chassis (max-width: 900px)",
+			selector: "body.receiver .catalog-body",
+			want:     []string{"grid-template-columns: 132px 1fr;"},
+		},
+		{
+			name:     "600 hides meter source strip and field flip",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .meter-screen--compact .meter-source-strip,\n  body.receiver .field-flip",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "600 collapses transport controls",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .transport-strip",
+			want:     []string{"grid-template-columns: 60px auto 1fr auto;"},
+		},
+		{
+			name:     "600 adjusts input panel",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .input-section .input-panel",
+			want:     []string{"width: 100%;"},
+		},
+		{
+			name:     "600 adjusts preset bank",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .preset-bank",
+			want:     []string{"grid-template-columns: repeat(2, 1fr);"},
+		},
+		{
+			name:     "600 adjusts history timestamps",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .history-row .when",
+			want:     []string{"display: none;"},
+		},
+		{
+			name:     "600 adjusts catalog body",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .catalog-body",
+			want:     []string{"grid-template-columns: 1fr;"},
+		},
+		{
+			name:     "600 adjusts settings rows",
+			atRule:   "@container chassis (max-width: 600px)",
+			selector: "body.receiver .settings-row",
+			want:     []string{"grid-template-columns: 1fr;"},
+		},
+		{
+			name:     "720 hides VFD right panel",
+			atRule:   "@container vfd (max-width: 720px)",
+			selector: "body.receiver .vfd .right-panel",
+			want:     []string{"display: none;"},
+		},
+	}
+
+	for _, contract := range contracts {
+		rule := cssRuleBlockInAtRules(t, text, contract.atRule, contract.selector)
+		for _, want := range contract.want {
+			if !strings.Contains(rule, want) {
+				t.Errorf("%s: rule %q missing %q: %s", contract.name, contract.selector, want, rule)
+			}
+		}
+	}
+}
+
 func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
@@ -314,15 +483,77 @@ func cssGrammarText(p *css.Parser, data []byte) string {
 
 func cssRuleBlock(t *testing.T, text, selector string) string {
 	t.Helper()
-	start := strings.Index(text, selector+" {")
-	if start == -1 {
+	block, ok := cssRuleBlockMaybe(text, selector)
+	if !ok {
 		t.Fatalf("missing CSS selector block %q", selector)
 	}
-	end := strings.Index(text[start:], "\n}")
-	if end == -1 {
-		t.Fatalf("CSS selector block %q is not closed", selector)
+	return block
+}
+
+func cssRuleBlockMaybe(text, selector string) (string, bool) {
+	start := strings.Index(text, selector+" {")
+	if start == -1 {
+		return "", false
 	}
-	return text[start : start+end]
+	bodyStart := start + len(selector+" {")
+	depth := 1
+	for i := bodyStart; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[start:i], true
+			}
+		}
+	}
+	return "", false
+}
+
+func cssRuleBlockInAtRules(t *testing.T, text, atRule, selector string) string {
+	t.Helper()
+	for _, atRuleBlock := range cssAtRuleBlocks(t, text, atRule) {
+		if rule, ok := cssRuleBlockMaybe(atRuleBlock, selector); ok {
+			return rule
+		}
+	}
+	t.Fatalf("missing CSS selector block %q inside %q", selector, atRule)
+	return ""
+}
+
+func cssAtRuleBlocks(t *testing.T, text, atRule string) []string {
+	t.Helper()
+	var blocks []string
+	searchFrom := 0
+	for {
+		start := strings.Index(text[searchFrom:], atRule+" {")
+		if start == -1 {
+			break
+		}
+		start += searchFrom
+		bodyStart := start + len(atRule+" {")
+		depth := 1
+		for i := bodyStart; i < len(text); i++ {
+			switch text[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					blocks = append(blocks, text[bodyStart:i])
+					searchFrom = i + 1
+					goto next
+				}
+			}
+		}
+		t.Fatalf("CSS at-rule %q starting at byte %d is not closed", atRule, start)
+	next:
+	}
+	if len(blocks) == 0 {
+		t.Fatalf("missing CSS at-rule %q", atRule)
+	}
+	return blocks
 }
 
 func isSelectorExemptAtRule(at string) bool {

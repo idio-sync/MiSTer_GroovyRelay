@@ -3677,3 +3677,8 @@ body.receiver.catalog-scanning .vfd::after {
     opacity: 0;
   }
 }
+
+/* ---- 15. Responsive (container queries) ---- */
+/* Container declarations and breakpoint rules live with their owning
+   component sections above so each responsive contract stays near the
+   layout it adjusts. */
