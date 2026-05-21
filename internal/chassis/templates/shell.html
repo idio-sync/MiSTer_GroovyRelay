@@ -10,6 +10,10 @@
 <body class="receiver {{.State}}">
   {{htmlComment "chassis:shell"}}
   <div class="receiver">
+    <span class="screw tl" aria-hidden="true"></span>
+    <span class="screw tr" aria-hidden="true"></span>
+    <span class="screw bl" aria-hidden="true"></span>
+    <span class="screw br" aria-hidden="true"></span>
     {{template "status-bar" .HostInfo}}
     {{template "masthead" .BrandName}}
     <div class="receiver-inner">

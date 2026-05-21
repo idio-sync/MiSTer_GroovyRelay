@@ -161,11 +161,426 @@ body.receiver::-webkit-scrollbar-thumb:hover {
   background: #3a3a3e;
 }
 
+/* ---- 4. Chassis shell + screws + chrome ---------------------------- */
+/* Mockup source: receiver-v24.html .receiver and adjacent .screw rules. */
+body.receiver .receiver {
+  background: linear-gradient(180deg, #2a2a2e 0%, #1f1f23 100%);
+  border-radius: 4px;
+  padding: 18px 20px 22px;
+  position: relative;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 0 0 1px #0a0a0b,
+    0 24px 60px -20px rgba(0, 0, 0, 0.8);
+  container-type: inline-size;
+  container-name: chassis;
+  overflow-x: hidden;
+}
+
+body.receiver .receiver::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.3) 100%),
+    repeating-linear-gradient(90deg, transparent 0 1px, rgba(255, 255, 255, 0.015) 1px 2px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+body.receiver .receiver .screw {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #8a8a92 0%, #3a3a3e 70%, #1a1a1c 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 1px rgba(0, 0, 0, 0.6);
+  z-index: 5;
+}
+
+body.receiver .receiver .screw::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background:
+    linear-gradient(45deg, transparent 45%, #1a1a1c 45% 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, #1a1a1c 45% 55%, transparent 55%);
+  border-radius: inherit;
+}
+
+body.receiver .receiver .screw.tl {
+  top: 8px;
+  left: 8px;
+}
+
+body.receiver .receiver .screw.tr {
+  top: 8px;
+  right: 8px;
+}
+
+body.receiver .receiver .screw.bl {
+  bottom: 8px;
+  left: 8px;
+}
+
+body.receiver .receiver .screw.br {
+  right: 8px;
+  bottom: 8px;
+}
+
+body.receiver .receiver > .receiver-inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto auto;
+  gap: 14px;
+}
+
+body.receiver .receiver > .receiver-inner > * {
+  min-width: 0;
+}
+
+/* ---- 5. Status bar + masthead -------------------------------------- */
+/* Mockup source: receiver-v24.html .status-bar, .brand-plate, .led,
+   .led-row, and .load-core-btn rules, adapted to current templates. */
+body.receiver .status-bar {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 18px;
+  align-items: center;
+  padding: 6px 10px 10px;
+  border-bottom: 1px solid #0a0a0b;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.receiver .status-bar > .brand-plate {
+  grid-column: 1;
+}
+
+body.receiver .status-bar > .status-spacer {
+  grid-column: 2;
+  min-width: 0;
+}
+
+body.receiver .status-bar > .led-row {
+  grid-column: 3;
+}
+
+body.receiver .status-bar > .load-core-btn {
+  grid-column: 4;
+}
+
+body.receiver .host-readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: #5a5a5e;
+  font: 600 8px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+body.receiver .host-readout .val {
+  overflow: hidden;
+  color: #c0c0c4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.receiver .led-row {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+body.receiver .led {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+body.receiver .led .dot,
+body.receiver .led .light {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2a2a2c;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+}
+
+body.receiver .led.on .dot,
+body.receiver .led.on .light,
+body.receiver .led.on.green .dot,
+body.receiver .led.on.green .light {
+  background: #00ff66;
+  box-shadow: 0 0 6px #00ff66cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
+}
+
+body.receiver .led.on.red .dot,
+body.receiver .led.on.red .light {
+  background: #ff3030;
+  box-shadow: 0 0 6px #ff3030cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
+  animation: rec-pulse 1.6s ease-in-out infinite;
+}
+
+body.receiver .led.on.aqua .dot,
+body.receiver .led.on.aqua .light {
+  background: oklch(0.90 0.22 175);
+  box-shadow: 0 0 5px oklch(0.90 0.22 175 / 0.9), inset 0 0 2px rgba(255, 255, 255, 0.4);
+}
+
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+body.receiver .led .lbl {
+  color: #5a5a5e;
+  font: 600 8px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+body.receiver .led.on .lbl {
+  color: #c0c0c4;
+}
+
+body.receiver.idle .led.on.aqua .dot,
+body.receiver.idle .led.on.aqua .light,
+body.receiver.idle .led.on.red .dot,
+body.receiver.idle .led.on.red .light {
+  background: #2a2a2c;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+  animation: none;
+}
+
+body.receiver.idle .led.on.aqua .lbl,
+body.receiver.idle .led.on.red .lbl {
+  color: #5a5a5e;
+}
+
+body.receiver .load-core-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 124px;
+  padding: 6px 12px 6px 22px;
+  color: #c0c0c4;
+  font: 600 10px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #3a3a40 0%, #2a2a2e 50%, #1a1a1c 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  transition:
+    color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    text-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 80ms;
+}
+
+body.receiver .load-core-btn::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #1a1a1c;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+  transform: translateY(-50%);
+  transition:
+    background 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+body.receiver .load-core-btn > .dot {
+  display: none;
+}
+
+body.receiver .load-core-btn:hover {
+  color: #d4d4d8;
+  background: linear-gradient(180deg, #45454c 0%, #25252b 100%);
+}
+
+body.receiver .load-core-btn:active {
+  transform: translateY(1px);
+}
+
+body.receiver .load-core-btn.loading {
+  color: var(--lock-amber);
+  text-shadow: 0 0 3px oklch(0.62 0.14 75 / 0.5);
+}
+
+body.receiver .load-core-btn.loading::before {
+  background: var(--lock-amber);
+  box-shadow: 0 0 5px oklch(0.82 0.18 75 / 0.9);
+  animation: load-pulse 700ms ease-in-out infinite;
+}
+
+@keyframes load-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+}
+
+body.receiver .load-core-btn.loaded {
+  color: var(--vfd);
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+  background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 50%, #1a1a1c 100%);
+}
+
+body.receiver .load-core-btn.loaded::before {
+  background: var(--vfd);
+  box-shadow: 0 0 5px var(--vfd-glow);
+}
+
+body.receiver .brand-plate {
+  padding: 6px 10px;
+  text-align: right;
+  background: linear-gradient(180deg, #1a1a1c 0%, #0a0a0b 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+body.receiver .brand-plate .name {
+  color: #d4d4d8;
+  font: 900 14px/1 'Inter', sans-serif;
+  letter-spacing: 0.16em;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+body.receiver .brand-plate .model {
+  display: block;
+  margin-top: 2px;
+  color: #5a5a5e;
+  font: 500 8px/1.4 'Inter', sans-serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+body.receiver .brand-plate .model em {
+  color: var(--vfd);
+  font-style: normal;
+}
+
+body.receiver.idle .brand-plate .model em {
+  color: var(--vfd-faded);
+}
+
+body.receiver .masthead {
+  position: relative;
+  z-index: 1;
+  padding: 4px 12px;
+  border-bottom: 1px solid #0a0a0b;
+}
+
+body.receiver .masthead .brand-plate {
+  display: inline-block;
+}
+
+body.receiver .masthead .name {
+  color: #c0c0c4;
+  font: 700 14px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+@container chassis (max-width: 900px) {
+  body.receiver .receiver {
+    padding: 12px 12px 16px;
+  }
+
+  body.receiver .receiver .screw {
+    display: none;
+  }
+
+  body.receiver .receiver > .receiver-inner {
+    gap: 10px;
+  }
+
+  body.receiver .status-bar {
+    gap: 10px;
+    padding: 4px 6px 8px;
+  }
+
+  body.receiver .brand-plate {
+    padding: 4px 8px;
+  }
+
+  body.receiver .brand-plate .model {
+    display: none;
+  }
+
+  body.receiver .brand-plate .name {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+  }
+
+  body.receiver .led-row {
+    gap: 8px;
+  }
+
+  body.receiver .led .lbl {
+    display: none;
+  }
+
+  body.receiver .load-core-btn {
+    min-width: 36px;
+    padding: 6px 8px 6px 22px;
+  }
+
+  body.receiver .load-core-btn .label-text {
+    display: none;
+  }
+
+  body.receiver .load-core-btn::after {
+    content: "Core";
+    font: 700 9px 'Inter', sans-serif;
+    letter-spacing: 0.12em;
+  }
+}
+
+@container chassis (max-width: 420px) {
+  body.receiver .receiver {
+    padding: 8px 8px 12px;
+  }
+
+  body.receiver .led-row .led:nth-child(n+5) {
+    display: none;
+  }
+
+  body.receiver .brand-plate .name {
+    font-size: 11px;
+  }
+}
+
 /* Layout placeholders */
-
-/* Status bar */
-
-/* Masthead */
 
 /* VFD source row */
 
