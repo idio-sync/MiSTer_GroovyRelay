@@ -1,4 +1,24 @@
 {{define "vfd"}}
 {{htmlComment "chassis:vfd"}}
-<div class="screen-frame"><div class="screen vfd"></div></div>
+<div class="screen-frame">
+  <div class="screen vfd">
+    <div class="vfd-state vfd-state--idle">
+      <div>
+        <div class="title-line seg-display" data-ghost="~~~~~~~">{{.Title}}</div>
+        <div class="marquee-line seg-display" data-ghost="~~~~~~ ~~~~ ~~ ~ ~~~~ ~~ ~~ ~~~~~~~ ~ ~~ ~~~~~~~ ~ ~ ~~~~~ ~~~ ~~ ~~~~ ~ ~~~~~~">{{.Marquee}}</div>
+      </div>
+      <div class="right-panel">
+        <div class="lbl">System time</div>
+        <div class="time-row">
+          <div class="queue-stack">
+            <div class="queue-v seg-display" data-ghost="88 ~ 88">{{.QueueCurrent}} / {{.QueueTotal}}</div>
+            <div class="queue-k">QUEUE</div>
+          </div>
+          <div class="big-time"><span class="seg-display" data-ghost="88:88" data-system-time>{{.SystemTime}}</span></div>
+        </div>
+        <div class="freq"><span class="seg-display" data-ghost="~~~~~~">UPTIME</span> <span class="seg-display" data-ghost="88~ 88~">{{.Uptime}}</span></div>
+      </div>
+    </div>
+  </div>
+</div>
 {{end}}
