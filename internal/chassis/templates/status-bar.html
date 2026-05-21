@@ -6,9 +6,9 @@
     <span class="host-readout"><span class="lbl">HOST</span><span class="val">{{.HostIP}}:{{.HTTPPort}}</span></span>
   </div>
   <div class="led-row">
-    <span class="led on" title="Bridge online"><span class="dot"></span><span class="lbl">BRIDGE</span></span>
-    <span class="led" title="MiSTer link"><span class="dot"></span><span class="lbl">MISTER</span></span>
-    <span class="led" title="Cast active"><span class="dot"></span><span class="lbl">CAST</span></span>
+    <span class="led on" role="status" aria-label="Bridge online" title="Bridge online"><span class="dot"></span><span class="lbl">BRIDGE</span></span>
+    <span class="led" role="status" aria-label="MiSTer link offline" title="MiSTer link"><span class="dot"></span><span class="lbl">MISTER</span></span>
+    <span class="led" role="status" aria-label="Cast inactive" title="Cast active"><span class="dot"></span><span class="lbl">CAST</span></span>
   </div>
   <button class="load-core-btn" type="button" aria-label="Load core"><span class="dot"></span><span class="label-text">LOAD CORE</span></button>
 </div>
