@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +36,7 @@ func TestReceiverEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chassis.New: %v", err)
 	}
+	defer chassisSrv.Close()
 	mux := http.NewServeMux()
 	chassisSrv.Mount(mux)
 	ts := httptest.NewServer(mux)
@@ -110,6 +113,7 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chassis.New: %v", err)
 	}
+	defer chassisSrv.Close()
 
 	mux := http.NewServeMux()
 	uiSrv.Mount(mux)
@@ -175,6 +179,203 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 				t.Fatalf("GET %s body unexpectedly contained %q", tc.path, notWant)
 			}
 		}
+	}
+}
+
+func TestReceiverEvents_EndToEnd(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mux := http.NewServeMux()
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:    config.BridgeConfig{},
+		Manager:   &core.Manager{},
+		Registry:  adapters.NewRegistry(),
+		Version:   "integration-test",
+		StartedAt: time.Now(),
+		HostIP:    "10.0.0.5",
+		// Session=nil — exercises the idle-only path through the real handler.
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	defer chassisSrv.Close()
+	chassisSrv.Mount(mux)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/receiver/events", nil)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+
+	// Read until we observe the initial state + vfd events.
+	rdr := bufio.NewReader(resp.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	var sawState, sawVfd, sawRetry bool
+	for time.Now().Before(deadline) && !(sawState && sawVfd && sawRetry) {
+		line, err := rdr.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read SSE stream: %v", err)
+		}
+		switch {
+		case strings.HasPrefix(line, "retry: 3000"):
+			sawRetry = true
+		case strings.HasPrefix(line, "event: state"):
+			sawState = true
+		case strings.HasPrefix(line, "event: vfd"):
+			sawVfd = true
+		}
+	}
+	if !sawRetry {
+		t.Errorf("did not observe retry: 3000 directive")
+	}
+	if !sawState {
+		t.Errorf("did not observe event: state record")
+	}
+	if !sawVfd {
+		t.Errorf("did not observe event: vfd record")
+	}
+}
+
+func TestReceiverEvents_LivePathReachesClient(t *testing.T) {
+	// Exercises the full live-session SSE path: a fake SessionViewer
+	// reports core.StatePlaying; the chassis Server (with Mount started
+	// so the refresher runs) must emit a vfd event whose payload
+	// contains the cast title within the first few records.
+	mux := http.NewServeMux()
+
+	// integration-local fake matching the chassis.SessionViewer shape.
+	// Defined here (not imported from internal/chassis) because the
+	// integration package legitimately depends on both internal/chassis
+	// and internal/core — the production cross-import lint exempts
+	// _test.go files (Phase 0).
+	fake := &fakeIntegrationSession{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "Integration Live Title", Source: "plex",
+		Position: 10 * time.Second, Duration: 90 * time.Second,
+	}}
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:    config.BridgeConfig{},
+		Manager:   &core.Manager{},
+		Registry:  adapters.NewRegistry(),
+		Version:   "integration-test",
+		StartedAt: time.Now(),
+		HostIP:    "10.0.0.5",
+		Session:   fake,
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	defer chassisSrv.Close()
+	chassisSrv.Mount(mux)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/receiver/events", nil)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	rdr := bufio.NewReader(resp.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	var sawLiveState, sawLiveTitle bool
+	for time.Now().Before(deadline) && !(sawLiveState && sawLiveTitle) {
+		line, err := rdr.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read SSE stream: %v", err)
+		}
+		if strings.Contains(line, `"state":"live"`) {
+			sawLiveState = true
+		}
+		if strings.Contains(line, `"title":"Integration Live Title"`) {
+			sawLiveTitle = true
+		}
+	}
+	if !sawLiveState {
+		t.Errorf("did not observe live state event")
+	}
+	if !sawLiveTitle {
+		t.Errorf("did not observe live title in vfd event payload")
+	}
+}
+
+// fakeIntegrationSession is the integration-test SessionViewer fake.
+// Lives in the integration package; chassis.SessionViewer is satisfied
+// structurally via the StatusHomeView() method signature.
+type fakeIntegrationSession struct {
+	view core.StatusHomeView
+}
+
+func (f *fakeIntegrationSession) StatusHomeView() core.StatusHomeView { return f.view }
+
+func TestReceiverEvents_DoesNotShadowUIRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+
+	uiSrv, err := ui.New(ui.Config{
+		Registry: adapters.NewRegistry(),
+		Version:  "integration-test",
+	})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	uiSrv.Mount(mux)
+
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:    config.BridgeConfig{},
+		Manager:   &core.Manager{},
+		Registry:  adapters.NewRegistry(),
+		Version:   "integration-test",
+		StartedAt: time.Now(),
+		HostIP:    "10.0.0.5",
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	defer chassisSrv.Close()
+	chassisSrv.Mount(mux)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// /ui/playback/banner (the existing htmx-polled live banner) is
+	// independent of /receiver/events.
+	uiResp, err := srv.Client().Get(srv.URL + "/ui/playback/banner")
+	if err != nil {
+		t.Fatalf("GET /ui/playback/banner: %v", err)
+	}
+	defer uiResp.Body.Close()
+	if uiResp.StatusCode != http.StatusOK {
+		t.Errorf("/ui/playback/banner status = %d, want 200", uiResp.StatusCode)
+	}
+	if got := uiResp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("/ui/playback/banner Content-Type = %q, want text/html prefix", got)
+	}
+
+	// /receiver/events is SSE.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/receiver/events", nil)
+	rxResp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	defer rxResp.Body.Close()
+	if got := rxResp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("/receiver/events Content-Type = %q, want text/event-stream", got)
 	}
 }
 
