@@ -15,8 +15,20 @@
 // narrow SessionViewer interface (satisfied structurally by *core.Manager via
 // its StatusHomeView method) is the read-only seam between the chassis and the
 // bridge session; a per-server snapshot cache decouples connected-tab fan-out
-// from core.Manager lock pressure. Later specs add transport controls,
-// visualizer wiring, and telemetry to the same SSE transport.
+// from core.Manager lock pressure.
+//
+// Phase 1 / Spec 4 adds receiver visualizer mode control. POST
+// /receiver/visualizer accepts an application/x-www-form-urlencoded body with
+// mode=<value> and returns 204 after the mode is persisted. Connected receiver
+// tabs stay synchronized over GET /receiver/events through a visualizer SSE
+// event whenever the active mode changes. The POST route is wrapped by
+// requireSameOrigin, which accepts Sec-Fetch-Site values from the same browsing
+// context and rejects missing or cross-site state-changing requests with 403.
+//
+// VisualizerViewer and VisualizerSaver are intentionally narrow interfaces:
+// the chassis can read and save the bridge visualizer mode without importing
+// internal/uiserver or depending on its settings form implementation.
+// Later specs add transport controls and telemetry to the same SSE transport.
 //
 // See docs/superpowers/specs/2026-05-21-receiver-chassis-foundation-design.md
 // and docs/superpowers/specs/2026-05-21-receiver-chassis-vfd-live-design.md

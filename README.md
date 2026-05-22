@@ -156,6 +156,18 @@ DLNA controller findings live in [docs/dlna-compatibility.md](docs/dlna-compatib
 | Plex reports target offline after cast | Fixed `source_port` and no port conflict | [Operations](docs/operations.md) |
 | DLNA renderer missing or uncontrollable | `bridge.host_ip`, UDP 1900, trusted LAN only | [DLNA adapter](docs/dlna.md) |
 
+Scripted POSTs to local UI endpoints need the same-origin fetch header that
+the browser sends. For example, to change the receiver visualizer mode:
+
+```bash
+curl -i -X POST http://localhost:32500/receiver/visualizer \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  --data 'mode=stereo_scope'
+```
+
+Omitting `Sec-Fetch-Site: same-origin` returns 403.
+
 ## License
 
 [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). See the design notes for why: this project stands on the shoulders of several GPL-3 references (plexdlnaplayer, plex-mpv-shim, Groovy_MiSTer) and carries that license forward.
