@@ -1061,6 +1061,16 @@ func (m *Manager) UpdateBridge(b config.BridgeConfig) {
 	m.bridge = b
 }
 
+// VisualizerMode returns the live bridge's visualizer mode under
+// m.mu. Tracks the in-memory bridge updated by UpdateBridge.
+// Pure in-memory read; honors the "Manager.mu is never held across
+// network I/O" invariant.
+func (m *Manager) VisualizerMode() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bridge.Visualizer.Mode
+}
+
 // DropActiveCast terminates the current cast session (if any) with the
 // given reason logged. Idempotent — returns nil when no session is
 // active. Called by the UI save path for restart-cast field changes:
