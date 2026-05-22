@@ -79,10 +79,12 @@ func TestWriteJSONErrorWithMode_IncludesMode(t *testing.T) {
 	}
 }
 
-func TestHandleVisualizerPost_SavesSupportedModesInOrder(t *testing.T) {
+func TestHandleVisualizerPost_TrimsAndSavesSupportedModesInOrder(t *testing.T) {
 	saver := &fakeVisualizerSaver{}
 	s := &Server{visualizerSaver: saver}
 
+	// Spec 4 trims HTTP input before exact SupportedVisualizerModes
+	// membership validation; normalization is still intentionally absent.
 	for _, mode := range []string{" " + config.VisualizerModeStereoScope + " ", config.VisualizerModeOscilloscopeWave} {
 		w := postVisualizerMode(t, s, mode)
 

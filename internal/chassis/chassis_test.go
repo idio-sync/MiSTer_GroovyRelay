@@ -1282,8 +1282,9 @@ func TestVfdLive_ExposesEventSourceReference_StaticAssetCheck(t *testing.T) {
 	}
 	js := string(bytes)
 	for _, want := range []string{
-		"window.Chassis.events",
+		"window.Chassis.events.source = source",
 		"chassis:eventsource",
+		"detail: { source }",
 		"new EventSource",
 	} {
 		if !strings.Contains(js, want) {
