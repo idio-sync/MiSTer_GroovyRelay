@@ -877,3 +877,136 @@ func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
 	}
 }
+
+// fakeSessionViewer is the test double for SessionViewer. Lets tests
+// drive the chassis from a known StatusHomeView without spinning up a
+// real *core.Manager (which requires a full bridge graph).
+type fakeSessionViewer struct {
+	view core.StatusHomeView
+}
+
+func (f *fakeSessionViewer) StatusHomeView() core.StatusHomeView { return f.view }
+
+func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:    core.StatePlaying,
+		Title:    "First Day on MTV",
+		Source:   "plex",
+		Position: 4*time.Minute + 23*time.Second,
+		Duration: 9*time.Minute + 56*time.Second,
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+
+	if got.State != StateLive {
+		t.Errorf("State = %q, want %q", got.State, StateLive)
+	}
+	if got.VFD.Title != "First Day on MTV" {
+		t.Errorf("VFD.Title = %q, want First Day on MTV", got.VFD.Title)
+	}
+	if got.VFD.Marquee != "PLEX · 04:23 / 09:56" {
+		t.Errorf("VFD.Marquee = %q, want PLEX · 04:23 / 09:56", got.VFD.Marquee)
+	}
+	if got.VFD.State != string(StateLive) {
+		t.Errorf("VFD.State = %q, want %q (mirrors top-level State)", got.VFD.State, StateLive)
+	}
+}
+
+func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePaused, Title: "Take On Me", Source: "plex",
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+
+	// core.StatePaused -> chassis "live" so the body stays bright
+	// during transport pause. The transport-row pause indicator is
+	// Spec 3's job; chassis state class should not flicker.
+	if got.State != StateLive {
+		t.Errorf("paused -> chassis State = %q, want %q", got.State, StateLive)
+	}
+}
+
+func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+	want := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("idle-from-session should match idleSnapshot exactly")
+	}
+}
+
+func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:    core.StatePlaying,
+		Title:    "TEST",
+		Source:   "jellyfin",
+		Position: 30 * time.Second,
+		Duration: 3 * time.Minute,
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+
+	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
+		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)
+	}
+	if got.VFD.QueueCurrent != 0 || got.VFD.QueueTotal != 0 {
+		t.Errorf("queue should be 0/0 placeholder in Phase 1; got %d/%d",
+			got.VFD.QueueCurrent, got.VFD.QueueTotal)
+	}
+}
+
+func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		view core.StatusHomeView
+		want string
+	}{
+		{
+			name: "unknown duration",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex",
+				Position: 4*time.Minute + 23*time.Second},
+			want: "PLEX · 04:23 / --:--",
+		},
+		{
+			name: "zero position unknown duration",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex"},
+			want: "PLEX · 00:00 / --:--",
+		},
+		{
+			name: "empty source fallback",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "",
+				Position: 30 * time.Second, Duration: 3 * time.Minute},
+			want: "BRIDGE · 00:30 / 03:00",
+		},
+		{
+			name: "hour-long position single-digit hours",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex",
+				Position: time.Hour + 4*time.Minute + 5*time.Second,
+				Duration: time.Hour + 30*time.Minute},
+			want: "PLEX · 1:04:05 / 1:30:00",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatLiveMarquee(tc.view)
+			if got != tc.want {
+				t.Errorf("formatLiveMarquee = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
