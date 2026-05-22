@@ -1273,3 +1273,21 @@ func TestHandleStatic_VfdLiveJSServed(t *testing.T) {
 		t.Errorf("served vfd-live.js doesn't contain window.Chassis.events namespace export")
 	}
 }
+
+func TestVfdLive_ExposesEventSourceReference_StaticAssetCheck(t *testing.T) {
+	t.Parallel()
+	bytes, err := chassisStaticFS.ReadFile("static/vfd-live.js")
+	if err != nil {
+		t.Fatalf("read vfd-live.js: %v", err)
+	}
+	js := string(bytes)
+	for _, want := range []string{
+		"window.Chassis.events",
+		"chassis:eventsource",
+		"new EventSource",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("vfd-live.js missing %q", want)
+		}
+	}
+}
