@@ -1042,6 +1042,30 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	}
 }
 
+func TestShellTemplate_LoadsVfdLiveScript(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `/receiver/static/vfd-live.js?v=test-1.0.0`) {
+		t.Errorf("shell.html should include versioned vfd-live.js script tag")
+	}
+	chassisIdx := strings.Index(body, "chassis.js?v=")
+	vfdIdx := strings.Index(body, "vfd-live.js?v=")
+	if chassisIdx < 0 || vfdIdx < 0 {
+		t.Fatalf("missing one of the script tags")
+	}
+	if vfdIdx <= chassisIdx {
+		t.Errorf("vfd-live.js script must appear AFTER chassis.js so the deferred load order initializes window.Chassis first")
+	}
+}
+
 func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
