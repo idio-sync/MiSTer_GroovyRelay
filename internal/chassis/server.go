@@ -1,9 +1,11 @@
 package chassis
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -19,13 +21,26 @@ type Config struct {
 	Version   string
 	StartedAt time.Time
 	HostIP    string
+
+	// Session is the read-only session-state source for live VFD
+	// rendering and SSE events. Optional: when nil, the chassis renders
+	// idle-only and the /receiver/events stream emits the initial idle
+	// snapshot then sits silent. *core.Manager satisfies the interface
+	// structurally; main.go wires that.
+	Session SessionViewer
 }
 
 // Server owns the chassis runtime state.
 type Server struct {
 	cfg      Config
+	session  SessionViewer
 	tmpl     *template.Template
-	cssBytes []byte // chassis.css with {{.Version}} substituted, cached
+	cssBytes []byte
+
+	cache       *snapshotCache
+	cacheOnce   sync.Once          // Mount starts the refresher exactly once
+	cacheCancel context.CancelFunc // Close() signals the refresher to exit
+	cacheDone   chan struct{}      // closed when the refresher goroutine returns
 }
 
 // New builds a Server from cfg, validating fields required at startup.
@@ -48,12 +63,72 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, tmpl: tmpl, cssBytes: cssBytes}, nil
+	s := &Server{
+		cfg:       cfg,
+		session:   cfg.Session,
+		tmpl:      tmpl,
+		cssBytes:  cssBytes,
+		cache:     &snapshotCache{},
+		cacheDone: make(chan struct{}),
+	}
+	// Seed the cache synchronously so the first SSE connection always
+	// sees a coherent snapshot — no zero-value VFD or stale state.
+	// New deliberately does NOT start a goroutine: unmounted servers
+	// (test ergonomics, offline-friendly modes) leak no background work.
+	s.cache.Set(snapshotFromSession(s.cfg, s.session, time.Now()))
+	return s, nil
 }
 
-// Mount registers chassis routes on mux.
+// Mount registers chassis routes on mux and starts the snapshot cache
+// refresher exactly once. Safe to call multiple times (sync.Once
+// guards the goroutine start) but only the first call wins.
 func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /receiver", s.handleIndex)
 	mux.HandleFunc("GET /receiver/{$}", s.handleIndex)
 	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
+	mux.HandleFunc("GET /receiver/events", s.handleEvents)
+	s.cacheOnce.Do(s.startSnapshotRefresher)
+}
+
+// startSnapshotRefresher starts the cache refresher goroutine once.
+// Called from Mount via sync.Once so multiple Mounts (defensive) or
+// no-Mount paths (tests / unmounted servers) don't spawn extras.
+func (s *Server) startSnapshotRefresher() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cacheCancel = cancel
+	go func() {
+		defer close(s.cacheDone)
+		t := time.NewTicker(chassisTickInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.cache.Set(snapshotFromSession(s.cfg, s.session, time.Now()))
+			}
+		}
+	}()
+}
+
+// Close stops the snapshot refresher goroutine (if Mount ever started
+// one) and waits for it to exit. Safe to call multiple times
+// sequentially; do not race with Mount. Calling Close without a prior
+// Mount returns nil immediately. Production wires this from main.go's
+// shutdown sequence; tests register via t.Cleanup.
+func (s *Server) Close() error {
+	if s.cacheCancel == nil {
+		// Mount never ran — nothing to stop.
+		return nil
+	}
+	// Cancel may be called from multiple Close calls; context.CancelFunc
+	// is itself idempotent.
+	s.cacheCancel()
+	select {
+	case <-s.cacheDone:
+		// goroutine exited
+	case <-time.After(time.Second):
+		return fmt.Errorf("chassis: snapshot refresher did not exit within 1s")
+	}
+	return nil
 }

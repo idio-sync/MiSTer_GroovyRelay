@@ -1,6 +1,7 @@
 package chassis
 
 import (
+	"bytes"
 	"html/template"
 	"mime"
 	"net/http"
@@ -441,6 +442,7 @@ func TestHandleStatic_JS_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.js", nil)
 	rr := httptest.NewRecorder()
 
@@ -699,6 +701,7 @@ func TestHandleStatic_CSS_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 
@@ -720,6 +723,7 @@ func TestHandleStatic_CSS_VersionedFontURLs(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 
@@ -742,6 +746,7 @@ func TestHandleStatic_Fonts_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 
 	for _, font := range []string{
 		"DSEG7Classic-Regular.woff2",
@@ -780,6 +785,7 @@ func TestHandleStatic_LICENSE_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/fonts/LICENSE", nil)
 	rr := httptest.NewRecorder()
 
@@ -807,6 +813,7 @@ func TestHandleStatic_UnknownAsset404(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/nonexistent.css", nil)
 	rr := httptest.NewRecorder()
 
@@ -822,6 +829,7 @@ func TestHandleStatic_PathTraversalBlocked(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/../config.toml", nil)
 	rr := httptest.NewRecorder()
 
@@ -837,6 +845,7 @@ func TestMount_TrailingSlashIndex(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 
 	for _, path := range []string{"/receiver", "/receiver/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -847,5 +856,302 @@ func TestMount_TrailingSlashIndex(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Errorf("%s status = %d, want %d", path, rr.Code, http.StatusOK)
 		}
+	}
+}
+
+func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+	// Compile-time and runtime assertion that *core.Manager satisfies
+	// the chassis SessionViewer interface. Catches regressions where
+	// core.Manager.StatusHomeView() changes signature without the
+	// chassis side noticing.
+	var _ SessionViewer = (*core.Manager)(nil)
+
+	cfg := nonZeroConfig()
+	cfg.Session = cfg.Manager
+	if cfg.Session == nil {
+		t.Fatal("expected non-nil Session after assignment from Manager")
+	}
+}
+
+func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Session = nil
+
+	got := snapshotFromSession(cfg, nil, fixedNow)
+	want := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
+	}
+}
+
+// fakeSessionViewer is the test double for SessionViewer. Lets tests
+// drive the chassis from a known StatusHomeView without spinning up a
+// real *core.Manager (which requires a full bridge graph).
+type fakeSessionViewer struct {
+	view core.StatusHomeView
+}
+
+func (f *fakeSessionViewer) StatusHomeView() core.StatusHomeView { return f.view }
+
+func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:    core.StatePlaying,
+		Title:    "First Day on MTV",
+		Source:   "plex",
+		Position: 4*time.Minute + 23*time.Second,
+		Duration: 9*time.Minute + 56*time.Second,
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+
+	if got.State != StateLive {
+		t.Errorf("State = %q, want %q", got.State, StateLive)
+	}
+	if got.VFD.Title != "First Day on MTV" {
+		t.Errorf("VFD.Title = %q, want First Day on MTV", got.VFD.Title)
+	}
+	if got.VFD.Marquee != "PLEX · 04:23 / 09:56" {
+		t.Errorf("VFD.Marquee = %q, want PLEX · 04:23 / 09:56", got.VFD.Marquee)
+	}
+	if got.VFD.State != string(StateLive) {
+		t.Errorf("VFD.State = %q, want %q (mirrors top-level State)", got.VFD.State, StateLive)
+	}
+}
+
+func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePaused, Title: "Take On Me", Source: "plex",
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+
+	// core.StatePaused -> chassis "live" so the body stays bright
+	// during transport pause. The transport-row pause indicator is
+	// Spec 3's job; chassis state class should not flicker.
+	if got.State != StateLive {
+		t.Errorf("paused -> chassis State = %q, want %q", got.State, StateLive)
+	}
+}
+
+func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+	want := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("idle-from-session should match idleSnapshot exactly")
+	}
+}
+
+func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+	want := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:    core.StatePlaying,
+		Title:    "TEST",
+		Source:   "jellyfin",
+		Position: 30 * time.Second,
+		Duration: 3 * time.Minute,
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+
+	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
+		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)
+	}
+	if got.VFD.QueueCurrent != 0 || got.VFD.QueueTotal != 0 {
+		t.Errorf("queue should be 0/0 placeholder in Phase 1; got %d/%d",
+			got.VFD.QueueCurrent, got.VFD.QueueTotal)
+	}
+}
+
+func TestHandleIndex_RendersLiveStateFromSession(t *testing.T) {
+	t.Parallel()
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:    core.StatePlaying,
+		Title:    "Burning Down the House",
+		Source:   "plex",
+		Position: 8 * time.Second,
+		Duration: 4*time.Minute + 1*time.Second,
+	}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="receiver live"`) {
+		t.Errorf("body missing live body class: %s", body[:min(200, len(body))])
+	}
+	if !strings.Contains(body, "Burning Down the House") {
+		t.Errorf("body missing live title")
+	}
+	if !strings.Contains(body, "PLEX · 00:08 / 04:01") {
+		t.Errorf("body missing live marquee")
+	}
+}
+
+func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	var buf bytes.Buffer
+	data := VFDData{
+		Title:        "TEST-TITLE",
+		Marquee:      "TEST-MARQUEE",
+		QueueCurrent: 1,
+		QueueTotal:   12,
+		SystemTime:   "22:47",
+		Uptime:       "4H 12M",
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "vfd", data); err != nil {
+		t.Fatalf("execute vfd partial: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{
+		"data-vfd-title",
+		"data-vfd-marquee",
+		"data-vfd-queue",
+		"data-vfd-uptime",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vfd partial missing %q hook; full output:\n%s", want, body)
+		}
+	}
+	// Ghost overlays must still be present — regression guard against
+	// accidentally placing data-vfd-* on the outer divs and breaking
+	// the seg-text/seg-ghost overlay vocabulary.
+	if !strings.Contains(body, "seg-ghost") {
+		t.Errorf("vfd partial is missing seg-ghost spans; overlay vocabulary broken")
+	}
+}
+
+func TestShellTemplate_LoadsVfdLiveScript(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `/receiver/static/vfd-live.js?v=test-1.0.0`) {
+		t.Errorf("shell.html should include versioned vfd-live.js script tag")
+	}
+	chassisIdx := strings.Index(body, "chassis.js?v=")
+	vfdIdx := strings.Index(body, "vfd-live.js?v=")
+	if chassisIdx < 0 || vfdIdx < 0 {
+		t.Fatalf("missing one of the script tags")
+	}
+	if vfdIdx <= chassisIdx {
+		t.Errorf("vfd-live.js script must appear AFTER chassis.js so the deferred load order initializes window.Chassis first")
+	}
+}
+
+func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		view core.StatusHomeView
+		want string
+	}{
+		{
+			name: "unknown duration",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex",
+				Position: 4*time.Minute + 23*time.Second},
+			want: "PLEX · 04:23 / --:--",
+		},
+		{
+			name: "zero position unknown duration",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex"},
+			want: "PLEX · 00:00 / --:--",
+		},
+		{
+			name: "empty source fallback",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "",
+				Position: 30 * time.Second, Duration: 3 * time.Minute},
+			want: "BRIDGE · 00:30 / 03:00",
+		},
+		{
+			name: "hour-long position single-digit hours",
+			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex",
+				Position: time.Hour + 4*time.Minute + 5*time.Second,
+				Duration: time.Hour + 30*time.Minute},
+			want: "PLEX · 1:04:05 / 1:30:00",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatLiveMarquee(tc.view)
+			if got != tc.want {
+				t.Errorf("formatLiveMarquee = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleStatic_VfdLiveJSServed(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET vfd-live.js status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") && !strings.HasPrefix(got, "application/javascript") {
+		t.Errorf("Content-Type = %q, want text/javascript or application/javascript", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "window.Chassis.events") {
+		t.Errorf("served vfd-live.js doesn't contain window.Chassis.events namespace export")
 	}
 }

@@ -4,19 +4,19 @@
   <div class="screen vfd">
     <div class="vfd-state vfd-state--idle">
       <div>
-        <div class="title-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~</span><span class="seg-text">{{.Title}}</span></div>
-        <div class="marquee-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~~~~ ~~ ~ ~~~~ ~~ ~~ ~~~~~~~ ~ ~~ ~~~~~~~ ~ ~ ~~~~~ ~~~ ~~ ~~~~ ~ ~~~~~~</span><span class="seg-text">{{.Marquee}}</span></div>
+        <div class="title-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~</span><span class="seg-text" data-vfd-title>{{.Title}}</span></div>
+        <div class="marquee-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~~~~ ~~ ~ ~~~~ ~~ ~~ ~~~~~~~ ~ ~~ ~~~~~~~ ~ ~ ~~~~~ ~~~ ~~ ~~~~ ~ ~~~~~~</span><span class="seg-text" data-vfd-marquee>{{.Marquee}}</span></div>
       </div>
       <div class="right-panel">
         <div class="lbl">System time</div>
         <div class="time-row">
           <div class="queue-stack">
-            <div class="queue-v seg-display"><span class="seg-ghost" aria-hidden="true">88 ~ 88</span><span class="seg-text">{{.QueueCurrent}} / {{.QueueTotal}}</span></div>
+            <div class="queue-v seg-display"><span class="seg-ghost" aria-hidden="true">88 ~ 88</span><span class="seg-text" data-vfd-queue>{{.QueueCurrent}} / {{.QueueTotal}}</span></div>
             <div class="queue-k">QUEUE</div>
           </div>
           <div class="big-time"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>{{.SystemTime}}</span></span></div>
         </div>
-        <div class="freq"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">UPTIME</span></span> <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88~ 88~</span><span class="seg-text">{{.Uptime}}</span></span></div>
+        <div class="freq"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">UPTIME</span></span> <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88~ 88~</span><span class="seg-text" data-vfd-uptime>{{.Uptime}}</span></span></div>
       </div>
     </div>
   </div>
