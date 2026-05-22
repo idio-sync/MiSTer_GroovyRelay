@@ -3,6 +3,7 @@ package chassis
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -411,5 +412,51 @@ func TestHandleEvents_EmitsHeartbeatComments(t *testing.T) {
 	if count < 2 {
 		t.Errorf("expected at least 2 heartbeat comments after ~180ms with 50ms interval, got %d. body:\n%s",
 			count, w.Body.String())
+	}
+}
+
+// failingWriter implements http.ResponseWriter + http.Flusher but
+// returns io.ErrClosedPipe from Write after the first N bytes,
+// simulating a TCP RST while the handler is mid-stream.
+type failingWriter struct {
+	headers http.Header
+	written int
+	cutoff  int
+	flushes int
+}
+
+func (f *failingWriter) Header() http.Header { return f.headers }
+func (f *failingWriter) Write(b []byte) (int, error) {
+	if f.written >= f.cutoff {
+		return 0, io.ErrClosedPipe
+	}
+	f.written += len(b)
+	return len(b), nil
+}
+func (f *failingWriter) WriteHeader(int) {}
+func (f *failingWriter) Flush()          { f.flushes++ }
+
+func TestHandleEvents_BailsOnMidWriteDisconnect(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &failingWriter{headers: http.Header{}, cutoff: 20} // fail after a few bytes
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		s.handleEvents(w, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// handler returned quickly on write error
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleEvents did not bail on mid-write disconnect within 200ms")
 	}
 }
