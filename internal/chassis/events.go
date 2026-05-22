@@ -52,3 +52,20 @@ func emit(w io.Writer, name string, payload any) error {
 	}
 	return nil
 }
+
+// vfdChanged enumerates exactly the fields that participate in the
+// `vfd` event payload. Other fields on VFDData (notably SystemTime,
+// which is client-ticker-driven via [data-system-time], and the
+// duplicated State that mirrors ReceiverPageData.State and is handled
+// by a separate `state` event) are deliberately excluded.
+//
+// Explicit field-level compare beats reflect.DeepEqual for speed
+// (no reflection) and clarity (the function definition IS the spec
+// of which fields are part of the Phase 1 VFD wire-format surface).
+func vfdChanged(a, b VFDData) bool {
+	return a.Title != b.Title ||
+		a.Marquee != b.Marquee ||
+		a.QueueCurrent != b.QueueCurrent ||
+		a.QueueTotal != b.QueueTotal ||
+		a.Uptime != b.Uptime
+}
