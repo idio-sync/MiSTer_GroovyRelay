@@ -620,3 +620,55 @@ func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
 		t.Errorf("second Close returned error: %v (want nil; Close must be idempotent)", err)
 	}
 }
+
+func TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs(t *testing.T) {
+	t.Parallel()
+
+	cv := &countingViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = cv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux) // starts the refresher goroutine
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Open 5 SSE handlers; let them run for ~5 cache ticks; cancel.
+	const tabs = 5
+	const ticks = 5
+	var wg sync.WaitGroup
+	ctxs := make([]context.CancelFunc, tabs)
+	for i := 0; i < tabs; i++ {
+		i := i
+		ctx, cancel := context.WithCancel(context.Background())
+		ctxs[i] = cancel
+		req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+		w := newFlushRecorder()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handleEvents(w, req)
+			_ = i
+		}()
+	}
+	time.Sleep(time.Duration(ticks) * chassisTickInterval)
+	for _, c := range ctxs {
+		c()
+	}
+	wg.Wait()
+
+	got := cv.Calls()
+	// One call from New's synchronous seed + ~one per tick. Allow
+	// generous slack for scheduler jitter on slow CI; still vastly
+	// less than the per-tab-polling worst case of tabs*ticks plus seed.
+	maxAllowed := ticks*2 + 2
+	if got > maxAllowed {
+		t.Errorf("StatusHomeView called %d times across %d tabs over %d ticks; want <= %d (single shared refresher, not per-tab polling)",
+			got, tabs, ticks, maxAllowed)
+	}
+	if got < 1 {
+		t.Errorf("StatusHomeView never called; expected at least the New-time seed call")
+	}
+}

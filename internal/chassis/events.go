@@ -98,7 +98,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	last := snapshotFromSession(s.cfg, s.session, time.Now())
+	last := s.cache.Get()
 	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
 		return
 	}
@@ -116,7 +116,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-tick.C:
-			curr := snapshotFromSession(s.cfg, s.session, time.Now())
+			curr := s.cache.Get()
 			if curr.State != last.State {
 				if err := emit(w, "state", stateEnvelope{State: string(curr.State)}); err != nil {
 					return
