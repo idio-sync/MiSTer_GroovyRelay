@@ -69,4 +69,5 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /receiver", s.handleIndex)
 	mux.HandleFunc("GET /receiver/{$}", s.handleIndex)
 	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
+	mux.HandleFunc("GET /receiver/events", s.handleEvents)
 }

@@ -460,3 +460,74 @@ func TestHandleEvents_BailsOnMidWriteDisconnect(t *testing.T) {
 		t.Fatal("handleEvents did not bail on mid-write disconnect within 200ms")
 	}
 }
+
+func TestHandleEvents_MultipleConcurrentConnections(t *testing.T) {
+	t.Parallel()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Mount(http.NewServeMux()) // starts the shared cache refresher after Task 13
+
+	const n = 5
+	bodies := make([]*flushRecorder, n)
+	ctxs := make([]context.CancelFunc, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		i := i
+		ctx, cancel := context.WithCancel(context.Background())
+		ctxs[i] = cancel
+		bodies[i] = newFlushRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handleEvents(bodies[i], req)
+		}()
+	}
+
+	// Drive a state transition; every connected handler should observe it.
+	time.Sleep(150 * time.Millisecond)
+	sv.set(core.StatusHomeView{State: core.StatePlaying, Title: "X", Source: "plex"})
+	time.Sleep(350 * time.Millisecond)
+	for _, cancel := range ctxs {
+		cancel()
+	}
+	wg.Wait()
+
+	for i, w := range bodies {
+		body := w.Body.String()
+		if !strings.Contains(body, `"state":"live"`) {
+			t.Errorf("connection %d missed the live transition:\n%s", i, body)
+		}
+	}
+}
+
+func TestMount_RegistersEventsRoute(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /receiver/events status = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+}
