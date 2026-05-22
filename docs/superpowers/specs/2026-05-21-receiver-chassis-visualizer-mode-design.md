@@ -1,6 +1,6 @@
 # Receiver Chassis Visualizer Mode — Phase 1 / Spec 4 Design
 
-**Status:** Implementation plan drafted; blocked on the Spec 2 SSE/session foundation.
+**Status:** Ready to implement. Spec 2's SSE/session foundation has landed in this branch and is now the baseline for this spec.
 **Scope:** Third sub-project of Phase 1 (Live Console). Wires the chassis visualizer-bank buttons to `bridge.visualizer.mode` via a new `POST /receiver/visualizer` endpoint, adds a `visualizer` event to the existing SSE stream for cross-tab synchronization, and introduces the first chassis cross-origin defence (`Sec-Fetch-Site` middleware).
 **Repo location:** Committed under `docs/superpowers/specs/`. That directory is normally gitignored (`.gitignore` line 35); this spec is force-added per the convention established by the Phase 0 design doc.
 
@@ -12,9 +12,9 @@ The bridge already persists `bridge.visualizer.mode` to `config.toml` via the ex
 
 The deferred fourth mode (`radial_spectrum`) is intentionally absent from `config.SupportedVisualizerModes()` per the `feat(ffmpeg): defer radial_spectrum mode from v1` commit. The chassis must reject it server-side; the existing client-side disable is reinforced, not replaced.
 
-## Prerequisite
+## Baseline
 
-Spec 4 is not standalone against the Phase 0-only chassis tree. It requires Spec 2 to land first, providing:
+Spec 4 is not standalone against the Phase 0-only chassis tree. It builds on the landed Spec 2 baseline, which provides:
 
 - `internal/chassis/events.go` with `GET /receiver/events`, the SSE encoder, heartbeat/retry behavior, and snapshot diff ticker.
 - `internal/chassis/session.go` with `SessionViewer` and `snapshotFromSession(cfg, sv, now)`.
@@ -22,7 +22,7 @@ Spec 4 is not standalone against the Phase 0-only chassis tree. It requires Spec
 - `internal/chassis/server.go` support for the Spec 2 session viewer, snapshot cache, and `Close()` lifecycle hook.
 - `internal/chassis/templates/shell.html` loading `vfd-live.js` before later SSE consumers.
 
-If those files are absent, implement or merge Spec 2 before starting this spec. The file table below marks Spec 2-owned files as **prerequisite files modified by Spec 4**, not as files created here.
+If those files are absent, the checkout is on the wrong baseline; switch to the branch that includes Spec 2 before starting this spec. The file table below marks Spec 2-owned files as **baseline files modified by Spec 4**, not as files created here.
 
 ## Goals
 
@@ -74,12 +74,12 @@ internal/chassis/
 | File | Change |
 |---|---|
 | `internal/chassis/server.go` | `Config` gains optional `VisualizerViewer` and `VisualizerSaver` fields. Stored on `Server`. |
-| `internal/chassis/events.go` (Spec 2 prerequisite) | Snapshot diff loop gains `visualizer` event emission. `vizEnvelope` added. |
-| `internal/chassis/session.go` (Spec 2 prerequisite) | `snapshotFromSession` signature extended with `VisualizerViewer`; populates `ReceiverPageData.Visualizer.ActiveMode` from the live viewer. |
-| `internal/chassis/handler.go` | `Mount` registers `POST /receiver/visualizer` wrapped in `requireSameOrigin`. |
+| `internal/chassis/events.go` (Spec 2 baseline) | Snapshot diff loop gains `visualizer` event emission. `vizEnvelope` added. |
+| `internal/chassis/session.go` (Spec 2 baseline) | `snapshotFromSession` signature extended with `VisualizerViewer`; populates `ReceiverPageData.Visualizer.ActiveMode` from the live viewer. |
+| `internal/chassis/server.go` | `Mount` registers `POST /receiver/visualizer` wrapped in `requireSameOrigin`. |
 | `internal/chassis/templates/shell.html` | New `<script defer src="/receiver/static/visualizer-bank.js?v={{.Version}}">` after `vfd-live.js`. |
 | `internal/chassis/static/chassis.css` | Adds `body.receiver .viz-btn.pressed { ... }` rules for click feedback. |
-| `internal/chassis/static/vfd-live.js` (Spec 2 prerequisite) | After `new EventSource(...)`, dispatches `CustomEvent('chassis:eventsource', { detail: { source } })`. Stores `source` on `window.Chassis.events.source` for late-attachers. |
+| `internal/chassis/static/vfd-live.js` (Spec 2 baseline) | Adds a listener-registry-backed `window.Chassis.events.subscribe(name, fn)` helper. `connect()` reattaches registered listeners after each new `EventSource`. |
 | `internal/uiserver/bridge_saver.go` | New method `SaveVisualizerMode(mode string) (adapters.ApplyScope, error)`. |
 | `internal/core/manager.go` | New method `VisualizerMode() string`. |
 | `cmd/mister-groovy-relay/main.go` | Wires `VisualizerViewer: coreMgr` and `VisualizerSaver` (closure over `BridgeSaver.SaveVisualizerMode`) into `chassis.Config`. |
@@ -246,11 +246,15 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, now 
     base := idleSnapshot(cfg, now)
     if sv != nil {
         view := sv.StatusHomeView()
-        if view.State != core.StateIdle {
+        switch view.State {
+        case core.StatePlaying, core.StatePaused:
             base.State = StateLive
             base.VFD.State = string(StateLive)
             base.VFD.Title = view.Title
             base.VFD.Marquee = formatLiveMarquee(view)
+        default:
+            // Preserve Spec 2's fallback: idle and unknown states render
+            // as idle, not live.
         }
     }
     base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
@@ -271,7 +275,12 @@ Nil-viewer falls back to the Phase 0 helper (reads `cfg.Bridge.Visualizer.Mode`,
 
 Engineering estimate: click → POST → `BridgeSaver` write + `UpdateBridge` (≤10 ms) → cache refresher next tick (≤250 ms) → SSE emit → DOM update (~1 ms). Worst case ~260 ms + the POST roundtrip. The Hybrid `pressed`-class affordance fires within ~5 ms of click, so perceived latency is the press flash, not the active-class transition.
 
-The **acceptance criterion in Done When** is "within ~500 ms" — a UX SLO with substantial headroom over the ~260 ms engineering estimate. Automated tests should assert eventual convergence with a generous timeout and separately cover the configured ticker interval; they should not hard-fail CI on a 500 ms wall-clock threshold.
+The **acceptance criterion in Done When** is "within ~500 ms" — a UX SLO with substantial headroom over the ~260 ms engineering estimate. Automated tests assert eventual convergence with a concrete CI-friendly deadline rather than the user-facing SLO:
+
+- **Concrete CI timeout for end-to-end SSE convergence: 5 seconds** (matches the existing `tests/integration/` convention of 5-10s deadlines).
+- **Ticker-interval assertion is separate**: a Layer 1 test asserts the configured ticker is 250 ms (or whatever the constant is) without timing the test itself.
+
+The 5-second deadline is ~20× the engineering estimate and ~10× the UX SLO. CI flakes on busy workers don't masquerade as regressions, while a real latency regression of (say) 10s would still fail the test.
 
 ## Save Endpoint
 
@@ -306,7 +315,7 @@ The HTTP boundary owns mode validation. Unsupported values never reach `Visualiz
 
 ```go
 func (s *Server) handleVisualizerPost(w http.ResponseWriter, r *http.Request) {
-    if s.cfg.VisualizerSaver == nil {
+    if s.visualizerSaver == nil {
         writeJSONError(w, http.StatusServiceUnavailable, "visualizer save not configured")
         return
     }
@@ -323,7 +332,7 @@ func (s *Server) handleVisualizerPost(w http.ResponseWriter, r *http.Request) {
         writeJSONErrorWithMode(w, http.StatusBadRequest, "unsupported visualizer mode", mode)
         return
     }
-    if err := s.cfg.VisualizerSaver.SaveVisualizerMode(mode); err != nil {
+    if err := s.visualizerSaver.SaveVisualizerMode(mode); err != nil {
         // Log the full error server-side via stdlib log.Printf (the
         // chassis package has no logger today; introducing a structured
         // logger is out of scope for this spec — Phase 5 polish task).
@@ -337,9 +346,8 @@ func (s *Server) handleVisualizerPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func isSupportedVisualizerMode(mode string) bool {
-    normalized := config.NormalizeVisualizerMode(mode)
     for _, supported := range config.SupportedVisualizerModes() {
-        if normalized == supported {
+        if mode == supported {
             return true
         }
     }
@@ -347,7 +355,7 @@ func isSupportedVisualizerMode(mode string) bool {
 }
 ```
 
-`writeJSONError`, `writeJSONErrorWithMode`, and `isSupportedVisualizerMode` live in `visualizer.go`.
+`writeJSONError`, `writeJSONErrorWithMode`, and `isSupportedVisualizerMode` live in `visualizer.go`. The handler trims input and rejects the empty string before calling `isSupportedVisualizerMode`; the helper itself is exact membership only. `config.NormalizeVisualizerMode` is reserved for render-time/live-viewer fallback, not HTTP input validation.
 
 ### Eventlog
 
@@ -470,24 +478,16 @@ Decided in brainstorming: server-authoritative, but with an immediate CSS press 
     }
   }
 
-  function attachToEventSource(source) {
-    if (source) source.addEventListener('visualizer', handleVisualizerEvent);
-  }
-
   function attach() {
     const root = bankRoot();
     if (root) root.addEventListener('click', onClick);
-    // Subscribe to the shared EventSource owned by vfd-live.js. Defer
-    // scripts run in document order, so vfd-live.js's DOMContentLoaded
-    // handler may already have fired by the time we reach this point;
-    // the cached reference path covers that case, the CustomEvent path
-    // covers a future reconnect that creates a fresh EventSource.
-    if (window.Chassis.events && window.Chassis.events.source) {
-      attachToEventSource(window.Chassis.events.source);
+    // Subscribe to the shared EventSource owned by vfd-live.js. The
+    // listener registry there reattaches this handler after reconnect().
+    if (window.Chassis.events && typeof window.Chassis.events.subscribe === 'function') {
+      window.Chassis.events.subscribe('visualizer', handleVisualizerEvent);
+    } else {
+      console.warn('visualizer-bank: window.Chassis.events.subscribe missing; vfd-live.js failed to load?');
     }
-    document.addEventListener('chassis:eventsource', (e) => {
-      attachToEventSource(e.detail.source);
-    });
   }
 
   document.addEventListener('DOMContentLoaded', attach);
@@ -496,14 +496,15 @@ Decided in brainstorming: server-authoritative, but with an immediate CSS press 
 
 ### Coordination with `vfd-live.js` (Spec 2 amendment)
 
-Spec 2 currently creates a single `EventSource` inside `vfd-live.js`. Spec 4 needs to share that source rather than open a second one. Spec 4 amends Spec 2's `vfd-live.js`:
+Spec 2 currently creates a single `EventSource` inside `vfd-live.js` and exposes `window.Chassis.events.reconnect()`. Spec 4 needs to share that source rather than open a second one. Spec 4 amends Spec 2's `vfd-live.js` with a listener-registry-backed subscription helper:
 
-1. After `source = new EventSource('/receiver/events')`, store the reference on `window.Chassis.events = { source, reconnect: ... }` (the existing `reconnect` API stays).
-2. Dispatch `document.dispatchEvent(new CustomEvent('chassis:eventsource', { detail: { source } }))` immediately after.
+1. Add `window.Chassis.events.subscribe(name, fn)`, which records listeners in a `Map<string, Set<Function>>` and attaches immediately when a source already exists.
+2. Make `connect()` call `attachRegisteredListeners()` after attaching Spec 2's built-in `state` and `vfd` listeners.
+3. Preserve the existing `reconnect()` API; after reconnect creates a fresh `EventSource`, all registered sibling listeners are reattached.
 
-These two changes are ~3 lines and don't alter `vfd-live.js`'s wire behaviour or test surface.
+These changes don't alter `vfd-live.js`'s wire behaviour or Spec 2's event handlers.
 
-**Defer-order semantics on first load.** Both scripts use `<script defer>`, which preserves document order. `vfd-live.js` loads first per `shell.html`'s ordering; its `DOMContentLoaded` handler creates the EventSource and dispatches the CustomEvent *before* `visualizer-bank.js`'s `DOMContentLoaded` handler runs. Result: on first connect, the cached `window.Chassis.events.source` reference is the path that always fires; the CustomEvent path matters only on reconnects (when `vfd-live.js` is wired to call `connect()` again, the new source replaces the cached one and the CustomEvent picks up late-attached listeners). This ordering is encoded in the JS comment. Until the Spec 5 Vitest/jsdom harness exists, Spec 4 verifies this through static asset checks plus integration/manual single-SSE-connection checks rather than a real JS unit test.
+**Defer-order semantics on first load.** Both scripts use `<script defer>`, which preserves document order. `vfd-live.js` loads first per `shell.html`'s ordering and creates `window.Chassis.events.subscribe` before `visualizer-bank.js`'s `DOMContentLoaded` handler runs. If the `EventSource` already exists, `subscribe()` attaches immediately; if not, the listener registry attaches the handler when `connect()` runs. Reconnect follows the same path: `connect()` creates a fresh source and reattaches all registered listeners. Until the Spec 5 Vitest/jsdom harness exists, Spec 4 verifies this through static asset checks plus integration/manual single-SSE-connection checks rather than a real JS unit test.
 
 ### Template changes
 
@@ -547,7 +548,7 @@ TestHandleVisualizerPost_Returns400OnMissingOrEmptyModeField  // covers both: ke
 TestHandleVisualizerPost_Returns400OnUnsupportedMode
 TestHandleVisualizerPost_Returns400OnRadialSpectrumDeferred
 TestHandleVisualizerPost_DoesNotInvokeSaverForUnsupportedMode
-TestHandleVisualizerPost_Returns405OnGet
+TestMount_GetVisualizerReturns405
 TestHandleVisualizerPost_Returns503WhenSaverNil
 TestHandleVisualizerPost_Returns500OnSaverInternalError
 TestHandleVisualizerPost_LogsButNeverLeaksInternalError
@@ -573,7 +574,7 @@ TestVfdLive_ExposesEventSourceReference_StaticAssetCheck
 - `fakeVisualizerViewer struct { mu sync.Mutex; mode string; set(string) }` — mutex-guarded so the diff-ticker test can flip the mode mid-stream deterministically.
 - `fakeVisualizerSaver struct { mu sync.Mutex; saved []string; err error }` — records calls, optionally returns a configured error.
 
-The static `vfd-live.js` check is deliberately narrow: it verifies the file exposes `window.Chassis.events.source` and dispatches `chassis:eventsource`. Real dispatch-order behavior is covered by the browser/manual checklist until the Spec 5 JS harness lands.
+The static `vfd-live.js` check is deliberately narrow: it verifies the file exposes `window.Chassis.events.subscribe`, keeps a listener registry, and reattaches registered listeners from `connect()`. Real reconnect-order behavior is covered by the browser/manual checklist until the Spec 5 JS harness lands.
 
 ### Layer 2 — template tests
 
@@ -589,10 +590,12 @@ TestVisualizerBankTemplate_RendersDataVizOnEveryButton
 TestReceiverVisualizer_EndToEnd_PostAndSSEEvent
 TestReceiverVisualizer_BlocksCrossSitePost
 TestReceiverVisualizer_PreviewModeRejected
-TestReceiverVisualizer_DoesNotShadowUIRoutes
+TestReceiverVisualizer_GetReturns405
 ```
 
-`TestReceiverVisualizer_EndToEnd_PostAndSSEEvent` spins a full bridge with a real `BridgeSaver` writing to a temp dir; opens an SSE connection; reads the initial `visualizer` event; POSTs `/receiver/visualizer mode=stereo_scope`; waits for eventual `visualizer` convergence with a generous timeout; reads `config.toml` from disk and asserts `bridge.visualizer.mode = "stereo_scope"`; calls `coreMgr.VisualizerMode()` and asserts the live in-memory bridge matches.
+`TestReceiverVisualizer_EndToEnd_PostAndSSEEvent` spins a full bridge with a real `BridgeSaver` writing to a temp dir; opens an SSE connection; reads the initial `visualizer` event; POSTs `/receiver/visualizer mode=stereo_scope`; waits up to **5 seconds** for the next `visualizer` event to carry `stereo_scope` (deadline picked to match the existing `tests/integration/` 5-10s convention; ~10× the user-facing 500ms SLO so CI flakes don't masquerade as regressions); reads `config.toml` from disk and asserts `bridge.visualizer.mode = "stereo_scope"`; calls `coreMgr.VisualizerMode()` and asserts the live in-memory bridge matches.
+
+Existing chassis route-shadowing coverage remains in the baseline integration suite; Spec 4 adds the method-specific GET-405 assertion for `/receiver/visualizer`.
 
 ### Manual verification (PR checklist)
 
@@ -643,13 +646,13 @@ Spec 4 is additive. Revert = revert the merge commit. The chassis falls back to 
 
 | Risk | Mitigation |
 |---|---|
-| Two SSE connections per tab if visualizer-bank.js opens its own EventSource | The `chassis:eventsource` CustomEvent + `window.Chassis.events.source` cache deliberately share the one source from vfd-live.js. Integration test exercises the cohabitation; manual smoke check on DevTools Network panel verifies a single SSE connection. |
+| Two SSE connections per tab if visualizer-bank.js opens its own EventSource | `window.Chassis.events.subscribe('visualizer', handler)` deliberately shares the one source from vfd-live.js. Integration test exercises the cohabitation; manual smoke check on DevTools Network panel verifies a single SSE connection. |
 | Unsupported modes accidentally reach the persistence layer | `handleVisualizerPost` validates locally against `config.SupportedVisualizerModes()` and `TestHandleVisualizerPost_DoesNotInvokeSaverForUnsupportedMode` verifies the saver is not called for rejected values. `BridgeSaver.saveLocked` still performs full config validation as defense in depth. |
 | Sec-Fetch-Site absent on a legitimate non-browser ops script | Documented in the PR: ops scripts must set `-H "Sec-Fetch-Site: same-origin"`. Trade-off accepted given the chassis's browser-only deployment model. |
 | `radial_spectrum` slip-through while still deferred from v1 | `TestHandleVisualizerPost_Returns400OnRadialSpectrumDeferred` asserts the current deferred behavior. If a future spec intentionally adds `radial_spectrum` to `SupportedVisualizerModes()`, that spec updates the test and removes the preview-only UI state. |
 | Diff-ticker latency feels sluggish on click | 250 ms is below the 500 ms feel-instant threshold. Hybrid `pressed`-class affordance fires within ~5 ms so perceived latency is the press flash, not the class change. Eager-push (synchronous emit on save) is available as a Spec 5 retrofit if user testing flags it. |
 | Rapid sequential clicks faster than SSE roundtrip | Each POST is independent; `BridgeSaver.mu` serializes; last-write-wins. The diff ticker may collapse intermediate modes into a single SSE emit of the final mode — desirable behavior. `TestHandleVisualizerPost_RapidSequentialClicks` (race-detected) locks in this contract. |
-| `vfd-live.js` amendment (CustomEvent + `window.Chassis.events.source` cache) accidentally breaks Spec 2's tests | The amendment is additive and post-EventSource-creation. Spec 2's test suite re-runs unchanged. A static asset check covers the new exposed surface; browser-level ordering is covered by integration/manual verification until the JS harness exists. |
+| `vfd-live.js` amendment (`window.Chassis.events.subscribe`) accidentally breaks Spec 2's tests | The amendment is additive; Spec 2's test suite re-runs unchanged. A static asset check covers the new exposed surface; browser-level ordering is covered by integration/manual verification until the JS harness exists. |
 
 ### Cutover handoff
 
@@ -678,4 +681,4 @@ The endpoint validates against `config.SupportedVisualizerModes()` before callin
 - **Spec 3 (transport).** Will reuse `requireSameOrigin`. Open: do play/pause/stop/seek POSTs each emit a `transport` SSE event to confirm? Recommended yes. Open: does eventlog get a `source=chassis` field to distinguish chassis-triggered transport from `/ui` or adapter-triggered? Spec 9 decides.
 - **Spec 5 (telemetry).** Diff-ticker latency vs broker. Resolves Spec 4's deferred decision.
 - **Spec 8 (settings).** Whether the chassis save endpoint becomes the canonical write path and `/ui/*` retires its bridge-panel form.
-- **Phase 5 polish.** Extraction of `requireSameOrigin` to a shared package once Spec 3 + Spec 4 establish the pattern; possible elevation of `window.Chassis.events.source` to a documented subscriber API.
+- **Phase 5 polish.** Extraction of `requireSameOrigin` to a shared package once Spec 3 + Spec 4 establish the pattern; possible extraction of the `window.Chassis.events.subscribe` listener registry into a tiny shared client utility if Spec 5 needs more event orchestration.
