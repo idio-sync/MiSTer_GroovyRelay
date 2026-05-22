@@ -16,6 +16,10 @@ type stateEnvelope struct {
 	State string `json:"state"`
 }
 
+type vizEnvelope struct {
+	Mode string `json:"mode"`
+}
+
 // vfdEnvelope is the payload for the `vfd` SSE event. Carries the
 // minimal Phase 1 fields the client needs to update the VFD spans;
 // Spec 5 (telemetry) and later specs add their own envelope types
@@ -106,6 +110,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err := emit(w, "vfd", vfdEnvelopeFrom(last.VFD)); err != nil {
 		return
 	}
+	if err := emit(w, "visualizer", vizEnvelope{Mode: last.Visualizer.ActiveMode}); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	tick := time.NewTicker(chassisTickInterval)
@@ -129,6 +136,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				last.VFD = curr.VFD
+			}
+			if curr.Visualizer.ActiveMode != last.Visualizer.ActiveMode {
+				if err := emit(w, "visualizer", vizEnvelope{Mode: curr.Visualizer.ActiveMode}); err != nil {
+					return
+				}
+				last.Visualizer.ActiveMode = curr.Visualizer.ActiveMode
 			}
 			flusher.Flush()
 		case <-heartbeat.C:

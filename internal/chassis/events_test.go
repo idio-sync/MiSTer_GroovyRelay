@@ -3,6 +3,7 @@ package chassis
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -52,6 +54,18 @@ func TestEmit_VfdEnvelopeUsesCamelCaseFieldNames(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("emit output missing %q\nfull output:\n%s", want, got)
 		}
+	}
+}
+
+func TestVizEnvelope_JSONCamelCase(t *testing.T) {
+	t.Parallel()
+	got, err := json.Marshal(vizEnvelope{Mode: config.VisualizerModeStereoScope})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	want := `{"mode":"stereo_scope"}`
+	if string(got) != want {
+		t.Errorf("vizEnvelope JSON = %s, want %s", got, want)
 	}
 }
 
@@ -232,6 +246,38 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	}
 	if !strings.Contains(body, `"title":"STANDBY"`) {
 		t.Errorf("body missing STANDBY title payload")
+	}
+}
+
+func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.VisualizerViewer = &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	stateIdx := strings.Index(body, "event: state\n")
+	vfdIdx := strings.Index(body, "event: vfd\n")
+	vizIdx := strings.Index(body, "event: visualizer\n")
+	if vizIdx < 0 {
+		t.Fatalf("body missing initial visualizer event:\n%s", body)
+	}
+	if !(stateIdx >= 0 && vfdIdx > stateIdx && vizIdx > vfdIdx) {
+		t.Errorf("initial event order should be state, vfd, visualizer; body:\n%s", body)
+	}
+	if !strings.Contains(body, `"mode":"stereo_scope"`) {
+		t.Errorf("body missing visualizer mode payload:\n%s", body)
 	}
 }
 
@@ -417,6 +463,70 @@ func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	}
 	if !strings.Contains(body, `"title":"Second Track"`) {
 		t.Errorf("missing title-change vfd event:\n%s", body)
+	}
+}
+
+func TestHandleEvents_EmitsVisualizerEventOnModeChange(t *testing.T) {
+	t.Parallel()
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeRetroAnalyzer}
+	cfg := nonZeroConfig()
+	cfg.VisualizerViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		viewer.set(config.VisualizerModeOscilloscopeWave)
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"mode":"retro_analyzer"`) {
+		t.Errorf("missing initial visualizer mode event:\n%s", body)
+	}
+	if !strings.Contains(body, `"mode":"oscilloscope_wave"`) {
+		t.Errorf("missing visualizer mode-change event:\n%s", body)
+	}
+	if got := strings.Count(body, "event: visualizer\n"); got < 2 {
+		t.Errorf("visualizer event count = %d, want at least 2; body:\n%s", got, body)
+	}
+}
+
+func TestHandleEvents_VisualizerEventOmittedWhenModeUnchanged(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.VisualizerViewer = &fakeVisualizerViewer{mode: config.VisualizerModeRetroAnalyzer}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if got := strings.Count(body, "event: visualizer\n"); got != 1 {
+		t.Errorf("visualizer event count = %d, want 1 initial event only; body:\n%s", got, body)
 	}
 }
 
