@@ -526,6 +526,9 @@ func TestVisualizerBankJS_RuntimeContracts(t *testing.T) {
 		"/receiver/visualizer",
 		"data-viz",
 		"viz-btn--preview",
+		"queuedMode",
+		"res.status !== 204",
+		"visualizer-bank: save failed",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("static/visualizer-bank.js missing runtime contract %q", want)

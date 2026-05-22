@@ -11,6 +11,8 @@
   }
 
   let source = null;
+  let inFlightMode = false;
+  let queuedMode = null;
 
   function buttons() {
     return Array.from(document.querySelectorAll('[data-viz]'));
@@ -73,6 +75,35 @@
     });
   }
 
+  async function drainSaves() {
+    if (inFlightMode) {
+      return;
+    }
+    inFlightMode = true;
+    try {
+      while (queuedMode) {
+        const mode = queuedMode;
+        queuedMode = null;
+        try {
+          const res = await postMode(mode);
+          if (res.status !== 204) {
+            const text = await res.text().catch(() => '');
+            console.warn('visualizer-bank: save failed', res.status, text);
+          }
+        } catch (err) {
+          console.warn('visualizer-bank: mode POST failed', err);
+        }
+      }
+    } finally {
+      inFlightMode = false;
+    }
+  }
+
+  function saveMode(mode) {
+    queuedMode = mode;
+    drainSaves();
+  }
+
   function bindClicks() {
     buttons().forEach((btn) => {
       if (isPreview(btn)) {
@@ -84,9 +115,7 @@
           return;
         }
         press(btn);
-        postMode(mode).catch((err) => {
-          console.warn('visualizer-bank: mode POST failed', err);
-        });
+        saveMode(mode);
       });
     });
   }

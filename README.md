@@ -121,9 +121,10 @@ The settings UI labels whether a saved field applies live, restarts the current 
 Open `http://<host>:32500/` after the bridge starts. The UI lets you:
 
 > **Preview UI:** A new receiver-chassis-styled UI is being built at
-> `/receiver` in parallel with `/ui`. It currently renders an idle-state
-> preview with no live data -- Phases 1-5 wire functionality in. License
-> attributions for the bundled fonts: `/receiver/static/fonts/LICENSE`.
+> `/receiver` in parallel with `/ui`. It now carries live VFD updates and
+> visualizer-mode controls while later phases add transport controls,
+> telemetry, and settings polish. License attributions for the bundled fonts:
+> `/receiver/static/fonts/LICENSE`.
 
 - Link Plex and Jellyfin accounts.
 - Enable or disable adapters.
