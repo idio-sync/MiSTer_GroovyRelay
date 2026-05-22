@@ -1,6 +1,8 @@
 package chassis
 
 import (
+	"time"
+
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -15,4 +17,17 @@ import (
 // in that spec's review.
 type SessionViewer interface {
 	StatusHomeView() core.StatusHomeView
+}
+
+// snapshotFromSession builds the page-render data. When sv is nil the
+// chassis renders idle-only (offline-friendly + test-friendly).
+// Subsequent tasks add live-state mapping; this first implementation
+// is the fallback path so handleIndex can be re-wired immediately
+// without breaking Phase 0 behaviour.
+func snapshotFromSession(cfg Config, sv SessionViewer, now time.Time) ReceiverPageData {
+	if sv == nil {
+		return idleSnapshot(cfg, now)
+	}
+	// Live-state mapping lands in Task 3.
+	return idleSnapshot(cfg, now)
 }

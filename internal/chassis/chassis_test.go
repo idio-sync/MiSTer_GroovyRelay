@@ -864,3 +864,16 @@ func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
 		t.Fatal("expected non-nil Session after assignment from Manager")
 	}
 }
+
+func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Session = nil
+
+	got := snapshotFromSession(cfg, nil, fixedNow)
+	want := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
+	}
+}
