@@ -112,9 +112,10 @@ func (s *Server) startSnapshotRefresher() {
 }
 
 // Close stops the snapshot refresher goroutine (if Mount ever started
-// one) and waits for it to exit. Safe to call multiple times; calling
-// Close without a prior Mount returns nil immediately. Production wires
-// this from main.go's shutdown sequence; tests register via t.Cleanup.
+// one) and waits for it to exit. Safe to call multiple times
+// sequentially; do not race with Mount. Calling Close without a prior
+// Mount returns nil immediately. Production wires this from main.go's
+// shutdown sequence; tests register via t.Cleanup.
 func (s *Server) Close() error {
 	if s.cacheCancel == nil {
 		// Mount never ran — nothing to stop.

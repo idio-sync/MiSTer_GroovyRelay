@@ -140,9 +140,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // chassisTickInterval is the diff-ticker cadence. Package-level var so
-// tests can shorten it via TestMain / setter without changing
-// production behaviour. Production default 250 ms; tests override to
-// 100 ms (still slow enough to be reliable on busy CI workers).
+// tests can shorten it from init() before any test runs. Production
+// default 250 ms; tests override to 100 ms (still slow enough to be
+// reliable on busy CI workers).
 var chassisTickInterval = 250 * time.Millisecond
 
 // chassisHeartbeatInterval is the cadence at which the handler emits
@@ -160,6 +160,11 @@ type snapshotCache struct {
 	data ReceiverPageData
 }
 
+// Get returns a value copy of the cached snapshot. The copy shares
+// slice backing arrays (Sources / Visualizers / History rows) with the
+// cached struct, so callers must treat the returned data as read-only.
+// The refresher only Sets fresh snapshots produced by snapshotFromSession;
+// it never mutates a previously-stored slice in place.
 func (c *snapshotCache) Get() ReceiverPageData {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
