@@ -106,7 +106,27 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
-	// Diff loop lands in Task 8. For now block until disconnect so the
-	// stream stays open per the handler contract.
-	<-r.Context().Done()
+	tick := time.NewTicker(chassisTickInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+			curr := snapshotFromSession(s.cfg, s.session, time.Now())
+			if curr.State != last.State {
+				if err := emit(w, "state", stateEnvelope{State: string(curr.State)}); err != nil {
+					return
+				}
+				last.State = curr.State
+			}
+			flusher.Flush()
+		}
+	}
 }
+
+// chassisTickInterval is the diff-ticker cadence. Package-level var so
+// tests can shorten it via TestMain / setter without changing
+// production behaviour. Production default 250 ms; tests override to
+// 100 ms (still slow enough to be reliable on busy CI workers).
+var chassisTickInterval = 250 * time.Millisecond

@@ -9,7 +9,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+func init() {
+	// Shorten diff ticker for tests so transition detection completes
+	// quickly. This assignment happens before any tests run, so no test
+	// mutates package-level timing vars at runtime (race-safe under
+	// go test -race).
+	chassisTickInterval = 100 * time.Millisecond
+}
 
 func TestEmit_FormatsValidSSERecord(t *testing.T) {
 	t.Parallel()
@@ -272,5 +282,67 @@ func TestHandleEvents_TerminatesOnClientDisconnect(t *testing.T) {
 		// handler returned
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("handleEvents did not return within 200ms of context cancel")
+	}
+}
+
+// mutableSessionViewer flips between idle and live snapshots on
+// demand. Lets tests drive state transitions through handleEvents
+// without spinning up a real bridge.
+type mutableSessionViewer struct {
+	mu   sync.Mutex
+	view core.StatusHomeView
+}
+
+func (m *mutableSessionViewer) StatusHomeView() core.StatusHomeView {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.view
+}
+
+func (m *mutableSessionViewer) set(view core.StatusHomeView) {
+	m.mu.Lock()
+	m.view = view
+	m.mu.Unlock()
+}
+
+func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
+	t.Parallel()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mount is called even though this test invokes handleEvents directly:
+	// Task 13 makes Mount start the shared snapshot-cache refresher that
+	// Task 14's handleEvents path reads. Task 13 also adds Close cleanup.
+	s.Mount(http.NewServeMux())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	// Trigger a state transition shortly after the handler boots.
+	go func() {
+		time.Sleep(150 * time.Millisecond) // > one diff tick (100ms in tests)
+		sv.set(core.StatusHomeView{
+			State: core.StatePlaying, Title: "T", Source: "plex",
+		})
+		// Leave room for both the shared cache refresher and the per-handler
+		// diff ticker to observe the mutation after Task 14.
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	// Initial snapshot: state:idle. Then after the mutation: state:live.
+	if !strings.Contains(body, `"state":"idle"`) {
+		t.Errorf("missing initial idle state in body:\n%s", body)
+	}
+	if !strings.Contains(body, `"state":"live"`) {
+		t.Errorf("missing transition-to-live state event in body:\n%s", body)
 	}
 }
