@@ -18,7 +18,7 @@ The existing `/ui/playback/action` endpoint dispatches via `adapter.HandlePlayba
 
 1. Mount `POST /receiver/transport/action` and `POST /receiver/transport/seek` — JSON-responding endpoints that mirror `/ui/playback/{action,seek}`'s URL shape and `adapters.PlaybackActionRequest` contract, wrapped in chassis same-origin protection.
 2. Add a `transport` named event to the existing SSE stream at `GET /receiver/events`. Payload carries the playing/paused/stopped state, server-formatted seek-bar fields, and a per-action enabled struct so the client can grey out unsupported buttons.
-3. Encapsulate the snapshot + provider-lookup + dispatch dance currently inline in `internal/ui/playback.go` into two new methods on a shared `internal/playback.Dispatcher`: `PlaybackView(ctx)` (read) and `HandlePlaybackAction(ctx, req)` (write). The chassis depends on these structurally via new narrow interfaces (`TransportViewer`, `TransportController`).
+3. Encapsulate the snapshot + provider-lookup + dispatch dance currently inline in `internal/ui/playback.go` into a shared `internal/playback.Dispatcher`: `PlaybackView(ctx)` (read), `PlaybackViewForSnapshot(ctx, snap)` (read with caller-owned snapshot), and `HandlePlaybackAction(ctx, req)` (write). The chassis depends on these structurally via new narrow interfaces (`TransportViewer`, `TransportController`).
 4. Ship `internal/chassis/static/transport.js` — a ~150-line vanilla ES2022 client that subscribes to the new `transport` SSE event (via Spec 4's shared `window.Chassis.events.source` + `chassis:eventsource` CustomEvent surface), swaps DOM via new `data-transport-*` attribute hooks, and POSTs to the new endpoints on button click + seek-bar drag using raw seek milliseconds supplied by the server.
 5. Refactor `/ui/playback`'s inline dispatch to delegate to the shared dispatcher. HTTP response shape for `/ui/playback/*` stays byte-identical so existing `/ui` tests pass without modification.
 
@@ -36,10 +36,10 @@ The existing `/ui/playback/action` endpoint dispatches via `adapter.HandlePlayba
 ## Done When
 
 - `POST /receiver/transport/action` accepts a same-origin form with `adapter_ref`, `generation`, `action` (one of `pause|resume|stop|previous|next|replay`) and returns `204 No Content` on success. (Matches Spec 4's `/receiver/visualizer` convention — successful POSTs return 204 with no body; the SSE stream pushes the resulting state change within ~250 ms.)
-- `POST /receiver/transport/seek` accepts a same-origin form with `adapter_ref`, `generation`, `offset_ms` and returns the same JSON shape on success.
+- `POST /receiver/transport/seek` accepts a same-origin form with `adapter_ref`, `generation`, `offset_ms` and returns `204 No Content` on success.
 - Both routes return `409` on `generation` mismatch (stale session), `422` on unsupported action, `400` on malformed form, `500` on unexpected provider error — all with `{"error": "<message>"}` (Spec 4's `writeJSONError` shape).
 - Cross-site, missing, or `Sec-Fetch-Site: none` POST attempts receive `403 application/json` with `{"error": "cross-site request blocked"}` from Spec 4's `requireSameOrigin` middleware, before form parsing or dispatch.
-- A new SSE event `transport` is emitted on `/receiver/events` whenever any of state, seekFillPercent, elapsedTime, totalTime, percentPlayed, offsetMs, durationMs, actionsEnabled, adapterRef, or generation changes. Initial-snapshot sequence on connect now includes a `transport` event after the existing `state` and `vfd` events.
+- A new SSE event `transport` is emitted on `/receiver/events` whenever any of state, seekFillPercent, elapsedTime, totalTime, percentPlayed, offsetMs, durationMs, actionsEnabled, adapterRef, or generation changes. Initial-snapshot sequence on connect now includes a `transport` event after the existing `state`, `vfd`, and `visualizer` events.
 - Clicking pause / resume / stop / previous / next / replay in `/receiver` dispatches to the owning adapter via `playback.Dispatcher.HandlePlaybackAction` and reflects on the chassis within ~500 ms (one SSE tick).
 - Dragging the seek-bar to a new position dispatches a seek with the resolved `offset_ms` and reflects on the chassis within ~500 ms.
 - Multiple chassis tabs viewing the same active cast see synchronized button state, seek-bar position, and time labels.
@@ -73,7 +73,7 @@ Spec 4 (visualizer mode) shipped before this spec writes its plan, and it establ
 
 ### Files modified
 
-- `internal/adapters/playback.go` — add two `errors.Is`-friendly sentinels: `ErrActiveSessionChanged = errors.New(ErrActiveSessionChangedMessage)` (so existing string-comparing callers and new typed-error callers both work) and `ErrPlaybackActionUnsupported = errors.New("active adapter does not support playback action")`. Existing playback providers do not need to migrate immediately; the dispatcher normalizes exact-string matches of the legacy `"active session changed"` message into the typed sentinel during rollout.
+- `internal/adapters/playback.go` — add two `errors.Is`-friendly sentinels: `ErrActiveSessionChanged = errors.New(ErrActiveSessionChangedMessage)` (so existing string-comparing callers and new typed-error callers both work) and `ErrPlaybackActionUnsupported = errors.New("active adapter does not expose playback controls")`. Existing playback providers migrate in this spec: stale-session paths return or wrap `ErrActiveSessionChanged`, and unsupported-verb paths return or wrap `ErrPlaybackActionUnsupported`. The dispatcher still normalizes exact-string matches of the legacy `"active session changed"` message as a rollout safety net.
 - `internal/core/manager.go` — no method additions. The dispatcher reads via `Manager.StatusHomeView()` (already exists per Spec 2) and writes via the existing `Manager.PauseIfSession / PlayIfSession / StopIfSession / SeekToIfSession` guarded helpers (already exist). No new methods on `Manager`. This avoids putting `internal/adapters` types onto `core.Manager` and keeps `internal/core`'s import surface unchanged.
 - `internal/ui/server.go` — `Config` gains optional `Playback PlaybackService` (a package-local interface declaring the two dispatcher methods). When nil, `New` constructs `playback.NewDispatcher(cfg.StatusViewer, cfg.Registry)` so existing tests that only provide `StatusViewer` + `Registry` keep working.
 - `internal/ui/playback.go` — the inline `playbackProviderForSnapshot` is deleted; all callers migrate to the dispatcher. There are **two distinct call sites** to update (not "two endpoints"): `handlePlaybackMutation` at line 159 dispatches the action via `s.playback.HandlePlaybackAction(ctx, req)`; `buildPlaybackBannerData` at line 335 fetches the provider's view via `s.playback.PlaybackView(ctx)`, then composes the remaining banner-specific fields (`QuickCastTabs`, `OutputVolume`, `ReadOnly`, `PollTrigger`, `Title`/`Subtitle`/`SourceDisplay` overrides) locally exactly as today. `buildPlaybackBannerData` itself is called from **four** places (`handlePlaybackBanner`, `handlePlaybackVolume`, `renderPlaybackMessage`, `shellDataForPath`); none of those four callers change — only the function's internals do. HTML response shape for `/ui/playback/*` is preserved byte-identically (same `renderPlaybackMessage` writes the same banner partial); `internal/ui/playback_test.go` stays green without modification.
@@ -82,7 +82,7 @@ Spec 4 (visualizer mode) shipped before this spec writes its plan, and it establ
 - `internal/chassis/data.go` — `ReceiverPageData` gains a `Transport TransportData` field, replacing the existing `Transport TransportData` struct shipped in Phase 0. The Phase-0 struct had `PlayState string`, `ElapsedTime string`, `TotalTime string`, `PercentPlayed string`, `SeekFillPercent int`. The new struct **renames `PlayState` → `State`**, **adds** `OffsetMS int`, `DurationMS int`, `ActionsEnabled ActionsEnabled`, `AdapterRef string`, `Generation uint64`, and **changes the idle placeholders** from `"--:--"` / `"---"` to empty strings (the templates render empty strings as the segmented display's ghost-only state, which matches the desired idle visual). `idleSnapshot()` is updated to the new values.
 - `internal/chassis/chassis_test.go` — the existing Phase-0 `TestIdleSnapshot_*` fixtures assert the old `PlayState` / `"--:--"` / `"---"` values; update those assertions to the new field names and empty-string placeholders. Add new template assertions for the `data-transport-*` hooks (see Testing section).
 - `internal/chassis/events.go` — `transportEnvelope` type; `transportEnvelopeFrom(TransportData)` flattener; `transportChanged(a, b TransportData) bool` field-by-field diff. `handleEvents` diff loop emits `transport` events on change.
-- `internal/chassis/events_test.go` — existing Spec 2 tests that count events on initial connect (e.g. `TestHandleEvents_EmitsInitialSnapshotOnConnect`, `TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE`) update to expect three events (`state`, `vfd`, `transport`) instead of two.
+- `internal/chassis/events_test.go` — existing Spec 2/4 tests that count events on initial connect (e.g. `TestHandleEvents_EmitsInitialSnapshotOnConnect`, `TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE`) update to expect four events (`state`, `vfd`, `visualizer`, `transport`) instead of the current three.
 - `internal/chassis/session.go` — `snapshotFromSession` now calls `SessionViewer.StatusHomeView()` once and passes the resulting snapshot to `TransportViewer.PlaybackViewForSnapshot(ctx, snap)` (see Locking discussion below — the for-snapshot variant skips re-acquiring `Manager.mu`). Maps adapter view + core state into `TransportData`.
 - `internal/chassis/templates/transport.html` — replaces inline icon glyphs on the pause button with two `data-state-icon` spans; adds `data-transport-state`, `data-transport-action`, `data-transport-seek*`, `data-transport-elapsed`, `data-transport-total`, `data-transport-percent`, raw `data-transport-offset-ms` / `data-transport-duration-ms`, and `{{if not ...}}disabled{{end}}` markup.
 - `internal/chassis/templates/shell.html` — adds `<script defer src="/receiver/static/transport.js?v={{.Version}}">` after `vfd-live.js`. Adds `<meta name="chassis-adapter-ref" content="{{.Transport.AdapterRef}}">` and `<meta name="chassis-generation" content="{{.Transport.Generation}}">` to `<head>` so the client knows the initial generation without waiting for the first SSE event.
@@ -100,13 +100,14 @@ import (
     "context"
 
     "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+    "github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // TransportViewer is the narrow read-only view of bridge playback state.
-// *playback.Dispatcher satisfies this structurally via its PlaybackView method.
+// *playback.Dispatcher satisfies this structurally via its PlaybackViewForSnapshot method.
 // Tests inject fakes; production wires the shared dispatcher.
 type TransportViewer interface {
-    PlaybackView(ctx context.Context) (adapters.PlaybackBannerAdapterView, bool)
+    PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool)
 }
 
 // TransportController is the narrow write surface for playback actions.
@@ -175,7 +176,7 @@ Package-boundary invariant: `internal/core` does not import `internal/adapters` 
 
 Locking invariant: neither dispatcher method holds `core.Manager.mu` across the provider call. `StatusHomeView()` snapshots under the manager's internal lock and returns a value copy; the dispatcher validates `adapter_ref + generation` against that snapshot before lookup, then dispatches. Providers remain the final stale-session authority and must revalidate under their own locks or core's guarded helpers. This preserves the existing invariant that `Manager.mu` is never held across provider work.
 
-Provider-view contract: `PlaybackBanner(ctx, snap)` must be state-cache-only and non-blocking. It may take adapter-local locks briefly, but must not perform fresh network I/O. The 250 ms chassis cache refresher calls `PlaybackView(ctx)` on every tick; adapters that need remote state must keep a cached view updated elsewhere.
+Provider-view contract: `PlaybackBanner(ctx, snap)` must be state-cache-only and non-blocking. It may take adapter-local locks briefly, but must not perform fresh network I/O. The 250 ms chassis cache refresher calls `PlaybackViewForSnapshot(ctx, snap)` on every tick; adapters that need remote state must keep a cached view updated elsewhere.
 
 ### Sentinel errors: `ErrActiveSessionChanged` and `ErrPlaybackActionUnsupported`
 
@@ -185,17 +186,18 @@ The existing `internal/adapters/playback.go` exports `ErrActiveSessionChangedMes
 // internal/adapters/playback.go
 var (
     ErrActiveSessionChanged      = errors.New(ErrActiveSessionChangedMessage)
-    ErrPlaybackActionUnsupported = errors.New("active adapter does not support playback action")
+    ErrPlaybackActionUnsupported = errors.New("active adapter does not expose playback controls")
 )
 ```
 
 `Dispatcher.HandlePlaybackAction` returns:
 - `ErrActiveSessionChanged` when the caller's `adapter_ref + generation` doesn't match the active session (chassis maps to 409; `/ui` renders the existing inline error).
-- `ErrPlaybackActionUnsupported` (possibly wrapped) when the active adapter has no `PlaybackControlProvider` registered or the provider rejects the action verb (chassis maps to 422; `/ui` renders an inline error).
+- `ErrPlaybackActionUnsupported` when the active adapter has no `PlaybackControlProvider` registered. This path preserves `/ui`'s existing exact message string: `"active adapter does not expose playback controls"`.
+- An error that matches `ErrPlaybackActionUnsupported` when the provider rejects the action verb (chassis maps to 422; `/ui` renders the provider's existing inline message).
 
 Both consumers use `errors.Is(err, sentinel)` to detect. Provider-emitted errors that don't match either sentinel bubble through unchanged (chassis maps to 500).
 
-Provider migration requirement: existing playback providers that currently return `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` must switch to returning or wrapping `adapters.ErrActiveSessionChanged`. Unsupported verbs should return or wrap `ErrPlaybackActionUnsupported` instead of a plain `"unknown playback action"` error. The dispatcher includes a narrow compatibility normalizer for the exact legacy active-session message so a missed provider still maps to 409, but tests should assert providers use the sentinel directly.
+Provider migration requirement: existing playback providers that currently return `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` must switch to returning or wrapping `adapters.ErrActiveSessionChanged`. Unsupported verbs must return errors that satisfy `errors.Is(err, adapters.ErrPlaybackActionUnsupported)` while preserving the provider's current `Error()` text for `/ui` banner compatibility. Use a tiny typed wrapper or helper if `%w` would append sentinel text to an existing user-facing message. The dispatcher includes a narrow compatibility normalizer for the exact legacy active-session message so a missed provider still maps to 409, but tests should assert providers use the sentinel directly.
 
 ### `ReceiverPageData.Transport` and `TransportData`
 
@@ -232,7 +234,7 @@ Six explicit bools (not a map) so the diff is six trivial comparisons and the wi
 `snapshotFromSession` is extended to populate `Transport`. The mapping pipeline:
 
 1. `SessionViewer.StatusHomeView()` → `core.State`, `Position`, `Duration`, `AdapterRef`, `Generation`, etc.
-2. `TransportViewer.PlaybackView(ctx)` → `adapters.PlaybackBannerAdapterView` with `Actions []PlaybackAction` and `Seek *PlaybackSeek`.
+2. `TransportViewer.PlaybackViewForSnapshot(ctx, snap)` → `adapters.PlaybackBannerAdapterView` with `Actions []PlaybackAction` and `Seek *PlaybackSeek`.
 3. Compose:
    - `Transport.State`: from `core.State` via the mapping table below. Idle → "stopped"; playing → "playing"; paused → "paused".
    - `Transport.AdapterRef`, `Transport.Generation`: from `StatusHomeView`.
@@ -243,7 +245,7 @@ Six explicit bools (not a map) so the diff is six trivial comparisons and the wi
    - `Transport.OffsetMS`, `Transport.DurationMS`: prefer `PlaybackSeek.OffsetMS` / `DurationMS` when the provider supplies `Seek`; otherwise derive from `StatusHomeView.Position` / `Duration`. Clamp negative values to zero. These raw fields are what `transport.js` uses for seek math; the formatted display strings are never parsed.
    - `Transport.ActionsEnabled`: derived from the adapter view's Actions and Seek. See "Actions enabled derivation" below.
 
-If `TransportViewer` is nil or `PlaybackView` returns `(_, false)`, the chassis still renders a valid Transport from `StatusHomeView`: state, elapsed time, total time, percent, offset, duration, adapter ref, and generation remain accurate for active read-only casts; only all six `ActionsEnabled` flags become false. If `SessionViewer` itself is nil, the chassis falls back to idle transport (`state="stopped"`, blank time fields, zero raw milliseconds, no adapter ref/generation), matching Spec 2's idle-only precedent.
+If `TransportViewer` is nil or `PlaybackViewForSnapshot` returns `(_, false)`, the chassis still renders a valid Transport from `StatusHomeView`: state, elapsed time, total time, percent, offset, duration, adapter ref, and generation remain accurate for active read-only casts; only all six `ActionsEnabled` flags become false. If `SessionViewer` itself is nil, the chassis falls back to idle transport (`state="stopped"`, blank time fields, zero raw milliseconds, no adapter ref/generation), matching Spec 2's idle-only precedent.
 
 ### `core.State` → `Transport.State` mapping
 
@@ -297,17 +299,18 @@ func transportChanged(a, b TransportData) bool {
 
 The Spec 2 snapshot cache (`Server.cache *snapshotCache`) already holds a full `ReceiverPageData`. Spec 3 extends `snapshotFromSession` to populate the new `Transport` field; the cache refresher's tick body is unchanged. Per-tick work is now one `Manager.StatusHomeView()` call plus one `Dispatcher.PlaybackViewForSnapshot(ctx, snap)` call. The for-snapshot variant deliberately accepts the caller's already-acquired snapshot so the per-tick `Manager.mu` acquisition count stays at exactly **one** — 4 Hz total regardless of connected-tab count, matching Spec 2's invariant. POST handlers, which don't have a fresh snapshot in hand, use the regular `Dispatcher.PlaybackView(ctx)` / `Dispatcher.HandlePlaybackAction(ctx, req)` variants that snapshot internally; those add per-click `Manager.mu` acquisitions on the order of user input (a handful per second worst case), well below the 4 Hz baseline.
 
-`handleEvents` initial-snapshot block extends to a third emit:
+`handleEvents` initial-snapshot block extends the current Spec 4 sequence with a fourth emit:
 
 ```go
 last := s.cache.Get()
 if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil { return }
 if err := emit(w, "vfd", vfdEnvelopeFrom(last.VFD)); err != nil { return }
+if err := emit(w, "visualizer", vizEnvelope{Mode: last.Visualizer.ActiveMode}); err != nil { return }
 if err := emit(w, "transport", transportEnvelopeFrom(last.Transport)); err != nil { return }
 flusher.Flush()
 ```
 
-The diff loop gains a third `if` block:
+The diff loop gains a transport `if` block after the existing state, VFD, and visualizer checks:
 
 ```go
 if transportChanged(curr.Transport, last.Transport) {
@@ -334,7 +337,7 @@ data: {"state":"stopped","seekFillPercent":0,"elapsedTime":"","totalTime":"","pe
 
 ### Initial-snapshot sequence
 
-Extends Spec 2's sequence by one record:
+Extends Spec 4's current sequence by one record:
 
 ```
 retry: 3000
@@ -345,12 +348,15 @@ data: {"state":"<current>"}
 event: vfd
 data: {...}
 
+event: visualizer
+data: {...}
+
 event: transport
 data: {...}
 
 ```
 
-The trailing blank line terminates the third record. SSE parsing on the client (`EventSource`) handles all three events with distinct listeners.
+The trailing blank line terminates the fourth record. SSE parsing on the client (`EventSource`) handles all four events with distinct listeners.
 
 ### Envelope struct (Go)
 
@@ -443,7 +449,7 @@ The seek route sets `action = "seek"` server-side; client never passes it.
 
 Success: `204 No Content` with no body. The SSE `transport` event arrives within ~250 ms and is the canonical signal of state change.
 
-Error: `{"error": "<message>"}` via Spec 4's existing `writeJSONError(w, status, msg)` helper. `Content-Type: application/json` (no charset, matching Spec 4). `Cache-Control: no-store` on all responses.
+Error: `{"error": "<message>"}` via Spec 4's existing `writeJSONError(w, status, msg)` helper. `Content-Type: application/json` (no charset, matching Spec 4). `Cache-Control: no-store` on all transport responses; set it before success writes and on error paths, including same-origin guard failures.
 
 ### HTTP status mapping
 
@@ -461,6 +467,7 @@ Error: `{"error": "<message>"}` via Spec 4's existing `writeJSONError(w, status,
 
 ```go
 _, err := s.transport.HandlePlaybackAction(r.Context(), req)
+w.Header().Set("Cache-Control", "no-store")
 switch {
 case err == nil:
     w.WriteHeader(http.StatusNoContent)
@@ -577,16 +584,18 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
 (() => {
   'use strict';
 
-  if (!window.Chassis || !window.Chassis.events) {
-    console.warn('transport: window.Chassis.events missing; vfd-live.js failed to load?');
+  if (!window.Chassis) {
+    console.warn('transport: window.Chassis missing; chassis.js failed to load?');
     return;
   }
+  window.Chassis.events = window.Chassis.events || {};
 
   let adapterRef = '';
   let generation = 0;
   let transportState = 'stopped';
   let offsetMs = 0;
   let durationMs = 0;
+  let source = null;
 
   // Read initial state from meta tags so first click works even if
   // the SSE stream hasn't delivered a transport event yet.
@@ -642,6 +651,7 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
     try {
       const res = await fetch(url, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams(params).toString(),
       });
@@ -714,8 +724,13 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
       const offset_ms = Math.round((p / 100) * rawDuration);
       postForm('/receiver/transport/seek', { adapter_ref: adapterRef, generation, offset_ms });
     }
+    function cancel() {
+      if (!dragging) return;
+      dragging = false;
+      seekBar.removeAttribute('data-seek-interacting');
+    }
     seekBar.addEventListener('pointerup', release);
-    seekBar.addEventListener('pointercancel', release);
+    seekBar.addEventListener('pointercancel', cancel);
   }
 
   function boot() {
@@ -733,8 +748,10 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
     // attach-then-listen pattern as visualizer-bank.js. See
     // "EventSource fan-out" below.
     function attachSource(src) {
-      if (!src) return;
-      src.addEventListener('transport', handleTransportEvent);
+      if (!src || src === source) return;
+      if (source) source.removeEventListener('transport', handleTransportEvent);
+      source = src;
+      source.addEventListener('transport', handleTransportEvent);
     }
     if (window.Chassis.events && window.Chassis.events.source) {
       attachSource(window.Chassis.events.source);
@@ -758,7 +775,7 @@ If the button is clicked while transport state is `stopped`, the JS click handle
 
 - `pointerdown` on `.seek-bar` (provided seek is enabled) sets `data-seek-interacting`. SSE seek-bar fill updates skip while this attribute is present.
 - `pointermove` while dragging updates the `.fill` width and `aria-valuenow` visually only (optimistic, no POST yet).
-- `pointerup` or `pointercancel` computes `offset_ms = (fill_percent / 100) * data-transport-duration-ms`, POSTs `/receiver/transport/seek`, and removes `data-seek-interacting`. The next SSE `transport` event ~250 ms later confirms. Formatted clock text is display-only and is never parsed for seek math.
+- `pointerup` computes `offset_ms = (fill_percent / 100) * data-transport-duration-ms`, POSTs `/receiver/transport/seek`, and removes `data-seek-interacting`. `pointercancel` only aborts the interaction and clears `data-seek-interacting`; it never dispatches a seek. The next SSE `transport` event ~250 ms later confirms. Formatted clock text is display-only and is never parsed for seek math.
 - If `actionsEnabled.seek = false` (no duration, adapter doesn't support, idle), the seek-bar has `data-transport-seek-disabled` attribute which the CSS turns into `pointer-events: none`.
 
 ### EventSource fan-out: one connection per tab
@@ -821,10 +838,12 @@ TestDispatcher_PlaybackProviderForSnapshot_LegacyRefScanFallback
 
 The provider-lookup-policy tests verify the source-first + legacy-fallback rules from the original `/ui/playback.go` carry over verbatim.
 
+Existing provider tests for URL, streams, and torrent update their stale-session assertions to use `errors.Is(err, adapters.ErrActiveSessionChanged)` and unsupported-action assertions to use `errors.Is(err, adapters.ErrPlaybackActionUnsupported)`, while preserving the existing `err.Error()` text that `/ui` renders into the now-playing banner.
+
 **`internal/chassis/transport_test.go`** (new file):
 
 ```
-TestHandleTransportAction_RejectsNonPOST                 # 405
+TestTransportRoutes_RejectNonPOSTViaMux                  # 405 from method-aware mux
 TestHandleTransportAction_RejectsMalformedForm           # 400 on missing fields
 TestHandleTransportAction_RejectsSeekActionOnActionRoute # 400
 TestHandleTransportAction_RejectsZeroGeneration          # 400
@@ -864,7 +883,7 @@ TestHandleEvents_EmitsTransportEventOnConnect                 # initial snapshot
 TestHandleEvents_EmitsTransportEventOnStateTransition         # playing↔paused
 TestHandleEvents_EmitsTransportEventOnSeekFillPercentChange
 # Update existing Spec 2 tests that count events on initial connect:
-TestHandleEvents_EmitsInitialSnapshotOnConnect                # now expects 3 events, not 2
+TestHandleEvents_EmitsInitialSnapshotOnConnect                # now expects 4 events: state, vfd, visualizer, transport
 TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE            # populated cache includes Transport
 ```
 
