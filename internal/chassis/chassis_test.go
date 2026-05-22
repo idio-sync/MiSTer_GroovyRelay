@@ -948,10 +948,43 @@ func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 	cfg := nonZeroConfig()
 	cfg.Session = nil
 
-	got := snapshotFromSession(cfg, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestSnapshotFromSession_VisualizerModeOverridesIdleDefault(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	got := snapshotFromSession(cfg, nil, viewer, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (viewer overrides cfg.Bridge default)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
+	}
+}
+
+func TestSnapshotFromSession_NilVisualizerViewerFallsBackToCfg(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	got := snapshotFromSession(cfg, nil, nil, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (nil viewer falls back to cfg.Bridge)", got.Visualizer.ActiveMode, config.VisualizerModeOscilloscopeWave)
+	}
+}
+
+func TestSnapshotFromSession_NormalizesEmptyMode(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	viewer := &fakeVisualizerViewer{mode: ""}
+	got := snapshotFromSession(cfg, nil, viewer, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (empty viewer mode should normalize to retro_analyzer)", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
 	}
 }
 
@@ -976,7 +1009,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 		Position: 4*time.Minute + 23*time.Second,
 		Duration: 9*time.Minute + 56*time.Second,
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
@@ -992,6 +1025,23 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromSession_LiveStateOverridesIdleDefaults_StillSetsVisualizer(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "First Day on MTV", Source: "plex", Position: 4*time.Minute + 23*time.Second, Duration: 9*time.Minute + 56*time.Second,
+	}}
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	got := snapshotFromSession(cfg, sv, viewer, fixedNow)
+	if got.State != StateLive {
+		t.Errorf("State = %q, want %q", got.State, StateLive)
+	}
+	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (live state still applies viz override)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
+	}
+}
+
 func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
@@ -1000,7 +1050,7 @@ func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.StatePaused, Title: "Take On Me", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 
 	// core.StatePaused -> chassis "live" so the body stays bright
 	// during transport pause. The transport-row pause indicator is
@@ -1016,7 +1066,7 @@ func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
 	cfg := nonZeroConfig()
 
 	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idle-from-session should match idleSnapshot exactly")
@@ -1031,7 +1081,7 @@ func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
@@ -1050,7 +1100,7 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 		Position: 30 * time.Second,
 		Duration: 3 * time.Minute,
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 
 	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
 		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)

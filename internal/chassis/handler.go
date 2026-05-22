@@ -20,7 +20,7 @@ func init() {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data := snapshotFromSession(s.cfg, s.session, time.Now())
+	data := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, time.Now())
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, "shell.html", data); err != nil {
 		http.Error(w, "template execute failed", http.StatusInternalServerError)

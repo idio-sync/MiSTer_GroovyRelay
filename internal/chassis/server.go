@@ -88,7 +88,7 @@ func New(cfg Config) (*Server, error) {
 	// sees a coherent snapshot — no zero-value VFD or stale state.
 	// New deliberately does NOT start a goroutine: unmounted servers
 	// (test ergonomics, offline-friendly modes) leak no background work.
-	s.cache.Set(snapshotFromSession(s.cfg, s.session, time.Now()))
+	s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, time.Now()))
 	return s, nil
 }
 
@@ -118,7 +118,7 @@ func (s *Server) startSnapshotRefresher() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.cache.Set(snapshotFromSession(s.cfg, s.session, time.Now()))
+				s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, time.Now()))
 			}
 		}
 	}()
