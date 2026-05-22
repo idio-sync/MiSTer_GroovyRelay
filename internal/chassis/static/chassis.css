@@ -2187,6 +2187,16 @@ body.receiver .viz-bank .viz-btn {
   position: relative;
 }
 
+body.receiver .viz-btn {
+  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease;
+}
+
+body.receiver .viz-btn.pressed {
+  transform: translateY(1px);
+  filter: brightness(1.18);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.55), 0 0 8px var(--vfd-glow-soft);
+}
+
 body.receiver .viz-bank .viz-btn::before {
   content: "";
   position: absolute;

@@ -447,6 +447,23 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_VisualizerPressedStateScoped(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(css)
+	for _, want := range []string{
+		`body.receiver .viz-btn {`,
+		`body.receiver .viz-btn.pressed {`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("chassis.css missing visualizer pressed-state selector %q", want)
+		}
+	}
+}
+
 func TestChassisJS_RuntimeContracts(t *testing.T) {
 	t.Parallel()
 	js, err := chassisStaticFS.ReadFile("static/chassis.js")
@@ -492,6 +509,26 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 	} {
 		if strings.Contains(text, unwanted) {
 			t.Errorf("static/chassis.js contains obsolete runtime contract %q", unwanted)
+		}
+	}
+}
+
+func TestVisualizerBankJS_RuntimeContracts(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/visualizer-bank.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/visualizer-bank.js): %v", err)
+	}
+	text := string(js)
+	for _, want := range []string{
+		"window.Chassis",
+		"chassis:eventsource",
+		"/receiver/visualizer",
+		"data-viz",
+		"viz-btn--preview",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("static/visualizer-bank.js missing runtime contract %q", want)
 		}
 	}
 }
@@ -1204,6 +1241,30 @@ func TestShellTemplate_LoadsVfdLiveScript(t *testing.T) {
 	}
 	if vfdIdx <= chassisIdx {
 		t.Errorf("vfd-live.js script must appear AFTER chassis.js so the deferred load order initializes window.Chassis first")
+	}
+}
+
+func TestShellTemplate_LoadsVisualizerBankScriptAfterVfdLive(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `/receiver/static/visualizer-bank.js?v=test-1.0.0`) {
+		t.Errorf("shell.html should include versioned visualizer-bank.js script tag")
+	}
+	vfdIdx := strings.Index(body, "vfd-live.js?v=")
+	vizIdx := strings.Index(body, "visualizer-bank.js?v=")
+	if vfdIdx < 0 || vizIdx < 0 {
+		t.Fatalf("missing one of the script tags")
+	}
+	if vizIdx <= vfdIdx {
+		t.Errorf("visualizer-bank.js script must appear AFTER vfd-live.js so it can use the shared EventSource")
 	}
 }
 
