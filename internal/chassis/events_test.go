@@ -346,3 +346,42 @@ func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
 		t.Errorf("missing transition-to-live state event in body:\n%s", body)
 	}
 }
+
+func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
+	t.Parallel()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "First Track", Source: "plex",
+	}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mount starts the shared snapshot-cache refresher once Task 13 lands;
+	// before that it is harmless and keeps this test linearly valid.
+	s.Mount(http.NewServeMux())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		sv.set(core.StatusHomeView{
+			State: core.StatePlaying, Title: "Second Track", Source: "plex",
+		})
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"title":"First Track"`) {
+		t.Errorf("missing initial title event:\n%s", body)
+	}
+	if !strings.Contains(body, `"title":"Second Track"`) {
+		t.Errorf("missing title-change vfd event:\n%s", body)
+	}
+}

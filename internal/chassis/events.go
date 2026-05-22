@@ -120,6 +120,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				}
 				last.State = curr.State
 			}
+			if vfdChanged(curr.VFD, last.VFD) {
+				if err := emit(w, "vfd", vfdEnvelopeFrom(curr.VFD)); err != nil {
+					return
+				}
+				last.VFD = curr.VFD
+			}
 			flusher.Flush()
 		}
 	}
