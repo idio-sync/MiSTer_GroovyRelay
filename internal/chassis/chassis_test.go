@@ -1,6 +1,7 @@
 package chassis
 
 import (
+	"bytes"
 	"html/template"
 	"mime"
 	"net/http"
@@ -1001,6 +1002,43 @@ func TestHandleIndex_RendersLiveStateFromSession(t *testing.T) {
 	}
 	if !strings.Contains(body, "PLEX · 00:08 / 04:01") {
 		t.Errorf("body missing live marquee")
+	}
+}
+
+func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	var buf bytes.Buffer
+	data := VFDData{
+		Title:        "TEST-TITLE",
+		Marquee:      "TEST-MARQUEE",
+		QueueCurrent: 1,
+		QueueTotal:   12,
+		SystemTime:   "22:47",
+		Uptime:       "4H 12M",
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "vfd", data); err != nil {
+		t.Fatalf("execute vfd partial: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{
+		"data-vfd-title",
+		"data-vfd-marquee",
+		"data-vfd-queue",
+		"data-vfd-uptime",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vfd partial missing %q hook; full output:\n%s", want, body)
+		}
+	}
+	// Ghost overlays must still be present — regression guard against
+	// accidentally placing data-vfd-* on the outer divs and breaking
+	// the seg-text/seg-ghost overlay vocabulary.
+	if !strings.Contains(body, "seg-ghost") {
+		t.Errorf("vfd partial is missing seg-ghost spans; overlay vocabulary broken")
 	}
 }
 
