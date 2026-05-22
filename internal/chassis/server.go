@@ -31,6 +31,7 @@ type Config struct {
 // Server owns the chassis runtime state.
 type Server struct {
 	cfg      Config
+	session  SessionViewer
 	tmpl     *template.Template
 	cssBytes []byte // chassis.css with {{.Version}} substituted, cached
 }
@@ -55,7 +56,12 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, tmpl: tmpl, cssBytes: cssBytes}, nil
+	return &Server{
+		cfg:      cfg,
+		session:  cfg.Session,
+		tmpl:     tmpl,
+		cssBytes: cssBytes,
+	}, nil
 }
 
 // Mount registers chassis routes on mux.

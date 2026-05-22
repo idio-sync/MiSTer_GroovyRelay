@@ -969,6 +969,41 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_RendersLiveStateFromSession(t *testing.T) {
+	t.Parallel()
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:    core.StatePlaying,
+		Title:    "Burning Down the House",
+		Source:   "plex",
+		Position: 8 * time.Second,
+		Duration: 4*time.Minute + 1*time.Second,
+	}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="receiver live"`) {
+		t.Errorf("body missing live body class: %s", body[:min(200, len(body))])
+	}
+	if !strings.Contains(body, "Burning Down the House") {
+		t.Errorf("body missing live title")
+	}
+	if !strings.Contains(body, "PLEX · 00:08 / 04:01") {
+		t.Errorf("body missing live marquee")
+	}
+}
+
 func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
