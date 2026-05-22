@@ -1107,3 +1107,28 @@ func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleStatic_VfdLiveJSServed(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET vfd-live.js status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") && !strings.HasPrefix(got, "application/javascript") {
+		t.Errorf("Content-Type = %q, want text/javascript or application/javascript", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "window.Chassis.events") {
+		t.Errorf("served vfd-live.js doesn't contain window.Chassis.events namespace export")
+	}
+}
