@@ -2,7 +2,9 @@ package chassis
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
@@ -45,4 +47,33 @@ func writeJSONErrorWithMode(w http.ResponseWriter, status int, msg, mode string)
 	w.WriteHeader(status)
 	body, _ := json.Marshal(map[string]string{"error": msg, "mode": mode})
 	_, _ = w.Write(body)
+}
+
+func (s *Server) handleVisualizerPost(w http.ResponseWriter, r *http.Request) {
+	if s.visualizerSaver == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "visualizer save not configured")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "malformed form body")
+		return
+	}
+
+	mode := strings.TrimSpace(r.PostFormValue("mode"))
+	if mode == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing mode field")
+		return
+	}
+	if !isSupportedVisualizerMode(mode) {
+		writeJSONErrorWithMode(w, http.StatusBadRequest, "unsupported visualizer mode", mode)
+		return
+	}
+
+	if err := s.visualizerSaver.SaveVisualizerMode(mode); err != nil {
+		log.Printf("chassis: visualizer save failed: mode=%q err=%v", mode, err)
+		writeJSONError(w, http.StatusInternalServerError, "internal save failure")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
