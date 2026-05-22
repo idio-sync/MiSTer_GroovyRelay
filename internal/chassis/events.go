@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -148,3 +149,25 @@ var chassisTickInterval = 250 * time.Millisecond
 // `: heartbeat` SSE comments to defeat reverse-proxy idle timeouts.
 // Production default 30s; tests override.
 var chassisHeartbeatInterval = 30 * time.Second
+
+// snapshotCache holds the most recent ReceiverPageData read from
+// SessionViewer. New seeds it synchronously; Mount starts a single
+// background goroutine that refreshes it every chassisTickInterval.
+// All connected SSE handlers read via Get (RLock), so Manager.mu
+// pressure is decoupled from tab count.
+type snapshotCache struct {
+	mu   sync.RWMutex
+	data ReceiverPageData
+}
+
+func (c *snapshotCache) Get() ReceiverPageData {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data
+}
+
+func (c *snapshotCache) Set(d ReceiverPageData) {
+	c.mu.Lock()
+	c.data = d
+	c.mu.Unlock()
+}

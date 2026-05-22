@@ -316,6 +316,7 @@ func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
 	// Task 13 makes Mount start the shared snapshot-cache refresher that
 	// Task 14's handleEvents path reads. Task 13 also adds Close cleanup.
 	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -359,6 +360,7 @@ func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	// Mount starts the shared snapshot-cache refresher once Task 13 lands;
 	// before that it is harmless and keeps this test linearly valid.
 	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -471,6 +473,7 @@ func TestHandleEvents_MultipleConcurrentConnections(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	s.Mount(http.NewServeMux()) // starts the shared cache refresher after Task 13
+	t.Cleanup(func() { _ = s.Close() })
 
 	const n = 5
 	bodies := make([]*flushRecorder, n)
@@ -514,6 +517,7 @@ func TestMount_RegistersEventsRoute(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
@@ -529,5 +533,90 @@ func TestMount_RegistersEventsRoute(t *testing.T) {
 	}
 	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+}
+
+// countingViewer wraps a SessionViewer and counts StatusHomeView calls.
+// Used by snapshot-cache tests to assert call cadence.
+type countingViewer struct {
+	mu    sync.Mutex
+	calls int
+	view  core.StatusHomeView
+}
+
+func (c *countingViewer) StatusHomeView() core.StatusHomeView {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.view
+}
+
+func (c *countingViewer) Calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE(t *testing.T) {
+	t.Parallel()
+	// A New-only server (no Mount) should already have a valid cached
+	// snapshot reflecting the live SessionViewer state — proving the
+	// seed call in New happens synchronously and the first SSE
+	// connection cannot emit a zero-value or stale "vfd" frame.
+	cv := &countingViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "Live Title", Source: "plex",
+	}}
+	cfg := nonZeroConfig()
+	cfg.Session = cv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Do NOT call Mount; we're proving the seed is synchronous in New.
+	if cv.Calls() < 1 {
+		t.Fatalf("StatusHomeView not called during New; want >= 1 (synchronous seed)")
+	}
+	snap := s.cache.Get()
+	if snap.State != StateLive {
+		t.Errorf("cached snapshot State = %q, want %q (the live SessionViewer)", snap.State, StateLive)
+	}
+	if snap.VFD.Title != "Live Title" {
+		t.Errorf("cached snapshot VFD.Title = %q, want %q", snap.VFD.Title, "Live Title")
+	}
+}
+
+func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
+	t.Parallel()
+	cv := &countingViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = cv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	// Let the refresher tick a few times.
+	time.Sleep(350 * time.Millisecond)
+	preClose := cv.Calls()
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Subsequent ticks (if the goroutine hadn't actually stopped) would
+	// increment the call counter; pin down by sleeping > 3 intervals.
+	time.Sleep(400 * time.Millisecond)
+	postClose := cv.Calls()
+
+	// Allow at most one in-flight tick to land between Close and the
+	// goroutine actually returning.
+	if delta := postClose - preClose; delta > 1 {
+		t.Errorf("StatusHomeView calls after Close: pre=%d post=%d (delta %d); refresher did not stop", preClose, postClose, delta)
+	}
+
+	// Idempotence: calling Close twice must not panic or block.
+	if err := s.Close(); err != nil {
+		t.Errorf("second Close returned error: %v (want nil; Close must be idempotent)", err)
 	}
 }
