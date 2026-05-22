@@ -66,7 +66,7 @@ func TestVfdChanged_DetectsEveryFieldDelta(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
+		name   string
 		mutate func(*VFDData)
 	}{
 		{"title", func(v *VFDData) { v.Title = "Live Title" }},
@@ -134,9 +134,9 @@ type nonFlushableWriter struct {
 	status  int
 }
 
-func (n *nonFlushableWriter) Header() http.Header        { return n.headers }
+func (n *nonFlushableWriter) Header() http.Header         { return n.headers }
 func (n *nonFlushableWriter) Write(b []byte) (int, error) { return n.body.Write(b) }
-func (n *nonFlushableWriter) WriteHeader(s int)          { n.status = s }
+func (n *nonFlushableWriter) WriteHeader(s int)           { n.status = s }
 
 func TestHandleEvents_RejectsNonFlushableResponseWriter(t *testing.T) {
 	t.Parallel()
@@ -232,6 +232,40 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	}
 	if !strings.Contains(body, `"title":"STANDBY"`) {
 		t.Errorf("body missing STANDBY title payload")
+	}
+}
+
+func TestHandleEvents_RefreshesInitialSnapshotBeforeEmitting(t *testing.T) {
+	t.Parallel()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sv.set(core.StatusHomeView{
+		State: core.StatePlaying, Title: "Fresh Title", Source: "plex",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"state":"live"`) {
+		t.Errorf("initial SSE snapshot should refresh to live before emitting; body:\n%s", body)
+	}
+	if !strings.Contains(body, `"title":"Fresh Title"`) {
+		t.Errorf("initial SSE VFD payload should include fresh title; body:\n%s", body)
+	}
+	if strings.Contains(body, `"title":"STANDBY"`) {
+		t.Errorf("initial SSE VFD payload used stale cached idle snapshot; body:\n%s", body)
 	}
 }
 

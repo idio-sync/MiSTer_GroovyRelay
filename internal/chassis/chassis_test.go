@@ -442,6 +442,7 @@ func TestHandleStatic_JS_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.js", nil)
 	rr := httptest.NewRecorder()
 
@@ -700,6 +701,7 @@ func TestHandleStatic_CSS_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 
@@ -721,6 +723,7 @@ func TestHandleStatic_CSS_VersionedFontURLs(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 
@@ -743,6 +746,7 @@ func TestHandleStatic_Fonts_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 
 	for _, font := range []string{
 		"DSEG7Classic-Regular.woff2",
@@ -781,6 +785,7 @@ func TestHandleStatic_LICENSE_Served(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/fonts/LICENSE", nil)
 	rr := httptest.NewRecorder()
 
@@ -808,6 +813,7 @@ func TestHandleStatic_UnknownAsset404(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/nonexistent.css", nil)
 	rr := httptest.NewRecorder()
 
@@ -823,6 +829,7 @@ func TestHandleStatic_PathTraversalBlocked(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/../config.toml", nil)
 	rr := httptest.NewRecorder()
 
@@ -838,6 +845,7 @@ func TestMount_TrailingSlashIndex(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
 
 	for _, path := range []string{"/receiver", "/receiver/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -944,6 +952,21 @@ func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idle-from-session should match idleSnapshot exactly")
+	}
+}
+
+func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
+	}}
+	got := snapshotFromSession(cfg, sv, fixedNow)
+	want := idleSnapshot(cfg, fixedNow)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
 	}
 }
 

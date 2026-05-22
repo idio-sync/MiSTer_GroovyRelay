@@ -98,7 +98,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	last := s.cache.Get()
+	last := snapshotFromSession(s.cfg, s.session, time.Now())
+	s.cache.Set(last)
 	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
 		return
 	}

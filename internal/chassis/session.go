@@ -28,9 +28,10 @@ type SessionViewer interface {
 // surfaces real queue data on StatusHomeView.
 //
 // State mapping (per spec):
-//   core.StateIdle    -> chassis StateIdle ("idle")
-//   core.StatePlaying -> chassis StateLive ("live")
-//   core.StatePaused  -> chassis StateLive ("live")
+//
+//	core.StateIdle    -> chassis StateIdle ("idle")
+//	core.StatePlaying -> chassis StateLive ("live")
+//	core.StatePaused  -> chassis StateLive ("live")
 //
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
@@ -39,7 +40,10 @@ func snapshotFromSession(cfg Config, sv SessionViewer, now time.Time) ReceiverPa
 		return idleSnapshot(cfg, now)
 	}
 	view := sv.StatusHomeView()
-	if view.State == core.StateIdle {
+	switch view.State {
+	case core.StatePlaying, core.StatePaused:
+		// live mapping below
+	default:
 		return idleSnapshot(cfg, now)
 	}
 
@@ -57,11 +61,12 @@ func snapshotFromSession(cfg Config, sv SessionViewer, now time.Time) ReceiverPa
 // formatLiveMarquee composes the VFD marquee string for live state per
 // spec §"Field mapping": "<UPPER(Source)> · <position> / <duration>".
 // Examples:
-//   PLEX, 04:23, 09:56  → "PLEX · 04:23 / 09:56"
-//   PLEX, 04:23, 0      → "PLEX · 04:23 / --:--"   (unknown duration)
-//   plex, 0,      0     → "PLEX · 00:00 / --:--"   (start of unknown stream)
-//   "",   0,      0     → "BRIDGE · 00:00 / --:--" (empty source fallback)
-//   1h4m5s position with same duration → "PLEX · 1:04:05 / 1:04:05"
+//
+//	PLEX, 04:23, 09:56  → "PLEX · 04:23 / 09:56"
+//	PLEX, 04:23, 0      → "PLEX · 04:23 / --:--"   (unknown duration)
+//	plex, 0,      0     → "PLEX · 00:00 / --:--"   (start of unknown stream)
+//	"",   0,      0     → "BRIDGE · 00:00 / --:--" (empty source fallback)
+//	1h4m5s position with same duration → "PLEX · 1:04:05 / 1:04:05"
 //
 // Source fallback is "BRIDGE" (NOT "PLAYING") per spec §"Field mapping".
 func formatLiveMarquee(view core.StatusHomeView) string {
