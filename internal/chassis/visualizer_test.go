@@ -218,6 +218,90 @@ func TestHandleVisualizerPost_RapidSequentialClicksPreserveOrder(t *testing.T) {
 	}
 }
 
+func TestMount_VisualizerPostBlocksCrossSiteAndDoesNotSave(t *testing.T) {
+	t.Parallel()
+	saver := &fakeVisualizerSaver{}
+	cfg := nonZeroConfig()
+	cfg.VisualizerSaver = saver
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(url.Values{
+		"mode": {config.VisualizerModeStereoScope},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	assertJSONError(t, w, http.StatusForbidden, "cross-site request blocked")
+	if got := saver.calls(); len(got) != 0 {
+		t.Fatalf("saver calls = %#v, want none", got)
+	}
+}
+
+func TestMount_VisualizerPostSameOriginSavesMode(t *testing.T) {
+	t.Parallel()
+	saver := &fakeVisualizerSaver{}
+	cfg := nonZeroConfig()
+	cfg.VisualizerSaver = saver
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(url.Values{
+		"mode": {config.VisualizerModeStereoScope},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if got, want := saver.calls(), []string{config.VisualizerModeStereoScope}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("saved modes = %#v, want %#v", got, want)
+	}
+}
+
+func TestMount_VisualizerGetReturnsMethodNotAllowed(t *testing.T) {
+	t.Parallel()
+	saver := &fakeVisualizerSaver{}
+	cfg := nonZeroConfig()
+	cfg.VisualizerSaver = saver
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver/visualizer", nil)
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusMethodNotAllowed, w.Body.String())
+	}
+	if got := saver.calls(); len(got) != 0 {
+		t.Fatalf("saver calls = %#v, want none", got)
+	}
+}
+
 func postVisualizerMode(t *testing.T, s *Server, mode string) *httptest.ResponseRecorder {
 	t.Helper()
 	body := url.Values{"mode": {mode}}.Encode()
