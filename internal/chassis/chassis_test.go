@@ -874,6 +874,15 @@ func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
 	}
 }
 
+func TestVisualizerViewer_ManagerSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+	// Compile-time + runtime assertion that *core.Manager satisfies
+	// the chassis VisualizerViewer interface via its VisualizerMode()
+	// method. Catches regressions where Manager's signature changes
+	// without the chassis side noticing.
+	var _ VisualizerViewer = (*core.Manager)(nil)
+}
+
 func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
