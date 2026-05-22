@@ -192,6 +192,31 @@ func TestManager_InitialStatusIdle(t *testing.T) {
 	}
 }
 
+func TestManager_VisualizerMode_ReturnsLiveBridgeMode(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	// testBridgeConfig intentionally omits Visualizer.Mode, so the initial value is the zero string.
+	// UpdateBridge is the path the saver uses to refresh; this test asserts VisualizerMode reads through it.
+	b := testBridgeConfig(t)
+	b.Visualizer.Mode = config.VisualizerModeStereoScope
+	m.UpdateBridge(b)
+
+	if got := m.VisualizerMode(); got != config.VisualizerModeStereoScope {
+		t.Errorf("VisualizerMode() = %q, want %q", got, config.VisualizerModeStereoScope)
+	}
+}
+
+func TestManager_VisualizerMode_ReturnsEmptyBeforeUpdateBridge(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	// testBridgeConfig omits Visualizer.Mode, so newTestManager constructs the Manager with an empty mode.
+	// The getter returns whatever is in m.bridge with no defaulting: that is saver/UI responsibility, not core's.
+	if got := m.VisualizerMode(); got != "" {
+		t.Errorf("VisualizerMode() = %q, want empty (testBridgeConfig leaves field unset)", got)
+	}
+}
+
 func TestProbeDuration_ConvertsSecondsToDuration(t *testing.T) {
 	got := probeDuration(&ffmpeg.ProbeResult{Duration: 12.345})
 	want := 12345 * time.Millisecond

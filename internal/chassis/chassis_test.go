@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,44 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+type fakeVisualizerViewer struct {
+	mu   sync.Mutex
+	mode string
+}
+
+func (f *fakeVisualizerViewer) VisualizerMode() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mode
+}
+
+func (f *fakeVisualizerViewer) set(mode string) {
+	f.mu.Lock()
+	f.mode = mode
+	f.mu.Unlock()
+}
+
+type fakeVisualizerSaver struct {
+	mu    sync.Mutex
+	saved []string
+	err   error
+}
+
+func (f *fakeVisualizerSaver) SaveVisualizerMode(mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved = append(f.saved, mode)
+	return f.err
+}
+
+func (f *fakeVisualizerSaver) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.saved))
+	copy(out, f.saved)
+	return out
+}
 
 // nonZeroConfig returns a Config valid enough for New(). Tests that
 // want to assert error paths shadow individual fields with zero values.
@@ -46,6 +85,26 @@ func TestNew_ReturnsServerWithValidConfig(t *testing.T) {
 	}
 	if s == nil {
 		t.Fatal("New returned nil Server with no error")
+	}
+}
+
+func TestServer_StoresVisualizerViewerAndSaverFromConfig(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	saver := &fakeVisualizerSaver{}
+	cfg.VisualizerViewer = viewer
+	cfg.VisualizerSaver = saver
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.visualizerViewer != viewer {
+		t.Errorf("Server.visualizerViewer not stored from Config")
+	}
+	if s.visualizerSaver != saver {
+		t.Errorf("Server.visualizerSaver not stored from Config")
 	}
 }
 
@@ -388,6 +447,23 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_VisualizerPressedStateScoped(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(css)
+	for _, want := range []string{
+		`body.receiver .viz-btn {`,
+		`body.receiver .viz-btn.pressed {`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("chassis.css missing visualizer pressed-state selector %q", want)
+		}
+	}
+}
+
 func TestChassisJS_RuntimeContracts(t *testing.T) {
 	t.Parallel()
 	js, err := chassisStaticFS.ReadFile("static/chassis.js")
@@ -433,6 +509,29 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 	} {
 		if strings.Contains(text, unwanted) {
 			t.Errorf("static/chassis.js contains obsolete runtime contract %q", unwanted)
+		}
+	}
+}
+
+func TestVisualizerBankJS_RuntimeContracts(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/visualizer-bank.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/visualizer-bank.js): %v", err)
+	}
+	text := string(js)
+	for _, want := range []string{
+		"window.Chassis",
+		"chassis:eventsource",
+		"/receiver/visualizer",
+		"data-viz",
+		"viz-btn--preview",
+		"queuedMode",
+		"res.status !== 204",
+		"visualizer-bank: save failed",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("static/visualizer-bank.js missing runtime contract %q", want)
 		}
 	}
 }
@@ -874,16 +973,58 @@ func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
 	}
 }
 
+func TestVisualizerViewer_ManagerSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+	// Compile-time + runtime assertion that *core.Manager satisfies
+	// the chassis VisualizerViewer interface via its VisualizerMode()
+	// method. Catches regressions where Manager's signature changes
+	// without the chassis side noticing.
+	var _ VisualizerViewer = (*core.Manager)(nil)
+}
+
 func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	cfg.Session = nil
 
-	got := snapshotFromSession(cfg, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestSnapshotFromSession_VisualizerModeOverridesIdleDefault(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	got := snapshotFromSession(cfg, nil, viewer, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (viewer overrides cfg.Bridge default)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
+	}
+}
+
+func TestSnapshotFromSession_NilVisualizerViewerFallsBackToCfg(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
+	got := snapshotFromSession(cfg, nil, nil, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (nil viewer falls back to cfg.Bridge)", got.Visualizer.ActiveMode, config.VisualizerModeOscilloscopeWave)
+	}
+}
+
+func TestSnapshotFromSession_NormalizesEmptyMode(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	viewer := &fakeVisualizerViewer{mode: ""}
+	got := snapshotFromSession(cfg, nil, viewer, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (empty viewer mode should normalize to retro_analyzer)", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
 	}
 }
 
@@ -908,7 +1049,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 		Position: 4*time.Minute + 23*time.Second,
 		Duration: 9*time.Minute + 56*time.Second,
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
@@ -924,6 +1065,23 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromSession_LiveStateOverridesIdleDefaults_StillSetsVisualizer(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "First Day on MTV", Source: "plex", Position: 4*time.Minute + 23*time.Second, Duration: 9*time.Minute + 56*time.Second,
+	}}
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	got := snapshotFromSession(cfg, sv, viewer, fixedNow)
+	if got.State != StateLive {
+		t.Errorf("State = %q, want %q", got.State, StateLive)
+	}
+	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q (live state still applies viz override)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
+	}
+}
+
 func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
@@ -932,7 +1090,7 @@ func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.StatePaused, Title: "Take On Me", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 
 	// core.StatePaused -> chassis "live" so the body stays bright
 	// during transport pause. The transport-row pause indicator is
@@ -948,7 +1106,7 @@ func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
 	cfg := nonZeroConfig()
 
 	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idle-from-session should match idleSnapshot exactly")
@@ -963,7 +1121,7 @@ func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
@@ -982,7 +1140,7 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 		Position: 30 * time.Second,
 		Duration: 3 * time.Minute,
 	}}
-	got := snapshotFromSession(cfg, sv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, fixedNow)
 
 	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
 		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)
@@ -1089,6 +1247,30 @@ func TestShellTemplate_LoadsVfdLiveScript(t *testing.T) {
 	}
 }
 
+func TestShellTemplate_LoadsVisualizerBankScriptAfterVfdLive(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `/receiver/static/visualizer-bank.js?v=test-1.0.0`) {
+		t.Errorf("shell.html should include versioned visualizer-bank.js script tag")
+	}
+	vfdIdx := strings.Index(body, "vfd-live.js?v=")
+	vizIdx := strings.Index(body, "visualizer-bank.js?v=")
+	if vfdIdx < 0 || vizIdx < 0 {
+		t.Fatalf("missing one of the script tags")
+	}
+	if vizIdx <= vfdIdx {
+		t.Errorf("visualizer-bank.js script must appear AFTER vfd-live.js so it can use the shared EventSource")
+	}
+}
+
 func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1153,5 +1335,24 @@ func TestHandleStatic_VfdLiveJSServed(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "window.Chassis.events") {
 		t.Errorf("served vfd-live.js doesn't contain window.Chassis.events namespace export")
+	}
+}
+
+func TestVfdLive_ExposesEventSourceReference_StaticAssetCheck(t *testing.T) {
+	t.Parallel()
+	bytes, err := chassisStaticFS.ReadFile("static/vfd-live.js")
+	if err != nil {
+		t.Fatalf("read vfd-live.js: %v", err)
+	}
+	js := string(bytes)
+	for _, want := range []string{
+		"window.Chassis.events.source = source",
+		"chassis:eventsource",
+		"detail: { source }",
+		"new EventSource",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("vfd-live.js missing %q", want)
+		}
 	}
 }

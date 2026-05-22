@@ -28,6 +28,14 @@ type Config struct {
 	// snapshot then sits silent. *core.Manager satisfies the interface
 	// structurally; main.go wires that.
 	Session SessionViewer
+
+	// VisualizerViewer is the optional read-only visualizer-mode source.
+	// When nil, chassis falls back to config/default mode data.
+	VisualizerViewer VisualizerViewer
+	// VisualizerSaver is the optional persistence hook for mode changes.
+	// When nil, chassis can render mode state but later change handlers
+	// should operate in read-only mode.
+	VisualizerSaver VisualizerSaver
 }
 
 // Server owns the chassis runtime state.
@@ -36,6 +44,9 @@ type Server struct {
 	session  SessionViewer
 	tmpl     *template.Template
 	cssBytes []byte
+
+	visualizerViewer VisualizerViewer
+	visualizerSaver  VisualizerSaver
 
 	cache       *snapshotCache
 	cacheOnce   sync.Once          // Mount starts the refresher exactly once
@@ -64,18 +75,20 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:       cfg,
-		session:   cfg.Session,
-		tmpl:      tmpl,
-		cssBytes:  cssBytes,
-		cache:     &snapshotCache{},
-		cacheDone: make(chan struct{}),
+		cfg:              cfg,
+		session:          cfg.Session,
+		tmpl:             tmpl,
+		cssBytes:         cssBytes,
+		visualizerViewer: cfg.VisualizerViewer,
+		visualizerSaver:  cfg.VisualizerSaver,
+		cache:            &snapshotCache{},
+		cacheDone:        make(chan struct{}),
 	}
 	// Seed the cache synchronously so the first SSE connection always
 	// sees a coherent snapshot — no zero-value VFD or stale state.
 	// New deliberately does NOT start a goroutine: unmounted servers
 	// (test ergonomics, offline-friendly modes) leak no background work.
-	s.cache.Set(snapshotFromSession(s.cfg, s.session, time.Now()))
+	s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, time.Now()))
 	return s, nil
 }
 
@@ -87,6 +100,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /receiver/{$}", s.handleIndex)
 	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
 	mux.HandleFunc("GET /receiver/events", s.handleEvents)
+	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 
@@ -105,7 +119,7 @@ func (s *Server) startSnapshotRefresher() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.cache.Set(snapshotFromSession(s.cfg, s.session, time.Now()))
+				s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, time.Now()))
 			}
 		}
 	}()

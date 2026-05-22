@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -25,7 +26,8 @@ type SessionViewer interface {
 // session state. When sv is nil OR the bridge is idle, falls back to
 // idleSnapshot. When live (playing or paused), overrides VFD title +
 // marquee + State; queue stays 0/0 placeholder until a later spec
-// surfaces real queue data on StatusHomeView.
+// surfaces real queue data on StatusHomeView. Visualizer mode is always
+// sourced from vv when available, falling back to cfg.
 //
 // State mapping (per spec):
 //
@@ -35,27 +37,32 @@ type SessionViewer interface {
 //
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
-func snapshotFromSession(cfg Config, sv SessionViewer, now time.Time) ReceiverPageData {
-	if sv == nil {
-		return idleSnapshot(cfg, now)
-	}
-	view := sv.StatusHomeView()
-	switch view.State {
-	case core.StatePlaying, core.StatePaused:
-		// live mapping below
-	default:
-		return idleSnapshot(cfg, now)
-	}
-
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, now time.Time) ReceiverPageData {
 	base := idleSnapshot(cfg, now)
-	base.State = StateLive
-	base.VFD.State = string(StateLive)
-	base.VFD.Title = view.Title
-	base.VFD.Marquee = formatLiveMarquee(view)
-	// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
-	// SystemTime + Uptime are computed in idleSnapshot from `now` and
-	// cfg.StartedAt; they remain valid in live state.
+	if sv != nil {
+		view := sv.StatusHomeView()
+		switch view.State {
+		case core.StatePlaying, core.StatePaused:
+			base.State = StateLive
+			base.VFD.State = string(StateLive)
+			base.VFD.Title = view.Title
+			base.VFD.Marquee = formatLiveMarquee(view)
+			// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
+			// SystemTime + Uptime are computed in idleSnapshot from `now` and
+			// cfg.StartedAt; they remain valid in live state.
+		default:
+			// idle/unknown keep idleSnapshot data
+		}
+	}
+	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 	return base
+}
+
+func liveVisualizerMode(cfg Config, vv VisualizerViewer) string {
+	if vv == nil {
+		return defaultVisualizerMode(cfg)
+	}
+	return config.NormalizeVisualizerMode(vv.VisualizerMode())
 }
 
 // formatLiveMarquee composes the VFD marquee string for live state per

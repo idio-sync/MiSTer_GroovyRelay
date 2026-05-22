@@ -121,9 +121,10 @@ The settings UI labels whether a saved field applies live, restarts the current 
 Open `http://<host>:32500/` after the bridge starts. The UI lets you:
 
 > **Preview UI:** A new receiver-chassis-styled UI is being built at
-> `/receiver` in parallel with `/ui`. It currently renders an idle-state
-> preview with no live data -- Phases 1-5 wire functionality in. License
-> attributions for the bundled fonts: `/receiver/static/fonts/LICENSE`.
+> `/receiver` in parallel with `/ui`. It now carries live VFD updates and
+> visualizer-mode controls while later phases add transport controls,
+> telemetry, and settings polish. License attributions for the bundled fonts:
+> `/receiver/static/fonts/LICENSE`.
 
 - Link Plex and Jellyfin accounts.
 - Enable or disable adapters.
@@ -155,6 +156,18 @@ DLNA controller findings live in [docs/dlna-compatibility.md](docs/dlna-compatib
 | Field shimmer | Flip `interlace_field_order` | Settings UI |
 | Plex reports target offline after cast | Fixed `source_port` and no port conflict | [Operations](docs/operations.md) |
 | DLNA renderer missing or uncontrollable | `bridge.host_ip`, UDP 1900, trusted LAN only | [DLNA adapter](docs/dlna.md) |
+
+Scripted POSTs to local UI endpoints need the same-origin fetch header that
+the browser sends. For example, to change the receiver visualizer mode:
+
+```bash
+curl -i -X POST http://localhost:32500/receiver/visualizer \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  --data 'mode=stereo_scope'
+```
+
+Omitting `Sec-Fetch-Site: same-origin` returns 403.
 
 ## License
 

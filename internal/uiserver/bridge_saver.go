@@ -150,6 +150,20 @@ func (r *BridgeSaver) SaveOutputVolume(volume int) (adapters.ApplyScope, error) 
 	return r.saveLocked(next)
 }
 
+// SaveVisualizerMode atomically persists only bridge.visualizer.mode
+// against the latest in-memory bridge snapshot. Mirrors the
+// SaveOutputVolume pattern so concurrent saves of other fields don't
+// race against the in-memory current() snapshot. Returns the applied
+// scope (ScopeNextCast when the mode changes unless a future
+// scopeForBridgeField update changes it) and any validation/write error.
+func (r *BridgeSaver) SaveVisualizerMode(mode string) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.sec.Bridge
+	next.Visualizer.Mode = mode
+	return r.saveLocked(next)
+}
+
 func (r *BridgeSaver) saveLocked(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
 	candidate := &config.Sectioned{Bridge: newCfg}
 	if err := candidate.Validate(); err != nil {

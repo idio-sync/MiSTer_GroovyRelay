@@ -377,6 +377,74 @@ func TestBridgeSaver_SaveOutputVolumePreservesLatestBridgeFields(t *testing.T) {
 	}
 }
 
+func TestBridgeSaver_SaveVisualizerMode_PersistsAndReturnsScope(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	path := testConfigPath(t)
+	s := NewBridgeSaver(path, &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	scope, err := s.SaveVisualizerMode(config.VisualizerModeStereoScope)
+	if err != nil {
+		t.Fatalf("SaveVisualizerMode: %v", err)
+	}
+	if scope != adapters.ScopeNextCast {
+		t.Errorf("scope = %v, want ScopeNextCast", scope)
+	}
+
+	if got := s.Current().Visualizer.Mode; got != config.VisualizerModeStereoScope {
+		t.Errorf("Current().Visualizer.Mode = %q, want %q", got, config.VisualizerModeStereoScope)
+	}
+	if got := core.updated.Visualizer.Mode; got != config.VisualizerModeStereoScope {
+		t.Errorf("core.updated.Visualizer.Mode = %q, want %q", got, config.VisualizerModeStereoScope)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), `mode = "stereo_scope"`) {
+		t.Errorf("config.toml does not contain new mode; content:\n%s", string(raw))
+	}
+}
+
+func TestBridgeSaver_SaveVisualizerMode_PreservesLatestBridgeFields(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	path := testConfigPath(t)
+	s := NewBridgeSaver(path, &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	s.sec.Bridge.MiSTer.Host = "198.51.100.9"
+
+	if _, err := s.SaveVisualizerMode(config.VisualizerModeOscilloscopeWave); err != nil {
+		t.Fatalf("SaveVisualizerMode: %v", err)
+	}
+
+	if got := s.Current().MiSTer.Host; got != "198.51.100.9" {
+		t.Errorf("MiSTer.Host = %q, want preserved 198.51.100.9", got)
+	}
+	if got := s.Current().Visualizer.Mode; got != config.VisualizerModeOscilloscopeWave {
+		t.Errorf("Visualizer.Mode = %q, want oscilloscope_wave", got)
+	}
+}
+
+func TestBridgeSaver_SaveVisualizerMode_RejectsUnsupportedMode(t *testing.T) {
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	path := testConfigPath(t)
+	s := NewBridgeSaver(path, &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+
+	_, err := s.SaveVisualizerMode("radial_spectrum")
+	if err == nil {
+		t.Fatal("expected error for unsupported mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "bridge.visualizer.mode must be one of") {
+		t.Errorf("error = %q, want it to contain validate-prose substring", err.Error())
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "radial_spectrum") {
+		t.Errorf("config.toml unexpectedly contains rejected mode:\n%s", string(raw))
+	}
+}
+
 func TestBridgeSaver_VisualizerModePersistsVisualizerTable(t *testing.T) {
 	core := &fakeBridgeCore{}
 	old := testBridgeConfig(t, "NTSC_480i")

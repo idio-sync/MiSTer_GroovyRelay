@@ -6,9 +6,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +23,9 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
 func TestReceiverEndToEnd(t *testing.T) {
@@ -321,6 +327,237 @@ type fakeIntegrationSession struct {
 }
 
 func (f *fakeIntegrationSession) StatusHomeView() core.StatusHomeView { return f.view }
+
+type chassisVisualizerSaver struct {
+	bs *uiserver.BridgeSaver
+}
+
+func (s *chassisVisualizerSaver) SaveVisualizerMode(mode string) error {
+	_, err := s.bs.SaveVisualizerMode(mode)
+	return err
+}
+
+type visualizerEvent struct {
+	mode string
+	err  error
+}
+
+func streamVisualizerEvents(r io.Reader) <-chan visualizerEvent {
+	events := make(chan visualizerEvent, 8)
+	go func() {
+		defer close(events)
+		scanner := bufio.NewScanner(r)
+		var name, data string
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				data = strings.TrimPrefix(line, "data: ")
+			case line == "":
+				if name == "visualizer" {
+					var env struct {
+						Mode string `json:"mode"`
+					}
+					if err := json.Unmarshal([]byte(data), &env); err != nil {
+						events <- visualizerEvent{err: err}
+						return
+					}
+					events <- visualizerEvent{mode: env.Mode}
+				}
+				name, data = "", ""
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			events <- visualizerEvent{err: err}
+		}
+	}()
+	return events
+}
+
+func nextVisualizerMode(t *testing.T, events <-chan visualizerEvent, timeout time.Duration) string {
+	t.Helper()
+	select {
+	case ev, ok := <-events:
+		if !ok {
+			t.Fatal("SSE stream closed before visualizer event arrived")
+		}
+		if ev.err != nil {
+			t.Fatalf("read visualizer event: %v", ev.err)
+		}
+		return ev.mode
+	case <-time.After(timeout):
+		t.Fatalf("no visualizer event within %v", timeout)
+		return ""
+	}
+}
+
+func newChassisVisualizerIntegrationServer(t *testing.T) (*httptest.Server, *core.Manager, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfgBody := fmt.Sprintf(testChassisVisualizerConfig, filepath.ToSlash(dir))
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	sec, err := config.LoadSectioned(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	sender, err := groovynet.NewSender("127.0.0.1", 0, 0)
+	if err != nil {
+		t.Fatalf("groovynet.NewSender: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+
+	mgr := core.NewManager(sec.Bridge, sender)
+	reg := adapters.NewRegistry()
+	saver := uiserver.NewBridgeSaver(cfgPath, sec, mgr, reg)
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:           sec.Bridge,
+		Manager:          mgr,
+		Registry:         reg,
+		Version:          "integration-test",
+		StartedAt:        time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC),
+		HostIP:           "127.0.0.1",
+		Session:          mgr,
+		VisualizerViewer: mgr,
+		VisualizerSaver:  &chassisVisualizerSaver{bs: saver},
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	t.Cleanup(func() { _ = chassisSrv.Close() })
+	mux := http.NewServeMux()
+	chassisSrv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, mgr, dir
+}
+
+func TestReceiverVisualizer_EndToEnd_PostAndSSEEvent(t *testing.T) {
+	ts, mgr, dir := newChassisVisualizerIntegrationServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	sseResp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("open SSE: %v", err)
+	}
+	defer sseResp.Body.Close()
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status = %d, want 200", sseResp.StatusCode)
+	}
+	events := streamVisualizerEvents(sseResp.Body)
+	if got := nextVisualizerMode(t, events, 5*time.Second); got != config.VisualizerModeRetroAnalyzer {
+		t.Fatalf("initial visualizer mode = %q, want %q", got, config.VisualizerModeRetroAnalyzer)
+	}
+
+	postReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/receiver/visualizer", strings.NewReader("mode=stereo_scope"))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	postResp, err := ts.Client().Do(postReq)
+	if err != nil {
+		t.Fatalf("POST visualizer: %v", err)
+	}
+	_ = postResp.Body.Close()
+	if postResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST status = %d, want 204", postResp.StatusCode)
+	}
+	if got := nextVisualizerMode(t, events, 5*time.Second); got != config.VisualizerModeStereoScope {
+		t.Fatalf("post-save visualizer mode = %q, want %q", got, config.VisualizerModeStereoScope)
+	}
+	if got := mgr.VisualizerMode(); got != config.VisualizerModeStereoScope {
+		t.Fatalf("Manager.VisualizerMode() = %q, want %q", got, config.VisualizerModeStereoScope)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if !strings.Contains(string(raw), `mode = "stereo_scope"`) {
+		t.Fatalf("config.toml missing saved mode:\n%s", raw)
+	}
+}
+
+func TestReceiverVisualizer_BlocksCrossSitePost(t *testing.T) {
+	ts, mgr, _ := newChassisVisualizerIntegrationServer(t)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/receiver/visualizer", strings.NewReader("mode=stereo_scope"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST visualizer: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 403; body=%s", resp.StatusCode, body)
+	}
+	if got := mgr.VisualizerMode(); got != config.VisualizerModeRetroAnalyzer {
+		t.Fatalf("Manager.VisualizerMode() = %q, want %q", got, config.VisualizerModeRetroAnalyzer)
+	}
+}
+
+func TestReceiverVisualizer_PreviewModeRejected(t *testing.T) {
+	ts, _, _ := newChassisVisualizerIntegrationServer(t)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/receiver/visualizer", strings.NewReader("mode=radial_spectrum"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST visualizer: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"mode":"radial_spectrum"`) {
+		t.Fatalf("body should echo rejected mode; got %s", body)
+	}
+}
+
+func TestReceiverVisualizer_GetReturns405(t *testing.T) {
+	ts, _, _ := newChassisVisualizerIntegrationServer(t)
+	resp, err := ts.Client().Get(ts.URL + "/receiver/visualizer")
+	if err != nil {
+		t.Fatalf("GET visualizer: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 405; body=%s", resp.StatusCode, body)
+	}
+}
+
+const testChassisVisualizerConfig = `
+[bridge]
+data_dir = "%s"
+
+[bridge.video]
+modeline = "NTSC_480i"
+interlace_field_order = "tff"
+aspect_mode = "auto"
+rgb_mode = "rgb888"
+lz4_enabled = true
+
+[bridge.audio]
+sample_rate = 48000
+channels = 2
+output_volume = 100
+
+[bridge.mister]
+host = "127.0.0.1"
+port = 32100
+source_port = 32101
+
+[bridge.ui]
+http_port = 32500
+
+[bridge.visualizer]
+mode = "retro_analyzer"
+`
 
 func TestReceiverEvents_DoesNotShadowUIRoutes(t *testing.T) {
 	mux := http.NewServeMux()

@@ -51,15 +51,24 @@
     source.addEventListener('error', () => {
       console.info('vfd-live: stream interrupted; browser will retry using the SSE retry directive');
     });
+
+    if (!window.Chassis.events) {
+      window.Chassis.events = {};
+    }
+    window.Chassis.events.source = source;
+    document.dispatchEvent(new CustomEvent('chassis:eventsource', {
+      detail: { source },
+    }));
   }
 
   // Expose for the ?dev=1 toggle and integration debugging.
-  window.Chassis.events = {
+  window.Chassis.events = window.Chassis.events || {};
+  Object.assign(window.Chassis.events, {
     reconnect() {
       if (source) source.close();
       connect();
     },
-  };
+  });
 
   document.addEventListener('DOMContentLoaded', connect);
 })();

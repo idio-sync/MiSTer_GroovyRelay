@@ -47,6 +47,15 @@ import (
 // -ldflags "-X main.version=...".
 var version = "1.0.0"
 
+type visualizerSaverAdapter struct {
+	bs *uiserver.BridgeSaver
+}
+
+func (a *visualizerSaverAdapter) SaveVisualizerMode(mode string) error {
+	_, err := a.bs.SaveVisualizerMode(mode)
+	return err
+}
+
 func main() {
 	startedAt := time.Now()
 	defaultCfg := defaultConfigForRuntime()
@@ -313,13 +322,15 @@ func main() {
 	uiSrv.Mount(mux)
 
 	chassisSrv, err := chassis.New(chassis.Config{
-		Bridge:    sec.Bridge,
-		Manager:   coreMgr,
-		Registry:  reg,
-		Version:   version,
-		StartedAt: startedAt,
-		HostIP:    hostIP,
-		Session:   coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
+		Bridge:           sec.Bridge,
+		Manager:          coreMgr,
+		Registry:         reg,
+		Version:          version,
+		StartedAt:        startedAt,
+		HostIP:           hostIP,
+		Session:          coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
+		VisualizerViewer: coreMgr,
+		VisualizerSaver:  &visualizerSaverAdapter{bs: saver},
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
