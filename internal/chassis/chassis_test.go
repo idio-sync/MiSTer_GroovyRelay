@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,44 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
+
+type fakeVisualizerViewer struct {
+	mu   sync.Mutex
+	mode string
+}
+
+func (f *fakeVisualizerViewer) VisualizerMode() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mode
+}
+
+func (f *fakeVisualizerViewer) set(mode string) {
+	f.mu.Lock()
+	f.mode = mode
+	f.mu.Unlock()
+}
+
+type fakeVisualizerSaver struct {
+	mu    sync.Mutex
+	saved []string
+	err   error
+}
+
+func (f *fakeVisualizerSaver) SaveVisualizerMode(mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved = append(f.saved, mode)
+	return f.err
+}
+
+func (f *fakeVisualizerSaver) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.saved))
+	copy(out, f.saved)
+	return out
+}
 
 // nonZeroConfig returns a Config valid enough for New(). Tests that
 // want to assert error paths shadow individual fields with zero values.
@@ -46,6 +85,26 @@ func TestNew_ReturnsServerWithValidConfig(t *testing.T) {
 	}
 	if s == nil {
 		t.Fatal("New returned nil Server with no error")
+	}
+}
+
+func TestServer_StoresVisualizerViewerAndSaverFromConfig(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
+	saver := &fakeVisualizerSaver{}
+	cfg.VisualizerViewer = viewer
+	cfg.VisualizerSaver = saver
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.visualizerViewer != viewer {
+		t.Errorf("Server.visualizerViewer not stored from Config")
+	}
+	if s.visualizerSaver != saver {
+		t.Errorf("Server.visualizerSaver not stored from Config")
 	}
 }
 
