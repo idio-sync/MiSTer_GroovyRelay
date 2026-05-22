@@ -2,8 +2,13 @@ package chassis
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestEmit_FormatsValidSSERecord(t *testing.T) {
@@ -89,5 +94,183 @@ func TestVfdChanged_IdenticalReturnsFalse(t *testing.T) {
 	v := VFDData{Title: "X", Marquee: "Y", QueueCurrent: 3, QueueTotal: 12, Uptime: "1H 2M"}
 	if vfdChanged(v, v) {
 		t.Errorf("vfdChanged should be false for identical inputs")
+	}
+}
+
+// flushRecorder is httptest.ResponseRecorder + a Flusher implementation
+// so SSE handlers can call w.(http.Flusher).Flush() without panic.
+// Tracks flushes for assertion.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushes int
+	mu      sync.Mutex
+}
+
+func newFlushRecorder() *flushRecorder {
+	return &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (f *flushRecorder) Flush() {
+	f.mu.Lock()
+	f.flushes++
+	f.mu.Unlock()
+}
+
+// nonFlushableWriter implements http.ResponseWriter but deliberately
+// does NOT satisfy http.Flusher. httptest.ResponseRecorder satisfies
+// Flusher in Go 1.20+, so we hand-roll a minimal writer to drive the
+// 500-on-non-flushable branch of handleEvents.
+type nonFlushableWriter struct {
+	headers http.Header
+	body    bytes.Buffer
+	status  int
+}
+
+func (n *nonFlushableWriter) Header() http.Header        { return n.headers }
+func (n *nonFlushableWriter) Write(b []byte) (int, error) { return n.body.Write(b) }
+func (n *nonFlushableWriter) WriteHeader(s int)          { n.status = s }
+
+func TestHandleEvents_RejectsNonFlushableResponseWriter(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	w := &nonFlushableWriter{headers: http.Header{}}
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil)
+	s.handleEvents(w, req)
+	if w.status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.status)
+	}
+}
+
+func TestHandleEvents_SetsCorrectHeaders(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	headers := w.Result().Header
+	if got := headers.Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+	if got := headers.Get("Cache-Control"); got != "no-cache, no-store, must-revalidate" {
+		t.Errorf("Cache-Control = %q, want no-cache, no-store, must-revalidate", got)
+	}
+	if got := headers.Get("Connection"); got != "keep-alive" {
+		t.Errorf("Connection = %q, want keep-alive", got)
+	}
+	if got := headers.Get("X-Accel-Buffering"); got != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want no", got)
+	}
+}
+
+func TestHandleEvents_EmitsRetryDirectiveOnConnect(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.HasPrefix(body, "retry: 3000\n\n") {
+		t.Errorf("body should start with retry: 3000 directive; got:\n%s",
+			body[:min(120, len(body))])
+	}
+}
+
+func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: state\n") {
+		t.Errorf("body missing initial state event:\n%s", body)
+	}
+	if !strings.Contains(body, `"state":"idle"`) {
+		t.Errorf("body missing idle state payload")
+	}
+	if !strings.Contains(body, "event: vfd\n") {
+		t.Errorf("body missing initial vfd event")
+	}
+	if !strings.Contains(body, `"title":"STANDBY"`) {
+		t.Errorf("body missing STANDBY title payload")
+	}
+}
+
+func TestHandleEvents_NilSessionStreamsIdleOnly(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.session != nil {
+		t.Fatalf("expected nil session by default (nonZeroConfig does not set Session); got %v", s.session)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"state":"idle"`) {
+		t.Errorf("nil session should still emit initial idle snapshot; body:\n%s", body)
+	}
+}
+
+func TestHandleEvents_TerminatesOnClientDisconnect(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		s.handleEvents(w, req)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+		// handler returned
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleEvents did not return within 200ms of context cancel")
 	}
 }

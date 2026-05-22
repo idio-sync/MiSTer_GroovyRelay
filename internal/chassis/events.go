@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"time"
 )
 
 // stateEnvelope is the payload for the `state` SSE event. Explicit
@@ -68,4 +70,43 @@ func vfdChanged(a, b VFDData) bool {
 		a.QueueCurrent != b.QueueCurrent ||
 		a.QueueTotal != b.QueueTotal ||
 		a.Uptime != b.Uptime
+}
+
+// handleEvents serves a long-lived SSE stream at GET /receiver/events.
+// Scaffolding only — the diff ticker that emits change events lands
+// in the next task. This implementation handles:
+//   - 500 when the ResponseWriter cannot flush
+//   - SSE response headers
+//   - retry: 3000 directive (pins browser reconnect cadence)
+//   - initial state + vfd snapshot
+//   - clean termination on r.Context().Done()
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+
+	if _, err := io.WriteString(w, "retry: 3000\n\n"); err != nil {
+		return
+	}
+
+	last := snapshotFromSession(s.cfg, s.session, time.Now())
+	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
+		return
+	}
+	if err := emit(w, "vfd", vfdEnvelopeFrom(last.VFD)); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	// Diff loop lands in Task 8. For now block until disconnect so the
+	// stream stays open per the handler contract.
+	<-r.Context().Done()
 }
