@@ -849,3 +849,18 @@ func TestMount_TrailingSlashIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+	// Compile-time and runtime assertion that *core.Manager satisfies
+	// the chassis SessionViewer interface. Catches regressions where
+	// core.Manager.StatusHomeView() changes signature without the
+	// chassis side noticing.
+	var _ SessionViewer = (*core.Manager)(nil)
+
+	cfg := nonZeroConfig()
+	cfg.Session = cfg.Manager
+	if cfg.Session == nil {
+		t.Fatal("expected non-nil Session after assignment from Manager")
+	}
+}

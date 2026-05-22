@@ -19,6 +19,13 @@ type Config struct {
 	Version   string
 	StartedAt time.Time
 	HostIP    string
+
+	// Session is the read-only session-state source for live VFD
+	// rendering and SSE events. Optional: when nil, the chassis renders
+	// idle-only and the /receiver/events stream emits the initial idle
+	// snapshot then sits silent. *core.Manager satisfies the interface
+	// structurally; main.go wires that.
+	Session SessionViewer
 }
 
 // Server owns the chassis runtime state.
