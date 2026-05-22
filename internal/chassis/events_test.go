@@ -14,11 +14,8 @@ import (
 )
 
 func init() {
-	// Shorten diff ticker for tests so transition detection completes
-	// quickly. This assignment happens before any tests run, so no test
-	// mutates package-level timing vars at runtime (race-safe under
-	// go test -race).
 	chassisTickInterval = 100 * time.Millisecond
+	chassisHeartbeatInterval = 50 * time.Millisecond
 }
 
 func TestEmit_FormatsValidSSERecord(t *testing.T) {
@@ -383,5 +380,36 @@ func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	}
 	if !strings.Contains(body, `"title":"Second Track"`) {
 		t.Errorf("missing title-change vfd event:\n%s", body)
+	}
+}
+
+// chassisHeartbeatInterval is a package-level var for the same reason
+// chassisTickInterval is — tests shorten it once during package init to
+// keep the suite fast without runtime races.
+//
+// We assert heartbeat by leaving the handler running for 3x the
+// (shortened) interval and counting `: heartbeat\n\n` occurrences.
+
+func TestHandleEvents_EmitsHeartbeatComments(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(180 * time.Millisecond) // > 3x heartbeat
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	count := strings.Count(w.Body.String(), ": heartbeat\n\n")
+	if count < 2 {
+		t.Errorf("expected at least 2 heartbeat comments after ~180ms with 50ms interval, got %d. body:\n%s",
+			count, w.Body.String())
 	}
 }

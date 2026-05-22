@@ -108,6 +108,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	tick := time.NewTicker(chassisTickInterval)
 	defer tick.Stop()
+	heartbeat := time.NewTicker(chassisHeartbeatInterval)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
@@ -127,6 +129,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				last.VFD = curr.VFD
 			}
 			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }
@@ -136,3 +143,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // production behaviour. Production default 250 ms; tests override to
 // 100 ms (still slow enough to be reliable on busy CI workers).
 var chassisTickInterval = 250 * time.Millisecond
+
+// chassisHeartbeatInterval is the cadence at which the handler emits
+// `: heartbeat` SSE comments to defeat reverse-proxy idle timeouts.
+// Production default 30s; tests override.
+var chassisHeartbeatInterval = 30 * time.Second
