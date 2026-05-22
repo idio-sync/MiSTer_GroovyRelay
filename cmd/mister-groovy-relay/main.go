@@ -319,10 +319,16 @@ func main() {
 		Version:   version,
 		StartedAt: startedAt,
 		HostIP:    hostIP,
+		Session:   coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
 	}
+	defer func() {
+		if err := chassisSrv.Close(); err != nil {
+			slog.Warn("chassis close", "err", err)
+		}
+	}()
 	chassisSrv.Mount(mux)
 
 	addr := fmt.Sprintf(":%d", sec.Bridge.UI.HTTPPort)
