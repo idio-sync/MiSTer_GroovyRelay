@@ -850,6 +850,22 @@ func TestTransportTemplate_RendersDataAttributeHooks(t *testing.T) {
 	if !replayDisabled.MatchString(body) {
 		t.Fatalf("replay button should be disabled when ActionsEnabled.Replay=false; full output:\n%s", body)
 	}
+
+	for name, pattern := range map[string]string{
+		"previous":    `(?s)<button[^>]*data-transport-action="previous"[^>]*aria-label="Previous"[^>]*title="Previous"[^>]*>`,
+		"next":        `(?s)<button[^>]*data-transport-action="next"[^>]*aria-label="Next"[^>]*title="Next"[^>]*>`,
+		"pauseResume": `(?s)<button[^>]*data-transport-action="pauseResume"[^>]*aria-label="Pause or resume"[^>]*title="Pause / Resume"[^>]*>.*data-state-icon="playing".*data-state-icon="paused".*</button>`,
+		"stop":        `(?s)<button[^>]*data-transport-action="stop"[^>]*aria-label="Stop"[^>]*title="Stop"[^>]*>`,
+		"replay":      `(?s)<button[^>]*data-transport-action="replay"[^>]*disabled[^>]*aria-label="Replay"[^>]*title="Replay"[^>]*>`,
+	} {
+		if !regexp.MustCompile(pattern).MatchString(body) {
+			t.Errorf("transport %s button missing expected attributes on one element; full output:\n%s", name, body)
+		}
+	}
+	seekBar := regexp.MustCompile(`(?s)<div[^>]*class="seek-bar"[^>]*data-transport-seek[^>]*data-transport-offset-ms="263000"[^>]*data-transport-duration-ms="596000"[^>]*aria-valuenow="44"[^>]*aria-disabled="false"[^>]*>`)
+	if !seekBar.MatchString(body) {
+		t.Errorf("transport seek bar missing expected attributes on one element; full output:\n%s", body)
+	}
 }
 
 func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
