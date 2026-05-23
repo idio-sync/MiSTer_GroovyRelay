@@ -13,7 +13,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - YouTube/Twitch/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.); public live `.m3u8` casts use the HLS buffer by default.
-- Torrent streaming (uploaded .torrent files and magnet links)
+- Torrent streaming (magnet links, uploaded `.torrent` files, and HTTP(S) `.torrent` URLs)
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming channels
 
@@ -113,7 +113,7 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | Jellyfin | Jellyfin cast picker | On after linking | Link through the settings UI. |
 | URL | Global Cast drawer or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
 | Streams | Bundled catalog entries | On | Includes Toonami Aftermath and other bundled channels. |
-| Torrent | Global Cast drawer magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
+| Torrent | Global Cast drawer magnet link, `.torrent` upload, or HTTP(S) `.torrent` URL | Off | Requires explicit traffic acknowledgement. Remote torrent URLs are public HTTP(S) only. See [docs/torrent.md](docs/torrent.md). |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
 
 ## Settings UI
