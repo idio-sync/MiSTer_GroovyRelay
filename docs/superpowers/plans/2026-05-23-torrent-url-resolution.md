@@ -6,7 +6,7 @@
 
 **Architecture:** First extract the existing hardened Streams fetcher/address classifier into `internal/sourcefetch` so Torrent, Streams, and DLNA/HLS share one guarded fetch/address policy. Then add Torrent URL fetch and quick-cast wiring on top of that shared package, preserving magnet/upload behavior and the existing Torrent traffic gates.
 
-**Tech Stack:** Go stdlib (`net/http`, `net/netip`, `crypto/tls`, `mime`, `io`), existing adapter registry/quick-cast interfaces, `github.com/anacrolix/torrent`, existing Go unit tests.
+**Tech Stack:** Go stdlib (`net/http`, `net/netip`, `crypto/tls`, `mime`, `io`), existing `golang.org/x/net/idna` dependency for hostname canonicalization, existing adapter registry/quick-cast interfaces, `github.com/anacrolix/torrent`, existing Go unit tests.
 
 ---
 
@@ -73,14 +73,6 @@ Create `internal/sourcefetch/fetch_test.go` with this initial content:
 package sourcefetch
 
 import (
-	"context"
-	"crypto/tls"
-	"errors"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"testing"
@@ -243,6 +235,24 @@ Expected: PASS.
 
 - [ ] **Step 5: Add failing guarded fetcher tests**
 
+First replace the import block in `internal/sourcefetch/fetch_test.go` with:
+
+```go
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"strings"
+	"testing"
+)
+```
+
 Append these tests and helpers to `internal/sourcefetch/fetch_test.go`:
 
 ```go
@@ -283,8 +293,79 @@ func TestFetcherDoesNotHonorEnvironmentProxy(t *testing.T) {
 	}
 }
 
-func TestFetcherPinsTLSNameAndDialsValidatedIP(t *testing.T) {
-	dialer, transport := newPinnedFetchServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestValidateTargetHonorsAllowedSchemes(t *testing.T) {
+	f := Fetcher{Resolver: staticResolver{"media.example": []string{"93.184.216.34"}}}
+	if _, err := f.ValidateTarget(context.Background(), mustURL(t, "http://media.example/file.torrent"), "", Limits{
+		AllowedSchemes: []string{"http", "https"},
+	}); err != nil {
+		t.Fatalf("public http rejected despite explicit allowed scheme: %v", err)
+	}
+	if _, err := f.ValidateTarget(context.Background(), mustURL(t, "ftp://media.example/file.torrent"), "", Limits{
+		AllowedSchemes: []string{"http", "https"},
+	}); err == nil {
+		t.Fatal("ftp accepted despite explicit allowed schemes")
+	}
+}
+
+func TestValidateTargetNormalizesAllowedHosts(t *testing.T) {
+	f := Fetcher{Resolver: staticResolver{"trusted.example": []string{"93.184.216.34"}}}
+	_, err := f.ValidateTarget(context.Background(), mustURL(t, "https://Trusted.Example./catalog.json"), "", Limits{
+		AllowedSchemes: []string{"https"},
+		AllowedHosts:   map[string]struct{}{"trusted.example": {}},
+	})
+	if err != nil {
+		t.Fatalf("normalized allowlisted host rejected: %v", err)
+	}
+	_, err = f.ValidateTarget(context.Background(), mustURL(t, "https://Trusted.Example./catalog.json"), "", Limits{
+		AllowedSchemes: []string{"https"},
+		AllowedHosts:   map[string]struct{}{"other.example": {}},
+	})
+	if err == nil {
+		t.Fatal("non-allowlisted host accepted")
+	}
+}
+
+func TestResolvePublicTargetIPRejectsMixedAnswers(t *testing.T) {
+	_, err := ResolvePublicTargetIP(context.Background(), staticResolver{
+		"media.example": []string{"93.184.216.34", "192.168.1.20"},
+	}, "media.example", false)
+	if err == nil {
+		t.Fatal("mixed public/private DNS answers accepted")
+	}
+	_, err = ResolvePublicTargetIP(context.Background(), staticResolver{
+		"media.example": []string{"93.184.216.34", "198.18.0.10"},
+	}, "media.example", false)
+	if err == nil {
+		t.Fatal("mixed public/special-use DNS answers accepted")
+	}
+}
+
+func TestFetcherRejectsRedirectUserinfoBeforeFollow(t *testing.T) {
+	requests := 0
+	dialer, transport := newPinnedHTTPFetchServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Redirect(w, r, "http://user:pass@media.example/file.torrent", http.StatusFound)
+	})
+	f := Fetcher{
+		Resolver:    staticResolver{"media.example": []string{"93.184.216.34"}},
+		Transport:   transport,
+		DialContext: dialer.DialContext,
+	}
+	_, err := f.Fetch(context.Background(), http.MethodGet, "http://media.example/start", Limits{
+		MaxBytes:       1024,
+		AllowedSchemes: []string{"http", "https"},
+		MaxRedirects:   3,
+	}, Condition{})
+	if err == nil {
+		t.Fatal("redirect target userinfo accepted")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only the original request", requests)
+	}
+}
+
+func TestFetcherDialsValidatedIPAndPreservesHostHeader(t *testing.T) {
+	dialer, transport := newPinnedHTTPFetchServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != "media.example" {
 			t.Fatalf("Host = %q, want media.example", r.Host)
 		}
@@ -295,22 +376,50 @@ func TestFetcherPinsTLSNameAndDialsValidatedIP(t *testing.T) {
 		Transport:   transport,
 		DialContext: dialer.DialContext,
 	}
-	_, _ = f.Fetch(context.Background(), http.MethodGet, "https://media.example/catalog.json", Limits{
+	if _, err := f.Fetch(context.Background(), http.MethodGet, "http://media.example/catalog.json", Limits{
 		MaxBytes:       1024,
-		AllowedSchemes: []string{"https"},
+		AllowedSchemes: []string{"http"},
 		MaxRedirects:   3,
-	}, Condition{})
+	}, Condition{}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
 	if !dialer.dialed("93.184.216.34") {
 		t.Fatalf("dialed %v, want validated IP", dialer.addrs)
 	}
-	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("base transport used InsecureSkipVerify")
+}
+
+func TestRoundTripperPinsTLSNameAndDisablesProxyAndCompression(t *testing.T) {
+	base := &http.Transport{
+		Proxy:           http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{},
+	}
+	f := Fetcher{Transport: base}
+	rt, cleanup := f.roundTripper(Target{
+		URL:      mustURL(t, "https://media.example/catalog.json"),
+		Hostname: "media.example",
+		DialAddr: "93.184.216.34:443",
+	})
+	defer cleanup()
+	if rt.TLSClientConfig == nil || rt.TLSClientConfig.ServerName != "media.example" {
+		t.Fatalf("TLS ServerName = %#v, want media.example", rt.TLSClientConfig)
+	}
+	if rt.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("round tripper set InsecureSkipVerify")
+	}
+	if rt.Proxy != nil {
+		t.Fatal("round tripper retained proxy function")
+	}
+	if !rt.DisableCompression {
+		t.Fatal("round tripper did not disable compression")
+	}
+	if base.TLSClientConfig.ServerName != "" {
+		t.Fatalf("base transport mutated with ServerName %q", base.TLSClientConfig.ServerName)
 	}
 }
 
 func TestFetcherRedirectRevalidatesEachHop(t *testing.T) {
-	dialer, transport := newPinnedFetchServer(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://private.example/catalog.json", http.StatusFound)
+	dialer, transport := newPinnedHTTPFetchServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://private.example/catalog.json", http.StatusFound)
 	})
 	f := Fetcher{
 		Resolver: staticResolver{
@@ -320,9 +429,9 @@ func TestFetcherRedirectRevalidatesEachHop(t *testing.T) {
 		Transport:   transport,
 		DialContext: dialer.DialContext,
 	}
-	_, err := f.Fetch(context.Background(), http.MethodGet, "https://public.example/catalog.json", Limits{
+	_, err := f.Fetch(context.Background(), http.MethodGet, "http://public.example/catalog.json", Limits{
 		MaxBytes:       1024,
-		AllowedSchemes: []string{"https"},
+		AllowedSchemes: []string{"http"},
 		MaxRedirects:   3,
 	}, Condition{})
 	if err == nil {
@@ -389,6 +498,24 @@ func newPinnedFetchServer(t *testing.T, h http.HandlerFunc) (*pinnedDialer, *htt
 	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	return dialer, transport
 }
+
+func newPinnedHTTPFetchServer(t *testing.T, h http.HandlerFunc) (*pinnedDialer, *http.Transport) {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	serverHostPort := strings.TrimPrefix(srv.URL, "http://")
+	dialer := &pinnedDialer{serverAddr: serverHostPort}
+	return dialer, http.DefaultTransport.(*http.Transport).Clone()
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
 ```
 
 - [ ] **Step 6: Run the guarded fetcher tests and verify they fail**
@@ -396,10 +523,10 @@ func newPinnedFetchServer(t *testing.T, h http.HandlerFunc) (*pinnedDialer, *htt
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/sourcefetch -run "TestFetcher" -count=1
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/sourcefetch -run "Test(Fetcher|ValidateTarget|ResolvePublicTargetIP|RoundTripper)" -count=1
 ```
 
-Expected: FAIL because `Fetcher`, `Limits`, and `Condition` do not exist.
+Expected: FAIL because `Fetcher`, `Limits`, `Condition`, `ValidateTarget`, and `ResolvePublicTargetIP` do not exist.
 
 - [ ] **Step 7: Implement guarded fetcher API**
 
@@ -419,6 +546,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 type Resolver interface {
@@ -470,9 +599,11 @@ Add the remaining implementation by moving the body of the existing Streams func
 - `fetchCondition` becomes `Condition`.
 - `fetchResponse` becomes `Response`.
 - `validatedFetchTarget` becomes `Target`.
+- `validateTarget` becomes exported method `ValidateTarget`.
 - `resolveValidatedIP` becomes `ResolvePublicTargetIP`.
 - `isRedirectStatus` becomes `IsRedirectStatus`.
 - `cloneURL` remains private.
+- Add `NormalizeHost` in `internal/sourcefetch`; do not call `streams.normalizeConfigHost` from this shared package.
 
 Ensure these concrete behavior changes while moving:
 
@@ -540,6 +671,144 @@ func (f Fetcher) Fetch(ctx context.Context, method string, rawURL string, limits
 }
 ```
 
+Implement `ValidateTarget` with these exact invariants:
+
+```go
+func (f Fetcher) ValidateTarget(ctx context.Context, u *url.URL, previousScheme string, limits Limits) (Target, error) {
+	if u == nil {
+		return Target{}, fmt.Errorf("URL is required")
+	}
+	if u.User != nil {
+		return Target{}, fmt.Errorf("URL userinfo is not allowed")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	allowed := allowedSchemeSet(limits)
+	if _, ok := allowed[scheme]; !ok {
+		return Target{}, fmt.Errorf("scheme %q is not allowed", scheme)
+	}
+	if previousScheme == "https" && scheme == "http" {
+		if _, ok := allowed["http"]; !ok {
+			return Target{}, fmt.Errorf("redirect from https to http is not allowed")
+		}
+	}
+	hostname, err := NormalizeHost(u.Hostname())
+	if err != nil {
+		return Target{}, err
+	}
+	if len(limits.AllowedHosts) != 0 {
+		if _, ok := limits.AllowedHosts[hostname]; !ok {
+			return Target{}, fmt.Errorf("host %q is not in allowlist", hostname)
+		}
+	}
+	addr, err := ResolvePublicTargetIP(ctx, f.Resolver, hostname, limits.AllowLocalURLs)
+	if err != nil {
+		return Target{}, err
+	}
+	port := u.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return Target{
+		URL:        cloneURL(u),
+		Hostname:   hostname,
+		ResolvedIP: addr.String(),
+		DialAddr:   net.JoinHostPort(addr.String(), port),
+	}, nil
+}
+```
+
+Implement scheme defaults in a helper:
+
+```go
+func allowedSchemeSet(limits Limits) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, scheme := range limits.AllowedSchemes {
+		scheme = strings.ToLower(strings.TrimSpace(scheme))
+		if scheme != "" {
+			out[scheme] = struct{}{}
+		}
+	}
+	if len(out) != 0 {
+		return out
+	}
+	if limits.AllowLocalURLs {
+		return map[string]struct{}{"http": {}, "https": {}}
+	}
+	return map[string]struct{}{"https": {}}
+}
+```
+
+Implement host normalization inside `internal/sourcefetch` so Streams and shared fetch use the same canonical comparison form:
+
+```go
+func NormalizeHost(in string) (string, error) {
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(in)), ".")
+	if host == "" {
+		return "", fmt.Errorf("host is required")
+	}
+	if strings.ContainsAny(host, "*:/?#@") {
+		return "", fmt.Errorf("host must not contain URL syntax, wildcard, or port")
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return "", fmt.Errorf("IP literal hosts are not allowed")
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", err
+	}
+	ascii = strings.TrimSuffix(strings.ToLower(ascii), ".")
+	if ascii == "" {
+		return "", fmt.Errorf("host is required")
+	}
+	if _, err := netip.ParseAddr(ascii); err == nil {
+		return "", fmt.Errorf("IP literal hosts are not allowed")
+	}
+	return ascii, nil
+}
+```
+
+Implement DNS resolution as all-or-nothing when `allowLocal` is false:
+
+```go
+func ResolvePublicTargetIP(ctx context.Context, resolver Resolver, hostname string, allowLocal bool) (netip.Addr, error) {
+	if literal, err := netip.ParseAddr(hostname); err == nil {
+		if !allowLocal {
+			return netip.Addr{}, fmt.Errorf("IP literal hosts are not allowed")
+		}
+		return literal.Unmap(), nil
+	}
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	hosts, err := resolver.LookupHost(ctx, hostname)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if len(hosts) == 0 {
+		return netip.Addr{}, fmt.Errorf("host %q did not resolve", hostname)
+	}
+	var first netip.Addr
+	for _, host := range hosts {
+		addr, err := netip.ParseAddr(host)
+		if err != nil {
+			return netip.Addr{}, fmt.Errorf("host %q resolved to invalid address %q", hostname, host)
+		}
+		addr = addr.Unmap()
+		if !allowLocal && !IsPublicRoutable(addr) {
+			return netip.Addr{}, fmt.Errorf("host %q resolved to disallowed address %s", hostname, addr)
+		}
+		if !first.IsValid() {
+			first = addr
+		}
+	}
+	return first, nil
+}
+```
+
 In `roundTripper`, explicitly disable proxies and compression after cloning:
 
 ```go
@@ -569,6 +838,15 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/sourcefetch -count=1
 ```
 
 Expected: PASS.
+
+Task 1 acceptance criteria:
+
+- initial classifier/body-reader tests fail before `internal/sourcefetch` exists and pass after Step 3;
+- guarded fetcher tests fail before `Fetcher`, `ValidateTarget`, and `ResolvePublicTargetIP` exist and pass after Step 7;
+- public HTTP is accepted only when listed in `AllowedSchemes`;
+- every DNS answer is classified and any private/special-use answer rejects the host;
+- original and redirect-target userinfo are rejected before a credentialed request can be issued;
+- cloned transports have `Proxy == nil`, `DisableCompression == true`, `TLSClientConfig.ServerName == target.Hostname`, and do not set `InsecureSkipVerify`.
 
 - [ ] **Step 9: Commit**
 
@@ -920,6 +1198,23 @@ func TestTorrentURLFetcherUsesCappedGetForTorrentPath(t *testing.T) {
 	}
 }
 
+func TestTorrentURLFetcherAllowsPublicHTTP(t *testing.T) {
+	source := &recordingSourceFetcher{
+		getResp: sourcefetch.Response{
+			Body:        []byte("metainfo"),
+			FinalURL:    "http://example.com/file.torrent",
+			ContentType: "application/octet-stream",
+		},
+	}
+	tf := torrentURLHTTPFetcher{source: source}
+	if _, err := tf.FetchTorrentURL(context.Background(), "http://example.com/file.torrent", maxTorrentUploadBytes); err != nil {
+		t.Fatalf("public http torrent URL rejected: %v", err)
+	}
+	if source.gets != 1 {
+		t.Fatalf("GET calls = %d, want 1", source.gets)
+	}
+}
+
 func TestTorrentURLFetcherRejectsOversizedSharedFetch(t *testing.T) {
 	tf := torrentURLHTTPFetcher{source: &recordingSourceFetcher{
 		getErr: sourcefetch.ErrBodyTooLarge,
@@ -927,6 +1222,30 @@ func TestTorrentURLFetcherRejectsOversizedSharedFetch(t *testing.T) {
 	_, err := tf.FetchTorrentURL(context.Background(), "https://example.com/file.torrent", maxTorrentUploadBytes)
 	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrUploadTooLarge {
 		t.Fatalf("err = %#v, want ErrUploadTooLarge", err)
+	}
+}
+
+func TestTorrentURLFetcherErrorsDoNotLeakSensitiveURLParts(t *testing.T) {
+	tf := torrentURLHTTPFetcher{source: &recordingSourceFetcher{
+		getErr: errors.New(`Get "https://example.com/file.torrent?token=secret": dial tcp failed`),
+	}}
+	_, err := tf.FetchTorrentURL(context.Background(), "https://example.com/file.torrent?token=secret", maxTorrentUploadBytes)
+	if err == nil {
+		t.Fatal("expected fetch error")
+	}
+	for _, leak := range []string{"token=secret", "secret"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error leaked %q: %v", leak, err)
+		}
+	}
+	_, err = tf.FetchTorrentURL(context.Background(), "https://user:pass@example.com/file.torrent", maxTorrentUploadBytes)
+	if err == nil {
+		t.Fatal("expected credential rejection")
+	}
+	for _, leak := range []string{"user", "pass"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("credential rejection leaked %q: %v", leak, err)
+		}
 	}
 }
 
@@ -995,7 +1314,6 @@ package torrent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"mime"
 	"net/http"
 	"net/netip"
@@ -1115,16 +1433,6 @@ func torrentURLPathCandidate(raw string) bool {
 	}
 	return strings.HasSuffix(strings.ToLower(u.Path), ".torrent")
 }
-
-func sanitizeTorrentURLError(rawURL string, err error) error {
-	if err == nil {
-		return nil
-	}
-	if terr, ok := err.(*TorrentError); ok {
-		return terr
-	}
-	return fmt.Errorf("%s", "torrent URL fetch failed")
-}
 ```
 
 - [ ] **Step 5: Run Torrent URL fetcher tests**
@@ -1146,6 +1454,15 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/sourcefetch -count=1
 ```
 
 Expected: PASS.
+
+Task 4 acceptance criteria:
+
+- `http://` and `https://` torrent URL inputs are accepted when the shared fetcher approves the target;
+- unsupported schemes, userinfo, and IP literals are rejected before shared fetcher calls;
+- non-`.torrent` paths require successful `HEAD` with a torrent predicate and return the actionable HEAD error otherwise;
+- explicit `.torrent` paths skip `HEAD` and use the capped `GET`;
+- shared body-cap errors map to `ErrUploadTooLarge`;
+- returned error strings do not contain submitted credentials or sensitive query values.
 
 - [ ] **Step 7: Commit**
 
@@ -1448,6 +1765,31 @@ func TestTorrentQuickCastRejectsEmptyTorrentURL(t *testing.T) {
 	}
 }
 
+func TestTorrentQuickCastDoesNotFetchTorrentURLWhenDisabledOrUnacknowledged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "disabled", cfg: Config{Enabled: false, TrafficAcknowledged: true}},
+		{name: "unacknowledged", cfg: Config{Enabled: true, TrafficAcknowledged: false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := &fakeTorrentURLFetcher{body: []byte("metainfo")}
+			a := &Adapter{cfg: tc.cfg, urlFetcher: fetcher}
+			_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+				TabID:  "torrent-url",
+				Values: map[string]string{"torrent_url": "https://example.com/file.torrent"},
+			})
+			if err == nil {
+				t.Fatal("HandleQuickCast succeeded despite disabled gate")
+			}
+			if fetcher.calls != 0 {
+				t.Fatalf("fetcher calls = %d, want 0 before gates", fetcher.calls)
+			}
+		})
+	}
+}
+
 func TestTorrentQuickCastStartsTorrentURL(t *testing.T) {
 	core := &recordingCore{}
 	client := &fakeTorrentClient{}
@@ -1555,6 +1897,14 @@ cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/ui -run "TestQuickCas
 ```
 
 Expected: PASS.
+
+Task 6 acceptance criteria:
+
+- `QuickCastTabs()` includes a `torrent-url` form tab with `torrent_url` URL field;
+- empty `torrent_url` is rejected before session start;
+- disabled or unacknowledged adapters reject the quick-cast without calling the URL fetcher;
+- successful quick-cast returns `"torrent started"` and a non-empty `AdapterRef`;
+- UI quick-cast drawer renders the tab and input field.
 
 - [ ] **Step 7: Commit**
 
