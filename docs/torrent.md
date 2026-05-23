@@ -1,6 +1,6 @@
 # Torrent Adapter
 
-The Torrent adapter can cast a magnet link or uploaded `.torrent` file through MiSTer Groovy Relay.
+The Torrent adapter can cast a magnet link, uploaded `.torrent` file, or HTTP(S) `.torrent` URL through MiSTer Groovy Relay.
 
 ## Enablement
 
