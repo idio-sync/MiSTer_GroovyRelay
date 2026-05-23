@@ -48,7 +48,13 @@ func (d *Dispatcher) HandlePlaybackAction(ctx context.Context, req adapters.Play
 	if req.OffsetMS < 0 {
 		req.OffsetMS = 0
 	}
+	if d.status == nil {
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+	}
 	snap := d.status.StatusHomeView()
+	if snap.State == core.StateIdle {
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+	}
 	if snap.AdapterRef != req.AdapterRef || snap.Generation != req.Generation {
 		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 	}

@@ -302,6 +302,47 @@ func TestDispatcher_HandlePlaybackAction_StaleGenerationReturnsSentinel(t *testi
 	}
 }
 
+func TestDispatcher_HandlePlaybackAction_NilStatusReturnsSentinel(t *testing.T) {
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", &fakeProvider{})
+	dispatcher := NewDispatcher(nil, reg)
+
+	_, err := dispatcher.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionStop,
+		AdapterRef: "plex:abc",
+		Generation: 7,
+	})
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("HandlePlaybackAction nil status error = %v, want ErrActiveSessionChanged", err)
+	}
+}
+
+func TestDispatcher_HandlePlaybackAction_IdleSnapshotReturnsSentinel(t *testing.T) {
+	provider := &fakeProvider{}
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", provider)
+	dispatcher := NewDispatcher(fakeStatusViewer{
+		view: core.StatusHomeView{
+			State:      core.StateIdle,
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 7,
+		},
+	}, reg)
+
+	_, err := dispatcher.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionStop,
+		AdapterRef: "plex:abc",
+		Generation: 7,
+	})
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("HandlePlaybackAction idle snapshot error = %v, want ErrActiveSessionChanged", err)
+	}
+	if len(provider.actions) != 0 {
+		t.Fatalf("HandlePlaybackAction provider calls = %d, want 0", len(provider.actions))
+	}
+}
+
 func TestDispatcher_HandlePlaybackAction_UnsupportedAdapterReturnsSentinel(t *testing.T) {
 	reg := adapters.NewRegistry()
 	if err := reg.Register(&fakeBareAdapter{name: "plex"}); err != nil {
