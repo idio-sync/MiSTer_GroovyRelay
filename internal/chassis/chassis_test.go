@@ -598,6 +598,82 @@ func TestHandleStatic_JS_Served(t *testing.T) {
 	}
 }
 
+func TestHandleStatic_TransportJSServed(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"chassis:eventsource",
+		"data-transport-action",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served transport.js missing %q", want)
+		}
+	}
+}
+
+func TestTransportJS_SeekUsesRawDurationMsNotClockText(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "data-transport-duration-ms") {
+		t.Errorf("served transport.js missing raw duration hook")
+	}
+	for _, unwanted := range []string{
+		".split(':')",
+		"parseClockToMs",
+		"MM:SS",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("served transport.js contains clock parsing sentinel %q", unwanted)
+		}
+	}
+}
+
+func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !strings.Contains(rr.Body.String(), "transportState === 'stopped'") {
+		t.Errorf("served transport.js missing stopped-state pause/resume guard")
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
