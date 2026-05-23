@@ -29,6 +29,13 @@ type Config struct {
 	// structurally; main.go wires that.
 	Session SessionViewer
 
+	// TransportViewer is the optional read-only playback data source for
+	// the chassis transport row. Later tasks own population.
+	TransportViewer TransportViewer
+	// TransportController is the optional playback action dispatcher for
+	// the chassis transport row. Later tasks own handlers.
+	TransportController TransportController
+
 	// VisualizerViewer is the optional read-only visualizer-mode source.
 	// When nil, chassis falls back to config/default mode data.
 	VisualizerViewer VisualizerViewer
@@ -44,6 +51,9 @@ type Server struct {
 	session  SessionViewer
 	tmpl     *template.Template
 	cssBytes []byte
+
+	transportViewer     TransportViewer
+	transportController TransportController
 
 	visualizerViewer VisualizerViewer
 	visualizerSaver  VisualizerSaver
@@ -75,14 +85,16 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:              cfg,
-		session:          cfg.Session,
-		tmpl:             tmpl,
-		cssBytes:         cssBytes,
-		visualizerViewer: cfg.VisualizerViewer,
-		visualizerSaver:  cfg.VisualizerSaver,
-		cache:            &snapshotCache{},
-		cacheDone:        make(chan struct{}),
+		cfg:                 cfg,
+		session:             cfg.Session,
+		tmpl:                tmpl,
+		cssBytes:            cssBytes,
+		transportViewer:     cfg.TransportViewer,
+		transportController: cfg.TransportController,
+		visualizerViewer:    cfg.VisualizerViewer,
+		visualizerSaver:     cfg.VisualizerSaver,
+		cache:               &snapshotCache{},
+		cacheDone:           make(chan struct{}),
 	}
 	// Seed the cache synchronously so the first SSE connection always
 	// sees a coherent snapshot — no zero-value VFD or stale state.

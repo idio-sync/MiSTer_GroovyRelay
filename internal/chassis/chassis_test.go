@@ -15,6 +15,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/playback"
 )
 
 type fakeVisualizerViewer struct {
@@ -970,6 +971,43 @@ func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
 	cfg.Session = cfg.Manager
 	if cfg.Session == nil {
 		t.Fatal("expected non-nil Session after assignment from Manager")
+	}
+}
+
+func TestTransportViewer_DispatcherSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+	var _ TransportViewer = (*playback.Dispatcher)(nil)
+	var _ TransportController = (*playback.Dispatcher)(nil)
+
+	cfg := nonZeroConfig()
+	d := testTransportDispatcher(cfg)
+	cfg.TransportViewer = d
+	cfg.TransportController = d
+	if cfg.TransportViewer == nil || cfg.TransportController == nil {
+		t.Fatal("transport fields should be assignable from *playback.Dispatcher")
+	}
+}
+
+func testTransportDispatcher(cfg Config) *playback.Dispatcher {
+	return playback.NewDispatcher(cfg.Manager, cfg.Registry)
+}
+
+func TestServer_StoresTransportViewerAndControllerFromConfig(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	d := testTransportDispatcher(cfg)
+	cfg.TransportViewer = d
+	cfg.TransportController = d
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.transportViewer != d {
+		t.Errorf("Server.transportViewer not stored from Config")
+	}
+	if s.transportController != d {
+		t.Errorf("Server.transportController not stored from Config")
 	}
 }
 

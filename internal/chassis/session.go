@@ -1,10 +1,12 @@
 package chassis
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -20,6 +22,18 @@ import (
 // in that spec's review.
 type SessionViewer interface {
 	StatusHomeView() core.StatusHomeView
+}
+
+// TransportViewer is the read-only playback banner source for chassis
+// transport data. Optional; later tasks own snapshot population.
+type TransportViewer interface {
+	PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool)
+}
+
+// TransportController handles playback control actions from chassis
+// transport UI. Optional; later tasks own HTTP handlers.
+type TransportController interface {
+	HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error)
 }
 
 // snapshotFromSession builds the page-render data from current bridge
