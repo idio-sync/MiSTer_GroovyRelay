@@ -232,17 +232,18 @@ live.m3u8
 }
 
 func TestWarmSegmentCacheCancelsSiblingsOnError(t *testing.T) {
-	requested := make(chan struct{}, 1)
+	requested := make(chan struct{})
 	cancelled := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/seg-fail.ts":
+			select {
+			case <-requested:
+			case <-time.After(2 * time.Second):
+			}
 			http.Error(w, "boom", http.StatusInternalServerError)
 		case "/seg-slow.ts":
-			select {
-			case requested <- struct{}{}:
-			default:
-			}
+			close(requested)
 			select {
 			case <-r.Context().Done():
 				select {
