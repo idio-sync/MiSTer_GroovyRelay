@@ -1,0 +1,87 @@
+// Package playback provides the shared playback view and action dispatcher
+// that sits above core status snapshots and adapter playback providers.
+package playback
+
+import (
+	"context"
+	"strings"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+)
+
+type StatusViewer interface {
+	StatusHomeView() core.StatusHomeView
+}
+
+type Dispatcher struct {
+	status   StatusViewer
+	registry *adapters.Registry
+}
+
+func NewDispatcher(status StatusViewer, registry *adapters.Registry) *Dispatcher {
+	return &Dispatcher{status: status, registry: registry}
+}
+
+func (d *Dispatcher) PlaybackView(ctx context.Context) (adapters.PlaybackBannerAdapterView, bool) {
+	if d.status == nil {
+		return adapters.PlaybackBannerAdapterView{}, false
+	}
+	return d.PlaybackViewForSnapshot(ctx, d.status.StatusHomeView())
+}
+
+func (d *Dispatcher) PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool) {
+	if snap.State == core.StateIdle {
+		return adapters.PlaybackBannerAdapterView{}, false
+	}
+	provider, ok := d.playbackProviderForSnapshot(snap)
+	if !ok {
+		return adapters.PlaybackBannerAdapterView{}, false
+	}
+	return provider.PlaybackBanner(ctx, snapshotForProvider(snap))
+}
+
+// playbackProviderForSnapshot resolves the adapter that owns the active
+// session and exposes the PlaybackControlProvider interface, if any.
+//
+// Source-first policy: when snap.Source names a registered adapter, that
+// adapter is the sole candidate. If it does not implement
+// PlaybackControlProvider, this returns false instead of falling through to
+// the legacy adapter-ref prefix scan.
+func (d *Dispatcher) playbackProviderForSnapshot(snap core.StatusHomeView) (adapters.PlaybackControlProvider, bool) {
+	if d.registry == nil || snap.AdapterRef == "" {
+		return nil, false
+	}
+	if snap.Source != "" {
+		if a, ok := d.registry.Get(snap.Source); ok {
+			p, ok := a.(adapters.PlaybackControlProvider)
+			return p, ok
+		}
+	}
+	for _, a := range d.registry.List() {
+		if adapterRefBelongsTo(a.Name(), snap.AdapterRef) {
+			p, ok := a.(adapters.PlaybackControlProvider)
+			return p, ok
+		}
+	}
+	return nil, false
+}
+
+func adapterRefBelongsTo(adapterName, ref string) bool {
+	return strings.HasPrefix(ref, adapterName+":") || strings.HasPrefix(ref, adapterName+"/")
+}
+
+func snapshotForProvider(snap core.StatusHomeView) adapters.PlaybackBannerSnapshot {
+	return adapters.PlaybackBannerSnapshot{
+		State:      snap.State,
+		AdapterRef: snap.AdapterRef,
+		Source:     snap.Source,
+		Title:      snap.Title,
+		Position:   snap.Position,
+		Duration:   snap.Duration,
+		StartedAt:  snap.StartedAt,
+		MediaKind:  snap.MediaKind,
+		Modeline:   snap.Modeline,
+		Generation: snap.Generation,
+	}
+}
