@@ -65,7 +65,7 @@ func (a *Adapter) HandlePlaybackAction(ctx context.Context, req adapters.Playbac
 	case adapters.PlaybackActionStop:
 		err = a.StopQueueGuarded(ctx, req.AdapterRef, req.Generation)
 	default:
-		err = fmt.Errorf("unknown playback action %q", req.Action)
+		err = adapters.UnsupportedPlaybackActionError(fmt.Sprintf("unknown playback action %q", req.Action))
 	}
 	if err != nil {
 		return adapters.PlaybackActionResult{}, err
@@ -79,7 +79,7 @@ func (a *Adapter) ensureOwnsCoreSession(ref string, generation uint64) error {
 	}
 	st := a.core.Status()
 	if st.AdapterRef != ref || st.Generation != generation {
-		return playbackError("", adapters.ErrActiveSessionChangedMessage)
+		return adapters.ErrActiveSessionChanged
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -2,6 +2,7 @@ package url
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -85,8 +86,8 @@ func TestURLPlaybackActionRejectsStaleSameAdapterGeneration(t *testing.T) {
 	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 4}}
 	a := &Adapter{core: coreStub}
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionPause, AdapterRef: "url:abc", Generation: 3})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("stale generation err = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("stale generation err = %v, want stale-session sentinel", err)
 	}
 	if coreStub.pauseRef != "url:abc" || coreStub.pauseGen != 3 {
 		t.Fatalf("pause guard should receive stale key for recheck, got %q/%d", coreStub.pauseRef, coreStub.pauseGen)
@@ -97,11 +98,23 @@ func TestURLPlaybackActionRejectsForeignAdapterRef(t *testing.T) {
 	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "streams:abc", Generation: 4}}
 	a := &Adapter{core: coreStub}
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "url:abc", Generation: 4})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("foreign adapter err = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("foreign adapter err = %v, want stale-session sentinel", err)
 	}
 	if coreStub.stopRef != "url:abc" || coreStub.stopGen != 4 {
 		t.Fatalf("stop guard should receive submitted key for recheck, got %q/%d", coreStub.stopRef, coreStub.stopGen)
+	}
+}
+
+func TestURLPlaybackActionRejectsUnsupportedActionWithSentinel(t *testing.T) {
+	a := &Adapter{core: &providerCoreStub{}}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionPrevious, AdapterRef: "url:abc", Generation: 4})
+	if !errors.Is(err, adapters.ErrPlaybackActionUnsupported) {
+		t.Fatalf("unsupported action err = %v, want unsupported-action sentinel", err)
+	}
+	const want = "unknown playback action \"previous\""
+	if err.Error() != want {
+		t.Fatalf("unsupported action message = %q, want %q", err.Error(), want)
 	}
 }
 

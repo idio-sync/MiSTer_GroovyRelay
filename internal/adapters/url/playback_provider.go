@@ -55,7 +55,7 @@ func (a *Adapter) HandlePlaybackAction(ctx context.Context, action adapters.Play
 	case adapters.PlaybackActionReplay:
 		return a.replayBanner(ctx, action)
 	default:
-		return adapters.PlaybackActionResult{}, fmt.Errorf("unknown playback action %q", action.Action)
+		return adapters.PlaybackActionResult{}, adapters.UnsupportedPlaybackActionError(fmt.Sprintf("unknown playback action %q", action.Action))
 	}
 }
 
@@ -65,7 +65,7 @@ func (a *Adapter) pauseBanner(action adapters.PlaybackActionRequest) (adapters.P
 		return adapters.PlaybackActionResult{}, err
 	}
 	if !matched {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 	}
 	return adapters.PlaybackActionResult{Message: "paused"}, nil
 }
@@ -76,7 +76,7 @@ func (a *Adapter) stopBanner(action adapters.PlaybackActionRequest) (adapters.Pl
 		return adapters.PlaybackActionResult{}, err
 	}
 	if !matched {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 	}
 	return adapters.PlaybackActionResult{Message: "stopped"}, nil
 }
@@ -90,7 +90,7 @@ func (a *Adapter) seekBanner(action adapters.PlaybackActionRequest) (adapters.Pl
 		return adapters.PlaybackActionResult{}, err
 	}
 	if !matched {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 	}
 	return adapters.PlaybackActionResult{Message: "seeked"}, nil
 }
@@ -98,7 +98,7 @@ func (a *Adapter) seekBanner(action adapters.PlaybackActionRequest) (adapters.Pl
 func (a *Adapter) resumeBanner(ctx context.Context, action adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
 	st := a.core.Status()
 	if st.AdapterRef != action.AdapterRef || st.Generation != action.Generation {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 	}
 	if st.Duration > 0 {
 		matched, err := a.core.PlayIfSession(action.AdapterRef, action.Generation)
@@ -106,7 +106,7 @@ func (a *Adapter) resumeBanner(ctx context.Context, action adapters.PlaybackActi
 			return adapters.PlaybackActionResult{}, err
 		}
 		if !matched {
-			return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
+			return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 		}
 		return adapters.PlaybackActionResult{Message: "resumed"}, nil
 	}

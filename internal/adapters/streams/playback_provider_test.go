@@ -2,6 +2,7 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -98,8 +99,8 @@ func TestStreamsPlaybackActionRejectsStaleCoreGeneration(t *testing.T) {
 	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: ref, Generation: 9}
 
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: ref, Generation: 8})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("stale streams action err = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("stale streams action err = %v, want stale-session sentinel", err)
 	}
 	if fc.stopIfSessionCalls != 0 {
 		t.Fatalf("stale streams action called core stop %d times", fc.stopIfSessionCalls)
@@ -114,11 +115,29 @@ func TestStreamsPlaybackActionRejectsForeignAdapterRef(t *testing.T) {
 	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 8}
 
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "streams:mtv:metal:sess:2", Generation: 8})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("foreign streams action err = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("foreign streams action err = %v, want stale-session sentinel", err)
 	}
 	if fc.stopIfSessionCalls != 0 {
 		t.Fatalf("foreign streams action called core stop %d times", fc.stopIfSessionCalls)
+	}
+}
+
+func TestStreamsPlaybackActionRejectsUnsupportedActionWithSentinel(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.mu.Lock()
+	a.active = &ActiveQueue{SessionID: "sess", ProviderID: "mtv", ChannelID: "metal", Items: []StreamItem{{ID: "one"}}, Index: 0, Generation: 4, ItemToken: 2}
+	a.mu.Unlock()
+	ref := "streams:mtv:metal:sess:2"
+	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: ref, Generation: 8}
+
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionPause, AdapterRef: ref, Generation: 8})
+	if !errors.Is(err, adapters.ErrPlaybackActionUnsupported) {
+		t.Fatalf("unsupported streams action err = %v, want unsupported-action sentinel", err)
+	}
+	const want = "unknown playback action \"pause\""
+	if err.Error() != want {
+		t.Fatalf("unsupported streams action message = %q, want %q", err.Error(), want)
 	}
 }
 
