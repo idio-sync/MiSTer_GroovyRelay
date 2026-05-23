@@ -116,8 +116,8 @@ func TestFetcherDoesNotHonorEnvironmentProxy(t *testing.T) {
 	}
 
 	_, err := fetcher.Fetch(context.Background(), http.MethodGet, "https://media.example/file.torrent", Limits{MaxBytes: 1}, Condition{})
-	if err == nil || !strings.Contains(err.Error(), "dial stopped") {
-		t.Fatalf("Fetch() error = %v, want dial stopped", err)
+	if !errors.Is(err, ErrFetchFailed) {
+		t.Fatalf("Fetch() error = %v, want ErrFetchFailed", err)
 	}
 	if len(dialer.addrs) != 1 {
 		t.Fatalf("dial count = %d, want 1", len(dialer.addrs))
@@ -125,6 +125,27 @@ func TestFetcherDoesNotHonorEnvironmentProxy(t *testing.T) {
 	if dialer.addrs[0] != "93.184.216.34:443" {
 		t.Fatalf("dialed addr = %q, want validated target IP", dialer.addrs[0])
 	}
+}
+
+func TestFetcherSanitizesTransportErrorURL(t *testing.T) {
+	dialer := &recordingDialer{err: &url.Error{
+		Op:  "Get",
+		URL: "https://media.example/file.torrent?token=secret",
+		Err: errors.New("dial stopped"),
+	}}
+	fetcher := Fetcher{
+		Resolver:    staticResolver{"media.example": {"93.184.216.34"}},
+		DialContext: dialer.DialContext,
+	}
+
+	_, err := fetcher.Fetch(context.Background(), http.MethodGet, "https://media.example/file.torrent?token=secret", Limits{MaxBytes: 1}, Condition{})
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want transport error")
+	}
+	if !errors.Is(err, ErrFetchFailed) {
+		t.Fatalf("Fetch() error = %v, want ErrFetchFailed", err)
+	}
+	assertNoSecret(t, err, "token=secret", "secret")
 }
 
 func TestValidateTargetHonorsAllowedSchemes(t *testing.T) {

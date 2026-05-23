@@ -58,6 +58,7 @@ type Target struct {
 	DialAddr   string
 }
 
+var ErrFetchFailed = errors.New("source fetch failed")
 var ErrBodyTooLarge = errors.New("response body exceeds maximum size")
 
 var deniedIPv4 = []netip.Prefix{
@@ -114,7 +115,7 @@ func (f Fetcher) Fetch(ctx context.Context, method, rawURL string, limits Limits
 
 		resp, err := f.roundTrip(ctx, method, target, condition, limits.UserAgent)
 		if err != nil {
-			return Response{}, err
+			return Response{}, fmt.Errorf("%w", ErrFetchFailed)
 		}
 
 		if IsRedirectStatus(resp.StatusCode) {
