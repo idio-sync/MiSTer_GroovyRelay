@@ -55,6 +55,7 @@ The adapter builds a `core.SessionRequest` with:
 - `MediaKind: core.MediaKindMusic`
 - `Visualizer.Enabled: true`
 - metadata title/display fields such as `AUX` or the configured input name
+- `AudioOutputMode: core.AudioOutputVisualOnly` by default, or `core.AudioOutputMonitor` when configured
 - capabilities suitable for a live source: `CanPause=false`, `CanSeek=false`; stop remains available through core session stop
 
 The adapter supports two input modes:
@@ -64,18 +65,36 @@ The adapter supports two input modes:
 
 The existing FFmpeg visualizer path remains the renderer. AUX does not introduce a separate Go-side video generator.
 
-For local capture, `core.SessionRequest` needs a small adapter-agnostic capture input block so adapters do not smuggle capture syntax through `StreamURL`:
+For local capture, `core.SessionRequest` needs a small adapter-agnostic capture input block so adapters do not smuggle capture syntax through `StreamURL`. Exactly one of `StreamURL` or `AudioCapture.Enabled` may be set for an AUX session:
 
 ```go
 type AudioCaptureInput struct {
-    Enabled bool
-    Format  string
-    Device  string
-    Options map[string]string
+    Enabled         bool
+    Format          string
+    Device          string
+    SampleRate      int
+    Channels        int
+    ThreadQueueSize int
+    AnalyzeDuration time.Duration
+    ProbeSize       int
+}
+
+type AudioOutputMode string
+
+const (
+    AudioOutputDefault    AudioOutputMode = ""
+    AudioOutputVisualOnly AudioOutputMode = "visual_only"
+    AudioOutputMonitor    AudioOutputMode = "monitor"
+)
+
+type SessionRequest struct {
+    // existing fields...
+    AudioCapture   AudioCaptureInput
+    AudioOutputMode AudioOutputMode
 }
 ```
 
-`core.Manager` maps this block into the FFmpeg package at the same core-to-FFmpeg boundary that already maps visualizer metadata, media input policy, subtitles, and audio settings.
+`core.Manager` maps this block and output mode into the FFmpeg/data-plane packages at the same core-to-FFmpeg boundary that already maps visualizer metadata, media input policy, subtitles, and audio settings.
 
 ## Configuration
 
@@ -101,43 +120,67 @@ format = "dshow" # examples: dshow, avfoundation, alsa, pulse
 device = "audio=Line In (USB Audio Device)"
 sample_rate = 48000
 channels = 2
+thread_queue_size = 64
+analyze_duration_ms = 100
+probe_size = 32768
 ```
 
 Validation rules:
 
 - `enabled=false` allows incomplete input fields.
 - `enabled=true` requires `input.id`, `input.name`, and a supported `mode`.
-- `stream_url` requires an absolute URL accepted by the media input policy.
+- `stream_url` requires an absolute URL accepted by the AUX stream URL validator and its media input policy.
 - `local_capture` requires `format` and `device`.
 - `audio_output` defaults to `visual_only`.
 - `sample_rate` and `channels` default to the bridge audio config unless explicitly set for capture.
+- `thread_queue_size`, `analyze_duration_ms`, and `probe_size` are optional low-latency knobs. They are typed fields, not arbitrary FFmpeg option strings.
 
 The implementation plan may choose exact field names that match existing adapter config conventions, but it should preserve this model.
 
 ## FFmpeg Pipeline Changes
 
-`ffmpeg.PipelineSpec` needs two small extensions.
+`ffmpeg.PipelineSpec` needs three small extensions.
 
-First, capture inputs need structured pre-input fields mapped from `core.AudioCaptureInput`:
+First, capture inputs need structured pre-input fields mapped from `core.AudioCaptureInput`. The FFmpeg package owns the concrete argv mapping:
 
 ```go
 type CaptureInputSpec struct {
-    Enabled bool
-    Format string
-    Device string
-    Options map[string]string
+    Enabled         bool
+    Format          string
+    Device          string
+    SampleRate      int
+    Channels        int
+    ThreadQueueSize int
+    AnalyzeDuration time.Duration
+    ProbeSize       int
 }
 ```
 
 When enabled, `BuildCommand` places input options before `-i` without using shell strings. Examples include `-f dshow -i audio=Line In (...)` on Windows, `-f avfoundation -i :0` on macOS, or `-f alsa -i hw:1,0` on Linux. Low-latency options should also be structured argv tokens.
 
-Second, AUX needs a way to generate visualizer video while suppressing PCM output:
+Second, probing must stop being URL-only. Add an input-shaped probe entry point rather than overloading `Probe(ctx, path, url, policy)`:
+
+```go
+type ProbeInputSpec struct {
+    URL     string
+    Policy  MediaInputPolicy
+    Capture CaptureInputSpec
+}
+
+func ProbeInput(ctx context.Context, ffprobePath string, input ProbeInputSpec) (*ProbeResult, error)
+```
+
+For `stream_url`, `ProbeInput` preserves today's URL argv shape and applies `Policy`. For `local_capture`, it runs a bounded live-input probe with the same structured capture args used by `BuildCommand`, for example `ffprobe -f <format> <capture-options> -i <device> -show_streams -print_format json`. `core.Manager.probeForStart` calls this input-shaped probe. It allows `StreamURL` to be empty when `AudioCapture.Enabled=true`, still rejects visualizer sessions whose probe has no audio stream, and treats capture duration as zero because live inputs do not have a finite media duration.
+
+Third, AUX needs a way to generate visualizer video while suppressing PCM output:
 
 ```go
 SuppressAudioOutput bool
 ```
 
-When `SuppressAudioOutput=true`, a visualizer session still maps the audio input into the visualizer filter graph, but does not append the `-map <audio> -f s16le <audio-pipe>` output. The data plane should treat this like existing video-only media.
+When `SuppressAudioOutput=true`, a visualizer session still maps the audio input into the visualizer filter graph, but does not append the `-map <audio> -f s16le <audio-pipe>` output.
+
+This is not only an FFmpeg flag. The session-level `AudioOutputMode` must also flow into `dataplane.PlaneConfig`, so visual-only mode advertises `AudioRateOff` / zero channels in the Groovy `INIT`, does not start the audio pipe reader, and never waits for PCM chunks. `monitor` mode keeps the existing audio pipe and MiSTer PCM behavior. Tests must cover both FFmpeg argv and data-plane INIT/effective-audio behavior.
 
 For `stream_url`, the existing URL input path should be reused, with AUX-specific low-latency defaults where safe. For `local_capture`, probing may need a short timeout and device-friendly behavior because live capture inputs do not always have finite duration.
 
@@ -161,15 +204,52 @@ Responses follow the chassis JSON conventions:
 
 The source cluster lights `AUX` when active. VFD display for an active AUX session should read like `AUX - Analog In` or the configured input name. If AUX is disabled or unconfigured, the UI should render the control unavailable and POSTs should still fail clearly.
 
+The chassis talks to AUX through narrow interfaces declared in `internal/chassis`, not through the concrete adapter:
+
+```go
+type AUXStarter interface {
+    AUXStatus(ctx context.Context) AUXStatus
+    StartAUX(ctx context.Context, inputID string) (adapterRef string, generation uint64, err error)
+    StopAUX(ctx context.Context, inputID string, generation uint64) (matched bool, err error)
+}
+
+type AUXStatus struct {
+    Enabled      bool
+    Configured   bool
+    Active       bool
+    InputID      string
+    DisplayName  string
+    AdapterRef   string
+    Generation   uint64
+    ErrorMessage string
+}
+```
+
+`StopAUX` must guard ownership. It may call `core.Manager.StopIfSession("aux:<input-id>", generation)` when the UI has a fresh generation, or `StopIfAdapterRef("aux:<input-id>")` for a simpler stop button, but it must not stop a foreign active Plex/Jellyfin/DLNA/URL session. Tests must include a foreign-active-session stop attempt.
+
+The current source cluster is four buttons (`STREAMS`, `PLEX`, `JELLYFIN`, `DLNA`). AUX implementation must update the cluster layout and responsive tests so adding `AUX` does not overflow or regress mobile rendering.
+
 ## Remote Stream Producer
 
 V1 does not require a custom capture agent. For Unraid and other remote deployments, the documented path is an FFmpeg command on the machine with the analog input, exposing a low-latency audio stream that GroovyRelay consumes via `stream_url`.
 
-The spec does not lock the transport to a single protocol. The implementation plan should test realistic options and choose a default recommendation based on latency and reliability. Candidate patterns:
+V1 should recommend HTTP WAV/PCM as the default remote producer because it is easy to inspect, works with stock FFmpeg, avoids remote command execution, and is good enough for visualizer-first latency on a wired LAN. RTP/UDP can remain an advanced later option after it has real firewall and jitter testing.
 
-- HTTP WAV/PCM stream for simplicity.
-- RTP/UDP PCM or Opus for lower latency if FFmpeg support and firewall setup are reasonable.
-- Existing operator-provided stream URL when the capture device/software already exposes one.
+Example producer patterns to validate and document during implementation:
+
+```bash
+# Linux / ALSA example producer on the machine with line-in.
+ffmpeg -f alsa -thread_queue_size 64 -sample_rate 48000 -channels 2 -i hw:1,0 \
+  -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+
+# Windows / DirectShow shape. Device names are examples; operators list them
+# with: ffmpeg -list_devices true -f dshow -i dummy
+ffmpeg -f dshow -thread_queue_size 64 -audio_buffer_size 50 \
+  -i audio="Line In (USB Audio Device)" \
+  -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+```
+
+The exact commands may change after real-device validation, but the spec locks the v1 operator story: GroovyRelay consumes `http://capture-host:8090/aux.wav`; the capture machine owns OS-specific line-in capture.
 
 The relay should only consume the configured URL. It should not SSH into remote machines or execute arbitrary remote commands.
 
@@ -179,14 +259,21 @@ The visual reaction target is "as close to the real audio as practical." V1 shou
 
 `visual_only` is the default because the original analog source can keep feeding the user's real listening chain. `monitor` mode sends captured PCM to the MiSTer, but operators should expect some latency and possible capture/network jitter.
 
+Validation target: on a wired LAN with the default HTTP WAV/PCM producer and `visual_only` mode, a visible transient in the analog input should appear in the CRT visualizer within roughly 250 ms. This is a manual/diagnostic target rather than a hard automated test in v1, because capture devices and FFmpeg demuxers vary by platform.
+
 ## Security
 
-`stream_url` must use the existing media input policy machinery where applicable:
+`stream_url` must use explicit validation plus the existing media input policy machinery. Policy flags alone are not a URL validator.
 
-- protocol allow-list
-- bounded timeouts
-- redirect/reconnect constraints
-- blocked-header filtering
+V1 allowed URL shape:
+
+- Scheme: `http` or `https` only.
+- Host: must parse as a host or IP address; empty hosts are rejected.
+- Userinfo is rejected.
+- Fragment is rejected.
+- Redirects are not allowed for AUX stream URLs. If a validating redirect resolver is added, every redirect target must be revalidated against these same rules before FFmpeg sees the final URL.
+- Default policy: `ProtocolWhitelist=["http","https","tcp","tls"]`, `DisableReconnect=true`, bounded `RWTimeout`, and no input headers.
+- `file`, `udp`, `rtp`, and `srt` stream URLs are out of v1 unless a later spec adds source-specific validation and operator-facing firewall guidance.
 
 `local_capture` config must never be a shell command. It is parsed into explicit argv tokens. The adapter should reject suspicious empty or malformed capture fields early, but it does not need to sanitize for shell metacharacters because no shell is involved.
 
@@ -199,6 +286,7 @@ The receiver POST routes use the same same-origin protection as existing chassis
 - Remote stream unreachable: map probe/open failures to a clear "AUX input unreachable" class of error.
 - Unsupported FFmpeg capture format/device: surface the FFmpeg start failure without exposing sensitive local paths beyond the configured device name.
 - Active cast replacement: `AUX` should preempt only after validation and probing have succeeded enough to start the new session, preserving the existing `core.Manager` pattern of probing before acquiring the session lock.
+- Stop route ownership: an AUX stop request that no longer matches the active adapter ref/generation returns success-or-noop without stopping a foreign session.
 
 ## Testing
 
@@ -207,10 +295,14 @@ Unit tests:
 - AUX config defaults and validation.
 - Session request construction for `stream_url` and `local_capture`.
 - `visual_only` sets the FFmpeg audio-suppression flag.
-- `monitor` preserves normal PCM output.
+- `visual_only` also disables data-plane audio advertisement (`AudioRateOff`, zero channels) and audio pipe reading.
+- `monitor` preserves normal PCM output in both FFmpeg argv and data-plane INIT.
+- Input-shaped probing supports both URL and local capture specs; local capture probe uses a bounded timeout and accepts zero duration.
 - FFmpeg argv generation for local capture uses structured args in the right order.
 - FFmpeg argv generation for stream URL applies media input policy and low-latency options in the right place.
-- Receiver AUX start/stop route method checks, same-origin failures, malformed input, disabled/unconfigured errors, and success.
+- Stream URL validation rejects unsupported schemes, userinfo, empty host, fragments, and redirects unless explicitly prevalidated.
+- Receiver AUX start/stop route method checks, same-origin failures, malformed input, disabled/unconfigured errors, success, and foreign-session stop no-op.
+- Source cluster template/CSS tests cover the added AUX control at desktop and mobile widths.
 
 Integration or fake-MiSTer tests:
 
@@ -222,6 +314,7 @@ Manual validation:
 
 - Native Windows local capture with a real line-in or USB audio device.
 - Linux/Unraid remote stream URL fed by an FFmpeg command from another host.
+- Visual transient latency check against the roughly 250 ms target on a wired LAN.
 - Receiver UI source state: disabled, idle, active, and error.
 
 ## Done When
@@ -235,3 +328,4 @@ Manual validation:
 - AUX start preempts the active cast only after start validation succeeds.
 - Disabled/unconfigured/unreachable states produce clear UI and JSON errors.
 - Tests cover config, argv generation, route behavior, session construction, and audio-output suppression.
+- README, `internal/config/example.toml`, and operator docs include the AUX config shape and the validated remote FFmpeg producer command.
