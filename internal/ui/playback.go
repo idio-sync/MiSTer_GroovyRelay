@@ -402,7 +402,3 @@ func playbackActionGlyph(action adapters.PlaybackAction) string {
 		return action.Label
 	}
 }
-
-func adapterRefBelongsTo(adapterName, ref string) bool {
-	return strings.HasPrefix(ref, adapterName+":") || strings.HasPrefix(ref, adapterName+"/")
-}
