@@ -1096,17 +1096,25 @@ Delete the now-unused local `snap := adapters.PlaybackBannerSnapshot{...}` block
 
 It's now duplicated in `internal/playback`. Search the rest of `/ui` for any remaining callers — there should be none after Tasks 5 + 6. If any remain, migrate them too.
 
-- [ ] **Step 4: Run all `/ui` tests**
+- [ ] **Step 4: Delete the now-orphaned `currentPlaybackSnapshot` helper**
+
+`internal/ui/playback.go:263` defines `func (s *Server) currentPlaybackSnapshot() adapters.PlaybackBannerSnapshot`. Its only consumer was `handlePlaybackMutation` (now refactored in Task 5 to call the dispatcher directly). After Task 5 + Step 3 above, this helper has zero callers in production code.
+
+Verify with `grep -n "currentPlaybackSnapshot" internal/ui/` — expected: zero matches outside the function definition itself (and possibly stale `_test.go` references which should also be cleaned up if they were calling it). Delete the function.
+
+If the grep surfaces unexpected callers, audit them: most likely they are vestigial test helpers that also migrate to the dispatcher or get removed. Don't leave dead code in `/ui` post-refactor.
+
+- [ ] **Step 5: Run all `/ui` tests**
 
 Run: `go test ./internal/ui/...`
 Expected: PASS — banner HTML byte-identical to before.
 
-- [ ] **Step 5: Run race + full repo**
+- [ ] **Step 6: Run race + full repo**
 
 Run: `go test ./...`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add internal/ui/playback.go
@@ -1116,7 +1124,9 @@ refactor(ui): buildPlaybackBannerData via Dispatcher; delete inline lookup
 Phase 1 / Spec 3 task 6. The second and final call site of the inline
 playbackProviderForSnapshot migrates to s.playback.PlaybackView(ctx)
 (or PlaybackViewForSnapshot when a core snapshot is in hand). The
-inline helper is deleted.
+inline helper is deleted. currentPlaybackSnapshot is also deleted —
+it was only used by handlePlaybackMutation, which Task 5 already
+refactored to delegate to the dispatcher.
 
 Banner-specific data composition (QuickCastTabs, OutputVolume,
 ReadOnly, PollTrigger, Title/Subtitle/SourceDisplay overrides) stays
@@ -1479,6 +1489,10 @@ Append to `internal/chassis/events_test.go`:
 ```go
 func TestTransportEnvelopeFrom_FlattensTransportData(t *testing.T) {
 	t.Parallel()
+	// Mixed true/false ActionsEnabled values are deliberate: a uniform
+	// all-true fixture would let a Previous↔Next copy-paste swap slip
+	// through (both ends would be true). The alternating pattern below
+	// detects any single-field swap because each adjacent pair differs.
 	td := TransportData{
 		State:           "playing",
 		SeekFillPercent: 44,
@@ -1488,18 +1502,26 @@ func TestTransportEnvelopeFrom_FlattensTransportData(t *testing.T) {
 		OffsetMS:        263000,
 		DurationMS:      596000,
 		ActionsEnabled: ActionsEnabled{
-			Previous: true, Next: true, PauseResume: true,
-			Stop: true, Replay: true, Seek: true,
+			Previous: true, Next: false, PauseResume: true,
+			Stop: false, Replay: true, Seek: false,
 		},
 		AdapterRef: "plex:abc123",
 		Generation: 42,
 	}
 	env := transportEnvelopeFrom(td)
-	if env.State != "playing" || env.SeekFillPercent != 44 || env.OffsetMS != 263000 {
+	if env.State != "playing" || env.SeekFillPercent != 44 || env.OffsetMS != 263000 ||
+		env.ElapsedTime != "04:23" || env.TotalTime != "09:56" || env.PercentPlayed != "44%" ||
+		env.DurationMS != 596000 {
 		t.Errorf("flatten lost scalars: %+v", env)
 	}
-	if !env.ActionsEnabled.PauseResume || !env.ActionsEnabled.Seek {
-		t.Errorf("flatten lost ActionsEnabled bools: %+v", env.ActionsEnabled)
+	// Check all six ActionsEnabled fields independently so a copy-paste
+	// swap (e.g. Previous ↔ Next) in transportEnvelopeFrom is caught.
+	wantAE := actionsEnabledE{
+		Previous: true, Next: false, PauseResume: true,
+		Stop: false, Replay: true, Seek: false,
+	}
+	if env.ActionsEnabled != wantAE {
+		t.Errorf("flatten lost ActionsEnabled bools: got %+v, want %+v", env.ActionsEnabled, wantAE)
 	}
 	if env.AdapterRef != "plex:abc123" || env.Generation != 42 {
 		t.Errorf("flatten lost ref/generation: %+v", env)
@@ -1665,10 +1687,10 @@ func transportEnvelopeFrom(t TransportData) transportEnvelope {
 }
 
 // transportChanged returns true if any wire-format field differs.
-// Performs nine field-level comparisons (eight scalars + one
+// Performs ten field-level comparisons (nine scalars + one
 // ActionsEnabled struct equality, which Go's == handles directly
 // because all six bool fields are comparable). End-to-end the
-// wire-format surface has 14 testable deltas (eight scalars + six
+// wire-format surface has 15 testable deltas (nine scalars + six
 // ActionsEnabled bools).
 func transportChanged(a, b TransportData) bool {
 	return a.State != b.State ||
@@ -1705,11 +1727,11 @@ Phase 1 / Spec 3 task 9. Adds the wire-format types for the new
 transport SSE event:
 - transportEnvelope + actionsEnabledE: camelCase-tagged JSON shapes.
 - transportEnvelopeFrom(TransportData) → transportEnvelope: flattener.
-- transportChanged(a, b TransportData) bool: 9 field-level comparisons
-  (8 scalars + ActionsEnabled struct equality), surfacing 14 testable
+- transportChanged(a, b TransportData) bool: 10 field-level comparisons
+  (9 scalars + ActionsEnabled struct equality), surfacing 15 testable
   deltas. Matches vfdChanged's explicit-compare precedent.
 
-The wire format is locked in by 14 subtests asserting every field
+The wire format is locked in by 15 subtests asserting every field
 mutation triggers the diff. Adapter view → TransportData mapping
 lands in task 10; SSE emission lands in task 11.
 
@@ -2144,15 +2166,11 @@ case <-tick.C:
 	flusher.Flush()
 ```
 
-- [ ] **Step 4: Confirm all four `snapshotFromSession` call sites pass `s.transportViewer`**
+- [ ] **Step 4: Sanity-check the four `snapshotFromSession` call sites updated in Task 10**
 
-Task 10's Step 3 enumerated the four call sites that need updating (`handleIndex`, `New`'s synchronous seed, `startSnapshotRefresher`, and `handleEvents`'s initial-snapshot block). Verify all four pass `s.transportViewer` (or `cfg.TransportViewer` where called pre-`Server`-construction). The full call now reads:
+Task 10 already updated `handleIndex`, `New`'s synchronous seed, `startSnapshotRefresher`, and `handleEvents`'s initial-snapshot block to pass the new `s.transportViewer` argument. This step is verification only — no code edits — confirming Task 10's surgery before the new transport SSE emission goes live below.
 
-```go
-snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, time.Now())
-```
-
-Run: `grep -n "snapshotFromSession" internal/chassis/` — every match should now have five arguments (`cfg, session, visualizerViewer, transportViewer, now`).
+Run: `grep -n "snapshotFromSession" internal/chassis/` — every match should already pass five arguments (`cfg, session, visualizerViewer, transportViewer, now`). If any match still has four arguments, fix it before continuing.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -2206,6 +2224,7 @@ Create `internal/chassis/transport_test.go`:
 package chassis
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -2383,9 +2402,50 @@ func TestHandleTransportAction_ResponseSetsCacheControlNoStore(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 }
-```
 
-Add `"context"` to imports.
+func TestHandleTransportAction_RejectsZeroGeneration(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.TransportController = &fakeTransportController{}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// generation=0 is structurally invalid (uint64 > 0 required) even
+	// though the field is present. Distinct from "field missing" which
+	// is covered by RejectsMalformedForm.
+	body := "adapter_ref=plex:abc&generation=0&action=pause"
+	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleTransportAction(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleTransportAction_ErrorResponseContentTypeIsJSON(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.TransportController = &fakeTransportController{err: adapters.ErrActiveSessionChanged}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	body := "adapter_ref=plex:abc&generation=42&action=pause"
+	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleTransportAction(rec, req)
+
+	// Spec 4's writeJSONError sets "application/json" exactly (no
+	// charset). Lock the response Content-Type in.
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2749,6 +2809,38 @@ func TestTransportTemplate_RendersDataAttributeHooks(t *testing.T) {
 	}
 }
 
+func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	// The seek-bar .fill div renders style="width: {{.SeekFillPercent}}%".
+	// Render at three values to confirm the template wires the percent
+	// through, not a hard-coded constant.
+	cases := []struct {
+		name    string
+		percent int
+		want    string
+	}{
+		{"zero", 0, `style="width: 0%"`},
+		{"mid", 44, `style="width: 44%"`},
+		{"full", 100, `style="width: 100%"`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := tmpl.ExecuteTemplate(&buf, "transport", TransportData{SeekFillPercent: tc.percent}); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if !strings.Contains(buf.String(), tc.want) {
+				t.Errorf("seek-bar fill missing %q; output:\n%s", tc.want, buf.String())
+			}
+		})
+	}
+}
+
 func TestShellTemplate_LoadsTransportScript(t *testing.T) {
 	t.Parallel()
 	s, err := New(nonZeroConfig())
@@ -2954,6 +3046,61 @@ func TestHandleStatic_TransportJSServed(t *testing.T) {
 	}
 	if !strings.Contains(body, "data-transport-action") {
 		t.Errorf("transport.js should reference data-transport-action selectors")
+	}
+}
+
+// Lock in two race-window mitigations the spec explicitly called out.
+// Both are content checks on the served JS — cheap and high-signal.
+
+func TestTransportJS_SeekUsesRawDurationMsNotClockText(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	// Positive: the drag release reads data-transport-duration-ms.
+	if !strings.Contains(body, "data-transport-duration-ms") {
+		t.Errorf("transport.js seek math must read data-transport-duration-ms; not present in served JS")
+	}
+	// Negative: should NOT parse the formatted MM:SS clock text via a
+	// .split(':') / Date.parse / etc. for seek math. If a future refactor
+	// re-adds clock parsing, this test fires.
+	for _, forbidden := range []string{".split(':')", "parseClockToMs", "MM:SS"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("transport.js must not parse formatted clock text for seek math; found %q", forbidden)
+		}
+	}
+}
+
+func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	// The click handler must short-circuit on transportState === 'stopped'
+	// for the pauseResume button (defense-in-depth over the disabled
+	// attribute). Look for the literal guard.
+	if !strings.Contains(body, "transportState === 'stopped'") {
+		t.Errorf("transport.js click handler must explicitly refuse pauseResume against stopped state")
 	}
 }
 ```
