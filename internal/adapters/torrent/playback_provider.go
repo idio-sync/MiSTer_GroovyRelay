@@ -69,6 +69,20 @@ func (a *Adapter) QuickCastTabs() []adapters.QuickCastTab {
 			Encoding:       adapters.QuickCastEncodingMultipart,
 			Fields:         []adapters.QuickCastField{{Name: "torrent_file", Label: "Torrent File", Type: "file", Required: true}},
 		},
+		{
+			ID:             "torrent-url",
+			Label:          "Torrent URL",
+			Enabled:        enabled && ack,
+			DisabledReason: disabled,
+			Encoding:       adapters.QuickCastEncodingForm,
+			Fields: []adapters.QuickCastField{{
+				Name:        "torrent_url",
+				Label:       "Torrent URL",
+				Type:        "url",
+				Placeholder: "https://example.com/file.torrent",
+				Required:    true,
+			}},
+		},
 	}
 }
 
@@ -112,6 +126,16 @@ func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastReq
 			return adapters.QuickCastResult{}, fmt.Errorf("torrent file exceeds 4 MiB")
 		}
 		started, err := a.startTorrentBytes(ctx, body)
+		if err != nil {
+			return adapters.QuickCastResult{}, err
+		}
+		return adapters.QuickCastResult{Message: "torrent started", AdapterRef: started.AdapterRef}, nil
+	case "torrent-url":
+		raw := strings.TrimSpace(req.Values["torrent_url"])
+		if raw == "" {
+			return adapters.QuickCastResult{}, fmt.Errorf("torrent_url is required")
+		}
+		started, err := a.startTorrentURL(ctx, raw)
 		if err != nil {
 			return adapters.QuickCastResult{}, err
 		}

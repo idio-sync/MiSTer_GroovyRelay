@@ -78,3 +78,141 @@ func TestTorrentQuickCastRejectsDisabledAdapter(t *testing.T) {
 		t.Fatalf("HandleQuickCast disabled error = %v, want disabled", err)
 	}
 }
+
+func TestTorrentQuickCastTabsIncludeTorrentURL(t *testing.T) {
+	a := &Adapter{cfg: Config{Enabled: true, TrafficAcknowledged: true}}
+	var tab adapters.QuickCastTab
+	found := false
+	for _, candidate := range a.QuickCastTabs() {
+		if candidate.ID == "torrent-url" {
+			tab = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("QuickCastTabs missing torrent-url tab")
+	}
+	if !tab.Enabled {
+		t.Fatalf("torrent-url tab Enabled = false, DisabledReason = %q", tab.DisabledReason)
+	}
+	if tab.Encoding != adapters.QuickCastEncodingForm {
+		t.Fatalf("torrent-url Encoding = %q, want form", tab.Encoding)
+	}
+	if len(tab.Fields) != 1 {
+		t.Fatalf("torrent-url Fields = %#v, want one field", tab.Fields)
+	}
+	field := tab.Fields[0]
+	if field.Name != "torrent_url" || field.Type != "url" {
+		t.Fatalf("torrent-url field = %#v, want torrent_url url field", field)
+	}
+}
+
+func TestTorrentQuickCastTorrentURLDisabledReasons(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "disabled",
+			cfg:  Config{Enabled: false, TrafficAcknowledged: true},
+			want: "torrent adapter is disabled",
+		},
+		{
+			name: "unacknowledged",
+			cfg:  Config{Enabled: true, TrafficAcknowledged: false},
+			want: "BitTorrent traffic acknowledgement required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &Adapter{cfg: tt.cfg}
+			var tab adapters.QuickCastTab
+			found := false
+			for _, candidate := range a.QuickCastTabs() {
+				if candidate.ID == "torrent-url" {
+					tab = candidate
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatal("QuickCastTabs missing torrent-url tab")
+			}
+			if tab.Enabled {
+				t.Fatalf("torrent-url tab Enabled = true, want disabled")
+			}
+			if tab.DisabledReason != tt.want {
+				t.Fatalf("torrent-url DisabledReason = %q, want %q", tab.DisabledReason, tt.want)
+			}
+		})
+	}
+}
+
+func TestTorrentQuickCastRejectsEmptyTorrentURL(t *testing.T) {
+	a := &Adapter{cfg: Config{Enabled: true, TrafficAcknowledged: true}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "torrent-url",
+		Values: map[string]string{"torrent_url": " \t\n"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "torrent_url is required") {
+		t.Fatalf("HandleQuickCast empty torrent_url error = %v, want torrent_url is required", err)
+	}
+}
+
+func TestTorrentQuickCastDoesNotFetchTorrentURLWhenDisabledOrUnacknowledged(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "disabled", cfg: Config{Enabled: false, TrafficAcknowledged: true}},
+		{name: "unacknowledged", cfg: Config{Enabled: true, TrafficAcknowledged: false}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := &fakeTorrentURLFetcher{body: []byte("metainfo")}
+			a := &Adapter{cfg: tt.cfg, urlFetcher: fetcher}
+			_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+				TabID:  "torrent-url",
+				Values: map[string]string{"torrent_url": "https://example.com/file.torrent"},
+			})
+			if err == nil {
+				t.Fatal("HandleQuickCast error = nil, want gate rejection")
+			}
+			if fetcher.calls != 0 {
+				t.Fatalf("fetcher calls = %d, want 0", fetcher.calls)
+			}
+		})
+	}
+}
+
+func TestTorrentQuickCastStartsTorrentURL(t *testing.T) {
+	rec := &recordingCore{}
+	client := &fakeTorrentClient{
+		metaTorrent: &fakeTorrent{
+			hash:  "cccccccccccccccccccccccccccccccccccccccc",
+			name:  "movie",
+			files: []FileCandidate{{DisplayPath: "movie.mkv", Length: 10, Index: 0}},
+		},
+	}
+	a := newStartedTestAdapter(t, startedTorrentConfig(), client, rec)
+	a.urlFetcher = &fakeTorrentURLFetcher{body: []byte("metainfo")}
+
+	result, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "torrent-url",
+		Values: map[string]string{"torrent_url": "https://example.com/file.torrent"},
+	})
+	if err != nil {
+		t.Fatalf("HandleQuickCast torrent-url: %v", err)
+	}
+	if result.Message != "torrent started" {
+		t.Fatalf("Message = %q, want torrent started", result.Message)
+	}
+	if result.AdapterRef == "" {
+		t.Fatal("AdapterRef is empty")
+	}
+	if len(rec.reqs) != 1 {
+		t.Fatalf("core requests = %d, want 1", len(rec.reqs))
+	}
+}

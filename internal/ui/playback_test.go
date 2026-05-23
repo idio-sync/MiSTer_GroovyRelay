@@ -665,6 +665,7 @@ func TestBannerDismissButtonPreservesDrawerState(t *testing.T) {
 		tabs: []adapters.QuickCastTab{
 			{ID: "url", Label: "URL", Enabled: true, Encoding: adapters.QuickCastEncodingForm},
 			{ID: "torrent-magnet", Label: "Magnet", Enabled: true, Encoding: adapters.QuickCastEncodingForm},
+			{ID: "torrent-url", Label: "Torrent URL", Enabled: true, Encoding: adapters.QuickCastEncodingForm, Fields: []adapters.QuickCastField{{Name: "torrent_url", Label: "Torrent URL", Type: "url", Required: true}}},
 		},
 	}
 	_, mux := newTestServer(t, func(c *Config) {
@@ -684,6 +685,17 @@ func TestBannerDismissButtonPreservesDrawerState(t *testing.T) {
 	// Dismiss button URL should preserve drawer=cast and the active tab.
 	if !strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast&tab=torrent-magnet"`) {
 		t.Fatalf("Dismiss button should preserve drawer+tab in hx-get: %s", body)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast&tab=torrent-url", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	body = w.Body.String()
+	if !strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast&tab=torrent-url"`) {
+		t.Fatalf("torrent-url tab missing from quick-cast drawer:\n%s", body)
+	}
+	if !strings.Contains(body, `name="torrent_url"`) {
+		t.Fatalf("torrent_url input missing from quick-cast drawer:\n%s", body)
 	}
 }
 
