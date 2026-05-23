@@ -140,7 +140,7 @@ func transportChanged(a, b TransportData) bool {
 //   - 500 when the ResponseWriter cannot flush
 //   - SSE response headers
 //   - retry: 3000 directive (pins browser reconnect cadence)
-//   - initial state + vfd snapshot
+//   - initial state + vfd + visualizer + transport snapshot
 //   - clean termination on r.Context().Done()
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
@@ -168,6 +168,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := emit(w, "visualizer", vizEnvelope{Mode: last.Visualizer.ActiveMode}); err != nil {
+		return
+	}
+	if err := emit(w, "transport", transportEnvelopeFrom(last.Transport)); err != nil {
 		return
 	}
 	flusher.Flush()
@@ -199,6 +202,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				last.Visualizer.ActiveMode = curr.Visualizer.ActiveMode
+			}
+			if transportChanged(curr.Transport, last.Transport) {
+				if err := emit(w, "transport", transportEnvelopeFrom(curr.Transport)); err != nil {
+					return
+				}
+				last.Transport = curr.Transport
 			}
 			flusher.Flush()
 		case <-heartbeat.C:

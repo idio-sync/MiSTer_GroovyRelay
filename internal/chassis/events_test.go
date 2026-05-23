@@ -421,6 +421,12 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	if !strings.Contains(body, `"title":"STANDBY"`) {
 		t.Errorf("body missing STANDBY title payload")
 	}
+	if !strings.Contains(body, "event: transport\n") {
+		t.Errorf("body missing initial transport event")
+	}
+	if !strings.Contains(body, `"state":"stopped"`) {
+		t.Errorf("body missing stopped transport payload")
+	}
 }
 
 func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
@@ -444,14 +450,65 @@ func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
 	stateIdx := strings.Index(body, "event: state\n")
 	vfdIdx := strings.Index(body, "event: vfd\n")
 	vizIdx := strings.Index(body, "event: visualizer\n")
+	transportIdx := strings.Index(body, "event: transport\n")
 	if vizIdx < 0 {
 		t.Fatalf("body missing initial visualizer event:\n%s", body)
 	}
-	if !(stateIdx >= 0 && vfdIdx > stateIdx && vizIdx > vfdIdx) {
-		t.Errorf("initial event order should be state, vfd, visualizer; body:\n%s", body)
+	if transportIdx < 0 {
+		t.Fatalf("body missing initial transport event:\n%s", body)
+	}
+	if !(stateIdx >= 0 && vfdIdx > stateIdx && vizIdx > vfdIdx && transportIdx > vizIdx) {
+		t.Errorf("initial event order should be state, vfd, visualizer, transport; body:\n%s", body)
 	}
 	if !strings.Contains(body, `"mode":"stereo_scope"`) {
 		t.Errorf("body missing visualizer mode payload:\n%s", body)
+	}
+}
+
+func TestHandleEvents_EmitsTransportEventOnInitialConnect(t *testing.T) {
+	t.Parallel()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Initial Track",
+		Source:     "plex",
+		AdapterRef: "plex:item:initial",
+		Generation: 3,
+		Position:   64 * time.Second,
+		Duration:   100 * time.Second,
+	}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: transport\n") {
+		t.Fatalf("body missing initial transport event:\n%s", body)
+	}
+	for _, want := range []string{
+		`"state":"playing"`,
+		`"seekFillPercent":64`,
+		`"elapsedTime":"01:04"`,
+		`"totalTime":"01:40"`,
+		`"percentPlayed":"64%"`,
+		`"offsetMs":64000`,
+		`"durationMs":100000`,
+		`"adapterRef":"plex:item:initial"`,
+		`"generation":3`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("initial transport event missing %s; body:\n%s", want, body)
+		}
 	}
 }
 
@@ -674,6 +731,63 @@ func TestHandleEvents_EmitsVisualizerEventOnModeChange(t *testing.T) {
 	}
 	if got := strings.Count(body, "event: visualizer\n"); got < 2 {
 		t.Errorf("visualizer event count = %d, want at least 2; body:\n%s", got, body)
+	}
+}
+
+func TestHandleEvents_EmitsTransportEventOnStateTransition(t *testing.T) {
+	t.Parallel()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Transport Track",
+		Source:     "plex",
+		AdapterRef: "plex:item:transport",
+		Generation: 1,
+		Position:   10 * time.Second,
+		Duration:   100 * time.Second,
+	}}
+	cfg := nonZeroConfig()
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		sv.set(core.StatusHomeView{
+			State:      core.StatePaused,
+			Title:      "Transport Track",
+			Source:     "plex",
+			AdapterRef: "plex:item:transport",
+			Generation: 2,
+			Position:   20 * time.Second,
+			Duration:   100 * time.Second,
+		})
+		s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, time.Now()))
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if got := strings.Count(body, "event: transport\n"); got < 2 {
+		t.Fatalf("transport event count = %d, want at least 2; body:\n%s", got, body)
+	}
+	for _, want := range []string{
+		`"state":"playing"`,
+		`"state":"paused"`,
+		`"seekFillPercent":20`,
+		`"elapsedTime":"00:20"`,
+		`"generation":2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport transition event missing %s; body:\n%s", want, body)
+		}
 	}
 }
 
