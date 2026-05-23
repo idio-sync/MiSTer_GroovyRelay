@@ -1512,6 +1512,26 @@ func TestStartTorrentURLRequiresGatesBeforeFetch(t *testing.T) {
 	}
 }
 
+func TestStartTorrentURLRejectsUnsafeInputBeforeGatesAndFetch(t *testing.T) {
+	for _, raw := range []string{
+		"ftp://example.com/file.torrent",
+		"https://user:pass@example.com/file.torrent",
+		"http://[::1]/file.torrent",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			fetcher := &fakeTorrentURLFetcher{}
+			a := &Adapter{cfg: Config{Enabled: false, TrafficAcknowledged: false}, urlFetcher: fetcher}
+			_, err := a.startTorrentURL(context.Background(), raw)
+			if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrBadInput {
+				t.Fatalf("err = %#v, want ErrBadInput before gates", err)
+			}
+			if fetcher.calls != 0 {
+				t.Fatalf("fetcher calls = %d, want 0", fetcher.calls)
+			}
+		})
+	}
+}
+
 func TestStartTorrentURLRechecksGatesAfterFetchBeforeClient(t *testing.T) {
 	fetcher := &fakeTorrentURLFetcher{body: []byte("metainfo")}
 	factoryCalls := 0
@@ -1664,8 +1684,9 @@ Add:
 
 ```go
 func (a *Adapter) startTorrentURL(ctx context.Context, rawURL string) (*StartedSession, error) {
-	if _, err := url.Parse(strings.TrimSpace(rawURL)); err != nil {
-		return nil, &TorrentError{Kind: ErrBadInput, Message: "invalid torrent URL"}
+	rawURL = strings.TrimSpace(rawURL)
+	if err := validateTorrentURLInput(rawURL); err != nil {
+		return nil, err
 	}
 	if _, err := a.snapshotForStart(); err != nil {
 		return nil, err
@@ -1690,7 +1711,6 @@ Add imports if needed:
 
 ```go
 import (
-	"net/url"
 	"strings"
 )
 ```
@@ -1754,6 +1774,37 @@ func TestTorrentQuickCastTabsIncludeTorrentURL(t *testing.T) {
 	}
 	if len(found.Fields) != 1 || found.Fields[0].Name != "torrent_url" || found.Fields[0].Type != "url" {
 		t.Fatalf("torrent-url fields = %#v", found.Fields)
+	}
+}
+
+func TestTorrentQuickCastTorrentURLDisabledReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{name: "disabled", cfg: Config{Enabled: false, TrafficAcknowledged: true}, want: "torrent adapter is disabled"},
+		{name: "unacknowledged", cfg: Config{Enabled: true, TrafficAcknowledged: false}, want: "BitTorrent traffic acknowledgement required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{cfg: tc.cfg}
+			var found adapters.QuickCastTab
+			for _, tab := range a.QuickCastTabs() {
+				if tab.ID == "torrent-url" {
+					found = tab
+					break
+				}
+			}
+			if found.ID == "" {
+				t.Fatal("torrent-url tab missing")
+			}
+			if found.Enabled {
+				t.Fatalf("torrent-url enabled = true, want false")
+			}
+			if found.DisabledReason != tc.want {
+				t.Fatalf("DisabledReason = %q, want %q", found.DisabledReason, tc.want)
+			}
+		})
 	}
 }
 
@@ -1959,6 +2010,8 @@ https://example.com/movie.torrent
 ```
 
 Remote torrent URL fetching is public HTTP(S) only. The bridge rejects URL credentials, IP-literal hosts, private/local/link-local/multicast/special-use addresses, unsafe redirects, and responses over 4 MiB. If the URL path does not end in `.torrent`, the server must support `HEAD` and return a BitTorrent content type (`application/x-bittorrent` or `application/x-torrent`) before the bridge will download the body.
+
+Torrent URL casts require the adapter to be enabled and BitTorrent traffic acknowledged, just like magnet links and uploads.
 
 Servers that only allow presigned `GET` requests should use a URL path ending in `.torrent`. Otherwise the bridge returns an error instead of downloading an arbitrary body to sniff it.
 ```
