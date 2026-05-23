@@ -32,7 +32,7 @@
 | Path | Change |
 |---|---|
 | `internal/adapters/playback.go` | Add `ErrActiveSessionChanged` and `ErrPlaybackActionUnsupported` typed sentinels |
-| `internal/adapters/streams/playback_provider.go` | Migrate stale-session + unsupported-verb error paths to wrap sentinels |
+| `internal/adapters/streams/playback_provider.go` | Migrate stale-session + unsupported-verb error paths to errors.Is-friendly sentinels |
 | `internal/adapters/torrent/playback_provider.go` | Same migration |
 | `internal/adapters/url/playback_provider.go` | Same migration |
 | `internal/adapters/streams/playback_provider_test.go` | Update assertions to use `errors.Is(err, sentinel)` |
@@ -97,11 +97,23 @@ func TestErrPlaybackActionUnsupported_IsErrorsIsFriendly(t *testing.T) {
 		t.Fatalf("wrapped sentinel should satisfy errors.Is")
 	}
 }
+
+func TestUnsupportedPlaybackActionError_PreservesMessageAndUnwraps(t *testing.T) {
+	t.Parallel()
+	const msg = "streams adapter does not support previous"
+	err := UnsupportedPlaybackActionError(msg)
+	if err.Error() != msg {
+		t.Fatalf("Error() = %q, want %q", err.Error(), msg)
+	}
+	if !errors.Is(err, ErrPlaybackActionUnsupported) {
+		t.Fatalf("UnsupportedPlaybackActionError should unwrap to ErrPlaybackActionUnsupported")
+	}
+}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `go test ./internal/adapters/ -run 'TestErrActiveSessionChanged|TestErrPlaybackActionUnsupported'`
+Run: `go test ./internal/adapters/ -run 'TestErrActiveSessionChanged|TestErrPlaybackActionUnsupported|TestUnsupportedPlaybackActionError'`
 Expected: FAIL — `ErrActiveSessionChanged` and `ErrPlaybackActionUnsupported` undefined.
 
 - [ ] **Step 3: Add the sentinels to `internal/adapters/playback.go`**
@@ -132,11 +144,34 @@ var ErrActiveSessionChanged = errors.New(ErrActiveSessionChangedMessage)
 // active session. Maps to HTTP 422 on the chassis; /ui surfaces the
 // provider's existing inline message.
 var ErrPlaybackActionUnsupported = errors.New("active adapter does not expose playback controls")
+
+type playbackActionUnsupportedError struct {
+	message string
+}
+
+func (e playbackActionUnsupportedError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	return ErrPlaybackActionUnsupported.Error()
+}
+
+func (e playbackActionUnsupportedError) Unwrap() error {
+	return ErrPlaybackActionUnsupported
+}
+
+// UnsupportedPlaybackActionError returns an error whose visible message
+// is exactly the supplied provider message, while errors.Is still matches
+// ErrPlaybackActionUnsupported. Providers use this instead of fmt.Errorf
+// with %w so /ui's legacy banner text stays byte-for-byte compatible.
+func UnsupportedPlaybackActionError(message string) error {
+	return playbackActionUnsupportedError{message: message}
+}
 ```
 
 - [ ] **Step 4: Run the test to verify the sentinels pass**
 
-Run: `go test ./internal/adapters/ -run 'TestErrActiveSessionChanged|TestErrPlaybackActionUnsupported'`
+Run: `go test ./internal/adapters/ -run 'TestErrActiveSessionChanged|TestErrPlaybackActionUnsupported|TestUnsupportedPlaybackActionError'`
 Expected: PASS.
 
 - [ ] **Step 5: Migrate `streams` provider**
@@ -156,7 +191,7 @@ return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 // Before (representative unsupported-action return):
 return adapters.PlaybackActionResult{}, fmt.Errorf("streams adapter does not support %s", req.Action)
 // After:
-return adapters.PlaybackActionResult{}, fmt.Errorf("streams adapter does not support %s: %w", req.Action, adapters.ErrPlaybackActionUnsupported)
+return adapters.PlaybackActionResult{}, adapters.UnsupportedPlaybackActionError(fmt.Sprintf("streams adapter does not support %s", req.Action))
 ```
 
 This loses the `*StreamsError` type for these two error paths. Verify no `errors.As(err, &StreamsError{})` callers depend on those specific paths (grep for `errors.As.*StreamsError` — likely zero hits in production code; the only callers are inside `internal/adapters/streams/` itself).
@@ -178,11 +213,11 @@ Add `"errors"` to test imports if not already present.
 
 - [ ] **Step 6: Migrate `torrent` provider**
 
-Same pattern as Step 5. Find `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` and switch to `adapters.ErrActiveSessionChanged`. Find unsupported-verb returns and wrap `adapters.ErrPlaybackActionUnsupported`. Update `playback_provider_test.go` to use `errors.Is`.
+Same pattern as Step 5. Find `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` and switch to `adapters.ErrActiveSessionChanged`. Find unsupported-verb returns and use `adapters.UnsupportedPlaybackActionError(<existing message>)` so `errors.Is(err, adapters.ErrPlaybackActionUnsupported)` succeeds without changing `/ui`'s visible banner text. Update `playback_provider_test.go` to use `errors.Is`.
 
 - [ ] **Step 7: Migrate `url` provider**
 
-Same pattern. Five occurrences of `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` per the earlier grep — switch each to `adapters.ErrActiveSessionChanged`. Update `playback_provider_test.go` to use `errors.Is`.
+Same pattern. Five occurrences of `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` per the earlier grep — switch each to `adapters.ErrActiveSessionChanged`. Use `adapters.UnsupportedPlaybackActionError(<existing message>)` for unsupported verbs. Update `playback_provider_test.go` to use `errors.Is`.
 
 - [ ] **Step 8: Run all adapter playback tests**
 
@@ -211,8 +246,9 @@ Phase 1 / Spec 3 task 1. Adds errors.Is-friendly sentinels:
 
 Migrates the three current playback providers (streams, torrent, url):
 stale-session returns now use the typed sentinel directly; unsupported
-verb returns wrap ErrPlaybackActionUnsupported via %w so the existing
-provider-specific message text is preserved for /ui's banner display.
+verb returns use UnsupportedPlaybackActionError so errors.Is detects
+ErrPlaybackActionUnsupported while the existing provider-specific
+message text is preserved for /ui's banner display.
 
 Behaviour unchanged for /ui (Error() string identical via sentinel
 declaration). Dispatcher migration in the next task starts depending
@@ -242,6 +278,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -250,6 +288,16 @@ import (
 type fakeStatusViewer struct{ view core.StatusHomeView }
 
 func (f *fakeStatusViewer) StatusHomeView() core.StatusHomeView { return f.view }
+
+type countingStatusViewer struct {
+	calls int
+	view  core.StatusHomeView
+}
+
+func (f *countingStatusViewer) StatusHomeView() core.StatusHomeView {
+	f.calls++
+	return f.view
+}
 
 // fakeProvider implements adapters.PlaybackControlProvider.
 type fakeProvider struct {
@@ -272,10 +320,29 @@ func (p *fakeProvider) HandlePlaybackAction(ctx context.Context, req adapters.Pl
 	return p.actionResult, p.actionErr
 }
 
-// fakeRegistry stubs the adapters.Registry API the dispatcher uses to
-// resolve a name → provider mapping. The dispatcher only calls .Lookup
-// (or whatever the actual API is) — implementer should verify the
-// concrete Registry call site and use the matching test double.
+type fakeAdapter struct {
+	*fakeProvider
+	adapterName string
+}
+
+func (a *fakeAdapter) Name() string { return a.adapterName }
+func (a *fakeAdapter) DisplayName() string { return a.adapterName }
+func (a *fakeAdapter) Fields() []adapters.FieldDef { return nil }
+func (a *fakeAdapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error { return nil }
+func (a *fakeAdapter) IsEnabled() bool { return true }
+func (a *fakeAdapter) Start(ctx context.Context) error { return nil }
+func (a *fakeAdapter) Stop() error { return nil }
+func (a *fakeAdapter) Status() adapters.Status { return adapters.Status{} }
+func (a *fakeAdapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeHotSwap, nil
+}
+
+func registerFakeProvider(t *testing.T, reg *adapters.Registry, name string, provider *fakeProvider) {
+	t.Helper()
+	if err := reg.Register(&fakeAdapter{fakeProvider: provider, adapterName: name}); err != nil {
+		t.Fatalf("Register(%q): %v", name, err)
+	}
+}
 
 func TestDispatcher_PlaybackView_NoActiveSession(t *testing.T) {
 	t.Parallel()
@@ -294,7 +361,7 @@ func TestDispatcher_PlaybackView_DelegatesToOwningProvider(t *testing.T) {
 		bannerView: adapters.PlaybackBannerAdapterView{Title: "live title"},
 	}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", provider) // pseudo — implementer uses real API
+	registerFakeProvider(t, reg, "plex", provider)
 
 	d := NewDispatcher(&fakeStatusViewer{view: core.StatusHomeView{
 		State:      core.StatePlaying,
@@ -316,9 +383,7 @@ func TestDispatcher_PlaybackView_DelegatesToOwningProvider(t *testing.T) {
 }
 ```
 
-**Implementer note on the Registry API.** The `adapters.Registry.Register` signature takes a full `Adapter` (with `Name()`, `Start()`, `Stop()`, `Status()`, `Fields()`, `ApplyConfig()`, `IsEnabled()`, `DecodeConfig()`, `DisplayName()`), not a bare provider. The `reg.Register("plex", provider)` shorthand above is illustrative — to make these tests run, the implementer needs a minimal fake `Adapter` that also implements `adapters.PlaybackControlProvider`.
-
-Either: (a) check `internal/adapters/registry_test.go` for an existing minimal Adapter fake and reuse it; or (b) write one in `internal/playback/dispatcher_test.go` (call it `fakeAdapter` — embed `*fakeProvider` so the playback methods are inherited; satisfy the other ~9 Adapter methods with no-ops returning zero values). The conformance bar is "the registry accepts it and looks it up by name"; nothing in these tests exercises the non-playback Adapter methods.
+**Implementer note on the Registry API.** The snippets above use a real `adapters.Adapter` fake because `adapters.Registry.Register` accepts `Register(Adapter)`, not a bare playback provider. Keep later tests on the same `registerFakeProvider` helper so the plan stays copy-safe.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -344,7 +409,6 @@ package playback
 
 import (
 	"context"
-	"errors"
 	"strings"  // used by the source-first prefix scan ported from /ui
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -407,9 +471,9 @@ func (d *Dispatcher) PlaybackViewForSnapshot(ctx context.Context, snap core.Stat
 // snap.Source names a registered adapter, that adapter is the sole
 // candidate — if it doesn't implement PlaybackControlProvider, this
 // returns (nil, false) rather than falling through to the legacy
-// adapter-ref prefix scan. The scan only runs as a legacy fallback when
-// Source is empty (older sessions installed before Source was a
-// first-class field on core.StatusHomeView).
+// adapter-ref prefix scan. The scan runs as a legacy fallback when
+// Source is empty or names no registered adapter (older sessions
+// installed before Source was a first-class field on core.StatusHomeView).
 //
 // Takes core.StatusHomeView (not adapters.PlaybackBannerSnapshot like
 // /ui's original): the public dispatcher methods accept core snapshots,
@@ -420,19 +484,23 @@ func (d *Dispatcher) playbackProviderForSnapshot(snap core.StatusHomeView) (adap
 	if d.registry == nil || snap.AdapterRef == "" {
 		return nil, false
 	}
-	// Implementer: port the body of /ui/playback.go's existing
-	// playbackProviderForSnapshot (line 381) — but ADJUST the field
-	// accesses for the core.StatusHomeView type. Specifically the
-	// existing code reads snap.Source and snap.AdapterRef; both fields
-	// also exist on core.StatusHomeView with the same names/types, so
-	// the adjustment is mechanical. Key invariants to preserve:
-	// 1. If snap.Source != "" and registry has it, return that adapter
-	//    only if it implements PlaybackControlProvider; otherwise
-	//    return (nil, false) WITHOUT falling through.
-	// 2. If snap.Source == "", iterate registered adapters and match
-	//    by AdapterRef prefix (e.g. "plex:" → plex adapter).
-	// Implement here (the test at Step 5 below will fail until you do):
+	if snap.Source != "" {
+		if a, ok := d.registry.Get(snap.Source); ok {
+			p, ok := a.(adapters.PlaybackControlProvider)
+			return p, ok
+		}
+	}
+	for _, a := range d.registry.List() {
+		if adapterRefBelongsTo(a.Name(), snap.AdapterRef) {
+			p, ok := a.(adapters.PlaybackControlProvider)
+			return p, ok
+		}
+	}
 	return nil, false
+}
+
+func adapterRefBelongsTo(adapterName, ref string) bool {
+	return strings.HasPrefix(ref, adapterName+":") || strings.HasPrefix(ref, adapterName+"/")
 }
 
 // snapshotForProvider converts the core view into the adapter-facing
@@ -456,10 +524,7 @@ func snapshotForProvider(snap core.StatusHomeView) adapters.PlaybackBannerSnapsh
 	}
 }
 
-// `errors` is used by the legacy-message normalizer added in Task 3 below.
 ```
-
-(The `errors` import is needed by Task 3; left placeholder for now.)
 
 **Implementer note:** The body of `playbackProviderForSnapshot` and `snapshotForProvider` must match `/ui/playback.go`'s existing implementations byte-for-byte (the source-first policy is non-trivial and Spec 3 explicitly relies on the same semantics). Copy and adjust import paths only.
 
@@ -468,11 +533,9 @@ func snapshotForProvider(snap core.StatusHomeView) adapters.PlaybackBannerSnapsh
 Run: `go test ./internal/playback/`
 Expected: PASS.
 
-- [ ] **Step 5: Replace the stub body with the source-first lookup and add policy tests**
+- [ ] **Step 5: Add focused source-first policy tests**
 
-First, replace the `return nil, false` stub in `playbackProviderForSnapshot` (introduced in Step 3) with the actual policy implementation. Port the logic from `internal/ui/playback.go:381-398` (the existing inline `playbackProviderForSnapshot` body); adjust field accesses to `core.StatusHomeView` (same field names — `Source`, `AdapterRef` — so the port is largely mechanical). Verify against the existing /ui implementation; the policy semantics MUST match byte-for-byte because Task 5's `/ui` refactor relies on it.
-
-Then add the policy tests below.
+Task 2 Step 3 already implemented the source-first lookup. Add the focused policy tests below so the exact no-fallthrough and legacy-ref-scan cases are locked down before `/ui` delegates to the dispatcher.
 
 Append to `dispatcher_test.go`:
 
@@ -482,8 +545,8 @@ func TestDispatcher_PlaybackProviderForSnapshot_SourceFirstPolicy(t *testing.T) 
 	plex := &fakeProvider{name: "plex"}
 	dlna := &fakeProvider{name: "dlna"}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", plex)
-	reg.Register("dlna", dlna)
+	registerFakeProvider(t, reg, "plex", plex)
+	registerFakeProvider(t, reg, "dlna", dlna)
 
 	d := NewDispatcher(nil, reg)
 	snap := core.StatusHomeView{Source: "plex", AdapterRef: "plex:abc"}
@@ -498,7 +561,7 @@ func TestDispatcher_PlaybackProviderForSnapshot_LegacyRefScanFallback(t *testing
 	t.Parallel()
 	plex := &fakeProvider{name: "plex"}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", plex)
+	registerFakeProvider(t, reg, "plex", plex)
 
 	d := NewDispatcher(nil, reg)
 	// Empty Source triggers the legacy adapter-ref-prefix scan.
@@ -509,11 +572,27 @@ func TestDispatcher_PlaybackProviderForSnapshot_LegacyRefScanFallback(t *testing
 		t.Errorf("legacy fallback: got provider %v ok=%v, want plex", p, ok)
 	}
 }
+
+func TestDispatcher_PlaybackViewForSnapshot_DoesNotAcquireFreshSnapshot(t *testing.T) {
+	t.Parallel()
+	status := &countingStatusViewer{}
+	provider := &fakeProvider{name: "plex", bannerOK: true}
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", provider)
+	d := NewDispatcher(status, reg)
+
+	_, _ = d.PlaybackViewForSnapshot(context.Background(), core.StatusHomeView{
+		State: core.StatePlaying, Source: "plex", AdapterRef: "plex:abc", Generation: 7,
+	})
+	if status.calls != 0 {
+		t.Fatalf("PlaybackViewForSnapshot called StatusHomeView %d times, want 0", status.calls)
+	}
+}
 ```
 
 - [ ] **Step 6: Run the new policy tests**
 
-Run: `go test ./internal/playback/ -run TestDispatcher_PlaybackProviderForSnapshot`
+Run: `go test ./internal/playback/ -run 'TestDispatcher_PlaybackProviderForSnapshot|TestDispatcher_PlaybackViewForSnapshot'`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -560,7 +639,7 @@ func TestDispatcher_HandlePlaybackAction_StaleGenerationReturnsSentinel(t *testi
 	t.Parallel()
 	provider := &fakeProvider{name: "plex", bannerOK: true}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", provider)
+	registerFakeProvider(t, reg, "plex", provider)
 	d := NewDispatcher(&fakeStatusViewer{view: core.StatusHomeView{
 		State: core.StatePlaying, Source: "plex", AdapterRef: "plex:abc", Generation: 7,
 	}}, reg)
@@ -599,7 +678,7 @@ func TestDispatcher_HandlePlaybackAction_DispatchesToProvider(t *testing.T) {
 		actionResult: adapters.PlaybackActionResult{Message: "Paused"},
 	}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", provider)
+	registerFakeProvider(t, reg, "plex", provider)
 	d := NewDispatcher(&fakeStatusViewer{view: core.StatusHomeView{
 		State: core.StatePlaying, Source: "plex", AdapterRef: "plex:abc", Generation: 7,
 	}}, reg)
@@ -622,7 +701,7 @@ func TestDispatcher_HandlePlaybackAction_ClampsNegativeOffsetToZero(t *testing.T
 	t.Parallel()
 	provider := &fakeProvider{name: "plex", bannerOK: true}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", provider)
+	registerFakeProvider(t, reg, "plex", provider)
 	d := NewDispatcher(&fakeStatusViewer{view: core.StatusHomeView{
 		State: core.StatePlaying, Source: "plex", AdapterRef: "plex:abc", Generation: 7,
 	}}, reg)
@@ -650,7 +729,7 @@ func TestDispatcher_HandlePlaybackAction_NormalizesLegacyStaleMessage(t *testing
 		actionErr: fmt.Errorf("active session changed"),
 	}
 	reg := adapters.NewRegistry()
-	reg.Register("plex", provider)
+	registerFakeProvider(t, reg, "plex", provider)
 	d := NewDispatcher(&fakeStatusViewer{view: core.StatusHomeView{
 		State: core.StatePlaying, Source: "plex", AdapterRef: "plex:abc", Generation: 7,
 	}}, reg)
@@ -673,7 +752,7 @@ Expected: FAIL — `HandlePlaybackAction` not yet implemented.
 
 - [ ] **Step 3: Implement `HandlePlaybackAction` with clamp + sentinel normalization**
 
-Append to `internal/playback/dispatcher.go`:
+Append to `internal/playback/dispatcher.go` and add `"errors"` to its import block:
 
 ```go
 // HandlePlaybackAction validates the caller's adapter_ref + generation
@@ -722,7 +801,7 @@ func (d *Dispatcher) HandlePlaybackAction(ctx context.Context, req adapters.Play
 }
 ```
 
-The `errors` import added in Task 2 is now actually used by `errors.Is` below.
+Task 2 deliberately omitted `"errors"` so its compile pass stays green; Task 3 adds it when `HandlePlaybackAction` starts using `errors.Is`.
 
 - [ ] **Step 4: Run all dispatcher tests**
 
@@ -804,6 +883,7 @@ In `internal/ui/server.go`, declare a package-local interface and extend `Config
 // Registry so existing test fixtures don't need updating.
 type PlaybackService interface {
 	PlaybackView(ctx context.Context) (adapters.PlaybackBannerAdapterView, bool)
+	PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool)
 	HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error)
 }
 
@@ -859,7 +939,7 @@ git commit -m "$(cat <<'EOF'
 feat(ui): Config gains PlaybackService field with default Dispatcher
 
 Phase 1 / Spec 3 task 4. Adds a package-local PlaybackService interface
-declaring the two playback.Dispatcher methods /ui consumes. Config
+declaring the three playback.Dispatcher methods /ui consumes. Config
 gains an optional Playback field; New defaults it to
 playback.NewDispatcher(StatusViewer, Registry) when nil, so existing
 test fixtures that only supply StatusViewer + Registry keep working
@@ -909,6 +989,13 @@ func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, 
 
 ```go
 func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, req adapters.PlaybackActionRequest) {
+	if s.playback == nil {
+		// Preserve the existing nil-StatusViewer/status-disabled behavior:
+		// the old inline path compared the request to an idle zero snapshot
+		// and rendered the stale-session message instead of panicking.
+		s.renderPlaybackMessage(w, r, "err", adapters.ErrActiveSessionChangedMessage, false, "")
+		return
+	}
 	result, err := s.playback.HandlePlaybackAction(r.Context(), req)
 	if err != nil {
 		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
@@ -918,7 +1005,7 @@ func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, 
 }
 ```
 
-The dispatcher already does the stale-generation check and returns `ErrActiveSessionChanged` (whose `.Error()` is the existing message text), and already maps no-provider to `ErrPlaybackActionUnsupported` (whose `.Error()` is the existing "active adapter does not expose playback controls" string). The inline pre-check is redundant; `renderPlaybackMessage` displays the same string either way.
+The dispatcher already does the stale-generation check and returns `ErrActiveSessionChanged` (whose `.Error()` is the existing message text), and already maps no-provider to `ErrPlaybackActionUnsupported` (whose `.Error()` is the existing "active adapter does not expose playback controls" string). The inline pre-check is redundant; `renderPlaybackMessage` displays the same string either way. The explicit `s.playback == nil` branch is required because Task 4 intentionally leaves `s.playback` nil when `StatusViewer` is nil, preserving the existing status-disabled UI mode.
 
 - [ ] **Step 3: Run the existing `/ui` playback tests**
 
@@ -977,33 +1064,33 @@ if provider, ok := s.playbackProviderForSnapshot(snap); ok {
 - [ ] **Step 2: Replace with a dispatcher call**
 
 ```go
-if providerView, ok := s.playback.PlaybackViewForSnapshot(ctx, snap); ok {
-	if providerView.Title != "" {
-		data.Title = providerView.Title
-	}
-	if providerView.Subtitle != "" {
-		data.Subtitle = providerView.Subtitle
-	}
-	if providerView.SourceDisplay != "" {
-		data.SourceDisplay = providerView.SourceDisplay
-	}
-	data.Actions = providerView.Actions
-	data.Seek = providerView.Seek
-	if providerView.Seek != nil {
-		data.HasTimeline = data.HasTimeline || providerView.Seek.DurationMS > 0
-		data.PositionMS = providerView.Seek.OffsetMS
-		data.DurationMS = providerView.Seek.DurationMS
+if s.playback != nil {
+	if providerView, ok := s.playback.PlaybackViewForSnapshot(ctx, view); ok {
+		if providerView.Title != "" {
+			data.Title = providerView.Title
+		}
+		if providerView.Subtitle != "" {
+			data.Subtitle = providerView.Subtitle
+		}
+		if providerView.SourceDisplay != "" {
+			data.SourceDisplay = providerView.SourceDisplay
+		}
+		data.Actions = providerView.Actions
+		data.Seek = providerView.Seek
+		if providerView.Seek != nil {
+			data.HasTimeline = data.HasTimeline || providerView.Seek.DurationMS > 0
+			data.PositionMS = providerView.Seek.OffsetMS
+			data.DurationMS = providerView.Seek.DurationMS
+		}
 	}
 }
 ```
 
-`buildPlaybackBannerData` reads `view := s.cfg.StatusViewer.StatusHomeView()` upstream of the provider lookup (around line 290-310). Reuse that `view` variable directly:
-
-```go
-if providerView, ok := s.playback.PlaybackViewForSnapshot(ctx, view); ok {
-```
+`buildPlaybackBannerData` reads `view := s.cfg.StatusViewer.StatusHomeView()` upstream of the provider lookup (around line 290-310). Reuse that `view` variable directly. The `s.playback != nil` guard preserves the nil-`StatusViewer` / status-disabled mode from Task 4: when no playback service exists, the banner keeps its core-derived read-only defaults and the later `ReadOnly` branch behaves as before.
 
 If for any reason the code path no longer has a `core.StatusHomeView` in hand at that call site (verify by reading the surrounding lines), fall back to `s.playback.PlaybackView(ctx)` — that variant snapshots internally for the extra cost of one `Manager.mu` acquisition per banner render (~µs; acceptable since `/ui` polls at 2s, not 4Hz).
+
+Delete the now-unused local `snap := adapters.PlaybackBannerSnapshot{...}` block from `buildPlaybackBannerData`; after this replacement the function should compile without an unused `snap` variable.
 
 - [ ] **Step 3: Delete the inline `playbackProviderForSnapshot` function from `playback.go`**
 
@@ -1684,7 +1771,7 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 	cfg.Session = sv
 	cfg.TransportViewer = tv
 
-	got := snapshotFromSession(cfg, sv, tv, fixedNow)
+	got := snapshotFromSession(cfg, sv, cfg.VisualizerViewer, tv, fixedNow)
 
 	if got.Transport.State != "playing" {
 		t.Errorf("State = %q, want playing", got.Transport.State)
@@ -1713,7 +1800,7 @@ func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
 	}}
 	tv := &fakeTransportViewer{ok: false} // no provider
 
-	got := snapshotFromSession(cfg, sv, tv, fixedNow)
+	got := snapshotFromSession(cfg, sv, cfg.VisualizerViewer, tv, fixedNow)
 
 	if got.Transport.State != "playing" {
 		t.Errorf("State should still be playing even without provider: %q", got.Transport.State)
@@ -1733,7 +1820,7 @@ func TestSnapshotFromSession_NilTransportViewerKeepsTransportZero(t *testing.T) 
 	cfg := nonZeroConfig()
 
 	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	got := snapshotFromSession(cfg, sv, nil, fixedNow) // nil TransportViewer
+	got := snapshotFromSession(cfg, sv, cfg.VisualizerViewer, nil, fixedNow) // nil TransportViewer
 
 	if got.Transport.State != "stopped" {
 		t.Errorf("State should be stopped when idle: %q", got.Transport.State)
@@ -2239,7 +2326,7 @@ func TestHandleTransportAction_ProviderErrorReturns500(t *testing.T) {
 
 func TestHandleTransportAction_RejectsMalformedForm(t *testing.T) {
 	t.Parallel()
-	// Wire a controller so the nil-controller 503 branch doesn't preempt
+	// Wire a controller so the nil-controller 500 branch doesn't preempt
 	// the form-parse 400 we're actually testing for.
 	cfg := nonZeroConfig()
 	cfg.TransportController = &fakeTransportController{}
@@ -2331,13 +2418,20 @@ var allowedTransportActions = map[string]struct{}{
 	adapters.PlaybackActionReplay:   {},
 }
 
+func transportNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // handleTransportAction dispatches a transport action (pause / resume /
 // stop / previous / next / replay) to the playback dispatcher. Returns
 // 204 on success. Wired through requireSameOrigin in Mount.
 func (s *Server) handleTransportAction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if s.transportController == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "transport controller not configured")
+		writeJSONError(w, http.StatusInternalServerError, "transport controller not configured")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -2391,7 +2485,7 @@ func (s *Server) handleTransportAction(w http.ResponseWriter, r *http.Request) {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./internal/chassis/ -run TestHandleTransportAction`
-Expected: PASS — all 6 action-handler tests.
+Expected: PASS — all 7 action-handler tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2410,7 +2504,7 @@ Phase 1 / Spec 3 task 12. POST /receiver/transport/action handler:
 - All responses set Cache-Control: no-store.
 - All non-success responses use Spec 4's writeJSONError shape.
 
-Mount wiring through requireSameOrigin lands in task 15.
+Mount wiring through `transportNoStore(requireSameOrigin(...))` lands in task 16.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -2515,7 +2609,7 @@ Append to `internal/chassis/transport.go`:
 func (s *Server) handleTransportSeek(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if s.transportController == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "transport controller not configured")
+		writeJSONError(w, http.StatusInternalServerError, "transport controller not configured")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -2582,7 +2676,7 @@ offset_ms is parsed as int and passed through to the dispatcher
 (which clamps negatives to zero per task 3). Action verb is hard-
 coded to "seek" server-side.
 
-Mount wiring lands in task 15 alongside the action route.
+Mount wiring lands in task 16 alongside the action route.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -2649,7 +2743,8 @@ func TestTransportTemplate_RendersDataAttributeHooks(t *testing.T) {
 		}
 	}
 	// The Replay button has Enabled=false → must render `disabled`.
-	if !strings.Contains(body, `data-transport-action="replay" disabled`) && !strings.Contains(body, `disabled data-transport-action="replay"`) {
+	replayDisabled := regexp.MustCompile(`(?s)<button[^>]*data-transport-action="replay"[^>]*disabled|<button[^>]*disabled[^>]*data-transport-action="replay"`)
+	if !replayDisabled.MatchString(body) {
 		t.Errorf("Replay button must render disabled when ActionsEnabled.Replay is false; output:\n%s", body)
 	}
 }
@@ -2703,6 +2798,8 @@ func TestShellTemplate_EmitsChassisMetaTags(t *testing.T) {
 	}
 }
 ```
+
+Add `"regexp"` to imports if not already present.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -3010,8 +3107,13 @@ Create `internal/chassis/static/transport.js`:
       const offset_ms = Math.round((p / 100) * totalMs);
       postForm('/receiver/transport/seek', { adapter_ref: adapterRef, generation, offset_ms });
     }
+    function cancel() {
+      if (!dragging) return;
+      dragging = false;
+      seekBar.removeAttribute('data-seek-interacting');
+    }
     seekBar.addEventListener('pointerup', release);
-    seekBar.addEventListener('pointercancel', release);
+    seekBar.addEventListener('pointercancel', cancel);
   }
 
   function attachSource(src) {
@@ -3070,7 +3172,8 @@ Phase 1 / Spec 3 task 15. Vanilla ES2022 IIFE (~150 lines) that:
   over the disabled attribute).
 - Seek drag: pointerdown sets data-seek-interacting (SSE skips fill
   updates while dragging); pointerup POSTs the resolved offset_ms
-  computed from data-transport-duration-ms.
+  computed from data-transport-duration-ms; pointercancel only clears
+  drag state and never sends a seek.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -3113,8 +3216,12 @@ func TestMount_RegistersTransportRoutesThroughRequireSameOrigin(t *testing.T) {
 		t.Errorf("missing Sec-Fetch-Site: status = %d, want 403", rec.Code)
 	}
 
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("missing Sec-Fetch-Site Cache-Control = %q, want no-store", got)
+	}
+
 	// Same-site POST passes the middleware. The response itself is
-	// 503 (no transport controller wired in nonZeroConfig) — what
+	// 500 (no transport controller wired in nonZeroConfig) — what
 	// matters here is that we're NOT returning 403 from the middleware.
 	req2 := httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
 	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -3143,8 +3250,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
 	mux.HandleFunc("GET /receiver/events", s.handleEvents)
 	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
-	mux.Handle("POST /receiver/transport/action", requireSameOrigin(http.HandlerFunc(s.handleTransportAction)))
-	mux.Handle("POST /receiver/transport/seek", requireSameOrigin(http.HandlerFunc(s.handleTransportSeek)))
+	mux.Handle("POST /receiver/transport/action", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportAction))))
+	mux.Handle("POST /receiver/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 ```
@@ -3230,8 +3337,9 @@ Phase 1 / Spec 3 task 16. Three pieces of integration:
 
 - chassis.Mount registers POST /receiver/transport/action and POST
   /receiver/transport/seek, each wrapped through Spec 4's
-  requireSameOrigin middleware. Pattern matches the visualizer POST
-  route precedent.
+  requireSameOrigin middleware plus transportNoStore so even guard
+  failures carry Cache-Control: no-store. Pattern matches the visualizer
+  POST route precedent with the extra transport cache contract.
 - main.go builds a single playback.NewDispatcher(coreMgr, reg) and
   passes it to ui.Config.Playback, chassis.Config.TransportViewer,
   and chassis.Config.TransportController — one canonical instance,
@@ -3376,12 +3484,25 @@ func TestReceiverTransport_SSEReflectsAction(t *testing.T) {
 		},
 		Seek: &adapters.PlaybackSeek{Enabled: true},
 	}, ok: true}
+	tc := &fakeIntegrationTransport{}
+	tc.onAction = func(req adapters.PlaybackActionRequest) {
+		if req.Action != adapters.PlaybackActionPause {
+			return
+		}
+		sv.set(core.StatusHomeView{
+			State:      core.StatePaused,
+			Title:      "Integration",
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 42,
+		})
+	}
 	chassisSrv, _ := chassis.New(chassis.Config{
 		Bridge: config.BridgeConfig{}, Manager: &core.Manager{}, Registry: adapters.NewRegistry(),
 		Version: "test", StartedAt: time.Now(), HostIP: "10.0.0.5",
 		Session:             sv,
 		TransportViewer:     tv,
-		TransportController: &fakeIntegrationTransport{},
+		TransportController: tc,
 	})
 	defer chassisSrv.Close()
 	chassisSrv.Mount(mux)
@@ -3397,10 +3518,23 @@ func TestReceiverTransport_SSEReflectsAction(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
+	postBody := "adapter_ref=plex:abc&generation=42&action=pause"
+	postReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/receiver/transport/action", strings.NewReader(postBody))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	postResp, err := srv.Client().Do(postReq)
+	if err != nil {
+		t.Fatalf("POST /receiver/transport/action: %v", err)
+	}
+	_ = postResp.Body.Close()
+	if postResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST status = %d, want 204", postResp.StatusCode)
+	}
+
 	rdr := bufio.NewReader(resp.Body)
 	deadline := time.Now().Add(2 * time.Second)
-	var sawTransport, sawPlaying bool
-	for time.Now().Before(deadline) && !(sawTransport && sawPlaying) {
+	var sawTransport, sawPaused bool
+	for time.Now().Before(deadline) && !(sawTransport && sawPaused) {
 		line, err := rdr.ReadString('\n')
 		if err != nil {
 			t.Fatalf("read SSE: %v", err)
@@ -3408,12 +3542,12 @@ func TestReceiverTransport_SSEReflectsAction(t *testing.T) {
 		if strings.HasPrefix(line, "event: transport") {
 			sawTransport = true
 		}
-		if strings.Contains(line, `"state":"playing"`) {
-			sawPlaying = true
+		if strings.Contains(line, `"state":"paused"`) {
+			sawPaused = true
 		}
 	}
-	if !sawTransport || !sawPlaying {
-		t.Errorf("expected transport event with state=playing within 2s; sawTransport=%v sawPlaying=%v", sawTransport, sawPlaying)
+	if !sawTransport || !sawPaused {
+		t.Errorf("expected post-driven transport event with state=paused within 2s; sawTransport=%v sawPaused=%v", sawTransport, sawPaused)
 	}
 }
 
@@ -3422,10 +3556,14 @@ type fakeIntegrationTransport struct {
 	lastReq adapters.PlaybackActionRequest
 	result  adapters.PlaybackActionResult
 	err     error
+	onAction func(adapters.PlaybackActionRequest)
 }
 
 func (f *fakeIntegrationTransport) HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
 	f.lastReq = req
+	if f.onAction != nil {
+		f.onAction(req)
+	}
 	return f.result, f.err
 }
 
@@ -3440,9 +3578,36 @@ func (f *fakeIntegrationTransportViewer) PlaybackViewForSnapshot(ctx context.Con
 }
 ```
 
-(`fakeIntegrationSession` referenced in `TestReceiverTransport_SSEReflectsAction` already exists in the file — Spec 2's `TestReceiverEvents_LivePathReachesClient` defined it. Reuse, don't redefine.)
+`fakeIntegrationSession` referenced in `TestReceiverTransport_SSEReflectsAction` already exists in the file — Spec 2's `TestReceiverEvents_LivePathReachesClient` defined it. Reuse it, but extend it with a `sync.Mutex` and `set(core.StatusHomeView)` helper so the POST controller can safely mutate the session while the SSE loop reads:
 
-Extend imports with `bufio` and `context` if not already present.
+```go
+type fakeIntegrationSession struct {
+	mu   sync.Mutex
+	view core.StatusHomeView
+}
+
+func (f *fakeIntegrationSession) StatusHomeView() core.StatusHomeView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.view
+}
+
+func (f *fakeIntegrationSession) set(view core.StatusHomeView) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.view = view
+}
+```
+
+Extend imports with `bufio`, `context`, and `sync` if not already present.
+
+Add lightweight Layer 3 table tests alongside the four snippets above for the remaining endpoint contract edges:
+
+- Cross-site or missing `Sec-Fetch-Site` POST to `/receiver/transport/action` returns `403`, `Content-Type: application/json`, and `Cache-Control: no-store`.
+- Controller returning `adapters.ErrPlaybackActionUnsupported` maps to `422`.
+- Non-integer `offset_ms` on `/receiver/transport/seek` maps to `400`.
+- `GET /receiver/transport/action` and `GET /receiver/transport/seek` return mux-provided `405`.
+- `/ui/playback/banner` remains unshadowed when mounted with the chassis. If `TestMount_DoesNotShadowUIRoutes` or `TestReceiverEvents_DoesNotShadowUIRoutes` already covers the same mux composition in this file, extend that existing test rather than duplicating it.
 
 - [ ] **Step 3: Run the integration tests**
 
@@ -3456,7 +3621,7 @@ git add tests/integration/chassis_test.go
 git commit -m "$(cat <<'EOF'
 test(chassis): integration coverage for /receiver/transport routes + SSE
 
-Phase 1 / Spec 3 task 17. Four new integration tests booting full
+Phase 1 / Spec 3 task 17. New integration tests booting full
 httptest.Server with the chassis mounted:
 
 - PostActionDispatchesViaController: end-to-end form POST → 204 →
@@ -3466,8 +3631,8 @@ httptest.Server with the chassis mounted:
 - PostSeekDispatchesOffset: same shape with offset_ms in form, action
   set to "seek" server-side.
 - SSEReflectsAction: with a live session viewer + transport viewer,
-  the /receiver/events stream emits a transport event with the
-  expected state within 2s of connect.
+  a POST pause mutates the fake session and /receiver/events emits the
+  follow-up transport event with state=paused within 2s.
 
 Two test-local fakes mirror the chassis interfaces:
 fakeIntegrationTransport (TransportController) and
@@ -3551,8 +3716,8 @@ Implements docs/superpowers/specs/2026-05-22-receiver-chassis-transport-design.m
 
 ## Tests
 
-- 18 new Layer 1 tests (dispatcher: source-first policy, sentinel returns, clamp, legacy normalization; chassis: envelope JSON, transportChanged 14 deltas, transport SSE emission, POST handler status mapping, template hooks, smoke handler).
-- 4 new Layer 3 integration tests (POST dispatch, stale-generation 409, seek dispatch, SSE-reflects-action).
+- 20+ new Layer 1 tests (dispatcher: source-first policy, no-extra-snapshot, sentinel returns, clamp, legacy normalization; chassis: envelope JSON, transportChanged 14 deltas, transport SSE emission, POST handler status mapping, template hooks, smoke handler).
+- Layer 3 integration coverage for POST dispatch, stale-generation 409, unsupported 422, bad seek offset 400, cross-site 403 + no-store, seek dispatch, GET 405, `/ui` non-shadowing, and POST-driven SSE reflection.
 - Existing `/ui` playback tests + Spec 2/4 chassis tests stay green; only event-count assertions adjust from 3 → 4 events on initial connect.
 - `TestProductionImports_NoCrossPackageCoupling` extended with three new rules enforcing the no-cycle invariant for `internal/playback`.
 
@@ -3649,7 +3814,7 @@ Cross-checking the spec sections against tasks:
 - One stream / multiple named events → **Task 11** (transport joins state/vfd/visualizer).
 - Pause/Resume as one button with CSS swap → **Task 14** + **Task 15.**
 
-**Placeholder scan:** None remaining. Every step has concrete code, exact commands, expected output. The two notes-to-implementer (Task 2 step 3 about copying `playbackProviderForSnapshot` from `/ui`, Task 6 step 2 about which dispatcher method to use in `/ui`) are decisions that depend on details of the existing code rather than placeholders.
+**Placeholder scan:** None remaining. Every step has concrete code, exact commands, expected output. The remaining notes-to-implementer are bounded instructions about matching existing local test fixtures or extending existing integration fakes, not unresolved design placeholders.
 
 **Type consistency:**
 - `Dispatcher` exposes `PlaybackView`, `PlaybackViewForSnapshot`, `HandlePlaybackAction` — consistent across Tasks 2, 3, 5, 6, 7, 11, 12, 13.
@@ -3663,7 +3828,7 @@ Cross-checking the spec sections against tasks:
 - `requireSameOrigin` (Spec 4) — used in Task 16.
 - `errors.Is(err, adapters.ErrActiveSessionChanged | adapters.ErrPlaybackActionUnsupported)` — Task 3, Tasks 12-13.
 
-No drift detected.
+No drift detected after the review fixes above.
 
 ---
 
