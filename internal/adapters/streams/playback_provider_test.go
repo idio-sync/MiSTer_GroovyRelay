@@ -230,8 +230,8 @@ func TestStreamsPlaybackActionNextDoesNotMutateQueueOnStaleGenerationRace(t *tes
 	}
 
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionNext, AdapterRef: ref, Generation: 8})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("stale race err = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("stale race err = %v, want stale-session sentinel", err)
 	}
 	if fc.stopIfSessionCalls != 1 || fc.startIdleCalls != 0 {
 		t.Fatalf("core calls stopIf=%d startIdle=%d, want stop guard only", fc.stopIfSessionCalls, fc.startIdleCalls)
@@ -292,8 +292,8 @@ func TestStreamsPlaybackActionNextDoesNotMutateNewerQueueAfterMatchedStop(t *tes
 	}
 
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionNext, AdapterRef: oldRef, Generation: 8})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("newer queue race err = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("newer queue race err = %v, want stale-session sentinel", err)
 	}
 	if fc.stopIfSessionCalls != 1 || fc.startIdleCalls != 0 {
 		t.Fatalf("core calls stopIf=%d startIdle=%d, want matched stop without new start", fc.stopIfSessionCalls, fc.startIdleCalls)

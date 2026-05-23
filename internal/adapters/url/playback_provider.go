@@ -116,7 +116,11 @@ func (a *Adapter) resumeBanner(ctx context.Context, action adapters.PlaybackActi
 	}
 	ref, _, _, err := a.castURLGuarded(ctx, lastURL, "auto", action.AdapterRef, action.Generation)
 	if err != nil {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", redactErr(err, lastURL))
+		redacted := redactErr(err, lastURL)
+		if redacted == adapters.ErrActiveSessionChangedMessage {
+			return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+		}
+		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", redacted)
 	}
 	return adapters.PlaybackActionResult{Message: "resumed " + ref}, nil
 }
@@ -128,7 +132,11 @@ func (a *Adapter) replayBanner(ctx context.Context, action adapters.PlaybackActi
 	}
 	ref, _, _, err := a.castURLGuarded(ctx, lastURL, "auto", action.AdapterRef, action.Generation)
 	if err != nil {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", redactErr(err, lastURL))
+		redacted := redactErr(err, lastURL)
+		if redacted == adapters.ErrActiveSessionChangedMessage {
+			return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+		}
+		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", redacted)
 	}
 	return adapters.PlaybackActionResult{Message: "replayed " + ref}, nil
 }

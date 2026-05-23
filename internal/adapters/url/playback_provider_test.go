@@ -118,6 +118,38 @@ func TestURLPlaybackActionRejectsUnsupportedActionWithSentinel(t *testing.T) {
 	}
 }
 
+func TestURLPlaybackResumeGuardedCastStaleErrorUsesSentinel(t *testing.T) {
+	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StateIdle, AdapterRef: "url:old", Generation: 4}}
+	a := &Adapter{core: coreStub, history: LoadHistory("")}
+	a.mu.Lock()
+	a.lastURL = "https://example.test/video.mp4"
+	a.mu.Unlock()
+
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionResume, AdapterRef: "url:old", Generation: 4})
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("resume stale guarded cast err = %v, want stale-session sentinel", err)
+	}
+	if err.Error() != adapters.ErrActiveSessionChangedMessage {
+		t.Fatalf("resume stale guarded cast message = %q, want %q", err.Error(), adapters.ErrActiveSessionChangedMessage)
+	}
+}
+
+func TestURLPlaybackReplayGuardedCastStaleErrorUsesSentinel(t *testing.T) {
+	coreStub := &providerCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:old", Generation: 4}}
+	a := &Adapter{core: coreStub, history: LoadHistory("")}
+	a.mu.Lock()
+	a.lastURL = "https://example.test/video.mp4"
+	a.mu.Unlock()
+
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionReplay, AdapterRef: "url:old", Generation: 4})
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("replay stale guarded cast err = %v, want stale-session sentinel", err)
+	}
+	if err.Error() != adapters.ErrActiveSessionChangedMessage {
+		t.Fatalf("replay stale guarded cast message = %q, want %q", err.Error(), adapters.ErrActiveSessionChangedMessage)
+	}
+}
+
 func TestURLQuickCastRejectsDisabledAdapter(t *testing.T) {
 	a := &Adapter{core: &providerCoreStub{}}
 	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{Values: map[string]string{"url": "https://example.test/video.mp4"}})

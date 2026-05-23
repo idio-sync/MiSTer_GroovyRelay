@@ -2,6 +2,7 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -68,6 +69,9 @@ func (a *Adapter) HandlePlaybackAction(ctx context.Context, req adapters.Playbac
 		err = adapters.UnsupportedPlaybackActionError(fmt.Sprintf("unknown playback action %q", req.Action))
 	}
 	if err != nil {
+		if isActiveSessionChangedPlaybackError(err) {
+			return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+		}
 		return adapters.PlaybackActionResult{}, err
 	}
 	return adapters.PlaybackActionResult{Message: "streams updated"}, nil
@@ -87,6 +91,16 @@ func (a *Adapter) ensureOwnsCoreSession(ref string, generation uint64) error {
 		return playbackError("", "streams does not own the active queue")
 	}
 	return nil
+}
+
+func isActiveSessionChangedPlaybackError(err error) bool {
+	if err.Error() == adapters.ErrActiveSessionChangedMessage {
+		return true
+	}
+	var streamsErr *StreamsError
+	return errors.As(err, &streamsErr) &&
+		(streamsErr.Message == adapters.ErrActiveSessionChangedMessage ||
+			strings.HasSuffix(streamsErr.Message, ": "+adapters.ErrActiveSessionChangedMessage))
 }
 
 func disabledReason(enabled bool, reason string) string {
