@@ -603,3 +603,34 @@ func TestSetupShellDoesNotRenderNowPlayingBanner(t *testing.T) {
 		t.Fatalf("setup page rendered now-playing banner: %s", rr.Body.String())
 	}
 }
+
+func TestUIConfig_PlaybackDefaultBuildsDispatcher(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Registry:     adapters.NewRegistry(),
+		StatusViewer: fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}},
+	}
+	cfg.Playback = nil
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.playback == nil {
+		t.Fatalf("Server.playback should be non-nil after New defaults the field")
+	}
+}
+
+func TestUIConfig_PlaybackDefaultPreservesStatusDisabledMode(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Registry: adapters.NewRegistry(),
+	}
+	cfg.Playback = nil
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.playback != nil {
+		t.Fatalf("Server.playback should remain nil when StatusViewer is nil")
+	}
+}
