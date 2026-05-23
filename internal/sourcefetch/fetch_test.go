@@ -288,6 +288,48 @@ func TestFetcherDialsValidatedIPAndPreservesHostHeader(t *testing.T) {
 	}
 }
 
+func TestFetcherTriesAllValidatedIPsInResolverOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "catalog")
+	}))
+	defer server.Close()
+
+	var gotAddrs []string
+	fetcher := Fetcher{
+		Resolver: staticResolver{"media.example": {"93.184.216.34", "93.184.216.35"}},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			gotAddrs = append(gotAddrs, addr)
+			if addr == "93.184.216.34:80" {
+				return nil, errors.New("first approved address unreachable")
+			}
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}
+	limits := Limits{
+		MaxBytes:       32,
+		AllowedSchemes: []string{"http"},
+	}
+
+	resp, err := fetcher.Fetch(context.Background(), http.MethodGet, "http://media.example/catalog.json", limits, Condition{})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v, want nil", err)
+	}
+	if string(resp.Body) != "catalog" {
+		t.Fatalf("body = %q, want catalog", resp.Body)
+	}
+
+	wantAddrs := []string{"93.184.216.34:80", "93.184.216.35:80"}
+	if len(gotAddrs) != len(wantAddrs) {
+		t.Fatalf("dialed addrs = %v, want %v", gotAddrs, wantAddrs)
+	}
+	for i := range wantAddrs {
+		if gotAddrs[i] != wantAddrs[i] {
+			t.Fatalf("dialed addrs = %v, want %v", gotAddrs, wantAddrs)
+		}
+	}
+}
+
 func TestRoundTripperPinsTLSNameAndDisablesProxyAndCompression(t *testing.T) {
 	baseTLS := &tls.Config{ServerName: "base.example"}
 	base := &http.Transport{

@@ -52,10 +52,12 @@ type Fetcher struct {
 }
 
 type Target struct {
-	URL        *url.URL
-	Hostname   string
-	ResolvedIP string
-	DialAddr   string
+	URL         *url.URL
+	Hostname    string
+	ResolvedIP  string
+	ResolvedIPs []string
+	DialAddr    string
+	DialAddrs   []string
 }
 
 var ErrFetchFailed = errors.New("source fetch failed")
@@ -195,7 +197,7 @@ func (f Fetcher) ValidateTarget(ctx context.Context, u *url.URL, limits Limits) 
 		}
 	}
 
-	addr, err := ResolvePublicTargetIP(ctx, f.Resolver, hostname, limits.AllowLocalURLs)
+	addrs, err := ResolvePublicTargetIPs(ctx, f.Resolver, hostname, limits.AllowLocalURLs)
 	if err != nil {
 		return Target{}, err
 	}
@@ -207,11 +209,21 @@ func (f Fetcher) ValidateTarget(ctx context.Context, u *url.URL, limits Limits) 
 			port = "80"
 		}
 	}
+	resolvedIPs := make([]string, 0, len(addrs))
+	dialAddrs := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		resolvedIP := addr.String()
+		resolvedIPs = append(resolvedIPs, resolvedIP)
+		dialAddrs = append(dialAddrs, net.JoinHostPort(resolvedIP, port))
+	}
+
 	return Target{
-		URL:        cloneURL(u),
-		Hostname:   hostname,
-		ResolvedIP: addr.String(),
-		DialAddr:   net.JoinHostPort(addr.String(), port),
+		URL:         cloneURL(u),
+		Hostname:    hostname,
+		ResolvedIP:  resolvedIPs[0],
+		ResolvedIPs: resolvedIPs,
+		DialAddr:    dialAddrs[0],
+		DialAddrs:   dialAddrs,
 	}, nil
 }
 
@@ -241,39 +253,44 @@ func NormalizeHost(host string) (string, error) {
 }
 
 func ResolvePublicTargetIP(ctx context.Context, resolver Resolver, hostname string, allowLocal bool) (netip.Addr, error) {
+	addrs, err := ResolvePublicTargetIPs(ctx, resolver, hostname, allowLocal)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return addrs[0], nil
+}
+
+func ResolvePublicTargetIPs(ctx context.Context, resolver Resolver, hostname string, allowLocal bool) ([]netip.Addr, error) {
 	if literal, err := netip.ParseAddr(hostname); err == nil {
 		literal = literal.Unmap()
 		if !allowLocal {
-			return netip.Addr{}, fmt.Errorf("IP literal hosts are not allowed")
+			return nil, fmt.Errorf("IP literal hosts are not allowed")
 		}
-		return literal, nil
+		return []netip.Addr{literal}, nil
 	}
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	hosts, err := resolver.LookupHost(ctx, hostname)
 	if err != nil {
-		return netip.Addr{}, err
+		return nil, err
 	}
 	if len(hosts) == 0 {
-		return netip.Addr{}, fmt.Errorf("host %q did not resolve to any IPs", hostname)
+		return nil, fmt.Errorf("host %q did not resolve to any IPs", hostname)
 	}
 
-	var first netip.Addr
+	addrs := make([]netip.Addr, 0, len(hosts))
 	for _, host := range hosts {
 		addr, err := netip.ParseAddr(host)
 		if err != nil {
-			return netip.Addr{}, fmt.Errorf("host %q resolved to invalid IP %q", hostname, host)
+			return nil, fmt.Errorf("host %q resolved to invalid IP %q", hostname, host)
 		}
 		if !allowLocal && !IsPublicRoutable(addr) {
-			return netip.Addr{}, fmt.Errorf("host %q resolved to non-public IP %s", hostname, addr)
+			return nil, fmt.Errorf("host %q resolved to non-public IP %s", hostname, addr)
 		}
-		addr = addr.Unmap()
-		if !first.IsValid() {
-			first = addr
-		}
+		addrs = append(addrs, addr.Unmap())
 	}
-	return first, nil
+	return addrs, nil
 }
 
 func (f Fetcher) roundTrip(ctx context.Context, method string, target Target, condition Condition, userAgent string) (*http.Response, error) {
@@ -321,7 +338,22 @@ func (f Fetcher) pinTransportToTarget(transport *http.Transport, target Target) 
 			dialer := &net.Dialer{Timeout: 30 * time.Second}
 			dial = dialer.DialContext
 		}
-		return dial(ctx, network, target.DialAddr)
+		dialAddrs := target.DialAddrs
+		if len(dialAddrs) == 0 && target.DialAddr != "" {
+			dialAddrs = []string{target.DialAddr}
+		}
+		var lastErr error
+		for _, addr := range dialAddrs {
+			conn, err := dial(ctx, network, addr)
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no dial address for host %q", target.Hostname)
 	}
 	transport.DialTLS = nil
 	transport.DialTLSContext = nil
