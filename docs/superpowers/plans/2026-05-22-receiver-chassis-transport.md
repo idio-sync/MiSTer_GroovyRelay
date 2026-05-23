@@ -194,7 +194,7 @@ return adapters.PlaybackActionResult{}, fmt.Errorf("streams adapter does not sup
 return adapters.PlaybackActionResult{}, adapters.UnsupportedPlaybackActionError(fmt.Sprintf("streams adapter does not support %s", req.Action))
 ```
 
-This loses the `*StreamsError` type for these two error paths. Verify no `errors.As(err, &StreamsError{})` callers depend on those specific paths (grep for `errors.As.*StreamsError` — likely zero hits in production code; the only callers are inside `internal/adapters/streams/` itself).
+This loses the `*StreamsError` type for these two error paths. Verify no `errors.As(err, &StreamsError{})` callers depend on those specific paths (`rg -n 'errors\.As.*StreamsError'` should find zero production hits; the only callers are inside `internal/adapters/streams/` itself).
 
 **Option B (more invasive).** Add an `Unwrap() error` method to `*StreamsError` so wrapping a sentinel inside `StreamsError.Message` (via a new `Cause error` field, say) participates in `errors.Is`. This preserves the streams-specific error type for downstream callers. Larger change; defer if option A is sufficient.
 
@@ -217,7 +217,7 @@ Same pattern as Step 5. Find `fmt.Errorf("%s", adapters.ErrActiveSessionChangedM
 
 - [ ] **Step 7: Migrate `url` provider**
 
-Same pattern. Five occurrences of `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` per the earlier grep — switch each to `adapters.ErrActiveSessionChanged`. Use `adapters.UnsupportedPlaybackActionError(<existing message>)` for unsupported verbs. Update `playback_provider_test.go` to use `errors.Is`.
+Same pattern. Five occurrences of `fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)` per the earlier search — switch each to `adapters.ErrActiveSessionChanged`. Use `adapters.UnsupportedPlaybackActionError(<existing message>)` for unsupported verbs. Update `playback_provider_test.go` to use `errors.Is`.
 
 - [ ] **Step 8: Run all adapter playback tests**
 
@@ -337,11 +337,13 @@ func (a *fakeAdapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapt
 	return adapters.ScopeHotSwap, nil
 }
 
-func registerFakeProvider(t *testing.T, reg *adapters.Registry, name string, provider *fakeProvider) {
+func registerFakeProvider(t *testing.T, reg *adapters.Registry, name string, provider *fakeProvider) *fakeAdapter {
 	t.Helper()
-	if err := reg.Register(&fakeAdapter{fakeProvider: provider, adapterName: name}); err != nil {
+	adapter := &fakeAdapter{fakeProvider: provider, adapterName: name}
+	if err := reg.Register(adapter); err != nil {
 		t.Fatalf("Register(%q): %v", name, err)
 	}
+	return adapter
 }
 
 func TestDispatcher_PlaybackView_NoActiveSession(t *testing.T) {
@@ -383,7 +385,7 @@ func TestDispatcher_PlaybackView_DelegatesToOwningProvider(t *testing.T) {
 }
 ```
 
-**Implementer note on the Registry API.** The snippets above use a real `adapters.Adapter` fake because `adapters.Registry.Register` accepts `Register(Adapter)`, not a bare playback provider. Keep later tests on the same `registerFakeProvider` helper so the plan stays copy-safe.
+**Implementer note on the Registry API.** The snippets above use a real `adapters.Adapter` fake because `adapters.Registry.Register` accepts `Register(Adapter)`, not a bare playback provider. Keep later tests on the same `registerFakeProvider` helper so the plan stays copy-safe; compare provider lookup identity against the returned `*fakeAdapter`, not the embedded `*fakeProvider`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -506,7 +508,7 @@ func adapterRefBelongsTo(adapterName, ref string) bool {
 // snapshotForProvider converts the core view into the adapter-facing
 // PlaybackBannerSnapshot type. The conversion is mechanical — copy
 // the equivalent helper from /ui/playback.go if one exists, or write
-// the field-for-field copy here. The implementer should grep for
+// the field-for-field copy here. The implementer should search for
 // currentPlaybackSnapshot / PlaybackBannerSnapshot in /ui to find the
 // existing conversion.
 func snapshotForProvider(snap core.StatusHomeView) adapters.PlaybackBannerSnapshot {
@@ -545,15 +547,15 @@ func TestDispatcher_PlaybackProviderForSnapshot_SourceFirstPolicy(t *testing.T) 
 	plex := &fakeProvider{name: "plex"}
 	dlna := &fakeProvider{name: "dlna"}
 	reg := adapters.NewRegistry()
-	registerFakeProvider(t, reg, "plex", plex)
+	plexAdapter := registerFakeProvider(t, reg, "plex", plex)
 	registerFakeProvider(t, reg, "dlna", dlna)
 
 	d := NewDispatcher(nil, reg)
 	snap := core.StatusHomeView{Source: "plex", AdapterRef: "plex:abc"}
 
 	p, ok := d.playbackProviderForSnapshot(snap)
-	if !ok || p != plex {
-		t.Errorf("source-first: got provider %v ok=%v, want plex", p, ok)
+	if !ok || p != plexAdapter {
+		t.Errorf("source-first: got provider %v ok=%v, want plex adapter", p, ok)
 	}
 }
 
@@ -561,15 +563,15 @@ func TestDispatcher_PlaybackProviderForSnapshot_LegacyRefScanFallback(t *testing
 	t.Parallel()
 	plex := &fakeProvider{name: "plex"}
 	reg := adapters.NewRegistry()
-	registerFakeProvider(t, reg, "plex", plex)
+	plexAdapter := registerFakeProvider(t, reg, "plex", plex)
 
 	d := NewDispatcher(nil, reg)
 	// Empty Source triggers the legacy adapter-ref-prefix scan.
 	snap := core.StatusHomeView{Source: "", AdapterRef: "plex:abc"}
 
 	p, ok := d.playbackProviderForSnapshot(snap)
-	if !ok || p != plex {
-		t.Errorf("legacy fallback: got provider %v ok=%v, want plex", p, ok)
+	if !ok || p != plexAdapter {
+		t.Errorf("legacy fallback: got provider %v ok=%v, want plex adapter", p, ok)
 	}
 }
 
@@ -1100,16 +1102,16 @@ It's now duplicated in `internal/playback`. Search the rest of `/ui` for any rem
 
 `internal/ui/playback.go:263` defines `func (s *Server) currentPlaybackSnapshot() adapters.PlaybackBannerSnapshot`. Its only consumer was `handlePlaybackMutation` (now refactored in Task 5 to call the dispatcher directly). After Task 5 + Step 3 above, this helper has zero callers in production code.
 
-Verify with `grep -n "currentPlaybackSnapshot" internal/ui/` — expected: zero matches outside the function definition itself (and possibly stale `_test.go` references which should also be cleaned up if they were calling it). Delete the function.
+Verify with `rg -n "currentPlaybackSnapshot" internal/ui` — expected: zero matches outside the function definition itself (and possibly stale `_test.go` references which should also be cleaned up if they were calling it). Delete the function.
 
-If the grep surfaces unexpected callers, audit them: most likely they are vestigial test helpers that also migrate to the dispatcher or get removed. Don't leave dead code in `/ui` post-refactor.
+If the search surfaces unexpected callers, audit them: most likely they are vestigial test helpers that also migrate to the dispatcher or get removed. Don't leave dead code in `/ui` post-refactor.
 
 - [ ] **Step 5: Run all `/ui` tests**
 
 Run: `go test ./internal/ui/...`
 Expected: PASS — banner HTML byte-identical to before.
 
-- [ ] **Step 6: Run race + full repo**
+- [ ] **Step 6: Run full repo**
 
 Run: `go test ./...`
 Expected: PASS.
@@ -1423,10 +1425,10 @@ if got.Transport.ElapsedTime != "--:--" { ... }
 if got.Transport.ElapsedTime != "" { ... }
 ```
 
-Use grep first to find all occurrences:
+Use `rg` first to find all occurrences:
 
 ```bash
-grep -n "PlayState\|--:--\|\"---\"" internal/chassis/chassis_test.go
+rg -n 'PlayState|--:--|"---"' internal/chassis/chassis_test.go
 ```
 
 Update each match.
@@ -1436,7 +1438,7 @@ Update each match.
 The Phase 0 template (`transport.html`) had `{{.PlayState}}` references in places (e.g. the title attribute or aria-label might reference state). Run:
 
 ```bash
-grep -n "PlayState\|--:--\|\"---\"" internal/chassis/templates/transport.html
+rg -n 'PlayState|--:--|"---"' internal/chassis/templates/transport.html
 ```
 
 If the template references `{{.PlayState}}` anywhere, update to `{{.State}}`. (This will be re-done more comprehensively in Task 13's template rewrite; just keep it building cleanly here.)
@@ -1490,9 +1492,9 @@ Append to `internal/chassis/events_test.go`:
 func TestTransportEnvelopeFrom_FlattensTransportData(t *testing.T) {
 	t.Parallel()
 	// Mixed true/false ActionsEnabled values are deliberate: a uniform
-	// all-true fixture would let a Previous↔Next copy-paste swap slip
-	// through (both ends would be true). The alternating pattern below
-	// detects any single-field swap because each adjacent pair differs.
+	// all-true fixture would let common copy-paste swaps slip through.
+	// This catches adjacent swaps where the values differ; the
+	// transportChanged table below locks every bool field independently.
 	td := TransportData{
 		State:           "playing",
 		SeekFillPercent: 44,
@@ -1747,6 +1749,9 @@ EOF
 **Files:**
 - Modify: `internal/chassis/session.go`
 - Modify: `internal/chassis/chassis_test.go`
+- Modify: `internal/chassis/handler.go`
+- Modify: `internal/chassis/server.go`
+- Modify: `internal/chassis/events.go`
 
 - [ ] **Step 1: Write the failing test for live-state transport mapping**
 
@@ -1836,7 +1841,7 @@ func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
 	}
 }
 
-func TestSnapshotFromSession_NilTransportViewerKeepsTransportZero(t *testing.T) {
+func TestSnapshotFromSession_NilTransportViewerIdleKeepsTransportZero(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
@@ -1851,7 +1856,38 @@ func TestSnapshotFromSession_NilTransportViewerKeepsTransportZero(t *testing.T) 
 		t.Errorf("idle ref/gen should be empty/0")
 	}
 }
+
+func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "Read Only", Source: "plex",
+		Position: 30 * time.Second, Duration: time.Minute,
+		AdapterRef: "plex:abc", Generation: 9,
+	}}
+	got := snapshotFromSession(cfg, sv, cfg.VisualizerViewer, nil, fixedNow) // nil TransportViewer
+
+	if got.Transport.State != "playing" {
+		t.Errorf("State = %q, want playing", got.Transport.State)
+	}
+	if got.Transport.AdapterRef != "plex:abc" || got.Transport.Generation != 9 {
+		t.Errorf("AdapterRef/Generation: got %q/%d, want plex:abc/9", got.Transport.AdapterRef, got.Transport.Generation)
+	}
+	if got.Transport.ElapsedTime != "00:30" || got.Transport.TotalTime != "01:00" {
+		t.Errorf("time fields: got %q/%q, want 00:30/01:00", got.Transport.ElapsedTime, got.Transport.TotalTime)
+	}
+	if got.Transport.OffsetMS != 30000 || got.Transport.DurationMS != 60000 {
+		t.Errorf("raw ms: got %d/%d, want 30000/60000", got.Transport.OffsetMS, got.Transport.DurationMS)
+	}
+	if got.Transport.ActionsEnabled != (ActionsEnabled{}) {
+		t.Errorf("ActionsEnabled should be all-false with nil TransportViewer: %+v", got.Transport.ActionsEnabled)
+	}
+}
 ```
+
+Add `"context"` to `internal/chassis/chassis_test.go` imports if not already present; `fakeTransportViewer` uses `context.Context`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1864,23 +1900,24 @@ Edit `internal/chassis/session.go`. The **current** signature (Spec 4) is `snaps
 
 ```go
 func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, now time.Time) ReceiverPageData {
-	if sv == nil {
-		return idleSnapshot(cfg, now)
-	}
-	view := sv.StatusHomeView()
-	if view.State == core.StateIdle {
-		return idleSnapshot(cfg, now)
-	}
-
 	base := idleSnapshot(cfg, now)
-	base.State = StateLive
-	base.VFD.State = string(StateLive)
-	base.VFD.Title = view.Title
-	base.VFD.Marquee = formatLiveMarquee(view)
-	// Existing Spec 4 visualizer-mode population stays as-is — do not
-	// touch the lines that consume `vv` (e.g. base.Visualizer.ActiveMode).
-
-	base.Transport = buildTransportData(view, tv, context.Background())
+	if sv != nil {
+		view := sv.StatusHomeView()
+		switch view.State {
+		case core.StatePlaying, core.StatePaused:
+			base.State = StateLive
+			base.VFD.State = string(StateLive)
+			base.VFD.Title = view.Title
+			base.VFD.Marquee = formatLiveMarquee(view)
+			// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
+			// SystemTime + Uptime are computed in idleSnapshot from `now`
+			// and cfg.StartedAt; they remain valid in live state.
+			base.Transport = buildTransportData(view, tv, context.Background())
+		default:
+			// idle/unknown keep idleSnapshot data and stopped transport.
+		}
+	}
+	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 	return base
 }
 
@@ -1890,14 +1927,14 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv T
 // adapter view when a provider exists; all-false otherwise.
 func buildTransportData(view core.StatusHomeView, tv TransportViewer, ctx context.Context) TransportData {
 	td := TransportData{
-		State:         transportStateFromCore(view.State),
-		AdapterRef:    view.AdapterRef,
-		Generation:    view.Generation,
-		ElapsedTime:   formatPlaybackPosition(view.Position),
-		TotalTime:     formatPlaybackDuration(view.Duration),
+		State:           transportStateFromCore(view.State),
+		AdapterRef:      view.AdapterRef,
+		Generation:      view.Generation,
+		ElapsedTime:     formatPlaybackPosition(view.Position),
+		TotalTime:       formatPlaybackDuration(view.Duration),
 		SeekFillPercent: computeSeekFillPercent(view.Position, view.Duration),
-		OffsetMS:      clampMSNonNegative(int(view.Position / time.Millisecond)),
-		DurationMS:    clampMSNonNegative(int(view.Duration / time.Millisecond)),
+		OffsetMS:        clampMSNonNegative(int(view.Position / time.Millisecond)),
+		DurationMS:      clampMSNonNegative(int(view.Duration / time.Millisecond)),
 	}
 	if td.SeekFillPercent > 0 || td.DurationMS > 0 {
 		td.PercentPlayed = fmt.Sprintf("%d%%", td.SeekFillPercent)
@@ -1991,12 +2028,12 @@ Add `"context"` and `"fmt"` to the imports if not already present (the file alre
 
 For all four, pass `s.transportViewer` (or `cfg.TransportViewer` if called pre-Server-construction). For tests, `nil` is acceptable where the test doesn't exercise the transport path.
 
-Use `grep -n "snapshotFromSession" internal/chassis/` to confirm no call site is missed.
+Use `rg -n "snapshotFromSession" internal/chassis` to confirm no call site is missed.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./internal/chassis/ -run TestSnapshotFromSession`
-Expected: PASS — all three new tests + the existing snapshot tests.
+Expected: PASS — all four new tests + the existing snapshot tests.
 
 - [ ] **Step 5: Run full chassis tests**
 
@@ -2006,7 +2043,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/chassis/session.go internal/chassis/chassis_test.go
+git add internal/chassis/session.go internal/chassis/chassis_test.go internal/chassis/handler.go internal/chassis/server.go internal/chassis/events.go
 git commit -m "$(cat <<'EOF'
 feat(chassis): snapshotFromSession populates Transport from adapter view
 
@@ -2110,7 +2147,7 @@ func TestHandleEvents_EmitsTransportEventOnStateTransition(t *testing.T) {
 Also update existing Spec 2/4 tests that count events on initial connect. Find them with:
 
 ```bash
-grep -n "event: state\|event: vfd\|event: visualizer\|initial snapshot" internal/chassis/events_test.go
+rg -n 'event: state|event: vfd|event: visualizer|initial snapshot' internal/chassis/events_test.go
 ```
 
 For each test that asserts a specific count of events (e.g. "expected 3 records", "len(records) == 3"), update to expect 4. The most common patterns:
@@ -2166,11 +2203,11 @@ case <-tick.C:
 	flusher.Flush()
 ```
 
-- [ ] **Step 4: Sanity-check the four `snapshotFromSession` call sites updated in Task 10**
+- [ ] **Step 4: Sanity-check the remaining `snapshotFromSession` call sites updated in Task 10**
 
-Task 10 already updated `handleIndex`, `New`'s synchronous seed, `startSnapshotRefresher`, and `handleEvents`'s initial-snapshot block to pass the new `s.transportViewer` argument. This step is verification only — no code edits — confirming Task 10's surgery before the new transport SSE emission goes live below.
+Task 10 already updated `handleIndex`, `New`'s synchronous seed, `startSnapshotRefresher`, and the pre-Task-11 `handleEvents` initial-snapshot block to pass the new `s.transportViewer` argument. This task replaces the `handleEvents` initial snapshot with `s.cache.Get()`, so this step is verification only: confirm any remaining direct calls still use the five-argument signature.
 
-Run: `grep -n "snapshotFromSession" internal/chassis/` — every match should already pass five arguments (`cfg, session, visualizerViewer, transportViewer, now`). If any match still has four arguments, fix it before continuing.
+Run: `rg -n "snapshotFromSession" internal/chassis` — every direct call should already pass five arguments (`cfg, session, visualizerViewer, transportViewer, now`). If any call still has four arguments, fix it before continuing.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -2192,7 +2229,7 @@ feat(chassis): handleEvents emits transport SSE event
 Phase 1 / Spec 3 task 11. handleEvents extends the initial-snapshot
 block to emit a fourth record (state, vfd, visualizer, transport) and
 the 250 ms diff loop now emits transport events when transportChanged
-returns true (per task 9's 9-field-comparison helper).
+returns true (per task 9's 10-field transportChanged helper).
 
 The snapshot cache refresher and synchronous seed in New both pass
 s.transportViewer through to snapshotFromSession, so the cached
@@ -2545,7 +2582,7 @@ func (s *Server) handleTransportAction(w http.ResponseWriter, r *http.Request) {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./internal/chassis/ -run TestHandleTransportAction`
-Expected: PASS — all 7 action-handler tests.
+Expected: PASS — all action-handler tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2648,6 +2685,60 @@ func TestHandleTransportSeek_StaleGenerationReturns409(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestHandleTransportSeek_UnsupportedActionReturns422(t *testing.T) {
+	t.Parallel()
+	tc := &fakeTransportController{err: adapters.ErrPlaybackActionUnsupported}
+	cfg := nonZeroConfig()
+	cfg.TransportController = tc
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	body := "adapter_ref=plex:abc&generation=42&offset_ms=0"
+	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/seek", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleTransportSeek(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
+func TestHandleTransportSeek_ProviderErrorReturns500(t *testing.T) {
+	t.Parallel()
+	tc := &fakeTransportController{err: errors.New("provider exploded")}
+	cfg := nonZeroConfig()
+	cfg.TransportController = tc
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	body := "adapter_ref=plex:abc&generation=42&offset_ms=0"
+	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/seek", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleTransportSeek(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
 	}
 }
 ```
@@ -3107,7 +3198,7 @@ func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `go test ./internal/chassis/ -run TestHandleStatic_TransportJSServed`
+Run: `go test ./internal/chassis/ -run 'TestHandleStatic_TransportJSServed|TestTransportJS'`
 Expected: FAIL — file doesn't exist.
 
 - [ ] **Step 3: Create `transport.js`**
@@ -3287,10 +3378,16 @@ Create `internal/chassis/static/transport.js`:
 })();
 ```
 
-- [ ] **Step 4: Run the smoke test**
+- [ ] **Step 4: Run the smoke + syntax checks**
 
-Run: `go test ./internal/chassis/ -run TestHandleStatic_TransportJSServed`
-Expected: PASS.
+Run:
+
+```bash
+go test ./internal/chassis/ -run 'TestHandleStatic_TransportJSServed|TestTransportJS'
+node --check internal/chassis/static/transport.js
+```
+
+Expected: PASS — Go smoke tests pass and `node --check` reports no syntax errors.
 
 - [ ] **Step 5: Run all chassis tests**
 
@@ -3321,6 +3418,8 @@ Phase 1 / Spec 3 task 15. Vanilla ES2022 IIFE (~150 lines) that:
   updates while dragging); pointerup POSTs the resolved offset_ms
   computed from data-transport-duration-ms; pointercancel only clears
   drag state and never sends a seek.
+- Static asset smoke tests cover the expected hooks and `node --check`
+  verifies the script parses before browser testing.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -3468,7 +3567,7 @@ Expected: PASS — route mounted, import boundaries enforced.
 Run: `go build ./cmd/mister-groovy-relay`
 Expected: clean build.
 
-- [ ] **Step 8: Run race + full repo + integration**
+- [ ] **Step 8: Run full repo compile/test**
 
 Run: `go test ./... && go build ./...`
 Expected: PASS.
