@@ -38,6 +38,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/playback"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
@@ -298,6 +299,7 @@ func main() {
 	})
 	saver.WithEventLog(elog)
 	adapterSaver := uiserver.NewAdapterSaver(*cfgPath, saver.Mu())
+	playbackDispatcher := playback.NewDispatcher(coreMgr, reg)
 
 	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
 	misterProber := bridgeMisterProber{bridge: saver, timeout: 1 * time.Second}
@@ -311,6 +313,7 @@ func main() {
 		CompanionURL:     urlAdapter,
 		CompanionDisplay: urlAdapter,
 		StatusViewer:     coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
+		Playback:         playbackDispatcher,
 		EventLog:         elog,    // in-memory ring buffer constructed above
 		Version:          version, // build-time ldflags variable
 		MisterProber:     misterProber,
@@ -322,15 +325,17 @@ func main() {
 	uiSrv.Mount(mux)
 
 	chassisSrv, err := chassis.New(chassis.Config{
-		Bridge:           sec.Bridge,
-		Manager:          coreMgr,
-		Registry:         reg,
-		Version:          version,
-		StartedAt:        startedAt,
-		HostIP:           hostIP,
-		Session:          coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
-		VisualizerViewer: coreMgr,
-		VisualizerSaver:  &visualizerSaverAdapter{bs: saver},
+		Bridge:              sec.Bridge,
+		Manager:             coreMgr,
+		Registry:            reg,
+		Version:             version,
+		StartedAt:           startedAt,
+		HostIP:              hostIP,
+		Session:             coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
+		TransportViewer:     playbackDispatcher,
+		TransportController: playbackDispatcher,
+		VisualizerViewer:    coreMgr,
+		VisualizerSaver:     &visualizerSaverAdapter{bs: saver},
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)

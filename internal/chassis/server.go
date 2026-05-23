@@ -112,6 +112,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /receiver/{$}", s.handleIndex)
 	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
 	mux.HandleFunc("GET /receiver/events", s.handleEvents)
+	mux.Handle("POST /receiver/transport/action", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportAction))))
+	mux.Handle("POST /receiver/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
 	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }

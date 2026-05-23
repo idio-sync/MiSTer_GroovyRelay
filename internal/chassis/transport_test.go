@@ -13,6 +13,44 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
+func TestMount_RegistersTransportRoutesThroughRequireSameOrigin(t *testing.T) {
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	body := "adapter_ref=plex:abc&generation=42&action=pause"
+	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status without same-origin = %d, want %d; body=%q", w.Code, http.StatusForbidden, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control without same-origin = %q, want %q", got, "no-store")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("status with same-origin = %d, want route to pass requireSameOrigin; body=%q", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleTransportAction_SuccessDispatchesRequestAndReturnsNoContent(t *testing.T) {
 	controller := &fakeTransportController{}
 	s := &Server{transportController: controller}

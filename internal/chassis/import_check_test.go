@@ -45,6 +45,29 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 				modulePath + "/internal/chassis",
 			},
 		},
+		{
+			fromPkg: modulePath + "/internal/playback",
+			fromDir: filepath.Join(repoRoot, "internal", "playback"),
+			forbidden: []string{
+				modulePath + "/internal/chassis",
+				modulePath + "/internal/ui",
+				modulePath + "/internal/uiserver",
+			},
+		},
+		{
+			fromPkg: modulePath + "/internal/core",
+			fromDir: filepath.Join(repoRoot, "internal", "core"),
+			forbidden: []string{
+				modulePath + "/internal/playback",
+			},
+		},
+		{
+			fromPkg: modulePath + "/internal/adapters",
+			fromDir: filepath.Join(repoRoot, "internal", "adapters"),
+			forbidden: []string{
+				modulePath + "/internal/playback",
+			},
+		},
 	}
 
 	for _, rule := range rules {
