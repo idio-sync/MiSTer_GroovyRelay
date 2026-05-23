@@ -88,6 +88,21 @@ func TestFetcherRejectsUserinfoAndIPLiteral(t *testing.T) {
 	}
 }
 
+func TestFetcherSanitizesInvalidOriginalURLError(t *testing.T) {
+	fetcher := Fetcher{
+		Resolver: staticResolver{"media.example": {"93.184.216.34"}},
+	}
+
+	_, err := fetcher.Fetch(context.Background(), http.MethodGet, "https://user:hunter2@media.example/%zz?token=sekrit", Limits{MaxBytes: 1}, Condition{})
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want invalid URL error")
+	}
+	if !strings.Contains(err.Error(), "invalid URL") {
+		t.Fatalf("Fetch() error = %q, want invalid URL", err)
+	}
+	assertNoSecret(t, err, "hunter2", "sekrit")
+}
+
 func TestFetcherDoesNotHonorEnvironmentProxy(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
 
@@ -122,6 +137,13 @@ func TestValidateTargetHonorsAllowedSchemes(t *testing.T) {
 	}
 	if _, err := fetcher.ValidateTarget(context.Background(), mustURL(t, "ftp://media.example/catalog.json"), limits); err == nil {
 		t.Fatal("ValidateTarget(ftp) error = nil, want rejection")
+	}
+
+	ftpOnly := Limits{
+		AllowedSchemes: []string{"ftp"},
+	}
+	if _, err := fetcher.ValidateTarget(context.Background(), mustURL(t, "ftp://media.example/catalog.json"), ftpOnly); err == nil {
+		t.Fatal("ValidateTarget(explicit ftp) error = nil, want rejection")
 	}
 }
 
@@ -179,6 +201,32 @@ func TestFetcherRejectsRedirectUserinfoBeforeFollow(t *testing.T) {
 	if requests != 1 {
 		t.Fatalf("requests = %d, want 1", requests)
 	}
+}
+
+func TestFetcherSanitizesInvalidRedirectLocationError(t *testing.T) {
+	server, dialer := newPinnedHTTPFetchServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://user:hunter2@media.example/%zz?token=sekrit", http.StatusFound)
+	}))
+	defer server.Close()
+
+	fetcher := Fetcher{
+		Resolver:    staticResolver{"media.example": {"93.184.216.34"}},
+		DialContext: dialer.DialContext,
+	}
+	limits := Limits{
+		MaxBytes:       32,
+		MaxRedirects:   3,
+		AllowedSchemes: []string{"http", "https"},
+	}
+
+	_, err := fetcher.Fetch(context.Background(), http.MethodGet, "http://media.example/start", limits, Condition{})
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want invalid redirect location error")
+	}
+	if !strings.Contains(err.Error(), "invalid redirect location") {
+		t.Fatalf("Fetch() error = %q, want invalid redirect location", err)
+	}
+	assertNoSecret(t, err, "hunter2", "sekrit")
 }
 
 func TestFetcherDialsValidatedIPAndPreservesHostHeader(t *testing.T) {
@@ -240,6 +288,9 @@ func TestRoundTripperPinsTLSNameAndDisablesProxyAndCompression(t *testing.T) {
 	}
 	if !transport.DisableCompression {
 		t.Fatal("transport.DisableCompression = false, want true")
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("transport.DisableKeepAlives = false, want true")
 	}
 	if transport.TLSClientConfig == nil {
 		t.Fatal("transport.TLSClientConfig = nil")
@@ -351,4 +402,15 @@ func mustURL(t *testing.T, raw string) *url.URL {
 		t.Fatalf("url.Parse(%q) error = %v", raw, err)
 	}
 	return u
+}
+
+func assertNoSecret(t *testing.T, err error, secrets ...string) {
+	t.Helper()
+
+	message := err.Error()
+	for _, secret := range secrets {
+		if strings.Contains(message, secret) {
+			t.Fatalf("error %q contains secret %q", message, secret)
+		}
+	}
 }

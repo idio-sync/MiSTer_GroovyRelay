@@ -24,8 +24,9 @@ type Limits struct {
 	MaxRedirects   int
 	AllowedSchemes []string
 	AllowLocalURLs bool
-	AllowedHosts   map[string]struct{}
-	UserAgent      string
+	// AllowedHosts keys must be normalized with NormalizeHost.
+	AllowedHosts map[string]struct{}
+	UserAgent    string
 }
 
 type Condition struct {
@@ -100,7 +101,7 @@ func (f Fetcher) Fetch(ctx context.Context, method, rawURL string, limits Limits
 
 	current, err := url.Parse(rawURL)
 	if err != nil {
-		return Response{}, err
+		return Response{}, fmt.Errorf("invalid URL")
 	}
 	for redirects := 0; ; {
 		target, err := f.ValidateTarget(ctx, current, limits)
@@ -121,7 +122,7 @@ func (f Fetcher) Fetch(ctx context.Context, method, rawURL string, limits Limits
 			}
 			next, err := current.Parse(location)
 			if err != nil {
-				return Response{}, err
+				return Response{}, fmt.Errorf("invalid redirect location")
 			}
 			current = next
 			redirects++
@@ -274,7 +275,7 @@ func ResolvePublicTargetIP(ctx context.Context, resolver Resolver, hostname stri
 func (f Fetcher) roundTrip(ctx context.Context, method string, target Target, condition Condition, userAgent string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, target.URL.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid request")
 	}
 	req.Host = target.URL.Host
 	if condition.ETag != "" {
@@ -303,6 +304,7 @@ func (f Fetcher) roundTripper(target Target) (*http.Transport, func()) {
 	}
 	transport.Proxy = nil
 	transport.DisableCompression = true
+	transport.DisableKeepAlives = true
 	f.pinTransportToTarget(transport, target)
 	return transport, transport.CloseIdleConnections
 }
@@ -381,6 +383,9 @@ func IsRedirectStatus(status int) bool {
 }
 
 func schemeAllowed(scheme string, limits Limits) bool {
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
 	if len(limits.AllowedSchemes) != 0 {
 		for _, allowed := range limits.AllowedSchemes {
 			if scheme == strings.ToLower(strings.TrimSpace(allowed)) {
