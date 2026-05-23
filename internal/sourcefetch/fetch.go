@@ -3,6 +3,7 @@ package sourcefetch
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -56,6 +57,8 @@ type Target struct {
 	ResolvedIP string
 	DialAddr   string
 }
+
+var ErrBodyTooLarge = errors.New("response body exceeds maximum size")
 
 var deniedIPv4 = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
@@ -364,7 +367,7 @@ func ReadCappedBody(body io.Reader, maxBytes int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(out)) > maxBytes {
-		return nil, fmt.Errorf("response body exceeds %d bytes", maxBytes)
+		return nil, fmt.Errorf("%w: response body exceeds %d bytes", ErrBodyTooLarge, maxBytes)
 	}
 	return out, nil
 }
