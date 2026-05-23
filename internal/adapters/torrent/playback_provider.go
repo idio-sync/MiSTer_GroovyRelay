@@ -26,7 +26,7 @@ func (a *Adapter) PlaybackBanner(ctx context.Context, snap adapters.PlaybackBann
 
 func (a *Adapter) HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
 	if req.Action != adapters.PlaybackActionStop {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("unknown playback action %q", req.Action)
+		return adapters.PlaybackActionResult{}, adapters.UnsupportedPlaybackActionError(fmt.Sprintf("unknown playback action %q", req.Action))
 	}
 	if a.core == nil {
 		return adapters.PlaybackActionResult{}, fmt.Errorf("core not wired")
@@ -36,7 +36,7 @@ func (a *Adapter) HandlePlaybackAction(ctx context.Context, req adapters.Playbac
 		return adapters.PlaybackActionResult{}, err
 	}
 	if !matched {
-		return adapters.PlaybackActionResult{}, fmt.Errorf("%s", adapters.ErrActiveSessionChangedMessage)
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
 	}
 	return adapters.PlaybackActionResult{Message: "stopped"}, nil
 }

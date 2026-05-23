@@ -1,10 +1,12 @@
 package chassis
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -22,6 +24,18 @@ type SessionViewer interface {
 	StatusHomeView() core.StatusHomeView
 }
 
+// TransportViewer is the read-only playback banner source for chassis
+// transport data. Optional; nil/unowned snapshots render read-only.
+type TransportViewer interface {
+	PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool)
+}
+
+// TransportController handles playback control actions from chassis
+// transport UI. Optional; later tasks own HTTP handlers.
+type TransportController interface {
+	HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error)
+}
+
 // snapshotFromSession builds the page-render data from current bridge
 // session state. When sv is nil OR the bridge is idle, falls back to
 // idleSnapshot. When live (playing or paused), overrides VFD title +
@@ -37,7 +51,7 @@ type SessionViewer interface {
 //
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
-func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, now time.Time) ReceiverPageData {
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, now time.Time) ReceiverPageData {
 	base := idleSnapshot(cfg, now)
 	if sv != nil {
 		view := sv.StatusHomeView()
@@ -50,6 +64,7 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, now 
 			// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
 			// SystemTime + Uptime are computed in idleSnapshot from `now` and
 			// cfg.StartedAt; they remain valid in live state.
+			base.Transport = buildTransportData(view, tv, context.Background())
 		default:
 			// idle/unknown keep idleSnapshot data
 		}
@@ -63,6 +78,96 @@ func liveVisualizerMode(cfg Config, vv VisualizerViewer) string {
 		return defaultVisualizerMode(cfg)
 	}
 	return config.NormalizeVisualizerMode(vv.VisualizerMode())
+}
+
+func buildTransportData(view core.StatusHomeView, tv TransportViewer, ctx context.Context) TransportData {
+	percent := computeSeekFillPercent(view.Position, view.Duration)
+	out := TransportData{
+		State:           transportStateFromCore(view.State),
+		SeekFillPercent: percent,
+		ElapsedTime:     formatPlaybackPosition(view.Position),
+		TotalTime:       formatPlaybackDuration(view.Duration),
+		OffsetMS:        clampMSNonNegative(int(view.Position / time.Millisecond)),
+		DurationMS:      clampMSNonNegative(int(view.Duration / time.Millisecond)),
+		AdapterRef:      view.AdapterRef,
+		Generation:      view.Generation,
+	}
+	if percent > 0 || view.Duration > 0 {
+		out.PercentPlayed = fmt.Sprintf("%d%%", percent)
+	}
+	if tv == nil {
+		return out
+	}
+
+	adapterView, owns := tv.PlaybackViewForSnapshot(ctx, view)
+	if !owns {
+		return out
+	}
+	if adapterView.Seek != nil {
+		if adapterView.Seek.DurationMS > 0 {
+			out.DurationMS = adapterView.Seek.DurationMS
+		}
+		if adapterView.Seek.OffsetMS >= 0 {
+			out.OffsetMS = adapterView.Seek.OffsetMS
+		}
+	}
+	out.ActionsEnabled = actionsEnabledFromAdapterView(adapterView)
+	return out
+}
+
+func transportStateFromCore(s core.State) string {
+	switch s {
+	case core.StatePlaying:
+		return "playing"
+	case core.StatePaused:
+		return "paused"
+	default:
+		return "stopped"
+	}
+}
+
+func computeSeekFillPercent(pos, dur time.Duration) int {
+	if dur <= 0 {
+		return 0
+	}
+	percent := int((float64(pos) / float64(dur)) * 100)
+	if percent < 0 {
+		return 0
+	}
+	if percent > 100 {
+		return 100
+	}
+	return percent
+}
+
+func clampMSNonNegative(v int) int {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func actionsEnabledFromAdapterView(view adapters.PlaybackBannerAdapterView) ActionsEnabled {
+	var out ActionsEnabled
+	for _, action := range view.Actions {
+		if !action.Enabled {
+			continue
+		}
+		switch action.ID {
+		case adapters.PlaybackActionPrevious:
+			out.Previous = true
+		case adapters.PlaybackActionNext:
+			out.Next = true
+		case adapters.PlaybackActionPause, adapters.PlaybackActionResume:
+			out.PauseResume = true
+		case adapters.PlaybackActionStop:
+			out.Stop = true
+		case adapters.PlaybackActionReplay:
+			out.Replay = true
+		}
+	}
+	out.Seek = view.Seek != nil && view.Seek.Enabled
+	return out
 }
 
 // formatLiveMarquee composes the VFD marquee string for live state per

@@ -2,6 +2,7 @@ package torrent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -51,8 +52,8 @@ func TestTorrentStopRejectsStaleGeneration(t *testing.T) {
 	coreStub := &torrentProviderCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "torrent:abc", Generation: 5}}
 	a := &Adapter{core: coreStub}
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "torrent:abc", Generation: 4})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("HandlePlaybackAction stale error = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("HandlePlaybackAction stale error = %v, want stale-session sentinel", err)
 	}
 	if coreStub.stopRef != "torrent:abc" || coreStub.stopGen != 4 {
 		t.Fatalf("stop key = %q/%d, want submitted stale key", coreStub.stopRef, coreStub.stopGen)
@@ -63,11 +64,23 @@ func TestTorrentStopRejectsForeignAdapterRef(t *testing.T) {
 	coreStub := &torrentProviderCoreStub{status: core.SessionStatus{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 4}}
 	a := &Adapter{core: coreStub}
 	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionStop, AdapterRef: "torrent:abc", Generation: 4})
-	if err == nil || !strings.Contains(err.Error(), "active session changed") {
-		t.Fatalf("HandlePlaybackAction foreign error = %v, want active session changed", err)
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("HandlePlaybackAction foreign error = %v, want stale-session sentinel", err)
 	}
 	if coreStub.stopRef != "torrent:abc" || coreStub.stopGen != 4 {
 		t.Fatalf("stop key = %q/%d, want submitted foreign key", coreStub.stopRef, coreStub.stopGen)
+	}
+}
+
+func TestTorrentRejectsUnsupportedActionWithSentinel(t *testing.T) {
+	a := &Adapter{}
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionPause, AdapterRef: "torrent:abc", Generation: 4})
+	if !errors.Is(err, adapters.ErrPlaybackActionUnsupported) {
+		t.Fatalf("HandlePlaybackAction unsupported error = %v, want unsupported-action sentinel", err)
+	}
+	const want = "unknown playback action \"pause\""
+	if err.Error() != want {
+		t.Fatalf("HandlePlaybackAction unsupported message = %q, want %q", err.Error(), want)
 	}
 }
 

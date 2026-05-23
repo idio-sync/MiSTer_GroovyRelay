@@ -46,6 +46,50 @@ func vfdEnvelopeFrom(v VFDData) vfdEnvelope {
 	}
 }
 
+type transportEnvelope struct {
+	State           string          `json:"state"`
+	SeekFillPercent int             `json:"seekFillPercent"`
+	ElapsedTime     string          `json:"elapsedTime"`
+	TotalTime       string          `json:"totalTime"`
+	PercentPlayed   string          `json:"percentPlayed"`
+	OffsetMS        int             `json:"offsetMs"`
+	DurationMS      int             `json:"durationMs"`
+	ActionsEnabled  actionsEnabledE `json:"actionsEnabled"`
+	AdapterRef      string          `json:"adapterRef"`
+	Generation      uint64          `json:"generation"`
+}
+
+type actionsEnabledE struct {
+	Previous    bool `json:"previous"`
+	Next        bool `json:"next"`
+	PauseResume bool `json:"pauseResume"`
+	Stop        bool `json:"stop"`
+	Replay      bool `json:"replay"`
+	Seek        bool `json:"seek"`
+}
+
+func transportEnvelopeFrom(t TransportData) transportEnvelope {
+	return transportEnvelope{
+		State:           t.State,
+		SeekFillPercent: t.SeekFillPercent,
+		ElapsedTime:     t.ElapsedTime,
+		TotalTime:       t.TotalTime,
+		PercentPlayed:   t.PercentPlayed,
+		OffsetMS:        t.OffsetMS,
+		DurationMS:      t.DurationMS,
+		ActionsEnabled: actionsEnabledE{
+			Previous:    t.ActionsEnabled.Previous,
+			Next:        t.ActionsEnabled.Next,
+			PauseResume: t.ActionsEnabled.PauseResume,
+			Stop:        t.ActionsEnabled.Stop,
+			Replay:      t.ActionsEnabled.Replay,
+			Seek:        t.ActionsEnabled.Seek,
+		},
+		AdapterRef: t.AdapterRef,
+		Generation: t.Generation,
+	}
+}
+
 // emit writes one SSE record (event line + data line + terminating
 // blank line). Returns the underlying writer error so callers can
 // detect mid-write client disconnects and bail cleanly.
@@ -77,13 +121,26 @@ func vfdChanged(a, b VFDData) bool {
 		a.Uptime != b.Uptime
 }
 
+func transportChanged(a, b TransportData) bool {
+	return a.State != b.State ||
+		a.SeekFillPercent != b.SeekFillPercent ||
+		a.ElapsedTime != b.ElapsedTime ||
+		a.TotalTime != b.TotalTime ||
+		a.PercentPlayed != b.PercentPlayed ||
+		a.OffsetMS != b.OffsetMS ||
+		a.DurationMS != b.DurationMS ||
+		a.ActionsEnabled != b.ActionsEnabled ||
+		a.AdapterRef != b.AdapterRef ||
+		a.Generation != b.Generation
+}
+
 // handleEvents serves a long-lived SSE stream at GET /receiver/events.
 // Scaffolding only — the diff ticker that emits change events lands
 // in the next task. This implementation handles:
 //   - 500 when the ResponseWriter cannot flush
 //   - SSE response headers
 //   - retry: 3000 directive (pins browser reconnect cadence)
-//   - initial state + vfd snapshot
+//   - initial state + vfd + visualizer + transport snapshot
 //   - clean termination on r.Context().Done()
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
@@ -102,7 +159,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, time.Now())
+	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, time.Now())
 	s.cache.Set(last)
 	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
 		return
@@ -111,6 +168,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := emit(w, "visualizer", vizEnvelope{Mode: last.Visualizer.ActiveMode}); err != nil {
+		return
+	}
+	if err := emit(w, "transport", transportEnvelopeFrom(last.Transport)); err != nil {
 		return
 	}
 	flusher.Flush()
@@ -142,6 +202,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				last.Visualizer.ActiveMode = curr.Visualizer.ActiveMode
+			}
+			if transportChanged(curr.Transport, last.Transport) {
+				if err := emit(w, "transport", transportEnvelopeFrom(curr.Transport)); err != nil {
+					return
+				}
+				last.Transport = curr.Transport
 			}
 			flusher.Flush()
 		case <-heartbeat.C:

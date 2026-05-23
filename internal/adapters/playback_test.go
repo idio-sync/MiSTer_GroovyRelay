@@ -1,6 +1,8 @@
 package adapters
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -30,5 +32,36 @@ func TestQuickCastEncodingConstants(t *testing.T) {
 	}
 	if QuickCastEncodingMultipart != "multipart" {
 		t.Fatalf("QuickCastEncodingMultipart = %q", QuickCastEncodingMultipart)
+	}
+}
+
+func TestErrActiveSessionChanged_IsErrorsIsFriendly(t *testing.T) {
+	t.Parallel()
+	wrapped := fmt.Errorf("provider context: %w", ErrActiveSessionChanged)
+	if !errors.Is(wrapped, ErrActiveSessionChanged) {
+		t.Fatalf("wrapped sentinel should satisfy errors.Is")
+	}
+	if ErrActiveSessionChanged.Error() != ErrActiveSessionChangedMessage {
+		t.Errorf("Error() = %q, want %q", ErrActiveSessionChanged.Error(), ErrActiveSessionChangedMessage)
+	}
+}
+
+func TestErrPlaybackActionUnsupported_IsErrorsIsFriendly(t *testing.T) {
+	t.Parallel()
+	wrapped := fmt.Errorf("provider context: %w", ErrPlaybackActionUnsupported)
+	if !errors.Is(wrapped, ErrPlaybackActionUnsupported) {
+		t.Fatalf("wrapped sentinel should satisfy errors.Is")
+	}
+}
+
+func TestUnsupportedPlaybackActionError_PreservesMessageAndUnwraps(t *testing.T) {
+	t.Parallel()
+	const msg = "streams adapter does not support previous"
+	err := UnsupportedPlaybackActionError(msg)
+	if err.Error() != msg {
+		t.Fatalf("Error() = %q, want %q", err.Error(), msg)
+	}
+	if !errors.Is(err, ErrPlaybackActionUnsupported) {
+		t.Fatalf("UnsupportedPlaybackActionError should unwrap to ErrPlaybackActionUnsupported")
 	}
 }
