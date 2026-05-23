@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -74,6 +75,10 @@ func (a *Adapter) startTorrentBytes(ctx context.Context, body []byte) (*StartedS
 	if err != nil {
 		return nil, err
 	}
+	return a.startTorrentBytesWithConfig(ctx, cfg, body)
+}
+
+func (a *Adapter) startTorrentBytesWithConfig(ctx context.Context, cfg Config, body []byte) (*StartedSession, error) {
 	client, err := a.ensureClient(cfg)
 	if err != nil {
 		return nil, err
@@ -83,6 +88,29 @@ func (a *Adapter) startTorrentBytes(ctx context.Context, body []byte) (*StartedS
 		return nil, &TorrentError{Kind: ErrBadInput, Message: "torrent file could not be added", Err: err}
 	}
 	return a.startTorrentHandle(ctx, cfg, t, isNew)
+}
+
+func (a *Adapter) startTorrentURL(ctx context.Context, rawURL string) (*StartedSession, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if err := validateTorrentURLInput(rawURL); err != nil {
+		return nil, err
+	}
+	if _, err := a.snapshotForStart(); err != nil {
+		return nil, err
+	}
+	fetcher := a.urlFetcher
+	if fetcher == nil {
+		fetcher = torrentURLHTTPFetcher{}
+	}
+	res, err := fetcher.FetchTorrentURL(ctx, rawURL, maxTorrentUploadBytes)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := a.snapshotForStart()
+	if err != nil {
+		return nil, err
+	}
+	return a.startTorrentBytesWithConfig(ctx, cfg, res.Body)
 }
 
 func (a *Adapter) snapshotForStart() (Config, error) {

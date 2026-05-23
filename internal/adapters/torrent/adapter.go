@@ -39,10 +39,11 @@ type AdapterConfig struct {
 
 // Adapter implements adapters.Adapter for torrent-backed casts.
 type Adapter struct {
-	core     SessionManager
-	bridge   config.BridgeConfig
-	factory  ClientFactory
-	eventLog *eventlog.Log
+	core       SessionManager
+	bridge     config.BridgeConfig
+	factory    ClientFactory
+	urlFetcher torrentURLFetcher
+	eventLog   *eventlog.Log
 
 	mu         sync.Mutex
 	cfg        Config
@@ -75,6 +76,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		core:       cfg.Core,
 		bridge:     cfg.Bridge,
 		factory:    factory,
+		urlFetcher: torrentURLHTTPFetcher{},
 		eventLog:   cfg.EventLog,
 		cfg:        DefaultConfig(),
 		state:      adapters.StateStopped,

@@ -20,6 +20,7 @@ import (
 type fakeTorrentClient struct {
 	magnets      []string
 	metainfo     [][]byte
+	metaTorrent  *fakeTorrent
 	byHash       map[string]*fakeTorrent
 	closes       int
 	files        []FileCandidate
@@ -62,12 +63,44 @@ func (f *fakeTorrentClient) AddMagnet(ctx context.Context, raw string) (TorrentH
 
 func (f *fakeTorrentClient) AddMetaInfo(ctx context.Context, body []byte) (TorrentHandle, bool, error) {
 	f.metainfo = append(f.metainfo, body)
-	return nil, false, errors.New("not used")
+	if f.metaTorrent != nil {
+		return f.metaTorrent, true, nil
+	}
+	files := f.files
+	if files == nil {
+		files = []FileCandidate{
+			{DisplayPath: "movie.mkv", Length: 10, Index: 0},
+		}
+	}
+	return &fakeTorrent{
+		hash:    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		name:    "movie",
+		files:   files,
+		waitErr: f.waitErr,
+	}, true, nil
 }
 
 func (f *fakeTorrentClient) Close() error {
 	f.closes++
 	return nil
+}
+
+type fakeTorrentURLFetcher struct {
+	calls      int
+	body       []byte
+	err        error
+	afterFetch func()
+}
+
+func (f *fakeTorrentURLFetcher) FetchTorrentURL(ctx context.Context, rawURL string, limit int64) (TorrentURLFetchResult, error) {
+	f.calls++
+	if f.afterFetch != nil {
+		f.afterFetch()
+	}
+	if f.err != nil {
+		return TorrentURLFetchResult{}, f.err
+	}
+	return TorrentURLFetchResult{Body: f.body, FinalURL: rawURL, ContentType: "application/x-bittorrent"}, nil
 }
 
 type fakeTorrent struct {
@@ -169,6 +202,129 @@ func TestStartMagnetRequiresEnabledAndTrafficAcknowledged(t *testing.T) {
 	}
 	if factoryCalls != 0 || len(client.magnets) != 0 {
 		t.Fatalf("client touched before gates passed: factory=%d magnets=%d", factoryCalls, len(client.magnets))
+	}
+}
+
+func TestStartTorrentURLRequiresGatesBeforeFetch(t *testing.T) {
+	factoryCalls := 0
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	fetcher := &fakeTorrentURLFetcher{body: []byte("metainfo")}
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   core,
+		ClientFactory: func(ClientConfig) (TorrentClient, error) {
+			factoryCalls++
+			return client, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.urlFetcher = fetcher
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.startTorrentURL(context.Background(), "https://example.com/file.torrent")
+	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrDisabled {
+		t.Fatalf("disabled err = %#v, want ErrDisabled", err)
+	}
+	a.SetEnabled(true)
+	_, err = a.startTorrentURL(context.Background(), "https://example.com/file.torrent")
+	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrTrafficNotAcknowledged {
+		t.Fatalf("traffic err = %#v, want ErrTrafficNotAcknowledged", err)
+	}
+	if fetcher.calls != 0 || factoryCalls != 0 {
+		t.Fatalf("fetch/client touched before gates passed: fetch=%d factory=%d", fetcher.calls, factoryCalls)
+	}
+}
+
+func TestStartTorrentURLRejectsUnsafeInputBeforeGatesAndFetch(t *testing.T) {
+	core := &recordingCore{}
+	fetcher := &fakeTorrentURLFetcher{body: []byte("metainfo")}
+	a, err := New(AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   core,
+		ClientFactory: func(ClientConfig) (TorrentClient, error) {
+			t.Fatal("client factory called for unsafe URL")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.urlFetcher = fetcher
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, raw := range []string{
+		"ftp://example.com/file.torrent",
+		"https://user:pass@example.com/file.torrent",
+		"http://[::1]/file.torrent",
+	} {
+		_, err := a.startTorrentURL(context.Background(), raw)
+		if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrBadInput {
+			t.Fatalf("startTorrentURL(%q) err = %#v, want ErrBadInput", raw, err)
+		}
+	}
+	if fetcher.calls != 0 {
+		t.Fatalf("fetcher calls = %d, want 0", fetcher.calls)
+	}
+}
+
+func TestStartTorrentURLRechecksGatesAfterFetchBeforeClient(t *testing.T) {
+	factoryCalls := 0
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	cfg := startedTorrentConfig()
+	a := newStartedTestAdapter(t, cfg, client, core)
+	fetcher := &fakeTorrentURLFetcher{
+		body: []byte("metainfo"),
+		afterFetch: func() {
+			a.mu.Lock()
+			a.cfg.TrafficAcknowledged = false
+			a.mu.Unlock()
+		},
+	}
+	a.urlFetcher = fetcher
+	a.factory = func(ClientConfig) (TorrentClient, error) {
+		factoryCalls++
+		return client, nil
+	}
+
+	_, err := a.startTorrentURL(context.Background(), "https://example.com/file.torrent")
+	if terr, ok := err.(*TorrentError); !ok || terr.Kind != ErrTrafficNotAcknowledged {
+		t.Fatalf("startTorrentURL err = %#v, want ErrTrafficNotAcknowledged", err)
+	}
+	if factoryCalls != 0 || len(client.metainfo) != 0 {
+		t.Fatalf("client touched after gate revoked: factory=%d metainfo=%d", factoryCalls, len(client.metainfo))
+	}
+}
+
+func TestStartTorrentURLStartsFromFetchedBytes(t *testing.T) {
+	core := &recordingCore{}
+	client := &fakeTorrentClient{}
+	a := newStartedTestAdapter(t, startedTorrentConfig(), client, core)
+	fetcher := &fakeTorrentURLFetcher{body: []byte("metainfo")}
+	a.urlFetcher = fetcher
+
+	started, err := a.startTorrentURL(context.Background(), "https://example.com/file.torrent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.AdapterRef == "" {
+		t.Fatal("started AdapterRef empty")
+	}
+	if len(client.metainfo) != 1 || string(client.metainfo[0]) != "metainfo" {
+		t.Fatalf("metainfo = %q, want fetched body", client.metainfo)
+	}
+	if len(core.reqs) != 1 {
+		t.Fatalf("core StartSession calls = %d, want 1", len(core.reqs))
+	}
+	if fetcher.calls != 1 {
+		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
 	}
 }
 
