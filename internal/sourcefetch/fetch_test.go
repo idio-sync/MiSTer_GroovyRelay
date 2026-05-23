@@ -46,6 +46,7 @@ func TestIsPublicRoutableRejectsNormativeDeniedPrefixes(t *testing.T) {
 		"fe80::1",
 		"ff00::1",
 		"::ffff:192.168.1.2",
+		"::ffff:8.8.8.8",
 	}
 
 	for _, raw := range denied {
@@ -144,6 +145,7 @@ func TestResolvePublicTargetIPRejectsMixedAnswers(t *testing.T) {
 	for name, answers := range map[string][]string{
 		"mixed-private":     {"93.184.216.34", "192.168.1.1"},
 		"mixed-special-use": {"93.184.216.34", "198.51.100.1"},
+		"mapped-public":     {"::ffff:8.8.8.8"},
 	} {
 		resolver := staticResolver{name: answers}
 		if _, err := ResolvePublicTargetIP(context.Background(), resolver, name, false); err == nil {

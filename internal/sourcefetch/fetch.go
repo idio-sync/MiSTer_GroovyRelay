@@ -260,10 +260,10 @@ func ResolvePublicTargetIP(ctx context.Context, resolver Resolver, hostname stri
 		if err != nil {
 			return netip.Addr{}, fmt.Errorf("host %q resolved to invalid IP %q", hostname, host)
 		}
-		addr = addr.Unmap()
 		if !allowLocal && !IsPublicRoutable(addr) {
 			return netip.Addr{}, fmt.Errorf("host %q resolved to non-public IP %s", hostname, addr)
 		}
+		addr = addr.Unmap()
 		if !first.IsValid() {
 			first = addr
 		}
@@ -333,7 +333,7 @@ func (f Fetcher) pinTransportToTarget(transport *http.Transport, target Target) 
 
 func IsPublicRoutable(addr netip.Addr) bool {
 	if addr.Is4In6() {
-		addr = addr.Unmap()
+		return false
 	}
 	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() ||
 		addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
