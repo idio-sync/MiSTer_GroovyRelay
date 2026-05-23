@@ -65,6 +65,8 @@ The adapter supports two input modes:
 
 The existing FFmpeg visualizer path remains the renderer. AUX does not introduce a separate Go-side video generator.
 
+For `stream_url`, the AUX adapter should not hand the operator URL directly to FFmpeg. It should create a short-lived validating stream proxy owned by the relay process. The proxy performs the outbound HTTP(S) GET with the AUX URL validator, no redirects, bounded timeout, and no caller-supplied headers, then exposes the response body on a loopback URL that FFmpeg consumes for that one session. This makes the redirect policy enforceable instead of relying on FFmpeg's HTTP demuxer behavior.
+
 For local capture, `core.SessionRequest` needs a small adapter-agnostic capture input block so adapters do not smuggle capture syntax through `StreamURL`. Exactly one of `StreamURL` or `AudioCapture.Enabled` may be set for an AUX session:
 
 ```go
@@ -170,7 +172,7 @@ type ProbeInputSpec struct {
 func ProbeInput(ctx context.Context, ffprobePath string, input ProbeInputSpec) (*ProbeResult, error)
 ```
 
-For `stream_url`, `ProbeInput` preserves today's URL argv shape and applies `Policy`. For `local_capture`, it runs a bounded live-input probe with the same structured capture args used by `BuildCommand`, for example `ffprobe -f <format> <capture-options> -i <device> -show_streams -print_format json`. `core.Manager.probeForStart` calls this input-shaped probe. It allows `StreamURL` to be empty when `AudioCapture.Enabled=true`, still rejects visualizer sessions whose probe has no audio stream, and treats capture duration as zero because live inputs do not have a finite media duration.
+For `stream_url`, `ProbeInput` receives the relay-local proxy URL, preserves today's URL argv shape against that loopback input, and applies `Policy`. For `local_capture`, it runs a bounded live-input probe with the same structured capture args used by `BuildCommand`, for example `ffprobe -f <format> <capture-options> -i <device> -show_streams -print_format json`. `core.Manager.probeForStart` calls this input-shaped probe. It allows `StreamURL` to be empty when `AudioCapture.Enabled=true`, still rejects visualizer sessions whose probe has no audio stream, and treats capture duration as zero because live inputs do not have a finite media duration.
 
 Third, AUX needs a way to generate visualizer video while suppressing PCM output:
 
@@ -229,6 +231,43 @@ type AUXStatus struct {
 
 The current source cluster is four buttons (`STREAMS`, `PLEX`, `JELLYFIN`, `DLNA`). AUX implementation must update the cluster layout and responsive tests so adding `AUX` does not overflow or regress mobile rendering.
 
+## Stream URL Proxy
+
+`stream_url` mode uses a relay-local validating proxy rather than passing the operator URL directly to FFmpeg.
+
+Flow:
+
+```text
+operator capture URL
+        |
+        v
+aux adapter validates URL shape
+        |
+        v
+relay-local stream proxy opens outbound GET with redirects disabled
+        |
+        v
+loopback proxy URL handed to core.SessionRequest.StreamURL
+        |
+        v
+FFmpeg visualizer input
+```
+
+Proxy requirements:
+
+- Listen only on loopback or use an unguessable in-process route mounted on the existing UI listener.
+- Generate one opaque session token per AUX start.
+- Allow only the owning session token to read the stream.
+- Use Go's `http.Client` with `CheckRedirect` returning `http.ErrUseLastResponse`.
+- Treat any 3xx as `AUX input redirected` and fail start before preempting the active cast.
+- Reject non-2xx responses.
+- Apply the same AUX URL validator before dialing.
+- Set bounded dial/TLS/header timeouts.
+- Send no operator-configurable request headers in v1.
+- Close the outbound response when the AUX session stops or FFmpeg exits.
+
+FFmpeg consumes only the relay-local URL. The `MediaInputPolicy` on that loopback URL should still disable reconnects and set `RWTimeout`, but SSRF and redirect safety live in the proxy, not in FFmpeg flags.
+
 ## Remote Stream Producer
 
 V1 does not require a custom capture agent. For Unraid and other remote deployments, the documented path is an FFmpeg command on the machine with the analog input, exposing a low-latency audio stream that GroovyRelay consumes via `stream_url`.
@@ -271,8 +310,8 @@ V1 allowed URL shape:
 - Host: must parse as a host or IP address; empty hosts are rejected.
 - Userinfo is rejected.
 - Fragment is rejected.
-- Redirects are not allowed for AUX stream URLs. If a validating redirect resolver is added, every redirect target must be revalidated against these same rules before FFmpeg sees the final URL.
-- Default policy: `ProtocolWhitelist=["http","https","tcp","tls"]`, `DisableReconnect=true`, bounded `RWTimeout`, and no input headers.
+- Redirects are not allowed. The relay-local proxy enforces this by refusing 3xx responses instead of following them.
+- FFmpeg consumes only the relay-local proxy URL. Default policy for that URL: `ProtocolWhitelist=["http","tcp"]`, `DisableReconnect=true`, bounded `RWTimeout`, and no input headers.
 - `file`, `udp`, `rtp`, and `srt` stream URLs are out of v1 unless a later spec adds source-specific validation and operator-facing firewall guidance.
 
 `local_capture` config must never be a shell command. It is parsed into explicit argv tokens. The adapter should reject suspicious empty or malformed capture fields early, but it does not need to sanitize for shell metacharacters because no shell is involved.
@@ -293,14 +332,16 @@ The receiver POST routes use the same same-origin protection as existing chassis
 Unit tests:
 
 - AUX config defaults and validation.
+- Session request input validation rejects both-set (`StreamURL` plus `AudioCapture.Enabled`) and neither-set inputs.
 - Session request construction for `stream_url` and `local_capture`.
 - `visual_only` sets the FFmpeg audio-suppression flag.
 - `visual_only` also disables data-plane audio advertisement (`AudioRateOff`, zero channels) and audio pipe reading.
 - `monitor` preserves normal PCM output in both FFmpeg argv and data-plane INIT.
-- Input-shaped probing supports both URL and local capture specs; local capture probe uses a bounded timeout and accepts zero duration.
+- Input-shaped probing supports both relay-local stream URL and local capture specs; local capture probe uses a default bounded timeout of 3 seconds and accepts zero duration.
 - FFmpeg argv generation for local capture uses structured args in the right order.
 - FFmpeg argv generation for stream URL applies media input policy and low-latency options in the right place.
-- Stream URL validation rejects unsupported schemes, userinfo, empty host, fragments, and redirects unless explicitly prevalidated.
+- Stream URL validation rejects unsupported schemes, userinfo, empty host, and fragments; the stream proxy rejects redirects by refusing 3xx responses.
+- Stream proxy rejects 3xx and non-2xx upstream responses, uses no operator-provided headers, and tears down the upstream response on session stop.
 - Receiver AUX start/stop route method checks, same-origin failures, malformed input, disabled/unconfigured errors, success, and foreign-session stop no-op.
 - Source cluster template/CSS tests cover the added AUX control at desktop and mobile widths.
 
