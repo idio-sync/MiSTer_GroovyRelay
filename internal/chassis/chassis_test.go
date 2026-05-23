@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -747,8 +749,8 @@ func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 	}
 	transportHTML := body[transportStart:transportEnd]
 	for _, want := range []string{
-		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text"></span></span>`,
-		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text"></span></span>`,
+		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-transport-elapsed></span></span>`,
+		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-transport-total></span></span>`,
 	} {
 		if !strings.Contains(transportHTML, want) {
 			t.Errorf("body missing accessible transport ghost markup %q", want)
@@ -772,16 +774,99 @@ func TestHandleIndex_RendersTransportAndVisualizerAccessibilityHooks(t *testing.
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		`<button class="trn" type="button" aria-label="Previous" title="Previous">`,
-		`<button class="trn" type="button" aria-label="Next" title="Next">`,
-		`<button class="trn primary" type="button" aria-label="Pause or resume" title="Pause / Resume">`,
-		`<button class="trn" type="button" aria-label="Stop" title="Stop">`,
-		`<button class="trn" type="button" aria-label="Replay" title="Replay">`,
-		`class="seek-bar" role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"`,
+		`data-transport-action="previous"`,
+		`aria-label="Previous" title="Previous"`,
+		`data-transport-action="next"`,
+		`aria-label="Next" title="Next"`,
+		`data-transport-action="pauseResume"`,
+		`aria-label="Pause or resume" title="Pause / Resume"`,
+		`data-state-icon="playing"`,
+		`data-state-icon="paused"`,
+		`data-transport-action="stop"`,
+		`aria-label="Stop" title="Stop"`,
+		`data-transport-action="replay"`,
+		`aria-label="Replay" title="Replay"`,
+		`class="seek-bar" data-transport-seek`,
+		`role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"`,
 		`class="hw-btn viz-btn viz-btn--preview" type="button" role="radio" aria-checked="false" aria-disabled="true" disabled`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing transport/visualizer accessibility hook %q", want)
+		}
+	}
+}
+
+func TestTransportTemplate_RendersDataAttributeHooks(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	data := TransportData{
+		State:           "playing",
+		SeekFillPercent: 44,
+		ElapsedTime:     "04:23",
+		TotalTime:       "09:56",
+		PercentPlayed:   "44%",
+		OffsetMS:        263000,
+		DurationMS:      596000,
+		ActionsEnabled: ActionsEnabled{
+			Previous:    true,
+			Next:        true,
+			PauseResume: true,
+			Stop:        true,
+			Replay:      false,
+			Seek:        true,
+		},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+		t.Fatalf("execute transport partial: %v", err)
+	}
+	body := buf.String()
+
+	for _, want := range []string{
+		`data-transport-state="playing"`,
+		`data-transport-action="previous"`,
+		`data-transport-action="next"`,
+		`data-transport-action="pauseResume"`,
+		`data-transport-action="stop"`,
+		`data-transport-action="replay"`,
+		`data-transport-seek`,
+		`data-transport-seek-fill`,
+		`data-transport-elapsed`,
+		`data-transport-total`,
+		`data-transport-percent`,
+		`data-transport-offset-ms="263000"`,
+		`data-transport-duration-ms="596000"`,
+		`data-state-icon="playing"`,
+		`data-state-icon="paused"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport partial missing %q; full output:\n%s", want, body)
+		}
+	}
+	replayDisabled := regexp.MustCompile(`(?s)<button[^>]*data-transport-action="replay"[^>]*\sdisabled(?:\s|>)`)
+	if !replayDisabled.MatchString(body) {
+		t.Fatalf("replay button should be disabled when ActionsEnabled.Replay=false; full output:\n%s", body)
+	}
+}
+
+func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	for _, percent := range []int{0, 44, 100} {
+		data := TransportData{SeekFillPercent: percent}
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+			t.Fatalf("execute transport partial with percent %d: %v", percent, err)
+		}
+		want := `style="width: ` + strconv.Itoa(percent) + `%"`
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("seek fill style with percent %d missing %q; full output:\n%s", percent, want, buf.String())
 		}
 	}
 }
@@ -1507,6 +1592,57 @@ func TestShellTemplate_LoadsVisualizerBankScriptAfterVfdLive(t *testing.T) {
 	}
 	if vizIdx <= vfdIdx {
 		t.Errorf("visualizer-bank.js script must appear AFTER vfd-live.js so it can use the shared EventSource")
+	}
+}
+
+func TestShellTemplate_LoadsTransportScript(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `/receiver/static/transport.js?v=test-1.0.0`) {
+		t.Errorf("shell.html should include versioned transport.js script tag")
+	}
+	vfdIdx := strings.Index(body, "vfd-live.js?v=")
+	transportIdx := strings.Index(body, "transport.js?v=")
+	if vfdIdx < 0 || transportIdx < 0 {
+		t.Fatalf("missing one of the script tags")
+	}
+	if transportIdx <= vfdIdx {
+		t.Errorf("transport.js script must appear AFTER vfd-live.js so it can use live transport data hooks")
+	}
+}
+
+func TestShellTemplate_EmitsChassisMetaTags(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Session = &fakeSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		AdapterRef: "plex:abc",
+		Generation: 42,
+	}}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`<meta name="chassis-adapter-ref" content="plex:abc"`,
+		`<meta name="chassis-generation" content="42"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("shell.html missing %q", want)
+		}
 	}
 }
 

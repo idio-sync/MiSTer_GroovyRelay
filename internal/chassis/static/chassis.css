@@ -1835,6 +1835,12 @@ body.receiver .transport-row {
   gap: 4px;
 }
 
+body.receiver [data-transport-state="playing"] [data-state-icon="paused"] { display: none; }
+body.receiver [data-transport-state="paused"]  [data-state-icon="playing"] { display: none; }
+body.receiver [data-transport-state="stopped"] [data-state-icon="paused"] { display: none; }
+body.receiver .transport-strip [data-transport-action]:disabled { opacity: 0.35; cursor: not-allowed; }
+body.receiver .seek-bar[data-transport-seek-disabled] { pointer-events: none; opacity: 0.5; }
+
 body.receiver .trn {
   width: 44px;
   height: 36px;
