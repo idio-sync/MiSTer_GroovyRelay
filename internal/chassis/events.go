@@ -46,6 +46,50 @@ func vfdEnvelopeFrom(v VFDData) vfdEnvelope {
 	}
 }
 
+type transportEnvelope struct {
+	State           string          `json:"state"`
+	SeekFillPercent int             `json:"seekFillPercent"`
+	ElapsedTime     string          `json:"elapsedTime"`
+	TotalTime       string          `json:"totalTime"`
+	PercentPlayed   string          `json:"percentPlayed"`
+	OffsetMS        int             `json:"offsetMs"`
+	DurationMS      int             `json:"durationMs"`
+	ActionsEnabled  actionsEnabledE `json:"actionsEnabled"`
+	AdapterRef      string          `json:"adapterRef"`
+	Generation      uint64          `json:"generation"`
+}
+
+type actionsEnabledE struct {
+	Previous    bool `json:"previous"`
+	Next        bool `json:"next"`
+	PauseResume bool `json:"pauseResume"`
+	Stop        bool `json:"stop"`
+	Replay      bool `json:"replay"`
+	Seek        bool `json:"seek"`
+}
+
+func transportEnvelopeFrom(t TransportData) transportEnvelope {
+	return transportEnvelope{
+		State:           t.State,
+		SeekFillPercent: t.SeekFillPercent,
+		ElapsedTime:     t.ElapsedTime,
+		TotalTime:       t.TotalTime,
+		PercentPlayed:   t.PercentPlayed,
+		OffsetMS:        t.OffsetMS,
+		DurationMS:      t.DurationMS,
+		ActionsEnabled: actionsEnabledE{
+			Previous:    t.ActionsEnabled.Previous,
+			Next:        t.ActionsEnabled.Next,
+			PauseResume: t.ActionsEnabled.PauseResume,
+			Stop:        t.ActionsEnabled.Stop,
+			Replay:      t.ActionsEnabled.Replay,
+			Seek:        t.ActionsEnabled.Seek,
+		},
+		AdapterRef: t.AdapterRef,
+		Generation: t.Generation,
+	}
+}
+
 // emit writes one SSE record (event line + data line + terminating
 // blank line). Returns the underlying writer error so callers can
 // detect mid-write client disconnects and bail cleanly.
@@ -75,6 +119,19 @@ func vfdChanged(a, b VFDData) bool {
 		a.QueueCurrent != b.QueueCurrent ||
 		a.QueueTotal != b.QueueTotal ||
 		a.Uptime != b.Uptime
+}
+
+func transportChanged(a, b TransportData) bool {
+	return a.State != b.State ||
+		a.SeekFillPercent != b.SeekFillPercent ||
+		a.ElapsedTime != b.ElapsedTime ||
+		a.TotalTime != b.TotalTime ||
+		a.PercentPlayed != b.PercentPlayed ||
+		a.OffsetMS != b.OffsetMS ||
+		a.DurationMS != b.DurationMS ||
+		a.ActionsEnabled != b.ActionsEnabled ||
+		a.AdapterRef != b.AdapterRef ||
+		a.Generation != b.Generation
 }
 
 // handleEvents serves a long-lived SSE stream at GET /receiver/events.

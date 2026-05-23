@@ -119,6 +119,180 @@ func TestVfdChanged_IdenticalReturnsFalse(t *testing.T) {
 	}
 }
 
+func sampleTransportData() TransportData {
+	return TransportData{
+		State:           "playing",
+		SeekFillPercent: 42,
+		ElapsedTime:     "01:23",
+		TotalTime:       "03:21",
+		PercentPlayed:   "42%",
+		OffsetMS:        83000,
+		DurationMS:      201000,
+		ActionsEnabled: ActionsEnabled{
+			Previous:    true,
+			Next:        true,
+			PauseResume: true,
+			Stop:        true,
+			Replay:      true,
+			Seek:        true,
+		},
+		AdapterRef: "plex:track:abc",
+		Generation: 7,
+	}
+}
+
+func TestTransportEnvelopeFrom_FlattensTransportData(t *testing.T) {
+	t.Parallel()
+	src := sampleTransportData()
+	got := transportEnvelopeFrom(src)
+
+	if got.State != src.State {
+		t.Errorf("State = %q, want %q", got.State, src.State)
+	}
+	if got.SeekFillPercent != src.SeekFillPercent {
+		t.Errorf("SeekFillPercent = %d, want %d", got.SeekFillPercent, src.SeekFillPercent)
+	}
+	if got.ElapsedTime != src.ElapsedTime {
+		t.Errorf("ElapsedTime = %q, want %q", got.ElapsedTime, src.ElapsedTime)
+	}
+	if got.TotalTime != src.TotalTime {
+		t.Errorf("TotalTime = %q, want %q", got.TotalTime, src.TotalTime)
+	}
+	if got.PercentPlayed != src.PercentPlayed {
+		t.Errorf("PercentPlayed = %q, want %q", got.PercentPlayed, src.PercentPlayed)
+	}
+	if got.OffsetMS != src.OffsetMS {
+		t.Errorf("OffsetMS = %d, want %d", got.OffsetMS, src.OffsetMS)
+	}
+	if got.DurationMS != src.DurationMS {
+		t.Errorf("DurationMS = %d, want %d", got.DurationMS, src.DurationMS)
+	}
+	if got.AdapterRef != src.AdapterRef {
+		t.Errorf("AdapterRef = %q, want %q", got.AdapterRef, src.AdapterRef)
+	}
+	if got.Generation != src.Generation {
+		t.Errorf("Generation = %d, want %d", got.Generation, src.Generation)
+	}
+
+	actionCases := []struct {
+		name string
+		src  ActionsEnabled
+		want actionsEnabledE
+	}{
+		{"previous", ActionsEnabled{Previous: true}, actionsEnabledE{Previous: true}},
+		{"next", ActionsEnabled{Next: true}, actionsEnabledE{Next: true}},
+		{"pauseResume", ActionsEnabled{PauseResume: true}, actionsEnabledE{PauseResume: true}},
+		{"stop", ActionsEnabled{Stop: true}, actionsEnabledE{Stop: true}},
+		{"replay", ActionsEnabled{Replay: true}, actionsEnabledE{Replay: true}},
+		{"seek", ActionsEnabled{Seek: true}, actionsEnabledE{Seek: true}},
+	}
+	for _, tt := range actionCases {
+		t.Run(tt.name, func(t *testing.T) {
+			input := TransportData{ActionsEnabled: tt.src}
+			got := transportEnvelopeFrom(input)
+			if got.ActionsEnabled != tt.want {
+				t.Errorf("ActionsEnabled = %+v, want %+v", got.ActionsEnabled, tt.want)
+			}
+		})
+	}
+}
+
+func TestTransportEnvelope_JSONFormatCamelCase(t *testing.T) {
+	t.Parallel()
+	got, err := json.Marshal(transportEnvelope{
+		State:           "playing",
+		SeekFillPercent: 64,
+		ElapsedTime:     "02:08",
+		TotalTime:       "03:20",
+		PercentPlayed:   "64%",
+		OffsetMS:        128000,
+		DurationMS:      200000,
+		ActionsEnabled: actionsEnabledE{
+			Previous:    true,
+			Next:        true,
+			PauseResume: true,
+			Stop:        true,
+			Replay:      true,
+			Seek:        true,
+		},
+		AdapterRef: "jellyfin:item:123",
+		Generation: 12,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	want := `{"state":"playing","seekFillPercent":64,"elapsedTime":"02:08","totalTime":"03:20","percentPlayed":"64%","offsetMs":128000,"durationMs":200000,"actionsEnabled":{"previous":true,"next":true,"pauseResume":true,"stop":true,"replay":true,"seek":true},"adapterRef":"jellyfin:item:123","generation":12}`
+	if string(got) != want {
+		t.Errorf("transportEnvelope JSON = %s, want %s", got, want)
+	}
+}
+
+func TestTransportEnvelope_StateValueSpaceDistinctFromBodyClass(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		transportState string
+		bodyClassState string
+	}{
+		{"playing", "playing", "live"},
+		{"paused", "paused", "live"},
+		{"stopped", "stopped", "idle"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := transportEnvelopeFrom(TransportData{State: tt.transportState})
+			if got.State != tt.transportState {
+				t.Errorf("State = %q, want transport state %q", got.State, tt.transportState)
+			}
+			if got.State == tt.bodyClassState {
+				t.Errorf("State = %q, want transport value space distinct from body class state %q", got.State, tt.bodyClassState)
+			}
+		})
+	}
+}
+
+func TestTransportChanged_DetectsEveryFieldDelta(t *testing.T) {
+	t.Parallel()
+	base := sampleTransportData()
+	tests := []struct {
+		name   string
+		mutate func(*TransportData)
+	}{
+		{"state", func(v *TransportData) { v.State = "paused" }},
+		{"seekFillPercent", func(v *TransportData) { v.SeekFillPercent = 43 }},
+		{"elapsedTime", func(v *TransportData) { v.ElapsedTime = "01:24" }},
+		{"totalTime", func(v *TransportData) { v.TotalTime = "03:22" }},
+		{"percentPlayed", func(v *TransportData) { v.PercentPlayed = "43%" }},
+		{"offsetMS", func(v *TransportData) { v.OffsetMS = 84000 }},
+		{"durationMS", func(v *TransportData) { v.DurationMS = 202000 }},
+		{"adapterRef", func(v *TransportData) { v.AdapterRef = "plex:track:def" }},
+		{"generation", func(v *TransportData) { v.Generation = 8 }},
+		{"actionsEnabled.previous", func(v *TransportData) { v.ActionsEnabled.Previous = !v.ActionsEnabled.Previous }},
+		{"actionsEnabled.next", func(v *TransportData) { v.ActionsEnabled.Next = !v.ActionsEnabled.Next }},
+		{"actionsEnabled.pauseResume", func(v *TransportData) { v.ActionsEnabled.PauseResume = !v.ActionsEnabled.PauseResume }},
+		{"actionsEnabled.stop", func(v *TransportData) { v.ActionsEnabled.Stop = !v.ActionsEnabled.Stop }},
+		{"actionsEnabled.replay", func(v *TransportData) { v.ActionsEnabled.Replay = !v.ActionsEnabled.Replay }},
+		{"actionsEnabled.seek", func(v *TransportData) { v.ActionsEnabled.Seek = !v.ActionsEnabled.Seek }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next := base
+			tt.mutate(&next)
+			if !transportChanged(base, next) {
+				t.Errorf("transportChanged should return true when %s changes", tt.name)
+			}
+		})
+	}
+}
+
+func TestTransportChanged_IdenticalReturnsFalse(t *testing.T) {
+	t.Parallel()
+	v := sampleTransportData()
+	if transportChanged(v, v) {
+		t.Errorf("transportChanged should be false for identical inputs")
+	}
+}
+
 // flushRecorder is httptest.ResponseRecorder + a Flusher implementation
 // so SSE handlers can call w.(http.Flusher).Flush() without panic.
 // Tracks flushes for assertion.
