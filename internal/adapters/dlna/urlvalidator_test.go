@@ -221,6 +221,9 @@ func TestValidateMediaURL_RejectsSharedDeniedPublicLookingRanges(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s accepted, want shared denied range rejection", ip)
 			}
+			if !errors.Is(err, ErrAddressNotAllowed) {
+				t.Fatalf("err = %v, want errors.Is ErrAddressNotAllowed", err)
+			}
 		})
 	}
 }
