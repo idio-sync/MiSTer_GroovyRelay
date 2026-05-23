@@ -15,6 +15,7 @@
   let generation = parseInteger(metaContent('chassis-generation'), 0);
   let transportState = '';
   let draggingSeek = null;
+  let serverSeekPercent = 0;
 
   function metaContent(name) {
     const el = document.querySelector(`meta[name="${name}"]`);
@@ -79,6 +80,10 @@
       fill.style.width = `${nextPercent}%`;
     }
     bar.setAttribute('aria-valuenow', String(nextPercent));
+  }
+
+  function restoreSeekVisual(bar) {
+    setSeekVisual(bar, serverSeekPercent);
   }
 
   function percentFromPointer(bar, ev) {
@@ -152,9 +157,17 @@
   }
 
   function applyTransport(data) {
+    const nextAdapterRef = data.adapterRef || '';
+    const nextGeneration = parseInteger(data.generation, 0);
+    const bar = seekBar();
+    if (bar && draggingSeek && (nextAdapterRef !== draggingSeek.adapterRef || nextGeneration !== draggingSeek.generation)) {
+      draggingSeek = null;
+      bar.removeAttribute('data-seek-interacting');
+    }
+
     transportState = data.state || transportState || '';
-    adapterRef = data.adapterRef || '';
-    generation = parseInteger(data.generation, 0);
+    adapterRef = nextAdapterRef;
+    generation = nextGeneration;
 
     const root = strip();
     if (root) {
@@ -168,15 +181,15 @@
     setButton('stop', Boolean(actions.stop));
     setButton('replay', Boolean(actions.replay));
 
-    const bar = seekBar();
     if (bar) {
       const offsetMs = parseInteger(data.offsetMs, 0);
       const durationMs = parseInteger(data.durationMs, 0);
       bar.setAttribute('data-transport-offset-ms', String(offsetMs));
       bar.setAttribute('data-transport-duration-ms', String(durationMs));
       setSeekDisabled(bar, !actions.seek);
+      serverSeekPercent = data.seekFillPercent || 0;
       if (!bar.hasAttribute('data-seek-interacting')) {
-        setSeekVisual(bar, data.seekFillPercent || 0);
+        setSeekVisual(bar, serverSeekPercent);
       }
     }
 
@@ -233,10 +246,18 @@
       if (!canSeek(bar)) {
         return;
       }
+      const durationMs = parseInteger(bar.getAttribute('data-transport-duration-ms'), 0);
+      if (durationMs <= 0) {
+        restoreSeekVisual(bar);
+        return;
+      }
       ev.preventDefault();
       draggingSeek = {
         pointerId: ev.pointerId,
         percent: percentFromPointer(bar, ev),
+        adapterRef: adapterRef,
+        generation: generation,
+        durationMs: durationMs,
       };
       bar.setAttribute('data-seek-interacting', '');
       if (bar.setPointerCapture) {
@@ -257,20 +278,22 @@
       if (!draggingSeek || draggingSeek.pointerId !== ev.pointerId) {
         return;
       }
-      const percent = draggingSeek.percent;
+      const drag = draggingSeek;
       draggingSeek = null;
       bar.removeAttribute('data-seek-interacting');
       if (bar.releasePointerCapture) {
         bar.releasePointerCapture(ev.pointerId);
       }
-      if (!canSeek(bar)) {
+      if (
+        !canSeek(bar) ||
+        adapterRef !== drag.adapterRef ||
+        generation !== drag.generation ||
+        drag.durationMs <= 0
+      ) {
+        restoreSeekVisual(bar);
         return;
       }
-      const durationMs = parseInteger(bar.getAttribute('data-transport-duration-ms'), 0);
-      if (durationMs <= 0) {
-        return;
-      }
-      const offsetMs = Math.round(durationMs * (percent / 100));
+      const offsetMs = Math.round(drag.durationMs * (drag.percent / 100));
       bar.setAttribute('data-transport-offset-ms', String(offsetMs));
       postSeek(offsetMs);
     });
@@ -284,6 +307,7 @@
       if (bar.releasePointerCapture) {
         bar.releasePointerCapture(ev.pointerId);
       }
+      restoreSeekVisual(bar);
     });
   }
 

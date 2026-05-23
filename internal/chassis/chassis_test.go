@@ -674,6 +674,46 @@ func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
 	}
 }
 
+func TestTransportJS_SeekDragCapturesSessionIdentity(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/transport.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/transport.js): %v", err)
+	}
+	body := string(js)
+	for _, want := range []string{
+		"adapterRef: adapterRef",
+		"generation: generation",
+		"durationMs: durationMs",
+		"adapterRef !== drag.adapterRef",
+		"generation !== drag.generation",
+		"drag.durationMs",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport.js missing seek session guard %q", want)
+		}
+	}
+}
+
+func TestTransportJS_SeekCancelRestoresServerBackedVisual(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/transport.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/transport.js): %v", err)
+	}
+	body := string(js)
+	for _, want := range []string{
+		"let serverSeekPercent = 0",
+		"serverSeekPercent = data.seekFillPercent || 0",
+		"function restoreSeekVisual(bar)",
+		"restoreSeekVisual(bar);",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport.js missing seek visual restore contract %q", want)
+		}
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
