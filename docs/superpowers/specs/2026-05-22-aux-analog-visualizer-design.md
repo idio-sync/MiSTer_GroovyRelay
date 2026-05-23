@@ -258,6 +258,7 @@ Proxy requirements:
 - Listen only on loopback or use an unguessable in-process route mounted on the existing UI listener.
 - Generate one opaque session token per AUX start.
 - Allow only the owning session token to read the stream.
+- Support both the preflight `ffprobe` read and the subsequent FFmpeg playback read by issuing separate opaque read tokens, or by allowing a tightly bounded two-read lifecycle. Each read opens its own upstream GET and applies the same validation, no-redirect policy, and timeout behavior.
 - Use Go's `http.Client` with `CheckRedirect` returning `http.ErrUseLastResponse`.
 - Treat any 3xx as `AUX input redirected` and fail start before preempting the active cast.
 - Reject non-2xx responses.
