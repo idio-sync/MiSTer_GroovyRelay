@@ -854,12 +854,21 @@ func TestTransportTemplate_RendersDataAttributeHooks(t *testing.T) {
 	for name, pattern := range map[string]string{
 		"previous":    `(?s)<button[^>]*data-transport-action="previous"[^>]*aria-label="Previous"[^>]*title="Previous"[^>]*>`,
 		"next":        `(?s)<button[^>]*data-transport-action="next"[^>]*aria-label="Next"[^>]*title="Next"[^>]*>`,
-		"pauseResume": `(?s)<button[^>]*data-transport-action="pauseResume"[^>]*aria-label="Pause or resume"[^>]*title="Pause / Resume"[^>]*>.*data-state-icon="playing".*data-state-icon="paused".*</button>`,
+		"pauseResume": `(?s)<button[^>]*data-transport-action="pauseResume"[^>]*aria-label="Pause or resume"[^>]*title="Pause / Resume"[^>]*>`,
 		"stop":        `(?s)<button[^>]*data-transport-action="stop"[^>]*aria-label="Stop"[^>]*title="Stop"[^>]*>`,
 		"replay":      `(?s)<button[^>]*data-transport-action="replay"[^>]*disabled[^>]*aria-label="Replay"[^>]*title="Replay"[^>]*>`,
 	} {
 		if !regexp.MustCompile(pattern).MatchString(body) {
 			t.Errorf("transport %s button missing expected attributes on one element; full output:\n%s", name, body)
+		}
+	}
+	pauseButton := regexp.MustCompile(`(?s)<button[^>]*data-transport-action="pauseResume"[^>]*>.*?</button>`).FindString(body)
+	if pauseButton == "" {
+		t.Fatalf("pauseResume button not found; full output:\n%s", body)
+	}
+	for _, want := range []string{`data-state-icon="playing"`, `data-state-icon="paused"`} {
+		if !strings.Contains(pauseButton, want) {
+			t.Errorf("pauseResume button missing %q; button output:\n%s", want, pauseButton)
 		}
 	}
 	seekBar := regexp.MustCompile(`(?s)<div[^>]*class="seek-bar"[^>]*data-transport-seek[^>]*data-transport-offset-ms="263000"[^>]*data-transport-duration-ms="596000"[^>]*aria-valuenow="44"[^>]*aria-disabled="false"[^>]*>`)
