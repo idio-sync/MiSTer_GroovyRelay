@@ -120,6 +120,68 @@ func TestTorrentURLFetcherRequiresHeadForNonTorrentPath(t *testing.T) {
 	}
 }
 
+func TestTorrentURLFetcherUsesHeadForNonTorrentPathWithTorrentContentType(t *testing.T) {
+	t.Parallel()
+
+	source := &recordingSourceFetcher{
+		headResp: sourcefetch.Response{
+			FinalURL:    "https://example.com/download",
+			ContentType: "application/x-bittorrent",
+			StatusCode:  http.StatusOK,
+		},
+		getResp: sourcefetch.Response{
+			Body:        []byte("torrent bytes"),
+			FinalURL:    "https://example.com/download",
+			ContentType: "application/x-bittorrent",
+		},
+	}
+	fetcher := torrentURLHTTPFetcher{source: source}
+
+	result, err := fetcher.FetchTorrentURL(context.Background(), "https://example.com/download", maxTorrentUploadBytes)
+	if err != nil {
+		t.Fatalf("FetchTorrentURL() error = %v", err)
+	}
+	if source.heads != 1 {
+		t.Fatalf("HEAD calls = %d, want 1", source.heads)
+	}
+	if source.gets != 1 {
+		t.Fatalf("GET calls = %d, want 1", source.gets)
+	}
+	if string(result.Body) != "torrent bytes" {
+		t.Fatalf("Body = %q, want torrent bytes", result.Body)
+	}
+}
+
+func TestTorrentURLFetcherRejectsNonTorrentHeadBeforeGet(t *testing.T) {
+	t.Parallel()
+
+	source := &recordingSourceFetcher{
+		headResp: sourcefetch.Response{
+			FinalURL:    "https://example.com/download",
+			ContentType: "application/octet-stream",
+			StatusCode:  http.StatusOK,
+		},
+		getResp: sourcefetch.Response{
+			Body: []byte("should not fetch"),
+		},
+	}
+	fetcher := torrentURLHTTPFetcher{source: source}
+
+	_, err := fetcher.FetchTorrentURL(context.Background(), "https://example.com/download", maxTorrentUploadBytes)
+	if err == nil {
+		t.Fatal("FetchTorrentURL() error = nil, want non-torrent HEAD rejection")
+	}
+	if !strings.Contains(err.Error(), "URL does not look like a torrent file") {
+		t.Fatalf("FetchTorrentURL() error = %q, want torrent predicate rejection", err)
+	}
+	if source.heads != 1 {
+		t.Fatalf("HEAD calls = %d, want 1", source.heads)
+	}
+	if source.gets != 0 {
+		t.Fatalf("GET calls = %d, want 0", source.gets)
+	}
+}
+
 func TestTorrentURLFetcherUsesCappedGetForTorrentPath(t *testing.T) {
 	t.Parallel()
 

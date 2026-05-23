@@ -64,6 +64,9 @@ func TestReadCappedBodyUsesLimitReader(t *testing.T) {
 	if err == nil {
 		t.Fatal("ReadCappedBody() error = nil, want capped body error")
 	}
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("ReadCappedBody() error = %v, want ErrBodyTooLarge", err)
+	}
 	if !strings.Contains(err.Error(), "exceeds 4 bytes") {
 		t.Fatalf("ReadCappedBody() error = %q, want exceeds 4 bytes", err)
 	}
