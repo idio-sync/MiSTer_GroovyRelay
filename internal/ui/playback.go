@@ -151,23 +151,11 @@ func parsePlaybackActionRequest(r *http.Request, requireOffset bool) (adapters.P
 }
 
 func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, req adapters.PlaybackActionRequest) {
-	snap := s.currentPlaybackSnapshot()
-	if snap.AdapterRef != req.AdapterRef || snap.Generation != req.Generation {
+	if s.playback == nil {
 		s.renderPlaybackMessage(w, r, "err", adapters.ErrActiveSessionChangedMessage, false, "")
 		return
 	}
-	provider, ok := s.playbackProviderForSnapshot(snap)
-	if !ok {
-		s.renderPlaybackMessage(w, r, "err", "active adapter does not expose playback controls", false, "")
-		return
-	}
-	// Providers self-validate: they recheck ownership under their own locks
-	// and return descriptive errors for unsupported or stale actions. The
-	// HTML template already disables buttons whose action.Enabled is false,
-	// and the banner re-render after this call rebuilds a fresh view from
-	// post-action state — so a pre-check would only duplicate the provider's
-	// own validation while adding a redundant lock roundtrip per click.
-	result, err := provider.HandlePlaybackAction(r.Context(), req)
+	result, err := s.playback.HandlePlaybackAction(r.Context(), req)
 	if err != nil {
 		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
 		return
