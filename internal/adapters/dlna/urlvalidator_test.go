@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -196,6 +197,31 @@ func TestValidateMediaURL_PublicAccepted_AllowPublicPolicy(t *testing.T) {
 	}
 	if isPrivate {
 		t.Errorf("isPrivate = true, want false (public address)")
+	}
+}
+
+func TestValidateMediaURL_RejectsSharedDeniedPublicLookingRanges(t *testing.T) {
+	cases := map[string]string{
+		"benchmark":     "198.18.0.1",
+		"old-6to4":      "192.88.99.1",
+		"future-use":    "240.0.0.1",
+		"documentation": "192.0.2.1",
+	}
+	for name, ip := range cases {
+		t.Run(name, func(t *testing.T) {
+			v := &urlValidator{
+				resolver: func(context.Context, string) ([]net.IP, error) {
+					return []net.IP{net.ParseIP(ip)}, nil
+				},
+				client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+				})},
+			}
+			_, err := v.validate(context.Background(), "http://media.example/movie.mp4", PolicyAllowPublic)
+			if err == nil {
+				t.Fatalf("%s accepted, want shared denied range rejection", ip)
+			}
+		})
 	}
 }
 

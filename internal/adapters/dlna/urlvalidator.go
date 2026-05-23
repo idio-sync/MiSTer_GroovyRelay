@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/sourcefetch"
 )
 
 // urlvalidator.go implements server-side prevalidation for media URLs
@@ -97,11 +99,12 @@ type ValidatedURL struct {
 // errors.Is each one to its UPnP fault code without parsing strings.
 //
 // Mapping (defined in P2.3):
-//   ErrInvalidURL        -> 402 Invalid Args
-//   ErrSchemeNotAllowed  -> 716 Resource not found
-//   ErrAddressNotAllowed -> 716 Resource not found
-//   ErrTooManyRedirects  -> 716 Resource not found
-//   ErrRedirectFetchFail -> 716 Resource not found
+//
+//	ErrInvalidURL        -> 402 Invalid Args
+//	ErrSchemeNotAllowed  -> 716 Resource not found
+//	ErrAddressNotAllowed -> 716 Resource not found
+//	ErrTooManyRedirects  -> 716 Resource not found
+//	ErrRedirectFetchFail -> 716 Resource not found
 //
 // We deliberately collapse three distinct rejection kinds onto 716
 // because the spec treats "I can't reach this resource" as one
@@ -192,11 +195,11 @@ func validateMediaURL(ctx context.Context, rawURL string, policy AddressPolicy) 
 }
 
 // validate runs the full validation pipeline:
-//   1. URL parse + scheme check (no DNS yet).
-//   2. Hostname resolve + address policy on every resolved IP.
-//   3. HEAD request with CheckRedirect that re-runs (1) + (2) for
-//      every Location target, capped at validatorMaxRedirects.
-//   4. Return the final URL on success.
+//  1. URL parse + scheme check (no DNS yet).
+//  2. Hostname resolve + address policy on every resolved IP.
+//  3. HEAD request with CheckRedirect that re-runs (1) + (2) for
+//     every Location target, capped at validatorMaxRedirects.
+//  4. Return the final URL on success.
 //
 // Step 3's HEAD is preferred over GET because we never want to
 // download the media body during validation. Servers that don't
@@ -396,51 +399,24 @@ const (
 // covered by netip.Addr.IsPrivate(), so we check it explicitly.
 var cgnatNet = netip.MustParsePrefix("100.64.0.0/10")
 
-// classifyIP returns the ipClass for a single resolved IP. The
-// stdlib's classification helpers cover most of the work; CGNAT and
-// the IPv4-mapped-IPv6 form (::ffff:127.0.0.1, etc.) need explicit
-// handling.
-//
-// Conversion to netip.Addr is done via AddrFromSlice + Unmap so an
-// IPv4-mapped IPv6 address is normalized to its IPv4 form. Without
-// Unmap, ::ffff:127.0.0.1 would NOT match IsLoopback (which checks
-// 127.0.0.0/8 and ::1/128) — Unmap fixes that.
+// classifyIP returns the ipClass for a single resolved IP. Local ranges
+// remain accepted as private for DLNA's LAN-media policy, while the public
+// bucket is delegated to sourcefetch's shared special-use deny list.
 func classifyIP(ip net.IP) ipClass {
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {
-		// Malformed net.IP — treat as disallowed. parseAndClassify
-		// already rejected len(ips)==0, so this only fires on a
-		// resolver bug.
 		return ipClassDisallowed
 	}
 	addr = addr.Unmap()
-
-	switch {
-	case addr.IsUnspecified():
-		// 0.0.0.0 / ::. Always rejected: a media URL targeting "any
-		// interface" makes no sense and is a known SSRF dodge in some
-		// stacks.
+	if !addr.IsGlobalUnicast() || addr.IsUnspecified() || addr.IsLoopback() ||
+		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
 		return ipClassDisallowed
-	case addr.IsLoopback():
-		// 127.0.0.0/8, ::1/128.
-		return ipClassDisallowed
-	case addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
-		// 169.254.0.0/16 (IPv4 link-local, includes 169.254.169.254
-		// cloud metadata) and fe80::/10 (IPv6 link-local). Always
-		// rejected — this is the SSRF-defense headline.
-		return ipClassDisallowed
-	case addr.IsMulticast():
-		// 224.0.0.0/4, ff00::/8. As a media SOURCE these don't
-		// belong; the bridge talks unicast to ffmpeg.
-		return ipClassDisallowed
-	case addr.IsPrivate():
-		// netip.Addr.IsPrivate covers RFC1918 (10/8, 172.16/12,
-		// 192.168/16) and ULA (fc00::/7).
-		return ipClassPrivate
-	case addr.Is4() && cgnatNet.Contains(addr):
-		// RFC6598 CGNAT — see cgnatNet doc comment.
-		return ipClassPrivate
-	default:
-		return ipClassPublic
 	}
+	if addr.IsPrivate() || (addr.Is4() && cgnatNet.Contains(addr)) {
+		return ipClassPrivate
+	}
+	if !sourcefetch.IsPublicRoutable(addr) {
+		return ipClassDisallowed
+	}
+	return ipClassPublic
 }
