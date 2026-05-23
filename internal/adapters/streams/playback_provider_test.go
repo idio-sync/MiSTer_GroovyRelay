@@ -141,6 +141,74 @@ func TestStreamsPlaybackActionRejectsUnsupportedActionWithSentinel(t *testing.T)
 	}
 }
 
+func TestStreamsPlaybackActionUnavailableControlsUseUnsupportedSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action string
+		queue  ActiveQueue
+	}{
+		{
+			name:   "previous unavailable at first item",
+			action: adapters.PlaybackActionPrevious,
+			queue: ActiveQueue{
+				SessionID:  "sess",
+				ProviderID: "mtv",
+				ChannelID:  "metal",
+				Items:      []StreamItem{{ID: "one"}},
+				baseItems:  []StreamItem{{ID: "one"}},
+				Index:      0,
+				ItemToken:  2,
+				loopMode:   loopNone,
+			},
+		},
+		{
+			name:   "next unavailable at last item",
+			action: adapters.PlaybackActionNext,
+			queue: ActiveQueue{
+				SessionID:  "sess",
+				ProviderID: "mtv",
+				ChannelID:  "metal",
+				Items:      []StreamItem{{ID: "one"}},
+				baseItems:  []StreamItem{{ID: "one"}},
+				Index:      0,
+				ItemToken:  2,
+				loopMode:   loopNone,
+			},
+		},
+		{
+			name:   "replay unavailable when provider catalog missing",
+			action: adapters.PlaybackActionReplay,
+			queue: ActiveQueue{
+				SessionID:  "sess",
+				ProviderID: "missing",
+				ChannelID:  "metal",
+				Items:      []StreamItem{{ID: "one"}},
+				baseItems:  []StreamItem{{ID: "one"}},
+				Index:      0,
+				ItemToken:  2,
+				loopMode:   loopSequential,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, fc := newTestAdapterWithFakeCore(t)
+			a.mu.Lock()
+			a.active = &tc.queue
+			a.mu.Unlock()
+			ref := activeAdapterRef(&tc.queue)
+			fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: ref, Generation: 8}
+
+			_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: tc.action, AdapterRef: ref, Generation: 8})
+			if !errors.Is(err, adapters.ErrPlaybackActionUnsupported) {
+				t.Fatalf("unavailable streams %s err = %v, want unsupported-action sentinel", tc.action, err)
+			}
+			if err == nil || err.Error() == adapters.ErrPlaybackActionUnsupported.Error() {
+				t.Fatalf("unavailable streams %s should preserve provider message, got %v", tc.action, err)
+			}
+		})
+	}
+}
+
 func TestStreamsPlaybackActionStopUsesFullSessionKey(t *testing.T) {
 	a, fc := newTestAdapterWithFakeCore(t)
 	a.mu.Lock()
