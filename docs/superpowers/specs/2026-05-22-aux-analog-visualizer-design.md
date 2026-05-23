@@ -65,9 +65,11 @@ The adapter supports two input modes:
 
 The existing FFmpeg visualizer path remains the renderer. AUX does not introduce a separate Go-side video generator.
 
-For `stream_url`, the AUX adapter does not hand the operator URL directly to FFmpeg. It creates two short-lived single-use tokens (probe + play) against a validating stream proxy owned by the relay process and mounted on the existing UI listener. The proxy performs each outbound HTTP(S) GET with the AUX URL validator, no redirects, bounded timeout, and no caller-supplied headers, then exposes the response body on a relay-local URL (`http://<ui-host>:<ui-port>/internal/aux-proxy/?aux_token=...`) that FFmpeg consumes for that one read. This makes the redirect policy enforceable instead of relying on FFmpeg's HTTP demuxer behavior. See §Stream URL Proxy for the token lifecycle and listener placement.
+For `stream_url`, the AUX adapter does not hand the operator URL directly to FFmpeg. It creates two short-lived single-use tokens (probe + play) against a validating stream proxy owned by the AUX adapter and mounted on the existing UI listener. The proxy performs each outbound HTTP(S) GET with the AUX URL validator, no redirects, bounded timeout, and no caller-supplied headers, then exposes the response body on relay-local loopback URLs (`http://127.0.0.1:<ui-port>/internal/aux-proxy/?aux_token=...`) that FFprobe/FFmpeg consume for those reads. This makes the redirect policy enforceable instead of relying on FFmpeg's HTTP demuxer behavior. See §Stream URL Proxy for the token lifecycle and listener placement.
 
-For local capture, `core.SessionRequest` needs a small adapter-agnostic capture input block so adapters do not smuggle capture syntax through `StreamURL`. Exactly one of `StreamURL` or `AudioCapture.Enabled` may be set for an AUX session:
+For stream URLs, `core.SessionRequest` also needs an explicit probe/play split so the single-use probe token is never consumed by the later FFmpeg playback process. For backward compatibility, non-AUX sessions leave `StreamProbeURL` empty and core probes `StreamURL` as it does today. AUX `stream_url` sessions set both fields: `StreamProbeURL` is the probe-token URL, and `StreamURL` is the play-token URL passed into `ffmpeg.PipelineSpec.InputURL`.
+
+For local capture, `core.SessionRequest` needs a small adapter-agnostic capture input block so adapters do not smuggle capture syntax through `StreamURL`. Exactly one of the stream URL pair (`StreamURL` plus optional `StreamProbeURL`) or `AudioCapture.Enabled` may be set for an AUX session:
 
 ```go
 type AudioCaptureInput struct {
@@ -91,7 +93,8 @@ const (
 
 type SessionRequest struct {
     // existing fields...
-    AudioCapture   AudioCaptureInput
+    StreamProbeURL  string // optional; empty means probe StreamURL
+    AudioCapture    AudioCaptureInput
     AudioOutputMode AudioOutputMode
 }
 ```
@@ -100,9 +103,9 @@ type SessionRequest struct {
 
 ## Configuration
 
-V1 exposes one configured input, but the config is shaped like an array of named inputs so a v2 expansion to multiple inputs is the same shape with a larger array — no migration of the `config.toml.pre-ui-migration` kind.
+V1 exposes one configured input. The config uses a single nested table because the current generic adapter settings pipeline serializes `FieldDef` keys as flat/dotted TOML assignments; it does not support `[[array-of-tables]]` fields. The Go side should still isolate the input fields in an `AUXInput` struct so v2 can migrate to multiple named inputs with an explicit migration when the UI grows an input selector.
 
-The TOML uses an array-of-tables (`[[adapters.aux.input]]`). V1 enforces `len(input) <= 1` in `Validate()`; v2 lifts that cap and adds an input selector. The Go side stores a `[]AUXInput` slice from day one.
+The TOML uses `[adapters.aux.input]`. Field definitions use dotted keys such as `input.id` and `input.url`, which the existing form serializer emits as valid nested TOML under `[adapters.aux]`.
 
 Conceptual TOML shape:
 
@@ -110,7 +113,7 @@ Conceptual TOML shape:
 [adapters.aux]
 enabled = false
 
-[[adapters.aux.input]]
+[adapters.aux.input]
 id = "aux"
 name = "AUX"
 mode = "stream_url" # "stream_url" or "local_capture"
@@ -131,8 +134,8 @@ probe_size = 32768
 
 Validation rules:
 
-- `enabled=false` allows incomplete input fields and an empty `input` array.
-- `enabled=true` requires exactly one `[[adapters.aux.input]]` entry with `id`, `name`, and a supported `mode` populated. More than one entry is a validation error in v1.
+- `enabled=false` allows incomplete input fields and an omitted `[adapters.aux.input]` table.
+- `enabled=true` requires one `[adapters.aux.input]` table with `id`, `name`, and a supported `mode` populated.
 - `stream_url` requires an absolute URL accepted by the AUX stream URL validator and its media input policy.
 - `local_capture` requires `format` and `device`.
 - `audio_output` defaults to `visual_only`.
@@ -167,7 +170,7 @@ Every field declares an `adapters.ApplyScope`, per [`internal/adapters/adapter.g
 
 | Field | Apply scope | Rationale |
 | --- | --- | --- |
-| `enabled` | `ScopeHotSwap` | Toggles the source-cluster button; no live session is implicated when AUX is off. When AUX is on and live, disabling it requires an explicit `StopAUX` first — the UI enforces this rather than the save scope. |
+| `enabled` | `ScopeHotSwap` | Toggles the source-cluster button. Generic adapter settings may call `Start()` / `Stop()` on enabled transitions; AUX `Start()` does not start playback, while AUX `Stop()` must ownership-stop only an active AUX session and must no-op for foreign active sessions. |
 | `input.id` / `input.name` | `ScopeHotSwap` | Identifier and display string; next AUX-start picks them up. Changing `id` mid-cast does not invalidate the running session because its `AdapterRef` was captured at start. |
 | `input.mode` | `ScopeHotSwap` | A mode flip while live does not rewrite the running FFmpeg argv; the change applies to the next AUX-start. |
 | `input.audio_output` | `ScopeHotSwap` | Same — visualizer-only ↔ monitor flips at the next start. Switching live would require rebuilding both FFmpeg argv and the data plane's `INIT` advertisement; the spec does not require live switching in v1. |
@@ -211,7 +214,7 @@ type ProbeInputSpec struct {
 func ProbeInput(ctx context.Context, ffprobePath string, input ProbeInputSpec) (*ProbeResult, error)
 ```
 
-For `stream_url`, `ProbeInput` receives the relay-local proxy URL, preserves today's URL argv shape against that loopback input, and applies `Policy`. For `local_capture`, it runs a bounded live-input probe with the same structured capture args used by `BuildCommand`, for example `ffprobe -f <format> <capture-options> -i <device> -show_streams -print_format json`. `core.Manager.probeForStart` calls this input-shaped probe. It allows `StreamURL` to be empty when `AudioCapture.Enabled=true` and treats capture duration as zero because live inputs do not have a finite media duration.
+For `stream_url`, `ProbeInput` receives `SessionRequest.StreamProbeURL` when set, otherwise `StreamURL`, preserves today's URL argv shape against that input, and applies `Policy`. `startPlaneLocked` still passes `SessionRequest.StreamURL` into `ffmpeg.PipelineSpec.InputURL`, so the play token is consumed only by FFmpeg. For `local_capture`, it runs a bounded live-input probe with the same structured capture args used by `BuildCommand`, for example `ffprobe -f <format> <capture-options> -i <device> -show_streams -print_format json`. `core.Manager.probeForStart` calls this input-shaped probe. It allows `StreamURL` to be empty when `AudioCapture.Enabled=true` and treats capture duration as zero because live inputs do not have a finite media duration.
 
 ### Visualizer "must have audio" gate must move off `probe.AudioRate`
 
@@ -219,11 +222,11 @@ Today, `core.probeForStart` at [`internal/core/manager.go:511-515`](../../../int
 
 The gate must move from probe shape to request shape:
 
-- `Visualizer.Enabled && StreamURL != "" && !AudioCapture.Enabled` — visualizer is fed by a remote audio source, probe MUST see an audio stream. This is today's behavior; AUX `stream_url` mode goes through this path because the relay-local proxy URL is just an `http://127.0.0.1:.../aux/<token>` URL.
+- `Visualizer.Enabled && StreamURL != "" && !AudioCapture.Enabled` — visualizer is fed by a remote audio source, probe MUST see an audio stream. This is today's behavior; AUX `stream_url` mode goes through this path because `StreamProbeURL` points at a relay-local proxy URL and `StreamURL` points at the separate relay-local play URL.
 - `Visualizer.Enabled && AudioCapture.Enabled` — audio is asserted by configuration (the operator picked a capture device). Skip the `probe.AudioRate > 0` check. The bounded `ProbeInput` is still run to confirm the device opens at all, but a zero `AudioRate` is treated as "probe could not report rates for this live input" rather than "no audio." Downstream code must use `AudioCapture.SampleRate` / `AudioCapture.Channels` as the source of truth for `INIT` and FFmpeg argv when probe values are zero.
 - `Visualizer.Enabled && StreamURL != "" && AudioCapture.Enabled` — rejected by the both-set validation in §Architecture before any probe.
 
-For AUX `stream_url` specifically: the documented v1 producer (`-f wav -listen 1`) emits a stream whose `ffprobe` always sees the audio. The gate's effective behavior for AUX `stream_url` is unchanged; the relaxed shape exists for `local_capture`.
+For AUX `stream_url` specifically: the documented v1 producer must support the probe/read lifecycle described below, and its WAV/PCM stream should give `ffprobe` an audio stream during the probe token read. The gate's effective behavior for AUX `stream_url` is unchanged; the relaxed shape exists for `local_capture`.
 
 Third, AUX needs a way to generate visualizer video while suppressing PCM output:
 
@@ -233,7 +236,7 @@ SuppressAudioOutput bool
 
 When `SuppressAudioOutput=true`, a visualizer session still maps the audio input into the visualizer filter graph, but does not append the `-map <audio> -f s16le <audio-pipe>` output.
 
-This is not only an FFmpeg flag. The session-level `AudioOutputMode` must also flow into `dataplane.PlaneConfig`, so visual-only mode advertises `AudioRateOff` / zero channels in the Groovy `INIT`, does not start the audio pipe reader, and never waits for PCM chunks. `monitor` mode keeps the existing audio pipe and MiSTer PCM behavior. Tests must cover both FFmpeg argv and data-plane INIT/effective-audio behavior.
+This is not only an FFmpeg flag. The session-level `AudioOutputMode` must also flow into `dataplane.PlaneConfig`, so visual-only mode advertises `AudioRateOff` / zero channels in the Groovy `INIT`, does not start the audio pipe reader, and never waits for PCM chunks. `monitor` mode keeps the existing audio pipe and MiSTer PCM behavior. For `local_capture`, a successful probe whose `AudioRate` is zero must be normalized before building `PipelineSpec` / `PlaneConfig` by filling the effective audio rate and channel count from `AudioCapture.SampleRate` / `AudioCapture.Channels`; otherwise the existing single-input data-plane guard would suppress monitor audio. Tests must cover both FFmpeg argv and data-plane INIT/effective-audio behavior.
 
 For `stream_url`, the existing URL input path should be reused, with AUX-specific low-latency defaults where safe. For `local_capture`, probing may need a short timeout and device-friendly behavior because live capture inputs do not always have finite duration.
 
@@ -245,6 +248,8 @@ Proposed routes:
 
 - `POST /receiver/aux/start`
 - `POST /receiver/aux/stop` if transport stop is not yet available during implementation
+
+Both routes use `application/x-www-form-urlencoded` bodies. In v1, `input_id` is optional: an empty body means "use the sole configured input." If `input_id` is present it must match the configured input id, otherwise the handler returns `422` (`AUX input unavailable`). This keeps v1 ergonomic while preserving the request shape needed for a later multi-input selector.
 
 Responses follow the chassis JSON conventions:
 
@@ -259,7 +264,7 @@ The source cluster lights `AUX` when active. VFD display for an active AUX sessi
 
 ### Route ownership: chassis, not adapter
 
-The AUX-start route lives in `internal/chassis`, alongside the existing chassis-owned `POST /receiver/visualizer/mode` route. The chassis talks to AUX through a narrow interface declared in `internal/chassis`; the chassis does NOT import the AUX adapter package, which keeps `TestProductionImports_NoCrossPackageCoupling` in [`internal/chassis/import_check_test.go`](../../../internal/chassis/import_check_test.go) green.
+The AUX-start route lives in `internal/chassis`, alongside the existing chassis-owned `POST /receiver/visualizer` route. The chassis talks to AUX through a narrow interface declared in `internal/chassis`; the chassis does NOT import the AUX adapter package, which keeps `TestProductionImports_NoCrossPackageCoupling` in [`internal/chassis/import_check_test.go`](../../../internal/chassis/import_check_test.go) green.
 
 We considered the alternative of mounting `/receiver/aux/*` on the AUX adapter via `adapters.RouteProvider` (the pattern Plex uses for `/player/*`). That pattern fits Plex because `/player/*` is the Plex Companion protocol spoken to external Plex apps — it is bound to the adapter's external protocol surface. AUX-start is the opposite: it is a same-origin POST from the chassis's own receiver page, triggered by a button rendered in the chassis source cluster. The chassis already owns receiver-page state and visualizer-mode mutation; routing AUX-start through `RouteProvider` would split the chassis source-cluster click handlers across two packages, with one click handler living in the chassis (visualizer mode) and another in the adapter (AUX-start) for no consistent reason.
 
@@ -307,48 +312,52 @@ aux adapter validates URL shape
 relay-local stream proxy opens outbound GET with redirects disabled
         |
         v
-loopback proxy URL handed to core.SessionRequest.StreamURL
+loopback proxy URLs handed to core.SessionRequest.StreamProbeURL and StreamURL
         |
         v
-FFmpeg visualizer input
+FFprobe probe input, then FFmpeg visualizer input
 ```
 
 ### Listener placement: shared UI listener, query-param token
 
 The proxy mounts on the existing UI listener (the one socket bound on `bridge.ui.http_port`) rather than spinning a second loopback-bound listener. That keeps the "one HTTP listener" invariant from `CLAUDE.md` intact and avoids inventing a second socket lifecycle.
 
-The proxy is mounted under `/internal/aux-proxy/`. The path itself is constant; the token is carried as a query parameter `?aux_token=<128-bit base64url>`. Query-param placement (not path placement) is deliberate so the existing [`redactURL` helper in `internal/core/manager.go:56-78`](../../../internal/core/manager.go#L56-L78) can redact it from any operator log line that prints `req.StreamURL`. `redactURL` must be extended to know about `aux_token` alongside the existing `api_key` / `X-Plex-Token` / `token` cases.
+Ownership is adapter-side, not chassis-side: `internal/adapters/aux` implements `adapters.PublicRouteProvider` and mounts only `/internal/aux-proxy/` through the existing registry walk in `cmd/mister-groovy-relay/main.go`. The chassis receives only the `AUXStarter` interface for `/receiver/aux/*`. This keeps the receiver click route in chassis, the proxy token store/lifecycle in AUX, and avoids a chassis import of `internal/adapters/aux`.
 
-Because the listener is bound on `0.0.0.0` (it has to be, to serve the UI on the LAN), token unguessability is the only thing keeping a LAN attacker off the proxy:
+The proxy is mounted under `/internal/aux-proxy/`. The path itself is constant; the token is carried as a query parameter `?aux_token=<128-bit base64url>`. Query-param placement (not path placement) is deliberate so the existing [`redactURL` helper in `internal/core/manager.go:56-78`](../../../internal/core/manager.go#L56-L78) can redact it from any operator log line that prints `req.StreamURL` or `req.StreamProbeURL`. `redactURL` must be extended to know about `aux_token` alongside the existing `api_key` / `X-Plex-Token` / `token` cases.
+
+Because the listener is bound on `0.0.0.0` (it has to be, to serve the UI on the LAN), the proxy handler must refuse non-loopback clients. AUX generates proxy URLs with `127.0.0.1` (or `[::1]` if the listener is IPv6-only), and the handler rejects any `RemoteAddr` that is not loopback before token lookup. Token unguessability remains a second boundary and protects against accidental leakage or local races:
 
 - Token entropy MUST be ≥128 bits, generated with `crypto/rand`.
 - Tokens MUST be single-use per read (see two-token lifecycle below).
 - Tokens MUST expire after a short TTL (recommended 5 seconds for the probe token, the full AUX-session lifetime for the play token, hard-capped at 24h regardless).
 - The handler MUST use constant-time token comparison (`subtle.ConstantTimeCompare`).
-- Logging of the full `StreamURL` MUST route through `redactURL` everywhere it prints, including request logs, error wrapping, and event-log entries.
+- Logging of the full `StreamURL` / `StreamProbeURL` MUST route through `redactURL` everywhere either prints, including request logs, error wrapping, and event-log entries.
 
 ### Two-token lifecycle: separate probe and play tokens, sequential upstream GETs
 
 Each AUX-start mints two independent tokens:
 
-1. `probeToken` — single-use, ≤5 second TTL. Handed to `ProbeInput`'s `ffprobe` invocation.
-2. `playToken` — single-use, lives for the AUX session. Handed to `BuildCommand`'s `ffmpeg` invocation.
+1. `probeToken` — single-use, ≤5 second TTL. Exposed via `SessionRequest.StreamProbeURL` and consumed by `ProbeInput`'s `ffprobe` invocation.
+2. `playToken` — single-use, lives for the AUX session. Exposed via `SessionRequest.StreamURL` and consumed by `BuildCommand`'s `ffmpeg` invocation.
 
 The proxy opens the upstream operator URL exactly twice per AUX-start: once when the probe token is consumed (a short read sized to satisfy `ffprobe` headers, closed when probe exits), once when the play token is consumed (long-lived for the cast). This costs one extra HTTP round-trip and dial against the operator's producer compared to a single-open model, but it is meaningfully simpler than tee-ing one upstream into two readers and avoids the synchronization required to make a single upstream serve both a short-lived probe and a long-lived play.
 
-If the producer cannot tolerate the second connection (e.g. a single-client `ffmpeg -listen 1` exits after the probe consumes it), the operator must restart the producer between probe and play. The recommended v1 producer uses `-listen 1` but documentation should call this out as a known limitation; a future spec may add a `-multiple_requests 1` option to the producer command or replace it with a long-running streaming server.
+The producer must tolerate two sequential client connections per AUX-start. A one-shot `ffmpeg -listen 1 ...` command by itself is not sufficient because the probe can consume that single served request. The documented v1 producer should therefore be either a real HTTP audio endpoint that supports repeated GETs or a tiny restart loop around `ffmpeg -listen 1` so the producer is ready again after the probe read exits.
 
 Each upstream GET independently:
 
 - Applies the AUX URL validator before dialing.
 - Uses Go's `http.Client` with `CheckRedirect: http.ErrUseLastResponse`.
-- Treats any 3xx response as `AUX input redirected` and fails the AUX-start before preempting the active cast.
+- Treats any 3xx response as `AUX input redirected`.
 - Rejects non-2xx responses.
 - Uses bounded dial / TLS-handshake / response-header timeouts.
 - Sends no operator-configurable request headers in v1.
 - Closes the outbound response when the AUX session stops or FFmpeg exits.
 
-FFmpeg consumes only the relay-local URL. The `MediaInputPolicy` on that loopback URL should still disable reconnects and set `RWTimeout`, but SSRF and redirect safety live in the proxy, not in FFmpeg flags.
+Probe-token failures happen before core preempts the active cast because `probeForStart` runs before acquiring `Manager.mu`. Play-token failures happen during FFmpeg startup after the prior plane has already been cancelled by the existing core start path; those failures must surface as a clear AUX input error and clean up the play token, but v1 does not promise to preserve the previous cast after a probe-success/play-open failure.
+
+FFmpeg consumes only the relay-local loopback URL. The `MediaInputPolicy` on that loopback URL should still disable reconnects and set `RWTimeout`, but SSRF and redirect safety live in the proxy, not in FFmpeg flags.
 
 ## Remote Stream Producer
 
@@ -360,17 +369,24 @@ Example producer patterns to validate and document during implementation:
 
 ```bash
 # Linux / ALSA example producer on the machine with line-in.
-ffmpeg -f alsa -thread_queue_size 64 -sample_rate 48000 -channels 2 -i hw:1,0 \
-  -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+# The loop is intentional: AUX probe + play consume two sequential GETs.
+while true; do
+  ffmpeg -nostdin -f alsa -thread_queue_size 64 -sample_rate 48000 -channels 2 -i hw:1,0 \
+    -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+  sleep 0.2
+done
 
 # Windows / DirectShow shape. Device names are examples; operators list them
 # with: ffmpeg -list_devices true -f dshow -i dummy
-ffmpeg -f dshow -thread_queue_size 64 -audio_buffer_size 50 \
-  -i audio="Line In (USB Audio Device)" \
-  -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+while ($true) {
+  ffmpeg -nostdin -f dshow -thread_queue_size 64 -audio_buffer_size 50 `
+    -i audio="Line In (USB Audio Device)" `
+    -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+  Start-Sleep -Milliseconds 200
+}
 ```
 
-The exact commands may change after real-device validation, but the spec locks the v1 operator story: GroovyRelay consumes `http://capture-host:8090/aux.wav`; the capture machine owns OS-specific line-in capture.
+The exact commands may change after real-device validation, but the spec locks the v1 operator story: GroovyRelay consumes `http://capture-host:8090/aux.wav`; the capture machine owns OS-specific line-in capture; the producer must be able to serve the probe request and then a second long-lived play request.
 
 The relay should only consume the configured URL. It should not SSH into remote machines or execute arbitrary remote commands.
 
@@ -421,7 +437,7 @@ V1 allowed URL shape:
 - Userinfo is rejected.
 - Fragment is rejected.
 - Redirects are not allowed. The relay-local proxy enforces this by refusing 3xx responses instead of following them.
-- FFmpeg consumes only the relay-local proxy URL. Default policy for that URL: `ProtocolWhitelist=["http","tcp"]`, `DisableReconnect=true`, bounded `RWTimeout`, and no input headers.
+- FFmpeg consumes only the relay-local loopback proxy URL, and the proxy handler rejects non-loopback clients. Default policy for that URL: `ProtocolWhitelist=["http","tcp"]`, `DisableReconnect=true`, bounded `RWTimeout`, and no input headers.
 - `file`, `udp`, `rtp`, and `srt` stream URLs are out of v1 unless a later spec adds source-specific validation and operator-facing firewall guidance.
 
 `local_capture` config must never be a shell command. It is parsed into explicit argv tokens. The adapter should reject suspicious empty or malformed capture fields early, but it does not need to sanitize for shell metacharacters because no shell is involved.
@@ -432,31 +448,37 @@ The receiver POST routes use the same same-origin protection as existing chassis
 
 - Disabled or unconfigured AUX: UI disabled; POST returns a clear `422` JSON error.
 - Local capture cannot open: adapter reports an error state and the user sees a clear AUX input failure.
-- Remote stream unreachable: map probe/open failures to a clear "AUX input unreachable" class of error.
+- Remote stream unreachable: map probe failures to a clear "AUX input unreachable" POST error before preempt; map play-open failures to a clear AUX error state/event-log entry after preempt.
 - Unsupported FFmpeg capture format/device: surface the FFmpeg start failure without exposing sensitive local paths beyond the configured device name.
-- Active cast replacement: `AUX` should preempt only after validation and probing have succeeded enough to start the new session, preserving the existing `core.Manager` pattern of probing before acquiring the session lock.
+- Active cast replacement: `AUX` should preempt only after config validation and probe-token validation have succeeded, preserving the existing `core.Manager` pattern of probing before acquiring the session lock. V1 does not preserve the previous cast if the later play-token GET fails during FFmpeg startup.
 - Stop route ownership: an AUX stop request that no longer matches the active adapter ref returns success-or-noop without stopping a foreign session.
 
 ## Testing
 
 Unit tests:
 
-- AUX config defaults and validation, including the `len(input) <= 1` cap when `enabled=true` and the array-of-tables shape.
+- AUX config defaults and validation, including the single `[adapters.aux.input]` table shape and dotted `FieldDef` keys that round-trip through the current settings UI serializer.
 - Per-field `ApplyScope` declarations match the §Configuration "Apply scopes" table.
-- Session request input validation rejects both-set (`StreamURL` plus `AudioCapture.Enabled`) and neither-set inputs.
+- Settings save/toggle behavior for `enabled=false` while AUX is active: adapter `Stop()` ownership-stops only AUX and does not stop a foreign active session.
+- Session request input validation rejects both-set (`StreamURL` or `StreamProbeURL` plus `AudioCapture.Enabled`) and neither-set inputs; `StreamProbeURL` without `StreamURL` is invalid.
 - Session request construction for `stream_url` and `local_capture`.
 - `visual_only` sets the FFmpeg audio-suppression flag.
 - `visual_only` also disables data-plane audio advertisement (`AudioRateOff`, zero channels) and audio pipe reading.
 - `monitor` preserves normal PCM output in both FFmpeg argv and data-plane INIT.
 - Input-shaped probing supports both relay-local stream URL and local capture specs; local capture probe uses a default bounded timeout of 3 seconds and accepts zero duration.
+- `stream_url` probe/play separation: `probeForStart` consumes `StreamProbeURL`, `BuildCommand` consumes `StreamURL`, and the play token is not consumed by ffprobe.
 - Visualizer "must have audio" gate accepts `AudioCapture.Enabled=true` with a probe that reports zero audio rate, but still rejects `StreamURL`-only visualizer sessions whose probe has no audio stream.
+- `local_capture + monitor` with zero probe audio rate still advertises configured audio rate/channels and starts the PCM reader after probe normalization.
 - FFmpeg argv generation for local capture uses structured args in the right order.
 - FFmpeg argv generation for stream URL applies media input policy and low-latency options in the right place.
 - Stream URL validation rejects unsupported schemes, userinfo, empty host, and fragments; the stream proxy rejects redirects by refusing 3xx responses.
+- Stream proxy mounts via `adapters.PublicRouteProvider` at `/internal/aux-proxy/`; route tests assert no chassis import of `internal/adapters/aux` and no route conflict with `/ui/*` or `/receiver/*`.
+- Stream proxy rejects non-loopback clients before token lookup.
 - Stream proxy mints distinct probe and play tokens per AUX-start, each single-use; reusing or cross-using a token returns 401/403.
-- `redactURL` removes `aux_token` from URLs in operator log output.
-- Stream proxy rejects 3xx and non-2xx upstream responses, uses no operator-provided headers, and tears down the upstream response on session stop.
-- Receiver AUX start/stop route method checks, same-origin failures, malformed input, disabled/unconfigured errors, success, and foreign-session stop no-op (a no-op stop request issued while a Plex cast is active must NOT stop the Plex cast).
+- `redactURL` removes `aux_token` from `StreamURL` and `StreamProbeURL` in operator log output.
+- Stream proxy rejects 3xx and non-2xx upstream responses, uses no operator-provided headers, and tears down tokens/upstream responses on failed starts, session stop, adapter stop, and bridge shutdown.
+- Remote producer validation covers the two sequential GET requirement; a one-shot `ffmpeg -listen 1` without the restart loop is documented as insufficient.
+- Receiver AUX start/stop route method checks, same-origin failures, malformed `input_id`, disabled/unconfigured errors, success, and foreign-session stop no-op (a no-op stop request issued while a Plex cast is active must NOT stop the Plex cast).
 - Source cluster template/CSS tests cover the added five-button AUX control at desktop and mobile widths.
 
 Integration or fake-MiSTer tests:
@@ -480,7 +502,7 @@ Manual validation:
 - `visual_only` is the default and suppresses PCM output to the MiSTer.
 - `monitor` mode sends captured PCM audio through the existing MiSTer audio path.
 - AUX sessions use the configured global visualizer mode, matching existing music sessions.
-- AUX start preempts the active cast only after start validation succeeds.
-- Disabled/unconfigured/unreachable states produce clear UI and JSON errors.
-- Tests cover config, argv generation, route behavior, session construction, and audio-output suppression.
+- AUX start preempts the active cast only after config and probe-token validation succeeds; later play-token failures produce a clear AUX error state.
+- Disabled/unconfigured/probe-unreachable states produce clear UI and JSON errors; play-open failures produce clear UI and event-log errors after preempt.
+- Tests cover config, argv generation, route behavior, session construction, proxy lifecycle, probe/play URL separation, loopback-only proxy access, and audio-output suppression.
 - README, `internal/config/example.toml`, and operator docs include the AUX config shape and the validated remote FFmpeg producer command.
