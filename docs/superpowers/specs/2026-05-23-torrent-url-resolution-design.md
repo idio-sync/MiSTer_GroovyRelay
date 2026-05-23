@@ -44,20 +44,16 @@ A valid Torrent URL cast returns the same success shape as magnet/upload quick c
 
 ## Input Acceptance
 
-`startTorrentURL(ctx, rawURL)` accepts only `http` and `https`.
+`startTorrentURL(ctx, rawURL)` accepts only `http` and `https`. The original URL and every redirect target must not contain userinfo; URLs such as `https://user:pass@example.com/file.torrent` are rejected instead of stripped so credentials are never sent by the HTTP stack.
 
-The adapter should treat a URL as a candidate Torrent URL when at least one of these is true:
+The acceptance predicate is:
 
-- the original URL path ends in `.torrent`, case-insensitive;
-- a followed redirect's final URL path ends in `.torrent`, case-insensitive;
-- the final response `Content-Type` is one of:
-  - `application/x-bittorrent`
-  - `application/x-torrent`
-  - `application/octet-stream`
+- `pathCandidate`: the original URL path or final URL path ends in `.torrent`, case-insensitive;
+- `contentCandidate`: the final response `Content-Type`, parsed with `mime.ParseMediaType` so case and parameters are ignored, is `application/x-bittorrent` or `application/x-torrent`;
+- accept when `pathCandidate || contentCandidate`;
+- `application/octet-stream` is only tolerated for a `pathCandidate`; it never creates `contentCandidate` by itself.
 
-`application/octet-stream` is accepted only after the URL path rule matches on either the original or final URL. This avoids routing unrelated binary downloads into the torrent parser.
-
-If none of these rules match, the request fails with a bad-input error such as `URL does not look like a torrent file`.
+If neither predicate matches, the request fails with a bad-input error such as `URL does not look like a torrent file`. This keeps arbitrary public binary downloads out of the Torrent adapter.
 
 ## Fetch Safety
 
@@ -74,22 +70,24 @@ After those gates pass, the adapter fetches metainfo with a small dedicated HTTP
 - request timeout: 15 seconds total;
 - user agent may be the Go default unless the codebase already has a bridge user-agent helper;
 - no cookies, authorization headers, or operator-provided headers;
+- direct transport only: `http.Transport.Proxy` must be `nil`, so environment proxy settings cannot bypass destination validation;
 - no retry loop;
 - no decompression requirement. If Go transparently decodes a compressed response, the decoded body still counts against the byte cap.
 
-Each URL hop is parsed and DNS-resolved before the client follows it. A hop is rejected if any resolved address is loopback, link-local, multicast, unspecified, private RFC1918/ULA, carrier-grade NAT, or another local-only address class. Multiple A/AAAA answers are all-or-nothing: every resolved address must be public. This blocks common SSRF paths and keeps local `.torrent` use on the existing upload path.
+Each URL hop is parsed and DNS-resolved before the client follows it. A hop is rejected if any resolved address is loopback, link-local, multicast, unspecified, private RFC1918/ULA, carrier-grade NAT, documentation-only, IPv6 unique-local, IPv4-mapped private, or another special-purpose/non-routable address class. Multiple A/AAAA answers are all-or-nothing: every resolved address must be public-routable. Implement this with `net/netip` normalization and explicit deny-prefix checks rather than relying on a single broad predicate. This blocks common SSRF paths and keeps local `.torrent` use on the existing upload path.
 
 The downloader should use a custom `http.Transport.DialContext` or equivalent hook that classifies the actual address being dialed, not only a preflight resolver result. This closes the DNS-rebinding gap where validation resolves a public address but the HTTP transport later dials a private address.
 
 Fetch order:
 
 1. Parse and classify the original URL.
-2. Run a redirect-aware `HEAD` request when the original path does not end in `.torrent`.
-3. Accept the URL for download if the final path ends in `.torrent` or the final `Content-Type` is BitTorrent-specific.
-4. Reject non-`.torrent` paths when `HEAD` fails, omits a usable content type, or returns only `application/octet-stream`.
-5. Run the capped `GET` only after the candidate check passes.
+2. If the original path does not end in `.torrent`, run a redirect-aware `HEAD` request through the hardened no-proxy transport.
+3. For non-`.torrent` originals, require `HEAD` to succeed with `2xx` and establish `pathCandidate` or `contentCandidate`. If `HEAD` fails, omits a useful content type, or returns only `application/octet-stream` without a final `.torrent` path, reject before `GET`.
+4. If the original path ends in `.torrent`, skip preflight `HEAD`; the explicit path is enough to permit a capped `GET`.
+5. Run the capped `GET` through the same hardened no-proxy transport. Its redirect chain is validated again, including scheme, userinfo, address class, hop count, and dial-time address.
+6. Require the final `GET` response to be `2xx`, then apply the same `pathCandidate || contentCandidate` predicate using the original path, final path, and final `Content-Type`.
 
-For original or final paths ending in `.torrent`, a server that does not support `HEAD` may still be fetched with capped `GET`. For non-`.torrent` paths, `HEAD` is required so the bridge does not download arbitrary bodies just to sniff them.
+For non-`.torrent` originals, `HEAD` is required so the bridge does not download arbitrary bodies just to sniff them. A server that does not support `HEAD` is still usable by naming the file with a `.torrent` URL path.
 
 The final response must be a successful `2xx` status. Non-`2xx` responses fail with a bad-input/fetch error and must not be passed to the metainfo parser.
 
@@ -117,12 +115,14 @@ func (a *Adapter) fetchTorrentURLBytes(ctx context.Context, rawURL string, cfg C
 `startTorrentURL` follows this sequence:
 
 1. Parse and trim the submitted URL.
-2. Snapshot config through the existing `snapshotForStart`, so disabled/acknowledgement behavior matches magnet/upload.
-3. Fetch and validate remote metainfo bytes with the capped fetcher.
-4. Call the existing `startTorrentBytes(ctx, body)` or a shared lower-level helper that avoids taking the snapshot twice.
-5. Return the existing `StartedSession` response.
+2. Reject unsupported schemes and URL userinfo.
+3. Snapshot config through the existing `snapshotForStart`, so disabled/acknowledgement behavior matches magnet/upload before any network fetch.
+4. Fetch and validate remote metainfo bytes with the capped fetcher.
+5. Run `snapshotForStart` again immediately before creating or touching the torrent client. If `enabled` or `traffic_acknowledged` was revoked during the fetch, abort and discard the fetched bytes.
+6. Call a shared lower-level helper such as `startTorrentBytesWithConfig(ctx, cfg, body)`.
+7. Return the existing `StartedSession` response.
 
-The implementation may extract a helper such as `startTorrentBytesWithConfig(ctx, cfg, body)` to avoid re-checking gates after the remote fetch. The public behavior must still be that gates are checked before any remote HTTP request and before any torrent client creation.
+The second gate check is intentional. It prevents a long fetch from creating the torrent client after the operator disables the adapter or revokes traffic acknowledgement.
 
 ## Quick-Cast Integration
 
@@ -176,6 +176,7 @@ Add or reuse Torrent errors so route handlers can map them consistently:
 | traffic not acknowledged | `BitTorrent traffic must be acknowledged before starting a torrent` | 403 |
 | malformed URL | `invalid torrent URL` | 400 |
 | unsupported scheme | `torrent URL must use http or https` | 400 |
+| URL contains userinfo | `torrent URL must not include credentials` | 400 |
 | URL does not look like metainfo | `URL does not look like a torrent file` | 400 |
 | private/local address | `torrent URL resolves to a disallowed address` | 400 |
 | too many redirects | `torrent URL redirect chain is too long` | 400 |
@@ -183,7 +184,9 @@ Add or reuse Torrent errors so route handlers can map them consistently:
 | body over 4 MiB | `torrent file exceeds 4 MiB` | 413 |
 | metainfo parse failure | existing `torrent file could not be added` | 400 |
 
-Logs and wrapped errors must use a redacted URL form. Credentials are stripped with `url.URL.Redacted()`. Query strings may be omitted entirely for log messages unless needed for a host/path-only diagnostic. The raw URL should not appear in `Error()` output returned to the UI.
+Remote URL validation errors use `ErrBadInput` and map to 400. Do not reuse `ErrNonLoopback`; that existing 403 error is for non-loopback clients trying to read the adapter's local media route.
+
+Logs and wrapped errors must use a redacted URL form. Credentials are rejected before request construction and stripped with `url.URL.Redacted()` in any defensive redaction helper. Query strings may be omitted entirely for log messages unless needed for a host/path-only diagnostic. The raw URL should not appear in `Error()` output returned to the UI.
 
 ## Documentation
 
@@ -205,11 +208,18 @@ Unit tests in `internal/adapters/torrent`:
 - `HandleQuickCast` starts a session from fetched bytes and returns the `AdapterRef`.
 - `startTorrentURL` rejects non-HTTP(S) schemes.
 - fetcher rejects URLs that do not look like `.torrent` files.
-- fetcher accepts final `Content-Type: application/x-bittorrent`.
+- fetcher accepts final `Content-Type: application/x-bittorrent`, including case differences and parameters such as `; charset=binary`.
 - fetcher accepts `application/octet-stream` only when a candidate URL path ends in `.torrent`.
 - fetcher rejects oversized bodies at `4 MiB + 1`.
+- fetcher maps oversized remote bodies to the 413 route/status behavior.
 - fetcher rejects redirect chains over the hop limit.
 - fetcher rejects loopback, link-local, private, multicast, unspecified, and mixed public/private DNS answers.
+- fetcher rejects URL userinfo on the original URL and redirect targets.
+- fetcher disables proxies and does not honor environment proxy settings.
+- fetcher blocks redirect-to-private and DNS-rebinding-to-private at actual dial time.
+- fetcher validates both `HEAD` and `GET` redirect chains.
+- fetcher rejects non-`2xx` `HEAD` and `GET` responses where required.
+- fetcher rejects non-`.torrent` originals when `HEAD` is unsupported or only reports `application/octet-stream`.
 - errors/log-safe strings do not include raw credentials or full query strings.
 
 Integration-level coverage can stay narrow:
