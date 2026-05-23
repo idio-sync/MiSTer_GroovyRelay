@@ -84,7 +84,7 @@ Spec 4 (visualizer mode) shipped before this spec writes its plan, and it establ
 - `internal/chassis/events.go` — `transportEnvelope` type; `transportEnvelopeFrom(TransportData)` flattener; `transportChanged(a, b TransportData) bool` field-by-field diff. `handleEvents` diff loop emits `transport` events on change.
 - `internal/chassis/events_test.go` — existing Spec 2/4 tests that count events on initial connect (e.g. `TestHandleEvents_EmitsInitialSnapshotOnConnect`, `TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE`) update to expect four events (`state`, `vfd`, `visualizer`, `transport`) instead of the current three.
 - `internal/chassis/session.go` — `snapshotFromSession` now calls `SessionViewer.StatusHomeView()` once and passes the resulting snapshot to `TransportViewer.PlaybackViewForSnapshot(ctx, snap)` (see Locking discussion below — the for-snapshot variant skips re-acquiring `Manager.mu`). Maps adapter view + core state into `TransportData`.
-- `internal/chassis/templates/transport.html` — replaces inline icon glyphs on the pause button with two `data-state-icon` spans; adds `data-transport-state`, `data-transport-action`, `data-transport-seek*`, `data-transport-elapsed`, `data-transport-total`, `data-transport-percent`, raw `data-transport-offset-ms` / `data-transport-duration-ms`, and `{{if not ...}}disabled{{end}}` markup.
+- `internal/chassis/templates/transport.html` — replaces inline icon glyphs on the pause button with two `data-state-icon` spans; adds `data-transport-state`, `data-transport-action`, `data-transport-seek*`, `data-transport-elapsed`, `data-transport-total`, `data-transport-percent`, raw `data-transport-offset-ms` / `data-transport-duration-ms`, `data-transport-seek-disabled` / `aria-disabled` seek state, and `{{if not ...}}disabled{{end}}` button markup.
 - `internal/chassis/templates/shell.html` — adds `<script defer src="/receiver/static/transport.js?v={{.Version}}">` after `vfd-live.js`. Adds `<meta name="chassis-adapter-ref" content="{{.Transport.AdapterRef}}">` and `<meta name="chassis-generation" content="{{.Transport.Generation}}">` to `<head>` so the client knows the initial generation without waiting for the first SSE event.
 - `internal/chassis/static/chassis.css` — adds CSS rules for the pause/resume icon swap based on `[data-transport-state]` and the disabled-seek pointer-events guard.
 - `internal/chassis/import_check_test.go` — extends the `rules` table with three new entries: `internal/playback` forbidden from importing `internal/chassis`, `internal/ui`, `internal/uiserver`; `internal/core` forbidden from importing `internal/playback`; `internal/adapters` forbidden from importing `internal/playback`. These assert the no-import-cycle invariant the dispatcher's placement depends on.
@@ -238,11 +238,11 @@ Six explicit bools (not a map) so the diff is six trivial comparisons and the wi
 3. Compose:
    - `Transport.State`: from `core.State` via the mapping table below. Idle → "stopped"; playing → "playing"; paused → "paused".
    - `Transport.AdapterRef`, `Transport.Generation`: from `StatusHomeView`.
-   - `Transport.SeekFillPercent`: integer percentage `100 * Position.Milliseconds() / Duration.Milliseconds()`, clamped to `[0, 100]`. Zero when duration is 0 or unknown.
    - `Transport.ElapsedTime`: `formatPlaybackPosition(StatusHomeView.Position)` (Spec 2 helper).
    - `Transport.TotalTime`: `formatPlaybackDuration(StatusHomeView.Duration)` (Spec 2 helper). `--:--` for unknown duration.
-   - `Transport.PercentPlayed`: `fmt.Sprintf("%d%%", SeekFillPercent)`. Empty string when idle.
    - `Transport.OffsetMS`, `Transport.DurationMS`: prefer `PlaybackSeek.OffsetMS` / `DurationMS` when the provider supplies `Seek`; otherwise derive from `StatusHomeView.Position` / `Duration`. Clamp negative values to zero. These raw fields are what `transport.js` uses for seek math; the formatted display strings are never parsed.
+   - `Transport.SeekFillPercent`: integer percentage derived from the final clamped `OffsetMS` / `DurationMS` values after any provider `PlaybackSeek` override. Clamp to `[0, 100]`; zero when duration is 0 or unknown.
+   - `Transport.PercentPlayed`: `fmt.Sprintf("%d%%", SeekFillPercent)` when duration is known. Empty string when idle.
    - `Transport.ActionsEnabled`: derived from the adapter view's Actions and Seek. See "Actions enabled derivation" below.
 
 If `TransportViewer` is nil or `PlaybackViewForSnapshot` returns `(_, false)`, the chassis still renders a valid Transport from `StatusHomeView`: state, elapsed time, total time, percent, offset, duration, adapter ref, and generation remain accurate for active read-only casts; only all six `ActionsEnabled` flags become false. If `SessionViewer` itself is nil, the chassis falls back to idle transport (`state="stopped"`, blank time fields, zero raw milliseconds, no adapter ref/generation), matching Spec 2's idle-only precedent.
@@ -504,7 +504,7 @@ The chassis does **not** re-check `actionsEnabled` server-side before dispatch. 
 
 ### Template hooks on `transport.html`
 
-The pause/resume button gains two `data-state-icon` spans (one per direction) so CSS can toggle visibility without JS textContent edits. The `transport-strip` parent gains `data-transport-state` for the CSS selector parent. All five buttons gain `data-transport-action` for the click delegation handler. The seek-bar elements gain `data-transport-seek`, `data-transport-seek-fill`, `data-transport-offset-ms`, and `data-transport-duration-ms`. The time spans gain `data-transport-elapsed`, `data-transport-total`, and `data-transport-percent`. Buttons gain `{{if not .Transport.ActionsEnabled.X}}disabled{{end}}` so the cold render reflects current capability.
+The pause/resume button gains two `data-state-icon` spans (one per direction) so CSS can toggle visibility without JS textContent edits. The `transport-strip` parent gains `data-transport-state` for the CSS selector parent and first-click JS hydration. All five buttons gain `data-transport-action` for the click delegation handler. The seek-bar elements gain `data-transport-seek`, `data-transport-seek-fill`, `data-transport-offset-ms`, `data-transport-duration-ms`, and disabled-state attributes from `ActionsEnabled.Seek`. The time spans gain `data-transport-elapsed`, `data-transport-total`, and `data-transport-percent`. Buttons gain `{{if not .Transport.ActionsEnabled.X}}disabled{{end}}` so the cold render reflects current capability.
 
 Concrete template after the change:
 
@@ -536,6 +536,7 @@ Concrete template after the change:
   <div class="seek-bar" data-transport-seek role="progressbar"
     data-transport-offset-ms="{{.Transport.OffsetMS}}"
     data-transport-duration-ms="{{.Transport.DurationMS}}"
+    {{if not .Transport.ActionsEnabled.Seek}}data-transport-seek-disabled aria-disabled="true"{{else}}aria-disabled="false"{{end}}
     aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"
     aria-valuenow="{{.Transport.SeekFillPercent}}" title="Cast position">
     <div class="fill" data-transport-seek-fill style="width: {{.Transport.SeekFillPercent}}%"></div>
@@ -597,7 +598,8 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
   let durationMs = 0;
   let source = null;
 
-  // Read initial state from meta tags so first click works even if
+  // Read initial identity from meta tags; boot() hydrates transportState
+  // from the cold-rendered transport strip so first click works even if
   // the SSE stream hasn't delivered a transport event yet.
   const metaRef = document.querySelector('meta[name="chassis-adapter-ref"]');
   const metaGen = document.querySelector('meta[name="chassis-generation"]');
@@ -624,6 +626,7 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
       if (seekBar) {
         if (enabled.seek) seekBar.removeAttribute('data-transport-seek-disabled');
         else seekBar.setAttribute('data-transport-seek-disabled', '');
+        seekBar.setAttribute('aria-disabled', enabled.seek ? 'false' : 'true');
         offsetMs = Number.isFinite(data.offsetMs) ? data.offsetMs : 0;
         durationMs = Number.isFinite(data.durationMs) ? data.durationMs : 0;
         seekBar.setAttribute('data-transport-offset-ms', String(offsetMs));
@@ -734,6 +737,10 @@ On boot, `transport.js` reads these into closure variables. The SSE `transport` 
   }
 
   function boot() {
+    const strip = document.querySelector('.transport-strip');
+    if (strip) {
+      transportState = strip.getAttribute('data-transport-state') || transportState;
+    }
     const seekBar = document.querySelector('[data-transport-seek]');
     if (seekBar) {
       offsetMs = parseInt(seekBar.getAttribute('data-transport-offset-ms') || '0', 10) || 0;
@@ -805,7 +812,7 @@ If a future spec introduces a reconnect path that creates a new EventSource (e.g
 
 ### Server-side initial render: no flash
 
-The chassis cold-render of `/receiver` includes `Transport` populated by `snapshotFromSession`. The buttons render with correct `disabled` attributes, the icons render correctly per `data-transport-state`, and the seek-bar shows the right fill — all before any JS executes. The SSE stream upgrades from there.
+The chassis cold-render of `/receiver` includes `Transport` populated by `snapshotFromSession`. The buttons render with correct `disabled` attributes, the icons render correctly per `data-transport-state`, and the seek-bar shows the right fill and disabled state — all before any JS executes. The SSE stream upgrades from there.
 
 ### Error handling philosophy
 

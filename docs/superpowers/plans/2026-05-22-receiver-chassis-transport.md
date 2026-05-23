@@ -183,10 +183,15 @@ Edit `internal/adapters/streams/playback_provider.go`.
 **Option A (recommended).** For the stale-session and unsupported-action paths specifically, bypass `playbackError` and return the typed sentinel directly:
 
 ```go
-// Before:
+// Before, inside ensureOwnsCoreSession:
 return playbackError("", adapters.ErrActiveSessionChangedMessage)
 // After:
-return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+return adapters.ErrActiveSessionChanged
+
+// HandlePlaybackAction keeps its existing two-value return shape:
+if err := a.ensureOwnsCoreSession(req.AdapterRef, req.Generation); err != nil {
+	return adapters.PlaybackActionResult{}, err
+}
 
 // Before (representative unsupported-action return):
 return adapters.PlaybackActionResult{}, fmt.Errorf("streams adapter does not support %s", req.Action)
@@ -1809,9 +1814,66 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 	if got.Transport.OffsetMS != 263000 || got.Transport.DurationMS != 596000 {
 		t.Errorf("raw seek ms: got %d/%d, want 263000/596000", got.Transport.OffsetMS, got.Transport.DurationMS)
 	}
+	if got.Transport.SeekFillPercent != 44 || got.Transport.PercentPlayed != "44%" {
+		t.Errorf("percent fields: got %d/%q, want 44/44%%", got.Transport.SeekFillPercent, got.Transport.PercentPlayed)
+	}
 	want := ActionsEnabled{PauseResume: true, Stop: true, Previous: false, Next: true, Replay: false, Seek: true}
 	if got.Transport.ActionsEnabled != want {
 		t.Errorf("ActionsEnabled mismatch:\n got: %+v\nwant: %+v", got.Transport.ActionsEnabled, want)
+	}
+}
+
+func TestSnapshotFromSession_SeekPercentUsesFinalAdapterSeekValues(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Source: "plex",
+		Position: 10 * time.Second, Duration: 100 * time.Second,
+		AdapterRef: "plex:abc", Generation: 42,
+	}}
+	tv := &fakeTransportViewer{
+		ok: true,
+		view: adapters.PlaybackBannerAdapterView{
+			Seek: &adapters.PlaybackSeek{Enabled: true, OffsetMS: 30000, DurationMS: 60000},
+		},
+	}
+
+	got := snapshotFromSession(cfg, sv, cfg.VisualizerViewer, tv, fixedNow)
+
+	if got.Transport.OffsetMS != 30000 || got.Transport.DurationMS != 60000 {
+		t.Fatalf("raw seek ms: got %d/%d, want 30000/60000", got.Transport.OffsetMS, got.Transport.DurationMS)
+	}
+	if got.Transport.SeekFillPercent != 50 || got.Transport.PercentPlayed != "50%" {
+		t.Errorf("percent fields should use final raw seek values; got %d/%q, want 50/50%%", got.Transport.SeekFillPercent, got.Transport.PercentPlayed)
+	}
+}
+
+func TestSnapshotFromSession_NegativeAdapterSeekOffsetClampsBeforePercent(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Source: "plex",
+		Position: 20 * time.Second, Duration: 100 * time.Second,
+		AdapterRef: "plex:abc", Generation: 42,
+	}}
+	tv := &fakeTransportViewer{
+		ok: true,
+		view: adapters.PlaybackBannerAdapterView{
+			Seek: &adapters.PlaybackSeek{Enabled: true, OffsetMS: -5000, DurationMS: 100000},
+		},
+	}
+
+	got := snapshotFromSession(cfg, sv, cfg.VisualizerViewer, tv, fixedNow)
+
+	if got.Transport.OffsetMS != 0 || got.Transport.DurationMS != 100000 {
+		t.Fatalf("raw seek ms: got %d/%d, want 0/100000", got.Transport.OffsetMS, got.Transport.DurationMS)
+	}
+	if got.Transport.SeekFillPercent != 0 || got.Transport.PercentPlayed != "0%" {
+		t.Errorf("percent fields should use clamped raw seek values; got %d/%q, want 0/0%%", got.Transport.SeekFillPercent, got.Transport.PercentPlayed)
 	}
 }
 
@@ -1927,37 +1989,41 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv T
 // adapter view when a provider exists; all-false otherwise.
 func buildTransportData(view core.StatusHomeView, tv TransportViewer, ctx context.Context) TransportData {
 	td := TransportData{
-		State:           transportStateFromCore(view.State),
-		AdapterRef:      view.AdapterRef,
-		Generation:      view.Generation,
-		ElapsedTime:     formatPlaybackPosition(view.Position),
-		TotalTime:       formatPlaybackDuration(view.Duration),
-		SeekFillPercent: computeSeekFillPercent(view.Position, view.Duration),
-		OffsetMS:        clampMSNonNegative(int(view.Position / time.Millisecond)),
-		DurationMS:      clampMSNonNegative(int(view.Duration / time.Millisecond)),
-	}
-	if td.SeekFillPercent > 0 || td.DurationMS > 0 {
-		td.PercentPlayed = fmt.Sprintf("%d%%", td.SeekFillPercent)
+		State:       transportStateFromCore(view.State),
+		AdapterRef:  view.AdapterRef,
+		Generation:  view.Generation,
+		ElapsedTime: formatPlaybackPosition(view.Position),
+		TotalTime:   formatPlaybackDuration(view.Duration),
+		OffsetMS:    clampMSNonNegative(int(view.Position / time.Millisecond)),
+		DurationMS:  clampMSNonNegative(int(view.Duration / time.Millisecond)),
 	}
 
 	if tv == nil {
+		finalizeTransportSeekFields(&td)
 		return td
 	}
 	adapterView, ok := tv.PlaybackViewForSnapshot(ctx, view)
 	if !ok {
+		finalizeTransportSeekFields(&td)
 		return td
 	}
 	// Prefer adapter-provided Seek raw ms when present.
 	if adapterView.Seek != nil {
 		if adapterView.Seek.DurationMS > 0 {
-			td.DurationMS = adapterView.Seek.DurationMS
+			td.DurationMS = clampMSNonNegative(adapterView.Seek.DurationMS)
 		}
-		if adapterView.Seek.OffsetMS >= 0 {
-			td.OffsetMS = adapterView.Seek.OffsetMS
-		}
+		td.OffsetMS = clampMSNonNegative(adapterView.Seek.OffsetMS)
 	}
 	td.ActionsEnabled = actionsEnabledFromAdapterView(adapterView)
+	finalizeTransportSeekFields(&td)
 	return td
+}
+
+func finalizeTransportSeekFields(td *TransportData) {
+	td.SeekFillPercent = computeSeekFillPercent(time.Duration(td.OffsetMS)*time.Millisecond, time.Duration(td.DurationMS)*time.Millisecond)
+	if td.SeekFillPercent > 0 || td.DurationMS > 0 {
+		td.PercentPlayed = fmt.Sprintf("%d%%", td.SeekFillPercent)
+	}
 }
 
 func transportStateFromCore(s core.State) string {
@@ -2054,10 +2120,11 @@ parameter; the new buildTransportData composes:
   Paused→paused} mapping.
 - ElapsedTime / TotalTime from Spec 2's formatPlaybackPosition /
   formatPlaybackDuration helpers.
-- SeekFillPercent from integer (Position * 100 / Duration), clamped.
-- PercentPlayed as "%d%%" formatted from the percent.
 - OffsetMS / DurationMS from PlaybackSeek when adapter supplies, else
   from StatusHomeView Position/Duration; both clamped non-negative.
+- SeekFillPercent from integer (OffsetMS * 100 / DurationMS) after the
+  final raw ms values are selected and clamped.
+- PercentPlayed as "%d%%" formatted from the percent.
 - ActionsEnabled mapped from adapters.PlaybackAction[].ID; missing
   actions default to false. PauseResume OR's pause/resume enable.
   Seek mirrors view.Seek.Enabled.
@@ -2598,7 +2665,7 @@ Phase 1 / Spec 3 task 12. POST /receiver/transport/action handler:
 - Status mapping: ErrActiveSessionChanged → 409, ErrPlaybackAction-
   Unsupported → 422, success → 204, other errors → 500 (with the
   underlying message logged server-side but not leaked to the client).
-- All responses set Cache-Control: no-store.
+- All handler and same-origin guard responses set Cache-Control: no-store.
 - All non-success responses use Spec 4's writeJSONError shape.
 
 Mount wiring through `transportNoStore(requireSameOrigin(...))` lands in task 16.
@@ -2932,6 +2999,44 @@ func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
 	}
 }
 
+func TestTransportTemplate_SeekDisabledReflectsActionsEnabled(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	cases := []struct {
+		name     string
+		enabled  bool
+		want     string
+		wantAria string
+		forbid   string
+	}{
+		{name: "disabled", enabled: false, want: `data-transport-seek-disabled`, wantAria: `aria-disabled="true"`, forbid: `aria-disabled="false"`},
+		{name: "enabled", enabled: true, want: `aria-disabled="false"`, wantAria: `aria-disabled="false"`, forbid: `data-transport-seek-disabled`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			data := TransportData{ActionsEnabled: ActionsEnabled{Seek: tc.enabled}}
+			if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			body := buf.String()
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("seek enabled=%v missing %q; output:\n%s", tc.enabled, tc.want, body)
+			}
+			if !strings.Contains(body, tc.wantAria) {
+				t.Errorf("seek enabled=%v missing aria state %q; output:\n%s", tc.enabled, tc.wantAria, body)
+			}
+			if strings.Contains(body, tc.forbid) {
+				t.Errorf("seek enabled=%v should not render %q; output:\n%s", tc.enabled, tc.forbid, body)
+			}
+		})
+	}
+}
+
 func TestShellTemplate_LoadsTransportScript(t *testing.T) {
 	t.Parallel()
 	s, err := New(nonZeroConfig())
@@ -3021,6 +3126,7 @@ Replace the contents of `internal/chassis/templates/transport.html` with:
   <div class="seek-bar" data-transport-seek
     data-transport-offset-ms="{{.OffsetMS}}"
     data-transport-duration-ms="{{.DurationMS}}"
+    {{if not .ActionsEnabled.Seek}}data-transport-seek-disabled aria-disabled="true"{{else}}aria-disabled="false"{{end}}
     role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"
     aria-valuenow="{{.SeekFillPercent}}" title="Cast position">
     <div class="fill" data-transport-seek-fill style="width: {{.SeekFillPercent}}%"></div>
@@ -3193,6 +3299,9 @@ func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
 	if !strings.Contains(body, "transportState === 'stopped'") {
 		t.Errorf("transport.js click handler must explicitly refuse pauseResume against stopped state")
 	}
+	if !strings.Contains(body, "getAttribute('data-transport-state')") {
+		t.Errorf("transport.js boot must hydrate transportState from the cold-rendered data-transport-state before first click")
+	}
 }
 ```
 
@@ -3251,6 +3360,7 @@ Create `internal/chassis/static/transport.js`:
       if (seekBar) {
         if (enabled.seek) seekBar.removeAttribute('data-transport-seek-disabled');
         else seekBar.setAttribute('data-transport-seek-disabled', '');
+        seekBar.setAttribute('aria-disabled', enabled.seek ? 'false' : 'true');
         if (typeof data.offsetMs === 'number') seekBar.setAttribute('data-transport-offset-ms', data.offsetMs);
         if (typeof data.durationMs === 'number') seekBar.setAttribute('data-transport-duration-ms', data.durationMs);
       }
@@ -3364,8 +3474,12 @@ Create `internal/chassis/static/transport.js`:
   }
 
   function boot() {
+    const strip = document.querySelector('.transport-strip');
+    if (strip) {
+      transportState = strip.getAttribute('data-transport-state') || transportState;
+    }
     document.addEventListener('click', handleClick);
-    bindSeekDrag(document.querySelector('[data-transport-seek]'));
+    bindSeekDrag(strip ? strip.querySelector('[data-transport-seek]') : document.querySelector('[data-transport-seek]'));
     if (window.Chassis.events && window.Chassis.events.source) {
       attachSource(window.Chassis.events.source);
     }
@@ -3402,8 +3516,9 @@ git commit -m "$(cat <<'EOF'
 feat(chassis): transport.js EventSource subscriber + click/drag handlers
 
 Phase 1 / Spec 3 task 15. Vanilla ES2022 IIFE (~150 lines) that:
-- Reads initial adapter_ref + generation from <meta> tags so the
-  first click works without waiting for the SSE.
+- Reads initial adapter_ref + generation from <meta> tags and
+  transportState from the cold-rendered transport strip so the first
+  click works without waiting for the SSE.
 - Attaches a `transport` event listener to the shared EventSource
   exposed by vfd-live.js (window.Chassis.events.source) or via the
   chassis:eventsource CustomEvent for the subscribe-before-connect
@@ -3958,11 +4073,11 @@ Implements docs/superpowers/specs/2026-05-22-receiver-chassis-transport-design.m
 - Chassis adds two narrow interfaces (`TransportViewer`, `TransportController`) satisfied structurally by `*playback.Dispatcher`. Same pattern as Spec 2's `SessionViewer` and Spec 4's `VisualizerViewer`.
 - `transport.js` (~150 lines) attaches to Spec 4's shared `window.Chassis.events.source`, no `vfd-live.js` edits required.
 - `transport.html` adds `data-transport-*` attribute hooks, two `data-state-icon` spans for the CSS-driven icon swap, raw `data-transport-offset-ms`/`-duration-ms` for seek math.
-- `shell.html` adds `chassis-adapter-ref` and `chassis-generation` meta tags so the first click works without waiting for the first SSE event.
+- `shell.html` adds `chassis-adapter-ref` and `chassis-generation` meta tags, while `transport.html` cold-renders `data-transport-state`, so the first click works without waiting for the first SSE event.
 
 ## Tests
 
-- 20+ new Layer 1 tests (dispatcher: source-first policy, no-extra-snapshot, sentinel returns, clamp, legacy normalization; chassis: envelope JSON, transportChanged 14 deltas, transport SSE emission, POST handler status mapping, template hooks, smoke handler).
+- 20+ new Layer 1 tests (dispatcher: source-first policy, no-extra-snapshot, sentinel returns, clamp, legacy normalization; chassis: envelope JSON, transportChanged 15 deltas, transport SSE emission, POST handler status mapping, template hooks, smoke handler).
 - Layer 3 integration coverage for POST dispatch, stale-generation 409, unsupported 422, bad seek offset 400, cross-site 403 + no-store, seek dispatch, GET 405, `/ui` non-shadowing, and POST-driven SSE reflection.
 - Existing `/ui` playback tests + Spec 2/4 chassis tests stay green; only event-count assertions adjust from 3 → 4 events on initial connect.
 - `TestProductionImports_NoCrossPackageCoupling` extended with three new rules enforcing the no-cycle invariant for `internal/playback`.
