@@ -223,11 +223,16 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 			},
 		},
 		Transport: TransportData{
-			PlayState:       "stopped",
-			ElapsedTime:     "--:--",
-			TotalTime:       "--:--",
-			PercentPlayed:   "---",
+			State:           "stopped",
 			SeekFillPercent: 0,
+			ElapsedTime:     "",
+			TotalTime:       "",
+			PercentPlayed:   "",
+			OffsetMS:        0,
+			DurationMS:      0,
+			ActionsEnabled:  ActionsEnabled{},
+			AdapterRef:      "",
+			Generation:      0,
 		},
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
@@ -257,6 +262,29 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idleSnapshot() = %+v, want %+v", got, want)
+	}
+}
+
+func TestIdleSnapshot_TransportDataMatchesNewIdleShape(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	got := idleSnapshot(cfg, fixedNow)
+
+	want := TransportData{
+		State:           "stopped",
+		SeekFillPercent: 0,
+		ElapsedTime:     "",
+		TotalTime:       "",
+		PercentPlayed:   "",
+		OffsetMS:        0,
+		DurationMS:      0,
+		ActionsEnabled:  ActionsEnabled{},
+		AdapterRef:      "",
+		Generation:      0,
+	}
+	if !reflect.DeepEqual(got.Transport, want) {
+		t.Errorf("idleSnapshot Transport mismatch:\n got: %+v\nwant: %+v", got.Transport, want)
 	}
 }
 
@@ -718,8 +746,8 @@ func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 	}
 	transportHTML := body[transportStart:transportEnd]
 	for _, want := range []string{
-		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">--:--</span></span>`,
-		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">--:--</span></span>`,
+		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text"></span></span>`,
+		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text"></span></span>`,
 	} {
 		if !strings.Contains(transportHTML, want) {
 			t.Errorf("body missing accessible transport ghost markup %q", want)
