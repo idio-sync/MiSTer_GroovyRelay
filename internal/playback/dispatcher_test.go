@@ -2,6 +2,8 @@ package playback
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -30,10 +32,12 @@ func (f *countingStatusViewer) StatusHomeView() core.StatusHomeView {
 }
 
 type fakeProvider struct {
-	view    adapters.PlaybackBannerAdapterView
-	owns    bool
-	banners []adapters.PlaybackBannerSnapshot
-	actions []adapters.PlaybackActionRequest
+	view         adapters.PlaybackBannerAdapterView
+	owns         bool
+	banners      []adapters.PlaybackBannerSnapshot
+	actions      []adapters.PlaybackActionRequest
+	actionResult adapters.PlaybackActionResult
+	actionErr    error
 }
 
 func (f *fakeProvider) PlaybackBanner(_ context.Context, snap adapters.PlaybackBannerSnapshot) (adapters.PlaybackBannerAdapterView, bool) {
@@ -43,7 +47,7 @@ func (f *fakeProvider) PlaybackBanner(_ context.Context, snap adapters.PlaybackB
 
 func (f *fakeProvider) HandlePlaybackAction(_ context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
 	f.actions = append(f.actions, req)
-	return adapters.PlaybackActionResult{}, nil
+	return f.actionResult, f.actionErr
 }
 
 type fakeAdapter struct {
@@ -269,5 +273,142 @@ func TestDispatcher_PlaybackViewForSnapshot_DoesNotAcquireFreshSnapshot(t *testi
 	}
 	if provider.banners[0].AdapterRef != "plex:from-argument" {
 		t.Fatalf("PlaybackBanner AdapterRef = %q, want argument snapshot ref", provider.banners[0].AdapterRef)
+	}
+}
+
+func TestDispatcher_HandlePlaybackAction_StaleGenerationReturnsSentinel(t *testing.T) {
+	provider := &fakeProvider{}
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", provider)
+	dispatcher := NewDispatcher(fakeStatusViewer{
+		view: core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 7,
+		},
+	}, reg)
+
+	_, err := dispatcher.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionStop,
+		AdapterRef: "plex:abc",
+		Generation: 99,
+	})
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("HandlePlaybackAction stale generation error = %v, want ErrActiveSessionChanged", err)
+	}
+	if len(provider.actions) != 0 {
+		t.Fatalf("HandlePlaybackAction provider calls = %d, want 0", len(provider.actions))
+	}
+}
+
+func TestDispatcher_HandlePlaybackAction_UnsupportedAdapterReturnsSentinel(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&fakeBareAdapter{name: "plex"}); err != nil {
+		t.Fatalf("Register bare plex: %v", err)
+	}
+	dispatcher := NewDispatcher(fakeStatusViewer{
+		view: core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 7,
+		},
+	}, reg)
+
+	_, err := dispatcher.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionStop,
+		AdapterRef: "plex:abc",
+		Generation: 7,
+	})
+	if !errors.Is(err, adapters.ErrPlaybackActionUnsupported) {
+		t.Fatalf("HandlePlaybackAction unsupported adapter error = %v, want ErrPlaybackActionUnsupported", err)
+	}
+}
+
+func TestDispatcher_HandlePlaybackAction_DispatchesToProvider(t *testing.T) {
+	wantResult := adapters.PlaybackActionResult{Message: "stopped"}
+	provider := &fakeProvider{actionResult: wantResult}
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", provider)
+	dispatcher := NewDispatcher(fakeStatusViewer{
+		view: core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 7,
+		},
+	}, reg)
+	req := adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionStop,
+		AdapterRef: "plex:abc",
+		Generation: 7,
+	}
+
+	got, err := dispatcher.HandlePlaybackAction(context.Background(), req)
+	if err != nil {
+		t.Fatalf("HandlePlaybackAction dispatch error = %v", err)
+	}
+	if !reflect.DeepEqual(got, wantResult) {
+		t.Fatalf("HandlePlaybackAction result = %#v, want %#v", got, wantResult)
+	}
+	if len(provider.actions) != 1 {
+		t.Fatalf("HandlePlaybackAction provider calls = %d, want 1", len(provider.actions))
+	}
+	if !reflect.DeepEqual(provider.actions[0], req) {
+		t.Fatalf("HandlePlaybackAction provider request = %#v, want %#v", provider.actions[0], req)
+	}
+}
+
+func TestDispatcher_HandlePlaybackAction_ClampsNegativeOffsetToZero(t *testing.T) {
+	provider := &fakeProvider{}
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", provider)
+	dispatcher := NewDispatcher(fakeStatusViewer{
+		view: core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 7,
+		},
+	}, reg)
+
+	_, err := dispatcher.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionSeek,
+		AdapterRef: "plex:abc",
+		Generation: 7,
+		OffsetMS:   -500,
+	})
+	if err != nil {
+		t.Fatalf("HandlePlaybackAction seek error = %v", err)
+	}
+	if len(provider.actions) != 1 {
+		t.Fatalf("HandlePlaybackAction provider calls = %d, want 1", len(provider.actions))
+	}
+	if provider.actions[0].OffsetMS != 0 {
+		t.Fatalf("HandlePlaybackAction provider OffsetMS = %d, want 0", provider.actions[0].OffsetMS)
+	}
+}
+
+func TestDispatcher_HandlePlaybackAction_NormalizesLegacyStaleMessage(t *testing.T) {
+	provider := &fakeProvider{actionErr: fmt.Errorf("active session changed")}
+	reg := adapters.NewRegistry()
+	registerFakeProvider(t, reg, "plex", provider)
+	dispatcher := NewDispatcher(fakeStatusViewer{
+		view: core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "plex",
+			AdapterRef: "plex:abc",
+			Generation: 7,
+		},
+	}, reg)
+
+	_, err := dispatcher.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionStop,
+		AdapterRef: "plex:abc",
+		Generation: 7,
+	})
+	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
+		t.Fatalf("HandlePlaybackAction legacy stale error = %v, want ErrActiveSessionChanged", err)
 	}
 }

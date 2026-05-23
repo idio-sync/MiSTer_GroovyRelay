@@ -4,6 +4,7 @@ package playback
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -39,6 +40,29 @@ func (d *Dispatcher) PlaybackViewForSnapshot(ctx context.Context, snap core.Stat
 		return adapters.PlaybackBannerAdapterView{}, false
 	}
 	return provider.PlaybackBanner(ctx, snapshotForProvider(snap))
+}
+
+// HandlePlaybackAction guards actions with the active adapter ref and
+// generation before handing them to the current playback provider.
+func (d *Dispatcher) HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
+	if req.OffsetMS < 0 {
+		req.OffsetMS = 0
+	}
+	snap := d.status.StatusHomeView()
+	if snap.AdapterRef != req.AdapterRef || snap.Generation != req.Generation {
+		return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+	}
+	provider, ok := d.playbackProviderForSnapshot(snap)
+	if !ok {
+		return adapters.PlaybackActionResult{}, adapters.ErrPlaybackActionUnsupported
+	}
+	result, err := provider.HandlePlaybackAction(ctx, req)
+	if err != nil {
+		if !errors.Is(err, adapters.ErrActiveSessionChanged) && err.Error() == adapters.ErrActiveSessionChangedMessage {
+			return adapters.PlaybackActionResult{}, adapters.ErrActiveSessionChanged
+		}
+	}
+	return result, err
 }
 
 // playbackProviderForSnapshot resolves the adapter that owns the active
