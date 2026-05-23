@@ -23,10 +23,11 @@
       aria-label="Replay" title="Replay">&#x27f2;</button>
   </div>
   <div class="seek-bar" data-transport-seek
+    {{if not .ActionsEnabled.Seek}}data-transport-seek-disabled{{end}}
     data-transport-offset-ms="{{.OffsetMS}}"
     data-transport-duration-ms="{{.DurationMS}}"
     role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"
-    aria-valuenow="{{.SeekFillPercent}}" title="Cast position">
+    aria-valuenow="{{.SeekFillPercent}}" aria-disabled="{{if .ActionsEnabled.Seek}}false{{else}}true{{end}}" title="Cast position">
     <div class="fill" data-transport-seek-fill style="width: {{.SeekFillPercent}}%"></div>
     <div class="head"><span class="grip"></span></div>
   </div>

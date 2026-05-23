@@ -871,6 +871,40 @@ func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
 	}
 }
 
+func TestTransportTemplate_SeekDisabledReflectsActionsEnabled(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name             string
+		seekEnabled      bool
+		wantDisabledAttr bool
+		wantAriaDisabled string
+	}{
+		{name: "disabled", seekEnabled: false, wantDisabledAttr: true, wantAriaDisabled: `aria-disabled="true"`},
+		{name: "enabled", seekEnabled: true, wantDisabledAttr: false, wantAriaDisabled: `aria-disabled="false"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := TransportData{ActionsEnabled: ActionsEnabled{Seek: tt.seekEnabled}}
+			var buf bytes.Buffer
+			if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+				t.Fatalf("execute transport partial: %v", err)
+			}
+			body := buf.String()
+
+			if got := strings.Contains(body, `data-transport-seek-disabled`); got != tt.wantDisabledAttr {
+				t.Errorf("data-transport-seek-disabled present = %v, want %v; full output:\n%s", got, tt.wantDisabledAttr, body)
+			}
+			if !strings.Contains(body, tt.wantAriaDisabled) {
+				t.Errorf("transport partial missing %q; full output:\n%s", tt.wantAriaDisabled, body)
+			}
+		})
+	}
+}
+
 func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
