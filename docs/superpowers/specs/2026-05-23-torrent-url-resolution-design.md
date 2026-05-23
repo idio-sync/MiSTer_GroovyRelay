@@ -207,6 +207,7 @@ Unit tests in `internal/adapters/torrent`:
 - `HandleQuickCast` rejects disabled and unacknowledged adapter before invoking the fetcher.
 - `HandleQuickCast` starts a session from fetched bytes and returns the `AdapterRef`.
 - `startTorrentURL` rejects non-HTTP(S) schemes.
+- `startTorrentURL` rechecks gates after a successful fetch; if `enabled` or `traffic_acknowledged` is revoked before torrent client creation, no client or `AddMetaInfo` path is touched.
 - fetcher rejects URLs that do not look like `.torrent` files.
 - fetcher accepts final `Content-Type: application/x-bittorrent`, including case differences and parameters such as `; charset=binary`.
 - fetcher accepts `application/octet-stream` only when a candidate URL path ends in `.torrent`.
