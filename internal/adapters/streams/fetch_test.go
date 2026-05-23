@@ -2,7 +2,6 @@ package streams
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -18,6 +17,14 @@ func TestFetchRejectsLoopbackByDefault(t *testing.T) {
 	_, err := f.Fetch(t.Context(), "https://example.test/catalog.json", fetchLimits{MaxBytes: 1024})
 	if err == nil {
 		t.Fatal("loopback target accepted")
+	}
+}
+
+func TestStreamsFetcherUsesSharedDeniedPrefixes(t *testing.T) {
+	f := secureFetcher{resolver: staticResolver{"example.test": []string{"192.0.0.8"}}}
+	_, err := f.Fetch(t.Context(), "https://example.test/catalog.json", fetchLimits{MaxBytes: 1024})
+	if err == nil {
+		t.Fatal("streams fetcher accepted 192.0.0.0/24, want shared classifier rejection")
 	}
 }
 
@@ -48,7 +55,7 @@ func TestFetchRejectsRedirectToPrivateIP(t *testing.T) {
 		if req.Host != "public.example" {
 			t.Fatalf("unexpected first request host %s", req.Host)
 		}
-		http.Redirect(w, req, "https://private.example/catalog.json", http.StatusFound)
+		http.Redirect(w, req, "http://private.example/catalog.json", http.StatusFound)
 	})
 	f := secureFetcher{
 		resolver: sequenceResolver{
@@ -58,7 +65,7 @@ func TestFetchRejectsRedirectToPrivateIP(t *testing.T) {
 		transport:   transport,
 		dialContext: dialer.DialContext,
 	}
-	_, err := f.Fetch(t.Context(), "https://public.example/catalog.json", fetchLimits{MaxBytes: 1024})
+	_, err := f.Fetch(t.Context(), "http://public.example/catalog.json", fetchTestLimits(1024))
 	if err == nil {
 		t.Fatal("redirect revalidation did not reject private target")
 	}
@@ -124,7 +131,7 @@ func TestFetchRemoteProviderRespectsHostAllowlistAfterRedirect(t *testing.T) {
 	}
 	dialer, transport := newPinnedFetchServer(t, func(w http.ResponseWriter, req *http.Request) {
 		if req.Host == "trusted.example" {
-			http.Redirect(w, req, "https://untrusted.example/catalog.json", http.StatusFound)
+			http.Redirect(w, req, "http://untrusted.example/catalog.json", http.StatusFound)
 			return
 		}
 		t.Fatalf("untrusted host should never be fetched, got %s", req.Host)
@@ -137,9 +144,10 @@ func TestFetchRemoteProviderRespectsHostAllowlistAfterRedirect(t *testing.T) {
 		transport:   transport,
 		dialContext: dialer.DialContext,
 	}
-	_, err = f.Fetch(t.Context(), "https://trusted.example/catalog.json", fetchLimits{
-		MaxBytes:     1024,
-		AllowedHosts: allow,
+	_, err = f.Fetch(t.Context(), "http://trusted.example/catalog.json", fetchLimits{
+		MaxBytes:       1024,
+		AllowedSchemes: []string{"http", "https"},
+		AllowedHosts:   allow,
 	})
 	if err == nil {
 		t.Fatal("redirect to non-allowlisted host should be rejected")
@@ -152,10 +160,10 @@ func TestFetchRemoteProviderRespectsHostAllowlistAfterRedirect(t *testing.T) {
 func TestFetchRejectsTooManyRedirects(t *testing.T) {
 	dialer, transport := newPinnedFetchServer(t, func(w http.ResponseWriter, req *http.Request) {
 		next := map[string]string{
-			"one.example":   "https://two.example/catalog.json",
-			"two.example":   "https://three.example/catalog.json",
-			"three.example": "https://four.example/catalog.json",
-			"four.example":  "https://five.example/catalog.json",
+			"one.example":   "http://two.example/catalog.json",
+			"two.example":   "http://three.example/catalog.json",
+			"three.example": "http://four.example/catalog.json",
+			"four.example":  "http://five.example/catalog.json",
 		}[req.Host]
 		http.Redirect(w, req, next, http.StatusFound)
 	})
@@ -170,7 +178,7 @@ func TestFetchRejectsTooManyRedirects(t *testing.T) {
 		transport:   transport,
 		dialContext: dialer.DialContext,
 	}
-	_, err := f.Fetch(t.Context(), "https://one.example/catalog.json", fetchLimits{MaxBytes: 1024})
+	_, err := f.Fetch(t.Context(), "http://one.example/catalog.json", fetchTestLimits(1024))
 	if err == nil {
 		t.Fatal("redirect chain over three hops accepted")
 	}
@@ -188,7 +196,7 @@ func TestFetchRejectsResponseOverMaxBytes(t *testing.T) {
 		transport:   transport,
 		dialContext: dialer.DialContext,
 	}
-	_, err := f.Fetch(t.Context(), "https://media.example/catalog.json", fetchLimits{MaxBytes: 4})
+	_, err := f.Fetch(t.Context(), "http://media.example/catalog.json", fetchTestLimits(4))
 	if err == nil {
 		t.Fatal("response larger than max bytes accepted")
 	}
@@ -211,7 +219,7 @@ func TestFetchConditionalNotModified(t *testing.T) {
 		transport:   transport,
 		dialContext: dialer.DialContext,
 	}
-	resp, err := f.FetchConditional(t.Context(), "https://media.example/catalog.json", fetchLimits{MaxBytes: 1024}, fetchCondition{
+	resp, err := f.FetchConditional(t.Context(), "http://media.example/catalog.json", fetchTestLimits(1024), fetchCondition{
 		ETag:         `"abc"`,
 		LastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
 	})
@@ -287,11 +295,18 @@ func (d *testServerDialer) dialed(ip string) bool {
 	return false
 }
 
+func fetchTestLimits(maxBytes int64) fetchLimits {
+	return fetchLimits{
+		MaxBytes:       maxBytes,
+		AllowedSchemes: []string{"http", "https"},
+	}
+}
+
 func newPinnedFetchServer(t *testing.T, handler http.HandlerFunc) (*testServerDialer, *http.Transport) {
 	t.Helper()
-	server := httptest.NewTLSServer(handler)
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	dialer := &testServerDialer{serverAddr: server.Listener.Addr().String()}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	transport := &http.Transport{}
 	return dialer, transport
 }
