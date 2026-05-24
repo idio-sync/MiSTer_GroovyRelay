@@ -77,6 +77,21 @@ README.md
 - Keep commits narrow. Suggested commit points are listed after tasks.
 - Chassis must not import `internal/adapters/aux`; keep coupling through interfaces declared in `internal/chassis` and shared neutral contracts in `internal/adapters`.
 - The AUX proxy path is adapter-owned and mounted through `adapters.PublicRouteProvider` at `/internal/aux-proxy/`. The chassis start/stop routes are chassis-owned at `/receiver/aux/*`.
+- `cmd/mister-groovy-relay/main.go` resolves `sec.Bridge.UI.HTTPPort` before any adapter construction today; the AUX constructor in Task 8 can read it safely. Don't reorder the existing port-resolution block.
+- Whenever `req.StreamURL` is logged in production code, the log site MUST route through `redactURL`. Task 13's `rg` audit catches stray sites; in particular, audit `internal/dataplane/plane.go` error wrapping for raw `InputURL` prints when applying Task 4.
+
+## Compatibility Checklist
+
+The following existing files have call sites or assertions that this plan changes and must be migrated in the same commit as the change. Skipping these will leave the build red.
+
+| Plan task | File | What changes | Why |
+| --- | --- | --- | --- |
+| Task 1 | `internal/core/types.go` | New fields on `SessionRequest` (additive) | Compiles cleanly; no caller breakage. |
+| Task 3 | `internal/core/manager_test.go` (26 sites) and `internal/core/errors_test.go` (3 sites) | All `probeFn = func(ctx, path, url, policy)` assignments migrate to the new `probeInputFn = func(ctx, path, ffmpeg.ProbeInputSpec)` shape | Required because Task 3 replaces the package-private `probeFn` indirection. The migration helper `legacyProbeInputSpec(url, policy)` (added in Task 3) keeps the test rewrite mechanical. |
+| Task 2 | `internal/ffmpeg/pipeline.go:112` (`audioOutputEnabled`) | Add early return `if s.SuppressAudioOutput { return false }` | Required so `BuildCommand` omits the `-map <audio> -f s16le <pipe>` arg block under visual-only mode. |
+| Task 10 | `internal/chassis/session.go:54` (`snapshotFromSession` signature) and 19 other call sites across `events.go`, `events_test.go`, `chassis_test.go`, `handler.go`, `server.go` | Add `aux AUXStarter` as a new trailing parameter; production call sites pass `s.aux`, tests pass `nil` or a fake | `applyAUXSourceState` runs inside `snapshotFromSession` so the chassis renders AUX button state from a single snapshot path. |
+| Task 10 | `internal/chassis/chassis_test.go:795` (and any other exact-HTML-match assertion against `source-cluster.html`) | Switch from exact-string equality to substring assertions for the new `data-source-action` / `data-input-id` attributes | The new attributes are inserted between existing ones; exact-string matches will not survive. |
+| Task 11 | Add `internal/dataplane/aux_visual_only_test.go` (NOT under `tests/integration/`) | In-process test using `internal/fakemister.Server`, no integration build tag | Matches the existing dataplane test pattern and runs under plain `go test ./...`. |
 
 ## Task 1: Add Core Session Input Contract
 
@@ -233,41 +248,67 @@ const (
 )
 ```
 
-Validation rules in `validateSessionInputShape(req SessionRequest) error`:
+Validation rules in `validateSessionInputShape(req SessionRequest) error`. This helper is a NEW function — it is NOT called from the existing `validateSessionRequest` because that function runs against every adapter's session requests (Plex, Jellyfin, URL, DLNA, Torrent, Streams) and most do not set `AudioCapture` or `StreamProbeURL`. Instead, `validateSessionInputShape` is invoked from `validateSessionRequest` ONLY when at least one of the new AUX-shaped fields is populated (`req.StreamProbeURL != "" || req.AudioCapture.Enabled || req.AudioOutputMode != AudioOutputDefault`). The "must have either stream or capture" rule never fires for sessions that set neither.
+
+`AudioStreamURL` already exists on `SessionRequest` today (DASH dual-stream path; see `internal/core/types.go`). Task 1 does not introduce it; it just adds it to the "exactly one media input" exclusion so a future adapter cannot combine it with `AudioCapture`. If the existing field name in the codebase differs (grep `internal/core/types.go` for the secondary audio URL field), match the existing spelling.
 
 ```go
-hasStream := req.StreamURL != "" || req.StreamProbeURL != "" || req.AudioStreamURL != ""
-hasCapture := req.AudioCapture.Enabled
-switch {
-case req.StreamProbeURL != "" && req.StreamURL == "":
-	return fmt.Errorf("stream_probe_url requires stream_url")
-case hasStream && hasCapture:
-	return fmt.Errorf("exactly one media input may be set")
-case !hasStream && !hasCapture:
-	return fmt.Errorf("stream_url or audio_capture is required")
-}
-if hasCapture {
-	c := req.AudioCapture
-	if strings.TrimSpace(c.Format) == "" {
-		return fmt.Errorf("audio_capture.format is required")
+func validateSessionInputShape(req SessionRequest) error {
+	hasStream := req.StreamURL != "" || req.StreamProbeURL != "" || req.AudioStreamURL != ""
+	hasCapture := req.AudioCapture.Enabled
+	switch {
+	case req.StreamProbeURL != "" && req.StreamURL == "":
+		return fmt.Errorf("stream_probe_url requires stream_url")
+	case hasStream && hasCapture:
+		return fmt.Errorf("exactly one media input may be set")
+	case !hasStream && !hasCapture:
+		return fmt.Errorf("stream_url or audio_capture is required")
 	}
-	if strings.TrimSpace(c.Device) == "" {
-		return fmt.Errorf("audio_capture.device is required")
+	if hasCapture {
+		c := req.AudioCapture
+		if strings.TrimSpace(c.Format) == "" {
+			return fmt.Errorf("audio_capture.format is required")
+		}
+		if strings.TrimSpace(c.Device) == "" {
+			return fmt.Errorf("audio_capture.device is required")
+		}
+		if c.SampleRate <= 0 {
+			return fmt.Errorf("audio_capture.sample_rate must be positive")
+		}
+		if c.Channels != 1 && c.Channels != 2 {
+			return fmt.Errorf("audio_capture.channels must be 1 or 2")
+		}
 	}
-	if c.SampleRate <= 0 {
-		return fmt.Errorf("audio_capture.sample_rate must be positive")
+	switch req.AudioOutputMode {
+	case AudioOutputDefault, AudioOutputVisualOnly, AudioOutputMonitor:
+		return nil
+	default:
+		return fmt.Errorf("audio_output_mode must be visual_only or monitor, got %q", req.AudioOutputMode)
 	}
-	if c.Channels != 1 && c.Channels != 2 {
-		return fmt.Errorf("audio_capture.channels must be 1 or 2")
-	}
-}
-switch req.AudioOutputMode {
-case AudioOutputDefault, AudioOutputVisualOnly, AudioOutputMonitor:
-	return nil
-default:
-	return fmt.Errorf("audio_output_mode must be visual_only or monitor, got %q", req.AudioOutputMode)
 }
 ```
+
+`validateSessionRequest` (existing function) gains a gated call to it:
+
+```go
+func validateSessionRequest(req SessionRequest) error {
+	if err := validateVisualizerRequest(req); err != nil {
+		return err
+	}
+	if hasAUXShape(req) {
+		if err := validateSessionInputShape(req); err != nil {
+			return err
+		}
+	}
+	return validateAspectModeOverride(req.AspectMode)
+}
+
+func hasAUXShape(req SessionRequest) bool {
+	return req.StreamProbeURL != "" || req.AudioCapture.Enabled || req.AudioOutputMode != AudioOutputDefault
+}
+```
+
+This keeps the existing Plex/Jellyfin/URL/DLNA tests in `manager_test.go` green — none of them set `StreamProbeURL`, `AudioCapture`, or `AudioOutputMode`.
 
 Run:
 
@@ -290,6 +331,7 @@ git commit -m "feat(aux): add core capture session contract"
 - [ ] Make `Probe` delegate to `ProbeInput` for backward compatibility.
 - [ ] Add capture input support to `PipelineSpec` and `BuildCommand`.
 - [ ] Keep local capture arguments structured; do not build shell strings.
+- [ ] Add `SuppressAudioOutput bool` to `PipelineSpec` and gate `audioOutputEnabled` on it so visual-only sessions emit no `-map <audio> -f s16le <pipe>` block.
 
 Tests to add:
 
@@ -376,7 +418,37 @@ func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
 		"-i", `audio=Line In (USB Audio Device)`,
 	})
 }
+
+func TestBuildCommandSuppressAudioOutputOmitsAudioPipe(t *testing.T) {
+	spec := PipelineSpec{
+		SuppressAudioOutput: true,
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			RequiredFiltersAvailable: true,
+		},
+		SourceProbe:     &ProbeResult{AudioRate: 48000},
+		OutputWidth:     720,
+		OutputHeight:    480,
+		AudioSampleRate: 48000,
+		AudioChannels:   2,
+		VideoPipePath:   "pipe:3",
+		AudioPipePath:   "pipe:4",
+		InputURL:        "http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=play",
+		FFmpegPath:      "ffmpeg",
+	}
+	args := BuildCommand(context.Background(), spec).Args
+	for _, banned := range []string{"-f", "s16le"} {
+		// "-f" appears elsewhere; the assertion is that "-f s16le <audio-pipe>"
+		// does NOT appear as a subsequence.
+		_ = banned
+	}
+	assertArgsDoNotContainSubsequence(t, args, []string{"-f", "s16le", spec.AudioPipePath})
+	assertArgsDoNotContainSubsequence(t, args, []string{"-map", "0:a:0"})
+}
 ```
+
+`assertArgsDoNotContainSubsequence` is the negative variant of the existing helper; add it next to `assertArgsContainSubsequence` if not already present.
 
 Implementation shape:
 
@@ -423,6 +495,28 @@ func appendCaptureInputArgs(args []string, c CaptureInputSpec) []string {
 
 Add `probeCommand(ffprobePath string, input ProbeInputSpec) *exec.Cmd` so tests can inspect argv without spawning ffprobe. `ProbeInput` calls `probeCommand`, sets `WaitDelay`, runs `cmd.Output()`, and calls `parseProbeOutput`.
 
+Add `SuppressAudioOutput bool` to `PipelineSpec` (place it next to `AudioInputURL` for grouping). Extend `audioOutputEnabled` at `internal/ffmpeg/pipeline.go:112` with an early return:
+
+```go
+func audioOutputEnabled(s PipelineSpec) bool {
+	if s.SuppressAudioOutput {
+		return false
+	}
+	if s.AudioSampleRate <= 0 || s.AudioChannels <= 0 {
+		return false
+	}
+	if s.AudioInputURL != "" {
+		return true
+	}
+	if s.SourceProbe != nil && s.SourceProbe.AudioRate <= 0 {
+		return false
+	}
+	return true
+}
+```
+
+This single edit gates both audio-output sites (`internal/ffmpeg/pipeline.go:487` and `:515`) without touching their bodies.
+
 Run:
 
 ```bash
@@ -440,26 +534,56 @@ git commit -m "feat(aux): support capture inputs in ffmpeg pipeline"
 ## Task 3: Wire Core Probe Selection And Audio Output Mode
 
 - [ ] Replace the core probe indirection with an input-shaped probe indirection.
+- [ ] Migrate every `probeFn = func(...)` test override in `manager_test.go` and `errors_test.go` to the new `probeInputFn` shape in the SAME commit.
 - [ ] Use `StreamProbeURL` for probe and `StreamURL` for playback.
-- [ ] Relax the visualizer audio gate for configured local capture.
+- [ ] Relax the visualizer audio gate for configured local capture, with an explicit code comment so the relaxation is not tightened back.
 - [ ] Normalize local-capture monitor audio from capture config when probe reports zero audio rate.
-- [ ] Set `SuppressAudioOutput` for visual-only sessions.
+- [ ] Set `SuppressAudioOutput` for visual-only sessions on both the `PipelineSpec` AND the `PlaneConfig`.
 
-Core tests:
+### Migrating `probeFn` → `probeInputFn`
+
+The existing `internal/core/manager.go` has a single package-private variable `probeFn` used as a test seam. Tests override it with the existing `(ctx, ffprobePath, url, policy) → (*ProbeResult, error)` signature in 29 places across `internal/core/manager_test.go` (26 sites) and `internal/core/errors_test.go` (3 sites). Task 3 renames it to `probeInputFn` and changes the signature to `(ctx, ffprobePath, ffmpeg.ProbeInputSpec) → (*ProbeResult, error)`.
+
+Every test override moves from this:
+
+```go
+origProbe := probeFn
+defer func() { probeFn = origProbe }()
+probeFn = func(ctx context.Context, ffprobePath, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
+}
+```
+
+To this (mechanically — the body is identical, only the signature changes):
+
+```go
+origProbe := probeInputFn
+defer func() { probeInputFn = origProbe }()
+probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+	return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
+}
+```
+
+Tests that inspect the old `url` / `policy` arguments to assert specific values must move to `input.URL` / `input.Policy`. The grep-and-replace is mechanical for 26 of the 29 sites; the remaining 3 sites in `manager_test.go` that assert against the probed URL will need the URL extracted from `input.URL`.
+
+Use the existing pattern (no `stubProbeInput`/`stubNewPlane`/`newNoopPlane` helpers — those do not exist in the package and Task 3 does not introduce them; rewrite the snippets below with direct assignment).
+
+Core tests (rewritten to use direct assignment):
 
 ```go
 func TestManagerProbeForStartUsesStreamProbeURLWhenPresent(t *testing.T) {
 	var got ffmpeg.ProbeInputSpec
-	restore := stubProbeInput(func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+	origProbe := probeInputFn
+	defer func() { probeInputFn = origProbe }()
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		got = input
 		return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
-	})
-	defer restore()
+	}
 
 	m := newTestManager(t)
 	_, _, _, err := m.probeForStart(SessionRequest{
-		StreamURL:      "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=play",
-		StreamProbeURL: "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=probe",
+		StreamURL:      "http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=play",
+		StreamProbeURL: "http://127.0.0.1:32500/internal/aux-proxy/?kind=probe&aux_token=probe",
 		MediaKind:      MediaKindMusic,
 		Visualizer:     VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
 	})
@@ -472,17 +596,19 @@ func TestManagerProbeForStartUsesStreamProbeURLWhenPresent(t *testing.T) {
 }
 
 func TestManagerVisualizerCaptureAcceptsZeroProbeAudioRate(t *testing.T) {
-	restore := stubProbeInput(func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+	origProbe := probeInputFn
+	defer func() { probeInputFn = origProbe }()
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 0}, nil
-	})
-	defer restore()
+	}
 
+	origNewPlane := newPlane
+	defer func() { newPlane = origNewPlane }()
 	var got dataplane.PlaneConfig
-	restorePlane := stubNewPlane(func(cfg dataplane.PlaneConfig) planeRunner {
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
 		got = cfg
-		return newNoopPlane()
-	})
-	defer restorePlane()
+		return &fakePlane{}
+	}
 
 	m := newTestManager(t)
 	err := m.StartSession(SessionRequest{
@@ -506,17 +632,19 @@ func TestManagerVisualizerCaptureAcceptsZeroProbeAudioRate(t *testing.T) {
 }
 
 func TestManagerVisualOnlySuppressesFFmpegAndPlaneAudio(t *testing.T) {
-	restore := stubProbeInput(func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+	origProbe := probeInputFn
+	defer func() { probeInputFn = origProbe }()
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
-	})
-	defer restore()
+	}
 
+	origNewPlane := newPlane
+	defer func() { newPlane = origNewPlane }()
 	var got dataplane.PlaneConfig
-	restorePlane := stubNewPlane(func(cfg dataplane.PlaneConfig) planeRunner {
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
 		got = cfg
-		return newNoopPlane()
-	})
-	defer restorePlane()
+		return &fakePlane{}
+	}
 
 	m := newTestManager(t)
 	err := m.StartSession(SessionRequest{
@@ -539,13 +667,15 @@ func TestManagerVisualOnlySuppressesFFmpegAndPlaneAudio(t *testing.T) {
 
 Implementation points:
 
-- Change `probeFn` to:
+- Replace the package-level `var probeFn = func(ctx context.Context, ffprobePath, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) { ... }` with:
 
 ```go
-probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+var probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 	return ffmpeg.ProbeInput(ctx, ffprobePath, input)
 }
 ```
+
+The rename is intentional: keeping the old name with a new signature would produce confusing test failures across the 29 migrated call sites; the rename surfaces every stale override at compile time.
 
 - Build `ffmpeg.ProbeInputSpec` in `probeForStart`:
 
@@ -562,10 +692,13 @@ probeInput := ffmpeg.ProbeInputSpec{
 probe, err := probeInputFn(ctx, ffprobePath, probeInput)
 ```
 
-- Visualizer audio gate:
+- Visualizer audio gate (REPLACES `internal/core/manager.go:511-515`). The relaxation for `AudioCapture.Enabled=true` is load-bearing: live ALSA/DirectShow/avfoundation probes do not reliably populate `AudioRate`, even when the device produces audio under `ffmpeg`. Do NOT tighten the gate back without first re-reading `docs/superpowers/specs/2026-05-22-aux-analog-visualizer-design.md` §"Visualizer 'must have audio' gate".
 
 ```go
 if req.Visualizer.Enabled && !req.AudioCapture.Enabled {
+	// AudioCapture.Enabled=true asserts audio by configuration; capture-device
+	// probes do not reliably set AudioRate. See AUX visualizer spec §Visualizer
+	// "must have audio" gate must move off probe.AudioRate.
 	if probe == nil || probe.AudioRate <= 0 {
 		return nil, nil, "", fmt.Errorf("visualizer source has no audio")
 	}
@@ -796,7 +929,9 @@ git commit -m "feat(aux): add analog input adapter config"
 - [ ] Implement `adapters.PublicRouteProvider`.
 - [ ] Mint distinct single-use probe/play tokens.
 - [ ] Reject non-loopback clients before token lookup.
-- [ ] Reject redirects and non-2xx upstream responses.
+- [ ] Construct the outbound `http.Client` with `CheckRedirect: http.ErrUseLastResponse` so Go's default 10-follow behavior cannot bypass the 3xx rejection.
+- [ ] Bound dial / TLS-handshake / response-header timeouts on the outbound `http.Transport`.
+- [ ] Reject redirects and non-2xx upstream responses (asserted at the handler too as defense in depth).
 - [ ] Use no operator-configurable headers.
 
 URL validation tests:
@@ -854,9 +989,14 @@ type proxyStore struct {
 }
 ```
 
-Use slice lookup so token comparison can be constant-time:
+Use slice lookup; compare individual tokens with `subtle.ConstantTimeCompare` to avoid per-byte timing leaks on the token string itself. The whole-table search is NOT constant-time across "present-but-rejected" vs "absent" outcomes — that is intentional given the proxy is bound to loopback with a 5s probe-token TTL, where wall-clock timing attacks across the LAN are impractical. Document this tradeoff in a comment.
 
 ```go
+// consume looks up a token by constant-time per-slot comparison. The whole-table
+// iteration is not constant-time across hit-then-rejected vs absent outcomes;
+// loopback binding + short TTL make whole-table timing attacks impractical, and
+// constant-time-across-rejection would force iterating every slot for every
+// request even in the steady state.
 func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -876,7 +1016,36 @@ func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool)
 }
 ```
 
-Handler rules:
+### Outbound HTTP client construction
+
+The proxy's `http.Client` MUST be constructed with `CheckRedirect: http.ErrUseLastResponse`. Without it, Go's `http.DefaultClient` follows up to 10 redirects automatically, so a 302 to an attacker-controlled URL would be silently followed BEFORE the handler ever sees a 3xx status code — defeating the spec's redirect-safety boundary entirely. The bounded `Transport` timeouts prevent a dead remote producer from holding the handler goroutine open indefinitely.
+
+```go
+func newProxyHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 0,
+			}).DialContext,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			DisableKeepAlives:     true,
+		},
+		// No whole-body Timeout: the play token's GET is long-lived for the
+		// duration of the cast. Per-stage timeouts above bound the dial /
+		// TLS / header phases.
+	}
+}
+```
+
+The adapter constructor in Task 5 assigns `a.proxyHTTP = newProxyHTTPClient()`.
+
+### Handler rules
 
 ```go
 func (a *Adapter) MountPublicRoutes(mux *http.ServeMux) {
@@ -911,6 +1080,10 @@ func (a *Adapter) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	// 3xx rejection. Only fires for non-redirected 3xx (304 Not Modified etc.)
+	// because CheckRedirect: http.ErrUseLastResponse stops the client at the
+	// first 3xx response. Defense in depth — if a future maintainer drops
+	// CheckRedirect, this block keeps SSRF rejection working.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		http.Error(w, "AUX input redirected", http.StatusBadGateway)
 		return
@@ -923,6 +1096,12 @@ func (a *Adapter) handleProxy(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 ```
+
+### Required proxy tests (in addition to those already listed)
+
+- `TestProxyRejectsUpstreamRedirect`: mint a play token whose upstream is a `httptest.Server` returning `302 Location: http://evil.test/`. Call `/internal/aux-proxy/?kind=play&aux_token=<tok>` from `127.0.0.1`. Assert response is `502 Bad Gateway` with body `AUX input redirected`. Assert `evil.test` is NEVER dialled (the upstream test server's request counter shows exactly one request).
+- `TestProxyRejectsNonLoopbackClient`: send a request with `r.RemoteAddr = "192.0.2.1:54321"`; assert 403 before any token lookup.
+- `TestProxyBoundedDialTimeout`: point the upstream at an unroutable address (e.g. `http://192.0.2.1:1` per RFC 5737); assert the proxy returns 502 within 6 seconds rather than hanging.
 
 The generated local URLs must be:
 
@@ -1270,8 +1449,10 @@ git commit -m "feat(aux): add receiver aux routes"
 - [ ] Add AUX status data to `ReceiverPageData`.
 - [ ] Add a fifth `AUX` source button.
 - [ ] Add button action metadata instead of hardcoding click behavior by label.
-- [ ] Add JavaScript that posts to `/receiver/aux/start`.
-- [ ] Add a `source` SSE event and client handler so AUX active/unavailable state updates in already-open tabs.
+- [ ] Extend `snapshotFromSession`'s signature with a trailing `aux AUXStarter` parameter; update every call site (3 production, 16 test) in the same commit; production callers pass `s.aux`, tests pass `nil` or a fake.
+- [ ] Match the AUX button by its stable `Action` constant (`"aux-start"`), not by `Label`, so a future label rename does not silently break the toggle.
+- [ ] Update `internal/chassis/chassis_test.go:795` (and any other exact-string template assertion against `source-cluster.html`) to use substring matching, so the new `data-source-action` / `data-input-id` attributes do not break the existing assertion.
+- [ ] Add a `source` SSE event with a diff helper (`sourceChanged`) and client handler so AUX active/unavailable state updates in already-open tabs.
 - [ ] Update CSS responsive tests for five buttons.
 
 Data changes:
@@ -1287,21 +1468,46 @@ type SourceButton struct {
 }
 ```
 
-Snapshot rule in `snapshotFromSession`:
+### `snapshotFromSession` signature change and call-site migration
+
+The current signature is `func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, now time.Time) ReceiverPageData` (`internal/chassis/session.go:54`). Task 10 adds a trailing `aux AUXStarter` parameter:
 
 ```go
-func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter, ctx context.Context) {
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData
+```
+
+Production call sites (pass `s.aux`):
+- `internal/chassis/server.go` (2 sites)
+- `internal/chassis/events.go` (1 site)
+- `internal/chassis/handler.go` (1 site)
+
+Test call sites (pass `nil` or a fake `AUXStarter`):
+- `internal/chassis/chassis_test.go` (14 sites)
+- `internal/chassis/events_test.go` (1 site)
+
+Tests that exercise AUX state pass a `fakeAUXStarter` returning a controlled `adapters.AUXStatus`. Tests that do not exercise AUX state pass `nil` and rely on `applyAUXSourceState` short-circuiting.
+
+The chassis snapshot path does not currently carry a `context.Context`; `applyAUXSourceState` calls `AUXStatus(context.Background())`. The AUX adapter's `AUXStatus` implementation is read-only and synchronous, so this is sufficient for v1.
+
+### Snapshot rule
+
+Match the AUX button by `Action` (a new stable identifier), not by `Label`. This survives a future label rename and avoids hidden coupling between display text and click behavior.
+
+```go
+const SourceActionAUXStart = "aux-start"
+
+func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter) {
 	if aux == nil {
 		return
 	}
-	st := aux.AUXStatus(ctx)
+	st := aux.AUXStatus(context.Background())
 	if st.Active {
 		for i := range base.Source.Buttons {
 			base.Source.Buttons[i].Active = false
 		}
 	}
 	for i := range base.Source.Buttons {
-		if base.Source.Buttons[i].Label != "AUX" {
+		if base.Source.Buttons[i].Action != SourceActionAUXStart {
 			continue
 		}
 		base.Source.Buttons[i].Unavailable = !st.Enabled || !st.Configured
@@ -1313,6 +1519,8 @@ func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter, ctx context.Con
 	}
 }
 ```
+
+The new AUX button is constructed with `Action: SourceActionAUXStart` in the source-cluster initialiser at `internal/chassis/data.go:217-222`.
 
 Template shape:
 
@@ -1371,14 +1579,41 @@ type sourceEnvelope struct {
 
 type sourceButtonEnvelope struct {
 	Label       string `json:"label"`
+	Action      string `json:"action"`
 	Active      bool   `json:"active"`
 	Lit         bool   `json:"lit"`
 	Unavailable bool   `json:"unavailable"`
 	InputID     string `json:"inputId"`
 }
+
+func sourceEnvelopeFromSnapshot(data ReceiverPageData) sourceEnvelope {
+	out := sourceEnvelope{Buttons: make([]sourceButtonEnvelope, 0, len(data.Source.Buttons))}
+	for _, b := range data.Source.Buttons {
+		out.Buttons = append(out.Buttons, sourceButtonEnvelope{
+			Label: b.Label, Action: b.Action,
+			Active: b.Active, Lit: b.Lit,
+			Unavailable: b.Unavailable, InputID: b.InputID,
+		})
+	}
+	return out
+}
+
+func sourceChanged(prev, next sourceEnvelope) bool {
+	if len(prev.Buttons) != len(next.Buttons) {
+		return true
+	}
+	for i := range prev.Buttons {
+		if prev.Buttons[i] != next.Buttons[i] {
+			return true
+		}
+	}
+	return false
+}
 ```
 
-`handleEvents` must emit an initial `source` event after `vfd`, compare source-button envelopes on each tick, and emit `source` when AUX active/unavailable state changes. `internal/chassis/static/vfd-live.js` must listen for `source`, find buttons by their label or `data-source-action`, and update `active`, `lit`, `aria-checked`, `aria-disabled`, `disabled`, and `data-input-id` without a full page reload.
+`handleEvents` must emit an initial `source` event after `vfd`, then on each tick call `sourceEnvelopeFromSnapshot(snapshot)`, compare to the previous envelope with `sourceChanged`, and emit `source` only when state changes — matching the existing tick-loop diff pattern at `internal/chassis/events.go:194-211` for visualizer/transport.
+
+`internal/chassis/static/vfd-live.js` must listen for `source`, find buttons by `data-source-action`, and update `active`, `lit`, `aria-checked`, `aria-disabled`, `disabled`, and `data-input-id` without a full page reload. Do NOT match by button label text; the `Action` attribute is the stable identifier.
 
 Tests:
 
@@ -1412,17 +1647,29 @@ git commit -m "feat(aux): add receiver source control"
 
 ## Task 11: Add End-To-End AUX Behavior Tests
 
-- [ ] Add a fake-MiSTer/integration-style test for AUX visual-only video fields.
+- [ ] Add an in-process dataplane test for AUX visual-only video fields, using `internal/fakemister.Server` (NOT the `tests/integration` build-tag path; runs under plain `go test`).
 - [ ] Add a start-preempts-prior-session test.
 - [ ] Add stream proxy two-GET behavior coverage using `httptest.Server`.
 - [ ] Add local-capture command integration at the command-builder boundary rather than requiring a real device.
 
-Recommended test targets:
+### Test placement
+
+| Test | File | Build tag |
+| --- | --- | --- |
+| `TestAUXStreamURLConsumesProbeAndPlayTokensSeparately` | `internal/adapters/aux/proxy_test.go` | none |
+| `TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast` | `internal/adapters/aux/session_test.go` | none |
+| `TestAUXStreamURLPlayFailureReportsAfterPreempt` | `internal/adapters/aux/session_test.go` | none |
+| `TestAUXVisualOnlyProducesVideoWithoutAudioPipe` | `internal/dataplane/aux_visual_only_test.go` (new file) | none |
+| `TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe` | `internal/core/manager_test.go` | none |
+
+Use `internal/fakemister.Server` in-process for the dataplane test rather than `cmd/fake-mister` as a subprocess, so the test runs under plain `go test ./...` without ffmpeg-on-PATH or process-management overhead. This matches the existing dataplane test idiom.
+
+### Recommended test targets
 
 - `TestAUXStreamURLConsumesProbeAndPlayTokensSeparately`: start AUX against an `httptest.Server`, consume the probe token, then the play token, and assert the upstream saw exactly two GETs.
 - `TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast`: make probe token consumption return a 502, call `StartAUX`, and assert the fake core's active foreign session was not stopped or replaced.
 - `TestAUXStreamURLPlayFailureReportsAfterPreempt`: allow probe to pass, make the play token return a 502 during plane spawn, and assert AUX status records a clear error after the fake prior session was preempted.
-- `TestAUXVisualOnlyProducesVideoWithoutAudioPipe`: run the fake-MiSTer path with `SuppressAudioOutput=true` and assert video fields are emitted while no audio chunks are read.
+- `TestAUXVisualOnlyProducesVideoWithoutAudioPipe`: spin a `*fakemister.Server`, start a visual-only plane, and assert video fields are emitted while the audio pipe is never opened. The plane must observe `SuppressAudioOutput=true`.
 - `TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe`: fake an active Plex session, start AUX after successful probe, and assert the final status carries an `aux:` adapter ref.
 
 The fake upstream should count requests:
@@ -1501,6 +1748,8 @@ done
 ```
 
 The loop is required because GroovyRelay opens the stream twice per AUX start: once for probe, then once for playback.
+
+If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update `audio_output`/`probe_size` accordingly. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it.
 ````
 
 Run:
@@ -1530,17 +1779,25 @@ Commands:
 cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w cmd/mister-groovy-relay/main.go internal/core internal/ffmpeg internal/dataplane internal/adapters/aux internal/chassis
 cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./...
 git diff --check
-rg -n "/receiver/visualizer/mode|aux_token=[A-Za-z0-9_-]{8,}|\\[\\[adapters\\.aux\\.input\\]\\]" .
+# Audit: AUX code must not reference the chassis visualizer-mode route by mistake
+# (the route legitimately exists in internal/chassis/server.go and stays there).
+rg -n "/receiver/visualizer/mode" internal/adapters/aux internal/chassis/aux*.go cmd/mister-groovy-relay/main.go
+# Audit: no array-of-tables form survived the back-out
+rg -n "\\[\\[adapters\\.aux\\.input\\]\\]" .
+# Audit: no real aux_token values in committed source (redaction tests use the
+# literal string "secret" or short dummy values)
+rg -n "aux_token=[A-Za-z0-9_-]{16,}" internal docs cmd
+# Coverage: confirm the new contracts are wired through
 rg -n "POST /receiver/aux/start|/internal/aux-proxy/|StreamProbeURL|SuppressAudioOutput|AudioCaptureInput" internal docs README.md
 git status --short
 ```
 
 Expected `rg` results:
 
-- No `/receiver/visualizer/mode`.
-- No `[[adapters.aux.input]]`.
-- No hard-coded leaked `aux_token` values beyond redaction tests that intentionally use known dummy strings.
-- Positive hits for `/receiver/aux/start`, `/internal/aux-proxy/`, `StreamProbeURL`, `SuppressAudioOutput`, and `AudioCaptureInput`.
+- First grep: NO hits. The visualizer-mode route is a legitimate chassis route owned outside the AUX feature; if it appears inside AUX code, something is wrong.
+- Second grep: NO hits. The plan deliberately uses single-table `[adapters.aux.input]` because the generic adapter form serializer cannot emit `[[arrays]]`.
+- Third grep: NO hits beyond redaction tests that intentionally use known short dummy strings.
+- Fourth grep: positive hits for `/receiver/aux/start`, `/internal/aux-proxy/`, `StreamProbeURL`, `SuppressAudioOutput`, and `AudioCaptureInput`.
 
 Final commit if any verification-only fix was needed:
 
