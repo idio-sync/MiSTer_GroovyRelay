@@ -3,10 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="chassis-adapter-ref" content="{{.Transport.AdapterRef}}">
+  <meta name="chassis-generation" content="{{.Transport.Generation}}">
   <title>{{.BrandName}}</title>
   <link rel="stylesheet" href="/receiver/static/chassis.css?v={{.Version}}">
   <script defer src="/receiver/static/chassis.js?v={{.Version}}"></script>
   <script defer src="/receiver/static/vfd-live.js?v={{.Version}}"></script>
+  <script defer src="/receiver/static/transport.js?v={{.Version}}"></script>
   <script defer src="/receiver/static/visualizer-bank.js?v={{.Version}}"></script>
 </head>
 <body class="receiver {{.State}}">

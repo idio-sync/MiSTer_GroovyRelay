@@ -122,11 +122,25 @@ type ReadoutIdleData struct {
 // seek bar, time readout, and gear. Phase 0 idle keeps buttons dim and
 // seek fill at 0%.
 type TransportData struct {
-	PlayState       string
+	State           string
+	SeekFillPercent int
 	ElapsedTime     string
 	TotalTime       string
 	PercentPlayed   string
-	SeekFillPercent int
+	OffsetMS        int
+	DurationMS      int
+	ActionsEnabled  ActionsEnabled
+	AdapterRef      string
+	Generation      uint64
+}
+
+type ActionsEnabled struct {
+	Previous    bool
+	Next        bool
+	PauseResume bool
+	Stop        bool
+	Replay      bool
+	Seek        bool
 }
 
 // VisualizerData drives the 4-button visualizer-bank selector. One of
@@ -253,11 +267,16 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			},
 		},
 		Transport: TransportData{
-			PlayState:       "stopped",
-			ElapsedTime:     "--:--",
-			TotalTime:       "--:--",
-			PercentPlayed:   "---",
+			State:           "stopped",
 			SeekFillPercent: 0,
+			ElapsedTime:     "",
+			TotalTime:       "",
+			PercentPlayed:   "",
+			OffsetMS:        0,
+			DurationMS:      0,
+			ActionsEnabled:  ActionsEnabled{},
+			AdapterRef:      "",
+			Generation:      0,
 		},
 		Visualizer: VisualizerData{
 			ActiveMode: defaultVisualizerMode(cfg),

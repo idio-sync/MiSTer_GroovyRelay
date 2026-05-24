@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -323,10 +324,347 @@ func TestReceiverEvents_LivePathReachesClient(t *testing.T) {
 // Lives in the integration package; chassis.SessionViewer is satisfied
 // structurally via the StatusHomeView() method signature.
 type fakeIntegrationSession struct {
+	mu   sync.Mutex
 	view core.StatusHomeView
 }
 
-func (f *fakeIntegrationSession) StatusHomeView() core.StatusHomeView { return f.view }
+func (f *fakeIntegrationSession) StatusHomeView() core.StatusHomeView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.view
+}
+
+func (f *fakeIntegrationSession) set(view core.StatusHomeView) {
+	f.mu.Lock()
+	f.view = view
+	f.mu.Unlock()
+}
+
+type fakeIntegrationTransport struct {
+	mu       sync.Mutex
+	lastReq  adapters.PlaybackActionRequest
+	hasReq   bool
+	result   adapters.PlaybackActionResult
+	err      error
+	onAction func(adapters.PlaybackActionRequest)
+}
+
+func (f *fakeIntegrationTransport) HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error) {
+	f.mu.Lock()
+	f.lastReq = req
+	f.hasReq = true
+	result := f.result
+	err := f.err
+	onAction := f.onAction
+	f.mu.Unlock()
+
+	if onAction != nil {
+		onAction(req)
+	}
+	return result, err
+}
+
+func (f *fakeIntegrationTransport) lastRequest() (adapters.PlaybackActionRequest, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReq, f.hasReq
+}
+
+type fakeIntegrationTransportViewer struct {
+	mu   sync.Mutex
+	view adapters.PlaybackBannerAdapterView
+	owns bool
+}
+
+func (f *fakeIntegrationTransportViewer) PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.view, f.owns
+}
+
+func newChassisTransportIntegrationServer(t *testing.T, session *fakeIntegrationSession, viewer *fakeIntegrationTransportViewer, controller *fakeIntegrationTransport) *httptest.Server {
+	t.Helper()
+
+	cfg := chassis.Config{
+		Bridge:    config.BridgeConfig{},
+		Manager:   &core.Manager{},
+		Registry:  adapters.NewRegistry(),
+		Version:   "integration-test",
+		StartedAt: time.Now(),
+		HostIP:    "10.0.0.5",
+	}
+	if session != nil {
+		cfg.Session = session
+	}
+	if viewer != nil {
+		cfg.TransportViewer = viewer
+	}
+	if controller != nil {
+		cfg.TransportController = controller
+	}
+	chassisSrv, err := chassis.New(cfg)
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	t.Cleanup(func() { _ = chassisSrv.Close() })
+
+	mux := http.NewServeMux()
+	chassisSrv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func postReceiverTransport(t *testing.T, ts *httptest.Server, path, body, fetchSite string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if fetchSite != "" {
+		req.Header.Set("Sec-Fetch-Site", fetchSite)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+func assertIntegrationTransportJSONError(t *testing.T, resp *http.Response, status int) {
+	t.Helper()
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != status {
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, status, body)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestReceiverTransport_PostActionDispatchesViaController(t *testing.T) {
+	controller := &fakeIntegrationTransport{}
+	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
+
+	resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204; body=%s", resp.StatusCode, body)
+	}
+
+	got, ok := controller.lastRequest()
+	if !ok {
+		t.Fatal("controller did not receive playback action")
+	}
+	if got.Action != adapters.PlaybackActionPause || got.AdapterRef != "plex:abc" || got.Generation != 42 {
+		t.Fatalf("controller request = %+v, want pause plex:abc generation 42", got)
+	}
+}
+
+func TestReceiverTransport_PostActionStaleGenerationReturns409(t *testing.T) {
+	controller := &fakeIntegrationTransport{err: adapters.ErrActiveSessionChanged}
+	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
+
+	resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	assertIntegrationTransportJSONError(t, resp, http.StatusConflict)
+}
+
+func TestReceiverTransport_PostSeekDispatchesOffset(t *testing.T) {
+	controller := &fakeIntegrationTransport{}
+	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
+
+	resp := postReceiverTransport(t, ts, "/receiver/transport/seek", "adapter_ref=plex:abc&generation=42&offset_ms=12345", "same-origin")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204; body=%s", resp.StatusCode, body)
+	}
+
+	got, ok := controller.lastRequest()
+	if !ok {
+		t.Fatal("controller did not receive playback action")
+	}
+	if got.Action != adapters.PlaybackActionSeek || got.AdapterRef != "plex:abc" || got.Generation != 42 || got.OffsetMS != 12345 {
+		t.Fatalf("controller request = %+v, want seek plex:abc generation 42 offset 12345", got)
+	}
+}
+
+type receiverTransportEvent struct {
+	state string
+	err   error
+}
+
+func streamReceiverTransportEvents(r io.Reader) <-chan receiverTransportEvent {
+	events := make(chan receiverTransportEvent, 8)
+	go func() {
+		defer close(events)
+		scanner := bufio.NewScanner(r)
+		var name, data string
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				data = strings.TrimPrefix(line, "data: ")
+			case line == "":
+				if name == "transport" {
+					var env struct {
+						State string `json:"state"`
+					}
+					if err := json.Unmarshal([]byte(data), &env); err != nil {
+						events <- receiverTransportEvent{err: err}
+						return
+					}
+					events <- receiverTransportEvent{state: env.State}
+				}
+				name, data = "", ""
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			events <- receiverTransportEvent{err: err}
+		}
+	}()
+	return events
+}
+
+func TestReceiverTransport_SSEReflectsAction(t *testing.T) {
+	session := &fakeIntegrationSession{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Integration Live Title",
+		Source:     "plex",
+		AdapterRef: "plex:abc",
+		Generation: 42,
+		Position:   10 * time.Second,
+		Duration:   90 * time.Second,
+	}}
+	viewer := &fakeIntegrationTransportViewer{
+		owns: true,
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{
+				{ID: adapters.PlaybackActionPause, Enabled: true},
+				{ID: adapters.PlaybackActionStop, Enabled: true},
+			},
+			Seek: &adapters.PlaybackSeek{Enabled: true, OffsetMS: 10000, DurationMS: 90000},
+		},
+	}
+	controller := &fakeIntegrationTransport{
+		onAction: func(req adapters.PlaybackActionRequest) {
+			if req.Action != adapters.PlaybackActionPause {
+				return
+			}
+			session.set(core.StatusHomeView{
+				State:      core.StatePaused,
+				Title:      "Integration Live Title",
+				Source:     "plex",
+				AdapterRef: "plex:abc",
+				Generation: 42,
+				Position:   10 * time.Second,
+				Duration:   90 * time.Second,
+			})
+		},
+	}
+	ts := newChassisTransportIntegrationServer(t, session, viewer, controller)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	sseResp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	defer sseResp.Body.Close()
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status = %d, want 200", sseResp.StatusCode)
+	}
+	events := streamReceiverTransportEvents(sseResp.Body)
+
+	postResp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	_ = postResp.Body.Close()
+	if postResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST pause status = %d, want 204", postResp.StatusCode)
+	}
+
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("SSE stream closed before paused transport event arrived")
+			}
+			if ev.err != nil {
+				t.Fatalf("read transport event: %v", ev.err)
+			}
+			if ev.state == "paused" {
+				return
+			}
+		case <-timeout:
+			t.Fatal(`no transport event with state "paused" within 2s`)
+		}
+	}
+}
+
+func TestReceiverTransport_PostActionRejectsCrossSiteOrMissingFetchSite(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fetchSite string
+	}{
+		{name: "cross-site", fetchSite: "cross-site"},
+		{name: "missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controller := &fakeIntegrationTransport{}
+			ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
+
+			resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", tc.fetchSite)
+			assertIntegrationTransportJSONError(t, resp, http.StatusForbidden)
+		})
+	}
+}
+
+func TestReceiverTransport_PostActionUnsupportedReturns422(t *testing.T) {
+	controller := &fakeIntegrationTransport{err: adapters.UnsupportedPlaybackActionError("pause unavailable")}
+	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
+
+	resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	assertIntegrationTransportJSONError(t, resp, http.StatusUnprocessableEntity)
+}
+
+func TestReceiverTransport_PostSeekNonIntegerOffsetReturns400(t *testing.T) {
+	controller := &fakeIntegrationTransport{}
+	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
+
+	resp := postReceiverTransport(t, ts, "/receiver/transport/seek", "adapter_ref=plex:abc&generation=42&offset_ms=twelve", "same-origin")
+	assertIntegrationTransportJSONError(t, resp, http.StatusBadRequest)
+}
+
+func TestReceiverTransport_GetRoutesReturn405(t *testing.T) {
+	ts := newChassisTransportIntegrationServer(t, nil, nil, &fakeIntegrationTransport{})
+
+	for _, path := range []string{"/receiver/transport/action", "/receiver/transport/seek"} {
+		resp, err := ts.Client().Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s body: %v", path, readErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close %s body: %v", path, closeErr)
+		}
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("GET %s status = %d, want 405; body=%s", path, resp.StatusCode, body)
+		}
+	}
+}
 
 type chassisVisualizerSaver struct {
 	bs *uiserver.BridgeSaver

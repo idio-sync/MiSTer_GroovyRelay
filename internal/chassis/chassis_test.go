@@ -2,11 +2,14 @@ package chassis
 
 import (
 	"bytes"
+	"context"
 	"html/template"
 	"mime"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +18,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/playback"
 )
 
 type fakeVisualizerViewer struct {
@@ -222,11 +226,16 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 			},
 		},
 		Transport: TransportData{
-			PlayState:       "stopped",
-			ElapsedTime:     "--:--",
-			TotalTime:       "--:--",
-			PercentPlayed:   "---",
+			State:           "stopped",
 			SeekFillPercent: 0,
+			ElapsedTime:     "",
+			TotalTime:       "",
+			PercentPlayed:   "",
+			OffsetMS:        0,
+			DurationMS:      0,
+			ActionsEnabled:  ActionsEnabled{},
+			AdapterRef:      "",
+			Generation:      0,
 		},
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
@@ -256,6 +265,29 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idleSnapshot() = %+v, want %+v", got, want)
+	}
+}
+
+func TestIdleSnapshot_TransportDataMatchesNewIdleShape(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	got := idleSnapshot(cfg, fixedNow)
+
+	want := TransportData{
+		State:           "stopped",
+		SeekFillPercent: 0,
+		ElapsedTime:     "",
+		TotalTime:       "",
+		PercentPlayed:   "",
+		OffsetMS:        0,
+		DurationMS:      0,
+		ActionsEnabled:  ActionsEnabled{},
+		AdapterRef:      "",
+		Generation:      0,
+	}
+	if !reflect.DeepEqual(got.Transport, want) {
+		t.Errorf("idleSnapshot Transport mismatch:\n got: %+v\nwant: %+v", got.Transport, want)
 	}
 }
 
@@ -566,6 +598,122 @@ func TestHandleStatic_JS_Served(t *testing.T) {
 	}
 }
 
+func TestHandleStatic_TransportJSServed(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"chassis:eventsource",
+		"data-transport-action",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served transport.js missing %q", want)
+		}
+	}
+}
+
+func TestTransportJS_SeekUsesRawDurationMsNotClockText(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "data-transport-duration-ms") {
+		t.Errorf("served transport.js missing raw duration hook")
+	}
+	for _, unwanted := range []string{
+		".split(':')",
+		"parseClockToMs",
+		"MM:SS",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("served transport.js contains clock parsing sentinel %q", unwanted)
+		}
+	}
+}
+
+func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	t.Cleanup(func() { _ = s.Close() })
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	rr := httptest.NewRecorder()
+
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !strings.Contains(rr.Body.String(), "transportState === 'stopped'") {
+		t.Errorf("served transport.js missing stopped-state pause/resume guard")
+	}
+}
+
+func TestTransportJS_SeekDragCapturesSessionIdentity(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/transport.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/transport.js): %v", err)
+	}
+	body := string(js)
+	for _, want := range []string{
+		"adapterRef: adapterRef",
+		"generation: generation",
+		"durationMs: durationMs",
+		"adapterRef !== drag.adapterRef",
+		"generation !== drag.generation",
+		"drag.durationMs",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport.js missing seek session guard %q", want)
+		}
+	}
+}
+
+func TestTransportJS_SeekCancelRestoresServerBackedVisual(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/transport.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/transport.js): %v", err)
+	}
+	body := string(js)
+	for _, want := range []string{
+		"let serverSeekPercent = 0",
+		"serverSeekPercent = data.seekFillPercent || 0",
+		"function restoreSeekVisual(bar)",
+		"restoreSeekVisual(bar);",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport.js missing seek visual restore contract %q", want)
+		}
+	}
+}
+
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
@@ -717,8 +865,8 @@ func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 	}
 	transportHTML := body[transportStart:transportEnd]
 	for _, want := range []string{
-		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">--:--</span></span>`,
-		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text">--:--</span></span>`,
+		`<span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-transport-elapsed></span></span>`,
+		`<span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-transport-total></span></span>`,
 	} {
 		if !strings.Contains(transportHTML, want) {
 			t.Errorf("body missing accessible transport ghost markup %q", want)
@@ -742,17 +890,159 @@ func TestHandleIndex_RendersTransportAndVisualizerAccessibilityHooks(t *testing.
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		`<button class="trn" type="button" aria-label="Previous" title="Previous">`,
-		`<button class="trn" type="button" aria-label="Next" title="Next">`,
-		`<button class="trn primary" type="button" aria-label="Pause or resume" title="Pause / Resume">`,
-		`<button class="trn" type="button" aria-label="Stop" title="Stop">`,
-		`<button class="trn" type="button" aria-label="Replay" title="Replay">`,
-		`class="seek-bar" role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"`,
+		`data-transport-action="previous"`,
+		`aria-label="Previous" title="Previous"`,
+		`data-transport-action="next"`,
+		`aria-label="Next" title="Next"`,
+		`data-transport-action="pauseResume"`,
+		`aria-label="Pause or resume" title="Pause / Resume"`,
+		`data-state-icon="playing"`,
+		`data-state-icon="paused"`,
+		`data-transport-action="stop"`,
+		`aria-label="Stop" title="Stop"`,
+		`data-transport-action="replay"`,
+		`aria-label="Replay" title="Replay"`,
+		`class="seek-bar" data-transport-seek`,
+		`role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"`,
 		`class="hw-btn viz-btn viz-btn--preview" type="button" role="radio" aria-checked="false" aria-disabled="true" disabled`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing transport/visualizer accessibility hook %q", want)
 		}
+	}
+}
+
+func TestTransportTemplate_RendersDataAttributeHooks(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	data := TransportData{
+		State:           "playing",
+		SeekFillPercent: 44,
+		ElapsedTime:     "04:23",
+		TotalTime:       "09:56",
+		PercentPlayed:   "44%",
+		OffsetMS:        263000,
+		DurationMS:      596000,
+		ActionsEnabled: ActionsEnabled{
+			Previous:    true,
+			Next:        true,
+			PauseResume: true,
+			Stop:        true,
+			Replay:      false,
+			Seek:        true,
+		},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+		t.Fatalf("execute transport partial: %v", err)
+	}
+	body := buf.String()
+
+	for _, want := range []string{
+		`data-transport-state="playing"`,
+		`data-transport-action="previous"`,
+		`data-transport-action="next"`,
+		`data-transport-action="pauseResume"`,
+		`data-transport-action="stop"`,
+		`data-transport-action="replay"`,
+		`data-transport-seek`,
+		`data-transport-seek-fill`,
+		`data-transport-elapsed`,
+		`data-transport-total`,
+		`data-transport-percent`,
+		`data-transport-offset-ms="263000"`,
+		`data-transport-duration-ms="596000"`,
+		`data-state-icon="playing"`,
+		`data-state-icon="paused"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transport partial missing %q; full output:\n%s", want, body)
+		}
+	}
+	replayDisabled := regexp.MustCompile(`(?s)<button[^>]*data-transport-action="replay"[^>]*\sdisabled(?:\s|>)`)
+	if !replayDisabled.MatchString(body) {
+		t.Fatalf("replay button should be disabled when ActionsEnabled.Replay=false; full output:\n%s", body)
+	}
+
+	for name, pattern := range map[string]string{
+		"previous":    `(?s)<button[^>]*data-transport-action="previous"[^>]*aria-label="Previous"[^>]*title="Previous"[^>]*>`,
+		"next":        `(?s)<button[^>]*data-transport-action="next"[^>]*aria-label="Next"[^>]*title="Next"[^>]*>`,
+		"pauseResume": `(?s)<button[^>]*data-transport-action="pauseResume"[^>]*aria-label="Pause or resume"[^>]*title="Pause / Resume"[^>]*>`,
+		"stop":        `(?s)<button[^>]*data-transport-action="stop"[^>]*aria-label="Stop"[^>]*title="Stop"[^>]*>`,
+		"replay":      `(?s)<button[^>]*data-transport-action="replay"[^>]*disabled[^>]*aria-label="Replay"[^>]*title="Replay"[^>]*>`,
+	} {
+		if !regexp.MustCompile(pattern).MatchString(body) {
+			t.Errorf("transport %s button missing expected attributes on one element; full output:\n%s", name, body)
+		}
+	}
+	pauseButton := regexp.MustCompile(`(?s)<button[^>]*data-transport-action="pauseResume"[^>]*>.*?</button>`).FindString(body)
+	if pauseButton == "" {
+		t.Fatalf("pauseResume button not found; full output:\n%s", body)
+	}
+	for _, want := range []string{`data-state-icon="playing"`, `data-state-icon="paused"`} {
+		if !strings.Contains(pauseButton, want) {
+			t.Errorf("pauseResume button missing %q; button output:\n%s", want, pauseButton)
+		}
+	}
+	seekBar := regexp.MustCompile(`(?s)<div[^>]*class="seek-bar"[^>]*data-transport-seek[^>]*data-transport-offset-ms="263000"[^>]*data-transport-duration-ms="596000"[^>]*aria-valuenow="44"[^>]*aria-disabled="false"[^>]*>`)
+	if !seekBar.MatchString(body) {
+		t.Errorf("transport seek bar missing expected attributes on one element; full output:\n%s", body)
+	}
+}
+
+func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	for _, percent := range []int{0, 44, 100} {
+		data := TransportData{SeekFillPercent: percent}
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+			t.Fatalf("execute transport partial with percent %d: %v", percent, err)
+		}
+		want := `style="width: ` + strconv.Itoa(percent) + `%"`
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("seek fill style with percent %d missing %q; full output:\n%s", percent, want, buf.String())
+		}
+	}
+}
+
+func TestTransportTemplate_SeekDisabledReflectsActionsEnabled(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name             string
+		seekEnabled      bool
+		wantDisabledAttr bool
+		wantAriaDisabled string
+	}{
+		{name: "disabled", seekEnabled: false, wantDisabledAttr: true, wantAriaDisabled: `aria-disabled="true"`},
+		{name: "enabled", seekEnabled: true, wantDisabledAttr: false, wantAriaDisabled: `aria-disabled="false"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := TransportData{ActionsEnabled: ActionsEnabled{Seek: tt.seekEnabled}}
+			var buf bytes.Buffer
+			if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+				t.Fatalf("execute transport partial: %v", err)
+			}
+			body := buf.String()
+
+			if got := strings.Contains(body, `data-transport-seek-disabled`); got != tt.wantDisabledAttr {
+				t.Errorf("data-transport-seek-disabled present = %v, want %v; full output:\n%s", got, tt.wantDisabledAttr, body)
+			}
+			if !strings.Contains(body, tt.wantAriaDisabled) {
+				t.Errorf("transport partial missing %q; full output:\n%s", tt.wantAriaDisabled, body)
+			}
+		})
 	}
 }
 
@@ -973,6 +1263,43 @@ func TestSessionViewer_StatusHomeViewSatisfiesInterface(t *testing.T) {
 	}
 }
 
+func TestTransportViewer_DispatcherSatisfiesInterface(t *testing.T) {
+	t.Parallel()
+	var _ TransportViewer = (*playback.Dispatcher)(nil)
+	var _ TransportController = (*playback.Dispatcher)(nil)
+
+	cfg := nonZeroConfig()
+	d := testTransportDispatcher(cfg)
+	cfg.TransportViewer = d
+	cfg.TransportController = d
+	if cfg.TransportViewer == nil || cfg.TransportController == nil {
+		t.Fatal("transport fields should be assignable from *playback.Dispatcher")
+	}
+}
+
+func testTransportDispatcher(cfg Config) *playback.Dispatcher {
+	return playback.NewDispatcher(cfg.Manager, cfg.Registry)
+}
+
+func TestServer_StoresTransportViewerAndControllerFromConfig(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	d := testTransportDispatcher(cfg)
+	cfg.TransportViewer = d
+	cfg.TransportController = d
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.transportViewer != d {
+		t.Errorf("Server.transportViewer not stored from Config")
+	}
+	if s.transportController != d {
+		t.Errorf("Server.transportController not stored from Config")
+	}
+}
+
 func TestVisualizerViewer_ManagerSatisfiesInterface(t *testing.T) {
 	t.Parallel()
 	// Compile-time + runtime assertion that *core.Manager satisfies
@@ -988,7 +1315,7 @@ func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 	cfg := nonZeroConfig()
 	cfg.Session = nil
 
-	got := snapshotFromSession(cfg, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
@@ -1000,7 +1327,7 @@ func TestSnapshotFromSession_VisualizerModeOverridesIdleDefault(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
-	got := snapshotFromSession(cfg, nil, viewer, fixedNow)
+	got := snapshotFromSession(cfg, nil, viewer, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (viewer overrides cfg.Bridge default)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
 	}
@@ -1011,7 +1338,7 @@ func TestSnapshotFromSession_NilVisualizerViewerFallsBackToCfg(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	cfg.Bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
-	got := snapshotFromSession(cfg, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeOscilloscopeWave {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (nil viewer falls back to cfg.Bridge)", got.Visualizer.ActiveMode, config.VisualizerModeOscilloscopeWave)
 	}
@@ -1022,7 +1349,7 @@ func TestSnapshotFromSession_NormalizesEmptyMode(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	viewer := &fakeVisualizerViewer{mode: ""}
-	got := snapshotFromSession(cfg, nil, viewer, fixedNow)
+	got := snapshotFromSession(cfg, nil, viewer, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (empty viewer mode should normalize to retro_analyzer)", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
 	}
@@ -1037,6 +1364,178 @@ type fakeSessionViewer struct {
 
 func (f *fakeSessionViewer) StatusHomeView() core.StatusHomeView { return f.view }
 
+type fakeTransportViewer struct {
+	view  adapters.PlaybackBannerAdapterView
+	owns  bool
+	calls []core.StatusHomeView
+}
+
+func (f *fakeTransportViewer) PlaybackViewForSnapshot(_ context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool) {
+	f.calls = append(f.calls, snap)
+	return f.view, f.owns
+}
+
+func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	status := core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "The Chauffeur",
+		Source:     "jellyfin",
+		AdapterRef: "jellyfin:item:123",
+		Generation: 12,
+		Position:   2*time.Minute + 8*time.Second,
+		Duration:   3*time.Minute + 20*time.Second,
+	}
+	sv := &fakeSessionViewer{view: status}
+	tv := &fakeTransportViewer{
+		owns: true,
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{
+				{ID: adapters.PlaybackActionPrevious, Enabled: true},
+				{ID: adapters.PlaybackActionNext, Enabled: true},
+				{ID: adapters.PlaybackActionPause, Enabled: true},
+				{ID: adapters.PlaybackActionStop, Enabled: true},
+				{ID: adapters.PlaybackActionReplay, Enabled: true},
+			},
+			Seek: &adapters.PlaybackSeek{
+				Enabled:    true,
+				OffsetMS:   129999,
+				DurationMS: 201234,
+			},
+		},
+	}
+
+	got := snapshotFromSession(cfg, sv, nil, tv, fixedNow)
+
+	want := TransportData{
+		State:           "playing",
+		SeekFillPercent: 64,
+		ElapsedTime:     "02:08",
+		TotalTime:       "03:20",
+		PercentPlayed:   "64%",
+		OffsetMS:        129999,
+		DurationMS:      201234,
+		ActionsEnabled: ActionsEnabled{
+			Previous:    true,
+			Next:        true,
+			PauseResume: true,
+			Stop:        true,
+			Replay:      true,
+			Seek:        true,
+		},
+		AdapterRef: "jellyfin:item:123",
+		Generation: 12,
+	}
+	if got.Transport != want {
+		t.Errorf("Transport = %+v, want %+v", got.Transport, want)
+	}
+	if len(tv.calls) != 1 || !reflect.DeepEqual(tv.calls[0], status) {
+		t.Errorf("PlaybackViewForSnapshot calls = %+v, want one call with status snapshot", tv.calls)
+	}
+}
+
+func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	status := core.StatusHomeView{
+		State:      core.StatePaused,
+		Title:      "Rio",
+		Source:     "url",
+		AdapterRef: "url:abc",
+		Generation: 4,
+		Position:   90 * time.Second,
+		Duration:   5 * time.Minute,
+	}
+	sv := &fakeSessionViewer{view: status}
+	tv := &fakeTransportViewer{
+		owns: false,
+		view: adapters.PlaybackBannerAdapterView{
+			Actions: []adapters.PlaybackAction{
+				{ID: adapters.PlaybackActionResume, Enabled: true},
+				{ID: adapters.PlaybackActionStop, Enabled: true},
+			},
+			Seek: &adapters.PlaybackSeek{Enabled: true, OffsetMS: 91000, DurationMS: 301000},
+		},
+	}
+
+	got := snapshotFromSession(cfg, sv, nil, tv, fixedNow)
+
+	want := TransportData{
+		State:           "paused",
+		SeekFillPercent: 30,
+		ElapsedTime:     "01:30",
+		TotalTime:       "05:00",
+		PercentPlayed:   "30%",
+		OffsetMS:        90000,
+		DurationMS:      300000,
+		ActionsEnabled:  ActionsEnabled{},
+		AdapterRef:      "url:abc",
+		Generation:      4,
+	}
+	if got.Transport != want {
+		t.Errorf("Transport = %+v, want read-only %+v", got.Transport, want)
+	}
+	if len(tv.calls) != 1 || !reflect.DeepEqual(tv.calls[0], status) {
+		t.Errorf("PlaybackViewForSnapshot calls = %+v, want one call with status snapshot", tv.calls)
+	}
+}
+
+func TestSnapshotFromSession_NilTransportViewerIdleKeepsTransportZero(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:      core.StateIdle,
+		AdapterRef: "url:abc",
+		Generation: 4,
+		Position:   90 * time.Second,
+		Duration:   5 * time.Minute,
+	}}
+
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	want := idleSnapshot(cfg, fixedNow).Transport
+
+	if got.Transport != want {
+		t.Errorf("idle Transport = %+v, want idle zero transport %+v", got.Transport, want)
+	}
+}
+
+func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Planet Earth",
+		Source:     "plex",
+		AdapterRef: "plex:track:def",
+		Generation: 8,
+		Position:   4*time.Minute + 23*time.Second,
+		Duration:   0,
+	}}
+
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+
+	want := TransportData{
+		State:           "playing",
+		SeekFillPercent: 0,
+		ElapsedTime:     "04:23",
+		TotalTime:       "--:--",
+		PercentPlayed:   "",
+		OffsetMS:        263000,
+		DurationMS:      0,
+		ActionsEnabled:  ActionsEnabled{},
+		AdapterRef:      "plex:track:def",
+		Generation:      8,
+	}
+	if got.Transport != want {
+		t.Errorf("Transport = %+v, want read-only %+v", got.Transport, want)
+	}
+}
+
 func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
@@ -1049,7 +1548,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 		Position: 4*time.Minute + 23*time.Second,
 		Duration: 9*time.Minute + 56*time.Second,
 	}}
-	got := snapshotFromSession(cfg, sv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
 
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
@@ -1073,7 +1572,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults_StillSetsVisualizer(
 		State: core.StatePlaying, Title: "First Day on MTV", Source: "plex", Position: 4*time.Minute + 23*time.Second, Duration: 9*time.Minute + 56*time.Second,
 	}}
 	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
-	got := snapshotFromSession(cfg, sv, viewer, fixedNow)
+	got := snapshotFromSession(cfg, sv, viewer, nil, fixedNow)
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
 	}
@@ -1090,7 +1589,7 @@ func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.StatePaused, Title: "Take On Me", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
 
 	// core.StatePaused -> chassis "live" so the body stays bright
 	// during transport pause. The transport-row pause indicator is
@@ -1106,7 +1605,7 @@ func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
 	cfg := nonZeroConfig()
 
 	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	got := snapshotFromSession(cfg, sv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idle-from-session should match idleSnapshot exactly")
@@ -1121,7 +1620,7 @@ func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
@@ -1140,7 +1639,7 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 		Position: 30 * time.Second,
 		Duration: 3 * time.Minute,
 	}}
-	got := snapshotFromSession(cfg, sv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
 
 	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
 		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)
@@ -1268,6 +1767,57 @@ func TestShellTemplate_LoadsVisualizerBankScriptAfterVfdLive(t *testing.T) {
 	}
 	if vizIdx <= vfdIdx {
 		t.Errorf("visualizer-bank.js script must appear AFTER vfd-live.js so it can use the shared EventSource")
+	}
+}
+
+func TestShellTemplate_LoadsTransportScript(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `/receiver/static/transport.js?v=test-1.0.0`) {
+		t.Errorf("shell.html should include versioned transport.js script tag")
+	}
+	vfdIdx := strings.Index(body, "vfd-live.js?v=")
+	transportIdx := strings.Index(body, "transport.js?v=")
+	if vfdIdx < 0 || transportIdx < 0 {
+		t.Fatalf("missing one of the script tags")
+	}
+	if transportIdx <= vfdIdx {
+		t.Errorf("transport.js script must appear AFTER vfd-live.js so it can use live transport data hooks")
+	}
+}
+
+func TestShellTemplate_EmitsChassisMetaTags(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Session = &fakeSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		AdapterRef: "plex:abc",
+		Generation: 42,
+	}}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`<meta name="chassis-adapter-ref" content="plex:abc"`,
+		`<meta name="chassis-generation" content="42"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("shell.html missing %q", want)
+		}
 	}
 }
 

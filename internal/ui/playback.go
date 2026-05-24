@@ -151,23 +151,11 @@ func parsePlaybackActionRequest(r *http.Request, requireOffset bool) (adapters.P
 }
 
 func (s *Server) handlePlaybackMutation(w http.ResponseWriter, r *http.Request, req adapters.PlaybackActionRequest) {
-	snap := s.currentPlaybackSnapshot()
-	if snap.AdapterRef != req.AdapterRef || snap.Generation != req.Generation {
+	if s.playback == nil {
 		s.renderPlaybackMessage(w, r, "err", adapters.ErrActiveSessionChangedMessage, false, "")
 		return
 	}
-	provider, ok := s.playbackProviderForSnapshot(snap)
-	if !ok {
-		s.renderPlaybackMessage(w, r, "err", "active adapter does not expose playback controls", false, "")
-		return
-	}
-	// Providers self-validate: they recheck ownership under their own locks
-	// and return descriptive errors for unsupported or stale actions. The
-	// HTML template already disables buttons whose action.Enabled is false,
-	// and the banner re-render after this call rebuilds a fresh view from
-	// post-action state — so a pre-check would only duplicate the provider's
-	// own validation while adding a redundant lock roundtrip per click.
-	result, err := provider.HandlePlaybackAction(r.Context(), req)
+	result, err := s.playback.HandlePlaybackAction(r.Context(), req)
 	if err != nil {
 		s.renderPlaybackMessage(w, r, "err", err.Error(), false, "")
 		return
@@ -260,25 +248,6 @@ func parseQuickCastRequest(w http.ResponseWriter, r *http.Request) (adapters.Qui
 	return req, nil
 }
 
-func (s *Server) currentPlaybackSnapshot() adapters.PlaybackBannerSnapshot {
-	view := core.StatusHomeView{State: core.StateIdle}
-	if s.cfg.StatusViewer != nil {
-		view = s.cfg.StatusViewer.StatusHomeView()
-	}
-	return adapters.PlaybackBannerSnapshot{
-		State:      view.State,
-		Source:     view.Source,
-		Title:      view.Title,
-		AdapterRef: view.AdapterRef,
-		Generation: view.Generation,
-		Position:   view.Position,
-		Duration:   view.Duration,
-		StartedAt:  view.StartedAt,
-		MediaKind:  view.MediaKind,
-		Modeline:   view.Modeline,
-	}
-}
-
 func (s *Server) renderPlaybackMessage(w http.ResponseWriter, r *http.Request, kind, msg string, drawer bool, tab string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -290,18 +259,6 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 	view := core.StatusHomeView{State: core.StateIdle}
 	if s.cfg.StatusViewer != nil {
 		view = s.cfg.StatusViewer.StatusHomeView()
-	}
-	snap := adapters.PlaybackBannerSnapshot{
-		State:      view.State,
-		Source:     view.Source,
-		Title:      view.Title,
-		AdapterRef: view.AdapterRef,
-		Generation: view.Generation,
-		Position:   view.Position,
-		Duration:   view.Duration,
-		StartedAt:  view.StartedAt,
-		MediaKind:  view.MediaKind,
-		Modeline:   view.Modeline,
 	}
 	data := playbackBannerData{
 		State:           view.State,
@@ -332,8 +289,8 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 	if data.SourceDisplay == "" {
 		data.SourceDisplay = "No source"
 	}
-	if provider, ok := s.playbackProviderForSnapshot(snap); ok {
-		if providerView, owns := provider.PlaybackBanner(ctx, snap); owns {
+	if s.playback != nil {
+		if providerView, ok := s.playback.PlaybackViewForSnapshot(ctx, view); ok {
 			if providerView.Title != "" {
 				data.Title = providerView.Title
 			}
@@ -361,40 +318,6 @@ func (s *Server) buildPlaybackBannerData(ctx context.Context, opts playbackRende
 	}
 	data.PollTrigger = playbackPollTrigger(data)
 	return data
-}
-
-// playbackProviderForSnapshot resolves the adapter that owns the active
-// session and exposes the PlaybackControlProvider interface, if any.
-//
-// Source-first policy (matches design spec invariant 2): when snap.Source
-// names a registered adapter, that adapter is the sole candidate — if it
-// doesn't implement PlaybackControlProvider, this returns (nil, false)
-// rather than falling through to the legacy adapter-ref prefix scan. The
-// scan only runs as a legacy fallback when Source is empty (e.g. an older
-// session installed before Source was a first-class field on
-// core.StatusHomeView).
-//
-// Don't "fix" the no-fall-through by adding a second-chance scan when
-// Source is set and registered: that would silently route ref:X to a
-// different adapter than the one named in Source, breaking the invariant
-// that Source is authoritative whenever it's populated.
-func (s *Server) playbackProviderForSnapshot(snap adapters.PlaybackBannerSnapshot) (adapters.PlaybackControlProvider, bool) {
-	if s.cfg.Registry == nil || snap.AdapterRef == "" {
-		return nil, false
-	}
-	if snap.Source != "" {
-		if a, ok := s.cfg.Registry.Get(snap.Source); ok {
-			p, ok := a.(adapters.PlaybackControlProvider)
-			return p, ok
-		}
-	}
-	for _, a := range s.cfg.Registry.List() {
-		if adapterRefBelongsTo(a.Name(), snap.AdapterRef) {
-			p, ok := a.(adapters.PlaybackControlProvider)
-			return p, ok
-		}
-	}
-	return nil, false
 }
 
 func (s *Server) quickCastTabs() []adapters.QuickCastTab {
@@ -478,8 +401,4 @@ func playbackActionGlyph(action adapters.PlaybackAction) string {
 	default:
 		return action.Label
 	}
-}
-
-func adapterRefBelongsTo(adapterName, ref string) bool {
-	return strings.HasPrefix(ref, adapterName+":") || strings.HasPrefix(ref, adapterName+"/")
 }

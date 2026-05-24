@@ -18,6 +18,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/playback"
 )
 
 // BridgeSaver abstracts the bridge-level save operation so the UI
@@ -75,6 +76,16 @@ type StatusViewer interface {
 	StatusHomeView() core.StatusHomeView
 }
 
+// PlaybackService is the narrow interface the /ui playback handlers
+// depend on. *playback.Dispatcher satisfies it structurally. Optional
+// on Config: when nil, New constructs a Dispatcher from StatusViewer +
+// Registry so existing test fixtures don't need updating.
+type PlaybackService interface {
+	PlaybackView(ctx context.Context) (adapters.PlaybackBannerAdapterView, bool)
+	PlaybackViewForSnapshot(ctx context.Context, snap core.StatusHomeView) (adapters.PlaybackBannerAdapterView, bool)
+	HandlePlaybackAction(ctx context.Context, req adapters.PlaybackActionRequest) (adapters.PlaybackActionResult, error)
+}
+
 // MisterProber sends a single safe reachability probe to the configured
 // MiSTer. Distinct from MisterLauncher (which loads a core over SSH —
 // firing it on every diagnostics click would have side effects on the
@@ -99,8 +110,9 @@ type Config struct {
 	CompanionSession CompanionSessionProvider
 	CompanionURL     CompanionURLSource
 	CompanionDisplay CompanionDisplayProvider
-	MisterProber     MisterProber  // nil disables reachability probe on diagnostics page
-	StatusViewer     StatusViewer  // nil disables live data on status home
+	MisterProber     MisterProber // nil disables reachability probe on diagnostics page
+	StatusViewer     StatusViewer // nil disables live data on status home
+	Playback         PlaybackService
 	EventLog         *eventlog.Log // nil disables activity feed
 	Version          string        // build version, displayed in diagnostics
 	StartedAt        time.Time     // process start time for status/diagnostics uptime
@@ -151,9 +163,10 @@ var templateFuncs = template.FuncMap{
 // reference to the adapter registry. Constructed once at startup and
 // mounted on the shared HTTP mux.
 type Server struct {
-	cfg   Config
-	tmpl  *template.Template
-	guard func(http.Handler) http.Handler
+	cfg      Config
+	tmpl     *template.Template
+	playback PlaybackService
+	guard    func(http.Handler) http.Handler
 }
 
 func New(cfg Config) (*Server, error) {
@@ -167,7 +180,10 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ui: parse templates: %w", err)
 	}
-	s := &Server{cfg: cfg, tmpl: tmpl}
+	if cfg.Playback == nil && cfg.StatusViewer != nil {
+		cfg.Playback = playback.NewDispatcher(cfg.StatusViewer, cfg.Registry)
+	}
+	s := &Server{cfg: cfg, tmpl: tmpl, playback: cfg.Playback}
 
 	// Build the first-run guard once. Guard against nil BridgeSaver before
 	// the type assertion — a naked assert on a nil interface panics.

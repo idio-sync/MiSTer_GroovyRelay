@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"mime/multipart"
 	"time"
 
@@ -26,6 +27,43 @@ const (
 	// message slot.
 	ErrActiveSessionChangedMessage = "active session changed"
 )
+
+// ErrActiveSessionChanged is the typed sentinel form of
+// ErrActiveSessionChangedMessage. Providers return or wrap this when the
+// caller's adapter_ref + generation no longer matches the active session;
+// the playback dispatcher maps it to HTTP 409 for the chassis and to the
+// existing inline-error banner message for /ui.
+var ErrActiveSessionChanged = errors.New(ErrActiveSessionChangedMessage)
+
+// ErrPlaybackActionUnsupported is returned by the dispatcher when the
+// active adapter does not implement PlaybackControlProvider, and by
+// providers that recognize the action verb but don't support it on the
+// active session. Maps to HTTP 422 on the chassis; /ui surfaces the
+// provider's existing inline message.
+var ErrPlaybackActionUnsupported = errors.New("active adapter does not expose playback controls")
+
+type playbackActionUnsupportedError struct {
+	message string
+}
+
+func (e playbackActionUnsupportedError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	return ErrPlaybackActionUnsupported.Error()
+}
+
+func (e playbackActionUnsupportedError) Unwrap() error {
+	return ErrPlaybackActionUnsupported
+}
+
+// UnsupportedPlaybackActionError returns an error whose visible message
+// is exactly the supplied provider message, while errors.Is still matches
+// ErrPlaybackActionUnsupported. Providers use this instead of fmt.Errorf
+// with %w so /ui's legacy banner text stays byte-for-byte compatible.
+func UnsupportedPlaybackActionError(message string) error {
+	return playbackActionUnsupportedError{message: message}
+}
 
 type PlaybackControlProvider interface {
 	// PlaybackBanner returns adapter-specific banner controls and true when
