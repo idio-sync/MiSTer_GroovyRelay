@@ -4,7 +4,7 @@
 
 **Goal:** Make the receiver chassis audio-analysis scopes (L/R VU, phase correlation, short-term LUFS, 32-band spectrum, 256-point goniometer) real by computing all DSP inline on the data-plane field-tick goroutine, publishing through a lock-free atomic snapshot, and streaming to the chassis at 30 Hz over a new `audio` SSE event on the existing `/receiver/events` connection.
 
-**Architecture:** A new `AudioMeter` type lives on `*Plane` and runs DSP inline in `Observe()` (called once per PCM chunk just before `sendAudio`). It publishes `*AudioScopeSnapshot` via `atomic.Pointer` at an average 30 Hz via a Bresenham-style sample accumulator. Core exposes the snapshot via `Manager.AudioScopes() *AudioScopeSnapshot` (alias to dataplane type, no copy). Chassis adds an `AudioScopeViewer` interface, a discriminated-union envelope (`audioPendingEnvelope` | `audioLiveEnvelope`) with a custom `MarshalJSON` for float-precision and NaN/Inf clamping, and a 30 Hz audio ticker in `handleEvents` that emits the `audio` event independently of the 2 Hz snapshot cache. Folds in the Phase 1 follow-up debt: migrating `transport.js` and `visualizer-bank.js` from raw `EventSource` to the `subscribe()` helper that 5A introduces.
+**Architecture:** A new `AudioMeter` type lives on `*Plane` and runs DSP inline in `Observe()` (called once per PCM chunk just before `sendAudio`). It publishes `*AudioScopeSnapshot` via `atomic.Pointer` at an average 30 Hz via a Bresenham-style sample accumulator. Core exposes the snapshot via `Manager.AudioScopes() *AudioScopeSnapshot` (alias to dataplane type, no copy). Chassis adds an `AudioScopeViewer` interface, a discriminated-union envelope (`audioPendingEnvelope` | `audioLiveEnvelope`) with a custom `MarshalJSON` for float-precision and NaN/Inf clamping, and a 30 Hz audio ticker in `handleEvents` that emits the `audio` event independently of the 2 Hz snapshot cache. Starts with the Phase 1 follow-up debt: migrating `transport.js`, `visualizer-bank.js`, and the current `volume-knob.js` legacy consumer from raw `EventSource` to the `subscribe()` helper that 5A introduces.
 
 **Tech Stack:** Go 1.26 stdlib (`math`, `sync/atomic`, `encoding/json`, `strconv`, `time`), existing internal packages (`dataplane`, `core`, `chassis`), vanilla ES2022 (no bundler). One new internal subpackage `internal/dataplane/fft/`. No new go.mod dependencies.
 
@@ -39,14 +39,15 @@
 | `internal/chassis/server.go` | Add `Config.AudioScopeViewer AudioScopeViewer`; add `Server.audioScopeViewer` field; store in `New()` |
 | `internal/chassis/events.go` | Add `audioTickInterval = time.Second / 30`; add `audioEventHz = 30` constant; add 30 Hz audio ticker in `handleEvents` with closure-scoped panic recovery; emit initial audio frame last in burst |
 | `internal/chassis/events_test.go` | Initial-burst order extension; exact-count cadence assertion; pending suppression; generation flip via pending and direct; legitimate-zero serialization; meter discovery hook; panic recovery |
-| `internal/chassis/templates/meter.html` | No structural changes — Task 11 drives existing 5A hooks (`#phase-needle`, `#lufs-val`, `#spectrum`, `#gonio-canvas`, `.ch-bar`) from meter.js |
-| `internal/chassis/static/meter.js` | Add `subscribe('audio', ...)` handler with discriminator gate + generation reset; canvas paint loops for spectrum and goniometer; CSS-variable drivers for VU/phase/LUFS |
-| `internal/chassis/static/transport.js` | **Task 14 (gated)**: migrate from `events.source.addEventListener` + `chassis:eventsource` to `window.Chassis.events.subscribe('transport', ...)` |
-| `internal/chassis/static/visualizer-bank.js` | **Task 14 (gated)**: migrate from `events.source.addEventListener` + `chassis:eventsource` to `window.Chassis.events.subscribe('visualizer', ...)` |
-| `internal/chassis/static/chassis.css` | Canvas sizing, VU bar transitions, phase needle rotation transition; scoped under `body.receiver` |
-| `internal/chassis/chassis_test.go` | Template-hook presence test for live audio scope DOM hooks; no-fake-values lint (no `Math.random`/`Math.sin`/etc. in `meter.js`); subscribe-pattern lint (no `events.source` or `chassis:eventsource` in `transport.js`/`visualizer-bank.js` after Task 14) |
+| `internal/chassis/templates/meter.html` | Replace the existing segmented `#spectrum` placeholder with a `#spectrum-canvas` hook while preserving VU/phase/LUFS/goniometer hooks |
+| `internal/chassis/static/meter.js` | Add `subscribe('audio', ...)` handler with discriminator gate + generation reset; canvas paint loops for spectrum and goniometer; class/inline-style drivers for VU/phase/LUFS |
+| `internal/chassis/static/transport.js` | **Task 1 (gated)**: migrate from `events.source.addEventListener` + `chassis:eventsource` to `window.Chassis.events.subscribe('transport', ...)` |
+| `internal/chassis/static/visualizer-bank.js` | **Task 1 (gated)**: migrate from `events.source.addEventListener` + `chassis:eventsource` to `window.Chassis.events.subscribe('visualizer', ...)` |
+| `internal/chassis/static/volume-knob.js` | **Task 1 (gated)**: migrate the current volume subscriber from raw `events.source` handoff to `window.Chassis.events.subscribe('volume', ...)` |
+| `internal/chassis/static/chassis.css` | Verify existing 5A meter scope styling; add only minimal scoped canvas/VU/phase rules if needed |
+| `internal/chassis/chassis_test.go` | Template-hook presence test for live audio scope DOM hooks; no-fake-values lint (no `Math.random`/`Math.sin`/`Date.now`/etc. in `meter.js`); subscribe-pattern lint (no legacy raw source consumers in `transport.js`/`visualizer-bank.js`/`volume-knob.js` after Task 1) |
 | `cmd/mister-groovy-relay/main.go` | Add `AudioScopeViewer: coreMgr` to the `chassis.Config` literal where chassis is constructed |
-| `tests/integration/chassis_test.go` | Build-tagged end-to-end SSE test: real `*core.Manager` + fake processHandle → connect SSE client → assert `audio` event arrives with `status: live`; stop session → assert next `audio` event is `{"status":"pending"}` |
+| `tests/integration/chassis_test.go` | Build-tagged end-to-end SSE test: real `*core.Manager` + real dataplane via existing `scenarioHarness` → connect SSE client → assert `audio` event arrives with `status: live`; stop session → assert next `audio` event is `{"status":"pending"}` |
 
 **Files intentionally unchanged:**
 
@@ -60,13 +61,139 @@
 
 ## Sequencing Status (verified at plan-revise time)
 
-Spec 5A has merged: `window.Chassis.events.subscribe(eventName, handler)` is at [internal/chassis/static/vfd-live.js:21](../../../internal/chassis/static/vfd-live.js). The 5A meter envelope, `meter.go`, `meter.html`, and `data-meter-audio-scopes-status` discovery marker are also all in the tree. All 14 tasks may proceed without sequencing gates.
+Spec 5A has merged: `window.Chassis.events.subscribe(eventName, handler)` is at [internal/chassis/static/vfd-live.js:21](../../../internal/chassis/static/vfd-live.js). The 5A meter envelope, `meter.go`, `meter.html`, and `data-meter-audio-scopes-status` discovery marker are also all in the tree. Run Task 1 first, then proceed through the audio tasks in order.
 
-Task 14 (Phase 1 debt migration) retains a defensive precondition grep as Step 1 — expected to pass immediately. If a future revision lands without 5A, the grep blocks Task 14 instead of writing JS that calls a missing function.
+Task 1 (Phase 1 debt migration) retains a defensive precondition grep as Step 1 — expected to pass immediately. If a future revision lands without 5A, the grep blocks Task 1 instead of writing JS that calls a missing function.
 
 ---
 
-## Task 1: FFT Subpackage
+## Task 1: Phase 1 Debt Migration
+
+**Scope:** migrate every current receiver client that consumes the shared SSE stream through the legacy `events.source` / `chassis:eventsource` handoff. At current HEAD this includes `transport.js`, `visualizer-bank.js`, and `volume-knob.js`. `vfd-live.js` remains the owner that creates the `EventSource` and exposes `window.Chassis.events.subscribe()`; the lint below intentionally does not forbid the source owner from assigning `events.source`.
+
+**Precondition check (defensive — expected to pass at HEAD).**
+
+- [ ] **Step 1: Verify 5A's subscribe() helper is in the tree**
+
+```bash
+grep -n "subscribe" internal/chassis/static/vfd-live.js
+```
+
+Expected output: a line `function subscribe(eventName, handler) {` near line 21. Verified at plan-revise time.
+
+If NO `subscribe` function is present (unexpected), halt this task with a clear blocker message; resume after `subscribe()` lands.
+
+If `subscribe` IS present, proceed to Step 2.
+
+**Files:**
+- Modify: `internal/chassis/static/transport.js`
+- Modify: `internal/chassis/static/visualizer-bank.js`
+- Modify: `internal/chassis/static/volume-knob.js`
+- Modify: `internal/chassis/chassis_test.go`
+
+- [ ] **Step 2: Write failing subscribe-pattern lint test**
+
+Append to `internal/chassis/chassis_test.go`:
+
+```go
+func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
+	files := []string{
+		"static/transport.js",
+		"static/visualizer-bank.js",
+		"static/volume-knob.js",
+	}
+	for _, f := range files {
+		t.Run(f, func(t *testing.T) {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			s := string(src)
+			for _, forbidden := range []string{
+				"events.source",
+				"chassis:eventsource",
+			} {
+				if strings.Contains(s, forbidden) {
+					t.Errorf("%s still contains raw EventSource consumer pattern %q; use window.Chassis.events.subscribe()", f, forbidden)
+				}
+			}
+		})
+	}
+}
+```
+
+- [ ] **Step 3: Run failing test**
+
+```bash
+go test ./internal/chassis -run TestChassisJS_NoRawEventSourceConsumers -v
+```
+
+Expected: FAIL before migration because the three scripts still use the legacy source handoff.
+
+- [ ] **Step 4: Migrate transport.js**
+
+In `internal/chassis/static/transport.js`, replace the raw source attach/reconnect listener with:
+
+```js
+  window.Chassis.events.subscribe('transport', (ev) => {
+    try {
+      render(JSON.parse(ev.data));
+    } catch (err) {
+      console.warn('transport.js: bad transport payload', ev.data, err);
+    }
+  });
+```
+
+Preserve existing render/update helpers. Remove the `chassis:eventsource` document-level listener; `subscribe()` handles reconnect dedupe internally.
+
+- [ ] **Step 5: Migrate visualizer-bank.js**
+
+Same migration in `internal/chassis/static/visualizer-bank.js` for the `visualizer` event:
+
+```js
+  window.Chassis.events.subscribe('visualizer', (ev) => {
+    try {
+      render(JSON.parse(ev.data));
+    } catch (err) {
+      console.warn('visualizer-bank.js: bad visualizer payload', ev.data, err);
+    }
+  });
+```
+
+- [ ] **Step 6: Migrate volume-knob.js**
+
+Same migration in `internal/chassis/static/volume-knob.js` for the `volume` event:
+
+```js
+  window.Chassis.events.subscribe('volume', (ev) => {
+    try {
+      applyVolume(JSON.parse(ev.data));
+    } catch (err) {
+      console.warn('volume-knob.js: bad volume payload', ev.data, err);
+    }
+  });
+```
+
+Use the script's actual existing volume-rendering helper name if it differs from `applyVolume`; do not introduce duplicate state or a second renderer.
+
+- [ ] **Step 7: Run chassis tests**
+
+```bash
+go test ./internal/chassis -v
+```
+
+Expected: all chassis tests PASS, including the new subscribe-pattern lint and any existing transport/visualizer/volume functional tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/chassis/static/transport.js internal/chassis/static/visualizer-bank.js internal/chassis/static/volume-knob.js internal/chassis/chassis_test.go
+git commit -m "refactor(chassis): migrate receiver clients to subscribe helper"
+```
+
+---
+
+## Task 2: FFT Subpackage
 
 **Files:**
 - Create: `internal/dataplane/fft/fft.go`
@@ -297,9 +424,9 @@ git commit -m "feat(dataplane): add 1024-pt real FFT subpackage"
 
 ---
 
-## Task 2: AudioMeter Skeleton — Peak/RMS/Phase/Goniometer DSP
+## Task 3: AudioMeter Skeleton — Peak/RMS/Phase/Goniometer DSP
 
-This task wires up the AudioMeter type with the cheap DSP that does not need FFT or LUFS. Those land in Tasks 3-4.
+This task wires up the AudioMeter type with the cheap DSP that does not need FFT or LUFS. Those land in Tasks 4-5.
 
 **Files:**
 - Create: `internal/dataplane/audiometer.go`
@@ -339,7 +466,7 @@ func makeStereoPCM(frames int, generators [2]func(i int) float32) []byte {
 
 func TestAudioMeter_SilenceSnapshot(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000 // force publish on every Observe
+	m.forcePublishEveryObserve = true
 	pcm := makeStereoPCM(800, [2]func(int) float32{
 		func(i int) float32 { return 0 },
 		func(i int) float32 { return 0 },
@@ -365,7 +492,7 @@ func TestAudioMeter_SilenceSnapshot(t *testing.T) {
 
 func TestAudioMeter_FullScaleSinePeakAndRMS(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000 // force publish
+	m.forcePublishEveryObserve = true
 	// 1 kHz full-scale sine on both channels, in phase
 	sineL := func(i int) float32 { return float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000)) }
 	// feed ~300 ms so the RMS window fills
@@ -393,7 +520,7 @@ func TestAudioMeter_FullScaleSinePeakAndRMS(t *testing.T) {
 
 func TestAudioMeter_OutOfPhasePhaseCorr(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	sineL := func(i int) float32 { return float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000)) }
 	sineR := func(i int) float32 { return float32(-math.Sin(2 * math.Pi * 1000 * float64(i) / 48000)) }
 	for chunk := 0; chunk < 18; chunk++ {
@@ -408,7 +535,7 @@ func TestAudioMeter_OutOfPhasePhaseCorr(t *testing.T) {
 
 func TestAudioMeter_PeakDecayExponential(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	// One full-scale sample, then silence
 	hit := func(i int) float32 {
 		if i == 0 {
@@ -433,7 +560,7 @@ func TestAudioMeter_PeakDecayExponential(t *testing.T) {
 
 func TestAudioMeter_GoniometerCapturesRecentSamples(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	sineL := func(i int) float32 { return float32(math.Sin(2 * math.Pi * 100 * float64(i) / 48000)) }
 	sineR := func(i int) float32 { return float32(math.Cos(2 * math.Pi * 100 * float64(i) / 48000)) }
 	for chunk := 0; chunk < 4; chunk++ { // 4 * 800 = 3200 samples ≈ 67 ms
@@ -521,23 +648,26 @@ type AudioMeter struct {
 	// Bresenham cadence: Observe adds samplesInChunk * targetHz; publish
 	// when publishAccum >= sampleRate, then subtract sampleRate.
 	//
-	// targetHz is exported as a test seam:
-	//   - production:        targetHz = 30
-	//   - no-publish run:    targetHz = 0 (accumulator never advances)
-	//   - always-publish:    targetHz = sampleRate (publish every Observe)
-	targetHz     int
-	publishAccum int
+	// targetHz is a test seam:
+	//   - production:     targetHz = 30
+	//   - no-publish run: targetHz = 0 (accumulator never advances)
+	//
+	// forcePublishEveryObserve is a separate test seam. It publishes at
+	// most once at the end of an Observe call, regardless of chunk size.
+	targetHz                 int
+	publishAccum             int
+	forcePublishEveryObserve bool
 
 	state              audioMeterState
 	peakDecayPerSample float32
 	gonioDecimStep     int
 	gonioStepCount     int
 
-	// LUFS coefficients (Task 3 will populate)
+	// LUFS coefficients (Task 4 will populate)
 	kPreCoeffs  biquadCoeffs
 	kHighCoeffs biquadCoeffs
 
-	// FFT scratch (Task 4 will populate)
+	// FFT scratch (Task 5 will populate)
 	fftWindowed [audioFFTSize]float32
 	fftOut      []complex64
 	hannWindow  []float32
@@ -572,7 +702,7 @@ type audioMeterState struct {
 	// Last published spectrum (kept across non-publish ticks)
 	lastSpectrum [audioSpectrumBands]float32
 
-	// LUFS K-weighting biquad state per channel (Task 3 will populate)
+	// LUFS K-weighting biquad state per channel (Task 4 will populate)
 	kPreL, kPreR   biquadState
 	kHighL, kHighR biquadState
 
@@ -718,13 +848,17 @@ func (m *AudioMeter) Observe(pcm []byte, channels, sampleRate int) {
 			m.state.gonioHead = (m.state.gonioHead + 1) % audioGoniometerSize
 		}
 
-		// LUFS K-weighting (Task 3 will fill this in)
+		// LUFS K-weighting (Task 4 will fill this in)
 		_ = m.state.kPreL.process(float64(l))
 		_ = m.state.kPreR.process(float64(r))
-		// stored sample-by-sample but LUFS computation lands in Task 3
+		// stored sample-by-sample but LUFS computation lands in Task 4
 	}
 
 	// Bresenham cadence
+	if m.forcePublishEveryObserve {
+		m.publish()
+		return
+	}
 	if m.targetHz <= 0 {
 		return
 	}
@@ -772,10 +906,10 @@ func (m *AudioMeter) publish() {
 		idx := (m.state.gonioHead + i) % audioGoniometerSize
 		snap.Goniometer[i] = m.state.gonio[idx]
 	}
-	// Spectrum: Task 4 will populate via FFT. Until then, reuse lastSpectrum
-	// (all zero on first publish before Task 4 lands).
+	// Spectrum: Task 5 will populate via FFT. Until then, reuse lastSpectrum
+	// (all zero on first publish before Task 5 lands).
 	snap.SpectrumBands = m.state.lastSpectrum
-	// LUFS: Task 3 will populate. Until then, leave as zero value (0.0).
+	// LUFS: Task 4 will populate. Until then, leave as zero value (0.0).
 	snap.LUFSShort = 0
 	m.snapshot.Store(snap)
 }
@@ -795,7 +929,7 @@ func abs32(x float32) float32 {
 	return x
 }
 
-// Placeholder LUFS coefficient functions; Task 3 implements them.
+// Placeholder LUFS coefficient functions; Task 4 implements them.
 func kWeightingPreFilter(sampleRate int) biquadCoeffs  { return biquadCoeffs{b0: 1} }
 func kWeightingHighShelf(sampleRate int) biquadCoeffs { return biquadCoeffs{b0: 1} }
 ```
@@ -817,7 +951,7 @@ git commit -m "feat(dataplane): add AudioMeter with peak/RMS/phase/goniometer DS
 
 ---
 
-## Task 3: AudioMeter LUFS Short-Term Loudness
+## Task 4: AudioMeter LUFS Short-Term Loudness
 
 This task replaces the placeholder K-weighting coefficient functions with real BS.1770-4 filters and adds the LUFS-short integration over the 3-second sliding window.
 
@@ -833,7 +967,7 @@ Append to `internal/dataplane/audiometer_test.go`:
 func TestAudioMeter_LUFSShortMonoCalibration(t *testing.T) {
 	// BS.1770-4: 1 kHz sine at -20 dBFS RMS mono → -20.7 LUFS ±0.5
 	m := NewAudioMeter(1, 48000, 1)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	// -20 dBFS RMS sine: amplitude = sqrt(2) * 10^(-20/20) = 0.1414
 	const amp = 0.1414213562
 	sine := func(i int) float32 { return float32(amp * math.Sin(2*math.Pi*1000*float64(i)/48000)) }
@@ -852,7 +986,7 @@ func TestAudioMeter_LUFSShortMonoCalibration(t *testing.T) {
 func TestAudioMeter_LUFSDualMonoStereoIsLouder(t *testing.T) {
 	// Dual-mono stereo at -20 dBFS RMS → ~3 dB louder than mono (channel power sum)
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	const amp = 0.1414213562
 	sine := func(i int) float32 { return float32(amp * math.Sin(2*math.Pi*1000*float64(i)/48000)) }
 	for chunk := 0; chunk < 180; chunk++ {
@@ -868,7 +1002,7 @@ func TestAudioMeter_LUFSDualMonoStereoIsLouder(t *testing.T) {
 
 func TestAudioMeter_LUFSSilenceReturnsSentinel(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	silent := func(i int) float32 { return 0 }
 	for chunk := 0; chunk < 180; chunk++ {
 		pcm := makeStereoPCM(800, [2]func(int) float32{silent, silent})
@@ -979,10 +1113,10 @@ func designHighpass(sampleRate, f0, q float64) biquadCoeffs {
 In `Observe`'s per-sample loop, replace the placeholder K-weighting block with full LUFS integration. Find the existing two lines:
 
 ```go
-		// LUFS K-weighting (Task 3 will fill this in)
+		// LUFS K-weighting (Task 4 will fill this in)
 		_ = m.state.kPreL.process(float64(l))
 		_ = m.state.kPreR.process(float64(r))
-		// stored sample-by-sample but LUFS computation lands in Task 3
+		// stored sample-by-sample but LUFS computation lands in Task 4
 ```
 
 …and replace with:
@@ -1007,7 +1141,7 @@ In `Observe`'s per-sample loop, replace the placeholder K-weighting block with f
 In `publish`, replace the LUFS placeholder:
 
 ```go
-	// LUFS: Task 3 will populate. Until then, leave as zero value (0.0).
+	// LUFS: Task 4 will populate. Until then, leave as zero value (0.0).
 	snap.LUFSShort = 0
 ```
 
@@ -1052,7 +1186,7 @@ git commit -m "feat(dataplane): add BS.1770 K-weighting and LUFS-short integrati
 
 ---
 
-## Task 4: AudioMeter FFT Spectrum
+## Task 5: AudioMeter FFT Spectrum
 
 This task replaces the placeholder spectrum (zeros) with a real Hann-windowed FFT computed on publish ticks.
 
@@ -1067,7 +1201,7 @@ Append to `internal/dataplane/audiometer_test.go`:
 ```go
 func TestAudioMeter_SpectrumSilenceIsSentinel(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	// Feed enough silence to fill the FFT input ring and publish
 	silent := func(i int) float32 { return 0 }
 	for chunk := 0; chunk < 2; chunk++ {
@@ -1086,7 +1220,7 @@ func TestAudioMeter_SpectrumBinCenteredSinePeak(t *testing.T) {
 	// Sine at 3000 Hz (= bin 64 at sampleRate=48000, fftSize=1024)
 	// should produce a peak in the log band that contains bin 64.
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000
+	m.forcePublishEveryObserve = true
 	const freq = 3000.0
 	sine := func(i int) float32 { return float32(math.Sin(2 * math.Pi * freq * float64(i) / 48000)) }
 	// Feed 2 chunks (1600 samples) to overfill the 1024-sample FFT ring
@@ -1217,8 +1351,8 @@ func (m *AudioMeter) computeSpectrum() {
 Modify `publish` to call `computeSpectrum` before copying `lastSpectrum` into the snapshot. Find:
 
 ```go
-	// Spectrum: Task 4 will populate via FFT. Until then, reuse lastSpectrum
-	// (all zero on first publish before Task 4 lands).
+	// Spectrum: Task 5 will populate via FFT. Until then, reuse lastSpectrum
+	// (all zero on first publish before Task 5 lands).
 	snap.SpectrumBands = m.state.lastSpectrum
 ```
 
@@ -1255,7 +1389,7 @@ git commit -m "feat(dataplane): add Hann-windowed FFT spectrum to AudioMeter"
 
 ---
 
-## Task 5: AudioMeter Concurrency, Alloc Budget, and Bresenham Cadence Tests
+## Task 6: AudioMeter Concurrency, Alloc Budget, and Bresenham Cadence Tests
 
 **Files:**
 - Modify: `internal/dataplane/audiometer_test.go`
@@ -1286,7 +1420,7 @@ func TestAudioMeter_NoPublishHotPathZeroAllocs(t *testing.T) {
 
 func TestAudioMeter_AlwaysPublishExactlyOneAlloc(t *testing.T) {
 	m := NewAudioMeter(1, 48000, 2)
-	m.targetHz = 48000 // publish on every Observe
+	m.forcePublishEveryObserve = true
 	pcm := makeStereoPCM(800, [2]func(int) float32{
 		func(i int) float32 { return 0.5 },
 		func(i int) float32 { return -0.5 },
@@ -1400,7 +1534,7 @@ git commit -m "test(dataplane): cover AudioMeter cadence, alloc budget, race"
 
 ---
 
-## Task 6: Plane Wiring — PlaneConfig.Generation, audioMeter, AudioScopes()
+## Task 7: Plane Wiring — PlaneConfig.Generation, audioMeter, AudioScopes()
 
 **Files:**
 - Modify: `internal/dataplane/plane.go`
@@ -1498,7 +1632,44 @@ func (p *Plane) AudioScopes() *AudioScopeSnapshot {
 }
 ```
 
-- [ ] **Step 6: Update existing plane_test.go fakes if needed**
+- [ ] **Step 6: Add Plane wiring tests**
+
+Append focused tests to `internal/dataplane/plane_test.go`:
+
+```go
+func TestNewPlane_AudioScopesNilUntilAudioObserved(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		Generation: 42,
+		AudioRate:  48000,
+		AudioChans: 2,
+	})
+	if got := p.AudioScopes(); got != nil {
+		t.Fatalf("AudioScopes before observed audio = %#v, want nil", got)
+	}
+}
+
+func TestPlane_RunPublishesAudioScopesFromReadyAudioPath(t *testing.T) {
+	// Use the existing stub-process + fakemister pattern in this file.
+	// Configure ACK audio-ready, AudioRate=48000, AudioChans=2, and a
+	// stub AudioPipe that emits several non-empty PCM chunks. Run long
+	// enough for the delayed audio branch to execute.
+	//
+	// Assert:
+	//   - p.AudioScopes() is nil before Run ships a ready audio chunk.
+	//   - p.AudioScopes() becomes non-nil after enough non-empty chunks.
+	//   - the snapshot Generation matches PlaneConfig.Generation.
+}
+
+func TestPlane_RunDoesNotPublishAudioScopesForEmptyChunks(t *testing.T) {
+	// Same harness as above, but the stub AudioPipe emits empty chunks/EOF.
+	// Assert AudioScopes() remains nil. This pins the Observe call inside
+	// the existing `if len(oldest) > 0` guard immediately before sendAudio.
+}
+```
+
+The second and third tests should reuse the local `spawnProcess` seam and existing `stubProcess` helpers rather than adding a public test hook. If the existing helper only returns an already-canceled plane, add a narrow helper in `plane_test.go` that runs the plane for a bounded duration and returns the constructed `*Plane` for assertions.
+
+- [ ] **Step 7: Update existing plane_test.go fakes if needed**
 
 ```bash
 go build ./internal/dataplane
@@ -1506,7 +1677,7 @@ go build ./internal/dataplane
 
 If the build fails because existing test fakes don't compile against the widened plane shape, update them minimally (add `Generation` to `PlaneConfig` literals where present; default to 0).
 
-- [ ] **Step 7: Run dataplane tests**
+- [ ] **Step 8: Run dataplane tests**
 
 ```bash
 go test ./internal/dataplane -v
@@ -1514,7 +1685,7 @@ go test ./internal/dataplane -v
 
 Expected: PASS. If the audio-suppressed path is exercised and now sees `p.audioMeter != nil` checks, those should pass through cleanly.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add internal/dataplane/plane.go internal/dataplane/plane_test.go
@@ -1523,7 +1694,7 @@ git commit -m "feat(dataplane): wire AudioMeter into Plane field tick"
 
 ---
 
-## Task 7: Core Surface — Manager.AudioScopes, type alias, generation plumbing
+## Task 8: Core Surface — Manager.AudioScopes, type alias, generation plumbing
 
 **Files:**
 - Modify: `internal/core/types.go`
@@ -1650,7 +1821,7 @@ git commit -m "feat(core): expose Manager.AudioScopes with type alias"
 
 ---
 
-## Task 8: Chassis Audio Surface
+## Task 9: Chassis Audio Surface
 
 This task adds the `AudioScopeViewer` interface, the discriminated-union envelope types with custom `MarshalJSON` (NaN/Inf clamping, float-precision pin), `audioEnvelopeFromViewer`, and `audioShouldEmit`.
 
@@ -2054,7 +2225,7 @@ git commit -m "feat(chassis): add audio scope envelope and viewer surface"
 
 ---
 
-## Task 9: Events Integration — 30 Hz Audio Ticker
+## Task 10: Events Integration — 30 Hz Audio Ticker
 
 **Files:**
 - Modify: `internal/chassis/events.go`
@@ -2084,8 +2255,8 @@ func TestHandleEvents_InitialBurstIncludesAudio(t *testing.T) {
 }
 
 func TestHandleEvents_LiveAudioEmitsAtCadence(t *testing.T) {
-	// 100 ms of audio ticks should emit exactly 3 live frames even
-	// with identical payloads.
+	// One second of audio ticks should emit 30 live tick frames ±1 even
+	// with identical payloads. The initial burst is counted separately.
 	cfg := nonZeroConfig()
 	viewer := &countingAudioViewer{
 		snap: &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2},
@@ -2100,14 +2271,14 @@ func TestHandleEvents_LiveAudioEmitsAtCadence(t *testing.T) {
 	w := newFlushRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 		cancel()
 	}()
 	s.handleEvents(w, req)
-	count := strings.Count(w.Body.String(), "event: audio\n")
-	// 1 initial + ~3 ticks at 33 ms each = 4 (allow 3-5)
-	if count < 3 || count > 5 {
-		t.Errorf("audio event count over 100 ms = %d, want 3-5", count)
+	total := strings.Count(w.Body.String(), "event: audio\n")
+	tickCount := total - 1 // subtract initial burst frame
+	if tickCount < 29 || tickCount > 31 {
+		t.Errorf("audio tick count over 1 s = %d (total=%d), want 30 ± 1", tickCount, total)
 	}
 }
 
@@ -2271,7 +2442,7 @@ func TestHandleEvents_InitialBurstAudioIsLast(t *testing.T) {
 		t.Fatalf("no audio event in initial burst:\n%s", body)
 	}
 	// Assert audio comes AFTER every other initial event present in the burst.
-	for _, prior := range []string{"event: state\n", "event: vfd\n", "event: source\n", "event: visualizer\n", "event: transport\n", "event: meter\n"} {
+	for _, prior := range []string{"event: state\n", "event: vfd\n", "event: source\n", "event: visualizer\n", "event: transport\n", "event: volume\n", "event: meter\n"} {
 		idx := strings.Index(body, prior)
 		if idx < 0 {
 			continue // not all events guaranteed present in every cfg
@@ -2451,7 +2622,7 @@ git commit -m "feat(chassis): emit audio scope event at 30 Hz"
 
 ---
 
-## Task 10: Meter Discovery Hook (5A `meter.go` + `data.go` update)
+## Task 11: Meter Discovery Hook (5A `meter.go` + `data.go` update)
 
 The 5A code already has `AudioScopesData{Status: string}` in [data.go:171](../../../internal/chassis/data.go) and `meterAudioScopesE{Status: string}` in [meter.go:570](../../../internal/chassis/meter.go). The "pending" placeholder is populated in two places:
 
@@ -2535,7 +2706,7 @@ Add the helper near the other format functions:
 // audioScopesData builds the discovery-hook AudioScopesData. When
 // audioLive is true, advertises the high-rate audio event via the
 // hook fields; otherwise returns pending. audioEventHz is the
-// constant exported by events.go (Task 9).
+// constant exported by events.go (Task 10).
 func audioScopesData(audioLive bool) AudioScopesData {
 	if audioLive {
 		return AudioScopesData{
@@ -2570,15 +2741,11 @@ Grep for callers of `meterSampler.Sample` (likely in server.go's snapshot refres
 grep -n "\.meter\.Sample\|s\.meter\.Sample" internal/chassis/*.go
 ```
 
-At each call site, add an `audioLive` argument derived from the server's audio viewer:
+At each call site, add an `audioLive` argument derived from active session state and whether the server has an audio viewer. Do **not** derive this from `AudioScopes() != nil`: during startup/prebuffer the high-rate `audio` event exists before the first snapshot has published.
 
 ```go
-audioLive := false
-if s.audioScopeViewer != nil {
-    if snap := s.audioScopeViewer.AudioScopes(); snap != nil && snap.Generation > 0 {
-        audioLive = true
-    }
-}
+audioLive := s.audioScopeViewer != nil &&
+	(view.State == core.StatePlaying || view.State == core.StatePaused)
 data := s.meter.Sample(view, overlay, audioLive, now)
 ```
 
@@ -2650,22 +2817,21 @@ git commit -m "feat(chassis): repurpose meter.audioScopes as audio discovery hoo
 
 ---
 
-## Task 11: meter.js Audio Subscribe + Live Rendering
+## Task 12: meter.js Audio Subscribe + Live Rendering
 
-**5A already built the meter scope DOM.** Existing hooks in [internal/chassis/templates/meter.html](../../../internal/chassis/templates/meter.html):
+**5A already built most of the meter scope DOM.** Existing hooks in [internal/chassis/templates/meter.html](../../../internal/chassis/templates/meter.html):
 
 - **VU bars:** `.tr-vu .vu-lr .ch-bar > .s` — 12 segments per channel, `.on` class for lit. Color tiers: `.g` (green, bars 0-5), `.y` (yellow, 6-9), `.r` (red, 10-11).
 - **Phase needle:** `#phase-needle` element with `data-phase` attribute consumed by 5A CSS.
 - **LUFS readout:** `#lufs-val .seg-text` text content (DSEG14 font).
-- **Spectrum:** `#spectrum > .spectrum-band > .stack > .seg` — **6 octave bands × 8 segments each** plus `.peak-dot` per band. Bands labeled 60/250/1K/4K/8K/16K Hz.
+- **Spectrum:** Task 12 replaces the existing 6-band segmented placeholder with a `#spectrum-canvas` canvas so all 32 wire bands render distinctly, matching the spec.
 - **Goniometer:** `#gonio-canvas` 172×172 canvas.
 - **Discovery marker:** `[data-meter-audio-scopes-status]` (hidden element, server-rendered from `meter` event).
 
-**5A's `meter.js` exists** at [internal/chassis/static/meter.js](../../../internal/chassis/static/meter.js) and handles the slow `meter` event (HLS, throughput, ack). It uses `subscribe()` already, so the audio handler joins that IIFE — no template changes, no new selectors.
-
-**Data resolution gap:** the spec promises 32-band spectrum data; the existing UI has 6 visual bands. meter.js aggregates 32 → 6 octave bands for display. Goniometer data is 256 points; canvas paints all of them.
+**5A's `meter.js` exists** at [internal/chassis/static/meter.js](../../../internal/chassis/static/meter.js) and handles the slow `meter` event (HLS, throughput, ack). It uses `subscribe()` already, so the audio handler joins that IIFE. Goniometer data is 256 points; spectrum data is 32 bands; both paint on canvas.
 
 **Files:**
+- Modify: `internal/chassis/templates/meter.html`
 - Modify: `internal/chassis/static/meter.js`
 - Modify: `internal/chassis/chassis_test.go`
 
@@ -2675,7 +2841,7 @@ Append to `internal/chassis/chassis_test.go`:
 
 ```go
 // TestMeterHTML_HasAudioScopeHooks verifies the existing 5A hooks are
-// still present (regression guard — Task 11 must not accidentally
+	// still present (regression guard — Task 12 must not accidentally
 // remove or rename them via template churn).
 func TestMeterHTML_HasAudioScopeHooks(t *testing.T) {
 	cfg := nonZeroConfig()
@@ -2690,8 +2856,9 @@ func TestMeterHTML_HasAudioScopeHooks(t *testing.T) {
 	for _, hook := range []string{
 		`id="phase-needle"`,
 		`id="lufs-val"`,
-		`id="spectrum"`,
-		`id="gonio-canvas"`,
+			`id="spectrum"`,
+			`id="spectrum-canvas"`,
+			`id="gonio-canvas"`,
 		`class="ch-bar"`,
 		`data-meter-audio-scopes-status`,
 	} {
@@ -2711,6 +2878,7 @@ func TestMeterJS_NoFakeValueGenerators(t *testing.T) {
 	s := string(src)
 	for _, forbidden := range []string{
 		"Math.random", "Math.sin(", "Math.cos(", "Math.tan(",
+		"Date.now(",
 	} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("meter.js contains forbidden generator %q (audio scopes must drive real values, not fake animations)", forbidden)
@@ -2718,7 +2886,7 @@ func TestMeterJS_NoFakeValueGenerators(t *testing.T) {
 	}
 }
 
-// TestMeterJS_SubscribesToAudio ensures Task 11 wired the audio
+// TestMeterJS_SubscribesToAudio ensures Task 12 wired the audio
 // subscription that the rest of this task depends on.
 func TestMeterJS_SubscribesToAudio(t *testing.T) {
 	src, err := os.ReadFile("static/meter.js")
@@ -2737,9 +2905,21 @@ func TestMeterJS_SubscribesToAudio(t *testing.T) {
 go test ./internal/chassis -run "TestMeterHTML_HasAudioScopeHooks|TestMeterJS_NoFakeValueGenerators|TestMeterJS_SubscribesToAudio" -v
 ```
 
-Expected: `TestMeterHTML_HasAudioScopeHooks` PASSES (hooks already exist from 5A), `TestMeterJS_SubscribesToAudio` FAILS (no audio handler yet), `TestMeterJS_NoFakeValueGenerators` PASSES (5A meter.js doesn't have generators). After Step 3 lands the audio handler, all three should pass.
+Expected: `TestMeterHTML_HasAudioScopeHooks` FAILS until Step 3 replaces the spectrum placeholder, `TestMeterJS_SubscribesToAudio` FAILS until Step 4 adds the audio handler, and `TestMeterJS_NoFakeValueGenerators` PASSES (5A meter.js doesn't have generators).
 
-- [ ] **Step 3: Add audio subscriber to meter.js (existing IIFE)**
+- [ ] **Step 3: Replace spectrum placeholder with a 32-band canvas hook**
+
+In [internal/chassis/templates/meter.html](../../../internal/chassis/templates/meter.html), replace the current `#spectrum` contents (the 6 `.spectrum-band` placeholders) with a canvas hook:
+
+```html
+<div class="spectrum" id="spectrum" aria-hidden="true">
+  <canvas id="spectrum-canvas" width="220" height="120" role="img" aria-label="32-band audio spectrum">32-band audio spectrum</canvas>
+</div>
+```
+
+Keep the surrounding `.audio-grp` layout and do not rename `#gonio-canvas`, `#phase-needle`, `#lufs-val`, or `.ch-bar`.
+
+- [ ] **Step 4: Add audio subscriber to meter.js (existing IIFE)**
 
 Open [internal/chassis/static/meter.js](../../../internal/chassis/static/meter.js). The file is an IIFE starting with `(() => { 'use strict'; ... })();`. The existing code handles the `meter` event with helpers like `setText`, `setLamp`, `updateHLS`, `drawLine`. **Do not remove anything.**
 
@@ -2747,53 +2927,18 @@ Inside the same IIFE, after the existing helpers and before any final `})();`, a
 
 ```js
   // ---- Audio scope renderer (Spec 5B) ----
-  // Drives the 5A meter DOM hooks from the 30 Hz `audio` SSE event.
-  // The DOM has 6 octave bands (60/250/1K/4K/8K/16K Hz) × 8 segments
-  // each; the wire delivers 32 log bands. We aggregate to 6 bands at
-  // render time using peak-of-bins.
-
-  const vuChBarL = document.querySelector('.tr-vu .vu-lr .ch-bar:nth-of-type(1)');
-  const vuChBarR = document.querySelector('.tr-vu .vu-lr .ch-bar:nth-of-type(2)');
+  // Drives the meter DOM hooks from the 30 Hz `audio` SSE event.
+  const vuBars = Array.from(document.querySelectorAll('.tr-vu .vu-lr .ch-bar'));
+  const vuChBarL = vuBars[0];
+  const vuChBarR = vuBars[1];
   const phaseNeedle = document.getElementById('phase-needle');
   const lufsTextEl = document.querySelector('#lufs-val .seg-text');
-  const spectrumEl = document.getElementById('spectrum');
+  const spectrumCanvas = document.getElementById('spectrum-canvas');
+  const spectrumCtx = spectrumCanvas && spectrumCanvas.getContext('2d');
   const gonioCanvas = document.getElementById('gonio-canvas');
   const gonioCtx = gonioCanvas && gonioCanvas.getContext('2d');
 
-  // Build the spectrum band → segment map (6 bands × 8 segments).
-  const spectrumBandEls = spectrumEl
-    ? Array.from(spectrumEl.querySelectorAll('.spectrum-band'))
-    : [];
-  const spectrumSegments = spectrumBandEls.map((b) =>
-    Array.from(b.querySelectorAll('.stack .seg')),
-  );
-  const spectrumPeakDots = spectrumBandEls.map((b) => b.querySelector('.peak-dot'));
-
-  // Map 32 wire bands → 6 visual bands. Wire bands span 20 Hz – 20 kHz
-  // logarithmically; visual bands center at 60/250/1K/4K/8K/16K. Pick
-  // the wire bin whose center is closest to each visual center, with a
-  // window of ±2 bins, and take max dBFS.
-  const visualCenters = [60, 250, 1000, 4000, 8000, 16000];
-  const visualWindowBins = 2;
-  function wireBandToVisualIndex(wireBand) {
-    const lo = 20 * Math.pow(1000, wireBand / 32);
-    const hi = 20 * Math.pow(1000, (wireBand + 1) / 32);
-    const center = Math.sqrt(lo * hi);
-    let best = 0;
-    let bestDist = Infinity;
-    for (let v = 0; v < visualCenters.length; v++) {
-      const d = Math.abs(Math.log(center) - Math.log(visualCenters[v]));
-      if (d < bestDist) {
-        bestDist = d;
-        best = v;
-      }
-    }
-    return best;
-  }
-  const wireToVisualMap = new Array(32);
-  for (let w = 0; w < 32; w++) wireToVisualMap[w] = wireBandToVisualIndex(w);
-
-  const peakHold = new Array(6).fill(-90);
+  const peakHold = new Array(32).fill(-90);
   const peakHoldDecayPerFrame = 0.5; // dB per render frame
   let lastAudioGeneration = 0;
   let lastSpectrum = null;
@@ -2815,13 +2960,7 @@ Inside the same IIFE, after the existing helpers and before any final `})();`, a
     // the .vu-phase .bar parent is the reference. center = 50%.
     if (phaseNeedle) phaseNeedle.style.left = '';
     if (lufsTextEl) lufsTextEl.textContent = '--.-';
-    // Clear spectrum segments and peak dots (5A peak-dot CSS uses inline style.top)
-    spectrumSegments.forEach((segs) =>
-      segs.forEach((s) => s.classList.remove('on')),
-    );
-    spectrumPeakDots.forEach((dot) => {
-      if (dot) dot.style.top = '';
-    });
+    if (spectrumCtx) spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
     for (let i = 0; i < peakHold.length; i++) peakHold[i] = -90;
     // Clear goniometer
     if (gonioCtx) gonioCtx.clearRect(0, 0, gonioCanvas.width, gonioCanvas.height);
@@ -2854,31 +2993,25 @@ Inside the same IIFE, after the existing helpers and before any final `})();`, a
       requestAnimationFrame(paintAudio);
       return;
     }
-    // Spectrum: aggregate 32 wire bands → 6 visual bands (peak-of-bins),
-    // then light segments + peak-hold dot per visual band.
-    if (lastSpectrum && spectrumSegments.length === 6) {
-      const visualLevels = [-90, -90, -90, -90, -90, -90];
-      for (let w = 0; w < 32 && w < lastSpectrum.length; w++) {
-        const v = wireToVisualMap[w];
-        if (lastSpectrum[w] > visualLevels[v]) visualLevels[v] = lastSpectrum[w];
-      }
-      for (let v = 0; v < 6; v++) {
-        const db = visualLevels[v];
-        // Map -60..0 dBFS to 0..8 segments
+    // Spectrum: 32 wire bands → 32 canvas bars, with peak-hold tick.
+    if (spectrumCtx && lastSpectrum && lastSpectrum.length === 32) {
+      const w = spectrumCanvas.width;
+      const h = spectrumCanvas.height;
+      spectrumCtx.clearRect(0, 0, w, h);
+      const gap = 1;
+      const barW = Math.max(2, Math.floor((w - gap * 31) / 32));
+      for (let i = 0; i < 32; i++) {
+        const db = Math.max(-90, Math.min(0, Number(lastSpectrum[i]) || -90));
+        if (db > peakHold[i]) peakHold[i] = db;
+        else peakHold[i] = Math.max(-90, peakHold[i] - peakHoldDecayPerFrame);
         const norm = Math.max(0, Math.min(1, (db + 60) / 60));
-        const lit = Math.round(norm * 8);
-        const segs = spectrumSegments[v];
-        for (let i = 0; i < segs.length; i++) {
-          segs[i].classList.toggle('on', i < lit);
-        }
-        // Peak-hold: rise instantly, decay slowly
-        if (db > peakHold[v]) peakHold[v] = db;
-        else peakHold[v] = Math.max(-90, peakHold[v] - peakHoldDecayPerFrame);
-        const peakNorm = Math.max(0, Math.min(1, (peakHold[v] + 60) / 60));
-        const dot = spectrumPeakDots[v];
-        // 5A peak-dot: top: 100% (bottom) at idle, decreasing top moves up.
-        // Map peakNorm 0..1 → top 100%..0%.
-        if (dot) dot.style.top = `${(1 - peakNorm) * 100}%`;
+        const peakNorm = Math.max(0, Math.min(1, (peakHold[i] + 60) / 60));
+        const x = i * (barW + gap);
+        const barH = Math.max(1, norm * h);
+        spectrumCtx.fillStyle = i < 20 ? '#7cffb2' : '#ffd76a';
+        spectrumCtx.fillRect(x, h - barH, barW, barH);
+        spectrumCtx.fillStyle = '#ff6f61';
+        spectrumCtx.fillRect(x, h - peakNorm * h, barW, 1);
       }
     }
     // Goniometer: alpha-fade prior frame for trail; plot 256 (L,R) points.
@@ -2932,10 +3065,9 @@ Inside the same IIFE, after the existing helpers and before any final `})();`, a
 
 Notes:
 - The visual peak-hold and decay live in the client (per spec §Client rendering). Wire payload is just the current spectrum snapshot.
-- The phase needle uses `data-phase` attribute (existing 5A pattern); 5A CSS already animates it. If the existing CSS doesn't consume `data-phase` for live rendering, Task 12 may need a small CSS addition.
-- The `--peak-y` CSS variable controlling peak-dot position assumes 5A CSS uses it. If not (verify during implementation), either set `style.top` directly or extend Task 12.
+- The phase needle is positioned with inline `style.left`; Task 13 only needs CSS if the current transition rule no longer applies after implementation.
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
 go test ./internal/chassis -run "TestMeterHTML_HasAudioScopeHooks|TestMeterJS_NoFakeValueGenerators|TestMeterJS_SubscribesToAudio" -v
@@ -2943,18 +3075,18 @@ go test ./internal/chassis -run "TestMeterHTML_HasAudioScopeHooks|TestMeterJS_No
 
 Expected: all three PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add internal/chassis/static/meter.js internal/chassis/chassis_test.go
+git add internal/chassis/templates/meter.html internal/chassis/static/meter.js internal/chassis/chassis_test.go
 git commit -m "feat(chassis): render audio scopes from live audio event"
 ```
 
 ---
 
-## Task 12: chassis.css Audio-Scope Styles (verification + minimal additions)
+## Task 13: chassis.css Audio-Scope Styles (verification + minimal additions)
 
-5A's `chassis.css` already styles the existing meter scope DOM (`.tr-vu .ch-bar`, `#phase-needle`/`.vu-phase .needle` with `transition: left 80ms linear`, `.spectrum-band .peak-dot` with `transition: top 220ms`, etc.). meter.js (Task 11) drives those existing hooks by setting `style.left`, `style.top`, and `.on` classes directly — no new CSS variables required.
+5A's `chassis.css` already styles most of the meter scope DOM (`.tr-vu .ch-bar`, `#phase-needle`/`.vu-phase .needle` with `transition: left 80ms linear`, etc.). meter.js (Task 12) drives VU/phase/LUFS directly and paints the 32-band spectrum/goniometer canvases.
 
 **Files:**
 - Modify (only if verification finds a gap): `internal/chassis/static/chassis.css`
@@ -2965,11 +3097,11 @@ Run `make build && ./mister-groovy-relay` (or however the bridge starts locally)
 
 - VU `.ch-bar > .s` segments light up to follow the audio level
 - `#phase-needle` slides left/right along `.vu-phase .bar` as L/R correlation changes (CSS `transition: left 80ms linear` already animates the move)
-- `#spectrum .peak-dot` rises and falls per band (CSS `transition: top 220ms` animates)
+- `#spectrum-canvas` renders 32 distinct bars with peak-hold ticks
 - `#gonio-canvas` shows scattered (L,R) points
 - `#lufs-val .seg-text` updates the DSEG14 numeric readout
 
-If all five work without CSS changes, **skip Step 2 and Step 3**. Commit nothing for Task 12 and proceed to Task 13.
+If all five work without CSS changes, **skip Step 2 and Step 3**. Commit nothing for Task 13 and proceed to Task 14.
 
 - [ ] **Step 2: Add scoped styles only for gaps found in Step 1**
 
@@ -3000,7 +3132,7 @@ git commit -m "feat(chassis): tighten audio scope styles"
 
 ---
 
-## Task 13: main.go Wiring + End-to-End Integration Test
+## Task 14: main.go Wiring + End-to-End Integration Test
 
 **Files:**
 - Modify: `cmd/mister-groovy-relay/main.go`
@@ -3020,7 +3152,7 @@ AudioScopeViewer: coreMgr,
 
 The existing `tests/integration/chassis_test.go` uses `package integration` (NOT `integration_test`). Append a new test function to that file (or create the file if absent with `package integration`).
 
-The simplest correct shape is a smoke test that spins up the real `chassis.Server` with a synthetic `AudioScopeViewer`, connects via `httptest`, and asserts the audio event appears on the wire. This exercises main.go's wiring path (the same `chassis.Config` shape) without requiring a real `core.Manager` + plane (which would need the `newPlane = func(cfg dataplane.PlaneConfig) planeRunner { ... }` override hook at [manager.go:114](../../../internal/core/manager.go) — workable but heavier than needed).
+This test must exercise the real manager/dataplane-to-chassis path, not a synthetic `AudioScopeViewer`. Reuse the existing `scenarioHarness` from [tests/integration/scenarios_test.go](../../../tests/integration/scenarios_test.go), which already wires a real `*core.Manager`, real `dataplane.Plane`, ffmpeg sample media, and `fakemister` ACK/audio readiness.
 
 ```go
 //go:build integration
@@ -3032,87 +3164,93 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
-type integrationAudioViewer struct {
-	mu   sync.Mutex
-	snap *core.AudioScopeSnapshot
-}
-
-func (v *integrationAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.snap
-}
-
-func (v *integrationAudioViewer) set(s *core.AudioScopeSnapshot) {
-	v.mu.Lock()
-	v.snap = s
-	v.mu.Unlock()
-}
-
 func TestChassisIntegration_AudioEventEndToEnd(t *testing.T) {
-	viewer := &integrationAudioViewer{snap: &core.AudioScopeSnapshot{
-		Generation: 1, SampleRate: 48000, Channels: 2,
-		Peak: [2]float32{0.5, 0.5}, RMS: [2]float32{0.35, 0.35},
-	}}
+	sample := ensureSampleMP4(t, "5s.mp4", 5)
+	h := newScenarioHarness(t)
+
 	srv, err := chassis.New(chassis.Config{
-		// Use whatever minimal-but-valid Config the existing chassis
-		// tests already construct (see internal/chassis/chassis_test.go
-		// `nonZeroConfig()`). Required fields: Version, StartedAt,
-		// HostIP, plus AudioScopeViewer for this test.
+		Bridge:           config.BridgeConfig{},
+		Manager:          h.Manager,
+		Registry:         adapters.NewRegistry(),
 		Version:          "integration-test",
 		StartedAt:        time.Now(),
 		HostIP:           "127.0.0.1",
-		AudioScopeViewer: viewer,
+		AudioScopeViewer: h.Manager,
 	})
 	if err != nil {
 		t.Fatalf("chassis.New: %v", err)
 	}
+	defer srv.Close()
 	mux := http.NewServeMux()
 	srv.Mount(mux)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	if err := h.Manager.StartSession(defaultRequest(sample, "audio-sse")); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("SSE request: %v", err)
 	}
 	defer resp.Body.Close()
 
-	buf := make([]byte, 8192)
-	deadline := time.Now().Add(300 * time.Millisecond)
-	var collected strings.Builder
-	for time.Now().Before(deadline) {
-		n, _ := resp.Body.Read(buf)
-		if n > 0 {
-			collected.Write(buf[:n])
-			if strings.Contains(collected.String(), "event: audio") &&
-				strings.Contains(collected.String(), `"status":"live"`) {
-				break
-			}
+	liveBody := readSSEUntil(t, resp, `"status":"live"`, 4*time.Second)
+	for _, want := range []string{
+		"event: audio\n",
+		`"vu":`,
+		`"spectrum":[`,
+		`"goniometer":[`,
+	} {
+		if !strings.Contains(liveBody, want) {
+			t.Fatalf("live audio SSE missing %q:\n%s", want, liveBody)
 		}
 	}
-	body := collected.String()
-	if !strings.Contains(body, "event: audio\n") {
-		t.Errorf("no audio event in stream:\n%s", body)
+
+	if err := h.Manager.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
-	if !strings.Contains(body, `"status":"pending"`) && !strings.Contains(body, `"status":"live"`) {
-		t.Errorf("audio event missing status discriminator:\n%s", body)
+	pendingBody := readSSEUntil(t, resp, `"status":"pending"`, 2*time.Second)
+	if !strings.Contains(pendingBody, "event: audio\n") {
+		t.Fatalf("pending audio event missing after stop:\n%s", pendingBody)
 	}
+}
+
+func readSSEUntil(t *testing.T, resp *http.Response, needle string, timeout time.Duration) string {
+	t.Helper()
+	buf := make([]byte, 8192)
+	deadline := time.Now().Add(timeout)
+	var collected strings.Builder
+	for time.Now().Before(deadline) {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			collected.Write(buf[:n])
+			if strings.Contains(collected.String(), needle) {
+				return collected.String()
+			}
+		}
+		if err != nil {
+			t.Fatalf("read SSE: %v; collected:\n%s", err, collected.String())
+		}
+	}
+	t.Fatalf("timed out waiting for %q; collected:\n%s", needle, collected.String())
+	return collected.String()
 }
 ```
 
-Adapt the constructor calls (`core.NewManager`, `chassis.New`) to match the actual exported APIs.
+Adapt constructor calls only if the exported APIs have changed by implementation time. Do not replace `h.Manager` with a fake viewer; this test exists to catch breaks in dataplane publication, core forwarding, chassis SSE emission, and stop-to-pending behavior together.
 
 - [ ] **Step 3: Run tests**
 
@@ -3141,113 +3279,9 @@ git commit -m "feat(chassis): wire AudioScopeViewer and add end-to-end test"
 
 ---
 
-## Task 14: Phase 1 Debt Migration
-
-**Scope:** migrates the two scripts spec §Phase 1 Follow-Up Debt names — `transport.js` and `visualizer-bank.js`. `volume-knob.js` ALSO uses the legacy `events.source` + `chassis:eventsource` pattern (verified at [internal/chassis/static/volume-knob.js:209-212](../../../internal/chassis/static/volume-knob.js)) but is owned by the parallel volume-knob spec, not 5B. If volume-knob ships after 5B, that spec's plan extends the subscribe-pattern lint to include volume-knob.js then.
-
-**Precondition check (defensive — expected to pass at HEAD).**
-
-- [ ] **Step 1: Verify 5A's subscribe() helper is in the tree**
-
-```bash
-grep -n "subscribe" internal/chassis/static/vfd-live.js
-```
-
-Expected output: a line `function subscribe(eventName, handler) {` near line 21. Verified at plan-revise time.
-
-If NO `subscribe` function is present (unexpected), halt this task with a clear blocker message; resume after `subscribe()` lands.
-
-If `subscribe` IS present, proceed to Step 2.
-
-**Files:**
-- Modify: `internal/chassis/static/transport.js`
-- Modify: `internal/chassis/static/visualizer-bank.js`
-- Modify: `internal/chassis/chassis_test.go`
-
-- [ ] **Step 2: Write failing subscribe-pattern lint test**
-
-Append to `internal/chassis/chassis_test.go`:
-
-```go
-func TestChassisJS_NoRawEventSourcePattern(t *testing.T) {
-	files := []string{"static/transport.js", "static/visualizer-bank.js"}
-	for _, f := range files {
-		t.Run(f, func(t *testing.T) {
-			src, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatalf("ReadFile: %v", err)
-			}
-			s := string(src)
-			for _, forbidden := range []string{
-				"events.source.addEventListener",
-				"chassis:eventsource",
-			} {
-				if strings.Contains(s, forbidden) {
-					t.Errorf("%s contains forbidden raw-EventSource pattern %q (use subscribe() instead)", f, forbidden)
-				}
-			}
-			if !strings.Contains(s, "window.Chassis.events.subscribe(") {
-				t.Errorf("%s does not use subscribe() at all", f)
-			}
-		})
-	}
-}
-```
-
-- [ ] **Step 3: Run test to confirm it fails**
-
-```bash
-go test ./internal/chassis -run TestChassisJS_NoRawEventSourcePattern -v
-```
-
-Expected: FAIL (both files still use the raw pattern).
-
-- [ ] **Step 4: Migrate transport.js**
-
-In `internal/chassis/static/transport.js`, find the existing event listener setup (typically `events.source.addEventListener('transport', …)` plus a `chassis:eventsource` listener for reconnect-time reattach). Replace with:
-
-```js
-window.Chassis.events.subscribe('transport', (ev) => {
-  // existing handler body — unchanged
-});
-```
-
-Remove the `chassis:eventsource` document-level listener (subscribe() handles reconnect dedupe internally).
-
-- [ ] **Step 5: Migrate visualizer-bank.js**
-
-Same migration in `internal/chassis/static/visualizer-bank.js` for the `visualizer` event:
-
-```js
-window.Chassis.events.subscribe('visualizer', (ev) => {
-  // existing handler body — unchanged
-});
-```
-
-- [ ] **Step 6: Run tests to confirm they pass**
-
-```bash
-go test ./internal/chassis -v
-```
-
-Expected: all chassis tests PASS, including the new subscribe-pattern lint and any existing transport/visualizer functional tests.
-
-- [ ] **Step 7: Manual sanity check**
-
-If practical, start the chassis and verify in a browser that transport controls and visualizer-bank buttons still respond to SSE events after the migration. (Skip if no live test rig available; the lint + existing tests are the structural safety net.)
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add internal/chassis/static/transport.js internal/chassis/static/visualizer-bank.js internal/chassis/chassis_test.go
-git commit -m "refactor(chassis): migrate transport.js and visualizer-bank.js to subscribe()"
-```
-
----
-
 ## Final Verification
 
-After all 14 tasks (or 13 + deferred Task 14), run the full verification suite:
+After all 14 tasks, run the full verification suite:
 
 - [ ] **Step 1: Run unit tests, race detector, and integration tests**
 
@@ -3286,7 +3320,7 @@ gh pr create --title "feat(chassis): receiver audio-analysis scopes (Spec 5B)" -
 - DSP runs inline on the data-plane field-tick goroutine, publishes lock-free via `atomic.Pointer` at average 30 Hz (Bresenham-style cadence; works at both NTSC and PAL field rates)
 - Streams to the chassis at 30 Hz over a new `audio` SSE event on the existing `/receiver/events` connection
 - Repurposes 5A's reserved `meter.audioScopes` slot as a discovery hook
-- Migrates `transport.js` and `visualizer-bank.js` from raw `EventSource` to the `subscribe()` helper
+- Migrates `transport.js`, `visualizer-bank.js`, and `volume-knob.js` from raw `EventSource` consumers to the `subscribe()` helper
 
 ## Test plan
 
