@@ -51,6 +51,12 @@ type Config struct {
 	// changes. When nil, chassis renders the knob read-only for POSTs.
 	VolumeSaver VolumeSaver
 
+	// AudioScopeViewer is the optional read-only source for the latest
+	// audio-analysis snapshot. When nil, the chassis emits a pending audio
+	// frame on every 30 Hz tick. *core.Manager satisfies this structurally
+	// via AudioScopes(); main.go wires that once the manager is live.
+	AudioScopeViewer AudioScopeViewer
+
 	AUX AUXStarter
 }
 
@@ -71,6 +77,7 @@ type Server struct {
 	visualizerSaver  VisualizerSaver
 	volumeViewer     VolumeViewer
 	volumeSaver      VolumeSaver
+	audioScopeViewer AudioScopeViewer
 	aux              AUXStarter
 
 	cache       *snapshotCache
@@ -114,6 +121,7 @@ func New(cfg Config) (*Server, error) {
 		visualizerSaver:     cfg.VisualizerSaver,
 		volumeViewer:        cfg.VolumeViewer,
 		volumeSaver:         cfg.VolumeSaver,
+		audioScopeViewer:    cfg.AudioScopeViewer,
 		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
