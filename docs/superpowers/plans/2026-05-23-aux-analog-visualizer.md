@@ -4,7 +4,7 @@
 
 **Goal:** Add a manual `AUX` receiver source that can drive the existing CRT visualizer from an external analog audio signal, using either a relay-local FFmpeg capture input or a validated remote HTTP(S) audio stream.
 
-**Architecture:** `internal/adapters/aux` owns AUX configuration, proxy tokens, URL validation, and core session construction. `internal/chassis` owns `/receiver/aux/*` same-origin routes and source-cluster UI through a narrow `AUXStarter` interface. `internal/core`, `internal/ffmpeg`, and `internal/dataplane` gain adapter-agnostic capture/probe/audio-output contracts so AUX can reuse the existing visualizer renderer without importing adapter packages across layers.
+**Architecture:** `internal/adapters/auxadapter` owns AUX configuration, proxy tokens, URL validation, and core session construction. The Go package name remains `aux`; the directory avoids the Windows-reserved basename `aux` so the repo's normal Windows Go test path can run. `internal/chassis` owns `/receiver/aux/*` same-origin routes and source-cluster UI through a narrow `AUXStarter` interface. `internal/core`, `internal/ffmpeg`, and `internal/dataplane` gain adapter-agnostic capture/probe/audio-output contracts so AUX can reuse the existing visualizer renderer without importing adapter packages across layers.
 
 **Tech Stack:** Go standard library HTTP, BurntSushi TOML, existing adapter registry, existing chassis templates/static assets, existing FFmpeg command builder and Groovy data plane.
 
@@ -22,16 +22,16 @@
 New files:
 
 ```text
-internal/adapters/aux/adapter.go
-internal/adapters/aux/config.go
-internal/adapters/aux/proxy.go
-internal/adapters/aux/session.go
-internal/adapters/aux/url.go
-internal/adapters/aux/adapter_test.go
-internal/adapters/aux/config_test.go
-internal/adapters/aux/proxy_test.go
-internal/adapters/aux/session_test.go
-internal/adapters/aux/url_test.go
+internal/adapters/auxadapter/adapter.go
+internal/adapters/auxadapter/config.go
+internal/adapters/auxadapter/proxy.go
+internal/adapters/auxadapter/session.go
+internal/adapters/auxadapter/url.go
+internal/adapters/auxadapter/adapter_test.go
+internal/adapters/auxadapter/config_test.go
+internal/adapters/auxadapter/proxy_test.go
+internal/adapters/auxadapter/session_test.go
+internal/adapters/auxadapter/url_test.go
 internal/adapters/aux_contract.go
 internal/chassis/aux.go
 internal/chassis/aux_test.go
@@ -75,7 +75,7 @@ README.md
 - Use `apply_patch` for manual edits.
 - Run `gofmt` after each Go task.
 - Keep commits narrow. Suggested commit points are listed after tasks.
-- Chassis must not import `internal/adapters/aux`; keep coupling through interfaces declared in `internal/chassis` and shared neutral contracts in `internal/adapters`.
+- Chassis must not import `internal/adapters/auxadapter`; keep coupling through interfaces declared in `internal/chassis` and shared neutral contracts in `internal/adapters`.
 - The AUX proxy path is adapter-owned and mounted through `adapters.PublicRouteProvider` at `/internal/aux-proxy/`. The chassis start/stop routes are chassis-owned at `/receiver/aux/*`.
 - `cmd/mister-groovy-relay/main.go` resolves `sec.Bridge.UI.HTTPPort` before any adapter construction today; the AUX constructor in Task 8 can read it safely. Don't reorder the existing port-resolution block.
 - Whenever `req.StreamURL` is logged in production code, the log site MUST route through `redactURL`. Task 13's `rg` audit catches stray sites; in particular, audit `internal/dataplane/plane.go` error wrapping for raw `InputURL` prints when applying Task 4.
@@ -819,8 +819,8 @@ git commit -m "feat(aux): support visual-only dataplane audio"
 
 ## Task 5: Add AUX Config And Adapter Skeleton
 
-- [ ] Create `internal/adapters/aux/config.go`.
-- [ ] Create `internal/adapters/aux/adapter.go`.
+- [ ] Create `internal/adapters/auxadapter/config.go`.
+- [ ] Create `internal/adapters/auxadapter/adapter.go`.
 - [ ] Add config/default/field/apply/status tests.
 - [ ] Ensure `enabled=false` allows incomplete input config.
 - [ ] Ensure `enabled=true` requires a configured input.
@@ -930,21 +930,21 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux/adapter.go internal/adapters/aux/config.go internal/adapters/aux/adapter_test.go internal/adapters/aux/config_test.go
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/aux
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/auxadapter/adapter.go internal/adapters/auxadapter/config.go internal/adapters/auxadapter/adapter_test.go internal/adapters/auxadapter/config_test.go
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/auxadapter
 ```
 
 Commit:
 
 ```bash
-git add internal/adapters/aux
+git add internal/adapters/auxadapter
 git commit -m "feat(aux): add analog input adapter config"
 ```
 
 ## Task 6: Add AUX Stream URL Validator And Proxy
 
-- [ ] Create `internal/adapters/aux/url.go`.
-- [ ] Create `internal/adapters/aux/proxy.go`.
+- [ ] Create `internal/adapters/auxadapter/url.go`.
+- [ ] Create `internal/adapters/auxadapter/proxy.go`.
 - [ ] Implement `adapters.PublicRouteProvider`.
 - [ ] Mint distinct single-use probe/play tokens.
 - [ ] Reject non-loopback clients before token lookup.
@@ -1131,20 +1131,20 @@ fmt.Sprintf("http://127.0.0.1:%d/internal/aux-proxy/?kind=%s&aux_token=%s", a.ht
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux/proxy.go internal/adapters/aux/proxy_test.go internal/adapters/aux/url.go internal/adapters/aux/url_test.go
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/aux
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/auxadapter/proxy.go internal/adapters/auxadapter/proxy_test.go internal/adapters/auxadapter/url.go internal/adapters/auxadapter/url_test.go
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/auxadapter
 ```
 
 Commit:
 
 ```bash
-git add internal/adapters/aux
+git add internal/adapters/auxadapter
 git commit -m "feat(aux): add validated stream proxy"
 ```
 
 ## Task 7: Build AUX Session Start/Stop
 
-- [ ] Add `internal/adapters/aux/session.go`.
+- [ ] Add `internal/adapters/auxadapter/session.go`.
 - [ ] Implement `AUXStatus`, `StartAUX`, and `StopAUX` using `adapters.AUXStatus`.
 - [ ] Return errors wrapping `adapters.ErrSourceUnavailable` from the REAL `StartAUX` path when AUX is disabled, no input is configured, `inputID` does not match the configured input, the input mode is unsupported, or config validation fails before session start.
 - [ ] Build stream-url sessions with separate probe/play proxy URLs.
@@ -1307,14 +1307,14 @@ Task 7 depends on the shared contract from Task 8; create `internal/adapters/aux
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux/session.go internal/adapters/aux/session_test.go internal/adapters/aux/adapter.go internal/adapters/aux/adapter_test.go
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/aux
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/auxadapter/session.go internal/adapters/auxadapter/session_test.go internal/adapters/auxadapter/adapter.go internal/adapters/auxadapter/adapter_test.go
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/auxadapter
 ```
 
 Commit:
 
 ```bash
-git add internal/adapters/aux
+git add internal/adapters/auxadapter
 git commit -m "feat(aux): start analog visualizer sessions"
 ```
 
@@ -1323,7 +1323,7 @@ git commit -m "feat(aux): start analog visualizer sessions"
 - [ ] Add `internal/adapters/aux_contract.go` with `AUXStatus` and `ErrSourceUnavailable`.
 - [ ] Add `internal/chassis/aux.go` with the `AUXStarter` interface returning `adapters.AUXStatus`.
 - [ ] Add `AUX AUXStarter` to `chassis.Config` and `Server` before wiring main.
-- [ ] Import `internal/adapters/aux` in `cmd/mister-groovy-relay/main.go`.
+- [ ] Import `internal/adapters/auxadapter` in `cmd/mister-groovy-relay/main.go`.
 - [ ] Construct the adapter after `coreMgr` and before the registry decode loop.
 - [ ] Register it in a stable source order.
 - [ ] Pass the AUX adapter to chassis config.
@@ -1392,7 +1392,7 @@ Run:
 
 ```bash
 cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux_contract.go internal/chassis/aux.go internal/chassis/server.go cmd/mister-groovy-relay/main.go
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters ./internal/chassis ./cmd/mister-groovy-relay ./internal/adapters/aux
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters ./internal/chassis ./cmd/mister-groovy-relay ./internal/adapters/auxadapter
 ```
 
 Commit:
@@ -1407,7 +1407,7 @@ git commit -m "feat(aux): register analog source adapter"
 - [ ] Mount `POST /receiver/aux/start` and `POST /receiver/aux/stop` with same-origin protection.
 - [ ] Return JSON errors with clear status codes.
 - [ ] Keep foreign-session stop as success/no-op.
-- [ ] Use `errors.Is(err, adapters.ErrSourceUnavailable)` for 422 errors so chassis does not import `internal/adapters/aux`.
+- [ ] Use `errors.Is(err, adapters.ErrSourceUnavailable)` for 422 errors so chassis does not import `internal/adapters/auxadapter`.
 
 Route handlers:
 
@@ -1458,7 +1458,7 @@ Tests:
 - `TestAUXStartRouteUsesSameOriginProtection`: mount through `Server.Mount`, send a cross-origin POST, and assert 403 without calling `StartAUX`.
 - `TestAUXStopRouteNoopsWithoutAUX`: server with nil AUX returns 204 for `/receiver/aux/stop`.
 - `TestAUXStopRouteDoesNotRequireForeignStopMatch`: fake returns `matched=false`, handler returns 204, and no error body is emitted.
-- `TestProductionImports_NoChassisAuxAdapterImport`: extend the existing import check to fail if any `internal/chassis` file imports `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/aux`.
+- `TestProductionImports_NoChassisAuxAdapterImport`: extend the existing import check to fail if any `internal/chassis` file imports `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/auxadapter`.
 
 Run:
 
@@ -1686,9 +1686,9 @@ git commit -m "feat(aux): add receiver source control"
 
 | Test | File | Build tag |
 | --- | --- | --- |
-| `TestAUXStreamURLConsumesProbeAndPlayTokensSeparately` | `internal/adapters/aux/proxy_test.go` | none |
-| `TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast` | `internal/adapters/aux/session_test.go` | none |
-| `TestAUXStreamURLPlayFailureReportsAfterPreempt` | `internal/adapters/aux/session_test.go` | none |
+| `TestAUXStreamURLConsumesProbeAndPlayTokensSeparately` | `internal/adapters/auxadapter/proxy_test.go` | none |
+| `TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast` | `internal/adapters/auxadapter/session_test.go` | none |
+| `TestAUXStreamURLPlayFailureReportsAfterPreempt` | `internal/adapters/auxadapter/session_test.go` | none |
 | `TestAUXVisualOnlyProducesVideoWithoutAudioPipe` | `internal/dataplane/aux_visual_only_test.go` (new file) | none |
 | `TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe` | `internal/core/manager_test.go` | none |
 
@@ -1718,14 +1718,14 @@ Expected result: one GET during `ProbeInput`, a second GET during FFmpeg command
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux/proxy_test.go internal/adapters/aux/session_test.go internal/core/manager_test.go internal/dataplane/plane_test.go
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/aux ./internal/core ./internal/dataplane ./internal/ffmpeg ./internal/chassis
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/auxadapter/proxy_test.go internal/adapters/auxadapter/session_test.go internal/core/manager_test.go internal/dataplane/plane_test.go
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/auxadapter ./internal/core ./internal/dataplane ./internal/ffmpeg ./internal/chassis
 ```
 
 Commit:
 
 ```bash
-git add internal/adapters/aux internal/core/manager_test.go internal/dataplane/plane_test.go internal/ffmpeg internal/chassis
+git add internal/adapters/auxadapter internal/core/manager_test.go internal/dataplane/plane_test.go internal/ffmpeg internal/chassis
 git commit -m "test(aux): cover analog visualizer lifecycle"
 ```
 
@@ -1786,7 +1786,7 @@ Run:
 
 ```bash
 git diff --check
-cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/aux ./internal/chassis
+cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters/auxadapter ./internal/chassis
 ```
 
 Commit:
@@ -1806,12 +1806,12 @@ git commit -m "docs(aux): document analog visualizer setup"
 Commands:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w cmd/mister-groovy-relay/main.go internal/core internal/ffmpeg internal/dataplane internal/adapters/aux internal/chassis
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w cmd/mister-groovy-relay/main.go internal/core internal/ffmpeg internal/dataplane internal/adapters/auxadapter internal/chassis
 cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./...
 git diff --check
 # Audit: AUX code must not reference the chassis visualizer-mode route by mistake
 # (the route legitimately exists in internal/chassis/server.go and stays there).
-rg -n "/receiver/visualizer/mode" internal/adapters/aux internal/chassis/aux*.go cmd/mister-groovy-relay/main.go
+rg -n "/receiver/visualizer/mode" internal/adapters/auxadapter internal/chassis/aux*.go cmd/mister-groovy-relay/main.go
 # Audit: no array-of-tables form survived the back-out
 rg -n "\\[\\[adapters\\.aux\\.input\\]\\]" .
 # Audit: no real aux_token values in committed source (redaction tests use the
