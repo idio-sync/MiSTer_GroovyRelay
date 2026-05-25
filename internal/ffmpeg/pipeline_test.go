@@ -824,8 +824,10 @@ func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
 		script := "@echo off\r\n" +
 			"if \"%1\"==\"-hide_banner\" if \"%2\"==\"-filters\" (\r\n" +
 			"  echo Filters:\r\n" +
+			"  echo  ... color             V-^>V       Provide an uniformly colored input.\r\n" +
 			"  echo  ... showfreqs         A-^>V       Convert input audio to a frequencies video output.\r\n" +
 			"  echo  T.C drawtext          V-^>V       Draw text on top of video frames using libfreetype library.\r\n" +
+			"  echo  T.. overlay           VV-^>V      Overlay a video source on top of the input.\r\n" +
 			"  exit /b 0\r\n" +
 			")\r\n" +
 			"echo [Parsed_drawtext_0] Cannot find a valid font for the family Sans 1>&2\r\n" +
@@ -838,7 +840,7 @@ func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
 	path := filepath.Join(dir, "ffmpeg")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"-hide_banner\" ] && [ \"$2\" = \"-filters\" ]; then\n" +
-		"  printf 'Filters:\\n ... showfreqs         A->V       Convert input audio to a frequencies video output.\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n'\n" +
+		"  printf 'Filters:\\n ... color             V->V       Provide an uniformly colored input.\\n ... showfreqs         A->V       Convert input audio to a frequencies video output.\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n T.. overlay           VV->V      Overlay a video source on top of the input.\\n'\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"printf '%s\\n' '[Parsed_drawtext_0] Cannot find a valid font for the family Sans' >&2\n" +
