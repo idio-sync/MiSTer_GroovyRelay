@@ -23,11 +23,11 @@ The Streams adapter does not yet implement `QuickCastProvider`. 3A adds two smal
 ## Goals
 
 1. **Input row works end-to-end.** The paste field detects URL vs magnet live as the user types and updates the kind chip; the CAST button fires `adapters.QuickCastProvider.HandleQuickCast` on the URL adapter (URL paste) or torrent adapter (magnet paste); the `.TORRENT` button opens a file picker and submits multipart to the torrent adapter's file tab.
-2. **Preset bank renders the 12-slot bundled defaults from the streams adapter.** Each slot shows num + name + color-coded badge ("MTV REWIND", "CARTOON", "TOONAMI"). The `.lit` class lights when the current cast matches the slot's `provider:channel`. The `.live` class lights when the slot's channel has `live: true` in the catalog (Toonami Aftermath).
+2. **Preset bank renders the 12-slot bundled defaults from the streams adapter.** Each slot shows num + name + color-coded badge ("MTV REWIND", "CARTOON", "TOONAMI"). The `.lit` class lights when the current cast matches the slot's `provider:channel`. The `.live` class lights for slots whose `PresetEntry.Live` is hardcoded `true` in `bundledChassisPresets` — i.e., Toonami Aftermath's always-live channels. (The `ChannelDefinition` struct at [streams/provider.go:56](../../../internal/adapters/streams/provider.go) has no `Live` field; the mockup's `live: true` is JS-only. The 12-slot list is the single source of truth for the `Live` annotation.)
 3. **Preset click fires a Streams cast** via a new `adapters.PresetCaster.CastPreset(ctx, slot)` method. The streams adapter looks up the slot's `provider:channel` and starts the appropriate session through its existing playback path.
 4. **Cast errors surface inline in the chip.** The detected-kind chip gains a `.err` variant: red background, short uppercase message (`BAD URL`, `BLOCKED HOST`, `CAST FAILED`). Auto-clears on next keystroke or 4 s timeout. No toast, no banner, no dialog.
 5. **LIT state is derived from the existing `transport` SSE event.** No new SSE event. Preset bank JS subscribes to `transport`, parses `AdapterRef`, finds the matching slot, toggles `.lit`. Cast transitions across all chassis tabs stay coherent.
-6. **`internal/chassis/` adds no concrete-adapter imports.** Chassis imports only `internal/adapters` (the interface package). The existing [import_check_test.go](../../../internal/chassis/import_check_test.go) stays green.
+6. **`internal/chassis/` adds no concrete-adapter imports.** Chassis imports only `internal/adapters` (the interface package). 3A extends [import_check_test.go](../../../internal/chassis/import_check_test.go) to enforce this — see §Architecture for details. (The test as written today only forbids chassis from importing `internal/ui`, `internal/uiserver`, and `internal/adapters/auxadapter`; concrete adapter sub-packages like `streams`/`url`/`torrent` are not yet on the forbidden list. 3A closes that gap as a prerequisite task.)
 7. **`/ui/*` is unchanged.** 3A is additive under `/receiver/*`.
 
 ## Non-Goals
@@ -92,10 +92,20 @@ Content-Type: application/x-bittorrent
 1. Parse form (size cap = `adapters.MaxQuickCastBytes` for multipart).
 2. Re-detect kind from the payload (URL prefix `http://` or `https://` → `url`; `magnet:?` → `magnet`; file part present → `file`). The form's `kind` field is logged but not used for routing — defense-in-depth.
 3. Look up tab ID via `castKindToTab[kind]`. If kind is unknown or the tab does not resolve, respond `{"ok": false, "chip": "BAD INPUT"}` with status 400.
-4. Construct `adapters.QuickCastRequest{TabID: tabID, Values: {payload field}, File: <if multipart>}`.
-5. Resolve adapter via `quickCastProviderForTab(tabID)` (mirror of [internal/ui/playback.go:338](../../../internal/ui/playback.go)).
-6. Call `provider.HandleQuickCast(ctx, req)`.
-7. On success respond `{"ok": true}` (status 200). On adapter error respond `{"ok": false, "chip": "<derived short uppercase>"}` (status 4xx or 5xx; see Chip Vocabulary below).
+4. Translate the chassis-side generic `payload` form field into the adapter-side `Values` map key the tab actually reads. The chassis owns this mapping because each adapter's `QuickCastTab.Fields[].Name` differs:
+
+   | `kind` | `tabID` | `Values` key populated from `payload` form field | Adapter source |
+   |---|---|---|---|
+   | `url` | `"url"` | `Values["url"]` | [url/playback_provider.go:177](../../../internal/adapters/url/playback_provider.go) reads `Values["url"]` |
+   | `magnet` | `"torrent-magnet"` | `Values["magnet"]` | [torrent/playback_provider.go:103](../../../internal/adapters/torrent/playback_provider.go) reads `Values["magnet"]` |
+   | `file` | `"torrent-file"` | (no Values entry; `File` field holds the multipart `FileHeader`) | [torrent/playback_provider.go:113](../../../internal/adapters/torrent/playback_provider.go) reads `req.File.Header` |
+
+   Implementation: a small `valuesKeyForTab` lookup table mirrors `castKindToTab`. The startup verification test (§Testing Layer 1) walks both maps and asserts each `(tabID, valuesKey)` pair corresponds to a real `QuickCastField.Name` in the registered tab — catches drift in field names the same way it catches drift in tab IDs.
+
+5. Construct `adapters.QuickCastRequest{TabID: tabID, Values: map{<translatedKey>: <payload>}, File: <multipart FileHeader for kind=file>}`.
+6. Resolve adapter via `quickCastProviderForTab(tabID)` (mirror of [internal/ui/playback.go:338](../../../internal/ui/playback.go)).
+7. Call `provider.HandleQuickCast(ctx, req)`.
+8. On success respond `{"ok": true}` (status 200). On adapter error respond `{"ok": false, "chip": "<derived short uppercase>"}` (status 4xx or 5xx; see Chip Vocabulary below).
 
 **Responses:**
 
@@ -207,19 +217,27 @@ func (a *Adapter) BundledPresets() [12]adapters.PresetEntry {
 }
 
 // CastPreset starts a Streams cast for slot N (1-indexed). Looks up
-// the slot's provider:channel and delegates to the existing playback
-// handler that /ui/streams/play uses today (refactored to a shared
-// helper if not already callable from non-route code).
+// the slot's provider:channel and delegates to the existing
+// StartResolvedStream path — the same path /ui/streams/play uses via
+// handlePlay. No wrapper helper is needed.
 func (a *Adapter) CastPreset(ctx context.Context, slot int) error {
     if slot < 1 || slot > 12 {
         return fmt.Errorf("streams: preset slot %d out of range", slot)
     }
     entry := bundledChassisPresets[slot-1]
-    return a.startChannel(ctx, entry.ProviderID, entry.ChannelID)
+    res := streamhandoff.Resolution{
+        ProviderID: entry.ProviderID,
+        ChannelID:  entry.ChannelID,
+    }
+    if err := a.validatePlayRequest(res); err != nil {
+        return err
+    }
+    _, err := a.StartResolvedStream(ctx, res)
+    return err
 }
 ```
 
-The 12 entries in `assets.go`:
+The 12 entries in `assets.go`. `Live` is hardcoded per-slot in this literal — there is no `Live` field on `ChannelDefinition` to derive from, so the preset list is the authoritative source. Slots 11 and 12 reference `toonami-aftermath`, which is a `directStreamsProviderType` (always-live by nature); other providers are `youtubeChannelJSONProviderType` (non-live VOD-style playlists).
 
 ```go
 var bundledChassisPresets = [12]adapters.PresetEntry{
@@ -238,7 +256,9 @@ var bundledChassisPresets = [12]adapters.PresetEntry{
 }
 ```
 
-Implementation note: `startChannel` should be an existing or factored-out helper from the streams adapter's playback path (the same one [routes.go:122](../../../internal/adapters/streams/routes.go) `handlePlay` uses). If `handlePlay` currently does its work inline, factor the channel-start logic into a method first, then call it from both `handlePlay` and `CastPreset`.
+Implementation note: `CastPreset` calls the existing exported [`StartResolvedStream`](../../../internal/adapters/streams/playback.go) method directly (the same one `handlePlay` at [routes.go:144](../../../internal/adapters/streams/routes.go) delegates to). No new wrapper is introduced — both `handlePlay` and `CastPreset` build a `streamhandoff.Resolution`, run `validatePlayRequest` for symmetry, and then call `StartResolvedStream`.
+
+**Catalog readiness:** `validatePlayRequest` checks the provider/channel against `a.catalogs`, which the adapter's `Start()` populates via `buildCatalogs`. If a `CastPreset` call races startup before catalogs are loaded (very narrow window — `Start()` blocks the bridge boot sequence before HTTP serves), `validatePlayRequest` returns an error. The chassis surfaces this as `CAST FAILED` (5xx + chip). For `directStreamsProviderType` providers (Toonami Aftermath), `buildCatalogs` does the same catalog population as `youtubeChannelJSONProviderType` — the channel set is bundled in the provider definition either way, so no per-type readiness asymmetry exists.
 
 ### Chassis `Config` additions — `internal/chassis/server.go`
 
@@ -278,7 +298,11 @@ func (s *Server) detectCastKind(payload string, hasFile bool) string {
     switch {
     case hasFile:
         return "file"
-    case strings.HasPrefix(payload, "magnet:?"):
+    case strings.HasPrefix(payload, "magnet:"):
+        // Routing-only check; the torrent adapter's startMagnet validates
+        // the full BEP-9 URI structure (xt=urn:btih:..., etc.). Accepting
+        // bare "magnet:" here keeps detection liberal and lets adapter-side
+        // validation own the rejection message.
         return "magnet"
     case strings.HasPrefix(payload, "http://") || strings.HasPrefix(payload, "https://"):
         return "url"
@@ -328,6 +352,8 @@ type PresetSlot struct {
 `PresetsData.ModeLabel` becomes `"Memory · 12 / 12 slots"` (matching the mockup) when `PresetViewer` is wired, `"Memory · 0 / 12 slots"` when nil.
 
 `PresetsData.Count` becomes `"★ 12"` / `"★ 0"` similarly.
+
+**`idleSnapshot` must initialize `Slot: i+1` (1-indexed) on every slot regardless of `Filled` state.** The slot number drives the `POST /receiver/preset/{slot}/cast` URL the client builds from `data-slot`; an empty slot still needs a valid slot number so a click is rejected as "not filled" (handler refuses with 400) rather than as "slot 0 out of range" (handler refuses with 400 but for the wrong reason). Equivalently: if the chassis JS guard "ignore clicks on `.empty` slots" is in place, the slot number never matters for empty slots — but the data attribute must still render correctly for the template's `data-slot` to be valid HTML.
 
 ### Templates — `internal/chassis/templates/`
 
@@ -382,6 +408,31 @@ Same for the search field.
 - On match, toggles `.lit` on the slot whose `data-provider:data-channel` equals the parsed pair.
 - Click handler: `POST /receiver/preset/{slot}/cast` with the slot number; reads JSON; on error renders the error chip in the input row (presets reuse the input row's error surface — single source of truth for cast errors). No DOM update on success; LIT migrates via SSE.
 
+### Prerequisite — extend `internal/chassis/import_check_test.go`
+
+Before any 3A code lands, extend the chassis forbidden-imports list to cover all concrete adapter sub-packages:
+
+```go
+{
+    fromPkg: modulePath + "/internal/chassis",
+    fromDir: filepath.Join(repoRoot, "internal", "chassis"),
+    forbidden: []string{
+        modulePath + "/internal/ui",
+        modulePath + "/internal/uiserver",
+        modulePath + "/internal/adapters/auxadapter",
+        // 3A additions:
+        modulePath + "/internal/adapters/streams",
+        modulePath + "/internal/adapters/url",
+        modulePath + "/internal/adapters/torrent",
+        modulePath + "/internal/adapters/plex",
+        modulePath + "/internal/adapters/jellyfin",
+        modulePath + "/internal/adapters/dlna",
+    },
+},
+```
+
+The test should pass immediately after the extension (chassis has no such imports today). This is a defense-in-depth task: it makes the spec's architectural rule mechanical rather than honor-system.
+
 ### CSS additions — `internal/chassis/static/chassis.css`
 
 All new rules scoped under `body.receiver` (existing `css_scope_test.go` enforces this):
@@ -411,6 +462,7 @@ The chassis snapshot cache and refresher remain unchanged. `buildSnapshot` calls
 - **`internal/chassis/cast_test.go`**
   - `detectCastKind` returns `"url"`, `"magnet"`, `"file"`, `""` for representative inputs.
   - `castKindToTab` startup verification: with the real registry (URL + torrent adapters), every value in the map resolves to a real `QuickCastTab.ID`.
+  - `valuesKeyForTab` startup verification: every `(tabID, valuesKey)` pair resolves to a real `QuickCastField.Name` on the resolved tab's `Fields[]`. Catches adapter-side field renames the same way the tab-ID verification catches tab-ID renames.
   - `castKindToTab` handles a missing adapter gracefully (e.g., torrent not registered) — the test exercises a registry without the torrent adapter and asserts the verification helper returns a structured "missing tab" error rather than panicking. Production startup wires this verification.
   - JSON response shapes: success / 400 / 404 / 409 / 500 each encode `{"ok": bool, "chip": string?}` correctly.
 
@@ -441,7 +493,7 @@ The chassis snapshot cache and refresher remain unchanged. `buildSnapshot` calls
   - `POST /receiver/cast` with multipart file → fake torrent adapter's `HandleQuickCast` was called with the file part.
   - `POST /receiver/preset/3/cast` → fake streams `CastPreset(ctx, 3)` was called.
   - `POST /receiver/preset/0/cast` returns 400.
-  - Connect SSE, fake a transport event with `AdapterRef: "streams:mtv-rewind:90s"` → next snapshot's `Presets.Slots[2].Lit` is true.
+  - Connect SSE, fake a transport event with `AdapterRef: "streams:mtv-rewind:90s:abc12345:42"` (full 5-segment production format, as `queueAdapterRef` emits) → next snapshot's `Presets.Slots[2].Lit` is true. Truncated 3-segment refs (`"streams:mtv-rewind:90s"`) parse the same way; non-streams refs (`"url:..."`) clear all `.lit`.
 
 ### Layer 4 — Manual smoke (post-merge)
 
@@ -467,7 +519,7 @@ None. 3A is purely additive under `/receiver/*`. `/ui/playback/quick-cast` is un
 
 - The 12-slot list is the source of truth for the mockup's preset bank. Do not invent new slots, reorder them, or change the badge labels without updating the mockup at [docs/superpowers/reference/2026-05-21-receiver-v24.html](../reference/2026-05-21-receiver-v24.html) too — drift between the mockup and the live render is the single most common source of churn in this rollout.
 - The `castKindToTab` startup verification is load-bearing. It is what guards the chassis from silently breaking when an adapter renames a `QuickCastTab.ID`. Do not skip it; do not turn it into a soft warning.
-- The chassis must not import `internal/adapters/streams` directly. `import_check_test.go` will fail loudly if it does. The streams adapter is wired exclusively through the `PresetViewer` / `PresetCaster` interfaces in the chassis `Config`.
+- The chassis must not import `internal/adapters/streams` directly. The first 3A task extends [import_check_test.go](../../../internal/chassis/import_check_test.go) to add `internal/adapters/streams`, `internal/adapters/url`, `internal/adapters/torrent`, `internal/adapters/plex`, `internal/adapters/jellyfin`, and `internal/adapters/dlna` to the chassis forbidden list. Without that prerequisite, the discipline is honor-system; with it, the test fails loudly on accidental coupling. The streams adapter is wired exclusively through the `PresetViewer` / `PresetCaster` interfaces in the chassis `Config`.
 - Server-side kind re-detection (`detectCastKind` on the parsed payload) is required for defense-in-depth. A malicious or buggy client could submit `kind=url` with a `magnet:?` payload; the server routes by what's in the payload, not what the client claims.
 - The streams adapter's `startChannel` helper (if it doesn't already exist as a method) is a refactor inside the streams adapter; do not introduce it as a public method on `*Adapter` if it can stay package-private. The `CastPreset` method on the adapter is what gets exported.
 - The `LIT` derivation parses the first three segments of `transport.adapterRef`: `streams:<providerID>:<channelID>:...` (further segments — session, item token — are discarded). Confirmed at spec time against [streams/playback.go:1328](../../../internal/adapters/streams/playback.go). If a future change to the streams adapter widens or narrows that prefix, update both the client-side parser in `preset-bank.js` and the server-side `Lit` computation in `data.go` together — these are paired, not independent.
