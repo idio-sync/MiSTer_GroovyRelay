@@ -260,10 +260,10 @@ func escapeSubtitlePathFor(goos, p string) string {
 // single-quoted region as literal (backslash escapes are NOT processed
 // inside it), so the only character that needs special handling at the
 // filtergraph layer is `'` itself, which must close the quote, emit an
-// escaped apostrophe, and reopen: `'\”`. After the filtergraph parser
+// escaped apostrophe, and reopen: `'\''`. After the filtergraph parser
 // hands the extracted value to drawtext, drawtext runs its own `%{...}`
-// expansion and consumes backslash escapes, so `%` must be escaped as
-// `\%` and `\` as `\\` to render literally. Bracket / colon / comma /
+// expansion and consumes backslash escapes, so `:`, `%`, and `\` must be
+// escaped as `\:`, `\%`, and `\\` to render literally. Bracket / comma /
 // semicolon are filtergraph metacharacters but are inert inside single
 // quotes, so they pass through unchanged.
 func escapeFilterText(s string) string {
@@ -276,6 +276,8 @@ func escapeFilterText(s string) string {
 			b.WriteString(`'\''`)
 		case '\\':
 			b.WriteString(`\\`)
+		case ':':
+			b.WriteString(`\:`)
 		case '%':
 			b.WriteString(`\%`)
 		default:
@@ -398,6 +400,62 @@ func visualizerDrawText(line visualizerTextLine) string {
 	return escapeFilterText(line.Text)
 }
 
+func visualizerProgressText(line visualizerTextLine) string {
+	const prefix = "%{pts\\:hms} / "
+	if strings.HasPrefix(line.Text, prefix) {
+		return prefix + escapeFilterText(strings.TrimPrefix(line.Text, prefix))
+	}
+	return visualizerDrawText(line)
+}
+
+func visualizerLineLayerHeight(fontSize int) int {
+	return fontSize + 4
+}
+
+func visualizerMarqueeX(line visualizerTextLine) string {
+	if !line.Marquee {
+		return line.X
+	}
+	return fmt.Sprintf("if(lte(tw,%d),0,-mod(max(t-1.5,0)*24,tw+24))", line.WindowWidth)
+}
+
+func visualizerLineLayerFilter(line visualizerTextLine, idx int) string {
+	return fmt.Sprintf(
+		"color=c=black@0.0:s=%dx%d,format=rgba,drawtext=text='%s':x='%s':y=0:fontsize=%d:fontcolor=%s:box=1:boxcolor=0x00000099[vizline%d]",
+		line.WindowWidth,
+		visualizerLineLayerHeight(line.FontSize),
+		visualizerDrawText(line),
+		visualizerMarqueeX(line),
+		line.FontSize,
+		line.FontColor,
+		idx,
+	)
+}
+
+func visualizerOverlayY(line visualizerTextLine) string {
+	if strings.HasPrefix(line.Y, "h-") {
+		return "H-" + strings.TrimPrefix(line.Y, "h-")
+	}
+	return line.Y
+}
+
+func visualizerOverlayFilter(base string, line visualizerTextLine, idx int, next string) string {
+	return fmt.Sprintf("[%s][vizline%d]overlay=x=%s:y=%s:format=auto[%s]", base, idx, line.X, visualizerOverlayY(line), next)
+}
+
+func visualizerProgressFilter(base string, line visualizerTextLine, next string) string {
+	return fmt.Sprintf(
+		"[%s]drawtext=text='%s':x=%s:y=%s:fontsize=%d:fontcolor=%s:box=1:boxcolor=0x00000099[%s]",
+		base,
+		visualizerProgressText(line),
+		line.X,
+		line.Y,
+		line.FontSize,
+		line.FontColor,
+		next,
+	)
+}
+
 func nonEmpty(values ...string) []string {
 	out := make([]string, 0, len(values))
 	for _, v := range values {
@@ -452,15 +510,6 @@ func visualizerCoreFilter(mode VisualizerMode, logicalW, logicalH int) string {
 	}
 }
 
-func visualizerTextY(mode VisualizerMode, line int) string {
-	switch mode {
-	case VisualizerModeStereoScope:
-		return fmt.Sprintf("h-%d", 96-line*30)
-	default:
-		return fmt.Sprintf("%d", 24+line*30)
-	}
-}
-
 func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 	if !isSupportedVisualizerMode(s.Visualizer.Mode) {
 		return "", fmt.Errorf("unsupported visualizer mode %q", s.Visualizer.Mode)
@@ -478,10 +527,17 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 	}
 	label := "viz0"
 	if s.Visualizer.DrawTextAvailable {
+		lineLayer := 0
 		for i, line := range visualizerTextLines(s) {
 			next := fmt.Sprintf("viztext%d", i)
-			parts = append(parts, fmt.Sprintf("[%s]drawtext=text='%s':x=24:y=%s:fontsize=24:fontcolor=0x9dff9d:box=1:boxcolor=0x00000099[%s]",
-				label, visualizerDrawText(line), visualizerTextY(s.Visualizer.Mode, i), next))
+			if line.Role == visualizerTextRoleProgress {
+				parts = append(parts, visualizerProgressFilter(label, line, next))
+				label = next
+				continue
+			}
+			parts = append(parts, visualizerLineLayerFilter(line, lineLayer))
+			parts = append(parts, visualizerOverlayFilter(label, line, lineLayer, next))
+			lineLayer++
 			label = next
 		}
 	}
