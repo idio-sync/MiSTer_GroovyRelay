@@ -304,33 +304,44 @@ func TestStopAUXInputMismatchDoesNotStopActiveRef(t *testing.T) {
 	}
 }
 
-func TestSameRefStartAUXRestartReleasesReplacedProxyTokens(t *testing.T) {
+func TestStartAUXSameActiveInputIsIdempotent(t *testing.T) {
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
 	a.mustApplyConfig(t, validStreamConfig())
-	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+
+	ref, err := a.StartAUX(context.Background(), "aux")
+	if err != nil {
 		t.Fatalf("first StartAUX: %v", err)
+	}
+	if ref != "aux:aux" {
+		t.Fatalf("first StartAUX ref = %q, want aux:aux", ref)
 	}
 	if got := len(a.proxy.tokens); got != 2 {
 		t.Fatalf("proxy tokens after first StartAUX = %d, want 2", got)
 	}
+	originalTokens := tokenNames(a.proxy.tokens)
+	originalProbe := fc.lastRequest.StreamProbeURL
+	originalPlay := fc.lastRequest.StreamURL
 
-	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+	ref, err = a.StartAUX(context.Background(), "aux")
+	if err != nil {
 		t.Fatalf("second StartAUX: %v", err)
+	}
+	if ref != "aux:aux" {
+		t.Fatalf("second StartAUX ref = %q, want aux:aux", ref)
 	}
 
 	if got := len(a.proxy.tokens); got != 2 {
-		t.Fatalf("proxy tokens after same-ref restart = %d, want only newer session's 2 tokens", got)
+		t.Fatalf("proxy tokens after idempotent StartAUX = %d, want original 2 tokens", got)
 	}
-	want := []string{
-		proxyTokenFromURL(fc.lastRequest.StreamProbeURL),
-		proxyTokenFromURL(fc.lastRequest.StreamURL),
+	if got := tokenNames(a.proxy.tokens); !sameStrings(got, originalTokens) {
+		t.Fatalf("proxy tokens after idempotent StartAUX = %#v, want original tokens %#v", got, originalTokens)
 	}
-	if got := tokenNames(a.proxy.tokens); !sameStrings(got, want) {
-		t.Fatalf("proxy tokens after same-ref restart = %#v, want newer session tokens %#v", got, want)
+	if fc.lastRequest.StreamProbeURL != originalProbe || fc.lastRequest.StreamURL != originalPlay {
+		t.Fatalf("last request proxy URLs changed: probe=%q play=%q, want %q/%q", fc.lastRequest.StreamProbeURL, fc.lastRequest.StreamURL, originalProbe, originalPlay)
 	}
-	if fc.starts != 2 {
-		t.Fatalf("StartSession calls = %d, want 2", fc.starts)
+	if fc.starts != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", fc.starts)
 	}
 }
 
@@ -356,7 +367,7 @@ func TestStartAUXStartSessionErrorReleasesProxyTokensAndDoesNotWrapUnavailable(t
 	}
 }
 
-func TestReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *testing.T) {
+func TestDifferentRefReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *testing.T) {
 	wantErr := errors.New("core start failed before preempt")
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
@@ -370,8 +381,16 @@ func TestReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *t
 		t.Fatalf("activeRef after first StartAUX = %q, want aux:aux", got)
 	}
 
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux2", Name: "Second AUX", Mode: ModeStreamURL,
+			AudioOutput: AudioOutputVisualOnly,
+			URL:         "http://capture-host:8090/aux2.wav",
+		},
+	})
 	fc.startErr = wantErr
-	_, err := a.StartAUX(context.Background(), "aux")
+	_, err := a.StartAUX(context.Background(), "aux2")
 
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("StartAUX error = %v, want core error", err)
@@ -401,7 +420,7 @@ func TestReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *t
 	}
 }
 
-func TestReplacementStartAUXStartSessionErrorAfterPreemptLeavesInactive(t *testing.T) {
+func TestDifferentRefReplacementStartAUXStartSessionErrorAfterPreemptLeavesInactive(t *testing.T) {
 	wantErr := errors.New("core start failed after preempt")
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
@@ -415,13 +434,21 @@ func TestReplacementStartAUXStartSessionErrorAfterPreemptLeavesInactive(t *testi
 		t.Fatalf("tokens after first StartAUX = %#v, want 2 tokens", oldTokens)
 	}
 
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux2", Name: "Second AUX", Mode: ModeStreamURL,
+			AudioOutput: AudioOutputVisualOnly,
+			URL:         "http://capture-host:8090/aux2.wav",
+		},
+	})
 	fc.onStart = func(req core.SessionRequest) {
 		if fc.starts == 2 {
 			oldOnStop("preempted")
 		}
 	}
 	fc.startErr = wantErr
-	_, err := a.StartAUX(context.Background(), "aux")
+	_, err := a.StartAUX(context.Background(), "aux2")
 
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("StartAUX error = %v, want core error", err)
@@ -455,32 +482,55 @@ func TestConcurrentSameRefStartAUXSerializesStartSession(t *testing.T) {
 	fc := newBlockingStartCore()
 	a := newTestAdapterWithCore(t, fc)
 	a.mustApplyConfig(t, validStreamConfig())
-	errCh := make(chan error, 2)
+	type startResult struct {
+		ref string
+		err error
+	}
+	resultCh := make(chan startResult, 2)
 
 	go func() {
-		_, err := a.StartAUX(context.Background(), "aux")
-		errCh <- err
+		ref, err := a.StartAUX(context.Background(), "aux")
+		resultCh <- startResult{ref: ref, err: err}
 	}()
 	first := fc.waitForStart(t, 1)
 
+	attempted := make(chan struct{})
 	go func() {
-		_, err := a.StartAUX(context.Background(), "aux")
-		errCh <- err
+		close(attempted)
+		ref, err := a.StartAUX(context.Background(), "aux")
+		resultCh <- startResult{ref: ref, err: err}
 	}()
+	<-attempted
 	fc.assertNoStart(t, 2, 50*time.Millisecond)
 
 	first.release()
-	if err := <-errCh; err != nil {
-		t.Fatalf("first StartAUX: %v", err)
+	firstResult := <-resultCh
+	if firstResult.err != nil {
+		t.Fatalf("first StartAUX: %v", firstResult.err)
 	}
-	second := fc.waitForStart(t, 2)
-	second.release()
-	if err := <-errCh; err != nil {
-		t.Fatalf("second StartAUX: %v", err)
+	if firstResult.ref != "aux:aux" {
+		t.Fatalf("first StartAUX ref = %q, want aux:aux", firstResult.ref)
+	}
+	select {
+	case call := <-fc.started:
+		call.release()
+		t.Fatalf("second StartAUX entered StartSession call %d, want idempotent return", call.n)
+	case secondResult := <-resultCh:
+		if secondResult.err != nil {
+			t.Fatalf("second StartAUX: %v", secondResult.err)
+		}
+		if secondResult.ref != "aux:aux" {
+			t.Fatalf("second StartAUX ref = %q, want aux:aux", secondResult.ref)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second StartAUX")
 	}
 
 	if got := len(a.proxy.tokens); got != 2 {
-		t.Fatalf("proxy tokens after serialized starts = %d, want newer session tokens only", got)
+		t.Fatalf("proxy tokens after serialized starts = %d, want original session tokens only", got)
+	}
+	if got := fc.startCallCount(); got != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", got)
 	}
 }
 
@@ -498,7 +548,9 @@ func TestStopAUXWaitsForInFlightSameRefStartAUX(t *testing.T) {
 	}()
 	first := fc.waitForStart(t, 1)
 
+	attempted := make(chan struct{})
 	go func() {
+		close(attempted)
 		matched, err := a.StopAUX(context.Background(), "aux")
 		if err != nil {
 			stopCh <- err
@@ -510,6 +562,7 @@ func TestStopAUXWaitsForInFlightSameRefStartAUX(t *testing.T) {
 		}
 		stopCh <- nil
 	}()
+	<-attempted
 	fc.assertNoStop(t, 50*time.Millisecond)
 
 	first.release()
@@ -580,29 +633,26 @@ func TestStaleOnStopDoesNotClearNewerActiveAUXRef(t *testing.T) {
 	}
 }
 
-func TestSameRefStaleOnStopDoesNotClearNewerActiveAUXSession(t *testing.T) {
+func TestClearActiveSessionIgnoresStaleSameRefGeneration(t *testing.T) {
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
 	a.mustApplyConfig(t, validStreamConfig())
 	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
-		t.Fatalf("first StartAUX: %v", err)
+		t.Fatalf("StartAUX: %v", err)
 	}
-	oldOnStop := fc.lastRequest.OnStop
-	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
-		t.Fatalf("second StartAUX: %v", err)
-	}
-	if fc.status.AdapterRef != "aux:aux" {
-		t.Fatalf("core status after second StartAUX = %+v, want aux:aux", fc.status)
-	}
+	staleGen := a.activeGen
+	a.activeGen++
 
-	oldOnStop("preempted")
+	if cleanup := a.clearActiveSession("aux:aux", staleGen); cleanup != nil {
+		t.Fatal("clearActiveSession returned cleanup for stale generation")
+	}
 
 	if a.activeRef != "aux:aux" {
-		t.Fatalf("activeRef after same-ref stale OnStop = %q, want aux:aux", a.activeRef)
+		t.Fatalf("activeRef after stale clear = %q, want aux:aux", a.activeRef)
 	}
 	st := a.AUXStatus(context.Background())
 	if !st.Active || st.AdapterRef != "aux:aux" {
-		t.Fatalf("AUXStatus after same-ref stale OnStop = %+v, want active aux:aux", st)
+		t.Fatalf("AUXStatus after stale clear = %+v, want active aux:aux", st)
 	}
 }
 
@@ -767,6 +817,12 @@ func (f *blockingStartCore) Status() core.SessionStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status
+}
+
+func (f *blockingStartCore) startCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.startCalls
 }
 
 func (f *blockingStartCore) waitForStart(t *testing.T, want int) blockingStartCall {

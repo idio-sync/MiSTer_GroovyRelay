@@ -77,6 +77,11 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		a.mu.Unlock()
 		return "", a.recordAUXStartError(unavailableError("AUX core is unavailable"))
 	}
+	targetRef := "aux:" + cfg.Input.ID
+	if a.activeRef == targetRef && coreManager.Status().AdapterRef == targetRef {
+		a.mu.Unlock()
+		return targetRef, nil
+	}
 	req, cleanup, err := a.buildSessionRequestLocked(ctx, cfg.Input)
 	if err != nil {
 		a.mu.Unlock()
