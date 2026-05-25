@@ -479,16 +479,21 @@ func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
 	body := w.Body.String()
 	stateIdx := strings.Index(body, "event: state\n")
 	vfdIdx := strings.Index(body, "event: vfd\n")
+	sourceIdx := strings.Index(body, "event: source\n")
 	vizIdx := strings.Index(body, "event: visualizer\n")
 	transportIdx := strings.Index(body, "event: transport\n")
+	volumeIdx := strings.Index(body, "event: volume\n")
 	if vizIdx < 0 {
 		t.Fatalf("body missing initial visualizer event:\n%s", body)
 	}
 	if transportIdx < 0 {
 		t.Fatalf("body missing initial transport event:\n%s", body)
 	}
-	if !(stateIdx >= 0 && vfdIdx > stateIdx && vizIdx > vfdIdx && transportIdx > vizIdx) {
-		t.Errorf("initial event order should be state, vfd, visualizer, transport; body:\n%s", body)
+	if volumeIdx < 0 {
+		t.Fatalf("body missing initial volume event:\n%s", body)
+	}
+	if !(stateIdx >= 0 && vfdIdx > stateIdx && sourceIdx > vfdIdx && vizIdx > sourceIdx && transportIdx > vizIdx && volumeIdx > transportIdx) {
+		t.Errorf("initial event order should be state, vfd, source, visualizer, transport, volume; body:\n%s", body)
 	}
 	if !strings.Contains(body, `"mode":"stereo_scope"`) {
 		t.Errorf("body missing visualizer mode payload:\n%s", body)
@@ -641,6 +646,26 @@ func (m *mutableSessionViewer) StatusHomeView() core.StatusHomeView {
 func (m *mutableSessionViewer) set(view core.StatusHomeView) {
 	m.mu.Lock()
 	m.view = view
+	m.mu.Unlock()
+}
+
+// mutableVolumeViewer is the volume counterpart to mutableSessionViewer.
+// Tests use it to flip the live output volume mid-stream so the volume
+// diff loop in handleEvents has something to react to.
+type mutableVolumeViewer struct {
+	mu     sync.Mutex
+	volume int
+}
+
+func (m *mutableVolumeViewer) OutputVolume() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.volume
+}
+
+func (m *mutableVolumeViewer) set(volume int) {
+	m.mu.Lock()
+	m.volume = volume
 	m.mu.Unlock()
 }
 
@@ -902,6 +927,100 @@ func TestHandleEvents_VisualizerEventOmittedWhenModeUnchanged(t *testing.T) {
 	body := w.Body.String()
 	if got := strings.Count(body, "event: visualizer\n"); got != 1 {
 		t.Errorf("visualizer event count = %d, want 1 initial event only; body:\n%s", got, body)
+	}
+}
+
+func TestHandleEvents_InitialSnapshotIncludesVolume(t *testing.T) {
+	t.Parallel()
+	vv := &mutableVolumeViewer{volume: 73}
+	cfg := nonZeroConfig()
+	cfg.VolumeViewer = vv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+
+	if !strings.Contains(body, "event: volume\n") {
+		t.Fatalf("SSE stream missing volume event:\n%s", body)
+	}
+	if !strings.Contains(body, `"outputVolume":73`) {
+		t.Fatalf("SSE stream missing outputVolume 73:\n%s", body)
+	}
+}
+
+func TestHandleEvents_EmitsVolumeWhenChanged(t *testing.T) {
+	t.Parallel()
+	vv := &mutableVolumeViewer{volume: 40}
+	cfg := nonZeroConfig()
+	cfg.VolumeViewer = vv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.Mount(http.NewServeMux())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		vv.set(41)
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+
+	if got := strings.Count(body, "event: volume\n"); got < 2 {
+		t.Fatalf("volume event count = %d, want initial plus changed event; body:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"outputVolume":40`) || !strings.Contains(body, `"outputVolume":41`) {
+		t.Fatalf("SSE stream missing initial/changed volume payloads:\n%s", body)
+	}
+}
+
+func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
+	t.Parallel()
+	vv := &mutableVolumeViewer{volume: 40}
+	cfg := nonZeroConfig()
+	cfg.VolumeViewer = vv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.Mount(http.NewServeMux())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	if got := strings.Count(w.Body.String(), "event: volume\n"); got != 1 {
+		t.Fatalf("volume event count = %d, want exactly 1 (initial only); body:\n%s", got, w.Body.String())
+	}
+}
+
+func TestVolumeChanged_ComparesOnlyOutputVolume(t *testing.T) {
+	if !volumeChanged(TransportData{OutputVolume: 1}, TransportData{OutputVolume: 2}) {
+		t.Fatal("volumeChanged = false, want true for changed output volume")
+	}
+	if volumeChanged(TransportData{OutputVolume: 2, State: "playing"}, TransportData{OutputVolume: 2, State: "paused"}) {
+		t.Fatal("volumeChanged = true, want false for transport-only changes")
 	}
 }
 
