@@ -3,6 +3,7 @@ package ffmpeg
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -70,15 +71,27 @@ func DrawTextUsable(ctx context.Context, ffmpegPath string) (bool, error) {
 
 var drawTextUsableFn = DrawTextUsable
 
-func visualizerOverlayFiltersAvailable(ctx context.Context, ffmpegPath string) bool {
+// visualizerOverlayFiltersAvailable reports whether the ffmpeg binary
+// exposes every filter required to render the overlay text layer. The
+// missing filter (if any) is returned so callers can log it as the reason
+// for downgrading to bars-only.
+func visualizerOverlayFiltersAvailable(ctx context.Context, ffmpegPath string) (bool, string) {
 	for _, filter := range RequiredVisualizerOverlayFilters() {
 		ok, err := filterAvailableFn(ctx, ffmpegPath, filter)
 		if err != nil || !ok {
-			return false
+			return false, filter
 		}
 	}
-	return true
+	return true, ""
 }
+
+// visualizerCapabilityProbeBudget bounds the total time a Spawn will
+// spend probing ffmpeg for visualizer overlay capabilities. Five probes
+// run sequentially (up to one required-filter probe, three overlay-filter
+// probes, and the drawtext smoke render), and the smoke render alone has
+// been measured at 200–800 ms on slow-disk cold starts. A 2 s budget was
+// too tight in those conditions and produced silent fallbacks.
+const visualizerCapabilityProbeBudget = 5 * time.Second
 
 func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpec {
 	if !s.Visualizer.Enabled {
@@ -88,7 +101,7 @@ func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpe
 	if ffmpegPath == "" {
 		ffmpegPath = "ffmpeg"
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	checkCtx, cancel := context.WithTimeout(ctx, visualizerCapabilityProbeBudget)
 	defer cancel()
 
 	requiredOK := false
@@ -104,12 +117,22 @@ func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpe
 	}
 	s.Visualizer.RequiredFiltersAvailable = requiredOK
 
-	if visualizerOverlayFiltersAvailable(checkCtx, ffmpegPath) {
+	overlayOK, missing := visualizerOverlayFiltersAvailable(checkCtx, ffmpegPath)
+	if overlayOK {
 		ok, err := drawTextUsableFn(checkCtx, ffmpegPath)
 		if err == nil && ok {
 			s.Visualizer.DrawTextAvailable = true
 			return s
 		}
+		slog.Warn("visualizer overlay text disabled: drawtext smoke probe failed",
+			"ffmpeg_path", ffmpegPath,
+			"mode", string(s.Visualizer.Mode),
+			"err", err)
+	} else {
+		slog.Warn("visualizer overlay text disabled: required filter unavailable",
+			"ffmpeg_path", ffmpegPath,
+			"mode", string(s.Visualizer.Mode),
+			"missing_filter", missing)
 	}
 	s.Visualizer.DrawTextAvailable = false
 	return s

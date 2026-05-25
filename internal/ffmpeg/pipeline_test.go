@@ -206,7 +206,7 @@ func TestVisualizerTextLines_MetadataOrderStylesAndProgress(t *testing.T) {
 		{Role: visualizerTextRoleArtist, Text: "NEW ORDER", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "24", WindowWidth: 392, Marquee: true},
 		{Role: visualizerTextRoleTitle, Text: "BLUE MONDAY", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "48", WindowWidth: 392, Marquee: true},
 		{Role: visualizerTextRoleAlbum, Text: "POWER CORRUPTION & LIES", FontSize: 18, FontColor: "0x7fdc7f", X: "24", Y: "72", WindowWidth: 392, Marquee: true},
-		{Role: visualizerTextRoleProgress, Text: "%{pts\\:hms} / 7:29", TrustedExpr: true, FontSize: 16, FontColor: "0x70c870", X: "w-tw-24", Y: "24"},
+		{Role: visualizerTextRoleProgress, Text: "%{pts\\:hms} / 7:29", FontSize: 16, FontColor: "0x70c870", X: "w-tw-24", Y: "24"},
 	}
 	for i := range want {
 		if lines[i] != want[i] {
@@ -245,7 +245,6 @@ func TestVisualizerLayoutForLogicalCanvases(t *testing.T) {
 		name          string
 		mode          VisualizerMode
 		logicalW      int
-		logicalH      int
 		sideMargin    int
 		metadataWidth int
 		metadataY     []string
@@ -253,15 +252,15 @@ func TestVisualizerLayoutForLogicalCanvases(t *testing.T) {
 		progressY     string
 		showProgress  bool
 	}{
-		{name: "ntsc 240p upper", mode: VisualizerModeRetroAnalyzer, logicalW: 320, logicalH: 240, sideMargin: 16, metadataWidth: 176, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
-		{name: "pal 288p upper", mode: VisualizerModeOscilloscopeWave, logicalW: 384, logicalH: 288, sideMargin: 16, metadataWidth: 234, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
-		{name: "ntsc 480i upper", mode: VisualizerModeRetroAnalyzer, logicalW: 640, logicalH: 480, sideMargin: 24, metadataWidth: 392, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-24", progressY: "24", showProgress: true},
-		{name: "pal 576i lower", mode: VisualizerModeStereoScope, logicalW: 768, logicalH: 576, sideMargin: 24, metadataWidth: 504, metadataY: []string{"h-88", "h-64", "h-40"}, progressX: "w-tw-24", progressY: "h-88", showProgress: true},
-		{name: "tiny unexpected canvas omits progress", mode: VisualizerModeRetroAnalyzer, logicalW: 180, logicalH: 120, sideMargin: 16, metadataWidth: 148, metadataY: []string{"24", "48", "72"}, progressX: "", progressY: "", showProgress: false},
+		{name: "ntsc 240p upper", mode: VisualizerModeRetroAnalyzer, logicalW: 320, sideMargin: 16, metadataWidth: 176, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
+		{name: "pal 288p upper", mode: VisualizerModeOscilloscopeWave, logicalW: 384, sideMargin: 16, metadataWidth: 234, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
+		{name: "ntsc 480i upper", mode: VisualizerModeRetroAnalyzer, logicalW: 640, sideMargin: 24, metadataWidth: 392, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-24", progressY: "24", showProgress: true},
+		{name: "pal 576i lower", mode: VisualizerModeStereoScope, logicalW: 768, sideMargin: 24, metadataWidth: 504, metadataY: []string{"h-88", "h-64", "h-40"}, progressX: "w-tw-24", progressY: "h-88", showProgress: true},
+		{name: "tiny unexpected canvas omits progress", mode: VisualizerModeRetroAnalyzer, logicalW: 180, sideMargin: 16, metadataWidth: 148, metadataY: []string{"24", "48", "72"}, progressX: "", progressY: "", showProgress: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := visualizerLayoutFor(tc.mode, tc.logicalW, tc.logicalH)
+			got := visualizerLayoutFor(tc.mode, tc.logicalW)
 			if got.SideMargin != tc.sideMargin || got.MetadataX != tc.sideMargin {
 				t.Fatalf("margins = %#v, want side/meta %d", got, tc.sideMargin)
 			}

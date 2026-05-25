@@ -311,7 +311,6 @@ const (
 
 type visualizerTextLine struct {
 	Text        string
-	TrustedExpr bool
 	Role        string
 	FontSize    int
 	FontColor   string
@@ -341,7 +340,7 @@ func clampInt(v, min, max int) int {
 	return v
 }
 
-func visualizerLayoutFor(mode VisualizerMode, logicalW, logicalH int) visualizerOverlayLayout {
+func visualizerLayoutFor(mode VisualizerMode, logicalW int) visualizerOverlayLayout {
 	sideMargin := 24
 	if logicalW < 640 {
 		sideMargin = 16
@@ -375,8 +374,8 @@ func visualizerMetadataLine(layout visualizerOverlayLayout, role, text, y string
 
 func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 	md := s.Visualizer.Metadata
-	logicalW, logicalH := logicalCanvas(s.OutputHeight)
-	layout := visualizerLayoutFor(s.Visualizer.Mode, logicalW, logicalH)
+	logicalW, _ := logicalCanvas(s.OutputHeight)
+	layout := visualizerLayoutFor(s.Visualizer.Mode, logicalW)
 	lines := make([]visualizerTextLine, 0, 4)
 	y := 0
 	if artist := strings.TrimSpace(md.Artist); artist != "" {
@@ -393,18 +392,19 @@ func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleAlbum, album, layout.MetadataY[y], 18, visualizerAlbumColor))
 	}
 	if md.Duration > 0 && layout.ShowProgress {
-		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), TrustedExpr: true, Role: visualizerTextRoleProgress, FontSize: 16, FontColor: visualizerProgressColor, X: layout.ProgressX, Y: layout.ProgressY})
+		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), Role: visualizerTextRoleProgress, FontSize: 16, FontColor: visualizerProgressColor, X: layout.ProgressX, Y: layout.ProgressY})
 	}
 	return lines
 }
 
 func visualizerDrawText(line visualizerTextLine) string {
-	if line.TrustedExpr {
-		return line.Text
-	}
 	return escapeFilterText(line.Text)
 }
 
+// visualizerProgressText preserves the %{pts\:hms} expression at the head
+// of a progress line (drawtext evaluates it as a runtime timestamp), while
+// escaping any user-supplied tail (the formatted clock string) so colons
+// in the clock don't terminate the drawtext value.
 func visualizerProgressText(line visualizerTextLine) string {
 	const prefix = "%{pts\\:hms} / "
 	if strings.HasPrefix(line.Text, prefix) {
@@ -459,16 +459,6 @@ func visualizerProgressFilter(base string, line visualizerTextLine, next string)
 		line.FontColor,
 		next,
 	)
-}
-
-func nonEmpty(values ...string) []string {
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			out = append(out, strings.TrimSpace(v))
-		}
-	}
-	return out
 }
 
 func formatDurationClock(d time.Duration) string {
