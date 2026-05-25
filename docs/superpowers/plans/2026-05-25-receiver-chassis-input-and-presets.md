@@ -1023,16 +1023,17 @@ func TestCastPreset_SuccessfulSlotCallsStartResolvedStream(t *testing.T) {
 	// fakeCore inside it records what arrives in StartResolvedStream
 	// (via StartSession on the fake core).
 	a := newTestAdapterWithCatalog(t)
-	if err := a.CastPreset(context.Background(), 7); err != nil {
-		t.Fatalf("CastPreset(7) err = %v", err)
+	if err := a.CastPreset(context.Background(), 9); err != nil {
+		t.Fatalf("CastPreset(9) err = %v", err)
 	}
 	// The exact assertion shape depends on how the existing fakeCore
-	// records sessions. Cartoon-rewind/loonytunes is slot 7, so the
+	// records sessions. Cartoon-rewind/heman is slot 9 and already
+	// exists in newTestAdapterWithCatalog's seeded fixture, so the
 	// AdapterRef on the started session should contain
-	// "streams:cartoon-rewind:loonytunes:..." (5-segment format).
+	// "streams:cartoon-rewind:heman:..." (5-segment format).
 	started := a.lastStartedSession(t) // small helper — see Step 3 note
-	if !strings.HasPrefix(started.AdapterRef, "streams:cartoon-rewind:loonytunes:") {
-		t.Errorf("started.AdapterRef = %q, want prefix streams:cartoon-rewind:loonytunes:", started.AdapterRef)
+	if !strings.HasPrefix(started.AdapterRef, "streams:cartoon-rewind:heman:") {
+		t.Errorf("started.AdapterRef = %q, want prefix streams:cartoon-rewind:heman:", started.AdapterRef)
 	}
 }
 ```
@@ -1051,7 +1052,7 @@ Expected: FAIL with `CastPreset undefined` on `*Adapter`.
 
 - [ ] **Step 3: Implement `CastPreset`**
 
-Append to [internal/adapters/streams/preset.go](../../../internal/adapters/streams/preset.go):
+Update [internal/adapters/streams/preset.go](../../../internal/adapters/streams/preset.go) so it has one consolidated import block, then append `CastPreset` below `BundledPresets`:
 
 ```go
 import (
@@ -1059,7 +1060,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/streamhandoff"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 )
 
 // CastPreset starts a Streams cast for slot N (1-indexed). The slot's
@@ -1537,19 +1539,22 @@ func TestVerifyCastTabBindings_MissingAdapterFails(t *testing.T) {
 
 The local stubs `newURLAdapterStub` and `newTorrentAdapterStub` are minimal `adapters.Adapter` + `adapters.QuickCastProvider` implementations defined in the same test file. They return tab IDs `"url"`, `"torrent-magnet"`, `"torrent-file"` to satisfy the mapping.
 
-Sample stub (place at the bottom of `cast_test.go`):
+Sample stub (place at the bottom of `cast_test.go`; add `github.com/BurntSushi/toml` to the test imports):
 
 ```go
 type urlAdapterStub struct{}
 
-func (urlAdapterStub) Name() string                           { return "url" }
-func (urlAdapterStub) Description() string                    { return "" }
-func (urlAdapterStub) UIRoutes() []adapters.Route             { return nil }
-func (urlAdapterStub) CompanionRoutes() []adapters.Route      { return nil }
-func (urlAdapterStub) Start(ctx context.Context) error        { return nil }
-func (urlAdapterStub) Stop(ctx context.Context) error         { return nil }
-func (urlAdapterStub) IsEnabled() bool                        { return true }
-func (urlAdapterStub) Status() adapters.Status                { return adapters.Status{} }
+func (urlAdapterStub) Name() string            { return "url" }
+func (urlAdapterStub) DisplayName() string     { return "URL" }
+func (urlAdapterStub) Fields() []adapters.FieldDef { return nil }
+func (urlAdapterStub) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
+func (urlAdapterStub) IsEnabled() bool         { return true }
+func (urlAdapterStub) Start(ctx context.Context) error { return nil }
+func (urlAdapterStub) Stop() error             { return nil }
+func (urlAdapterStub) Status() adapters.Status { return adapters.Status{} }
+func (urlAdapterStub) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeNextCast, nil
+}
 func (urlAdapterStub) QuickCastTabs() []adapters.QuickCastTab {
 	return []adapters.QuickCastTab{{
 		ID:       "url",
@@ -1562,12 +1567,15 @@ func (urlAdapterStub) HandleQuickCast(ctx context.Context, req adapters.QuickCas
 	return adapters.QuickCastResult{}, nil
 }
 
-func newURLAdapterStub(t *testing.T) adapters.Adapter { return urlAdapterStub{} }
+func newURLAdapterStub(t *testing.T) adapters.Adapter {
+	t.Helper()
+	return urlAdapterStub{}
+}
 ```
 
 (Similar stub for `newTorrentAdapterStub` exposes `torrent-magnet` and `torrent-file` tabs with the right field names.)
 
-If the `adapters.Adapter` interface has more required methods than shown, copy them from the existing `internal/adapters/adapter.go`.
+Keep the stub method set in sync with the current `adapters.Adapter` interface in `internal/adapters/adapter.go`; the sample above reflects the interface at plan time (`Name`, `DisplayName`, `Fields`, `DecodeConfig`, `IsEnabled`, `Start`, `Stop`, `Status`, `ApplyConfig`).
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -1797,6 +1805,53 @@ func TestHandleCastPost_FileUploadPopulatesFile(t *testing.T) {
 	}
 }
 
+func TestHandleCastPost_FileUploadWrongFieldReturns400(t *testing.T) {
+	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
+	body, contentType := makeMultipart(t, "file", "example.torrent", []byte("d8:announce..."))
+	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	srv.handleCastPost(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCastPost_FileUploadTooLargeReturns413(t *testing.T) {
+	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
+	body, contentType := makeMultipart(t, "torrent_file", "huge.torrent", bytes.Repeat([]byte("x"), adapters.MaxQuickCastBytes+1))
+	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	srv.handleCastPost(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("Code = %d, want 413; body = %s", rec.Code, rec.Body.String())
+	}
+	var bodyOut map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &bodyOut)
+	if bodyOut["chip"] != "FILE TOO BIG" {
+		t.Errorf("chip = %v, want FILE TOO BIG", bodyOut["chip"])
+	}
+}
+
+func TestHandleCastPost_FileUploadMultipleFilesReturns400(t *testing.T) {
+	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
+	body, contentType := makeMultipartFiles(t, []multipartFilePart{
+		{fieldName: "torrent_file", filename: "one.torrent", data: []byte("one")},
+		{fieldName: "torrent_file", filename: "two.torrent", data: []byte("two")},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	srv.handleCastPost(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleCastPost_BadInputReturns400(t *testing.T) {
 	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
 	form := url.Values{}
@@ -1862,6 +1917,36 @@ func TestHandleCastPost_UntypedErrorCollapsesToCastFailed(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if body["chip"] != "CAST FAILED" {
 		t.Errorf("chip = %v, want CAST FAILED", body["chip"])
+	}
+}
+
+func TestReceiverCastPostRouteRejectsMissingFetchSite(t *testing.T) {
+	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	form := url.Values{}
+	form.Set("kind", "url")
+	form.Set("payload", "https://example.com/x.mp4")
+	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Deliberately omit Sec-Fetch-Site; direct handler tests above cannot
+	// verify requireSameOrigin because the middleware is mounted in Mount.
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Code = %d, want 403", rec.Code)
+	}
+}
+
+func TestReceiverPresetCastRouteRejectsMissingFetchSite(t *testing.T) {
+	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/1/cast", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Code = %d, want 403", rec.Code)
 	}
 }
 ```
@@ -1939,17 +2024,30 @@ func (s routedTorrentStub) HandleQuickCast(ctx context.Context, req adapters.Qui
 // plus the named file part.
 func makeMultipart(t *testing.T, fieldName, filename string, data []byte) (io.Reader, string) {
 	t.Helper()
+	return makeMultipartFiles(t, []multipartFilePart{{fieldName: fieldName, filename: filename, data: data}})
+}
+
+type multipartFilePart struct {
+	fieldName string
+	filename  string
+	data      []byte
+}
+
+func makeMultipartFiles(t *testing.T, files []multipartFilePart) (io.Reader, string) {
+	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	if err := w.WriteField("kind", "file"); err != nil {
 		t.Fatal(err)
 	}
-	part, err := w.CreateFormFile(fieldName, filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := part.Write(data); err != nil {
-		t.Fatal(err)
+	for _, file := range files {
+		part, err := w.CreateFormFile(file.fieldName, file.filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(file.data); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -1958,7 +2056,7 @@ func makeMultipart(t *testing.T, fieldName, filename string, data []byte) (io.Re
 }
 ```
 
-Both helpers go at the bottom of `cast_test.go`. The `torrentAdapterStub` is the sibling stub defined in Step 1 alongside `urlAdapterStub` — it returns `torrent-magnet` and `torrent-file` tabs with field names `magnet` and `torrent_file`. Add `"bytes"` and `"mime/multipart"` to the test file's imports.
+The recorder, multipart helpers, and `multipartFilePart` type go at the bottom of `cast_test.go`. The `torrentAdapterStub` is the sibling stub defined in Step 1 alongside `urlAdapterStub` — it returns `torrent-magnet` and `torrent-file` tabs with field names `magnet` and `torrent_file`. Add `"bytes"` and `"mime/multipart"` to the test file's imports.
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -1987,21 +2085,33 @@ func (s *Server) handleCastPost(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(contentType, "multipart/form-data"):
 		r.Body = http.MaxBytesReader(w, r.Body, adapters.MaxQuickCastBytes)
 		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeCastJSON(w, http.StatusRequestEntityTooLarge, false, "FILE TOO BIG")
+				return
+			}
 			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
 			return
 		}
-		if r.MultipartForm != nil {
-			defer r.MultipartForm.RemoveAll()
+		if r.MultipartForm == nil {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
 		}
+		defer r.MultipartForm.RemoveAll()
 		formKind = strings.TrimSpace(r.FormValue(castKindFormField))
 		payload = strings.TrimSpace(r.FormValue(castPayloadFormField))
-		for fieldName, headers := range r.MultipartForm.File {
-			if len(headers) == 0 {
-				continue
-			}
-			file = &adapters.QuickCastFile{FieldName: fieldName, Header: headers[0]}
-			break
+		files := r.MultipartForm.File["torrent_file"]
+		if len(files) != 1 {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
 		}
+		for fieldName, headers := range r.MultipartForm.File {
+			if fieldName != "torrent_file" && len(headers) > 0 {
+				writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+				return
+			}
+		}
+		file = &adapters.QuickCastFile{FieldName: "torrent_file", Header: files[0]}
 	default:
 		if err := r.ParseForm(); err != nil {
 			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
@@ -2036,7 +2146,10 @@ func (s *Server) handleCastPost(w http.ResponseWriter, r *http.Request) {
 			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
 			return
 		}
-		file.FieldName = expectedFieldName
+		if file.FieldName != expectedFieldName {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
 		req.File = file
 	} else {
 		valuesKey, ok := valuesKeyForTab[kind]
@@ -2324,12 +2437,11 @@ git commit -m "feat(chassis): add POST /receiver/preset/{slot}/cast handler"
 
 ---
 
-## Task 12: Templates — `input-row.html`, `preset-bank.html`, `shell.html`
+## Task 12: Templates — `input-row.html` and `preset-bank.html`
 
 **Files:**
 - Modify: `internal/chassis/templates/input-row.html`
 - Modify: `internal/chassis/templates/preset-bank.html`
-- Modify: `internal/chassis/templates/shell.html`
 - Modify: `internal/chassis/chassis_test.go`
 
 - [ ] **Step 1: Write failing template tests**
@@ -2399,21 +2511,6 @@ func TestInputRowTemplate_RendersChipKindAttribute(t *testing.T) {
 	}
 }
 
-func TestShellTemplate_LoadsNewScripts(t *testing.T) {
-	srv := newServerForTest(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
-	rec := httptest.NewRecorder()
-	srv.handleIndex(rec, req)
-	html := rec.Body.String()
-	for _, want := range []string{
-		`/receiver/static/input-cast.js?v=`,
-		`/receiver/static/preset-bank.js?v=`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("shell.html missing %q script tag", want)
-		}
-	}
-}
 ```
 
 `parseTemplatesForTest` is an existing helper; if not, add a small one that calls `parseTemplates()` (the internal function in `templates.go`).
@@ -2421,10 +2518,10 @@ func TestShellTemplate_LoadsNewScripts(t *testing.T) {
 - [ ] **Step 2: Run tests to confirm they fail**
 
 ```bash
-go test ./internal/chassis -run "TestPresetBankTemplate|TestInputRowTemplate|TestShellTemplate_LoadsNewScripts" -v
+go test ./internal/chassis -run "TestPresetBankTemplate|TestInputRowTemplate" -v
 ```
 
-Expected: FAIL — template doesn't render the new attributes/classes; new scripts aren't in shell.html.
+Expected: FAIL — templates don't render the new attributes/classes.
 
 - [ ] **Step 3: Update `preset-bank.html`**
 
@@ -2485,18 +2582,7 @@ Replace [internal/chassis/templates/input-row.html](../../../internal/chassis/te
 {{end}}
 ```
 
-- [ ] **Step 5: Update `shell.html` to load the new scripts**
-
-In [internal/chassis/templates/shell.html](../../../internal/chassis/templates/shell.html), after the existing `meter.js` script tag, insert:
-
-```html
-  <script defer src="/receiver/static/input-cast.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/preset-bank.js?v={{.Version}}"></script>
-```
-
-`input-cast.js` and `preset-bank.js` are created in Task 13. Loading their `<script>` tags here even before the files exist won't break — the test for shell.html only checks the `<script>` URL is in the HTML; the static handler returns 404 for the files until Task 13 lands, but the page still renders.
-
-- [ ] **Step 6: Run tests to confirm they pass**
+- [ ] **Step 5: Run tests to confirm they pass**
 
 ```bash
 go test ./internal/chassis -v
@@ -2504,10 +2590,10 @@ go test ./internal/chassis -v
 
 Expected: all chassis tests PASS, including the new template tests.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add internal/chassis/templates/ internal/chassis/chassis_test.go
+git add internal/chassis/templates/input-row.html internal/chassis/templates/preset-bank.html internal/chassis/chassis_test.go
 git commit -m "feat(chassis): wire preset bank and input row templates for live data"
 ```
 
@@ -2518,7 +2604,9 @@ git commit -m "feat(chassis): wire preset bank and input row templates for live 
 **Files:**
 - Create: `internal/chassis/static/input-cast.js`
 - Create: `internal/chassis/static/preset-bank.js`
+- Create: `internal/chassis/testdata/input-cast.behavior.test.js`
 - Modify: `internal/chassis/static/chassis.css`
+- Modify: `internal/chassis/templates/shell.html`
 - Modify: `internal/chassis/chassis_test.go`
 
 - [ ] **Step 1: Write failing lint + presence tests**
@@ -2558,6 +2646,22 @@ func TestPresetBankJS_Exists(t *testing.T) {
 	}
 }
 
+func TestShellTemplate_LoadsNewScripts(t *testing.T) {
+	srv := newServerForTest(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`/receiver/static/input-cast.js?v=`,
+		`/receiver/static/preset-bank.js?v=`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("shell.html missing %q script tag", want)
+		}
+	}
+}
+
 func TestChassisCSS_AddsCastRules(t *testing.T) {
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
 	if err != nil {
@@ -2581,10 +2685,10 @@ func TestChassisCSS_AddsCastRules(t *testing.T) {
 - [ ] **Step 2: Run tests to confirm they fail**
 
 ```bash
-go test ./internal/chassis -run "TestInputCastJS_Exists|TestPresetBankJS_Exists|TestChassisCSS_AddsCastRules" -v
+go test ./internal/chassis -run "TestInputCastJS_Exists|TestPresetBankJS_Exists|TestShellTemplate_LoadsNewScripts|TestChassisCSS_AddsCastRules" -v
 ```
 
-Expected: FAIL — files don't exist; CSS doesn't have the new selectors.
+Expected: FAIL — JS files don't exist, shell.html doesn't load them yet, and CSS doesn't have the new selectors.
 
 - [ ] **Step 3: Create `input-cast.js`**
 
@@ -2600,10 +2704,11 @@ Create [internal/chassis/static/input-cast.js](../../../internal/chassis/static/
   const castBtn = document.getElementById('cast-btn');
   const uploadBtn = document.getElementById('upload-btn');
   const fileInput = document.getElementById('torrent-file-input');
-  if (!input || !chip || !castBtn || !uploadBtn || !fileInput) return;
+  if (!input || !clearBtn || !chip || !castBtn || !uploadBtn || !fileInput) return;
 
   let queuedFile = null;
   let chipTimer = 0;
+  let chipInError = false;
 
   function detectKind(raw) {
     if (!raw) return '';
@@ -2637,18 +2742,26 @@ Create [internal/chassis/static/input-cast.js](../../../internal/chassis/static/
   }
 
   function setErrorChip(text) {
+    chipInError = true;
     chip.dataset.chipKind = 'err';
     chip.textContent = text;
     clearTimeout(chipTimer);
     chipTimer = setTimeout(() => {
+      chipInError = false;
       const k = queuedFile ? 'file' : detectKind(input.value);
       setChipKind(k);
     }, 4000);
   }
 
+  function clearErrorChip() {
+    if (!chipInError) return;
+    chipInError = false;
+    clearTimeout(chipTimer);
+  }
+
   function updateState() {
     const kind = queuedFile ? 'file' : detectKind(input.value);
-    setChipKind(kind);
+    if (!chipInError) setChipKind(kind);
     const canCast = !!queuedFile || kind === 'url' || kind === 'magnet';
     castBtn.disabled = !canCast;
     castBtn.classList.toggle('disabled', !canCast);
@@ -2657,11 +2770,13 @@ Create [internal/chassis/static/input-cast.js](../../../internal/chassis/static/
 
   let debounceTimer = 0;
   input.addEventListener('input', () => {
+    clearErrorChip();
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(updateState, 120);
   });
 
   clearBtn.addEventListener('click', () => {
+    clearErrorChip();
     input.value = '';
     queuedFile = null;
     fileInput.value = '';
@@ -2671,6 +2786,7 @@ Create [internal/chassis/static/input-cast.js](../../../internal/chassis/static/
   uploadBtn.addEventListener('click', () => fileInput.click());
 
   fileInput.addEventListener('change', () => {
+    clearErrorChip();
     queuedFile = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
     if (queuedFile) input.value = '';
     updateState();
@@ -2733,7 +2849,154 @@ Create [internal/chassis/static/input-cast.js](../../../internal/chassis/static/
 })();
 ```
 
-- [ ] **Step 4: Create `preset-bank.js`**
+- [ ] **Step 4: Add `input-cast.js` behavior test**
+
+Create [internal/chassis/testdata/input-cast.behavior.test.js](../../../internal/chassis/testdata/input-cast.behavior.test.js), modeled after the existing `volume-knob.behavior.test.js`, to exercise the failed-cast chip lifecycle:
+
+```javascript
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+class FakeElement {
+  constructor(value = '') {
+    this.value = value;
+    this.textContent = '';
+    this.disabled = false;
+    this.dataset = {};
+    this.style = { display: '' };
+    this.files = [];
+    this.listeners = new Map();
+    this.classes = new Set();
+    this.classList = {
+      toggle: (name, on) => on ? this.classes.add(name) : this.classes.delete(name),
+    };
+  }
+
+  addEventListener(name, fn) {
+    const list = this.listeners.get(name) || [];
+    list.push(fn);
+    this.listeners.set(name, list);
+  }
+
+  async dispatch(name) {
+    for (const fn of this.listeners.get(name) || []) {
+      await fn({ type: name, target: this });
+    }
+  }
+
+  click() {
+    return this.dispatch('click');
+  }
+}
+
+function createHarness() {
+  const panel = new FakeElement();
+  const input = new FakeElement('https://example.com/video.mp4');
+  const clearBtn = new FakeElement();
+  const chip = new FakeElement();
+  const castBtn = new FakeElement();
+  const uploadBtn = new FakeElement();
+  const fileInput = new FakeElement();
+  const requests = [];
+  const timers = new Map();
+  let now = 0;
+  let nextTimer = 1;
+
+  const document = {
+    querySelector: (selector) => selector === '.input-section' ? panel : null,
+    getElementById: (id) => ({
+      'paste-input': input,
+      'paste-clear': clearBtn,
+      'paste-chip': chip,
+      'cast-btn': castBtn,
+      'upload-btn': uploadBtn,
+      'torrent-file-input': fileInput,
+    })[id] || null,
+  };
+
+  function setTimeoutFake(fn, delay) {
+    const id = nextTimer++;
+    timers.set(id, { at: now + delay, fn });
+    return id;
+  }
+
+  function clearTimeoutFake(id) {
+    timers.delete(id);
+  }
+
+  function advance(ms) {
+    now += ms;
+    let ran = true;
+    while (ran) {
+      ran = false;
+      const due = [...timers.entries()]
+        .filter(([, timer]) => timer.at <= now)
+        .sort((a, b) => a[1].at - b[1].at)[0];
+      if (due) {
+        timers.delete(due[0]);
+        due[1].fn();
+        ran = true;
+      }
+    }
+  }
+
+  function fetchFake(url, options) {
+    requests.push({ url, options, body: String(options.body) });
+    return Promise.resolve({ json: async () => ({ ok: false, chip: 'BAD URL' }) });
+  }
+
+  const context = {
+    document,
+    fetch: fetchFake,
+    window: {},
+    URL,
+    URLSearchParams,
+    setTimeout: setTimeoutFake,
+    clearTimeout: clearTimeoutFake,
+  };
+  vm.createContext(context);
+  const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'input-cast.js'), 'utf8');
+  vm.runInContext(code, context, { filename: 'input-cast.js' });
+
+  return { input, chip, castBtn, requests, advance };
+}
+
+async function settle() {
+  for (let i = 0; i < 4; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+test('failed cast keeps error chip after controls re-enable and clears on input', async () => {
+  const h = createHarness();
+  assert.equal(h.chip.dataset.chipKind, 'url');
+  assert.equal(h.castBtn.disabled, false);
+
+  await h.castBtn.dispatch('click');
+  await settle();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.chip.dataset.chipKind, 'err');
+  assert.equal(h.chip.textContent, 'BAD URL');
+  assert.equal(h.castBtn.disabled, false);
+
+  h.input.value = 'https://example.com/other.mp4';
+  await h.input.dispatch('input');
+  h.advance(120);
+  assert.equal(h.chip.dataset.chipKind, 'url');
+  assert.equal(h.chip.textContent, 'URL');
+});
+```
+
+Run it in Step 8 with:
+
+```bash
+node --test internal/chassis/testdata/input-cast.behavior.test.js
+```
+
+- [ ] **Step 5: Create `preset-bank.js`**
 
 Create [internal/chassis/static/preset-bank.js](../../../internal/chassis/static/preset-bank.js):
 
@@ -2802,7 +3065,18 @@ Create [internal/chassis/static/preset-bank.js](../../../internal/chassis/static
 })();
 ```
 
-- [ ] **Step 5: Update `chassis.css` with new rules**
+- [ ] **Step 6: Update `shell.html` to load the new scripts**
+
+In [internal/chassis/templates/shell.html](../../../internal/chassis/templates/shell.html), after the existing `meter.js` script tag, insert:
+
+```html
+  <script defer src="/receiver/static/input-cast.js?v={{.Version}}"></script>
+  <script defer src="/receiver/static/preset-bank.js?v={{.Version}}"></script>
+```
+
+The scripts are created earlier in this same task before the shell references them, so the task remains independently committable without introducing intermediate static-file 404s.
+
+- [ ] **Step 7: Update `chassis.css` with new rules**
 
 Append to [internal/chassis/static/chassis.css](../../../internal/chassis/static/chassis.css):
 
@@ -2833,18 +3107,19 @@ body.receiver .browse-btn[disabled] {
 }
 ```
 
-- [ ] **Step 6: Run tests to confirm they pass**
+- [ ] **Step 8: Run tests to confirm they pass**
 
 ```bash
 go test ./internal/chassis -v
+node --test internal/chassis/testdata/input-cast.behavior.test.js
 ```
 
-Expected: all chassis tests PASS — the JS existence tests, the CSS rules tests, and the existing CSS scope test (every new selector starts with `body.receiver`).
+Expected: all chassis tests PASS — the JS existence tests, behavior test, CSS rules tests, and the existing CSS scope test (every new selector starts with `body.receiver`).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add internal/chassis/static/
+git add internal/chassis/static/ internal/chassis/templates/shell.html internal/chassis/chassis_test.go internal/chassis/testdata/input-cast.behavior.test.js
 git commit -m "feat(chassis): add input-cast and preset-bank client JS plus cast CSS"
 ```
 
@@ -2894,8 +3169,6 @@ if err := chassis.VerifyCastTabBindings(reg); err != nil {
 In [tests/integration/chassis_test.go](../../../tests/integration/chassis_test.go), append a new test function:
 
 ```go
-//go:build integration
-
 func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 	// Real chassis + fake registry containing URL + torrent + streams stubs.
 	reg, urlCalls, torrentCalls, streamsCalls := buildFakeRegistry(t)
@@ -3017,6 +3290,7 @@ func mustPOSTRaw(t *testing.T, url, contentType string, body io.Reader) *http.Re
 go test ./...
 go test -race ./...
 go test -tags=integration ./tests/integration/...
+node --test internal/chassis/testdata/input-cast.behavior.test.js
 ```
 
 Expected: all PASS. The race detector is important — the snapshot cache refresher reads `PresetViewer.BundledPresets()` concurrently with whatever else runs.
@@ -3071,6 +3345,7 @@ gh pr create --title "feat(chassis): receiver input row and preset bank (Phase 3
 - [ ] `go test ./...` passes
 - [ ] `go test -race ./...` passes
 - [ ] `go test -tags=integration ./tests/integration/...` passes
+- [ ] `node --test internal/chassis/testdata/input-cast.behavior.test.js` passes
 - [ ] Manual smoke: paste URL → CAST works; paste magnet → CAST works; upload .torrent → CAST works; click preset → Streams cast; click Toonami preset → `.live` styling + "TOONAMI · LIVE" badge
 
 Spec: docs/superpowers/specs/2026-05-25-receiver-chassis-input-and-presets-design.md
