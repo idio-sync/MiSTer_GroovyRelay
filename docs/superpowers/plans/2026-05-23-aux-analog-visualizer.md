@@ -87,11 +87,11 @@ The following existing files have call sites or assertions that this plan change
 | Plan task | File | What changes | Why |
 | --- | --- | --- | --- |
 | Task 1 | `internal/core/types.go` | New fields on `SessionRequest` (additive) | Compiles cleanly; no caller breakage. |
-| Task 3 | `internal/core/manager_test.go` (26 sites) and `internal/core/errors_test.go` (3 sites) | All `probeFn = func(ctx, path, url, policy)` assignments migrate to the new `probeInputFn = func(ctx, path, ffmpeg.ProbeInputSpec)` shape | Required because Task 3 replaces the package-private `probeFn` indirection. The migration helper `legacyProbeInputSpec(url, policy)` (added in Task 3) keeps the test rewrite mechanical. |
+| Task 3 | `internal/core/manager_test.go` (26 sites) and `internal/core/errors_test.go` (3 sites) | All `probeFn = func(ctx, path, url, policy)` assignments migrate to the new `probeInputFn = func(ctx, path, ffmpeg.ProbeInputSpec)` shape | Required because Task 3 replaces the package-private `probeFn` indirection; most rewrites are mechanical direct-assignment updates, with URL/policy assertions moving to `input.URL` and `input.Policy`. |
 | Task 2 | `internal/ffmpeg/pipeline.go:112` (`audioOutputEnabled`) | Add early return `if s.SuppressAudioOutput { return false }` | Required so `BuildCommand` omits the `-map <audio> -f s16le <pipe>` arg block under visual-only mode. |
 | Task 10 | `internal/chassis/session.go:54` (`snapshotFromSession` signature) and 19 other call sites across `events.go`, `events_test.go`, `chassis_test.go`, `handler.go`, `server.go` | Add `aux AUXStarter` as a new trailing parameter; production call sites pass `s.aux`, tests pass `nil` or a fake | `applyAUXSourceState` runs inside `snapshotFromSession` so the chassis renders AUX button state from a single snapshot path. |
 | Task 10 | `internal/chassis/chassis_test.go:795` (and any other exact-HTML-match assertion against `source-cluster.html`) | Switch from exact-string equality to substring assertions for the new `data-source-action` / `data-input-id` attributes | The new attributes are inserted between existing ones; exact-string matches will not survive. |
-| Task 11 | Add `internal/dataplane/aux_visual_only_test.go` (NOT under `tests/integration/`) | In-process test using `internal/fakemister.Server`, no integration build tag | Matches the existing dataplane test pattern and runs under plain `go test ./...`. |
+| Task 11 | Add `internal/dataplane/aux_visual_only_test.go` (NOT under `tests/integration/`) | In-process test using `fakemister.NewListener`, `RunWithFields`, and `fakemister.NewRecorder`; no integration build tag | Matches the existing dataplane test pattern and runs under plain `go test ./...`. |
 
 ## Task 1: Add Core Session Input Contract
 
@@ -329,6 +329,7 @@ git commit -m "feat(aux): add core capture session contract"
 - [ ] Add `internal/ffmpeg/input.go` and tests.
 - [ ] Add `CaptureInputSpec` and `ProbeInputSpec`.
 - [ ] Make `Probe` delegate to `ProbeInput` for backward compatibility.
+- [ ] Give local-capture `ProbeInput` calls a default bounded timeout of 3 seconds.
 - [ ] Add capture input support to `PipelineSpec` and `BuildCommand`.
 - [ ] Keep local capture arguments structured; do not build shell strings.
 - [ ] Add `SuppressAudioOutput bool` to `PipelineSpec` and gate `audioOutputEnabled` on it so visual-only sessions emit no `-map <audio> -f s16le <pipe>` block.
@@ -419,6 +420,23 @@ func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
 	})
 }
 
+func TestProbeInputCaptureUsesDefaultBoundedTimeout(t *testing.T) {
+	if got := probeTimeout(ProbeInputSpec{
+		Capture: CaptureInputSpec{Enabled: true},
+	}); got != 3*time.Second {
+		t.Fatalf("capture default probe timeout = %s, want 3s", got)
+	}
+	if got := probeTimeout(ProbeInputSpec{URL: "http://example.test/audio.wav"}); got != 0 {
+		t.Fatalf("URL probe timeout = %s, want caller context", got)
+	}
+	if got := probeTimeout(ProbeInputSpec{
+		Capture: CaptureInputSpec{Enabled: true},
+		Timeout: 500 * time.Millisecond,
+	}); got != 500*time.Millisecond {
+		t.Fatalf("explicit probe timeout = %s, want 500ms", got)
+	}
+}
+
 func TestBuildCommandSuppressAudioOutputOmitsAudioPipe(t *testing.T) {
 	spec := PipelineSpec{
 		SuppressAudioOutput: true,
@@ -468,6 +486,7 @@ type ProbeInputSpec struct {
 	URL     string
 	Policy  MediaInputPolicy
 	Capture CaptureInputSpec
+	Timeout time.Duration
 }
 
 func appendCaptureInputArgs(args []string, c CaptureInputSpec) []string {
@@ -493,7 +512,7 @@ func appendCaptureInputArgs(args []string, c CaptureInputSpec) []string {
 }
 ```
 
-Add `probeCommand(ffprobePath string, input ProbeInputSpec) *exec.Cmd` so tests can inspect argv without spawning ffprobe. `ProbeInput` calls `probeCommand`, sets `WaitDelay`, runs `cmd.Output()`, and calls `parseProbeOutput`.
+Define `const defaultCaptureProbeTimeout = 3 * time.Second` and a small `probeTimeout(input ProbeInputSpec) time.Duration` helper so timeout behavior can be tested without sleeping or spawning ffprobe. Add `probeCommand(ffprobePath string, input ProbeInputSpec) *exec.Cmd` so tests can inspect argv without spawning ffprobe. `ProbeInput` wraps the caller context before constructing the command when `probeTimeout(input) > 0`. URL-only probes preserve the incoming context unless `Timeout` is explicitly set. `ProbeInput` then calls `probeCommand`, sets `WaitDelay`, runs `cmd.Output()`, and calls `parseProbeOutput`.
 
 Add `SuppressAudioOutput bool` to `PipelineSpec` (place it next to `AudioInputURL` for grouping). Extend `audioOutputEnabled` at `internal/ffmpeg/pipeline.go:112` with an early return:
 
@@ -1101,7 +1120,7 @@ func (a *Adapter) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 - `TestProxyRejectsUpstreamRedirect`: mint a play token whose upstream is a `httptest.Server` returning `302 Location: http://evil.test/`. Call `/internal/aux-proxy/?kind=play&aux_token=<tok>` from `127.0.0.1`. Assert response is `502 Bad Gateway` with body `AUX input redirected`. Assert `evil.test` is NEVER dialled (the upstream test server's request counter shows exactly one request).
 - `TestProxyRejectsNonLoopbackClient`: send a request with `r.RemoteAddr = "192.0.2.1:54321"`; assert 403 before any token lookup.
-- `TestProxyBoundedDialTimeout`: point the upstream at an unroutable address (e.g. `http://192.0.2.1:1` per RFC 5737); assert the proxy returns 502 within 6 seconds rather than hanging.
+- `TestProxyHTTPClientHasBoundedStageTimeouts`: inspect `newProxyHTTPClient()` deterministically instead of performing a real network dial. Assert `CheckRedirect` returns `http.ErrUseLastResponse`, the transport is an `*http.Transport`, and `TLSHandshakeTimeout`, `ResponseHeaderTimeout`, and `ExpectContinueTimeout` are non-zero expected values. Keep any dial-timeout behavior behind a small constructor seam if it needs direct testing; do not make `go test ./...` depend on external routing behavior.
 
 The generated local URLs must be:
 
@@ -1127,6 +1146,7 @@ git commit -m "feat(aux): add validated stream proxy"
 
 - [ ] Add `internal/adapters/aux/session.go`.
 - [ ] Implement `AUXStatus`, `StartAUX`, and `StopAUX` using `adapters.AUXStatus`.
+- [ ] Return errors wrapping `adapters.ErrSourceUnavailable` from the REAL `StartAUX` path when AUX is disabled, no input is configured, `inputID` does not match the configured input, the input mode is unsupported, or config validation fails before session start.
 - [ ] Build stream-url sessions with separate probe/play proxy URLs.
 - [ ] Build local-capture sessions with structured capture input.
 - [ ] Normalize sample rate/channels from bridge defaults when AUX fields are zero.
@@ -1208,6 +1228,16 @@ func TestStartAUXLocalCaptureBuildsCaptureRequest(t *testing.T) {
 	}
 }
 
+func TestStartAUXUnavailableErrorsWrapSharedSentinel(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	a.mustApplyConfig(t, Config{Enabled: false})
+	_, err := a.StartAUX(context.Background(), "aux")
+	if !errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX error = %v, want ErrSourceUnavailable", err)
+	}
+}
+
 func TestStopAUXDoesNotStopForeignSession(t *testing.T) {
 	fc := &fakeCore{status: core.SessionStatus{AdapterRef: "plex:/library/metadata/42"}}
 	a := newTestAdapter(t, fc)
@@ -1262,7 +1292,7 @@ func (a *Adapter) buildSessionRequestLocked(ctx context.Context, input AUXInput)
 			ProbeSize: input.ProbeSize,
 		}
 	default:
-		return core.SessionRequest{}, nil, fmt.Errorf("unsupported AUX input mode %q", input.Mode)
+		return core.SessionRequest{}, nil, fmt.Errorf("%w: unsupported AUX input mode %q", adapters.ErrSourceUnavailable, input.Mode)
 	}
 	req.OnStop = func(reason string) {
 		cleanup()
@@ -1272,7 +1302,7 @@ func (a *Adapter) buildSessionRequestLocked(ctx context.Context, input AUXInput)
 }
 ```
 
-`StartAUX` must call `cleanup()` if `a.core.StartSession(req)` returns an error. When `StartSession` succeeds, `req.OnStop` owns cleanup for EOF, stop, preempt, and error exits.
+Task 7 depends on the shared contract from Task 8; create `internal/adapters/aux_contract.go` before wiring these errors, or include that small contract in the same commit as `session.go`. `StartAUX` must call `cleanup()` if `a.core.StartSession(req)` returns an error. When `StartSession` succeeds, `req.OnStop` owns cleanup for EOF, stop, preempt, and error exits. Do not map `StartSession` runtime failures to `ErrSourceUnavailable`; reserve the sentinel for "this AUX source cannot be started as requested" validation/configuration failures that the chassis route should expose as 422.
 
 Run:
 
@@ -1449,7 +1479,7 @@ git commit -m "feat(aux): add receiver aux routes"
 - [ ] Add AUX status data to `ReceiverPageData`.
 - [ ] Add a fifth `AUX` source button.
 - [ ] Add button action metadata instead of hardcoding click behavior by label.
-- [ ] Extend `snapshotFromSession`'s signature with a trailing `aux AUXStarter` parameter; update every call site (3 production, 16 test) in the same commit; production callers pass `s.aux`, tests pass `nil` or a fake.
+- [ ] Extend `snapshotFromSession`'s signature with a trailing `aux AUXStarter` parameter; update every call site (4 production, 15 test) in the same commit; production callers pass `s.aux`, tests pass `nil` or a fake.
 - [ ] Match the AUX button by its stable `Action` constant (`"aux-start"`), not by `Label`, so a future label rename does not silently break the toggle.
 - [ ] Update `internal/chassis/chassis_test.go:795` (and any other exact-string template assertion against `source-cluster.html`) to use substring matching, so the new `data-source-action` / `data-input-id` attributes do not break the existing assertion.
 - [ ] Add a `source` SSE event with a diff helper (`sourceChanged`) and client handler so AUX active/unavailable state updates in already-open tabs.
@@ -1647,7 +1677,7 @@ git commit -m "feat(aux): add receiver source control"
 
 ## Task 11: Add End-To-End AUX Behavior Tests
 
-- [ ] Add an in-process dataplane test for AUX visual-only video fields, using `internal/fakemister.Server` (NOT the `tests/integration` build-tag path; runs under plain `go test`).
+- [ ] Add an in-process dataplane test for AUX visual-only video fields, using `fakemister.NewListener`, `RunWithFields`, and `fakemister.NewRecorder` (NOT the `tests/integration` build-tag path; runs under plain `go test`).
 - [ ] Add a start-preempts-prior-session test.
 - [ ] Add stream proxy two-GET behavior coverage using `httptest.Server`.
 - [ ] Add local-capture command integration at the command-builder boundary rather than requiring a real device.
@@ -1662,14 +1692,14 @@ git commit -m "feat(aux): add receiver source control"
 | `TestAUXVisualOnlyProducesVideoWithoutAudioPipe` | `internal/dataplane/aux_visual_only_test.go` (new file) | none |
 | `TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe` | `internal/core/manager_test.go` | none |
 
-Use `internal/fakemister.Server` in-process for the dataplane test rather than `cmd/fake-mister` as a subprocess, so the test runs under plain `go test ./...` without ffmpeg-on-PATH or process-management overhead. This matches the existing dataplane test idiom.
+Use the existing `internal/fakemister` listener/recorder test harness in-process for the dataplane test rather than `cmd/fake-mister` as a subprocess, so the test runs under plain `go test ./...` without ffmpeg-on-PATH or process-management overhead. The harness does not define a server wrapper type; follow the existing dataplane test idiom from `internal/dataplane/plane_test.go` by creating a `fakemister.NewListener("127.0.0.1:0")`, enabling ACKs with `EnableACKs(false)`, running `RunWithFields` into command/field/audio channels, and recording observed commands with `fakemister.NewRecorder`.
 
 ### Recommended test targets
 
 - `TestAUXStreamURLConsumesProbeAndPlayTokensSeparately`: start AUX against an `httptest.Server`, consume the probe token, then the play token, and assert the upstream saw exactly two GETs.
 - `TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast`: make probe token consumption return a 502, call `StartAUX`, and assert the fake core's active foreign session was not stopped or replaced.
 - `TestAUXStreamURLPlayFailureReportsAfterPreempt`: allow probe to pass, make the play token return a 502 during plane spawn, and assert AUX status records a clear error after the fake prior session was preempted.
-- `TestAUXVisualOnlyProducesVideoWithoutAudioPipe`: spin a `*fakemister.Server`, start a visual-only plane, and assert video fields are emitted while the audio pipe is never opened. The plane must observe `SuppressAudioOutput=true`.
+- `TestAUXVisualOnlyProducesVideoWithoutAudioPipe`: spin a `fakemister.Listener` with `RunWithFields`, start a visual-only plane, and assert video fields are emitted while the audio channel remains empty and the process audio pipe is never opened. The plane must observe `SuppressAudioOutput=true`.
 - `TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe`: fake an active Plex session, start AUX after successful probe, and assert the final status carries an `aux:` adapter ref.
 
 The fake upstream should count requests:
