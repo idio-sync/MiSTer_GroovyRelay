@@ -1659,8 +1659,9 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 			Replay:      true,
 			Seek:        true,
 		},
-		AdapterRef: "jellyfin:item:123",
-		Generation: 12,
+		AdapterRef:   "jellyfin:item:123",
+		Generation:   12,
+		OutputVolume: 0,
 	}
 	if got.Transport != want {
 		t.Errorf("Transport = %+v, want %+v", got.Transport, want)
@@ -1708,6 +1709,7 @@ func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "url:abc",
 		Generation:      4,
+		OutputVolume:    0,
 	}
 	if got.Transport != want {
 		t.Errorf("Transport = %+v, want read-only %+v", got.Transport, want)
@@ -1764,6 +1766,7 @@ func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "plex:track:def",
 		Generation:      8,
+		OutputVolume:    0,
 	}
 	if got.Transport != want {
 		t.Errorf("Transport = %+v, want read-only %+v", got.Transport, want)
