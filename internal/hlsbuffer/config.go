@@ -47,3 +47,7 @@ type Session struct {
 	Stats        func() Stats
 	Close        func() error
 }
+
+func NormalizeConfig(c Config) Config {
+	return normalizeSessionConfig(c)
+}
