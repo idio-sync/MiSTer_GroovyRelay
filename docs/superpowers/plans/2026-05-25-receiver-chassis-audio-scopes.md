@@ -162,19 +162,15 @@ Same migration in `internal/chassis/static/visualizer-bank.js` for the `visualiz
 
 - [ ] **Step 6: Migrate volume-knob.js**
 
-Same migration in `internal/chassis/static/volume-knob.js` for the `volume` event:
+`volume-knob.js` already has a `handleVolumeEvent(ev)` function (verified at volume-knob.js:148-159) that does substantive work: clamps `data.outputVolume`, sets the `authoritative` value, and gates `setVisual` calls on `!editing && !inFlight && queuedValue === null` so the knob never jumps during user drag. **Do not rewrite this handler** — migrate the subscription wiring only.
+
+In the file's `init()` function (around volume-knob.js:209-214), find the block that does `attachSource(window.Chassis.events.source)` and `document.addEventListener('chassis:eventsource', ...)`. Replace the entire block with:
 
 ```js
-  window.Chassis.events.subscribe('volume', (ev) => {
-    try {
-      applyVolume(JSON.parse(ev.data));
-    } catch (err) {
-      console.warn('volume-knob.js: bad volume payload', ev.data, err);
-    }
-  });
+  window.Chassis.events.subscribe('volume', handleVolumeEvent);
 ```
 
-Use the script's actual existing volume-rendering helper name if it differs from `applyVolume`; do not introduce duplicate state or a second renderer.
+Remove the now-orphaned `attachSource` helper if no other code calls it. The existing `handleVolumeEvent` continues to handle every aspect of payload parsing, clamping, editing-state gating, and `setVisual` — no changes to its body.
 
 - [ ] **Step 7: Run chassis tests**
 
@@ -1583,13 +1579,18 @@ type Plane struct {
 Locate the `NewPlane` constructor (grep for `func NewPlane`). After the existing field initialization, add:
 
 ```go
-	// Audio meter is constructed even when audio is suppressed, so
-	// AudioScopes() can return a meaningful nil-vs-zero distinction.
-	// Construction is cheap (~ a few KB of ring allocations).
+	// Audio meter is constructed even when audio is suppressed at the
+	// sender (cfg.SuppressAudioOutput == true): the field-tick path still
+	// feeds it real PCM, snapshots are still valid, and operators viewing
+	// the chassis still see live scopes for the underlying audio stream.
+	// The only sender-side effect of SuppressAudioOutput is that
+	// p.sendAudio() becomes a no-op; the meter Observe call (Step 4) runs
+	// in parallel because audio is still being decoded for HLS / probe
+	// parity. Construction is cheap (~ a few KB of ring allocations).
 	p.audioMeter = NewAudioMeter(cfg.Generation, cfg.AudioRate, cfg.AudioChans)
 ```
 
-If `cfg.AudioRate` or `cfg.AudioChans` could be zero (audio-disabled paths), guard:
+If `cfg.AudioRate` or `cfg.AudioChans` is zero (audio-disabled paths — no audio at all, distinct from "audio suppressed at sender"), guard:
 
 ```go
 	if cfg.AudioRate > 0 && cfg.AudioChans > 0 {
@@ -1906,10 +1907,13 @@ func TestAudioLiveEnvelope_MarshalJSONIncludesLegitimateZeros(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	s := string(body)
-	if !strings.Contains(s, `"phaseCorr":0`) {
+	// Trailing comma anchors the assertion to "this field's value is
+	// exactly zero" — without it, "phaseCorr":0 falsely matches values
+	// like 0.5, 0.91, etc.
+	if !strings.Contains(s, `"phaseCorr":0,`) {
 		t.Errorf("phaseCorr=0 omitted: %s", s)
 	}
-	if !strings.Contains(s, `"lufsShort":0`) {
+	if !strings.Contains(s, `"lufsShort":0,`) {
 		t.Errorf("lufsShort=0 omitted: %s", s)
 	}
 }
@@ -2414,10 +2418,12 @@ func TestHandleEvents_LiveLegitimateZerosOnWire(t *testing.T) {
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	body := w.Body.String()
-	if !strings.Contains(body, `"phaseCorr":0`) {
+	// Trailing comma anchors the assertion to a literal zero value
+	// (without it, "phaseCorr":0 matches 0.5/0.91/etc).
+	if !strings.Contains(body, `"phaseCorr":0,`) {
 		t.Errorf("phaseCorr=0 was erased on wire: %s", body)
 	}
-	if !strings.Contains(body, `"lufsShort":0`) {
+	if !strings.Contains(body, `"lufsShort":0,`) {
 		t.Errorf("lufsShort=0 was erased on wire: %s", body)
 	}
 }
@@ -2623,6 +2629,8 @@ git commit -m "feat(chassis): emit audio scope event at 30 Hz"
 ---
 
 ## Task 11: Meter Discovery Hook (5A `meter.go` + `data.go` update)
+
+**Sequencing dependency (load-bearing for subagent parallelization):** Task 11 references the `audioEventHz` constant defined in Task 10's events.go changes. If a subagent scheduler runs Task 10 and Task 11 in parallel, Task 11 will fail to compile until Task 10 has merged its events.go edits. Execute Task 10 → Task 11 strictly sequentially, OR have Task 11's subagent verify `audioEventHz` is defined before starting (`grep -n "audioEventHz" internal/chassis/events.go`).
 
 The 5A code already has `AudioScopesData{Status: string}` in [data.go:171](../../../internal/chassis/data.go) and `meterAudioScopesE{Status: string}` in [meter.go:570](../../../internal/chassis/meter.go). The "pending" placeholder is populated in two places:
 
@@ -2939,7 +2947,11 @@ Inside the same IIFE, after the existing helpers and before any final `})();`, a
   const gonioCtx = gonioCanvas && gonioCanvas.getContext('2d');
 
   const peakHold = new Array(32).fill(-90);
-  const peakHoldDecayPerFrame = 0.5; // dB per render frame
+  // 0.5 dB per frame at 60 fps = 30 dB/s — quite aggressive vs.
+  // industry-standard VU peak-hold (~1.5-3 dB/s with a 1-2 s hold).
+  // Starting value; tune visually after first integration. If peak
+  // ticks disappear too quickly to see, try 0.02-0.05.
+  const peakHoldDecayPerFrame = 0.5;
   let lastAudioGeneration = 0;
   let lastSpectrum = null;
   let lastGoniometer = null;
@@ -2974,11 +2986,13 @@ Inside the same IIFE, after the existing helpers and before any final `})();`, a
     setVUBarSegments(vuChBarR, payload.vu.right.peak);
     if (phaseNeedle) {
       // PhaseCorr in [-1, +1] → position needle along .vu-phase .bar.
-      // 5A baseline at idle: left = 50%. Range +/- ~36px from center
-      // (the .bar is ~72px wide; needle is 3px). Linear map: -1 → 14%,
-      // 0 → 50%, +1 → 86%.
+      // 5A baseline at idle: left = calc(50% - 1.5px). Range +/- ~36% from
+      // center (the .bar is ~60px wide; needle is 3px). Linear map:
+      // -1 → 14%, 0 → 50%, +1 → 86%. The -1.5px offset compensates for
+      // the needle's own 3px width so the visual center (not the left edge)
+      // tracks the value; matches 5A's idle calc().
       const pct = 50 + payload.phaseCorr * 36;
-      phaseNeedle.style.left = pct + '%';
+      phaseNeedle.style.left = `calc(${pct}% - 1.5px)`;
     }
     if (lufsTextEl) {
       const v = payload.lufsShort;
@@ -3084,12 +3098,14 @@ git commit -m "feat(chassis): render audio scopes from live audio event"
 
 ---
 
-## Task 13: chassis.css Audio-Scope Styles (verification + minimal additions)
+## Task 13: chassis.css Audio-Scope Styles (verification + dead-code cleanup)
 
 5A's `chassis.css` already styles most of the meter scope DOM (`.tr-vu .ch-bar`, `#phase-needle`/`.vu-phase .needle` with `transition: left 80ms linear`, etc.). meter.js (Task 12) drives VU/phase/LUFS directly and paints the 32-band spectrum/goniometer canvases.
 
+**Critical:** Task 12 replaced the 5A 6-band `#spectrum > .spectrum-band > .seg / .peak-dot` placeholder with a `#spectrum-canvas` element. That leaves orphaned CSS rules in `chassis.css` (verified at HEAD: `.spectrum-band` and `.spectrum-band .peak-dot` rules around `chassis.css:1366-1436`, roughly 70 lines). Task 13 removes them so the stylesheet stays clean.
+
 **Files:**
-- Modify (only if verification finds a gap): `internal/chassis/static/chassis.css`
+- Modify: `internal/chassis/static/chassis.css` (dead-rule removal is mandatory; new rules optional)
 
 - [ ] **Step 1: Verify 5A styles produce live audio rendering**
 
@@ -3101,9 +3117,21 @@ Run `make build && ./mister-groovy-relay` (or however the bridge starts locally)
 - `#gonio-canvas` shows scattered (L,R) points
 - `#lufs-val .seg-text` updates the DSEG14 numeric readout
 
-If all five work without CSS changes, **skip Step 2 and Step 3**. Commit nothing for Task 13 and proceed to Task 14.
+If all five work without **new** CSS additions, skip Step 3. Step 2 (dead-rule cleanup) is still required.
 
-- [ ] **Step 2: Add scoped styles only for gaps found in Step 1**
+- [ ] **Step 2: Remove orphaned 6-band spectrum CSS rules**
+
+Find the dead rules (the surrounding context will likely include `.meter-screen--compact`):
+
+```bash
+grep -n "spectrum-band\|\.peak-dot" internal/chassis/static/chassis.css
+```
+
+Delete every rule whose selector contains `.spectrum-band` or `.spectrum-band .peak-dot` (these targeted the now-removed 6-band placeholder DOM; the canvas spectrum is styled by `#spectrum-canvas` if at all). Expected removal: ~70 lines around chassis.css:1366-1436. Preserve any rule whose selector does NOT contain `.spectrum-band` even if it sits between deleted rules.
+
+After removal, the `TestChassisCSS_AllSelectorsScoped` test (which parses CSS via tdewolff) MUST still pass — orphan removal doesn't change selector scoping.
+
+- [ ] **Step 3: Add scoped styles only for gaps found in Step 1**
 
 If a specific scope renders incorrectly (e.g., goniometer canvas needs a background color the existing `.gonio` rule doesn't provide), append a targeted rule under `body.receiver`. Avoid introducing new selectors that overlap existing 5A rules; prefer extending existing rules.
 
@@ -3115,19 +3143,17 @@ body.receiver #gonio-canvas {
 }
 ```
 
-- [ ] **Step 3: Run chassis-CSS scope tests + commit if changes were made**
+- [ ] **Step 4: Run chassis-CSS scope tests + commit**
 
 ```bash
 go test ./internal/chassis -run "TestChassisCSS" -v
 ```
 
-Expected: PASS. The existing `TestChassisCSS_AllSelectorsScoped` test enforces every selector starts with `body.receiver`; any addition must comply.
-
-Commit only if you made changes:
+Expected: PASS. The existing `TestChassisCSS_AllSelectorsScoped` test enforces every selector starts with `body.receiver`; both removals and additions must comply.
 
 ```bash
 git add internal/chassis/static/chassis.css
-git commit -m "feat(chassis): tighten audio scope styles"
+git commit -m "feat(chassis): drop orphaned 6-band spectrum CSS, polish audio styles"
 ```
 
 ---
