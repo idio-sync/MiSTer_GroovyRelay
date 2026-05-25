@@ -219,4 +219,68 @@ type StatusHomeView struct {
 	Underruns   uint64        // dataplane underruns since session start
 	WireBytes   uint64        // post-LZ4 bytes sent (drives throughput; §S10)
 	LastACKAge  time.Duration // 0 when no plane or no ACK yet
+	Meter       MeterHomeView
+}
+
+type MeterHomeView struct {
+	Source   SourceMeterView
+	Crop     CropMeterView
+	Pipeline PipelineMeterView
+	Runtime  RuntimeMeterView
+}
+
+type SourceMeterView struct {
+	Width                 int
+	Height                int
+	FrameRate             float64
+	Interlaced            bool
+	SampleAspectRatioNum  int
+	SampleAspectRatioDen  int
+	DisplayAspectRatioNum int
+	DisplayAspectRatioDen int
+	VideoCodec            string
+	AudioCodec            string
+	AudioRate             int
+	AudioChannels         int
+	VideoBitrateBPS       int64
+	AudioBitrateBPS       int64
+	FormatBitrateBPS      int64
+}
+
+type CropMeterView struct {
+	Mode     string
+	Detected bool
+	W        int
+	H        int
+	X        int
+	Y        int
+}
+
+type PipelineMeterView struct {
+	ModelineName        string
+	OutputWidth         int
+	OutputHeight        int
+	FieldHeight         int
+	FieldRateHz         float64
+	HorizontalKHz       float64
+	InterlacedOutput    bool
+	Standard            string
+	FieldOrder          string
+	RGBMode             string
+	LZ4Enabled          bool
+	DeltaLZ4Enabled     bool
+	AudioSampleRate     int
+	AudioChannels       int
+	AudioOutputVolume   int
+	EffectiveAspectMode string
+}
+
+type RuntimeMeterView struct {
+	BlitsTotal  uint64
+	FramesTotal uint64
+	Underruns   uint64
+	WireBytes   uint64
+	LastACKAge  time.Duration
+	StartedAt   time.Time
+	Generation  uint64
 }

@@ -180,6 +180,7 @@ type activeSession struct {
 	baseOffsetMs   int           // offset the plane was spawned with
 	pausedPosition time.Duration // snapshot from plane at Pause
 	duration       time.Duration
+	meter          MeterHomeView
 }
 
 var errAdapterRefChanged = errors.New("adapter ref changed")
@@ -796,12 +797,14 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OnInit:              m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
+	meter := buildMeterHomeView(req, probe, cropRect, aspectMode, preset, modeline, fieldH, m.bridge.Video.RGBMode, audioRate, audioChans, m.bridge)
 	m.active = &activeSession{
 		req:          req,
 		startedAt:    time.Now(),
 		generation:   generation,
 		baseOffsetMs: offsetMs,
 		duration:     visualizerDuration(req, probe),
+		meter:        meter,
 	}
 
 	go func() {
@@ -1440,6 +1443,20 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		view.Underruns = m.plane.Underruns()
 		view.WireBytes = m.plane.WireBytes()
 		view.LastACKAge = m.plane.LastACKAge()
+	}
+	if m.active != nil {
+		view.Meter = m.active.meter
+		view.Meter.Pipeline.FieldOrder = m.bridge.Video.InterlaceFieldOrder
+		view.Meter.Pipeline.AudioOutputVolume = m.bridge.Audio.OutputVolume
+		view.Meter.Runtime.StartedAt = m.active.startedAt
+		view.Meter.Runtime.Generation = m.active.generation
+	}
+	if m.plane != nil {
+		view.Meter.Runtime.BlitsTotal = m.plane.BlitsTotal()
+		view.Meter.Runtime.FramesTotal = m.plane.FramesTotal()
+		view.Meter.Runtime.Underruns = m.plane.Underruns()
+		view.Meter.Runtime.WireBytes = m.plane.WireBytes()
+		view.Meter.Runtime.LastACKAge = m.plane.LastACKAge()
 	}
 	return view
 }

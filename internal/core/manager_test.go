@@ -3200,3 +3200,125 @@ func TestProbeForStart_ZeroPolicyPreservesBehavior(t *testing.T) {
 		}
 	}
 }
+
+func TestManager_StatusHomeViewIdleHasZeroMeter(t *testing.T) {
+	m := newTestManager(t)
+	got := m.StatusHomeView()
+	if got.Meter != (MeterHomeView{}) {
+		t.Fatalf("idle Meter = %+v, want zero value", got.Meter)
+	}
+}
+
+func TestManager_StatusHomeViewIncludesMeterFacts(t *testing.T) {
+	m := newTestManager(t)
+	m.bridge.Video.Modeline = "PAL_576i"
+	m.bridge.Video.InterlaceFieldOrder = "tff"
+	m.bridge.Video.LZ4Enabled = true
+	m.bridge.Video.DeltaLZ4Enabled = true
+	m.bridge.Audio.SampleRate = 48000
+	m.bridge.Audio.Channels = 2
+	m.bridge.Audio.OutputVolume = 77
+
+	probe := &ffmpeg.ProbeResult{
+		Width:                 720,
+		Height:                480,
+		FrameRate:             29.97,
+		Interlaced:            true,
+		AudioRate:             48000,
+		VideoCodec:            "h264",
+		AudioCodec:            "aac",
+		AudioChannels:         2,
+		SampleAspectRatioNum:  8,
+		SampleAspectRatioDen:  9,
+		DisplayAspectRatioNum: 4,
+		DisplayAspectRatioDen: 3,
+		VideoBitrateBPS:       1800000,
+		AudioBitrateBPS:       128000,
+		FormatBitrateBPS:      2100000,
+	}
+	crop := &ffmpeg.CropRect{W: 704, H: 480, X: 8, Y: 0}
+	req := SessionRequest{
+		StreamURL:  "http://example.test/live.m3u8",
+		AdapterRef: "url:test",
+		Source:     "url",
+		Title:      "Meter Test",
+		DirectPlay: true,
+	}
+
+	oldNewPlane := newPlane
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		return &fakePlane{}
+	}
+	t.Cleanup(func() { newPlane = oldNewPlane })
+
+	m.mu.Lock()
+	err := m.startPlaneLocked(req, 0, probe, crop, "ffmpeg", 42, sessionGuard{}, false)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("startPlaneLocked: %v", err)
+	}
+	got := m.StatusHomeView().Meter
+	if got.Source.Width != 720 || got.Source.Height != 480 || got.Source.VideoCodec != "h264" {
+		t.Fatalf("source meter = %+v", got.Source)
+	}
+	if got.Crop.Mode != "letterbox" || !got.Crop.Detected || got.Crop.W != 704 {
+		t.Fatalf("crop meter = %+v", got.Crop)
+	}
+	if got.Pipeline.ModelineName != "PAL_576i" || got.Pipeline.Standard != "pal" {
+		t.Fatalf("pipeline modeline/standard = %+v", got.Pipeline)
+	}
+	if !got.Pipeline.InterlacedOutput || got.Pipeline.FieldOrder != "tff" {
+		t.Fatalf("pipeline interlace = %+v", got.Pipeline)
+	}
+	if got.Pipeline.AudioSampleRate != 48000 || got.Pipeline.AudioChannels != 2 || got.Pipeline.AudioOutputVolume != 77 {
+		t.Fatalf("pipeline audio = %+v", got.Pipeline)
+	}
+}
+
+func TestManager_StatusHomeViewMeterRuntimeAndHotSwapFacts(t *testing.T) {
+	m := newTestManager(t)
+	m.bridge.Video.InterlaceFieldOrder = "bff"
+	m.bridge.Audio.OutputVolume = 44
+	m.active = &activeSession{
+		req:        SessionRequest{Title: "Runtime", AdapterRef: "url:runtime", Source: "url"},
+		generation: 7,
+		meter: MeterHomeView{
+			Pipeline: PipelineMeterView{FieldOrder: "tff", AudioOutputVolume: 20},
+		},
+	}
+	m.plane = &meterCountingPlane{
+		blitsTotal:  120,
+		framesTotal: 60,
+		underruns:   3,
+		wireBytes:   9000000,
+		lastACKAge:  4 * time.Millisecond,
+	}
+	got := m.StatusHomeView().Meter
+	if got.Pipeline.FieldOrder != "bff" {
+		t.Fatalf("hot-swapped field order = %q, want bff", got.Pipeline.FieldOrder)
+	}
+	if got.Pipeline.AudioOutputVolume != 44 {
+		t.Fatalf("hot-swapped volume = %d, want 44", got.Pipeline.AudioOutputVolume)
+	}
+	if got.Runtime.BlitsTotal != 120 || got.Runtime.Underruns != 3 || got.Runtime.WireBytes != 9000000 {
+		t.Fatalf("runtime counters = %+v", got.Runtime)
+	}
+	if got.Runtime.LastACKAge != 4*time.Millisecond || got.Runtime.Generation != 7 {
+		t.Fatalf("runtime ack/generation = %+v", got.Runtime)
+	}
+}
+
+type meterCountingPlane struct {
+	fakePlane
+	blitsTotal  uint64
+	framesTotal uint64
+	underruns   uint64
+	wireBytes   uint64
+	lastACKAge  time.Duration
+}
+
+func (p *meterCountingPlane) BlitsTotal() uint64        { return p.blitsTotal }
+func (p *meterCountingPlane) FramesTotal() uint64       { return p.framesTotal }
+func (p *meterCountingPlane) Underruns() uint64         { return p.underruns }
+func (p *meterCountingPlane) WireBytes() uint64         { return p.wireBytes }
+func (p *meterCountingPlane) LastACKAge() time.Duration { return p.lastACKAge }
