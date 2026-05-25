@@ -400,14 +400,17 @@ func hasAUXShape(req SessionRequest) bool {
 }
 
 func validateSessionInputShape(req SessionRequest) error {
-	hasStream := req.StreamURL != "" || req.StreamProbeURL != "" || req.AudioStreamURL != ""
+	hasPrimaryStream := req.StreamURL != "" || req.StreamProbeURL != ""
+	hasSecondaryStream := req.AudioStreamURL != ""
 	hasCapture := req.AudioCapture.Enabled
 	switch {
 	case req.StreamProbeURL != "" && req.StreamURL == "":
 		return fmt.Errorf("stream_probe_url requires stream_url")
-	case hasStream && hasCapture:
+	case (hasPrimaryStream || hasSecondaryStream) && hasCapture:
 		return fmt.Errorf("exactly one media input may be set")
-	case !hasStream && !hasCapture:
+	case hasSecondaryStream && req.StreamURL == "":
+		return fmt.Errorf("audio_stream_url requires stream_url")
+	case !hasPrimaryStream && !hasCapture:
 		return fmt.Errorf("stream_url or audio_capture is required")
 	}
 	if hasCapture {

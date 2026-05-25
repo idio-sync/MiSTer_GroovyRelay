@@ -538,6 +538,14 @@ func TestValidateSessionRequestRejectsInvalidInputShapes(t *testing.T) {
 			want: "exactly one media input",
 		},
 		{
+			name: "secondary audio stream without primary stream",
+			req: SessionRequest{
+				AudioStreamURL:  "http://example.test/audio-only.m4a",
+				AudioOutputMode: AudioOutputVisualOnly,
+			},
+			want: "audio_stream_url requires stream_url",
+		},
+		{
 			name: "capture missing format",
 			req: SessionRequest{
 				AudioCapture: AudioCaptureInput{
