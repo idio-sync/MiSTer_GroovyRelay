@@ -41,7 +41,8 @@
 | `internal/adapters/torrent/errors.go` | Add `wrapQuickCastError(err error) *adapters.QuickCastError` helper |
 | `internal/adapters/streams/assets.go` | Add `bundledChassisPresets` constant |
 | `internal/chassis/server.go` | Add `Config.PresetViewer` and `Config.PresetCaster`; store on `*Server`; register two new routes in `Mount` |
-| `internal/chassis/data.go` | Extend `PresetSlot` struct; populate in `idleSnapshot` (all 12 with `Slot: i+1`) and `snapshotFromStatusView` (with LIT derivation from `transport.AdapterRef`) |
+| `internal/chassis/data.go` | Extend `PresetSlot` struct; add `buildPresetsData` and `parseStreamsAdapterRef` helpers; replace `idleSnapshot`'s `Presets` literal with `buildPresetsData(cfg.PresetViewer, "", "")` so all 12 slots get `Slot: i+1` |
+| `internal/chassis/session.go` | Replace `snapshotFromStatusView`'s `Presets` literal with `buildPresetsData(cfg.PresetViewer, providerID, channelID)` using `parseStreamsAdapterRef(view.AdapterRef)` for LIT derivation |
 | `internal/chassis/templates/shell.html` | Add `<script>` tags for `input-cast.js` and `preset-bank.js` after `vfd-live.js` |
 | `internal/chassis/templates/input-row.html` | Add `data-chip-kind` and `data-cast-state` attributes; wire CAST button id |
 | `internal/chassis/templates/preset-bank.html` | Add `data-slot` / `data-provider` / `data-channel` attributes; conditional ` · LIVE` badge suffix |
@@ -979,68 +980,32 @@ func TestCastPreset_SlotOutOfRange(t *testing.T) {
 	}
 }
 
-func TestCastPreset_StartupSnapshotFailureReturnsNotReady(t *testing.T) {
-	// Construct an adapter WITHOUT pre-populated catalogs so
-	// ensureStartupSnapshot will attempt to fetch and fail. The easiest
-	// way is to use the existing fakeCore + fakeFetcher pattern from
-	// test_helpers_test.go and inject a fetcher that errors. If a fetch-
-	// injection seam doesn't exist, add a small one in this step:
-	//
-	//   // in adapter.go (production code, near other deps)
-	//   type playlistFetcher interface { ... } // already exists or rename
-	//   func (a *Adapter) replaceFetcherForTest(f playlistFetcher) { a.fetcher = f }
-	//
-	// Once that seam exists, the test reads cleanly:
-	a, _ := newTestAdapterWithFakeCore(t)
-	a.replaceFetcherForTest(failingFetcher{err: errors.New("synthetic fetch failure")})
-	err := a.CastPreset(context.Background(), 7)
-	if err == nil {
-		t.Fatal("err = nil, want NOT READY")
-	}
-	var qerr *adapters.QuickCastError
-	if !errors.As(err, &qerr) {
-		t.Fatalf("err = %v, want *QuickCastError", err)
-	}
-	if qerr.Status != http.StatusServiceUnavailable {
-		t.Errorf("Status = %d, want 503", qerr.Status)
-	}
-	if qerr.Chip != "NOT READY" {
-		t.Errorf("Chip = %q, want NOT READY", qerr.Chip)
-	}
-}
-
-// failingFetcher is a tiny local stub that returns the configured error
-// for every fetch call. Add to preset_test.go alongside the test.
-type failingFetcher struct{ err error }
-
-func (f failingFetcher) FetchPlaylist(ctx context.Context, url string) ([]byte, error) {
-	return nil, f.err
-}
-
-func TestCastPreset_SuccessfulSlotCallsStartResolvedStream(t *testing.T) {
-	// newTestAdapterWithCatalog (existing helper) pre-populates the
-	// streams catalog so ensureStartupSnapshot is a no-op. The
-	// fakeCore inside it records what arrives in StartResolvedStream
-	// (via StartSession on the fake core).
-	a := newTestAdapterWithCatalog(t)
+func TestCastPreset_SuccessfulSlotForwardsToFakeCore(t *testing.T) {
+	// newTestAdapterWithFakeCore (test_helpers_test.go:290) constructs
+	// an *Adapter with catalogs pre-populated AND returns a *fakeCore
+	// that records SessionRequests in core.lastReq. ensureStartupSnapshot
+	// is a no-op in this scenario (catalogs already loaded), so this
+	// test covers the happy path: slot 9 → cartoon-rewind:heman →
+	// StartResolvedStream → fakeCore.StartSession.
+	a, core := newTestAdapterWithFakeCore(t)
 	if err := a.CastPreset(context.Background(), 9); err != nil {
 		t.Fatalf("CastPreset(9) err = %v", err)
 	}
-	// The exact assertion shape depends on how the existing fakeCore
-	// records sessions. Cartoon-rewind/heman is slot 9 and already
-	// exists in newTestAdapterWithCatalog's seeded fixture, so the
-	// AdapterRef on the started session should contain
-	// "streams:cartoon-rewind:heman:..." (5-segment format).
-	started := a.lastStartedSession(t) // small helper — see Step 3 note
-	if !strings.HasPrefix(started.AdapterRef, "streams:cartoon-rewind:heman:") {
-		t.Errorf("started.AdapterRef = %q, want prefix streams:cartoon-rewind:heman:", started.AdapterRef)
+	// fakeCore.lastReq carries the SessionRequest that StartResolvedStream
+	// built. The adapter sets req.Source = "streams" and req.AdapterRef =
+	// "streams:cartoon-rewind:heman:<sessionID>:<token>" (5 segments).
+	if core.lastReq.Source != "streams" {
+		t.Errorf("lastReq.Source = %q, want streams", core.lastReq.Source)
+	}
+	if !strings.HasPrefix(core.lastReq.AdapterRef, "streams:cartoon-rewind:heman:") {
+		t.Errorf("lastReq.AdapterRef = %q, want prefix streams:cartoon-rewind:heman:", core.lastReq.AdapterRef)
 	}
 }
 ```
 
-**Note on TDD discipline for this task:** in Go, when a test references symbols (types, methods, package-level vars) that don't yet exist, `go test` produces a compile error instead of an assertion failure. That compile error IS the red phase for Go TDD — `go test` exits non-zero with `undefined: CastPreset`, `undefined: failingFetcher`, etc. Step 3 then introduces both the new symbols and the implementation. The Step 1 → Step 2 → Step 3 cycle remains valid.
+**On the `NOT READY` (503) path:** triggering `ensureStartupSnapshot` to fail in a unit test requires a fetcher-injection seam that doesn't exist yet in the streams adapter (`replaceCatalogsForTest` and `replaceDefinitionsForTest` exist; no `replaceFetcherForTest`). Adding that seam is out of scope for 3A. The `NOT READY` chip path is exercised by the chassis-side handler test in Task 11 (which uses a fake `PresetCaster` returning `*QuickCastError{503, "NOT READY"}` directly) and by code review of the small ~5-line `CastPreset` wrapper around `ensureStartupSnapshot`. If a future spec adds the fetcher seam, a corresponding `TestCastPreset_StartupSnapshotFailureReturnsNotReady` slots in naturally.
 
-`replaceFetcherForTest`, `lastStartedSession`, and any other small test seams referenced above don't yet exist. Add them as part of Step 1 (alongside the test code) or Step 3 (as part of the implementation, before the assertion logic). The plan deliberately doesn't dictate which file each helper lands in — match the existing test-scaffolding patterns in `test_helpers_test.go`.
+**On TDD discipline for this task:** the test references `CastPreset` (and reads `core.lastReq.AdapterRef`, which is set by the existing fakeCore's `StartSession`). Step 2 (`go test ... -v`) produces a compile error `undefined: (*Adapter).CastPreset` — that's the red phase. Step 3 introduces the method and the test passes green.
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -1139,7 +1104,7 @@ Append to [internal/chassis/chassis_test.go](../../../internal/chassis/chassis_t
 
 ```go
 func TestIdleSnapshot_PresetsAreSlotNumberedEvenWhenEmpty(t *testing.T) {
-	cfg := minimalConfigForTest() // existing helper — see chassis_test.go
+	cfg := nonZeroConfig() // existing helper — see chassis_test.go
 	cfg.PresetViewer = nil
 	data := idleSnapshot(cfg, time.Now())
 	for i, slot := range data.Presets.Slots {
@@ -1156,7 +1121,7 @@ func TestIdleSnapshot_PresetsAreSlotNumberedEvenWhenEmpty(t *testing.T) {
 }
 
 func TestIdleSnapshot_PresetsHydratedWhenViewerWired(t *testing.T) {
-	cfg := minimalConfigForTest()
+	cfg := nonZeroConfig()
 	cfg.PresetViewer = fakePresetViewer{
 		entries: [12]adapters.PresetEntry{
 			{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day on MTV", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
@@ -1191,7 +1156,7 @@ func TestIdleSnapshot_PresetsHydratedWhenViewerWired(t *testing.T) {
 }
 
 func TestSnapshotFromStatusView_LitDerivesFromAdapterRef(t *testing.T) {
-	cfg := minimalConfigForTest()
+	cfg := nonZeroConfig()
 	cfg.PresetViewer = bundledFakeViewer()
 	view := fakeStatusView(t, "streams:mtv-rewind:90s:sess-1:42") // helper that returns a core.StatusHomeView with AdapterRef
 	data := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
@@ -1205,7 +1170,7 @@ func TestSnapshotFromStatusView_LitDerivesFromAdapterRef(t *testing.T) {
 }
 
 func TestSnapshotFromStatusView_NonStreamsAdapterRefClearsAllLit(t *testing.T) {
-	cfg := minimalConfigForTest()
+	cfg := nonZeroConfig()
 	cfg.PresetViewer = bundledFakeViewer()
 	view := fakeStatusView(t, "url:https://example.test/x.mp4")
 	data := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
@@ -1233,18 +1198,9 @@ func bundledFakeViewer() fakePresetViewer {
 }
 ```
 
-If `fakeStatusView` and `minimalConfigForTest` don't already exist in `chassis_test.go`, add small helpers alongside the new tests. Sample:
+`nonZeroConfig()` and `newTestServer(t)` already exist in `chassis_test.go` (see lines 72 and 83 — `nonZeroConfig` returns a `Config` with `Bridge`, `Version: "test"`, `StartedAt`, `HostIP`, and `Registry: adapters.NewRegistry()` pre-populated). Reuse them. `fakeStatusView` does not exist; add a small helper alongside the new tests:
 
 ```go
-func minimalConfigForTest() Config {
-	return Config{
-		Bridge:    config.BridgeConfig{},
-		Version:   "test",
-		StartedAt: time.Now(),
-		HostIP:    "127.0.0.1",
-	}
-}
-
 func fakeStatusView(t *testing.T, adapterRef string) core.StatusHomeView {
 	t.Helper()
 	return core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef, Source: "streams"}
@@ -1385,7 +1341,7 @@ func parseStreamsAdapterRef(ref string) (providerID, channelID string) {
 
 Add `"fmt"` and `"strings"` imports if not already present, plus `"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"`.
 
-In `snapshotFromStatusView`, replace the existing `Presets` population:
+In [internal/chassis/session.go](../../../internal/chassis/session.go) (NOT `data.go`), `snapshotFromStatusView` builds the live snapshot — the function is defined at `session.go:74`. Replace the existing `Presets` population there:
 
 ```go
 providerID, channelID := parseStreamsAdapterRef(view.AdapterRef)
@@ -1400,12 +1356,28 @@ base.Presets = buildPresetsData(cfg.PresetViewer, providerID, channelID)
 go test ./internal/chassis -v
 ```
 
-Expected: all chassis tests PASS, including the new preset tests and any existing tests that touch `PresetsData`. If a pre-existing chassis test references the old `PresetsData{...}` literal, update its expectation to use the helper output.
+Expected: all chassis tests PASS, including the new preset tests and any existing tests that touch `PresetsData`.
+
+**Specific pre-existing test that will break and must be updated as part of this task:** [TestIdleSnapshot_AllFieldsPopulated](../../../internal/chassis/chassis_test.go) at `chassis_test.go:172`. Its `want.Presets.Slots` is a zero-valued `[12]PresetSlot{}` where every `Slot` field is 0. After `buildPresetsData` lands, `idleSnapshot` returns slots with `Slot: i+1` populated (1..12) — the `reflect.DeepEqual` check will fail. Update the `want.Presets` block to populate the `Slot` numbers:
+
+```go
+Presets: PresetsData{
+    ModeLabel: "Memory · 0 / 12 slots",
+    Count:     "★ 0",
+    Slots: func() [12]PresetSlot {
+        var s [12]PresetSlot
+        for i := range s {
+            s[i].Slot = i + 1
+        }
+        return s
+    }(),
+},
+```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/chassis/server.go internal/chassis/data.go internal/chassis/chassis_test.go
+git add internal/chassis/server.go internal/chassis/data.go internal/chassis/session.go internal/chassis/chassis_test.go
 git commit -m "feat(chassis): hydrate preset bank from PresetViewer with LIT derivation"
 ```
 
@@ -1991,7 +1963,7 @@ func newServerWithAdaptersForTest(t *testing.T, calls *recordedQuickCasts) *Serv
 	if err := reg.Register(routedTorrentStub{calls: calls}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := minimalConfigForTest()
+	cfg := nonZeroConfig()
 	cfg.Registry = reg
 	srv, err := New(cfg)
 	if err != nil {
@@ -2266,7 +2238,7 @@ func (f *fakePresetCaster) CastPreset(ctx context.Context, slot int) error {
 }
 
 func newServerWithPresetCasterForTest(t *testing.T, caster adapters.PresetCaster) *Server {
-	cfg := minimalConfigForTest()
+	cfg := nonZeroConfig()
 	cfg.PresetCaster = caster
 	srv, err := New(cfg)
 	if err != nil {
@@ -2647,7 +2619,7 @@ func TestPresetBankJS_Exists(t *testing.T) {
 }
 
 func TestShellTemplate_LoadsNewScripts(t *testing.T) {
-	srv := newServerForTest(t)
+	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
