@@ -169,12 +169,106 @@ func TestBuildVisualizerFilterChain_ApostropheInTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildVisualizerFilterChain: %v", err)
 	}
-	if !strings.Contains(graph, `text='Don'\''t Stop Believin'\'''`) {
+	if !strings.Contains(graph, `text='DON'\''T STOP BELIEVIN'\'''`) {
 		t.Fatalf("apostrophes not escaped via close-reopen idiom:\n%s", graph)
 	}
 	// And nothing crashed the trusted `%{pts\:hms}` expression path.
-	if strings.Contains(graph, `text='Don\'t`) {
+	if strings.Contains(graph, `text='DON\'T`) {
 		t.Fatalf("graph contains pre-fix broken `\\'` escape:\n%s", graph)
+	}
+}
+
+func TestVisualizerTextLines_MetadataOrderStylesAndProgress(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth:  720,
+		OutputHeight: 480,
+		Visualizer: VisualizerSpec{
+			Mode: VisualizerModeRetroAnalyzer,
+			Metadata: VisualizerMetadata{
+				Title:    "Blue Monday",
+				Artist:   "New Order",
+				Album:    "Power Corruption & Lies",
+				Duration: 7*time.Minute + 29*time.Second,
+			},
+		},
+	}
+	lines := visualizerTextLines(spec)
+	if len(lines) != 4 {
+		t.Fatalf("visualizerTextLines len = %d, want 4: %#v", len(lines), lines)
+	}
+	want := []visualizerTextLine{
+		{Role: visualizerTextRoleArtist, Text: "NEW ORDER", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "24", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleTitle, Text: "BLUE MONDAY", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "48", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleAlbum, Text: "POWER CORRUPTION & LIES", FontSize: 18, FontColor: "0x7fdc7f", X: "24", Y: "72", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleProgress, Text: "%{pts\\:hms} / 7:29", TrustedExpr: true, FontSize: 16, FontColor: "0x70c870", X: "w-tw-24", Y: "24"},
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d = %#v, want %#v", i, lines[i], want[i])
+		}
+	}
+}
+
+func TestVisualizerTextLines_TitleFallbackAndBlankMetadata(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth:  720,
+		OutputHeight: 480,
+		Visualizer: VisualizerSpec{
+			Mode: VisualizerModeRetroAnalyzer,
+			Metadata: VisualizerMetadata{
+				Title:  "   ",
+				Artist: "   ",
+				Album:  "",
+			},
+		},
+	}
+	lines := visualizerTextLines(spec)
+	if len(lines) != 1 {
+		t.Fatalf("visualizerTextLines len = %d, want 1: %#v", len(lines), lines)
+	}
+	if lines[0].Role != visualizerTextRoleTitle || lines[0].Text != "NOW PLAYING" {
+		t.Fatalf("fallback line = %#v, want NOW PLAYING title", lines[0])
+	}
+	if lines[0].WindowWidth != 392 || !lines[0].Marquee {
+		t.Fatalf("fallback line layout = %#v, want metadata window marquee line", lines[0])
+	}
+}
+
+func TestVisualizerLayoutForLogicalCanvases(t *testing.T) {
+	cases := []struct {
+		name          string
+		mode          VisualizerMode
+		logicalW      int
+		logicalH      int
+		sideMargin    int
+		metadataWidth int
+		metadataY     []string
+		progressX     string
+		progressY     string
+		showProgress  bool
+	}{
+		{name: "ntsc 240p upper", mode: VisualizerModeRetroAnalyzer, logicalW: 320, logicalH: 240, sideMargin: 16, metadataWidth: 176, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
+		{name: "pal 288p upper", mode: VisualizerModeOscilloscopeWave, logicalW: 384, logicalH: 288, sideMargin: 16, metadataWidth: 234, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
+		{name: "ntsc 480i upper", mode: VisualizerModeRetroAnalyzer, logicalW: 640, logicalH: 480, sideMargin: 24, metadataWidth: 392, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-24", progressY: "24", showProgress: true},
+		{name: "pal 576i lower", mode: VisualizerModeStereoScope, logicalW: 768, logicalH: 576, sideMargin: 24, metadataWidth: 504, metadataY: []string{"h-88", "h-64", "h-40"}, progressX: "w-tw-24", progressY: "h-88", showProgress: true},
+		{name: "tiny unexpected canvas omits progress", mode: VisualizerModeRetroAnalyzer, logicalW: 180, logicalH: 120, sideMargin: 16, metadataWidth: 148, metadataY: []string{"24", "48", "72"}, progressX: "", progressY: "", showProgress: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := visualizerLayoutFor(tc.mode, tc.logicalW, tc.logicalH)
+			if got.SideMargin != tc.sideMargin || got.MetadataX != tc.sideMargin {
+				t.Fatalf("margins = %#v, want side/meta %d", got, tc.sideMargin)
+			}
+			if got.MetadataWidth != tc.metadataWidth {
+				t.Fatalf("MetadataWidth = %d, want %d in %#v", got.MetadataWidth, tc.metadataWidth, got)
+			}
+			if strings.Join(got.MetadataY, ",") != strings.Join(tc.metadataY, ",") {
+				t.Fatalf("MetadataY = %v, want %v", got.MetadataY, tc.metadataY)
+			}
+			if got.ProgressX != tc.progressX || got.ProgressY != tc.progressY || got.ShowProgress != tc.showProgress {
+				t.Fatalf("progress layout = %#v, want x=%q y=%q show=%v", got, tc.progressX, tc.progressY, tc.showProgress)
+			}
+		})
 	}
 }
 
@@ -206,8 +300,8 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 		"x=24:y=24",
 		"x=24:y=54",
 		"x=24:y=84",
-		"Blue Monday",
-		"New Order",
+		"BLUE MONDAY",
+		"NEW ORDER",
 		"%{pts\\:hms}",
 		"fps=60000/1001",
 		"scale=w=720:h=480",

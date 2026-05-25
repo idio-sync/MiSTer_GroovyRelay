@@ -289,23 +289,104 @@ func escapeFilterText(s string) string {
 	return b.String()
 }
 
+const (
+	visualizerTextRoleArtist   = "artist"
+	visualizerTextRoleTitle    = "title"
+	visualizerTextRoleAlbum    = "album"
+	visualizerTextRoleProgress = "progress"
+)
+
+const (
+	visualizerMetadataColor = "0x9dff9d"
+	visualizerAlbumColor    = "0x7fdc7f"
+	visualizerProgressColor = "0x70c870"
+)
+
 type visualizerTextLine struct {
 	Text        string
 	TrustedExpr bool
+	Role        string
+	FontSize    int
+	FontColor   string
+	X           string
+	Y           string
+	WindowWidth int
+	Marquee     bool
+}
+
+type visualizerOverlayLayout struct {
+	SideMargin    int
+	MetadataX     int
+	MetadataWidth int
+	MetadataY     []string
+	ProgressX     string
+	ProgressY     string
+	ShowProgress  bool
+}
+
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func visualizerLayoutFor(mode VisualizerMode, logicalW, logicalH int) visualizerOverlayLayout {
+	sideMargin := 24
+	if logicalW < 640 {
+		sideMargin = 16
+	}
+	progressReserve := clampInt((logicalW*35+50)/100, 128, 240)
+	metadataWidth := logicalW - sideMargin - progressReserve
+	showProgress := metadataWidth >= 160
+	if !showProgress {
+		metadataWidth = logicalW - sideMargin*2
+		if metadataWidth < 0 {
+			metadataWidth = 0
+		}
+	}
+	layout := visualizerOverlayLayout{SideMargin: sideMargin, MetadataX: sideMargin, MetadataWidth: metadataWidth, ShowProgress: showProgress}
+	switch mode {
+	case VisualizerModeStereoScope:
+		layout.MetadataY = []string{"h-88", "h-64", "h-40"}
+	default:
+		layout.MetadataY = []string{"24", "48", "72"}
+	}
+	if showProgress {
+		layout.ProgressX = fmt.Sprintf("w-tw-%d", sideMargin)
+		layout.ProgressY = layout.MetadataY[0]
+	}
+	return layout
+}
+
+func visualizerMetadataLine(layout visualizerOverlayLayout, role, text, y string, fontSize int, color string) visualizerTextLine {
+	return visualizerTextLine{Text: strings.ToUpper(strings.TrimSpace(text)), Role: role, FontSize: fontSize, FontColor: color, X: fmt.Sprintf("%d", layout.MetadataX), Y: y, WindowWidth: layout.MetadataWidth, Marquee: true}
 }
 
 func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 	md := s.Visualizer.Metadata
+	logicalW, logicalH := logicalCanvas(s.OutputHeight)
+	layout := visualizerLayoutFor(s.Visualizer.Mode, logicalW, logicalH)
+	lines := make([]visualizerTextLine, 0, 4)
+	y := 0
+	if artist := strings.TrimSpace(md.Artist); artist != "" {
+		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleArtist, artist, layout.MetadataY[y], 20, visualizerMetadataColor))
+		y++
+	}
 	title := strings.TrimSpace(md.Title)
 	if title == "" {
 		title = "Now Playing"
 	}
-	lines := []visualizerTextLine{{Text: title}}
-	if artistAlbum := strings.TrimSpace(strings.Join(nonEmpty(md.Artist, md.Album), " - ")); artistAlbum != "" {
-		lines = append(lines, visualizerTextLine{Text: artistAlbum})
+	lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleTitle, title, layout.MetadataY[y], 20, visualizerMetadataColor))
+	y++
+	if album := strings.TrimSpace(md.Album); album != "" {
+		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleAlbum, album, layout.MetadataY[y], 18, visualizerAlbumColor))
 	}
-	if md.Duration > 0 {
-		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), TrustedExpr: true})
+	if md.Duration > 0 && layout.ShowProgress {
+		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), TrustedExpr: true, Role: visualizerTextRoleProgress, FontSize: 16, FontColor: visualizerProgressColor, X: layout.ProgressX, Y: layout.ProgressY})
 	}
 	return lines
 }
