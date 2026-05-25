@@ -100,18 +100,18 @@ The physical knob should feel tactile:
 - The client coalesces saves while dragging so the active cast can update live without writing on every pointer move. It should always send a final save on commit.
 - The last authoritative server value is retained. If a save fails, the client returns to that value.
 
-The implementation plan can choose exact debounce constants, but the design target is responsive live volume with bounded disk writes. A practical target is no more than about 5 save POSTs per second while dragging, plus a final commit.
+Concrete coalescing rule: trailing-edge throttle at 200 ms while the user is dragging or pressing keys, plus one unconditional final POST on pointer-up / blur / keyboard commit. This caps in-flight saves at five per second, leaves headroom under the 250 ms chassis tick, and guarantees the last-seen value is what reaches disk. An implementation may choose a slightly different debounce constant, but the final-commit guarantee and the ≤5 saves/sec ceiling are required, and the test suite should pin the final-commit behaviour rather than the rate.
 
 ### Client Save State
 
 `volume-knob.js` should use a single-flight queued save model:
 
-- `synced`: no pending local edits; SSE updates apply immediately and become the last authoritative value.
+- `synced`: no pending local edits and no in-flight POST; SSE `volume` updates apply immediately and become the last authoritative value.
 - `dragging`: pointer, keyboard, or wheel input owns the visual angle locally. Incoming SSE values are recorded as remote authoritative state but do not move the knob while the local edit is active.
-- `saving`: one POST is in flight. If the user changes the value again, store only the latest queued value and send it after the in-flight request completes.
-- `failed`: if the latest pending/final commit fails, restore the last authoritative value and clear queued local edits.
+- `saving`: one POST is in flight. If the user changes the value again, store only the latest queued value and send it after the in-flight request completes. Incoming SSE `volume` events update the last-authoritative tracker but DO NOT move the visual knob — they are deferred until the queued/in-flight POST resolves and the state returns to `synced`. This prevents the tab from snapping backwards to a stale fan-out of its own earlier POST while a newer value is still pending.
+- `failed`: if the latest pending/final commit fails, restore the last authoritative value and clear queued local edits, then return to `synced` so subsequent SSE values move the knob again.
 
-Older successful POST responses must not overwrite a newer queued or final local value. Pointer release, blur, or keyboard commit sends one final save for the latest value even if an intermediate save already ran.
+Older successful POST responses must not overwrite a newer queued or final local value. Pointer release, blur, or keyboard commit sends one final save for the latest value even if an intermediate save already ran. Closing the tab mid-drag may lose any queued-but-unsent value — that is acceptable because the user has no expectation that intermediate dragging values are persisted; the next session reads `bridge.audio.output_volume` from the last *completed* save.
 
 ### Accessibility
 
@@ -147,9 +147,9 @@ internal/chassis/
 | --- | --- |
 | `internal/core/manager.go` | Add `OutputVolume() int`, returning `m.bridge.Audio.OutputVolume` under the manager lock. |
 | `internal/core/manager_test.go` | Cover `OutputVolume()` and ensure `SetOutputVolume()` remains authoritative. |
-| `internal/chassis/server.go` | Add optional `VolumeViewer` and `VolumeSaver` to `Config`; store on `Server`; mount `POST /receiver/volume` through `requireSameOrigin`. |
+| `internal/chassis/server.go` | Add optional `VolumeViewer` and `VolumeSaver` to `Config`; store on `Server`; mount `POST /receiver/volume` through `requireSameOrigin`. All three `snapshotFromSession` call sites (`handleIndex`, the snapshot refresher, and `handleEvents` in `events.go`) must pass `s.volumeViewer`. |
 | `internal/chassis/data.go` | Add `OutputVolume int` to `TransportData`; idle transport data falls back to `cfg.Bridge.Audio.OutputVolume`. The knob is rendered by `transport.html`, which receives `.Transport` from `shell.html`, so the template reads `.OutputVolume`. |
-| `internal/chassis/session.go` | Extend `snapshotFromSession` to populate `Transport.OutputVolume` from `VolumeViewer.OutputVolume()` when available, otherwise from startup config. This happens for both idle and live states, outside the live-session-only branch. |
+| `internal/chassis/session.go` | Extend `snapshotFromSession` to populate `Transport.OutputVolume` from `VolumeViewer.OutputVolume()` when available, otherwise from startup config. This must apply to both idle and live states. Today the signature is `snapshotFromSession(cfg, sv, vv, tv, aux, now)` and the live branch overwrites `base.Transport` while idle keeps `idleSnapshot`'s value — see [Wiring `snapshotFromSession`](#wiring-snapshotfromsession) below. |
 | `internal/chassis/events.go` | Add `volumeEnvelope`, `volumeEnvelopeFrom`, `volumeChanged`, and initial/diff-loop `volume` event emission. |
 | `internal/chassis/events_test.go` | Update initial event expectations and add changed-volume SSE coverage. |
 | `internal/chassis/templates/transport.html` | Add the knob markup after `.seek-time` and before `.gear-btn`. |
@@ -174,13 +174,11 @@ type VolumeSaver interface {
 
 `*core.Manager` satisfies `VolumeViewer` after adding `OutputVolume()`.
 
-`main.go` owns the `VolumeSaver` adapter over `uiserver.BridgeSaver`:
+`main.go` owns the `VolumeSaver` adapter over `uiserver.BridgeSaver`. Use the same concrete-field shape as the existing `visualizerSaverAdapter` in `cmd/mister-groovy-relay/main.go`:
 
 ```go
 type volumeSaverAdapter struct {
-    bs interface {
-        SaveOutputVolume(int) (adapters.ApplyScope, error)
-    }
+    bs *uiserver.BridgeSaver
 }
 
 func (a *volumeSaverAdapter) SaveOutputVolume(volume int) error {
@@ -189,7 +187,43 @@ func (a *volumeSaverAdapter) SaveOutputVolume(volume int) error {
 }
 ```
 
-This mirrors the existing visualizer saver adapter pattern and keeps `internal/chassis` free of `internal/uiserver`.
+`main.go` already imports `uiserver`, so the concrete field adds no new dependency. It keeps `internal/chassis` free of `internal/uiserver` and matches the precedent verbatim — reviewers and future grep should see one pattern, not two.
+
+`BridgeSaver.SaveOutputVolume` returns `adapters.ApplyScope`; today `scopeForBridgeField("audio.output_volume")` always resolves to `ScopeHotSwap`, and the hot-swap is fully performed inside `applyHotSwapSideEffects` (which calls `core.Manager.SetOutputVolume`). The chassis discards the scope value for the same reason `visualizerSaverAdapter` does: there is no chassis-side action keyed on it.
+
+### Wiring `snapshotFromSession`
+
+The existing signature is:
+
+```go
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer,
+    tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData
+```
+
+It must grow a `VolumeViewer` parameter, conventionally placed next to `vv`:
+
+```go
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer,
+    volv VolumeViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData
+```
+
+Three call sites need updating in lockstep with the signature change:
+
+1. `internal/chassis/server.go` — `handleIndex` (the page render).
+2. `internal/chassis/server.go` — the snapshot refresher goroutine started by `Mount`.
+3. `internal/chassis/events.go` — `handleEvents` initial-burst call at the top of the SSE handler.
+
+Inside `snapshotFromSession`, populate `Transport.OutputVolume` *after* the live/idle switch so both branches converge. The current shape leaves `base.Transport` untouched on the idle path; the new code adds one assignment that runs regardless of state:
+
+```go
+if volv != nil {
+    base.Transport.OutputVolume = volv.OutputVolume()
+} else {
+    base.Transport.OutputVolume = cfg.Bridge.Audio.OutputVolume
+}
+```
+
+`buildTransportData` does not need to learn about volume — keeping the assignment in `snapshotFromSession` mirrors how `Visualizer.ActiveMode` is set (line 73 of today's session.go) and keeps `buildTransportData` focused on adapter-derived transport fields.
 
 ## Data Flow
 
@@ -220,11 +254,19 @@ output_volume=73
 ```
 
 5. `handleVolumePost` validates the form, invokes `VolumeSaver.SaveOutputVolume(73)`, and returns `204`.
-6. `BridgeSaver.SaveOutputVolume` persists the config and calls `core.Manager.SetOutputVolume(73)`.
-7. The chassis snapshot cache reads `core.Manager.OutputVolume()` on the next tick and emits `event: volume` when the value changes.
+6. `BridgeSaver.SaveOutputVolume` runs `saveLocked` (bridge_saver.go): validate, atomic disk write, then update in-memory bridge (`r.sec.Bridge = newCfg` and `r.core.UpdateBridge(newCfg)`), then `applyHotSwapSideEffects` which calls `core.Manager.SetOutputVolume(73)`.
+7. The chassis snapshot cache reads `core.Manager.OutputVolume()` on the next tick (250 ms `chassisTickInterval`) and emits `event: volume` when the value changes.
 8. All tabs apply the authoritative SSE value.
 
 The chassis handler still validates locally for clean JSON errors. It may rely on `BridgeSaver.SaveOutputVolume` and `core.Manager.SetOutputVolume` as the final validation and hot-swap authority.
+
+#### Partial-failure semantics
+
+`saveLocked` writes disk before mutating in-memory state, so the rollback contract holds in the common failure mode (atomic disk write fails — disk and memory both untouched, client rollback works).
+
+There is one narrower mode the chassis cannot fully reverse: if disk write succeeds and in-memory bridge state is updated, but `core.Manager.SetOutputVolume` then fails inside `applyHotSwapSideEffects`, the saver returns the wrapped `"output volume hot-swap"` error. The handler renders `500 internal save failure` and the client rolls back visually, but `m.bridge.Audio.OutputVolume` already advanced — so the next chassis tick reads the saved value and emits an SSE that immediately overrides the client's rollback.
+
+This is acceptable: hot-swap failures on volume are extremely rare in practice (the path is a single in-process method that writes to a plane field), the persisted value is still the user's intent, and the SSE fan-out is the source of truth for all tabs. The spec's "client snaps back to last authoritative value" rule therefore covers total-failure cases (network drop, disk write failure, validation rejection); for the disk-write-succeeds-but-hot-swap-fails mode, the SSE will assert the saved value within one tick. Implementers should not introduce additional rollback machinery — let SSE be authoritative.
 
 ### SSE Payload
 
@@ -234,13 +276,13 @@ type volumeEnvelope struct {
 }
 ```
 
-Initial SSE burst adds `volume` after the current Phase 1 events. If the meter telemetry spec has already added `meter`, implementation should preserve the established order and append `volume` near the other low-rate control-state events. A valid order is:
+Initial SSE burst adds `volume` after the current Phase 1 events. The shipping order in `handleEvents` (events.go) is `state, vfd, source, visualizer, transport`; append `volume` after `transport`. If the meter telemetry spec ships first, preserve its placement and slot `volume` immediately before `meter`. The canonical order is:
 
 ```text
-state, vfd, visualizer, transport, volume, meter
+state, vfd, source, visualizer, transport, volume, meter
 ```
 
-The exact order is less important than making the initial `volume` event unconditional and documenting any test fixture updates.
+The exact order is less important than making the initial `volume` event unconditional and updating any `events_test.go` fixtures that assert the burst sequence.
 
 ## Error Handling
 

@@ -50,7 +50,7 @@ Spec 5A must not animate fake audio values. It can reserve hooks and quiet displ
 ## Done When
 
 - A live cast renders real low-rate meter text on `/receiver` within about 500 ms: `AUDIO IN`, `AUDIO OUT`, `SRC`, `CROP`, `HLS BUF`, `DROPS`, bitrate, kHz, mode, standard lamps, field lock, MB/S, MS ACK, `OUTPUT`, `ASPECT`, `PIPE`, `SPEED`, and `LINK`.
-- The initial SSE burst on `/receiver/events` emits `state`, `vfd`, `visualizer`, `transport`, then `meter`.
+- The initial SSE burst on `/receiver/events` emits `state`, `vfd`, `source`, `visualizer`, `transport`, then `meter` — `source` is the existing Phase 1 event surfaced by `handleEvents` (events.go) and must be preserved.
 - During a live session, `meter` updates arrive at about 2 Hz and include enough numeric samples for the throughput and ACK canvases.
 - Multiple open chassis tabs consume the same cached meter snapshots without increasing `core.Manager.StatusHomeView()` call rate.
 - HLS-buffered URL and Streams casts show live HLS segment counts and selected-variant data when available. Non-HLS casts show `0 / 0 SEG`.
@@ -382,13 +382,14 @@ Field-flip behavior:
 
 `GET /receiver/events` keeps the existing stream and adds `meter`.
 
-Initial burst order:
+Initial burst order (mirrors the existing `handleEvents` in events.go; `source` is already shipping and must not be dropped):
 
 1. `state`
 2. `vfd`
-3. `visualizer`
-4. `transport`
-5. `meter`
+3. `source`
+4. `visualizer`
+5. `transport`
+6. `meter`
 
 Live cadence:
 
