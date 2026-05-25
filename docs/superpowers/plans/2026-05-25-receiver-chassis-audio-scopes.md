@@ -39,7 +39,7 @@
 | `internal/chassis/server.go` | Add `Config.AudioScopeViewer AudioScopeViewer`; add `Server.audioScopeViewer` field; store in `New()` |
 | `internal/chassis/events.go` | Add `audioTickInterval = time.Second / 30`; add `audioEventHz = 30` constant; add 30 Hz audio ticker in `handleEvents` with closure-scoped panic recovery; emit initial audio frame last in burst |
 | `internal/chassis/events_test.go` | Initial-burst order extension; exact-count cadence assertion; pending suppression; generation flip via pending and direct; legitimate-zero serialization; meter discovery hook; panic recovery |
-| `internal/chassis/templates/meter.html` | Replace 5A pending placeholders with `data-scope-*` hooks for live data driving |
+| `internal/chassis/templates/meter.html` | No structural changes — Task 11 drives existing 5A hooks (`#phase-needle`, `#lufs-val`, `#spectrum`, `#gonio-canvas`, `.ch-bar`) from meter.js |
 | `internal/chassis/static/meter.js` | Add `subscribe('audio', ...)` handler with discriminator gate + generation reset; canvas paint loops for spectrum and goniometer; CSS-variable drivers for VU/phase/LUFS |
 | `internal/chassis/static/transport.js` | **Task 14 (gated)**: migrate from `events.source.addEventListener` + `chassis:eventsource` to `window.Chassis.events.subscribe('transport', ...)` |
 | `internal/chassis/static/visualizer-bank.js` | **Task 14 (gated)**: migrate from `events.source.addEventListener` + `chassis:eventsource` to `window.Chassis.events.subscribe('visualizer', ...)` |
@@ -58,13 +58,11 @@
 
 ---
 
-## Sequencing Constraint
+## Sequencing Status (verified at plan-revise time)
 
-5B Task 14 (Phase 1 debt migration) requires that 5A's `subscribe()` helper has merged into `internal/chassis/static/vfd-live.js` first. As of this plan's authoring, **5A has NOT merged** — `vfd-live.js` exposes `window.Chassis.events.source` and dispatches `chassis:eventsource`, but no `subscribe()` function exists.
+Spec 5A has merged: `window.Chassis.events.subscribe(eventName, handler)` is at [internal/chassis/static/vfd-live.js:21](../../../internal/chassis/static/vfd-live.js). The 5A meter envelope, `meter.go`, `meter.html`, and `data-meter-audio-scopes-status` discovery marker are also all in the tree. All 14 tasks may proceed without sequencing gates.
 
-**Execution rule:** Tasks 1-13 are independent of 5A and may proceed immediately. **Task 14 has a precondition check** — its first step is to verify `window.Chassis.events.subscribe` exists in `vfd-live.js` (via grep). If not, halt Task 14 with a clear blocker message; resume after 5A lands.
-
-This ordering avoids two failure modes: (a) Task 14 silently writing JS that calls a function that doesn't exist; (b) double-shipping `subscribe()` if 5A merges in parallel.
+Task 14 (Phase 1 debt migration) retains a defensive precondition grep as Step 1 — expected to pass immediately. If a future revision lands without 5A, the grep blocks Task 14 instead of writing JS that calls a missing function.
 
 ---
 
@@ -1166,9 +1164,15 @@ func (m *AudioMeter) computeSpectrum() {
 	bins := fft.Real1024(m.fftWindowed[:], m.fftOut)
 	nyquist := float64(m.sampleRate) / 2
 
-	// Compute Hann-corrected per-bin power (one-sided: ×2 for bins 1..N/2-1)
-	// Calibration: a bin-centered full-scale sine produces |X[k]| ≈ N/2 * sqrt(8/3)
-	// after Hann windowing. To recover 0 dBFS peak: divide by N^2 * (sum(w²)/N) / 2.
+	// Compute Hann-corrected per-bin power (one-sided: ×2 for bins 1..N/2-1).
+	// Normalization: 1 / (N² × hannEnergyGain / 2) where hannEnergyGain =
+	// sum(w²)/N = 3/8 for length-N Hann. A bin-centered full-scale sine
+	// after Hann windowing produces ≈-2 dBFS at the peak band (not exactly
+	// 0 dBFS), because the per-bin coherent-gain correction is folded into
+	// this single energy normalization rather than a separate amplitude-
+	// correction step. The test tolerance (band peak > -3 dBFS) accepts
+	// this. If exact 0 dBFS is ever required, multiply normFactor by an
+	// additional coherent-gain factor (~1.5) and re-tune sentinel tests.
 	hannEnergyGain := 3.0 / 8.0
 	normFactor := 1.0 / (float64(audioFFTSize) * float64(audioFFTSize) * hannEnergyGain / 2)
 
@@ -1610,7 +1614,24 @@ type audioScopesFakePlane struct {
 func (p *audioScopesFakePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return p.snap }
 ```
 
-If the existing `fakePlane` does not satisfy `planeRunner`, you'll need to add a no-op `AudioScopes() *dataplane.AudioScopeSnapshot { return nil }` method to it — this is the test-update implied by widening the interface.
+`internal/core/manager_test.go` defines several `planeRunner` fakes (verified at HEAD: `fakePlane` at line 87, `contextDonePlane` at 100, `blockingDonePlane` at 119, `volumePlane` at 135, `errorPlane` at 145, `meterCountingPlane` at 3397). All of them need the no-op method added so they still satisfy the widened interface:
+
+```go
+func (p *fakePlane) AudioScopes() *dataplane.AudioScopeSnapshot           { return nil }
+func (p *contextDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot    { return nil }
+func (p *blockingDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot   { return nil }
+// volumePlane embeds fakePlane, so it inherits the method — no addition needed
+func (p *errorPlane) AudioScopes() *dataplane.AudioScopeSnapshot          { return nil }
+func (p *meterCountingPlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
+```
+
+Verify with a build before proceeding to the new test:
+
+```bash
+go build ./internal/core
+```
+
+Expected: no errors. If any fake is missing the method, the compiler will name it.
 
 - [ ] **Step 6: Run core tests**
 
@@ -1928,6 +1949,12 @@ func (e *audioLiveEnvelope) MarshalJSON() ([]byte, error) {
 // Clamp policies per field type.
 type clampPolicy func(float32) float32
 
+// peakClamp covers both peak (signed amplitude [-1, +1]) and RMS
+// (non-negative [0, +1]) fields. RMS can never legitimately go
+// negative, so the x < 0 branch is unreachable for RMS but kept for
+// symmetry with peak. If the spec ever distinguishes peak from RMS
+// in terms of clamp behavior, split this into a dedicated rmsClamp
+// returning 0.0 for any negative or NaN input.
 func peakClamp(x float32) float32 {
 	if isBadFloat32(x) {
 		if x > 0 {
@@ -2132,6 +2159,176 @@ func TestHandleEvents_GenerationFlipDirectLiveToLive(t *testing.T) {
 	}
 }
 
+func TestHandleEvents_GenerationFlipViaPending(t *testing.T) {
+	// live(gen=1) → nil → live(gen=2) on the wire should appear as
+	// live, then pending, then live(gen=2). No stale live(gen=1)
+	// after the pending frame.
+	cfg := nonZeroConfig()
+	viewer := &mutableAudioViewer{snap: &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2}}
+	cfg.AudioScopeViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		viewer.setSnap(nil) // pending phase
+		time.Sleep(60 * time.Millisecond)
+		viewer.setSnap(&core.AudioScopeSnapshot{Generation: 2, SampleRate: 48000, Channels: 2})
+		time.Sleep(60 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	gen1 := strings.Index(body, `"generation":1`)
+	pending := strings.Index(body, `"status":"pending"`)
+	gen2 := strings.Index(body, `"generation":2`)
+	if gen1 < 0 || pending < 0 || gen2 < 0 {
+		t.Fatalf("missing one of gen1/pending/gen2: %s", body)
+	}
+	if !(gen1 < pending && pending < gen2) {
+		t.Errorf("ordering wrong: gen1=%d pending=%d gen2=%d\n%s", gen1, pending, gen2, body)
+	}
+	// After the pending frame, no stale live(gen=1) should reappear.
+	if strings.Index(body[pending:], `"generation":1`) >= 0 {
+		t.Errorf("stale gen=1 emission after pending: %s", body)
+	}
+}
+
+func TestHandleEvents_PendingShapeExact(t *testing.T) {
+	// Idle wire emit MUST be exactly `data: {"status":"pending"}` —
+	// no other keys, no whitespace beyond what the encoder emits.
+	cfg := nonZeroConfig()
+	cfg.AudioScopeViewer = &fakeAudioViewer{snap: nil} // permanent pending
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `event: audio
+data: {"status":"pending"}
+
+`) {
+		t.Errorf("expected exact pending wire bytes, got:\n%s", body)
+	}
+}
+
+func TestHandleEvents_LiveLegitimateZerosOnWire(t *testing.T) {
+	// PhaseCorr: 0.0 and LUFSShort: 0.0 are legitimate live values
+	// that JSON omitempty would erase. The wire payload MUST include
+	// both keys.
+	cfg := nonZeroConfig()
+	cfg.AudioScopeViewer = &fakeAudioViewer{snap: &core.AudioScopeSnapshot{
+		Generation: 1, SampleRate: 48000, Channels: 2,
+		PhaseCorr: 0.0, LUFSShort: 0.0,
+	}}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `"phaseCorr":0`) {
+		t.Errorf("phaseCorr=0 was erased on wire: %s", body)
+	}
+	if !strings.Contains(body, `"lufsShort":0`) {
+		t.Errorf("lufsShort=0 was erased on wire: %s", body)
+	}
+}
+
+func TestHandleEvents_InitialBurstAudioIsLast(t *testing.T) {
+	// Spec §Initial Event Order: audio MUST be the last initial event.
+	// Read current order from main; assert audioIdx > previously-last.
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(40 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	audioIdx := strings.Index(body, "event: audio\n")
+	if audioIdx < 0 {
+		t.Fatalf("no audio event in initial burst:\n%s", body)
+	}
+	// Assert audio comes AFTER every other initial event present in the burst.
+	for _, prior := range []string{"event: state\n", "event: vfd\n", "event: source\n", "event: visualizer\n", "event: transport\n", "event: meter\n"} {
+		idx := strings.Index(body, prior)
+		if idx < 0 {
+			continue // not all events guaranteed present in every cfg
+		}
+		if idx > audioIdx {
+			t.Errorf("audio appeared before %s: audioIdx=%d priorIdx=%d", prior, audioIdx, idx)
+		}
+	}
+}
+
+func TestHandleEvents_PanicInViewerSkipsFrame(t *testing.T) {
+	// A viewer that panics on its Nth call must not terminate the SSE
+	// handler. The frame is skipped; subsequent calls succeed.
+	cfg := nonZeroConfig()
+	viewer := &panickingAudioViewer{
+		snap:       &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2},
+		panicOnNth: 2, // initial burst (call 1) ok; first tick (call 2) panics; call 3 recovers
+	}
+	cfg.AudioScopeViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	// Initial burst contains one audio event (call 1).
+	// First tick panics (call 2): no new emit, but handler must survive.
+	// Subsequent ticks (call 3+) emit again.
+	audioCount := strings.Count(body, "event: audio\n")
+	if audioCount < 2 {
+		t.Errorf("audio event count = %d, want >= 2 (initial + post-panic recovery); body:\n%s", audioCount, body)
+	}
+}
+
+type panickingAudioViewer struct {
+	mu         sync.Mutex
+	snap       *core.AudioScopeSnapshot
+	calls      int
+	panicOnNth int
+}
+
+func (p *panickingAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	if n == p.panicOnNth {
+		panic("synthetic panic for test")
+	}
+	return p.snap
+}
+
 type countingAudioViewer struct {
 	mu   sync.Mutex
 	snap *core.AudioScopeSnapshot
@@ -2254,127 +2451,233 @@ git commit -m "feat(chassis): emit audio scope event at 30 Hz"
 
 ---
 
-## Task 10: Meter Discovery Hook (5A `meter.go` update)
+## Task 10: Meter Discovery Hook (5A `meter.go` + `data.go` update)
+
+The 5A code already has `AudioScopesData{Status: string}` in [data.go:171](../../../internal/chassis/data.go) and `meterAudioScopesE{Status: string}` in [meter.go:570](../../../internal/chassis/meter.go). The "pending" placeholder is populated in two places:
+
+- `idleSnapshot` at [data.go:317](../../../internal/chassis/data.go) — idle path
+- `meterDataFromSnapshot` at [meter.go:150](../../../internal/chassis/meter.go) — live path (currently also emits "pending")
+
+5B's discovery-hook update extends both struct types with `Via` and `SampleHz`, threads an `audioLive bool` into the data populator, and updates `meterEnvelopeFrom` to serialize the new fields.
 
 **Files:**
+- Modify: `internal/chassis/data.go`
 - Modify: `internal/chassis/meter.go`
 - Modify: `internal/chassis/meter_test.go`
 
-- [ ] **Step 1: Locate the meter envelope's audioScopes field**
+- [ ] **Step 1: Extend AudioScopesData and meterAudioScopesE structs**
 
-```bash
-grep -n "audioScopes" internal/chassis/meter.go
-```
-
-The 5A meter envelope builder emits `{"status":"pending"}` for the `audioScopes` slot. Find that emit (likely a struct literal or a map assignment).
-
-- [ ] **Step 2: Write failing discovery-hook test**
-
-Append to `internal/chassis/meter_test.go`:
+In `internal/chassis/data.go`, extend the struct at line 171:
 
 ```go
-func TestMeterEnvelope_AudioScopesDiscoveryHookWhenLive(t *testing.T) {
-	// When a session is active (Generation > 0 on audio snapshot), the
-	// meter event's audioScopes field must advertise the high-rate audio
-	// event so meter-only clients can discover it.
-	cfg := nonZeroConfig()
-	cfg.AudioScopeViewer = &fakeAudioViewer{snap: &core.AudioScopeSnapshot{Generation: 1}}
-	s, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	// Build a meter envelope as the live path would — use whatever
-	// existing helper meter.go exposes for envelope construction.
-	env := buildMeterEnvelopeForTest(s)
-	body, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	s_ := string(body)
-	if !strings.Contains(s_, `"audioScopes":{"status":"live","via":"audio","sampleHz":30}`) {
-		t.Errorf("discovery hook missing or wrong: %s", s_)
-	}
-}
-
-func TestMeterEnvelope_AudioScopesPendingWhenIdle(t *testing.T) {
-	cfg := nonZeroConfig() // no AudioScopeViewer → idle
-	s, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	env := buildMeterEnvelopeForTest(s)
-	body, _ := json.Marshal(env)
-	if !strings.Contains(string(body), `"audioScopes":{"status":"pending"}`) {
-		t.Errorf("idle audioScopes hook wrong: %s", body)
-	}
+// AudioScopesData holds the audio-scope cluster status. Carries the
+// discovery hook so meter-only clients can find the high-rate `audio`
+// SSE event when a session is active. When idle, only Status is set;
+// when live, Via and SampleHz advertise the high-rate channel.
+type AudioScopesData struct {
+	Status   string
+	Via      string
+	SampleHz int
 }
 ```
 
-`buildMeterEnvelopeForTest` is a test helper that calls whatever path `events.go` uses to build the meter envelope — depending on how 5A structured this, it might be a direct function call or a snapshot+envelope chain. If no such helper exists, add a minimal one in `meter_test.go`.
-
-- [ ] **Step 3: Run failing tests**
-
-```bash
-go test ./internal/chassis -run TestMeterEnvelope_AudioScopes -v
-```
-
-Expected: FAIL.
-
-- [ ] **Step 4: Update meter envelope builder**
-
-In `internal/chassis/meter.go`, find the `audioScopes` emission. Replace with a discovery-hook builder that consults the `AudioScopeViewer`:
+In `internal/chassis/meter.go`, extend the envelope struct at line 570:
 
 ```go
-type audioScopesHook struct {
+type meterAudioScopesE struct {
 	Status   string `json:"status"`
 	Via      string `json:"via,omitempty"`
 	SampleHz int    `json:"sampleHz,omitempty"`
 }
+```
 
-func audioScopesHookFromViewer(v AudioScopeViewer) audioScopesHook {
-	if v == nil {
-		return audioScopesHook{Status: "pending"}
+`omitempty` on `Via` and `SampleHz` keeps the pending shape exactly `{"status":"pending"}` (no extra keys with zero values).
+
+- [ ] **Step 2: Update meterEnvelopeFrom to carry the new fields**
+
+In `internal/chassis/meter.go`, find the `AudioScopes:` literal at line 617:
+
+```go
+		AudioScopes: meterAudioScopesE{
+			Status: m.AudioScopes.Status,
+		},
+```
+
+Replace with:
+
+```go
+		AudioScopes: meterAudioScopesE{
+			Status:   m.AudioScopes.Status,
+			Via:      m.AudioScopes.Via,
+			SampleHz: m.AudioScopes.SampleHz,
+		},
+```
+
+- [ ] **Step 3: Thread audioLive parameter into meterDataFromSnapshot**
+
+The live path at [meter.go:150](../../../internal/chassis/meter.go) currently hard-codes `base.AudioScopes.Status = "pending"`. It needs to know whether audio is live. The cleanest fix: add an `audioLive bool` parameter to `meterDataFromSnapshot`, and have the meter sampler (which lives in server scope) pass it from the viewer.
+
+Change `meterDataFromSnapshot` signature at line 121:
+
+```go
+func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverlay, throughput []float64, ack []float64, audioLive bool) MeterData {
+```
+
+Replace the hard-coded "pending" assignment at line 150:
+
+```go
+	base.AudioScopes = audioScopesData(audioLive)
+```
+
+Add the helper near the other format functions:
+
+```go
+// audioScopesData builds the discovery-hook AudioScopesData. When
+// audioLive is true, advertises the high-rate audio event via the
+// hook fields; otherwise returns pending. audioEventHz is the
+// constant exported by events.go (Task 9).
+func audioScopesData(audioLive bool) AudioScopesData {
+	if audioLive {
+		return AudioScopesData{
+			Status:   "live",
+			Via:      "audio",
+			SampleHz: audioEventHz,
+		}
 	}
-	snap := v.AudioScopes()
-	if snap == nil || snap.Generation == 0 {
-		return audioScopesHook{Status: "pending"}
-	}
-	return audioScopesHook{Status: "live", Via: "audio", SampleHz: audioEventHz}
+	return AudioScopesData{Status: "pending"}
 }
 ```
 
-Use `audioScopesHookFromViewer(s.audioScopeViewer)` everywhere the meter envelope currently emits the static pending placeholder for `audioScopes`. The `audioEventHz` constant ties the literal to `audioTickInterval` (see Task 9).
+- [ ] **Step 4: Update meterSampler.Sample to take and forward audioLive**
 
-- [ ] **Step 5: Run tests to confirm they pass**
+Change `meterSampler.Sample` signature at line 32:
 
-```bash
-go test ./internal/chassis -run TestMeterEnvelope_AudioScopes -v
+```go
+func (s *meterSampler) Sample(snap core.StatusHomeView, overlay adapters.MeterOverlay, audioLive bool, now time.Time) MeterData {
 ```
 
-Expected: PASS.
+Forward to `meterDataFromSnapshot` at line 45:
 
-- [ ] **Step 6: Commit**
+```go
+	current := meterDataFromSnapshot(snap, overlay, s.throughput, s.ack, audioLive)
+```
+
+- [ ] **Step 5: Update meter sampler call sites**
+
+Grep for callers of `meterSampler.Sample` (likely in server.go's snapshot refresher and possibly elsewhere):
 
 ```bash
-git add internal/chassis/meter.go internal/chassis/meter_test.go
+grep -n "\.meter\.Sample\|s\.meter\.Sample" internal/chassis/*.go
+```
+
+At each call site, add an `audioLive` argument derived from the server's audio viewer:
+
+```go
+audioLive := false
+if s.audioScopeViewer != nil {
+    if snap := s.audioScopeViewer.AudioScopes(); snap != nil && snap.Generation > 0 {
+        audioLive = true
+    }
+}
+data := s.meter.Sample(view, overlay, audioLive, now)
+```
+
+For idle-path callers (where no live audio is possible), pass `false`.
+
+- [ ] **Step 6: Write failing discovery-hook tests**
+
+Append to `internal/chassis/meter_test.go`:
+
+```go
+func TestMeterDataFromSnapshot_AudioScopesLiveDiscoveryHook(t *testing.T) {
+	snap := core.StatusHomeView{} // minimal; populate as existing tests do
+	got := meterDataFromSnapshot(snap, adapters.MeterOverlay{}, nil, nil, true)
+	if got.AudioScopes.Status != "live" || got.AudioScopes.Via != "audio" || got.AudioScopes.SampleHz != audioEventHz {
+		t.Errorf("AudioScopes = %+v, want Status=live Via=audio SampleHz=%d", got.AudioScopes, audioEventHz)
+	}
+}
+
+func TestMeterDataFromSnapshot_AudioScopesPendingWhenIdle(t *testing.T) {
+	snap := core.StatusHomeView{}
+	got := meterDataFromSnapshot(snap, adapters.MeterOverlay{}, nil, nil, false)
+	if got.AudioScopes.Status != "pending" || got.AudioScopes.Via != "" || got.AudioScopes.SampleHz != 0 {
+		t.Errorf("AudioScopes = %+v, want pending only", got.AudioScopes)
+	}
+}
+
+func TestMeterEnvelopeFrom_DiscoveryHookSerialization(t *testing.T) {
+	m := MeterData{AudioScopes: AudioScopesData{Status: "live", Via: "audio", SampleHz: 30}}
+	env := meterEnvelopeFrom(m)
+	body, _ := json.Marshal(env)
+	if !strings.Contains(string(body), `"audioScopes":{"status":"live","via":"audio","sampleHz":30}`) {
+		t.Errorf("envelope shape wrong: %s", body)
+	}
+}
+
+func TestMeterEnvelopeFrom_PendingShapeExact(t *testing.T) {
+	m := MeterData{AudioScopes: AudioScopesData{Status: "pending"}}
+	env := meterEnvelopeFrom(m)
+	body, _ := json.Marshal(env)
+	if !strings.Contains(string(body), `"audioScopes":{"status":"pending"}`) {
+		t.Errorf("pending envelope must NOT include via/sampleHz: %s", body)
+	}
+}
+```
+
+- [ ] **Step 7: Run failing tests**
+
+```bash
+go test ./internal/chassis -run TestMeterDataFromSnapshot_AudioScopes -v
+go test ./internal/chassis -run TestMeterEnvelopeFrom -v
+```
+
+Expected: FAIL (structs/signatures not yet updated).
+
+- [ ] **Step 8: Run tests to confirm they pass after Steps 1-5 are applied**
+
+```bash
+go test ./internal/chassis -v
+```
+
+Expected: PASS. If existing meter tests fail because they call `meterDataFromSnapshot` or `Sample` with the old signature, update them to pass `false` (or `true` where appropriate). Use `gofmt -w internal/chassis/` after edits.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/chassis/data.go internal/chassis/meter.go internal/chassis/meter_test.go internal/chassis/server.go
 git commit -m "feat(chassis): repurpose meter.audioScopes as audio discovery hook"
 ```
 
 ---
 
-## Task 11: Meter Template + meter.js Subscribe + Canvas Rendering
+## Task 11: meter.js Audio Subscribe + Live Rendering
+
+**5A already built the meter scope DOM.** Existing hooks in [internal/chassis/templates/meter.html](../../../internal/chassis/templates/meter.html):
+
+- **VU bars:** `.tr-vu .vu-lr .ch-bar > .s` — 12 segments per channel, `.on` class for lit. Color tiers: `.g` (green, bars 0-5), `.y` (yellow, 6-9), `.r` (red, 10-11).
+- **Phase needle:** `#phase-needle` element with `data-phase` attribute consumed by 5A CSS.
+- **LUFS readout:** `#lufs-val .seg-text` text content (DSEG14 font).
+- **Spectrum:** `#spectrum > .spectrum-band > .stack > .seg` — **6 octave bands × 8 segments each** plus `.peak-dot` per band. Bands labeled 60/250/1K/4K/8K/16K Hz.
+- **Goniometer:** `#gonio-canvas` 172×172 canvas.
+- **Discovery marker:** `[data-meter-audio-scopes-status]` (hidden element, server-rendered from `meter` event).
+
+**5A's `meter.js` exists** at [internal/chassis/static/meter.js](../../../internal/chassis/static/meter.js) and handles the slow `meter` event (HLS, throughput, ack). It uses `subscribe()` already, so the audio handler joins that IIFE — no template changes, no new selectors.
+
+**Data resolution gap:** the spec promises 32-band spectrum data; the existing UI has 6 visual bands. meter.js aggregates 32 → 6 octave bands for display. Goniometer data is 256 points; canvas paints all of them.
 
 **Files:**
-- Modify: `internal/chassis/templates/meter.html`
 - Modify: `internal/chassis/static/meter.js`
 - Modify: `internal/chassis/chassis_test.go`
 
-- [ ] **Step 1: Write failing template + no-fake-values lint tests**
+- [ ] **Step 1: Write failing template-presence + no-fake-values lint tests**
 
 Append to `internal/chassis/chassis_test.go`:
 
 ```go
-func TestMeterHTML_HasScopeHooks(t *testing.T) {
+// TestMeterHTML_HasAudioScopeHooks verifies the existing 5A hooks are
+// still present (regression guard — Task 11 must not accidentally
+// remove or rename them via template churn).
+func TestMeterHTML_HasAudioScopeHooks(t *testing.T) {
 	cfg := nonZeroConfig()
 	s, err := New(cfg)
 	if err != nil {
@@ -2385,19 +2688,21 @@ func TestMeterHTML_HasScopeHooks(t *testing.T) {
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
 	for _, hook := range []string{
-		"data-scope-vu-left",
-		"data-scope-vu-right",
-		"data-scope-phase",
-		"data-scope-lufs",
-		"data-scope-spectrum",
-		"data-scope-goniometer",
+		`id="phase-needle"`,
+		`id="lufs-val"`,
+		`id="spectrum"`,
+		`id="gonio-canvas"`,
+		`class="ch-bar"`,
+		`data-meter-audio-scopes-status`,
 	} {
 		if !strings.Contains(body, hook) {
-			t.Errorf("meter HTML missing hook %q", hook)
+			t.Errorf("meter HTML missing existing 5A hook %q", hook)
 		}
 	}
 }
 
+// TestMeterJS_NoFakeValueGenerators ensures audio scope rendering
+// drives values from the wire, never synthesizes them.
 func TestMeterJS_NoFakeValueGenerators(t *testing.T) {
 	src, err := os.ReadFile("static/meter.js")
 	if err != nil {
@@ -2412,136 +2717,190 @@ func TestMeterJS_NoFakeValueGenerators(t *testing.T) {
 		}
 	}
 }
+
+// TestMeterJS_SubscribesToAudio ensures Task 11 wired the audio
+// subscription that the rest of this task depends on.
+func TestMeterJS_SubscribesToAudio(t *testing.T) {
+	src, err := os.ReadFile("static/meter.js")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(src), `subscribe('audio'`) && !strings.Contains(string(src), `subscribe("audio"`) {
+		t.Error("meter.js does not subscribe to the audio SSE event")
+	}
+}
 ```
 
 - [ ] **Step 2: Run failing tests**
 
 ```bash
-go test ./internal/chassis -run "TestMeterHTML_HasScopeHooks|TestMeterJS_NoFakeValueGenerators" -v
+go test ./internal/chassis -run "TestMeterHTML_HasAudioScopeHooks|TestMeterJS_NoFakeValueGenerators|TestMeterJS_SubscribesToAudio" -v
 ```
 
-Expected: FAIL (hooks not present yet; meter.js may or may not contain forbidden generators).
+Expected: `TestMeterHTML_HasAudioScopeHooks` PASSES (hooks already exist from 5A), `TestMeterJS_SubscribesToAudio` FAILS (no audio handler yet), `TestMeterJS_NoFakeValueGenerators` PASSES (5A meter.js doesn't have generators). After Step 3 lands the audio handler, all three should pass.
 
-- [ ] **Step 3: Update meter.html with live data hooks**
+- [ ] **Step 3: Add audio subscriber to meter.js (existing IIFE)**
 
-In `internal/chassis/templates/meter.html`, replace 5A's pending placeholders for the audio scopes with `data-scope-*` hooks. Approximate structure (adapt to existing markup):
+Open [internal/chassis/static/meter.js](../../../internal/chassis/static/meter.js). The file is an IIFE starting with `(() => { 'use strict'; ... })();`. The existing code handles the `meter` event with helpers like `setText`, `setLamp`, `updateHLS`, `drawLine`. **Do not remove anything.**
 
-```html
-<div class="meter-row-3">
-  <div class="meter-vu meter-vu-left">
-    <div class="vu-bar" data-scope-vu-left></div>
-    <span class="vu-label">L</span>
-  </div>
-  <div class="meter-vu meter-vu-right">
-    <div class="vu-bar" data-scope-vu-right></div>
-    <span class="vu-label">R</span>
-  </div>
-  <div class="meter-phase">
-    <div class="phase-needle" data-scope-phase></div>
-    <span class="phase-label">φ</span>
-  </div>
-  <div class="meter-lufs" data-scope-lufs>--.- LUFS</div>
-</div>
-
-<div class="meter-row-2">
-  <canvas class="meter-canvas" data-scope-spectrum width="320" height="80"></canvas>
-  <canvas class="meter-canvas" data-scope-goniometer width="80" height="80"></canvas>
-</div>
-```
-
-Preserve other existing meter row markup; only replace the audio-scope partials with these `data-scope-*` hooks.
-
-- [ ] **Step 4: Add audio subscribe handler + canvas paint loops to meter.js**
-
-In `internal/chassis/static/meter.js`, add at the top level of the existing IIFE:
+Inside the same IIFE, after the existing helpers and before any final `})();`, append:
 
 ```js
-(() => {
-  // … existing 5A meter.js code (kept) …
+  // ---- Audio scope renderer (Spec 5B) ----
+  // Drives the 5A meter DOM hooks from the 30 Hz `audio` SSE event.
+  // The DOM has 6 octave bands (60/250/1K/4K/8K/16K Hz) × 8 segments
+  // each; the wire delivers 32 log bands. We aggregate to 6 bands at
+  // render time using peak-of-bins.
 
-  // Audio scope renderer — driven by the 30 Hz `audio` SSE event.
-  if (!window.Chassis || !window.Chassis.events || !window.Chassis.events.subscribe) {
-    console.warn('meter.js: window.Chassis.events.subscribe not available');
-    return;
+  const vuChBarL = document.querySelector('.tr-vu .vu-lr .ch-bar:nth-of-type(1)');
+  const vuChBarR = document.querySelector('.tr-vu .vu-lr .ch-bar:nth-of-type(2)');
+  const phaseNeedle = document.getElementById('phase-needle');
+  const lufsTextEl = document.querySelector('#lufs-val .seg-text');
+  const spectrumEl = document.getElementById('spectrum');
+  const gonioCanvas = document.getElementById('gonio-canvas');
+  const gonioCtx = gonioCanvas && gonioCanvas.getContext('2d');
+
+  // Build the spectrum band → segment map (6 bands × 8 segments).
+  const spectrumBandEls = spectrumEl
+    ? Array.from(spectrumEl.querySelectorAll('.spectrum-band'))
+    : [];
+  const spectrumSegments = spectrumBandEls.map((b) =>
+    Array.from(b.querySelectorAll('.stack .seg')),
+  );
+  const spectrumPeakDots = spectrumBandEls.map((b) => b.querySelector('.peak-dot'));
+
+  // Map 32 wire bands → 6 visual bands. Wire bands span 20 Hz – 20 kHz
+  // logarithmically; visual bands center at 60/250/1K/4K/8K/16K. Pick
+  // the wire bin whose center is closest to each visual center, with a
+  // window of ±2 bins, and take max dBFS.
+  const visualCenters = [60, 250, 1000, 4000, 8000, 16000];
+  const visualWindowBins = 2;
+  function wireBandToVisualIndex(wireBand) {
+    const lo = 20 * Math.pow(1000, wireBand / 32);
+    const hi = 20 * Math.pow(1000, (wireBand + 1) / 32);
+    const center = Math.sqrt(lo * hi);
+    let best = 0;
+    let bestDist = Infinity;
+    for (let v = 0; v < visualCenters.length; v++) {
+      const d = Math.abs(Math.log(center) - Math.log(visualCenters[v]));
+      if (d < bestDist) {
+        bestDist = d;
+        best = v;
+      }
+    }
+    return best;
   }
+  const wireToVisualMap = new Array(32);
+  for (let w = 0; w < 32; w++) wireToVisualMap[w] = wireBandToVisualIndex(w);
 
-  const vuLeft = document.querySelector('[data-scope-vu-left]');
-  const vuRight = document.querySelector('[data-scope-vu-right]');
-  const phase = document.querySelector('[data-scope-phase]');
-  const lufs = document.querySelector('[data-scope-lufs]');
-  const spectrumCanvas = document.querySelector('[data-scope-spectrum]');
-  const goniometerCanvas = document.querySelector('[data-scope-goniometer]');
-  const spectrumCtx = spectrumCanvas && spectrumCanvas.getContext('2d');
-  const goniometerCtx = goniometerCanvas && goniometerCanvas.getContext('2d');
-
-  let lastGeneration = 0;
+  const peakHold = new Array(6).fill(-90);
+  const peakHoldDecayPerFrame = 0.5; // dB per render frame
+  let lastAudioGeneration = 0;
   let lastSpectrum = null;
   let lastGoniometer = null;
-  let isLive = false;
+  let audioIsLive = false;
 
-  function renderPending() {
-    isLive = false;
-    if (vuLeft) vuLeft.style.setProperty('--vu-level', '0');
-    if (vuRight) vuRight.style.setProperty('--vu-level', '0');
-    if (phase) phase.style.setProperty('--phase-angle', '0deg');
-    if (lufs) lufs.textContent = '--.- LUFS';
-    if (spectrumCtx) {
-      spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
-    }
-    if (goniometerCtx) {
-      goniometerCtx.clearRect(0, 0, goniometerCanvas.width, goniometerCanvas.height);
-    }
+  function setVUBarSegments(chBar, level) {
+    if (!chBar) return;
+    const segs = chBar.querySelectorAll('.s');
+    const lit = Math.round(Math.max(0, Math.min(1, level)) * 12);
+    segs.forEach((s, i) => s.classList.toggle('on', i < lit));
+  }
+
+  function renderAudioPending() {
+    audioIsLive = false;
+    setVUBarSegments(vuChBarL, 0);
+    setVUBarSegments(vuChBarR, 0);
+    // Phase needle: park at center. 5A CSS positions via inline style.left;
+    // the .vu-phase .bar parent is the reference. center = 50%.
+    if (phaseNeedle) phaseNeedle.style.left = '';
+    if (lufsTextEl) lufsTextEl.textContent = '--.-';
+    // Clear spectrum segments and peak dots (5A peak-dot CSS uses inline style.top)
+    spectrumSegments.forEach((segs) =>
+      segs.forEach((s) => s.classList.remove('on')),
+    );
+    spectrumPeakDots.forEach((dot) => {
+      if (dot) dot.style.top = '';
+    });
+    for (let i = 0; i < peakHold.length; i++) peakHold[i] = -90;
+    // Clear goniometer
+    if (gonioCtx) gonioCtx.clearRect(0, 0, gonioCanvas.width, gonioCanvas.height);
     lastSpectrum = null;
     lastGoniometer = null;
   }
 
-  function renderLive(payload) {
-    isLive = true;
-    if (vuLeft) vuLeft.style.setProperty('--vu-level', String(payload.vu.left.peak));
-    if (vuRight) vuRight.style.setProperty('--vu-level', String(payload.vu.right.peak));
-    if (phase) {
-      const angle = payload.phaseCorr * 45;
-      phase.style.setProperty('--phase-angle', angle + 'deg');
+  function renderAudioLive(payload) {
+    audioIsLive = true;
+    setVUBarSegments(vuChBarL, payload.vu.left.peak);
+    setVUBarSegments(vuChBarR, payload.vu.right.peak);
+    if (phaseNeedle) {
+      // PhaseCorr in [-1, +1] → position needle along .vu-phase .bar.
+      // 5A baseline at idle: left = 50%. Range +/- ~36px from center
+      // (the .bar is ~72px wide; needle is 3px). Linear map: -1 → 14%,
+      // 0 → 50%, +1 → 86%.
+      const pct = 50 + payload.phaseCorr * 36;
+      phaseNeedle.style.left = pct + '%';
     }
-    if (lufs) lufs.textContent = payload.lufsShort.toFixed(1) + ' LUFS';
+    if (lufsTextEl) {
+      const v = payload.lufsShort;
+      lufsTextEl.textContent = v <= -100 ? '--.-' : v.toFixed(1);
+    }
     lastSpectrum = payload.spectrum;
     lastGoniometer = payload.goniometer;
   }
 
-  function paintFrame() {
-    if (!isLive) {
-      requestAnimationFrame(paintFrame);
+  function paintAudio() {
+    if (!audioIsLive) {
+      requestAnimationFrame(paintAudio);
       return;
     }
-    if (spectrumCtx && lastSpectrum) {
-      const w = spectrumCanvas.width;
-      const h = spectrumCanvas.height;
-      spectrumCtx.clearRect(0, 0, w, h);
-      const barW = w / lastSpectrum.length;
-      spectrumCtx.fillStyle = '#0f0';
-      for (let i = 0; i < lastSpectrum.length; i++) {
-        const db = lastSpectrum[i];
-        const norm = Math.max(0, Math.min(1, (db + 60) / 60)); // -60..0 dBFS
-        const barH = norm * h;
-        spectrumCtx.fillRect(i * barW, h - barH, barW - 1, barH);
+    // Spectrum: aggregate 32 wire bands → 6 visual bands (peak-of-bins),
+    // then light segments + peak-hold dot per visual band.
+    if (lastSpectrum && spectrumSegments.length === 6) {
+      const visualLevels = [-90, -90, -90, -90, -90, -90];
+      for (let w = 0; w < 32 && w < lastSpectrum.length; w++) {
+        const v = wireToVisualMap[w];
+        if (lastSpectrum[w] > visualLevels[v]) visualLevels[v] = lastSpectrum[w];
+      }
+      for (let v = 0; v < 6; v++) {
+        const db = visualLevels[v];
+        // Map -60..0 dBFS to 0..8 segments
+        const norm = Math.max(0, Math.min(1, (db + 60) / 60));
+        const lit = Math.round(norm * 8);
+        const segs = spectrumSegments[v];
+        for (let i = 0; i < segs.length; i++) {
+          segs[i].classList.toggle('on', i < lit);
+        }
+        // Peak-hold: rise instantly, decay slowly
+        if (db > peakHold[v]) peakHold[v] = db;
+        else peakHold[v] = Math.max(-90, peakHold[v] - peakHoldDecayPerFrame);
+        const peakNorm = Math.max(0, Math.min(1, (peakHold[v] + 60) / 60));
+        const dot = spectrumPeakDots[v];
+        // 5A peak-dot: top: 100% (bottom) at idle, decreasing top moves up.
+        // Map peakNorm 0..1 → top 100%..0%.
+        if (dot) dot.style.top = `${(1 - peakNorm) * 100}%`;
       }
     }
-    if (goniometerCtx && lastGoniometer) {
-      const w = goniometerCanvas.width;
-      const h = goniometerCanvas.height;
-      // Alpha-blend prior frame for trail effect
-      goniometerCtx.fillStyle = 'rgba(0,0,0,0.2)';
-      goniometerCtx.fillRect(0, 0, w, h);
-      goniometerCtx.fillStyle = '#0f0';
+    // Goniometer: alpha-fade prior frame for trail; plot 256 (L,R) points.
+    if (gonioCtx && lastGoniometer) {
+      const w = gonioCanvas.width;
+      const h = gonioCanvas.height;
+      gonioCtx.fillStyle = 'rgba(0,0,0,0.15)';
+      gonioCtx.fillRect(0, 0, w, h);
+      gonioCtx.fillStyle = '#7cffb2';
       const cx = w / 2, cy = h / 2;
       const scale = Math.min(w, h) / 2 * 0.9;
-      for (const [l, r] of lastGoniometer) {
-        const x = cx + (l - r) * scale * 0.707;
-        const y = cy - (l + r) * scale * 0.707;
-        goniometerCtx.fillRect(x, y, 1, 1);
+      // Rotate 45° so in-phase appears vertical (standard goniometer orientation):
+      // x = (L - R) * sin45 * scale, y = -(L + R) * sin45 * scale
+      const r2 = 0.70710678;
+      for (let i = 0; i < lastGoniometer.length; i++) {
+        const pair = lastGoniometer[i];
+        const x = cx + (pair[0] - pair[1]) * r2 * scale;
+        const y = cy - (pair[0] + pair[1]) * r2 * scale;
+        gonioCtx.fillRect(x, y, 1, 1);
       }
     }
-    requestAnimationFrame(paintFrame);
+    requestAnimationFrame(paintAudio);
   }
 
   window.Chassis.events.subscribe('audio', (ev) => {
@@ -2552,110 +2911,91 @@ In `internal/chassis/static/meter.js`, add at the top level of the existing IIFE
       console.warn('meter.js: bad audio payload', ev.data, err);
       return;
     }
+    // Discriminator gate (load-bearing): never destructure non-status fields
+    // before checking status.
     if (payload.status !== 'live') {
-      renderPending();
+      renderAudioPending();
       return;
     }
-    if (payload.generation !== lastGeneration) {
-      lastGeneration = payload.generation;
-      // Generation reset: clear histories (peak-hold, trails)
+    if (payload.generation !== lastAudioGeneration) {
+      lastAudioGeneration = payload.generation;
+      // Generation reset: clear peak-hold and goniometer trail
+      for (let i = 0; i < peakHold.length; i++) peakHold[i] = -90;
       lastSpectrum = null;
       lastGoniometer = null;
     }
-    renderLive(payload);
+    renderAudioLive(payload);
   });
 
-  requestAnimationFrame(paintFrame);
-})();
+  requestAnimationFrame(paintAudio);
 ```
 
-- [ ] **Step 5: Run tests to confirm they pass**
+Notes:
+- The visual peak-hold and decay live in the client (per spec §Client rendering). Wire payload is just the current spectrum snapshot.
+- The phase needle uses `data-phase` attribute (existing 5A pattern); 5A CSS already animates it. If the existing CSS doesn't consume `data-phase` for live rendering, Task 12 may need a small CSS addition.
+- The `--peak-y` CSS variable controlling peak-dot position assumes 5A CSS uses it. If not (verify during implementation), either set `style.top` directly or extend Task 12.
+
+- [ ] **Step 4: Run tests to confirm they pass**
 
 ```bash
-go test ./internal/chassis -run "TestMeterHTML_HasScopeHooks|TestMeterJS_NoFakeValueGenerators" -v
+go test ./internal/chassis -run "TestMeterHTML_HasAudioScopeHooks|TestMeterJS_NoFakeValueGenerators|TestMeterJS_SubscribesToAudio" -v
 ```
 
-Expected: PASS.
+Expected: all three PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/chassis/templates/meter.html internal/chassis/static/meter.js internal/chassis/chassis_test.go
+git add internal/chassis/static/meter.js internal/chassis/chassis_test.go
 git commit -m "feat(chassis): render audio scopes from live audio event"
 ```
 
 ---
 
-## Task 12: chassis.css Audio-Scope Styles
+## Task 12: chassis.css Audio-Scope Styles (verification + minimal additions)
+
+5A's `chassis.css` already styles the existing meter scope DOM (`.tr-vu .ch-bar`, `#phase-needle`/`.vu-phase .needle` with `transition: left 80ms linear`, `.spectrum-band .peak-dot` with `transition: top 220ms`, etc.). meter.js (Task 11) drives those existing hooks by setting `style.left`, `style.top`, and `.on` classes directly — no new CSS variables required.
 
 **Files:**
-- Modify: `internal/chassis/static/chassis.css`
+- Modify (only if verification finds a gap): `internal/chassis/static/chassis.css`
 
-- [ ] **Step 1: Add audio scope styles scoped under body.receiver**
+- [ ] **Step 1: Verify 5A styles produce live audio rendering**
 
-Append to `internal/chassis/static/chassis.css`:
+Run `make build && ./mister-groovy-relay` (or however the bridge starts locally), connect to `/receiver` in a browser, start a cast, and visually verify:
+
+- VU `.ch-bar > .s` segments light up to follow the audio level
+- `#phase-needle` slides left/right along `.vu-phase .bar` as L/R correlation changes (CSS `transition: left 80ms linear` already animates the move)
+- `#spectrum .peak-dot` rises and falls per band (CSS `transition: top 220ms` animates)
+- `#gonio-canvas` shows scattered (L,R) points
+- `#lufs-val .seg-text` updates the DSEG14 numeric readout
+
+If all five work without CSS changes, **skip Step 2 and Step 3**. Commit nothing for Task 12 and proceed to Task 13.
+
+- [ ] **Step 2: Add scoped styles only for gaps found in Step 1**
+
+If a specific scope renders incorrectly (e.g., goniometer canvas needs a background color the existing `.gonio` rule doesn't provide), append a targeted rule under `body.receiver`. Avoid introducing new selectors that overlap existing 5A rules; prefer extending existing rules.
+
+Example (only if needed — goniometer trail blending):
 
 ```css
-body.receiver .vu-bar {
-  display: block;
-  width: 100%;
-  height: 8px;
-  background: linear-gradient(to right, #0a0, #aa0 70%, #a00 90%);
-  transform-origin: left center;
-  transform: scaleX(var(--vu-level, 0));
-  transition: transform 60ms linear;
-}
-
-body.receiver .phase-needle {
-  display: block;
-  width: 2px;
-  height: 24px;
-  background: #888;
-  transform-origin: center bottom;
-  transform: rotate(var(--phase-angle, 0deg));
-  transition: transform 80ms ease-out;
-}
-
-body.receiver .meter-lufs {
-  font-family: 'DSEG14Classic', monospace;
-  font-size: 14px;
-  color: #ccc;
-}
-
-body.receiver .meter-canvas {
-  background: #0a0a0a;
-  border: 1px solid #1a1a1a;
-  image-rendering: pixelated;
-}
-
-body.receiver .meter-vu {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-body.receiver .vu-label,
-body.receiver .phase-label {
-  font-family: 'Inter', sans-serif;
-  font-size: 9px;
-  color: #666;
-  text-transform: uppercase;
+body.receiver #gonio-canvas {
+  background: transparent;
 }
 ```
 
-- [ ] **Step 2: Run chassis-CSS scope tests to confirm no regressions**
+- [ ] **Step 3: Run chassis-CSS scope tests + commit if changes were made**
 
 ```bash
 go test ./internal/chassis -run "TestChassisCSS" -v
 ```
 
-Expected: PASS. The existing scope-test parses CSS via tdewolff and confirms every selector starts with `body.receiver`; the new rules already comply.
+Expected: PASS. The existing `TestChassisCSS_AllSelectorsScoped` test enforces every selector starts with `body.receiver`; any addition must comply.
 
-- [ ] **Step 3: Commit**
+Commit only if you made changes:
 
 ```bash
 git add internal/chassis/static/chassis.css
-git commit -m "feat(chassis): add audio scope styles"
+git commit -m "feat(chassis): tighten audio scope styles"
 ```
 
 ---
@@ -2678,18 +3018,21 @@ AudioScopeViewer: coreMgr,
 
 - [ ] **Step 2: Write failing end-to-end integration test**
 
-In `tests/integration/chassis_test.go`, add (or append to) a build-tagged file:
+The existing `tests/integration/chassis_test.go` uses `package integration` (NOT `integration_test`). Append a new test function to that file (or create the file if absent with `package integration`).
+
+The simplest correct shape is a smoke test that spins up the real `chassis.Server` with a synthetic `AudioScopeViewer`, connects via `httptest`, and asserts the audio event appears on the wire. This exercises main.go's wiring path (the same `chassis.Config` shape) without requiring a real `core.Manager` + plane (which would need the `newPlane = func(cfg dataplane.PlaneConfig) planeRunner { ... }` override hook at [manager.go:114](../../../internal/core/manager.go) — workable but heavier than needed).
 
 ```go
 //go:build integration
 
-package integration_test
+package integration
 
 import (
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2697,21 +3040,41 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
-func TestChassisIntegration_AudioEventEndToEnd(t *testing.T) {
-	// Construct a real Manager with a fake plane that publishes a known
-	// snapshot. Mount chassis at /receiver. Connect SSE client; assert
-	// `audio` event arrives with status: live within 200 ms.
-	mgr := core.NewManager(/* test config — adapt to existing helper */)
-	// Inject a fake plane that returns a known audio snapshot…
-	// (Implementation-specific; adapt to whatever core_test exports.)
+type integrationAudioViewer struct {
+	mu   sync.Mutex
+	snap *core.AudioScopeSnapshot
+}
 
-	srv := chassis.New(chassis.Config{
-		Manager:          mgr,
-		AudioScopeViewer: mgr,
-		Version:          "test",
+func (v *integrationAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.snap
+}
+
+func (v *integrationAudioViewer) set(s *core.AudioScopeSnapshot) {
+	v.mu.Lock()
+	v.snap = s
+	v.mu.Unlock()
+}
+
+func TestChassisIntegration_AudioEventEndToEnd(t *testing.T) {
+	viewer := &integrationAudioViewer{snap: &core.AudioScopeSnapshot{
+		Generation: 1, SampleRate: 48000, Channels: 2,
+		Peak: [2]float32{0.5, 0.5}, RMS: [2]float32{0.35, 0.35},
+	}}
+	srv, err := chassis.New(chassis.Config{
+		// Use whatever minimal-but-valid Config the existing chassis
+		// tests already construct (see internal/chassis/chassis_test.go
+		// `nonZeroConfig()`). Required fields: Version, StartedAt,
+		// HostIP, plus AudioScopeViewer for this test.
+		Version:          "integration-test",
 		StartedAt:        time.Now(),
 		HostIP:           "127.0.0.1",
+		AudioScopeViewer: viewer,
 	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
 	mux := http.NewServeMux()
 	srv.Mount(mux)
 	ts := httptest.NewServer(mux)
@@ -2733,7 +3096,8 @@ func TestChassisIntegration_AudioEventEndToEnd(t *testing.T) {
 		n, _ := resp.Body.Read(buf)
 		if n > 0 {
 			collected.Write(buf[:n])
-			if strings.Contains(collected.String(), "event: audio") {
+			if strings.Contains(collected.String(), "event: audio") &&
+				strings.Contains(collected.String(), `"status":"live"`) {
 				break
 			}
 		}
@@ -2777,9 +3141,11 @@ git commit -m "feat(chassis): wire AudioScopeViewer and add end-to-end test"
 
 ---
 
-## Task 14: Phase 1 Debt Migration (GATED on 5A)
+## Task 14: Phase 1 Debt Migration
 
-**Precondition check before starting this task.**
+**Scope:** migrates the two scripts spec §Phase 1 Follow-Up Debt names — `transport.js` and `visualizer-bank.js`. `volume-knob.js` ALSO uses the legacy `events.source` + `chassis:eventsource` pattern (verified at [internal/chassis/static/volume-knob.js:209-212](../../../internal/chassis/static/volume-knob.js)) but is owned by the parallel volume-knob spec, not 5B. If volume-knob ships after 5B, that spec's plan extends the subscribe-pattern lint to include volume-knob.js then.
+
+**Precondition check (defensive — expected to pass at HEAD).**
 
 - [ ] **Step 1: Verify 5A's subscribe() helper is in the tree**
 
@@ -2787,15 +3153,9 @@ git commit -m "feat(chassis): wire AudioScopeViewer and add end-to-end test"
 grep -n "subscribe" internal/chassis/static/vfd-live.js
 ```
 
-Expected output: at least one line containing `subscribe` as a function definition (e.g., `subscribe: function(name, handler) {` or `subscribe(name, handler) {`).
+Expected output: a line `function subscribe(eventName, handler) {` near line 21. Verified at plan-revise time.
 
-If NO `subscribe` function is present, **halt this task** with the following blocker message:
-
-> Task 14 (Phase 1 debt migration) cannot proceed: 5A's `subscribe()` helper has not yet merged into `internal/chassis/static/vfd-live.js`. Either:
-> (a) Wait for 5A to merge, then resume Task 14.
-> (b) Land the `subscribe()` helper in this task as a prerequisite step — coordinate with 5A's author to avoid double-shipping.
-
-Tasks 1-13 are complete and shippable without this task. Do not block them.
+If NO `subscribe` function is present (unexpected), halt this task with a clear blocker message; resume after `subscribe()` lands.
 
 If `subscribe` IS present, proceed to Step 2.
 
