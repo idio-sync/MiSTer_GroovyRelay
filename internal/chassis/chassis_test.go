@@ -2045,3 +2045,87 @@ func TestVFDLiveJSHandlesSourceEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestMeterTemplateHasDataHooks(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "meter", data.Meter); err != nil {
+		t.Fatalf("execute meter: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{
+		"data-meter-audio-in",
+		"data-meter-audio-out",
+		"data-meter-src",
+		"data-meter-crop",
+		"data-meter-hls-buffer",
+		"data-meter-drops",
+		"data-meter-bitrate",
+		"data-meter-freq-khz",
+		"data-meter-mode",
+		"data-meter-standard-ntsc",
+		"data-meter-standard-pal",
+		"data-meter-field-lock",
+		"data-meter-throughput",
+		"data-meter-ack",
+		"data-meter-output",
+		"data-meter-aspect",
+		"data-meter-pipe",
+		"data-meter-speed",
+		"data-meter-link",
+		"data-meter-audio-scopes-status",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("meter template missing %q; body:\n%s", want, body)
+		}
+	}
+}
+
+func TestMeterStaticUsesSubscribeAndNoDemoGenerators(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/meter.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/meter.js): %v", err)
+	}
+	body := string(js)
+	for _, want := range []string{
+		"window.Chassis.events.subscribe('meter'",
+		"data-meter-audio-in",
+		"data-meter-hls-seg",
+		"throughput-canvas",
+		"ack-canvas",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("meter.js missing %q", want)
+		}
+	}
+	for _, bad := range []string{"new EventSource", "Math.random", "setInterval(", "demo"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("meter.js contains forbidden generator %q", bad)
+		}
+	}
+}
+
+func TestVFDLiveSubscribeHelperContract(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/vfd-live.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/vfd-live.js): %v", err)
+	}
+	body := string(js)
+	for _, want := range []string{
+		"subscribe(eventName, handler)",
+		"subscriptions",
+		"removeEventListener(eventName, handler)",
+		"addEventListener(eventName, handler)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("vfd-live.js missing subscribe contract %q", want)
+		}
+	}
+}
