@@ -403,34 +403,6 @@ func TestStartAUXStartSessionErrorReleasesProxyTokensAndDoesNotWrapUnavailable(t
 	}
 }
 
-func TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast(t *testing.T) {
-	wantErr := errors.New("probe failed: AUX input returned non-2xx status")
-	fc := &sessionCore{
-		startErr: wantErr,
-		status:   core.SessionStatus{AdapterRef: "plex:/library/metadata/42"},
-	}
-	a := newTestAdapterWithCore(t, fc)
-	a.mustApplyConfig(t, validStreamConfig())
-
-	_, err := a.StartAUX(context.Background(), "aux")
-
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("StartAUX error = %v, want %v", err, wantErr)
-	}
-	if fc.stopCalls != 0 {
-		t.Fatalf("StopIfAdapterRef calls = %d, want 0 before successful probe", fc.stopCalls)
-	}
-	if got := fc.status.AdapterRef; got != "plex:/library/metadata/42" {
-		t.Fatalf("core status AdapterRef = %q, want prior foreign session preserved", got)
-	}
-	if a.activeRef != "" {
-		t.Fatalf("activeRef = %q, want no AUX replacement after probe failure", a.activeRef)
-	}
-	if got := len(a.proxy.tokens); got != 0 {
-		t.Fatalf("proxy tokens after probe failure = %d, want released", got)
-	}
-}
-
 func TestStartAUXSameRefStaleOnStopAfterClearDoesNotClearNewSession(t *testing.T) {
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
@@ -668,52 +640,6 @@ func TestDifferentRefReplacementStartAUXStartSessionErrorAfterPreemptLeavesInact
 	}
 	if status.LastError == "" || !strings.Contains(status.LastError, wantErr.Error()) {
 		t.Fatalf("Status.LastError = %q, want runtime error %q", status.LastError, wantErr.Error())
-	}
-}
-
-func TestAUXStreamURLPlayFailureReportsAfterPreempt(t *testing.T) {
-	wantErr := errors.New("play failed: AUX input connection closed")
-	fc := &sessionCore{}
-	a := newTestAdapterWithCore(t, fc)
-	a.mustApplyConfig(t, validStreamConfig())
-	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
-		t.Fatalf("first StartAUX: %v", err)
-	}
-	oldOnStop := fc.lastRequest.OnStop
-
-	a.mustApplyConfig(t, Config{
-		Enabled: true,
-		Input: AUXInput{
-			ID: "aux2", Name: "Second AUX", Mode: ModeStreamURL,
-			AudioOutput: AudioOutputVisualOnly,
-			URL:         "http://capture-host:8090/aux2.wav",
-		},
-	})
-	fc.onStart = func(req core.SessionRequest) {
-		if fc.starts == 2 {
-			oldOnStop("preempted")
-		}
-	}
-	fc.startErr = wantErr
-
-	_, err := a.StartAUX(context.Background(), "aux2")
-
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("StartAUX error = %v, want %v", err, wantErr)
-	}
-	st := a.AUXStatus(context.Background())
-	if st.Active || st.AdapterRef != "" {
-		t.Fatalf("AUXStatus after play failure = %+v, want inactive", st)
-	}
-	if st.ErrorMessage == "" || !strings.Contains(st.ErrorMessage, wantErr.Error()) {
-		t.Fatalf("AUXStatus.ErrorMessage = %q, want play failure %q", st.ErrorMessage, wantErr.Error())
-	}
-	status := a.Status()
-	if status.State != adapters.StateError {
-		t.Fatalf("Status.State = %v, want error", status.State)
-	}
-	if status.LastError == "" || !strings.Contains(status.LastError, wantErr.Error()) {
-		t.Fatalf("Status.LastError = %q, want play failure %q", status.LastError, wantErr.Error())
 	}
 }
 

@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -140,6 +141,25 @@ func (f *volumePlane) SetOutputVolume(volume int) error {
 	f.volumes = append(f.volumes, volume)
 	return nil
 }
+
+type errorPlane struct {
+	done chan struct{}
+	err  error
+}
+
+func (f *errorPlane) Run(context.Context) error {
+	close(f.done)
+	return f.err
+}
+func (f *errorPlane) Done() <-chan struct{}      { return f.done }
+func (f *errorPlane) Position() time.Duration    { return 0 }
+func (f *errorPlane) SetFieldOrder(string) error { return nil }
+func (f *errorPlane) SetOutputVolume(int) error  { return nil }
+func (f *errorPlane) BlitsTotal() uint64         { return 0 }
+func (f *errorPlane) FramesTotal() uint64        { return 0 }
+func (f *errorPlane) Underruns() uint64          { return 0 }
+func (f *errorPlane) WireBytes() uint64          { return 0 }
+func (f *errorPlane) LastACKAge() time.Duration  { return 0 }
 
 func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	m := newTestManager(t)
@@ -798,6 +818,189 @@ func TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("prior Plex session OnStop was not called")
+	}
+}
+
+func TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	origCheck := checkVisualizerFiltersFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+		checkVisualizerFiltersFn = origCheck
+		newPlane = origNewPlane
+	})
+
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, AudioRate: 48000}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	planeStarts := 0
+	priorPlane := &contextDonePlane{done: make(chan struct{})}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		planeStarts++
+		return priorPlane
+	}
+
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Stop() })
+	stopped := make(chan string, 1)
+	if err := m.StartSession(SessionRequest{
+		StreamURL:    "http://pms/music.mp3",
+		AdapterRef:   "plex:/library/metadata/42",
+		Source:       "plex",
+		Capabilities: Capabilities{CanPause: true, CanSeek: true},
+		OnStop: func(reason string) {
+			stopped <- reason
+		},
+	}); err != nil {
+		t.Fatalf("start prior Plex session: %v", err)
+	}
+	if planeStarts != 1 {
+		t.Fatalf("plane starts after prior session = %d, want 1", planeStarts)
+	}
+
+	wantErr := errors.New("probe failed before preempt")
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return nil, wantErr
+	}
+
+	err := m.StartSession(SessionRequest{
+		StreamURL:       "http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=play",
+		StreamProbeURL:  "http://127.0.0.1:32500/internal/aux-proxy/?kind=probe&aux_token=probe",
+		AdapterRef:      "aux:aux",
+		Source:          "aux",
+		MediaKind:       MediaKindMusic,
+		AudioOutputMode: AudioOutputVisualOnly,
+		Visualizer:      VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartSession error = %v, want probe error %v", err, wantErr)
+	}
+	if planeStarts != 1 {
+		t.Fatalf("plane starts after failed AUX probe = %d, want still 1", planeStarts)
+	}
+	st := m.Status()
+	if st.AdapterRef != "plex:/library/metadata/42" || st.State != StatePlaying {
+		t.Fatalf("status after failed AUX probe = %+v, want prior Plex playing", st)
+	}
+	select {
+	case <-priorPlane.Done():
+		t.Fatal("prior Plex plane was canceled by failed AUX probe")
+	default:
+	}
+	select {
+	case reason := <-stopped:
+		t.Fatalf("prior Plex OnStop fired with %q after failed AUX probe", reason)
+	default:
+	}
+}
+
+func TestAUXStartPlaneFailureReportsAfterPreempt(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	origCheck := checkVisualizerFiltersFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+		checkVisualizerFiltersFn = origCheck
+		newPlane = origNewPlane
+	})
+
+	var probed []string
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		probed = append(probed, input.URL)
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, AudioRate: 48000}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	planeStarts := 0
+	priorPlane := &contextDonePlane{done: make(chan struct{})}
+	wantErr := errors.New("AUX plane startup failed")
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		planeStarts++
+		if planeStarts == 1 {
+			return priorPlane
+		}
+		return &errorPlane{done: make(chan struct{}), err: wantErr}
+	}
+
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Stop() })
+	preempted := make(chan string, 1)
+	auxStopped := make(chan string, 1)
+	if err := m.StartSession(SessionRequest{
+		StreamURL:    "http://pms/music.mp3",
+		AdapterRef:   "plex:/library/metadata/42",
+		Source:       "plex",
+		Capabilities: Capabilities{CanPause: true, CanSeek: true},
+		OnStop: func(reason string) {
+			preempted <- reason
+		},
+	}); err != nil {
+		t.Fatalf("start prior Plex session: %v", err)
+	}
+
+	err := m.StartSession(SessionRequest{
+		StreamURL:       "http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=play",
+		StreamProbeURL:  "http://127.0.0.1:32500/internal/aux-proxy/?kind=probe&aux_token=probe",
+		AdapterRef:      "aux:aux",
+		Source:          "aux",
+		MediaKind:       MediaKindMusic,
+		AudioOutputMode: AudioOutputVisualOnly,
+		Visualizer:      VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+		OnStop: func(reason string) {
+			auxStopped <- reason
+		},
+	})
+	if err != nil {
+		t.Fatalf("start AUX session: %v", err)
+	}
+	if len(probed) < 2 || !strings.Contains(probed[len(probed)-1], "kind=probe") {
+		t.Fatalf("probe URLs = %#v, want AUX start to probe StreamProbeURL", probed)
+	}
+	if planeStarts != 2 {
+		t.Fatalf("plane starts = %d, want prior Plex plus AUX", planeStarts)
+	}
+	select {
+	case got := <-preempted:
+		if got != "preempted" {
+			t.Fatalf("prior OnStop reason = %q, want preempted", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prior Plex session OnStop was not called")
+	}
+	select {
+	case got := <-auxStopped:
+		if got != "error" {
+			t.Fatalf("AUX OnStop reason = %q, want error", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AUX session OnStop was not called after plane failure")
+	}
+	deadline := time.After(time.Second)
+	for {
+		st := m.Status()
+		if st.State == StateIdle && st.AdapterRef == "" {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("status after AUX plane failure = %+v, want idle with no active AdapterRef", st)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
