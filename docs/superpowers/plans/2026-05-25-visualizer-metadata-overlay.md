@@ -608,7 +608,7 @@ In `internal/ffmpeg/pipeline_test.go`, add this test after `TestVisualizerRequir
 ```go
 func TestVisualizerOverlayFilters(t *testing.T) {
 	got := RequiredVisualizerOverlayFilters()
-	want := []string{"color", "drawtext", "format", "overlay"}
+	want := []string{"color", "drawtext", "overlay"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("RequiredVisualizerOverlayFilters() = %v, want %v", got, want)
 	}
@@ -619,29 +619,34 @@ Add this test after `TestWithVisualizerCapabilitiesFallsBackWhenDrawTextCannotRe
 
 ```go
 func TestWithVisualizerCapabilitiesFallsBackWhenOverlayFilterUnavailable(t *testing.T) {
-	origFilter := filterAvailableFn
-	origDrawText := drawTextUsableFn
-	t.Cleanup(func() {
-		filterAvailableFn = origFilter
-		drawTextUsableFn = origDrawText
-	})
-	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
-		return filter != "overlay", nil
-	}
-	drawTextUsableFn = func(context.Context, string) (bool, error) {
-		return true, nil
-	}
-	spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
-		Visualizer: VisualizerSpec{
-			Enabled: true,
-			Mode:    VisualizerModeRetroAnalyzer,
-		},
-	})
-	if spec.Visualizer.DrawTextAvailable {
-		t.Fatal("DrawTextAvailable = true, want false when overlay filter is unavailable")
-	}
-	if !spec.Visualizer.RequiredFiltersAvailable {
-		t.Fatal("RequiredFiltersAvailable = false, want true; overlay fallback must not disable visualizer core")
+	for _, missing := range []string{"color", "drawtext", "overlay"} {
+		t.Run(missing, func(t *testing.T) {
+			origFilter := filterAvailableFn
+			origDrawText := drawTextUsableFn
+			t.Cleanup(func() {
+				filterAvailableFn = origFilter
+				drawTextUsableFn = origDrawText
+			})
+			filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+				return filter != missing, nil
+			}
+			drawTextUsableFn = func(context.Context, string) (bool, error) {
+				t.Fatal("drawtext smoke check should not run when an overlay filter is unavailable")
+				return true, nil
+			}
+			spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+				Visualizer: VisualizerSpec{
+					Enabled: true,
+					Mode:    VisualizerModeRetroAnalyzer,
+				},
+			})
+			if spec.Visualizer.DrawTextAvailable {
+				t.Fatal("DrawTextAvailable = true, want false when overlay filter is unavailable")
+			}
+			if !spec.Visualizer.RequiredFiltersAvailable {
+				t.Fatal("RequiredFiltersAvailable = false, want true; overlay fallback must not disable visualizer core")
+			}
+		})
 	}
 }
 ```
@@ -662,9 +667,11 @@ In `internal/ffmpeg/pipeline.go`, add this function below `RequiredVisualizerFil
 
 ```go
 func RequiredVisualizerOverlayFilters() []string {
-	return []string{"color", "drawtext", "format", "overlay"}
+	return []string{"color", "drawtext", "overlay"}
 }
 ```
+
+Do not include `format` in this list: the core/final visualizer graph already depends on `format=rgba` for `stereo_scope` and `format=bgr24` for all modes, so a missing `format` filter cannot be treated as an overlay-text-only fallback.
 
 - [ ] **Step 4: Extend capability probing**
 

@@ -48,7 +48,9 @@ Expected: any pre-existing user edits remain visible. During execution, stage on
 
 ---
 
-### Task 1: Phase 1 CRT Mode Constants, Validation, And UI Exposure
+### Task 1: Phase 1 CRT Mode Constants, Validation, And UI Exposure (stage only — no commit)
+
+> **Commit boundary:** Task 1 leaves the working tree dirty on purpose. The config/UI/core mode IDs added here are only meaningful once Task 2 lands their FFmpeg graphs, so the first commit covers Task 1 + Task 2 together (see Task 2 Step 4). Do not run `git commit` at the end of Task 1.
 
 **Files:**
 - Modify: `internal/config/config.go`
@@ -299,9 +301,9 @@ go test ./internal/config ./internal/ui ./internal/chassis ./internal/core
 
 Expected: core tests still fail only because FFmpeg constants do not exist yet.
 
-- [ ] **Step 5: Commit phase-1 mode plumbing after Task 2 passes**
+- [ ] **Step 5: Stop — do not commit Task 1 in isolation**
 
-Do not commit until Task 2 adds working FFmpeg graphs for these same mode IDs. The first commit should include Task 1 and Task 2 together so no accepted UI/config mode lacks a graph.
+Do not run `git add` or `git commit` at the end of Task 1. The config/UI/core changes here accept new mode IDs that have no FFmpeg graph yet; committing now would leave the tree in a state where the UI can select a mode that fails at session start. Leave the changes staged in the working tree and proceed directly to Task 2, which commits Task 1 + Task 2 together.
 
 ---
 
@@ -546,6 +548,13 @@ func TestRedactURLRemovesUserinfoAndTokenKeys(t *testing.T) {
 	}
 }
 
+func TestRedactURLReturnsSentinelOnParseFailure(t *testing.T) {
+	got := RedactURL("http://[::1:bad")
+	if got != "<unparseable URL>" {
+		t.Fatalf("RedactURL(unparseable) = %q, want sentinel", got)
+	}
+}
+
 func TestValidatePathAcceptsCanonicalDescendant(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "cover.png")
@@ -786,7 +795,10 @@ func AppendToken(u *url.URL, key, token string) string {
 func RedactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		// Refuse to log an unparseable URL verbatim — it may carry an
+		// embedded token in a form url.Parse rejects but a human reader
+		// could still recognize.
+		return "<unparseable URL>"
 	}
 	u.User = nil
 	q := u.Query()
@@ -1391,7 +1403,7 @@ ArtworkCandidates []string
 ArtworkPath       string
 ```
 
-In `pmsMediaContainer.Track`, add:
+In `internal/adapters/plex/transcode.go`, extend the anonymous `Track` struct fields inside `pmsMediaContainer` (the `Track []struct { ... } \`xml:"Track"\`` slice — there is no named `Track` type to attach methods to). Add these three attribute fields alongside the existing `Key`/`Title`/`DurationMs`/`Media` fields:
 
 ```go
 Thumb            string `xml:"thumb,attr"`
@@ -1431,14 +1443,21 @@ Add:
 
 ```go
 func (c *Companion) fetchMusicArtwork(ctx context.Context, p PlayMediaRequest, md MusicMetadata) string {
+	// Bound total wall time across all candidates so a slow PMS cannot stall
+	// the playMedia handler past Plex Companion's ~10s controller timeout.
+	outerCtx, outerCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer outerCancel()
 	for _, candidate := range md.ArtworkCandidates {
+		if outerCtx.Err() != nil {
+			break
+		}
 		u, ok := artworkcache.ResolveSameOrigin(p.serverURL(), candidate)
 		if !ok {
 			slog.Debug("plex artwork candidate rejected", "url", artworkcache.RedactURL(candidate))
 			continue
 		}
 		reqURL := artworkcache.AppendToken(u, "X-Plex-Token", p.PlexToken)
-		artCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		artCtx, cancel := context.WithTimeout(outerCtx, 2*time.Second)
 		path, err := artworkcache.FetchToCache(artCtx, artworkcache.FetchOptions{
 			DataDir: c.cfg.DataDir,
 			URL:     reqURL,
