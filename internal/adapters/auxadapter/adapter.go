@@ -90,6 +90,7 @@ func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	if err != nil {
 		return fmt.Errorf("aux: decode config: %w", err)
 	}
+	cfg = a.normalizeConfig(cfg)
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -105,6 +106,7 @@ func (a *Adapter) Validate(raw toml.Primitive, meta toml.MetaData) error {
 	if err != nil {
 		return fmt.Errorf("aux: decode config: %w", err)
 	}
+	cfg = a.normalizeConfig(cfg)
 	return cfg.Validate()
 }
 
@@ -116,7 +118,7 @@ func (a *Adapter) IsEnabled() bool {
 
 func (a *Adapter) Start(context.Context) error {
 	a.mu.Lock()
-	cfg := a.cfg
+	cfg := a.normalizeConfig(a.cfg)
 	enableErr := a.enableErr
 	a.mu.Unlock()
 	if enableErr != nil {
@@ -176,7 +178,7 @@ func (a *Adapter) SetEnabled(v bool) {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	next := a.cfg
+	next := a.normalizeConfig(a.cfg)
 	next.Enabled = true
 	if err := next.Validate(); err != nil {
 		a.cfg.Enabled = false
@@ -196,6 +198,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	if err != nil {
 		return 0, fmt.Errorf("aux: decode apply config: %w", err)
 	}
+	newCfg = a.normalizeConfig(newCfg)
 	if err := newCfg.Validate(); err != nil {
 		return 0, err
 	}
@@ -212,6 +215,19 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	}
 	a.mu.Unlock()
 	return adapters.ScopeHotSwap, nil
+}
+
+func (a *Adapter) normalizeConfig(cfg Config) Config {
+	if cfg.Input.Mode != ModeLocalCapture {
+		return cfg
+	}
+	if cfg.Input.SampleRate == 0 {
+		cfg.Input.SampleRate = a.bridge.Audio.SampleRate
+	}
+	if cfg.Input.Channels == 0 {
+		cfg.Input.Channels = a.bridge.Audio.Channels
+	}
+	return cfg
 }
 
 func (a *Adapter) CurrentValues() map[string]any {

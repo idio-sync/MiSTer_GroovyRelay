@@ -1,0 +1,315 @@
+package aux
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+)
+
+func TestStartAUXStreamURLBuildsProbeAndPlayURLs(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux", Name: "Analog In", Mode: ModeStreamURL,
+			AudioOutput:     AudioOutputVisualOnly,
+			URL:             "http://capture-host:8090/aux.wav",
+			ThreadQueueSize: 64, AnalyzeDurationMillis: 100, ProbeSize: 32768,
+		},
+	})
+
+	ref, err := a.StartAUX(context.Background(), "")
+	if err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	req := fc.lastRequest
+	if ref != "aux:aux" || req.AdapterRef != "aux:aux" || req.Source != "aux" {
+		t.Fatalf("bad ref/source: ref=%q req=%+v", ref, req)
+	}
+	if req.Title != "Analog In" || req.Visualizer.Metadata.Title != "Analog In" || req.Visualizer.Metadata.Artist != "AUX" {
+		t.Fatalf("bad title/metadata: %+v", req)
+	}
+	if req.StreamProbeURL == "" || req.StreamURL == "" || req.StreamProbeURL == req.StreamURL {
+		t.Fatalf("probe/play URLs not distinct: probe=%q play=%q", req.StreamProbeURL, req.StreamURL)
+	}
+	assertProxyURL(t, req.StreamProbeURL, proxyTokenProbe)
+	assertProxyURL(t, req.StreamURL, proxyTokenPlay)
+	if req.MediaInputPolicy.IsZero() {
+		t.Fatal("MediaInputPolicy is zero, want loopback policy")
+	}
+	if req.AudioOutputMode != core.AudioOutputVisualOnly {
+		t.Fatalf("AudioOutputMode = %q", req.AudioOutputMode)
+	}
+	if !req.Visualizer.Enabled || req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("not a music visualizer request: %+v", req)
+	}
+	if req.Capabilities.CanPause || req.Capabilities.CanSeek {
+		t.Fatalf("capabilities = %+v, want no pause/seek", req.Capabilities)
+	}
+	if a.activeRef != "aux:aux" {
+		t.Fatalf("activeRef = %q, want aux:aux", a.activeRef)
+	}
+}
+
+func TestStartAUXLocalCaptureBuildsCaptureRequest(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux", Name: "Line In", Mode: ModeLocalCapture,
+			AudioOutput: AudioOutputMonitor,
+			Format:      "alsa", Device: "hw:1,0",
+			SampleRate: 48000, Channels: 2,
+			ThreadQueueSize: 64, AnalyzeDurationMillis: 100, ProbeSize: 32768,
+		},
+	})
+
+	_, err := a.StartAUX(context.Background(), "aux")
+	if err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	req := fc.lastRequest
+	if req.StreamURL != "" || req.StreamProbeURL != "" {
+		t.Fatalf("local capture set stream URLs: %+v", req)
+	}
+	if !req.AudioCapture.Enabled || req.AudioCapture.Format != "alsa" || req.AudioCapture.Device != "hw:1,0" {
+		t.Fatalf("bad capture request: %+v", req.AudioCapture)
+	}
+	if req.AudioCapture.SampleRate != 48000 || req.AudioCapture.Channels != 2 {
+		t.Fatalf("audio shape = %d/%d, want 48000/2", req.AudioCapture.SampleRate, req.AudioCapture.Channels)
+	}
+	if req.AudioCapture.AnalyzeDuration != 100*time.Millisecond || req.AudioCapture.ProbeSize != 32768 {
+		t.Fatalf("probe settings = %s/%d, want 100ms/32768", req.AudioCapture.AnalyzeDuration, req.AudioCapture.ProbeSize)
+	}
+	if req.AudioOutputMode != core.AudioOutputMonitor {
+		t.Fatalf("AudioOutputMode = %q", req.AudioOutputMode)
+	}
+}
+
+func TestStartAUXUnavailableErrorsWrapSharedSentinel(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		inputID string
+	}{
+		{name: "disabled", cfg: Config{Enabled: false, Input: DefaultConfig().Input}, inputID: "aux"},
+		{name: "no input", cfg: Config{Enabled: true}, inputID: "aux"},
+		{name: "input mismatch", cfg: validStreamConfig(), inputID: "other"},
+		{name: "unsupported mode", cfg: Config{Enabled: true, Input: AUXInput{ID: "aux", Name: "AUX", Mode: "bogus"}}, inputID: "aux"},
+		{name: "validation failure", cfg: Config{Enabled: true, Input: AUXInput{ID: "aux", Name: "AUX", Mode: ModeStreamURL}}, inputID: "aux"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := &sessionCore{}
+			a := newTestAdapterWithCore(t, fc)
+			a.mustApplyConfig(t, tt.cfg)
+
+			_, err := a.StartAUX(context.Background(), tt.inputID)
+
+			if !errors.Is(err, adapters.ErrSourceUnavailable) {
+				t.Fatalf("StartAUX error = %v, want ErrSourceUnavailable", err)
+			}
+			if fc.starts != 0 {
+				t.Fatalf("StartSession calls = %d, want 0", fc.starts)
+			}
+			if a.Status().LastError == "" {
+				t.Fatal("Status.LastError is empty")
+			}
+		})
+	}
+}
+
+func TestStopAUXDoesNotStopForeignSession(t *testing.T) {
+	fc := &sessionCore{status: core.SessionStatus{AdapterRef: "plex:/library/metadata/42"}}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, DefaultConfig())
+
+	matched, err := a.StopAUX(context.Background(), "")
+
+	if err != nil {
+		t.Fatalf("StopAUX: %v", err)
+	}
+	if matched || fc.stopCalls != 0 {
+		t.Fatalf("foreign stop matched=%v calls=%d", matched, fc.stopCalls)
+	}
+}
+
+func TestStartAUXStartSessionErrorReleasesProxyTokensAndDoesNotWrapUnavailable(t *testing.T) {
+	wantErr := errors.New("core start failed")
+	fc := &sessionCore{startErr: wantErr}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+
+	_, err := a.StartAUX(context.Background(), "aux")
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartAUX error = %v, want core error", err)
+	}
+	if errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX wrapped ErrSourceUnavailable for runtime error: %v", err)
+	}
+	if got := len(a.proxy.tokens); got != 0 {
+		t.Fatalf("proxy tokens after failed StartSession = %d, want 0", got)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want empty after failed start", a.activeRef)
+	}
+}
+
+func TestOnStopReleasesProxyTokensAndClearsActiveAUXState(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	ref, err := a.StartAUX(context.Background(), "aux")
+	if err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	if got := len(a.proxy.tokens); got != 2 {
+		t.Fatalf("proxy tokens after start = %d, want 2", got)
+	}
+
+	fc.lastRequest.OnStop("eof")
+
+	if got := len(a.proxy.tokens); got != 0 {
+		t.Fatalf("proxy tokens after OnStop = %d, want 0", got)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want cleared", a.activeRef)
+	}
+	st := a.AUXStatus(context.Background())
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus after OnStop = %+v, want inactive", st)
+	}
+	if ref != "aux:aux" {
+		t.Fatalf("ref = %q, want aux:aux", ref)
+	}
+}
+
+func TestStaleOnStopDoesNotClearNewerActiveAUXRef(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	oldOnStop := fc.lastRequest.OnStop
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux2", Name: "Second AUX", Mode: ModeStreamURL,
+			AudioOutput: AudioOutputVisualOnly,
+			URL:         "http://capture-host:8090/aux2.wav",
+		},
+	})
+	if _, err := a.StartAUX(context.Background(), "aux2"); err != nil {
+		t.Fatalf("second StartAUX: %v", err)
+	}
+
+	oldOnStop("preempted")
+
+	if a.activeRef != "aux:aux2" {
+		t.Fatalf("activeRef after stale OnStop = %q, want aux:aux2", a.activeRef)
+	}
+}
+
+func TestStartAUXLocalCaptureDefaultsSampleRateAndChannelsFromBridge(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux", Name: "Line In", Mode: ModeLocalCapture,
+			AudioOutput: AudioOutputMonitor,
+			Format:      "alsa", Device: "hw:1,0",
+		},
+	})
+
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+
+	if got := fc.lastRequest.AudioCapture.SampleRate; got != 44100 {
+		t.Fatalf("SampleRate = %d, want bridge default 44100", got)
+	}
+	if got := fc.lastRequest.AudioCapture.Channels; got != 1 {
+		t.Fatalf("Channels = %d, want bridge default 1", got)
+	}
+}
+
+func validStreamConfig() Config {
+	return Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux", Name: "AUX", Mode: ModeStreamURL,
+			AudioOutput:     AudioOutputVisualOnly,
+			URL:             "http://capture-host:8090/aux.wav",
+			ThreadQueueSize: 64, AnalyzeDurationMillis: 100, ProbeSize: 32768,
+		},
+	}
+}
+
+func (a *Adapter) mustApplyConfig(t *testing.T, cfg Config) {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg = cfg
+	a.enableErr = nil
+	a.lastErr = ""
+}
+
+func assertProxyURL(t *testing.T, raw string, kind proxyTokenKind) {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse proxy URL %q: %v", raw, err)
+	}
+	if u.Scheme != "http" || u.Host != "127.0.0.1:32500" || u.Path != "/internal/aux-proxy/" {
+		t.Fatalf("proxy URL = %q, want loopback aux proxy", raw)
+	}
+	if got := u.Query().Get("kind"); got != string(kind) {
+		t.Fatalf("proxy kind = %q, want %q", got, kind)
+	}
+	if strings.TrimSpace(u.Query().Get("aux_token")) == "" {
+		t.Fatalf("proxy URL %q has empty token", raw)
+	}
+}
+
+type sessionCore struct {
+	starts      int
+	startErr    error
+	lastRequest core.SessionRequest
+	stopCalls   int
+	stopRef     string
+	stopErr     error
+	stopMatched bool
+	status      core.SessionStatus
+}
+
+func (f *sessionCore) StartSession(req core.SessionRequest) error {
+	f.starts++
+	f.lastRequest = req
+	if f.startErr != nil {
+		return f.startErr
+	}
+	f.status = core.SessionStatus{AdapterRef: req.AdapterRef}
+	return nil
+}
+
+func (f *sessionCore) StopIfAdapterRef(ref string) (bool, error) {
+	f.stopCalls++
+	f.stopRef = ref
+	if f.stopMatched {
+		f.status = core.SessionStatus{}
+	}
+	return f.stopMatched, f.stopErr
+}
+
+func (f *sessionCore) Status() core.SessionStatus { return f.status }

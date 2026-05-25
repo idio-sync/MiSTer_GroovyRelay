@@ -171,6 +171,29 @@ func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool)
 	return proxyToken{}, false
 }
 
+func (s *proxyStore) release(rawTokens ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.tokens[:0]
+	for _, tok := range s.tokens {
+		release := false
+		for _, raw := range rawTokens {
+			if raw != "" && proxyTokenEqual(tok.token, raw) {
+				release = true
+				break
+			}
+		}
+		if release {
+			if tok.cancel != nil {
+				tok.cancel()
+			}
+			continue
+		}
+		kept = append(kept, tok)
+	}
+	s.tokens = kept
+}
+
 func (s *proxyStore) pruneLocked(now time.Time) {
 	kept := s.tokens[:0]
 	for _, tok := range s.tokens {
