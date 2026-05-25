@@ -248,9 +248,20 @@ func (m *AudioMeter) Observe(pcm []byte, channels, sampleRate int) {
 			m.state.gonioHead = (m.state.gonioHead + 1) % audioGoniometerSize
 		}
 
-		// LUFS K-weighting (Task 4 will fill this in)
-		_ = m.state.kPreL.process(float64(l))
-		_ = m.state.kPreR.process(float64(r))
+		// LUFS K-weighting: cascade pre-filter then RLB high-pass, then
+		// integrate squared output over the 3 s sliding window per channel.
+		kL := m.state.kHighL.process(m.state.kPreL.process(float64(l)))
+		kR := m.state.kHighR.process(m.state.kPreR.process(float64(r)))
+		oldKL := m.state.lufsRingL[m.state.lufsHead]
+		oldKR := m.state.lufsRingR[m.state.lufsHead]
+		m.state.lufsSumSqL += kL*kL - float64(oldKL)*float64(oldKL)
+		m.state.lufsSumSqR += kR*kR - float64(oldKR)*float64(oldKR)
+		m.state.lufsRingL[m.state.lufsHead] = float32(kL)
+		m.state.lufsRingR[m.state.lufsHead] = float32(kR)
+		m.state.lufsHead = (m.state.lufsHead + 1) % len(m.state.lufsRingL)
+		if m.state.lufsCount < len(m.state.lufsRingL) {
+			m.state.lufsCount++
+		}
 	}
 
 	// Bresenham cadence
@@ -303,7 +314,25 @@ func (m *AudioMeter) publish() {
 		snap.Goniometer[i] = m.state.gonio[idx]
 	}
 	snap.SpectrumBands = m.state.lastSpectrum
-	snap.LUFSShort = 0
+	// LUFS short-term (BS.1770-4): L_K = -0.691 + 10 * log10(Σ G_ch * meanSquare_ch).
+	// G_L = G_R = 1.0 for stereo; mono is a single-channel sum.
+	if m.state.lufsCount >= len(m.state.lufsRingL) {
+		var totalPower float64
+		meanSqL := m.state.lufsSumSqL / float64(m.state.lufsCount)
+		if m.channels == 1 {
+			totalPower = meanSqL
+		} else {
+			meanSqR := m.state.lufsSumSqR / float64(m.state.lufsCount)
+			totalPower = meanSqL + meanSqR
+		}
+		if totalPower > 1e-12 {
+			snap.LUFSShort = float32(-0.691 + 10*math.Log10(totalPower))
+		} else {
+			snap.LUFSShort = audioLUFSSilenceFloor
+		}
+	} else {
+		snap.LUFSShort = audioLUFSSilenceFloor
+	}
 	m.snapshot.Store(snap)
 }
 
@@ -321,6 +350,65 @@ func abs32(x float32) float32 {
 	return x
 }
 
-// Placeholder LUFS coefficient functions; Task 4 implements them.
-func kWeightingPreFilter(sampleRate int) biquadCoeffs  { return biquadCoeffs{b0: 1} }
-func kWeightingHighShelf(sampleRate int) biquadCoeffs { return biquadCoeffs{b0: 1} }
+// kWeightingPreFilter computes the BS.1770-4 pre-filter (high-frequency
+// shelving boost at ~1.68 kHz, +4 dB) for the given sample rate using
+// RBJ Audio EQ Cookbook biquad design.
+func kWeightingPreFilter(sampleRate int) biquadCoeffs {
+	const (
+		f0     = 1681.974450955533
+		q      = 0.7071752369554196
+		gainDB = 3.999843853973347
+	)
+	return designShelfHigh(float64(sampleRate), f0, q, gainDB)
+}
+
+// kWeightingHighShelf computes the BS.1770-4 RLB filter (high-pass at
+// ~38 Hz) for the given sample rate.
+func kWeightingHighShelf(sampleRate int) biquadCoeffs {
+	const (
+		f0 = 38.13547087602444
+		q  = 0.5003270373238773
+	)
+	return designHighpass(float64(sampleRate), f0, q)
+}
+
+// designShelfHigh designs a 2nd-order high-frequency shelving biquad
+// (RBJ Cookbook, "highShelf"). Returns normalized (a0 = 1) coefficients.
+func designShelfHigh(sampleRate, f0, q, gainDB float64) biquadCoeffs {
+	A := math.Pow(10, gainDB/40)
+	w0 := 2 * math.Pi * f0 / sampleRate
+	cosW := math.Cos(w0)
+	sinW := math.Sin(w0)
+	alpha := sinW / (2 * q)
+	sqrtA := math.Sqrt(A)
+
+	b0 := A * ((A + 1) + (A-1)*cosW + 2*sqrtA*alpha)
+	b1 := -2 * A * ((A - 1) + (A+1)*cosW)
+	b2 := A * ((A + 1) + (A-1)*cosW - 2*sqrtA*alpha)
+	a0 := (A + 1) - (A-1)*cosW + 2*sqrtA*alpha
+	a1 := 2 * ((A - 1) - (A+1)*cosW)
+	a2 := (A + 1) - (A-1)*cosW - 2*sqrtA*alpha
+	return biquadCoeffs{
+		b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+		a1: a1 / a0, a2: a2 / a0,
+	}
+}
+
+// designHighpass designs a 2nd-order high-pass biquad (RBJ Cookbook).
+func designHighpass(sampleRate, f0, q float64) biquadCoeffs {
+	w0 := 2 * math.Pi * f0 / sampleRate
+	cosW := math.Cos(w0)
+	sinW := math.Sin(w0)
+	alpha := sinW / (2 * q)
+
+	b0 := (1 + cosW) / 2
+	b1 := -(1 + cosW)
+	b2 := (1 + cosW) / 2
+	a0 := 1 + alpha
+	a1 := -2 * cosW
+	a2 := 1 - alpha
+	return biquadCoeffs{
+		b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+		a1: a1 / a0, a2: a2 / a0,
+	}
+}

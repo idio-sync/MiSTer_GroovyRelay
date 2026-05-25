@@ -130,3 +130,69 @@ func TestAudioMeter_GoniometerCapturesRecentSamples(t *testing.T) {
 		}
 	}
 }
+
+func TestAudioMeter_LUFSShortMonoCalibration(t *testing.T) {
+	// BS.1770-4: 1 kHz sine at -20 dBFS RMS mono → -20.7 LUFS ±0.5
+	m := NewAudioMeter(1, 48000, 1)
+	m.forcePublishEveryObserve = true
+	// -20 dBFS RMS sine: amplitude = sqrt(2) * 10^(-20/20) = 0.1414
+	const amp = 0.1414213562
+	sine := func(i int) float32 { return float32(amp * math.Sin(2*math.Pi*1000*float64(i)/48000)) }
+	// Feed > 3 s to fill the LUFS window
+	for chunk := 0; chunk < 180; chunk++ { // 180 * 800 = 144000 samples = 3 s
+		pcm := makeMonoPCM(800, sine)
+		m.Observe(pcm, 1, 48000)
+	}
+	snap := m.AudioScopes()
+	want := -20.7
+	if math.Abs(float64(snap.LUFSShort)-want) > 0.5 {
+		t.Errorf("LUFSShort = %f, want %f ± 0.5", snap.LUFSShort, want)
+	}
+}
+
+func TestAudioMeter_LUFSDualMonoStereoIsLouder(t *testing.T) {
+	// Dual-mono stereo at -20 dBFS RMS → ~3 dB louder than mono (channel power sum)
+	m := NewAudioMeter(1, 48000, 2)
+	m.forcePublishEveryObserve = true
+	const amp = 0.1414213562
+	sine := func(i int) float32 { return float32(amp * math.Sin(2*math.Pi*1000*float64(i)/48000)) }
+	for chunk := 0; chunk < 180; chunk++ {
+		pcm := makeStereoPCM(800, [2]func(int) float32{sine, sine})
+		m.Observe(pcm, 2, 48000)
+	}
+	snap := m.AudioScopes()
+	want := -17.7 // -20.7 + 3.0
+	if math.Abs(float64(snap.LUFSShort)-want) > 0.7 {
+		t.Errorf("LUFSShort dual-mono = %f, want %f ± 0.7", snap.LUFSShort, want)
+	}
+}
+
+func TestAudioMeter_LUFSSilenceReturnsSentinel(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.forcePublishEveryObserve = true
+	silent := func(i int) float32 { return 0 }
+	for chunk := 0; chunk < 180; chunk++ {
+		pcm := makeStereoPCM(800, [2]func(int) float32{silent, silent})
+		m.Observe(pcm, 2, 48000)
+	}
+	snap := m.AudioScopes()
+	if snap.LUFSShort != audioLUFSSilenceFloor {
+		t.Errorf("LUFSShort silence = %f, want %f", snap.LUFSShort, audioLUFSSilenceFloor)
+	}
+}
+
+// makeMonoPCM is a helper paralleling makeStereoPCM but for 1-channel input.
+func makeMonoPCM(frames int, gen func(i int) float32) []byte {
+	buf := make([]byte, frames*2)
+	for i := 0; i < frames; i++ {
+		v := gen(i)
+		if v > 1.0 {
+			v = 1.0
+		} else if v < -1.0 {
+			v = -1.0
+		}
+		s := int16(v * 32767)
+		binary.LittleEndian.PutUint16(buf[i*2:], uint16(s))
+	}
+	return buf
+}
