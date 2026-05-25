@@ -6,7 +6,7 @@
 
 **Architecture:** The chassis gets a narrow live `VolumeViewer` backed by `core.Manager.OutputVolume()` and a narrow `VolumeSaver` backed by `uiserver.BridgeSaver.SaveOutputVolume`. Volume state lives on `TransportData.OutputVolume` because `transport.html` receives `.Transport`, and `volume-knob.js` uses the existing shared `/receiver/events` stream plus a same-origin `POST /receiver/volume` save route.
 
-**Tech Stack:** Go stdlib (`net/http`, `sync`, `time`, `html/template`), existing chassis templates/CSS, vanilla ES2022, existing `cmd.exe /c node --check` syntax verification on Windows-hosted Node when available.
+**Tech Stack:** Go stdlib (`net/http`, `sync`, `time`, `html/template`), existing chassis templates/CSS, vanilla ES2022, existing Windows-hosted Node syntax and behavior verification via `cmd.exe /c node --check` and `cmd.exe /c node --test`.
 
 **Spec:** [docs/superpowers/specs/2026-05-25-receiver-chassis-volume-knob-design.md](../specs/2026-05-25-receiver-chassis-volume-knob-design.md)
 
@@ -25,6 +25,7 @@ This is one implementation unit: receiver chassis volume control. It reuses the 
 | `internal/chassis/volume.go` | `VolumeViewer`, `VolumeSaver`, `handleVolumePost`, volume parsing, and JSON error responses. |
 | `internal/chassis/volume_test.go` | Handler tests for success, validation, missing saver, saver error, and same-origin route wrapping. |
 | `internal/chassis/static/volume-knob.js` | Physical knob interaction, single-flight save queue, SSE synchronization, and rollback behavior. |
+| `internal/chassis/testdata/volume-knob.behavior.test.js` | Node `--test` harness for save coalescing, final commit, SSE deferral, and rollback behavior. |
 
 **Modified files:**
 
@@ -526,6 +527,9 @@ func TestMount_RegistersVolumeRouteThroughRequireSameOrigin(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status without same-origin = %d, want %d; body=%q", w.Code, http.StatusForbidden, w.Body.String())
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control without same-origin = %q, want %q", got, "no-store")
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/receiver/volume", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -534,6 +538,9 @@ func TestMount_RegistersVolumeRouteThroughRequireSameOrigin(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status with same-origin = %d, want %d; body=%q", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control with same-origin = %q, want %q", got, "no-store")
 	}
 }
 ```
@@ -709,7 +716,7 @@ func (m *mutableVolumeViewer) set(volume int) {
 
 `events_test.go` already imports `sync`; if not, add it.
 
-- [ ] **Step 2: Write failing SSE tests**
+- [ ] **Step 2: Write failing SSE tests and update initial-order coverage**
 
 Add these tests to `internal/chassis/events_test.go` near existing SSE event tests. They use the current `newFlushRecorder` pattern from this file rather than adding a second SSE helper stack:
 
@@ -783,12 +790,67 @@ func TestVolumeChanged_ComparesOnlyOutputVolume(t *testing.T) {
 }
 ```
 
+Also add a no-repeat assertion for unchanged volume next to `TestHandleEvents_EmitsVolumeWhenChanged`:
+
+```go
+func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
+	t.Parallel()
+	vv := &mutableVolumeViewer{volume: 40}
+	cfg := nonZeroConfig()
+	cfg.VolumeViewer = vv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.Mount(http.NewServeMux())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	if got := strings.Count(w.Body.String(), "event: volume\n"); got != 1 {
+		t.Fatalf("volume event count = %d, want exactly 1 (initial only); body:\n%s", got, w.Body.String())
+	}
+}
+```
+
+The only existing order-assertion test is `TestHandleEvents_EmitsInitialVisualizerEventOnConnect` in `internal/chassis/events_test.go` (around line 462). It currently only checks `state < vfd < visualizer < transport` and ignores the `source` event, even though `source` is emitted in production. Extend it during this failing-test step to assert the full canonical order including `source` and the new `volume`:
+
+```go
+stateIdx := strings.Index(body, "event: state\n")
+vfdIdx := strings.Index(body, "event: vfd\n")
+sourceIdx := strings.Index(body, "event: source\n")
+vizIdx := strings.Index(body, "event: visualizer\n")
+transportIdx := strings.Index(body, "event: transport\n")
+volumeIdx := strings.Index(body, "event: volume\n")
+if vizIdx < 0 {
+	t.Fatalf("body missing initial visualizer event:\n%s", body)
+}
+if transportIdx < 0 {
+	t.Fatalf("body missing initial transport event:\n%s", body)
+}
+if volumeIdx < 0 {
+	t.Fatalf("body missing initial volume event:\n%s", body)
+}
+if !(stateIdx >= 0 && vfdIdx > stateIdx && sourceIdx > vfdIdx && vizIdx > sourceIdx && transportIdx > vizIdx && volumeIdx > transportIdx) {
+	t.Errorf("initial event order should be state, vfd, source, visualizer, transport, volume; body:\n%s", body)
+}
+```
+
+Update the test's error message string so the new canonical order is documented in test output.
+
 - [ ] **Step 3: Run SSE tests to verify they fail**
 
 Run:
 
 ```bash
-go test ./internal/chassis -run 'TestHandleEvents_InitialSnapshotIncludesVolume|TestHandleEvents_EmitsVolumeWhenChanged|TestVolumeChanged'
+go test ./internal/chassis -run 'TestHandleEvents_InitialSnapshotIncludesVolume|TestHandleEvents_EmitsVolumeWhenChanged|TestHandleEvents_DoesNotRepeatUnchangedVolume|TestVolumeChanged|TestHandleEvents_EmitsInitialVisualizerEventOnConnect'
 ```
 
 Expected: FAIL because no `volume` event or helper exists yet.
@@ -827,18 +889,7 @@ In `handleEvents`, after the initial `transport` emit, add:
 	}
 ```
 
-In the diff loop, after the `transportChanged` block, add:
-
-```go
-			if volumeChanged(curr.Transport, last.Transport) {
-				if err := emit(w, "volume", volumeEnvelopeFrom(curr.Transport)); err != nil {
-					return
-				}
-				last.Transport.OutputVolume = curr.Transport.OutputVolume
-			}
-```
-
-Because `transportChanged` updates `last.Transport = curr.Transport`, place `volumeChanged` before `transportChanged` or store `lastVolume := last.Transport.OutputVolume` before the transport block. Use this ordering:
+In the diff loop, place the `volumeChanged` block immediately before `transportChanged`. This ordering matters because `transportChanged` updates `last.Transport = curr.Transport`, which would otherwise erase the old volume before it can be compared:
 
 ```go
 			if volumeChanged(curr.Transport, last.Transport) {
@@ -876,64 +927,9 @@ func transportChanged(a, b TransportData) bool {
 }
 ```
 
-- [ ] **Step 7: Update the initial-burst order assertion**
+- [ ] **Step 7: Confirm the expanded SSE tests pass**
 
-The only existing order-assertion test is `TestHandleEvents_EmitsInitialVisualizerEventOnConnect` in `internal/chassis/events_test.go` (around line 462). It currently only checks `state < vfd < visualizer < transport` (it ignores the `source` event entirely, even though `source` is emitted in production). Extend it to assert the full canonical order including `source` and the new `volume`:
-
-```go
-stateIdx := strings.Index(body, "event: state\n")
-vfdIdx := strings.Index(body, "event: vfd\n")
-sourceIdx := strings.Index(body, "event: source\n")
-vizIdx := strings.Index(body, "event: visualizer\n")
-transportIdx := strings.Index(body, "event: transport\n")
-volumeIdx := strings.Index(body, "event: volume\n")
-if vizIdx < 0 {
-    t.Fatalf("body missing initial visualizer event:\n%s", body)
-}
-if transportIdx < 0 {
-    t.Fatalf("body missing initial transport event:\n%s", body)
-}
-if volumeIdx < 0 {
-    t.Fatalf("body missing initial volume event:\n%s", body)
-}
-if !(stateIdx >= 0 && vfdIdx > stateIdx && sourceIdx > vfdIdx && vizIdx > sourceIdx && transportIdx > vizIdx && volumeIdx > transportIdx) {
-    t.Errorf("initial event order should be state, vfd, source, visualizer, transport, volume; body:\n%s", body)
-}
-```
-
-Also update the error message string in that test so the new canonical order is documented in test output.
-
-- [ ] **Step 7b: Add a no-repeat assertion for unchanged volume**
-
-Per the spec's testing notes, add a test asserting an unchanged volume does NOT emit a second `volume` event after the initial burst. Place it next to `TestHandleEvents_EmitsVolumeWhenChanged`:
-
-```go
-func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
-    t.Parallel()
-    vv := &mutableVolumeViewer{volume: 40}
-    cfg := nonZeroConfig()
-    cfg.VolumeViewer = vv
-    s, err := New(cfg)
-    if err != nil {
-        t.Fatalf("New: %v", err)
-    }
-    t.Cleanup(func() { _ = s.Close() })
-    s.Mount(http.NewServeMux())
-
-    ctx, cancel := context.WithCancel(context.Background())
-    w := newFlushRecorder()
-    req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
-    go func() {
-        time.Sleep(400 * time.Millisecond)
-        cancel()
-    }()
-    s.handleEvents(w, req)
-
-    if got := strings.Count(w.Body.String(), "event: volume\n"); got != 1 {
-        t.Fatalf("volume event count = %d, want exactly 1 (initial only); body:\n%s", got, w.Body.String())
-    }
-}
-```
+The initial-burst order assertion and unchanged-volume no-repeat test were added in Step 2 so they fail before implementation. Keep them in this task's final test run; they protect against duplicate volume events and accidental SSE order drift.
 
 - [ ] **Step 8: Run gofmt and SSE tests**
 
@@ -976,7 +972,9 @@ func TestVolumeAngle_MapsOutputVolumeToArc(t *testing.T) {
 	}{
 		{volume: -10, want: -135},
 		{volume: 0, want: -135},
+		{volume: 1, want: -132},
 		{volume: 50, want: 0},
+		{volume: 99, want: 132},
 		{volume: 100, want: 135},
 		{volume: 150, want: 135},
 	}
@@ -1016,6 +1014,14 @@ func TestHandleIndex_RendersVolumeKnobHooks(t *testing.T) {
 			t.Errorf("receiver HTML missing %q\n%s", want, body)
 		}
 	}
+	transportIdx := strings.Index(body, "transport.js?v=")
+	volumeIdx := strings.Index(body, "volume-knob.js?v=")
+	if transportIdx < 0 || volumeIdx < 0 {
+		t.Fatalf("missing transport.js or volume-knob.js script tag")
+	}
+	if volumeIdx < transportIdx {
+		t.Errorf("volume-knob.js must load after transport.js so shared transport/event hooks are initialized")
+	}
 }
 ```
 
@@ -1031,7 +1037,7 @@ Expected: FAIL because `volumeAngle` and volume markup/script do not exist.
 
 - [ ] **Step 3: Add `volumeAngle` template helper**
 
-In `internal/chassis/templates.go`, add a helper function below `templateFuncs`:
+In `internal/chassis/templates.go`, add `math` to the imports and add a helper function below `templateFuncs`:
 
 ```go
 func volumeAngle(volume int) int {
@@ -1041,7 +1047,7 @@ func volumeAngle(volume int) int {
 	if volume > 100 {
 		volume = 100
 	}
-	return -135 + int(float64(volume)*2.7)
+	return -135 + int(math.Round(float64(volume)*2.7))
 }
 ```
 
@@ -1279,18 +1285,43 @@ After Step 6 the grid is 5-column. Update the row to:
 want: []string{"grid-template-columns: 60px auto 1fr auto auto;"},
 ```
 
-Do not add a new 420 px transport-strip contract row — the existing 420 px contract block does not include `.transport-strip` (verify with `rg -n "max-width: 420" internal/chassis/css_scope_test.go`), so introducing one would be scope creep beyond this plan.
+- [ ] **Step 6c: Update the existing 420 px narrow-layout contract assertion**
+
+`internal/chassis/chassis_test.go` already pins the 420 px transport grid in `TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled`. Update its `want` strings for the new `volume` grid area:
+
+```go
+for _, want := range []string{
+	`@container chassis (max-width: 420px)`,
+	`"label controls controls controls"`,
+	`"label seek volume gear"`,
+	`grid-area: label;`,
+	`grid-area: controls;`,
+	`grid-area: seek;`,
+	`grid-area: volume;`,
+	`grid-area: gear;`,
+	`body.receiver .seek-time`,
+	`display: none;`,
+	`body.receiver .viz-btn--preview:disabled`,
+	`cursor: not-allowed;`,
+} {
+	if !strings.Contains(text, want) {
+		t.Errorf("chassis.css missing transport/preview contract %q", want)
+	}
+}
+```
+
+Do not add a new 420 px transport-strip contract row to `internal/chassis/css_scope_test.go` — that file does not currently pin `.transport-strip` at 420 px. The 420 px contract lives in `internal/chassis/chassis_test.go`, and this step updates it.
 
 - [ ] **Step 7: Run CSS/template tests to verify they pass**
 
 Run:
 
 ```bash
-gofmt -w internal/chassis/templates.go internal/chassis/chassis_test.go
-go test ./internal/chassis -run 'TestVolumeAngle|TestHandleIndex_RendersVolumeKnobHooks|TestChassisCSS_AllSelectorsScoped|TestChassisCSS_RulesetCountSanity|TestChassisCSS_Task24ResponsiveContainerContracts'
+gofmt -w internal/chassis/templates.go internal/chassis/chassis_test.go internal/chassis/css_scope_test.go
+go test ./internal/chassis -run 'TestVolumeAngle|TestHandleIndex_RendersVolumeKnobHooks|TestChassisCSS_AllSelectorsScoped|TestChassisCSS_RulesetCountSanity|TestChassisCSS_Task24ResponsiveContainerContracts|TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled'
 ```
 
-Expected: PASS. If `TestChassisCSS_RulesetCountSanity` fails only because the ruleset count increased, leave the minimum unchanged; the test wants a lower bound. If `TestChassisCSS_Task24ResponsiveContainerContracts` still fails for the 600 px row, the Step 6 grid value and the Step 6b expected value must match character-for-character.
+Expected: PASS. If `TestChassisCSS_RulesetCountSanity` fails only because the ruleset count increased, leave the minimum unchanged; the test wants a lower bound. If `TestChassisCSS_Task24ResponsiveContainerContracts` still fails for the 600 px row, the Step 6 grid value and the Step 6b expected value must match character-for-character. If `TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled` fails, verify the Step 6 420 px `grid-template-areas` and Step 6c expected strings match.
 
 - [ ] **Step 8: Commit Task 4**
 
@@ -1303,8 +1334,255 @@ git commit -m "feat(chassis): render receiver volume knob"
 
 **Files:**
 - Create: `internal/chassis/static/volume-knob.js`
+- Create: `internal/chassis/testdata/volume-knob.behavior.test.js`
 
-- [ ] **Step 1: Add the client script**
+- [ ] **Step 1: Add failing JS behavior tests**
+
+Create `internal/chassis/testdata/volume-knob.behavior.test.js`:
+
+```js
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+class FakeTarget {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  addEventListener(name, fn) {
+    const list = this.listeners.get(name) || [];
+    list.push(fn);
+    this.listeners.set(name, list);
+  }
+
+  removeEventListener(name, fn) {
+    const list = this.listeners.get(name) || [];
+    this.listeners.set(name, list.filter((item) => item !== fn));
+  }
+
+  dispatch(name, event = {}) {
+    for (const fn of this.listeners.get(name) || []) {
+      fn({ type: name, target: this, ...event });
+    }
+  }
+}
+
+class FakeElement extends FakeTarget {
+  constructor(value = '') {
+    super();
+    this.value = value;
+    this.dataset = {};
+    this.styleValues = new Map();
+    this.style = {
+      setProperty: (name, value) => this.styleValues.set(name, value),
+    };
+    this.classes = new Set();
+    this.classList = {
+      toggle: (name, on) => {
+        if (on) {
+          this.classes.add(name);
+        } else {
+          this.classes.delete(name);
+        }
+      },
+    };
+  }
+
+  matches(selector) {
+    return selector === ':hover';
+  }
+}
+
+class FakeSource extends FakeTarget {
+  emitVolume(outputVolume) {
+    this.dispatch('volume', { data: JSON.stringify({ outputVolume }) });
+  }
+}
+
+function createHarness(initialValue = 40) {
+  const root = new FakeElement();
+  root.dataset.volumeValue = String(initialValue);
+  const range = new FakeElement(String(initialValue));
+  const source = new FakeSource();
+  const requests = [];
+  const timers = new Map();
+  let now = 0;
+  let nextTimer = 1;
+
+  function setTimeoutFake(fn, delay) {
+    const id = nextTimer++;
+    timers.set(id, { at: now + delay, fn });
+    return id;
+  }
+
+  function clearTimeoutFake(id) {
+    timers.delete(id);
+  }
+
+  function advance(ms) {
+    now += ms;
+    let ran = true;
+    while (ran) {
+      ran = false;
+      const due = [...timers.entries()]
+        .filter(([, timer]) => timer.at <= now)
+        .sort((a, b) => a[1].at - b[1].at)[0];
+      if (due) {
+        timers.delete(due[0]);
+        due[1].fn();
+        ran = true;
+      }
+    }
+  }
+
+  function fetchFake(url, options) {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    requests.push({
+      url,
+      options,
+      body: String(options.body),
+      resolve,
+      reject,
+    });
+    return promise;
+  }
+
+  const document = new FakeTarget();
+  document.readyState = 'complete';
+  document.activeElement = range;
+  document.querySelector = (selector) => {
+    if (selector === '[data-volume-knob]') {
+      return root;
+    }
+    if (selector === '[data-volume-range]') {
+      return range;
+    }
+    return null;
+  };
+
+  const window = {
+    Chassis: { events: { source } },
+    setTimeout: setTimeoutFake,
+    clearTimeout: clearTimeoutFake,
+  };
+  const context = {
+    console: { warn() {} },
+    document,
+    fetch: fetchFake,
+    window,
+    URLSearchParams,
+  };
+  vm.createContext(context);
+  const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'volume-knob.js'), 'utf8');
+  vm.runInContext(code, context, { filename: 'volume-knob.js' });
+
+  return { root, range, source, requests, advance };
+}
+
+async function settle() {
+  for (let i = 0; i < 4; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+function postedVolume(req) {
+  return new URLSearchParams(req.body).get('output_volume');
+}
+
+test('coalesces non-final saves behind one in-flight request and preserves 200ms spacing', async () => {
+  const h = createHarness(40);
+
+  h.range.dispatch('pointerdown');
+  h.range.value = '41';
+  h.range.dispatch('input');
+  h.range.value = '42';
+  h.range.dispatch('input');
+
+  h.advance(199);
+  assert.equal(h.requests.length, 0);
+  h.advance(1);
+  assert.equal(h.requests.length, 1);
+  assert.equal(postedVolume(h.requests[0]), '42');
+
+  h.range.value = '43';
+  h.range.dispatch('input');
+  h.range.value = '44';
+  h.range.dispatch('input');
+  assert.equal(h.requests.length, 1);
+
+  h.requests[0].resolve({ status: 204, text: async () => '' });
+  await settle();
+  assert.equal(h.requests.length, 1, 'queued non-final save must not drain immediately after a fast response');
+
+  h.advance(199);
+  assert.equal(h.requests.length, 1);
+  h.advance(1);
+  assert.equal(h.requests.length, 2);
+  assert.equal(postedVolume(h.requests[1]), '44');
+});
+
+test('final commit bypasses the throttle after an in-flight save', async () => {
+  const h = createHarness(40);
+
+  h.range.dispatch('pointerdown');
+  h.range.value = '50';
+  h.range.dispatch('input');
+  h.advance(200);
+  assert.equal(h.requests.length, 1);
+
+  h.range.value = '60';
+  h.range.dispatch('input');
+  h.range.dispatch('change');
+  assert.equal(h.requests.length, 1);
+
+  h.requests[0].resolve({ status: 204, text: async () => '' });
+  await settle();
+  h.advance(0);
+  assert.equal(h.requests.length, 2);
+  assert.equal(postedVolume(h.requests[1]), '60');
+});
+
+test('defers SSE while editing and rolls failed final save back to last authoritative value', async () => {
+  const h = createHarness(40);
+
+  h.source.emitVolume(50);
+  assert.equal(h.range.value, '50');
+
+  h.range.dispatch('pointerdown');
+  h.range.value = '70';
+  h.range.dispatch('input');
+  h.source.emitVolume(30);
+  assert.equal(h.range.value, '70');
+
+  h.range.dispatch('change');
+  h.advance(0);
+  assert.equal(h.requests.length, 1);
+  assert.equal(postedVolume(h.requests[0]), '70');
+
+  h.requests[0].resolve({ status: 500, text: async () => 'nope' });
+  await settle();
+  assert.equal(h.range.value, '30');
+  assert.equal(h.root.classes.has('failed'), true);
+});
+```
+
+Run:
+
+```bash
+cmd.exe /c node --test internal/chassis/testdata/volume-knob.behavior.test.js
+```
+
+Expected: FAIL because `internal/chassis/static/volume-knob.js` does not exist yet.
+
+- [ ] **Step 2: Add the client script**
 
 Create `internal/chassis/static/volume-knob.js`:
 
@@ -1376,16 +1654,27 @@ Create `internal/chassis/static/volume-knob.js`:
     });
   }
 
-  function scheduleSave(value, finalCommit) {
-    queuedValue = clamp(value);
-    finalCommitNeeded = finalCommitNeeded || Boolean(finalCommit);
+  function scheduleDrain(delay) {
     if (saveTimer) {
       return;
     }
     saveTimer = window.setTimeout(() => {
       saveTimer = 0;
       drainSaves();
-    }, finalCommit ? 0 : SAVE_INTERVAL_MS);
+    }, delay);
+  }
+
+  function scheduleSave(value, finalCommit) {
+    queuedValue = clamp(value);
+    finalCommitNeeded = finalCommitNeeded || Boolean(finalCommit);
+    if (finalCommit && saveTimer) {
+      window.clearTimeout(saveTimer);
+      saveTimer = 0;
+    }
+    if (inFlight) {
+      return;
+    }
+    scheduleDrain(finalCommit ? 0 : SAVE_INTERVAL_MS);
   }
 
   async function drainSaves() {
@@ -1417,7 +1706,7 @@ Create `internal/chassis/static/volume-knob.js`:
     } finally {
       inFlight = false;
       if (queuedValue !== null) {
-        drainSaves();
+        scheduleDrain(finalCommitNeeded ? 0 : SAVE_INTERVAL_MS);
       } else if (!editing) {
         setVisual(localValue, '');
       }
@@ -1439,7 +1728,6 @@ Create `internal/chassis/static/volume-knob.js`:
     const next = clamp(value);
     setVisual(next, '');
     scheduleSave(next, true);
-    drainSaves();
   }
 
   function handleVolumeEvent(ev) {
@@ -1519,30 +1807,31 @@ Create `internal/chassis/static/volume-knob.js`:
 })();
 ```
 
-- [ ] **Step 2: Run JS syntax check**
+- [ ] **Step 3: Run JS syntax and behavior checks**
 
 Run:
 
 ```bash
 cmd.exe /c node --check internal/chassis/static/volume-knob.js
+cmd.exe /c node --test internal/chassis/testdata/volume-knob.behavior.test.js
 ```
 
-Expected: PASS with no output.
+Expected: PASS. `node --check` prints no output; `node --test` reports the three behavior tests passing.
 
-- [ ] **Step 3: Add focused static verification by grep**
+- [ ] **Step 4: Add focused static verification by grep**
 
 Run:
 
 ```bash
-rg -n "SAVE_INTERVAL_MS|addEventListener\\('volume'|/receiver/volume|finalCommitNeeded|data-volume" internal/chassis/static/volume-knob.js
+rg -n "SAVE_INTERVAL_MS|scheduleDrain|clearTimeout|addEventListener\\('volume'|/receiver/volume|finalCommitNeeded|data-volume" internal/chassis/static/volume-knob.js
 ```
 
-Expected: the command prints matches for all five patterns.
+Expected: the command prints matches for all seven patterns.
 
-- [ ] **Step 4: Commit Task 5**
+- [ ] **Step 5: Commit Task 5**
 
 ```bash
-git add internal/chassis/static/volume-knob.js
+git add internal/chassis/static/volume-knob.js internal/chassis/testdata/volume-knob.behavior.test.js
 git commit -m "feat(chassis): handle receiver volume knob input"
 ```
 
@@ -1578,6 +1867,7 @@ Run:
 ```bash
 go test ./internal/chassis -run 'TestChassisCSS'
 cmd.exe /c node --check internal/chassis/static/volume-knob.js
+cmd.exe /c node --test internal/chassis/testdata/volume-knob.behavior.test.js
 ```
 
 Expected: PASS.
@@ -1638,4 +1928,4 @@ Prepare a completion note with:
 - commits created;
 - tests run and pass/fail status;
 - manual browser checks completed or not completed;
-- any remaining limitations, especially if `cmd.exe /c node --check` or browser verification could not run.
+- any remaining limitations, especially if `cmd.exe /c node --check`, `cmd.exe /c node --test`, or browser verification could not run.
