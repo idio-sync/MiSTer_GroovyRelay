@@ -40,6 +40,7 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 	activeRef  string
+	activeGen  uint64
 	enableErr  error
 	proxy      proxyStore
 	proxyHTTP  *http.Client
@@ -139,6 +140,7 @@ func (a *Adapter) Stop() error {
 	a.mu.Lock()
 	ref := a.activeRef
 	a.activeRef = ""
+	a.activeGen = 0
 	a.state = adapters.StateStopped
 	a.lastErr = ""
 	a.stateSince = a.now()

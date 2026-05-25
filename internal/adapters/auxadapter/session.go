@@ -77,7 +77,17 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		a.mu.Unlock()
 		return "", a.recordAUXStartError(err)
 	}
+	activeGen := a.activeGen + 1
+	if activeGen == 0 {
+		activeGen = 1
+	}
+	ref := req.AdapterRef
+	req.OnStop = func(reason string) {
+		cleanup()
+		a.onStopForSession(ref, activeGen)(reason)
+	}
 	a.activeRef = req.AdapterRef
+	a.activeGen = activeGen
 	a.state = adapters.StateRunning
 	a.lastErr = ""
 	a.stateSince = a.auxNow()
@@ -86,7 +96,7 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 	if err := coreManager.StartSession(req); err != nil {
 		cleanup()
 		wrapped := fmt.Errorf("start AUX session: %w", err)
-		a.rollbackAUXStart(req.AdapterRef, wrapped)
+		a.rollbackAUXStart(ref, activeGen, wrapped)
 		return "", wrapped
 	}
 
@@ -100,6 +110,7 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 
 	a.mu.Lock()
 	activeRef := a.activeRef
+	activeGen := a.activeGen
 	a.mu.Unlock()
 	if activeRef == "" {
 		return false, nil
@@ -109,19 +120,19 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 	}
 	coreManager := a.core
 	if coreManager == nil {
-		a.clearActiveRef(activeRef)
+		a.clearActiveSession(activeRef, activeGen)
 		return false, nil
 	}
 
 	matched, err := coreManager.StopIfAdapterRef(activeRef)
 	if !matched {
-		a.clearActiveRef(activeRef)
+		a.clearActiveSession(activeRef, activeGen)
 		return false, err
 	}
 	if err != nil {
 		return true, err
 	}
-	a.clearActiveRef(activeRef)
+	a.clearActiveSession(activeRef, activeGen)
 	return true, nil
 }
 
@@ -174,10 +185,6 @@ func (a *Adapter) buildSessionRequestLocked(ctx context.Context, input AUXInput)
 		return core.SessionRequest{}, nil, unavailableError("unsupported AUX input mode %q", input.Mode)
 	}
 
-	req.OnStop = func(reason string) {
-		cleanup()
-		a.onStopForRef(ref)(reason)
-	}
 	return req, cleanup, nil
 }
 
@@ -272,32 +279,34 @@ func (a *Adapter) recordAUXStartError(err error) error {
 	return err
 }
 
-func (a *Adapter) rollbackAUXStart(ref string, err error) {
+func (a *Adapter) rollbackAUXStart(ref string, gen uint64, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.activeRef != ref {
+	if a.activeRef != ref || a.activeGen != gen {
 		return
 	}
 	a.activeRef = ""
+	a.activeGen = 0
 	a.state = adapters.StateError
 	a.lastErr = err.Error()
 	a.stateSince = a.auxNow()
 }
 
-func (a *Adapter) onStopForRef(ref string) func(string) {
+func (a *Adapter) onStopForSession(ref string, gen uint64) func(string) {
 	return func(reason string) {
 		_ = reason
-		a.clearActiveRef(ref)
+		a.clearActiveSession(ref, gen)
 	}
 }
 
-func (a *Adapter) clearActiveRef(ref string) {
+func (a *Adapter) clearActiveSession(ref string, gen uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.activeRef != ref {
+	if a.activeRef != ref || a.activeGen != gen {
 		return
 	}
 	a.activeRef = ""
+	a.activeGen = 0
 	a.state = adapters.StateStopped
 	a.lastErr = ""
 	a.stateSince = a.auxNow()

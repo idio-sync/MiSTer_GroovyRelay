@@ -364,6 +364,32 @@ func TestStaleOnStopDoesNotClearNewerActiveAUXRef(t *testing.T) {
 	}
 }
 
+func TestSameRefStaleOnStopDoesNotClearNewerActiveAUXSession(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	oldOnStop := fc.lastRequest.OnStop
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("second StartAUX: %v", err)
+	}
+	if fc.status.AdapterRef != "aux:aux" {
+		t.Fatalf("core status after second StartAUX = %+v, want aux:aux", fc.status)
+	}
+
+	oldOnStop("preempted")
+
+	if a.activeRef != "aux:aux" {
+		t.Fatalf("activeRef after same-ref stale OnStop = %q, want aux:aux", a.activeRef)
+	}
+	st := a.AUXStatus(context.Background())
+	if !st.Active || st.AdapterRef != "aux:aux" {
+		t.Fatalf("AUXStatus after same-ref stale OnStop = %+v, want active aux:aux", st)
+	}
+}
+
 func TestStartAUXLocalCaptureDefaultsSampleRateAndChannelsFromBridge(t *testing.T) {
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
