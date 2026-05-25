@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -34,6 +35,7 @@ type Adapter struct {
 	httpPort      int
 	eventLog      *eventlog.Log
 	now           func() time.Time
+	opMu          sync.Mutex
 	mu            sync.Mutex
 	cfg           Config
 	state         adapters.State
@@ -42,6 +44,7 @@ type Adapter struct {
 	activeRef     string
 	activeGen     uint64
 	activeCleanup func()
+	activeStopped *atomic.Bool
 	enableErr     error
 	proxy         proxyStore
 	proxyHTTP     *http.Client
@@ -138,12 +141,16 @@ func (a *Adapter) Start(context.Context) error {
 }
 
 func (a *Adapter) Stop() error {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
 	a.mu.Lock()
 	ref := a.activeRef
 	cleanup := a.activeCleanup
 	a.activeRef = ""
 	a.activeGen = 0
 	a.activeCleanup = nil
+	a.activeStopped = nil
 	a.state = adapters.StateStopped
 	a.lastErr = ""
 	a.stateSince = a.now()

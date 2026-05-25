@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -391,6 +392,136 @@ func TestReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *t
 	if got := tokenNames(a.proxy.tokens); !sameStrings(got, oldTokens) {
 		t.Fatalf("proxy tokens after failed replacement = %#v, want original tokens %#v", got, oldTokens)
 	}
+	status := a.Status()
+	if status.LastError == "" || !strings.Contains(status.LastError, wantErr.Error()) {
+		t.Fatalf("Status.LastError = %q, want failed replacement error %q", status.LastError, wantErr.Error())
+	}
+	if st.ErrorMessage == "" || !strings.Contains(st.ErrorMessage, wantErr.Error()) {
+		t.Fatalf("AUXStatus.ErrorMessage = %q, want failed replacement error %q", st.ErrorMessage, wantErr.Error())
+	}
+}
+
+func TestReplacementStartAUXStartSessionErrorAfterPreemptLeavesInactive(t *testing.T) {
+	wantErr := errors.New("core start failed after preempt")
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	oldOnStop := fc.lastRequest.OnStop
+	oldTokens := tokenNames(a.proxy.tokens)
+	if len(oldTokens) != 2 {
+		t.Fatalf("tokens after first StartAUX = %#v, want 2 tokens", oldTokens)
+	}
+
+	fc.onStart = func(req core.SessionRequest) {
+		if fc.starts == 2 {
+			oldOnStop("preempted")
+		}
+	}
+	fc.startErr = wantErr
+	_, err := a.StartAUX(context.Background(), "aux")
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartAUX error = %v, want core error", err)
+	}
+	if errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX wrapped ErrSourceUnavailable for runtime error: %v", err)
+	}
+	if got := len(a.proxy.tokens); got != 0 {
+		t.Fatalf("proxy tokens after failed preempting replacement = %d, want 0", got)
+	}
+	if got := a.activeRef; got != "" {
+		t.Fatalf("activeRef after failed preempting replacement = %q, want empty", got)
+	}
+	st := a.AUXStatus(context.Background())
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus after failed preempting replacement = %+v, want inactive", st)
+	}
+	if st.ErrorMessage == "" || !strings.Contains(st.ErrorMessage, wantErr.Error()) {
+		t.Fatalf("AUXStatus.ErrorMessage = %q, want runtime error %q", st.ErrorMessage, wantErr.Error())
+	}
+	status := a.Status()
+	if status.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", status.State)
+	}
+	if status.LastError == "" || !strings.Contains(status.LastError, wantErr.Error()) {
+		t.Fatalf("Status.LastError = %q, want runtime error %q", status.LastError, wantErr.Error())
+	}
+}
+
+func TestConcurrentSameRefStartAUXSerializesStartSession(t *testing.T) {
+	fc := newBlockingStartCore()
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	errCh := make(chan error, 2)
+
+	go func() {
+		_, err := a.StartAUX(context.Background(), "aux")
+		errCh <- err
+	}()
+	first := fc.waitForStart(t, 1)
+
+	go func() {
+		_, err := a.StartAUX(context.Background(), "aux")
+		errCh <- err
+	}()
+	fc.assertNoStart(t, 2, 50*time.Millisecond)
+
+	first.release()
+	if err := <-errCh; err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	second := fc.waitForStart(t, 2)
+	second.release()
+	if err := <-errCh; err != nil {
+		t.Fatalf("second StartAUX: %v", err)
+	}
+
+	if got := len(a.proxy.tokens); got != 2 {
+		t.Fatalf("proxy tokens after serialized starts = %d, want newer session tokens only", got)
+	}
+}
+
+func TestStopAUXWaitsForInFlightSameRefStartAUX(t *testing.T) {
+	fc := newBlockingStartCore()
+	fc.stopMatched = true
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	errCh := make(chan error, 1)
+	stopCh := make(chan error, 1)
+
+	go func() {
+		_, err := a.StartAUX(context.Background(), "aux")
+		errCh <- err
+	}()
+	first := fc.waitForStart(t, 1)
+
+	go func() {
+		matched, err := a.StopAUX(context.Background(), "aux")
+		if err != nil {
+			stopCh <- err
+			return
+		}
+		if !matched {
+			stopCh <- errors.New("StopAUX matched = false, want true")
+			return
+		}
+		stopCh <- nil
+	}()
+	fc.assertNoStop(t, 50*time.Millisecond)
+
+	first.release()
+	if err := <-errCh; err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	if err := <-stopCh; err != nil {
+		t.Fatalf("StopAUX: %v", err)
+	}
+	if fc.stopRef != "aux:aux" {
+		t.Fatalf("StopIfAdapterRef ref = %q, want aux:aux", fc.stopRef)
+	}
 }
 
 func TestOnStopReleasesProxyTokensAndClearsActiveAUXState(t *testing.T) {
@@ -572,3 +703,100 @@ func (f *sessionCore) StopIfAdapterRef(ref string) (bool, error) {
 }
 
 func (f *sessionCore) Status() core.SessionStatus { return f.status }
+
+type blockingStartCore struct {
+	mu          sync.Mutex
+	startCalls  int
+	stopCalls   int
+	stopRef     string
+	stopMatched bool
+	status      core.SessionStatus
+	started     chan blockingStartCall
+	stopped     chan struct{}
+}
+
+type blockingStartCall struct {
+	n       int
+	req     core.SessionRequest
+	release func()
+}
+
+func newBlockingStartCore() *blockingStartCore {
+	return &blockingStartCore{
+		started: make(chan blockingStartCall, 4),
+		stopped: make(chan struct{}, 4),
+	}
+}
+
+func (f *blockingStartCore) StartSession(req core.SessionRequest) error {
+	release := make(chan struct{})
+	f.mu.Lock()
+	f.startCalls++
+	n := f.startCalls
+	f.mu.Unlock()
+
+	f.started <- blockingStartCall{
+		n:   n,
+		req: req,
+		release: func() {
+			close(release)
+		},
+	}
+	<-release
+
+	f.mu.Lock()
+	f.status = core.SessionStatus{AdapterRef: req.AdapterRef}
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *blockingStartCore) StopIfAdapterRef(ref string) (bool, error) {
+	f.mu.Lock()
+	f.stopCalls++
+	f.stopRef = ref
+	matched := f.stopMatched
+	if matched {
+		f.status = core.SessionStatus{}
+	}
+	f.mu.Unlock()
+	f.stopped <- struct{}{}
+	return matched, nil
+}
+
+func (f *blockingStartCore) Status() core.SessionStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
+
+func (f *blockingStartCore) waitForStart(t *testing.T, want int) blockingStartCall {
+	t.Helper()
+	select {
+	case call := <-f.started:
+		if call.n != want {
+			t.Fatalf("StartSession call = %d, want %d", call.n, want)
+		}
+		return call
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for StartSession call %d", want)
+		return blockingStartCall{}
+	}
+}
+
+func (f *blockingStartCore) assertNoStart(t *testing.T, want int, d time.Duration) {
+	t.Helper()
+	select {
+	case call := <-f.started:
+		t.Fatalf("StartSession call %d entered before call %d was released", call.n, want-1)
+	case <-time.After(d):
+	}
+}
+
+func (f *blockingStartCore) assertNoStop(t *testing.T, d time.Duration) {
+	t.Helper()
+	select {
+	case <-f.stopped:
+		t.Fatal("StopIfAdapterRef entered before StartSession returned")
+	case <-time.After(d):
+	}
+}

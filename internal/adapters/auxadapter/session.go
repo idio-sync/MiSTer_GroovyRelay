@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -54,6 +55,9 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		return "", err
 	}
 
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
 	a.mu.Lock()
 	cfg := a.normalizeConfig(a.cfg)
 	if !cfg.Enabled {
@@ -82,6 +86,7 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		ref:        a.activeRef,
 		gen:        a.activeGen,
 		cleanup:    a.activeCleanup,
+		stopped:    a.activeStopped,
 		state:      a.state,
 		lastErr:    a.lastErr,
 		stateSince: a.stateSince,
@@ -91,10 +96,12 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		activeGen = 1
 	}
 	ref := req.AdapterRef
-	req.OnStop = a.onStopForSession(ref, activeGen)
+	stopped := &atomic.Bool{}
+	req.OnStop = a.onStopForSession(ref, activeGen, stopped, cleanup)
 	a.activeRef = req.AdapterRef
 	a.activeGen = activeGen
 	a.activeCleanup = cleanup
+	a.activeStopped = stopped
 	a.state = adapters.StateRunning
 	a.lastErr = ""
 	a.stateSince = a.auxNow()
@@ -119,6 +126,9 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 		return false, err
 	}
 
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
 	a.mu.Lock()
 	activeRef := a.activeRef
 	activeGen := a.activeGen
@@ -131,19 +141,25 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 	}
 	coreManager := a.core
 	if coreManager == nil {
-		a.clearActiveSession(activeRef, activeGen)
+		if cleanup := a.clearActiveSession(activeRef, activeGen); cleanup != nil {
+			cleanup()
+		}
 		return false, nil
 	}
 
 	matched, err := coreManager.StopIfAdapterRef(activeRef)
 	if !matched {
-		a.clearActiveSession(activeRef, activeGen)
+		if cleanup := a.clearActiveSession(activeRef, activeGen); cleanup != nil {
+			cleanup()
+		}
 		return false, err
 	}
 	if err != nil {
 		return true, err
 	}
-	a.clearActiveSession(activeRef, activeGen)
+	if cleanup := a.clearActiveSession(activeRef, activeGen); cleanup != nil {
+		cleanup()
+	}
 	return true, nil
 }
 
@@ -294,6 +310,7 @@ type auxActiveSession struct {
 	ref        string
 	gen        uint64
 	cleanup    func()
+	stopped    *atomic.Bool
 	state      adapters.State
 	lastErr    string
 	stateSince time.Time
@@ -302,48 +319,63 @@ type auxActiveSession struct {
 func (a *Adapter) rollbackAUXStart(ref string, gen uint64, previous auxActiveSession, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.activeRef != ref || a.activeGen != gen {
+	if (a.activeRef != ref || a.activeGen != gen) && a.activeRef != "" {
 		return
 	}
-	a.activeRef = previous.ref
-	a.activeGen = previous.gen
-	a.activeCleanup = previous.cleanup
-	if previous.ref != "" {
+	if previous.ref != "" && !auxSessionStopped(previous.stopped) {
+		a.activeRef = previous.ref
+		a.activeGen = previous.gen
+		a.activeCleanup = previous.cleanup
+		a.activeStopped = previous.stopped
 		a.state = previous.state
-		a.lastErr = previous.lastErr
+		a.lastErr = err.Error()
 		a.stateSince = previous.stateSince
 		return
 	}
+	a.activeRef = ""
+	a.activeGen = 0
+	a.activeCleanup = nil
+	a.activeStopped = nil
 	a.state = adapters.StateError
 	a.lastErr = err.Error()
 	a.stateSince = a.auxNow()
 }
 
-func (a *Adapter) onStopForSession(ref string, gen uint64) func(string) {
+func auxSessionStopped(stopped *atomic.Bool) bool {
+	return stopped != nil && stopped.Load()
+}
+
+func (a *Adapter) onStopForSession(ref string, gen uint64, stopped *atomic.Bool, cleanup func()) func(string) {
 	return func(reason string) {
 		_ = reason
-		a.clearActiveSession(ref, gen)
+		stopped.Store(true)
+		if activeCleanup := a.clearActiveSession(ref, gen); activeCleanup != nil {
+			activeCleanup()
+			return
+		}
+		if cleanup != nil {
+			cleanup()
+		}
 	}
 }
 
-func (a *Adapter) clearActiveSession(ref string, gen uint64) {
+func (a *Adapter) clearActiveSession(ref string, gen uint64) func() {
 	a.mu.Lock()
 	if a.activeRef != ref || a.activeGen != gen {
 		a.mu.Unlock()
-		return
+		return nil
 	}
 	cleanup := a.activeCleanup
 	a.activeRef = ""
 	a.activeGen = 0
 	a.activeCleanup = nil
+	a.activeStopped = nil
 	a.state = adapters.StateStopped
 	a.lastErr = ""
 	a.stateSince = a.auxNow()
 	a.mu.Unlock()
 
-	if cleanup != nil {
-		cleanup()
-	}
+	return cleanup
 }
 
 func (a *Adapter) auxNow() time.Time {
