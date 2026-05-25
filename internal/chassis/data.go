@@ -15,7 +15,6 @@ import (
 type ReceiverPageData struct {
 	Version    string
 	BrandName  string
-	HostInfo   HostInfo
 	State      ReceiverState
 	VFD        VFDData
 	Source     SourceData
@@ -36,13 +35,6 @@ const (
 	StateIdle ReceiverState = "idle"
 	StateLive ReceiverState = "live"
 )
-
-// HostInfo renders into the status bar. HostIP may be the literal
-// string "OFFLINE" if cfg.HostIP was empty on an offline host.
-type HostInfo struct {
-	HostIP   string
-	HTTPPort int
-}
 
 // VFDData drives the VFD frame in the top row of the chassis. Idle
 // state shows STANDBY plus the marquee hint. SystemTime is rendered
@@ -240,19 +232,10 @@ type SettingsData struct {
 // StateIdle and placeholder content matching the mockup's idle state.
 // Later live-state specs replace this with session-derived snapshots.
 func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
-	hostIP := cfg.HostIP
-	if hostIP == "" {
-		hostIP = "OFFLINE"
-	}
-
 	return ReceiverPageData{
 		Version:   cfg.Version,
 		BrandName: "GROOVY · RELAY",
 		State:     StateIdle,
-		HostInfo: HostInfo{
-			HostIP:   hostIP,
-			HTTPPort: cfg.Bridge.UI.HTTPPort,
-		},
 		VFD: VFDData{
 			State:        string(StateIdle),
 			Title:        "STANDBY",

@@ -173,10 +173,6 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		Version:   "test-1.0.0",
 		BrandName: "GROOVY · RELAY",
 		State:     StateIdle,
-		HostInfo: HostInfo{
-			HostIP:   "10.0.0.5",
-			HTTPPort: 32500,
-		},
 		VFD: VFDData{
 			State:        string(StateIdle),
 			Title:        "STANDBY",
@@ -300,17 +296,6 @@ func TestIdleSnapshot_DeterministicGivenSameNow(t *testing.T) {
 	b := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(a, b) {
 		t.Errorf("idleSnapshot is not deterministic: a=%+v b=%+v", a, b)
-	}
-}
-
-func TestIdleSnapshot_EmptyHostIPRendersAsOFFLINE(t *testing.T) {
-	t.Parallel()
-	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
-	cfg := nonZeroConfig()
-	cfg.HostIP = ""
-	got := idleSnapshot(cfg, fixedNow)
-	if got.HostInfo.HostIP != "OFFLINE" {
-		t.Errorf("HostInfo.HostIP with empty cfg.HostIP = %q, want OFFLINE", got.HostInfo.HostIP)
 	}
 }
 
