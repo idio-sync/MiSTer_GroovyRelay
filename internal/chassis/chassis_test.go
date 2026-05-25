@@ -2270,6 +2270,64 @@ func TestVFDLiveSubscribeHelperContract(t *testing.T) {
 	}
 }
 
+// TestMeterHTML_HasAudioScopeHooks verifies the existing 5A hooks are
+// still present (regression guard — Task 12 must not accidentally
+// remove or rename them via template churn).
+func TestMeterHTML_HasAudioScopeHooks(t *testing.T) {
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+	for _, hook := range []string{
+		`id="phase-needle"`,
+		`id="lufs-val"`,
+		`id="spectrum"`,
+		`id="spectrum-canvas"`,
+		`id="gonio-canvas"`,
+		`class="ch-bar"`,
+		`data-meter-audio-scopes-status`,
+	} {
+		if !strings.Contains(body, hook) {
+			t.Errorf("meter HTML missing existing 5A hook %q", hook)
+		}
+	}
+}
+
+// TestMeterJS_NoFakeValueGenerators ensures audio scope rendering
+// drives values from the wire, never synthesizes them.
+func TestMeterJS_NoFakeValueGenerators(t *testing.T) {
+	src, err := chassisStaticFS.ReadFile("static/meter.js")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, forbidden := range []string{
+		"Math.random", "Math.sin(", "Math.cos(", "Math.tan(",
+		"Date.now(",
+	} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("meter.js contains forbidden generator %q (audio scopes must drive real values, not fake animations)", forbidden)
+		}
+	}
+}
+
+// TestMeterJS_SubscribesToAudio ensures Task 12 wired the audio
+// subscription that the rest of this task depends on.
+func TestMeterJS_SubscribesToAudio(t *testing.T) {
+	src, err := chassisStaticFS.ReadFile("static/meter.js")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(src), `subscribe('audio'`) && !strings.Contains(string(src), `subscribe("audio"`) {
+		t.Error("meter.js does not subscribe to the audio SSE event")
+	}
+}
+
 func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
 	files := []string{
 		"static/transport.js",
