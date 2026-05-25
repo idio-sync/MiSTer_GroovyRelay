@@ -32,6 +32,7 @@ Prior art: [docs/plans/2026-05-20-audio-vu-telemetry.md](../../plans/2026-05-20-
 - A telemetry pub/sub broker, a new `internal/telemetry/` package, or a dedicated SSE endpoint for audio. The existing `/receiver/events` stream is the only transport.
 - Mobile/responsive polish for the audio canvases. Phase 5 owns that pass.
 - Adding new font files, CSS files, or external JS dependencies. 5B reuses the existing chassis asset surface.
+- `Last-Event-ID` SSE replay of the `audio` event. The chassis stream doesn't issue `id:` lines today and 5B doesn't add them. If chassis ever adopts SSE replay (e.g., for survival across a deploy), the `audio` event MUST be excluded from any buffered history — a 30 Hz stream of ~6 KB frames multiplied by replay duration would explode memory. The audio stream is real-time-only by contract; reconnects start fresh from the next live snapshot.
 
 ## Design Decisions
 
@@ -86,7 +87,7 @@ The audio event payload is one of two distinct shapes, distinguished by the `sta
 - `status` is the canonical liveness signal. When `status == "pending"`, no other keys are present. When `status == "live"`, **every** field above is present, including legitimate zeros (`phaseCorr: 0.0` for uncorrelated stereo, `lufsShort: -23.0` for any value).
 - `generation` matches `core.SessionStatus.Generation`. Used by clients to reset peak-hold and goniometer trail state on session change.
 - `spectrum` is exactly 32 floats, dBFS, logarithmically-spaced bands covering 20 Hz–20 kHz. Bands beyond the Nyquist for the current `sampleRate` clamp to a sentinel low value (`-90.0`). At the bridge's typical 48 kHz audio rate the Nyquist is 24 kHz, so the sentinel only applies on lower-rate sources (22.05 kHz, 11.025 kHz).
-- `goniometer` is exactly 256 `[L, R]` pairs, each in `[-1.0, +1.0]`, evenly decimated from the most recent ~50 ms window of input PCM (at 48 kHz that's ~2400 raw samples, decimation factor ~9). Length is fixed so clients can preallocate.
+- `goniometer` is exactly 256 `[L, R]` pairs, each in `[-1.0, +1.0]`, evenly decimated from the most recent ~50 ms window of input PCM. The decimation factor is `(sampleRate * 0.050) / 256` — at 48 kHz that's ~9, at 44.1 kHz ~8, at 22.05 kHz ~4. Length is fixed at 256 across all sample rates so clients can preallocate.
 - `phaseCorr` is the Pearson correlation of L and R over a 300 ms window, in `[-1.0, +1.0]`.
 - `lufsShort` is in dB. A sentinel of `-100.0` represents "below measurable floor / silence."
 - `vu.left.peak` and `vu.left.rms` are linear in `[0.0, 1.0]`. Clients apply their own log/dB mapping for the segmented bar display.
@@ -116,6 +117,17 @@ This wording prevents the test fixture from going stale based on which of 5A's f
 
 ## Architecture
 
+### Glossary
+
+5B's DSP discussion uses a handful of terms with subtle distinctions. Pinning them once here so the cadence math and test assertions are unambiguous:
+
+- **Sample frame** (or just **frame** in DSP context): one `(L, R)` pair for stereo, one `L` for mono. The unit `samplesInChunk` in the Bresenham accumulator below counts **sample frames**, not interleaved samples. Concretely: `samplesInChunk := len(pcm) / (bytesPerSample * channels)`. For 800 frames of stereo s16le PCM, `len(pcm) == 3200`, and `samplesInChunk == 800`.
+- **Sample**: one signed-int16 value on the wire (PCM byte view). Interleaved-sample count is `samplesInChunk * channels`. Used only when discussing wire format, never in cadence math.
+- **Chunk**: one `Observe(pcm, channels, sampleRate)` call worth of PCM, sized by `ReadAudioFromPipeContext`. Roughly one field period at typical rates (~16.7 ms at 60 Hz, ~20 ms at 50 Hz).
+- **Field tick**: the dataplane's per-field timer fire that drives one `Observe` call (one chunk). Not the same as a publish tick.
+- **Publish tick**: an `Observe` call where the Bresenham accumulator rolls over, causing the meter to compute spectrum and publish a new snapshot. Averages 30 Hz; cadence is irregular at non-NTSC field rates.
+- **Audio tick** (chassis-side): the `audioTickInterval` ticker inside `handleEvents` that reads `s.audioScopeViewer` and emits the SSE `audio` event. Exactly 30 Hz; decoupled from publish ticks.
+
 ### DSP — `internal/dataplane/audiometer.go`
 
 A new `AudioMeter` type owns the running DSP state and the published snapshot pointer:
@@ -137,6 +149,16 @@ type AudioMeter struct {
     // Observe adds samplesInChunk * targetHz; when the accumulator reaches
     // sampleRate, the meter publishes and subtracts sampleRate. This hits an
     // average 30 Hz at both 50 Hz and 59.94/60 Hz field cadences.
+    //
+    // targetHz is the test seam:
+    //   - production: targetHz = 30
+    //   - no-publish test run: targetHz = 0 (accumulator never advances)
+    //   - always-publish test run: targetHz = sampleRate (accumulator
+    //     crosses threshold every single Observe call, regardless of chunk size)
+    //
+    // The accumulator carries state across Observe calls and is reset only
+    // by AudioMeter construction. sampleRate is assumed constant for the
+    // meter's lifetime; see §Sample rate hot-swap below.
     targetHz int
     publishAccum int
 }
@@ -176,6 +198,8 @@ No `Paused` field: pause tears down the plane, so there is no paused-but-publish
 
 `Observe` publishes a fresh `*AudioScopeSnapshot` only when the sample accumulator crosses its 30 Hz threshold, keeping per-second allocations bounded and predictable. At 48 kHz/60 Hz this is roughly every other chunk; at 48 kHz/50 Hz the accumulator alternates publish gaps to average 30 Hz instead of falling to 25 Hz or jumping to 50 Hz. On non-publish ticks, running DSP state is updated in place on `audioMeterState` (no allocation). Readers always see a consistent snapshot — atomic publication via `atomic.Pointer.Store` is a single CPU-ordered write.
 
+**Single-producer goroutine invariant (load-bearing):** snapshot construction reads from `audioMeterState` after the same `Observe` call has just finished updating it, on the field-tick goroutine. Both the running-state update and the publish-build run inline in `Observe`; there is no separate publish goroutine and there must not be one. If a future contributor extracts the publish path into a background goroutine (e.g., for "performance"), the publish would race the next `Observe`'s in-place updates of `audioMeterState`, producing torn snapshots that `go test -race` would not reliably catch (the runtime DSP state has no `sync.Pointer` semantics). Tests should pin this invariant by asserting publish-tick callbacks observe the same goroutine ID as the most recent `Observe` call.
+
 ### DSP cost budget per chunk
 
 | Stage | Approx cost | Notes |
@@ -184,10 +208,36 @@ No `Paused` field: pause tears down the plane, so there is no paused-but-publish
 | Phase correlation accumulation | ~3 µs | Three running sums (Σl, Σr, Σlr) over the window |
 | LUFS K-weighting biquads | ~5 µs | Two biquads per channel, 3 s mean-square accumulator |
 | Goniometer ring write | ~1 µs | Decimated copy into a 256-deep ring |
-| FFT (every publish tick) | ~80 µs | 1024-pt Hann-windowed real FFT, binned to 32 log bands |
-| **Total per chunk** | **<100 µs** | Against ~16.7 ms field period: <1% budget |
+| FFT (publish ticks only, ~30 Hz) | ~80 µs amortized | 1024-pt Hann-windowed real FFT, binned to 32 log bands; only runs on publish ticks |
+| **Per non-publish chunk** | **~10 µs** | DSP state updates only; no FFT, no snapshot publish |
+| **Per publish chunk** | **~90 µs** | DSP updates + FFT + snapshot build + atomic store |
 
-Numbers are coarse estimates from typical x86 throughput; measured budgets land in the alloc/perf test pass.
+Per-second budget at 48 kHz/60 Hz: 30 publish chunks × ~90 µs + 30 non-publish chunks × ~10 µs ≈ 3 ms/s of CPU on the field-tick goroutine, against 1000 ms wall-clock = **<0.3% budget**. Numbers are coarse estimates from typical x86 throughput; measured budgets land in the alloc/perf test pass.
+
+### Peak ballistics and LUFS channel summation
+
+Two DSP details that the cost-budget table elides but must be pinned so implementers don't make arbitrary calls that diverge from §Testing assertions:
+
+**Peak decay:** the per-channel `Peak` value in the published snapshot is NOT simply the maximum sample since the last publish — that would render as a visually jumpy bar without the expected fall-off behavior of a hardware VU meter. The published peak combines:
+
+- **Attack:** instant. Any sample whose absolute value exceeds the current peak immediately raises it.
+- **Release:** exponential decay at `-20 dB/s`, applied per-sample (not per-publish). Concretely: `peak *= decayPerSample` where `decayPerSample = pow(10, -20.0 / 20.0 / sampleRate)` (≈ 0.99998 at 48 kHz). Sample-based rather than wall-clock means the decay rate is reproducible across irregular publish cadence and identical across NTSC/PAL field rates.
+- Decay state lives on `audioMeterState` and survives across publish ticks. On plane teardown the meter is destroyed and the next session starts fresh.
+
+A DSP test in pillar 1 covers the decay curve: feed one full-scale sample, then 48000 zero samples; assert the published peak after ~100 ms ≈ `1.0 * pow(10, -20*0.1/20)` = 0.794, and after 1 s ≈ `0.1`. Tolerance ±5%.
+
+**LUFS channel summation:** ITU-R BS.1770 short-term loudness is computed as:
+
+```
+L_K = -0.691 + 10 * log10(Σ_ch G_ch * meanSquare_ch)
+```
+
+…where:
+- `meanSquare_ch` is the mean of the K-weighted signal squared, taken over the 3 s sliding window, per channel.
+- `G_ch` is the BS.1770 channel weight: `G_L = G_R = 1.0` for stereo. For mono, treat as a single channel with `G = 1.0`.
+- The sum is over active channels: 1 for mono, 2 for stereo.
+
+**Critical:** do not compute per-channel LUFS and average them — power sums, then log. Averaging in the log domain gives different (and wrong) numbers. The `-0.691` calibration constant is applied once, after the channel-weighted power sum. This is what makes dual-mono stereo read +3 dB louder than mono (P_L + P_R = 2 × P_mono → 10 × log10(2) ≈ +3.01 dB), as asserted by pillar 1.
 
 ### FFT input handling
 
@@ -210,6 +260,14 @@ Small radix-2 real FFT, ~150 lines:
 - Hann window helper provided alongside.
 - Zero dependencies. Fully testable against `math/cmplx` reference values and the Parseval theorem (∑|x[n]|² = (1/N)·∑|X[k]|²).
 - Kept private to `internal/dataplane` so the rest of the codebase cannot grow a dependency on a chassis-internal FFT. The subpackage exists rather than a single `internal/dataplane/fft.go` file so the public surface (`Real1024`, `Hann1024`) is grouped with its test file and twiddle tables; the rest of `internal/dataplane` continues to live at the top level.
+
+### Sample rate hot-swap
+
+`AudioMeter` assumes `sampleRate` is constant for its lifetime. The Bresenham accumulator's threshold (`sampleRate`) and per-Observe increment (`samplesInChunk * targetHz`) are both expressed in units that depend on `sampleRate`; changing it mid-life would leave `publishAccum` carrying state in the wrong units, producing several over- or under-published ticks until the accumulator naturally re-equilibrates.
+
+Currently this can't happen: any source switch that changes the audio sample rate tears down the plane (and the meter with it), and the next session starts with a fresh `AudioMeter` whose accumulator is initialized to 0. The implementation may pass `sampleRate` as a parameter to `Observe` (matching how chunk-level metadata flows today), but the implementation MAY assert that `sampleRate` matches the value passed at construction and panic on mismatch — preferred for catching the eventual "hot-swap support" feature attempt at the right boundary.
+
+Future hot-swap support (e.g., 48 kHz → 44.1 kHz within one plane) MUST reset `publishAccum` to 0 and rebuild the K-weighting biquad state to preserve cadence and LUFS calibration. This is out of scope for 5B.
 
 ### Plane integration — `internal/dataplane/plane.go`
 
@@ -366,9 +424,20 @@ func audioShouldEmit(prev, curr any) bool
 - snapshot has `Generation == 0` → `&audioPendingEnvelope{Status: "pending"}`
 - otherwise → `&audioLiveEnvelope{...}` populated from the snapshot.
 
+**Generation gating policy (load-bearing):** `audioEnvelopeFromViewer` does NOT compare snapshot.Generation against any "current core generation." If a stale snapshot from a torn-down plane briefly leaks through (e.g., during the narrow window between `Manager.startPlaneLocked` swapping in a new plane and the new plane publishing its first snapshot, the chassis tick could observe the new plane but with an empty atomic pointer, see nil → pending, then on the next tick see the new plane's first live snapshot with the new generation), the chassis emits exactly what the dataplane published. Clients are the authority for generation tracking: any client maintaining peak-hold/goniometer history compares `audio.generation` against its previous-frame generation and resets on mismatch. This pushes generation reset semantics to clients (one place) rather than splitting them between chassis envelope construction and the client (two places).
+
+The downstream consequence: a direct live(gen=N) → live(gen=N+1) transition (no intervening pending frame) is a legal sequence on the wire. Tests must cover it (see §Testing pillar 3).
+
 `audioShouldEmit` returns true for every live envelope, even if two consecutive snapshots happen to be numerically identical. This preserves the 30 Hz stream contract for silence, steady test tones, and fake viewers. It returns true for pending↔live transitions, true for live↔pending transitions, and false only for pending→pending. That means the bridge emits one pending frame when a session ends, then goes quiet while idle.
 
-**Float formatting** for the live shape uses Go's default `encoding/json` float emitter, which is `strconv.FormatFloat(x, 'g', -1, 64)` and produces shortest-roundtrip representations. For wire-size stability and test determinism the spec pins `strconv.FormatFloat(x, 'g', 5, 32)` (5 significant figures, float32 precision) via a custom `MarshalJSON` on the live envelope. The custom marshaller is ~30 lines, fully testable, and is the only place where float-formatting policy is set.
+**Float formatting** for the live shape pins `strconv.FormatFloat(x, 'g', 5, 32)` (5 significant figures, float32 precision) via a custom `MarshalJSON` on `audioLiveEnvelope`. The marshaller must walk the `Spectrum []float32` and `Goniometer [][2]float32` slices element-by-element — Go's default `encoding/json` does not invoke a struct-level `MarshalJSON` for slice elements. Estimated size: ~60-80 lines including per-slice walks.
+
+**NaN/Inf clamping (required before format):** before formatting, every float is clamped:
+- `NaN → 0`
+- `+Inf → +1.0` for linear `[0, 1]` fields (peak, RMS); `0.0` for correlation; `0.0` for dB fields (the spectrum/LUFS sentinels handle the unreachable end)
+- `-Inf → -1.0` for correlation; the appropriate sentinel (`-90.0` for spectrum, `-100.0` for LUFS) for dB fields.
+
+Without clamping, `strconv.FormatFloat(NaN, 'g', 5, 32)` returns `"NaN"`, which is invalid JSON. `json.Marshal` would return an `InvalidJSONError` and the SSE handler's per-tick recovery would swallow the frame — visible to operators as a sporadic skipped tick under audio numeric edge cases (denormals in RMS sliding-window divisions, log of zero). Clamping at the marshaller is the single chokepoint.
 
 ### Events integration — `internal/chassis/events.go`
 
@@ -456,6 +525,8 @@ The 5A spec established that `s.cache.Set` is called once per `chassisTickInterv
 
 5B does add a second viewer-read at 30 Hz × N tabs (each tab calls `s.audioScopeViewer.AudioScopes()` from its own SSE handler). Each read briefly takes the existing `Manager.mu` to load `m.plane`, then performs an `atomic.Pointer` load on the plane itself. With N tabs open, the dataplane publishes one snapshot at an average 30 Hz, and each tab independently reads a pointer to the latest snapshot — the underlying memory is shared, not copied, thanks to the pointer-return design (see §Core surface). No new fan-out goroutine, no new broker, no new lock.
 
+**Lock-jitter acknowledgment:** `Manager.mu` is also contended by session-lifecycle operations — `StartSession`, `Pause`, `Stop`, `Seek`, `SetFieldOrder`, `SetOutputVolume` — some of which hold the lock for tens of ms (probe + plane teardown is not lock-free). With 5+ chassis tabs open, the audio ticker can stall on `m.mu` long enough to drop one or two publishes during a session transition. This is acceptable: the operations are infrequent, the gap is invisible at 30 Hz (one missing frame = ~33 ms), and the next tick recovers cleanly. If profiling ever shows audio-tick starvation as a real problem, the resolution is to add an `atomic.Pointer[planeRunner]` shadow of `m.plane` for hot reads — not to convert `m.mu` to `sync.RWMutex` (that would be a manager-wide concurrency change unrelated to audio scopes).
+
 ## Phase 1 Follow-Up Debt Migration
 
 **Sequencing constraint (load-bearing):** 5B's Task 1 requires that 5A's `subscribe()` helper has merged into `vfd-live.js` first. The current `vfd-live.js` (verified against `main`) only exposes `window.Chassis.events.source` and dispatches `chassis:eventsource` — there is no `subscribe()` function in the tree today. If 5A is still in flight when 5B's plan begins, one of:
@@ -497,6 +568,27 @@ Behavior of `transport.js` and `visualizer-bank.js` does not change; this is a p
 ## Client Rendering — `internal/chassis/static/meter.js`
 
 The 5A version of `meter.js` ships the pending hooks for the audio scopes — DOM elements present, no values driven, no fake animation. 5B replaces the pending paths with live data handlers; the `meter` event handler is untouched.
+
+**Consumer decode pattern (load-bearing):** unlike every other chassis event whose payload always has the same shape, `audio` is a discriminated union. The `subscribe('audio', ...)` handler MUST read `status` first and only then read the other fields:
+
+```js
+window.Chassis.events.subscribe('audio', (ev) => {
+    const payload = JSON.parse(ev.data);
+    if (payload.status !== 'live') {
+        renderPending();
+        return;
+    }
+    // safe to destructure now
+    const { generation, vu, phaseCorr, lufsShort, spectrum, goniometer } = payload;
+    if (generation !== lastGeneration) {
+        resetHistories(); // clears peak-hold, goniometer trail, etc.
+        lastGeneration = generation;
+    }
+    renderLive(vu, phaseCorr, lufsShort, spectrum, goniometer);
+});
+```
+
+Existing chassis event handlers (transport, state, vfd) destructure payload fields directly because those payloads always have all keys — `meter.js` should NOT use that idiom for `audio`. The `status` discriminator and `generation` reset are both load-bearing client responsibilities; see §Generation gating policy in the chassis surface section for why the chassis envelope does not filter stale-generation snapshots on the client's behalf.
 
 | Scope | Render strategy | Rationale |
 |---|---|---|
@@ -578,8 +670,8 @@ Six pillars, each mapping to one or more test files:
 - FFT calibration: a bin-centered full-scale sine whose Hann main lobe sits inside one log band → that band ≈0 dBFS; the same sine at -12 dB peak amplitude → that band ≈-12 dBFS. Tests MUST use a bin-centered frequency and a band wide enough to contain the Hann main lobe.
 - FFT Parseval: ∑|x[n]|² = (1/N)·∑|X[k]|² within float32 tolerance for several test signals.
 - Alloc budget: split into two runs against an `AudioMeter` test seam exposing cadence controls:
-  - **No-publish run:** set `targetHz = 0` so no Observe call ever publishes. `testing.AllocsPerRun(100, func() { meter.Observe(pcm, 2, 48000) })` MUST equal 0. This is the non-publish hot-path allocation budget.
-  - **Always-publish run:** set a test-only `forcePublish` seam so each Observe call publishes exactly once. `testing.AllocsPerRun(100, ...)` MUST equal exactly 1 (the snapshot pointer). Catches accidental allocations introduced by publish-path code.
+  - **No-publish run:** set `targetHz = 0` so the Bresenham accumulator never advances. `testing.AllocsPerRun(100, func() { meter.Observe(pcm, 2, 48000) })` MUST equal 0. This is the non-publish hot-path allocation budget.
+  - **Always-publish run:** set `targetHz = sampleRate` (e.g., 48000 for 48 kHz fixtures). The accumulator crosses the publish threshold on every Observe call regardless of chunk size, so each call publishes exactly once. `testing.AllocsPerRun(100, ...)` MUST equal exactly 1 (the snapshot pointer). Catches accidental allocations introduced by publish-path code.
   - **Cadence run:** with `targetHz = 30`, feed synthetic chunks matching both 50 Hz and 59.94/60 Hz field cadences for 10 s of audio and assert the publish count stays within one frame of 300.
 
 ### 2. Atomic snapshot safety — `plane_test.go`, `manager_test.go`
@@ -596,11 +688,12 @@ Six pillars, each mapping to one or more test files:
 - Pending shape on idle: `data: {"status":"pending"}` exactly, no other keys, no whitespace beyond what the encoder emits.
 - Live shape on active session: 32 spectrum entries, 256 goniometer pairs, all required scalar fields present **including legitimate zeros** (test forces `phaseCorr: 0.0` and `lufsShort: 0.0` through a fake viewer and asserts both keys appear in the JSON, not omitted).
 - `audioShouldEmit` suppresses identical pending frames at 30 Hz when bridge is idle (assert: 100 ms of idle ticks produces exactly one pending frame).
-- Live cadence: while the fake viewer returns a live envelope, 100 ms of audio ticks emits three live frames even when the payload values are identical.
-- Generation flip mid-stream: when the viewer transitions from live (gen=N) to nil to live (gen=N+1), the transition sequence contains live(N), then pending, then live(N+1) with no stale live(N) after pending. Clients use this as the reset signal.
+- Live cadence (exact count): while the fake viewer returns a live envelope, 100 ms of audio ticks emits **exactly** three live frames even when the payload values are numerically identical. A longer-window check: 1 s of ticks emits 30 ± 1 frames (the ±1 accounts for ticker-edge timing). Asserting exact counts catches a regression where someone restores change-detect semantics or accidentally double-emits per tick.
+- Generation flip via pending: when the viewer transitions live(gen=N) → nil → live(gen=N+1), the wire sequence contains live(N), then pending, then live(N+1) with no stale live(N) after pending.
+- Generation flip direct (no pending): when the viewer transitions live(gen=N) → live(gen=N+1) directly (preemption case — new plane up before chassis tick observes a nil read), the wire emits two distinct live envelopes carrying the correct generations in order. The chassis does NOT filter the second one on its way out; clients are the authority for generation reset (see §Generation gating policy).
 - Heartbeat ticker still fires when no audio change has been emitted for 30 s.
 - Panic recovery: a viewer that panics on its second call causes one skipped frame, not handler termination. Assert the third call's output appears in the stream.
-- Meter discovery hook: when a session is active, the `meter` event's `audioScopes` field is `{"status":"live","via":"audio","sampleHz":30}`. When idle, it is `{"status":"pending"}`. (5A's contract reservation now resolves to a discovery hook rather than perpetual-pending.)
+- Meter discovery hook: when a session is active, the `meter` event's `audioScopes` field is `{"status":"live","via":"audio","sampleHz":30}`. When idle, it is `{"status":"pending"}`. The literal `30` in the hook MUST be derived from the same source as `audioTickInterval` (e.g., a shared constant `audioEventHz`) so a future cadence change can't leave the discovery hook lying about the actual rate. The test references that constant rather than the literal `30`.
 
 ### 4. No-fake-values lint — `chassis_test.go`
 
