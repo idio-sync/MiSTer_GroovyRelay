@@ -44,10 +44,41 @@
     }
   }
 
+  function handleSourceEvent(ev) {
+    try {
+      const data = JSON.parse(ev.data);
+      (data.buttons || []).forEach((button) => {
+        if (!button.action) {
+          return;
+        }
+        const btn = document.querySelector(`[data-source-action="${button.action}"]`);
+        if (!btn) {
+          return;
+        }
+        btn.classList.toggle('active', !!button.active);
+        btn.classList.toggle('lit', !!button.lit);
+        btn.setAttribute('aria-checked', button.active ? 'true' : 'false');
+        btn.setAttribute('aria-disabled', button.unavailable ? 'true' : 'false');
+        if (button.unavailable) {
+          btn.setAttribute('disabled', '');
+        } else {
+          btn.removeAttribute('disabled');
+        }
+        btn.setAttribute('data-input-id', button.inputId || '');
+        const label = `${button.label || btn.textContent || ''}${button.active ? ' selected' : ''}${button.lit ? ' casting' : ''}`;
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('title', label);
+      });
+    } catch (err) {
+      console.warn('vfd-live: bad source payload', ev.data, err);
+    }
+  }
+
   function connect() {
     source = new EventSource('/receiver/events');
     source.addEventListener('state', handleStateEvent);
     source.addEventListener('vfd', handleVfdEvent);
+    source.addEventListener('source', handleSourceEvent);
     source.addEventListener('error', () => {
       console.info('vfd-live: stream interrupted; browser will retry using the SSE retry directive');
     });

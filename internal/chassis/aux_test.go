@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 )
 
 type fakeAUXStarter struct {
+	mu          sync.Mutex
+	status      adapters.AUXStatus
 	startCalls  []string
 	startErr    error
 	stopCalls   []string
@@ -21,16 +24,28 @@ type fakeAUXStarter struct {
 	stopErr     error
 }
 
-func (fakeAUXStarter) AUXStatus(context.Context) adapters.AUXStatus {
-	return adapters.AUXStatus{}
+func (f *fakeAUXStarter) AUXStatus(context.Context) adapters.AUXStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
+
+func (f *fakeAUXStarter) setStatus(status adapters.AUXStatus) {
+	f.mu.Lock()
+	f.status = status
+	f.mu.Unlock()
 }
 
 func (f *fakeAUXStarter) StartAUX(_ context.Context, inputID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.startCalls = append(f.startCalls, inputID)
 	return "aux:" + inputID, f.startErr
 }
 
 func (f *fakeAUXStarter) StopAUX(_ context.Context, inputID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stopCalls = append(f.stopCalls, inputID)
 	return f.stopMatched, f.stopErr
 }

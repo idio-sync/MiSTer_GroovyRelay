@@ -101,10 +101,46 @@
     document.body.appendChild(btn);
   }
 
+  function installSourceActions() {
+    document.querySelectorAll('[data-source-action="aux-start"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') {
+          return;
+        }
+        const form = new URLSearchParams();
+        const inputID = btn.getAttribute('data-input-id') || '';
+        if (inputID) {
+          form.set('input_id', inputID);
+        }
+        fetch('/receiver/aux/start', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: form,
+        }).then((res) => {
+          if (!res.ok) {
+            console.warn('source: AUX start failed', res.status);
+            return;
+          }
+          document.querySelectorAll('.source-cluster .hw-btn').forEach((sourceBtn) => {
+            sourceBtn.classList.remove('active');
+            sourceBtn.setAttribute('aria-checked', 'false');
+          });
+          btn.classList.add('active', 'lit');
+          btn.setAttribute('aria-checked', 'true');
+        }).catch((err) => {
+          console.warn('source: AUX start failed', err);
+        });
+      });
+    });
+  }
+
   window.Chassis = { State, animators };
 
   document.addEventListener('DOMContentLoaded', () => {
     startSystemTimeTicker();
+    installSourceActions();
     if (new URLSearchParams(location.search).get('dev') === '1') {
       installDevStateToggle();
     }

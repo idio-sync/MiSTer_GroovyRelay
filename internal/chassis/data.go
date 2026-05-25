@@ -1,6 +1,7 @@
 package chassis
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -57,7 +58,9 @@ type VFDData struct {
 	Uptime       string
 }
 
-// SourceData is the 4-button hardware source selector cluster.
+const SourceActionAUXStart = "aux-start"
+
+// SourceData is the hardware source selector cluster.
 type SourceData struct {
 	Buttons []SourceButton
 }
@@ -66,9 +69,35 @@ type SourceData struct {
 // cluster. Active means this tab is currently selected for browsing;
 // Lit means this source is currently casting.
 type SourceButton struct {
-	Label  string
-	Active bool
-	Lit    bool
+	Label       string
+	Active      bool
+	Lit         bool
+	Unavailable bool
+	Action      string
+	InputID     string
+}
+
+func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter) {
+	if aux == nil {
+		return
+	}
+	st := aux.AUXStatus(context.Background())
+	if st.Active {
+		for i := range base.Source.Buttons {
+			base.Source.Buttons[i].Active = false
+		}
+	}
+	for i := range base.Source.Buttons {
+		if base.Source.Buttons[i].Action != SourceActionAUXStart {
+			continue
+		}
+		base.Source.Buttons[i].Unavailable = !st.Enabled || !st.Configured
+		base.Source.Buttons[i].Lit = st.Active
+		base.Source.Buttons[i].InputID = st.InputID
+		if st.Active {
+			base.Source.Buttons[i].Active = true
+		}
+	}
 }
 
 // MeterData is the 3-row signal meter screen. Each sub-row holds idle
@@ -233,6 +262,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 				{Label: "PLEX", Active: false, Lit: false},
 				{Label: "JELLYFIN", Active: false, Lit: false},
 				{Label: "DLNA", Active: false, Lit: false},
+				{Label: "AUX", Active: false, Lit: false, Action: SourceActionAUXStart},
 			},
 		},
 		Meter: MeterData{

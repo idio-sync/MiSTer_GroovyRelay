@@ -51,7 +51,7 @@ type TransportController interface {
 //
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
-func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, now time.Time) ReceiverPageData {
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
 	base := idleSnapshot(cfg, now)
 	if sv != nil {
 		view := sv.StatusHomeView()
@@ -69,6 +69,7 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv T
 			// idle/unknown keep idleSnapshot data
 		}
 	}
+	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 	return base
 }

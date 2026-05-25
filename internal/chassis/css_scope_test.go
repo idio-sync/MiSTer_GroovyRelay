@@ -290,11 +290,11 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			want:     []string{"display: none;"},
 		},
 		{
-			name:     "1180 source cluster becomes a 2x2 footprint",
+			name:     "1180 source cluster becomes a stable 3x2 footprint",
 			atRule:   "@container chassis (max-width: 1180px)",
 			selector: "body.receiver .vfd-source-row .source-cluster",
 			want: []string{
-				"grid-template-columns: repeat(2, minmax(110px, auto));",
+				"grid-template-columns: repeat(3, minmax(96px, 1fr));",
 				"grid-template-rows: 1fr 1fr;",
 			},
 		},
@@ -311,10 +311,10 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			want:     []string{"grid-template-columns: 1fr;"},
 		},
 		{
-			name:     "900 keeps source cluster as a horizontal strip",
+			name:     "900 keeps source cluster as five equal columns",
 			atRule:   "@container chassis (max-width: 900px)",
 			selector: "body.receiver .vfd-source-row .source-cluster",
-			want:     []string{"grid-template-columns: repeat(4, 1fr);"},
+			want:     []string{"grid-template-columns: repeat(5, minmax(0, 1fr));"},
 		},
 		{
 			name:     "900 tightens the chassis chrome",

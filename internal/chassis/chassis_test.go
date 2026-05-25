@@ -192,6 +192,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				{Label: "PLEX", Active: false, Lit: false},
 				{Label: "JELLYFIN", Active: false, Lit: false},
 				{Label: "DLNA", Active: false, Lit: false},
+				{Label: "AUX", Active: false, Lit: false, Action: SourceActionAUXStart},
 			},
 		},
 		Meter: MeterData{
@@ -531,6 +532,11 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 		"btn.id = 'chassis-dev-state-toggle'",
 		"[dev] state:",
 		"document.addEventListener('DOMContentLoaded'",
+		"installSourceActions()",
+		`[data-source-action="aux-start"]`,
+		"/receiver/aux/start",
+		"application/x-www-form-urlencoded",
+		"data-input-id",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("static/chassis.js missing runtime contract %q", want)
@@ -541,6 +547,28 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 	} {
 		if strings.Contains(text, unwanted) {
 			t.Errorf("static/chassis.js contains obsolete runtime contract %q", unwanted)
+		}
+	}
+}
+
+func TestChassisJSInstallsAUXSourceAction(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/chassis.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.js): %v", err)
+	}
+	text := string(js)
+	for _, want := range []string{
+		"function installSourceActions()",
+		`document.querySelectorAll('[data-source-action="aux-start"]')`,
+		`fetch('/receiver/aux/start'`,
+		"URLSearchParams",
+		"input_id",
+		".source-cluster .hw-btn",
+		"classList.add('active', 'lit')",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("static/chassis.js missing AUX source action contract %q", want)
 		}
 	}
 }
@@ -792,7 +820,9 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 		`id="torrent-file-input"`,
 		`class="hw-btn active" type="button"`,
 		`class="source-cluster" role="radiogroup" aria-label="Media source"`,
-		`class="hw-btn active" type="button" role="radio" aria-checked="true" aria-label="STREAMS selected"`,
+		`aria-checked="true"`,
+		`aria-label="STREAMS selected"`,
+		`data-source-action="aux-start"`,
 		`class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>`,
 		`class="preset empty" type="button"`,
 	} {
@@ -802,6 +832,82 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 	}
 	if strings.Contains(body, `<label class="input-panel"`) {
 		t.Errorf("input panel must not be a label containing interactive children")
+	}
+}
+
+func TestIdleSnapshotRendersFiveSourceButtonsIncludingAUX(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	aux := &fakeAUXStarter{status: adapters.AUXStatus{
+		Enabled:    true,
+		Configured: true,
+		InputID:    "aux",
+	}}
+
+	got := snapshotFromSession(cfg, nil, nil, nil, aux, fixedNow)
+	var labels []string
+	for _, button := range got.Source.Buttons {
+		labels = append(labels, button.Label)
+	}
+	want := []string{"STREAMS", "PLEX", "JELLYFIN", "DLNA", "AUX"}
+	if !reflect.DeepEqual(labels, want) {
+		t.Fatalf("source labels = %#v, want %#v", labels, want)
+	}
+}
+
+func TestSourceClusterAUXButtonCarriesStartAction(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	applyAUXSourceState(&data, &fakeAUXStarter{status: adapters.AUXStatus{
+		Enabled:    true,
+		Configured: true,
+		InputID:    "aux",
+	}})
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "source-cluster", data.Source); err != nil {
+		t.Fatalf("execute source-cluster partial: %v", err)
+	}
+	body := buf.String()
+	auxButton := regexp.MustCompile(`(?s)<button[^>]*data-source-action="aux-start"[^>]*>AUX</button>`).FindString(body)
+	if auxButton == "" {
+		t.Fatalf("AUX source button with start action not found; full output:\n%s", body)
+	}
+	if !strings.Contains(auxButton, `data-input-id="aux"`) {
+		t.Fatalf("AUX source button missing input id; button:\n%s", auxButton)
+	}
+}
+
+func TestSourceClusterAUXDisabledWhenUnavailable(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.AUX = &fakeAUXStarter{status: adapters.AUXStatus{
+		Enabled:    false,
+		Configured: true,
+		InputID:    "aux",
+	}}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	body := rr.Body.String()
+	auxButton := regexp.MustCompile(`(?s)<button[^>]*data-source-action="aux-start"[^>]*>AUX</button>`).FindString(body)
+	if auxButton == "" {
+		t.Fatalf("AUX source button not found; full output:\n%s", body)
+	}
+	for _, want := range []string{`disabled`, `aria-disabled="true"`} {
+		if !strings.Contains(auxButton, want) {
+			t.Errorf("AUX unavailable button missing %q; button:\n%s", want, auxButton)
+		}
 	}
 }
 
@@ -1315,7 +1421,7 @@ func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 	cfg := nonZeroConfig()
 	cfg.Session = nil
 
-	got := snapshotFromSession(cfg, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
@@ -1327,7 +1433,7 @@ func TestSnapshotFromSession_VisualizerModeOverridesIdleDefault(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
-	got := snapshotFromSession(cfg, nil, viewer, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, viewer, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (viewer overrides cfg.Bridge default)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
 	}
@@ -1338,7 +1444,7 @@ func TestSnapshotFromSession_NilVisualizerViewerFallsBackToCfg(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	cfg.Bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
-	got := snapshotFromSession(cfg, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeOscilloscopeWave {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (nil viewer falls back to cfg.Bridge)", got.Visualizer.ActiveMode, config.VisualizerModeOscilloscopeWave)
 	}
@@ -1349,7 +1455,7 @@ func TestSnapshotFromSession_NormalizesEmptyMode(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	viewer := &fakeVisualizerViewer{mode: ""}
-	got := snapshotFromSession(cfg, nil, viewer, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, viewer, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (empty viewer mode should normalize to retro_analyzer)", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
 	}
@@ -1407,7 +1513,7 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 		},
 	}
 
-	got := snapshotFromSession(cfg, sv, nil, tv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, tv, nil, fixedNow)
 
 	want := TransportData{
 		State:           "playing",
@@ -1461,7 +1567,7 @@ func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
 		},
 	}
 
-	got := snapshotFromSession(cfg, sv, nil, tv, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, tv, nil, fixedNow)
 
 	want := TransportData{
 		State:           "paused",
@@ -1495,7 +1601,7 @@ func TestSnapshotFromSession_NilTransportViewerIdleKeepsTransportZero(t *testing
 		Duration:   5 * time.Minute,
 	}}
 
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow).Transport
 
 	if got.Transport != want {
@@ -1517,7 +1623,7 @@ func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t
 		Duration:   0,
 	}}
 
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 
 	want := TransportData{
 		State:           "playing",
@@ -1548,7 +1654,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 		Position: 4*time.Minute + 23*time.Second,
 		Duration: 9*time.Minute + 56*time.Second,
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
@@ -1572,7 +1678,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults_StillSetsVisualizer(
 		State: core.StatePlaying, Title: "First Day on MTV", Source: "plex", Position: 4*time.Minute + 23*time.Second, Duration: 9*time.Minute + 56*time.Second,
 	}}
 	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
-	got := snapshotFromSession(cfg, sv, viewer, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, viewer, nil, nil, fixedNow)
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
 	}
@@ -1589,7 +1695,7 @@ func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.StatePaused, Title: "Take On Me", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 
 	// core.StatePaused -> chassis "live" so the body stays bright
 	// during transport pause. The transport-row pause indicator is
@@ -1605,7 +1711,7 @@ func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
 	cfg := nonZeroConfig()
 
 	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idle-from-session should match idleSnapshot exactly")
@@ -1620,7 +1726,7 @@ func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
@@ -1639,7 +1745,7 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 		Position: 30 * time.Second,
 		Duration: 3 * time.Minute,
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
 
 	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
 		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)
@@ -1903,6 +2009,30 @@ func TestVfdLive_ExposesEventSourceReference_StaticAssetCheck(t *testing.T) {
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("vfd-live.js missing %q", want)
+		}
+	}
+}
+
+func TestVFDLiveJSHandlesSourceEvents(t *testing.T) {
+	t.Parallel()
+	bytes, err := chassisStaticFS.ReadFile("static/vfd-live.js")
+	if err != nil {
+		t.Fatalf("read vfd-live.js: %v", err)
+	}
+	js := string(bytes)
+	for _, want := range []string{
+		"source.addEventListener('source'",
+		"handleSourceEvent",
+		"`[data-source-action=\"${button.action}\"]`",
+		"classList.toggle('active'",
+		"classList.toggle('lit'",
+		"aria-checked",
+		"aria-disabled",
+		"data-input-id",
+		"disabled",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("vfd-live.js missing source event contract %q", want)
 		}
 	}
 }

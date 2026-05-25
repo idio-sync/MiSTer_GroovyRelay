@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -734,6 +735,63 @@ func TestHandleEvents_EmitsVisualizerEventOnModeChange(t *testing.T) {
 	}
 }
 
+func TestEventsEmitSourceWhenAUXStateChanges(t *testing.T) {
+	t.Parallel()
+	aux := &fakeAUXStarter{status: adapters.AUXStatus{
+		Enabled:    true,
+		Configured: true,
+		InputID:    "aux",
+	}}
+	cfg := nonZeroConfig()
+	cfg.AUX = aux
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		aux.setStatus(adapters.AUXStatus{
+			Enabled:    true,
+			Configured: true,
+			Active:     true,
+			InputID:    "aux",
+		})
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if got := strings.Count(body, "event: source\n"); got < 2 {
+		t.Fatalf("source event count = %d, want initial plus changed event; body:\n%s", got, body)
+	}
+	records := strings.Split(body, "event: source\n")
+	last := records[len(records)-1]
+	line := strings.SplitN(last, "\n", 2)[0]
+	payload := strings.TrimPrefix(line, "data: ")
+	var env sourceEnvelope
+	if err := json.Unmarshal([]byte(payload), &env); err != nil {
+		t.Fatalf("unmarshal source payload %q: %v\nbody:\n%s", payload, err, body)
+	}
+	activeLabels := map[string]bool{}
+	for _, button := range env.Buttons {
+		if button.Active {
+			activeLabels[button.Label] = true
+		}
+	}
+	if !activeLabels["AUX"] || len(activeLabels) != 1 {
+		t.Fatalf("active source labels = %#v, want only AUX active; payload=%s", activeLabels, payload)
+	}
+}
+
 func TestHandleEvents_EmitsTransportEventOnStateTransition(t *testing.T) {
 	t.Parallel()
 	sv := &mutableSessionViewer{view: core.StatusHomeView{
@@ -768,7 +826,7 @@ func TestHandleEvents_EmitsTransportEventOnStateTransition(t *testing.T) {
 			Position:   20 * time.Second,
 			Duration:   100 * time.Second,
 		})
-		s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, time.Now()))
+		s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now()))
 		time.Sleep(250 * time.Millisecond)
 		cancel()
 	}()

@@ -20,6 +20,19 @@ type vizEnvelope struct {
 	Mode string `json:"mode"`
 }
 
+type sourceEnvelope struct {
+	Buttons []sourceButtonEnvelope `json:"buttons"`
+}
+
+type sourceButtonEnvelope struct {
+	Label       string `json:"label"`
+	Action      string `json:"action"`
+	Active      bool   `json:"active"`
+	Lit         bool   `json:"lit"`
+	Unavailable bool   `json:"unavailable"`
+	InputID     string `json:"inputId"`
+}
+
 // vfdEnvelope is the payload for the `vfd` SSE event. Carries the
 // minimal Phase 1 fields the client needs to update the VFD spans;
 // Spec 5 (telemetry) and later specs add their own envelope types
@@ -90,6 +103,21 @@ func transportEnvelopeFrom(t TransportData) transportEnvelope {
 	}
 }
 
+func sourceEnvelopeFromSnapshot(data ReceiverPageData) sourceEnvelope {
+	out := sourceEnvelope{Buttons: make([]sourceButtonEnvelope, 0, len(data.Source.Buttons))}
+	for _, button := range data.Source.Buttons {
+		out.Buttons = append(out.Buttons, sourceButtonEnvelope{
+			Label:       button.Label,
+			Action:      button.Action,
+			Active:      button.Active,
+			Lit:         button.Lit,
+			Unavailable: button.Unavailable,
+			InputID:     button.InputID,
+		})
+	}
+	return out
+}
+
 // emit writes one SSE record (event line + data line + terminating
 // blank line). Returns the underlying writer error so callers can
 // detect mid-write client disconnects and bail cleanly.
@@ -134,6 +162,18 @@ func transportChanged(a, b TransportData) bool {
 		a.Generation != b.Generation
 }
 
+func sourceChanged(prev, next sourceEnvelope) bool {
+	if len(prev.Buttons) != len(next.Buttons) {
+		return true
+	}
+	for i := range prev.Buttons {
+		if prev.Buttons[i] != next.Buttons[i] {
+			return true
+		}
+	}
+	return false
+}
+
 // handleEvents serves a long-lived SSE stream at GET /receiver/events.
 // Scaffolding only — the diff ticker that emits change events lands
 // in the next task. This implementation handles:
@@ -159,12 +199,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, time.Now())
+	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now())
 	s.cache.Set(last)
 	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
 		return
 	}
 	if err := emit(w, "vfd", vfdEnvelopeFrom(last.VFD)); err != nil {
+		return
+	}
+	lastSource := sourceEnvelopeFromSnapshot(last)
+	if err := emit(w, "source", lastSource); err != nil {
 		return
 	}
 	if err := emit(w, "visualizer", vizEnvelope{Mode: last.Visualizer.ActiveMode}); err != nil {
@@ -202,6 +246,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				last.Visualizer.ActiveMode = curr.Visualizer.ActiveMode
+			}
+			currSource := sourceEnvelopeFromSnapshot(curr)
+			if sourceChanged(lastSource, currSource) {
+				if err := emit(w, "source", currSource); err != nil {
+					return
+				}
+				lastSource = currSource
 			}
 			if transportChanged(curr.Transport, last.Transport) {
 				if err := emit(w, "transport", transportEnvelopeFrom(curr.Transport)); err != nil {
