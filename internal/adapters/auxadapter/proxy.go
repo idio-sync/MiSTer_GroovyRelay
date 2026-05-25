@@ -148,7 +148,7 @@ func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool)
 	now := s.currentTime()
 	for i := range s.tokens {
 		tok := &s.tokens[i]
-		if subtle.ConstantTimeCompare([]byte(tok.token), []byte(raw)) != 1 {
+		if !proxyTokenEqual(tok.token, raw) {
 			continue
 		}
 		if tok.used || tok.kind != kind || now.After(tok.expiresAt) {
@@ -158,6 +158,23 @@ func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool)
 		return *tok, true
 	}
 	return proxyToken{}, false
+}
+
+func proxyTokenEqual(stored, raw string) bool {
+	return proxyTokenEqualWithRaw(stored, len(raw), func(i int) byte {
+		if i < len(raw) {
+			return raw[i]
+		}
+		return 0
+	})
+}
+
+func proxyTokenEqualWithRaw(stored string, rawLen int, rawByte func(int) byte) bool {
+	result := subtle.ConstantTimeEq(int32(len(stored)), int32(rawLen))
+	for i := 0; i < len(stored); i++ {
+		result &= subtle.ConstantTimeByteEq(stored[i], rawByte(i))
+	}
+	return result == 1
 }
 
 func (s *proxyStore) currentTime() time.Time {

@@ -67,6 +67,58 @@ func TestMintProxyURLMintsDistinctSingleUseTokens(t *testing.T) {
 	}
 }
 
+func TestProxyTokenEqualRejectsDifferentLength(t *testing.T) {
+	if !proxyTokenEqual("abcdef", "abcdef") {
+		t.Fatal("proxyTokenEqual rejected exact token")
+	}
+	if proxyTokenEqual("abcdef", "abc") {
+		t.Fatal("proxyTokenEqual accepted short raw token")
+	}
+	if proxyTokenEqual("abcdef", "abcdef0") {
+		t.Fatal("proxyTokenEqual accepted long raw token")
+	}
+	if proxyTokenEqual("abcdef", "abcdeg") {
+		t.Fatal("proxyTokenEqual accepted same-length mismatch")
+	}
+}
+
+func TestProxyTokenEqualReadsStoredTokenLength(t *testing.T) {
+	calls := 0
+	if proxyTokenEqualWithRaw("abcdef", 3, func(i int) byte {
+		calls++
+		if i < len("abc") {
+			return "abc"[i]
+		}
+		return 0
+	}) {
+		t.Fatal("proxyTokenEqualWithRaw accepted short raw token")
+	}
+	if calls != len("abcdef") {
+		t.Fatalf("raw byte reads = %d, want stored token length %d", calls, len("abcdef"))
+	}
+}
+
+func TestProxyStoreConsumeRejectsDifferentLengthWithoutUsingToken(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	store := proxyStore{now: func() time.Time { return now }}
+	store.add(proxyToken{
+		token:     "abcdef",
+		kind:      proxyTokenPlay,
+		upstream:  "http://capture-host:8090/aux.wav",
+		expiresAt: now.Add(time.Minute),
+	})
+
+	if _, ok := store.consume("abc", proxyTokenPlay); ok {
+		t.Fatal("short raw token consumed stored token")
+	}
+	if _, ok := store.consume("abcdef0", proxyTokenPlay); ok {
+		t.Fatal("long raw token consumed stored token")
+	}
+	if _, ok := store.consume("abcdef", proxyTokenPlay); !ok {
+		t.Fatal("exact same-length raw token was not consumed")
+	}
+}
+
 func TestProxyRejectsUpstreamRedirect(t *testing.T) {
 	var requests int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
