@@ -142,7 +142,8 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 	if s.session == nil {
 		base := idleSnapshot(s.cfg, now)
-		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, now)
+		audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
+		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, audioLive, now)
 		applyAUXSourceState(&base, s.aux)
 		base.Visualizer.ActiveMode = liveVisualizerMode(s.cfg, s.visualizerViewer)
 		// idleSnapshot already seeded Transport.OutputVolume from cfg; a
@@ -151,30 +152,26 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 		if s.volumeViewer != nil {
 			base.Transport.OutputVolume = s.volumeViewer.OutputVolume()
 		}
-		base.Meter.AudioScopes.Status = audioScopeStatus(s.audioScopeViewer)
 		return base
 	}
 	view := s.session.StatusHomeView()
 	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, now)
 	overlay := s.collectMeterOverlay(context.Background(), view)
-	base.Meter = s.meter.Sample(view, overlay, now)
-	base.Meter.AudioScopes.Status = audioScopeStatus(s.audioScopeViewer)
+	audioLive := s.audioScopeViewer != nil &&
+		(view.State == core.StatePlaying || view.State == core.StatePaused)
+	base.Meter = s.meter.Sample(view, overlay, audioLive, now)
 	return base
 }
 
-// audioScopeStatus returns "live" when the viewer has an active
-// snapshot (Generation > 0), and "pending" otherwise. Mirrors the
-// logic in audioEnvelopeFromViewer so the meter payload and the
-// dedicated audio SSE event agree on the current state.
-func audioScopeStatus(v AudioScopeViewer) string {
+// audioScopeViewerIsLive returns true when the viewer has an active
+// snapshot (Generation > 0). Used by the idle path to thread the
+// discovery hook through meterSampler.Sample without a session.
+func audioScopeViewerIsLive(v AudioScopeViewer) bool {
 	if v == nil {
-		return "pending"
+		return false
 	}
 	snap := v.AudioScopes()
-	if snap == nil || snap.Generation == 0 {
-		return "pending"
-	}
-	return "live"
+	return snap != nil && snap.Generation > 0
 }
 
 // Mount registers chassis routes on mux and starts the snapshot cache

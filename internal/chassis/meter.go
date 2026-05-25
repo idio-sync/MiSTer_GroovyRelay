@@ -29,10 +29,12 @@ func newMeterSampler() *meterSampler {
 	return &meterSampler{}
 }
 
-func (s *meterSampler) Sample(snap core.StatusHomeView, overlay adapters.MeterOverlay, now time.Time) MeterData {
+func (s *meterSampler) Sample(snap core.StatusHomeView, overlay adapters.MeterOverlay, audioLive bool, now time.Time) MeterData {
 	if snap.State != core.StatePlaying && snap.State != core.StatePaused {
 		s.reset()
-		return idleMeterData()
+		idle := idleMeterData()
+		idle.AudioScopes = audioScopesData(audioLive)
+		return idle
 	}
 	if snap.Generation != s.prevGeneration {
 		s.reset()
@@ -42,7 +44,7 @@ func (s *meterSampler) Sample(snap core.StatusHomeView, overlay adapters.MeterOv
 		s.prevUnderruns = snap.Meter.Runtime.Underruns
 		s.prevSampleTime = now
 	}
-	current := meterDataFromSnapshot(snap, overlay, s.throughput, s.ack)
+	current := meterDataFromSnapshot(snap, overlay, s.throughput, s.ack, audioLive)
 	current.State = string(StateLive)
 	current.Paused = snap.State == core.StatePaused
 	current.Generation = snap.Generation
@@ -118,7 +120,7 @@ func idleMeterData() MeterData {
 	return idleSnapshot(Config{Version: "meter", StartedAt: time.Unix(0, 0)}, time.Unix(0, 0)).Meter
 }
 
-func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverlay, throughput []float64, ack []float64) MeterData {
+func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverlay, throughput []float64, ack []float64, audioLive bool) MeterData {
 	base := idleMeterData()
 	src := snap.Meter.Source
 	pipe := snap.Meter.Pipeline
@@ -147,7 +149,7 @@ func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverl
 	base.Readout.SpeedRatio = 1.0
 	base.Readout.Speed = formatSpeed(base.Readout.SpeedRatio)
 	base.Readout.Link = formatLink(snap.Meter.Runtime.LastACKAge)
-	base.AudioScopes.Status = "pending"
+	base.AudioScopes = audioScopesData(audioLive)
 	if overlay.HLS != nil {
 		h := overlay.HLS
 		base.SourceStrip.HLSCachedSegments = h.CachedSegments
@@ -156,6 +158,21 @@ func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverl
 		base.SourceStrip.HLSBuffer = fmt.Sprintf("%d / %d SEG", h.CachedSegments, h.MaxCachedSegments)
 	}
 	return base
+}
+
+// audioScopesData builds the discovery-hook AudioScopesData. When
+// audioLive is true, advertises the high-rate audio event via the
+// hook fields; otherwise returns pending. audioEventHz is the
+// constant defined in events.go (Task 10).
+func audioScopesData(audioLive bool) AudioScopesData {
+	if audioLive {
+		return AudioScopesData{
+			Status:   "live",
+			Via:      "audio",
+			SampleHz: audioEventHz,
+		}
+	}
+	return AudioScopesData{Status: "pending"}
 }
 
 func deltaUint64(now, prev uint64) uint64 {
@@ -568,7 +585,9 @@ type meterReadoutE struct {
 }
 
 type meterAudioScopesE struct {
-	Status string `json:"status"`
+	Status   string `json:"status"`
+	Via      string `json:"via,omitempty"`
+	SampleHz int    `json:"sampleHz,omitempty"`
 }
 
 func meterEnvelopeFrom(m MeterData) meterEnvelope {
@@ -615,7 +634,9 @@ func meterEnvelopeFrom(m MeterData) meterEnvelope {
 			Link:       m.Readout.Link,
 		},
 		AudioScopes: meterAudioScopesE{
-			Status: m.AudioScopes.Status,
+			Status:   m.AudioScopes.Status,
+			Via:      m.AudioScopes.Via,
+			SampleHz: m.AudioScopes.SampleHz,
 		},
 	}
 }
