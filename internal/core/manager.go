@@ -1434,17 +1434,6 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		view.Generation = m.active.generation
 		view.Modeline = m.bridge.Video.Modeline
 		view.Position = m.active.pausedPosition
-	}
-	if m.plane != nil {
-		view.Modeline = m.bridge.Video.Modeline
-		view.Position = m.plane.Position()
-		view.BlitsTotal = m.plane.BlitsTotal()
-		view.FramesTotal = m.plane.FramesTotal()
-		view.Underruns = m.plane.Underruns()
-		view.WireBytes = m.plane.WireBytes()
-		view.LastACKAge = m.plane.LastACKAge()
-	}
-	if m.active != nil {
 		view.Meter = m.active.meter
 		view.Meter.Pipeline.FieldOrder = m.bridge.Video.InterlaceFieldOrder
 		view.Meter.Pipeline.AudioOutputVolume = m.bridge.Audio.OutputVolume
@@ -1452,11 +1441,23 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		view.Meter.Runtime.Generation = m.active.generation
 	}
 	if m.plane != nil {
-		view.Meter.Runtime.BlitsTotal = m.plane.BlitsTotal()
-		view.Meter.Runtime.FramesTotal = m.plane.FramesTotal()
-		view.Meter.Runtime.Underruns = m.plane.Underruns()
-		view.Meter.Runtime.WireBytes = m.plane.WireBytes()
-		view.Meter.Runtime.LastACKAge = m.plane.LastACKAge()
+		blits := m.plane.BlitsTotal()
+		frames := m.plane.FramesTotal()
+		underruns := m.plane.Underruns()
+		wireBytes := m.plane.WireBytes()
+		lastACKAge := m.plane.LastACKAge()
+		view.Modeline = m.bridge.Video.Modeline
+		view.Position = m.plane.Position()
+		view.BlitsTotal = blits
+		view.FramesTotal = frames
+		view.Underruns = underruns
+		view.WireBytes = wireBytes
+		view.LastACKAge = lastACKAge
+		view.Meter.Runtime.BlitsTotal = blits
+		view.Meter.Runtime.FramesTotal = frames
+		view.Meter.Runtime.Underruns = underruns
+		view.Meter.Runtime.WireBytes = wireBytes
+		view.Meter.Runtime.LastACKAge = lastACKAge
 	}
 	return view
 }
