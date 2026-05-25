@@ -4,7 +4,7 @@
 
 **Goal:** Add `vu_cabinet`, `neon_grid`, `raster_pulse`, `cover_vu`, and `cover_spectrum` music visualizer modes with safe Plex/Jellyfin album-art support.
 
-**Architecture:** Phase 1 adds the three CRT arcade modes end to end through config, core validation, UI exposure, FFmpeg graph construction, required-filter checks, and integration coverage. Phase 2 adds a shared local artwork cache, provider artwork fetches, path/origin/token validation, FFmpeg artwork inputs, and the two cover-art modes in one release slice. Core never performs artwork network I/O; adapters fetch into `<bridge.data_dir>/artwork-cache/`, core validates local paths before mapping to FFmpeg, and FFmpeg stays a pure argv/filtergraph builder.
+**Architecture:** Phase 1 adds the three CRT arcade modes end to end through config, core validation, UI exposure, FFmpeg graph construction, required-filter checks, and integration coverage. Phase 2 adds a shared local artwork cache, provider artwork fetches, redirect/origin/token validation, full image decode and PNG re-encode, FFmpeg artwork inputs, and the two cover-art modes in one release slice. Core never performs artwork network I/O; adapters fetch into `<bridge.data_dir>/artwork-cache/`, core validates local paths before mapping to FFmpeg, and FFmpeg stays a pure argv/filtergraph builder.
 
 **Tech Stack:** Go, standard `net/http` / `net/url` / `image` packages, existing Plex and Jellyfin adapters, existing `core.Manager`, existing `internal/ffmpeg` command builder, FFmpeg filters documented at https://ffmpeg.org/ffmpeg-filters.html.
 
@@ -12,8 +12,8 @@
 
 ## File Structure
 
-- Create `internal/artworkcache/cache.go`: cache-root helpers, same-origin URL anchoring, token redaction, image download/decode bounds, stale reaper, and `OnStop` cleanup wrapper.
-- Create `internal/artworkcache/cache_test.go`: unit tests for root creation, path validation, origin pinning, token append ordering, redaction, decode bounds, cleanup, idempotent removal, and stale reaping.
+- Create `internal/artworkcache/cache.go`: cache-root helpers, same-origin URL anchoring, redirect blocking, token redaction, image download/full-decode/re-encode bounds, stale reaper, and `OnStop` cleanup wrapper.
+- Create `internal/artworkcache/cache_test.go`: unit tests for root creation, path validation, origin pinning, redirect rejection, token append ordering, redaction, full decode bounds, corrupt-body rejection, cleanup, idempotent removal, and stale reaping.
 - Modify `internal/config/config.go`: add new visualizer mode string constants and extend the supported mode list in two phases.
 - Modify `internal/config/config_test.go`: cover supported mode lists, unknown-mode pass-through normalization, and clear validation failures.
 - Modify `internal/config/example.toml`: expose only implemented modes in the example at each phase.
@@ -48,9 +48,9 @@ Expected: any pre-existing user edits remain visible. During execution, stage on
 
 ---
 
-### Task 1: Phase 1 CRT Mode Constants, Validation, And UI Exposure (stage only — no commit)
+### Task 1: Phase 1 CRT Mode Constants, Validation, And UI Exposure (leave dirty — no commit)
 
-> **Commit boundary:** Task 1 leaves the working tree dirty on purpose. The config/UI/core mode IDs added here are only meaningful once Task 2 lands their FFmpeg graphs, so the first commit covers Task 1 + Task 2 together (see Task 2 Step 4). Do not run `git commit` at the end of Task 1.
+> **Commit boundary:** Task 1 leaves the working tree dirty and unstaged on purpose. The config/UI/core mode IDs added here are only meaningful once Task 2 lands their FFmpeg graphs, so the first commit covers Task 1 + Task 2 together (see Task 2 Step 4). Do not run `git add` or `git commit` at the end of Task 1.
 
 **Files:**
 - Modify: `internal/config/config.go`
@@ -303,7 +303,7 @@ Expected: core tests still fail only because FFmpeg constants do not exist yet.
 
 - [ ] **Step 5: Stop — do not commit Task 1 in isolation**
 
-Do not run `git add` or `git commit` at the end of Task 1. The config/UI/core changes here accept new mode IDs that have no FFmpeg graph yet; committing now would leave the tree in a state where the UI can select a mode that fails at session start. Leave the changes staged in the working tree and proceed directly to Task 2, which commits Task 1 + Task 2 together.
+Do not run `git add` or `git commit` at the end of Task 1. The config/UI/core changes here accept new mode IDs that have no FFmpeg graph yet; committing now would leave the tree in a state where the UI can select a mode that fails at session start. Leave the changes dirty and unstaged in the working tree and proceed directly to Task 2, which stages and commits Task 1 + Task 2 together.
 
 ---
 
@@ -313,6 +313,8 @@ Do not run `git add` or `git commit` at the end of Task 1. The config/UI/core ch
 - Modify: `internal/ffmpeg/pipeline.go`
 - Modify: `internal/ffmpeg/capabilities.go`
 - Modify: `internal/ffmpeg/pipeline_test.go`
+- Create: `tests/integration/visualizer_modes_test.go`
+- Modify: `tests/integration/testdata_helper_test.go`
 - Modify: files from Task 1
 
 - [ ] **Step 1: Write failing FFmpeg graph and filter tests**
@@ -452,10 +454,28 @@ go test ./internal/ffmpeg ./internal/core ./internal/config ./internal/ui ./inte
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit Phase 1 as one complete change**
+- [ ] **Step 4: Add Phase 1 real-FFmpeg smoke coverage**
+
+Add the integration helpers and `TestVisualizerModesSpawnRealFFmpeg` from Task 8 before this commit, but keep the first version of the test table limited to the three Phase 1 CRT rows:
+
+```go
+{"vu cabinet", ffmpeg.VisualizerModeVUCabinet, false},
+{"neon grid", ffmpeg.VisualizerModeNeonGrid, false},
+{"raster pulse", ffmpeg.VisualizerModeRasterPulse, false},
+```
+
+Run:
 
 ```bash
-git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/chassis/data.go internal/chassis/chassis_test.go internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/capabilities.go internal/ffmpeg/pipeline_test.go
+go test -tags=integration ./tests/integration -run TestVisualizerModesSpawnRealFFmpeg -v
+```
+
+Expected: PASS on hosts with required FFmpeg filters; SKIP for missing local FFmpeg/filter support.
+
+- [ ] **Step 5: Commit Phase 1 as one complete change**
+
+```bash
+git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/chassis/data.go internal/chassis/chassis_test.go internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/capabilities.go internal/ffmpeg/pipeline_test.go tests/integration/visualizer_modes_test.go tests/integration/testdata_helper_test.go
 git commit -m "feat(visualizer): add CRT arcade modes"
 ```
 
@@ -486,6 +506,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -536,9 +557,9 @@ func TestAppendTokenAfterResolveSameOrigin(t *testing.T) {
 }
 
 func TestRedactURLRemovesUserinfoAndTokenKeys(t *testing.T) {
-	raw := "https://user:pass@example.test/art.png?X-Plex-Token=plex&api_key=jf&X-Emby-Token=emby&AccessToken=access&token=plain&keep=1"
+	raw := "https://user:pass@example.test/art.png?X-Plex-Token=plex&api_key=jf&X-Emby-Token=emby&AccessToken=bearer&token=plain&x-plex-token=lower&Api_Key=mixed&aCcEsStOkEn=access2&access_token=snakesecret&auth_token=secondsecret&keep=1"
 	got := RedactURL(raw)
-	for _, leaked := range []string{"user", "pass", "plex", "jf", "emby", "access", "plain"} {
+	for _, leaked := range []string{"user", "pass", "plex", "jf", "emby", "bearer", "plain", "lower", "mixed", "access2", "snakesecret", "secondsecret"} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("RedactURL leaked %q in %q", leaked, got)
 		}
@@ -604,6 +625,43 @@ func TestFetchToCacheRejectsOversizedDecodedDimensions(t *testing.T) {
 	_, err := FetchToCache(context.Background(), FetchOptions{DataDir: t.TempDir(), URL: srv.URL, Client: srv.Client()})
 	if err == nil || !strings.Contains(err.Error(), "dimensions") {
 		t.Fatalf("FetchToCache err = %v, want dimension rejection", err)
+	}
+}
+
+func TestFetchToCacheRejectsRedirectWithoutFollowing(t *testing.T) {
+	var followed atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed.Store(true)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes(t, 8, 8))
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/cover.png?X-Plex-Token=leaked", http.StatusFound)
+	}))
+	defer source.Close()
+
+	_, err := FetchToCache(context.Background(), FetchOptions{DataDir: t.TempDir(), URL: source.URL, Client: source.Client()})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 302") {
+		t.Fatalf("FetchToCache err = %v, want redirect rejection", err)
+	}
+	if followed.Load() {
+		t.Fatal("FetchToCache followed an artwork redirect")
+	}
+}
+
+func TestFetchToCacheRejectsCorruptImageBody(t *testing.T) {
+	body := pngBytes(t, 8, 8)
+	body = body[:len(body)/2]
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	_, err := FetchToCache(context.Background(), FetchOptions{DataDir: t.TempDir(), URL: srv.URL, Client: srv.Client()})
+	if err == nil || !strings.Contains(err.Error(), "decode image") {
+		t.Fatalf("FetchToCache err = %v, want corrupt image rejection", err)
 	}
 }
 
@@ -712,7 +770,7 @@ import (
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -802,9 +860,13 @@ func RedactURL(raw string) string {
 	}
 	u.User = nil
 	q := u.Query()
-	for _, key := range []string{"X-Plex-Token", "api_key", "X-Emby-Token", "AccessToken", "token"} {
-		if _, ok := q[key]; ok {
-			q.Set(key, "REDACTED")
+	tokenKeys := []string{"X-Plex-Token", "api_key", "X-Emby-Token", "AccessToken", "access_token", "auth_token", "token"}
+	for key := range q {
+		for _, tokenKey := range tokenKeys {
+			if strings.EqualFold(key, tokenKey) {
+				q.Set(key, "REDACTED")
+				break
+			}
 		}
 	}
 	u.RawQuery = q.Encode()
@@ -821,6 +883,10 @@ func FetchToCache(ctx context.Context, opt FetchOptions) (string, error) {
 	if opt.Client == nil {
 		opt.Client = http.DefaultClient
 	}
+	client := *opt.Client
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	if opt.DataDir == "" {
 		return "", fmt.Errorf("artwork cache data dir is empty")
 	}
@@ -828,7 +894,7 @@ func FetchToCache(ctx context.Context, opt FetchOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := opt.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -846,23 +912,28 @@ func FetchToCache(ctx context.Context, opt FetchOptions) (string, error) {
 	if len(body) > MaxBytes {
 		return "", fmt.Errorf("artwork fetch: body exceeds %d bytes", MaxBytes)
 	}
-	cfg, format, err := image.DecodeConfig(bytes.NewReader(body))
+	img, _, err := image.Decode(bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("artwork decode config: %w", err)
+		return "", fmt.Errorf("artwork decode image: %w", err)
 	}
-	if cfg.Width > MaxDimension || cfg.Height > MaxDimension {
-		return "", fmt.Errorf("artwork dimensions %dx%d exceed %d", cfg.Width, cfg.Height, MaxDimension)
+	bounds := img.Bounds()
+	if bounds.Dx() > MaxDimension || bounds.Dy() > MaxDimension {
+		return "", fmt.Errorf("artwork dimensions %dx%d exceed %d", bounds.Dx(), bounds.Dy(), MaxDimension)
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		return "", fmt.Errorf("artwork encode png: %w", err)
 	}
 	root, err := EnsureRoot(opt.DataDir)
 	if err != nil {
 		return "", err
 	}
-	name, err := randomName(format)
+	name, err := randomName("png")
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(root, name)
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	if err := os.WriteFile(path, encoded.Bytes(), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -982,12 +1053,9 @@ go test ./internal/artworkcache ./cmd/mister-groovy-relay
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit artwork cache package**
+- [ ] **Step 4: Stop — keep artwork cache changes uncommitted**
 
-```bash
-git add internal/artworkcache/cache.go internal/artworkcache/cache_test.go cmd/mister-groovy-relay/main.go
-git commit -m "feat(visualizer): add artwork cache"
-```
+Do not run `git add` or `git commit` at the end of Task 3. Phase 2 ships as one release slice in Task 7 so the cache package, metadata boundary, provider fetches, and cover renderers land together.
 
 ---
 
@@ -1220,12 +1288,9 @@ go test ./internal/core ./internal/ffmpeg
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit metadata boundary**
+- [ ] **Step 4: Stop — keep metadata boundary changes uncommitted**
 
-```bash
-git add internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/pipeline_test.go
-git commit -m "feat(visualizer): validate artwork metadata boundary"
-```
+Do not run `git add` or `git commit` at the end of Task 4. Leave the Task 3 and Task 4 changes dirty and unstaged; Task 7 stages and commits the complete Phase 2 slice.
 
 ---
 
@@ -1501,12 +1566,9 @@ go test ./internal/adapters/plex
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit Plex artwork support**
+- [ ] **Step 4: Stop — keep Plex artwork changes uncommitted**
 
-```bash
-git add internal/adapters/plex/transcode.go internal/adapters/plex/transcode_test.go internal/adapters/plex/companion.go internal/adapters/plex/companion_test.go
-git commit -m "feat(plex): cache music artwork for visualizers"
-```
+Do not run `git add` or `git commit` at the end of Task 5. Leave the Task 3 through Task 5 changes dirty and unstaged; Task 7 stages and commits the complete Phase 2 slice.
 
 ---
 
@@ -1752,12 +1814,9 @@ go test ./internal/adapters/jellyfin
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit Jellyfin artwork support**
+- [ ] **Step 4: Stop — keep Jellyfin artwork changes uncommitted**
 
-```bash
-git add internal/adapters/jellyfin/playback.go internal/adapters/jellyfin/playback_test.go internal/adapters/jellyfin/commands_test.go internal/adapters/jellyfin/commands.go
-git commit -m "feat(jellyfin): cache music artwork for visualizers"
-```
+Do not run `git add` or `git commit` at the end of Task 6. Leave the Task 3 through Task 6 changes dirty and unstaged; Task 7 stages and commits the complete Phase 2 slice.
 
 ---
 
@@ -1774,6 +1833,9 @@ git commit -m "feat(jellyfin): cache music artwork for visualizers"
 - Modify: `internal/core/manager_test.go`
 - Modify: `internal/ffmpeg/pipeline.go`
 - Modify: `internal/ffmpeg/pipeline_test.go`
+- Modify: `tests/integration/visualizer_modes_test.go`
+- Modify: `tests/integration/testdata_helper_test.go`
+- Modify: files from Tasks 3 through 6 for the combined Phase 2 commit
 
 - [ ] **Step 1: Write failing cover-mode tests**
 
@@ -2019,24 +2081,53 @@ go test ./internal/config ./internal/ui ./internal/chassis ./internal/core ./int
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit cover modes**
+- [ ] **Step 4: Extend real-FFmpeg smoke coverage for cover modes**
+
+Extend the integration test created in Task 2 with the two cover-mode rows:
+
+```go
+{"cover vu", ffmpeg.VisualizerModeCoverVU, true},
+{"cover spectrum", ffmpeg.VisualizerModeCoverSpectrum, true},
+```
+
+Keep the `ensureSamplePNG` helper from Task 8 in `tests/integration/testdata_helper_test.go`, and keep this cover-art path assignment in the test body:
+
+```go
+if tc.cover {
+	spec.Visualizer.Metadata.ArtworkPath = cover
+}
+```
+
+Run:
 
 ```bash
-git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/chassis/data.go internal/chassis/chassis_test.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/pipeline_test.go
+go test -tags=integration ./tests/integration -run TestVisualizerModesSpawnRealFFmpeg -v
+```
+
+Expected: PASS on hosts with required FFmpeg filters; SKIP for missing local FFmpeg/filter support.
+
+- [ ] **Step 5: Commit Phase 2 as one complete release slice**
+
+This is the first Phase 2 commit. It intentionally stages Tasks 3 through 7 together so artwork fetch/cache behavior is not released before the cover visualizer modes consume it.
+
+```bash
+git add internal/artworkcache/cache.go internal/artworkcache/cache_test.go cmd/mister-groovy-relay/main.go internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/pipeline_test.go internal/adapters/plex/transcode.go internal/adapters/plex/transcode_test.go internal/adapters/plex/companion.go internal/adapters/plex/companion_test.go internal/adapters/jellyfin/playback.go internal/adapters/jellyfin/playback_test.go internal/adapters/jellyfin/commands_test.go internal/adapters/jellyfin/commands.go internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/chassis/data.go internal/chassis/chassis_test.go tests/integration/visualizer_modes_test.go tests/integration/testdata_helper_test.go
 git commit -m "feat(visualizer): add album-art modes"
 ```
 
 ---
 
-### Task 8: Real FFmpeg Integration Coverage
+### Task 8: Real FFmpeg Integration Reference And Final Smoke Verification
+
+> **Commit boundary:** Do not wait until Task 8 to add these files. Task 2 creates and commits the CRT-mode integration smoke coverage; Task 7 extends and commits the same test for cover modes. This task is the full final reference and an explicit final smoke run.
 
 **Files:**
-- Create: `tests/integration/visualizer_modes_test.go`
+- Modify: `tests/integration/visualizer_modes_test.go`
 - Modify: `tests/integration/testdata_helper_test.go`
 
-- [ ] **Step 1: Add integration helpers**
+- [ ] **Step 1: Verify final integration helpers**
 
-In `tests/integration/testdata_helper_test.go`, add:
+Ensure `tests/integration/testdata_helper_test.go` contains:
 
 ```go
 func ensureSampleWAV(t *testing.T, name string, durationSec int) string {
@@ -2104,9 +2195,9 @@ func ensureSamplePNG(t *testing.T, name string) string {
 }
 ```
 
-- [ ] **Step 2: Add one smoke test per new mode**
+- [ ] **Step 2: Verify one smoke test per new mode**
 
-Create `tests/integration/visualizer_modes_test.go`:
+Ensure `tests/integration/visualizer_modes_test.go` contains:
 
 ```go
 //go:build integration
@@ -2194,12 +2285,9 @@ go test -tags=integration ./tests/integration -run TestVisualizerModesSpawnRealF
 
 Expected: PASS on hosts with required FFmpeg filters; SKIP for missing local FFmpeg/filter support.
 
-- [ ] **Step 3: Commit integration coverage**
+- [ ] **Step 3: Stop — no standalone integration commit**
 
-```bash
-git add tests/integration/visualizer_modes_test.go tests/integration/testdata_helper_test.go
-git commit -m "test(visualizer): add integration smoke coverage"
-```
+Do not run `git add` or `git commit` at the end of Task 8. The integration files are already committed with the feature slices that expose the corresponding modes: Task 2 for CRT modes and Task 7 for cover modes.
 
 ---
 
