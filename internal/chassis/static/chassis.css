@@ -1806,7 +1806,7 @@ body.receiver.idle .meter-screen--compact .meter-mid-row .stat .v {
 /* ---- 8. Transport row + seek bar ---- */
 body.receiver .transport-strip {
   display: grid;
-  grid-template-columns: 80px auto 1fr auto auto;
+  grid-template-columns: 80px auto minmax(160px, 1fr) auto auto auto;
   gap: 12px;
   align-items: center;
 }
@@ -2053,6 +2053,130 @@ body.receiver.idle .seek-time .seg-ghost {
   color: oklch(0.42 0.12 175 / 0.30);
 }
 
+body.receiver .volume-control {
+  position: relative;
+  width: 82px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  --volume-angle: -135deg;
+}
+
+body.receiver .volume-label {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  color: #8a8a8e;
+  font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+body.receiver .volume-tick-ring {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+body.receiver .volume-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1px;
+  height: 7px;
+  transform-origin: 0 30px;
+  background: #6d6d72;
+  opacity: 0.72;
+}
+
+body.receiver .volume-tick:nth-child(5n + 1) {
+  height: 10px;
+  background: #a8a8ae;
+  opacity: 0.9;
+}
+
+body.receiver .volume-tick.tick-0 { transform: rotate(-135deg) translateY(-30px); }
+body.receiver .volume-tick.tick-1 { transform: rotate(-121.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-2 { transform: rotate(-108deg) translateY(-30px); }
+body.receiver .volume-tick.tick-3 { transform: rotate(-94.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-4 { transform: rotate(-81deg) translateY(-30px); }
+body.receiver .volume-tick.tick-5 { transform: rotate(-67.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-6 { transform: rotate(-54deg) translateY(-30px); }
+body.receiver .volume-tick.tick-7 { transform: rotate(-40.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-8 { transform: rotate(-27deg) translateY(-30px); }
+body.receiver .volume-tick.tick-9 { transform: rotate(-13.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-10 { transform: rotate(0deg) translateY(-30px); }
+body.receiver .volume-tick.tick-11 { transform: rotate(13.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-12 { transform: rotate(27deg) translateY(-30px); }
+body.receiver .volume-tick.tick-13 { transform: rotate(40.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-14 { transform: rotate(54deg) translateY(-30px); }
+body.receiver .volume-tick.tick-15 { transform: rotate(67.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-16 { transform: rotate(81deg) translateY(-30px); }
+body.receiver .volume-tick.tick-17 { transform: rotate(94.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-18 { transform: rotate(108deg) translateY(-30px); }
+body.receiver .volume-tick.tick-19 { transform: rotate(121.5deg) translateY(-30px); }
+body.receiver .volume-tick.tick-20 { transform: rotate(135deg) translateY(-30px); }
+
+body.receiver .volume-dial {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border: 1px solid #050506;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.55) 0 8%, transparent 9%),
+    radial-gradient(circle at 50% 54%, #c8c8cc 0%, #85858c 44%, #3a3a3e 70%, #111113 100%);
+  box-shadow:
+    inset 0 2px 3px rgba(255,255,255,0.28),
+    inset 0 -5px 8px rgba(0,0,0,0.55),
+    0 4px 10px rgba(0,0,0,0.65);
+  transform: rotate(var(--volume-angle));
+  transition: transform 120ms cubic-bezier(0.22,1,0.36,1), filter 120ms ease;
+}
+
+body.receiver .volume-notch {
+  position: absolute;
+  left: 50%;
+  top: 5px;
+  width: 3px;
+  height: 16px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: #121214;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.18);
+}
+
+body.receiver .volume-range {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+body.receiver .volume-control:focus-within .volume-dial {
+  filter: brightness(1.12);
+  box-shadow:
+    inset 0 2px 3px rgba(255,255,255,0.28),
+    inset 0 -5px 8px rgba(0,0,0,0.55),
+    0 0 0 2px var(--vfd-glow-soft),
+    0 0 12px var(--vfd-glow-soft);
+}
+
+body.receiver .volume-control.saving .volume-dial {
+  filter: brightness(1.08);
+}
+
+body.receiver .volume-control.failed .volume-dial {
+  filter: saturate(0.7) brightness(0.9);
+}
+
 body.receiver .gear-btn {
   background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1c 100%);
   border: 1px solid #0a0a0b;
@@ -2087,7 +2211,7 @@ body.receiver.settings-open .gear-btn {
 
 @container chassis (max-width: 600px) {
   body.receiver .transport-strip {
-    grid-template-columns: 60px auto 1fr auto;
+    grid-template-columns: 60px auto 1fr auto auto;
   }
 
   body.receiver .transport-strip .strip-label {
@@ -2098,14 +2222,24 @@ body.receiver.settings-open .gear-btn {
   body.receiver .seek-time {
     display: none;
   }
+
+  body.receiver .volume-control {
+    width: 66px;
+    height: 62px;
+  }
+
+  body.receiver .volume-dial {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 @container chassis (max-width: 420px) {
   body.receiver .transport-strip {
-    grid-template-columns: 48px 1fr auto;
+    grid-template-columns: 48px 1fr auto auto;
     grid-template-areas:
-      "label controls controls"
-      "label seek gear";
+      "label controls controls controls"
+      "label seek volume gear";
     gap: 6px;
   }
 
@@ -2129,6 +2263,12 @@ body.receiver.settings-open .gear-btn {
     width: auto;
     min-width: 34px;
     height: 36px;
+  }
+
+  body.receiver .volume-control {
+    grid-area: volume;
+    width: 58px;
+    height: 58px;
   }
 
   body.receiver .gear-btn {

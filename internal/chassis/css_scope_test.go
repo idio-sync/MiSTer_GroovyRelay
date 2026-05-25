@@ -380,7 +380,7 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			name:     "600 collapses transport controls",
 			atRule:   "@container chassis (max-width: 600px)",
 			selector: "body.receiver .transport-strip",
-			want:     []string{"grid-template-columns: 60px auto 1fr auto;"},
+			want:     []string{"grid-template-columns: 60px auto 1fr auto auto;"},
 		},
 		{
 			name:     "600 adjusts input panel",

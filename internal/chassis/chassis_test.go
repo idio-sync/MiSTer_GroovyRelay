@@ -346,6 +346,66 @@ func TestSnapshotFromSession_OutputVolumeViewerSurvivesLiveTransportOverwrite(t 
 	}
 }
 
+func TestVolumeAngle_MapsOutputVolumeToArc(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		volume int
+		want   int
+	}{
+		{volume: -10, want: -135},
+		{volume: 0, want: -135},
+		{volume: 1, want: -132},
+		{volume: 50, want: 0},
+		{volume: 99, want: 132},
+		{volume: 100, want: 135},
+		{volume: 150, want: 135},
+	}
+	for _, tc := range tests {
+		if got := volumeAngle(tc.volume); got != tc.want {
+			t.Errorf("volumeAngle(%d) = %d, want %d", tc.volume, got, tc.want)
+		}
+	}
+}
+
+func TestHandleIndex_RendersVolumeKnobHooks(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.OutputVolume = 73
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+
+	s.handleIndex(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-volume-knob`,
+		`data-volume-value="73"`,
+		`data-volume-range`,
+		`aria-label="Volume"`,
+		`min="0"`,
+		`max="100"`,
+		`value="73"`,
+		`--volume-angle: 62deg`,
+		`/receiver/static/volume-knob.js?v=test-1.0.0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("receiver HTML missing %q\n%s", want, body)
+		}
+	}
+	transportIdx := strings.Index(body, "transport.js?v=")
+	volumeIdx := strings.Index(body, "volume-knob.js?v=")
+	if transportIdx < 0 || volumeIdx < 0 {
+		t.Fatalf("missing transport.js or volume-knob.js script tag")
+	}
+	if volumeIdx < transportIdx {
+		t.Errorf("volume-knob.js must load after transport.js so shared transport/event hooks are initialized")
+	}
+}
+
 func TestIdleSnapshot_DeterministicGivenSameNow(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
@@ -506,11 +566,12 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 	text := string(css)
 	for _, want := range []string{
 		`@container chassis (max-width: 420px)`,
-		`"label controls controls"`,
-		`"label seek gear"`,
+		`"label controls controls controls"`,
+		`"label seek volume gear"`,
 		`grid-area: label;`,
 		`grid-area: controls;`,
 		`grid-area: seek;`,
+		`grid-area: volume;`,
 		`grid-area: gear;`,
 		`body.receiver .seek-time`,
 		`display: none;`,

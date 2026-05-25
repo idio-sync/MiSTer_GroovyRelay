@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"math"
 	"strings"
 	textTemplate "text/template"
 )
@@ -61,8 +62,23 @@ var templateFuncs = template.FuncMap{
 	"htmlComment": func(s string) template.HTML {
 		return template.HTML("<!-- " + s + " -->")
 	},
-	"list":  func(args ...string) []string { return args },
-	"until": func(n int) []struct{} { return make([]struct{}, n) },
+	"list":        func(args ...string) []string { return args },
+	"until":       func(n int) []struct{} { return make([]struct{}, n) },
+	"volumeAngle": volumeAngle,
+}
+
+// volumeAngle maps the output_volume (0..100) to the dial rotation in
+// degrees over a -135..135 arc. Out-of-range inputs are clamped so the
+// template helper is total — callers cannot blow up rendering by feeding
+// an out-of-spec configured volume.
+func volumeAngle(volume int) int {
+	if volume < 0 {
+		volume = 0
+	}
+	if volume > 100 {
+		volume = 100
+	}
+	return -135 + int(math.Round(float64(volume)*2.7))
 }
 
 // parseTemplates parses the embedded chassis templates with the helper
