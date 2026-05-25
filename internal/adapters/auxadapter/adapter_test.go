@@ -3,6 +3,7 @@ package aux
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,7 @@ id = "line-in"
 name = "Line In"
 mode = "local_capture"
 audio_output = "monitor"
+format = "avfoundation"
 device = ":0"
 sample_rate = 44100
 channels = 1
@@ -214,6 +216,16 @@ func TestSetEnabledAndStartStopLifecycle(t *testing.T) {
 		t.Fatalf("Start should not start playback; starts = %d", fake.starts)
 	}
 
+	raw, meta := decodeAUXSection(t, `
+[adapters.aux]
+enabled = false
+
+[adapters.aux.input]
+url = "http://127.0.0.1:8080/aux.wav"
+`)
+	if _, err := a.ApplyConfig(raw, meta); err != nil {
+		t.Fatalf("ApplyConfig valid disabled input: %v", err)
+	}
 	a.SetEnabled(true)
 	if !a.IsEnabled() {
 		t.Fatal("SetEnabled(true) did not update IsEnabled")
@@ -241,9 +253,58 @@ func TestSetEnabledAndStartStopLifecycle(t *testing.T) {
 	}
 }
 
+func TestSetEnabledTrueRejectsInvalidDefaultConfig(t *testing.T) {
+	a := newTestAdapter(t)
+
+	a.SetEnabled(true)
+
+	if a.IsEnabled() {
+		t.Fatal("SetEnabled(true) on invalid default config left adapter enabled")
+	}
+	st := a.Status()
+	if st.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", st.State)
+	}
+	if st.LastError == "" {
+		t.Fatal("Status.LastError is empty")
+	}
+	if !strings.Contains(st.LastError, "validation") {
+		t.Fatalf("Status.LastError = %q, want validation context", st.LastError)
+	}
+}
+
+func TestStartInvalidEnabledConfigReturnsErrorAndSetsStateError(t *testing.T) {
+	a := newTestAdapter(t)
+	a.mu.Lock()
+	a.cfg.Enabled = true
+	a.mu.Unlock()
+
+	err := a.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start invalid enabled config: want error")
+	}
+	st := a.Status()
+	if st.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", st.State)
+	}
+	if st.LastError == "" {
+		t.Fatal("Status.LastError is empty")
+	}
+}
+
 func TestStopOnlyStopsActiveAUXRef(t *testing.T) {
 	fake := &fakeCore{}
 	a := newTestAdapterWithCore(t, fake)
+	raw, meta := decodeAUXSection(t, `
+[adapters.aux]
+enabled = false
+
+[adapters.aux.input]
+url = "http://127.0.0.1:8080/aux.wav"
+`)
+	if _, err := a.ApplyConfig(raw, meta); err != nil {
+		t.Fatalf("ApplyConfig valid disabled input: %v", err)
+	}
 	a.SetEnabled(true)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)

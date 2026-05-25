@@ -109,11 +109,16 @@ func (a *Adapter) IsEnabled() bool {
 
 func (a *Adapter) Start(context.Context) error {
 	a.mu.Lock()
-	enabled := a.cfg.Enabled
+	cfg := a.cfg
 	a.mu.Unlock()
-	if enabled {
-		a.setState(adapters.StateRunning, "")
+	if !cfg.Enabled {
+		return nil
 	}
+	if err := cfg.Validate(); err != nil {
+		a.setState(adapters.StateError, fmt.Sprintf("validation failed: %v", err))
+		return err
+	}
+	a.setState(adapters.StateRunning, "")
 	return nil
 }
 
@@ -145,9 +150,31 @@ func (a *Adapter) Status() adapters.Status {
 }
 
 func (a *Adapter) SetEnabled(v bool) {
+	if !v {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.cfg.Enabled = false
+		a.lastErr = ""
+		if a.state == adapters.StateError {
+			a.state = adapters.StateStopped
+			a.stateSince = a.now()
+		}
+		return
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.cfg.Enabled = v
+	next := a.cfg
+	next.Enabled = true
+	if err := next.Validate(); err != nil {
+		a.cfg.Enabled = false
+		a.state = adapters.StateError
+		a.lastErr = fmt.Sprintf("validation failed: %v", err)
+		a.stateSince = a.now()
+		return
+	}
+	a.cfg = next
+	a.lastErr = ""
 }
 
 func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {

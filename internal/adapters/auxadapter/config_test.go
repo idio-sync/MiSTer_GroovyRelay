@@ -77,9 +77,54 @@ func TestValidateEnabledLocalCaptureRequiresDevice(t *testing.T) {
 	assertFieldError(t, err, "input.device")
 
 	c.Input.Device = "Microphone (USB Audio)"
+	c.Input.Format = "avfoundation"
+	c.Input.SampleRate = 44100
+	c.Input.Channels = 2
 	if err := c.Validate(); err != nil {
-		t.Fatalf("enabled local_capture with input.device should validate: %v", err)
+		t.Fatalf("enabled local_capture with complete capture input should validate: %v", err)
 	}
+}
+
+func TestValidateEnabledLocalCaptureRequiresCoreSupportedAudioShape(t *testing.T) {
+	c := DefaultConfig()
+	c.Enabled = true
+	c.Input.Mode = ModeLocalCapture
+	c.Input.Device = "Microphone (USB Audio)"
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("enabled local_capture with only input.device: want validation errors")
+	}
+	assertFieldError(t, err, "input.format")
+	assertFieldError(t, err, "input.sample_rate")
+	assertFieldError(t, err, "input.channels")
+
+	c.Input.Format = "avfoundation"
+	for _, sampleRate := range []int{22050, 44100, 48000} {
+		for _, channels := range []int{1, 2} {
+			c.Input.SampleRate = sampleRate
+			c.Input.Channels = channels
+			if err := c.Validate(); err != nil {
+				t.Fatalf("sample_rate=%d channels=%d should validate: %v", sampleRate, channels, err)
+			}
+		}
+	}
+
+	c.Input.SampleRate = 96000
+	c.Input.Channels = 2
+	err = c.Validate()
+	if err == nil {
+		t.Fatal("unsupported sample rate accepted")
+	}
+	assertFieldError(t, err, "input.sample_rate")
+
+	c.Input.SampleRate = 48000
+	c.Input.Channels = 6
+	err = c.Validate()
+	if err == nil {
+		t.Fatal("unsupported channel count accepted")
+	}
+	assertFieldError(t, err, "input.channels")
 }
 
 func TestValidateEnabledRequiresIdentityAndKnownEnums(t *testing.T) {

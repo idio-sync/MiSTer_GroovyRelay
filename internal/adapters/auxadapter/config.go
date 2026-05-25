@@ -69,8 +69,21 @@ func (c Config) Validate() error {
 			errs = append(errs, adapters.FieldError{Key: "input.url", Msg: "must be configured when mode is stream_url"})
 		}
 	case ModeLocalCapture:
+		if strings.TrimSpace(c.Input.Format) == "" {
+			errs = append(errs, adapters.FieldError{Key: "input.format", Msg: "must be configured when mode is local_capture"})
+		}
 		if strings.TrimSpace(c.Input.Device) == "" {
 			errs = append(errs, adapters.FieldError{Key: "input.device", Msg: "must be configured when mode is local_capture"})
+		}
+		switch c.Input.SampleRate {
+		case 22050, 44100, 48000:
+		default:
+			errs = append(errs, adapters.FieldError{Key: "input.sample_rate", Msg: "must be 22050, 44100, or 48000"})
+		}
+		switch c.Input.Channels {
+		case 1, 2:
+		default:
+			errs = append(errs, adapters.FieldError{Key: "input.channels", Msg: "must be 1 or 2"})
 		}
 	default:
 		errs = append(errs, adapters.FieldError{
