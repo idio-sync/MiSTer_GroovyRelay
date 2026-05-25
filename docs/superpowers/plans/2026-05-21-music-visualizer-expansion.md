@@ -19,6 +19,8 @@
 - Modify `internal/config/example.toml`: expose only implemented modes in the example at each phase.
 - Modify `internal/ui/bridge_fields.go`: keep the Bridge UI enum sourced from `config.SupportedVisualizerModes()`.
 - Modify `internal/ui/bridge_fields_test.go`: assert the UI enum matches the phase-appropriate supported list.
+- Modify `internal/chassis/data.go`: expose the same implemented modes in the receiver chassis visualizer bank and keep deferred `radial_spectrum` preview-only.
+- Modify `internal/chassis/chassis_test.go`: update visualizer-bank expectations and active-mode fallback tests for newly supported modes.
 - Modify `internal/core/types.go`: add new core visualizer constants and `VisualizerMetadata.ArtworkPath`.
 - Modify `internal/core/manager.go`: validate new modes, preserve snapshotted mode behavior, validate artwork paths before creating `ffmpeg.VisualizerSpec`, and map all supported core modes to FFmpeg modes.
 - Modify `internal/core/manager_test.go`: cover mode mapping, validation, same-session snapshot preservation, valid artwork pass-through, invalid artwork fallback, and no probe/network work before validation failures.
@@ -53,6 +55,8 @@ Expected: any pre-existing user edits remain visible. During execution, stage on
 - Modify: `internal/config/config_test.go`
 - Modify: `internal/config/example.toml`
 - Modify: `internal/ui/bridge_fields_test.go`
+- Modify: `internal/chassis/data.go`
+- Modify: `internal/chassis/chassis_test.go`
 - Modify: `internal/core/types.go`
 - Modify: `internal/core/manager.go`
 - Modify: `internal/core/manager_test.go`
@@ -104,10 +108,39 @@ want := []string{
 }
 ```
 
+In `internal/chassis/chassis_test.go`, update the `Visualizer.Buttons` expectation in `TestIdleSnapshot_AllFieldsPopulated` to:
+
+```go
+Buttons: []VisualizerButton{
+	{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+	{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
+	{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+},
+```
+
+Add this chassis active-mode regression test in the same file:
+
+```go
+func TestIdleSnapshot_NewSupportedVisualizerModeIsActive(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = config.VisualizerModeVUCabinet
+	got := idleSnapshot(cfg, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeVUCabinet {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q", got.Visualizer.ActiveMode, config.VisualizerModeVUCabinet)
+	}
+}
+```
+
 Run:
 
 ```bash
-go test ./internal/config ./internal/ui
+go test ./internal/config ./internal/ui ./internal/chassis
 ```
 
 Expected: compile failures for undefined CRT constants.
@@ -159,17 +192,43 @@ In `internal/config/example.toml`, update the mode comment for Phase 1:
 mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_scope, vu_cabinet, neon_grid, raster_pulse
 ```
 
+In `internal/chassis/data.go`, update the visualizer bank buttons for Phase 1:
+
+```go
+Buttons: []VisualizerButton{
+	{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+	{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
+	{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+},
+```
+
+Replace `defaultVisualizerMode` with a supported-list driven implementation so future mode additions do not require another switch edit:
+
+```go
+func defaultVisualizerMode(cfg Config) string {
+	mode := config.NormalizeVisualizerMode(cfg.Bridge.Visualizer.Mode)
+	if isSupportedVisualizerMode(mode) {
+		return mode
+	}
+	return config.VisualizerModeRetroAnalyzer
+}
+```
+
 Run:
 
 ```bash
-go test ./internal/config ./internal/ui
+go test ./internal/config ./internal/ui ./internal/chassis
 ```
 
-Expected: config/UI tests pass; core tests still fail once the core tests below are added.
+Expected: config/UI/chassis tests pass; core tests still fail once the core tests below are added.
 
 - [ ] **Step 3: Write failing core validation and mapping tests**
 
-In `internal/core/manager_test.go`, extend `TestValidateVisualizerRequestSupportedModes` to include:
+In `internal/core/manager_test.go`, extend `TestValidateVisualizerRequestModes` to include:
 
 ```go
 VisualizerModeVUCabinet,
@@ -235,7 +294,7 @@ case VisualizerModeRasterPulse:
 Run:
 
 ```bash
-go test ./internal/config ./internal/ui ./internal/core
+go test ./internal/config ./internal/ui ./internal/chassis ./internal/core
 ```
 
 Expected: core tests still fail only because FFmpeg constants do not exist yet.
@@ -386,7 +445,7 @@ parts := []string{graph}
 Run:
 
 ```bash
-go test ./internal/ffmpeg ./internal/core ./internal/config ./internal/ui
+go test ./internal/ffmpeg ./internal/core ./internal/config ./internal/ui ./internal/chassis
 ```
 
 Expected: PASS.
@@ -394,7 +453,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit Phase 1 as one complete change**
 
 ```bash
-git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/capabilities.go internal/ffmpeg/pipeline_test.go
+git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/chassis/data.go internal/chassis/chassis_test.go internal/core/types.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/capabilities.go internal/ffmpeg/pipeline_test.go
 git commit -m "feat(visualizer): add CRT arcade modes"
 ```
 
@@ -1133,7 +1192,7 @@ func visualizerArtworkInput(s PipelineSpec) ([]string, string) {
 }
 ```
 
-In `BuildCommand`, inside the `if s.Visualizer.Enabled` branch and before `buildVisualizerFilterChain`, append the artwork input args:
+In `BuildCommand`, inside the `if s.Visualizer.Enabled` branch, replace the existing `audioMap := audioInputMap(s)` line with:
 
 ```go
 artworkArgs, _ := visualizerArtworkInput(s)
@@ -1690,6 +1749,8 @@ git commit -m "feat(jellyfin): cache music artwork for visualizers"
 - Modify: `internal/config/config_test.go`
 - Modify: `internal/config/example.toml`
 - Modify: `internal/ui/bridge_fields_test.go`
+- Modify: `internal/chassis/data.go`
+- Modify: `internal/chassis/chassis_test.go`
 - Modify: `internal/core/manager.go`
 - Modify: `internal/core/manager_test.go`
 - Modify: `internal/ffmpeg/pipeline.go`
@@ -1718,6 +1779,22 @@ Extend `TestVisualizerRequiredFilters`:
 {VisualizerModeCoverSpectrum, []string{"showfreqs", "overlay", "scale"}},
 ```
 
+In `internal/chassis/chassis_test.go`, extend the `Visualizer.Buttons` expectation in `TestIdleSnapshot_AllFieldsPopulated` with the two cover-art modes before the deferred radial preview:
+
+```go
+Buttons: []VisualizerButton{
+	{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+	{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
+	{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
+	{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+},
+```
+
 Add FFmpeg graph tests:
 
 ```go
@@ -1732,7 +1809,6 @@ func visualizerCommandSpec(mode VisualizerMode) PipelineSpec {
 		AudioChannels:    2,
 		VideoPipePath:    "pipe:3",
 		AudioPipePath:    "pipe:4",
-		VideoBitrateKbps: 2500,
 		Visualizer: VisualizerSpec{
 			Enabled:                  true,
 			Mode:                     mode,
@@ -1790,7 +1866,7 @@ func TestBuildVisualizerFilterChain_CoverModesUsePlaceholderWithoutArtwork(t *te
 Run:
 
 ```bash
-go test ./internal/config ./internal/ui ./internal/core ./internal/ffmpeg
+go test ./internal/config ./internal/ui ./internal/chassis ./internal/core ./internal/ffmpeg
 ```
 
 Expected: cover-mode validation and FFmpeg graph tests fail.
@@ -1804,6 +1880,22 @@ mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_sc
 ```
 
 In `internal/core/manager.go`, add cover modes to `validateVisualizerRequest`, `coreVisualizerModeFromConfig`, and `ffmpegVisualizerMode`.
+
+In `internal/chassis/data.go`, extend the visualizer bank buttons for Phase 2:
+
+```go
+Buttons: []VisualizerButton{
+	{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+	{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+	{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
+	{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
+	{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
+	{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+},
+```
 
 - [ ] **Step 3: Add cover-mode required filters and graph helpers**
 
@@ -1903,7 +1995,7 @@ if s.Visualizer.Mode == VisualizerModeCoverVU || s.Visualizer.Mode == Visualizer
 Run:
 
 ```bash
-go test ./internal/config ./internal/ui ./internal/core ./internal/ffmpeg
+go test ./internal/config ./internal/ui ./internal/chassis ./internal/core ./internal/ffmpeg
 ```
 
 Expected: PASS.
@@ -1911,7 +2003,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit cover modes**
 
 ```bash
-git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/pipeline_test.go
+git add internal/config/config.go internal/config/config_test.go internal/config/example.toml internal/ui/bridge_fields_test.go internal/chassis/data.go internal/chassis/chassis_test.go internal/core/manager.go internal/core/manager_test.go internal/ffmpeg/pipeline.go internal/ffmpeg/pipeline_test.go
 git commit -m "feat(visualizer): add album-art modes"
 ```
 
@@ -2123,7 +2215,7 @@ Previously discussed `chiptune_equalizer` and `radial_spectrum` modes are not sh
 Run:
 
 ```bash
-go test ./internal/config ./internal/ui ./internal/core ./internal/ffmpeg ./internal/artworkcache ./internal/adapters/plex ./internal/adapters/jellyfin
+go test ./internal/config ./internal/ui ./internal/chassis ./internal/core ./internal/ffmpeg ./internal/artworkcache ./internal/adapters/plex ./internal/adapters/jellyfin
 ```
 
 Expected: PASS.
