@@ -16,7 +16,6 @@
   const ARC_DEG = 270;
   const SAVE_INTERVAL_MS = 200;
 
-  let source = null;
   let root = null;
   let range = null;
   let authoritative = 100;
@@ -158,17 +157,6 @@
     }
   }
 
-  function attachSource(nextSource) {
-    if (!nextSource || nextSource === source) {
-      return;
-    }
-    if (source) {
-      source.removeEventListener('volume', handleVolumeEvent);
-    }
-    source = nextSource;
-    source.addEventListener('volume', handleVolumeEvent);
-  }
-
   function bind() {
     if (!root || !range) {
       return;
@@ -206,12 +194,7 @@
     root = document.querySelector('[data-volume-knob]');
     range = document.querySelector('[data-volume-range]');
     bind();
-    if (window.Chassis.events && window.Chassis.events.source) {
-      attachSource(window.Chassis.events.source);
-    }
-    document.addEventListener('chassis:eventsource', (ev) => {
-      attachSource(ev.detail && ev.detail.source);
-    });
+    window.Chassis.events.subscribe('volume', handleVolumeEvent);
   }
 
   if (document.readyState === 'loading') {

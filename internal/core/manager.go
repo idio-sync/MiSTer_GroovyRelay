@@ -109,6 +109,7 @@ type planeRunner interface {
 	Underruns() uint64
 	WireBytes() uint64
 	LastACKAge() time.Duration
+	AudioScopes() *dataplane.AudioScopeSnapshot
 }
 
 var newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
@@ -831,6 +832,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		SuppressAudioOutput: suppressAudio,
 		OutputVolume:        m.bridge.Audio.OutputVolume,
 		SeekOffsetMs:        offsetMs,
+		Generation:          generation,
 		OnInit:              m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
@@ -1172,6 +1174,25 @@ func (m *Manager) SetInterlaceFieldOrder(order string) error {
 		return m.plane.SetFieldOrder(order)
 	}
 	return nil
+}
+
+// AudioScopes returns the latest published audio-analysis snapshot from
+// the active plane, or nil if no plane is active (idle, paused, between
+// sessions). Returned pointer is read-only — callers MUST NOT mutate
+// the pointee.
+//
+// Brief m.mu lock to load m.plane, then atomic.Pointer load on the
+// plane itself. With many chassis tabs at 30 Hz, audio-tick stalls
+// during session-lifecycle ops (start/stop/pause/seek/preempt) are
+// acceptable; see spec §Lock-jitter acknowledgment.
+func (m *Manager) AudioScopes() *AudioScopeSnapshot {
+	m.mu.Lock()
+	p := m.plane
+	m.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	return p.AudioScopes()
 }
 
 // OutputVolume returns the current global software output gain under m.mu.

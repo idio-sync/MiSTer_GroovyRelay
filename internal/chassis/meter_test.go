@@ -42,14 +42,14 @@ func TestMeterSamplerFormatsLiveLowRateFields(t *testing.T) {
 			},
 		},
 	}
-	first := sampler.Sample(snap, adapters.MeterOverlay{}, now)
+	first := sampler.Sample(snap, adapters.MeterOverlay{}, false, now)
 	secondSnap := snap
 	secondSnap.Meter.Runtime.BlitsTotal = 130
 	secondSnap.Meter.Runtime.Underruns = 3
 	secondSnap.Meter.Runtime.WireBytes = 8_000_000
 	got := sampler.Sample(secondSnap, adapters.MeterOverlay{HLS: &adapters.HLSMeterOverlay{
 		CachedSegments: 6, MaxCachedSegments: 12, CacheBytes: 1234, SelectedVariantBPS: 2600000,
-	}}, now.Add(500*time.Millisecond))
+	}}, false, now.Add(500*time.Millisecond))
 
 	if first.SampleSeq == got.SampleSeq {
 		t.Fatalf("SampleSeq did not advance: first=%d got=%d", first.SampleSeq, got.SampleSeq)
@@ -100,20 +100,20 @@ func TestMeterSamplerPausedFreezesHistoriesAndDisplayValues(t *testing.T) {
 			},
 		},
 	}
-	sampler.Sample(snap, adapters.MeterOverlay{}, now)
+	sampler.Sample(snap, adapters.MeterOverlay{}, false, now)
 
 	liveSnap := snap
 	liveSnap.Meter.Runtime.BlitsTotal = 40
 	liveSnap.Meter.Runtime.WireBytes = 4_000_000
 	liveSnap.Meter.Runtime.LastACKAge = 6 * time.Millisecond
-	live := sampler.Sample(liveSnap, adapters.MeterOverlay{}, now.Add(500*time.Millisecond))
+	live := sampler.Sample(liveSnap, adapters.MeterOverlay{}, false, now.Add(500*time.Millisecond))
 
 	pausedSnap := liveSnap
 	pausedSnap.State = core.StatePaused
 	pausedSnap.Meter.Runtime.BlitsTotal = 400
 	pausedSnap.Meter.Runtime.WireBytes = 80_000_000
 	pausedSnap.Meter.Runtime.LastACKAge = 99 * time.Millisecond
-	paused := sampler.Sample(pausedSnap, adapters.MeterOverlay{}, now.Add(time.Second))
+	paused := sampler.Sample(pausedSnap, adapters.MeterOverlay{}, false, now.Add(time.Second))
 
 	if !paused.Paused {
 		t.Fatal("paused sample did not set Paused")
@@ -135,7 +135,7 @@ func TestMeterSamplerPausedFreezesHistoriesAndDisplayValues(t *testing.T) {
 }
 
 func TestMeterSamplerIdleDimsBothStandardLamps(t *testing.T) {
-	got := newMeterSampler().Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, time.Unix(1, 0))
+	got := newMeterSampler().Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, false, time.Unix(1, 0))
 	if got.MidRow.StandardNTSC || got.MidRow.StandardPAL {
 		t.Fatalf("idle standard lamps = NTSC %v PAL %v, want both false", got.MidRow.StandardNTSC, got.MidRow.StandardPAL)
 	}
@@ -194,4 +194,38 @@ type staticMeterOverlayProvider struct{ overlay adapters.MeterOverlay }
 
 func (p staticMeterOverlayProvider) MeterOverlay(context.Context, core.StatusHomeView) (adapters.MeterOverlay, bool) {
 	return p.overlay, true
+}
+
+func TestMeterDataFromSnapshot_AudioScopesLiveDiscoveryHook(t *testing.T) {
+	snap := core.StatusHomeView{}
+	got := meterDataFromSnapshot(snap, adapters.MeterOverlay{}, nil, nil, true)
+	if got.AudioScopes.Status != "live" || got.AudioScopes.Via != "audio" || got.AudioScopes.SampleHz != audioEventHz {
+		t.Errorf("AudioScopes = %+v, want Status=live Via=audio SampleHz=%d", got.AudioScopes, audioEventHz)
+	}
+}
+
+func TestMeterDataFromSnapshot_AudioScopesPendingWhenIdle(t *testing.T) {
+	snap := core.StatusHomeView{}
+	got := meterDataFromSnapshot(snap, adapters.MeterOverlay{}, nil, nil, false)
+	if got.AudioScopes.Status != "pending" || got.AudioScopes.Via != "" || got.AudioScopes.SampleHz != 0 {
+		t.Errorf("AudioScopes = %+v, want pending only", got.AudioScopes)
+	}
+}
+
+func TestMeterEnvelopeFrom_DiscoveryHookSerialization(t *testing.T) {
+	m := MeterData{AudioScopes: AudioScopesData{Status: "live", Via: "audio", SampleHz: 30}}
+	env := meterEnvelopeFrom(m)
+	body, _ := json.Marshal(env)
+	if !strings.Contains(string(body), `"audioScopes":{"status":"live","via":"audio","sampleHz":30}`) {
+		t.Errorf("envelope shape wrong: %s", body)
+	}
+}
+
+func TestMeterEnvelopeFrom_PendingShapeExact(t *testing.T) {
+	m := MeterData{AudioScopes: AudioScopesData{Status: "pending"}}
+	env := meterEnvelopeFrom(m)
+	body, _ := json.Marshal(env)
+	if !strings.Contains(string(body), `"audioScopes":{"status":"pending"}`) {
+		t.Errorf("pending envelope must NOT include via/sampleHz: %s", body)
+	}
 }

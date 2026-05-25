@@ -269,6 +269,7 @@ type PlaneConfig struct {
 	SuppressAudioOutput bool
 	OutputVolume        int // global output gain, 0..100
 	SeekOffsetMs        int // reported as session start position
+	Generation          uint64 // session generation; stamps audio snapshots
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
@@ -324,7 +325,8 @@ const (
 //  6. Pump loop: one BLIT per tick, AUDIO when ACK bit 6 is set.
 //  7. CLOSE on ctx cancel or ffmpeg exit.
 type Plane struct {
-	cfg PlaneConfig
+	cfg        PlaneConfig
+	audioMeter *AudioMeter
 	// fieldSender is the per-field write surface: WaitForCongestion / Send /
 	// SendPayload / MarkBlitSent. It is initialized from cfg.Sender at
 	// NewPlane time and is intentionally narrower than cfg.Sender (which
@@ -468,6 +470,17 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	if cfg.Modeline.Interlaced() && cfg.SpawnSpec.FieldOrder == "bff" {
 		p.fieldOrderFlip.Store(true)
 	}
+	// Audio meter is constructed even when audio is suppressed at the
+	// sender (cfg.SuppressAudioOutput == true): the field-tick path still
+	// feeds it real PCM, snapshots are still valid, and operators viewing
+	// the chassis still see live scopes for the underlying audio stream.
+	// The only sender-side effect of SuppressAudioOutput is that
+	// p.sendAudio() becomes a no-op; the meter Observe call (Step 4) runs
+	// in parallel because audio is still being decoded for HLS / probe
+	// parity. Construction is cheap (~ a few KB of ring allocations).
+	if cfg.AudioRate > 0 && cfg.AudioChans > 0 {
+		p.audioMeter = NewAudioMeter(cfg.Generation, cfg.AudioRate, cfg.AudioChans)
+	}
 	return p
 }
 
@@ -543,6 +556,16 @@ func (p *Plane) Underruns() uint64 { return p.underruns.Load() }
 // Groovy UDP socket. Drives the status home's throughput readout.
 // See PR2 spec §S10.
 func (p *Plane) WireBytes() uint64 { return p.wireBytes.Load() }
+
+// AudioScopes returns the latest audio-analysis snapshot or nil if no
+// snapshot has been published yet (or if audio is suppressed and no
+// meter was constructed). Returned pointer is read-only.
+func (p *Plane) AudioScopes() *AudioScopeSnapshot {
+	if p.audioMeter == nil {
+		return nil
+	}
+	return p.audioMeter.AudioScopes()
+}
 
 // LastACKAge returns the wall-clock duration since the last ACK was
 // parsed, or 0 if no ACK has arrived yet. The status home displays
@@ -997,6 +1020,9 @@ func (p *Plane) Run(ctx context.Context) error {
 					audioRingHead = (audioRingHead + 1) % len(audioRing)
 					audioRingLen--
 					if len(oldest) > 0 {
+						if p.audioMeter != nil {
+							p.audioMeter.Observe(oldest, audioChans, audioRate)
+						}
 						p.sendAudio(oldest)
 					}
 				}

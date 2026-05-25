@@ -165,11 +165,14 @@ type ReadoutIdleData struct {
 	Link        string
 }
 
-// AudioScopesData holds the audio-scope cluster status. Spec 5B will
-// fill in live audio analysis; for now this only carries a status token
-// ("pending" while quiescent).
+// AudioScopesData holds the audio-scope cluster status. Carries the
+// discovery hook so meter-only clients can find the high-rate `audio`
+// SSE event when a session is active. When idle, only Status is set;
+// when live, Via and SampleHz advertise the high-rate channel.
 type AudioScopesData struct {
-	Status string
+	Status   string
+	Via      string
+	SampleHz int
 }
 
 // TransportData drives the transport row: play/pause/stop buttons,

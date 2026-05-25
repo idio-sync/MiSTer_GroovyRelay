@@ -43,15 +43,7 @@
       <div class="meter-mid-row meter-row">
         <div class="audio-grp">
           <div class="spectrum" id="spectrum" aria-hidden="true">
-            {{range $i, $_ := until 6}}
-            <div class="spectrum-band">
-              <div class="stack">
-                {{range until 8}}<div class="seg"></div>{{end}}
-                <span class="peak-dot"></span>
-              </div>
-              <div class="lbl">{{if eq $i 0}}60{{else if eq $i 1}}250{{else if eq $i 2}}1K{{else if eq $i 3}}4K{{else if eq $i 4}}8K{{else}}16K{{end}}</div>
-            </div>
-            {{end}}
+            <canvas id="spectrum-canvas" width="220" height="120" role="img" aria-label="32-band audio spectrum">32-band audio spectrum</canvas>
           </div>
           <div class="gonio-wrap aux-scope" title="Stereo phase scope (goniometer) &middot; L vs R">
             <div class="gonio" id="gonio">

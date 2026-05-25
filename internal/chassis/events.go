@@ -266,7 +266,52 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err := emit(w, "meter", meterEnvelopeFrom(last.Meter)); err != nil {
 		return
 	}
+
+	// Audio scope initial burst — emit last in the canonical order.
+	// safeAudioEnvelope recovers from panics in the viewer or marshaler
+	// so that a bad first frame does not abort the SSE handler.
+	safeAudioEnvelope := func() any {
+		result := any(&audioPendingEnvelope{Status: "pending"}) // safe fallback
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					_ = r
+				}
+			}()
+			result = audioEnvelopeFromViewer(s.audioScopeViewer)
+		}()
+		return result
+	}
+	var lastAudio any = safeAudioEnvelope()
+	if err := emit(w, "audio", lastAudio); err != nil {
+		return
+	}
 	flusher.Flush()
+
+	audioTick := time.NewTicker(audioTickInterval)
+	defer audioTick.Stop()
+
+	// emitAudio runs in a closure so defer recover() actually fires
+	// per-tick. A panic in viewer/marshal skips the frame but does
+	// NOT terminate the SSE handler.
+	emitAudio := func() (alive bool) {
+		alive = true
+		defer func() {
+			if r := recover(); r != nil {
+				_ = r
+			}
+		}()
+		curr := audioEnvelopeFromViewer(s.audioScopeViewer)
+		if !audioShouldEmit(lastAudio, curr) {
+			return true
+		}
+		if err := emit(w, "audio", curr); err != nil {
+			return false
+		}
+		lastAudio = curr
+		flusher.Flush()
+		return true
+	}
 
 	tick := time.NewTicker(chassisTickInterval)
 	defer tick.Stop()
@@ -329,6 +374,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				s.logMeterEmitRefused("unchanged")
 			}
 			flusher.Flush()
+		case <-audioTick.C:
+			if !emitAudio() {
+				return
+			}
 		case <-heartbeat.C:
 			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
 				return
@@ -348,6 +397,14 @@ var chassisTickInterval = 250 * time.Millisecond
 // `: heartbeat` SSE comments to defeat reverse-proxy idle timeouts.
 // Production default 30s; tests override.
 var chassisHeartbeatInterval = 30 * time.Second
+
+// audioTickInterval pins the audio event cadence at exactly 30 Hz.
+// time.Second / 30 = 33.333… ms, vs the looser 33 ms literal.
+var audioTickInterval = time.Second / 30
+
+// audioEventHz is the rate the meter discovery hook advertises in its
+// `sampleHz` field. MUST stay in sync with audioTickInterval.
+const audioEventHz = 30
 
 // snapshotCache holds the most recent ReceiverPageData read from
 // SessionViewer. New seeds it synchronously; Mount starts a single

@@ -51,6 +51,12 @@ type Config struct {
 	// changes. When nil, chassis renders the knob read-only for POSTs.
 	VolumeSaver VolumeSaver
 
+	// AudioScopeViewer is the optional read-only source for the latest
+	// audio-analysis snapshot. When nil, the chassis emits a pending audio
+	// frame on every 30 Hz tick. *core.Manager satisfies this structurally
+	// via AudioScopes(); main.go wires that once the manager is live.
+	AudioScopeViewer AudioScopeViewer
+
 	AUX AUXStarter
 }
 
@@ -71,6 +77,7 @@ type Server struct {
 	visualizerSaver  VisualizerSaver
 	volumeViewer     VolumeViewer
 	volumeSaver      VolumeSaver
+	audioScopeViewer AudioScopeViewer
 	aux              AUXStarter
 
 	cache       *snapshotCache
@@ -114,6 +121,7 @@ func New(cfg Config) (*Server, error) {
 		visualizerSaver:     cfg.VisualizerSaver,
 		volumeViewer:        cfg.VolumeViewer,
 		volumeSaver:         cfg.VolumeSaver,
+		audioScopeViewer:    cfg.AudioScopeViewer,
 		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
@@ -134,7 +142,8 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 	if s.session == nil {
 		base := idleSnapshot(s.cfg, now)
-		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, now)
+		audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
+		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, audioLive, now)
 		applyAUXSourceState(&base, s.aux)
 		base.Visualizer.ActiveMode = liveVisualizerMode(s.cfg, s.visualizerViewer)
 		// idleSnapshot already seeded Transport.OutputVolume from cfg; a
@@ -148,8 +157,20 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 	view := s.session.StatusHomeView()
 	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, now)
 	overlay := s.collectMeterOverlay(context.Background(), view)
-	base.Meter = s.meter.Sample(view, overlay, now)
+	audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
+	base.Meter = s.meter.Sample(view, overlay, audioLive, now)
 	return base
+}
+
+// audioScopeViewerIsLive returns true when the viewer has an active
+// snapshot (Generation > 0). Used by the idle path to thread the
+// discovery hook through meterSampler.Sample without a session.
+func audioScopeViewerIsLive(v AudioScopeViewer) bool {
+	if v == nil {
+		return false
+	}
+	snap := v.AudioScopes()
+	return snap != nil && snap.Generation > 0
 }
 
 // Mount registers chassis routes on mux and starts the snapshot cache

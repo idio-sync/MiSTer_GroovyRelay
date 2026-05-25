@@ -2266,3 +2266,212 @@ func TestPlane_TelemetryRaceFree(t *testing.T) {
 		t.Error("lastACKUnix stayed zero — ACK timestamp writers did not run")
 	}
 }
+
+// TestNewPlane_AudioScopesNilUntilAudioObserved confirms that a freshly
+// constructed Plane returns nil from AudioScopes() before any audio has been
+// observed. The meter is constructed (AudioRate > 0 && AudioChans > 0) but
+// has never called Observe, so no snapshot has been published yet.
+func TestNewPlane_AudioScopesNilUntilAudioObserved(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		Generation:    42,
+		AudioRate:     48000,
+		AudioChans:    2,
+		FieldWidth:    2,
+		FieldHeight:   1,
+		BytesPerPixel: 1,
+	})
+	if got := p.AudioScopes(); got != nil {
+		t.Fatalf("AudioScopes before observed audio = %#v, want nil", got)
+	}
+}
+
+// staticPCMReader is an io.Reader that fills any read buffer with non-zero
+// PCM bytes (0x01) indefinitely until Close is called. Used by
+// TestPlane_RunPublishesAudioScopesFromReadyAudioPath to feed the Plane.Run
+// audio pipe with valid s16le data.
+type staticPCMReader struct {
+	mu     sync.Mutex
+	closed bool
+}
+
+func (r *staticPCMReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return 0, io.EOF
+	}
+	r.mu.Unlock()
+	for i := range p {
+		p[i] = 0x01
+	}
+	return len(p), nil
+}
+
+func (r *staticPCMReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	return nil
+}
+
+// runPlaneWithAudioPipe is a test helper that spins up a Plane with the given
+// config and audio pipe reader, runs it past the INIT handshake, and then
+// continues running for runDuration before cancelling the context. Returns the
+// plane so the caller can inspect state (e.g. AudioScopes()). The helper
+// requires UDP sockets; it will call t.Skip if they are unavailable.
+func runPlaneWithAudioPipe(t *testing.T, cfg PlaneConfig, audioPipe io.Reader, runDuration time.Duration) *Plane {
+	t.Helper()
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "0")
+
+	listener, err := fakemister.NewListener("127.0.0.1:0")
+	requireUDPSockets(t, err)
+	// EnableACKs(true) sets status bit 6 (audio ready) in every ACK the fake
+	// mister emits; Plane.Run stores this into p.audioReady so the field-tick
+	// loop will actually pop audio from the ring and call Observe.
+	listener.EnableACKs(true)
+	addr := listener.Addr().(*net.UDPAddr)
+
+	events := make(chan fakemister.Command, 64)
+	listenerDone := make(chan struct{})
+	go func() {
+		defer close(listenerDone)
+		listener.Run(events)
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-listenerDone
+	})
+
+	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
+	requireUDPSockets(t, err)
+	t.Cleanup(func() { sender.Close() })
+
+	// Build a stub process whose audio pipe is the caller-supplied reader.
+	audioProc := &stubProcess{
+		video: newStaticFrameReader(),
+		audio: audioPipe,
+		done:  make(chan struct{}),
+	}
+
+	origSpawn := spawnProcess
+	spawnProcess = func(_ context.Context, _ ffmpeg.PipelineSpec) (processHandle, error) {
+		return audioProc, nil
+	}
+	t.Cleanup(func() { spawnProcess = origSpawn })
+
+	if cfg.Sender == nil {
+		cfg.Sender = sender
+	}
+	if cfg.Modeline.PClock == 0 {
+		cfg.Modeline = groovy.NTSC480i60
+	}
+	if cfg.FieldWidth == 0 {
+		cfg.FieldWidth = 2
+	}
+	if cfg.FieldHeight == 0 {
+		cfg.FieldHeight = 1
+	}
+	if cfg.BytesPerPixel == 0 {
+		cfg.BytesPerPixel = 1
+	}
+
+	plane := NewPlane(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- plane.Run(ctx)
+	}()
+
+	// Wait for INIT to confirm the handshake completed and the field-tick loop
+	// is running. After INIT the listener sends an ACK with audio-ready set,
+	// so p.audioReady becomes true and subsequent ticks will pop audio.
+	initSeen := make(chan struct{})
+	go func() {
+		for cmd := range events {
+			if cmd.Type == groovy.CmdInit {
+				close(initSeen)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-initSeen:
+	case err := <-runErr:
+		cancel()
+		t.Fatalf("Plane.Run exited before INIT: %v", err)
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-runErr
+		t.Fatal("timed out waiting for INIT")
+	}
+
+	// Let the field-tick loop run for runDuration to give audio chunks time to
+	// flow through the ring, past the delay guard, and into Observe.
+	select {
+	case <-time.After(runDuration):
+	case err := <-runErr:
+		cancel()
+		t.Fatalf("Plane.Run exited unexpectedly: %v", err)
+	}
+
+	cancel()
+	select {
+	case <-runErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Plane.Run did not stop after context cancel")
+	}
+	<-plane.Done()
+	return plane
+}
+
+// TestPlane_RunPublishesAudioScopesFromReadyAudioPath runs the plane with a
+// continuous PCM audio source and an ACK-enabled fake mister (audio-ready bit
+// set). After the field-tick loop has had time to drain audio chunks through
+// the ring and call Observe, AudioScopes() must return a non-nil snapshot
+// whose Generation matches PlaneConfig.Generation.
+func TestPlane_RunPublishesAudioScopesFromReadyAudioPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires running goroutines and a UDP loopback listener; skipped under -short")
+	}
+
+	const gen = uint64(77)
+	audioPipe := &staticPCMReader{}
+	defer audioPipe.Close()
+
+	plane := runPlaneWithAudioPipe(t, PlaneConfig{
+		Generation: gen,
+		AudioRate:  48000,
+		AudioChans: 2,
+		SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
+	}, audioPipe, 300*time.Millisecond)
+
+	snap := plane.AudioScopes()
+	if snap == nil {
+		t.Fatal("AudioScopes() = nil after running plane with PCM audio for 300ms; want non-nil snapshot")
+	}
+	if snap.Generation != gen {
+		t.Errorf("AudioScopes().Generation = %d, want %d", snap.Generation, gen)
+	}
+}
+
+// TestPlane_RunDoesNotPublishAudioScopesForEmptyChunks runs the plane with an
+// audio pipe that immediately returns EOF (empty/no data). Because no non-empty
+// PCM chunks ever reach Observe, AudioScopes() must remain nil.
+func TestPlane_RunDoesNotPublishAudioScopesForEmptyChunks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires running goroutines and a UDP loopback listener; skipped under -short")
+	}
+
+	plane := runPlaneWithAudioPipe(t, PlaneConfig{
+		Generation: 99,
+		AudioRate:  48000,
+		AudioChans: 2,
+		SpawnSpec:  ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
+	}, eofReader{}, 150*time.Millisecond)
+
+	if snap := plane.AudioScopes(); snap != nil {
+		t.Fatalf("AudioScopes() = %#v after EOF audio pipe, want nil", snap)
+	}
+}

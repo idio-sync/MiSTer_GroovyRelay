@@ -86,21 +86,23 @@ func bogusRequest() SessionRequest {
 
 type fakePlane struct{}
 
-func (f *fakePlane) Run(context.Context) error  { return nil }
-func (f *fakePlane) Done() <-chan struct{}      { ch := make(chan struct{}); close(ch); return ch }
-func (f *fakePlane) Position() time.Duration    { return 0 }
-func (f *fakePlane) SetFieldOrder(string) error { return nil }
-func (f *fakePlane) SetOutputVolume(int) error  { return nil }
-func (f *fakePlane) BlitsTotal() uint64         { return 0 }
-func (f *fakePlane) FramesTotal() uint64        { return 0 }
-func (f *fakePlane) Underruns() uint64          { return 0 }
-func (f *fakePlane) WireBytes() uint64          { return 0 }
-func (f *fakePlane) LastACKAge() time.Duration  { return 0 }
+func (f *fakePlane) Run(context.Context) error                      { return nil }
+func (f *fakePlane) Done() <-chan struct{}                           { ch := make(chan struct{}); close(ch); return ch }
+func (f *fakePlane) Position() time.Duration                        { return 0 }
+func (f *fakePlane) SetFieldOrder(string) error                     { return nil }
+func (f *fakePlane) SetOutputVolume(int) error                      { return nil }
+func (f *fakePlane) BlitsTotal() uint64                             { return 0 }
+func (f *fakePlane) FramesTotal() uint64                            { return 0 }
+func (f *fakePlane) Underruns() uint64                              { return 0 }
+func (f *fakePlane) WireBytes() uint64                              { return 0 }
+func (f *fakePlane) LastACKAge() time.Duration                      { return 0 }
+func (f *fakePlane) AudioScopes() *dataplane.AudioScopeSnapshot     { return nil }
 
 type contextDonePlane struct {
 	done chan struct{}
 }
 
+func (f *contextDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
 func (f *contextDonePlane) Run(ctx context.Context) error {
 	<-ctx.Done()
 	close(f.done)
@@ -121,16 +123,17 @@ type blockingDonePlane struct {
 	pos  time.Duration
 }
 
-func (f *blockingDonePlane) Run(context.Context) error  { <-f.done; return nil }
-func (f *blockingDonePlane) Done() <-chan struct{}      { return f.done }
-func (f *blockingDonePlane) Position() time.Duration    { return f.pos }
-func (f *blockingDonePlane) SetFieldOrder(string) error { return nil }
-func (f *blockingDonePlane) SetOutputVolume(int) error  { return nil }
-func (f *blockingDonePlane) BlitsTotal() uint64         { return 0 }
-func (f *blockingDonePlane) FramesTotal() uint64        { return 0 }
-func (f *blockingDonePlane) Underruns() uint64          { return 0 }
-func (f *blockingDonePlane) WireBytes() uint64          { return 0 }
-func (f *blockingDonePlane) LastACKAge() time.Duration  { return 0 }
+func (f *blockingDonePlane) Run(context.Context) error                   { <-f.done; return nil }
+func (f *blockingDonePlane) Done() <-chan struct{}                        { return f.done }
+func (f *blockingDonePlane) Position() time.Duration                     { return f.pos }
+func (f *blockingDonePlane) SetFieldOrder(string) error                  { return nil }
+func (f *blockingDonePlane) SetOutputVolume(int) error                   { return nil }
+func (f *blockingDonePlane) BlitsTotal() uint64                          { return 0 }
+func (f *blockingDonePlane) FramesTotal() uint64                         { return 0 }
+func (f *blockingDonePlane) Underruns() uint64                           { return 0 }
+func (f *blockingDonePlane) WireBytes() uint64                           { return 0 }
+func (f *blockingDonePlane) LastACKAge() time.Duration                   { return 0 }
+func (f *blockingDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
 
 type volumePlane struct {
 	fakePlane
@@ -151,15 +154,16 @@ func (f *errorPlane) Run(context.Context) error {
 	close(f.done)
 	return f.err
 }
-func (f *errorPlane) Done() <-chan struct{}      { return f.done }
-func (f *errorPlane) Position() time.Duration    { return 0 }
-func (f *errorPlane) SetFieldOrder(string) error { return nil }
-func (f *errorPlane) SetOutputVolume(int) error  { return nil }
-func (f *errorPlane) BlitsTotal() uint64         { return 0 }
-func (f *errorPlane) FramesTotal() uint64        { return 0 }
-func (f *errorPlane) Underruns() uint64          { return 0 }
-func (f *errorPlane) WireBytes() uint64          { return 0 }
-func (f *errorPlane) LastACKAge() time.Duration  { return 0 }
+func (f *errorPlane) Done() <-chan struct{}                        { return f.done }
+func (f *errorPlane) Position() time.Duration                     { return 0 }
+func (f *errorPlane) SetFieldOrder(string) error                  { return nil }
+func (f *errorPlane) SetOutputVolume(int) error                   { return nil }
+func (f *errorPlane) BlitsTotal() uint64                          { return 0 }
+func (f *errorPlane) FramesTotal() uint64                         { return 0 }
+func (f *errorPlane) Underruns() uint64                           { return 0 }
+func (f *errorPlane) WireBytes() uint64                           { return 0 }
+func (f *errorPlane) LastACKAge() time.Duration                   { return 0 }
+func (f *errorPlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
 
 func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	m := newTestManager(t)
@@ -3408,3 +3412,26 @@ func (p *meterCountingPlane) FramesTotal() uint64       { return p.framesTotal }
 func (p *meterCountingPlane) Underruns() uint64         { return p.underruns }
 func (p *meterCountingPlane) WireBytes() uint64         { return p.wireBytes }
 func (p *meterCountingPlane) LastACKAge() time.Duration { return p.lastACKAge }
+
+func TestManager_AudioScopesNilWhenIdle(t *testing.T) {
+	m := newTestManager(t)
+	if got := m.AudioScopes(); got != nil {
+		t.Errorf("AudioScopes() when idle = %v, want nil", got)
+	}
+}
+
+func TestManager_AudioScopesNonNilWhenPlaneActive(t *testing.T) {
+	m := newTestManager(t)
+	snap := &dataplane.AudioScopeSnapshot{Generation: 7, Peak: [2]float32{0.5, 0.5}}
+	m.plane = &audioScopesFakePlane{snap: snap}
+	if got := m.AudioScopes(); got == nil || got.Generation != 7 {
+		t.Errorf("AudioScopes() with plane = %v, want gen=7", got)
+	}
+}
+
+type audioScopesFakePlane struct {
+	fakePlane
+	snap *dataplane.AudioScopeSnapshot
+}
+
+func (p *audioScopesFakePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return p.snap }
