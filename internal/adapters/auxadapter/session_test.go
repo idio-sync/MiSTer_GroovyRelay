@@ -355,6 +355,44 @@ func TestStartAUXStartSessionErrorReleasesProxyTokensAndDoesNotWrapUnavailable(t
 	}
 }
 
+func TestReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *testing.T) {
+	wantErr := errors.New("core start failed before preempt")
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	oldTokens := tokenNames(a.proxy.tokens)
+	oldGen := a.activeGen
+	if got := a.activeRef; got != "aux:aux" {
+		t.Fatalf("activeRef after first StartAUX = %q, want aux:aux", got)
+	}
+
+	fc.startErr = wantErr
+	_, err := a.StartAUX(context.Background(), "aux")
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartAUX error = %v, want core error", err)
+	}
+	if errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX wrapped ErrSourceUnavailable for runtime error: %v", err)
+	}
+	if got := a.activeRef; got != "aux:aux" {
+		t.Fatalf("activeRef after failed replacement = %q, want aux:aux", got)
+	}
+	if got := a.activeGen; got != oldGen {
+		t.Fatalf("activeGen after failed replacement = %d, want restored %d", got, oldGen)
+	}
+	st := a.AUXStatus(context.Background())
+	if !st.Active || st.AdapterRef != "aux:aux" {
+		t.Fatalf("AUXStatus after failed replacement = %+v, want active aux:aux", st)
+	}
+	if got := tokenNames(a.proxy.tokens); !sameStrings(got, oldTokens) {
+		t.Fatalf("proxy tokens after failed replacement = %#v, want original tokens %#v", got, oldTokens)
+	}
+}
+
 func TestOnStopReleasesProxyTokensAndClearsActiveAUXState(t *testing.T) {
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)

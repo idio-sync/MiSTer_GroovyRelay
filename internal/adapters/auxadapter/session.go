@@ -78,19 +78,20 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		a.mu.Unlock()
 		return "", a.recordAUXStartError(err)
 	}
+	previousActive := auxActiveSession{
+		ref:        a.activeRef,
+		gen:        a.activeGen,
+		cleanup:    a.activeCleanup,
+		state:      a.state,
+		lastErr:    a.lastErr,
+		stateSince: a.stateSince,
+	}
 	activeGen := a.activeGen + 1
 	if activeGen == 0 {
 		activeGen = 1
 	}
 	ref := req.AdapterRef
-	req.OnStop = func(reason string) {
-		cleanup()
-		a.onStopForSession(ref, activeGen)(reason)
-	}
-	previousCleanup := a.activeCleanup
-	if previousCleanup != nil {
-		previousCleanup()
-	}
+	req.OnStop = a.onStopForSession(ref, activeGen)
 	a.activeRef = req.AdapterRef
 	a.activeGen = activeGen
 	a.activeCleanup = cleanup
@@ -102,8 +103,12 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 	if err := coreManager.StartSession(req); err != nil {
 		cleanup()
 		wrapped := fmt.Errorf("start AUX session: %w", err)
-		a.rollbackAUXStart(ref, activeGen, wrapped)
+		a.rollbackAUXStart(ref, activeGen, previousActive, wrapped)
 		return "", wrapped
+	}
+
+	if previousActive.cleanup != nil {
+		previousActive.cleanup()
 	}
 
 	return req.AdapterRef, nil
@@ -285,15 +290,30 @@ func (a *Adapter) recordAUXStartError(err error) error {
 	return err
 }
 
-func (a *Adapter) rollbackAUXStart(ref string, gen uint64, err error) {
+type auxActiveSession struct {
+	ref        string
+	gen        uint64
+	cleanup    func()
+	state      adapters.State
+	lastErr    string
+	stateSince time.Time
+}
+
+func (a *Adapter) rollbackAUXStart(ref string, gen uint64, previous auxActiveSession, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.activeRef != ref || a.activeGen != gen {
 		return
 	}
-	a.activeRef = ""
-	a.activeGen = 0
-	a.activeCleanup = nil
+	a.activeRef = previous.ref
+	a.activeGen = previous.gen
+	a.activeCleanup = previous.cleanup
+	if previous.ref != "" {
+		a.state = previous.state
+		a.lastErr = previous.lastErr
+		a.stateSince = previous.stateSince
+		return
+	}
 	a.state = adapters.StateError
 	a.lastErr = err.Error()
 	a.stateSince = a.auxNow()
