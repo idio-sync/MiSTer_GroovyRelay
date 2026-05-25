@@ -256,10 +256,11 @@ r.Body = http.MaxBytesReader(w, r.Body, adapters.MaxQuickCastBytes)
 
 ```bash
 go test ./internal/adapters -run "TestQuickCastError|TestMaxQuickCastBytes" -v
+go build ./internal/ui/...
 go test ./internal/ui -run "TestQuickCast" -v
 ```
 
-Expected: all PASS. The `/ui` tests still pass because `adapters.MaxQuickCastBytes == maxQuickCastMultipartBytes`.
+Expected: all PASS. The `go build` step catches a forgotten `MaxQuickCastBytes` replacement in `internal/ui/playback.go` — if you didn't update the call site at line 218, the build fails with `maxQuickCastMultipartBytes undefined` after the local constant is removed.
 
 - [ ] **Step 5: Commit**
 
@@ -350,9 +351,12 @@ Append to [internal/adapters/url/playback_provider_test.go](../../../internal/ad
 
 ```go
 func TestHandleQuickCast_WrapsDisabledAsQuickCastErrorBlocked(t *testing.T) {
-	a := newAdapterForTest(t) // existing helper; constructs disabled adapter
-	a.Disable()                // existing method or set IsEnabled() false
-	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(false) // existing adapter method — see adapter_interface_test.go for the pattern
+	_, err = a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
 		TabID:  "url",
 		Values: map[string]string{"url": "https://example.test/video.mp4"},
 	})
@@ -369,8 +373,12 @@ func TestHandleQuickCast_WrapsDisabledAsQuickCastErrorBlocked(t *testing.T) {
 }
 
 func TestHandleQuickCast_WrapsParseFailureAsBadURL(t *testing.T) {
-	a := newAdapterForTest(t)
-	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+	_, err = a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
 		TabID:  "url",
 		Values: map[string]string{"url": ""},
 	})
@@ -389,8 +397,12 @@ func TestHandleQuickCast_WrapsParseFailureAsBadURL(t *testing.T) {
 func TestHandleQuickCast_PreservesPlainErrorMessage(t *testing.T) {
 	// /ui consumers still call err.Error() so the human-readable message
 	// must be preserved through the wrap.
-	a := newAdapterForTest(t)
-	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+	_, err = a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
 		TabID:  "url",
 		Values: map[string]string{"url": ""},
 	})
@@ -403,9 +415,9 @@ func TestHandleQuickCast_PreservesPlainErrorMessage(t *testing.T) {
 }
 ```
 
-Add imports as needed (`errors`, `net/http`, `strings`, and the adapters package).
+Add imports as needed: `errors`, `net/http`, `strings`, `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters`, `github.com/idio-sync/MiSTer_GroovyRelay/internal/config`.
 
-The exact name of the existing helper (`newAdapterForTest`) and disabled-state setter (`Disable()`) may differ; use the existing test scaffolding patterns in the file.
+The URL adapter constructor pattern follows existing tests like [internal/adapters/url/adapter_test.go:28](../../../internal/adapters/url/adapter_test.go); `SetEnabled(bool)` is the existing method (see [internal/adapters/url/adapter_interface_test.go:74](../../../internal/adapters/url/adapter_interface_test.go)).
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -506,8 +518,10 @@ Append to [internal/adapters/torrent/playback_provider_test.go](../../../interna
 
 ```go
 func TestHandleQuickCast_WrapsDisabledAdapter(t *testing.T) {
-	a := newAdapterForTest(t)
-	a.Disable() // existing test helper or equivalent
+	// Mirror the existing torrent playback_provider_test.go:29 pattern:
+	// direct struct construction, not New(). The stub core dependency
+	// can be the same coreStub already used by other tests in this file.
+	a := &Adapter{core: coreStub(t), cfg: Config{Enabled: false, TrafficAcknowledged: true}}
 	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
 		TabID:  "torrent-magnet",
 		Values: map[string]string{"magnet": "magnet:?xt=urn:btih:abc"},
@@ -530,9 +544,7 @@ func TestHandleQuickCast_WrapsDisabledAdapter(t *testing.T) {
 }
 
 func TestHandleQuickCast_WrapsTrafficNotAcknowledged(t *testing.T) {
-	a := newAdapterForTest(t)
-	// existing helper: enable adapter but leave traffic ack false
-	a.Enable()
+	a := &Adapter{core: coreStub(t), cfg: Config{Enabled: true, TrafficAcknowledged: false}}
 	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
 		TabID:  "torrent-magnet",
 		Values: map[string]string{"magnet": "magnet:?xt=urn:btih:abc"},
@@ -602,11 +614,11 @@ Expected: FAIL with `undefined: wrapQuickCastError`.
 
 - [ ] **Step 3: Add the chip mapping + wrapping helper**
 
-Append to [internal/adapters/torrent/errors.go](../../../internal/adapters/torrent/errors.go):
+First, add `"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"` to the existing import block at the top of [internal/adapters/torrent/errors.go](../../../internal/adapters/torrent/errors.go) (after the existing `"net/http"` import — Go's import block goes at the top of the file, never at the bottom).
+
+Then append the new declarations to the file:
 
 ```go
-import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
-
 // torrentChipForKind maps each TorrentError.Kind to the chassis chip
 // text. Statuses come from torrentErrorStatus (preserved from existing
 // /ui behavior). The chassis route extracts both Status and Chip via
@@ -859,11 +871,19 @@ Expected: FAIL with `BundledPresets undefined`.
 
 - [ ] **Step 3: Add the bundled preset constant**
 
-Append to [internal/adapters/streams/assets.go](../../../internal/adapters/streams/assets.go):
+First, merge the adapters import into the existing import block at the top of [internal/adapters/streams/assets.go](../../../internal/adapters/streams/assets.go). The file currently has `import "embed"` at line 3 — change it to a parenthesized block:
 
 ```go
-import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+import (
+	"embed"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+)
+```
+
+Then append the new constant to the end of the file:
+
+```go
 // bundledChassisPresets is the source of truth for the 12-slot chassis
 // preset bank. The mockup's PRESETS map at docs/superpowers/reference/
 // 2026-05-21-receiver-v24.html is the visual spec; this literal mirrors
@@ -941,22 +961,38 @@ import (
 )
 
 func TestCastPreset_SlotOutOfRange(t *testing.T) {
-	a := newAdapterForTest(t) // existing test helper — see adapter_test.go for the canonical builder
+	a := newAdapterForTest(t) // see existing helpers in test_helpers_test.go
 	for _, slot := range []int{0, -1, 13, 99} {
 		err := a.CastPreset(context.Background(), slot)
 		if err == nil {
 			t.Errorf("CastPreset(%d) err = nil, want non-nil", slot)
+			continue
+		}
+		var qerr *adapters.QuickCastError
+		if !errors.As(err, &qerr) {
+			t.Errorf("CastPreset(%d) err = %v, want *QuickCastError", slot, err)
+			continue
+		}
+		if qerr.Status != http.StatusBadRequest || qerr.Chip != "BAD SLOT" {
+			t.Errorf("CastPreset(%d) qerr = %+v, want Status=400 Chip=BAD SLOT", slot, qerr)
 		}
 	}
 }
 
 func TestCastPreset_StartupSnapshotFailureReturnsNotReady(t *testing.T) {
-	a := newAdapterForTest(t)
-	// Force ensureStartupSnapshot to fail. The simplest way: replace the
-	// adapter's snapshot-builder dependency with one that returns an error.
-	// If newAdapterForTest doesn't expose a knob, add one — or stub a.fetcher
-	// (the existing httpFetcher dep) with a fake that errors.
-	a.injectFakeSnapshotFailure(errors.New("synthetic fetch failure"))
+	// Construct an adapter WITHOUT pre-populated catalogs so
+	// ensureStartupSnapshot will attempt to fetch and fail. The easiest
+	// way is to use the existing fakeCore + fakeFetcher pattern from
+	// test_helpers_test.go and inject a fetcher that errors. If a fetch-
+	// injection seam doesn't exist, add a small one in this step:
+	//
+	//   // in adapter.go (production code, near other deps)
+	//   type playlistFetcher interface { ... } // already exists or rename
+	//   func (a *Adapter) replaceFetcherForTest(f playlistFetcher) { a.fetcher = f }
+	//
+	// Once that seam exists, the test reads cleanly:
+	a, _ := newTestAdapterWithFakeCore(t)
+	a.replaceFetcherForTest(failingFetcher{err: errors.New("synthetic fetch failure")})
 	err := a.CastPreset(context.Background(), 7)
 	if err == nil {
 		t.Fatal("err = nil, want NOT READY")
@@ -973,20 +1009,37 @@ func TestCastPreset_StartupSnapshotFailureReturnsNotReady(t *testing.T) {
 	}
 }
 
+// failingFetcher is a tiny local stub that returns the configured error
+// for every fetch call. Add to preset_test.go alongside the test.
+type failingFetcher struct{ err error }
+
+func (f failingFetcher) FetchPlaylist(ctx context.Context, url string) ([]byte, error) {
+	return nil, f.err
+}
+
 func TestCastPreset_SuccessfulSlotCallsStartResolvedStream(t *testing.T) {
-	a := newAdapterForTest(t)
-	a.eagerlyPopulateCatalogs(t) // existing test helper that drives ensureStartupSnapshot
-	captured := a.captureStartResolvedStream() // record what arrives in StartResolvedStream
+	// newTestAdapterWithCatalog (existing helper) pre-populates the
+	// streams catalog so ensureStartupSnapshot is a no-op. The
+	// fakeCore inside it records what arrives in StartResolvedStream
+	// (via StartSession on the fake core).
+	a := newTestAdapterWithCatalog(t)
 	if err := a.CastPreset(context.Background(), 7); err != nil {
 		t.Fatalf("CastPreset(7) err = %v", err)
 	}
-	if got := captured.last(); got.ProviderID != "cartoon-rewind" || got.ChannelID != "loonytunes" {
-		t.Errorf("captured = %+v, want {cartoon-rewind, loonytunes}", got)
+	// The exact assertion shape depends on how the existing fakeCore
+	// records sessions. Cartoon-rewind/loonytunes is slot 7, so the
+	// AdapterRef on the started session should contain
+	// "streams:cartoon-rewind:loonytunes:..." (5-segment format).
+	started := a.lastStartedSession(t) // small helper — see Step 3 note
+	if !strings.HasPrefix(started.AdapterRef, "streams:cartoon-rewind:loonytunes:") {
+		t.Errorf("started.AdapterRef = %q, want prefix streams:cartoon-rewind:loonytunes:", started.AdapterRef)
 	}
 }
 ```
 
-The exact names of helper methods (`injectFakeSnapshotFailure`, `eagerlyPopulateCatalogs`, `captureStartResolvedStream`) will depend on what's already in `test_helpers_test.go`. If they don't exist, add them. The capture helper can be a simple slice-appending wrapper over the existing `StartResolvedStream`. If `StartResolvedStream` is reachable only via the real path, a per-adapter fake registered through the existing seam (see `playback_test.go` for the pattern) is enough.
+**Note on TDD discipline for this task:** in Go, when a test references symbols (types, methods, package-level vars) that don't yet exist, `go test` produces a compile error instead of an assertion failure. That compile error IS the red phase for Go TDD — `go test` exits non-zero with `undefined: CastPreset`, `undefined: failingFetcher`, etc. Step 3 then introduces both the new symbols and the implementation. The Step 1 → Step 2 → Step 3 cycle remains valid.
+
+`replaceFetcherForTest`, `lastStartedSession`, and any other small test seams referenced above don't yet exist. Add them as part of Step 1 (alongside the test code) or Step 3 (as part of the implementation, before the assertion logic). The plan deliberately doesn't dictate which file each helper lands in — match the existing test-scaffolding patterns in `test_helpers_test.go`.
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -1016,7 +1069,14 @@ import (
 // fallback.
 func (a *Adapter) CastPreset(ctx context.Context, slot int) error {
 	if slot < 1 || slot > 12 {
-		return fmt.Errorf("streams: preset slot %d out of range", slot)
+		// Typed error so any caller bypassing the chassis-side validation
+		// (tests, future callers) still gets the spec's 400/BAD SLOT
+		// response instead of collapsing to 500/CAST FAILED.
+		return &adapters.QuickCastError{
+			Status:  http.StatusBadRequest,
+			Chip:    "BAD SLOT",
+			Message: fmt.Sprintf("streams: preset slot %d out of range", slot),
+		}
 	}
 	// main.go binds and serves HTTP before adapter Start(ctx) runs, so
 	// preset clicks can arrive before catalogs are populated. Guard with
@@ -1117,8 +1177,14 @@ func TestIdleSnapshot_PresetsHydratedWhenViewerWired(t *testing.T) {
 	if data.Presets.Slots[1].Slot != 2 {
 		t.Errorf("slot 2 Slot = %d, want 2 (numbered even when empty)", data.Presets.Slots[1].Slot)
 	}
-	if data.Presets.ModeLabel != "Memory · 12 / 12 slots" {
-		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 12 / 12 slots")
+	// fixture has only slot 1 filled; the remaining 11 entries are zero-valued
+	// PresetEntry. buildPresetsData counts e.ProviderID != "" as filled, so the
+	// expected count is 1.
+	if data.Presets.ModeLabel != "Memory · 1 / 12 slots" {
+		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 1 / 12 slots")
+	}
+	if data.Presets.Count != "★ 1" {
+		t.Errorf("Count = %q, want %q", data.Presets.Count, "★ 1")
 	}
 }
 
@@ -1165,7 +1231,25 @@ func bundledFakeViewer() fakePresetViewer {
 }
 ```
 
-If `fakeStatusView` doesn't already exist, add a simple helper returning `core.StatusHomeView{State: core.StatePlaying, AdapterRef: ref, Source: "streams"}`.
+If `fakeStatusView` and `minimalConfigForTest` don't already exist in `chassis_test.go`, add small helpers alongside the new tests. Sample:
+
+```go
+func minimalConfigForTest() Config {
+	return Config{
+		Bridge:    config.BridgeConfig{},
+		Version:   "test",
+		StartedAt: time.Now(),
+		HostIP:    "127.0.0.1",
+	}
+}
+
+func fakeStatusView(t *testing.T, adapterRef string) core.StatusHomeView {
+	t.Helper()
+	return core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef, Source: "streams"}
+}
+```
+
+**Note on TDD red phase for this task:** the tests reference `Config.PresetViewer` / `PresetSlot.Slot` etc. that don't exist until Step 3 adds them. Step 2 (`go test ... -v`) will produce a compile error like `undefined: cfg.PresetViewer` — that's the red phase. Step 3 introduces the fields and the helper, and Step 5 confirms green.
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -1429,8 +1513,8 @@ func TestVerifyCastTabBindings_AllResolveAgainstRegistry(t *testing.T) {
 	if err := reg.Register(torrentAdapter); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyCastTabBindings(reg); err != nil {
-		t.Fatalf("verifyCastTabBindings: %v", err)
+	if err := VerifyCastTabBindings(reg); err != nil {
+		t.Fatalf("VerifyCastTabBindings: %v", err)
 	}
 }
 
@@ -1441,9 +1525,9 @@ func TestVerifyCastTabBindings_MissingAdapterFails(t *testing.T) {
 	}
 	// No torrent adapter registered — castKindToTab["magnet"] -> torrent-magnet
 	// should not resolve.
-	err := verifyCastTabBindings(reg)
+	err := VerifyCastTabBindings(reg)
 	if err == nil {
-		t.Fatal("verifyCastTabBindings = nil, want missing-tab error")
+		t.Fatal("VerifyCastTabBindings = nil, want missing-tab error")
 	}
 	if !strings.Contains(err.Error(), "torrent-magnet") {
 		t.Errorf("err = %v, want mention of torrent-magnet", err)
@@ -1511,7 +1595,7 @@ import (
 )
 
 // castKindToTab maps the chassis input row's detected kind to the
-// QuickCastTab.ID it submits against. verifyCastTabBindings asserts
+// QuickCastTab.ID it submits against. VerifyCastTabBindings asserts
 // every value resolves to a real tab in the registered adapters at
 // startup time.
 var castKindToTab = map[string]string{
@@ -1570,12 +1654,12 @@ func writeCastJSON(w http.ResponseWriter, status int, ok bool, chip string) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// verifyCastTabBindings walks the registry's QuickCastProvider adapters
+// VerifyCastTabBindings walks the registry's QuickCastProvider adapters
 // and asserts every (kind, tabID) and (kind, fieldName) pair in
 // castKindToTab/valuesKeyForTab/fileFieldForTab resolves to a real tab
 // + field. Called from main.go at startup so adapter renames fail loud
 // instead of producing 404s at request time.
-func verifyCastTabBindings(reg *adapters.Registry) error {
+func VerifyCastTabBindings(reg *adapters.Registry) error {
 	type tabIndex struct {
 		tab    adapters.QuickCastTab
 		fields map[string]adapters.QuickCastField
@@ -1813,13 +1897,68 @@ func (r *recordedQuickCasts) last() adapters.QuickCastRequest {
 // newServerWithAdaptersForTest constructs a *Server with a Registry
 // containing URL and torrent adapter stubs that route both tab IDs
 // through the recorder.
-func newServerWithAdaptersForTest(t *testing.T, calls *recordedQuickCasts) *Server { /* ... */ }
+func newServerWithAdaptersForTest(t *testing.T, calls *recordedQuickCasts) *Server {
+	t.Helper()
+	reg := adapters.NewRegistry()
+	if err := reg.Register(routedURLStub{calls: calls}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(routedTorrentStub{calls: calls}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := minimalConfigForTest()
+	cfg.Registry = reg
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return srv
+}
 
-// makeMultipart builds a multipart body with the named field.
-func makeMultipart(t *testing.T, fieldName, filename string, data []byte) (io.Reader, string) { /* ... */ }
+// routedURLStub wraps the URL adapter stub from cast_test.go so its
+// HandleQuickCast records to the shared recorder.
+type routedURLStub struct {
+	urlAdapterStub
+	calls *recordedQuickCasts
+}
+
+func (s routedURLStub) HandleQuickCast(ctx context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
+	return s.calls.record(req)
+}
+
+type routedTorrentStub struct {
+	torrentAdapterStub
+	calls *recordedQuickCasts
+}
+
+func (s routedTorrentStub) HandleQuickCast(ctx context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
+	return s.calls.record(req)
+}
+
+// makeMultipart builds a multipart/form-data body with a kind=file part
+// plus the named file part.
+func makeMultipart(t *testing.T, fieldName, filename string, data []byte) (io.Reader, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("kind", "file"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := w.CreateFormFile(fieldName, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, w.FormDataContentType()
+}
 ```
 
-Implement both helpers inline at the bottom of `cast_test.go`. `newServerWithAdaptersForTest` uses `chassis.New` with a `Config` that has a `Registry` containing two stubs whose `HandleQuickCast` defers to `calls.record(...)`.
+Both helpers go at the bottom of `cast_test.go`. The `torrentAdapterStub` is the sibling stub defined in Step 1 alongside `urlAdapterStub` — it returns `torrent-magnet` and `torrent-file` tabs with field names `magnet` and `torrent_file`. Add `"bytes"` and `"mime/multipart"` to the test file's imports.
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
@@ -2748,7 +2887,7 @@ if err := chassis.VerifyCastTabBindings(reg); err != nil {
 }
 ```
 
-(Promote `verifyCastTabBindings` to exported `VerifyCastTabBindings` in `cast.go` — single line change.)
+`VerifyCastTabBindings` is already exported from Task 9, so this is a direct call — no rename needed.
 
 - [ ] **Step 2: Add integration test**
 
@@ -2838,7 +2977,39 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 
 Add the test helpers `buildFakeRegistry`, `streamsStub`, `mustPOSTForm`, `mustPOSTRaw`, `makeMultipart`, and `integrationBridge`/`integrationManager` either inline in the same test file or in a `testdata_test.go` helper. The streams stub implements `BundledPresets() [12]adapters.PresetEntry` returning the same 12-slot list (or a fixed test fixture) and `CastPreset(ctx, slot int) error` deferring to the calls recorder. URL/torrent stubs implement `adapters.QuickCastProvider` deferring to their recorders.
 
-`mustPOSTForm` and `mustPOSTRaw` set the `Sec-Fetch-Site: same-origin` header.
+The POST helpers **MUST** set `Sec-Fetch-Site: same-origin` — `requireSameOrigin` middleware otherwise returns 403 and every assertion fails confusingly:
+
+```go
+func mustPOSTForm(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func mustPOSTRaw(t *testing.T, url, contentType string, body io.Reader) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+```
 
 - [ ] **Step 3: Run all tests**
 
