@@ -1504,3 +1504,274 @@ func TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs(t *testin
 		t.Errorf("StatusHomeView never called; expected at least the New-time seed call")
 	}
 }
+
+func TestHandleEvents_InitialBurstIncludesAudio(t *testing.T) {
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, "event: audio\n") {
+		t.Errorf("initial burst missing audio event:\n%s", body)
+	}
+}
+
+func TestHandleEvents_LiveAudioEmitsAtCadence(t *testing.T) {
+	cfg := nonZeroConfig()
+	viewer := &countingAudioViewer{
+		snap: &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2},
+	}
+	cfg.AudioScopeViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(1 * time.Second)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+	total := strings.Count(w.Body.String(), "event: audio\n")
+	tickCount := total - 1
+	if tickCount < 29 || tickCount > 31 {
+		t.Errorf("audio tick count over 1 s = %d (total=%d), want 30 ± 1", tickCount, total)
+	}
+}
+
+func TestHandleEvents_PendingSuppressedAtCadence(t *testing.T) {
+	cfg := nonZeroConfig()
+	cfg.AudioScopeViewer = &fakeAudioViewer{snap: nil}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	count := strings.Count(w.Body.String(), "event: audio\n")
+	if count != 1 {
+		t.Errorf("idle audio event count = %d, want 1 (initial only)", count)
+	}
+}
+
+func TestHandleEvents_GenerationFlipDirectLiveToLive(t *testing.T) {
+	cfg := nonZeroConfig()
+	viewer := &mutableAudioViewer{snap: &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2}}
+	cfg.AudioScopeViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		viewer.setSnap(&core.AudioScopeSnapshot{Generation: 2, SampleRate: 48000, Channels: 2})
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `"generation":1`) {
+		t.Errorf("missing gen=1 emission: %s", body)
+	}
+	if !strings.Contains(body, `"generation":2`) {
+		t.Errorf("missing gen=2 emission: %s", body)
+	}
+}
+
+func TestHandleEvents_GenerationFlipViaPending(t *testing.T) {
+	cfg := nonZeroConfig()
+	viewer := &mutableAudioViewer{snap: &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2}}
+	cfg.AudioScopeViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		viewer.setSnap(nil)
+		time.Sleep(60 * time.Millisecond)
+		viewer.setSnap(&core.AudioScopeSnapshot{Generation: 2, SampleRate: 48000, Channels: 2})
+		time.Sleep(60 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	gen1 := strings.Index(body, `"generation":1`)
+	pending := strings.Index(body, `"status":"pending"`)
+	gen2 := strings.Index(body, `"generation":2`)
+	if gen1 < 0 || pending < 0 || gen2 < 0 {
+		t.Fatalf("missing one of gen1/pending/gen2: %s", body)
+	}
+	if !(gen1 < pending && pending < gen2) {
+		t.Errorf("ordering wrong: gen1=%d pending=%d gen2=%d\n%s", gen1, pending, gen2, body)
+	}
+	if strings.Index(body[pending:], `"generation":1`) >= 0 {
+		t.Errorf("stale gen=1 emission after pending: %s", body)
+	}
+}
+
+func TestHandleEvents_PendingShapeExact(t *testing.T) {
+	cfg := nonZeroConfig()
+	cfg.AudioScopeViewer = &fakeAudioViewer{snap: nil}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, "event: audio\ndata: {\"status\":\"pending\"}\n\n") {
+		t.Errorf("expected exact pending wire bytes, got:\n%s", body)
+	}
+}
+
+func TestHandleEvents_LiveLegitimateZerosOnWire(t *testing.T) {
+	cfg := nonZeroConfig()
+	cfg.AudioScopeViewer = &fakeAudioViewer{snap: &core.AudioScopeSnapshot{
+		Generation: 1, SampleRate: 48000, Channels: 2,
+		PhaseCorr: 0.0, LUFSShort: 0.0,
+	}}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `"phaseCorr":0,`) {
+		t.Errorf("phaseCorr=0 was erased on wire: %s", body)
+	}
+	if !strings.Contains(body, `"lufsShort":0,`) {
+		t.Errorf("lufsShort=0 was erased on wire: %s", body)
+	}
+}
+
+func TestHandleEvents_InitialBurstAudioIsLast(t *testing.T) {
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(40 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	audioIdx := strings.Index(body, "event: audio\n")
+	if audioIdx < 0 {
+		t.Fatalf("no audio event in initial burst:\n%s", body)
+	}
+	for _, prior := range []string{"event: state\n", "event: vfd\n", "event: source\n", "event: visualizer\n", "event: transport\n", "event: volume\n", "event: meter\n"} {
+		idx := strings.Index(body, prior)
+		if idx < 0 {
+			continue
+		}
+		if idx > audioIdx {
+			t.Errorf("audio appeared before %s: audioIdx=%d priorIdx=%d", prior, audioIdx, idx)
+		}
+	}
+}
+
+func TestHandleEvents_PanicInViewerSkipsFrame(t *testing.T) {
+	cfg := nonZeroConfig()
+	viewer := &panickingAudioViewer{
+		snap:       &core.AudioScopeSnapshot{Generation: 1, SampleRate: 48000, Channels: 2},
+		panicOnNth: 2,
+	}
+	cfg.AudioScopeViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
+	s.handleEvents(w, req)
+	body := w.Body.String()
+	audioCount := strings.Count(body, "event: audio\n")
+	if audioCount < 2 {
+		t.Errorf("audio event count = %d, want >= 2 (initial + post-panic recovery); body:\n%s", audioCount, body)
+	}
+}
+
+type panickingAudioViewer struct {
+	mu         sync.Mutex
+	snap       *core.AudioScopeSnapshot
+	calls      int
+	panicOnNth int
+}
+
+func (p *panickingAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	if n == p.panicOnNth {
+		panic("synthetic panic for test")
+	}
+	return p.snap
+}
+
+type countingAudioViewer struct {
+	mu   sync.Mutex
+	snap *core.AudioScopeSnapshot
+	n    int
+}
+
+func (c *countingAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return c.snap
+}
+
+type mutableAudioViewer struct {
+	mu   sync.Mutex
+	snap *core.AudioScopeSnapshot
+}
+
+func (m *mutableAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.snap
+}
+
+func (m *mutableAudioViewer) setSnap(s *core.AudioScopeSnapshot) {
+	m.mu.Lock()
+	m.snap = s
+	m.mu.Unlock()
+}
