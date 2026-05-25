@@ -129,7 +129,10 @@ type RuntimeMeterView struct {
     WireBytes   uint64
     LastACKAge  time.Duration
     StartedAt   time.Time
-    Generation  uint64
+    Generation  uint64 // duplicate of StatusHomeView.Generation, copied here
+                       // so the sampler can read one atomic snapshot of all
+                       // runtime fields it needs without re-reading the
+                       // outer view.
 }
 ```
 
@@ -157,7 +160,7 @@ The active session should retain:
 
 Some meter data belongs to adapters because core does not know why a given stream URL was transformed. The first required overlay is HLS buffering.
 
-Add a neutral adapter-side interface, likely in `internal/adapters`, so the chassis can discover it structurally through the existing registry:
+Add a neutral adapter-side interface in `internal/adapters`, following the same structural-discovery pattern used by `internal/playback.Dispatcher` for `PlaybackControlProvider`. The chassis discovers providers through the existing adapter registry by type assertion. A `TestMeterOverlayProvider_Registration` test asserts that URL and Streams both satisfy the interface after registration; any future adapter that owns a buffered or otherwise observable source MUST also satisfy it.
 
 ```go
 type MeterOverlayProvider interface {
@@ -182,14 +185,72 @@ type HLSMeterOverlay struct {
 }
 ```
 
+`HLSMeterOverlay.CachedSegments`, `CachedMediaDurationMS`, and `CacheBytes` mean **current local cache occupancy**, not lifetime downloaded segment totals. Existing `hlsbuffer.Stats` currently exposes cumulative `CachedSegments`, `CachedMediaDuration`, and `CacheBytes`; the implementation must either extend `hlsbuffer.Stats` with current cache occupancy or expose an equivalent safe snapshot from `hlsbuffer.Session`. `SegmentDownloadsTotal` remains the lifetime counter.
+
 URL and Streams currently create `*hlsbuffer.Session` values for buffered casts and capture them for cleanup. Spec 5A must also store an active HLS stats handle, under the adapter's existing lock, while the adapter owns the active core session:
 
-- After a successful core start, read `core.Status()` and install the stats handle only when the returned `AdapterRef` matches the request. Store the returned core generation with the handle; do not use Streams queue generation as a substitute.
+- After a successful core start, read `core.Status()` outside adapter locks and install the stats handle only when the returned `AdapterRef` matches the request. Store the returned core generation with the handle; do not use Streams queue generation as a substitute.
+- Capture `MaxCachedSegments` from the normalized HLS buffer config used to open the active session. Do not read the current bridge config during overlay rendering; hot-swapped config should affect the next HLS session, not the denominator for the current one.
 - Return overlay only when `snap.AdapterRef` and `snap.Generation` match the active buffered session.
-- Clear overlay on stop/preempt through the existing `OnStop` cleanup path.
-- Do not expose source URLs or tokens through the overlay.
+- Clear overlay on stop/preempt through the existing `OnStop` cleanup path, before any adapter state mutation or HLS close work.
+- Do not expose source URLs, playlist URLs, segment URLs, variant URIs, cookies, headers, tokens, or raw failure strings through the overlay.
+
+The overlay conversion is an allowlist. Adapters may read broad `hlsbuffer.Stats`, but `toHLSMeterOverlay` copies only current cache counts/durations/bytes, reload/download counters, selected variant width/height/bandwidth, captured max segments, and a sanitized short failure reason. It must never copy `hlsbuffer.Variant.URI`, `Variant.Codecs`, or unsanitized `Stats.FailureReason`.
 
 Non-HLS providers return no overlay; chassis renders `0 / 0 SEG`.
+
+Install / clear ordering (both URL and Streams use this exact shape; this is the only place spec text fixes the order, so other future overlays can copy it verbatim):
+
+```
+// install (inside adapter.startBuffered, on the same goroutine that
+// returned from core.StartSession):
+hlsCfg := hlsConfigFromBridge(bridge.HLSBuffer)
+session := openHLSBuffer(..., hlsCfg)    // *hlsbuffer.Session
+ref := newAdapterRef()
+if err := core.StartSession(req with AdapterRef=ref, OnStop=cleanup); err != nil {
+    session.Close()
+    return err
+}
+st := core.Status()
+adapter.mu.Lock()
+if st.AdapterRef == ref && st.Generation != 0 {
+    adapter.activeOverlay = &hlsHandle{
+        ref:               ref,
+        generation:        st.Generation,
+        stats:             session.Stats,   // hlsbuffer.Stats accessor
+        maxCachedSegments: hlsCfg.MaxCachedSegments,
+    }
+}
+adapter.mu.Unlock()
+// If the guard failed (ref mismatch or generation 0), the handle is
+// dropped on the floor; OnStop will still close `session` because the
+// session is captured in the cleanup closure independently.
+
+// read (inside MeterOverlay, on the chassis refresher goroutine):
+adapter.mu.RLock()
+h := adapter.activeOverlay
+adapter.mu.RUnlock()
+if h == nil || h.ref != snap.AdapterRef || h.generation != snap.Generation {
+    return MeterOverlay{}, false
+}
+return MeterOverlay{HLS: toHLSMeterOverlay(h.stats(), h.maxCachedSegments)}, true
+
+// clear (inside OnStop closure, before any other OnStop work):
+adapter.mu.Lock()
+if adapter.activeOverlay != nil && adapter.activeOverlay.ref == stoppedRef {
+    adapter.activeOverlay = nil
+}
+adapter.mu.Unlock()
+```
+
+The existing URL and Streams `withHLSBufferCleanup` helpers currently call their base `OnStop` before closing the HLS session. Spec 5A must change or bypass that wrapper so the order becomes: clear overlay handle, run adapter `OnStop` state work, then close the HLS session.
+
+Overlay call-site contract. `MeterOverlay` is called from the chassis snapshot refresher goroutine, once per refresher tick per registered provider. It MUST:
+
+- Return promptly (no network I/O, no disk I/O, no waiting on channels).
+- Not hold an adapter lock across the return value. Copy the active overlay handle under the adapter lock, release it, then call the handle's internally synchronized stats accessor and build an allowlisted `MeterOverlay`.
+- Tolerate a `snap` that does not match the active session by returning `(MeterOverlay{}, false)`; chassis treats `ok == false` and a zero-value return identically.
+- Survive a panic inside one provider: chassis recovers per call so one bad provider cannot stall the meter for the rest. A recovered panic logs once and renders that overlay's fields as placeholders.
 
 ### Chassis Composition
 
@@ -203,7 +264,7 @@ The chassis snapshot refresher owns a small `meterSampler`:
 - Reset: when session generation changes or state returns idle.
 - Paused sessions keep the latest text facts and freeze throughput, speed, and ACK histories instead of appending zero samples. If a paused session has no plane, the event state remains `live` with `paused: true` so clients can preserve the last real values without inventing motion.
 
-SSE handlers should read the cached `ReceiverPageData`. They must not compute byte deltas per tab. This preserves the Spec 2 lock and fan-out invariant.
+SSE handlers should read the cached `ReceiverPageData`. They must not compute byte deltas per tab. The initial `meter` burst uses the cached snapshot as well; it must not call `snapshotFromSession` or `StatusHomeView()` directly per connection. This preserves the Spec 2 lock and fan-out invariant.
 
 ## Meter Event Contract
 
@@ -218,7 +279,7 @@ Conceptual payload:
   "generation": 12,
   "sourceStrip": {
     "audioIn": "AAC LC - STEREO",
-    "audioOut": "S16LE - 48k",
+    "audioOut": "S16LE - 48k - STEREO",
     "src": "1280x720@30 - H.264",
     "crop": "NONE - 16:9 NATIVE",
     "hlsBuffer": "6 / 12 SEG",
@@ -260,10 +321,14 @@ Conceptual payload:
 }
 ```
 
+The example value `"mode": "704"` is the BT.601 clean-aperture width for the shipped SD modelines (480i/576i); for any future non-BT.601 modeline it falls back to the output active width. The field is intentionally generic — never anchor a client check on the literal `704`.
+
+Clients MUST ignore unknown top-level keys and unknown sub-keys. Spec 5B will add real values under `audioScopes` (e.g. `audioScopes.spectrum`, `audioScopes.lufs`) and may add other top-level keys; the 5A schema is forward-compatible by convention, not by version field.
+
 The implementation can avoid sending full histories if the client maintains them from samples. The server must at least send the latest raw numeric throughput and ACK samples. If histories are server-owned, keep them bounded:
 
 - Throughput: last 60 samples at 2 Hz, covering 30 seconds.
-- ACK: last 128 samples, matching the reference scatter graph capacity.
+- ACK: last 128 samples at 2 Hz, covering ≈64 seconds. Note: the v24 mockup's ACK scatter is visually evocative of per-frame samples, but Spec 5A samples `LastACKAge` at 2 Hz only, so the rendered scatter is a sparse trail rather than a true per-field RTT cloud. A future protocol-aware change can densify this without revisiting the event contract.
 
 ### Field Mapping
 
@@ -296,13 +361,13 @@ Chassis owns display formatting. Core and adapters expose facts.
 - Codec names are normalized for display: examples include `H.264`, `AAC LC`, `MP3`, `OPUS`.
 - Frame rate displays as an integer when very close to whole, otherwise one or two decimals.
 - Source shape displays as `<width>x<height>@<fps> - <codec>`.
-- Audio output displays as `S16LE - 48k` for 48 kHz, `S16LE - 44.1k` for 44.1 kHz.
+- Audio output displays as `S16LE - <rate> - <channels>`, e.g. `S16LE - 48k - STEREO` or `S16LE - 44.1k - MONO`. Channels reflect `bridge.Audio.Channels` (currently configurable; 1 → MONO, 2 → STEREO). The channel suffix exists for symmetry with `AUDIO IN`, which already carries channel info.
 - Horizontal kHz displays with one decimal.
 - Throughput displays in decimal MB/s using `1000 * 1000` bytes per MB, matching network operator convention.
 - ACK displays with one decimal, left-padded to match the v24 feel where useful, for example `04.0`.
 - `PIPE` uses ASCII display text in code and JSON, for example `LZ4+D - TFF`.
-- `SPEED` is `1.00x LOCK` when within a small tolerance of expected field rate; otherwise `0.98x SLOW` or `1.02x FAST`.
-- `DROPS` is a percentage over the latest sampler interval: `100 * deltaUnderruns / max(1, deltaBlits + deltaUnderruns)`. The first sample after a generation reset displays `0.0` because there is no previous sample. Counter regressions reset the sampler. Paused samples do not append a new drop value.
+- `SPEED` is `1.00x LOCK` when measured ratio is within ±2 % of expected field rate; outside that band it renders `<ratio>x SLOW` (ratio < 0.98) or `<ratio>x FAST` (ratio > 1.02). The 2 % band absorbs ordinary jitter at 2 Hz sampling without lamp flicker.
+- `DROPS` is a percentage over the latest sampler interval: `100 * deltaUnderruns / max(1, deltaBlits)`. Justification: `Plane.BlitsTotal` increments once per emitted field, including the duplicate field the underrun→sendDuplicate path emits when a deadline is missed ([internal/dataplane/plane.go](../../../internal/dataplane/plane.go), `advancePosition` is called after BLIT or BLIT-dup). `Plane.Underruns` increments once per missed deadline. So `dU ⊆ dB` and the fraction of emitted fields that were forced duplicates is `dU / dB`. The first sample after a generation reset displays `0.0` because there is no previous sample. Counter regressions reset the sampler. Paused samples do not append a new drop value.
 - `CROP` and `ASPECT` formatting must use display aspect ratio when present. Pixel dimensions alone are only a fallback. Anamorphic sources must not be silently labeled by storage dimensions.
 
 Field-flip behavior:
@@ -311,6 +376,7 @@ Field-flip behavior:
 - `interlacedOutput == false`: ODD/EVEN lamps stay dim and the lock text renders `PROG` or the implementation's equivalent non-interlace state.
 - Idle: ODD/EVEN lamps stay dim and lock text renders the idle placeholder.
 - Reduced motion: no ticking animation; render the latest static field state/lock text only.
+- Lamps are a **best-effort visualization**, not a literal per-field truth source. Server samples arrive at 2 Hz; the client interpolates a 60 Hz visual cadence between them. Pause/resume, generation flip, or `fieldRateHz` change will visibly resync lamp phase. The label text (`TFF`/`BFF`/`PROG`/`LOCK`) remains authoritative; the lamp ticking is purely cosmetic.
 
 ## SSE Behavior
 
@@ -327,11 +393,17 @@ Initial burst order:
 Live cadence:
 
 - The server snapshot refresher can keep its existing 250 ms cadence.
-- `meter` emits at most every 500 ms while live, unless a session generation change requires immediate convergence.
+- The meter **sampler** appends one sample every 500 ms (every other refresher tick) while live, so throughput/ACK histories grow at 2 Hz regardless of emit gating.
+- The SSE **emitter** emits a `meter` event when ANY of the following are true on a given tick:
+  1. the sampler appended a new sample (i.e. a 500 ms boundary was crossed),
+  2. `state` transitioned (idle ↔ live, or live → live with `paused` flipped),
+  3. `generation` changed, or
+  4. any structural meter field changed: `standard`, `fieldOrder`, `interlacedOutput`, `output`, `aspect`, `pipe`, `link` text (these are rare and operator-meaningful — a 500 ms delay would feel laggy).
+- Pure text-only jitter inside the 500 ms window (e.g. `LastACKAge` ticking from 4 ms to 5 ms without a new sample boundary) does NOT emit.
 - Idle transitions emit one final idle `meter` event so clients clear histories.
 - Heartbeats remain unchanged.
 
-`meterChanged` should compare the event fields or generation, not unrelated page data. It can also gate by cadence so text-only jitter does not cause excessive writes.
+`meterChanged` implements rules 2–4 above. The sampler-driven rule 1 is the primary cadence; the others are convergence guarantees.
 
 ## Client Behavior
 
@@ -343,7 +415,9 @@ Spec 5A also adds a small shared event helper to `internal/chassis/static/vfd-li
 window.Chassis.events.subscribe(eventName, handler)
 ```
 
-The helper attaches `handler` to the current `/receiver/events` `EventSource` when one exists, reattaches it after the existing `chassis:eventsource` reconnect event, and returns an unsubscribe function. It must not open a second `EventSource`. Existing transport and visualizer scripts can keep their current `window.Chassis.events.source` / `chassis:eventsource` pattern in 5A; `meter.js` should use `subscribe` so new event consumers have one path.
+The helper attaches `handler` to the current `/receiver/events` `EventSource` when one exists, reattaches it after the existing `chassis:eventsource` reconnect event, and returns an unsubscribe function. It must not open a second `EventSource`, must not attach duplicate listeners after reconnect, and unsubscribe must remove the handler from both the current source and future reconnect bookkeeping. Existing transport and visualizer scripts can keep their current `window.Chassis.events.source` / `chassis:eventsource` pattern in 5A; `meter.js` should use `subscribe` so new event consumers have one path.
+
+Follow-up debt (not part of 5A scope): migrate `transport.js` and `visualizer-bank.js` off the raw `window.Chassis.events.source` + `chassis:eventsource` listener pattern and onto `subscribe()`. Tracked here so 5A doesn't ship and forget; addressing it in 5B or a small follow-up keeps the two-pattern coexistence from calcifying.
 
 Client responsibilities:
 
@@ -404,20 +478,26 @@ Layer 1, adapters:
 - Streams HLS-buffered cast exposes the same overlay.
 - URL and Streams install HLS stats handles only after a successful core start and a matching `core.Status()` read.
 - Streams overlay tests prove core session generation is used, not queue generation.
-- Overlay clears on stop/preempt.
-- Overlay never leaks raw source URLs or tokens.
+- URL and Streams capture `MaxCachedSegments` from the normalized session-open config and keep using that captured value after bridge config hot-swap.
+- HLS overlay current occupancy tests distinguish current cached segments/bytes/duration from lifetime segment-download totals, including after cache eviction.
+- Overlay clears on stop/preempt before adapter `OnStop` state work and before HLS session close.
+- Overlay conversion never leaks raw source URLs, variant URIs, codecs strings, raw failure reasons, or tokens. Include fixtures where `SelectedVariant.URI`, `Variant.Codecs`, and `FailureReason` contain relative signed URLs and secrets.
 
 Layer 1, chassis:
 
 - `MeterData` mapping renders idle placeholders exactly.
+- Idle placeholder tests assert both NTSC and PAL standard lamps are dim; the old idle default that lit NTSC must not survive into real telemetry.
 - Live mapping formats audio-in, source, output, crop/aspect, pipe, speed, link, HLS, drops, and standard lamps.
 - `meter` payload contract tests assert `audioIn`, `dropsPercent`, raw underrun/blit counters, `fieldRateHz`, `interlacedOutput`, and `paused` from a deterministic `StatusHomeView` plus HLS overlay.
 - Meter sampler computes throughput from `WireBytes` deltas and resets on generation change.
 - Meter sampler computes speed from blit deltas and expected field rate.
 - Meter sampler computes `DROPS` with the exact per-sample formula and resets on generation change or counter regression.
 - Paused snapshots freeze histories and mark `paused: true` without adding synthetic zero samples.
+- Overlay panic recovery tests prove one panicking provider logs once per generation/provider, base meter fields still render, and other providers can still contribute overlays.
 - Initial SSE burst includes `meter` after `transport`.
+- Initial SSE burst reads the cached `ReceiverPageData.Meter` snapshot rather than recomputing a per-connection meter snapshot.
 - Live SSE emits `meter` at the expected 2 Hz cadence, not every 250 ms tick.
+- `meterChanged` / emitter-gating table tests cover: sample-boundary emit, immediate pause flip emit, immediate generation emit, immediate structural-field emit, idle clear emit, and suppression of ACK/text jitter before the next sample boundary.
 - Multiple SSE clients do not multiply `StatusHomeView()` calls.
 
 Static asset tests:
@@ -425,6 +505,7 @@ Static asset tests:
 - `vfd-live.js` exposes `window.Chassis.events.subscribe`.
 - `meter.js` subscribes through `window.Chassis.events.subscribe`.
 - `meter.js` does not create `new EventSource`.
+- `window.Chassis.events.subscribe` tests prove unsubscribe removes the handler from the current `EventSource`, prevents future reconnect reattachment, and reconnects do not double-deliver a handler.
 - `meter.js` uses `data-meter-*` hooks.
 - `meter.js` updates `AUDIO IN` from `sourceStrip.audioIn`; it must not remain a static template value during live SSE.
 - `meter.js` does not contain pseudo audio generators for spectrum/goniometer/VU/phase/LUFS.
@@ -454,6 +535,24 @@ Spec 5A is intentionally low-rate:
 - The SSE stream remains text JSON; no binary transport is introduced.
 
 If Spec 5B's audio telemetry needs higher cadence or PCM volume, that spec can introduce a dedicated broker or a second event family without revisiting 5A's display contract.
+
+## Security
+
+The `meter` event ships to any browser that can reach `/receiver/events`. The same audience already sees title, modeline, and transport state via Phase 0/1 events, so 5A does not change the audience — but the new payload pulls from adapter-owned state (HLS overlay) for the first time, which raises the leak surface. The discipline is:
+
+- Overlay structs carry counts, durations, byte totals, and selected-variant metadata (width / height / bps) only. No source URL, no playlist URL, no segment URL, no variant URI, no codec string, no `Authorization` header, no cookie, no token. `FailureReason` (when populated) is a short adapter-emitted enum/string that cannot contain URL-like substrings.
+- The HLS overlay reads stats via `hlsbuffer.Session.Stats`, but that `Stats` struct currently includes URL-bearing data (`SelectedVariant.URI`) and may include raw `FailureReason` text. Spec 5A therefore treats `Stats` as input only: adapters must transform it through the allowlist mapper described above before it reaches chassis or JSON.
+- Tests grep the serialized `meter` JSON for `http://`, `https://`, `://`, `/live.m3u8`, `token=`, `sig=`, `secret`, `Authorization`, the source URL fixture, and a deliberately secret-bearing relative `SelectedVariant.URI`; any match fails the test. Apply the same test to both URL and Streams overlays.
+- New providers that want to surface adapter-owned data through this overlay MUST be reviewed for the same leak vectors before they ship.
+
+## Observability
+
+A stuck meter — events arriving but values not advancing, or events not arriving at all — is the most likely 5A failure mode in production. Add minimal instrumentation so it can be diagnosed without attaching a debugger:
+
+- `slog.Debug("chassis: meter emit refused", "reason", "<cadence|unchanged|paused>")` at most once per second while ticks are refused, to avoid log spam.
+- `slog.Warn("chassis: meter overlay panic", "provider", "<name>", "err", err)` on recovered overlay panic (rule 4 of the call-site contract). Logged at most once per generation per provider.
+- An incrementing counter on `Manager.StatusHomeView()` invocations is already implicit via existing logs; no new counter is required. The fan-out test asserts the call rate is bounded by the refresher cadence.
+- The chassis `meter` SSE response includes the cached snapshot's `generation` in every emit. A reader watching the stream with `curl -N` can confirm by inspection that generation advances across cast boundaries.
 
 ## Rollout And Rollback
 
