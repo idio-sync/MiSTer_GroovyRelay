@@ -95,10 +95,10 @@ func TestProbeCrop_PolicyAppliedBeforeInput(t *testing.T) {
 func TestParseCropLine(t *testing.T) {
 	cases := map[string]*CropRect{
 		"[Parsed_cropdetect_0 @ 0x55] x1:0 x2:1919 y1:140 y2:939 w:1920 h:800 x:0 y:140 pts:720 t:0.720000 limit:0.094118 crop=1920:800:0:140": {W: 1920, H: 800, X: 0, Y: 140},
-		"crop=720:480:0:0":      {W: 720, H: 480, X: 0, Y: 0},
-		"no match here":         nil,
-		"crop=abc":              nil,
-		"crop=1280:720:16:0":    {W: 1280, H: 720, X: 16, Y: 0},
+		"crop=720:480:0:0":   {W: 720, H: 480, X: 0, Y: 0},
+		"no match here":      nil,
+		"crop=abc":           nil,
+		"crop=1280:720:16:0": {W: 1280, H: 720, X: 16, Y: 0},
 	}
 	for line, want := range cases {
 		got := parseCropLine(line)

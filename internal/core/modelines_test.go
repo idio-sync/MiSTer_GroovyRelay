@@ -156,4 +156,3 @@ func TestPresetNamesMatchesRegistry(t *testing.T) {
 		}
 	}
 }
-
