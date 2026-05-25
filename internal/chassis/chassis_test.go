@@ -7,7 +7,6 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -2279,7 +2278,7 @@ func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
 	}
 	for _, f := range files {
 		t.Run(f, func(t *testing.T) {
-			src, err := os.ReadFile(f)
+			src, err := chassisStaticFS.ReadFile(f)
 			if err != nil {
 				t.Fatalf("ReadFile: %v", err)
 			}
