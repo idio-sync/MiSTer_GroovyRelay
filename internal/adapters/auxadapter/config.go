@@ -67,6 +67,8 @@ func (c Config) Validate() error {
 	case ModeStreamURL:
 		if strings.TrimSpace(c.Input.URL) == "" {
 			errs = append(errs, adapters.FieldError{Key: "input.url", Msg: "must be configured when mode is stream_url"})
+		} else if _, err := validateStreamURL(c.Input.URL); err != nil {
+			errs = append(errs, adapters.FieldError{Key: "input.url", Msg: err.Error()})
 		}
 	case ModeLocalCapture:
 		if strings.TrimSpace(c.Input.Format) == "" {

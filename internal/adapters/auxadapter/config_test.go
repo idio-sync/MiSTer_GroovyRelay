@@ -66,6 +66,28 @@ func TestValidateEnabledStreamURLRequiresURL(t *testing.T) {
 	}
 }
 
+func TestValidateEnabledStreamURLUsesURLPolicy(t *testing.T) {
+	tests := []string{
+		"ftp://127.0.0.1/aux.wav",
+		"http://user:pass@127.0.0.1/aux.wav",
+		"http://127.0.0.1/aux.wav#fragment",
+		"http:///aux.wav",
+	}
+	for _, rawURL := range tests {
+		t.Run(rawURL, func(t *testing.T) {
+			c := DefaultConfig()
+			c.Enabled = true
+			c.Input.URL = rawURL
+
+			err := c.Validate()
+			if err == nil {
+				t.Fatal("Validate() = nil, want input.url field error")
+			}
+			assertFieldError(t, err, "input.url")
+		})
+	}
+}
+
 func TestValidateEnabledLocalCaptureRequiresDevice(t *testing.T) {
 	c := DefaultConfig()
 	c.Enabled = true
