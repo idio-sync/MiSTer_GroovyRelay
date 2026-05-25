@@ -88,6 +88,26 @@ func TestProcess_LogWaitResultWarnsOnUnexpectedExit(t *testing.T) {
 	}
 }
 
+func TestProcessForwardStderrRedactsTokenQueryParams(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	p := &Process{}
+	p.forwardStderr(io.NopCloser(strings.NewReader("http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=secret-token failed\n")))
+	p.wg.Wait()
+
+	got := buf.String()
+	if strings.Contains(got, "secret-token") {
+		t.Fatalf("stderr log leaked aux token: %q", got)
+	}
+	if !strings.Contains(got, "aux_token=REDACTED") {
+		t.Fatalf("stderr log missing redacted aux token: %q", got)
+	}
+}
+
 // TestProcess_BasicLifecycle drives Spawn's lifecycle wiring without relying
 // on ffmpeg or on ExtraFiles (which is a Linux/Unix-only feature — cmd.Start
 // errors out when ExtraFiles is set on Windows).

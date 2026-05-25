@@ -744,7 +744,10 @@ func (p *Plane) Run(ctx context.Context) error {
 		if prebufferExit == "context_cancelled" {
 			return ctx.Err()
 		}
-		return nil
+		if prebufferExit == "ffmpeg_exit" {
+			return fmt.Errorf("ffmpeg exited during prebuffer")
+		}
+		return fmt.Errorf("video pipe closed during prebuffer")
 	}
 	// "timeout" or "" — proceed to the tick loop. On timeout, the tick
 	// loop's existing underrun → sendDuplicate path covers the gap until
@@ -1461,7 +1464,7 @@ func scalePCMVolumeInPlace(pcm []byte, volume int) {
 //   - "context_cancelled" — ctx cancelled mid-wait; caller MUST return
 //     ctx.Err() and release the captured frames to the pool.
 //   - "ffmpeg_exit" — proc.Done fired before target hit; caller MUST
-//     return nil and release captured frames.
+//     return a startup error and release captured frames.
 //   - "video_pipe_eof" — videoCh closed mid-wait; same as ffmpeg_exit.
 //   - "timeout" — hard timeout fired with partial buffer; caller
 //     proceeds to the tick loop, which will sendDuplicate until ffmpeg

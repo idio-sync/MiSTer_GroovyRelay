@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"sync"
 	"sync/atomic"
 )
@@ -26,6 +27,12 @@ type Process struct {
 	stopRequested atomic.Bool
 }
 
+var stderrTokenParamRE = regexp.MustCompile(`(?i)([?&](?:api_key|x-plex-token|aux_token|token)=)[^\s&"']+`)
+
+func redactStderrLine(line string) string {
+	return stderrTokenParamRE.ReplaceAllString(line, "${1}REDACTED")
+}
+
 // forwardStderr drains the child's stderr line-by-line into slog. Must be
 // called for every spawned ffmpeg or the child eventually blocks when its
 // stderr buffer fills (~64 KB). Owned by p.wg so Stop() blocks until the
@@ -40,7 +47,7 @@ func (p *Process) forwardStderr(r io.ReadCloser) {
 		// filter graphs). Bump the buffer so we don't truncate them.
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			slog.Warn("ffmpeg stderr", "line", scanner.Text())
+			slog.Warn("ffmpeg stderr", "line", redactStderrLine(scanner.Text()))
 		}
 	}()
 }

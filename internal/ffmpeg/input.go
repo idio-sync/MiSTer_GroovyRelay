@@ -31,7 +31,7 @@ func appendCaptureInputArgs(args []string, c CaptureInputSpec) []string {
 }
 
 func appendProbeCaptureInputArgs(args []string, c CaptureInputSpec) []string {
-	return appendCaptureInputArgsWithoutQueue(args, c)
+	return appendCaptureInputArgs(args, c)
 }
 
 func appendCaptureInputArgsWithoutQueue(args []string, c CaptureInputSpec) []string {

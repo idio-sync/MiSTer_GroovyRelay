@@ -771,6 +771,41 @@ func TestOnStopReleasesProxyTokensAndClearsActiveAUXState(t *testing.T) {
 	}
 }
 
+func TestOnStopErrorReleasesTokensAndPreservesAUXErrorState(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	if got := len(a.proxy.tokens); got != 2 {
+		t.Fatalf("proxy tokens after start = %d, want 2", got)
+	}
+
+	fc.lastRequest.OnStop("error")
+
+	if got := len(a.proxy.tokens); got != 0 {
+		t.Fatalf("proxy tokens after OnStop error = %d, want 0", got)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want cleared", a.activeRef)
+	}
+	st := a.AUXStatus(context.Background())
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus after OnStop error = %+v, want inactive", st)
+	}
+	if st.ErrorMessage == "" || !strings.Contains(st.ErrorMessage, "error") {
+		t.Fatalf("AUXStatus.ErrorMessage = %q, want startup error detail", st.ErrorMessage)
+	}
+	adapterStatus := a.Status()
+	if adapterStatus.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", adapterStatus.State)
+	}
+	if adapterStatus.LastError == "" || !strings.Contains(adapterStatus.LastError, "error") {
+		t.Fatalf("Status.LastError = %q, want startup error detail", adapterStatus.LastError)
+	}
+}
+
 func TestStaleOnStopDoesNotClearNewerActiveAUXRef(t *testing.T) {
 	fc := &sessionCore{}
 	a := newTestAdapterWithCore(t, fc)
@@ -808,7 +843,7 @@ func TestClearActiveSessionIgnoresStaleSameRefGeneration(t *testing.T) {
 	staleGen := a.activeGen
 	a.activeGen++
 
-	if cleanup := a.clearActiveSession("aux:aux", staleGen); cleanup != nil {
+	if cleanup := a.clearActiveSession("aux:aux", staleGen, "stopped"); cleanup != nil {
 		t.Fatal("clearActiveSession returned cleanup for stale generation")
 	}
 

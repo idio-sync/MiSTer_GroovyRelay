@@ -168,7 +168,7 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 	}
 	coreManager := a.core
 	if coreManager == nil {
-		if cleanup := a.clearActiveSession(activeRef, activeGen); cleanup != nil {
+		if cleanup := a.clearActiveSession(activeRef, activeGen, "stopped"); cleanup != nil {
 			cleanup()
 		}
 		return false, nil
@@ -176,7 +176,7 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 
 	matched, err := coreManager.StopIfAdapterRef(activeRef)
 	if !matched {
-		if cleanup := a.clearActiveSession(activeRef, activeGen); cleanup != nil {
+		if cleanup := a.clearActiveSession(activeRef, activeGen, "stopped"); cleanup != nil {
 			cleanup()
 		}
 		return false, err
@@ -184,7 +184,7 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	if cleanup := a.clearActiveSession(activeRef, activeGen); cleanup != nil {
+	if cleanup := a.clearActiveSession(activeRef, activeGen, "stopped"); cleanup != nil {
 		cleanup()
 	}
 	return true, nil
@@ -375,9 +375,8 @@ func auxSessionStopped(stopped *atomic.Bool) bool {
 
 func (a *Adapter) onStopForSession(ref string, gen uint64, stopped *atomic.Bool, cleanup func()) func(string) {
 	return func(reason string) {
-		_ = reason
 		stopped.Store(true)
-		if activeCleanup := a.clearActiveSession(ref, gen); activeCleanup != nil {
+		if activeCleanup := a.clearActiveSession(ref, gen, reason); activeCleanup != nil {
 			activeCleanup()
 			return
 		}
@@ -387,7 +386,7 @@ func (a *Adapter) onStopForSession(ref string, gen uint64, stopped *atomic.Bool,
 	}
 }
 
-func (a *Adapter) clearActiveSession(ref string, gen uint64) func() {
+func (a *Adapter) clearActiveSession(ref string, gen uint64, reason string) func() {
 	a.mu.Lock()
 	if a.activeRef != ref || a.activeGen != gen {
 		a.mu.Unlock()
@@ -398,8 +397,13 @@ func (a *Adapter) clearActiveSession(ref string, gen uint64) func() {
 	a.activeGen = 0
 	a.activeCleanup = nil
 	a.activeStopped = nil
-	a.state = adapters.StateStopped
-	a.lastErr = ""
+	if reason == "error" {
+		a.state = adapters.StateError
+		a.lastErr = "AUX session stopped with error"
+	} else {
+		a.state = adapters.StateStopped
+		a.lastErr = ""
+	}
 	a.stateSince = a.auxNow()
 	a.mu.Unlock()
 

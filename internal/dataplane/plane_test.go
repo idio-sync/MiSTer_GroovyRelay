@@ -1441,8 +1441,55 @@ type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
 
+type blockingReadCloser struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{done: make(chan struct{})}
+}
+
+func (r *blockingReadCloser) Read([]byte) (int, error) {
+	<-r.done
+	return 0, io.EOF
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.once.Do(func() {
+		close(r.done)
+	})
+	return nil
+}
+
+type startupExitProcess struct {
+	video io.ReadCloser
+	audio io.Reader
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (p *startupExitProcess) VideoPipe() io.Reader { return p.video }
+func (p *startupExitProcess) AudioPipe() io.Reader { return p.audio }
+func (p *startupExitProcess) Done() <-chan struct{} {
+	return p.done
+}
+func (p *startupExitProcess) Stop() {
+	p.once.Do(func() {
+		if p.video != nil {
+			_ = p.video.Close()
+		}
+		select {
+		case <-p.done:
+		default:
+			close(p.done)
+		}
+	})
+}
+
 func runPlaneUntilInit(t *testing.T, cfg PlaneConfig) (fakemister.Command, *stubProcess, error) {
 	t.Helper()
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "0")
 
 	listener, err := fakemister.NewListener("127.0.0.1:0")
 	requireUDPSockets(t, err)
@@ -1513,6 +1560,132 @@ func runPlaneUntilInit(t *testing.T, cfg PlaneConfig) (fakemister.Command, *stub
 			t.Fatalf("timed out waiting for INIT command; Plane.Run() err=%v", err)
 		}
 	}
+}
+
+func TestPlane_RunReportsProcessExitDuringPrebufferAsError(t *testing.T) {
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "4")
+
+	listener, err := fakemister.NewListener("127.0.0.1:0")
+	requireUDPSockets(t, err)
+	listener.EnableACKs(true)
+	defer listener.Close()
+	addr := listener.Addr().(*net.UDPAddr)
+
+	events := make(chan fakemister.Command, 64)
+	listenerDone := make(chan struct{})
+	go func() {
+		defer close(listenerDone)
+		listener.Run(events)
+	}()
+	defer func() {
+		_ = listener.Close()
+		<-listenerDone
+	}()
+
+	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
+	requireUDPSockets(t, err)
+	defer sender.Close()
+
+	procDone := make(chan struct{})
+	close(procDone)
+	proc := &startupExitProcess{
+		video: newBlockingReadCloser(),
+		audio: eofReader{},
+		done:  procDone,
+	}
+	origSpawn := spawnProcess
+	spawnProcess = func(context.Context, ffmpeg.PipelineSpec) (processHandle, error) {
+		return proc, nil
+	}
+	t.Cleanup(func() { spawnProcess = origSpawn })
+
+	plane := NewPlane(PlaneConfig{
+		Sender:        sender,
+		SpawnSpec:     ffmpeg.PipelineSpec{OutputWidth: 2, OutputHeight: 2, SourceProbe: &ffmpeg.ProbeResult{}},
+		Modeline:      groovy.NTSC480i60,
+		FieldWidth:    2,
+		FieldHeight:   1,
+		BytesPerPixel: 1,
+	})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- plane.Run(context.Background())
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Plane.Run() = nil, want startup error")
+		}
+		if !strings.Contains(err.Error(), "ffmpeg exited during prebuffer") {
+			t.Fatalf("Plane.Run() error = %v, want ffmpeg prebuffer exit", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Plane.Run() did not return after process exit during prebuffer")
+	}
+	<-plane.Done()
+}
+
+func TestPlane_RunReportsVideoEOFDuringPrebufferAsError(t *testing.T) {
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "4")
+
+	listener, err := fakemister.NewListener("127.0.0.1:0")
+	requireUDPSockets(t, err)
+	listener.EnableACKs(true)
+	defer listener.Close()
+	addr := listener.Addr().(*net.UDPAddr)
+
+	events := make(chan fakemister.Command, 64)
+	listenerDone := make(chan struct{})
+	go func() {
+		defer close(listenerDone)
+		listener.Run(events)
+	}()
+	defer func() {
+		_ = listener.Close()
+		<-listenerDone
+	}()
+
+	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
+	requireUDPSockets(t, err)
+	defer sender.Close()
+
+	proc := &startupExitProcess{
+		video: io.NopCloser(eofReader{}),
+		audio: eofReader{},
+		done:  make(chan struct{}),
+	}
+	origSpawn := spawnProcess
+	spawnProcess = func(context.Context, ffmpeg.PipelineSpec) (processHandle, error) {
+		return proc, nil
+	}
+	t.Cleanup(func() { spawnProcess = origSpawn })
+
+	plane := NewPlane(PlaneConfig{
+		Sender:        sender,
+		SpawnSpec:     ffmpeg.PipelineSpec{OutputWidth: 2, OutputHeight: 2, SourceProbe: &ffmpeg.ProbeResult{}},
+		Modeline:      groovy.NTSC480i60,
+		FieldWidth:    2,
+		FieldHeight:   1,
+		BytesPerPixel: 1,
+	})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- plane.Run(context.Background())
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Plane.Run() = nil, want startup error")
+		}
+		if !strings.Contains(err.Error(), "video pipe closed during prebuffer") {
+			t.Fatalf("Plane.Run() error = %v, want video prebuffer EOF", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Plane.Run() did not return after video EOF during prebuffer")
+	}
+	<-plane.Done()
 }
 
 // TestPlane_Prebuffer_HitsTargetReturnsFrames verifies the happy path:
