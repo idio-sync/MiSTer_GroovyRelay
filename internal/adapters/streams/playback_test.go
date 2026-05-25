@@ -2,7 +2,9 @@ package streams
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1193,4 +1195,105 @@ func (r *blockingSuccessResolver) Resolve(ctx context.Context, pageURL, format, 
 
 func (r *blockingSuccessResolver) release() {
 	r.releaseOnce.Do(func() { close(r.releaseCh) })
+}
+
+func TestStreamsMeterOverlayUsesCoreGeneration(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	enableBridgeHLSBufferForTest(a)
+	a.bridge.HLSBuffer.MaxCachedSegments = 9
+	fc.status = core.SessionStatus{State: core.StatePlaying, Generation: 21}
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+
+	var openedMaxSegments int
+	stats := hlsbuffer.Stats{
+		CachedSegments:        2,
+		CachedMediaDuration:   5 * time.Second,
+		CacheBytes:            4096,
+		SegmentDownloadsTotal: 2,
+		SelectedVariant:       hlsbuffer.Variant{URI: "relative/live.m3u8?sig=secret", Width: 640, Height: 480, Bandwidth: 1200000, Codecs: "avc1.secret"},
+	}
+	a.hlsBufferOpen = func(ctx context.Context, opts hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		openedMaxSegments = opts.Config.MaxCachedSegments
+		return &hlsbuffer.Session{
+			PlaybackPath: filepath.Join(t.TempDir(), "playlist.m3u8"),
+			Stats:        func() hlsbuffer.Stats { return stats },
+			Close:        func() error { return nil },
+		}, nil
+	}
+
+	started, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if openedMaxSegments != 9 {
+		t.Fatalf("opened MaxCachedSegments = %d, want normalized configured value 9", openedMaxSegments)
+	}
+	a.bridge.HLSBuffer.MaxCachedSegments = 99
+
+	snap := core.StatusHomeView{State: core.StatePlaying, AdapterRef: started.AdapterRef, Source: "streams", Generation: 21}
+	if snap.AdapterRef != started.AdapterRef || snap.Generation == 0 {
+		t.Fatalf("core snapshot = %+v started=%+v", snap, started)
+	}
+	overlay, ok := a.MeterOverlay(context.Background(), snap)
+	if !ok || overlay.HLS == nil {
+		t.Fatalf("MeterOverlay ok=%v overlay=%+v", ok, overlay)
+	}
+	if overlay.HLS.CachedSegments != 2 || overlay.HLS.MaxCachedSegments != openedMaxSegments {
+		t.Fatalf("HLS overlay = %+v", overlay.HLS)
+	}
+	stale := snap
+	stale.Generation++
+	if _, ok := a.MeterOverlay(context.Background(), stale); ok {
+		t.Fatalf("stale core generation should not own overlay")
+	}
+	body, _ := json.Marshal(overlay)
+	for _, leak := range []string{"/live.m3u8", "sig=", "secret", "avc1"} {
+		if strings.Contains(string(body), leak) {
+			t.Fatalf("overlay leaked %q: %s", leak, body)
+		}
+	}
+}
+
+func TestStreamsMeterOverlayClearsBeforeBaseOnStopAndClose(t *testing.T) {
+	a, _ := newTestAdapterWithFakeCore(t)
+	ref := "streams:test:channel:1"
+	snap := core.StatusHomeView{State: core.StatePlaying, AdapterRef: ref, Source: "streams", Generation: 21}
+	a.activeOverlay = &hlsMeterHandle{
+		ref:               ref,
+		generation:        21,
+		stats:             func() hlsbuffer.Stats { return hlsbuffer.Stats{CachedSegments: 1} },
+		maxCachedSegments: 6,
+	}
+	var order []string
+	var baseSawOverlay bool
+	baseOnStop := func(reason string) {
+		order = append(order, "base")
+		_, baseSawOverlay = a.MeterOverlay(context.Background(), snap)
+	}
+	onStop := withHLSBufferCleanup(a.hlsMeterClearingOnStop(ref, baseOnStop), &hlsbuffer.Session{
+		Close: func() error {
+			order = append(order, "close")
+			return nil
+		},
+	})
+	onStop("stopped")
+	if baseSawOverlay {
+		t.Fatal("overlay should be cleared before base OnStop state mutation")
+	}
+	if _, ok := a.MeterOverlay(context.Background(), core.StatusHomeView{State: core.StateIdle}); ok {
+		t.Fatal("overlay should be cleared after stop")
+	}
+	if len(order) != 2 || order[0] != "base" || order[1] != "close" {
+		t.Fatalf("stop order = %#v, want base before close", order)
+	}
+}
+
+func TestAdapterImplementsMeterOverlayProvider(t *testing.T) {
+	var _ adapters.MeterOverlayProvider = (*Adapter)(nil)
 }

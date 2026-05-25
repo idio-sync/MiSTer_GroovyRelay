@@ -63,6 +63,7 @@ func OpenSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 	for _, item := range cached {
 		stats.addSegment(item.segment.Duration, item.size)
 	}
+	stats.setCurrent(cached, cache.TotalBytes())
 
 	playbackPath := filepath.Join(sessionDir, "playlist.m3u8")
 	if err := writeLocalPlaylist(playbackPath, playlist, cached); err != nil {
@@ -324,7 +325,9 @@ func refreshPlaylist(ctx context.Context, state *refreshState) (Playlist, error)
 		state.stats.addSegment(item.segment.Duration, item.size)
 	}
 	pruneCachedByEntries(state.cachedBySeq, state.cache.Entries())
-	if err := writeLocalPlaylist(state.playbackPath, playlist, cachedWindow(state.cachedBySeq)); err != nil {
+	window := cachedWindow(state.cachedBySeq)
+	state.stats.setCurrent(window, state.cache.TotalBytes())
+	if err := writeLocalPlaylist(state.playbackPath, playlist, window); err != nil {
 		return Playlist{}, err
 	}
 	return playlist, nil
@@ -496,9 +499,9 @@ func formatHLSDuration(d time.Duration) string {
 
 type sessionStats struct {
 	mu                    sync.Mutex
-	cachedSegments        int
-	cachedMediaDuration   time.Duration
-	cacheBytes            int64
+	currentSegments       int
+	currentMediaDuration  time.Duration
+	currentCacheBytes     int64
 	playlistReloadsTotal  int64
 	segmentDownloadsTotal int64
 	selectedVariant       Variant
@@ -511,13 +514,22 @@ func (s *sessionStats) addPlaylistReload() {
 	s.playlistReloadsTotal++
 }
 
-func (s *sessionStats) addSegment(duration time.Duration, size int64) {
+func (s *sessionStats) addSegment(time.Duration, int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cachedSegments++
-	s.cachedMediaDuration += duration
-	s.cacheBytes += size
 	s.segmentDownloadsTotal++
+}
+
+func (s *sessionStats) setCurrent(cached []cachedSegment, bytes int64) {
+	var duration time.Duration
+	for _, item := range cached {
+		duration += item.segment.Duration
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentSegments = len(cached)
+	s.currentMediaDuration = duration
+	s.currentCacheBytes = bytes
 }
 
 func (s *sessionStats) setSelectedVariant(v Variant) {
@@ -536,9 +548,9 @@ func (s *sessionStats) snapshot() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Stats{
-		CachedSegments:        s.cachedSegments,
-		CachedMediaDuration:   s.cachedMediaDuration,
-		CacheBytes:            s.cacheBytes,
+		CachedSegments:        s.currentSegments,
+		CachedMediaDuration:   s.currentMediaDuration,
+		CacheBytes:            s.currentCacheBytes,
 		PlaylistReloadsTotal:  s.playlistReloadsTotal,
 		SegmentDownloadsTotal: s.segmentDownloadsTotal,
 		SelectedVariant:       s.selectedVariant,

@@ -7,34 +7,34 @@
         <div class="audio-grp">
           <span class="grp codec-grp">
             <span class="key">AUDIO IN</span>
-            <span class="val">{{.SourceStrip.AudioIn}}</span>
+            <span class="val" data-meter-audio-in>{{.SourceStrip.AudioIn}}</span>
           </span>
           <span class="grp">
             <span class="key">AUDIO OUT</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~ ~ ~~~</span><span class="seg-text">{{.SourceStrip.AudioOut}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~ ~ ~~~</span><span class="seg-text" data-meter-audio-out>{{.SourceStrip.AudioOut}}</span></span>
           </span>
         </div>
         <div class="video-grp">
           <span class="grp">
             <span class="key">SRC</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~ ~ ~~ ~ ~~~~</span><span class="seg-text">{{.SourceStrip.Src}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~ ~ ~~ ~ ~~~~</span><span class="seg-text" data-meter-src>{{.SourceStrip.Src}}</span></span>
           </span>
           <span class="grp">
             <span class="key">CROP</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~ ~~~~~~</span><span class="seg-text">{{.SourceStrip.Crop}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~ ~~~~~~</span><span class="seg-text" data-meter-crop>{{.SourceStrip.Crop}}</span></span>
           </span>
         </div>
         <div class="net-grp">
           <span class="grp">
             <span class="key">HLS BUF</span>
-            <span class="buf-bar" title="HLS segments cached">
-              {{range until 12}}<span class="seg"></span>{{end}}
+            <span class="buf-bar" title="HLS segments cached" data-meter-hls-bar>
+              {{range until 12}}<span class="seg" data-meter-hls-seg></span>{{end}}
             </span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~</span><span class="seg-text">{{.SourceStrip.HLSBuffer}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~</span><span class="seg-text" data-meter-hls-buffer>{{.SourceStrip.HLSBuffer}}</span></span>
           </span>
           <span class="grp">
             <span class="key">DROPS</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.SourceStrip.Drops}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text" data-meter-drops>{{.SourceStrip.Drops}}</span></span>
             <span style="font:600 9px 'Inter',sans-serif;letter-spacing:0.2em;color:var(--vfd-faded);text-shadow:none;">%</span>
           </span>
         </div>
@@ -66,29 +66,29 @@
         </div>
 
         <div class="video-grp">
-          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.BitrateMbps}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">Mbps</span></div></div>
-          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.FreqKHz}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">kHz</span></div></div>
-          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">888</span><span class="seg-text">{{.MidRow.Mode}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MODE</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text" data-meter-bitrate>{{.MidRow.BitrateMbps}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">Mbps</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text" data-meter-freq-khz>{{.MidRow.FreqKHz}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">kHz</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">888</span><span class="seg-text" data-meter-mode>{{.MidRow.Mode}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MODE</span></div></div>
           <div class="std-lamps std-lamps--stack" title="Output analog standard">
-            <span class="std-ind{{if .MidRow.StandardNTSC}} active{{end}} seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">NTSC</span></span>
-            <span class="std-ind{{if .MidRow.StandardPAL}} active{{end}} seg-display"><span class="seg-ghost" aria-hidden="true">~~~</span><span class="seg-text">PAL</span></span>
+            <span class="std-ind{{if .MidRow.StandardNTSC}} active{{end}} seg-display" data-meter-standard-ntsc><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">NTSC</span></span>
+            <span class="std-ind{{if .MidRow.StandardPAL}} active{{end}} seg-display" data-meter-standard-pal><span class="seg-ghost" aria-hidden="true">~~~</span><span class="seg-text">PAL</span></span>
           </div>
           <div class="field-flip" title="Interlace field interleave &middot; field order &middot; lock">
             <div class="row"><span class="dot odd"></span><span class="lbl">ODD</span></div>
             <div class="row"><span class="dot even"></span><span class="lbl">EVEN</span></div>
-            <span class="lock">{{.MidRow.FieldFlip}}</span>
+            <span class="lock" data-meter-field-lock>{{.MidRow.FieldFlip}}</span>
           </div>
         </div>
 
         <div class="net-grp">
-          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.ThroughputMBs}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MB/S</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text" data-meter-throughput>{{.MidRow.ThroughputMBs}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">MB/S</span></div></div>
           <div class="throughput-wrap aux-scope" title="Network throughput &middot; last 30 seconds">
             <div class="aux-screen">
               <canvas id="throughput-canvas" width="220" height="120" role="img" aria-labelledby="throughput-lbl">Network throughput graph</canvas>
             </div>
             <span class="aux-lbl" id="throughput-lbl">NET &middot; {{.MidRow.ThroughputMBs}} MB/S</span>
           </div>
-          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text">{{.MidRow.MSAck}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">MS ACK</span></div></div>
+          <div class="stat"><div class="v seg-display"><span class="seg-ghost" aria-hidden="true">88.8</span><span class="seg-text" data-meter-ack>{{.MidRow.MSAck}}</span></div><div class="k seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">MS ACK</span></div></div>
           <div class="ack-wrap aux-scope" title="ACK latency &middot; last 128 frames">
             <div class="aux-screen">
               <canvas id="ack-canvas" width="220" height="120" role="img" aria-labelledby="ack-lbl">ACK latency graph</canvas>
@@ -127,29 +127,30 @@
         <div class="video-grp">
           <span class="grp">
             <span class="key">OUTPUT</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~~ ~~~~ ~ ~~~~~~</span><span class="seg-text">{{.Readout.Output}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~~~~ ~~~~ ~ ~~~~~~</span><span class="seg-text" data-meter-output>{{.Readout.Output}}</span></span>
           </span>
           <span class="grp">
             <span class="key">ASPECT</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~ ~~~~~~~~~~</span><span class="seg-text">{{.Readout.Aspect}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~ ~~~~~~~~~~</span><span class="seg-text" data-meter-aspect>{{.Readout.Aspect}}</span></span>
           </span>
         </div>
         <div class="net-grp">
           <span class="grp">
             <span class="key">PIPE</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~</span><span class="seg-text">{{.Readout.Pipe}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~</span><span class="seg-text" data-meter-pipe>{{.Readout.Pipe}}</span></span>
           </span>
           <span class="grp speed-grp">
             <span class="key">SPEED</span>
-            <span class="val seg-display locked"><span class="seg-ghost" aria-hidden="true">8.88~ ~~~~</span><span class="seg-text">{{.Readout.Speed}}</span></span>
+            <span class="val seg-display locked"><span class="seg-ghost" aria-hidden="true">8.88~ ~~~~</span><span class="seg-text" data-meter-speed>{{.Readout.Speed}}</span></span>
           </span>
           <span class="grp link-grp">
             <span class="key">LINK</span>
-            <span class="val seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~ ~~~~~~~</span><span class="seg-text">{{.Readout.Link}}</span></span>
+            <span class="val seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~ ~~~~~~~</span><span class="seg-text" data-meter-link>{{.Readout.Link}}</span></span>
           </span>
         </div>
       </div>
     </div>
   </div>
 </div>
+<span hidden data-meter-audio-scopes-status="{{.AudioScopes.Status}}"></span>
 {{end}}

@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
@@ -1260,4 +1262,115 @@ func TestPlay_PopulatesTitle(t *testing.T) {
 	if core.lastReq.Title != want {
 		t.Errorf("Title: got %q, want %q", core.lastReq.Title, want)
 	}
+}
+
+func TestURLMeterOverlayExposesHLSStatsForOwningSession(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	a.bridge.HLSBuffer.Enabled = true
+	a.bridge.HLSBuffer.MaxCachedSegments = 8
+
+	var openedMaxSegments int
+	stats := hlsbuffer.Stats{
+		CachedSegments:        3,
+		CachedMediaDuration:   4500 * time.Millisecond,
+		CacheBytes:            2048,
+		PlaylistReloadsTotal:  2,
+		SegmentDownloadsTotal: 3,
+		SelectedVariant:       hlsbuffer.Variant{URI: "live.m3u8?token=secret", Width: 720, Height: 480, Bandwidth: 1500000, Codecs: "avc1.secret"},
+		FailureReason:         "fetch /live.m3u8?token=secret failed",
+	}
+	a.hlsBufferOpen = func(ctx context.Context, opts hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		openedMaxSegments = opts.Config.MaxCachedSegments
+		return &hlsbuffer.Session{
+			PlaybackPath: filepath.Join(t.TempDir(), "playlist.m3u8"),
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return stats },
+			Close:        func() error { return nil },
+		}, nil
+	}
+	fc.statusFn = func() core.SessionStatus {
+		req := fc.snapshot()
+		return core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef, Generation: 11}
+	}
+
+	ref, _, status, err := a.castURLWithHLSBuffer(context.Background(), "https://example.test/live.m3u8", "direct", "auto")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURLWithHLSBuffer status=%d err=%v", status, err)
+	}
+	if openedMaxSegments != 8 {
+		t.Fatalf("opened MaxCachedSegments = %d, want normalized configured value 8", openedMaxSegments)
+	}
+	a.mu.Lock()
+	a.bridge.HLSBuffer.MaxCachedSegments = 99
+	a.mu.Unlock()
+
+	snap := core.StatusHomeView{State: core.StatePlaying, AdapterRef: ref, Source: "url", Generation: 11}
+	if snap.AdapterRef != ref {
+		t.Fatalf("core AdapterRef = %q, want %q", snap.AdapterRef, ref)
+	}
+	overlay, ok := a.MeterOverlay(context.Background(), snap)
+	if !ok || overlay.HLS == nil {
+		t.Fatalf("MeterOverlay ok=%v overlay=%+v", ok, overlay)
+	}
+	if overlay.HLS.CachedSegments != 3 || overlay.HLS.MaxCachedSegments != openedMaxSegments {
+		t.Fatalf("HLS overlay = %+v", overlay.HLS)
+	}
+	body, _ := json.Marshal(overlay)
+	for _, leak := range []string{"https://example.test", "/live.m3u8", "token=", "secret", "avc1"} {
+		if strings.Contains(string(body), leak) {
+			t.Fatalf("overlay leaked %q: %s", leak, body)
+		}
+	}
+}
+
+func TestURLMeterOverlayClearsBeforeBaseOnStopAndClose(t *testing.T) {
+	fc := &fakeCore{}
+	a := newTestAdapter(t, fc)
+	a.bridge.HLSBuffer.Enabled = true
+	a.bridge.HLSBuffer.MaxCachedSegments = 6
+	var order []string
+	var baseSawOverlay bool
+	a.hlsBufferOpen = func(ctx context.Context, opts hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		return &hlsbuffer.Session{
+			PlaybackPath: filepath.Join(t.TempDir(), "playlist.m3u8"),
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{CachedSegments: 1} },
+			Close: func() error {
+				return nil
+			},
+		}, nil
+	}
+	fc.statusFn = func() core.SessionStatus {
+		req := fc.snapshot()
+		return core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef, Generation: 12}
+	}
+	ref, _, status, err := a.castURLWithHLSBuffer(context.Background(), "https://example.test/live.m3u8", "direct", "auto")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURLWithHLSBuffer status=%d err=%v", status, err)
+	}
+	snap := core.StatusHomeView{State: core.StatePlaying, AdapterRef: ref, Source: "url", Generation: 12}
+	if _, ok := a.MeterOverlay(context.Background(), snap); !ok {
+		t.Fatal("overlay should be active before stop")
+	}
+	baseOnStop := func(reason string) {
+		order = append(order, "base")
+		_, baseSawOverlay = a.MeterOverlay(context.Background(), snap)
+	}
+	onStop := withHLSBufferCleanup(a.hlsMeterClearingOnStop(ref, baseOnStop), &hlsbuffer.Session{
+		Close: func() error {
+			order = append(order, "close")
+			return nil
+		},
+	})
+	onStop("stopped")
+	if baseSawOverlay {
+		t.Fatal("overlay should be cleared before base OnStop state mutation")
+	}
+	if _, ok := a.MeterOverlay(context.Background(), core.StatusHomeView{State: core.StateIdle}); ok {
+		t.Fatal("overlay should be cleared after stop")
+	}
+	if len(order) != 2 || order[0] != "base" || order[1] != "close" {
+		t.Fatalf("stop order = %#v, want base before close", order)
+	}
+	_ = ref
 }

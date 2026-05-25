@@ -86,12 +86,13 @@ type Adapter struct {
 	ytdlpBinaryResolver ytdlp.BinaryResolver
 	streamResolver      streamhandoff.Resolver
 
-	mu         sync.Mutex
-	cfg        Config
-	state      adapters.State
-	lastErr    string
-	stateSince time.Time
-	lastURL    string // last URL handed to StartSession; surfaced in the panel
+	mu            sync.Mutex
+	cfg           Config
+	state         adapters.State
+	lastErr       string
+	stateSince    time.Time
+	lastURL       string // last URL handed to StartSession; surfaced in the panel
+	activeOverlay *hlsMeterHandle
 
 	// history is the LRU URL-recall list shown in the panel. Its own
 	// mutex; not guarded by a.mu. Path computed once at New() from

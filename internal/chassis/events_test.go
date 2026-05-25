@@ -336,10 +336,24 @@ func newFlushRecorder() *flushRecorder {
 	return &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 }
 
+func (f *flushRecorder) Write(b []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ResponseRecorder.Write(b)
+}
+
 func (f *flushRecorder) Flush() {
 	f.mu.Lock()
 	f.flushes++
 	f.mu.Unlock()
+}
+
+// BodyString returns the accumulated SSE body safely under the mutex.
+// Use this instead of f.Body.String() when another goroutine may be writing.
+func (f *flushRecorder) BodyString() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Body.String()
 }
 
 // nonFlushableWriter implements http.ResponseWriter but deliberately
@@ -542,17 +556,21 @@ func TestHandleEvents_EmitsTransportEventOnInitialConnect(t *testing.T) {
 	}
 }
 
-func TestHandleEvents_RefreshesInitialSnapshotBeforeEmitting(t *testing.T) {
+func TestHandleEvents_InitialBurstReadsFromCache(t *testing.T) {
 	t.Parallel()
-	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "Seeded Title", Source: "plex",
+	}}
 	cfg := nonZeroConfig()
 	cfg.Session = sv
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// Change session after New() — the cache still holds the seed snapshot.
+	// The initial burst reads from cache, not from the live session.
 	sv.set(core.StatusHomeView{
-		State: core.StatePlaying, Title: "Fresh Title", Source: "plex",
+		State: core.StatePlaying, Title: "Post-Seed Title", Source: "plex",
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -565,14 +583,12 @@ func TestHandleEvents_RefreshesInitialSnapshotBeforeEmitting(t *testing.T) {
 	s.handleEvents(w, req)
 
 	body := w.Body.String()
+	// Initial burst reflects the cache (seeded at New time from Seeded Title).
 	if !strings.Contains(body, `"state":"live"`) {
-		t.Errorf("initial SSE snapshot should refresh to live before emitting; body:\n%s", body)
+		t.Errorf("initial SSE burst should reflect cached live state; body:\n%s", body)
 	}
-	if !strings.Contains(body, `"title":"Fresh Title"`) {
-		t.Errorf("initial SSE VFD payload should include fresh title; body:\n%s", body)
-	}
-	if strings.Contains(body, `"title":"STANDBY"`) {
-		t.Errorf("initial SSE VFD payload used stale cached idle snapshot; body:\n%s", body)
+	if !strings.Contains(body, `"title":"Seeded Title"`) {
+		t.Errorf("initial SSE VFD payload should match cache seed; body:\n%s", body)
 	}
 }
 
@@ -1076,6 +1092,149 @@ func (c *countingViewer) Calls() int {
 	return c.calls
 }
 
+func TestHandleEvents_InitialBurstIncludesMeterAfterTransportFromCache(t *testing.T) {
+	cfg := nonZeroConfig()
+	sv := &countingViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Cached Meter",
+		AdapterRef: "url:cached",
+		Source:     "url",
+		Generation: 2,
+	}}
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	before := sv.Calls()
+	body := readInitialSSE(t, s)
+	after := sv.Calls()
+	if after != before {
+		t.Fatalf("initial SSE called StatusHomeView %d extra times; want cached burst only", after-before)
+	}
+	transportIdx := strings.Index(body, "event: transport\n")
+	meterIdx := strings.Index(body, "event: meter\n")
+	if transportIdx < 0 || meterIdx < 0 || meterIdx <= transportIdx {
+		t.Fatalf("meter must be emitted after transport; body:\n%s", body)
+	}
+	if !strings.Contains(body, `"generation":2`) {
+		t.Fatalf("meter payload missing generation: body:\n%s", body)
+	}
+}
+
+func readInitialSSE(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	w := newFlushRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.handleEvents(w, req)
+	}()
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		if strings.Contains(w.BodyString(), "event: meter\n") {
+			cancel()
+			<-done
+			return w.BodyString()
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for initial meter event; body:\n%s", w.BodyString())
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+// readSSEUntilMeterACK connects to handleEvents and accumulates SSE body
+// until a meter event with a non-"--" ackMS value appears, or the
+// deadline expires. Used by tests that require the meter sampler's 500ms
+// window to fire (ackMS is only computed after the first full interval).
+func readSSEUntilMeterACK(t *testing.T, s *Server, timeout time.Duration) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	w := newFlushRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.handleEvents(w, req)
+	}()
+	// ackMS values look like "04.0", "12.3", etc. — never "--" once
+	// the 500ms sampling window fires. Match any non-dash ackMS value.
+	hasLiveACK := func(body string) bool {
+		idx := 0
+		for {
+			pos := strings.Index(body[idx:], `"ackMS":"`)
+			if pos < 0 {
+				return false
+			}
+			// pos is relative to body[idx:]; convert to absolute index of the
+			// first character after the needle so we can inspect body[pos].
+			pos = idx + pos + len(`"ackMS":"`)
+			if pos < len(body) && body[pos] != '-' {
+				return true
+			}
+			// Advance past this occurrence so the next iteration searches further.
+			idx = pos
+		}
+	}
+	deadline := time.After(timeout)
+	for {
+		body := w.BodyString()
+		if hasLiveACK(body) {
+			cancel()
+			<-done
+			return body
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for meter event with non-'--' ackMS; body:\n%s", w.BodyString())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestMeterChangedGating(t *testing.T) {
+	base := idleSnapshot(nonZeroConfig(), time.Unix(1, 0)).Meter
+	base.State = "live"
+	base.Generation = 10
+	base.SampleSeq = 1
+	base.MidRow.Standard = "ntsc"
+	base.MidRow.FieldOrder = "tff"
+	base.MidRow.InterlacedOutput = true
+	base.Readout.Output = "INTERLACE 480i - BT.601"
+	base.Readout.Aspect = "4:3 LETTERBOX"
+	base.Readout.Pipe = "LZ4+D - TFF"
+	base.Readout.Link = "MiSTer - 4ms"
+	cases := []struct {
+		name string
+		edit func(*MeterData)
+		want bool
+	}{
+		{"sample boundary", func(m *MeterData) { m.SampleSeq++ }, true},
+		{"pause flip", func(m *MeterData) { m.Paused = true }, true},
+		{"generation", func(m *MeterData) { m.Generation++ }, true},
+		{"structural field", func(m *MeterData) { m.MidRow.FieldOrder = "bff" }, true},
+		{"idle clear", func(m *MeterData) { m.State = "idle" }, true},
+		{"ack text jitter suppressed", func(m *MeterData) { m.MidRow.MSAck = "05.0" }, false},
+	}
+	for _, tc := range cases {
+		next := base
+		tc.edit(&next)
+		if got := meterChanged(next, base); got != tc.want {
+			t.Errorf("%s: meterChanged = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE(t *testing.T) {
 	t.Parallel()
 	// A New-only server (no Mount) should already have a valid cached
@@ -1137,6 +1296,41 @@ func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
 	// Idempotence: calling Close twice must not panic or block.
 	if err := s.Close(); err != nil {
 		t.Errorf("second Close returned error: %v (want nil; Close must be idempotent)", err)
+	}
+}
+
+func TestReceiverEventsMeterPayloadIncludesLowRateFields(t *testing.T) {
+	cfg := nonZeroConfig()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Integration Meter",
+		AdapterRef: "url:meter",
+		Source:     "url",
+		Generation: 3,
+		Meter: core.MeterHomeView{
+			Source: core.SourceMeterView{Width: 720, Height: 480, VideoCodec: "h264", AudioCodec: "aac", AudioRate: 48000, AudioChannels: 2},
+			Pipeline: core.PipelineMeterView{ModelineName: "NTSC_480i", Standard: "ntsc", FieldOrder: "tff", FieldRateHz: 59.94, HorizontalKHz: 15.7, InterlacedOutput: true, AudioSampleRate: 48000, AudioChannels: 2},
+			Runtime: core.RuntimeMeterView{Generation: 3, BlitsTotal: 100, WireBytes: 1000000, LastACKAge: 4 * time.Millisecond},
+		},
+	}}
+	s, err := New(Config{Version: cfg.Version, StartedAt: cfg.StartedAt, Bridge: cfg.Bridge, Session: sv})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mount starts the shared cache refresher. The meter sampler's ACK
+	// readout (ackMS) requires at least one 500ms sampling window to
+	// accumulate, so we connect and collect SSE body until a meter event
+	// with a non-"--" ackMS appears (up to 1.5s).
+	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
+	body := readSSEUntilMeterACK(t, s, 1500*time.Millisecond)
+	if !strings.Contains(body, "event: meter\n") {
+		t.Fatalf("missing meter event:\n%s", body)
+	}
+	for _, want := range []string{`"audioIn":"AAC - STEREO"`, `"fieldRateHz":59.94`, `"interlacedOutput":true`, `"ackMS":"04.0"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("meter payload missing %s:\n%s", want, body)
+		}
 	}
 }
 

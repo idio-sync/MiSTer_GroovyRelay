@@ -426,3 +426,36 @@ func waitForLocalPlaylist(t *testing.T, path, want string) {
 	}
 	t.Fatalf("timed out waiting for local playlist %s to contain %q; last body:\n%s", path, want, readFile(t, path))
 }
+
+func TestSessionStats_CachedFieldsRepresentCurrentOccupancy(t *testing.T) {
+	stats := &sessionStats{}
+	stats.addSegment(2*time.Second, 100)
+	stats.addSegment(3*time.Second, 200)
+	stats.setCurrent([]cachedSegment{
+		{segment: Segment{Duration: 3 * time.Second, Sequence: 2}, name: "segment-000002.ts", size: 200},
+	}, 200)
+
+	got := stats.snapshot()
+	if got.CachedSegments != 1 {
+		t.Fatalf("CachedSegments = %d, want current occupancy 1", got.CachedSegments)
+	}
+	if got.CachedMediaDuration != 3*time.Second {
+		t.Fatalf("CachedMediaDuration = %s, want 3s", got.CachedMediaDuration)
+	}
+	if got.CacheBytes != 200 {
+		t.Fatalf("CacheBytes = %d, want current bytes 200", got.CacheBytes)
+	}
+	if got.SegmentDownloadsTotal != 2 {
+		t.Fatalf("SegmentDownloadsTotal = %d, want lifetime downloads 2", got.SegmentDownloadsTotal)
+	}
+}
+
+func TestNormalizeConfig_ExportsSessionDefaults(t *testing.T) {
+	got := NormalizeConfig(Config{})
+	if got.MaxCachedSegments != 6 {
+		t.Fatalf("MaxCachedSegments = %d, want 6", got.MaxCachedSegments)
+	}
+	if got.MaxCacheBytes <= 0 || got.MaxSegmentBytes <= 0 {
+		t.Fatalf("expected byte limits to be defaulted: %+v", got)
+	}
+}

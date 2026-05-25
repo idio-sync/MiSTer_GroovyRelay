@@ -181,6 +181,7 @@ type activeSession struct {
 	baseOffsetMs   int           // offset the plane was spawned with
 	pausedPosition time.Duration // snapshot from plane at Pause
 	duration       time.Duration
+	meter          MeterHomeView
 }
 
 var errAdapterRefChanged = errors.New("adapter ref changed")
@@ -833,12 +834,14 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OnInit:              m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
+	meter := buildMeterHomeView(req, probe, cropRect, aspectMode, preset, modeline, fieldH, m.bridge.Video.RGBMode, audioRate, audioChans, m.bridge)
 	m.active = &activeSession{
 		req:          req,
 		startedAt:    time.Now(),
 		generation:   generation,
 		baseOffsetMs: offsetMs,
 		duration:     visualizerDuration(req, probe),
+		meter:        meter,
 	}
 
 	go func() {
@@ -1468,15 +1471,30 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		view.Generation = m.active.generation
 		view.Modeline = m.bridge.Video.Modeline
 		view.Position = m.active.pausedPosition
+		view.Meter = m.active.meter
+		view.Meter.Pipeline.FieldOrder = m.bridge.Video.InterlaceFieldOrder
+		view.Meter.Pipeline.AudioOutputVolume = m.bridge.Audio.OutputVolume
+		view.Meter.Runtime.StartedAt = m.active.startedAt
+		view.Meter.Runtime.Generation = m.active.generation
 	}
 	if m.plane != nil {
+		blits := m.plane.BlitsTotal()
+		frames := m.plane.FramesTotal()
+		underruns := m.plane.Underruns()
+		wireBytes := m.plane.WireBytes()
+		lastACKAge := m.plane.LastACKAge()
 		view.Modeline = m.bridge.Video.Modeline
 		view.Position = m.plane.Position()
-		view.BlitsTotal = m.plane.BlitsTotal()
-		view.FramesTotal = m.plane.FramesTotal()
-		view.Underruns = m.plane.Underruns()
-		view.WireBytes = m.plane.WireBytes()
-		view.LastACKAge = m.plane.LastACKAge()
+		view.BlitsTotal = blits
+		view.FramesTotal = frames
+		view.Underruns = underruns
+		view.WireBytes = wireBytes
+		view.LastACKAge = lastACKAge
+		view.Meter.Runtime.BlitsTotal = blits
+		view.Meter.Runtime.FramesTotal = frames
+		view.Meter.Runtime.Underruns = underruns
+		view.Meter.Runtime.WireBytes = wireBytes
+		view.Meter.Runtime.LastACKAge = lastACKAge
 	}
 	return view
 }

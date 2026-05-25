@@ -16,6 +16,34 @@
   }
 
   let source = null;
+  const subscriptions = new Map();
+
+  function subscribe(eventName, handler) {
+    if (!subscriptions.has(eventName)) {
+      subscriptions.set(eventName, new Set());
+    }
+    const handlers = subscriptions.get(eventName);
+    handlers.add(handler);
+    if (source) {
+      source.removeEventListener(eventName, handler);
+      source.addEventListener(eventName, handler);
+    }
+    return function unsubscribe() {
+      handlers.delete(handler);
+      if (source) {
+        source.removeEventListener(eventName, handler);
+      }
+    };
+  }
+
+  function attachSubscriptions(nextSource) {
+    subscriptions.forEach((handlers, eventName) => {
+      handlers.forEach((handler) => {
+        nextSource.removeEventListener(eventName, handler);
+        nextSource.addEventListener(eventName, handler);
+      });
+    });
+  }
 
   function handleStateEvent(ev) {
     try {
@@ -82,6 +110,7 @@
     source.addEventListener('error', () => {
       console.info('vfd-live: stream interrupted; browser will retry using the SSE retry directive');
     });
+    attachSubscriptions(source);
 
     if (!window.Chassis.events) {
       window.Chassis.events = {};
@@ -95,6 +124,7 @@
   // Expose for the ?dev=1 toggle and integration debugging.
   window.Chassis.events = window.Chassis.events || {};
   Object.assign(window.Chassis.events, {
+    subscribe,
     reconnect() {
       if (source) source.close();
       connect();
