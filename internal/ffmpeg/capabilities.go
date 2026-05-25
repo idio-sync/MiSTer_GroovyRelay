@@ -70,6 +70,16 @@ func DrawTextUsable(ctx context.Context, ffmpegPath string) (bool, error) {
 
 var drawTextUsableFn = DrawTextUsable
 
+func visualizerOverlayFiltersAvailable(ctx context.Context, ffmpegPath string) bool {
+	for _, filter := range RequiredVisualizerOverlayFilters() {
+		ok, err := filterAvailableFn(ctx, ffmpegPath, filter)
+		if err != nil || !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpec {
 	if !s.Visualizer.Enabled {
 		return s
@@ -94,13 +104,12 @@ func withVisualizerCapabilities(ctx context.Context, s PipelineSpec) PipelineSpe
 	}
 	s.Visualizer.RequiredFiltersAvailable = requiredOK
 
-	ok, err := filterAvailableFn(checkCtx, ffmpegPath, "drawtext")
-	if err == nil && ok {
-		ok, err = drawTextUsableFn(checkCtx, ffmpegPath)
-	}
-	if err == nil && ok {
-		s.Visualizer.DrawTextAvailable = true
-		return s
+	if visualizerOverlayFiltersAvailable(checkCtx, ffmpegPath) {
+		ok, err := drawTextUsableFn(checkCtx, ffmpegPath)
+		if err == nil && ok {
+			s.Visualizer.DrawTextAvailable = true
+			return s
+		}
 	}
 	s.Visualizer.DrawTextAvailable = false
 	return s

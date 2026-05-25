@@ -1,15 +1,18 @@
 {{define "status-bar"}}
 {{htmlComment "chassis:status-bar"}}
 <div class="status-bar">
-  <div class="brand-plate"><span class="name">GROOVY · RELAY</span><span class="model">RECEIVER 2026</span></div>
-  <div class="status-spacer">
-    <span class="host-readout"><span class="lbl">HOST</span><span class="val">{{.HostIP}}:{{.HTTPPort}}</span></span>
+  <div class="power-cluster">
+    <button class="power-btn" type="button" aria-label="Power" title="Power">&#x23fb;</button>
+    <div class="led-row">
+      <span class="led on green" role="status" aria-label="Power on" title="Power on"><span class="light"></span><span class="lbl">PWR</span></span>
+      <span class="led on green" role="status" aria-label="Link online" title="Link online"><span class="light"></span><span class="lbl">LINK</span></span>
+      <span class="led on aqua" role="status" aria-label="On air" title="On air"><span class="light"></span><span class="lbl">ON&nbsp;AIR</span></span>
+      <span class="led on red" role="status" aria-label="Cast active" title="Cast active"><span class="light"></span><span class="lbl">CAST</span></span>
+      <span class="led" role="status" aria-label="Recording inactive" title="Recording inactive"><span class="light"></span><span class="lbl">REC</span></span>
+      <span class="led" role="status" aria-label="EQ inactive" title="EQ inactive"><span class="light"></span><span class="lbl">EQ</span></span>
+    </div>
   </div>
-  <div class="led-row">
-    <span class="led on" role="status" aria-label="Bridge online" title="Bridge online"><span class="dot"></span><span class="lbl">BRIDGE</span></span>
-    <span class="led" role="status" aria-label="MiSTer link offline" title="MiSTer link offline"><span class="dot"></span><span class="lbl">MISTER</span></span>
-    <span class="led" role="status" aria-label="Cast inactive" title="Cast inactive"><span class="dot"></span><span class="lbl">CAST</span></span>
-  </div>
-  <button class="load-core-btn" type="button" aria-label="Load core"><span class="dot"></span><span class="label-text">LOAD CORE</span></button>
+  <button class="load-core-btn loaded" type="button" aria-label="Load core"><span class="label-text">&#9656; Load core</span></button>
+  <div class="brand-plate"><span class="name">{{.BrandName}}</span><span class="model">model GR-<em>480i</em> &middot; stereo bridge</span></div>
 </div>
 {{end}}

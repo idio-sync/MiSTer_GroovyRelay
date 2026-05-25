@@ -782,7 +782,6 @@ func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 	body := rr.Body.String()
 	for _, want := range []string{
 		`<!-- chassis:status-bar -->`,
-		`<!-- chassis:masthead -->`,
 		`<!-- chassis:vfd-source-row -->`,
 		`<!-- chassis:vfd -->`,
 		`<!-- chassis:source-cluster -->`,
@@ -797,6 +796,9 @@ func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
+	}
+	if strings.Contains(body, `<!-- chassis:masthead -->`) {
+		t.Errorf("body should not render separate masthead chrome")
 	}
 }
 
@@ -813,8 +815,17 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		`class="host-readout"`,
-		`10.0.0.5:32500`,
+		`class="power-cluster"`,
+		`class="power-btn"`,
+		`<span class="lbl">PWR</span>`,
+		`<span class="lbl">LINK</span>`,
+		`<span class="lbl">ON&nbsp;AIR</span>`,
+		`<span class="lbl">CAST</span>`,
+		`<span class="lbl">REC</span>`,
+		`<span class="lbl">EQ</span>`,
+		`class="load-core-btn loaded"`,
+		`<span class="label-text">&#9656; Load core</span>`,
+		`model GR-<em>480i</em> &middot; stereo bridge`,
 		`<div class="input-panel" style="flex:1">`,
 		`id="paste-clear" type="button"`,
 		`id="torrent-file-input"`,
@@ -832,6 +843,17 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 	}
 	if strings.Contains(body, `<label class="input-panel"`) {
 		t.Errorf("input panel must not be a label containing interactive children")
+	}
+	for _, unwanted := range []string{
+		`class="host-readout"`,
+		`10.0.0.5:32500`,
+		`RECEIVER 2026`,
+		`<!-- chassis:masthead -->`,
+		`class="masthead"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("body should not contain old top chrome hook %q", unwanted)
+		}
 	}
 }
 

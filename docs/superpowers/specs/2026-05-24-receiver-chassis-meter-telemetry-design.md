@@ -49,7 +49,7 @@ Spec 5A must not animate fake audio values. It can reserve hooks and quiet displ
 
 ## Done When
 
-- A live cast renders real low-rate meter text on `/receiver` within about 500 ms: `AUDIO OUT`, `SRC`, `CROP`, `HLS BUF`, `DROPS`, bitrate, kHz, mode, standard lamps, field lock, MB/S, MS ACK, `OUTPUT`, `ASPECT`, `PIPE`, `SPEED`, and `LINK`.
+- A live cast renders real low-rate meter text on `/receiver` within about 500 ms: `AUDIO IN`, `AUDIO OUT`, `SRC`, `CROP`, `HLS BUF`, `DROPS`, bitrate, kHz, mode, standard lamps, field lock, MB/S, MS ACK, `OUTPUT`, `ASPECT`, `PIPE`, `SPEED`, and `LINK`.
 - The initial SSE burst on `/receiver/events` emits `state`, `vfd`, `visualizer`, `transport`, then `meter`.
 - During a live session, `meter` updates arrive at about 2 Hz and include enough numeric samples for the throughput and ACK canvases.
 - Multiple open chassis tabs consume the same cached meter snapshots without increasing `core.Manager.StatusHomeView()` call rate.
@@ -80,17 +80,21 @@ type MeterHomeView struct {
 }
 
 type SourceMeterView struct {
-    Width            int
-    Height           int
-    FrameRate        float64
-    Interlaced       bool
-    VideoCodec       string
-    AudioCodec       string
-    AudioRate        int
-    AudioChannels    int
-    VideoBitrateBPS  int64
-    AudioBitrateBPS  int64
-    FormatBitrateBPS int64
+    Width                 int
+    Height                int
+    FrameRate             float64
+    Interlaced            bool
+    SampleAspectRatioNum  int
+    SampleAspectRatioDen  int
+    DisplayAspectRatioNum int
+    DisplayAspectRatioDen int
+    VideoCodec            string
+    AudioCodec            string
+    AudioRate             int
+    AudioChannels         int
+    VideoBitrateBPS       int64
+    AudioBitrateBPS       int64
+    FormatBitrateBPS      int64
 }
 
 type CropMeterView struct {
@@ -142,12 +146,12 @@ Implementation can tune exact names, but the boundaries should stay:
 
 The active session should retain:
 
-- Probe-derived source facts: width, height, frame rate, interlace flag, audio rate, duration, codec names, channels, and bitrate where available.
-- Crop/effective aspect facts: whether a crop was detected, crop rectangle, and final aspect mode.
+- Probe-derived source facts: width, height, frame rate, interlace flag, sample/display aspect ratio, audio rate, duration, codec names, channels, and bitrate where available.
+- Crop/effective aspect facts: whether a crop was detected, crop rectangle, final aspect mode, and the source display aspect used to derive `CROP` and `ASPECT` labels.
 - Pipeline facts: modeline name, output dimensions, field height, field rate, horizontal kHz, standard, field order, RGB mode, LZ4 flags, audio sample rate/channels, and output volume.
 - Runtime facts: existing plane counters copied from the current plane on each `StatusHomeView()`.
 
-`ffmpeg.ProbeResult` should grow the extra fields needed by the meter: video codec, audio codec, audio channels, and bitrate values. If ffprobe omits a value, leave it zero and let chassis render placeholders.
+`ffmpeg.ProbeResult` should grow the extra fields needed by the meter: video codec, audio codec, audio channels, sample aspect ratio, display aspect ratio, and bitrate values. If ffprobe omits a value, leave it zero and let chassis render placeholders. Chassis may derive display aspect from width, height, and sample aspect ratio only when ffprobe does not provide display aspect directly.
 
 ### Provider Overlays
 
@@ -178,9 +182,9 @@ type HLSMeterOverlay struct {
 }
 ```
 
-URL and Streams already hold `*hlsbuffer.Session` during buffered casts. Spec 5A makes that state observable while the adapter owns the active core session:
+URL and Streams currently create `*hlsbuffer.Session` values for buffered casts and capture them for cleanup. Spec 5A must also store an active HLS stats handle, under the adapter's existing lock, while the adapter owns the active core session:
 
-- Hold the active HLS stats function together with adapter ref and generation.
+- After a successful core start, read `core.Status()` and install the stats handle only when the returned `AdapterRef` matches the request. Store the returned core generation with the handle; do not use Streams queue generation as a substitute.
 - Return overlay only when `snap.AdapterRef` and `snap.Generation` match the active buffered session.
 - Clear overlay on stop/preempt through the existing `OnStop` cleanup path.
 - Do not expose source URLs or tokens through the overlay.
@@ -195,8 +199,9 @@ The chassis snapshot refresher owns a small `meterSampler`:
 
 - Input: the latest `StatusHomeView`, optional provider overlay, and wall-clock time.
 - Output: display-ready `MeterData` plus raw numeric samples.
-- State: previous generation, previous wire bytes, previous blit count, previous sample time, throughput history, and ACK history.
+- State: previous generation, previous wire bytes, previous blit count, previous underrun count, previous sample time, throughput history, and ACK history.
 - Reset: when session generation changes or state returns idle.
+- Paused sessions keep the latest text facts and freeze throughput, speed, and ACK histories instead of appending zero samples. If a paused session has no plane, the event state remains `live` with `paused: true` so clients can preserve the last real values without inventing motion.
 
 SSE handlers should read the cached `ReceiverPageData`. They must not compute byte deltas per tab. This preserves the Spec 2 lock and fan-out invariant.
 
@@ -209,6 +214,7 @@ Conceptual payload:
 ```json
 {
   "state": "live",
+  "paused": false,
   "generation": 12,
   "sourceStrip": {
     "audioIn": "AAC LC - STEREO",
@@ -219,7 +225,10 @@ Conceptual payload:
     "hlsCachedSegments": 6,
     "hlsMaxSegments": 12,
     "hlsCacheBytes": 12345678,
-    "drops": "0.0"
+    "drops": "0.0",
+    "dropsPercent": 0.0,
+    "blitsTotal": 7200,
+    "underrunsTotal": 0
   },
   "midRow": {
     "bitrateMbps": "2.4",
@@ -227,6 +236,8 @@ Conceptual payload:
     "mode": "704",
     "standard": "ntsc",
     "fieldOrder": "tff",
+    "fieldRateHz": 59.94,
+    "interlacedOutput": true,
     "fieldLock": "LOCK",
     "throughputMBs": "14.2",
     "throughputSampleMBs": 14.2,
@@ -263,12 +274,12 @@ The implementation can avoid sending full histories if the client maintains them
 | `SRC` | probe width/height/frame-rate + video codec | `---` |
 | `CROP` | effective aspect + crop summary | `---` when no source, `NONE` when known no crop |
 | `HLS BUF` | provider HLS overlay | `0 / 0 SEG` |
-| `DROPS` | underruns divided by emitted opportunities | `0.0` |
+| `DROPS` | per-sample drop percentage from underrun and blit deltas | `0.0` |
 | bitrate | probe or selected-variant bitrate | `---` |
 | kHz | modeline horizontal frequency | `---` |
 | mode | BT.601 clean aperture for shipped SD modelines, fallback output active width | `---` |
 | NTSC/PAL | modeline standard | both dim when unknown |
-| ODD/EVEN/LOCK | field order + field rate; visual tick may be client clocked | idle lock |
+| ODD/EVEN/LOCK | field order + field rate + interlace flag; visual tick may be client clocked from real cadence | idle lock |
 | MB/S | wire-byte delta per sample | `0.0` |
 | MS ACK | ACK freshness from `LastACKAge`; not guaranteed RTT | `--` |
 | `OUTPUT` | scan mode and color matrix | `---` |
@@ -291,6 +302,15 @@ Chassis owns display formatting. Core and adapters expose facts.
 - ACK displays with one decimal, left-padded to match the v24 feel where useful, for example `04.0`.
 - `PIPE` uses ASCII display text in code and JSON, for example `LZ4+D - TFF`.
 - `SPEED` is `1.00x LOCK` when within a small tolerance of expected field rate; otherwise `0.98x SLOW` or `1.02x FAST`.
+- `DROPS` is a percentage over the latest sampler interval: `100 * deltaUnderruns / max(1, deltaBlits + deltaUnderruns)`. The first sample after a generation reset displays `0.0` because there is no previous sample. Counter regressions reset the sampler. Paused samples do not append a new drop value.
+- `CROP` and `ASPECT` formatting must use display aspect ratio when present. Pixel dimensions alone are only a fallback. Anamorphic sources must not be silently labeled by storage dimensions.
+
+Field-flip behavior:
+
+- `interlacedOutput == true`: the client may clock ODD/EVEN lamps from `fieldRateHz`, preserving `fieldOrder` for labels and phase.
+- `interlacedOutput == false`: ODD/EVEN lamps stay dim and the lock text renders `PROG` or the implementation's equivalent non-interlace state.
+- Idle: ODD/EVEN lamps stay dim and lock text renders the idle placeholder.
+- Reduced motion: no ticking animation; render the latest static field state/lock text only.
 
 ## SSE Behavior
 
@@ -315,7 +335,15 @@ Live cadence:
 
 ## Client Behavior
 
-Add `internal/chassis/static/meter.js` after `transport.js` and `visualizer-bank.js` in `shell.html`, or before them if implementation needs meter hooks initialized earlier. It uses the shared `window.Chassis.events.subscribe` surface from `vfd-live.js`.
+Add `internal/chassis/static/meter.js` after `transport.js` and `visualizer-bank.js` in `shell.html`, or before them if implementation needs meter hooks initialized earlier.
+
+Spec 5A also adds a small shared event helper to `internal/chassis/static/vfd-live.js`:
+
+```js
+window.Chassis.events.subscribe(eventName, handler)
+```
+
+The helper attaches `handler` to the current `/receiver/events` `EventSource` when one exists, reattaches it after the existing `chassis:eventsource` reconnect event, and returns an unsubscribe function. It must not open a second `EventSource`. Existing transport and visualizer scripts can keep their current `window.Chassis.events.source` / `chassis:eventsource` pattern in 5A; `meter.js` should use `subscribe` so new event consumers have one path.
 
 Client responsibilities:
 
@@ -323,13 +351,14 @@ Client responsibilities:
 - Update HLS buffer lamps from `hlsCachedSegments` and `hlsMaxSegments`.
 - Draw throughput and ACK canvases from incoming samples or histories.
 - Reset histories on idle state or generation change.
+- Freeze histories when `paused == true`; resume appending when live samples continue for the same generation.
 - Respect `prefers-reduced-motion`: draw latest/static snapshots without animated trails.
 - Keep audio scopes quiet while `audioScopes.status == "pending"`.
 - Avoid opening any additional EventSource connection.
 
 Template work:
 
-- Add `data-meter-*` hooks throughout `internal/chassis/templates/meter.html`.
+- Add `data-meter-*` hooks throughout `internal/chassis/templates/meter.html`, including explicit hooks for `AUDIO IN`, `AUDIO OUT`, `SRC`, `CROP`, `HLS BUF`, `DROPS`, every middle-row stat, and every readout field.
 - Keep existing visual structure and CSS class names where possible.
 - Add pending/empty audio-scope hooks without introducing fake values.
 
@@ -366,35 +395,44 @@ Layer 1, core:
 - `StatusHomeView` updates runtime counters from a fake plane without re-probing.
 - Interlace field-order hot-swap updates the meter view.
 - Output volume hot-swap updates audio output facts if volume is included in the meter view.
-- Probe parser captures codec names, channels, and bitrate fields.
+- Probe parser captures codec names, channels, sample/display aspect ratio, and bitrate fields.
+- Aspect formatting tests cover 4:3, 16:9, anamorphic, cropped, and no-crop inputs.
 
 Layer 1, adapters:
 
 - URL HLS-buffered cast exposes HLS stats only while its adapter ref + generation owns the active session.
 - Streams HLS-buffered cast exposes the same overlay.
+- URL and Streams install HLS stats handles only after a successful core start and a matching `core.Status()` read.
+- Streams overlay tests prove core session generation is used, not queue generation.
 - Overlay clears on stop/preempt.
 - Overlay never leaks raw source URLs or tokens.
 
 Layer 1, chassis:
 
 - `MeterData` mapping renders idle placeholders exactly.
-- Live mapping formats source, output, crop/aspect, pipe, speed, link, HLS, drops, and standard lamps.
+- Live mapping formats audio-in, source, output, crop/aspect, pipe, speed, link, HLS, drops, and standard lamps.
+- `meter` payload contract tests assert `audioIn`, `dropsPercent`, raw underrun/blit counters, `fieldRateHz`, `interlacedOutput`, and `paused` from a deterministic `StatusHomeView` plus HLS overlay.
 - Meter sampler computes throughput from `WireBytes` deltas and resets on generation change.
 - Meter sampler computes speed from blit deltas and expected field rate.
+- Meter sampler computes `DROPS` with the exact per-sample formula and resets on generation change or counter regression.
+- Paused snapshots freeze histories and mark `paused: true` without adding synthetic zero samples.
 - Initial SSE burst includes `meter` after `transport`.
 - Live SSE emits `meter` at the expected 2 Hz cadence, not every 250 ms tick.
 - Multiple SSE clients do not multiply `StatusHomeView()` calls.
 
 Static asset tests:
 
+- `vfd-live.js` exposes `window.Chassis.events.subscribe`.
 - `meter.js` subscribes through `window.Chassis.events.subscribe`.
 - `meter.js` does not create `new EventSource`.
 - `meter.js` uses `data-meter-*` hooks.
-- `meter.js` does not contain pseudo audio generators for spectrum/goniometer/VU/LUFS.
+- `meter.js` updates `AUDIO IN` from `sourceStrip.audioIn`; it must not remain a static template value during live SSE.
+- `meter.js` does not contain pseudo audio generators for spectrum/goniometer/VU/phase/LUFS.
+- `meter.js` does not synthesize non-audio meter values with `Math.random`, hard-coded demo samples, or demo timers. Throughput, ACK, HLS, drops, and speed canvases/readouts update only from SSE samples or histories.
 
 Integration:
 
-- A fake plane with deterministic counters drives `/receiver/events`; the `meter` payload shows throughput, ACK, drops, pipe, speed, and link.
+- A fake plane with deterministic counters drives `/receiver/events`; the `meter` payload shows audio-in, throughput, ACK, drops, pipe, speed, field-rate/interlace fields, and link.
 - A buffered URL or Streams path shows HLS buffer stats in the `meter` payload.
 - `/ui/*` route-shadowing tests remain green.
 

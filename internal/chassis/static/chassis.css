@@ -242,9 +242,10 @@ body.receiver .receiver > .receiver-inner > * {
   min-width: 0;
 }
 
-/* ---- 5. Status bar + masthead -------------------------------------- */
+/* ---- 5. Status bar -------------------------------------------------- */
 /* Mockup source: receiver-v24.html .status-bar, .brand-plate, .led,
-   .led-row, and .load-core-btn rules, adapted to current templates. */
+   .led-row, .power-cluster, and .load-core-btn rules, adapted to current
+   templates. */
 body.receiver .status-bar {
   position: relative;
   z-index: 1;
@@ -257,39 +258,41 @@ body.receiver .status-bar {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-body.receiver .status-bar > .brand-plate {
+body.receiver .status-bar > .power-cluster {
   grid-column: 1;
 }
 
-body.receiver .status-bar > .status-spacer {
-  grid-column: 2;
-  min-width: 0;
-}
-
-body.receiver .status-bar > .led-row {
+body.receiver .status-bar > .load-core-btn {
   grid-column: 3;
 }
 
-body.receiver .status-bar > .load-core-btn {
+body.receiver .status-bar > .brand-plate {
   grid-column: 4;
 }
 
-body.receiver .host-readout {
-  display: inline-flex;
-  align-items: baseline;
+body.receiver .power-cluster {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  min-width: 0;
-  color: #5a5a5e;
-  font: 600 8px 'Inter', sans-serif;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
 }
 
-body.receiver .host-readout .val {
-  overflow: hidden;
+body.receiver .power-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #0a0a0b;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #c0c0c4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font: 700 14px 'Inter', monospace;
+  background: radial-gradient(circle at 35% 30%, #4a4a50 0%, #1a1a1c 70%, #0a0a0b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.4),
+    0 2px 3px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  user-select: none;
 }
 
 body.receiver .led-row {
@@ -304,7 +307,7 @@ body.receiver .led {
   gap: 5px;
 }
 
-body.receiver .led .dot {
+body.receiver .led .light {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -312,19 +315,19 @@ body.receiver .led .dot {
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
 }
 
-body.receiver .led.on .dot,
-body.receiver .led.on.green .dot {
+body.receiver .led.on .light,
+body.receiver .led.on.green .light {
   background: #00ff66;
   box-shadow: 0 0 6px #00ff66cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
 }
 
-body.receiver .led.on.red .dot {
+body.receiver .led.on.red .light {
   background: #ff3030;
   box-shadow: 0 0 6px #ff3030cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
   animation: rec-pulse 1.6s ease-in-out infinite;
 }
 
-body.receiver .led.on.aqua .dot {
+body.receiver .led.on.aqua .light {
   background: oklch(0.90 0.22 175);
   box-shadow: 0 0 5px oklch(0.90 0.22 175 / 0.9), inset 0 0 2px rgba(255, 255, 255, 0.4);
 }
@@ -351,8 +354,8 @@ body.receiver .led.on .lbl {
   color: #c0c0c4;
 }
 
-body.receiver.idle .led.on.aqua .dot,
-body.receiver.idle .led.on.red .dot {
+body.receiver.idle .led.on.aqua .light,
+body.receiver.idle .led.on.red .light {
   background: #2a2a2c;
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
   animation: none;
@@ -404,10 +407,6 @@ body.receiver .load-core-btn::before {
   transition:
     background 280ms cubic-bezier(0.22, 1, 0.36, 1),
     box-shadow 280ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-body.receiver .load-core-btn > .dot {
-  display: none;
 }
 
 body.receiver .load-core-btn:hover {
@@ -484,24 +483,6 @@ body.receiver .brand-plate .model em {
 
 body.receiver.idle .brand-plate .model em {
   color: var(--vfd-faded);
-}
-
-body.receiver .masthead {
-  position: relative;
-  z-index: 1;
-  padding: 4px 12px;
-  border-bottom: 1px solid #0a0a0b;
-}
-
-body.receiver .masthead .brand-plate {
-  display: inline-block;
-}
-
-body.receiver .masthead .name {
-  color: #c0c0c4;
-  font: 700 14px 'Inter', sans-serif;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
 }
 
 @container chassis (max-width: 900px) {

@@ -265,10 +265,10 @@ func escapeSubtitlePathFor(goos, p string) string {
 // single-quoted region as literal (backslash escapes are NOT processed
 // inside it), so the only character that needs special handling at the
 // filtergraph layer is `'` itself, which must close the quote, emit an
-// escaped apostrophe, and reopen: `'\”`. After the filtergraph parser
+// escaped apostrophe, and reopen: `'\''`. After the filtergraph parser
 // hands the extracted value to drawtext, drawtext runs its own `%{...}`
-// expansion and consumes backslash escapes, so `%` must be escaped as
-// `\%` and `\` as `\\` to render literally. Bracket / colon / comma /
+// expansion and consumes backslash escapes, so `:`, `%`, and `\` must be
+// escaped as `\:`, `\%`, and `\\` to render literally. Bracket / comma /
 // semicolon are filtergraph metacharacters but are inert inside single
 // quotes, so they pass through unchanged.
 func escapeFilterText(s string) string {
@@ -281,6 +281,8 @@ func escapeFilterText(s string) string {
 			b.WriteString(`'\''`)
 		case '\\':
 			b.WriteString(`\\`)
+		case ':':
+			b.WriteString(`\:`)
 		case '%':
 			b.WriteString(`\%`)
 		default:
@@ -294,23 +296,104 @@ func escapeFilterText(s string) string {
 	return b.String()
 }
 
+const (
+	visualizerTextRoleArtist   = "artist"
+	visualizerTextRoleTitle    = "title"
+	visualizerTextRoleAlbum    = "album"
+	visualizerTextRoleProgress = "progress"
+)
+
+const (
+	visualizerMetadataColor = "0x9dff9d"
+	visualizerAlbumColor    = "0x7fdc7f"
+	visualizerProgressColor = "0x70c870"
+)
+
 type visualizerTextLine struct {
 	Text        string
 	TrustedExpr bool
+	Role        string
+	FontSize    int
+	FontColor   string
+	X           string
+	Y           string
+	WindowWidth int
+	Marquee     bool
+}
+
+type visualizerOverlayLayout struct {
+	SideMargin    int
+	MetadataX     int
+	MetadataWidth int
+	MetadataY     []string
+	ProgressX     string
+	ProgressY     string
+	ShowProgress  bool
+}
+
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func visualizerLayoutFor(mode VisualizerMode, logicalW, logicalH int) visualizerOverlayLayout {
+	sideMargin := 24
+	if logicalW < 640 {
+		sideMargin = 16
+	}
+	progressReserve := clampInt((logicalW*35+50)/100, 128, 240)
+	metadataWidth := logicalW - sideMargin - progressReserve
+	showProgress := metadataWidth >= 160
+	if !showProgress {
+		metadataWidth = logicalW - sideMargin*2
+		if metadataWidth < 0 {
+			metadataWidth = 0
+		}
+	}
+	layout := visualizerOverlayLayout{SideMargin: sideMargin, MetadataX: sideMargin, MetadataWidth: metadataWidth, ShowProgress: showProgress}
+	switch mode {
+	case VisualizerModeStereoScope:
+		layout.MetadataY = []string{"h-88", "h-64", "h-40"}
+	default:
+		layout.MetadataY = []string{"24", "48", "72"}
+	}
+	if showProgress {
+		layout.ProgressX = fmt.Sprintf("w-tw-%d", sideMargin)
+		layout.ProgressY = layout.MetadataY[0]
+	}
+	return layout
+}
+
+func visualizerMetadataLine(layout visualizerOverlayLayout, role, text, y string, fontSize int, color string) visualizerTextLine {
+	return visualizerTextLine{Text: strings.ToUpper(strings.TrimSpace(text)), Role: role, FontSize: fontSize, FontColor: color, X: fmt.Sprintf("%d", layout.MetadataX), Y: y, WindowWidth: layout.MetadataWidth, Marquee: true}
 }
 
 func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 	md := s.Visualizer.Metadata
+	logicalW, logicalH := logicalCanvas(s.OutputHeight)
+	layout := visualizerLayoutFor(s.Visualizer.Mode, logicalW, logicalH)
+	lines := make([]visualizerTextLine, 0, 4)
+	y := 0
+	if artist := strings.TrimSpace(md.Artist); artist != "" {
+		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleArtist, artist, layout.MetadataY[y], 20, visualizerMetadataColor))
+		y++
+	}
 	title := strings.TrimSpace(md.Title)
 	if title == "" {
 		title = "Now Playing"
 	}
-	lines := []visualizerTextLine{{Text: title}}
-	if artistAlbum := strings.TrimSpace(strings.Join(nonEmpty(md.Artist, md.Album), " - ")); artistAlbum != "" {
-		lines = append(lines, visualizerTextLine{Text: artistAlbum})
+	lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleTitle, title, layout.MetadataY[y], 20, visualizerMetadataColor))
+	y++
+	if album := strings.TrimSpace(md.Album); album != "" {
+		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleAlbum, album, layout.MetadataY[y], 18, visualizerAlbumColor))
 	}
-	if md.Duration > 0 {
-		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), TrustedExpr: true})
+	if md.Duration > 0 && layout.ShowProgress {
+		lines = append(lines, visualizerTextLine{Text: "%{pts\\:hms} / " + formatDurationClock(md.Duration), TrustedExpr: true, Role: visualizerTextRoleProgress, FontSize: 16, FontColor: visualizerProgressColor, X: layout.ProgressX, Y: layout.ProgressY})
 	}
 	return lines
 }
@@ -320,6 +403,62 @@ func visualizerDrawText(line visualizerTextLine) string {
 		return line.Text
 	}
 	return escapeFilterText(line.Text)
+}
+
+func visualizerProgressText(line visualizerTextLine) string {
+	const prefix = "%{pts\\:hms} / "
+	if strings.HasPrefix(line.Text, prefix) {
+		return prefix + escapeFilterText(strings.TrimPrefix(line.Text, prefix))
+	}
+	return visualizerDrawText(line)
+}
+
+func visualizerLineLayerHeight(fontSize int) int {
+	return fontSize + 4
+}
+
+func visualizerMarqueeX(line visualizerTextLine) string {
+	if !line.Marquee {
+		return line.X
+	}
+	return fmt.Sprintf("if(lte(tw,%d),0,-mod(max(t-1.5,0)*24,tw+24))", line.WindowWidth)
+}
+
+func visualizerLineLayerFilter(line visualizerTextLine, idx int) string {
+	return fmt.Sprintf(
+		"color=c=black@0.0:s=%dx%d,format=rgba,drawtext=text='%s':x='%s':y=0:fontsize=%d:fontcolor=%s:box=1:boxcolor=0x00000099[vizline%d]",
+		line.WindowWidth,
+		visualizerLineLayerHeight(line.FontSize),
+		visualizerDrawText(line),
+		visualizerMarqueeX(line),
+		line.FontSize,
+		line.FontColor,
+		idx,
+	)
+}
+
+func visualizerOverlayY(line visualizerTextLine) string {
+	if strings.HasPrefix(line.Y, "h-") {
+		return "H-" + strings.TrimPrefix(line.Y, "h-")
+	}
+	return line.Y
+}
+
+func visualizerOverlayFilter(base string, line visualizerTextLine, idx int, next string) string {
+	return fmt.Sprintf("[%s][vizline%d]overlay=x=%s:y=%s:format=auto[%s]", base, idx, line.X, visualizerOverlayY(line), next)
+}
+
+func visualizerProgressFilter(base string, line visualizerTextLine, next string) string {
+	return fmt.Sprintf(
+		"[%s]drawtext=text='%s':x=%s:y=%s:fontsize=%d:fontcolor=%s:box=1:boxcolor=0x00000099[%s]",
+		base,
+		visualizerProgressText(line),
+		line.X,
+		line.Y,
+		line.FontSize,
+		line.FontColor,
+		next,
+	)
 }
 
 func nonEmpty(values ...string) []string {
@@ -359,6 +498,10 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 	}
 }
 
+func RequiredVisualizerOverlayFilters() []string {
+	return []string{"color", "drawtext", "overlay"}
+}
+
 func isSupportedVisualizerMode(mode VisualizerMode) bool {
 	return len(RequiredVisualizerFilters(mode)) > 0
 }
@@ -373,15 +516,6 @@ func visualizerCoreFilter(mode VisualizerMode, logicalW, logicalH int) string {
 		return fmt.Sprintf("avectorscope=s=%dx%d:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba", logicalW, logicalH)
 	default:
 		return ""
-	}
-}
-
-func visualizerTextY(mode VisualizerMode, line int) string {
-	switch mode {
-	case VisualizerModeStereoScope:
-		return fmt.Sprintf("h-%d", 96-line*30)
-	default:
-		return fmt.Sprintf("%d", 24+line*30)
 	}
 }
 
@@ -402,10 +536,17 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 	}
 	label := "viz0"
 	if s.Visualizer.DrawTextAvailable {
+		lineLayer := 0
 		for i, line := range visualizerTextLines(s) {
 			next := fmt.Sprintf("viztext%d", i)
-			parts = append(parts, fmt.Sprintf("[%s]drawtext=text='%s':x=24:y=%s:fontsize=24:fontcolor=0x9dff9d:box=1:boxcolor=0x00000099[%s]",
-				label, visualizerDrawText(line), visualizerTextY(s.Visualizer.Mode, i), next))
+			if line.Role == visualizerTextRoleProgress {
+				parts = append(parts, visualizerProgressFilter(label, line, next))
+				label = next
+				continue
+			}
+			parts = append(parts, visualizerLineLayerFilter(line, lineLayer))
+			parts = append(parts, visualizerOverlayFilter(label, line, lineLayer, next))
+			lineLayer++
 			label = next
 		}
 	}
