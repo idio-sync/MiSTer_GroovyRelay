@@ -251,7 +251,6 @@ func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
 		},
 	})
 	assertArgsContainSubsequence(t, cmd.Args, []string{
-		"-thread_queue_size", "64",
 		"-f", "dshow",
 		"-sample_rate", "48000",
 		"-channels", "2",
@@ -259,6 +258,7 @@ func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
 		"-probesize", "32768",
 		"-i", `audio=Line In (USB Audio Device)`,
 	})
+	assertArgsDoNotContainSubsequence(t, cmd.Args, []string{"-thread_queue_size", "64"})
 }
 
 func TestProbeInputCaptureUsesDefaultBoundedTimeout(t *testing.T) {

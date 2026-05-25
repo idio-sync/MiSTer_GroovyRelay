@@ -94,7 +94,7 @@ func probeCommandContext(ctx context.Context, ffprobePath string, input ProbeInp
 		"-show_streams", "-show_format",
 	}
 	if input.Capture.Enabled {
-		args = appendCaptureInputArgs(args, input.Capture)
+		args = appendProbeCaptureInputArgs(args, input.Capture)
 	} else {
 		args = input.Policy.Apply(args)
 		args = append(args, input.URL)

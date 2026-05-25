@@ -27,6 +27,14 @@ func appendCaptureInputArgs(args []string, c CaptureInputSpec) []string {
 	if c.ThreadQueueSize > 0 {
 		args = append(args, "-thread_queue_size", fmt.Sprintf("%d", c.ThreadQueueSize))
 	}
+	return appendCaptureInputArgsWithoutQueue(args, c)
+}
+
+func appendProbeCaptureInputArgs(args []string, c CaptureInputSpec) []string {
+	return appendCaptureInputArgsWithoutQueue(args, c)
+}
+
+func appendCaptureInputArgsWithoutQueue(args []string, c CaptureInputSpec) []string {
 	if c.Format != "" {
 		args = append(args, "-f", c.Format)
 	}
