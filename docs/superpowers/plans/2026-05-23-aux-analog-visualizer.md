@@ -33,7 +33,8 @@ internal/adapters/auxadapter/proxy_test.go
 internal/adapters/auxadapter/session_test.go
 internal/adapters/auxadapter/url_test.go
 internal/adapters/aux_contract.go
-internal/chassis/aux.go
+internal/chassis/auxstarter.go
+internal/chassis/aux_routes.go
 internal/chassis/aux_test.go
 internal/ffmpeg/input.go
 internal/ffmpeg/input_test.go
@@ -1321,7 +1322,7 @@ git commit -m "feat(aux): start analog visualizer sessions"
 ## Task 8: Add Shared AUX Contracts And Wire Adapter In Main
 
 - [ ] Add `internal/adapters/aux_contract.go` with `AUXStatus` and `ErrSourceUnavailable`.
-- [ ] Add `internal/chassis/aux.go` with the `AUXStarter` interface returning `adapters.AUXStatus`.
+- [ ] Add `internal/chassis/auxstarter.go` with the `AUXStarter` interface returning `adapters.AUXStatus`.
 - [ ] Add `AUX AUXStarter` to `chassis.Config` and `Server` before wiring main.
 - [ ] Import `internal/adapters/auxadapter` in `cmd/mister-groovy-relay/main.go`.
 - [ ] Construct the adapter after `coreMgr` and before the registry decode loop.
@@ -1391,14 +1392,14 @@ Add a main-level compile test if an existing one covers imports; otherwise the p
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux_contract.go internal/chassis/aux.go internal/chassis/server.go cmd/mister-groovy-relay/main.go
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/adapters/aux_contract.go internal/chassis/auxstarter.go internal/chassis/server.go cmd/mister-groovy-relay/main.go
 cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/adapters ./internal/chassis ./cmd/mister-groovy-relay ./internal/adapters/auxadapter
 ```
 
 Commit:
 
 ```bash
-git add internal/adapters/aux_contract.go internal/chassis/aux.go internal/chassis/server.go cmd/mister-groovy-relay/main.go
+git add internal/adapters/aux_contract.go internal/chassis/auxstarter.go internal/chassis/server.go cmd/mister-groovy-relay/main.go
 git commit -m "feat(aux): register analog source adapter"
 ```
 
@@ -1463,14 +1464,14 @@ Tests:
 Run:
 
 ```bash
-cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/chassis/aux.go internal/chassis/aux_test.go internal/chassis/server.go internal/chassis/import_check_test.go
+cmd.exe /c C:\Users\Jake\sdk\go\bin\gofmt.exe -w internal/chassis/aux_routes.go internal/chassis/aux_test.go internal/chassis/server.go internal/chassis/import_check_test.go
 cmd.exe /c C:\Users\Jake\sdk\go\bin\go.exe test ./internal/chassis
 ```
 
 Commit:
 
 ```bash
-git add internal/chassis/aux.go internal/chassis/aux_test.go internal/chassis/server.go internal/chassis/import_check_test.go
+git add internal/chassis/aux_routes.go internal/chassis/aux_test.go internal/chassis/server.go internal/chassis/import_check_test.go
 git commit -m "feat(aux): add receiver aux routes"
 ```
 
