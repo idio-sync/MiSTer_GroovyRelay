@@ -3,6 +3,7 @@ package ffmpeg
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -488,6 +489,90 @@ func TestBuildVisualizerFilterChain_MetadataWindowScalesWithModeline(t *testing.
 				if !strings.Contains(graph, want) {
 					t.Fatalf("graph missing %q:\n%s", want, graph)
 				}
+			}
+		})
+	}
+}
+
+func TestBuildVisualizerFilterChain_MarqueeGraphSmokeWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping marquee graph smoke test")
+	}
+	cases := []struct {
+		name string
+		mode VisualizerMode
+	}{
+		{"retro analyzer", VisualizerModeRetroAnalyzer},
+		{"stereo scope", VisualizerModeStereoScope},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probeCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			err := CheckVisualizerFilters(probeCtx, ffmpegPath, tc.mode)
+			cancel()
+			if err != nil {
+				t.Skipf("ffmpeg %q lacks required filters for %s: %v", ffmpegPath, tc.mode, err)
+			}
+
+			for _, filter := range RequiredVisualizerOverlayFilters() {
+				probeCtx, cancel = context.WithTimeout(t.Context(), 10*time.Second)
+				ok, err := FilterAvailable(probeCtx, ffmpegPath, filter)
+				cancel()
+				if err != nil {
+					t.Skipf("ffmpeg %q overlay filter probe failed for %q in %s: %v", ffmpegPath, filter, tc.mode, err)
+				}
+				if !ok {
+					t.Skipf("ffmpeg %q overlay filter %q unavailable for %s", ffmpegPath, filter, tc.mode)
+				}
+			}
+
+			probeCtx, cancel = context.WithTimeout(t.Context(), 10*time.Second)
+			drawTextUsable, err := DrawTextUsable(probeCtx, ffmpegPath)
+			cancel()
+			if err != nil {
+				t.Skipf("ffmpeg %q drawtext probe failed for %s: %v", ffmpegPath, tc.mode, err)
+			}
+			if !drawTextUsable {
+				t.Skipf("ffmpeg %q drawtext is unavailable for %s", ffmpegPath, tc.mode)
+			}
+
+			spec := PipelineSpec{
+				OutputWidth:   720,
+				OutputHeight:  480,
+				OutputFpsExpr: "60000/1001",
+				Visualizer: VisualizerSpec{
+					Enabled:                  true,
+					Mode:                     tc.mode,
+					DrawTextAvailable:        true,
+					RequiredFiltersAvailable: true,
+					Metadata: VisualizerMetadata{
+						Artist:   `A Very Long Artist's Name: 100% Back\Slash Receiver Window Marquee`,
+						Title:    `An Even Longer Track Title: Don't Stop At 50% Back\Slash Scroll`,
+						Album:    `An Album Name: Long Enough For 25% Back\Slash Contained Marquee`,
+						Duration: 7*time.Minute + 29*time.Second,
+					},
+				},
+			}
+			graph, err := buildVisualizerFilterChain(spec)
+			if err != nil {
+				t.Fatalf("buildVisualizerFilterChain: %v", err)
+			}
+			runCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(runCtx, ffmpegPath,
+				"-hide_banner",
+				"-v", "error",
+				"-f", "lavfi",
+				"-i", "anullsrc=r=48000:cl=stereo",
+				"-filter_complex", graph,
+				"-map", "[visualizer_video]",
+				"-frames:v", "1",
+				"-f", "null",
+				"-",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("ffmpeg marquee graph smoke failed with %q: %v (context err: %v)\n%s\ngraph:\n%s", ffmpegPath, err, runCtx.Err(), string(out), graph)
 			}
 		})
 	}
