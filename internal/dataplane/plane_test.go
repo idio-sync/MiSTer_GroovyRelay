@@ -1228,6 +1228,80 @@ func TestEffectiveAudioConfig(t *testing.T) {
 	}
 }
 
+func TestEffectiveAudioConfigSuppressAudioOutput(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		SpawnSpec:           ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
+		AudioRate:           48000,
+		AudioChans:          2,
+		SuppressAudioOutput: true,
+	})
+	rate, chans := p.effectiveAudioConfig()
+	if rate != 0 || chans != 0 {
+		t.Fatalf("effectiveAudioConfig() = %d/%d, want 0/0", rate, chans)
+	}
+}
+
+func TestEffectiveAudioConfigCaptureMonitorWithNormalizedProbe(t *testing.T) {
+	p := NewPlane(PlaneConfig{
+		SpawnSpec: ffmpeg.PipelineSpec{
+			CaptureInput: ffmpeg.CaptureInputSpec{Enabled: true},
+			SourceProbe:  &ffmpeg.ProbeResult{AudioRate: 48000},
+		},
+		AudioRate:  48000,
+		AudioChans: 2,
+	})
+	rate, chans := p.effectiveAudioConfig()
+	if rate != 48000 || chans != 2 {
+		t.Fatalf("effectiveAudioConfig() = %d/%d, want 48000/2", rate, chans)
+	}
+}
+
+func TestPlaneRunSuppressAudioOutputAdvertisesOffAndSkipsAudioReader(t *testing.T) {
+	initCmd, stub, err := runPlaneUntilInit(t, PlaneConfig{
+		SpawnSpec:           ffmpeg.PipelineSpec{SourceProbe: &ffmpeg.ProbeResult{AudioRate: 48000}},
+		AudioRate:           48000,
+		AudioChans:          2,
+		SuppressAudioOutput: true,
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Plane.Run() error = %v, want context.Canceled or nil", err)
+	}
+	if initCmd.Init == nil {
+		t.Fatal("INIT command missing parsed payload")
+	}
+	if initCmd.Init.SoundRate != groovy.AudioRateOff || initCmd.Init.SoundChan != 0 {
+		t.Fatalf("INIT audio = rate %d/chans %d, want AudioRateOff/0",
+			initCmd.Init.SoundRate, initCmd.Init.SoundChan)
+	}
+	if stub.audioPipeCalls != 0 {
+		t.Fatalf("AudioPipe calls = %d, want 0", stub.audioPipeCalls)
+	}
+}
+
+func TestPlaneRunCaptureMonitorStartsAudioReaderWithNormalizedProbe(t *testing.T) {
+	initCmd, stub, err := runPlaneUntilInit(t, PlaneConfig{
+		SpawnSpec: ffmpeg.PipelineSpec{
+			CaptureInput: ffmpeg.CaptureInputSpec{Enabled: true},
+			SourceProbe:  &ffmpeg.ProbeResult{AudioRate: 48000},
+		},
+		AudioRate:  48000,
+		AudioChans: 2,
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Plane.Run() error = %v, want context.Canceled or nil", err)
+	}
+	if initCmd.Init == nil {
+		t.Fatal("INIT command missing parsed payload")
+	}
+	if initCmd.Init.SoundRate != groovy.AudioRate48000 || initCmd.Init.SoundChan != 2 {
+		t.Fatalf("INIT audio = rate %d/chans %d, want AudioRate48000/2",
+			initCmd.Init.SoundRate, initCmd.Init.SoundChan)
+	}
+	if stub.audioPipeCalls != 1 {
+		t.Fatalf("AudioPipe calls = %d, want 1", stub.audioPipeCalls)
+	}
+}
+
 func TestPlaneConfig_ResolveVideoHeight(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1335,10 +1409,11 @@ func (r *staticFrameReader) Close() error {
 // proc.Done() observes). AudioPipe returns an always-EOF reader because
 // TestPlane_AllocationBudget runs with audio disabled.
 type stubProcess struct {
-	video *staticFrameReader
-	audio io.Reader
-	done  chan struct{}
-	once  sync.Once
+	video          *staticFrameReader
+	audio          io.Reader
+	done           chan struct{}
+	once           sync.Once
+	audioPipeCalls int
 }
 
 func newStubProcess() *stubProcess {
@@ -1349,8 +1424,11 @@ func newStubProcess() *stubProcess {
 	}
 }
 
-func (s *stubProcess) VideoPipe() io.Reader  { return s.video }
-func (s *stubProcess) AudioPipe() io.Reader  { return s.audio }
+func (s *stubProcess) VideoPipe() io.Reader { return s.video }
+func (s *stubProcess) AudioPipe() io.Reader {
+	s.audioPipeCalls++
+	return s.audio
+}
 func (s *stubProcess) Done() <-chan struct{} { return s.done }
 func (s *stubProcess) Stop() {
 	s.once.Do(func() {
@@ -1362,6 +1440,80 @@ func (s *stubProcess) Stop() {
 type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+func runPlaneUntilInit(t *testing.T, cfg PlaneConfig) (fakemister.Command, *stubProcess, error) {
+	t.Helper()
+
+	listener, err := fakemister.NewListener("127.0.0.1:0")
+	requireUDPSockets(t, err)
+	listener.EnableACKs(true)
+	addr := listener.Addr().(*net.UDPAddr)
+
+	events := make(chan fakemister.Command, 64)
+	listenerDone := make(chan struct{})
+	go func() {
+		defer close(listenerDone)
+		listener.Run(events)
+	}()
+	defer func() {
+		_ = listener.Close()
+		<-listenerDone
+	}()
+
+	sender, err := groovynet.NewSender("127.0.0.1", addr.Port, 0)
+	requireUDPSockets(t, err)
+	defer sender.Close()
+
+	stub := newStubProcess()
+	origSpawn := spawnProcess
+	spawnProcess = func(_ context.Context, _ ffmpeg.PipelineSpec) (processHandle, error) {
+		return stub, nil
+	}
+	defer func() { spawnProcess = origSpawn }()
+
+	cfg.Sender = sender
+	if cfg.Modeline.PClock == 0 {
+		cfg.Modeline = groovy.NTSC480i60
+	}
+	if cfg.FieldWidth == 0 {
+		cfg.FieldWidth = 2
+	}
+	if cfg.FieldHeight == 0 {
+		cfg.FieldHeight = 1
+	}
+	if cfg.BytesPerPixel == 0 {
+		cfg.BytesPerPixel = 1
+	}
+
+	plane := NewPlane(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- plane.Run(ctx)
+	}()
+
+	var initCmd fakemister.Command
+	for {
+		select {
+		case cmd := <-events:
+			if cmd.Type == groovy.CmdInit {
+				initCmd = cmd
+				cancel()
+				err := <-runErr
+				<-plane.Done()
+				return initCmd, stub, err
+			}
+		case err := <-runErr:
+			return initCmd, stub, err
+		case <-time.After(time.Second):
+			cancel()
+			err := <-runErr
+			<-plane.Done()
+			t.Fatalf("timed out waiting for INIT command; Plane.Run() err=%v", err)
+		}
+	}
+}
 
 // TestPlane_Prebuffer_HitsTargetReturnsFrames verifies the happy path:
 // when videoCh produces the target number of frames, prebuffer returns

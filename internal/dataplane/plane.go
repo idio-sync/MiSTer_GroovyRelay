@@ -1069,6 +1069,9 @@ func resetTimer(timer *time.Timer, delay time.Duration) {
 // separately-resolved audio URL is the affirmative signal that audio exists,
 // so we override the probe-zero check in that case.
 func (p *Plane) effectiveAudioConfig() (rate, chans int) {
+	if p.cfg.SuppressAudioOutput {
+		return 0, 0
+	}
 	if p.cfg.AudioRate <= 0 || p.cfg.AudioChans <= 0 {
 		return 0, 0
 	}
