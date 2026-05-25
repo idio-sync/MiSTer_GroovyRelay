@@ -209,13 +209,11 @@ func playbackActionEnabled(view adapters.PlaybackBannerAdapterView, req adapters
 	return false
 }
 
-const maxQuickCastMultipartBytes = 4*1024*1024 + 64*1024
-
 func parseQuickCastRequest(w http.ResponseWriter, r *http.Request) (adapters.QuickCastRequest, error) {
 	ct := r.Header.Get("Content-Type")
 	req := adapters.QuickCastRequest{Values: map[string]string{}}
 	if strings.HasPrefix(ct, "multipart/form-data") {
-		r.Body = http.MaxBytesReader(w, r.Body, maxQuickCastMultipartBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, adapters.MaxQuickCastBytes)
 		if err := r.ParseMultipartForm(4 << 20); err != nil {
 			return req, fmt.Errorf("parse multipart: %w", err)
 		}

@@ -165,3 +165,44 @@ type QuickCastFile struct {
 	// providers can reuse existing upload validation without re-parsing HTTP.
 	Header *multipart.FileHeader
 }
+
+// MaxQuickCastBytes caps multipart payloads accepted by QuickCastProvider
+// implementations. Shared between /ui/playback/quick-cast and the chassis
+// /receiver/cast route so the limit moves in lockstep.
+const MaxQuickCastBytes = 4*1024*1024 + 64*1024
+
+// QuickCastError is the typed error returned by QuickCastProvider
+// implementations when a quick-cast attempt fails for a known reason.
+// The chassis JSON route extracts Status/Chip via errors.As; the
+// existing /ui route uses Error() for inline-banner rendering.
+//
+// Adapter implementations set Status to the HTTP status the chassis
+// should emit and Chip to the short uppercase text the chassis chip
+// displays. Cause is the wrapped underlying error (may be nil); Message
+// is the human-readable form preferred by Error() when set.
+type QuickCastError struct {
+	Status  int
+	Chip    string
+	Message string
+	Cause   error
+}
+
+func (e *QuickCastError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return e.Chip
+}
+
+func (e *QuickCastError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
