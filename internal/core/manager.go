@@ -48,7 +48,8 @@ func notifySessionStop(fn func(string), reason string) {
 // redactURL returns rawURL with any auth-token query parameters replaced by
 // "REDACTED". Adapters thread credentials through stream URLs via well-known
 // param names: Jellyfin uses api_key=, Plex uses X-Plex-Token=, and a few
-// other servers honour a generic token=. This helper lets log sites write
+// other servers honour a generic token=. AUX proxy URLs use aux_token=.
+// This helper lets log sites write
 // StreamURL without leaking the secret to operator logs.
 //
 // Returns rawURL unchanged if it is empty, not parseable, or carries no
@@ -65,7 +66,7 @@ func redactURL(rawURL string) string {
 	changed := false
 	for k := range q {
 		switch strings.ToLower(k) {
-		case "api_key", "x-plex-token", "token":
+		case "api_key", "x-plex-token", "token", "aux_token":
 			q.Set(k, "REDACTED")
 			changed = true
 		}
@@ -386,7 +387,50 @@ func validateSessionRequest(req SessionRequest) error {
 	if err := validateVisualizerRequest(req); err != nil {
 		return err
 	}
+	if hasAUXShape(req) {
+		if err := validateSessionInputShape(req); err != nil {
+			return err
+		}
+	}
 	return validateAspectModeOverride(req.AspectMode)
+}
+
+func hasAUXShape(req SessionRequest) bool {
+	return req.StreamProbeURL != "" || req.AudioCapture.Enabled || req.AudioOutputMode != AudioOutputDefault
+}
+
+func validateSessionInputShape(req SessionRequest) error {
+	hasStream := req.StreamURL != "" || req.StreamProbeURL != "" || req.AudioStreamURL != ""
+	hasCapture := req.AudioCapture.Enabled
+	switch {
+	case req.StreamProbeURL != "" && req.StreamURL == "":
+		return fmt.Errorf("stream_probe_url requires stream_url")
+	case hasStream && hasCapture:
+		return fmt.Errorf("exactly one media input may be set")
+	case !hasStream && !hasCapture:
+		return fmt.Errorf("stream_url or audio_capture is required")
+	}
+	if hasCapture {
+		c := req.AudioCapture
+		if strings.TrimSpace(c.Format) == "" {
+			return fmt.Errorf("audio_capture.format is required")
+		}
+		if strings.TrimSpace(c.Device) == "" {
+			return fmt.Errorf("audio_capture.device is required")
+		}
+		if c.SampleRate <= 0 {
+			return fmt.Errorf("audio_capture.sample_rate must be positive")
+		}
+		if c.Channels != 1 && c.Channels != 2 {
+			return fmt.Errorf("audio_capture.channels must be 1 or 2")
+		}
+	}
+	switch req.AudioOutputMode {
+	case AudioOutputDefault, AudioOutputVisualOnly, AudioOutputMonitor:
+		return nil
+	default:
+		return fmt.Errorf("audio_output_mode must be visual_only or monitor, got %q", req.AudioOutputMode)
+	}
 }
 
 func validateAspectModeOverride(mode string) error {

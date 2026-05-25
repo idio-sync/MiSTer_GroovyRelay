@@ -496,6 +496,115 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 	}
 }
 
+func TestValidateSessionRequestRejectsInvalidInputShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		req  SessionRequest
+		want string
+	}{
+		{
+			name: "stream probe without stream url",
+			req: SessionRequest{
+				StreamProbeURL: "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=probe",
+			},
+			want: "stream_probe_url requires stream_url",
+		},
+		{
+			name: "stream and capture both set",
+			req: SessionRequest{
+				StreamURL: "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=play",
+				AudioCapture: AudioCaptureInput{
+					Enabled:    true,
+					Format:     "alsa",
+					Device:     "hw:1,0",
+					SampleRate: 48000,
+					Channels:   2,
+				},
+			},
+			want: "exactly one media input",
+		},
+		{
+			name: "secondary audio stream and capture both set",
+			req: SessionRequest{
+				AudioStreamURL: "http://example.test/audio-only.m4a",
+				AudioCapture: AudioCaptureInput{
+					Enabled:    true,
+					Format:     "alsa",
+					Device:     "hw:1,0",
+					SampleRate: 48000,
+					Channels:   2,
+				},
+			},
+			want: "exactly one media input",
+		},
+		{
+			name: "capture missing format",
+			req: SessionRequest{
+				AudioCapture: AudioCaptureInput{
+					Enabled:    true,
+					Device:     "hw:1,0",
+					SampleRate: 48000,
+					Channels:   2,
+				},
+			},
+			want: "audio_capture.format is required",
+		},
+		{
+			name: "capture missing device",
+			req: SessionRequest{
+				AudioCapture: AudioCaptureInput{
+					Enabled:    true,
+					Format:     "alsa",
+					SampleRate: 48000,
+					Channels:   2,
+				},
+			},
+			want: "audio_capture.device is required",
+		},
+		{
+			name: "bad output mode",
+			req: SessionRequest{
+				StreamURL:       "http://example.test/a.wav",
+				AudioOutputMode: AudioOutputMode("speaker"),
+			},
+			want: "audio_output_mode must be visual_only or monitor",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSessionRequest(tc.req)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateSessionRequest() = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateSessionRequestAcceptsStreamAndCaptureShapes(t *testing.T) {
+	streamReq := SessionRequest{
+		StreamURL:       "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=play",
+		StreamProbeURL:  "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=probe",
+		AudioOutputMode: AudioOutputVisualOnly,
+	}
+	if err := validateSessionRequest(streamReq); err != nil {
+		t.Fatalf("stream shape rejected: %v", err)
+	}
+
+	captureReq := SessionRequest{
+		AudioCapture: AudioCaptureInput{
+			Enabled:    true,
+			Format:     "alsa",
+			Device:     "hw:1,0",
+			SampleRate: 48000,
+			Channels:   2,
+		},
+		AudioOutputMode: AudioOutputMonitor,
+	}
+	if err := validateSessionRequest(captureReq); err != nil {
+		t.Fatalf("capture shape rejected: %v", err)
+	}
+}
+
 func TestManager_SessionAspectModeOverrideSkipsAutoCropAndReachesPipeline(t *testing.T) {
 	origProbe := probeFn
 	origCrop := probeCropFn
@@ -1387,6 +1496,17 @@ func TestRedactURL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRedactURLRedactsAuxToken(t *testing.T) {
+	raw := "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=secret&x=1"
+	got := redactURL(raw)
+	if strings.Contains(got, "secret") {
+		t.Fatalf("redactURL leaked aux token: %s", got)
+	}
+	if !strings.Contains(got, "aux_token=REDACTED") {
+		t.Fatalf("redactURL = %s, want aux_token redacted", got)
 	}
 }
 

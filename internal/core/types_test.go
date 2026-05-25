@@ -22,6 +22,15 @@ func TestSessionRequest_ZeroValue(t *testing.T) {
 	if r.AspectMode != "" {
 		t.Errorf("AspectMode = %q, want empty bridge default", r.AspectMode)
 	}
+	if r.StreamProbeURL != "" {
+		t.Errorf("StreamProbeURL = %q, want empty", r.StreamProbeURL)
+	}
+	if r.AudioCapture.Enabled {
+		t.Errorf("AudioCapture.Enabled default = true, want false")
+	}
+	if r.AudioOutputMode != AudioOutputDefault {
+		t.Errorf("AudioOutputMode = %q, want default", r.AudioOutputMode)
+	}
 	if r.Capabilities.CanSeek || r.Capabilities.CanPause {
 		t.Errorf("Capabilities default = %+v, want both false", r.Capabilities)
 	}
@@ -51,6 +60,36 @@ func TestSessionRequest_MediaInputPolicyAccepted(t *testing.T) {
 	}
 	if len(r.MediaInputPolicy.ProtocolWhitelist) != 3 {
 		t.Errorf("whitelist round-trip: got %v", r.MediaInputPolicy.ProtocolWhitelist)
+	}
+}
+
+func TestSessionRequest_AudioCaptureInputContract(t *testing.T) {
+	r := SessionRequest{
+		StreamProbeURL: "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=probe",
+		AudioCapture: AudioCaptureInput{
+			Enabled:         true,
+			Format:          "alsa",
+			Device:          "hw:1,0",
+			SampleRate:      48000,
+			Channels:        2,
+			ThreadQueueSize: 512,
+			AnalyzeDuration: 500 * time.Millisecond,
+			ProbeSize:       1024,
+		},
+		AudioOutputMode: AudioOutputMonitor,
+	}
+
+	if r.StreamProbeURL == "" {
+		t.Fatalf("StreamProbeURL did not round-trip")
+	}
+	if !r.AudioCapture.Enabled {
+		t.Fatalf("AudioCapture.Enabled = false, want true")
+	}
+	if r.AudioCapture.Format != "alsa" || r.AudioCapture.Device != "hw:1,0" {
+		t.Fatalf("AudioCapture = %+v, want alsa hw:1,0", r.AudioCapture)
+	}
+	if r.AudioOutputMode != AudioOutputMonitor {
+		t.Fatalf("AudioOutputMode = %q, want monitor", r.AudioOutputMode)
 	}
 }
 

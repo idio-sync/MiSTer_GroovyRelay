@@ -44,6 +44,25 @@ type VisualizerRequest struct {
 	Metadata VisualizerMetadata
 }
 
+type AudioCaptureInput struct {
+	Enabled         bool
+	Format          string
+	Device          string
+	SampleRate      int
+	Channels        int
+	ThreadQueueSize int
+	AnalyzeDuration time.Duration
+	ProbeSize       int
+}
+
+type AudioOutputMode string
+
+const (
+	AudioOutputDefault    AudioOutputMode = ""
+	AudioOutputVisualOnly AudioOutputMode = "visual_only"
+	AudioOutputMonitor    AudioOutputMode = "monitor"
+)
+
 // SessionRequest is the adapter-agnostic input to StartSession. Every adapter
 // (Plex, and future: URL-input, Jellyfin, DLNA, ...) translates its
 // protocol-specific request into one of these before calling the manager.
@@ -52,6 +71,10 @@ type SessionRequest struct {
 	// RTSP, etc). The adapter is responsible for constructing any
 	// protocol-specific URL (e.g. Plex transcode URL with token).
 	StreamURL string
+
+	// StreamProbeURL optionally provides a separate probe endpoint for AUX
+	// streams whose playback URL should not be consumed by ffprobe.
+	StreamProbeURL string
 
 	// InputHeaders are passed as FFmpeg -headers (e.g. Plex tokens).
 	InputHeaders map[string]string
@@ -69,6 +92,14 @@ type SessionRequest struct {
 	// User-Agent / Origin requirements. Empty when AudioStreamURL is
 	// empty.
 	AudioInputHeaders map[string]string
+
+	// AudioCapture describes a local audio device input instead of a stream
+	// URL. Enabled capture is mutually exclusive with stream inputs.
+	AudioCapture AudioCaptureInput
+
+	// AudioOutputMode controls whether captured audio is only visualized or
+	// also monitored locally. Empty preserves today's stream playback behavior.
+	AudioOutputMode AudioOutputMode
 
 	// SeekOffsetMs is where to start playback (0 = beginning).
 	SeekOffsetMs int
