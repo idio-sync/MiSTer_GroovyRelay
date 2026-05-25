@@ -10,7 +10,6 @@
     return;
   }
 
-  let source = null;
   let inFlightMode = false;
   let queuedMode = null;
 
@@ -42,17 +41,6 @@
     } catch (err) {
       console.warn('visualizer-bank: bad visualizer payload', ev.data, err);
     }
-  }
-
-  function attachSource(nextSource) {
-    if (!nextSource || nextSource === source) {
-      return;
-    }
-    if (source) {
-      source.removeEventListener('visualizer', handleVisualizerEvent);
-    }
-    source = nextSource;
-    source.addEventListener('visualizer', handleVisualizerEvent);
   }
 
   function press(btn) {
@@ -122,12 +110,7 @@
 
   function init() {
     bindClicks();
-    if (window.Chassis.events && window.Chassis.events.source) {
-      attachSource(window.Chassis.events.source);
-    }
-    document.addEventListener('chassis:eventsource', (ev) => {
-      attachSource(ev.detail && ev.detail.source);
-    });
+    window.Chassis.events.subscribe('visualizer', handleVisualizerEvent);
   }
 
   if (document.readyState === 'loading') {

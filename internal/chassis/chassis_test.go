@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -706,7 +707,7 @@ func TestVisualizerBankJS_RuntimeContracts(t *testing.T) {
 	text := string(js)
 	for _, want := range []string{
 		"window.Chassis",
-		"chassis:eventsource",
+		"window.Chassis.events.subscribe('visualizer'",
 		"/receiver/visualizer",
 		"data-viz",
 		"viz-btn--preview",
@@ -769,7 +770,7 @@ func TestHandleStatic_TransportJSServed(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		"chassis:eventsource",
+		"window.Chassis.events.subscribe('transport'",
 		"data-transport-action",
 	} {
 		if !strings.Contains(body, want) {
@@ -2267,5 +2268,30 @@ func TestVFDLiveSubscribeHelperContract(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("vfd-live.js missing subscribe contract %q", want)
 		}
+	}
+}
+
+func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
+	files := []string{
+		"static/transport.js",
+		"static/visualizer-bank.js",
+		"static/volume-knob.js",
+	}
+	for _, f := range files {
+		t.Run(f, func(t *testing.T) {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			s := string(src)
+			for _, forbidden := range []string{
+				"events.source",
+				"chassis:eventsource",
+			} {
+				if strings.Contains(s, forbidden) {
+					t.Errorf("%s still contains raw EventSource consumer pattern %q; use window.Chassis.events.subscribe()", f, forbidden)
+				}
+			}
+		})
 	}
 }

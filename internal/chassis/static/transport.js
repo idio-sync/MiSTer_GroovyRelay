@@ -10,7 +10,6 @@
     return;
   }
 
-  let source = null;
   let adapterRef = metaContent('chassis-adapter-ref');
   let generation = parseInteger(metaContent('chassis-generation'), 0);
   let transportState = '';
@@ -206,17 +205,6 @@
     }
   }
 
-  function attachSource(nextSource) {
-    if (!nextSource || nextSource === source) {
-      return;
-    }
-    if (source) {
-      source.removeEventListener('transport', handleTransportEvent);
-    }
-    source = nextSource;
-    source.addEventListener('transport', handleTransportEvent);
-  }
-
   function bindActions() {
     Array.from(document.querySelectorAll('[data-transport-action]')).forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -318,12 +306,7 @@
     }
     bindActions();
     bindSeek();
-    if (window.Chassis.events && window.Chassis.events.source) {
-      attachSource(window.Chassis.events.source);
-    }
-    document.addEventListener('chassis:eventsource', (ev) => {
-      attachSource(ev.detail && ev.detail.source);
-    });
+    window.Chassis.events.subscribe('transport', handleTransportEvent);
   }
 
   if (document.readyState === 'loading') {
