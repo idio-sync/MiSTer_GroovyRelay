@@ -37,10 +37,11 @@ const (
 )
 
 type VisualizerMetadata struct {
-	Title    string
-	Artist   string
-	Album    string
-	Duration time.Duration
+	Title       string
+	Artist      string
+	Album       string
+	Duration    time.Duration
+	ArtworkPath string
 }
 
 type VisualizerRequest struct {

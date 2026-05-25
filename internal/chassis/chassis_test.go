@@ -247,6 +247,8 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
 				{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
 				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
+				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
 				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
 			},
 		},

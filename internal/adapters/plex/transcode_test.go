@@ -194,7 +194,8 @@ func TestMusicMetadataFor_DecodesTrack(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`<MediaContainer size="1">
 			<Track key="/library/metadata/42" ratingKey="42" title="Blue Monday"
-				grandparentTitle="New Order" parentTitle="Power Corruption &amp; Lies" duration="449000">
+				grandparentTitle="New Order" parentTitle="Power Corruption &amp; Lies" duration="449000"
+				thumb="/library/metadata/42/thumb" parentThumb="/library/metadata/7/thumb" grandparentThumb="/library/metadata/3/thumb">
 				<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
 			</Track>
 		</MediaContainer>`))
@@ -216,6 +217,10 @@ func TestMusicMetadataFor_DecodesTrack(t *testing.T) {
 	}
 	if got.PartKey != "/library/parts/99/file.mp3" {
 		t.Fatalf("PartKey = %q, want /library/parts/99/file.mp3", got.PartKey)
+	}
+	wantArt := []string{"/library/metadata/42/thumb", "/library/metadata/7/thumb", "/library/metadata/3/thumb"}
+	if strings.Join(got.ArtworkCandidates, ",") != strings.Join(wantArt, ",") {
+		t.Fatalf("ArtworkCandidates = %v, want %v", got.ArtworkCandidates, wantArt)
 	}
 }
 

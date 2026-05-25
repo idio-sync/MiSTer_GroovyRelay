@@ -668,6 +668,8 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 		{VisualizerModeVUCabinet, []string{"showvolume", "drawbox", "drawgrid"}},
 		{VisualizerModeNeonGrid, []string{"showfreqs", "drawgrid", "hue"}},
 		{VisualizerModeRasterPulse, []string{"showwaves", "split", "hflip", "blend"}},
+		{VisualizerModeCoverVU, []string{"showvolume", "overlay", "scale"}},
+		{VisualizerModeCoverSpectrum, []string{"showfreqs", "overlay", "scale"}},
 	}
 	for _, tc := range cases {
 		got := RequiredVisualizerFilters(tc.mode)
@@ -1505,6 +1507,138 @@ func TestBuildCommand_VisualizerDualInputMapsAudioInputOne(t *testing.T) {
 	}
 }
 
+func TestBuildCommand_NonCoverVisualizerIgnoresArtworkPath(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: "/tmp/cover.png"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if strings.Contains(strings.Join(cmd.Args, "\x00"), "/tmp/cover.png") {
+		t.Fatalf("non-cover visualizer argv unexpectedly contains artwork path: %v", cmd.Args)
+	}
+}
+
+func TestBuildCommand_CoverModeAddsArtworkInputAfterPrimary(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeCoverVU,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: "/cache/cover.png"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if got := inputURLs(cmd.Args); len(got) != 2 || got[0] != "http://pms/music.mp3" || got[1] != "/cache/cover.png" {
+		t.Fatalf("input URLs = %v, want primary then artwork", got)
+	}
+	graph := argAfter(cmd.Args, "-filter_complex")
+	for _, want := range []string{"[1:v:0]fps=60000/1001", "showvolume", "overlay"} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("cover_vu graph missing %q:\n%s", want, graph)
+		}
+	}
+}
+
+func TestBuildCommand_CoverModeDualInputMapsArtworkAfterAudio(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:      "https://video.example/video-only.mp4",
+		AudioInputURL: "https://audio.example/audio-only.m4a",
+		SourceProbe:   &ProbeResult{AudioRate: 0},
+		OutputWidth:   720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeCoverSpectrum,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: "/cache/cover.png"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if got := inputURLs(cmd.Args); len(got) != 3 || got[0] != spec.InputURL || got[1] != spec.AudioInputURL || got[2] != "/cache/cover.png" {
+		t.Fatalf("input URLs = %v, want primary, audio, artwork", got)
+	}
+	graph := argAfter(cmd.Args, "-filter_complex")
+	for _, want := range []string{"[2:v:0]fps=60000/1001", "[1:a:0]showfreqs"} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("cover_spectrum graph missing %q:\n%s", want, graph)
+		}
+	}
+	if !argPairExists(cmd.Args, "-map", "1:a:0") {
+		t.Fatalf("argv missing PCM audio map 1:a:0: %v", cmd.Args)
+	}
+}
+
+func TestBuildCommand_CoverModeWithoutArtworkUsesPlaceholder(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeCoverVU,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: ""},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if got := inputURLs(cmd.Args); len(got) != 1 {
+		t.Fatalf("input URLs = %v, want only primary input", got)
+	}
+	graph := argAfter(cmd.Args, "-filter_complex")
+	if !strings.Contains(graph, "color=c=0x101018") {
+		t.Fatalf("cover placeholder graph missing color source:\n%s", graph)
+	}
+	if strings.Contains(graph, "/cache/") || strings.Contains(graph, "cover.png") {
+		t.Fatalf("filtergraph contains argv/path token:\n%s", graph)
+	}
+}
+
+func TestBuildCommand_CoverModesTerminateWithAudioEOF(t *testing.T) {
+	for _, mode := range []VisualizerMode{VisualizerModeCoverVU, VisualizerModeCoverSpectrum} {
+		t.Run(string(mode), func(t *testing.T) {
+			spec := PipelineSpec{
+				InputURL:    "http://pms/music.mp3",
+				SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+				OutputWidth: 720, OutputHeight: 480,
+				OutputFpsExpr:   "60000/1001",
+				AudioSampleRate: 48000, AudioChannels: 2,
+				VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+				Visualizer: VisualizerSpec{
+					Enabled:                  true,
+					Mode:                     mode,
+					RequiredFiltersAvailable: true,
+					Metadata:                 VisualizerMetadata{ArtworkPath: "/cache/cover.png"},
+				},
+			}
+			graph := argAfter(BuildCommand(context.Background(), spec).Args, "-filter_complex")
+			if !strings.Contains(graph, "shortest=1") {
+				t.Fatalf("cover graph missing shortest=1 EOF control:\n%s", graph)
+			}
+		})
+	}
+}
+
 func TestBuildCommand_VisualizerRejectsUnknownMode(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL:    "http://pms/music.mp3",
@@ -1533,6 +1667,16 @@ func argPairExists(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+func inputURLs(args []string) []string {
+	out := []string{}
+	for i, arg := range args {
+		if arg == "-i" && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
 }
 
 // TestBuildCommand_ZeroPolicyArgvUnchanged is the backward-compat guard:

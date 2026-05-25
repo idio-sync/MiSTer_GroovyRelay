@@ -27,6 +27,7 @@ type SessionManager interface {
 	Stop() error
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
+	VisualizerMode() string
 }
 
 // Adapter implements adapters.Adapter for the Jellyfin cast-target

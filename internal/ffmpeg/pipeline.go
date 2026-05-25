@@ -30,10 +30,11 @@ const (
 )
 
 type VisualizerMetadata struct {
-	Title    string
-	Artist   string
-	Album    string
-	Duration time.Duration
+	Title       string
+	Artist      string
+	Album       string
+	Duration    time.Duration
+	ArtworkPath string
 }
 
 type VisualizerSpec struct {
@@ -137,6 +138,10 @@ func audioInputMap(s PipelineSpec) string {
 		return "1:a:0"
 	}
 	return "0:a:0"
+}
+
+func visualizerAudioInputMap(s PipelineSpec) string {
+	return audioInputMap(s)
 }
 
 // visibleDARNum / visibleDARDen describe the displayed aspect of the output
@@ -504,6 +509,10 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 		return []string{"showfreqs", "drawgrid", "hue"}
 	case VisualizerModeRasterPulse:
 		return []string{"showwaves", "split", "hflip", "blend"}
+	case VisualizerModeCoverVU:
+		return []string{"showvolume", "overlay", "scale"}
+	case VisualizerModeCoverSpectrum:
+		return []string{"showfreqs", "overlay", "scale"}
 	default:
 		return nil
 	}
@@ -540,6 +549,90 @@ func visualizerCoreGraph(mode VisualizerMode, audioMap string, logicalW, logical
 	}
 }
 
+func visualizerModeUsesArtwork(mode VisualizerMode) bool {
+	return mode == VisualizerModeCoverVU || mode == VisualizerModeCoverSpectrum
+}
+
+func visualizerArtworkInput(s PipelineSpec) ([]string, string) {
+	if !visualizerModeUsesArtwork(s.Visualizer.Mode) || s.Visualizer.Metadata.ArtworkPath == "" {
+		return nil, ""
+	}
+	idx := 1
+	if s.AudioInputURL != "" {
+		idx = 2
+	}
+	return []string{"-loop", "1", "-i", s.Visualizer.Metadata.ArtworkPath}, fmt.Sprintf("%d:v:0", idx)
+}
+
+func coverSquareSize(logicalW, logicalH int) int {
+	size := logicalH * 3 / 5
+	if capW := logicalW - 64; capW > 0 && size > capW {
+		size = capW
+	}
+	if size < 96 {
+		size = 96
+	}
+	if size%2 != 0 {
+		size--
+	}
+	return size
+}
+
+func coverArtBranch(label string, coverSize int, fpsExpr string) string {
+	if label == "" {
+		return fmt.Sprintf("color=c=0x101018:s=%dx%d,format=rgba[cover_art]", coverSize, coverSize)
+	}
+	return fmt.Sprintf("[%s]fps=%s,format=rgba,scale=w=%d:h=%d:force_original_aspect_ratio=increase,crop=%d:%d[cover_art]",
+		label, fpsExpr, coverSize, coverSize, coverSize, coverSize)
+}
+
+func coverModeGraph(s PipelineSpec, mode VisualizerMode, logicalW, logicalH int, fpsExpr string) (string, string) {
+	coverSize := coverSquareSize(logicalW, logicalH)
+	_, artworkLabel := visualizerArtworkInput(s)
+	margin := 24
+	if logicalW < 640 {
+		margin = 16
+	}
+	coverX := margin
+	coverY := (logicalH - coverSize) / 2
+	meterX := coverX + coverSize + margin
+	meterW := logicalW - meterX - margin
+	meterH := coverSize
+	if meterW < 96 {
+		meterX = margin
+		meterW = logicalW - margin*2
+		meterH = logicalH / 4
+		if meterH < 48 {
+			meterH = 48
+		}
+	}
+	parts := []string{
+		fmt.Sprintf("color=c=0x05050a:s=%dx%d,format=rgba[cover_bg]", logicalW, logicalH),
+		coverArtBranch(artworkLabel, coverSize, fpsExpr),
+		fmt.Sprintf("[cover_bg][cover_art]overlay=x=%d:y=%d:format=auto[cover_base]", coverX, coverY),
+	}
+	audioMap := visualizerAudioInputMap(s)
+	switch mode {
+	case VisualizerModeCoverVU:
+		vH := meterH / 4
+		if vH < 32 {
+			vH = 32
+		}
+		parts = append(parts,
+			fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=p:ds=log:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,format=rgba[cover_meter]",
+				audioMap, meterW, vH, meterW, meterH),
+			fmt.Sprintf("[cover_base][cover_meter]overlay=x=%d:y=(H-h)/2:format=auto:shortest=1[viz0]", meterX),
+		)
+	case VisualizerModeCoverSpectrum:
+		parts = append(parts,
+			fmt.Sprintf("[%s]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70|0xfff06b,format=rgba[cover_meter]",
+				audioMap, meterW, meterH),
+			fmt.Sprintf("[cover_base][cover_meter]overlay=x=%d:y=(H-h)/2:format=auto:shortest=1[viz0]", meterX),
+		)
+	}
+	return strings.Join(parts, ";"), "viz0"
+}
+
 func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 	if !isSupportedVisualizerMode(s.Visualizer.Mode) {
 		return "", fmt.Errorf("unsupported visualizer mode %q", s.Visualizer.Mode)
@@ -552,7 +645,12 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 		fpsExpr = "60000/1001"
 	}
 	logicalW, logicalH := logicalCanvas(s.OutputHeight)
-	graph, label := visualizerCoreGraph(s.Visualizer.Mode, audioInputMap(s), logicalW, logicalH)
+	var graph, label string
+	if visualizerModeUsesArtwork(s.Visualizer.Mode) {
+		graph, label = coverModeGraph(s, s.Visualizer.Mode, logicalW, logicalH, fpsExpr)
+	} else {
+		graph, label = visualizerCoreGraph(s.Visualizer.Mode, visualizerAudioInputMap(s), logicalW, logicalH)
+	}
 	if graph == "" || label == "" {
 		return "", fmt.Errorf("unsupported visualizer mode %q", s.Visualizer.Mode)
 	}
@@ -642,7 +740,10 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	}
 
 	if s.Visualizer.Enabled {
-		audioMap := audioInputMap(s)
+		if artArgs, _ := visualizerArtworkInput(s); len(artArgs) > 0 {
+			args = append(args, artArgs...)
+		}
+		audioMap := visualizerAudioInputMap(s)
 		graph, err := buildVisualizerFilterChain(s)
 		if err != nil {
 			cmd := exec.CommandContext(ctx, ffmpegPathFor(s), "-version")

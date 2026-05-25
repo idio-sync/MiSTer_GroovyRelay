@@ -22,7 +22,7 @@ channels = 2
 output_volume = 100              # Global output gain sent to the MiSTer, 0..100
 
 [bridge.visualizer]
-mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_scope, vu_cabinet, neon_grid, raster_pulse
+mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_scope, vu_cabinet, neon_grid, raster_pulse, cover_vu, cover_spectrum
 
 [bridge.mister]
 host = "192.168.1.50"             # MiSTer IP or hostname (required)

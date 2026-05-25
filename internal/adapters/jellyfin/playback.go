@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -44,6 +45,7 @@ type PlaybackInfoResult struct {
 	Artist         string
 	Album          string
 	Duration       time.Duration
+	ArtworkPath    string
 }
 
 type playbackInfoBody struct {
@@ -100,13 +102,14 @@ type ItemMetadataInput struct {
 // PlaybackInfo requests and fill music visualizer metadata when
 // PlaybackInfo omits it.
 type ItemMetadataResult struct {
-	ItemID    string
-	Type      string
-	MediaKind core.MediaKind
-	Title     string
-	Artist    string
-	Album     string
-	Duration  time.Duration
+	ItemID      string
+	Type        string
+	MediaKind   core.MediaKind
+	Title       string
+	Artist      string
+	Album       string
+	Duration    time.Duration
+	ArtworkPath string
 }
 
 type itemMetadataDTO struct {
@@ -301,6 +304,9 @@ func mergePlaybackMetadata(info PlaybackInfoResult, meta ItemMetadataResult) Pla
 	if info.Duration == 0 {
 		info.Duration = meta.Duration
 	}
+	if info.ArtworkPath == "" {
+		info.ArtworkPath = meta.ArtworkPath
+	}
 	return info
 }
 
@@ -363,7 +369,7 @@ func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 		AdapterRef:    refKey,
 		Source:        "jellyfin",
 		DirectPlay:    false,
-		OnStop:        a.makeOnStop(refKey),
+		OnStop:        artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey)),
 		Title:         in.PlayInfo.Title,
 	}
 	if in.PlayInfo.MediaKind == core.MediaKindMusic {
@@ -372,10 +378,11 @@ func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 			Enabled: true,
 			Mode:    core.VisualizerModeRetroAnalyzer,
 			Metadata: core.VisualizerMetadata{
-				Title:    in.PlayInfo.Title,
-				Artist:   in.PlayInfo.Artist,
-				Album:    in.PlayInfo.Album,
-				Duration: in.PlayInfo.Duration,
+				Title:       in.PlayInfo.Title,
+				Artist:      in.PlayInfo.Artist,
+				Album:       in.PlayInfo.Album,
+				Duration:    in.PlayInfo.Duration,
+				ArtworkPath: in.PlayInfo.ArtworkPath,
 			},
 		}
 	}

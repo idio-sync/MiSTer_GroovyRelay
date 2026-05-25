@@ -1,13 +1,18 @@
 package plex
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,6 +22,17 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
+
+func tinyPNGBody(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{G: 0xff, A: 0xff})
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
 
 func newLoopbackServer(t *testing.T, h http.Handler) *httptest.Server {
 	t.Helper()
@@ -219,6 +235,7 @@ type fakeCore struct {
 	lastSeek int
 	status   core.SessionStatus
 	startErr error
+	vizMode  string
 }
 
 func (f *fakeCore) StartSession(r core.SessionRequest) error {
@@ -256,6 +273,11 @@ func (f *fakeCore) Status() core.SessionStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status
+}
+func (f *fakeCore) VisualizerMode() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.vizMode
 }
 func (f *fakeCore) DropActiveCast(reason string) error {
 	f.mu.Lock()
@@ -614,6 +636,234 @@ func TestPlexCompanion_PlayMediaMusicBuildsVisualizerSession(t *testing.T) {
 	}
 	if got.AdapterRef == "/library/metadata/42" || !strings.Contains(got.AdapterRef, ":") {
 		t.Fatalf("AdapterRef should include transcode identity for music cleanup, got %q", got.AdapterRef)
+	}
+}
+
+func TestPlexCompanion_MusicDirectPlayRejectsForeignPartKey(t *testing.T) {
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev"}, nil)
+	req := c.musicSessionRequestForPlay(PlayMediaRequest{
+		PlexServerScheme:   "http",
+		PlexServerAddress:  "127.0.0.1",
+		PlexServerPort:     "32400",
+		MediaKey:           "/library/metadata/42",
+		PlexToken:          "tok",
+		SessionID:          "session-1",
+		TranscodeSessionID: "tsid-1",
+	}, MusicMetadata{
+		Title:   "Blue Monday",
+		PartKey: "https://evil.example/file.mp3",
+	})
+	if req.DirectPlay {
+		t.Fatal("DirectPlay = true for foreign absolute PartKey, want transcode fallback")
+	}
+	if strings.Contains(req.StreamURL, "evil.example") {
+		t.Fatalf("StreamURL used foreign PartKey: %s", req.StreamURL)
+	}
+	if !strings.Contains(req.StreamURL, "/music/:/transcode/universal/start.mp3") {
+		t.Fatalf("StreamURL = %s, want music transcode fallback", req.StreamURL)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMusicCachesArtworkAndCleansUp(t *testing.T) {
+	var artToken string
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<Track title="Blue Monday" grandparentTitle="New Order"
+					parentTitle="Power Corruption &amp; Lies" duration="449000"
+					thumb="/art/track.png" parentThumb="/art/album.png" grandparentThumb="/art/artist.png">
+					<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
+				</Track>
+			</MediaContainer>`))
+		case "/art/track.png":
+			artToken = r.URL.Query().Get("X-Plex-Token")
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(tinyPNGBody(t))
+		default:
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{vizMode: string(core.VisualizerModeCoverVU)}
+	dataDir := t.TempDir()
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev", DataDir: dataDir}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=track"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if artToken != "tok" {
+		t.Fatalf("artwork token = %q, want tok", artToken)
+	}
+	path := fc.lastReq.Visualizer.Metadata.ArtworkPath
+	if path == "" {
+		t.Fatal("ArtworkPath empty")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("cached artwork stat: %v", err)
+	}
+	if fc.lastReq.OnStop == nil {
+		t.Fatal("OnStop nil")
+	}
+	fc.lastReq.OnStop("stopped")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cached artwork after OnStop stat err = %v, want missing", err)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMusicStartSessionFailureRemovesArtwork(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<Track title="Blue Monday" grandparentTitle="New Order"
+					parentTitle="Power Corruption &amp; Lies" thumb="/art/track.png">
+					<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
+				</Track>
+			</MediaContainer>`))
+		case "/art/track.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(tinyPNGBody(t))
+		default:
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{startErr: errors.New("reject"), vizMode: string(core.VisualizerModeCoverVU)}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev", DataDir: t.TempDir()}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=track"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s, want 400", resp.StatusCode, body)
+	}
+
+	path := fc.lastReq.Visualizer.Metadata.ArtworkPath
+	if path == "" {
+		t.Fatal("ArtworkPath empty")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cached artwork after StartSession failure stat err = %v, want missing", err)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMusicRejectsForeignArtworkURL(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/library/metadata/42" {
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`<MediaContainer size="1">
+			<Track title="Blue Monday" grandparentTitle="New Order"
+				parentTitle="Power Corruption &amp; Lies" duration="449000"
+				thumb="https://example.invalid/cover.png">
+				<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
+			</Track>
+		</MediaContainer>`))
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{vizMode: string(core.VisualizerModeCoverVU)}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev", DataDir: t.TempDir()}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=track"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.starts != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if fc.lastReq.Visualizer.Metadata.ArtworkPath != "" {
+		t.Fatalf("ArtworkPath = %q, want empty", fc.lastReq.Visualizer.Metadata.ArtworkPath)
+	}
+}
+
+func TestPlexCompanion_PlayMediaMusicSkipsArtworkFetchForNonCoverMode(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/42":
+			_, _ = w.Write([]byte(`<MediaContainer size="1">
+				<Track title="Blue Monday" grandparentTitle="New Order"
+					parentTitle="Power Corruption &amp; Lies" thumb="/art/track.png">
+					<Media><Part id="99" key="/library/parts/99/file.mp3"/></Media>
+				</Track>
+			</MediaContainer>`))
+		case "/art/track.png":
+			t.Error("artwork endpoint should not be fetched for non-cover visualizer mode")
+			http.Error(w, "unexpected artwork fetch", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected PMS path %q", r.URL.Path)
+			http.Error(w, "unexpected PMS path", http.StatusNotFound)
+		}
+	}))
+	defer pms.Close()
+	pmsURL, _ := url.Parse(pms.URL)
+
+	fc := &fakeCore{vizMode: string(core.VisualizerModeRetroAnalyzer)}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid", Version: "dev", DataDir: t.TempDir()}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	reqURL := ts.URL + "/player/playback/playMedia?" +
+		"protocol=http&address=" + pmsURL.Hostname() + "&port=" + pmsURL.Port() + "&" +
+		"key=%2Flibrary%2Fmetadata%2F42&offset=0&token=tok&type=track"
+	req, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if fc.lastReq.Visualizer.Metadata.ArtworkPath != "" {
+		t.Fatalf("ArtworkPath = %q, want empty for non-cover mode", fc.lastReq.Visualizer.Metadata.ArtworkPath)
 	}
 }
 

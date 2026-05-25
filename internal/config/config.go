@@ -70,6 +70,8 @@ var supportedVisualizerModes = []string{
 	VisualizerModeVUCabinet,
 	VisualizerModeNeonGrid,
 	VisualizerModeRasterPulse,
+	VisualizerModeCoverVU,
+	VisualizerModeCoverSpectrum,
 }
 
 func NormalizeVisualizerMode(mode string) string {
@@ -311,7 +313,9 @@ func (s *Sectioned) Validate() error {
 		VisualizerModeStereoScope,
 		VisualizerModeVUCabinet,
 		VisualizerModeNeonGrid,
-		VisualizerModeRasterPulse:
+		VisualizerModeRasterPulse,
+		VisualizerModeCoverVU,
+		VisualizerModeCoverSpectrum:
 	default:
 		return fmt.Errorf("bridge.visualizer.mode must be one of %s, got %q", strings.Join(SupportedVisualizerModes(), ", "), b.Visualizer.Mode)
 	}

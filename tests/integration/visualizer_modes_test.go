@@ -16,17 +16,20 @@ func TestVisualizerModesSpawnRealFFmpeg(t *testing.T) {
 		name          string
 		mode          ffmpeg.VisualizerMode
 		suppressAudio bool
+		usesCover     bool
 	}{
-		{"vu cabinet", ffmpeg.VisualizerModeVUCabinet, false},
-		{"neon grid", ffmpeg.VisualizerModeNeonGrid, false},
-		{"raster pulse", ffmpeg.VisualizerModeRasterPulse, false},
+		{"vu cabinet", ffmpeg.VisualizerModeVUCabinet, false, false},
+		{"neon grid", ffmpeg.VisualizerModeNeonGrid, false, false},
+		{"raster pulse", ffmpeg.VisualizerModeRasterPulse, false, false},
+		{"cover vu", ffmpeg.VisualizerModeCoverVU, false, true},
+		{"cover spectrum", ffmpeg.VisualizerModeCoverSpectrum, false, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ffmpegPath := ffmpegPathOrSkip(t)
 			skipIfVisualizerFiltersMissing(t, ffmpegPath, tc.mode)
-			inputPath := ensureSampleMP4(t, "visualizer-source.mp4", 2)
+			inputPath := ensureSampleWAV(t, "visualizer-source.wav", 2)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -34,7 +37,7 @@ func TestVisualizerModesSpawnRealFFmpeg(t *testing.T) {
 			spec := ffmpeg.PipelineSpec{
 				FFmpegPath:          ffmpegPath,
 				InputURL:            inputPath,
-				SourceProbe:         &ffmpeg.ProbeResult{Width: 320, Height: 240, FrameRate: 24, AudioRate: 48000, Interlaced: false},
+				SourceProbe:         &ffmpeg.ProbeResult{AudioRate: 48000},
 				OutputWidth:         720,
 				OutputHeight:        480,
 				OutputFpsExpr:       "60000/1001",
@@ -44,6 +47,9 @@ func TestVisualizerModesSpawnRealFFmpeg(t *testing.T) {
 				AudioChannels:       2,
 				SuppressAudioOutput: tc.suppressAudio,
 				Visualizer:          ffmpeg.VisualizerSpec{Enabled: true, Mode: tc.mode},
+			}
+			if tc.usesCover {
+				spec.Visualizer.Metadata.ArtworkPath = ensureSamplePNG(t, "visualizer-cover.png")
 			}
 
 			p, err := ffmpeg.Spawn(ctx, spec)

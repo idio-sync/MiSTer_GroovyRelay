@@ -265,6 +265,8 @@ func TestBridgeFields_HasVisualizerMode(t *testing.T) {
 		config.VisualizerModeVUCabinet,
 		config.VisualizerModeNeonGrid,
 		config.VisualizerModeRasterPulse,
+		config.VisualizerModeCoverVU,
+		config.VisualizerModeCoverSpectrum,
 	}
 	if !reflect.DeepEqual(found.Enum, wantEnum) {
 		t.Errorf("enum = %v, want %v", found.Enum, wantEnum)

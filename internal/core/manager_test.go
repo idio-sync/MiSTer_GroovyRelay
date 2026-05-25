@@ -2699,6 +2699,8 @@ func TestValidateVisualizerRequestModes(t *testing.T) {
 		VisualizerModeVUCabinet,
 		VisualizerModeNeonGrid,
 		VisualizerModeRasterPulse,
+		VisualizerModeCoverVU,
+		VisualizerModeCoverSpectrum,
 	} {
 		t.Run(string(mode), func(t *testing.T) {
 			err := validateVisualizerRequest(SessionRequest{
@@ -2739,14 +2741,66 @@ func TestFFmpegVisualizerSpecMapsModes(t *testing.T) {
 		{VisualizerModeVUCabinet, ffmpeg.VisualizerModeVUCabinet},
 		{VisualizerModeNeonGrid, ffmpeg.VisualizerModeNeonGrid},
 		{VisualizerModeRasterPulse, ffmpeg.VisualizerModeRasterPulse},
+		{VisualizerModeCoverVU, ffmpeg.VisualizerModeCoverVU},
+		{VisualizerModeCoverSpectrum, ffmpeg.VisualizerModeCoverSpectrum},
 	}
 	for _, c := range cases {
 		t.Run(string(c.core), func(t *testing.T) {
-			got := ffmpegVisualizerSpec(VisualizerRequest{Enabled: true, Mode: c.core})
+			got := ffmpegVisualizerSpec("", VisualizerRequest{Enabled: true, Mode: c.core})
 			if got.Mode != c.want {
 				t.Fatalf("ffmpegVisualizerSpec mode = %q, want %q", got.Mode, c.want)
 			}
 		})
+	}
+}
+
+func TestFFmpegVisualizerSpecCarriesValidatedArtworkPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artwork-cache")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cover := filepath.Join(root, "cover.png")
+	if err := os.WriteFile(cover, []byte("not decoded at core boundary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ffmpegVisualizerSpec(root, VisualizerRequest{
+		Enabled: true,
+		Mode:    VisualizerModeCoverVU,
+		Metadata: VisualizerMetadata{
+			Title:       "Blue Monday",
+			Artist:      "New Order",
+			Album:       "Power Corruption & Lies",
+			Duration:    449 * time.Second,
+			ArtworkPath: cover,
+		},
+	})
+	if got.Metadata.ArtworkPath != cover {
+		t.Fatalf("ArtworkPath = %q, want %q", got.Metadata.ArtworkPath, cover)
+	}
+	if got.Metadata.Title != "Blue Monday" || got.Metadata.Artist != "New Order" ||
+		got.Metadata.Album != "Power Corruption & Lies" || got.Metadata.Duration != 449*time.Second {
+		t.Fatalf("metadata = %+v", got.Metadata)
+	}
+}
+
+func TestFFmpegVisualizerSpecDropsOutsideArtworkPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artwork-cache")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "cover.png")
+	if err := os.WriteFile(outside, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ffmpegVisualizerSpec(root, VisualizerRequest{
+		Enabled: true,
+		Mode:    VisualizerModeCoverSpectrum,
+		Metadata: VisualizerMetadata{
+			ArtworkPath: outside,
+		},
+	})
+	if got.Metadata.ArtworkPath != "" {
+		t.Fatalf("ArtworkPath = %q, want dropped", got.Metadata.ArtworkPath)
 	}
 }
 

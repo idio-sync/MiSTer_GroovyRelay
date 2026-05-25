@@ -418,6 +418,8 @@ func TestSupportedVisualizerModes_ReturnsDefensiveCopy(t *testing.T) {
 		VisualizerModeVUCabinet,
 		VisualizerModeNeonGrid,
 		VisualizerModeRasterPulse,
+		VisualizerModeCoverVU,
+		VisualizerModeCoverSpectrum,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("SupportedVisualizerModes() = %#v, want %#v", got, want)
@@ -439,6 +441,8 @@ func TestSectioned_Validate_VisualizerMode(t *testing.T) {
 		VisualizerModeVUCabinet,
 		VisualizerModeNeonGrid,
 		VisualizerModeRasterPulse,
+		VisualizerModeCoverVU,
+		VisualizerModeCoverSpectrum,
 	}
 	for _, mode := range valid {
 		t.Run("valid/"+mode, func(t *testing.T) {

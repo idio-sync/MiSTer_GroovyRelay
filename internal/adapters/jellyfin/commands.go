@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
@@ -88,6 +90,7 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			MediaKind:           meta.MediaKind,
 		})
 		if err != nil {
+			artworkcache.Remove(meta.ArtworkPath)
 			slog.Error("jellyfin: PlaybackInfo failed", "err", err)
 			return
 		}
@@ -104,12 +107,14 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 		prev := a.beginSelfPreempt(req.AdapterRef)
 		if a.core == nil {
 			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
 			slog.Error("jellyfin: no core SessionManager")
 			return
 		}
 		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 		if err := a.core.StartSession(req); err != nil {
 			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
 			slog.Error("jellyfin: StartSession failed", "err", err)
 			return
 		}
@@ -147,7 +152,51 @@ func (a *Adapter) fetchItemMetadataBestEffort(ctx context.Context, cfg Config, t
 		slog.Debug("jellyfin: item metadata unavailable; continuing with PlaybackInfo", "item", itemID, "err", err)
 		return ItemMetadataResult{}
 	}
+	if meta.MediaKind == core.MediaKindMusic && a.visualizerModeUsesArtwork() {
+		meta.ArtworkPath = a.fetchArtworkBestEffort(ctx, cfg, tok, itemID)
+	}
 	return meta
+}
+
+func (a *Adapter) visualizerModeUsesArtwork() bool {
+	if a.core == nil {
+		return false
+	}
+	switch core.VisualizerMode(a.core.VisualizerMode()) {
+	case core.VisualizerModeCoverVU, core.VisualizerModeCoverSpectrum:
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanupSessionArtwork(req core.SessionRequest) {
+	artworkcache.Remove(req.Visualizer.Metadata.ArtworkPath)
+}
+
+func (a *Adapter) fetchArtworkBestEffort(ctx context.Context, cfg Config, tok Token, itemID string) string {
+	if itemID == "" {
+		return ""
+	}
+	candidate := "/Items/" + url.PathEscape(itemID) + "/Images/Primary"
+	u, ok := artworkcache.ResolveSameOrigin(cfg.ServerURL, candidate)
+	if !ok {
+		slog.Debug("jellyfin: artwork candidate rejected", "url", artworkcache.RedactURL(candidate))
+		return ""
+	}
+	artURL := artworkcache.AppendToken(u, "api_key", tok.AccessToken)
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	path, err := artworkcache.FetchToCache(fetchCtx, artworkcache.FetchOptions{
+		DataDir: a.dataDir,
+		URL:     artURL,
+		Client:  jfHTTPClient,
+	})
+	if err != nil {
+		slog.Debug("jellyfin: artwork fetch failed", "url", artworkcache.RedactURL(artURL), "err", err)
+		return ""
+	}
+	return path
 }
 
 // snapshotNowPlayingQueue returns a QueueItem slice with the current
@@ -362,6 +411,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 			MediaKind:           meta.MediaKind,
 		})
 		if err != nil {
+			artworkcache.Remove(meta.ArtworkPath)
 			slog.Error("jellyfin: trackSwitch PlaybackInfo failed", "err", err)
 			return
 		}
@@ -381,6 +431,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 		if err := a.core.StartSession(req); err != nil {
 			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
 			slog.Error("jellyfin: trackSwitch StartSession failed", "err", err)
 			return
 		}
