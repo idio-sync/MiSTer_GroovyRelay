@@ -255,19 +255,20 @@ var spawnProcess = func(ctx context.Context, spec ffmpeg.PipelineSpec) (processH
 // Built by the control plane (core.Manager in Phase 7+) from a SessionRequest
 // plus a resolved PipelineSpec / Modeline / LZ4 toggle.
 type PlaneConfig struct {
-	Sender          *groovynet.Sender
-	SpawnSpec       ffmpeg.PipelineSpec
-	Modeline        groovy.Modeline // SWITCHRES modeline
-	FieldWidth      int             // hActive
-	FieldHeight     int             // per-field vActive (e.g. 240 for 480i)
-	BytesPerPixel   int
-	RGBMode         byte // groovy.RGBMode888 etc.
-	LZ4Enabled      bool
-	DeltaLZ4Enabled bool
-	AudioRate       int // Go-side integer (48000)
-	AudioChans      int // 2 for stereo
-	OutputVolume    int // global output gain, 0..100
-	SeekOffsetMs    int // reported as session start position
+	Sender              *groovynet.Sender
+	SpawnSpec           ffmpeg.PipelineSpec
+	Modeline            groovy.Modeline // SWITCHRES modeline
+	FieldWidth          int             // hActive
+	FieldHeight         int             // per-field vActive (e.g. 240 for 480i)
+	BytesPerPixel       int
+	RGBMode             byte // groovy.RGBMode888 etc.
+	LZ4Enabled          bool
+	DeltaLZ4Enabled     bool
+	AudioRate           int // Go-side integer (48000)
+	AudioChans          int // 2 for stereo
+	SuppressAudioOutput bool
+	OutputVolume        int // global output gain, 0..100
+	SeekOffsetMs        int // reported as session start position
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil

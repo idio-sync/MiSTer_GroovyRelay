@@ -331,16 +331,16 @@ func TestManager_NaturalEOFViaStartPlaneLockedFiresOnStop(t *testing.T) {
 }
 
 func TestManager_SessionGenerationStatusIncrementsOnFreshStarts(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 	})
 
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -371,16 +371,16 @@ func TestManager_SessionGenerationStatusIncrementsOnFreshStarts(t *testing.T) {
 }
 
 func TestManager_SessionGenerationStableAcrossPauseResumeAndSeek(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 	})
 
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -438,16 +438,16 @@ func TestManager_StartSession_ProbeFailLeavesIdle(t *testing.T) {
 }
 
 func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 	})
 
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
 	}
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -613,17 +613,120 @@ func TestValidateSessionRequestAcceptsStreamAndCaptureShapes(t *testing.T) {
 	}
 }
 
+func TestManagerProbeForStartUsesStreamProbeURLWhenPresent(t *testing.T) {
+	var got ffmpeg.ProbeInputSpec
+	origProbe := probeInputFn
+	defer func() { probeInputFn = origProbe }()
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		got = input
+		return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
+	}
+
+	m := newTestManager(t)
+	_, _, _, err := m.probeForStart(SessionRequest{
+		StreamURL:      "http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=play",
+		StreamProbeURL: "http://127.0.0.1:32500/internal/aux-proxy/?kind=probe&aux_token=probe",
+		MediaKind:      MediaKindMusic,
+		Visualizer:     VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+	if got.URL == "" || !strings.Contains(got.URL, "aux_token=probe") {
+		t.Fatalf("probe used URL %q, want probe token URL", got.URL)
+	}
+}
+
+func TestManagerVisualizerCaptureAcceptsZeroProbeAudioRate(t *testing.T) {
+	origProbe := probeInputFn
+	defer func() { probeInputFn = origProbe }()
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 0}, nil
+	}
+	origCheck := checkVisualizerFiltersFn
+	defer func() { checkVisualizerFiltersFn = origCheck }()
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+
+	origNewPlane := newPlane
+	defer func() { newPlane = origNewPlane }()
+	var got dataplane.PlaneConfig
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		got = cfg
+		return &fakePlane{}
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		MediaKind:       MediaKindMusic,
+		AudioOutputMode: AudioOutputMonitor,
+		AudioCapture: AudioCaptureInput{
+			Enabled:    true,
+			Format:     "alsa",
+			Device:     "hw:1,0",
+			SampleRate: 48000,
+			Channels:   2,
+		},
+		Visualizer: VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if got.AudioRate != 48000 || got.AudioChans != 2 {
+		t.Fatalf("PlaneConfig audio = %d/%d, want 48000/2", got.AudioRate, got.AudioChans)
+	}
+}
+
+func TestManagerVisualOnlySuppressesFFmpegAndPlaneAudio(t *testing.T) {
+	origProbe := probeInputFn
+	defer func() { probeInputFn = origProbe }()
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
+	}
+	origCheck := checkVisualizerFiltersFn
+	defer func() { checkVisualizerFiltersFn = origCheck }()
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+
+	origNewPlane := newPlane
+	defer func() { newPlane = origNewPlane }()
+	var got dataplane.PlaneConfig
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		got = cfg
+		return &fakePlane{}
+	}
+
+	m := newTestManager(t)
+	err := m.StartSession(SessionRequest{
+		StreamURL:       "http://example.test/aux.wav",
+		MediaKind:       MediaKindMusic,
+		AudioOutputMode: AudioOutputVisualOnly,
+		Visualizer:      VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if !got.SpawnSpec.SuppressAudioOutput {
+		t.Fatal("SpawnSpec.SuppressAudioOutput = false, want true")
+	}
+	if !got.SuppressAudioOutput {
+		t.Fatal("PlaneConfig.SuppressAudioOutput = false, want true")
+	}
+}
+
 func TestManager_SessionAspectModeOverrideSkipsAutoCropAndReachesPipeline(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 	})
 
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
 	}
 	cropCalls := 0
@@ -739,9 +842,9 @@ func TestManager_StopIfAdapterRefMatchStopsActive(t *testing.T) {
 }
 
 func TestManager_StartSessionIfAdapterRefMismatchSkipsValidationAndProbe(t *testing.T) {
-	origProbe := probeFn
-	t.Cleanup(func() { probeFn = origProbe })
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	origProbe := probeInputFn
+	t.Cleanup(func() { probeInputFn = origProbe })
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		t.Fatal("mismatched StartSessionIfAdapterRef must not probe")
 		return nil, nil
 	}
@@ -828,17 +931,17 @@ func TestManager_StopIfSessionMatchesGeneration(t *testing.T) {
 }
 
 func TestManager_PlaySeekAndStartIfSessionRejectStaleGeneration(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 	})
 
 	probeCalls := 0
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		probeCalls++
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
@@ -899,16 +1002,16 @@ func TestManager_PlaySeekAndStartIfSessionRejectStaleGeneration(t *testing.T) {
 }
 
 func TestManager_StartSessionIfSessionPreservesNewSessionInstalledWhileOldPlaneDrains(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 	})
 
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -1173,9 +1276,9 @@ func TestManager_SeekRequiresActiveSession(t *testing.T) {
 }
 
 func TestManager_SeekValidatesVisualizerBeforeProbe(t *testing.T) {
-	origProbe := probeFn
-	t.Cleanup(func() { probeFn = origProbe })
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	origProbe := probeInputFn
+	t.Cleanup(func() { probeInputFn = origProbe })
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		t.Fatal("Probe must not run before seek visualizer validation")
 		return nil, nil
 	}
@@ -1537,17 +1640,17 @@ func TestManager_PlaneError_TransitionsIdleAndFiresOnStop(t *testing.T) {
 // TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop is the policy-threading
 // proof: it constructs a SessionRequest with a non-zero MediaInputPolicy
 // and verifies the same policy reaches BOTH ffmpeg.Probe AND ffmpeg.ProbeCrop
-// via the package-private probeFn / probeCropFn seams. Spec acceptance:
+// via the package-private probeInputFn / probeCropFn seams. Spec acceptance:
 // the policy gates ffprobe, crop probe, and ffmpeg playback consistently.
 //
 // This test stubs the ffmpeg package entry points so it runs hermetically
 // on any platform — no external binaries required.
 func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
 	// Save and restore the package-level seams.
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
 
@@ -1556,9 +1659,9 @@ func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
 	var capturedCropHeaders map[string]string
 	var probeCalls, cropCalls int
 
-	probeFn = func(_ context.Context, _, _ string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		probeCalls++
-		capturedProbe = policy
+		capturedProbe = input.Policy
 		// Return a synthetic probe result; the test does not need to drive
 		// the FSM further than probeForStart's return.
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
@@ -1602,7 +1705,7 @@ func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
 		t.Errorf("crop rect should be nil from stub; got %+v", cropRect)
 	}
 	if probeCalls != 1 {
-		t.Errorf("probeFn calls = %d, want 1", probeCalls)
+		t.Errorf("probeInputFn calls = %d, want 1", probeCalls)
 	}
 	if cropCalls != 1 {
 		t.Errorf("probeCropFn calls = %d, want 1", cropCalls)
@@ -1770,18 +1873,18 @@ func TestManager_StatusCarriesMediaKind(t *testing.T) {
 }
 
 func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
 
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -1849,15 +1952,15 @@ func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
 }
 
 func TestManager_VisualizerUsesConfiguredBridgeMode(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -1927,15 +2030,15 @@ func TestManager_VisualizerSameAdapterRefInheritsSnapshottedMode(t *testing.T) {
 }
 
 func TestManager_VisualizerGuardedReplayKeepsSnapshottedMode(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -1987,10 +2090,10 @@ func TestManager_VisualizerGuardedReplayKeepsSnapshottedMode(t *testing.T) {
 }
 
 func TestManager_VisualizerUnknownConfiguredModeRejectedAfterNormalization(t *testing.T) {
-	origProbe := probeFn
-	t.Cleanup(func() { probeFn = origProbe })
+	origProbe := probeInputFn
+	t.Cleanup(func() { probeInputFn = origProbe })
 	probeRan := false
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		probeRan = true
 		return nil, nil
 	}
@@ -2006,20 +2109,20 @@ func TestManager_VisualizerUnknownConfiguredModeRejectedAfterNormalization(t *te
 		t.Fatalf("StartSession err = %v, want unsupported visualizer mode", err)
 	}
 	if probeRan {
-		t.Fatal("probeFn ran before configured visualizer mode validation failed")
+		t.Fatal("probeInputFn ran before configured visualizer mode validation failed")
 	}
 }
 
 func TestManager_VisualizerModeAdoptsBridgeAfterDrop(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2073,15 +2176,15 @@ func TestManager_VisualizerModeAdoptsBridgeAfterDrop(t *testing.T) {
 }
 
 func TestManager_VisualizerPlayKeepsSnapshottedMode(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2137,15 +2240,15 @@ func TestManager_VisualizerPlayKeepsSnapshottedMode(t *testing.T) {
 }
 
 func TestManager_VisualizerSeekKeepsSnapshottedMode(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2195,15 +2298,15 @@ func TestManager_VisualizerSeekKeepsSnapshottedMode(t *testing.T) {
 }
 
 func TestManager_VisualizerPlayKeepsSnapshottedModeWithEmptyAdapterRef(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2252,15 +2355,15 @@ func TestManager_VisualizerPlayKeepsSnapshottedModeWithEmptyAdapterRef(t *testin
 }
 
 func TestManager_VisualizerSeekKeepsSnapshottedModeWithEmptyAdapterRef(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2354,15 +2457,15 @@ func TestFFmpegVisualizerSpecMapsModes(t *testing.T) {
 }
 
 func TestManager_VisualizerMissingRequiredFilterFailsBeforePlaneStart(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2391,15 +2494,15 @@ func TestManager_VisualizerMissingRequiredFilterFailsBeforePlaneStart(t *testing
 }
 
 func TestManager_VisualizerPlayMissingRequiredFilterFailsBeforePlaneStart(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -2438,15 +2541,15 @@ func TestManager_VisualizerPlayMissingRequiredFilterFailsBeforePlaneStart(t *tes
 }
 
 func TestManager_VisualizerGuardedStartRechecksAfterPreflightError(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origNewPlane := newPlane
 	origCheck := checkVisualizerFiltersFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		newPlane = origNewPlane
 		checkVisualizerFiltersFn = origCheck
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 111}, nil
 	}
 	newPlane = func(dataplane.PlaneConfig) planeRunner {
@@ -2485,13 +2588,13 @@ func TestManager_VisualizerGuardedStartRechecksAfterPreflightError(t *testing.T)
 }
 
 func TestManager_VisualizerRejectsNilProbeWithoutPanic(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return nil, nil
 	}
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -2511,13 +2614,13 @@ func TestManager_VisualizerRejectsNilProbeWithoutPanic(t *testing.T) {
 }
 
 func TestManager_VisualizerRejectsProbeWithoutAudio(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
-	probeFn = func(context.Context, string, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, Duration: 10}, nil
 	}
 	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -2605,13 +2708,13 @@ func TestManager_StatusHomeView_PausedKeepsSnapshot(t *testing.T) {
 // carrying the SAME AdapterRef. The probe stub returns a synthetic
 // result and we expect the OnStop NOT to be called.
 func TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
-	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 720, Height: 480, FrameRate: 29.97}, nil
 	}
 	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -2690,13 +2793,13 @@ func TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop(t *testing.T) {
 // with reason "preempted". This is the case we must NOT regress while
 // fixing the same-session-replay bug.
 func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
-	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 720, Height: 480, FrameRate: 29.97}, nil
 	}
 	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
@@ -2757,10 +2860,10 @@ func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
 // receives the zero value verbatim — no filter, no flags, no behavioral
 // drift for existing Plex / Jellyfin / URL adapter call paths.
 func TestProbeForStart_ZeroPolicyPreservesBehavior(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
 
@@ -2768,8 +2871,8 @@ func TestProbeForStart_ZeroPolicyPreservesBehavior(t *testing.T) {
 	var cropPolicy ffmpeg.MediaInputPolicy
 	var capturedHeaders map[string]string
 
-	probeFn = func(_ context.Context, _, _ string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
-		probePolicy = policy
+	probeInputFn = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		probePolicy = input.Policy
 		return &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 24}, nil
 	}
 	probeCropFn = func(_ context.Context, _, _ string, headers map[string]string, _ time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {

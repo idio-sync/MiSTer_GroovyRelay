@@ -314,15 +314,15 @@ func (m *Manager) handlePlaneExit(plane planeRunner, runErr error) {
 	}
 }
 
-// probeFn / probeCropFn are the package-private indirections through
+// probeInputFn / probeCropFn are the package-private indirections through
 // which probeForStart calls into the ffmpeg package. Production sets them
-// to ffmpeg.Probe / ffmpeg.ProbeCrop; tests swap them with stubs that
-// capture the arguments passed in (specifically the MediaInputPolicy)
+// to ffmpeg.ProbeInput / ffmpeg.ProbeCrop; tests swap them with stubs that
+// capture the arguments passed in (specifically the input URL and policy)
 // without actually spawning ffprobe/ffmpeg. Mirrors the spawnProcess
 // pattern in internal/dataplane/plane.go.
 var (
-	probeFn = func(ctx context.Context, ffprobePath, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
-		return ffmpeg.Probe(ctx, ffprobePath, url, policy)
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return ffmpeg.ProbeInput(ctx, ffprobePath, input)
 	}
 	probeCropFn = func(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
 		return ffmpeg.ProbeCrop(ctx, ffmpegPath, inputURL, headers, duration, policy)
@@ -517,6 +517,38 @@ func ffmpegVisualizerSpec(v VisualizerRequest) ffmpeg.VisualizerSpec {
 	}
 }
 
+func ffmpegCaptureSpec(c AudioCaptureInput) ffmpeg.CaptureInputSpec {
+	if !c.Enabled {
+		return ffmpeg.CaptureInputSpec{}
+	}
+	return ffmpeg.CaptureInputSpec{
+		Enabled:         true,
+		Format:          c.Format,
+		Device:          c.Device,
+		SampleRate:      c.SampleRate,
+		Channels:        c.Channels,
+		ThreadQueueSize: c.ThreadQueueSize,
+		AnalyzeDuration: c.AnalyzeDuration,
+		ProbeSize:       c.ProbeSize,
+	}
+}
+
+func effectiveSessionAudio(req SessionRequest, bridge config.AudioConfig, probe *ffmpeg.ProbeResult) (rate, chans int, suppress bool, normalizedProbe *ffmpeg.ProbeResult) {
+	if req.AudioOutputMode == AudioOutputVisualOnly {
+		return 0, 0, true, probe
+	}
+	rate, chans = bridge.SampleRate, bridge.Channels
+	if req.AudioCapture.Enabled {
+		rate, chans = req.AudioCapture.SampleRate, req.AudioCapture.Channels
+		if probe != nil && probe.AudioRate <= 0 {
+			cp := *probe
+			cp.AudioRate = rate
+			probe = &cp
+		}
+	}
+	return rate, chans, false, probe
+}
+
 func checkVisualizerFiltersForStart(ctx context.Context, ffmpegPath string, req SessionRequest) error {
 	if !req.Visualizer.Enabled {
 		return nil
@@ -543,7 +575,16 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("resolve ffprobe: %w", err)
 	}
-	probe, err := probeFn(ctx, ffprobePath, req.StreamURL, req.MediaInputPolicy)
+	probeURL := req.StreamURL
+	if req.StreamProbeURL != "" {
+		probeURL = req.StreamProbeURL
+	}
+	probeInput := ffmpeg.ProbeInputSpec{
+		URL:     probeURL,
+		Policy:  req.MediaInputPolicy,
+		Capture: ffmpegCaptureSpec(req.AudioCapture),
+	}
+	probe, err := probeInputFn(ctx, ffprobePath, probeInput)
 	if err != nil {
 		wrapped := fmt.Errorf("probe source: %w", err)
 		if probeErrorIsLikelyUnreachable(err) {
@@ -555,10 +596,15 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		}
 		return nil, nil, "", wrapped
 	}
-	if req.Visualizer.Enabled {
+	if req.Visualizer.Enabled && !req.AudioCapture.Enabled {
+		// AudioCapture.Enabled=true asserts audio by configuration; capture-device
+		// probes do not reliably set AudioRate. See AUX visualizer spec §Visualizer
+		// "must have audio" gate must move off probe.AudioRate.
 		if probe == nil || probe.AudioRate <= 0 {
 			return nil, nil, "", fmt.Errorf("visualizer source has no audio")
 		}
+	}
+	if req.Visualizer.Enabled {
 		return probe, nil, ffmpegPath, nil
 	}
 	var cropRect *ffmpeg.CropRect
@@ -691,46 +737,51 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrPlaneError, err)
 	}
+	audioRate, audioChans, suppressAudio, normalizedProbe := effectiveSessionAudio(req, m.bridge.Audio, probe)
+	probe = normalizedProbe
 
 	spec := ffmpeg.PipelineSpec{
-		InputURL:          req.StreamURL,
-		InputHeaders:      inputHeaders,
-		AudioInputURL:     req.AudioStreamURL,
-		AudioInputHeaders: audioInputHeaders,
-		SeekSeconds:       float64(offsetMs) / 1000.0,
-		UseSSSeek:         req.DirectPlay,
-		SourceProbe:       probe,
-		OutputWidth:       int(modeline.HActive),
-		OutputHeight:      int(modeline.VActive),
-		FieldOrder:        m.bridge.Video.InterlaceFieldOrder,
-		OutputFpsExpr:     preset.FpsExpr,
-		AspectMode:        aspectMode,
-		CropRect:          cropRect,
-		Visualizer:        ffmpegVisualizerSpec(req.Visualizer),
-		SubtitleURL:       req.SubtitleURL,
-		SubtitlePath:      req.SubtitlePath,
-		SubtitleIndex:     req.SubtitleIndex,
-		AudioSampleRate:   m.bridge.Audio.SampleRate,
-		AudioChannels:     m.bridge.Audio.Channels,
-		FFmpegPath:        ffmpegPath,
-		Policy:            req.MediaInputPolicy,
+		InputURL:            req.StreamURL,
+		InputHeaders:        inputHeaders,
+		AudioInputURL:       req.AudioStreamURL,
+		AudioInputHeaders:   audioInputHeaders,
+		CaptureInput:        ffmpegCaptureSpec(req.AudioCapture),
+		SuppressAudioOutput: suppressAudio,
+		SeekSeconds:         float64(offsetMs) / 1000.0,
+		UseSSSeek:           req.DirectPlay,
+		SourceProbe:         probe,
+		OutputWidth:         int(modeline.HActive),
+		OutputHeight:        int(modeline.VActive),
+		FieldOrder:          m.bridge.Video.InterlaceFieldOrder,
+		OutputFpsExpr:       preset.FpsExpr,
+		AspectMode:          aspectMode,
+		CropRect:            cropRect,
+		Visualizer:          ffmpegVisualizerSpec(req.Visualizer),
+		SubtitleURL:         req.SubtitleURL,
+		SubtitlePath:        req.SubtitlePath,
+		SubtitleIndex:       req.SubtitleIndex,
+		AudioSampleRate:     audioRate,
+		AudioChannels:       audioChans,
+		FFmpegPath:          ffmpegPath,
+		Policy:              req.MediaInputPolicy,
 	}
 
 	plane := newPlane(dataplane.PlaneConfig{
-		Sender:          m.sender,
-		SpawnSpec:       spec,
-		Modeline:        modeline,
-		FieldWidth:      int(modeline.HActive),
-		FieldHeight:     fieldH,
-		BytesPerPixel:   bpp,
-		RGBMode:         rgbMode,
-		LZ4Enabled:      m.bridge.Video.LZ4Enabled,
-		DeltaLZ4Enabled: m.bridge.Video.DeltaLZ4Enabled,
-		AudioRate:       m.bridge.Audio.SampleRate,
-		AudioChans:      m.bridge.Audio.Channels,
-		OutputVolume:    m.bridge.Audio.OutputVolume,
-		SeekOffsetMs:    offsetMs,
-		OnInit:          m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
+		Sender:              m.sender,
+		SpawnSpec:           spec,
+		Modeline:            modeline,
+		FieldWidth:          int(modeline.HActive),
+		FieldHeight:         fieldH,
+		BytesPerPixel:       bpp,
+		RGBMode:             rgbMode,
+		LZ4Enabled:          m.bridge.Video.LZ4Enabled,
+		DeltaLZ4Enabled:     m.bridge.Video.DeltaLZ4Enabled,
+		AudioRate:           audioRate,
+		AudioChans:          audioChans,
+		SuppressAudioOutput: suppressAudio,
+		OutputVolume:        m.bridge.Audio.OutputVolume,
+		SeekOffsetMs:        offsetMs,
+		OnInit:              m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
 	})
 	m.plane = plane
 	m.active = &activeSession{

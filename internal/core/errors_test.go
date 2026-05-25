@@ -14,11 +14,11 @@ import (
 // handlers can map errors.Is(ErrProbeUnreachable) to UPnP 716 while the
 // underlying ffprobe error remains available for slog/operator logging.
 func TestProbeForStart_WrapsErrProbeUnreachableForNetworkFailures(t *testing.T) {
-	origProbe := probeFn
-	t.Cleanup(func() { probeFn = origProbe })
+	origProbe := probeInputFn
+	t.Cleanup(func() { probeInputFn = origProbe })
 
 	sentinelInner := errors.New("ffprobe: dial tcp: connection refused")
-	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return nil, sentinelInner
 	}
 
@@ -36,11 +36,11 @@ func TestProbeForStart_WrapsErrProbeUnreachableForNetworkFailures(t *testing.T) 
 }
 
 func TestProbeForStart_DoesNotWrapProbeParseFailureAsUnreachable(t *testing.T) {
-	origProbe := probeFn
-	t.Cleanup(func() { probeFn = origProbe })
+	origProbe := probeInputFn
+	t.Cleanup(func() { probeInputFn = origProbe })
 
 	sentinelInner := errors.New("parse ffprobe: invalid character 'n'")
-	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return nil, sentinelInner
 	}
 
@@ -82,14 +82,14 @@ func TestErrPolicyRejected_Exists(t *testing.T) {
 // The ffprobe stub returns a usable result so probeForStart succeeds
 // and execution reaches the resolve step under m.mu.
 func TestErrPlaneError_WrapsModelineFailure(t *testing.T) {
-	origProbe := probeFn
+	origProbe := probeInputFn
 	origCrop := probeCropFn
 	t.Cleanup(func() {
-		probeFn = origProbe
+		probeInputFn = origProbe
 		probeCropFn = origCrop
 	})
 
-	probeFn = func(_ context.Context, _, _ string, _ ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
 	}
 	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
