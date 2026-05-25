@@ -198,6 +198,32 @@ func TestManager_SetOutputVolumeRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+func TestManager_OutputVolumeReadsBridgeConfig(t *testing.T) {
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.bridge.Audio.OutputVolume = 64
+	m.mu.Unlock()
+
+	if got := m.OutputVolume(); got != 64 {
+		t.Fatalf("OutputVolume() = %d, want 64", got)
+	}
+}
+
+func TestManager_SetOutputVolumeVisibleThroughOutputVolume(t *testing.T) {
+	m := newTestManager(t)
+	vp := &volumePlane{}
+	m.mu.Lock()
+	m.plane = vp
+	m.mu.Unlock()
+
+	if err := m.SetOutputVolume(37); err != nil {
+		t.Fatalf("SetOutputVolume: %v", err)
+	}
+	if got := m.OutputVolume(); got != 37 {
+		t.Fatalf("OutputVolume() = %d, want 37", got)
+	}
+}
+
 func TestManager_InitialStatusIdle(t *testing.T) {
 	m := newTestManager(t)
 	st := m.Status()

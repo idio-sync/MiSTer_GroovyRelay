@@ -199,7 +199,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now())
+	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, time.Now())
 	s.cache.Set(last)
 	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
 		return

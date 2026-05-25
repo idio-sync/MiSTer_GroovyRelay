@@ -855,7 +855,7 @@ func TestHandleEvents_EmitsTransportEventOnStateTransition(t *testing.T) {
 			Position:   20 * time.Second,
 			Duration:   100 * time.Second,
 		})
-		s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now()))
+		s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, time.Now()))
 		time.Sleep(250 * time.Millisecond)
 		cancel()
 	}()

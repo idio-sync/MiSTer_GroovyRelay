@@ -51,7 +51,7 @@ type TransportController interface {
 //
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
-func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, volv VolumeViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
 	base := idleSnapshot(cfg, now)
 	if sv != nil {
 		view := sv.StatusHomeView()
@@ -68,6 +68,14 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv T
 		default:
 			// idle/unknown keep idleSnapshot data
 		}
+	}
+	// Apply the live volume read AFTER the live branch's
+	// base.Transport = buildTransportData(...) so a live overwrite cannot
+	// erase the value seeded by idleSnapshot.
+	if volv != nil {
+		base.Transport.OutputVolume = volv.OutputVolume()
+	} else {
+		base.Transport.OutputVolume = cfg.Bridge.Audio.OutputVolume
 	}
 	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)

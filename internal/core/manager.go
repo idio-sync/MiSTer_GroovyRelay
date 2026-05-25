@@ -1134,6 +1134,15 @@ func (m *Manager) SetInterlaceFieldOrder(order string) error {
 	return nil
 }
 
+// OutputVolume returns the current global software output gain under m.mu.
+// It tracks the in-memory bridge config updated by SetOutputVolume,
+// UpdateBridge, and the UI saver hot-swap path.
+func (m *Manager) OutputVolume() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bridge.Audio.OutputVolume
+}
+
 // SetOutputVolume changes the global software gain live and stores it for
 // future session rebuilds. The dataplane applies the gain immediately before
 // each outgoing PCM AUDIO packet.

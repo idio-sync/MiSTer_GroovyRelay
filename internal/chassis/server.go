@@ -44,6 +44,10 @@ type Config struct {
 	// should operate in read-only mode.
 	VisualizerSaver VisualizerSaver
 
+	// VolumeViewer is the optional read-only source for global output
+	// volume. When nil, chassis falls back to startup bridge config.
+	VolumeViewer VolumeViewer
+
 	AUX AUXStarter
 }
 
@@ -59,6 +63,7 @@ type Server struct {
 
 	visualizerViewer VisualizerViewer
 	visualizerSaver  VisualizerSaver
+	volumeViewer     VolumeViewer
 	aux              AUXStarter
 
 	cache       *snapshotCache
@@ -96,6 +101,7 @@ func New(cfg Config) (*Server, error) {
 		transportController: cfg.TransportController,
 		visualizerViewer:    cfg.VisualizerViewer,
 		visualizerSaver:     cfg.VisualizerSaver,
+		volumeViewer:        cfg.VolumeViewer,
 		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
@@ -104,7 +110,7 @@ func New(cfg Config) (*Server, error) {
 	// sees a coherent snapshot — no zero-value VFD or stale state.
 	// New deliberately does NOT start a goroutine: unmounted servers
 	// (test ergonomics, offline-friendly modes) leak no background work.
-	s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now()))
+	s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, time.Now()))
 	return s, nil
 }
 
@@ -139,7 +145,7 @@ func (s *Server) startSnapshotRefresher() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now()))
+				s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, time.Now()))
 			}
 		}
 	}()
