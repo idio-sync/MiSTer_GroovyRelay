@@ -376,7 +376,12 @@ func validateVisualizerRequest(req SessionRequest) error {
 		return fmt.Errorf("visualizer requires music media kind")
 	}
 	switch req.Visualizer.Mode {
-	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeStereoScope:
+	case VisualizerModeRetroAnalyzer,
+		VisualizerModeOscilloscopeWave,
+		VisualizerModeStereoScope,
+		VisualizerModeVUCabinet,
+		VisualizerModeNeonGrid,
+		VisualizerModeRasterPulse:
 	default:
 		return fmt.Errorf("unsupported visualizer mode %q", req.Visualizer.Mode)
 	}
@@ -476,6 +481,12 @@ func coreVisualizerModeFromConfig(mode string) VisualizerMode {
 		return VisualizerModeOscilloscopeWave
 	case config.VisualizerModeStereoScope:
 		return VisualizerModeStereoScope
+	case config.VisualizerModeVUCabinet:
+		return VisualizerModeVUCabinet
+	case config.VisualizerModeNeonGrid:
+		return VisualizerModeNeonGrid
+	case config.VisualizerModeRasterPulse:
+		return VisualizerModeRasterPulse
 	default:
 		return VisualizerMode(normalized)
 	}
@@ -501,6 +512,12 @@ func ffmpegVisualizerMode(mode VisualizerMode) ffmpeg.VisualizerMode {
 		return ffmpeg.VisualizerModeOscilloscopeWave
 	case VisualizerModeStereoScope:
 		return ffmpeg.VisualizerModeStereoScope
+	case VisualizerModeVUCabinet:
+		return ffmpeg.VisualizerModeVUCabinet
+	case VisualizerModeNeonGrid:
+		return ffmpeg.VisualizerModeNeonGrid
+	case VisualizerModeRasterPulse:
+		return ffmpeg.VisualizerModeRasterPulse
 	default:
 		return ffmpeg.VisualizerMode(mode)
 	}

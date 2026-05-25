@@ -29,6 +29,11 @@ const (
 	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
 	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
 	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
+	VisualizerModeVUCabinet        VisualizerMode = "vu_cabinet"
+	VisualizerModeNeonGrid         VisualizerMode = "neon_grid"
+	VisualizerModeRasterPulse      VisualizerMode = "raster_pulse"
+	VisualizerModeCoverVU          VisualizerMode = "cover_vu"
+	VisualizerModeCoverSpectrum    VisualizerMode = "cover_spectrum"
 )
 
 type VisualizerMetadata struct {

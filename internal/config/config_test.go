@@ -402,12 +402,22 @@ func TestNormalizeVisualizerMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeVisualizerMode_PreservesUnknownNonEmptyValue(t *testing.T) {
+	got := NormalizeVisualizerMode("future_mode")
+	if got != "future_mode" {
+		t.Fatalf("NormalizeVisualizerMode(future_mode) = %q, want future_mode", got)
+	}
+}
+
 func TestSupportedVisualizerModes_ReturnsDefensiveCopy(t *testing.T) {
 	got := SupportedVisualizerModes()
 	want := []string{
 		VisualizerModeRetroAnalyzer,
 		VisualizerModeOscilloscopeWave,
 		VisualizerModeStereoScope,
+		VisualizerModeVUCabinet,
+		VisualizerModeNeonGrid,
+		VisualizerModeRasterPulse,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("SupportedVisualizerModes() = %#v, want %#v", got, want)
@@ -426,6 +436,9 @@ func TestSectioned_Validate_VisualizerMode(t *testing.T) {
 		VisualizerModeRetroAnalyzer,
 		VisualizerModeOscilloscopeWave,
 		VisualizerModeStereoScope,
+		VisualizerModeVUCabinet,
+		VisualizerModeNeonGrid,
+		VisualizerModeRasterPulse,
 	}
 	for _, mode := range valid {
 		t.Run("valid/"+mode, func(t *testing.T) {

@@ -411,6 +411,37 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 				"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=h-88",
 			},
 		},
+		{
+			name: "vu cabinet",
+			mode: VisualizerModeVUCabinet,
+			want: []string{
+				"showvolume=",
+				"drawbox=x=8:y=8",
+				"drawgrid=w=iw/8:h=ih/4",
+				"[visualizer_video]",
+			},
+		},
+		{
+			name: "neon grid",
+			mode: VisualizerModeNeonGrid,
+			want: []string{
+				"showfreqs=s=640x480:mode=bar",
+				"drawgrid=w=iw/12:h=ih/6",
+				"hue=h=2*PI*t:s=1.35",
+				"[visualizer_video]",
+			},
+		},
+		{
+			name: "raster pulse",
+			mode: VisualizerModeRasterPulse,
+			want: []string{
+				"showwaves=s=640x480:mode=cline",
+				"split[wave_a][wave_b]",
+				"hflip[wave_flip]",
+				"blend=all_mode=screen:all_opacity=0.70",
+				"[visualizer_video]",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -587,6 +618,9 @@ func TestBuildVisualizerFilterChain_AllModesBarsOnlyWhenDrawTextUnavailable(t *t
 		{"retro analyzer", VisualizerModeRetroAnalyzer, "showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0x70ff70"},
 		{"oscilloscope wave", VisualizerModeOscilloscopeWave, "showwaves=s=640x480:mode=line:colors=0x58e8ff"},
 		{"stereo scope", VisualizerModeStereoScope, "avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba"},
+		{"vu cabinet", VisualizerModeVUCabinet, "showvolume="},
+		{"neon grid", VisualizerModeNeonGrid, "showfreqs=s=640x480:mode=bar"},
+		{"raster pulse", VisualizerModeRasterPulse, "showwaves=s=640x480:mode=cline"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -631,6 +665,9 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 		{VisualizerModeRetroAnalyzer, []string{"showfreqs"}},
 		{VisualizerModeOscilloscopeWave, []string{"showwaves"}},
 		{VisualizerModeStereoScope, []string{"avectorscope"}},
+		{VisualizerModeVUCabinet, []string{"showvolume", "drawbox", "drawgrid"}},
+		{VisualizerModeNeonGrid, []string{"showfreqs", "drawgrid", "hue"}},
+		{VisualizerModeRasterPulse, []string{"showwaves", "split", "hflip", "blend"}},
 	}
 	for _, tc := range cases {
 		got := RequiredVisualizerFilters(tc.mode)

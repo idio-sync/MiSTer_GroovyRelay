@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 )
 
 // testdataDir is the relative path that integration tests (running from the
@@ -79,6 +81,26 @@ func ensureSampleMP4(t *testing.T, name string, durationSec int) string {
 	}
 	generated[path] = true
 	return path
+}
+
+func ffmpegPathOrSkip(t *testing.T) string {
+	t.Helper()
+
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skipf("ffmpeg not on PATH: %v", err)
+	}
+	return ffmpegPath
+}
+
+func skipIfVisualizerFiltersMissing(t *testing.T, ffmpegPath string, mode ffmpeg.VisualizerMode) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ffmpeg.CheckVisualizerFilters(ctx, ffmpegPath, mode); err != nil {
+		t.Skipf("ffmpeg %q lacks required filters for %s: %v", ffmpegPath, mode, err)
+	}
 }
 
 // ensureSampleMP4Rate generates a silent/colour-bar MP4 at a specific frame

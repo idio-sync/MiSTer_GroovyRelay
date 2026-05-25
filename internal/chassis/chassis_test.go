@@ -241,9 +241,12 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
 			Buttons: []VisualizerButton{
-				{Mode: "retro_analyzer", Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
-				{Mode: "oscilloscope_wave", Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
-				{Mode: "stereo_scope", Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
 				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
 			},
 		},
@@ -322,6 +325,17 @@ func TestIdleSnapshot_InvalidVisualizerModeFallsBack(t *testing.T) {
 	got := idleSnapshot(cfg, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
+	}
+}
+
+func TestIdleSnapshot_NewSupportedVisualizerModeIsActive(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Visualizer.Mode = config.VisualizerModeVUCabinet
+	got := idleSnapshot(cfg, fixedNow)
+	if got.Visualizer.ActiveMode != config.VisualizerModeVUCabinet {
+		t.Errorf("Visualizer.ActiveMode = %q, want %q", got.Visualizer.ActiveMode, config.VisualizerModeVUCabinet)
 	}
 }
 

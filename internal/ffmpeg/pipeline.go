@@ -22,6 +22,11 @@ const (
 	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
 	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
 	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
+	VisualizerModeVUCabinet        VisualizerMode = "vu_cabinet"
+	VisualizerModeNeonGrid         VisualizerMode = "neon_grid"
+	VisualizerModeRasterPulse      VisualizerMode = "raster_pulse"
+	VisualizerModeCoverVU          VisualizerMode = "cover_vu"
+	VisualizerModeCoverSpectrum    VisualizerMode = "cover_spectrum"
 )
 
 type VisualizerMetadata struct {
@@ -265,7 +270,7 @@ func escapeSubtitlePathFor(goos, p string) string {
 // single-quoted region as literal (backslash escapes are NOT processed
 // inside it), so the only character that needs special handling at the
 // filtergraph layer is `'` itself, which must close the quote, emit an
-// escaped apostrophe, and reopen: `'\''`. After the filtergraph parser
+// escaped apostrophe, and reopen with `'`, `\`, `'`, `'`. After the filtergraph parser
 // hands the extracted value to drawtext, drawtext runs its own `%{...}`
 // expansion and consumes backslash escapes, so `:`, `%`, and `\` must be
 // escaped as `\:`, `\%`, and `\\` to render literally. Bracket / comma /
@@ -493,6 +498,12 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 		return []string{"showwaves"}
 	case VisualizerModeStereoScope:
 		return []string{"avectorscope"}
+	case VisualizerModeVUCabinet:
+		return []string{"showvolume", "drawbox", "drawgrid"}
+	case VisualizerModeNeonGrid:
+		return []string{"showfreqs", "drawgrid", "hue"}
+	case VisualizerModeRasterPulse:
+		return []string{"showwaves", "split", "hflip", "blend"}
 	default:
 		return nil
 	}
@@ -506,16 +517,26 @@ func isSupportedVisualizerMode(mode VisualizerMode) bool {
 	return len(RequiredVisualizerFilters(mode)) > 0
 }
 
-func visualizerCoreFilter(mode VisualizerMode, logicalW, logicalH int) string {
+func visualizerCoreGraph(mode VisualizerMode, audioMap string, logicalW, logicalH int) (string, string) {
 	switch mode {
 	case VisualizerModeRetroAnalyzer:
-		return fmt.Sprintf("showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70", logicalW, logicalH)
+		return fmt.Sprintf("[%s]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]", audioMap, logicalW, logicalH), "viz0"
 	case VisualizerModeOscilloscopeWave:
-		return fmt.Sprintf("showwaves=s=%dx%d:mode=line:colors=0x58e8ff", logicalW, logicalH)
+		return fmt.Sprintf("[%s]showwaves=s=%dx%d:mode=line:colors=0x58e8ff[viz0]", audioMap, logicalW, logicalH), "viz0"
 	case VisualizerModeStereoScope:
-		return fmt.Sprintf("avectorscope=s=%dx%d:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba", logicalW, logicalH)
+		return fmt.Sprintf("[%s]avectorscope=s=%dx%d:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba[viz0]", audioMap, logicalW, logicalH), "viz0"
+	case VisualizerModeVUCabinet:
+		meterH := logicalH / 5
+		if meterH < 24 {
+			meterH = 24
+		}
+		return fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=p:ds=log:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=0x05050a,drawbox=x=8:y=8:w=iw-16:h=ih-16:color=0x29ffc6@0.65:t=2,drawgrid=w=iw/8:h=ih/4:t=1:c=0x29ffc6@0.18[viz0]", audioMap, logicalW-64, meterH, logicalW, logicalH, logicalW, logicalH), "viz0"
+	case VisualizerModeNeonGrid:
+		return fmt.Sprintf("[%s]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0xff2bd6|0x28f7ff,drawgrid=w=iw/12:h=ih/6:t=1:c=0x28f7ff@0.22,hue=h=2*PI*t:s=1.35[viz0]", audioMap, logicalW, logicalH), "viz0"
+	case VisualizerModeRasterPulse:
+		return fmt.Sprintf("[%s]showwaves=s=%dx%d:mode=cline:colors=0x58e8ff|0xff4fd8:scale=sqrt,format=rgba,split[wave_a][wave_b];[wave_b]hflip[wave_flip];[wave_a][wave_flip]blend=all_mode=screen:all_opacity=0.70[viz0]", audioMap, logicalW, logicalH), "viz0"
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -531,10 +552,11 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 		fpsExpr = "60000/1001"
 	}
 	logicalW, logicalH := logicalCanvas(s.OutputHeight)
-	parts := []string{
-		fmt.Sprintf("[%s]%s[viz0]", audioInputMap(s), visualizerCoreFilter(s.Visualizer.Mode, logicalW, logicalH)),
+	graph, label := visualizerCoreGraph(s.Visualizer.Mode, audioInputMap(s), logicalW, logicalH)
+	if graph == "" || label == "" {
+		return "", fmt.Errorf("unsupported visualizer mode %q", s.Visualizer.Mode)
 	}
-	label := "viz0"
+	parts := []string{graph}
 	if s.Visualizer.DrawTextAvailable {
 		lineLayer := 0
 		for i, line := range visualizerTextLines(s) {

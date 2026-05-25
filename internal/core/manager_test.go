@@ -2696,6 +2696,9 @@ func TestValidateVisualizerRequestModes(t *testing.T) {
 		VisualizerModeRetroAnalyzer,
 		VisualizerModeOscilloscopeWave,
 		VisualizerModeStereoScope,
+		VisualizerModeVUCabinet,
+		VisualizerModeNeonGrid,
+		VisualizerModeRasterPulse,
 	} {
 		t.Run(string(mode), func(t *testing.T) {
 			err := validateVisualizerRequest(SessionRequest{
@@ -2733,6 +2736,9 @@ func TestFFmpegVisualizerSpecMapsModes(t *testing.T) {
 		{VisualizerModeRetroAnalyzer, ffmpeg.VisualizerModeRetroAnalyzer},
 		{VisualizerModeOscilloscopeWave, ffmpeg.VisualizerModeOscilloscopeWave},
 		{VisualizerModeStereoScope, ffmpeg.VisualizerModeStereoScope},
+		{VisualizerModeVUCabinet, ffmpeg.VisualizerModeVUCabinet},
+		{VisualizerModeNeonGrid, ffmpeg.VisualizerModeNeonGrid},
+		{VisualizerModeRasterPulse, ffmpeg.VisualizerModeRasterPulse},
 	}
 	for _, c := range cases {
 		t.Run(string(c.core), func(t *testing.T) {
