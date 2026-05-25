@@ -280,6 +280,71 @@ func TestProbeInputCaptureUsesDefaultBoundedTimeout(t *testing.T) {
 
 // TestProbe_LiveFixture generates a 1-second synthetic test clip with ffmpeg
 // then probes it. Skipped if ffmpeg / ffprobe are not findable.
+func TestParseProbeOutput_MeterMetadata(t *testing.T) {
+	raw := []byte(`{
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 720,
+				"height": 480,
+				"field_order": "tt",
+				"r_frame_rate": "30000/1001",
+				"sample_aspect_ratio": "8:9",
+				"display_aspect_ratio": "4:3",
+				"bit_rate": "1800000"
+			},
+			{
+				"codec_type": "audio",
+				"codec_name": "aac",
+				"sample_rate": "48000",
+				"channels": 2,
+				"bit_rate": "128000"
+			}
+		],
+		"format": {
+			"duration": "60.25",
+			"bit_rate": "2100000"
+		}
+	}`)
+	got, err := parseProbeOutput(raw)
+	if err != nil {
+		t.Fatalf("parseProbeOutput: %v", err)
+	}
+	if got.VideoCodec != "h264" || got.AudioCodec != "aac" {
+		t.Fatalf("codecs = video %q audio %q", got.VideoCodec, got.AudioCodec)
+	}
+	if got.AudioChannels != 2 {
+		t.Fatalf("AudioChannels = %d, want 2", got.AudioChannels)
+	}
+	if got.SampleAspectRatioNum != 8 || got.SampleAspectRatioDen != 9 {
+		t.Fatalf("sample aspect = %d:%d, want 8:9", got.SampleAspectRatioNum, got.SampleAspectRatioDen)
+	}
+	if got.DisplayAspectRatioNum != 4 || got.DisplayAspectRatioDen != 3 {
+		t.Fatalf("display aspect = %d:%d, want 4:3", got.DisplayAspectRatioNum, got.DisplayAspectRatioDen)
+	}
+	if got.VideoBitrateBPS != 1800000 || got.AudioBitrateBPS != 128000 || got.FormatBitrateBPS != 2100000 {
+		t.Fatalf("bitrates = video %d audio %d format %d", got.VideoBitrateBPS, got.AudioBitrateBPS, got.FormatBitrateBPS)
+	}
+}
+
+func TestParseProbeOutput_MissingMeterMetadataStaysZero(t *testing.T) {
+	raw := []byte(`{"streams":[{"codec_type":"video","width":640,"height":360}],"format":{}}`)
+	got, err := parseProbeOutput(raw)
+	if err != nil {
+		t.Fatalf("parseProbeOutput: %v", err)
+	}
+	if got.VideoCodec != "" || got.AudioCodec != "" || got.AudioChannels != 0 {
+		t.Fatalf("unexpected non-zero metadata: %+v", got)
+	}
+	if got.SampleAspectRatioNum != 0 || got.DisplayAspectRatioNum != 0 {
+		t.Fatalf("unexpected aspect metadata: %+v", got)
+	}
+	if got.VideoBitrateBPS != 0 || got.AudioBitrateBPS != 0 || got.FormatBitrateBPS != 0 {
+		t.Fatalf("unexpected bitrate metadata: %+v", got)
+	}
+}
+
 func TestProbe_LiveFixture(t *testing.T) {
 	ffmpegBin := findFFBinary("ffmpeg")
 	ffprobeBin := findFFBinary("ffprobe")
