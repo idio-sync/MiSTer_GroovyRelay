@@ -20,6 +20,8 @@ type proxyTokenKind string
 const (
 	proxyTokenProbe proxyTokenKind = "probe"
 	proxyTokenPlay  proxyTokenKind = "play"
+
+	maxProxyTokenTTL = 24 * time.Hour
 )
 
 type proxyToken struct {
@@ -67,6 +69,12 @@ func (a *Adapter) mintProxyURL(kind proxyTokenKind, upstream string, ttl time.Du
 	case proxyTokenProbe, proxyTokenPlay:
 	default:
 		return "", fmt.Errorf("unknown proxy token kind %q", kind)
+	}
+	if ttl <= 0 {
+		return "", fmt.Errorf("proxy token ttl must be positive")
+	}
+	if ttl > maxProxyTokenTTL {
+		return "", fmt.Errorf("proxy token ttl must not exceed %s", maxProxyTokenTTL)
 	}
 	u, err := validateStreamURL(upstream)
 	if err != nil {
@@ -134,6 +142,7 @@ func (a *Adapter) handleProxy(w http.ResponseWriter, r *http.Request) {
 func (s *proxyStore) add(tok proxyToken) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneLocked(s.currentTime())
 	s.tokens = append(s.tokens, tok)
 }
 
@@ -146,6 +155,7 @@ func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.currentTime()
+	s.pruneLocked(now)
 	for i := range s.tokens {
 		tok := &s.tokens[i]
 		if !proxyTokenEqual(tok.token, raw) {
@@ -155,9 +165,21 @@ func (s *proxyStore) consume(raw string, kind proxyTokenKind) (proxyToken, bool)
 			return proxyToken{}, false
 		}
 		tok.used = true
+		defer s.pruneLocked(now)
 		return *tok, true
 	}
 	return proxyToken{}, false
+}
+
+func (s *proxyStore) pruneLocked(now time.Time) {
+	kept := s.tokens[:0]
+	for _, tok := range s.tokens {
+		if tok.used || now.After(tok.expiresAt) {
+			continue
+		}
+		kept = append(kept, tok)
+	}
+	s.tokens = kept
 }
 
 func proxyTokenEqual(stored, raw string) bool {

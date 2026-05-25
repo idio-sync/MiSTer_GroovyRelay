@@ -67,6 +67,24 @@ func TestMintProxyURLMintsDistinctSingleUseTokens(t *testing.T) {
 	}
 }
 
+func TestMintProxyURLRejectsInvalidTTL(t *testing.T) {
+	for name, ttl := range map[string]time.Duration{
+		"zero":     0,
+		"negative": -time.Second,
+		"too_long": 24*time.Hour + time.Nanosecond,
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := newTestAdapter(t)
+			if _, err := a.mintProxyURL(proxyTokenPlay, "http://capture-host:8090/aux.wav", ttl); err == nil {
+				t.Fatalf("mintProxyURL ttl=%v succeeded, want error", ttl)
+			}
+			if len(a.proxy.tokens) != 0 {
+				t.Fatalf("invalid ttl minted %d token(s), want 0", len(a.proxy.tokens))
+			}
+		})
+	}
+}
+
 func TestProxyTokenEqualRejectsDifferentLength(t *testing.T) {
 	if !proxyTokenEqual("abcdef", "abcdef") {
 		t.Fatal("proxyTokenEqual rejected exact token")
@@ -116,6 +134,36 @@ func TestProxyStoreConsumeRejectsDifferentLengthWithoutUsingToken(t *testing.T) 
 	}
 	if _, ok := store.consume("abcdef", proxyTokenPlay); !ok {
 		t.Fatal("exact same-length raw token was not consumed")
+	}
+}
+
+func TestProxyStorePrunesUsedAndExpiredTokens(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	store := proxyStore{now: func() time.Time { return now }}
+	store.tokens = []proxyToken{
+		{token: "used", kind: proxyTokenPlay, upstream: "http://capture-host/used.wav", expiresAt: now.Add(time.Hour), used: true},
+		{token: "expired", kind: proxyTokenPlay, upstream: "http://capture-host/expired.wav", expiresAt: now.Add(-time.Nanosecond)},
+		{token: "live", kind: proxyTokenPlay, upstream: "http://capture-host/live.wav", expiresAt: now.Add(time.Hour)},
+	}
+
+	store.add(proxyToken{
+		token:     "new",
+		kind:      proxyTokenPlay,
+		upstream:  "http://capture-host/new.wav",
+		expiresAt: now.Add(time.Hour),
+	})
+
+	if got, want := tokenNames(store.tokens), []string{"live", "new"}; !sameStrings(got, want) {
+		t.Fatalf("tokens after add = %#v, want %#v", got, want)
+	}
+	if _, ok := store.consume("live", proxyTokenPlay); !ok {
+		t.Fatal("live token was not consumable")
+	}
+	if _, ok := store.consume("missing", proxyTokenPlay); ok {
+		t.Fatal("missing token consumed unexpectedly")
+	}
+	if got, want := tokenNames(store.tokens), []string{"new"}; !sameStrings(got, want) {
+		t.Fatalf("tokens after consume prune = %#v, want %#v", got, want)
 	}
 }
 
@@ -258,4 +306,24 @@ func parseProxyURL(t *testing.T, raw string) *url.URL {
 		t.Fatalf("url.Parse(%q): %v", raw, err)
 	}
 	return u
+}
+
+func tokenNames(tokens []proxyToken) []string {
+	names := make([]string, len(tokens))
+	for i := range tokens {
+		names[i] = tokens[i].token
+	}
+	return names
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
