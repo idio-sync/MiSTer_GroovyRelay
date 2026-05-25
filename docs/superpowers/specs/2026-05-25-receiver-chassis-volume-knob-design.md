@@ -30,7 +30,7 @@ This spec brings that existing capability into the receiver UI without changing 
 | Placement | Far right of the transport row. |
 | Visual style | Physical high-end receiver knob with brushed metal, pointer notch, and tick marks. |
 | Readout | No always-on numeric readout; the knob angle and tick ring are the visual readout. |
-| Accessibility | Use a native range/input surface under the physical control so keyboard and screen-reader users can operate it. |
+| Accessibility | Use a focusable native range/input surface under the physical control so keyboard and screen-reader users can operate it. |
 
 ## Goals
 
@@ -102,6 +102,23 @@ The physical knob should feel tactile:
 
 The implementation plan can choose exact debounce constants, but the design target is responsive live volume with bounded disk writes. A practical target is no more than about 5 save POSTs per second while dragging, plus a final commit.
 
+### Client Save State
+
+`volume-knob.js` should use a single-flight queued save model:
+
+- `synced`: no pending local edits; SSE updates apply immediately and become the last authoritative value.
+- `dragging`: pointer, keyboard, or wheel input owns the visual angle locally. Incoming SSE values are recorded as remote authoritative state but do not move the knob while the local edit is active.
+- `saving`: one POST is in flight. If the user changes the value again, store only the latest queued value and send it after the in-flight request completes.
+- `failed`: if the latest pending/final commit fails, restore the last authoritative value and clear queued local edits.
+
+Older successful POST responses must not overwrite a newer queued or final local value. Pointer release, blur, or keyboard commit sends one final save for the latest value even if an intermediate save already ran.
+
+### Accessibility
+
+The native range must remain focusable and operable. Do not implement it with `display: none`, `visibility: hidden`, `hidden`, or `aria-hidden="true"`.
+
+Acceptable patterns are a visually hidden range that remains in the tab order or a transparent range layered over the physical knob. It must have a programmatic name, either an associated visible `VOLUME` label or `aria-label="Volume"`. Focus must be visible on the physical knob shell when the range receives focus.
+
 ### Responsive Behavior
 
 The knob belongs to the transport strip. It should not move into the VFD/source row.
@@ -109,6 +126,8 @@ The knob belongs to the transport strip. It should not move into the VFD/source 
 - Wide layouts: knob appears between the time display and setup gear.
 - Mid-width layouts: knob shrinks before wrapping.
 - Narrow layouts: knob remains in the transport strip grid alongside controls and setup. If necessary, the time display may stay hidden as it already does at smaller widths.
+
+Implementation must update the existing transport grid columns and the `600px` / `420px` grid-area breakpoints so the new volume element has an explicit placement and cannot overlap the seek rail or gear button.
 
 ## Architecture
 
@@ -129,14 +148,14 @@ internal/chassis/
 | `internal/core/manager.go` | Add `OutputVolume() int`, returning `m.bridge.Audio.OutputVolume` under the manager lock. |
 | `internal/core/manager_test.go` | Cover `OutputVolume()` and ensure `SetOutputVolume()` remains authoritative. |
 | `internal/chassis/server.go` | Add optional `VolumeViewer` and `VolumeSaver` to `Config`; store on `Server`; mount `POST /receiver/volume` through `requireSameOrigin`. |
-| `internal/chassis/data.go` | Add `Volume VolumeData` to `ReceiverPageData`; add `VolumeData{OutputVolume int}`; idle snapshot falls back to `cfg.Bridge.Audio.OutputVolume`. |
-| `internal/chassis/session.go` | Extend `snapshotFromSession` to populate `Volume` from `VolumeViewer.OutputVolume()` when available, otherwise from startup config. This happens for both idle and live states, outside the live-session-only branch. |
+| `internal/chassis/data.go` | Add `OutputVolume int` to `TransportData`; idle transport data falls back to `cfg.Bridge.Audio.OutputVolume`. The knob is rendered by `transport.html`, which receives `.Transport` from `shell.html`, so the template reads `.OutputVolume`. |
+| `internal/chassis/session.go` | Extend `snapshotFromSession` to populate `Transport.OutputVolume` from `VolumeViewer.OutputVolume()` when available, otherwise from startup config. This happens for both idle and live states, outside the live-session-only branch. |
 | `internal/chassis/events.go` | Add `volumeEnvelope`, `volumeEnvelopeFrom`, `volumeChanged`, and initial/diff-loop `volume` event emission. |
 | `internal/chassis/events_test.go` | Update initial event expectations and add changed-volume SSE coverage. |
 | `internal/chassis/templates/transport.html` | Add the knob markup after `.seek-time` and before `.gear-btn`. |
 | `internal/chassis/templates/shell.html` | Load `/receiver/static/volume-knob.js?v={{.Version}}` after `transport.js`. |
-| `internal/chassis/static/chassis.css` | Add scoped knob, tick-ring, hidden range, responsive transport layout rules. |
-| `internal/chassis/chassis_test.go` | Assert initial `VolumeData` and template hooks. |
+| `internal/chassis/static/chassis.css` | Add scoped knob, tick-ring, focusable range, responsive transport layout rules. |
+| `internal/chassis/chassis_test.go` | Assert initial `Transport.OutputVolume` and template hooks. |
 | `internal/chassis/import_check_test.go` | Preserve no-cross-import rules if the table needs updating for new files. |
 | `cmd/mister-groovy-relay/main.go` | Wire `VolumeViewer: coreMgr` and `VolumeSaver: &volumeSaverAdapter{bs: saver}`. |
 
@@ -180,8 +199,8 @@ This mirrors the existing visualizer saver adapter pattern and keeps `internal/c
 2. `snapshotFromSession` calls `VolumeViewer.OutputVolume()` if wired, regardless of whether the bridge is idle, playing, or paused.
 3. Templates render the knob with:
    - `data-volume-knob`;
-   - `data-volume-value="{{.Volume.OutputVolume}}"`;
-   - a hidden/native range input with `min="0"`, `max="100"`, and `value="{{.Volume.OutputVolume}}"`;
+   - `data-volume-value="{{.OutputVolume}}"`;
+   - a focusable native range input with `min="0"`, `max="100"`, and `value="{{.OutputVolume}}"`;
    - CSS custom property or inline style for the initial angle.
 
 The fallback to `cfg.Bridge.Audio.OutputVolume` exists for tests and offline constructions where no `VolumeViewer` is wired.
@@ -204,6 +223,8 @@ output_volume=73
 6. `BridgeSaver.SaveOutputVolume` persists the config and calls `core.Manager.SetOutputVolume(73)`.
 7. The chassis snapshot cache reads `core.Manager.OutputVolume()` on the next tick and emits `event: volume` when the value changes.
 8. All tabs apply the authoritative SSE value.
+
+The chassis handler still validates locally for clean JSON errors. It may rely on `BridgeSaver.SaveOutputVolume` and `core.Manager.SetOutputVolume` as the final validation and hot-swap authority.
 
 ### SSE Payload
 
@@ -247,8 +268,8 @@ The client treats any non-204 response as failed. It logs the status/text to the
   - `SetOutputVolume()` updates the value visible through `OutputVolume()`.
 
 - `internal/chassis/chassis_test.go`
-  - idle snapshot includes configured volume.
-  - live snapshot uses `VolumeViewer` value over startup config.
+  - idle snapshot includes configured `Transport.OutputVolume`.
+  - live and idle snapshots use `VolumeViewer` value over startup config when wired.
   - `transport.html` renders `data-volume-*` hooks and accessible range attributes.
 
 - `internal/chassis/volume_test.go`
@@ -275,6 +296,8 @@ Manual browser verification is enough for `volume-knob.js` unless a JS test harn
 - failed save rolls back;
 - two tabs sync after one tab changes volume;
 - narrow viewport keeps the knob in the transport strip without overlap.
+
+If a lightweight JS test path exists by implementation time, add focused tests for save coalescing, stale success handling, failed final commit rollback, and SSE ignored/deferred during active drag.
 
 ### Regression Commands
 
