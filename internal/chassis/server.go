@@ -43,6 +43,8 @@ type Config struct {
 	// When nil, chassis can render mode state but later change handlers
 	// should operate in read-only mode.
 	VisualizerSaver VisualizerSaver
+
+	AUX AUXStarter
 }
 
 // Server owns the chassis runtime state.
@@ -57,6 +59,7 @@ type Server struct {
 
 	visualizerViewer VisualizerViewer
 	visualizerSaver  VisualizerSaver
+	aux              AUXStarter
 
 	cache       *snapshotCache
 	cacheOnce   sync.Once          // Mount starts the refresher exactly once
@@ -93,6 +96,7 @@ func New(cfg Config) (*Server, error) {
 		transportController: cfg.TransportController,
 		visualizerViewer:    cfg.VisualizerViewer,
 		visualizerSaver:     cfg.VisualizerSaver,
+		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
 	}

@@ -29,6 +29,7 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 			forbidden: []string{
 				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
+				modulePath + "/internal/adapters/auxadapter",
 			},
 		},
 		{

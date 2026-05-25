@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	aux "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/auxadapter"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
@@ -163,6 +164,16 @@ func main() {
 		core.WithBinaryResolvers(ffmpegResolver, ffprobeResolver),
 		core.WithEventLog(elog))
 
+	auxAdapter, err := aux.New(aux.AdapterConfig{
+		Bridge:   sec.Bridge,
+		Core:     coreMgr,
+		HTTPPort: sec.Bridge.UI.HTTPPort,
+		EventLog: elog,
+	})
+	if err != nil {
+		dieFriendly("aux adapter init", err)
+	}
+
 	hostIP := sec.Bridge.HostIP
 	if hostIP == "" {
 		hostIP = outboundIP()
@@ -225,6 +236,9 @@ func main() {
 	}
 	if err := reg.Register(streamsAdapter); err != nil {
 		dieFriendly("registry register streams", err)
+	}
+	if err := reg.Register(auxAdapter); err != nil {
+		dieFriendly("registry register aux", err)
 	}
 
 	torrentAdapter, err := torrentadapter.New(torrentadapter.AdapterConfig{
@@ -336,6 +350,7 @@ func main() {
 		TransportController: playbackDispatcher,
 		VisualizerViewer:    coreMgr,
 		VisualizerSaver:     &visualizerSaverAdapter{bs: saver},
+		AUX:                 auxAdapter,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
