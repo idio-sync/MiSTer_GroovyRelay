@@ -1,6 +1,17 @@
 package core
 
-import "time"
+import (
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+)
+
+// AudioScopeSnapshot is an alias for dataplane.AudioScopeSnapshot, so
+// chassis can read the type via internal/core without importing
+// internal/dataplane directly. Using an alias (not a wrapper struct)
+// preserves the pointer-return contract: no copies cross package
+// boundaries.
+type AudioScopeSnapshot = dataplane.AudioScopeSnapshot
 
 // State is the session lifecycle state exposed through SessionStatus.State.
 // The concrete transition table and machine live in state.go; the type is
