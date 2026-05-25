@@ -47,6 +47,9 @@ type Config struct {
 	// VolumeViewer is the optional read-only source for global output
 	// volume. When nil, chassis falls back to startup bridge config.
 	VolumeViewer VolumeViewer
+	// VolumeSaver is the optional persistence hook for output-volume
+	// changes. When nil, chassis renders the knob read-only for POSTs.
+	VolumeSaver VolumeSaver
 
 	AUX AUXStarter
 }
@@ -64,6 +67,7 @@ type Server struct {
 	visualizerViewer VisualizerViewer
 	visualizerSaver  VisualizerSaver
 	volumeViewer     VolumeViewer
+	volumeSaver      VolumeSaver
 	aux              AUXStarter
 
 	cache       *snapshotCache
@@ -102,6 +106,7 @@ func New(cfg Config) (*Server, error) {
 		visualizerViewer:    cfg.VisualizerViewer,
 		visualizerSaver:     cfg.VisualizerSaver,
 		volumeViewer:        cfg.VolumeViewer,
+		volumeSaver:         cfg.VolumeSaver,
 		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
@@ -125,6 +130,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/transport/action", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportAction))))
 	mux.Handle("POST /receiver/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
 	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
+	mux.Handle("POST /receiver/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
 	mux.Handle("POST /receiver/aux/start", requireSameOrigin(http.HandlerFunc(s.handleAUXStartPost)))
 	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
