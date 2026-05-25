@@ -244,3 +244,119 @@ func makeMonoPCM(frames int, gen func(i int) float32) []byte {
 	}
 	return buf
 }
+
+func TestAudioMeter_NoPublishHotPathZeroAllocs(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.targetHz = 0 // disable publishes entirely
+	pcm := makeStereoPCM(800, [2]func(int) float32{
+		func(i int) float32 { return 0.5 },
+		func(i int) float32 { return -0.5 },
+	})
+	// Warm the meter so RMS/phase rings are populated
+	for i := 0; i < 30; i++ {
+		m.Observe(pcm, 2, 48000)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		m.Observe(pcm, 2, 48000)
+	})
+	if allocs != 0 {
+		t.Errorf("AllocsPerRun = %f, want 0 (no-publish hot path)", allocs)
+	}
+}
+
+func TestAudioMeter_AlwaysPublishExactlyOneAlloc(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.forcePublishEveryObserve = true
+	pcm := makeStereoPCM(800, [2]func(int) float32{
+		func(i int) float32 { return 0.5 },
+		func(i int) float32 { return -0.5 },
+	})
+	// Warm
+	for i := 0; i < 30; i++ {
+		m.Observe(pcm, 2, 48000)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		m.Observe(pcm, 2, 48000)
+	})
+	if allocs != 1 {
+		t.Errorf("AllocsPerRun = %f, want exactly 1 (snapshot pointer)", allocs)
+	}
+}
+
+func TestAudioMeter_BresenhamCadenceNTSC(t *testing.T) {
+	// 48 kHz @ 59.94 Hz field rate: 800 frames per chunk.
+	// 10 s of audio = 600 chunks → expect 300 publishes ± 1.
+	m := NewAudioMeter(1, 48000, 2)
+	m.targetHz = 30
+	pcm := makeStereoPCM(800, [2]func(int) float32{
+		func(i int) float32 { return 0 },
+		func(i int) float32 { return 0 },
+	})
+	count := 0
+	prevSnap := m.AudioScopes()
+	for i := 0; i < 600; i++ {
+		m.Observe(pcm, 2, 48000)
+		curr := m.AudioScopes()
+		if curr != prevSnap {
+			count++
+			prevSnap = curr
+		}
+	}
+	if count < 299 || count > 301 {
+		t.Errorf("NTSC publish count over 10 s = %d, want 300 ± 1", count)
+	}
+}
+
+func TestAudioMeter_BresenhamCadencePAL(t *testing.T) {
+	// 48 kHz @ 50 Hz field rate: 960 frames per chunk.
+	// 10 s of audio = 500 chunks → expect 300 publishes ± 1.
+	m := NewAudioMeter(1, 48000, 2)
+	m.targetHz = 30
+	pcm := makeStereoPCM(960, [2]func(int) float32{
+		func(i int) float32 { return 0 },
+		func(i int) float32 { return 0 },
+	})
+	count := 0
+	prevSnap := m.AudioScopes()
+	for i := 0; i < 500; i++ {
+		m.Observe(pcm, 2, 48000)
+		curr := m.AudioScopes()
+		if curr != prevSnap {
+			count++
+			prevSnap = curr
+		}
+	}
+	if count < 299 || count > 301 {
+		t.Errorf("PAL publish count over 10 s = %d, want 300 ± 1", count)
+	}
+}
+
+func TestAudioMeter_ConcurrentReadersUnderRace(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.targetHz = 30
+	pcm := makeStereoPCM(800, [2]func(int) float32{
+		func(i int) float32 { return 0.3 },
+		func(i int) float32 { return -0.3 },
+	})
+	done := make(chan struct{})
+	// 5 concurrent readers
+	for r := 0; r < 5; r++ {
+		go func() {
+			for i := 0; i < 10000; i++ {
+				snap := m.AudioScopes()
+				if snap != nil {
+					_ = snap.Peak[0]
+					_ = snap.SpectrumBands[0]
+				}
+			}
+			done <- struct{}{}
+		}()
+	}
+	// Single writer (this goroutine)
+	for i := 0; i < 1000; i++ {
+		m.Observe(pcm, 2, 48000)
+	}
+	for r := 0; r < 5; r++ {
+		<-done
+	}
+}
