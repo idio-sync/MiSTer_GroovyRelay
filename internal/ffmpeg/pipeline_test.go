@@ -555,6 +555,14 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 	}
 }
 
+func TestVisualizerOverlayFilters(t *testing.T) {
+	got := RequiredVisualizerOverlayFilters()
+	want := []string{"color", "drawtext", "overlay"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("RequiredVisualizerOverlayFilters() = %v, want %v", got, want)
+	}
+}
+
 func TestFilterAvailableParsesFFmpegFilterList(t *testing.T) {
 	out := `Filters:
  T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.
@@ -637,6 +645,38 @@ func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextCannotRender(t *testing.
 	}
 	if !spec.Visualizer.RequiredFiltersAvailable {
 		t.Fatal("RequiredFiltersAvailable = false, want true")
+	}
+}
+
+func TestWithVisualizerCapabilitiesFallsBackWhenOverlayFilterUnavailable(t *testing.T) {
+	for _, missing := range []string{"color", "drawtext", "overlay"} {
+		t.Run(missing, func(t *testing.T) {
+			origFilter := filterAvailableFn
+			origDrawText := drawTextUsableFn
+			t.Cleanup(func() {
+				filterAvailableFn = origFilter
+				drawTextUsableFn = origDrawText
+			})
+			filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+				return filter != missing, nil
+			}
+			drawTextUsableFn = func(context.Context, string) (bool, error) {
+				t.Fatal("drawtext smoke check should not run when an overlay filter is unavailable")
+				return true, nil
+			}
+			spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+				Visualizer: VisualizerSpec{
+					Enabled: true,
+					Mode:    VisualizerModeRetroAnalyzer,
+				},
+			})
+			if spec.Visualizer.DrawTextAvailable {
+				t.Fatal("DrawTextAvailable = true, want false when overlay filter is unavailable")
+			}
+			if !spec.Visualizer.RequiredFiltersAvailable {
+				t.Fatal("RequiredFiltersAvailable = false, want true; overlay fallback must not disable visualizer core")
+			}
+		})
 	}
 }
 

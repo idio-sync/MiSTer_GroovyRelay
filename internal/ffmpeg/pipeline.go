@@ -493,6 +493,10 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 	}
 }
 
+func RequiredVisualizerOverlayFilters() []string {
+	return []string{"color", "drawtext", "overlay"}
+}
+
 func isSupportedVisualizerMode(mode VisualizerMode) bool {
 	return len(RequiredVisualizerFilters(mode)) > 0
 }
