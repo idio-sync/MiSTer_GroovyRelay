@@ -1,0 +1,295 @@
+# Receiver Chassis Volume Knob - Phase 1 Addendum Design
+
+**Status:** Brainstormed; awaiting implementation plan.
+**Scope:** Adds a physical, receiver-style volume knob to the right side of the new `/receiver` transport row. The knob controls the persisted global `bridge.audio.output_volume` value (`0..100`) that already hot-swaps into the active cast.
+**Repo location:** Committed under `docs/superpowers/specs/`. That directory is normally gitignored; this spec is force-added per the receiver chassis rollout convention.
+
+## Background
+
+The receiver chassis UI is being built in parallel at `/receiver`. Phase 1 already established the live console patterns this spec should reuse:
+
+- `GET /receiver/events` is the shared SSE stream.
+- Chassis scripts attach to the shared `EventSource` exposed by `vfd-live.js`.
+- Mutating controls use same-origin protected `POST /receiver/...` routes.
+- The chassis package stays independent from `internal/ui` and `internal/uiserver`; `main.go` wires narrow adapters.
+
+The bridge already has global output-volume plumbing:
+
+- `config.BridgeConfig.Audio.OutputVolume` stores `bridge.audio.output_volume`.
+- `core.Manager.SetOutputVolume(int)` validates `0..100`, updates in-memory bridge config, and hot-swaps the active data plane.
+- `uiserver.BridgeSaver.SaveOutputVolume(int)` persists only that field and preserves concurrent bridge config changes.
+- `/ui/playback/volume` already writes through the same saver.
+
+This spec brings that existing capability into the receiver UI without changing `/ui/*`.
+
+## User Decisions
+
+| Topic | Decision |
+| --- | --- |
+| Volume scope | Global persisted `bridge.audio.output_volume`, not per-session temporary volume. |
+| Placement | Far right of the transport row. |
+| Visual style | Physical high-end receiver knob with brushed metal, pointer notch, and tick marks. |
+| Readout | No always-on numeric readout; the knob angle and tick ring are the visual readout. |
+| Accessibility | Use a native range/input surface under the physical control so keyboard and screen-reader users can operate it. |
+
+## Goals
+
+1. Render a physical volume knob at the right end of `internal/chassis/templates/transport.html`, before the existing setup gear button.
+2. Control the existing global `bridge.audio.output_volume` value in the range `0..100`.
+3. Persist accepted changes through `uiserver.BridgeSaver.SaveOutputVolume` via a new narrow chassis `VolumeSaver` interface.
+4. Read current volume through a live `VolumeViewer` interface, with `*core.Manager` satisfying it via a new `OutputVolume() int` method. This keeps `/ui` changes and `/receiver` changes synchronized after startup.
+5. Add `POST /receiver/volume`, same-origin protected, form-encoded with `output_volume=<0..100>`, returning `204 No Content` on success.
+6. Add a `volume` named SSE event to `/receiver/events`, emitted on connect and whenever the authoritative volume changes.
+7. Add `internal/chassis/static/volume-knob.js` to handle knob interaction, coalesced saves, SSE updates, and rollback on failed save.
+
+## Non-Goals
+
+- Per-cast, per-adapter, or temporary session volume.
+- A mute button, balance control, tone controls, loudness switch, or gain curve redesign.
+- An always-visible numeric display such as `VOL 73`.
+- Replacing or removing `/ui/playback/volume`.
+- Settings drawer integration for `audio.output_volume`; the existing settings surface remains unchanged.
+- High-frequency audio telemetry or VU/spectrum changes.
+- Final `/ui` to `/receiver` cutover.
+
+## Done When
+
+- Loading `/receiver` shows a volume knob whose initial position matches the current global output volume.
+- The knob sits at the right of the transport row and reads visually as part of the same 80s/90s high-end AV receiver chassis.
+- Adjusting the knob posts to `/receiver/volume`, persists `bridge.audio.output_volume`, and hot-swaps the active cast through existing core/data-plane plumbing.
+- Multiple open `/receiver` tabs synchronize via the `volume` SSE event within the existing chassis tick cadence.
+- Changing volume through `/ui/playback/volume` is reflected on `/receiver` because the chassis reads current volume from live manager state, not only from startup config.
+- Invalid POSTs are rejected: malformed form, missing field, non-integer value, and out-of-range values all return JSON errors.
+- Save failures log details server-side, return a generic JSON error, and the client snaps back to the last authoritative value.
+- `internal/chassis/` still has zero production imports from `internal/ui` or `internal/uiserver`.
+- CSS selector scope and template tests remain green.
+
+## UX Design
+
+The transport row becomes:
+
+```text
+Transport label | buttons | seek rail | time display | volume knob | setup
+```
+
+The knob is a compact physical control, not a screen widget. It should use:
+
+- circular brushed-metal cap;
+- inset pointer notch or groove;
+- surrounding tick marks from low to high;
+- small `VOLUME` label;
+- no visible percentage text in normal operation.
+
+Value maps to rotation over a fixed arc:
+
+```text
+0   -> -135deg
+50  ->    0deg
+100 -> +135deg
+```
+
+The visual angle is the operator-facing readout. The native accessible range still exposes the numeric value to assistive technology through standard browser semantics.
+
+### Interaction
+
+The physical knob should feel tactile:
+
+- Pointer drag updates the visual angle immediately.
+- Wheel over the focused/hovered knob adjusts in small steps.
+- Keyboard operation goes through the native range: arrows adjust by `1`, PageUp/PageDown by `10`, Home to `0`, End to `100`.
+- The client coalesces saves while dragging so the active cast can update live without writing on every pointer move. It should always send a final save on commit.
+- The last authoritative server value is retained. If a save fails, the client returns to that value.
+
+The implementation plan can choose exact debounce constants, but the design target is responsive live volume with bounded disk writes. A practical target is no more than about 5 save POSTs per second while dragging, plus a final commit.
+
+### Responsive Behavior
+
+The knob belongs to the transport strip. It should not move into the VFD/source row.
+
+- Wide layouts: knob appears between the time display and setup gear.
+- Mid-width layouts: knob shrinks before wrapping.
+- Narrow layouts: knob remains in the transport strip grid alongside controls and setup. If necessary, the time display may stay hidden as it already does at smaller widths.
+
+## Architecture
+
+### Files Added
+
+```text
+internal/chassis/
+├── volume.go                  # VolumeViewer, VolumeSaver, handler, JSON errors
+├── volume_test.go             # handler, snapshot, SSE-facing unit tests
+└── static/
+    └── volume-knob.js         # knob UI, save queue, SSE subscriber
+```
+
+### Files Modified
+
+| File | Change |
+| --- | --- |
+| `internal/core/manager.go` | Add `OutputVolume() int`, returning `m.bridge.Audio.OutputVolume` under the manager lock. |
+| `internal/core/manager_test.go` | Cover `OutputVolume()` and ensure `SetOutputVolume()` remains authoritative. |
+| `internal/chassis/server.go` | Add optional `VolumeViewer` and `VolumeSaver` to `Config`; store on `Server`; mount `POST /receiver/volume` through `requireSameOrigin`. |
+| `internal/chassis/data.go` | Add `Volume VolumeData` to `ReceiverPageData`; add `VolumeData{OutputVolume int}`; idle snapshot falls back to `cfg.Bridge.Audio.OutputVolume`. |
+| `internal/chassis/session.go` | Extend `snapshotFromSession` to populate `Volume` from `VolumeViewer.OutputVolume()` when available, otherwise from startup config. This happens for both idle and live states, outside the live-session-only branch. |
+| `internal/chassis/events.go` | Add `volumeEnvelope`, `volumeEnvelopeFrom`, `volumeChanged`, and initial/diff-loop `volume` event emission. |
+| `internal/chassis/events_test.go` | Update initial event expectations and add changed-volume SSE coverage. |
+| `internal/chassis/templates/transport.html` | Add the knob markup after `.seek-time` and before `.gear-btn`. |
+| `internal/chassis/templates/shell.html` | Load `/receiver/static/volume-knob.js?v={{.Version}}` after `transport.js`. |
+| `internal/chassis/static/chassis.css` | Add scoped knob, tick-ring, hidden range, responsive transport layout rules. |
+| `internal/chassis/chassis_test.go` | Assert initial `VolumeData` and template hooks. |
+| `internal/chassis/import_check_test.go` | Preserve no-cross-import rules if the table needs updating for new files. |
+| `cmd/mister-groovy-relay/main.go` | Wire `VolumeViewer: coreMgr` and `VolumeSaver: &volumeSaverAdapter{bs: saver}`. |
+
+### Interfaces
+
+```go
+// internal/chassis/volume.go
+type VolumeViewer interface {
+    OutputVolume() int
+}
+
+type VolumeSaver interface {
+    SaveOutputVolume(volume int) error
+}
+```
+
+`*core.Manager` satisfies `VolumeViewer` after adding `OutputVolume()`.
+
+`main.go` owns the `VolumeSaver` adapter over `uiserver.BridgeSaver`:
+
+```go
+type volumeSaverAdapter struct {
+    bs interface {
+        SaveOutputVolume(int) (adapters.ApplyScope, error)
+    }
+}
+
+func (a *volumeSaverAdapter) SaveOutputVolume(volume int) error {
+    _, err := a.bs.SaveOutputVolume(volume)
+    return err
+}
+```
+
+This mirrors the existing visualizer saver adapter pattern and keeps `internal/chassis` free of `internal/uiserver`.
+
+## Data Flow
+
+### Initial Render
+
+1. `handleIndex` builds a receiver snapshot.
+2. `snapshotFromSession` calls `VolumeViewer.OutputVolume()` if wired, regardless of whether the bridge is idle, playing, or paused.
+3. Templates render the knob with:
+   - `data-volume-knob`;
+   - `data-volume-value="{{.Volume.OutputVolume}}"`;
+   - a hidden/native range input with `min="0"`, `max="100"`, and `value="{{.Volume.OutputVolume}}"`;
+   - CSS custom property or inline style for the initial angle.
+
+The fallback to `cfg.Bridge.Audio.OutputVolume` exists for tests and offline constructions where no `VolumeViewer` is wired.
+
+### Save Path
+
+1. User changes the knob.
+2. `volume-knob.js` clamps and rounds the value to an integer `0..100`.
+3. The client updates the visual angle immediately.
+4. The client posts:
+
+```http
+POST /receiver/volume
+Content-Type: application/x-www-form-urlencoded
+
+output_volume=73
+```
+
+5. `handleVolumePost` validates the form, invokes `VolumeSaver.SaveOutputVolume(73)`, and returns `204`.
+6. `BridgeSaver.SaveOutputVolume` persists the config and calls `core.Manager.SetOutputVolume(73)`.
+7. The chassis snapshot cache reads `core.Manager.OutputVolume()` on the next tick and emits `event: volume` when the value changes.
+8. All tabs apply the authoritative SSE value.
+
+### SSE Payload
+
+```go
+type volumeEnvelope struct {
+    OutputVolume int `json:"outputVolume"`
+}
+```
+
+Initial SSE burst adds `volume` after the current Phase 1 events. If the meter telemetry spec has already added `meter`, implementation should preserve the established order and append `volume` near the other low-rate control-state events. A valid order is:
+
+```text
+state, vfd, visualizer, transport, volume, meter
+```
+
+The exact order is less important than making the initial `volume` event unconditional and documenting any test fixture updates.
+
+## Error Handling
+
+`POST /receiver/volume` follows the chassis JSON error shape:
+
+| Condition | Status | Message |
+| --- | --- | --- |
+| `VolumeSaver` not configured | `503` | `volume save not configured` |
+| Malformed form body | `400` | `malformed form body` |
+| Missing `output_volume` | `400` | `missing output_volume field` |
+| Non-integer `output_volume` | `400` | `output_volume must be an integer` |
+| Out of range | `400` | `output_volume must be in 0..100` |
+| Save failure | `500` | `internal save failure` |
+
+The handler logs save failure details with the attempted volume. The response hides internal error text, matching the visualizer handler.
+
+The client treats any non-204 response as failed. It logs the status/text to the console and restores the last authoritative value from initial render or SSE.
+
+## Testing
+
+### Go Unit Tests
+
+- `internal/core/manager_test.go`
+  - `OutputVolume()` returns the current manager bridge volume.
+  - `SetOutputVolume()` updates the value visible through `OutputVolume()`.
+
+- `internal/chassis/chassis_test.go`
+  - idle snapshot includes configured volume.
+  - live snapshot uses `VolumeViewer` value over startup config.
+  - `transport.html` renders `data-volume-*` hooks and accessible range attributes.
+
+- `internal/chassis/volume_test.go`
+  - accepts `0`, `50`, `100` and calls saver.
+  - rejects missing, non-integer, and out-of-range input.
+  - returns `503` when saver is missing.
+  - returns `500` on saver failure without leaking the internal error string.
+  - same-origin middleware blocks cross-site POSTs.
+
+- `internal/chassis/events_test.go`
+  - initial SSE includes `volume`.
+  - changing only volume emits a `volume` event.
+  - unchanged volume does not emit repeatedly.
+
+- `internal/chassis/css_scope_test.go`
+  - new selectors are `body.receiver` scoped.
+
+### Client Verification
+
+Manual browser verification is enough for `volume-knob.js` unless a JS test harness already exists when implementation begins:
+
+- dragging rotates the knob and saves;
+- wheel/key changes work;
+- failed save rolls back;
+- two tabs sync after one tab changes volume;
+- narrow viewport keeps the knob in the transport strip without overlap.
+
+### Regression Commands
+
+Implementation should at minimum run:
+
+```bash
+go test ./internal/core ./internal/chassis ./internal/uiserver ./internal/ui
+go test ./...
+```
+
+If the branch's normal verification matrix includes race or integration targets, run those before completion.
+
+## Open Implementation Notes
+
+- Prefer integer volume values. Do not introduce fractional volume to the config or data plane.
+- Keep the knob JS independent from transport action dispatch. It can share the `EventSource` attach pattern, but volume saves go to `/receiver/volume`.
+- Use the existing `writeJSONError` helper if it remains in `visualizer.go`; if implementation wants to move it to a shared chassis file, keep that refactor mechanical and covered by existing tests.
+- Avoid a visible percentage readout. The native range value exists for accessibility, not as part of the visual receiver faceplate.
