@@ -78,9 +78,31 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		return "", a.recordAUXStartError(unavailableError("AUX core is unavailable"))
 	}
 	targetRef := "aux:" + cfg.Input.ID
-	if a.activeRef == targetRef && coreManager.Status().AdapterRef == targetRef {
-		a.mu.Unlock()
+	localSameActive := a.activeRef == targetRef
+	a.mu.Unlock()
+
+	if localSameActive && coreManager.Status().AdapterRef == targetRef {
 		return targetRef, nil
+	}
+
+	a.mu.Lock()
+	cfg = a.normalizeConfig(a.cfg)
+	if !cfg.Enabled {
+		a.mu.Unlock()
+		return "", a.recordAUXStartError(unavailableError("AUX is disabled"))
+	}
+	if requested := strings.TrimSpace(inputID); requested != "" && requested != cfg.Input.ID {
+		a.mu.Unlock()
+		return "", a.recordAUXStartError(unavailableError("AUX input %q is not configured", requested))
+	}
+	if err := cfg.Validate(); err != nil {
+		a.mu.Unlock()
+		return "", a.recordAUXStartError(unavailableError("AUX config validation failed: %v", err))
+	}
+	coreManager = a.core
+	if coreManager == nil {
+		a.mu.Unlock()
+		return "", a.recordAUXStartError(unavailableError("AUX core is unavailable"))
 	}
 	req, cleanup, err := a.buildSessionRequestLocked(ctx, cfg.Input)
 	if err != nil {

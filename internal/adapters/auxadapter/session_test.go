@@ -345,6 +345,42 @@ func TestStartAUXSameActiveInputIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestStartAUXSameActiveChecksCoreStatusOutsideAdapterLock(t *testing.T) {
+	fc := &sessionCore{status: core.SessionStatus{AdapterRef: "aux:aux"}}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	a.activeRef = "aux:aux"
+
+	statusCalled := false
+	statusSawAdapterLocked := false
+	fc.onStatus = func() {
+		statusCalled = true
+		if !a.mu.TryLock() {
+			statusSawAdapterLocked = true
+			return
+		}
+		a.mu.Unlock()
+	}
+
+	ref, err := a.StartAUX(context.Background(), "aux")
+
+	if err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	if ref != "aux:aux" {
+		t.Fatalf("StartAUX ref = %q, want aux:aux", ref)
+	}
+	if !statusCalled {
+		t.Fatal("core Status was not called for same-active idempotence check")
+	}
+	if statusSawAdapterLocked {
+		t.Fatal("core Status was called while adapter mutex was held")
+	}
+	if fc.starts != 0 {
+		t.Fatalf("StartSession calls = %d, want 0", fc.starts)
+	}
+}
+
 func TestStartAUXStartSessionErrorReleasesProxyTokensAndDoesNotWrapUnavailable(t *testing.T) {
 	wantErr := errors.New("core start failed")
 	fc := &sessionCore{startErr: wantErr}
@@ -857,6 +893,7 @@ type sessionCore struct {
 	stopErr     error
 	stopMatched bool
 	status      core.SessionStatus
+	onStatus    func()
 }
 
 func (f *sessionCore) StartSession(req core.SessionRequest) error {
@@ -881,7 +918,12 @@ func (f *sessionCore) StopIfAdapterRef(ref string) (bool, error) {
 	return f.stopMatched, f.stopErr
 }
 
-func (f *sessionCore) Status() core.SessionStatus { return f.status }
+func (f *sessionCore) Status() core.SessionStatus {
+	if f.onStatus != nil {
+		f.onStatus()
+	}
+	return f.status
+}
 
 type blockingStartCore struct {
 	mu          sync.Mutex
