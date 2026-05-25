@@ -62,13 +62,16 @@ The Streams adapter does not yet implement `QuickCastProvider`. 3A adds two smal
 
 - `internal/adapters/playback.go`: add `QuickCastError` and export `MaxQuickCastBytes` if needed.
 - `internal/adapters/preset.go`: add `PresetEntry`, `PresetViewer`, and `PresetCaster`.
+- `internal/adapters/url/playback_provider.go`: lift `castURLWithHLSBuffer`'s `status int` return into `*QuickCastError`; wrap `IsEnabled() == false` as `*QuickCastError{409, "BLOCKED"}`.
+- `internal/adapters/torrent/playback_provider.go` and `internal/adapters/torrent/errors.go`: convert the two top-level `fmt.Errorf` returns in `HandleQuickCast` to typed `*TorrentError{Kind: ErrDisabled}` / `{Kind: ErrTrafficNotAcknowledged}`, then wrap all `HandleQuickCast` errors in `*QuickCastError` via a per-kind chip table.
 - `internal/adapters/streams/assets.go` + `preset.go`: add the bundled 12-slot preset list and streams implementation.
-- `internal/chassis/cast.go`: add `/receiver/cast` routing helpers, kind detection, field translation, JSON responses, and startup verification.
+- `internal/chassis/cast.go`: add `/receiver/cast` routing helpers, kind detection, field translation, the `writeCastJSON` helper, and startup verification.
 - `internal/chassis/preset.go`: add `/receiver/preset/{slot}/cast` handler.
 - `internal/chassis/server.go` and `cmd/mister-groovy-relay/main.go`: add config fields and pass the streams adapter through the adapter interfaces.
-- `internal/chassis/templates/shell.html`, `input-row.html`, and `preset-bank.html`: load the new JS and render the required data attributes/classes.
+- `internal/chassis/templates/shell.html`, `input-row.html`, and `preset-bank.html`: load the new JS and render the required data attributes/classes (including the `· LIVE` badge-text conditional).
 - `internal/chassis/static/input-cast.js`, `preset-bank.js`, and `chassis.css`: add client behavior and scoped styling.
-- Tests named in §Testing, with `import_check_test.go` extended before chassis imports any concrete adapter package.
+- `internal/chassis/import_check_test.go`: extend the chassis forbidden-imports list (**land as a standalone commit at the start of the 3A branch**).
+- Tests named in §Testing.
 
 ## Wire Contract — HTTP Routes
 
@@ -123,10 +126,15 @@ Content-Type: application/x-bittorrent
 
 - `200 OK` with `{"ok":true}` — cast started.
 - `400 Bad Request` with `{"ok":false,"chip":"BAD URL" | "BAD INPUT" | ...}` — payload didn't parse or kind couldn't route.
-- `403 Forbidden` — wrong origin (middleware).
-- `404 Not Found` — no adapter registered for the resolved tab.
-- `409 Conflict` — adapter refused before handoff (e.g., torrent traffic acknowledgement disabled, forced yt-dlp mode unavailable). Chip: `BLOCKED`.
-- `500 Internal Server Error` — cast failed mid-handoff. Chip: `CAST FAILED`.
+- `403 Forbidden` — wrong origin (middleware) OR adapter `*QuickCastError` with `Status: 403` (e.g., torrent traffic acknowledgement missing, non-loopback host). Chip: `BLOCKED` for adapter rejections; no chip for middleware rejection (rendered by the middleware, not the route handler).
+- `404 Not Found` — no adapter registered for the resolved tab, or expired token. Chip: `NOT FOUND` for adapter rejections.
+- `409 Conflict` — adapter refused before handoff (`ErrDisabled` on torrent, forced resolver unavailable on URL). Chip: `BLOCKED`.
+- `413 Payload Too Large` — torrent file exceeds multipart cap. Chip: `FILE TOO BIG`.
+- `422 Unprocessable Entity` — torrent has no playable file. Chip: `NO VIDEO`.
+- `500 Internal Server Error` — untyped adapter error mid-handoff. Chip: `CAST FAILED`.
+- `504 Gateway Timeout` — torrent metadata fetch timed out. Chip: `TIMEOUT`.
+
+Status codes other than 200/400/403/middleware are sourced from the adapter's `*QuickCastError.Status` field — see §Architecture/Quick-cast error taxonomy for the per-adapter mapping.
 
 ### `POST /receiver/preset/{slot}/cast` (preset bank)
 
@@ -138,11 +146,11 @@ Content-Type: application/x-bittorrent
 
 **Server logic:**
 
-1. Validate `slot` is integer in `[1, 12]`. Out of range → 400, `{"ok":false,"chip":"BAD SLOT"}`.
+1. Validate `slot` is integer in `[1, 12]`. Out of range → `writeCastJSON(w, 400, false, "BAD SLOT")`.
 2. If chassis was constructed without a `PresetCaster` → 404 (the route exists but the caster doesn't).
 3. Call `PresetCaster.CastPreset(ctx, slot)`.
-4. On success respond `{"ok": true}`.
-5. On adapter error respond `{"ok": false, "chip": "<short>"}`. No DOM update in response body — LIT migrates via the next `transport` SSE event.
+4. On success: `writeCastJSON(w, 200, true, "")`.
+5. On error: `var qerr *adapters.QuickCastError; errors.As(err, &qerr)` for status/chip; if no typed error is present, `writeCastJSON(w, 500, false, "CAST FAILED")`. Same pattern as `/receiver/cast`. No DOM update in response body — LIT migrates via the next `transport` SSE event.
 
 **Responses:**
 
@@ -166,9 +174,13 @@ Short uppercase strings, ≤ ~14 characters so they fit the chip without truncat
 | `BAD URL` | URL doesn't parse |
 | `BAD INPUT` | Payload doesn't match any known kind |
 | `BAD SLOT` | Preset slot out of range |
-| `BLOCKED` | Adapter refused before handoff (disabled tab, traffic acknowledgement missing, forced resolver unavailable) |
-| `NOT READY` | Streams preset catalog/startup snapshot could not be prepared |
-| `CAST FAILED` | Adapter returned an untyped error mid-handoff |
+| `BLOCKED` | Adapter refused before handoff (disabled tab, traffic acknowledgement missing, forced resolver unavailable, non-loopback host) — emitted at 403 or 409 depending on adapter |
+| `NOT READY` | Streams preset catalog/startup snapshot could not be prepared (503) |
+| `FILE TOO BIG` | Uploaded torrent file exceeds the multipart cap (413) |
+| `TIMEOUT` | Torrent metadata fetch timed out (504) |
+| `NO VIDEO` | Torrent has no playable file (422) |
+| `NOT FOUND` | Resource not found — expired upload token or unknown tab (404) |
+| `CAST FAILED` | Adapter returned an untyped error mid-handoff (500) |
 
 The `chip` JSON field carries the error text verbatim. The client interprets any response with `chip` present as the error state: it sets `data-chip-kind="err"` on the chip element and uses `chip` as the displayed text. The 4 s auto-clear timer starts when the chip enters the error state; the next keystroke or file-pick cancels the timer.
 
@@ -207,15 +219,63 @@ func (e *QuickCastError) Unwrap() error {
 }
 ```
 
-The chassis uses `errors.As(err, &quickCastErr)` rather than string matching. The existing `/ui/playback/quick-cast` route can remain unchanged because `QuickCastError.Error()` returns a normal message. Initial mappings:
+The chassis uses `errors.As(err, &quickCastErr)` rather than string matching. The existing `/ui/playback/quick-cast` route can remain unchanged because `QuickCastError.Error()` returns a normal message.
+
+**Adapter wrapping is per-adapter and preserves existing native status codes.** The chassis taxonomy below specifies *chip text* for each error kind; the *status* comes from each adapter's existing per-error mapping. This avoids changing observable behavior on `/ui/playback/quick-cast` (status codes stay the same; only the wrapping type changes).
+
+#### Chassis-layer (`POST /receiver/cast` handler)
 
 | Case | Status | Chip |
 |---|---:|---|
-| Missing/invalid receiver payload before adapter dispatch | `400` | `BAD INPUT` or `BAD URL` |
-| URL quick-cast missing URL or parse failure | `400` | `BAD URL` |
-| Quick-cast tab disabled / torrent traffic acknowledgement missing / forced resolver unavailable | `409` | `BLOCKED` |
-| Streams preset startup snapshot unavailable | `503` | `NOT READY` |
+| Missing/invalid receiver payload before adapter dispatch (kind detection failed) | `400` | `BAD INPUT` |
 | Unexpected untyped adapter error | `500` | `CAST FAILED` |
+
+#### URL adapter — `internal/adapters/url/playback_provider.go:173+` (`HandleQuickCast`)
+
+`castURLWithHLSBuffer` already returns `(ref, resolvedVia string, status int, err error)` at [play.go:86](../../../internal/adapters/url/play.go). Today `HandleQuickCast` discards the status (`ref, _, _, err := …`). 3A lifts that `status` into `QuickCastError.Status`:
+
+| Existing return site | `QuickCastError.Status` | `Chip` |
+|---|---:|---|
+| `castURLWithHLSBuffer` returns `status` ≥ 400 with a parse/validation error (typically 400) | the returned `status` | `BAD URL` |
+| `castURLWithHLSBuffer` returns `status` == 403 (host blocked, forced resolver unavailable, etc.) | `403` | `BLOCKED` |
+| `castURLWithHLSBuffer` returns any other `status` ≥ 400 | the returned `status` | `CAST FAILED` |
+| `IsEnabled() == false` (top-level guard) | `409` | `BLOCKED` |
+
+Implementation note: `HandleQuickCast` becomes `ref, _, status, err := … ; if err != nil { return …, wrapURLCastError(status, err) }` where `wrapURLCastError` is a small helper in `url/playback_provider.go` that picks the chip from the status code. The existing `castURLWithHLSBuffer` callers that go through the Plex companion path are unaffected — they don't return errors through `HandleQuickCast`.
+
+#### Torrent adapter — `internal/adapters/torrent/playback_provider.go:89+` (`HandleQuickCast`)
+
+Torrent has a rich existing `TorrentError` kind enum at [errors.go:14](../../../internal/adapters/torrent/errors.go); `torrentErrorStatus` already maps each kind to an HTTP status. 3A wraps `HandleQuickCast`'s return so each `*TorrentError` becomes a `*QuickCastError` with `Status = torrentErrorStatus(err)` and a chip derived from `TorrentError.Kind`:
+
+| `TorrentError.Kind` | Existing status (from `torrentErrorStatus`) | `Chip` |
+|---|---:|---|
+| `ErrDisabled` | `409` | `BLOCKED` |
+| `ErrTrafficNotAcknowledged` | `403` | `BLOCKED` |
+| `ErrNonLoopback` | `403` | `BLOCKED` |
+| `ErrBadInput` | `400` | `BAD INPUT` |
+| `ErrUploadTooLarge` | `413` | `FILE TOO BIG` |
+| `ErrMetadataTimeout` | `504` | `TIMEOUT` |
+| `ErrNoPlayableFile` | `422` | `NO VIDEO` |
+| `ErrExpiredToken` | `404` | `NOT FOUND` |
+| `ErrCoreStart` | `500` | `CAST FAILED` |
+
+Implementation note: the two top-level `fmt.Errorf("torrent adapter is disabled")` and `fmt.Errorf("BitTorrent traffic acknowledgement required")` early-returns in `HandleQuickCast` at [playback_provider.go:94-99](../../../internal/adapters/torrent/playback_provider.go) become typed `*TorrentError{Kind: ErrDisabled}` / `{Kind: ErrTrafficNotAcknowledged}` first, then the wrap-to-`QuickCastError` step. (They currently bypass `TorrentError` entirely.) After this normalization, all return paths in `HandleQuickCast` route through one `wrapTorrentQuickCastError(err)` helper at the function's end.
+
+#### Streams adapter — `internal/adapters/streams/preset.go` (`CastPreset`)
+
+`CastPreset` returns at most three error categories:
+
+| Case | `Status` | `Chip` |
+|---|---:|---|
+| `slot` out of range (defense-in-depth; chassis validates first) | `400` | `BAD SLOT` |
+| `ensureStartupSnapshot` failure | `503` | `NOT READY` |
+| `validatePlayRequest` or `StartResolvedStream` failure | (untyped — falls through to `500`) | `CAST FAILED` |
+
+The third row is intentional: `validatePlayRequest` errors on a bundled preset list represent adapter-coding bugs (a slot points to a non-existent channel), not user-facing failures, so collapsing them to `CAST FAILED` via the untyped fallback path is correct. The streams adapter's unit test (`preset_test.go`) asserts every slot resolves, so this case is unreachable at run time barring asset.go drift.
+
+#### Chip vocabulary additions
+
+The torrent adapter's rich error taxonomy contributes four new chips beyond what the prior spec drafted: `FILE TOO BIG`, `TIMEOUT`, `NO VIDEO`, `NOT FOUND`. These are added to the Chip Vocabulary table in §Wire Contract.
 
 ### New interfaces — `internal/adapters/preset.go`
 
@@ -294,6 +354,12 @@ func (a *Adapter) CastPreset(ctx context.Context, slot int) error {
         ChannelID:  entry.ChannelID,
     }
     if err := a.validatePlayRequest(res); err != nil {
+        // validatePlayRequest errors on a bundled preset list represent
+        // adapter-coding bugs (a slot pointing to a non-existent channel),
+        // not user-facing failures. They return untyped errors and collapse
+        // to 500 + CAST FAILED via the chassis's errors.As fallback. The
+        // streams adapter's preset_test.go asserts every slot resolves, so
+        // this path is unreachable at run time barring assets.go drift.
         return err
     }
     _, err := a.StartResolvedStream(ctx, res)
@@ -343,6 +409,21 @@ type Config struct {
 ```
 
 `cmd/mister-groovy-relay/main.go` passes the streams adapter as both (streams adapter implements both interfaces).
+
+### JSON response helper — `internal/chassis/cast.go`
+
+The existing `writeJSONError` helper in [visualizer.go:38](../../../internal/chassis/visualizer.go) emits `{"error": msg}`, which doesn't fit the cast-route contract. 3A adds a sibling helper:
+
+```go
+// writeCastJSON emits the {"ok": bool, "chip": string?} shape used by
+// both /receiver/cast and /receiver/preset/{slot}/cast. Sets
+// Content-Type: application/json. When ok is true, chip is ignored
+// and omitted from the body. When ok is false, chip is required and
+// included verbatim.
+func writeCastJSON(w http.ResponseWriter, status int, ok bool, chip string)
+```
+
+Used by both new handlers. The success path calls `writeCastJSON(w, 200, true, "")`; error paths call `writeCastJSON(w, qerr.Status, false, qerr.Chip)` after `errors.As(err, &qerr)` (or `writeCastJSON(w, 500, false, "CAST FAILED")` on untyped fallback).
 
 ### Kind → tab mapping — `internal/chassis/cast.go`
 
@@ -446,10 +527,12 @@ Existing template renders 12 slots from `.Slots`. Additions:
   <div class="num">{{pad2 (inc $i)}}</div>
   {{if $slot.Filled}}
   <div class="name">{{$slot.Title}}</div>
-  <div class="badge {{$slot.BadgeClass}}">{{$slot.Subtitle}}</div>
+  <div class="badge {{$slot.BadgeClass}}">{{$slot.Subtitle}}{{if $slot.Live}} · LIVE{{end}}</div>
   {{end}}
 </button>
 ```
+
+The `Live` flag is the single source of truth for "always-on live channel"; the template renders both the `.live` CSS class (for the blinking dot animation) and the ` · LIVE` badge suffix from the same field. Mockup precedent: [v24:3874-3875](../reference/2026-05-21-receiver-v24.html) renders `<div class="badge toonami">TOONAMI · LIVE</div>` on the `.preset.live` rows. A template test asserts that `Live: true` slots render the suffix and `Live: false` slots do not.
 
 The BROWSE button (`<button class="browse-btn">`) renders disabled in 3A:
 
@@ -513,6 +596,8 @@ Before any 3A code lands, extend the chassis forbidden-imports list to cover all
 
 The test should pass immediately after the extension (chassis has no such imports today). This is a defense-in-depth task: it makes the spec's architectural rule mechanical rather than honor-system.
 
+**Ordering:** Go has no compile-time gate that forces tasks within a single PR to run in a specific order. Land the `import_check_test.go` extension as a **standalone commit at the start of the 3A branch**, before any chassis source changes — that way CI enforces the constraint from the first line of new 3A code, and a developer who later adds a stray `import "internal/adapters/streams"` line sees the failure immediately rather than at PR review time.
+
 ### CSS additions — `internal/chassis/static/chassis.css`
 
 All new rules scoped under `body.receiver` (existing `css_scope_test.go` enforces this):
@@ -546,8 +631,18 @@ The chassis snapshot cache and refresher remain unchanged. `buildSnapshot` calls
   - `castKindToTab` startup verification: with the real registry (URL + torrent adapters), every value in the map resolves to a real `QuickCastTab.ID`.
   - `valuesKeyForTab` / `fileFieldForTab` startup verification: every `(tabID, valuesKey)` or `(tabID, fileField)` pair resolves to a real `QuickCastField.Name` on the resolved tab's `Fields[]`. Catches adapter-side field renames the same way the tab-ID verification catches tab-ID renames.
   - `castKindToTab` handles a missing adapter gracefully (e.g., torrent not registered) — the test exercises a registry without the torrent adapter and asserts the verification helper returns a structured "missing tab" error rather than panicking. Production startup wires this verification.
-  - JSON response shapes: success / 400 / 404 / 409 / 500 each encode `{"ok": bool, "chip": string?}` correctly.
+  - JSON response shapes: success / 400 / 403 / 404 / 409 / 413 / 422 / 500 / 504 each encode `{"ok": bool, "chip": string?}` correctly via `writeCastJSON`.
   - Untyped adapter errors collapse to `500` + `CAST FAILED`; typed `QuickCastError` values preserve their status/chip without string matching.
+  - Adapter-emitted statuses propagate: a stub adapter returning `*QuickCastError{Status: 413, Chip: "FILE TOO BIG"}` produces a 413 response with that chip; same for 403/422/504.
+
+- **`internal/adapters/url/playback_provider_test.go`**
+  - `HandleQuickCast` returns `*QuickCastError` (verifiable via `errors.As`) when `castURLWithHLSBuffer` returns `status >= 400`, with `Status` matching the returned status and `Chip` matching the per-status mapping table (`BAD URL` for 400, `BLOCKED` for 403, `CAST FAILED` for other 4xx/5xx).
+  - `IsEnabled() == false` produces `*QuickCastError{Status: 409, Chip: "BLOCKED"}`.
+  - `QuickCastError.Error()` returns a human-readable message so `/ui/playback/quick-cast` rendering is unaffected.
+
+- **`internal/adapters/torrent/playback_provider_test.go`**
+  - Each `TorrentError.Kind` produces a `*QuickCastError` with `Status` matching `torrentErrorStatus(err)` and `Chip` matching the per-kind table. Cover `ErrDisabled`, `ErrTrafficNotAcknowledged`, `ErrBadInput`, `ErrUploadTooLarge`, `ErrMetadataTimeout`, `ErrNoPlayableFile`, `ErrExpiredToken`, `ErrNonLoopback`, `ErrCoreStart`.
+  - The two top-level `fmt.Errorf` returns in `HandleQuickCast` are now typed `*TorrentError`, then wrapped — assert via `errors.As(err, &torrentErr)` that both layers are present.
 
 - **`internal/chassis/preset_test.go`**
   - Handler: 404 when `PresetCaster` is nil.
