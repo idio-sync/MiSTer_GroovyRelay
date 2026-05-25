@@ -74,6 +74,23 @@ ytdlp_enabled = true              # Master switch for yt-dlp resolution. When tr
 # section. Saved to <data_dir>/url_cookies.txt mode 0600 — not configurable
 # in TOML by design.
 
+[adapters.aux]
+enabled = false
+
+[adapters.aux.input]
+id = "aux"
+name = "AUX"
+mode = "stream_url"              # "stream_url" or "local_capture"
+audio_output = "visual_only"     # "visual_only" or "monitor"
+url = "http://capture-host:8090/aux.wav"
+format = ""                      # local_capture example: "alsa", "dshow", "avfoundation"
+device = ""                      # local_capture example: "hw:1,0" or "audio=Line In (...)"
+sample_rate = 48000
+channels = 2
+thread_queue_size = 64
+analyze_duration_ms = 100
+probe_size = 32768
+
 [adapters.torrent]
 enabled = false
 traffic_acknowledged = false

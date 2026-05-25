@@ -34,6 +34,28 @@ Changing only the visualizer mode does not interrupt the current cast; the new m
 
 **Note:** A `radial_spectrum` mode was prototyped but deferred from v1; the lightweight FFmpeg polar transform did not produce a satisfactory circular display. It may return in a future release.
 
+### AUX analog visualizer
+
+The receiver page can expose an `AUX` source that drives the CRT visualizer from a line-in or USB audio interface.
+
+For native binaries, configure `mode = "local_capture"` with the FFmpeg capture format and device for the host.
+
+For Docker/Unraid, the recommended v1 path is `mode = "stream_url"` and a small FFmpeg producer on the machine that has the audio input:
+
+```bash
+while true; do
+  ffmpeg -nostdin -f alsa -thread_queue_size 64 -sample_rate 48000 -channels 2 -i hw:1,0 \
+    -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
+  sleep 0.2
+done
+```
+
+The loop is required because GroovyRelay opens the stream twice per AUX start: once for probe, then once for playback.
+
+If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update `url`/`probe_size` accordingly. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it.
+
+Set `audio_output = "visual_only"` to drive the CRT visualizer without sending PCM monitor audio to MiSTer. Set `audio_output = "monitor"` to keep PCM output enabled so the captured audio can be monitored through the normal MiSTer audio path.
+
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board or direct video adapter wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
@@ -113,6 +135,7 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | Jellyfin | Jellyfin cast picker | On after linking | Link through the settings UI. |
 | URL | Global Cast drawer or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
 | Streams | Bundled catalog entries | On | Includes Toonami Aftermath and other bundled channels. |
+| AUX | Receiver page | Off | CRT visualizer from native capture or a remote FFmpeg producer. |
 | Torrent | Global Cast drawer magnet link, `.torrent` upload, or HTTP(S) `.torrent` URL | Off | Requires explicit traffic acknowledgement. Remote torrent URLs are public HTTP(S) only. See [docs/torrent.md](docs/torrent.md). |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
 
