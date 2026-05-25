@@ -1,6 +1,7 @@
 package aux
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,62 @@ func TestMintProxyURLRejectsInvalidTTL(t *testing.T) {
 				t.Fatalf("invalid ttl minted %d token(s), want 0", len(a.proxy.tokens))
 			}
 		})
+	}
+}
+
+func TestAUXStreamURLConsumesProbeAndPlayTokensSeparately(t *testing.T) {
+	var requests int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write([]byte("aux"))
+	}))
+	defer upstream.Close()
+
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux", Name: "AUX", Mode: ModeStreamURL,
+			AudioOutput: AudioOutputVisualOnly,
+			URL:         upstream.URL,
+		},
+	})
+
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	probeURL := fc.lastRequest.StreamProbeURL
+	playURL := fc.lastRequest.StreamURL
+	if probeURL == "" || playURL == "" || probeURL == playURL {
+		t.Fatalf("probe/play proxy URLs = %q/%q, want distinct non-empty URLs", probeURL, playURL)
+	}
+
+	for name, raw := range map[string]string{"probe": probeURL, "play": playURL} {
+		req := httptest.NewRequest(http.MethodGet, raw, nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		rr := httptest.NewRecorder()
+		a.handleProxy(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s proxy status = %d, want 200 body=%q", name, rr.Code, rr.Body.String())
+		}
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("upstream GETs = %d, want 2", got)
+	}
+
+	for name, raw := range map[string]string{"probe": probeURL, "play": playURL} {
+		req := httptest.NewRequest(http.MethodGet, raw, nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		rr := httptest.NewRecorder()
+		a.handleProxy(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("reused %s proxy status = %d, want 401 body=%q", name, rr.Code, rr.Body.String())
+		}
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("upstream GETs after token reuse = %d, want still 2", got)
 	}
 }
 

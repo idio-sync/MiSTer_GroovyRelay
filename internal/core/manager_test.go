@@ -729,6 +729,78 @@ func TestManagerVisualOnlySuppressesFFmpegAndPlaneAudio(t *testing.T) {
 	}
 }
 
+func TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	origCheck := checkVisualizerFiltersFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+		checkVisualizerFiltersFn = origCheck
+		newPlane = origNewPlane
+	})
+
+	var probed []string
+	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		probed = append(probed, input.URL)
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, AudioRate: 48000}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
+		return nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		return &contextDonePlane{done: make(chan struct{})}
+	}
+
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Stop() })
+	preempted := make(chan string, 1)
+	if err := m.StartSession(SessionRequest{
+		StreamURL:    "http://pms/music.mp3",
+		AdapterRef:   "plex:/library/metadata/42",
+		Source:       "plex",
+		Capabilities: Capabilities{CanPause: true, CanSeek: true},
+		OnStop: func(reason string) {
+			preempted <- reason
+		},
+	}); err != nil {
+		t.Fatalf("start prior Plex session: %v", err)
+	}
+
+	err := m.StartSession(SessionRequest{
+		StreamURL:       "http://127.0.0.1:32500/internal/aux-proxy/?kind=play&aux_token=play",
+		StreamProbeURL:  "http://127.0.0.1:32500/internal/aux-proxy/?kind=probe&aux_token=probe",
+		AdapterRef:      "aux:aux",
+		Source:          "aux",
+		MediaKind:       MediaKindMusic,
+		AudioOutputMode: AudioOutputVisualOnly,
+		Visualizer:      VisualizerRequest{Enabled: true, Mode: VisualizerModeRetroAnalyzer},
+	})
+	if err != nil {
+		t.Fatalf("start AUX session: %v", err)
+	}
+
+	if len(probed) < 2 || !strings.Contains(probed[len(probed)-1], "kind=probe") {
+		t.Fatalf("probe URLs = %#v, want AUX start to probe StreamProbeURL", probed)
+	}
+	st := m.Status()
+	if st.AdapterRef != "aux:aux" || st.State != StatePlaying {
+		t.Fatalf("status after AUX start = %+v, want playing aux:aux", st)
+	}
+	select {
+	case got := <-preempted:
+		if got != "preempted" {
+			t.Fatalf("prior OnStop reason = %q, want preempted", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prior Plex session OnStop was not called")
+	}
+}
+
 func TestManager_SessionAspectModeOverrideSkipsAutoCropAndReachesPipeline(t *testing.T) {
 	origProbe := probeInputFn
 	origCrop := probeCropFn

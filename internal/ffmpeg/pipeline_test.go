@@ -883,6 +883,48 @@ func TestBuildCommandCaptureInputArgsPrecedeInput(t *testing.T) {
 	assertArgsContainSubsequence(t, args, wantOrder)
 }
 
+func TestBuildCommandCaptureVisualizerSuppressAudioOutputOmitsAudioPipe(t *testing.T) {
+	spec := PipelineSpec{
+		CaptureInput: CaptureInputSpec{
+			Enabled:         true,
+			Format:          "alsa",
+			Device:          "hw:1,0",
+			SampleRate:      48000,
+			Channels:        2,
+			ThreadQueueSize: 64,
+			AnalyzeDuration: 100 * time.Millisecond,
+			ProbeSize:       32768,
+		},
+		SuppressAudioOutput: true,
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			RequiredFiltersAvailable: true,
+		},
+		SourceProbe:     &ProbeResult{AudioRate: 48000},
+		OutputWidth:     720,
+		OutputHeight:    480,
+		AudioSampleRate: 48000,
+		AudioChannels:   2,
+		VideoPipePath:   "pipe:3",
+		AudioPipePath:   "pipe:4",
+		FFmpegPath:      "ffmpeg",
+	}
+	args := BuildCommand(context.Background(), spec).Args
+	assertArgsContainSubsequence(t, args, []string{
+		"-thread_queue_size", "64",
+		"-f", "alsa",
+		"-sample_rate", "48000",
+		"-channels", "2",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
+		"-i", "hw:1,0",
+	})
+	assertArgsContainSubsequence(t, args, []string{"-map", "[visualizer_video]", "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:3"})
+	assertArgsDoNotContainSubsequence(t, args, []string{"-f", "s16le", spec.AudioPipePath})
+	assertArgsDoNotContainSubsequence(t, args, []string{"-map", "0:a:0"})
+}
+
 // TestBuildCommand_DualInputForDASH covers the YouTube DASH path: yt-dlp
 // returns separate video-only and audio-only stream URLs and the bridge
 // must invoke ffmpeg with two `-i` inputs, each with its own `-headers`
