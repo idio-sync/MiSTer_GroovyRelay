@@ -67,25 +67,29 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		a.mu.Unlock()
 		return "", a.recordAUXStartError(unavailableError("AUX config validation failed: %v", err))
 	}
+	coreManager := a.core
+	if coreManager == nil {
+		a.mu.Unlock()
+		return "", a.recordAUXStartError(unavailableError("AUX core is unavailable"))
+	}
 	req, cleanup, err := a.buildSessionRequestLocked(ctx, cfg.Input)
-	a.mu.Unlock()
 	if err != nil {
+		a.mu.Unlock()
 		return "", a.recordAUXStartError(err)
 	}
-
-	if err := a.core.StartSession(req); err != nil {
-		cleanup()
-		wrapped := fmt.Errorf("start AUX session: %w", err)
-		a.setState(adapters.StateError, wrapped.Error())
-		return "", wrapped
-	}
-
-	a.mu.Lock()
 	a.activeRef = req.AdapterRef
 	a.state = adapters.StateRunning
 	a.lastErr = ""
-	a.stateSince = a.now()
+	a.stateSince = a.auxNow()
 	a.mu.Unlock()
+
+	if err := coreManager.StartSession(req); err != nil {
+		cleanup()
+		wrapped := fmt.Errorf("start AUX session: %w", err)
+		a.rollbackAUXStart(req.AdapterRef, wrapped)
+		return "", wrapped
+	}
+
 	return req.AdapterRef, nil
 }
 
@@ -103,15 +107,19 @@ func (a *Adapter) StopAUX(ctx context.Context, inputID string) (bool, error) {
 	if requested := strings.TrimSpace(inputID); requested != "" && activeRef != "aux:"+requested {
 		return false, nil
 	}
-	if a.core != nil {
-		if status := a.core.Status(); status.AdapterRef != activeRef {
-			return false, nil
-		}
+	coreManager := a.core
+	if coreManager == nil {
+		a.clearActiveRef(activeRef)
+		return false, nil
 	}
 
-	matched, err := a.core.StopIfAdapterRef(activeRef)
-	if err != nil || !matched {
-		return matched, err
+	matched, err := coreManager.StopIfAdapterRef(activeRef)
+	if !matched {
+		a.clearActiveRef(activeRef)
+		return false, err
+	}
+	if err != nil {
+		return true, err
 	}
 	a.clearActiveRef(activeRef)
 	return true, nil
@@ -256,8 +264,24 @@ func unavailableError(format string, args ...any) error {
 }
 
 func (a *Adapter) recordAUXStartError(err error) error {
-	a.setState(adapters.StateError, err.Error())
+	a.mu.Lock()
+	a.state = adapters.StateError
+	a.lastErr = err.Error()
+	a.stateSince = a.auxNow()
+	a.mu.Unlock()
 	return err
+}
+
+func (a *Adapter) rollbackAUXStart(ref string, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.activeRef != ref {
+		return
+	}
+	a.activeRef = ""
+	a.state = adapters.StateError
+	a.lastErr = err.Error()
+	a.stateSince = a.auxNow()
 }
 
 func (a *Adapter) onStopForRef(ref string) func(string) {
@@ -276,5 +300,12 @@ func (a *Adapter) clearActiveRef(ref string) {
 	a.activeRef = ""
 	a.state = adapters.StateStopped
 	a.lastErr = ""
-	a.stateSince = a.now()
+	a.stateSince = a.auxNow()
+}
+
+func (a *Adapter) auxNow() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
 }

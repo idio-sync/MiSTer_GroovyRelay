@@ -128,17 +128,161 @@ func TestStartAUXUnavailableErrorsWrapSharedSentinel(t *testing.T) {
 }
 
 func TestStopAUXDoesNotStopForeignSession(t *testing.T) {
-	fc := &sessionCore{status: core.SessionStatus{AdapterRef: "plex:/library/metadata/42"}}
+	fc := &sessionCore{
+		status:      core.SessionStatus{AdapterRef: "plex:/library/metadata/42"},
+		stopMatched: false,
+	}
 	a := newTestAdapterWithCore(t, fc)
 	a.mustApplyConfig(t, DefaultConfig())
+	a.activeRef = "aux:aux"
 
 	matched, err := a.StopAUX(context.Background(), "")
 
 	if err != nil {
 		t.Fatalf("StopAUX: %v", err)
 	}
+	if matched {
+		t.Fatal("StopAUX matched foreign session")
+	}
+	if fc.stopCalls != 1 || fc.stopRef != "aux:aux" {
+		t.Fatalf("StopIfAdapterRef call = %d/%q, want 1/aux:aux", fc.stopCalls, fc.stopRef)
+	}
+	if fc.status.AdapterRef != "plex:/library/metadata/42" {
+		t.Fatalf("foreign status was stopped: %+v", fc.status)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want stale local ref cleared", a.activeRef)
+	}
+}
+
+func TestStartAUXImmediateOnStopClearsLocalState(t *testing.T) {
+	fc := &sessionCore{
+		onStart: func(req core.SessionRequest) {
+			req.OnStop("startup ended")
+		},
+	}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+
+	ref, err := a.StartAUX(context.Background(), "aux")
+
+	if err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+	if ref != "aux:aux" {
+		t.Fatalf("ref = %q, want aux:aux", ref)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want cleared by immediate OnStop", a.activeRef)
+	}
+	st := a.AUXStatus(context.Background())
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus after immediate OnStop = %+v, want inactive", st)
+	}
+}
+
+func TestStopAUXSuccessfulOwnedStopClearsLocalState(t *testing.T) {
+	fc := &sessionCore{stopMatched: true}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("StartAUX: %v", err)
+	}
+
+	matched, err := a.StopAUX(context.Background(), "aux")
+
+	if err != nil {
+		t.Fatalf("StopAUX: %v", err)
+	}
+	if !matched {
+		t.Fatal("StopAUX matched = false, want true")
+	}
+	if fc.stopCalls != 1 || fc.stopRef != "aux:aux" {
+		t.Fatalf("StopIfAdapterRef call = %d/%q, want 1/aux:aux", fc.stopCalls, fc.stopRef)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want cleared", a.activeRef)
+	}
+	st := a.AUXStatus(context.Background())
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus after StopAUX = %+v, want inactive", st)
+	}
+}
+
+func TestStopAUXClearsStaleLocalRefOnCoreMismatch(t *testing.T) {
+	fc := &sessionCore{
+		status:      core.SessionStatus{AdapterRef: "streams:active"},
+		stopMatched: false,
+	}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	a.activeRef = "aux:aux"
+	a.state = adapters.StateRunning
+
+	matched, err := a.StopAUX(context.Background(), "aux")
+
+	if err != nil {
+		t.Fatalf("StopAUX: %v", err)
+	}
+	if matched {
+		t.Fatal("StopAUX matched = true, want false")
+	}
+	if fc.stopCalls != 1 || fc.stopRef != "aux:aux" {
+		t.Fatalf("StopIfAdapterRef call = %d/%q, want 1/aux:aux", fc.stopCalls, fc.stopRef)
+	}
+	if fc.status.AdapterRef != "streams:active" {
+		t.Fatalf("foreign status was stopped: %+v", fc.status)
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want stale local ref cleared", a.activeRef)
+	}
+}
+
+func TestStartAUXMissingCoreReturnsUnavailable(t *testing.T) {
+	a := &Adapter{
+		cfg:       validStreamConfig(),
+		httpPort:  32500,
+		proxyHTTP: newProxyHTTPClient(),
+	}
+
+	_, err := a.StartAUX(context.Background(), "aux")
+
+	if !errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX error = %v, want ErrSourceUnavailable", err)
+	}
+}
+
+func TestStopAUXMissingCoreClearsLocalState(t *testing.T) {
+	a := &Adapter{activeRef: "aux:aux", state: adapters.StateRunning}
+
+	matched, err := a.StopAUX(context.Background(), "aux")
+
+	if err != nil {
+		t.Fatalf("StopAUX: %v", err)
+	}
+	if matched {
+		t.Fatal("StopAUX matched = true, want false")
+	}
+	if a.activeRef != "" {
+		t.Fatalf("activeRef = %q, want cleared", a.activeRef)
+	}
+}
+
+func TestStopAUXInputMismatchDoesNotStopActiveRef(t *testing.T) {
+	fc := &sessionCore{stopMatched: true}
+	a := newTestAdapterWithCore(t, fc)
+	a.activeRef = "aux:aux"
+
+	matched, err := a.StopAUX(context.Background(), "other")
+
+	if err != nil {
+		t.Fatalf("StopAUX: %v", err)
+	}
 	if matched || fc.stopCalls != 0 {
 		t.Fatalf("foreign stop matched=%v calls=%d", matched, fc.stopCalls)
+	}
+	if a.activeRef != "aux:aux" {
+		t.Fatalf("activeRef = %q, want preserved on input mismatch", a.activeRef)
 	}
 }
 
@@ -285,6 +429,7 @@ func assertProxyURL(t *testing.T, raw string, kind proxyTokenKind) {
 type sessionCore struct {
 	starts      int
 	startErr    error
+	onStart     func(core.SessionRequest)
 	lastRequest core.SessionRequest
 	stopCalls   int
 	stopRef     string
@@ -296,6 +441,9 @@ type sessionCore struct {
 func (f *sessionCore) StartSession(req core.SessionRequest) error {
 	f.starts++
 	f.lastRequest = req
+	if f.onStart != nil {
+		f.onStart(req)
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}

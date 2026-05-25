@@ -198,6 +198,9 @@ func (s *proxyStore) pruneLocked(now time.Time) {
 	kept := s.tokens[:0]
 	for _, tok := range s.tokens {
 		if tok.used || now.After(tok.expiresAt) {
+			if tok.cancel != nil {
+				tok.cancel()
+			}
 			continue
 		}
 		kept = append(kept, tok)
