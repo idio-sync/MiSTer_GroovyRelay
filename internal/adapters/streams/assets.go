@@ -1,6 +1,10 @@
 package streams
 
-import "embed"
+import (
+	"embed"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+)
 
 //go:embed testdata/*.seed.json
 var seedFS embed.FS
@@ -234,4 +238,25 @@ func bundledToonamiAftermathDefinition() ProviderDefinition {
 			{ID: "radio", Name: "Radio", GroupID: "live", URL: "http://api.toonamiaftermath.com:3000/radio/playlist.m3u8", PlayMode: PlaySequential, Order: 40},
 		},
 	}
+}
+
+// bundledChassisPresets is the source of truth for the 12-slot chassis
+// preset bank. The mockup's PRESETS map at docs/superpowers/reference/
+// 2026-05-21-receiver-v24.html is the visual spec; this literal mirrors
+// it. Live is hardcoded per-slot — ChannelDefinition has no Live field
+// to derive from. Channels named here MUST exist in the bundled
+// manifest; a unit test asserts this at run time.
+var bundledChassisPresets = [12]adapters.PresetEntry{
+	{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day on MTV", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+	{Slot: 2, ProviderID: "mtv-rewind", ChannelID: "80s", Title: "MTV 80s", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+	{Slot: 3, ProviderID: "mtv-rewind", ChannelID: "90s", Title: "MTV 90s", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+	{Slot: 4, ProviderID: "mtv-rewind", ChannelID: "trl", Title: "TRL", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+	{Slot: 5, ProviderID: "mtv-rewind", ChannelID: "120minutes", Title: "120 Minutes", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+	{Slot: 6, ProviderID: "mtv-rewind", ChannelID: "unplugged", Title: "Unplugged", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+	{Slot: 7, ProviderID: "cartoon-rewind", ChannelID: "loonytunes", Title: "Looney Tunes", BadgeLabel: "CARTOON", BadgeClass: "cartoon"},
+	{Slot: 8, ProviderID: "cartoon-rewind", ChannelID: "animaniacs", Title: "Animaniacs", BadgeLabel: "CARTOON", BadgeClass: "cartoon"},
+	{Slot: 9, ProviderID: "cartoon-rewind", ChannelID: "heman", Title: "He-Man", BadgeLabel: "CARTOON", BadgeClass: "cartoon"},
+	{Slot: 10, ProviderID: "cartoon-rewind", ChannelID: "all", Title: "All Cartoons", BadgeLabel: "CARTOON", BadgeClass: "cartoon"},
+	{Slot: 11, ProviderID: "toonami-aftermath", ChannelID: "east", Title: "Toonami East", BadgeLabel: "TOONAMI", BadgeClass: "toonami", Live: true},
+	{Slot: 12, ProviderID: "toonami-aftermath", ChannelID: "movies", Title: "Toonami Movies", BadgeLabel: "TOONAMI", BadgeClass: "toonami", Live: true},
 }
