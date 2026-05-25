@@ -157,8 +157,7 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 	view := s.session.StatusHomeView()
 	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, now)
 	overlay := s.collectMeterOverlay(context.Background(), view)
-	audioLive := s.audioScopeViewer != nil &&
-		(view.State == core.StatePlaying || view.State == core.StatePaused)
+	audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
 	base.Meter = s.meter.Sample(view, overlay, audioLive, now)
 	return base
 }
