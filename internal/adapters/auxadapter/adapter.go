@@ -3,6 +3,7 @@ package aux
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sync"
 	"time"
@@ -40,6 +41,8 @@ type Adapter struct {
 	stateSince time.Time
 	activeRef  string
 	enableErr  error
+	proxy      proxyStore
+	proxyHTTP  *http.Client
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -56,6 +59,8 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		cfg:        DefaultConfig(),
 		state:      adapters.StateStopped,
 		stateSince: now(),
+		proxy:      proxyStore{now: now},
+		proxyHTTP:  newProxyHTTPClient(),
 	}, nil
 }
 
