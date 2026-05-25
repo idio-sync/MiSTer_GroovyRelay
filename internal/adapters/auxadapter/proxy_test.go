@@ -149,6 +149,36 @@ func TestProxyRejectsUpstreamRedirect(t *testing.T) {
 	}
 }
 
+func TestProxyRejectsUpstreamNon2xx(t *testing.T) {
+	var requests int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		http.Error(w, "missing aux", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	a := newTestAdapter(t)
+	proxyURL, err := a.mintProxyURL(proxyTokenPlay, upstream.URL, time.Minute)
+	if err != nil {
+		t.Fatalf("mint proxy URL: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, proxyURL, nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	rr := httptest.NewRecorder()
+
+	a.handleProxy(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "AUX input returned non-2xx status") {
+		t.Fatalf("body = %q, want AUX input returned non-2xx status", rr.Body.String())
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
+	}
+}
+
 func TestProxyRejectsNonLoopbackClient(t *testing.T) {
 	var requests int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
