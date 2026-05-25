@@ -186,6 +186,7 @@ type TransportData struct {
 	ActionsEnabled  ActionsEnabled
 	AdapterRef      string
 	Generation      uint64
+	OutputVolume    int
 }
 
 type ActionsEnabled struct {
@@ -326,6 +327,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			ActionsEnabled:  ActionsEnabled{},
 			AdapterRef:      "",
 			Generation:      0,
+			OutputVolume:    cfg.Bridge.Audio.OutputVolume,
 		},
 		Visualizer: VisualizerData{
 			ActiveMode: defaultVisualizerMode(cfg),

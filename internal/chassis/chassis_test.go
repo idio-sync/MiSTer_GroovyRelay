@@ -38,6 +38,14 @@ func (f *fakeVisualizerViewer) set(mode string) {
 	f.mu.Unlock()
 }
 
+type fakeVolumeViewer struct {
+	volume int
+}
+
+func (f *fakeVolumeViewer) OutputVolume() int {
+	return f.volume
+}
+
 type fakeVisualizerSaver struct {
 	mu    sync.Mutex
 	saved []string
@@ -235,6 +243,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 			ActionsEnabled:  ActionsEnabled{},
 			AdapterRef:      "",
 			Generation:      0,
+			OutputVolume:    0,
 		},
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
@@ -289,9 +298,120 @@ func TestIdleSnapshot_TransportDataMatchesNewIdleShape(t *testing.T) {
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "",
 		Generation:      0,
+		OutputVolume:    0,
 	}
 	if !reflect.DeepEqual(got.Transport, want) {
 		t.Errorf("idleSnapshot Transport mismatch:\n got: %+v\nwant: %+v", got.Transport, want)
+	}
+}
+
+func TestIdleSnapshot_TransportOutputVolumeFromConfig(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.OutputVolume = 73
+
+	got := idleSnapshot(cfg, fixedNow)
+
+	if got.Transport.OutputVolume != 73 {
+		t.Fatalf("Transport.OutputVolume = %d, want 73", got.Transport.OutputVolume)
+	}
+}
+
+func TestSnapshotFromSession_OutputVolumeViewerOverridesConfigWhenIdle(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.OutputVolume = 12
+	viewer := &fakeVolumeViewer{volume: 88}
+
+	got := snapshotFromSession(cfg, nil, nil, viewer, nil, nil, fixedNow)
+
+	if got.Transport.OutputVolume != 88 {
+		t.Fatalf("Transport.OutputVolume = %d, want 88", got.Transport.OutputVolume)
+	}
+}
+
+func TestSnapshotFromSession_OutputVolumeViewerSurvivesLiveTransportOverwrite(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.OutputVolume = 12
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Rio",
+		Source:     "plex",
+		AdapterRef: "plex:track:1",
+		Generation: 9,
+		Position:   30 * time.Second,
+		Duration:   90 * time.Second,
+	}}
+	viewer := &fakeVolumeViewer{volume: 66}
+
+	got := snapshotFromSession(cfg, sv, nil, viewer, nil, nil, fixedNow)
+
+	if got.Transport.OutputVolume != 66 {
+		t.Fatalf("Transport.OutputVolume = %d, want 66", got.Transport.OutputVolume)
+	}
+}
+
+func TestVolumeAngle_MapsOutputVolumeToArc(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		volume int
+		want   int
+	}{
+		{volume: -10, want: -135},
+		{volume: 0, want: -135},
+		{volume: 1, want: -132},
+		{volume: 50, want: 0},
+		{volume: 99, want: 132},
+		{volume: 100, want: 135},
+		{volume: 150, want: 135},
+	}
+	for _, tc := range tests {
+		if got := volumeAngle(tc.volume); got != tc.want {
+			t.Errorf("volumeAngle(%d) = %d, want %d", tc.volume, got, tc.want)
+		}
+	}
+}
+
+func TestHandleIndex_RendersVolumeKnobHooks(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.OutputVolume = 73
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+
+	s.handleIndex(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-volume-knob`,
+		`data-volume-value="73"`,
+		`data-volume-range`,
+		`aria-label="Volume"`,
+		`min="0"`,
+		`max="100"`,
+		`value="73"`,
+		`--volume-angle: 62deg`,
+		`/receiver/static/volume-knob.js?v=test-1.0.0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("receiver HTML missing %q\n%s", want, body)
+		}
+	}
+	transportIdx := strings.Index(body, "transport.js?v=")
+	volumeIdx := strings.Index(body, "volume-knob.js?v=")
+	if transportIdx < 0 || volumeIdx < 0 {
+		t.Fatalf("missing transport.js or volume-knob.js script tag")
+	}
+	if volumeIdx < transportIdx {
+		t.Errorf("volume-knob.js must load after transport.js so shared transport/event hooks are initialized")
 	}
 }
 
@@ -466,11 +586,12 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 	text := string(css)
 	for _, want := range []string{
 		`@container chassis (max-width: 420px)`,
-		`"label controls controls"`,
-		`"label seek gear"`,
+		`"label controls controls controls"`,
+		`"label seek volume gear"`,
 		`grid-area: label;`,
 		`grid-area: controls;`,
 		`grid-area: seek;`,
+		`grid-area: volume;`,
 		`grid-area: gear;`,
 		`body.receiver .seek-time`,
 		`display: none;`,
@@ -870,7 +991,7 @@ func TestIdleSnapshotRendersFiveSourceButtonsIncludingAUX(t *testing.T) {
 		InputID:    "aux",
 	}}
 
-	got := snapshotFromSession(cfg, nil, nil, nil, aux, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, nil, aux, fixedNow)
 	var labels []string
 	for _, button := range got.Source.Buttons {
 		labels = append(labels, button.Label)
@@ -1446,7 +1567,7 @@ func TestSnapshotFromSession_NilSessionFallsBackToIdle(t *testing.T) {
 	cfg := nonZeroConfig()
 	cfg.Session = nil
 
-	got := snapshotFromSession(cfg, nil, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nil Session should match idleSnapshot exactly; got %+v\nwant %+v", got, want)
@@ -1458,7 +1579,7 @@ func TestSnapshotFromSession_VisualizerModeOverridesIdleDefault(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
-	got := snapshotFromSession(cfg, nil, viewer, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, viewer, nil, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeStereoScope {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (viewer overrides cfg.Bridge default)", got.Visualizer.ActiveMode, config.VisualizerModeStereoScope)
 	}
@@ -1469,7 +1590,7 @@ func TestSnapshotFromSession_NilVisualizerViewerFallsBackToCfg(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	cfg.Bridge.Visualizer.Mode = config.VisualizerModeOscilloscopeWave
-	got := snapshotFromSession(cfg, nil, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, nil, nil, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeOscilloscopeWave {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (nil viewer falls back to cfg.Bridge)", got.Visualizer.ActiveMode, config.VisualizerModeOscilloscopeWave)
 	}
@@ -1480,7 +1601,7 @@ func TestSnapshotFromSession_NormalizesEmptyMode(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
 	cfg := nonZeroConfig()
 	viewer := &fakeVisualizerViewer{mode: ""}
-	got := snapshotFromSession(cfg, nil, viewer, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, nil, viewer, nil, nil, nil, fixedNow)
 	if got.Visualizer.ActiveMode != config.VisualizerModeRetroAnalyzer {
 		t.Errorf("Visualizer.ActiveMode = %q, want %q (empty viewer mode should normalize to retro_analyzer)", got.Visualizer.ActiveMode, config.VisualizerModeRetroAnalyzer)
 	}
@@ -1538,7 +1659,7 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 		},
 	}
 
-	got := snapshotFromSession(cfg, sv, nil, tv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, tv, nil, fixedNow)
 
 	want := TransportData{
 		State:           "playing",
@@ -1556,8 +1677,9 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 			Replay:      true,
 			Seek:        true,
 		},
-		AdapterRef: "jellyfin:item:123",
-		Generation: 12,
+		AdapterRef:   "jellyfin:item:123",
+		Generation:   12,
+		OutputVolume: 0,
 	}
 	if got.Transport != want {
 		t.Errorf("Transport = %+v, want %+v", got.Transport, want)
@@ -1592,7 +1714,7 @@ func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
 		},
 	}
 
-	got := snapshotFromSession(cfg, sv, nil, tv, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, tv, nil, fixedNow)
 
 	want := TransportData{
 		State:           "paused",
@@ -1605,6 +1727,7 @@ func TestSnapshotFromSession_NoProviderKeepsReadOnlyStateAndTime(t *testing.T) {
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "url:abc",
 		Generation:      4,
+		OutputVolume:    0,
 	}
 	if got.Transport != want {
 		t.Errorf("Transport = %+v, want read-only %+v", got.Transport, want)
@@ -1626,7 +1749,7 @@ func TestSnapshotFromSession_NilTransportViewerIdleKeepsTransportZero(t *testing
 		Duration:   5 * time.Minute,
 	}}
 
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow).Transport
 
 	if got.Transport != want {
@@ -1648,7 +1771,7 @@ func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t
 		Duration:   0,
 	}}
 
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 
 	want := TransportData{
 		State:           "playing",
@@ -1661,6 +1784,7 @@ func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "plex:track:def",
 		Generation:      8,
+		OutputVolume:    0,
 	}
 	if got.Transport != want {
 		t.Errorf("Transport = %+v, want read-only %+v", got.Transport, want)
@@ -1679,7 +1803,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 		Position: 4*time.Minute + 23*time.Second,
 		Duration: 9*time.Minute + 56*time.Second,
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
@@ -1703,7 +1827,7 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults_StillSetsVisualizer(
 		State: core.StatePlaying, Title: "First Day on MTV", Source: "plex", Position: 4*time.Minute + 23*time.Second, Duration: 9*time.Minute + 56*time.Second,
 	}}
 	viewer := &fakeVisualizerViewer{mode: config.VisualizerModeStereoScope}
-	got := snapshotFromSession(cfg, sv, viewer, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, viewer, nil, nil, nil, fixedNow)
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
 	}
@@ -1720,7 +1844,7 @@ func TestSnapshotFromSession_PausedMapsToLive(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.StatePaused, Title: "Take On Me", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 
 	// core.StatePaused -> chassis "live" so the body stays bright
 	// during transport pause. The transport-row pause indicator is
@@ -1736,7 +1860,7 @@ func TestSnapshotFromSession_IdleStateMatchesIdleSnapshot(t *testing.T) {
 	cfg := nonZeroConfig()
 
 	sv := &fakeSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("idle-from-session should match idleSnapshot exactly")
@@ -1751,7 +1875,7 @@ func TestSnapshotFromSession_UnknownStateFallsBackToIdle(t *testing.T) {
 	sv := &fakeSessionViewer{view: core.StatusHomeView{
 		State: core.State("buffering"), Title: "Not Yet Supported", Source: "plex",
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 	want := idleSnapshot(cfg, fixedNow)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("unknown session state should fall back to idleSnapshot; got %+v\nwant %+v", got, want)
@@ -1770,7 +1894,7 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 		Position: 30 * time.Second,
 		Duration: 3 * time.Minute,
 	}}
-	got := snapshotFromSession(cfg, sv, nil, nil, nil, fixedNow)
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 
 	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
 		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)

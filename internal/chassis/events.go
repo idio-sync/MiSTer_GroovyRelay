@@ -82,6 +82,18 @@ type actionsEnabledE struct {
 	Seek        bool `json:"seek"`
 }
 
+// volumeEnvelope is the payload for the `volume` SSE event. Kept
+// separate from transportEnvelope so volume-only changes (the chassis
+// knob) don't force the transport UI to repaint, and so transport-only
+// changes (state/seek) don't echo the unchanged volume.
+type volumeEnvelope struct {
+	OutputVolume int `json:"outputVolume"`
+}
+
+func volumeEnvelopeFrom(t TransportData) volumeEnvelope {
+	return volumeEnvelope{OutputVolume: t.OutputVolume}
+}
+
 func transportEnvelopeFrom(t TransportData) transportEnvelope {
 	return transportEnvelope{
 		State:           t.State,
@@ -186,6 +198,14 @@ func (s *Server) logMeterEmitRefused(reason string) {
 	}
 }
 
+// volumeChanged isolates the OutputVolume diff so the `volume` SSE
+// event can fire without piggy-backing on `transport`. Deliberately
+// excludes every other TransportData field: a state/seek change that
+// leaves volume untouched must not emit a duplicate volume event.
+func volumeChanged(a, b TransportData) bool {
+	return a.OutputVolume != b.OutputVolume
+}
+
 func sourceChanged(prev, next sourceEnvelope) bool {
 	if len(prev.Buttons) != len(next.Buttons) {
 		return true
@@ -240,6 +260,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err := emit(w, "transport", transportEnvelopeFrom(last.Transport)); err != nil {
 		return
 	}
+	if err := emit(w, "volume", volumeEnvelopeFrom(last.Transport)); err != nil {
+		return
+	}
 	if err := emit(w, "meter", meterEnvelopeFrom(last.Meter)); err != nil {
 		return
 	}
@@ -279,6 +302,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				lastSource = currSource
+			}
+			// Volume diff must precede transport diff: transportChanged's
+			// branch overwrites last.Transport wholesale, which would
+			// erase the old OutputVolume before we could compare it.
+			// volumeChanged is volume-only, so emitting it here for a
+			// pure knob change does not double-fire as a transport event.
+			if volumeChanged(curr.Transport, last.Transport) {
+				if err := emit(w, "volume", volumeEnvelopeFrom(curr.Transport)); err != nil {
+					return
+				}
+				last.Transport.OutputVolume = curr.Transport.OutputVolume
 			}
 			if transportChanged(curr.Transport, last.Transport) {
 				if err := emit(w, "transport", transportEnvelopeFrom(curr.Transport)); err != nil {

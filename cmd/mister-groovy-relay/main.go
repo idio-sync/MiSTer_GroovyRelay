@@ -59,6 +59,15 @@ func (a *visualizerSaverAdapter) SaveVisualizerMode(mode string) error {
 	return err
 }
 
+type volumeSaverAdapter struct {
+	bs *uiserver.BridgeSaver
+}
+
+func (a *volumeSaverAdapter) SaveOutputVolume(volume int) error {
+	_, err := a.bs.SaveOutputVolume(volume)
+	return err
+}
+
 func main() {
 	startedAt := time.Now()
 	defaultCfg := defaultConfigForRuntime()
@@ -354,6 +363,8 @@ func main() {
 		TransportController: playbackDispatcher,
 		VisualizerViewer:    coreMgr,
 		VisualizerSaver:     &visualizerSaverAdapter{bs: saver},
+		VolumeViewer:        coreMgr,
+		VolumeSaver:         &volumeSaverAdapter{bs: saver},
 		AUX:                 auxAdapter,
 	})
 	if err != nil {

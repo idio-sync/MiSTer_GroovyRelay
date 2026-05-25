@@ -44,6 +44,13 @@ type Config struct {
 	// should operate in read-only mode.
 	VisualizerSaver VisualizerSaver
 
+	// VolumeViewer is the optional read-only source for global output
+	// volume. When nil, chassis falls back to startup bridge config.
+	VolumeViewer VolumeViewer
+	// VolumeSaver is the optional persistence hook for output-volume
+	// changes. When nil, chassis renders the knob read-only for POSTs.
+	VolumeSaver VolumeSaver
+
 	AUX AUXStarter
 }
 
@@ -62,6 +69,8 @@ type Server struct {
 
 	visualizerViewer VisualizerViewer
 	visualizerSaver  VisualizerSaver
+	volumeViewer     VolumeViewer
+	volumeSaver      VolumeSaver
 	aux              AUXStarter
 
 	cache       *snapshotCache
@@ -103,6 +112,8 @@ func New(cfg Config) (*Server, error) {
 		transportController: cfg.TransportController,
 		visualizerViewer:    cfg.VisualizerViewer,
 		visualizerSaver:     cfg.VisualizerSaver,
+		volumeViewer:        cfg.VolumeViewer,
+		volumeSaver:         cfg.VolumeSaver,
 		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
@@ -126,10 +137,16 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, now)
 		applyAUXSourceState(&base, s.aux)
 		base.Visualizer.ActiveMode = liveVisualizerMode(s.cfg, s.visualizerViewer)
+		// idleSnapshot already seeded Transport.OutputVolume from cfg; a
+		// non-nil volumeViewer overrides with the live value so the knob
+		// tracks runtime hot-swaps even without an active cast.
+		if s.volumeViewer != nil {
+			base.Transport.OutputVolume = s.volumeViewer.OutputVolume()
+		}
 		return base
 	}
 	view := s.session.StatusHomeView()
-	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.transportViewer, s.aux, now)
+	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, now)
 	overlay := s.collectMeterOverlay(context.Background(), view)
 	base.Meter = s.meter.Sample(view, overlay, now)
 	return base
@@ -146,6 +163,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/transport/action", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportAction))))
 	mux.Handle("POST /receiver/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
 	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
+	mux.Handle("POST /receiver/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
 	mux.Handle("POST /receiver/aux/start", requireSameOrigin(http.HandlerFunc(s.handleAUXStartPost)))
 	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)

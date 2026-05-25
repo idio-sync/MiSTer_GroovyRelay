@@ -51,21 +51,27 @@ type TransportController interface {
 //
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
-func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
+func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, volv VolumeViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
 	if sv == nil {
 		base := idleSnapshot(cfg, now)
 		applyAUXSourceState(&base, aux)
 		base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
+		// Idle path: idleSnapshot seeded base.Transport.OutputVolume from
+		// cfg already. A non-nil volv overrides with the live value so the
+		// knob tracks runtime hot-swaps even without an active cast.
+		if volv != nil {
+			base.Transport.OutputVolume = volv.OutputVolume()
+		}
 		return base
 	}
-	return snapshotFromStatusView(cfg, sv.StatusHomeView(), vv, tv, aux, now)
+	return snapshotFromStatusView(cfg, sv.StatusHomeView(), vv, volv, tv, aux, now)
 }
 
 // snapshotFromStatusView is snapshotFromSession's worker variant for
 // callers that already hold a StatusHomeView (Server.buildSnapshot reads
 // the view once and reuses it for both transport data and meter
 // sampling, keeping the per-tick StatusHomeView() count at one).
-func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
+func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerViewer, volv VolumeViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
 	base := idleSnapshot(cfg, now)
 	switch view.State {
 	case core.StatePlaying, core.StatePaused:
@@ -79,6 +85,14 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 		base.Transport = buildTransportData(view, tv, context.Background())
 	default:
 		// idle/unknown keep idleSnapshot data
+	}
+	// Apply the live volume read AFTER the live branch's
+	// base.Transport = buildTransportData(...) so a live overwrite cannot
+	// erase the value seeded by idleSnapshot.
+	if volv != nil {
+		base.Transport.OutputVolume = volv.OutputVolume()
+	} else {
+		base.Transport.OutputVolume = cfg.Bridge.Audio.OutputVolume
 	}
 	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
