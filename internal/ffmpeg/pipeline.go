@@ -59,8 +59,10 @@ type PipelineSpec struct {
 	// muxes them via `-map 0:v -map 1:a`. Empty string preserves the
 	// single-input behavior used by Plex and progressive (pre-merged)
 	// YouTube formats. AudioInputHeaders apply only to the second input.
-	AudioInputURL     string
-	AudioInputHeaders map[string]string
+	AudioInputURL       string
+	AudioInputHeaders   map[string]string
+	SuppressAudioOutput bool
+	CaptureInput        CaptureInputSpec
 
 	OutputWidth  int
 	OutputHeight int
@@ -110,6 +112,9 @@ type PipelineSpec struct {
 // signal that the source has audio, and SourceProbe (which sees only the
 // video-only DASH stream) cannot tell us so.
 func audioOutputEnabled(s PipelineSpec) bool {
+	if s.SuppressAudioOutput {
+		return false
+	}
 	if s.AudioSampleRate <= 0 || s.AudioChannels <= 0 {
 		return false
 	}
@@ -452,9 +457,13 @@ func BuildCommand(ctx context.Context, s PipelineSpec) *exec.Cmd {
 	if s.UseSSSeek && s.SeekSeconds > 0 {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", s.SeekSeconds))
 	}
-	args = s.Policy.Apply(args)
-	args = appendHeadersArg(args, s.InputHeaders)
-	args = append(args, "-i", s.InputURL)
+	if s.CaptureInput.Enabled {
+		args = appendCaptureInputArgs(args, s.CaptureInput)
+	} else {
+		args = s.Policy.Apply(args)
+		args = appendHeadersArg(args, s.InputHeaders)
+		args = append(args, "-i", s.InputURL)
+	}
 
 	// Input 1 (audio), DASH path only. Repeat -ss before this -i so the
 	// audio stream starts at the same offset as video — without it the two

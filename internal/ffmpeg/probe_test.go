@@ -217,6 +217,67 @@ func TestProbe_NonZeroPolicyAppendsFlagsBeforeURL(t *testing.T) {
 	}
 }
 
+func TestProbeInputURLAppliesPolicyBeforeURL(t *testing.T) {
+	cmd := probeCommand("ffprobe", ProbeInputSpec{
+		URL: "http://127.0.0.1:32500/internal/aux-proxy/?aux_token=probe",
+		Policy: MediaInputPolicy{
+			ProtocolWhitelist: []string{"http", "tcp"},
+			DisableReconnect:  true,
+			RWTimeout:         2 * time.Second,
+		},
+	})
+	assertArgsContainSubsequence(t, cmd.Args, []string{
+		"-protocol_whitelist", "http,tcp",
+		"-reconnect", "0",
+		"-reconnect_at_eof", "0",
+		"-reconnect_streamed", "0",
+		"-reconnect_on_network_error", "0",
+		"-rw_timeout", "2000000",
+		"http://127.0.0.1:32500/internal/aux-proxy/?aux_token=probe",
+	})
+}
+
+func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
+	cmd := probeCommand("ffprobe", ProbeInputSpec{
+		Capture: CaptureInputSpec{
+			Enabled:         true,
+			Format:          "dshow",
+			Device:          `audio=Line In (USB Audio Device)`,
+			SampleRate:      48000,
+			Channels:        2,
+			ThreadQueueSize: 64,
+			AnalyzeDuration: 100 * time.Millisecond,
+			ProbeSize:       32768,
+		},
+	})
+	assertArgsContainSubsequence(t, cmd.Args, []string{
+		"-thread_queue_size", "64",
+		"-f", "dshow",
+		"-sample_rate", "48000",
+		"-channels", "2",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
+		"-i", `audio=Line In (USB Audio Device)`,
+	})
+}
+
+func TestProbeInputCaptureUsesDefaultBoundedTimeout(t *testing.T) {
+	if got := probeTimeout(ProbeInputSpec{
+		Capture: CaptureInputSpec{Enabled: true},
+	}); got != 3*time.Second {
+		t.Fatalf("capture default probe timeout = %s, want 3s", got)
+	}
+	if got := probeTimeout(ProbeInputSpec{URL: "http://example.test/audio.wav"}); got != 0 {
+		t.Fatalf("URL probe timeout = %s, want caller context", got)
+	}
+	if got := probeTimeout(ProbeInputSpec{
+		Capture: CaptureInputSpec{Enabled: true},
+		Timeout: 500 * time.Millisecond,
+	}); got != 500*time.Millisecond {
+		t.Fatalf("explicit probe timeout = %s, want 500ms", got)
+	}
+}
+
 // TestProbe_LiveFixture generates a 1-second synthetic test clip with ffmpeg
 // then probes it. Skipped if ffmpeg / ffprobe are not findable.
 func TestProbe_LiveFixture(t *testing.T) {

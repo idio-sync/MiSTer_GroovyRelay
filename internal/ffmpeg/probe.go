@@ -12,6 +12,7 @@ import (
 )
 
 const probeWaitDelay = time.Second
+const defaultCaptureProbeTimeout = 3 * time.Second
 
 // ProbeResult is the subset of ffprobe output the pipeline cares about.
 type ProbeResult struct {
@@ -48,6 +49,42 @@ type ffprobeOutput struct {
 // emits its flags before the URL so they apply to the probe input. See
 // MediaInputPolicy.Apply for the flag mapping.
 func Probe(ctx context.Context, ffprobePath, url string, policy MediaInputPolicy) (*ProbeResult, error) {
+	return ProbeInput(ctx, ffprobePath, ProbeInputSpec{
+		URL:    url,
+		Policy: policy,
+	})
+}
+
+func ProbeInput(ctx context.Context, ffprobePath string, input ProbeInputSpec) (*ProbeResult, error) {
+	if timeout := probeTimeout(input); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	cmd := probeCommandContext(ctx, ffprobePath, input)
+	cmd.WaitDelay = probeWaitDelay
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("ffprobe: %w", err)
+	}
+	return parseProbeOutput(out)
+}
+
+func probeTimeout(input ProbeInputSpec) time.Duration {
+	if input.Timeout > 0 {
+		return input.Timeout
+	}
+	if input.Capture.Enabled {
+		return defaultCaptureProbeTimeout
+	}
+	return 0
+}
+
+func probeCommand(ffprobePath string, input ProbeInputSpec) *exec.Cmd {
+	return probeCommandContext(context.Background(), ffprobePath, input)
+}
+
+func probeCommandContext(ctx context.Context, ffprobePath string, input ProbeInputSpec) *exec.Cmd {
 	if ffprobePath == "" {
 		ffprobePath = "ffprobe"
 	}
@@ -56,15 +93,14 @@ func Probe(ctx context.Context, ffprobePath, url string, policy MediaInputPolicy
 		"-print_format", "json",
 		"-show_streams", "-show_format",
 	}
-	args = policy.Apply(args)
-	args = append(args, url)
-	cmd := exec.CommandContext(ctx, ffprobePath, args...)
-	cmd.WaitDelay = probeWaitDelay
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("ffprobe: %w", err)
+	if input.Capture.Enabled {
+		args = appendCaptureInputArgs(args, input.Capture)
+	} else {
+		args = input.Policy.Apply(args)
+		args = append(args, input.URL)
 	}
-	return parseProbeOutput(out)
+	cmd := exec.CommandContext(ctx, ffprobePath, args...)
+	return cmd
 }
 
 // parseProbeOutput is split out so unit tests can exercise the JSON mapping
