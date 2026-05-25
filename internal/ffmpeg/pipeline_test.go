@@ -3,6 +3,7 @@ package ffmpeg
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -124,9 +125,10 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 
 func TestEscapeFilterText(t *testing.T) {
 	// Inside drawtext `text='...'`: filtergraph's single-quoted zone is
-	// literal, so `:`, `,`, `;`, `[`, `]` pass through untouched. Only `'`
-	// (filtergraph) and `\`, `%` (drawtext post-extraction expansion)
-	// need escaping. `'` uses the close-escape-reopen idiom `'\''`.
+	// literal, so `,`, `;`, `[`, `]` pass through untouched. `'` must be
+	// escaped for the filtergraph parser, while `:`, `\`, and `%` must be
+	// escaped for drawtext's option parser / post-extraction expansion.
+	// `'` uses the close-escape-reopen idiom `'\''`.
 	in := "Bob's [12\"]: 50%, line\nnext\\tail;end"
 	got := escapeFilterText(in)
 	for _, bad := range []string{"\n", "\r", "\t"} {
@@ -134,7 +136,7 @@ func TestEscapeFilterText(t *testing.T) {
 			t.Fatalf("escaped text contains control character %q: %q", bad, got)
 		}
 	}
-	for _, want := range []string{`Bob'\''s`, `[12"]`, `:`, `,`, `\%`, `\\tail`, `;`} {
+	for _, want := range []string{`Bob'\''s`, `[12"]`, `\:`, `,`, `\%`, `\\tail`, `;`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("escaped text missing %q: %q", want, got)
 		}
@@ -162,6 +164,7 @@ func TestBuildVisualizerFilterChain_ApostropheInTitle(t *testing.T) {
 			Metadata: VisualizerMetadata{
 				Title:  "Don't Stop Believin'",
 				Artist: "Journey",
+				Album:  "Live: 1999",
 			},
 		},
 	}
@@ -169,12 +172,109 @@ func TestBuildVisualizerFilterChain_ApostropheInTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildVisualizerFilterChain: %v", err)
 	}
-	if !strings.Contains(graph, `text='Don'\''t Stop Believin'\'''`) {
+	if !strings.Contains(graph, `text='DON'\''T STOP BELIEVIN'\'''`) {
 		t.Fatalf("apostrophes not escaped via close-reopen idiom:\n%s", graph)
 	}
+	if !strings.Contains(graph, `text='LIVE\: 1999'`) {
+		t.Fatalf("metadata colon not escaped for drawtext option parsing:\n%s", graph)
+	}
 	// And nothing crashed the trusted `%{pts\:hms}` expression path.
-	if strings.Contains(graph, `text='Don\'t`) {
+	if strings.Contains(graph, `text='DON\'T`) {
 		t.Fatalf("graph contains pre-fix broken `\\'` escape:\n%s", graph)
+	}
+}
+
+func TestVisualizerTextLines_MetadataOrderStylesAndProgress(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth:  720,
+		OutputHeight: 480,
+		Visualizer: VisualizerSpec{
+			Mode: VisualizerModeRetroAnalyzer,
+			Metadata: VisualizerMetadata{
+				Title:    "Blue Monday",
+				Artist:   "New Order",
+				Album:    "Power Corruption & Lies",
+				Duration: 7*time.Minute + 29*time.Second,
+			},
+		},
+	}
+	lines := visualizerTextLines(spec)
+	if len(lines) != 4 {
+		t.Fatalf("visualizerTextLines len = %d, want 4: %#v", len(lines), lines)
+	}
+	want := []visualizerTextLine{
+		{Role: visualizerTextRoleArtist, Text: "NEW ORDER", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "24", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleTitle, Text: "BLUE MONDAY", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "48", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleAlbum, Text: "POWER CORRUPTION & LIES", FontSize: 18, FontColor: "0x7fdc7f", X: "24", Y: "72", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleProgress, Text: "%{pts\\:hms} / 7:29", TrustedExpr: true, FontSize: 16, FontColor: "0x70c870", X: "w-tw-24", Y: "24"},
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d = %#v, want %#v", i, lines[i], want[i])
+		}
+	}
+}
+
+func TestVisualizerTextLines_TitleFallbackAndBlankMetadata(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth:  720,
+		OutputHeight: 480,
+		Visualizer: VisualizerSpec{
+			Mode: VisualizerModeRetroAnalyzer,
+			Metadata: VisualizerMetadata{
+				Title:  "   ",
+				Artist: "   ",
+				Album:  "",
+			},
+		},
+	}
+	lines := visualizerTextLines(spec)
+	if len(lines) != 1 {
+		t.Fatalf("visualizerTextLines len = %d, want 1: %#v", len(lines), lines)
+	}
+	if lines[0].Role != visualizerTextRoleTitle || lines[0].Text != "NOW PLAYING" {
+		t.Fatalf("fallback line = %#v, want NOW PLAYING title", lines[0])
+	}
+	if lines[0].WindowWidth != 392 || !lines[0].Marquee {
+		t.Fatalf("fallback line layout = %#v, want metadata window marquee line", lines[0])
+	}
+}
+
+func TestVisualizerLayoutForLogicalCanvases(t *testing.T) {
+	cases := []struct {
+		name          string
+		mode          VisualizerMode
+		logicalW      int
+		logicalH      int
+		sideMargin    int
+		metadataWidth int
+		metadataY     []string
+		progressX     string
+		progressY     string
+		showProgress  bool
+	}{
+		{name: "ntsc 240p upper", mode: VisualizerModeRetroAnalyzer, logicalW: 320, logicalH: 240, sideMargin: 16, metadataWidth: 176, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
+		{name: "pal 288p upper", mode: VisualizerModeOscilloscopeWave, logicalW: 384, logicalH: 288, sideMargin: 16, metadataWidth: 234, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-16", progressY: "24", showProgress: true},
+		{name: "ntsc 480i upper", mode: VisualizerModeRetroAnalyzer, logicalW: 640, logicalH: 480, sideMargin: 24, metadataWidth: 392, metadataY: []string{"24", "48", "72"}, progressX: "w-tw-24", progressY: "24", showProgress: true},
+		{name: "pal 576i lower", mode: VisualizerModeStereoScope, logicalW: 768, logicalH: 576, sideMargin: 24, metadataWidth: 504, metadataY: []string{"h-88", "h-64", "h-40"}, progressX: "w-tw-24", progressY: "h-88", showProgress: true},
+		{name: "tiny unexpected canvas omits progress", mode: VisualizerModeRetroAnalyzer, logicalW: 180, logicalH: 120, sideMargin: 16, metadataWidth: 148, metadataY: []string{"24", "48", "72"}, progressX: "", progressY: "", showProgress: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := visualizerLayoutFor(tc.mode, tc.logicalW, tc.logicalH)
+			if got.SideMargin != tc.sideMargin || got.MetadataX != tc.sideMargin {
+				t.Fatalf("margins = %#v, want side/meta %d", got, tc.sideMargin)
+			}
+			if got.MetadataWidth != tc.metadataWidth {
+				t.Fatalf("MetadataWidth = %d, want %d in %#v", got.MetadataWidth, tc.metadataWidth, got)
+			}
+			if strings.Join(got.MetadataY, ",") != strings.Join(tc.metadataY, ",") {
+				t.Fatalf("MetadataY = %v, want %v", got.MetadataY, tc.metadataY)
+			}
+			if got.ProgressX != tc.progressX || got.ProgressY != tc.progressY || got.ShowProgress != tc.showProgress {
+				t.Fatalf("progress layout = %#v, want x=%q y=%q show=%v", got, tc.progressX, tc.progressY, tc.showProgress)
+			}
+		})
 	}
 }
 
@@ -202,13 +302,18 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 	for _, want := range []string{
 		"showfreqs=s=640x480",
 		"colors=0x70ff70",
-		"drawtext=",
-		"x=24:y=24",
-		"x=24:y=54",
-		"x=24:y=84",
-		"Blue Monday",
-		"New Order",
-		"%{pts\\:hms}",
+		"color=c=black@0.0:s=392x24",
+		"color=c=black@0.0:s=392x22",
+		"drawtext=text='NEW ORDER'",
+		"drawtext=text='BLUE MONDAY'",
+		"drawtext=text='POWER CORRUPTION & LIES'",
+		"fontsize=20:fontcolor=0x9dff9d",
+		"fontsize=18:fontcolor=0x7fdc7f",
+		"x='if(lte(tw,392),0,-mod(max(t-1.5,0)*24,tw+24))'",
+		"overlay=x=24:y=24",
+		"overlay=x=24:y=48",
+		"overlay=x=24:y=72",
+		"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=24:fontsize=16:fontcolor=0x70c870",
 		"fps=60000/1001",
 		"scale=w=720:h=480",
 		"format=bgr24",
@@ -221,9 +326,9 @@ func TestBuildVisualizerFilterChain_RetroAnalyzerShape(t *testing.T) {
 	if strings.Contains(graph, "format=rgb24") {
 		t.Fatalf("graph contains wasted intermediate format=rgb24:\n%s", graph)
 	}
-	for _, bad := range []string{`\%{pts`, "(w-48)*min", "drawbox="} {
+	for _, bad := range []string{`\%{pts`, "(w-48)*min", "drawbox=", "Blue Monday", "New Order"} {
 		if strings.Contains(graph, bad) {
-			t.Fatalf("graph contains invalid duration expression %q:\n%s", bad, graph)
+			t.Fatalf("graph contains invalid or non-uppercase fragment %q:\n%s", bad, graph)
 		}
 	}
 }
@@ -278,9 +383,10 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 			mode: VisualizerModeRetroAnalyzer,
 			want: []string{
 				"[0:a:0]showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0x70ff70[viz0]",
-				"x=24:y=24",
-				"x=24:y=54",
-				"x=24:y=84",
+				"overlay=x=24:y=24",
+				"overlay=x=24:y=48",
+				"overlay=x=24:y=72",
+				"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=24",
 			},
 		},
 		{
@@ -288,9 +394,10 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 			mode: VisualizerModeOscilloscopeWave,
 			want: []string{
 				"[0:a:0]showwaves=s=640x480:mode=line:colors=0x58e8ff[viz0]",
-				"x=24:y=24",
-				"x=24:y=54",
-				"x=24:y=84",
+				"overlay=x=24:y=24",
+				"overlay=x=24:y=48",
+				"overlay=x=24:y=72",
+				"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=24",
 			},
 		},
 		{
@@ -298,9 +405,10 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 			mode: VisualizerModeStereoScope,
 			want: []string{
 				"[0:a:0]avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba[viz0]",
-				"x=24:y=h-96",
-				"x=24:y=h-66",
-				"x=24:y=h-36",
+				"overlay=x=24:y=H-88",
+				"overlay=x=24:y=H-64",
+				"overlay=x=24:y=H-40",
+				"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=h-88",
 			},
 		},
 	}
@@ -340,6 +448,131 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 				if !strings.Contains(graph, want) {
 					t.Fatalf("graph missing final stage %q:\n%s", want, graph)
 				}
+			}
+		})
+	}
+}
+
+func TestBuildVisualizerFilterChain_MetadataWindowScalesWithModeline(t *testing.T) {
+	cases := []struct {
+		name         string
+		outputH      int
+		mode         VisualizerMode
+		lineSize     string
+		overlay      string
+		progress     string
+		marqueeWidth string
+	}{
+		{"ntsc 240p", 240, VisualizerModeRetroAnalyzer, "color=c=black@0.0:s=176x24", "overlay=x=16:y=24", "x=w-tw-16:y=24", "lte(tw,176)"},
+		{"pal 288p", 288, VisualizerModeOscilloscopeWave, "color=c=black@0.0:s=234x24", "overlay=x=16:y=24", "x=w-tw-16:y=24", "lte(tw,234)"},
+		{"pal 576i lower", 576, VisualizerModeStereoScope, "color=c=black@0.0:s=504x24", "overlay=x=24:y=H-88", "x=w-tw-24:y=h-88", "lte(tw,504)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := PipelineSpec{
+				OutputWidth: 720, OutputHeight: tc.outputH,
+				OutputFpsExpr: "50/1",
+				Visualizer: VisualizerSpec{
+					Enabled: true, Mode: tc.mode,
+					DrawTextAvailable: true, RequiredFiltersAvailable: true,
+					Metadata: VisualizerMetadata{
+						Title: "Blue Monday", Artist: "New Order",
+						Album: "Power Corruption & Lies", Duration: time.Minute,
+					},
+				},
+			}
+			graph, err := buildVisualizerFilterChain(spec)
+			if err != nil {
+				t.Fatalf("buildVisualizerFilterChain: %v", err)
+			}
+			for _, want := range []string{tc.lineSize, tc.overlay, tc.progress, tc.marqueeWidth} {
+				if !strings.Contains(graph, want) {
+					t.Fatalf("graph missing %q:\n%s", want, graph)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildVisualizerFilterChain_MarqueeGraphSmokeWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping marquee graph smoke test")
+	}
+	cases := []struct {
+		name string
+		mode VisualizerMode
+	}{
+		{"retro analyzer", VisualizerModeRetroAnalyzer},
+		{"stereo scope", VisualizerModeStereoScope},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probeCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			err := CheckVisualizerFilters(probeCtx, ffmpegPath, tc.mode)
+			cancel()
+			if err != nil {
+				t.Skipf("ffmpeg %q lacks required filters for %s: %v", ffmpegPath, tc.mode, err)
+			}
+
+			for _, filter := range RequiredVisualizerOverlayFilters() {
+				probeCtx, cancel = context.WithTimeout(t.Context(), 10*time.Second)
+				ok, err := FilterAvailable(probeCtx, ffmpegPath, filter)
+				cancel()
+				if err != nil {
+					t.Skipf("ffmpeg %q overlay filter probe failed for %q in %s: %v", ffmpegPath, filter, tc.mode, err)
+				}
+				if !ok {
+					t.Skipf("ffmpeg %q overlay filter %q unavailable for %s", ffmpegPath, filter, tc.mode)
+				}
+			}
+
+			probeCtx, cancel = context.WithTimeout(t.Context(), 10*time.Second)
+			drawTextUsable, err := DrawTextUsable(probeCtx, ffmpegPath)
+			cancel()
+			if err != nil {
+				t.Skipf("ffmpeg %q drawtext probe failed for %s: %v", ffmpegPath, tc.mode, err)
+			}
+			if !drawTextUsable {
+				t.Skipf("ffmpeg %q drawtext is unavailable for %s", ffmpegPath, tc.mode)
+			}
+
+			spec := PipelineSpec{
+				OutputWidth:   720,
+				OutputHeight:  480,
+				OutputFpsExpr: "60000/1001",
+				Visualizer: VisualizerSpec{
+					Enabled:                  true,
+					Mode:                     tc.mode,
+					DrawTextAvailable:        true,
+					RequiredFiltersAvailable: true,
+					Metadata: VisualizerMetadata{
+						Artist:   `A Very Long Artist's Name: 100% Back\Slash Receiver Window Marquee`,
+						Title:    `An Even Longer Track Title: Don't Stop At 50% Back\Slash Scroll`,
+						Album:    `An Album Name: Long Enough For 25% Back\Slash Contained Marquee`,
+						Duration: 7*time.Minute + 29*time.Second,
+					},
+				},
+			}
+			graph, err := buildVisualizerFilterChain(spec)
+			if err != nil {
+				t.Fatalf("buildVisualizerFilterChain: %v", err)
+			}
+			runCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(runCtx, ffmpegPath,
+				"-hide_banner",
+				"-v", "error",
+				"-f", "lavfi",
+				"-i", "anullsrc=r=48000:cl=stereo",
+				"-filter_complex", graph,
+				"-map", "[visualizer_video]",
+				"-frames:v", "1",
+				"-f", "null",
+				"-",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("ffmpeg marquee graph smoke failed with %q: %v (context err: %v)\n%s\ngraph:\n%s", ffmpegPath, err, runCtx.Err(), string(out), graph)
 			}
 		})
 	}
@@ -404,6 +637,14 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
 			t.Fatalf("RequiredVisualizerFilters(%q) = %v, want %v", tc.mode, got, tc.want)
 		}
+	}
+}
+
+func TestVisualizerOverlayFilters(t *testing.T) {
+	got := RequiredVisualizerOverlayFilters()
+	want := []string{"color", "drawtext", "overlay"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("RequiredVisualizerOverlayFilters() = %v, want %v", got, want)
 	}
 }
 
@@ -492,6 +733,38 @@ func TestWithVisualizerCapabilitiesFallsBackWhenDrawTextCannotRender(t *testing.
 	}
 }
 
+func TestWithVisualizerCapabilitiesFallsBackWhenOverlayFilterUnavailable(t *testing.T) {
+	for _, missing := range []string{"color", "drawtext", "overlay"} {
+		t.Run(missing, func(t *testing.T) {
+			origFilter := filterAvailableFn
+			origDrawText := drawTextUsableFn
+			t.Cleanup(func() {
+				filterAvailableFn = origFilter
+				drawTextUsableFn = origDrawText
+			})
+			filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+				return filter != missing, nil
+			}
+			drawTextUsableFn = func(context.Context, string) (bool, error) {
+				t.Fatal("drawtext smoke check should not run when an overlay filter is unavailable")
+				return true, nil
+			}
+			spec := withVisualizerCapabilities(t.Context(), PipelineSpec{
+				Visualizer: VisualizerSpec{
+					Enabled: true,
+					Mode:    VisualizerModeRetroAnalyzer,
+				},
+			})
+			if spec.Visualizer.DrawTextAvailable {
+				t.Fatal("DrawTextAvailable = true, want false when overlay filter is unavailable")
+			}
+			if !spec.Visualizer.RequiredFiltersAvailable {
+				t.Fatal("RequiredFiltersAvailable = false, want true; overlay fallback must not disable visualizer core")
+			}
+		})
+	}
+}
+
 func TestWithVisualizerCapabilitiesRejectsMissingRequiredFilter(t *testing.T) {
 	origFilter := filterAvailableFn
 	origDrawText := drawTextUsableFn
@@ -551,8 +824,10 @@ func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
 		script := "@echo off\r\n" +
 			"if \"%1\"==\"-hide_banner\" if \"%2\"==\"-filters\" (\r\n" +
 			"  echo Filters:\r\n" +
+			"  echo  ... color             V-^>V       Provide an uniformly colored input.\r\n" +
 			"  echo  ... showfreqs         A-^>V       Convert input audio to a frequencies video output.\r\n" +
 			"  echo  T.C drawtext          V-^>V       Draw text on top of video frames using libfreetype library.\r\n" +
+			"  echo  T.. overlay           VV-^>V      Overlay a video source on top of the input.\r\n" +
 			"  exit /b 0\r\n" +
 			")\r\n" +
 			"echo [Parsed_drawtext_0] Cannot find a valid font for the family Sans 1>&2\r\n" +
@@ -565,7 +840,7 @@ func fakeFFmpegWithBrokenDrawText(t *testing.T) string {
 	path := filepath.Join(dir, "ffmpeg")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"-hide_banner\" ] && [ \"$2\" = \"-filters\" ]; then\n" +
-		"  printf 'Filters:\\n ... showfreqs         A->V       Convert input audio to a frequencies video output.\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n'\n" +
+		"  printf 'Filters:\\n ... color             V->V       Provide an uniformly colored input.\\n ... showfreqs         A->V       Convert input audio to a frequencies video output.\\n T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.\\n T.. overlay           VV->V      Overlay a video source on top of the input.\\n'\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"printf '%s\\n' '[Parsed_drawtext_0] Cannot find a valid font for the family Sans' >&2\n" +
