@@ -1293,3 +1293,7 @@ func TestStreamsMeterOverlayClearsBeforeBaseOnStopAndClose(t *testing.T) {
 		t.Fatalf("stop order = %#v, want base before close", order)
 	}
 }
+
+func TestAdapterImplementsMeterOverlayProvider(t *testing.T) {
+	var _ adapters.MeterOverlayProvider = (*Adapter)(nil)
+}

@@ -1136,6 +1136,55 @@ func readInitialSSE(t *testing.T, s *Server) string {
 	}
 }
 
+// readSSEUntilMeterACK connects to handleEvents and accumulates SSE body
+// until a meter event with a non-"--" ackMS value appears, or the
+// deadline expires. Used by tests that require the meter sampler's 500ms
+// window to fire (ackMS is only computed after the first full interval).
+func readSSEUntilMeterACK(t *testing.T, s *Server, timeout time.Duration) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	w := newFlushRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.handleEvents(w, req)
+	}()
+	// ackMS values look like "04.0", "12.3", etc. — never "--" once
+	// the 500ms sampling window fires. Match any non-dash ackMS value.
+	hasLiveACK := func(body string) bool {
+		idx := 0
+		for {
+			pos := strings.Index(body[idx:], `"ackMS":"`)
+			if pos < 0 {
+				return false
+			}
+			pos += idx + len(`"ackMS":"`)
+			if pos < len(body) && body[pos] != '-' {
+				return true
+			}
+			idx += pos
+		}
+	}
+	deadline := time.After(timeout)
+	for {
+		body := w.Body.String()
+		if hasLiveACK(body) {
+			cancel()
+			<-done
+			return body
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for meter event with non-'--' ackMS; body:\n%s", w.Body.String())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 func TestMeterChangedGating(t *testing.T) {
 	base := idleSnapshot(nonZeroConfig(), time.Unix(1, 0)).Meter
 	base.State = "live"
@@ -1230,6 +1279,41 @@ func TestServerClose_StopsSnapshotCacheRefresher(t *testing.T) {
 	// Idempotence: calling Close twice must not panic or block.
 	if err := s.Close(); err != nil {
 		t.Errorf("second Close returned error: %v (want nil; Close must be idempotent)", err)
+	}
+}
+
+func TestReceiverEventsMeterPayloadIncludesLowRateFields(t *testing.T) {
+	cfg := nonZeroConfig()
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Integration Meter",
+		AdapterRef: "url:meter",
+		Source:     "url",
+		Generation: 3,
+		Meter: core.MeterHomeView{
+			Source: core.SourceMeterView{Width: 720, Height: 480, VideoCodec: "h264", AudioCodec: "aac", AudioRate: 48000, AudioChannels: 2},
+			Pipeline: core.PipelineMeterView{ModelineName: "NTSC_480i", Standard: "ntsc", FieldOrder: "tff", FieldRateHz: 59.94, HorizontalKHz: 15.7, InterlacedOutput: true, AudioSampleRate: 48000, AudioChannels: 2},
+			Runtime: core.RuntimeMeterView{Generation: 3, BlitsTotal: 100, WireBytes: 1000000, LastACKAge: 4 * time.Millisecond},
+		},
+	}}
+	s, err := New(Config{Version: cfg.Version, StartedAt: cfg.StartedAt, Bridge: cfg.Bridge, Session: sv})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mount starts the shared cache refresher. The meter sampler's ACK
+	// readout (ackMS) requires at least one 500ms sampling window to
+	// accumulate, so we connect and collect SSE body until a meter event
+	// with a non-"--" ackMS appears (up to 1.5s).
+	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
+	body := readSSEUntilMeterACK(t, s, 1500*time.Millisecond)
+	if !strings.Contains(body, "event: meter\n") {
+		t.Fatalf("missing meter event:\n%s", body)
+	}
+	for _, want := range []string{`"audioIn":"AAC - STEREO"`, `"fieldRateHz":59.94`, `"interlacedOutput":true`, `"ackMS":"04.0"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("meter payload missing %s:\n%s", want, body)
+		}
 	}
 }
 

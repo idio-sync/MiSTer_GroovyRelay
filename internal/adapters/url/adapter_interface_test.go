@@ -119,3 +119,7 @@ enabled = true
 		t.Errorf("scope = %v, want ScopeHotSwap", scope)
 	}
 }
+
+func TestAdapterImplementsMeterOverlayProvider(t *testing.T) {
+	var _ adapters.MeterOverlayProvider = (*Adapter)(nil)
+}
