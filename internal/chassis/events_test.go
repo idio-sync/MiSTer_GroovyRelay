@@ -336,10 +336,24 @@ func newFlushRecorder() *flushRecorder {
 	return &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 }
 
+func (f *flushRecorder) Write(b []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ResponseRecorder.Write(b)
+}
+
 func (f *flushRecorder) Flush() {
 	f.mu.Lock()
 	f.flushes++
 	f.mu.Unlock()
+}
+
+// BodyString returns the accumulated SSE body safely under the mutex.
+// Use this instead of f.Body.String() when another goroutine may be writing.
+func (f *flushRecorder) BodyString() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Body.String()
 }
 
 // nonFlushableWriter implements http.ResponseWriter but deliberately
@@ -1120,16 +1134,16 @@ func readInitialSSE(t *testing.T, s *Server) string {
 	}()
 	deadline := time.After(300 * time.Millisecond)
 	for {
-		if strings.Contains(w.Body.String(), "event: meter\n") {
+		if strings.Contains(w.BodyString(), "event: meter\n") {
 			cancel()
 			<-done
-			return w.Body.String()
+			return w.BodyString()
 		}
 		select {
 		case <-deadline:
 			cancel()
 			<-done
-			t.Fatalf("timed out waiting for initial meter event; body:\n%s", w.Body.String())
+			t.Fatalf("timed out waiting for initial meter event; body:\n%s", w.BodyString())
 		default:
 			time.Sleep(5 * time.Millisecond)
 		}
@@ -1159,16 +1173,19 @@ func readSSEUntilMeterACK(t *testing.T, s *Server, timeout time.Duration) string
 			if pos < 0 {
 				return false
 			}
-			pos += idx + len(`"ackMS":"`)
+			// pos is relative to body[idx:]; convert to absolute index of the
+			// first character after the needle so we can inspect body[pos].
+			pos = idx + pos + len(`"ackMS":"`)
 			if pos < len(body) && body[pos] != '-' {
 				return true
 			}
-			idx += pos
+			// Advance past this occurrence so the next iteration searches further.
+			idx = pos
 		}
 	}
 	deadline := time.After(timeout)
 	for {
-		body := w.Body.String()
+		body := w.BodyString()
 		if hasLiveACK(body) {
 			cancel()
 			<-done
@@ -1178,7 +1195,7 @@ func readSSEUntilMeterACK(t *testing.T, s *Server, timeout time.Duration) string
 		case <-deadline:
 			cancel()
 			<-done
-			t.Fatalf("timed out waiting for meter event with non-'--' ackMS; body:\n%s", w.Body.String())
+			t.Fatalf("timed out waiting for meter event with non-'--' ackMS; body:\n%s", w.BodyString())
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
