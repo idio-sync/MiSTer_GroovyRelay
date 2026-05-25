@@ -241,6 +241,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 			ActionsEnabled:  ActionsEnabled{},
 			AdapterRef:      "",
 			Generation:      0,
+			OutputVolume:    0,
 		},
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
@@ -290,6 +291,7 @@ func TestIdleSnapshot_TransportDataMatchesNewIdleShape(t *testing.T) {
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "",
 		Generation:      0,
+		OutputVolume:    0,
 	}
 	if !reflect.DeepEqual(got.Transport, want) {
 		t.Errorf("idleSnapshot Transport mismatch:\n got: %+v\nwant: %+v", got.Transport, want)
