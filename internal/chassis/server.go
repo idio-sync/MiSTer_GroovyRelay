@@ -68,6 +68,8 @@ type Server struct {
 	cacheOnce   sync.Once          // Mount starts the refresher exactly once
 	cacheCancel context.CancelFunc // Close() signals the refresher to exit
 	cacheDone   chan struct{}      // closed when the refresher goroutine returns
+
+	meterRefusalLog *onePerSecondLimiter
 }
 
 // New builds a Server from cfg, validating fields required at startup.
@@ -104,6 +106,7 @@ func New(cfg Config) (*Server, error) {
 		aux:                 cfg.AUX,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
+		meterRefusalLog:     &onePerSecondLimiter{},
 	}
 	// Seed the cache synchronously so the first SSE connection always
 	// sees a coherent snapshot — no zero-value VFD or stale state.

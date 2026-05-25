@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -162,6 +163,29 @@ func transportChanged(a, b TransportData) bool {
 		a.Generation != b.Generation
 }
 
+func meterChanged(curr, last MeterData) bool {
+	return curr.State != last.State ||
+		curr.Paused != last.Paused ||
+		curr.Generation != last.Generation ||
+		curr.SampleSeq != last.SampleSeq ||
+		curr.MidRow.Standard != last.MidRow.Standard ||
+		curr.MidRow.FieldOrder != last.MidRow.FieldOrder ||
+		curr.MidRow.InterlacedOutput != last.MidRow.InterlacedOutput ||
+		curr.Readout.Output != last.Readout.Output ||
+		curr.Readout.Aspect != last.Readout.Aspect ||
+		curr.Readout.Pipe != last.Readout.Pipe ||
+		curr.Readout.Link != last.Readout.Link
+}
+
+func (s *Server) logMeterEmitRefused(reason string) {
+	if s.meterRefusalLog == nil {
+		return
+	}
+	if s.meterRefusalLog.Allow(time.Now()) {
+		slog.Debug("chassis: meter emit refused", "reason", reason)
+	}
+}
+
 func sourceChanged(prev, next sourceEnvelope) bool {
 	if len(prev.Buttons) != len(next.Buttons) {
 		return true
@@ -199,8 +223,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	last := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now())
-	s.cache.Set(last)
+	last := s.cache.Get()
 	if err := emit(w, "state", stateEnvelope{State: string(last.State)}); err != nil {
 		return
 	}
@@ -215,6 +238,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := emit(w, "transport", transportEnvelopeFrom(last.Transport)); err != nil {
+		return
+	}
+	if err := emit(w, "meter", meterEnvelopeFrom(last.Meter)); err != nil {
 		return
 	}
 	flusher.Flush()
@@ -259,6 +285,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				last.Transport = curr.Transport
+			}
+			if meterChanged(curr.Meter, last.Meter) {
+				if err := emit(w, "meter", meterEnvelopeFrom(curr.Meter)); err != nil {
+					return
+				}
+				last.Meter = curr.Meter
+			} else {
+				s.logMeterEmitRefused("unchanged")
 			}
 			flusher.Flush()
 		case <-heartbeat.C:

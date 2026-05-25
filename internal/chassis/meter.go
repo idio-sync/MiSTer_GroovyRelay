@@ -409,6 +409,21 @@ func formatLink(ack time.Duration) string {
 	return fmt.Sprintf("MiSTer - %.0fms", float64(ack)/float64(time.Millisecond))
 }
 
+type onePerSecondLimiter struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+func (l *onePerSecondLimiter) Allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last.IsZero() || now.Sub(l.last) >= time.Second {
+		l.last = now
+		return true
+	}
+	return false
+}
+
 type namedMeterOverlayProvider struct {
 	name     string
 	provider adapters.MeterOverlayProvider

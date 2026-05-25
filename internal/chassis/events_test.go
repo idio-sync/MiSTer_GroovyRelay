@@ -542,17 +542,21 @@ func TestHandleEvents_EmitsTransportEventOnInitialConnect(t *testing.T) {
 	}
 }
 
-func TestHandleEvents_RefreshesInitialSnapshotBeforeEmitting(t *testing.T) {
+func TestHandleEvents_InitialBurstReadsFromCache(t *testing.T) {
 	t.Parallel()
-	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
+	sv := &mutableSessionViewer{view: core.StatusHomeView{
+		State: core.StatePlaying, Title: "Seeded Title", Source: "plex",
+	}}
 	cfg := nonZeroConfig()
 	cfg.Session = sv
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// Change session after New() — the cache still holds the seed snapshot.
+	// The initial burst reads from cache, not from the live session.
 	sv.set(core.StatusHomeView{
-		State: core.StatePlaying, Title: "Fresh Title", Source: "plex",
+		State: core.StatePlaying, Title: "Post-Seed Title", Source: "plex",
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -565,14 +569,12 @@ func TestHandleEvents_RefreshesInitialSnapshotBeforeEmitting(t *testing.T) {
 	s.handleEvents(w, req)
 
 	body := w.Body.String()
+	// Initial burst reflects the cache (seeded at New time from Seeded Title).
 	if !strings.Contains(body, `"state":"live"`) {
-		t.Errorf("initial SSE snapshot should refresh to live before emitting; body:\n%s", body)
+		t.Errorf("initial SSE burst should reflect cached live state; body:\n%s", body)
 	}
-	if !strings.Contains(body, `"title":"Fresh Title"`) {
-		t.Errorf("initial SSE VFD payload should include fresh title; body:\n%s", body)
-	}
-	if strings.Contains(body, `"title":"STANDBY"`) {
-		t.Errorf("initial SSE VFD payload used stale cached idle snapshot; body:\n%s", body)
+	if !strings.Contains(body, `"title":"Seeded Title"`) {
+		t.Errorf("initial SSE VFD payload should match cache seed; body:\n%s", body)
 	}
 }
 
@@ -1074,6 +1076,97 @@ func (c *countingViewer) Calls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
+}
+
+func TestHandleEvents_InitialBurstIncludesMeterAfterTransportFromCache(t *testing.T) {
+	cfg := nonZeroConfig()
+	sv := &countingViewer{view: core.StatusHomeView{
+		State:      core.StatePlaying,
+		Title:      "Cached Meter",
+		AdapterRef: "url:cached",
+		Source:     "url",
+		Generation: 2,
+	}}
+	cfg.Session = sv
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	before := sv.Calls()
+	body := readInitialSSE(t, s)
+	after := sv.Calls()
+	if after != before {
+		t.Fatalf("initial SSE called StatusHomeView %d extra times; want cached burst only", after-before)
+	}
+	transportIdx := strings.Index(body, "event: transport\n")
+	meterIdx := strings.Index(body, "event: meter\n")
+	if transportIdx < 0 || meterIdx < 0 || meterIdx <= transportIdx {
+		t.Fatalf("meter must be emitted after transport; body:\n%s", body)
+	}
+	if !strings.Contains(body, `"generation":2`) {
+		t.Fatalf("meter payload missing generation: body:\n%s", body)
+	}
+}
+
+func readInitialSSE(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	w := newFlushRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.handleEvents(w, req)
+	}()
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		if strings.Contains(w.Body.String(), "event: meter\n") {
+			cancel()
+			<-done
+			return w.Body.String()
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for initial meter event; body:\n%s", w.Body.String())
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+func TestMeterChangedGating(t *testing.T) {
+	base := idleSnapshot(nonZeroConfig(), time.Unix(1, 0)).Meter
+	base.State = "live"
+	base.Generation = 10
+	base.SampleSeq = 1
+	base.MidRow.Standard = "ntsc"
+	base.MidRow.FieldOrder = "tff"
+	base.MidRow.InterlacedOutput = true
+	base.Readout.Output = "INTERLACE 480i - BT.601"
+	base.Readout.Aspect = "4:3 LETTERBOX"
+	base.Readout.Pipe = "LZ4+D - TFF"
+	base.Readout.Link = "MiSTer - 4ms"
+	cases := []struct {
+		name string
+		edit func(*MeterData)
+		want bool
+	}{
+		{"sample boundary", func(m *MeterData) { m.SampleSeq++ }, true},
+		{"pause flip", func(m *MeterData) { m.Paused = true }, true},
+		{"generation", func(m *MeterData) { m.Generation++ }, true},
+		{"structural field", func(m *MeterData) { m.MidRow.FieldOrder = "bff" }, true},
+		{"idle clear", func(m *MeterData) { m.State = "idle" }, true},
+		{"ack text jitter suppressed", func(m *MeterData) { m.MidRow.MSAck = "05.0" }, false},
+	}
+	for _, tc := range cases {
+		next := base
+		tc.edit(&next)
+		if got := meterChanged(next, base); got != tc.want {
+			t.Errorf("%s: meterChanged = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE(t *testing.T) {
