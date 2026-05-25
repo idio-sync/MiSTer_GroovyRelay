@@ -273,6 +273,77 @@ func TestSetEnabledTrueRejectsInvalidDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestSetEnabledTrueInvalidThenStartReturnsValidationError(t *testing.T) {
+	a := newTestAdapter(t)
+
+	a.SetEnabled(true)
+	err := a.Start(context.Background())
+
+	if err == nil {
+		t.Fatal("Start after invalid enable: want validation error")
+	}
+	if a.IsEnabled() {
+		t.Fatal("invalid enable left adapter enabled")
+	}
+	st := a.Status()
+	if st.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", st.State)
+	}
+	if st.LastError == "" {
+		t.Fatal("Status.LastError is empty")
+	}
+}
+
+func TestSetEnabledFalseClearsPendingEnableError(t *testing.T) {
+	a := newTestAdapter(t)
+
+	a.SetEnabled(true)
+	if err := a.Start(context.Background()); err == nil {
+		t.Fatal("Start after invalid enable: want validation error before clearing")
+	}
+	a.SetEnabled(false)
+	err := a.Start(context.Background())
+
+	if err != nil {
+		t.Fatalf("Start after disabling pending enable error: %v", err)
+	}
+	if a.IsEnabled() {
+		t.Fatal("adapter enabled after SetEnabled(false)")
+	}
+	st := a.Status()
+	if st.State != adapters.StateStopped {
+		t.Fatalf("Status.State = %v, want stopped", st.State)
+	}
+	if st.LastError != "" {
+		t.Fatalf("Status.LastError = %q, want empty", st.LastError)
+	}
+}
+
+func TestApplyConfigClearsPendingEnableError(t *testing.T) {
+	a := newTestAdapter(t)
+	a.SetEnabled(true)
+	if err := a.Start(context.Background()); err == nil {
+		t.Fatal("Start after invalid enable: want validation error before ApplyConfig")
+	}
+	raw, meta := decodeAUXSection(t, `
+[adapters.aux]
+enabled = true
+
+[adapters.aux.input]
+url = "http://127.0.0.1:8080/aux.wav"
+`)
+	if _, err := a.ApplyConfig(raw, meta); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start after valid ApplyConfig: %v", err)
+	}
+	if a.Status().State != adapters.StateRunning {
+		t.Fatalf("Status.State = %v, want running", a.Status().State)
+	}
+}
+
 func TestStartInvalidEnabledConfigReturnsErrorAndSetsStateError(t *testing.T) {
 	a := newTestAdapter(t)
 	a.mu.Lock()

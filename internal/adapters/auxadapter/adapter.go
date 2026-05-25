@@ -39,6 +39,7 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 	activeRef  string
+	enableErr  error
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -89,6 +90,7 @@ func (a *Adapter) DecodeConfig(raw toml.Primitive, meta toml.MetaData) error {
 	}
 	a.mu.Lock()
 	a.cfg = cfg
+	a.enableErr = nil
 	a.mu.Unlock()
 	return nil
 }
@@ -110,7 +112,11 @@ func (a *Adapter) IsEnabled() bool {
 func (a *Adapter) Start(context.Context) error {
 	a.mu.Lock()
 	cfg := a.cfg
+	enableErr := a.enableErr
 	a.mu.Unlock()
+	if enableErr != nil {
+		return enableErr
+	}
 	if !cfg.Enabled {
 		return nil
 	}
@@ -154,6 +160,7 @@ func (a *Adapter) SetEnabled(v bool) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.cfg.Enabled = false
+		a.enableErr = nil
 		a.lastErr = ""
 		if a.state == adapters.StateError {
 			a.state = adapters.StateStopped
@@ -169,11 +176,13 @@ func (a *Adapter) SetEnabled(v bool) {
 	if err := next.Validate(); err != nil {
 		a.cfg.Enabled = false
 		a.state = adapters.StateError
-		a.lastErr = fmt.Sprintf("validation failed: %v", err)
+		a.enableErr = fmt.Errorf("validation failed: %w", err)
+		a.lastErr = a.enableErr.Error()
 		a.stateSince = a.now()
 		return
 	}
 	a.cfg = next
+	a.enableErr = nil
 	a.lastErr = ""
 }
 
@@ -188,6 +197,14 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 
 	a.mu.Lock()
 	a.cfg = newCfg
+	if a.enableErr != nil {
+		a.enableErr = nil
+		a.lastErr = ""
+		if a.state == adapters.StateError {
+			a.state = adapters.StateStopped
+			a.stateSince = a.now()
+		}
+	}
 	a.mu.Unlock()
 	return adapters.ScopeHotSwap, nil
 }
