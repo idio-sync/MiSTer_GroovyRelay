@@ -43,6 +43,7 @@ type Adapter struct {
 	stateSince    time.Time
 	activeRef     string
 	activeGen     uint64
+	nextGen       uint64
 	activeCleanup func()
 	activeStopped *atomic.Bool
 	enableErr     error

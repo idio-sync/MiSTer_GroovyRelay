@@ -367,6 +367,75 @@ func TestStartAUXStartSessionErrorReleasesProxyTokensAndDoesNotWrapUnavailable(t
 	}
 }
 
+func TestStartAUXSameRefStaleOnStopAfterClearDoesNotClearNewSession(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	oldOnStop := fc.lastRequest.OnStop
+	oldGen := a.activeGen
+
+	oldOnStop("old session ended")
+	if a.activeRef != "" {
+		t.Fatalf("activeRef after first OnStop = %q, want cleared", a.activeRef)
+	}
+
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("second StartAUX: %v", err)
+	}
+	if got := a.activeGen; got == oldGen {
+		t.Fatalf("activeGen after second StartAUX = %d, want generation newer than stale %d", got, oldGen)
+	}
+
+	oldOnStop("late stale callback")
+
+	if got := a.activeRef; got != "aux:aux" {
+		t.Fatalf("activeRef after stale same-ref OnStop = %q, want aux:aux", got)
+	}
+	st := a.AUXStatus(context.Background())
+	if !st.Active || st.AdapterRef != "aux:aux" {
+		t.Fatalf("AUXStatus after stale same-ref OnStop = %+v, want active aux:aux", st)
+	}
+}
+
+func TestStartAUXStartSessionErrorWithStaleSameRefAndIdleCoreLeavesInactive(t *testing.T) {
+	wantErr := errors.New("core start failed")
+	fc := &sessionCore{startErr: wantErr}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	a.activeRef = "aux:aux"
+	a.activeGen = 7
+	a.state = adapters.StateRunning
+	a.stateSince = a.auxNow()
+
+	_, err := a.StartAUX(context.Background(), "aux")
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartAUX error = %v, want core error", err)
+	}
+	if errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX wrapped ErrSourceUnavailable for runtime error: %v", err)
+	}
+	if fc.starts != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", fc.starts)
+	}
+	if got := len(a.proxy.tokens); got != 0 {
+		t.Fatalf("proxy tokens after failed stale same-ref start = %d, want 0", got)
+	}
+	if got := a.activeRef; got != "" {
+		t.Fatalf("activeRef after failed stale same-ref start = %q, want empty", got)
+	}
+	status := a.Status()
+	if status.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", status.State)
+	}
+	if status.LastError == "" || !strings.Contains(status.LastError, wantErr.Error()) {
+		t.Fatalf("Status.LastError = %q, want runtime error %q", status.LastError, wantErr.Error())
+	}
+}
+
 func TestDifferentRefReplacementStartAUXStartSessionErrorPreservesPreviousActiveSession(t *testing.T) {
 	wantErr := errors.New("core start failed before preempt")
 	fc := &sessionCore{}
@@ -379,6 +448,9 @@ func TestDifferentRefReplacementStartAUXStartSessionErrorPreservesPreviousActive
 	oldGen := a.activeGen
 	if got := a.activeRef; got != "aux:aux" {
 		t.Fatalf("activeRef after first StartAUX = %q, want aux:aux", got)
+	}
+	if got := fc.Status().AdapterRef; got != "aux:aux" {
+		t.Fatalf("core status before failed replacement = %q, want aux:aux", got)
 	}
 
 	a.mustApplyConfig(t, Config{
@@ -417,6 +489,63 @@ func TestDifferentRefReplacementStartAUXStartSessionErrorPreservesPreviousActive
 	}
 	if st.ErrorMessage == "" || !strings.Contains(st.ErrorMessage, wantErr.Error()) {
 		t.Fatalf("AUXStatus.ErrorMessage = %q, want failed replacement error %q", st.ErrorMessage, wantErr.Error())
+	}
+}
+
+func TestDifferentRefReplacementStartAUXStartSessionErrorWithCoreMismatchLeavesInactive(t *testing.T) {
+	wantErr := errors.New("core start failed after core mismatch")
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	oldTokens := tokenNames(a.proxy.tokens)
+	oldGen := a.activeGen
+	fc.status = core.SessionStatus{}
+
+	a.mustApplyConfig(t, Config{
+		Enabled: true,
+		Input: AUXInput{
+			ID: "aux2", Name: "Second AUX", Mode: ModeStreamURL,
+			AudioOutput: AudioOutputVisualOnly,
+			URL:         "http://capture-host:8090/aux2.wav",
+		},
+	})
+	fc.startErr = wantErr
+	_, err := a.StartAUX(context.Background(), "aux2")
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartAUX error = %v, want core error", err)
+	}
+	if errors.Is(err, adapters.ErrSourceUnavailable) {
+		t.Fatalf("StartAUX wrapped ErrSourceUnavailable for runtime error: %v", err)
+	}
+	if got := a.activeRef; got != "" {
+		t.Fatalf("activeRef after failed replacement with core mismatch = %q, want empty", got)
+	}
+	if got := a.activeGen; got != 0 {
+		t.Fatalf("activeGen after failed replacement with core mismatch = %d, want 0", got)
+	}
+	st := a.AUXStatus(context.Background())
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus after failed replacement with core mismatch = %+v, want inactive", st)
+	}
+	status := a.Status()
+	if status.State != adapters.StateError {
+		t.Fatalf("Status.State = %v, want error", status.State)
+	}
+	if status.LastError == "" || !strings.Contains(status.LastError, wantErr.Error()) {
+		t.Fatalf("Status.LastError = %q, want runtime error %q", status.LastError, wantErr.Error())
+	}
+	if got := len(a.proxy.tokens); got != 0 {
+		t.Fatalf("proxy tokens after failed replacement with core mismatch = %d, want 0", got)
+	}
+	if oldGen == 0 {
+		t.Fatal("oldGen = 0, want non-zero setup generation")
+	}
+	if len(oldTokens) != 2 {
+		t.Fatalf("oldTokens = %#v, want two setup tokens", oldTokens)
 	}
 }
 

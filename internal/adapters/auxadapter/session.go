@@ -96,10 +96,7 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		lastErr:    a.lastErr,
 		stateSince: a.stateSince,
 	}
-	activeGen := a.activeGen + 1
-	if activeGen == 0 {
-		activeGen = 1
-	}
+	activeGen := a.nextAUXGenerationLocked()
 	ref := req.AdapterRef
 	stopped := &atomic.Bool{}
 	req.OnStop = a.onStopForSession(ref, activeGen, stopped, cleanup)
@@ -113,9 +110,12 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 	a.mu.Unlock()
 
 	if err := coreManager.StartSession(req); err != nil {
+		coreAdapterRef := coreManager.Status().AdapterRef
 		cleanup()
 		wrapped := fmt.Errorf("start AUX session: %w", err)
-		a.rollbackAUXStart(ref, activeGen, previousActive, wrapped)
+		if previousCleanup := a.rollbackAUXStart(ref, activeGen, previousActive, wrapped, coreAdapterRef); previousCleanup != nil {
+			previousCleanup()
+		}
 		return "", wrapped
 	}
 
@@ -321,13 +321,13 @@ type auxActiveSession struct {
 	stateSince time.Time
 }
 
-func (a *Adapter) rollbackAUXStart(ref string, gen uint64, previous auxActiveSession, err error) {
+func (a *Adapter) rollbackAUXStart(ref string, gen uint64, previous auxActiveSession, err error, coreAdapterRef string) func() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if (a.activeRef != ref || a.activeGen != gen) && a.activeRef != "" {
-		return
+		return nil
 	}
-	if previous.ref != "" && !auxSessionStopped(previous.stopped) {
+	if previous.ref != "" && previous.ref != ref && !auxSessionStopped(previous.stopped) && coreAdapterRef == previous.ref {
 		a.activeRef = previous.ref
 		a.activeGen = previous.gen
 		a.activeCleanup = previous.cleanup
@@ -335,7 +335,7 @@ func (a *Adapter) rollbackAUXStart(ref string, gen uint64, previous auxActiveSes
 		a.state = previous.state
 		a.lastErr = err.Error()
 		a.stateSince = previous.stateSince
-		return
+		return nil
 	}
 	a.activeRef = ""
 	a.activeGen = 0
@@ -344,6 +344,7 @@ func (a *Adapter) rollbackAUXStart(ref string, gen uint64, previous auxActiveSes
 	a.state = adapters.StateError
 	a.lastErr = err.Error()
 	a.stateSince = a.auxNow()
+	return previous.cleanup
 }
 
 func auxSessionStopped(stopped *atomic.Bool) bool {
@@ -381,6 +382,14 @@ func (a *Adapter) clearActiveSession(ref string, gen uint64) func() {
 	a.mu.Unlock()
 
 	return cleanup
+}
+
+func (a *Adapter) nextAUXGenerationLocked() uint64 {
+	a.nextGen++
+	if a.nextGen == 0 {
+		a.nextGen++
+	}
+	return a.nextGen
 }
 
 func (a *Adapter) auxNow() time.Time {
