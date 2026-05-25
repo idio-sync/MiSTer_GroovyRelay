@@ -193,6 +193,7 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 	var mediaPolicy core.MediaInputPolicy
 	var mediaKind core.MediaKind
 	var hlsSession *hlsbuffer.Session
+	var hlsCfg hlsbuffer.Config
 
 	if !useYtdlp {
 		if owncastURL, ok := resolveOwncastHomepageURL(ctx, parsed); ok {
@@ -231,7 +232,8 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		a.history.SetTitle(rawURL, resolvedTitle)
 	} else if shouldBufferDirectM3U8(parsed, hlsBufferMode, bridge) {
 		var berr error
-		hlsSession, berr = a.openURLHLSBuffer(ctx, rawURL, bridge, hlsBufferOpen)
+		hlsCfg = hlsbuffer.NormalizeConfig(hlsConfigFromBridge(bridge.HLSBuffer))
+		hlsSession, berr = a.openURLHLSBufferWithConfig(ctx, rawURL, bridge, hlsCfg, hlsBufferOpen)
 		if berr != nil {
 			safeMsg := strings.ReplaceAll(berr.Error(), rawURL, redactURL(rawURL))
 			a.setState(adapters.StateError, safeMsg)
@@ -259,9 +261,10 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		}
 	}
 
-	onStop := a.makeOnStop(rawURL, resolvedTitle)
+	baseOnStop := a.makeOnStop(rawURL, resolvedTitle)
+	onStop := baseOnStop
 	if hlsSession != nil {
-		onStop = withHLSBufferCleanup(onStop, hlsSession)
+		onStop = withHLSBufferCleanup(a.hlsMeterClearingOnStop(ref, baseOnStop), hlsSession)
 	}
 
 	req := core.SessionRequest{
@@ -310,6 +313,9 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 	}
 
 	a.markRunning(rawURL)
+	if hlsSession != nil {
+		a.installHLSMeterOverlay(ref, hlsSession, hlsCfg)
+	}
 	slog.Info("url cast started",
 		"url", redactURL(rawURL),
 		"ref", ref,
@@ -396,6 +402,10 @@ func shouldBufferDirectM3U8(parsed *stdurl.URL, hlsBufferMode string, bridge con
 }
 
 func (a *Adapter) openURLHLSBuffer(ctx context.Context, rawURL string, bridge config.BridgeConfig, open hlsBufferOpener) (*hlsbuffer.Session, error) {
+	return a.openURLHLSBufferWithConfig(ctx, rawURL, bridge, hlsConfigFromBridge(bridge.HLSBuffer), open)
+}
+
+func (a *Adapter) openURLHLSBufferWithConfig(ctx context.Context, rawURL string, bridge config.BridgeConfig, hlsCfg hlsbuffer.Config, open hlsBufferOpener) (*hlsbuffer.Session, error) {
 	if bridge.DataDir == "" {
 		return nil, fmt.Errorf("url hls buffer: bridge data_dir is required")
 	}
@@ -409,7 +419,7 @@ func (a *Adapter) openURLHLSBuffer(ctx context.Context, rawURL string, bridge co
 	return open(ctx, hlsbuffer.SessionOptions{
 		SourceURL:    rawURL,
 		CacheRoot:    cacheRoot,
-		Config:       hlsConfigFromBridge(bridge.HLSBuffer),
+		Config:       hlsCfg,
 		TrustMode:    hlsbuffer.TrustModeGenericPublic,
 		OutputHeight: hlsOutputHeightFromBridge(bridge),
 	})
