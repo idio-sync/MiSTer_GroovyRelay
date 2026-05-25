@@ -139,20 +139,11 @@ func TestProxyStoreConsumeRejectsDifferentLengthWithoutUsingToken(t *testing.T) 
 
 func TestProxyStorePrunesUsedAndExpiredTokens(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	var usedCanceled int32
-	var expiredCanceled int32
-	var liveCanceled int32
 	store := proxyStore{now: func() time.Time { return now }}
 	store.tokens = []proxyToken{
-		{token: "used", kind: proxyTokenPlay, upstream: "http://capture-host/used.wav", expiresAt: now.Add(time.Hour), used: true, cancel: func() {
-			atomic.AddInt32(&usedCanceled, 1)
-		}},
-		{token: "expired", kind: proxyTokenPlay, upstream: "http://capture-host/expired.wav", expiresAt: now.Add(-time.Nanosecond), cancel: func() {
-			atomic.AddInt32(&expiredCanceled, 1)
-		}},
-		{token: "live", kind: proxyTokenPlay, upstream: "http://capture-host/live.wav", expiresAt: now.Add(time.Hour), cancel: func() {
-			atomic.AddInt32(&liveCanceled, 1)
-		}},
+		{token: "used", kind: proxyTokenPlay, upstream: "http://capture-host/used.wav", expiresAt: now.Add(time.Hour), used: true},
+		{token: "expired", kind: proxyTokenPlay, upstream: "http://capture-host/expired.wav", expiresAt: now.Add(-time.Nanosecond)},
+		{token: "live", kind: proxyTokenPlay, upstream: "http://capture-host/live.wav", expiresAt: now.Add(time.Hour)},
 	}
 
 	store.add(proxyToken{
@@ -165,15 +156,6 @@ func TestProxyStorePrunesUsedAndExpiredTokens(t *testing.T) {
 	if got, want := tokenNames(store.tokens), []string{"live", "new"}; !sameStrings(got, want) {
 		t.Fatalf("tokens after add = %#v, want %#v", got, want)
 	}
-	if got := atomic.LoadInt32(&usedCanceled); got != 1 {
-		t.Fatalf("used token cancel calls after prune = %d, want 1", got)
-	}
-	if got := atomic.LoadInt32(&expiredCanceled); got != 1 {
-		t.Fatalf("expired token cancel calls after prune = %d, want 1", got)
-	}
-	if got := atomic.LoadInt32(&liveCanceled); got != 0 {
-		t.Fatalf("live token cancel calls after prune = %d, want 0", got)
-	}
 	if _, ok := store.consume("live", proxyTokenPlay); !ok {
 		t.Fatal("live token was not consumable")
 	}
@@ -183,8 +165,21 @@ func TestProxyStorePrunesUsedAndExpiredTokens(t *testing.T) {
 	if got, want := tokenNames(store.tokens), []string{"new"}; !sameStrings(got, want) {
 		t.Fatalf("tokens after consume prune = %#v, want %#v", got, want)
 	}
-	if got := atomic.LoadInt32(&liveCanceled); got != 1 {
-		t.Fatalf("used live token cancel calls after consume prune = %d, want 1", got)
+}
+
+func TestProxyStoreReleaseRemovesTokens(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	store := proxyStore{now: func() time.Time { return now }}
+	store.tokens = []proxyToken{
+		{token: "drop-one", kind: proxyTokenProbe, upstream: "http://capture-host/probe.wav", expiresAt: now.Add(time.Hour)},
+		{token: "keep", kind: proxyTokenPlay, upstream: "http://capture-host/play.wav", expiresAt: now.Add(time.Hour)},
+		{token: "drop-two", kind: proxyTokenPlay, upstream: "http://capture-host/play2.wav", expiresAt: now.Add(time.Hour)},
+	}
+
+	store.release("drop-one", "drop-two")
+
+	if got, want := tokenNames(store.tokens), []string{"keep"}; !sameStrings(got, want) {
+		t.Fatalf("tokens after release = %#v, want %#v", got, want)
 	}
 }
 

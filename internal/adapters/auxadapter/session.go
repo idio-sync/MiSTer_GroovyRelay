@@ -43,6 +43,7 @@ func (a *Adapter) AUXStatus(ctx context.Context) adapters.AUXStatus {
 		coreStatus := a.core.Status()
 		if coreStatus.AdapterRef != activeRef {
 			status.Active = false
+			status.AdapterRef = ""
 		}
 	}
 	return status
@@ -86,8 +87,13 @@ func (a *Adapter) StartAUX(ctx context.Context, inputID string) (string, error) 
 		cleanup()
 		a.onStopForSession(ref, activeGen)(reason)
 	}
+	previousCleanup := a.activeCleanup
+	if previousCleanup != nil {
+		previousCleanup()
+	}
 	a.activeRef = req.AdapterRef
 	a.activeGen = activeGen
+	a.activeCleanup = cleanup
 	a.state = adapters.StateRunning
 	a.lastErr = ""
 	a.stateSince = a.auxNow()
@@ -287,6 +293,7 @@ func (a *Adapter) rollbackAUXStart(ref string, gen uint64, err error) {
 	}
 	a.activeRef = ""
 	a.activeGen = 0
+	a.activeCleanup = nil
 	a.state = adapters.StateError
 	a.lastErr = err.Error()
 	a.stateSince = a.auxNow()
@@ -301,15 +308,22 @@ func (a *Adapter) onStopForSession(ref string, gen uint64) func(string) {
 
 func (a *Adapter) clearActiveSession(ref string, gen uint64) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.activeRef != ref || a.activeGen != gen {
+		a.mu.Unlock()
 		return
 	}
+	cleanup := a.activeCleanup
 	a.activeRef = ""
 	a.activeGen = 0
+	a.activeCleanup = nil
 	a.state = adapters.StateStopped
 	a.lastErr = ""
 	a.stateSince = a.auxNow()
+	a.mu.Unlock()
+
+	if cleanup != nil {
+		cleanup()
+	}
 }
 
 func (a *Adapter) auxNow() time.Time {

@@ -29,21 +29,22 @@ type AdapterConfig struct {
 }
 
 type Adapter struct {
-	core       SessionManager
-	bridge     config.BridgeConfig
-	httpPort   int
-	eventLog   *eventlog.Log
-	now        func() time.Time
-	mu         sync.Mutex
-	cfg        Config
-	state      adapters.State
-	lastErr    string
-	stateSince time.Time
-	activeRef  string
-	activeGen  uint64
-	enableErr  error
-	proxy      proxyStore
-	proxyHTTP  *http.Client
+	core          SessionManager
+	bridge        config.BridgeConfig
+	httpPort      int
+	eventLog      *eventlog.Log
+	now           func() time.Time
+	mu            sync.Mutex
+	cfg           Config
+	state         adapters.State
+	lastErr       string
+	stateSince    time.Time
+	activeRef     string
+	activeGen     uint64
+	activeCleanup func()
+	enableErr     error
+	proxy         proxyStore
+	proxyHTTP     *http.Client
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -139,14 +140,19 @@ func (a *Adapter) Start(context.Context) error {
 func (a *Adapter) Stop() error {
 	a.mu.Lock()
 	ref := a.activeRef
+	cleanup := a.activeCleanup
 	a.activeRef = ""
 	a.activeGen = 0
+	a.activeCleanup = nil
 	a.state = adapters.StateStopped
 	a.lastErr = ""
 	a.stateSince = a.now()
 	coreManager := a.core
 	a.mu.Unlock()
 
+	if cleanup != nil {
+		cleanup()
+	}
 	if ref != "" && coreManager != nil {
 		_, err := coreManager.StopIfAdapterRef(ref)
 		return err

@@ -238,6 +238,23 @@ func TestStopAUXClearsStaleLocalRefOnCoreMismatch(t *testing.T) {
 	}
 }
 
+func TestAUXStatusCoreMismatchReportsInactiveWithoutStaleRef(t *testing.T) {
+	fc := &sessionCore{status: core.SessionStatus{}}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	a.activeRef = "aux:aux"
+	a.state = adapters.StateRunning
+
+	st := a.AUXStatus(context.Background())
+
+	if st.Active || st.AdapterRef != "" {
+		t.Fatalf("AUXStatus on core mismatch = %+v, want inactive with empty AdapterRef", st)
+	}
+	if a.activeRef != "aux:aux" {
+		t.Fatalf("activeRef = %q, want AUXStatus to avoid mutating local state", a.activeRef)
+	}
+}
+
 func TestStartAUXMissingCoreReturnsUnavailable(t *testing.T) {
 	a := &Adapter{
 		cfg:       validStreamConfig(),
@@ -283,6 +300,36 @@ func TestStopAUXInputMismatchDoesNotStopActiveRef(t *testing.T) {
 	}
 	if a.activeRef != "aux:aux" {
 		t.Fatalf("activeRef = %q, want preserved on input mismatch", a.activeRef)
+	}
+}
+
+func TestSameRefStartAUXRestartReleasesReplacedProxyTokens(t *testing.T) {
+	fc := &sessionCore{}
+	a := newTestAdapterWithCore(t, fc)
+	a.mustApplyConfig(t, validStreamConfig())
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("first StartAUX: %v", err)
+	}
+	if got := len(a.proxy.tokens); got != 2 {
+		t.Fatalf("proxy tokens after first StartAUX = %d, want 2", got)
+	}
+
+	if _, err := a.StartAUX(context.Background(), "aux"); err != nil {
+		t.Fatalf("second StartAUX: %v", err)
+	}
+
+	if got := len(a.proxy.tokens); got != 2 {
+		t.Fatalf("proxy tokens after same-ref restart = %d, want only newer session's 2 tokens", got)
+	}
+	want := []string{
+		proxyTokenFromURL(fc.lastRequest.StreamProbeURL),
+		proxyTokenFromURL(fc.lastRequest.StreamURL),
+	}
+	if got := tokenNames(a.proxy.tokens); !sameStrings(got, want) {
+		t.Fatalf("proxy tokens after same-ref restart = %#v, want newer session tokens %#v", got, want)
+	}
+	if fc.starts != 2 {
+		t.Fatalf("StartSession calls = %d, want 2", fc.starts)
 	}
 }
 

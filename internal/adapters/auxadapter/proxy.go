@@ -30,7 +30,6 @@ type proxyToken struct {
 	upstream  string
 	expiresAt time.Time
 	used      bool
-	cancel    context.CancelFunc
 }
 
 type proxyStore struct {
@@ -84,13 +83,11 @@ func (a *Adapter) mintProxyURL(kind proxyTokenKind, upstream string, ttl time.Du
 	if err != nil {
 		return "", err
 	}
-	_, cancel := context.WithCancel(context.Background())
 	a.proxy.add(proxyToken{
 		token:     token,
 		kind:      kind,
 		upstream:  u.String(),
 		expiresAt: a.proxy.currentTime().Add(ttl),
-		cancel:    cancel,
 	})
 	return fmt.Sprintf("http://127.0.0.1:%d/internal/aux-proxy/?kind=%s&aux_token=%s", a.httpPort, kind, url.QueryEscape(token)), nil
 }
@@ -184,9 +181,6 @@ func (s *proxyStore) release(rawTokens ...string) {
 			}
 		}
 		if release {
-			if tok.cancel != nil {
-				tok.cancel()
-			}
 			continue
 		}
 		kept = append(kept, tok)
@@ -198,9 +192,6 @@ func (s *proxyStore) pruneLocked(now time.Time) {
 	kept := s.tokens[:0]
 	for _, tok := range s.tokens {
 		if tok.used || now.After(tok.expiresAt) {
-			if tok.cancel != nil {
-				tok.cancel()
-			}
 			continue
 		}
 		kept = append(kept, tok)
