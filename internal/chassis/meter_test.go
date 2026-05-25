@@ -153,6 +153,22 @@ func TestMeterOverlayPanicRecoveryKeepsBaseFields(t *testing.T) {
 	}
 }
 
+func TestOverlayPanicLimiterPrunesOldGenerations(t *testing.T) {
+	l := newOverlayPanicLimiter()
+	l.log("a", 1, "boom")
+	l.log("b", 1, "boom")
+	if got := len(l.seen); got != 2 {
+		t.Fatalf("after gen 1 panics: seen size = %d, want 2", got)
+	}
+	l.log("a", 2, "boom")
+	if got := len(l.seen); got != 1 {
+		t.Fatalf("after gen 2 panic: seen size = %d, want 1 (gen 1 entries pruned)", got)
+	}
+	if _, ok := l.seen[panicKey{name: "a", gen: 2}]; !ok {
+		t.Fatal("current-gen entry missing after prune")
+	}
+}
+
 func TestMeterEnvelopeDoesNotLeakHLSSecrets(t *testing.T) {
 	m := idleSnapshot(nonZeroConfig(), time.Unix(1, 0)).Meter
 	m.SourceStrip.HLSBuffer = "1 / 6 SEG"

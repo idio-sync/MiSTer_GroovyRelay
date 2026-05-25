@@ -1253,7 +1253,7 @@ func TestStreamsMeterOverlayUsesCoreGeneration(t *testing.T) {
 		t.Fatalf("stale core generation should not own overlay")
 	}
 	body, _ := json.Marshal(overlay)
-	for _, leak := range []string{"/live.m3u8", "sig=", "secret", "avc1"} {
+	for _, leak := range []string{"http://", "https://", "://", "/live.m3u8", "token=", "sig=", "secret", "Authorization", "relative/", "avc1"} {
 		if strings.Contains(string(body), leak) {
 			t.Fatalf("overlay leaked %q: %s", leak, body)
 		}

@@ -430,17 +430,34 @@ type namedMeterOverlayProvider struct {
 }
 
 type overlayPanicLimiter struct {
-	mu   sync.Mutex
-	seen map[string]struct{}
+	mu      sync.Mutex
+	lastGen uint64
+	seen    map[panicKey]struct{}
+}
+
+type panicKey struct {
+	name string
+	gen  uint64
 }
 
 func newOverlayPanicLimiter() *overlayPanicLimiter {
-	return &overlayPanicLimiter{seen: map[string]struct{}{}}
+	return &overlayPanicLimiter{seen: map[panicKey]struct{}{}}
 }
 
+// log records one panic per (provider, generation) and emits a warning
+// the first time each pair is seen. On generation change, prior-generation
+// entries are dropped so the map stays bounded by the active provider set.
 func (l *overlayPanicLimiter) log(name string, generation uint64, err any) {
-	key := fmt.Sprintf("%s/%d", name, generation)
+	key := panicKey{name: name, gen: generation}
 	l.mu.Lock()
+	if generation != l.lastGen {
+		for k := range l.seen {
+			if k.gen != generation {
+				delete(l.seen, k)
+			}
+		}
+		l.lastGen = generation
+	}
 	_, seen := l.seen[key]
 	if !seen {
 		l.seen[key] = struct{}{}

@@ -1317,7 +1317,7 @@ func TestURLMeterOverlayExposesHLSStatsForOwningSession(t *testing.T) {
 		t.Fatalf("HLS overlay = %+v", overlay.HLS)
 	}
 	body, _ := json.Marshal(overlay)
-	for _, leak := range []string{"https://example.test", "/live.m3u8", "token=", "secret", "avc1"} {
+	for _, leak := range []string{"http://", "https://", "://", "/live.m3u8", "token=", "sig=", "secret", "Authorization", "example.test", "avc1"} {
 		if strings.Contains(string(body), leak) {
 			t.Fatalf("overlay leaked %q: %s", leak, body)
 		}
