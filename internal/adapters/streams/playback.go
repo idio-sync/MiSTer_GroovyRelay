@@ -310,18 +310,21 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		}
 		playbackURL := pageURL
 		mediaPolicy := directHLSInputPolicy()
-		onStop := a.makeOnStop(capture)
+		baseOnStop := a.makeOnStop(capture)
+		onStop := baseOnStop
 		var hlsSession *hlsbuffer.Session
+		var hlsCfg hlsbuffer.Config
 		if a.shouldBufferDirectHLS(q, item) {
 			open := a.hlsBufferOpen
 			if open == nil {
 				open = hlsbuffer.OpenSession
 			}
+			hlsCfg = hlsbuffer.NormalizeConfig(hlsConfigFromBridge(a.bridge.HLSBuffer))
 			var err error
 			hlsSession, err = open(resolveCtx, hlsbuffer.SessionOptions{
 				SourceURL:    pageURL,
 				CacheRoot:    a.hlsBufferCacheRoot(),
-				Config:       hlsConfigFromBridge(a.bridge.HLSBuffer),
+				Config:       hlsCfg,
 				TrustMode:    hlsbuffer.TrustModeBundledToonami,
 				OutputHeight: a.hlsOutputHeight(),
 			})
@@ -332,7 +335,8 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			}
 			playbackURL = hlsSession.PlaybackPath
 			mediaPolicy = hlsSession.Policy
-			onStop = withHLSBufferCleanup(onStop, hlsSession)
+			stoppedRef := ref
+			onStop = withHLSBufferCleanup(a.hlsMeterClearingOnStop(stoppedRef, baseOnStop), hlsSession)
 		}
 		req := core.SessionRequest{
 			StreamURL:    playbackURL,
@@ -371,6 +375,10 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			return streamhandoff.StartResult{}, false, nil
 		}
 		a.playbackMu.Unlock()
+
+		if hlsSession != nil {
+			a.installHLSMeterOverlay(ref, hlsSession, hlsCfg)
+		}
 
 		now := time.Now()
 		a.mu.Lock()

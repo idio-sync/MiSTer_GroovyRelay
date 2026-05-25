@@ -73,6 +73,8 @@ type Adapter struct {
 	catalogs            map[string]ProviderCatalog
 	active              *ActiveQueue
 
+	activeOverlay *hlsMeterHandle
+
 	loopCtx    context.Context
 	loopCancel context.CancelFunc
 	loopDone   chan struct{}
