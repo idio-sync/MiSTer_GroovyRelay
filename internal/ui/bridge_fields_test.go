@@ -258,8 +258,18 @@ func TestBridgeFields_HasVisualizerMode(t *testing.T) {
 	if found.Kind != adapters.KindEnum {
 		t.Errorf("kind = %v, want KindEnum", found.Kind)
 	}
-	if !reflect.DeepEqual(found.Enum, config.SupportedVisualizerModes()) {
-		t.Errorf("enum = %v, want %v", found.Enum, config.SupportedVisualizerModes())
+	wantEnum := []string{
+		config.VisualizerModeRetroAnalyzer,
+		config.VisualizerModeOscilloscopeWave,
+		config.VisualizerModeStereoScope,
+		config.VisualizerModeVUCabinet,
+		config.VisualizerModeNeonGrid,
+		config.VisualizerModeRasterPulse,
+		config.VisualizerModeCoverVU,
+		config.VisualizerModeCoverSpectrum,
+	}
+	if !reflect.DeepEqual(found.Enum, wantEnum) {
+		t.Errorf("enum = %v, want %v", found.Enum, wantEnum)
 	}
 	if found.Default != config.VisualizerModeRetroAnalyzer {
 		t.Errorf("default = %v, want %q", found.Default, config.VisualizerModeRetroAnalyzer)

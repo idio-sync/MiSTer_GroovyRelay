@@ -410,6 +410,37 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 				"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=h-88",
 			},
 		},
+		{
+			name: "vu cabinet",
+			mode: VisualizerModeVUCabinet,
+			want: []string{
+				"showvolume=",
+				"drawbox=x=8:y=8",
+				"drawgrid=w=iw/8:h=ih/4",
+				"[visualizer_video]",
+			},
+		},
+		{
+			name: "neon grid",
+			mode: VisualizerModeNeonGrid,
+			want: []string{
+				"showfreqs=s=640x480:mode=bar",
+				"drawgrid=w=iw/12:h=ih/6",
+				"hue=h=2*PI*t:s=1.35",
+				"[visualizer_video]",
+			},
+		},
+		{
+			name: "raster pulse",
+			mode: VisualizerModeRasterPulse,
+			want: []string{
+				"showwaves=s=640x480:mode=cline",
+				"split[wave_a][wave_b]",
+				"hflip[wave_flip]",
+				"blend=all_mode=screen:all_opacity=0.70",
+				"[visualizer_video]",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -586,6 +617,9 @@ func TestBuildVisualizerFilterChain_AllModesBarsOnlyWhenDrawTextUnavailable(t *t
 		{"retro analyzer", VisualizerModeRetroAnalyzer, "showfreqs=s=640x480:mode=bar:ascale=log:fscale=log:colors=0x70ff70"},
 		{"oscilloscope wave", VisualizerModeOscilloscopeWave, "showwaves=s=640x480:mode=line:colors=0x58e8ff"},
 		{"stereo scope", VisualizerModeStereoScope, "avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba"},
+		{"vu cabinet", VisualizerModeVUCabinet, "showvolume="},
+		{"neon grid", VisualizerModeNeonGrid, "showfreqs=s=640x480:mode=bar"},
+		{"raster pulse", VisualizerModeRasterPulse, "showwaves=s=640x480:mode=cline"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -630,6 +664,11 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 		{VisualizerModeRetroAnalyzer, []string{"showfreqs"}},
 		{VisualizerModeOscilloscopeWave, []string{"showwaves"}},
 		{VisualizerModeStereoScope, []string{"avectorscope"}},
+		{VisualizerModeVUCabinet, []string{"showvolume", "scale", "pad", "drawbox", "drawgrid"}},
+		{VisualizerModeNeonGrid, []string{"showfreqs", "drawgrid", "hue"}},
+		{VisualizerModeRasterPulse, []string{"showwaves", "format", "split", "hflip", "blend"}},
+		{VisualizerModeCoverVU, []string{"showvolume", "color", "fps", "format", "scale", "crop", "overlay"}},
+		{VisualizerModeCoverSpectrum, []string{"showfreqs", "color", "fps", "format", "scale", "crop", "overlay"}},
 	}
 	for _, tc := range cases {
 		got := RequiredVisualizerFilters(tc.mode)
@@ -804,14 +843,28 @@ func TestCheckVisualizerFiltersRejectsUnknownMode(t *testing.T) {
 }
 
 func TestCheckVisualizerFiltersRejectsMissingRequiredFilter(t *testing.T) {
-	origFilter := filterAvailableFn
-	t.Cleanup(func() { filterAvailableFn = origFilter })
-	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
-		return filter != "avectorscope", nil
+	cases := []struct {
+		name    string
+		mode    VisualizerMode
+		missing string
+	}{
+		{"existing stereo filter", VisualizerModeStereoScope, "avectorscope"},
+		{"vu cabinet pad filter", VisualizerModeVUCabinet, "pad"},
+		{"cover vu color filter", VisualizerModeCoverVU, "color"},
+		{"cover spectrum crop filter", VisualizerModeCoverSpectrum, "crop"},
 	}
-	err := CheckVisualizerFilters(t.Context(), "ffmpeg", VisualizerModeStereoScope)
-	if err == nil || !strings.Contains(err.Error(), "avectorscope") {
-		t.Fatalf("CheckVisualizerFilters err = %v, want missing avectorscope error", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origFilter := filterAvailableFn
+			t.Cleanup(func() { filterAvailableFn = origFilter })
+			filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+				return filter != tc.missing, nil
+			}
+			err := CheckVisualizerFilters(t.Context(), "ffmpeg", tc.mode)
+			if err == nil || !strings.Contains(err.Error(), tc.missing) {
+				t.Fatalf("CheckVisualizerFilters err = %v, want missing %s error", err, tc.missing)
+			}
+		})
 	}
 }
 
@@ -1467,6 +1520,138 @@ func TestBuildCommand_VisualizerDualInputMapsAudioInputOne(t *testing.T) {
 	}
 }
 
+func TestBuildCommand_NonCoverVisualizerIgnoresArtworkPath(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeRetroAnalyzer,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: "/tmp/cover.png"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if strings.Contains(strings.Join(cmd.Args, "\x00"), "/tmp/cover.png") {
+		t.Fatalf("non-cover visualizer argv unexpectedly contains artwork path: %v", cmd.Args)
+	}
+}
+
+func TestBuildCommand_CoverModeAddsArtworkInputAfterPrimary(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeCoverVU,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: "/cache/cover.png"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if got := inputURLs(cmd.Args); len(got) != 2 || got[0] != "http://pms/music.mp3" || got[1] != "/cache/cover.png" {
+		t.Fatalf("input URLs = %v, want primary then artwork", got)
+	}
+	graph := argAfter(cmd.Args, "-filter_complex")
+	for _, want := range []string{"[1:v:0]fps=60000/1001", "showvolume", "overlay"} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("cover_vu graph missing %q:\n%s", want, graph)
+		}
+	}
+}
+
+func TestBuildCommand_CoverModeDualInputMapsArtworkAfterAudio(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:      "https://video.example/video-only.mp4",
+		AudioInputURL: "https://audio.example/audio-only.m4a",
+		SourceProbe:   &ProbeResult{AudioRate: 0},
+		OutputWidth:   720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeCoverSpectrum,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: "/cache/cover.png"},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if got := inputURLs(cmd.Args); len(got) != 3 || got[0] != spec.InputURL || got[1] != spec.AudioInputURL || got[2] != "/cache/cover.png" {
+		t.Fatalf("input URLs = %v, want primary, audio, artwork", got)
+	}
+	graph := argAfter(cmd.Args, "-filter_complex")
+	for _, want := range []string{"[2:v:0]fps=60000/1001", "[1:a:0]showfreqs"} {
+		if !strings.Contains(graph, want) {
+			t.Fatalf("cover_spectrum graph missing %q:\n%s", want, graph)
+		}
+	}
+	if !argPairExists(cmd.Args, "-map", "1:a:0") {
+		t.Fatalf("argv missing PCM audio map 1:a:0: %v", cmd.Args)
+	}
+}
+
+func TestBuildCommand_CoverModeWithoutArtworkUsesPlaceholder(t *testing.T) {
+	spec := PipelineSpec{
+		InputURL:    "http://pms/music.mp3",
+		SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+		OutputWidth: 720, OutputHeight: 480,
+		OutputFpsExpr:   "60000/1001",
+		AudioSampleRate: 48000, AudioChannels: 2,
+		VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+		Visualizer: VisualizerSpec{
+			Enabled:                  true,
+			Mode:                     VisualizerModeCoverVU,
+			RequiredFiltersAvailable: true,
+			Metadata:                 VisualizerMetadata{ArtworkPath: ""},
+		},
+	}
+	cmd := BuildCommand(context.Background(), spec)
+	if got := inputURLs(cmd.Args); len(got) != 1 {
+		t.Fatalf("input URLs = %v, want only primary input", got)
+	}
+	graph := argAfter(cmd.Args, "-filter_complex")
+	if !strings.Contains(graph, "color=c=0x101018") {
+		t.Fatalf("cover placeholder graph missing color source:\n%s", graph)
+	}
+	if strings.Contains(graph, "/cache/") || strings.Contains(graph, "cover.png") {
+		t.Fatalf("filtergraph contains argv/path token:\n%s", graph)
+	}
+}
+
+func TestBuildCommand_CoverModesTerminateWithAudioEOF(t *testing.T) {
+	for _, mode := range []VisualizerMode{VisualizerModeCoverVU, VisualizerModeCoverSpectrum} {
+		t.Run(string(mode), func(t *testing.T) {
+			spec := PipelineSpec{
+				InputURL:    "http://pms/music.mp3",
+				SourceProbe: &ProbeResult{AudioRate: 44100, Duration: 180},
+				OutputWidth: 720, OutputHeight: 480,
+				OutputFpsExpr:   "60000/1001",
+				AudioSampleRate: 48000, AudioChannels: 2,
+				VideoPipePath: "pipe:3", AudioPipePath: "pipe:4",
+				Visualizer: VisualizerSpec{
+					Enabled:                  true,
+					Mode:                     mode,
+					RequiredFiltersAvailable: true,
+					Metadata:                 VisualizerMetadata{ArtworkPath: "/cache/cover.png"},
+				},
+			}
+			graph := argAfter(BuildCommand(context.Background(), spec).Args, "-filter_complex")
+			if !strings.Contains(graph, "shortest=1") {
+				t.Fatalf("cover graph missing shortest=1 EOF control:\n%s", graph)
+			}
+		})
+	}
+}
+
 func TestBuildCommand_VisualizerRejectsUnknownMode(t *testing.T) {
 	spec := PipelineSpec{
 		InputURL:    "http://pms/music.mp3",
@@ -1495,6 +1680,16 @@ func argPairExists(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+func inputURLs(args []string) []string {
+	out := []string{}
+	for i, arg := range args {
+		if arg == "-i" && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
 }
 
 // TestBuildCommand_ZeroPolicyArgvUnchanged is the backward-compat guard:

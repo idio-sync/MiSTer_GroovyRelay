@@ -1,18 +1,36 @@
 package jellyfin
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
+
+func jellyfinTinyPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{B: 0xff, A: 0xff})
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
 
 // fakeManager records calls into a SessionManager.
 type fakeManager struct {
@@ -21,6 +39,7 @@ type fakeManager struct {
 	calls []string
 	st    core.SessionStatus
 	err   error
+	mode  string
 }
 
 func (f *fakeManager) StartSession(req core.SessionRequest) error {
@@ -41,6 +60,11 @@ func (f *fakeManager) SeekTo(ms int) error {
 }
 func (f *fakeManager) Status() core.SessionStatus { f.mu.Lock(); defer f.mu.Unlock(); return f.st }
 func (f *fakeManager) add(name string)            { f.mu.Lock(); f.calls = append(f.calls, name); f.mu.Unlock() }
+func (f *fakeManager) VisualizerMode() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mode
+}
 func (f *fakeManager) lastReq() core.SessionRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -48,6 +72,21 @@ func (f *fakeManager) lastReq() core.SessionRequest {
 		return core.SessionRequest{}
 	}
 	return f.reqs[len(f.reqs)-1]
+}
+
+func waitForFakeManagerReq(t *testing.T, mgr *fakeManager) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		n := len(mgr.reqs)
+		mgr.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for StartSession")
 }
 
 func startTestPlaybackInfoServer(t *testing.T) *httptest.Server {
@@ -120,6 +159,8 @@ func startTestAudioPlaybackInfoServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/Items/song-1/Images/Primary":
+			w.WriteHeader(http.StatusNotFound)
 		case r.URL.Path == "/Items/song-1":
 			_, _ = w.Write([]byte(`{
 				"Id":"song-1",
@@ -218,6 +259,202 @@ func TestHandlePlay_AudioItemStartsMusicVisualizerSession(t *testing.T) {
 	if !strings.Contains(req.StreamURL, "api_key=tok") {
 		t.Errorf("StreamURL missing api_key: %s", req.StreamURL)
 	}
+}
+
+func startTestAudioArtworkServer(t *testing.T, imageStatus int) (*httptest.Server, *string) {
+	t.Helper()
+	var gotAPIKey string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/Items/song-1/Images/Primary":
+			gotAPIKey = r.URL.Query().Get("api_key")
+			if imageStatus >= 400 {
+				w.WriteHeader(imageStatus)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(jellyfinTinyPNG(t))
+		case r.URL.Path == "/Items/song-1":
+			_, _ = w.Write([]byte(`{
+				"Id":"song-1",
+				"Type":"Audio",
+				"Name":"Age of Consent",
+				"Artists":["New Order"],
+				"Album":"Power Corruption & Lies",
+				"RunTimeTicks":3150000000
+			}`))
+		case strings.HasSuffix(r.URL.Path, "/PlaybackInfo"):
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-audio","Name":"Audio Source","TranscodingUrl":"/audio/song-1/universal?MediaSourceId=src-audio"}],
+				"PlaySessionId":"ps-audio",
+				"Item":{
+					"Type":"Audio",
+					"Name":"Age of Consent",
+					"Artists":["New Order"],
+					"Album":"Power Corruption & Lies",
+					"RunTimeTicks":3150000000
+				}
+			}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, &gotAPIKey
+}
+
+func TestHandlePlay_AudioItemCachesPrimaryArtworkAndCleansUp(t *testing.T) {
+	jfSrv, gotAPIKey := startTestAudioArtworkServer(t, http.StatusOK)
+
+	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"song-1"},
+		"PlayCommand": "PlayNow",
+	}))
+	waitForFakeManagerReq(t, mgr)
+
+	req := mgr.lastReq()
+	if *gotAPIKey != "tok" {
+		t.Fatalf("image api_key = %q, want tok", *gotAPIKey)
+	}
+	path := req.Visualizer.Metadata.ArtworkPath
+	if path == "" {
+		t.Fatal("ArtworkPath empty")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("cached artwork stat: %v", err)
+	}
+	if req.OnStop == nil {
+		t.Fatal("OnStop nil")
+	}
+	req.OnStop("stopped")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cached artwork after OnStop stat err = %v, want missing", err)
+	}
+}
+
+func TestHandlePlay_AudioItemArtwork404FallsBackToEmptyPath(t *testing.T) {
+	jfSrv, _ := startTestAudioArtworkServer(t, http.StatusNotFound)
+
+	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"song-1"},
+		"PlayCommand": "PlayNow",
+	}))
+	waitForFakeManagerReq(t, mgr)
+
+	req := mgr.lastReq()
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("request = %+v, want music visualizer", req)
+	}
+	if req.Visualizer.Metadata.ArtworkPath != "" {
+		t.Fatalf("ArtworkPath = %q, want empty on fetch failure", req.Visualizer.Metadata.ArtworkPath)
+	}
+}
+
+func TestHandlePlay_AudioItemStartSessionFailureRemovesArtwork(t *testing.T) {
+	jfSrv, _ := startTestAudioArtworkServer(t, http.StatusOK)
+
+	mgr := &fakeManager{err: errors.New("reject"), mode: string(core.VisualizerModeCoverVU)}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"song-1"},
+		"PlayCommand": "PlayNow",
+	}))
+	waitForFakeManagerReq(t, mgr)
+
+	path := mgr.lastReq().Visualizer.Metadata.ArtworkPath
+	if path == "" {
+		t.Fatal("ArtworkPath empty")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cached artwork after StartSession failure stat err = %v, want missing", err)
+	}
+}
+
+func TestHandlePlay_AudioItemPlaybackInfoFailureRemovesArtwork(t *testing.T) {
+	playbackInfoHit := make(chan struct{})
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/Items/song-1/Images/Primary":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(jellyfinTinyPNG(t))
+		case r.URL.Path == "/Items/song-1":
+			_, _ = w.Write([]byte(`{
+				"Id":"song-1",
+				"Type":"Audio",
+				"Name":"Age of Consent",
+				"Artists":["New Order"],
+				"Album":"Power Corruption & Lies",
+				"RunTimeTicks":3150000000
+			}`))
+		case strings.HasSuffix(r.URL.Path, "/PlaybackInfo"):
+			once.Do(func() { close(playbackInfoHit) })
+			http.Error(w, "no stream", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	jfSrv := httptest.NewServer(mux)
+	t.Cleanup(jfSrv.Close)
+
+	dataDir := t.TempDir()
+	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
+	a := New(mgr, dataDir, "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"song-1"},
+		"PlayCommand": "PlayNow",
+	}))
+
+	select {
+	case <-playbackInfoHit:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for PlaybackInfo request")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if entries, err := os.ReadDir(artworkcache.Root(dataDir)); err == nil && len(entries) == 0 {
+			return
+		} else if os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	entries, err := os.ReadDir(artworkcache.Root(dataDir))
+	if err != nil {
+		t.Fatalf("read artwork root: %v", err)
+	}
+	t.Fatalf("cached artwork remained after PlaybackInfo failure: %v", entries)
 }
 
 func TestHandlePlaystate_NextTrackAudioItemStartsMusicVisualizerSession(t *testing.T) {

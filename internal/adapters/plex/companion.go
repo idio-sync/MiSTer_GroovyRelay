@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
@@ -101,6 +102,7 @@ type SessionManager interface {
 	Stop() error
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
+	VisualizerMode() string
 	// DropActiveCast tears down any in-flight session with the given
 	// reason logged. Invoked by Plex ApplyConfig for restart-cast
 	// field changes.
@@ -252,12 +254,57 @@ func (c *Companion) musicMetadataForPlay(ctx context.Context, p PlayMediaRequest
 		slog.Debug("plex music metadata lookup failed", "key", p.MediaKey, "err", err)
 	}
 	if ok {
+		if c.visualizerModeUsesArtwork() {
+			md.ArtworkPath = c.fetchMusicArtwork(ctx, p, md)
+		}
 		return md, true
 	}
 	if explicitMusic {
 		return MusicMetadata{Title: p.Title}, true
 	}
 	return MusicMetadata{}, false
+}
+
+func (c *Companion) visualizerModeUsesArtwork() bool {
+	if c.core == nil {
+		return false
+	}
+	switch core.VisualizerMode(c.core.VisualizerMode()) {
+	case core.VisualizerModeCoverVU, core.VisualizerModeCoverSpectrum:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Companion) fetchMusicArtwork(ctx context.Context, p PlayMediaRequest, md MusicMetadata) string {
+	if len(md.ArtworkCandidates) == 0 {
+		return ""
+	}
+	outerCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	serverURL := p.serverURL()
+	for _, candidate := range md.ArtworkCandidates {
+		u, ok := artworkcache.ResolveSameOrigin(serverURL, candidate)
+		if !ok {
+			slog.Debug("plex artwork candidate rejected", "url", artworkcache.RedactURL(candidate))
+			continue
+		}
+		artURL := artworkcache.AppendToken(u, "X-Plex-Token", p.PlexToken)
+		fetchCtx, fetchCancel := context.WithTimeout(outerCtx, 2*time.Second)
+		path, err := artworkcache.FetchToCache(fetchCtx, artworkcache.FetchOptions{
+			DataDir: c.cfg.DataDir,
+			URL:     artURL,
+			Client:  plexHTTPClient,
+		})
+		fetchCancel()
+		if err != nil {
+			slog.Debug("plex artwork fetch failed", "url", artworkcache.RedactURL(artURL), "err", err)
+			continue
+		}
+		return path
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {
@@ -310,8 +357,10 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 	directPlay := false
 	streamURL := ""
 	if md.PartKey != "" {
-		streamURL = BuildPlexMediaURL(serverURL, md.PartKey, p.PlexToken)
-		directPlay = true
+		if u, ok := plexSameOriginMediaURL(serverURL, md.PartKey, p.PlexToken); ok {
+			streamURL = u
+			directPlay = true
+		}
 	}
 	if streamURL == "" {
 		streamURL = BuildMusicTranscodeURL(MusicTranscodeRequest{
@@ -354,10 +403,11 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 			Enabled: true,
 			Mode:    core.VisualizerModeRetroAnalyzer,
 			Metadata: core.VisualizerMetadata{
-				Title:    title,
-				Artist:   md.Artist,
-				Album:    md.Album,
-				Duration: md.Duration,
+				Title:       title,
+				Artist:      md.Artist,
+				Album:       md.Album,
+				Duration:    md.Duration,
+				ArtworkPath: md.ArtworkPath,
 			},
 		},
 	}
@@ -375,7 +425,20 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 			}
 		}
 	}
+	req.OnStop = artworkcache.WithCleanup(md.ArtworkPath, req.OnStop)
 	return req
+}
+
+func plexSameOriginMediaURL(serverURL, mediaPath, token string) (string, bool) {
+	u, ok := artworkcache.ResolveSameOrigin(serverURL, mediaPath)
+	if !ok {
+		return "", false
+	}
+	return artworkcache.AppendToken(u, "X-Plex-Token", token), true
+}
+
+func cleanupSessionArtwork(req core.SessionRequest) {
+	artworkcache.Remove(req.Visualizer.Metadata.ArtworkPath)
 }
 
 func (c *Companion) sessionRequestForPlay(ctx context.Context, p PlayMediaRequest, preset core.ModelinePreset) core.SessionRequest {
@@ -583,6 +646,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 	}
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
+		cleanupSessionArtwork(req)
 		http.Error(w, err.Error(), 400)
 		return false
 	}
@@ -868,6 +932,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		}
 		c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 		if err := c.core.StartSession(req); err != nil {
+			cleanupSessionArtwork(req)
 			http.Error(w, err.Error(), 400)
 			return
 		}
@@ -910,6 +975,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
+		cleanupSessionArtwork(req)
 		http.Error(w, err.Error(), 400)
 		return
 	}
@@ -972,6 +1038,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 	req := c.sessionRequestForPlay(r.Context(), p, preset)
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
+		cleanupSessionArtwork(req)
 		http.Error(w, err.Error(), 400)
 		return
 	}
@@ -1097,6 +1164,7 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 	req := c.sessionRequestForPlay(r.Context(), p, preset)
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
 	if err := c.core.StartSession(req); err != nil {
+		cleanupSessionArtwork(req)
 		http.Error(w, err.Error(), 400)
 		return
 	}

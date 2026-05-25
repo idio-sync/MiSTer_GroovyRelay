@@ -56,12 +56,22 @@ const (
 	VisualizerModeRetroAnalyzer    = "retro_analyzer"
 	VisualizerModeOscilloscopeWave = "oscilloscope_wave"
 	VisualizerModeStereoScope      = "stereo_scope"
+	VisualizerModeVUCabinet        = "vu_cabinet"
+	VisualizerModeNeonGrid         = "neon_grid"
+	VisualizerModeRasterPulse      = "raster_pulse"
+	VisualizerModeCoverVU          = "cover_vu"
+	VisualizerModeCoverSpectrum    = "cover_spectrum"
 )
 
 var supportedVisualizerModes = []string{
 	VisualizerModeRetroAnalyzer,
 	VisualizerModeOscilloscopeWave,
 	VisualizerModeStereoScope,
+	VisualizerModeVUCabinet,
+	VisualizerModeNeonGrid,
+	VisualizerModeRasterPulse,
+	VisualizerModeCoverVU,
+	VisualizerModeCoverSpectrum,
 }
 
 func NormalizeVisualizerMode(mode string) string {
@@ -298,7 +308,14 @@ func (s *Sectioned) Validate() error {
 	}
 	b.Visualizer.Mode = NormalizeVisualizerMode(b.Visualizer.Mode)
 	switch b.Visualizer.Mode {
-	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeStereoScope:
+	case VisualizerModeRetroAnalyzer,
+		VisualizerModeOscilloscopeWave,
+		VisualizerModeStereoScope,
+		VisualizerModeVUCabinet,
+		VisualizerModeNeonGrid,
+		VisualizerModeRasterPulse,
+		VisualizerModeCoverVU,
+		VisualizerModeCoverSpectrum:
 	default:
 		return fmt.Errorf("bridge.visualizer.mode must be one of %s, got %q", strings.Join(SupportedVisualizerModes(), ", "), b.Visualizer.Mode)
 	}

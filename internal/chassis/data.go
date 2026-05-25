@@ -300,9 +300,14 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 		Visualizer: VisualizerData{
 			ActiveMode: defaultVisualizerMode(cfg),
 			Buttons: []VisualizerButton{
-				{Mode: "retro_analyzer", Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
-				{Mode: "oscilloscope_wave", Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
-				{Mode: "stereo_scope", Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
+				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
+				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
+				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
+				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
 				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
 			},
 		},
@@ -337,15 +342,10 @@ func formatUptime(d time.Duration) string {
 	return fmt.Sprintf("%dH %dM", hours, minutes)
 }
 
-// defaultVisualizerMode returns the configured visualizer mode when it is
-// renderable in Phase 0, otherwise it falls back to retro_analyzer.
 func defaultVisualizerMode(cfg Config) string {
-	switch mode := cfg.Bridge.Visualizer.Mode; mode {
-	case config.VisualizerModeRetroAnalyzer,
-		config.VisualizerModeOscilloscopeWave,
-		config.VisualizerModeStereoScope:
+	mode := config.NormalizeVisualizerMode(cfg.Bridge.Visualizer.Mode)
+	if isSupportedVisualizerMode(mode) {
 		return mode
-	default:
-		return config.VisualizerModeRetroAnalyzer
 	}
+	return config.VisualizerModeRetroAnalyzer
 }

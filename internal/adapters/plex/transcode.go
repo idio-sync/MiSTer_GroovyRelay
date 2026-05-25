@@ -70,11 +70,13 @@ type MusicTranscodeRequest struct {
 }
 
 type MusicMetadata struct {
-	Title    string
-	Artist   string
-	Album    string
-	Duration time.Duration
-	PartKey  string
+	Title             string
+	Artist            string
+	Album             string
+	Duration          time.Duration
+	PartKey           string
+	ArtworkCandidates []string
+	ArtworkPath       string
 }
 
 func NewTranscodeSessionID() string {
@@ -277,6 +279,9 @@ type pmsMediaContainer struct {
 		GrandparentTitle string `xml:"grandparentTitle,attr"`
 		ParentTitle      string `xml:"parentTitle,attr"`
 		DurationMs       int64  `xml:"duration,attr"`
+		Thumb            string `xml:"thumb,attr"`
+		ParentThumb      string `xml:"parentThumb,attr"`
+		GrandparentThumb string `xml:"grandparentThumb,attr"`
 		Media            []struct {
 			Part []struct {
 				ID  string `xml:"id,attr"`
@@ -331,6 +336,20 @@ func PartIDFor(ctx context.Context, serverURL, mediaKey, token string) (string, 
 	return "", fmt.Errorf("part id not found under %s", mediaKey)
 }
 
+func uniqueNonEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
 func MusicMetadataFor(ctx context.Context, serverURL, mediaKey, token string) (MusicMetadata, bool, error) {
 	mc, err := fetchMetadata(ctx, serverURL, mediaKey, token)
 	if err != nil {
@@ -353,11 +372,12 @@ func MusicMetadataFor(ctx context.Context, serverURL, mediaKey, token string) (M
 		}
 	}
 	return MusicMetadata{
-		Title:    tr.Title,
-		Artist:   tr.GrandparentTitle,
-		Album:    tr.ParentTitle,
-		Duration: time.Duration(tr.DurationMs) * time.Millisecond,
-		PartKey:  partKey,
+		Title:             tr.Title,
+		Artist:            tr.GrandparentTitle,
+		Album:             tr.ParentTitle,
+		Duration:          time.Duration(tr.DurationMs) * time.Millisecond,
+		PartKey:           partKey,
+		ArtworkCandidates: uniqueNonEmpty(tr.Thumb, tr.ParentThumb, tr.GrandparentThumb),
 	}, true, nil
 }
 

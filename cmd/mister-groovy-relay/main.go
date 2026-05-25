@@ -31,6 +31,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -88,6 +89,9 @@ func main() {
 	}
 	if err := reapHLSBufferCaches(sec.Bridge, time.Now()); err != nil {
 		slog.Warn("hls buffer cache reap failed", "err", err)
+	}
+	if err := artworkcache.ReapStale(artworkcache.Root(sec.Bridge.DataDir), 24*time.Hour, time.Now()); err != nil {
+		slog.Warn("artwork cache reap failed", "err", err)
 	}
 
 	selfDir := executableDir()

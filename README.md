@@ -28,11 +28,20 @@ Set the global mode in `config.toml`:
 mode = "retro_analyzer"
 ```
 
-Supported modes are `retro_analyzer`, `oscilloscope_wave`, and `stereo_scope`.
+Supported modes are:
+
+- `retro_analyzer`: classic spectrum bars.
+- `oscilloscope_wave`: horizontal waveform trace.
+- `stereo_scope`: stereo/vector-scope display.
+- `vu_cabinet`: stereo VU meter cabinet display.
+- `neon_grid`: arcade spectrum bars with a neon grid treatment.
+- `raster_pulse`: mirrored reactive waveform bands.
+- `cover_vu`: cached album art with VU meters.
+- `cover_spectrum`: cached album art with spectrum bars.
 
 Changing only the visualizer mode does not interrupt the current cast; the new mode applies to the next music cast.
 
-**Note:** A `radial_spectrum` mode was prototyped but deferred from v1; the lightweight FFmpeg polar transform did not produce a satisfactory circular display. It may return in a future release.
+**Note:** Previously discussed `chiptune_equalizer` and `radial_spectrum` modes are not shipped in this wave. `chiptune_equalizer` overlaps with `retro_analyzer`; `radial_spectrum` is deferred until it can be implemented as a genuine polar/circular visualizer without a fragile FFmpeg graph.
 
 ### AUX analog visualizer
 

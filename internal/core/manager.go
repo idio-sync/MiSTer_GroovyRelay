@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -376,7 +377,14 @@ func validateVisualizerRequest(req SessionRequest) error {
 		return fmt.Errorf("visualizer requires music media kind")
 	}
 	switch req.Visualizer.Mode {
-	case VisualizerModeRetroAnalyzer, VisualizerModeOscilloscopeWave, VisualizerModeStereoScope:
+	case VisualizerModeRetroAnalyzer,
+		VisualizerModeOscilloscopeWave,
+		VisualizerModeStereoScope,
+		VisualizerModeVUCabinet,
+		VisualizerModeNeonGrid,
+		VisualizerModeRasterPulse,
+		VisualizerModeCoverVU,
+		VisualizerModeCoverSpectrum:
 	default:
 		return fmt.Errorf("unsupported visualizer mode %q", req.Visualizer.Mode)
 	}
@@ -476,6 +484,16 @@ func coreVisualizerModeFromConfig(mode string) VisualizerMode {
 		return VisualizerModeOscilloscopeWave
 	case config.VisualizerModeStereoScope:
 		return VisualizerModeStereoScope
+	case config.VisualizerModeVUCabinet:
+		return VisualizerModeVUCabinet
+	case config.VisualizerModeNeonGrid:
+		return VisualizerModeNeonGrid
+	case config.VisualizerModeRasterPulse:
+		return VisualizerModeRasterPulse
+	case config.VisualizerModeCoverVU:
+		return VisualizerModeCoverVU
+	case config.VisualizerModeCoverSpectrum:
+		return VisualizerModeCoverSpectrum
 	default:
 		return VisualizerMode(normalized)
 	}
@@ -501,6 +519,16 @@ func ffmpegVisualizerMode(mode VisualizerMode) ffmpeg.VisualizerMode {
 		return ffmpeg.VisualizerModeOscilloscopeWave
 	case VisualizerModeStereoScope:
 		return ffmpeg.VisualizerModeStereoScope
+	case VisualizerModeVUCabinet:
+		return ffmpeg.VisualizerModeVUCabinet
+	case VisualizerModeNeonGrid:
+		return ffmpeg.VisualizerModeNeonGrid
+	case VisualizerModeRasterPulse:
+		return ffmpeg.VisualizerModeRasterPulse
+	case VisualizerModeCoverVU:
+		return ffmpeg.VisualizerModeCoverVU
+	case VisualizerModeCoverSpectrum:
+		return ffmpeg.VisualizerModeCoverSpectrum
 	default:
 		return ffmpeg.VisualizerMode(mode)
 	}
@@ -513,18 +541,27 @@ func visualizerDuration(req SessionRequest, probe *ffmpeg.ProbeResult) time.Dura
 	return probeDuration(probe)
 }
 
-func ffmpegVisualizerSpec(v VisualizerRequest) ffmpeg.VisualizerSpec {
+func ffmpegVisualizerSpec(artworkRoot string, v VisualizerRequest) ffmpeg.VisualizerSpec {
 	if !v.Enabled {
 		return ffmpeg.VisualizerSpec{}
+	}
+	artworkPath := ""
+	if v.Metadata.ArtworkPath != "" {
+		if valid, ok := artworkcache.ValidatePath(artworkRoot, v.Metadata.ArtworkPath); ok {
+			artworkPath = valid
+		} else {
+			slog.Warn("dropping invalid visualizer artwork path", "path", v.Metadata.ArtworkPath)
+		}
 	}
 	return ffmpeg.VisualizerSpec{
 		Enabled: true,
 		Mode:    ffmpegVisualizerMode(v.Mode),
 		Metadata: ffmpeg.VisualizerMetadata{
-			Title:    v.Metadata.Title,
-			Artist:   v.Metadata.Artist,
-			Album:    v.Metadata.Album,
-			Duration: v.Metadata.Duration,
+			Title:       v.Metadata.Title,
+			Artist:      v.Metadata.Artist,
+			Album:       v.Metadata.Album,
+			Duration:    v.Metadata.Duration,
+			ArtworkPath: artworkPath,
 		},
 	}
 }
@@ -768,7 +805,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OutputFpsExpr:       preset.FpsExpr,
 		AspectMode:          aspectMode,
 		CropRect:            cropRect,
-		Visualizer:          ffmpegVisualizerSpec(req.Visualizer),
+		Visualizer:          ffmpegVisualizerSpec(artworkcache.Root(m.bridge.DataDir), req.Visualizer),
 		SubtitleURL:         req.SubtitleURL,
 		SubtitlePath:        req.SubtitlePath,
 		SubtitleIndex:       req.SubtitleIndex,
