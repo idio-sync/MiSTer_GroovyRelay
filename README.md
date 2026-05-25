@@ -52,7 +52,7 @@ done
 
 The loop is required because GroovyRelay opens the stream twice per AUX start: once for probe, then once for playback.
 
-If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update `url`/`probe_size` accordingly. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it.
+If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update the producer/container format or `url` as needed. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it.
 
 Set `audio_output = "visual_only"` to drive the CRT visualizer without sending PCM monitor audio to MiSTer. Set `audio_output = "monitor"` to keep PCM output enabled so the captured audio can be monitored through the normal MiSTer audio path.
 
