@@ -181,6 +181,54 @@ func TestAudioMeter_LUFSSilenceReturnsSentinel(t *testing.T) {
 	}
 }
 
+func TestAudioMeter_SpectrumSilenceIsSentinel(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.forcePublishEveryObserve = true
+	silent := func(i int) float32 { return 0 }
+	for chunk := 0; chunk < 2; chunk++ {
+		pcm := makeStereoPCM(800, [2]func(int) float32{silent, silent})
+		m.Observe(pcm, 2, 48000)
+	}
+	snap := m.AudioScopes()
+	for i, v := range snap.SpectrumBands {
+		if v != audioSpectrumSentinel {
+			t.Errorf("SpectrumBands[%d] = %f, want sentinel %f", i, v, audioSpectrumSentinel)
+		}
+	}
+}
+
+func TestAudioMeter_SpectrumBinCenteredSinePeak(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.forcePublishEveryObserve = true
+	const freq = 3000.0
+	sine := func(i int) float32 { return float32(math.Sin(2 * math.Pi * freq * float64(i) / 48000)) }
+	for chunk := 0; chunk < 3; chunk++ {
+		pcm := makeStereoPCM(800, [2]func(int) float32{sine, sine})
+		m.Observe(pcm, 2, 48000)
+	}
+	snap := m.AudioScopes()
+	targetBand := 0
+	for i := 0; i < audioSpectrumBands; i++ {
+		lo := 20.0 * math.Pow(1000, float64(i)/32)
+		hi := 20.0 * math.Pow(1000, float64(i+1)/32)
+		if freq >= lo && freq < hi {
+			targetBand = i
+			break
+		}
+	}
+	if snap.SpectrumBands[targetBand] < -3 {
+		t.Errorf("target band %d = %f dBFS, want > -3 (peak)", targetBand, snap.SpectrumBands[targetBand])
+	}
+	for i, v := range snap.SpectrumBands {
+		if i == targetBand {
+			continue
+		}
+		if v > -10 {
+			t.Errorf("non-target band %d = %f dBFS, want < -10 (suppressed)", i, v)
+		}
+	}
+}
+
 // makeMonoPCM is a helper paralleling makeStereoPCM but for 1-channel input.
 func makeMonoPCM(frames int, gen func(i int) float32) []byte {
 	buf := make([]byte, frames*2)

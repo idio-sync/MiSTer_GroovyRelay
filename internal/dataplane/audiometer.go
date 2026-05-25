@@ -313,6 +313,8 @@ func (m *AudioMeter) publish() {
 		idx := (m.state.gonioHead + i) % audioGoniometerSize
 		snap.Goniometer[i] = m.state.gonio[idx]
 	}
+	// Spectrum: run FFT on current ring, then copy into snapshot.
+	m.computeSpectrum()
 	snap.SpectrumBands = m.state.lastSpectrum
 	// LUFS short-term (BS.1770-4): L_K = -0.691 + 10 * log10(Σ G_ch * meanSquare_ch).
 	// G_L = G_R = 1.0 for stereo; mono is a single-channel sum.
@@ -334,6 +336,83 @@ func (m *AudioMeter) publish() {
 		snap.LUFSShort = audioLUFSSilenceFloor
 	}
 	m.snapshot.Store(snap)
+}
+
+// computeSpectrum runs one FFT pass on the current FFT input ring,
+// updating m.state.lastSpectrum with band-summed power in dBFS. Called
+// on publish ticks only.
+func (m *AudioMeter) computeSpectrum() {
+	// Copy ring in arrival order (oldest first) into windowed scratch
+	for i := 0; i < audioFFTSize; i++ {
+		idx := (m.state.fftHead + i) % audioFFTSize
+		m.fftWindowed[i] = m.state.fftRing[idx] * m.hannWindow[i]
+	}
+
+	// Detect all-zero input (silence) and emit sentinel without running FFT
+	allZero := true
+	for _, v := range m.fftWindowed {
+		if v != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		for i := range m.state.lastSpectrum {
+			m.state.lastSpectrum[i] = audioSpectrumSentinel
+		}
+		return
+	}
+
+	bins := fft.Real1024(m.fftWindowed[:], m.fftOut)
+	nyquist := float64(m.sampleRate) / 2
+
+	// Compute Hann-corrected per-bin power (one-sided: ×2 for bins 1..N/2-1).
+	// Normalization: 1 / (N² × hannEnergyGain / 2) where hannEnergyGain =
+	// sum(w²)/N = 3/8 for length-N Hann. A bin-centered full-scale sine
+	// after Hann windowing produces ≈-2 dBFS at the peak band (not exactly
+	// 0 dBFS), because the per-bin coherent-gain correction is folded into
+	// this single energy normalization rather than a separate amplitude-
+	// correction step. The test tolerance (band peak > -3 dBFS) accepts
+	// this. If exact 0 dBFS is ever required, multiply normFactor by an
+	// additional coherent-gain factor (~1.5) and re-tune sentinel tests.
+	hannEnergyGain := 3.0 / 8.0
+	normFactor := 1.0 / (float64(audioFFTSize) * float64(audioFFTSize) * hannEnergyGain / 2)
+
+	for band := 0; band < audioSpectrumBands; band++ {
+		lo := 20.0 * math.Pow(1000, float64(band)/32)
+		hi := 20.0 * math.Pow(1000, float64(band+1)/32)
+		if lo >= nyquist {
+			m.state.lastSpectrum[band] = audioSpectrumSentinel
+			continue
+		}
+		loBin := int(lo * float64(audioFFTSize) / float64(m.sampleRate))
+		hiBin := int(hi * float64(audioFFTSize) / float64(m.sampleRate))
+		if loBin < 1 {
+			loBin = 1
+		}
+		if hiBin > audioFFTSize/2 {
+			hiBin = audioFFTSize / 2
+		}
+		if hiBin <= loBin {
+			hiBin = loBin + 1
+		}
+		var power float64
+		for k := loBin; k < hiBin; k++ {
+			re := float64(real(bins[k]))
+			im := float64(imag(bins[k]))
+			power += (re*re + im*im) * 2 // one-sided spectrum
+		}
+		power *= normFactor
+		if power < 1e-9 {
+			m.state.lastSpectrum[band] = audioSpectrumSentinel
+		} else {
+			db := 10 * math.Log10(power)
+			if db < audioSpectrumSentinel {
+				db = audioSpectrumSentinel
+			}
+			m.state.lastSpectrum[band] = float32(db)
+		}
+	}
 }
 
 func int16ToFloat(pcm []byte, offset int) float32 {
