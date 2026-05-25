@@ -318,15 +318,15 @@ After the live/idle branch and before `applyAUXSourceState`, add:
 
 Use this exact placement so the live branch's `base.Transport = buildTransportData(...)` cannot erase the volume value.
 
-- [ ] **Step 11: Update all existing `snapshotFromSession` test call sites**
+- [ ] **Step 11: Update all existing `snapshotFromSession` TEST call sites**
 
-Run:
+Steps 9-10 already updated the four production call sites (`server.go` x2, `handler.go`, `events.go`). Step 11 targets test files only. Scope the grep accordingly:
 
 ```bash
-rg -n "snapshotFromSession\\(" internal/chassis
+rg -n "snapshotFromSession\\(" internal/chassis --glob '*_test.go'
 ```
 
-For every existing call that does not have a volume viewer, insert `nil` between the visualizer viewer argument and the transport viewer argument.
+For every remaining test call that does not have a volume viewer, insert `nil` between the visualizer viewer argument and the transport viewer argument. The grep result should contain only `_test.go` paths; if any production file still appears, recheck Steps 9-10 before editing further.
 
 Representative conversions:
 
@@ -876,18 +876,63 @@ func transportChanged(a, b TransportData) bool {
 }
 ```
 
-- [ ] **Step 7: Update initial-burst event expectations**
+- [ ] **Step 7: Update the initial-burst order assertion**
 
-Find tests that assert initial event order or count:
+The only existing order-assertion test is `TestHandleEvents_EmitsInitialVisualizerEventOnConnect` in `internal/chassis/events_test.go` (around line 462). It currently only checks `state < vfd < visualizer < transport` (it ignores the `source` event entirely, even though `source` is emitted in production). Extend it to assert the full canonical order including `source` and the new `volume`:
 
-```bash
-rg -n "state|vfd|source|visualizer|transport|initial|event:" internal/chassis/events_test.go
+```go
+stateIdx := strings.Index(body, "event: state\n")
+vfdIdx := strings.Index(body, "event: vfd\n")
+sourceIdx := strings.Index(body, "event: source\n")
+vizIdx := strings.Index(body, "event: visualizer\n")
+transportIdx := strings.Index(body, "event: transport\n")
+volumeIdx := strings.Index(body, "event: volume\n")
+if vizIdx < 0 {
+    t.Fatalf("body missing initial visualizer event:\n%s", body)
+}
+if transportIdx < 0 {
+    t.Fatalf("body missing initial transport event:\n%s", body)
+}
+if volumeIdx < 0 {
+    t.Fatalf("body missing initial volume event:\n%s", body)
+}
+if !(stateIdx >= 0 && vfdIdx > stateIdx && sourceIdx > vfdIdx && vizIdx > sourceIdx && transportIdx > vizIdx && volumeIdx > transportIdx) {
+    t.Errorf("initial event order should be state, vfd, source, visualizer, transport, volume; body:\n%s", body)
+}
 ```
 
-Update expected initial order to include `volume` after `transport`:
+Also update the error message string in that test so the new canonical order is documented in test output.
 
-```text
-state, vfd, source, visualizer, transport, volume
+- [ ] **Step 7b: Add a no-repeat assertion for unchanged volume**
+
+Per the spec's testing notes, add a test asserting an unchanged volume does NOT emit a second `volume` event after the initial burst. Place it next to `TestHandleEvents_EmitsVolumeWhenChanged`:
+
+```go
+func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
+    t.Parallel()
+    vv := &mutableVolumeViewer{volume: 40}
+    cfg := nonZeroConfig()
+    cfg.VolumeViewer = vv
+    s, err := New(cfg)
+    if err != nil {
+        t.Fatalf("New: %v", err)
+    }
+    t.Cleanup(func() { _ = s.Close() })
+    s.Mount(http.NewServeMux())
+
+    ctx, cancel := context.WithCancel(context.Background())
+    w := newFlushRecorder()
+    req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+    go func() {
+        time.Sleep(400 * time.Millisecond)
+        cancel()
+    }()
+    s.handleEvents(w, req)
+
+    if got := strings.Count(w.Body.String(), "event: volume\n"); got != 1 {
+        t.Fatalf("volume event count = %d, want exactly 1 (initial only); body:\n%s", got, w.Body.String())
+    }
+}
 ```
 
 - [ ] **Step 8: Run gofmt and SSE tests**
@@ -896,10 +941,10 @@ Run:
 
 ```bash
 gofmt -w internal/chassis/events.go internal/chassis/events_test.go
-go test ./internal/chassis -run 'TestHandleEvents_InitialSnapshotIncludesVolume|TestHandleEvents_EmitsVolumeWhenChanged|TestVolumeChanged|TestHandleEvents'
+go test ./internal/chassis -run 'TestHandleEvents_InitialSnapshotIncludesVolume|TestHandleEvents_EmitsVolumeWhenChanged|TestHandleEvents_DoesNotRepeatUnchangedVolume|TestVolumeChanged|TestHandleEvents_EmitsInitialVisualizerEventOnConnect'
 ```
 
-Expected: PASS.
+Expected: PASS. The `TestHandleEvents_EmitsInitialVisualizerEventOnConnect` run is non-negotiable — it now enforces the canonical `state, vfd, source, visualizer, transport, volume` order.
 
 - [ ] **Step 9: Commit Task 3**
 
@@ -916,7 +961,7 @@ git commit -m "feat(chassis): stream receiver volume state"
 - Modify: `internal/chassis/templates/shell.html`
 - Modify: `internal/chassis/static/chassis.css`
 - Modify: `internal/chassis/chassis_test.go`
-- Modify: `internal/chassis/css_scope_test.go` only if selector sanity thresholds require updating.
+- Modify: `internal/chassis/css_scope_test.go` to update the 600 px `body.receiver .transport-strip` contract assertion (the existing pinned `grid-template-columns` value will no longer match after Step 6). The selector-sanity ruleset minimum stays unchanged.
 
 - [ ] **Step 1: Write failing template tests**
 
@@ -1220,21 +1265,37 @@ Update breakpoints:
 
 Preserve the existing `label`, `controls`, `seek`, and `gear` grid-area rules in that same breakpoint block.
 
+- [ ] **Step 6b: Update the 600 px transport-strip contract assertion**
+
+`internal/chassis/css_scope_test.go` pins the 600 px breakpoint grid in `TestChassisCSS_Task24ResponsiveContainerContracts` (look for the `"600 collapses transport controls"` row). Today its `want` is:
+
+```go
+want: []string{"grid-template-columns: 60px auto 1fr auto;"},
+```
+
+After Step 6 the grid is 5-column. Update the row to:
+
+```go
+want: []string{"grid-template-columns: 60px auto 1fr auto auto;"},
+```
+
+Do not add a new 420 px transport-strip contract row — the existing 420 px contract block does not include `.transport-strip` (verify with `rg -n "max-width: 420" internal/chassis/css_scope_test.go`), so introducing one would be scope creep beyond this plan.
+
 - [ ] **Step 7: Run CSS/template tests to verify they pass**
 
 Run:
 
 ```bash
 gofmt -w internal/chassis/templates.go internal/chassis/chassis_test.go
-go test ./internal/chassis -run 'TestVolumeAngle|TestHandleIndex_RendersVolumeKnobHooks|TestChassisCSS_AllSelectorsScoped|TestChassisCSS_RulesetCountSanity'
+go test ./internal/chassis -run 'TestVolumeAngle|TestHandleIndex_RendersVolumeKnobHooks|TestChassisCSS_AllSelectorsScoped|TestChassisCSS_RulesetCountSanity|TestChassisCSS_Task24ResponsiveContainerContracts'
 ```
 
-Expected: PASS. If `TestChassisCSS_RulesetCountSanity` fails only because the ruleset count increased, leave the minimum unchanged; the test wants a lower bound.
+Expected: PASS. If `TestChassisCSS_RulesetCountSanity` fails only because the ruleset count increased, leave the minimum unchanged; the test wants a lower bound. If `TestChassisCSS_Task24ResponsiveContainerContracts` still fails for the 600 px row, the Step 6 grid value and the Step 6b expected value must match character-for-character.
 
 - [ ] **Step 8: Commit Task 4**
 
 ```bash
-git add internal/chassis/templates.go internal/chassis/templates/transport.html internal/chassis/templates/shell.html internal/chassis/static/chassis.css internal/chassis/chassis_test.go
+git add internal/chassis/templates.go internal/chassis/templates/transport.html internal/chassis/templates/shell.html internal/chassis/static/chassis.css internal/chassis/chassis_test.go internal/chassis/css_scope_test.go
 git commit -m "feat(chassis): render receiver volume knob"
 ```
 
@@ -1532,7 +1593,8 @@ Start the bridge in the usual local development mode for this repo, then open `/
 - Tab focuses the range and focus styling is visible on the knob;
 - Arrow keys, PageUp/PageDown, Home, and End work;
 - two tabs stay synchronized after one tab changes volume;
-- invalid direct POST returns JSON error:
+- DevTools EventStream pane shows `event: volume` on connect and after each successful POST;
+- invalid direct POST returns JSON error (substitute the local `bridge.ui.http_port` for `32500` if your `config.toml` overrides it):
 
 ```bash
 curl -i -X POST http://localhost:32500/receiver/volume \
