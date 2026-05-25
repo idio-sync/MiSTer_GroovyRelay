@@ -188,10 +188,10 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		},
 		Source: SourceData{
 			Buttons: []SourceButton{
-				{Label: "STREAMS", Active: true, Lit: false},
-				{Label: "PLEX", Active: false, Lit: false},
-				{Label: "JELLYFIN", Active: false, Lit: false},
-				{Label: "DLNA", Active: false, Lit: false},
+				{Label: "STREAMS", Active: true, Lit: false, Action: SourceActionStreams},
+				{Label: "PLEX", Active: false, Lit: false, Action: SourceActionPlex},
+				{Label: "JELLYFIN", Active: false, Lit: false, Action: SourceActionJellyfin},
+				{Label: "DLNA", Active: false, Lit: false, Action: SourceActionDLNA},
 				{Label: "AUX", Active: false, Lit: false, Action: SourceActionAUXStart},
 			},
 		},

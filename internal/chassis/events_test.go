@@ -70,6 +70,35 @@ func TestVizEnvelope_JSONCamelCase(t *testing.T) {
 	}
 }
 
+func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testing.T) {
+	t.Parallel()
+	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	env := sourceEnvelopeFromSnapshot(data)
+
+	wantActions := map[string]string{
+		"STREAMS":  "streams",
+		"PLEX":     "plex",
+		"JELLYFIN": "jellyfin",
+		"DLNA":     "dlna",
+		"AUX":      "aux-start",
+	}
+	if len(env.Buttons) != len(wantActions) {
+		t.Fatalf("source envelope button count = %d, want %d: %+v", len(env.Buttons), len(wantActions), env.Buttons)
+	}
+	for _, button := range env.Buttons {
+		if button.Action == "" {
+			t.Fatalf("source envelope button %q has empty action; payload=%+v", button.Label, env.Buttons)
+		}
+		if got, want := button.Action, wantActions[button.Label]; got != want {
+			t.Errorf("source envelope action for %q = %q, want %q", button.Label, got, want)
+		}
+		delete(wantActions, button.Label)
+	}
+	for label := range wantActions {
+		t.Errorf("source envelope missing button %q", label)
+	}
+}
+
 func TestVfdChanged_DetectsEveryFieldDelta(t *testing.T) {
 	t.Parallel()
 	base := VFDData{
