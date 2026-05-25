@@ -365,6 +365,7 @@ func main() {
 		VisualizerSaver:     &visualizerSaverAdapter{bs: saver},
 		VolumeViewer:        coreMgr,
 		VolumeSaver:         &volumeSaverAdapter{bs: saver},
+		AudioScopeViewer:    coreMgr,
 		AUX:                 auxAdapter,
 	})
 	if err != nil {

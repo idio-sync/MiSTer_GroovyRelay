@@ -954,6 +954,111 @@ func TestReceiverEvents_DoesNotShadowUIRoutes(t *testing.T) {
 	}
 }
 
+// TestChassisIntegration_AudioEventEndToEnd verifies the full audio scope
+// pipeline from data plane to SSE client. It starts a real session via the
+// scenario harness (which wires a real fakemister listener + ffmpeg data
+// plane), mounts a chassis server with that manager as AudioScopeViewer, and
+// asserts:
+//  1. While a session is active, the audio SSE event carries "status":"live"
+//     with vu / spectrum / goniometer fields.
+//  2. After calling Stop, the audio SSE transitions to "status":"pending".
+func TestChassisIntegration_AudioEventEndToEnd(t *testing.T) {
+	sample := ensureSampleMP4(t, "5s.mp4", 5)
+	h := newScenarioHarness(t)
+
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:           config.BridgeConfig{},
+		Manager:          h.Manager,
+		Registry:         adapters.NewRegistry(),
+		Version:          "integration-test",
+		StartedAt:        time.Now(),
+		HostIP:           "127.0.0.1",
+		AudioScopeViewer: h.Manager,
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	defer chassisSrv.Close()
+	mux := http.NewServeMux()
+	chassisSrv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	if err := h.Manager.StartSession(defaultRequest(sample, "audio-sse")); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("SSE request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status = %d, want 200", resp.StatusCode)
+	}
+
+	// Wait for at least one live audio event (status:"live") — the audio tick
+	// fires at 30 Hz so this should arrive well within 4 s once the plane is
+	// streaming. The audio data plane only sets Generation > 0 after the first
+	// real PCM chunk arrives via AudioMeter, so we tolerate up to 4 s of ramp.
+	liveBody := chassisReadSSEUntil(t, resp, "event: audio\n", `"status":"live"`, 6*time.Second)
+	for _, want := range []string{
+		`"vu":`,
+		`"spectrum":[`,
+		`"goniometer":[`,
+	} {
+		if !strings.Contains(liveBody, want) {
+			t.Errorf("live audio SSE missing %q in collected body:\n%s", want, liveBody)
+		}
+	}
+
+	if err := h.Manager.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// After Stop the plane is torn down; the audio viewer returns nil →
+	// the chassis emits a pending frame on the next audio tick (~33 ms).
+	// The live→pending transition is not suppressed by audioShouldEmit.
+	pendingBody := chassisReadSSEUntil(t, resp, "event: audio\n", `"status":"pending"`, 3*time.Second)
+	if !strings.Contains(pendingBody, "event: audio\n") {
+		t.Errorf("pending audio SSE response does not contain audio event:\n%s", pendingBody)
+	}
+}
+
+// chassisReadSSEUntil reads from the SSE response body until both eventLine
+// (e.g. "event: audio\n") and needle (e.g. `"status":"live"`) appear in the
+// accumulated text, or timeout elapses. Returns the accumulated body text.
+func chassisReadSSEUntil(t *testing.T, resp *http.Response, eventLine, needle string, timeout time.Duration) string {
+	t.Helper()
+	scanner := bufio.NewScanner(resp.Body)
+	var collected strings.Builder
+	deadline := time.Now().Add(timeout)
+
+	var seenEventLine bool
+	for time.Now().Before(deadline) {
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("read SSE stream: %v; collected:\n%s", err, collected.String())
+			}
+			t.Fatalf("SSE stream closed before seeing %q; collected:\n%s", needle, collected.String())
+		}
+		line := scanner.Text() + "\n"
+		collected.WriteString(line)
+
+		if line == eventLine {
+			seenEventLine = true
+		}
+		if seenEventLine && strings.Contains(collected.String(), needle) {
+			return collected.String()
+		}
+	}
+	t.Fatalf("timed out waiting for event %q with %q; collected:\n%s", eventLine, needle, collected.String())
+	return collected.String()
+}
+
 func collectClasses(n *html.Node) map[string]bool {
 	classes := make(map[string]bool)
 	var walk func(*html.Node)
