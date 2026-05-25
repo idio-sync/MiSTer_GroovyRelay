@@ -220,9 +220,33 @@ func Remove(path string) {
 	if path == "" {
 		return
 	}
+	if !isGeneratedCachePath(path) {
+		slog.Debug("artwork cache cleanup skipped non-cache path", "path", path)
+		return
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		slog.Debug("artwork cache cleanup", "path", path, "err", err)
 	}
+}
+
+func isGeneratedCachePath(path string) bool {
+	if filepath.Base(filepath.Dir(path)) != "artwork-cache" {
+		return false
+	}
+	base := filepath.Base(path)
+	if filepath.Ext(base) != ".png" {
+		return false
+	}
+	name := strings.TrimSuffix(base, ".png")
+	if len(name) != 32 {
+		return false
+	}
+	for _, r := range name {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func WithCleanup(path string, original func(reason string)) func(reason string) {

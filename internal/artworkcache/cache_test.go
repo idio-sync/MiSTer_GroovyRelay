@@ -302,10 +302,7 @@ func TestFetchToCacheWritesValidPathUnderArtworkRoot(t *testing.T) {
 }
 
 func TestWithCleanupInvokesOriginalAndRemoves(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cover.png")
-	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeGeneratedCacheFile(t)
 	called := ""
 	WithCleanup(path, func(reason string) { called = reason })("stopped")
 	if called != "stopped" {
@@ -317,10 +314,7 @@ func TestWithCleanupInvokesOriginalAndRemoves(t *testing.T) {
 }
 
 func TestWithCleanupRemovesWhenOriginalPanics(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cover.png")
-	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeGeneratedCacheFile(t)
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic")
@@ -335,6 +329,30 @@ func TestWithCleanupRemovesWhenOriginalPanics(t *testing.T) {
 func TestRemoveIgnoresEmptyAndMissing(t *testing.T) {
 	Remove("")
 	Remove(filepath.Join(t.TempDir(), "missing.png"))
+}
+
+func TestRemoveSkipsNonCacheShapedPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cover.png")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	Remove(path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("non-cache cleanup stat err = %v, want file preserved", err)
+	}
+}
+
+func writeGeneratedCacheFile(t *testing.T) string {
+	t.Helper()
+	root, err := EnsureRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, strings.Repeat("a", 32)+".png")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestReapStaleRemovesOldFilesOnly(t *testing.T) {

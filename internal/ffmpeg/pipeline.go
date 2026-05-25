@@ -504,15 +504,15 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 	case VisualizerModeStereoScope:
 		return []string{"avectorscope"}
 	case VisualizerModeVUCabinet:
-		return []string{"showvolume", "drawbox", "drawgrid"}
+		return []string{"showvolume", "scale", "pad", "drawbox", "drawgrid"}
 	case VisualizerModeNeonGrid:
 		return []string{"showfreqs", "drawgrid", "hue"}
 	case VisualizerModeRasterPulse:
-		return []string{"showwaves", "split", "hflip", "blend"}
+		return []string{"showwaves", "format", "split", "hflip", "blend"}
 	case VisualizerModeCoverVU:
-		return []string{"showvolume", "overlay", "scale"}
+		return []string{"showvolume", "color", "fps", "format", "scale", "crop", "overlay"}
 	case VisualizerModeCoverSpectrum:
-		return []string{"showfreqs", "overlay", "scale"}
+		return []string{"showfreqs", "color", "fps", "format", "scale", "crop", "overlay"}
 	default:
 		return nil
 	}

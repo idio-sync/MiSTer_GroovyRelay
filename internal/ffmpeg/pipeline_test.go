@@ -665,11 +665,11 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 		{VisualizerModeRetroAnalyzer, []string{"showfreqs"}},
 		{VisualizerModeOscilloscopeWave, []string{"showwaves"}},
 		{VisualizerModeStereoScope, []string{"avectorscope"}},
-		{VisualizerModeVUCabinet, []string{"showvolume", "drawbox", "drawgrid"}},
+		{VisualizerModeVUCabinet, []string{"showvolume", "scale", "pad", "drawbox", "drawgrid"}},
 		{VisualizerModeNeonGrid, []string{"showfreqs", "drawgrid", "hue"}},
-		{VisualizerModeRasterPulse, []string{"showwaves", "split", "hflip", "blend"}},
-		{VisualizerModeCoverVU, []string{"showvolume", "overlay", "scale"}},
-		{VisualizerModeCoverSpectrum, []string{"showfreqs", "overlay", "scale"}},
+		{VisualizerModeRasterPulse, []string{"showwaves", "format", "split", "hflip", "blend"}},
+		{VisualizerModeCoverVU, []string{"showvolume", "color", "fps", "format", "scale", "crop", "overlay"}},
+		{VisualizerModeCoverSpectrum, []string{"showfreqs", "color", "fps", "format", "scale", "crop", "overlay"}},
 	}
 	for _, tc := range cases {
 		got := RequiredVisualizerFilters(tc.mode)
@@ -844,14 +844,28 @@ func TestCheckVisualizerFiltersRejectsUnknownMode(t *testing.T) {
 }
 
 func TestCheckVisualizerFiltersRejectsMissingRequiredFilter(t *testing.T) {
-	origFilter := filterAvailableFn
-	t.Cleanup(func() { filterAvailableFn = origFilter })
-	filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
-		return filter != "avectorscope", nil
+	cases := []struct {
+		name    string
+		mode    VisualizerMode
+		missing string
+	}{
+		{"existing stereo filter", VisualizerModeStereoScope, "avectorscope"},
+		{"vu cabinet pad filter", VisualizerModeVUCabinet, "pad"},
+		{"cover vu color filter", VisualizerModeCoverVU, "color"},
+		{"cover spectrum crop filter", VisualizerModeCoverSpectrum, "crop"},
 	}
-	err := CheckVisualizerFilters(t.Context(), "ffmpeg", VisualizerModeStereoScope)
-	if err == nil || !strings.Contains(err.Error(), "avectorscope") {
-		t.Fatalf("CheckVisualizerFilters err = %v, want missing avectorscope error", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origFilter := filterAvailableFn
+			t.Cleanup(func() { filterAvailableFn = origFilter })
+			filterAvailableFn = func(_ context.Context, _ string, filter string) (bool, error) {
+				return filter != tc.missing, nil
+			}
+			err := CheckVisualizerFilters(t.Context(), "ffmpeg", tc.mode)
+			if err == nil || !strings.Contains(err.Error(), tc.missing) {
+				t.Fatalf("CheckVisualizerFilters err = %v, want missing %s error", err, tc.missing)
+			}
+		})
 	}
 }
 
