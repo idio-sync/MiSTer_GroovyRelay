@@ -570,6 +570,19 @@ func TestValidateSessionRequestRejectsInvalidInputShapes(t *testing.T) {
 			want: "audio_capture.device is required",
 		},
 		{
+			name: "capture unsupported sample rate",
+			req: SessionRequest{
+				AudioCapture: AudioCaptureInput{
+					Enabled:    true,
+					Format:     "alsa",
+					Device:     "hw:1,0",
+					SampleRate: 96000,
+					Channels:   2,
+				},
+			},
+			want: "audio_capture.sample_rate must be 22050, 44100, or 48000",
+		},
+		{
 			name: "bad output mode",
 			req: SessionRequest{
 				StreamURL:       "http://example.test/a.wav",

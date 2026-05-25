@@ -424,6 +424,9 @@ func validateSessionInputShape(req SessionRequest) error {
 		if c.SampleRate <= 0 {
 			return fmt.Errorf("audio_capture.sample_rate must be positive")
 		}
+		if !isSupportedCaptureSampleRate(c.SampleRate) {
+			return fmt.Errorf("audio_capture.sample_rate must be 22050, 44100, or 48000")
+		}
 		if c.Channels != 1 && c.Channels != 2 {
 			return fmt.Errorf("audio_capture.channels must be 1 or 2")
 		}
@@ -433,6 +436,15 @@ func validateSessionInputShape(req SessionRequest) error {
 		return nil
 	default:
 		return fmt.Errorf("audio_output_mode must be visual_only or monitor, got %q", req.AudioOutputMode)
+	}
+}
+
+func isSupportedCaptureSampleRate(rate int) bool {
+	switch rate {
+	case groovy.AudioSampleRate22050, groovy.AudioSampleRate44100, groovy.AudioSampleRate48000:
+		return true
+	default:
+		return false
 	}
 }
 
