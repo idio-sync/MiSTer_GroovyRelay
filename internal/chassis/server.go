@@ -53,6 +53,9 @@ type Server struct {
 	session  SessionViewer
 	tmpl     *template.Template
 	cssBytes []byte
+	meter    *meterSampler
+
+	overlayPanics *overlayPanicLimiter
 
 	transportViewer     TransportViewer
 	transportController TransportController
@@ -92,6 +95,8 @@ func New(cfg Config) (*Server, error) {
 		session:             cfg.Session,
 		tmpl:                tmpl,
 		cssBytes:            cssBytes,
+		meter:               newMeterSampler(),
+		overlayPanics:       newOverlayPanicLimiter(),
 		transportViewer:     cfg.TransportViewer,
 		transportController: cfg.TransportController,
 		visualizerViewer:    cfg.VisualizerViewer,
@@ -104,8 +109,27 @@ func New(cfg Config) (*Server, error) {
 	// sees a coherent snapshot — no zero-value VFD or stale state.
 	// New deliberately does NOT start a goroutine: unmounted servers
 	// (test ergonomics, offline-friendly modes) leak no background work.
-	s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now()))
+	s.cache.Set(s.buildSnapshot(time.Now()))
 	return s, nil
+}
+
+// buildSnapshot composes one ReceiverPageData from current session,
+// visualizer, transport, and overlay state. The single shared
+// meterSampler advances exactly once per refresher tick so multiple SSE
+// tabs do not multiply core reads or sampler drift.
+func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
+	if s.session == nil {
+		base := idleSnapshot(s.cfg, now)
+		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, now)
+		applyAUXSourceState(&base, s.aux)
+		base.Visualizer.ActiveMode = liveVisualizerMode(s.cfg, s.visualizerViewer)
+		return base
+	}
+	view := s.session.StatusHomeView()
+	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.transportViewer, s.aux, now)
+	overlay := s.collectMeterOverlay(context.Background(), view)
+	base.Meter = s.meter.Sample(view, overlay, now)
+	return base
 }
 
 // Mount registers chassis routes on mux and starts the snapshot cache
@@ -139,7 +163,7 @@ func (s *Server) startSnapshotRefresher() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.cache.Set(snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.transportViewer, s.aux, time.Now()))
+				s.cache.Set(s.buildSnapshot(time.Now()))
 			}
 		}
 	}()

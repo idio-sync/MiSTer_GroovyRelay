@@ -202,12 +202,13 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				Drops:     "0.0",
 			},
 			MidRow: MidRowIdleData{
-				BitrateMbps:   "0.0",
+				BitrateMbps:   "---",
 				FreqKHz:       "---",
 				Mode:          "---",
-				StandardNTSC:  true,
+				StandardNTSC:  false,
 				StandardPAL:   false,
 				FieldFlip:     "idle",
+				FieldLock:     "idle",
 				ThroughputMBs: "0.0",
 				MSAck:         "--",
 			},
@@ -221,6 +222,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				Speed:       "---",
 				Link:        "---",
 			},
+			AudioScopes: AudioScopesData{Status: "pending"},
 		},
 		Transport: TransportData{
 			State:           "stopped",

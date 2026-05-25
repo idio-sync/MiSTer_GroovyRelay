@@ -102,34 +102,53 @@ func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter) {
 // placeholder strings; live values arrive in later specs.
 type MeterData struct {
 	State       string
+	Paused      bool
+	Generation  uint64
+	SampleSeq   uint64
 	SourceStrip SourceStripIdleData
 	MidRow      MidRowIdleData
 	Readout     ReadoutIdleData
+	AudioScopes AudioScopesData
 }
 
 // SourceStripIdleData is the top row of the meter screen: input-side
 // metadata about the cast source, including codec, dimensions, crop,
 // buffer, and drops.
 type SourceStripIdleData struct {
-	AudioIn   string
-	AudioOut  string
-	Src       string
-	Crop      string
-	HLSBuffer string
-	Drops     string
+	AudioIn           string
+	AudioOut          string
+	Src               string
+	Crop              string
+	HLSBuffer         string
+	HLSCachedSegments int
+	HLSMaxSegments    int
+	HLSCacheBytes     int64
+	Drops             string
+	DropsPercent      float64
+	BlitsTotal        uint64
+	UnderrunsTotal    uint64
 }
 
 // MidRowIdleData is the analytics row: bitrate, sample rate, mode,
 // NTSC/PAL lamps, field-flip, throughput, and ACK.
 type MidRowIdleData struct {
-	BitrateMbps   string
-	FreqKHz       string
-	Mode          string
-	StandardNTSC  bool
-	StandardPAL   bool
-	FieldFlip     string
-	ThroughputMBs string
-	MSAck         string
+	BitrateMbps          string
+	FreqKHz              string
+	Mode                 string
+	Standard             string
+	StandardNTSC         bool
+	StandardPAL          bool
+	FieldOrder           string
+	FieldRateHz          float64
+	InterlacedOutput     bool
+	FieldLock            string
+	FieldFlip            string
+	ThroughputMBs        string
+	ThroughputSampleMBs  float64
+	ThroughputHistoryMBs []float64
+	MSAck                string
+	AckSampleMS          float64
+	AckHistoryMS         []float64
 }
 
 // ReadoutIdleData is the bottom row: audio scope cluster plus output,
@@ -142,7 +161,15 @@ type ReadoutIdleData struct {
 	Aspect      string
 	Pipe        string
 	Speed       string
+	SpeedRatio  float64
 	Link        string
+}
+
+// AudioScopesData holds the audio-scope cluster status. Spec 5B will
+// fill in live audio analysis; for now this only carries a status token
+// ("pending" while quiescent).
+type AudioScopesData struct {
+	Status string
 }
 
 // TransportData drives the transport row: play/pause/stop buttons,
@@ -265,12 +292,14 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 				Drops:     "0.0",
 			},
 			MidRow: MidRowIdleData{
-				BitrateMbps:   "0.0",
+				BitrateMbps:   "---",
 				FreqKHz:       "---",
 				Mode:          "---",
-				StandardNTSC:  true,
+				Standard:      "",
+				StandardNTSC:  false,
 				StandardPAL:   false,
 				FieldFlip:     "idle",
+				FieldLock:     "idle",
 				ThroughputMBs: "0.0",
 				MSAck:         "--",
 			},
@@ -284,6 +313,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 				Speed:       "---",
 				Link:        "---",
 			},
+			AudioScopes: AudioScopesData{Status: "pending"},
 		},
 		Transport: TransportData{
 			State:           "stopped",

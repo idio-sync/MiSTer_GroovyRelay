@@ -52,22 +52,33 @@ type TransportController interface {
 // Paused maps to live so the chassis stays bright during transport
 // pause; the transport-row controls (Spec 3) own pause indication.
 func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
+	if sv == nil {
+		base := idleSnapshot(cfg, now)
+		applyAUXSourceState(&base, aux)
+		base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
+		return base
+	}
+	return snapshotFromStatusView(cfg, sv.StatusHomeView(), vv, tv, aux, now)
+}
+
+// snapshotFromStatusView is snapshotFromSession's worker variant for
+// callers that already hold a StatusHomeView (Server.buildSnapshot reads
+// the view once and reuses it for both transport data and meter
+// sampling, keeping the per-tick StatusHomeView() count at one).
+func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerViewer, tv TransportViewer, aux AUXStarter, now time.Time) ReceiverPageData {
 	base := idleSnapshot(cfg, now)
-	if sv != nil {
-		view := sv.StatusHomeView()
-		switch view.State {
-		case core.StatePlaying, core.StatePaused:
-			base.State = StateLive
-			base.VFD.State = string(StateLive)
-			base.VFD.Title = view.Title
-			base.VFD.Marquee = formatLiveMarquee(view)
-			// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
-			// SystemTime + Uptime are computed in idleSnapshot from `now` and
-			// cfg.StartedAt; they remain valid in live state.
-			base.Transport = buildTransportData(view, tv, context.Background())
-		default:
-			// idle/unknown keep idleSnapshot data
-		}
+	switch view.State {
+	case core.StatePlaying, core.StatePaused:
+		base.State = StateLive
+		base.VFD.State = string(StateLive)
+		base.VFD.Title = view.Title
+		base.VFD.Marquee = formatLiveMarquee(view)
+		// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
+		// SystemTime + Uptime are computed in idleSnapshot from `now` and
+		// cfg.StartedAt; they remain valid in live state.
+		base.Transport = buildTransportData(view, tv, context.Background())
+	default:
+		// idle/unknown keep idleSnapshot data
 	}
 	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
