@@ -30,6 +30,12 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
 				modulePath + "/internal/adapters/auxadapter",
+				modulePath + "/internal/adapters/streams",
+				modulePath + "/internal/adapters/url",
+				modulePath + "/internal/adapters/torrent",
+				modulePath + "/internal/adapters/plex",
+				modulePath + "/internal/adapters/jellyfin",
+				modulePath + "/internal/adapters/dlna",
 			},
 		},
 		{
