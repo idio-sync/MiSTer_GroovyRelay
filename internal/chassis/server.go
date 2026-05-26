@@ -58,6 +58,15 @@ type Config struct {
 	AudioScopeViewer AudioScopeViewer
 
 	AUX AUXStarter
+
+	// PresetViewer is the optional source of the 12-slot chassis preset
+	// bank. When nil, the preset bank renders all 12 slots in the
+	// .empty state (no name, no badge). 3A wires the streams adapter.
+	PresetViewer adapters.PresetViewer
+
+	// PresetCaster is the optional handler for preset slot clicks.
+	// When nil, POST /receiver/preset/{slot}/cast returns 404.
+	PresetCaster adapters.PresetCaster
 }
 
 // Server owns the chassis runtime state.
@@ -79,6 +88,8 @@ type Server struct {
 	volumeSaver      VolumeSaver
 	audioScopeViewer AudioScopeViewer
 	aux              AUXStarter
+	presetViewer     adapters.PresetViewer
+	presetCaster     adapters.PresetCaster
 
 	cache       *snapshotCache
 	cacheOnce   sync.Once          // Mount starts the refresher exactly once
@@ -123,6 +134,8 @@ func New(cfg Config) (*Server, error) {
 		volumeSaver:         cfg.VolumeSaver,
 		audioScopeViewer:    cfg.AudioScopeViewer,
 		aux:                 cfg.AUX,
+		presetViewer:        cfg.PresetViewer,
+		presetCaster:        cfg.PresetCaster,
 		cache:               &snapshotCache{},
 		cacheDone:           make(chan struct{}),
 		meterRefusalLog:     &onePerSecondLimiter{},

@@ -96,6 +96,8 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 	}
 	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
+	providerID, channelID := parseStreamsAdapterRef(view.AdapterRef)
+	base.Presets = buildPresetsData(cfg.PresetViewer, providerID, channelID)
 	return base
 }
 

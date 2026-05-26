@@ -267,6 +267,13 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		Presets: PresetsData{
 			ModeLabel: "Memory · 0 / 12 slots",
 			Count:     "★ 0",
+			Slots: func() [12]PresetSlot {
+				var s [12]PresetSlot
+				for i := range s {
+					s[i].Slot = i + 1
+				}
+				return s
+			}(),
 		},
 		History: HistoryData{
 			Rows:         nil,
@@ -2351,4 +2358,103 @@ func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIdleSnapshot_PresetsAreSlotNumberedEvenWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = nil
+	data := idleSnapshot(cfg, time.Now())
+	for i, slot := range data.Presets.Slots {
+		if slot.Slot != i+1 {
+			t.Errorf("Slots[%d].Slot = %d, want %d", i, slot.Slot, i+1)
+		}
+		if slot.Filled {
+			t.Errorf("Slots[%d].Filled = true with nil PresetViewer, want false", i)
+		}
+	}
+	if data.Presets.ModeLabel != "Memory · 0 / 12 slots" {
+		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 0 / 12 slots")
+	}
+}
+
+func TestIdleSnapshot_PresetsHydratedWhenViewerWired(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = fakePresetViewer{
+		entries: [12]adapters.PresetEntry{
+			{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day on MTV", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+			// remaining entries left zero-valued to assert hydration handles them
+		},
+	}
+	data := idleSnapshot(cfg, time.Now())
+	if !data.Presets.Slots[0].Filled || data.Presets.Slots[0].Title != "First Day on MTV" {
+		t.Errorf("slot 1 not hydrated: %+v", data.Presets.Slots[0])
+	}
+	if data.Presets.Slots[0].Subtitle != "MTV REWIND" {
+		t.Errorf("slot 1 Subtitle = %q, want %q", data.Presets.Slots[0].Subtitle, "MTV REWIND")
+	}
+	if data.Presets.Slots[0].BadgeClass != "mtv" {
+		t.Errorf("slot 1 BadgeClass = %q, want %q", data.Presets.Slots[0].BadgeClass, "mtv")
+	}
+	if data.Presets.Slots[1].Filled {
+		t.Errorf("slot 2 should be empty (zero-valued PresetEntry), got Filled=true")
+	}
+	if data.Presets.Slots[1].Slot != 2 {
+		t.Errorf("slot 2 Slot = %d, want 2 (numbered even when empty)", data.Presets.Slots[1].Slot)
+	}
+	if data.Presets.ModeLabel != "Memory · 1 / 12 slots" {
+		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 1 / 12 slots")
+	}
+	if data.Presets.Count != "★ 1" {
+		t.Errorf("Count = %q, want %q", data.Presets.Count, "★ 1")
+	}
+}
+
+func TestSnapshotFromStatusView_LitDerivesFromAdapterRef(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = bundledFakeViewer()
+	view := fakeStatusView(t, "streams:mtv-rewind:90s:sess-1:42")
+	data := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
+	if !data.Presets.Slots[2].Lit {
+		t.Errorf("slot 3 not LIT: %+v", data.Presets.Slots[2])
+	}
+	if data.Presets.Slots[0].Lit {
+		t.Errorf("slot 1 LIT, want false (not the active stream)")
+	}
+}
+
+func TestSnapshotFromStatusView_NonStreamsAdapterRefClearsAllLit(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = bundledFakeViewer()
+	view := fakeStatusView(t, "url:https://example.test/x.mp4")
+	data := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
+	for i, slot := range data.Presets.Slots {
+		if slot.Lit {
+			t.Errorf("Slots[%d].Lit = true, want false (non-streams adapter)", i)
+		}
+	}
+}
+
+type fakePresetViewer struct {
+	entries [12]adapters.PresetEntry
+}
+
+func (f fakePresetViewer) BundledPresets() [12]adapters.PresetEntry { return f.entries }
+
+func bundledFakeViewer() fakePresetViewer {
+	return fakePresetViewer{
+		entries: [12]adapters.PresetEntry{
+			{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day on MTV", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+			{Slot: 2, ProviderID: "mtv-rewind", ChannelID: "80s", Title: "MTV 80s", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+			{Slot: 3, ProviderID: "mtv-rewind", ChannelID: "90s", Title: "MTV 90s", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+		},
+	}
+}
+
+func fakeStatusView(t *testing.T, adapterRef string) core.StatusHomeView {
+	t.Helper()
+	return core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef, Source: "streams"}
 }
