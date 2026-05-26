@@ -4,3 +4,11 @@
 # break the alpine `/bin/sh` shebang on `entrypoint.sh`.
 *.sh text eol=lf
 Dockerfile text eol=lf
+
+# Embedded chassis text assets are read raw via go:embed and verified by
+# byte-exact substring tests (see internal/chassis/css_scope_test.go).
+# Force LF so Windows checkouts don't fail those tests when core.autocrlf
+# converts CRLF on checkout.
+internal/chassis/static/*.css text eol=lf
+internal/chassis/static/*.js text eol=lf
+internal/chassis/templates/*.html text eol=lf
