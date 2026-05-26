@@ -3793,10 +3793,7 @@ body.receiver .chip[data-chip-kind="err"] {
   100% { transform: scale(1.0); }
 }
 
-/* 3A: preset badge colors (port from v24 mockup) */
-body.receiver .badge.mtv     { color: oklch(0.62 0.04 350); }
-body.receiver .badge.cartoon { color: oklch(0.62 0.06 80); }
-body.receiver .badge.toonami { color: oklch(0.62 0.06 280); }
+/* 3A: preset badge colors consolidated above under body.receiver .preset .badge.* */
 
 /* 3A: browse button disabled state (catalog drawer is Phase 3B) */
 body.receiver .browse-btn[disabled] {

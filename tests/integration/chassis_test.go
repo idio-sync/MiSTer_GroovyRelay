@@ -1175,7 +1175,14 @@ type streamsStub struct{}
 func (streamsStub) BundledPresets() [12]adapters.PresetEntry {
 	var out [12]adapters.PresetEntry
 	for i := range out {
-		out[i] = adapters.PresetEntry{Slot: i + 1, Title: fmt.Sprintf("Preset %d", i+1)}
+		out[i] = adapters.PresetEntry{
+			Slot:       i + 1,
+			ProviderID: "stub-provider",
+			ChannelID:  fmt.Sprintf("stub-channel-%d", i+1),
+			Title:      fmt.Sprintf("Preset %d", i+1),
+			BadgeLabel: "STUB",
+			BadgeClass: "mtv",
+		}
 	}
 	return out
 }
@@ -1352,6 +1359,69 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 		if resp.StatusCode != 400 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			t.Fatalf("status = %d, want 400; body=%s", resp.StatusCode, bodyBytes)
+		}
+	})
+
+	t.Run("lit derives from transport adapter ref", func(t *testing.T) {
+		// The streamsStub uses stub-provider/stub-channel-N pattern. A
+		// session whose AdapterRef points at stub-channel-3 should light
+		// slot 3.
+		// We construct a separate chassis server with a SessionViewer that
+		// emits the desired AdapterRef.
+		sessionView := &fakeIntegrationSession{view: core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "streams",
+			AdapterRef: "streams:stub-provider:stub-channel-3:sess:42",
+		}}
+		litSrv, err := chassis.New(chassis.Config{
+			Bridge:       integrationBridge(t),
+			Manager:      integrationManager(t),
+			Registry:     reg,
+			Version:      "test",
+			StartedAt:    time.Now(),
+			HostIP:       "127.0.0.1",
+			Session:      sessionView,
+			PresetViewer: streamsStub{},
+			PresetCaster: streamsCalls,
+		})
+		if err != nil {
+			t.Fatalf("chassis.New: %v", err)
+		}
+		mux2 := http.NewServeMux()
+		litSrv.Mount(mux2)
+		ts2 := httptest.NewServer(mux2)
+		defer ts2.Close()
+
+		req, _ := http.NewRequest(http.MethodGet, ts2.URL+"/receiver", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /receiver: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		bodyStr := string(body)
+
+		if !strings.Contains(bodyStr, `data-channel="stub-channel-3"`) {
+			t.Errorf("rendered HTML missing slot 3 data-channel attribute")
+		}
+
+		// Find the slot 3 button and check it has the lit class. The
+		// button element spans multiple lines, so we extract the substring
+		// between "<button" and "data-channel=\"stub-channel-3\"" and
+		// check that fragment for the lit class token.
+		channelMarker := `data-channel="stub-channel-3"`
+		markerIdx := strings.Index(bodyStr, channelMarker)
+		if markerIdx < 0 {
+			t.Fatal("slot 3 data-channel marker not found (already checked above)")
+		}
+		// Walk backward from the marker to find the opening <button tag.
+		buttonOpen := strings.LastIndex(bodyStr[:markerIdx], "<button")
+		if buttonOpen < 0 {
+			t.Fatal("could not find <button before slot 3 data-channel marker")
+		}
+		buttonFragment := bodyStr[buttonOpen : markerIdx+len(channelMarker)]
+		if !strings.Contains(buttonFragment, " lit") {
+			t.Errorf("slot 3 button does not have lit class; button fragment:\n%s", buttonFragment)
 		}
 	})
 }

@@ -378,6 +378,32 @@ func TestHandleCastPost_UntypedErrorCollapsesToCastFailed(t *testing.T) {
 	}
 }
 
+func TestHandleCastPost_MultipartWithNoFileReturns400(t *testing.T) {
+	t.Parallel()
+	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("kind", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	srv.handleCastPost(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["chip"] != "BAD INPUT" {
+		t.Errorf("chip = %v, want BAD INPUT", body["chip"])
+	}
+}
+
 func TestReceiverCastPostRouteRejectsMissingFetchSite(t *testing.T) {
 	t.Parallel()
 	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})

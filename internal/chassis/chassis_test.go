@@ -2596,9 +2596,9 @@ func TestChassisCSS_AddsCastRules(t *testing.T) {
 	s := string(src)
 	for _, want := range []string{
 		`body.receiver .chip[data-chip-kind="err"]`,
-		`body.receiver .badge.mtv`,
-		`body.receiver .badge.cartoon`,
-		`body.receiver .badge.toonami`,
+		`body.receiver .preset .badge.mtv`,
+		`body.receiver .preset .badge.cartoon`,
+		`body.receiver .preset .badge.toonami`,
 		`body.receiver .browse-btn[disabled]`,
 	} {
 		if !strings.Contains(s, want) {
