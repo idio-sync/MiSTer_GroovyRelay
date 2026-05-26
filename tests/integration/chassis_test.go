@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"golang.org/x/net/html"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -1057,6 +1060,300 @@ func chassisReadSSEUntil(t *testing.T, resp *http.Response, eventLine, needle st
 	}
 	t.Fatalf("timed out waiting for event %q with %q; collected:\n%s", eventLine, needle, collected.String())
 	return collected.String()
+}
+
+// ---------------------------------------------------------------------------
+// TestChassisIntegration_CastAndPresetEndToEnd — Task 14 (Phase 3A)
+// ---------------------------------------------------------------------------
+
+// integrationBridge returns a minimal BridgeConfig sufficient for chassis.New.
+func integrationBridge(_ *testing.T) config.BridgeConfig {
+	return config.BridgeConfig{UI: config.UIConfig{HTTPPort: 32500}}
+}
+
+// integrationManager returns the zero-value Manager used throughout the
+// existing integration tests (&core.Manager{}).
+func integrationManager(_ *testing.T) *core.Manager {
+	return &core.Manager{}
+}
+
+// fakeURLStub records HandleQuickCast calls for the "url" tab.
+type fakeURLStub struct {
+	mu    sync.Mutex
+	calls []adapters.QuickCastRequest
+}
+
+func (s *fakeURLStub) Name() string        { return "url" }
+func (s *fakeURLStub) DisplayName() string { return "URL" }
+func (s *fakeURLStub) Fields() []adapters.FieldDef {
+	return nil
+}
+func (s *fakeURLStub) DecodeConfig(_ toml.Primitive, _ toml.MetaData) error { return nil }
+func (s *fakeURLStub) IsEnabled() bool                                       { return true }
+func (s *fakeURLStub) Start(_ context.Context) error                         { return nil }
+func (s *fakeURLStub) Stop() error                                           { return nil }
+func (s *fakeURLStub) Status() adapters.Status                               { return adapters.Status{} }
+func (s *fakeURLStub) ApplyConfig(_ toml.Primitive, _ toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeNextCast, nil
+}
+func (s *fakeURLStub) QuickCastTabs() []adapters.QuickCastTab {
+	return []adapters.QuickCastTab{{
+		ID:       "url",
+		Enabled:  true,
+		Encoding: adapters.QuickCastEncodingForm,
+		Fields:   []adapters.QuickCastField{{Name: "url", Type: "url"}},
+	}}
+}
+func (s *fakeURLStub) HandleQuickCast(_ context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, req)
+	s.mu.Unlock()
+	return adapters.QuickCastResult{}, nil
+}
+func (s *fakeURLStub) last() adapters.QuickCastRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) == 0 {
+		return adapters.QuickCastRequest{}
+	}
+	return s.calls[len(s.calls)-1]
+}
+
+// fakeTorrentStub records HandleQuickCast calls for the "torrent-*" tabs.
+type fakeTorrentStub struct {
+	mu    sync.Mutex
+	calls []adapters.QuickCastRequest
+}
+
+func (s *fakeTorrentStub) Name() string        { return "torrent" }
+func (s *fakeTorrentStub) DisplayName() string { return "Torrent" }
+func (s *fakeTorrentStub) Fields() []adapters.FieldDef {
+	return nil
+}
+func (s *fakeTorrentStub) DecodeConfig(_ toml.Primitive, _ toml.MetaData) error { return nil }
+func (s *fakeTorrentStub) IsEnabled() bool                                       { return true }
+func (s *fakeTorrentStub) Start(_ context.Context) error                         { return nil }
+func (s *fakeTorrentStub) Stop() error                                           { return nil }
+func (s *fakeTorrentStub) Status() adapters.Status                               { return adapters.Status{} }
+func (s *fakeTorrentStub) ApplyConfig(_ toml.Primitive, _ toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeNextCast, nil
+}
+func (s *fakeTorrentStub) QuickCastTabs() []adapters.QuickCastTab {
+	return []adapters.QuickCastTab{
+		{
+			ID:       "torrent-magnet",
+			Enabled:  true,
+			Encoding: adapters.QuickCastEncodingForm,
+			Fields:   []adapters.QuickCastField{{Name: "magnet", Type: "text"}},
+		},
+		{
+			ID:       "torrent-file",
+			Enabled:  true,
+			Encoding: adapters.QuickCastEncodingMultipart,
+			Fields:   []adapters.QuickCastField{{Name: "torrent_file", Type: "file"}},
+		},
+	}
+}
+func (s *fakeTorrentStub) HandleQuickCast(_ context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, req)
+	s.mu.Unlock()
+	return adapters.QuickCastResult{}, nil
+}
+func (s *fakeTorrentStub) last() adapters.QuickCastRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) == 0 {
+		return adapters.QuickCastRequest{}
+	}
+	return s.calls[len(s.calls)-1]
+}
+
+// streamsStub satisfies adapters.PresetViewer with static entries.
+type streamsStub struct{}
+
+func (streamsStub) BundledPresets() [12]adapters.PresetEntry {
+	var out [12]adapters.PresetEntry
+	for i := range out {
+		out[i] = adapters.PresetEntry{Slot: i + 1, Title: fmt.Sprintf("Preset %d", i+1)}
+	}
+	return out
+}
+
+// fakeStreamsCaster records CastPreset calls and satisfies adapters.PresetCaster.
+type fakeStreamsCaster struct {
+	mu    sync.Mutex
+	slots []int
+}
+
+func (s *fakeStreamsCaster) CastPreset(_ context.Context, slot int) error {
+	s.mu.Lock()
+	s.slots = append(s.slots, slot)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeStreamsCaster) lastSlot() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.slots) == 0 {
+		return 0
+	}
+	return s.slots[len(s.slots)-1]
+}
+
+// buildFakeRegistry creates a registry with url, torrent, and (optionally)
+// streams stubs that record calls, returning the stubs for assertion.
+func buildFakeRegistry(t *testing.T) (*adapters.Registry, *fakeURLStub, *fakeTorrentStub, *fakeStreamsCaster) {
+	t.Helper()
+	urlCalls := &fakeURLStub{}
+	torrentCalls := &fakeTorrentStub{}
+	streamsCalls := &fakeStreamsCaster{}
+
+	reg := adapters.NewRegistry()
+	if err := reg.Register(urlCalls); err != nil {
+		t.Fatalf("register url: %v", err)
+	}
+	if err := reg.Register(torrentCalls); err != nil {
+		t.Fatalf("register torrent: %v", err)
+	}
+	return reg, urlCalls, torrentCalls, streamsCalls
+}
+
+// mustPOSTForm issues a same-origin POST with application/x-www-form-urlencoded body.
+func mustPOSTForm(t *testing.T, rawURL, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// mustPOSTRaw issues a same-origin POST with the given content-type and body.
+func mustPOSTRaw(t *testing.T, rawURL, contentType string, body io.Reader) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, rawURL, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// makeMultipart builds a multipart/form-data body with a single file field
+// plus the hidden kind=file field that the chassis cast handler expects.
+func makeMultipart(t *testing.T, fieldName, filename string, data []byte) (io.Reader, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("kind", "file"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := w.CreateFormFile(fieldName, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, w.FormDataContentType()
+}
+
+func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
+	reg, urlCalls, torrentCalls, streamsCalls := buildFakeRegistry(t)
+
+	srv, err := chassis.New(chassis.Config{
+		Bridge:       integrationBridge(t),
+		Manager:      integrationManager(t),
+		Registry:     reg,
+		Version:      "test",
+		StartedAt:    time.Now(),
+		HostIP:       "127.0.0.1",
+		PresetViewer: streamsStub{},
+		PresetCaster: streamsCalls,
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	t.Run("url paste", func(t *testing.T) {
+		body := url.Values{"kind": {"url"}, "payload": {"https://example.test/x.mp4"}}.Encode()
+		resp := mustPOSTForm(t, ts.URL+"/receiver/cast", body)
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, bodyBytes)
+		}
+		if got := urlCalls.last(); got.TabID != "url" || got.Values["url"] != "https://example.test/x.mp4" {
+			t.Errorf("url adapter received %+v, want TabID=url Values[url]=https://example.test/x.mp4", got)
+		}
+	})
+
+	t.Run("magnet paste", func(t *testing.T) {
+		body := url.Values{"kind": {"magnet"}, "payload": {"magnet:?xt=urn:btih:abc"}}.Encode()
+		resp := mustPOSTForm(t, ts.URL+"/receiver/cast", body)
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, bodyBytes)
+		}
+		if got := torrentCalls.last(); got.TabID != "torrent-magnet" {
+			t.Errorf("torrent adapter received TabID=%q, want torrent-magnet", got.TabID)
+		}
+	})
+
+	t.Run("torrent upload", func(t *testing.T) {
+		body, contentType := makeMultipart(t, "torrent_file", "example.torrent", []byte("d8:announce..."))
+		resp := mustPOSTRaw(t, ts.URL+"/receiver/cast", contentType, body)
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, bodyBytes)
+		}
+		if got := torrentCalls.last(); got.TabID != "torrent-file" || got.File == nil || got.File.FieldName != "torrent_file" {
+			t.Errorf("torrent adapter file upload incorrect: %+v", got)
+		}
+	})
+
+	t.Run("preset click", func(t *testing.T) {
+		resp := mustPOSTForm(t, ts.URL+"/receiver/preset/3/cast", "")
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, bodyBytes)
+		}
+		if got := streamsCalls.lastSlot(); got != 3 {
+			t.Errorf("streams.CastPreset slot = %d, want 3", got)
+		}
+	})
+
+	t.Run("preset bad slot", func(t *testing.T) {
+		resp := mustPOSTForm(t, ts.URL+"/receiver/preset/0/cast", "")
+		defer resp.Body.Close()
+		if resp.StatusCode != 400 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 400; body=%s", resp.StatusCode, bodyBytes)
+		}
+	})
 }
 
 func collectClasses(n *html.Node) map[string]bool {

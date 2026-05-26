@@ -351,6 +351,17 @@ func main() {
 	}
 	uiSrv.Mount(mux)
 
+	var presetViewer adapters.PresetViewer
+	var presetCaster adapters.PresetCaster
+	if streamsA, ok := reg.Get("streams"); ok {
+		if v, ok := streamsA.(adapters.PresetViewer); ok {
+			presetViewer = v
+		}
+		if c, ok := streamsA.(adapters.PresetCaster); ok {
+			presetCaster = c
+		}
+	}
+
 	chassisSrv, err := chassis.New(chassis.Config{
 		Bridge:              sec.Bridge,
 		Manager:             coreMgr,
@@ -367,9 +378,14 @@ func main() {
 		VolumeSaver:         &volumeSaverAdapter{bs: saver},
 		AudioScopeViewer:    coreMgr,
 		AUX:                 auxAdapter,
+		PresetViewer:        presetViewer,
+		PresetCaster:        presetCaster,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
+	}
+	if err := chassis.VerifyCastTabBindings(reg); err != nil {
+		dieFriendly("chassis cast bindings", err)
 	}
 	defer func() {
 		if err := chassisSrv.Close(); err != nil {
