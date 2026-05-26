@@ -1,0 +1,752 @@
+# Receiver Chassis Source Cluster & Streams Catalog — Phase 3B Design
+
+**Status:** Brainstormed; awaiting implementation plan.
+
+**Scope:** Second sub-spec of Phase 3 (Cast Initiation). Re-casts the four non-AUX source-cluster buttons (STREAMS / PLEX / JELLYFIN / DLNA) as 80s/90s AV-style three-state indicator lamps; wires the BROWSE button in the preset-bank header to a server-rendered Streams catalog drawer (provider tabs → group rail → channel grid); adds user-curated preset editing via star-toggle in the catalog plus pointer-based drag-to-reorder of the preset bank; enables the preset-header search/filter field to live-filter both surfaces. The catalog drawer is Streams-only in 3B; Plex / Jellyfin / DLNA library browsing requires entirely new adapter library-fetch surfaces and is out of scope.
+
+**Repo location:** Committed under `docs/superpowers/specs/`. That directory is normally gitignored; this spec is force-added per the receiver chassis rollout convention.
+
+## Context
+
+[Phase 0](2026-05-21-receiver-chassis-foundation-design.md) shipped the chassis chrome at `/receiver`, including idle-state placeholder templates for the source-cluster and catalog drawer. Phase 1 wired live VFD, transport, and visualizer state. Phase 2 closed the meter screen (telemetry + audio scopes). [Phase 3A](2026-05-25-receiver-chassis-input-and-presets-design.md) wired the input row (paste-to-cast via `adapters.QuickCastProvider` and a new typed `adapters.QuickCastError`) and the 12-slot preset bank (read-only, bundled from `streams/assets.go`). 3A established `POST /receiver/cast` and `POST /receiver/preset/{slot}/cast` plus the `PresetViewer` / `PresetCaster` adapter interface convention.
+
+**Phase 3 decomposition (revised in this spec):**
+
+- 3A — Input row + preset bank (shipped, merge `0e0baa7`)
+- **3B (this spec)** — Source-cluster lamps + Streams catalog drawer + user-curated preset editing (save/recall via star toggle, drag-to-reorder) + search/filter
+- 3D (future) — Slot rename, restore-defaults UI, settings-drawer integration
+
+The original Phase 3 decomposition had a separate Phase 3C for "user-curated presets (save/recall, drag-to-slot, rename)". Save/recall and drag-reorder are folded into 3B because they're the natural consumers of the catalog drawer's star affordance. Slot rename has no mockup precedent and creates a third interaction model on preset slots; it stays as 3D.
+
+**Mockup reference:** `docs/superpowers/reference/2026-05-21-receiver-v24.html`. This spec cites mockup line numbers throughout. Where the mockup's behavior diverges from production reality (e.g., the catalog JS hardcodes provider data; the real chassis pulls from an adapter interface), this spec calls the divergence out explicitly.
+
+## Goals
+
+1. **Source-cluster lamps work end-to-end.** STREAMS/PLEX/JELLYFIN/DLNA render as Pioneer/Sansui-style indicator lamps (LED dot + engraved nameplate). Three states per lamp: unavailable (adapter not registered or `IsEnabled()` false), configured-idle (linked/enabled), casting (currently the active cast source). AUX stays as its existing `hw-btn` alongside.
+2. **Catalog drawer matches the mockup.** Clicking the (currently `disabled`) BROWSE button in the preset-header opens the drawer beneath the preset bank. Drawer renders three Streams provider tabs (MTV Rewind / Cartoon Rewind / Toonami Aftermath), a 168px left rail of groups, and a right channel-card grid. Catalog data is server-rendered from `internal/adapters/streams/assets.go` (which already has the provider → group → channel structure the mockup expects).
+3. **Channel click immediately casts** via a new `POST /receiver/streams/cast` route and a new narrow `adapters.StreamsCaster` interface. Reuses the `{ok, chip}` JSON shape and `*adapters.QuickCastError` typed wrapping established in 3A.
+4. **Star toggle edits the preset bank.** Clicking the corner star on a channel card adds the channel to the first empty slot, or removes it from its current slot(s). Persisted to `{data_dir}/chassis_presets.json` via atomic write. All-12-full triggers a 409 `BANK FULL` chip. Drag-and-drop reorder of preset slots (pointer-based, swap semantics) lives alongside.
+5. **Search/filter is live, client-only.** The preset-header `<input id="search-input">` (currently disabled after 3A) becomes active. Filters both the preset bank and the catalog grid by name / badge / channel-id substring. ESC clears.
+6. **Source-cluster, catalog grid, and preset bank share `tuned` state.** All three derive from the existing `transport` SSE event's `AdapterRef`. No three-way state divergence is possible.
+7. **`internal/chassis/` adds no new concrete-adapter imports.** The new `StreamsCatalogViewer`, `StreamsCaster`, `PresetEditor`, and `SourceAvailabilityViewer` interfaces live in `internal/adapters/`. `import_check_test.go` continues to enforce isolation.
+8. **`/ui/*` is unchanged.** 3B is additive under `/receiver/*`.
+
+## Non-Goals
+
+- **Plex / Jellyfin / DLNA library browsing.** These adapters are pull-style (Plex/Jellyfin) or discovery-only (DLNA); none expose library data today. Wiring real library browsing for any of them is a multi-spec effort (per-adapter library fetch, pagination, refresh, permissions). Their lamps remain status-only.
+- **Slot rename.** User-overridable Title field on preset slots. Deferred to 3D.
+- **"Restore defaults" UI button.** Users can `rm {data_dir}/chassis_presets.json` to revert; a UI button lives in 3D alongside the settings-drawer port.
+- **Hover-X "remove" affordance on preset slots.** Removal goes through the catalog star toggle. Reduces 3B's surface and keeps each slot single-purpose (click = cast). 3D can revisit if usage data warrants.
+- **Reordering across drawer modes.** Dragging a preset slot onto a catalog card is not a valid drop. The two surfaces stay logically separate.
+- **History row population.** Phase 5.
+- **Search-result deep-link.** The filter is ephemeral; URL doesn't reflect it. Refresh clears.
+- **A keyboard "move to slot N" shortcut** beyond Ctrl+Arrow nudge. A jump like "Ctrl+G then 3" is rejected as out-of-idiom for a 12-slot bank.
+
+## Design Decisions
+
+| Decision | Resolution |
+|---|---|
+| Source-cluster button vocabulary | Four buttons → four indicator lamps. STREAMS/PLEX/JELLYFIN/DLNA are not interactive in 3B. AUX stays as its existing `hw-btn`. |
+| Lamp visual idiom | Pioneer/Sansui: LED dot (left) + engraved brushed-metal nameplate (right). Three states: dark / dim amber (`--lock-amber`) / bright green (`--vfd`). |
+| Lamp state derivation | New narrow `adapters.SourceAvailabilityViewer` interface. Each source adapter implements `SourceID()` + `Configured()`. Chassis snapshot helper walks the registry per tick. |
+| DLNA lamp | DLNA adapter exists and implements `IsEnabled()`. Lamp dark when disabled, dim amber when enabled, bright green when actively serving. |
+| Catalog drawer entry | Preset-header BROWSE button only. Source-cluster lamps are not click-targets. |
+| Catalog data source | `StreamsCatalogViewer.Catalog()` returns a chassis-shaped slice of providers → groups → channels. Implementation reads existing `ProviderDefinition` / `ChannelDefinition` / `GroupDefinition` from `streams/assets.go` — no new data shape. |
+| Catalog cast HTTP shape | New sibling route `POST /receiver/streams/cast` with `provider` + `channel` form fields. Returns `{ok, chip}` matching 3A. Reuses `*adapters.QuickCastError` for typed status/chip propagation. |
+| Preset editing HTTP shape | `POST /receiver/preset/toggle` (server-side toggle, race-safe) and `POST /receiver/preset/move` (swap semantics, 1..12 each). Both return the extended `{ok, chip, slot?, cleared?}` JSON shape. |
+| Bank-full behavior | Reject with `409 BANK FULL` chip. User clears a slot manually before retrying. No silent overwrites or FIFO eviction. |
+| Preset persistence | `{data_dir}/chassis_presets.json` atomic write via temp file + `os.Rename`. Format: 12-entry array of `(slot, provider, channel)` triples; display fields re-derived from catalog at load. First-run seeds from existing `bundledChassisPresets`. Stale references drop silently. |
+| Adapter interface rename | `PresetViewer.BundledPresets()` → `PresetViewer.Presets()`. The returned list is no longer guaranteed-bundled after edits; the method name reflects that. 3A call sites update. |
+| Drag-reorder mechanic | Pointer-based (`pointerdown`/`pointermove`/`pointerup`), not HTML5 native DnD. Native DnD's touch story is too uneven for the chassis's mouse/touch parity standard. |
+| Drag-reorder semantics | Swap, not insert/shift. Drag slot 7 onto slot 3 → 7 and 3 trade. Empty slots are valid drop targets. |
+| Search/filter | Client-only, no server route. Matches `name` / `badge label` / `channel id` substring (case-insensitive). Applies to preset bank (always) and catalog grid (when drawer open). ESC clears. `:not(.tuned)` exception preserves active-cast visibility through the filter. |
+| Search/filter persistence | None. Refresh clears the field. |
+| SSE | New `presets` event emitted on every successful Toggle/Move. Carries the full 12-slot array with derived display fields. Existing `transport` event still drives source-cluster/catalog/preset `.tuned` migration. |
+| LIT state sharing | Source-cluster STREAMS lamp, `.preset.lit`, and `.ch-card.tuned` all derive from `transport.AdapterRef`. Single source of truth; no three-way divergence. |
+| Chip vocabulary additions | `BANK FULL` (409), `BAD SLOT` (400, existing from 3A but also used by move). |
+| `BROWSE` button rename behavior | Closed: `"▸ Browse full catalog (N)"`. Open: `"◂ Back to presets"`. Server renders the closed form; JS swaps on toggle. Mirrors mockup [v24:5460-5483](../reference/2026-05-21-receiver-v24.html). |
+| Mode label content | Closed: `"Memory · N / 12 slots"` (or `"Memory · drag to reorder · N / 12"` when N ≥ 1). Open: `"Catalog · <provider> · <group> · <channel-count>"`. Server renders closed form; JS swaps on toggle and rail/tab switch. |
+| Star is read-from-catalog only | `.ch-card .star` shows ★ if the channel is in any preset slot, ☆ otherwise. Click toggles. The preset bank itself has no edit affordances in 3B. |
+
+## Implementation Checklist (sketch — implementation plan elaborates)
+
+- `internal/adapters/source.go`: add `SourceAvailabilityViewer` interface.
+- `internal/adapters/catalog.go`: add `CatalogProvider` / `CatalogGroup` / `CatalogChannel` types, `StreamsCatalogViewer` and `StreamsCaster` interfaces.
+- `internal/adapters/preset.go`: rename `PresetViewer.BundledPresets()` → `Presets()`; add `PresetEditor` interface with `TogglePreset` and `MovePreset`; add `PresetToggleResult` type.
+- `internal/adapters/streams/source.go`: implement `SourceAvailabilityViewer` (`SourceID() = "streams"`, `Configured() = true`).
+- `internal/adapters/streams/catalog.go`: implement `StreamsCatalogViewer.Catalog()` and `StreamsCaster.CastChannel`; provider badge lookup table in `assets.go`.
+- `internal/adapters/streams/preset_store.go`: in-memory slot array with file persistence; first-run seed from existing `bundledChassisPresets`; atomic write; load-time stale-reference scrubbing.
+- `internal/adapters/streams/preset.go`: rename `BundledPresets()` → `Presets()`; add `TogglePreset` and `MovePreset` methods backed by the new store.
+- `internal/adapters/plex/source.go`, `jellyfin/source.go`, `dlna/source.go`: implement `SourceAvailabilityViewer`.
+- `internal/chassis/cast.go`: add sibling helper `writeTogglePresetJSON(w, status, ok, chip, slot, cleared)`. Existing `writeCastJSON` from 3A stays unchanged so all 3A callers remain stable; the new helper shares an internal `castJSONBody` struct for the common `{ok, chip}` core fields.
+- `internal/chassis/streams_cast.go`: add `POST /receiver/streams/cast` handler.
+- `internal/chassis/preset.go`: add `POST /receiver/preset/toggle` and `POST /receiver/preset/move` handlers; existing 3A handler stays.
+- `internal/chassis/server.go`: add `Config.StreamsCatalogViewer`, `Config.StreamsCaster`, `Config.PresetEditor`, `Config.SourceAvailabilityViewers`. Store on `*Server`. Wire two new mux routes.
+- `internal/chassis/data.go`: extend `SourceButton` with `Configured` and `Casting`; add `CatalogData` and sub-types; add `applySourceLampState` and `buildCatalogData` helpers; rewrite source-cluster idle/snapshot blocks.
+- `internal/chassis/session.go`: `snapshotFromStatusView` populates `Source` lamp states and `Catalog` via the new helpers.
+- `internal/chassis/events.go`: add `publishPresets()` method; subscribers receive it via the existing SSE multiplexer.
+- `internal/chassis/templates/source-cluster.html`: branch on `Action` — empty → render `.lamp`, non-empty → existing `.hw-btn` (AUX).
+- `internal/chassis/templates/preset-bank.html`: render preset slots with reorder data attributes; add `<template id="catalog-tree-<provider>">` blocks holding the full DOM for each provider's rail+grid (one `<template>` per provider; JS clones content on tab switch); un-disable the BROWSE button and search field.
+- `internal/chassis/templates/catalog-drawer.html`, `catalog-rail.html`, `catalog-grid.html`: new partials matching the mockup structure.
+- `internal/chassis/static/chassis.css`: port mockup catalog rules under `body.receiver` scope; new lamp rules; drag-state rules; search filter rules.
+- `internal/chassis/static/source-cluster.js`: subscribe to `transport`, update lamp `.casting` / `.configured-idle` / `.unavailable` classes.
+- `internal/chassis/static/catalog-browser.js`: BROWSE toggle, provider tab / rail group switching (client-side, against pre-rendered DOM), `POST /receiver/streams/cast` on channel click, `POST /receiver/preset/toggle` on star click, `transport` + `presets` SSE subscriptions.
+- `internal/chassis/static/preset-bank.js` (extend from 3A): subscribe to `presets` SSE, re-render slots; co-exists with existing transport-driven `.lit` migration.
+- `internal/chassis/static/preset-reorder.js`: pointer-drag implementation; Ctrl+Arrow keyboard shortcut.
+- `internal/chassis/static/search-filter.js`: live substring filter; re-applies on drawer open / tab switch / `presets` event.
+- `cmd/mister-groovy-relay/main.go`: pass streams adapter as `StreamsCatalogViewer`, `StreamsCaster`, and `PresetEditor`; pass each enabled-source-adapter as `SourceAvailabilityViewer`.
+- `internal/chassis/import_check_test.go`: forbidden-imports list unchanged (3A already added streams/url/torrent/plex/jellyfin/dlna).
+- Tests named in §Testing.
+
+## Wire Contract — HTTP Routes
+
+### `POST /receiver/streams/cast` (catalog channel click)
+
+**Headers:** `Sec-Fetch-Site: same-origin` (enforced by `requireSameOrigin`).
+
+**Body:**
+
+```
+Content-Type: application/x-www-form-urlencoded
+
+provider=mtv-rewind&channel=80s
+```
+
+**Server logic:**
+
+1. Validate both `provider` and `channel` are non-empty after trimming. Empty → `400 {"ok":false,"chip":"BAD INPUT"}`.
+2. If `s.streamsCaster == nil` → `404 {"ok":false,"chip":"NOT FOUND"}`.
+3. Call `streamsCaster.CastChannel(ctx, provider, channel)`.
+4. On success: `writeCastJSON(w, 200, true, "")`.
+5. On error: `var qerr *adapters.QuickCastError; errors.As(err, &qerr)` for status/chip; untyped fallback is `500 / "CAST FAILED"`.
+
+**Responses:**
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{"ok":true}` | Cast started; SSE will migrate `.tuned` shortly |
+| 400 | `{"ok":false,"chip":"BAD INPUT"}` | Missing provider or channel |
+| 403 | (middleware) | Wrong origin |
+| 404 | `{"ok":false,"chip":"NOT FOUND"}` | `StreamsCaster` nil OR unknown provider/channel |
+| 503 | `{"ok":false,"chip":"NOT READY"}` | Streams startup snapshot not ready |
+| 500 | `{"ok":false,"chip":"CAST FAILED"}` | Untyped error fallback |
+
+### `POST /receiver/preset/toggle` (catalog star click)
+
+**Headers:** `Sec-Fetch-Site: same-origin`.
+
+**Body:** `provider=mtv-rewind&channel=trl`
+
+**Server logic:**
+
+1. Validate both `provider` and `channel`. Empty → `400 BAD INPUT`.
+2. If `s.presetEditor == nil` → `404 NOT FOUND`.
+3. Call `presetEditor.TogglePreset(ctx, provider, channel)`.
+4. Server-side toggle: if channel is in any slot → clear all matching, return `(Added: false, Cleared: [...])`. Else find lowest-numbered empty slot → write, return `(Added: true, Slot: N)`. Else (all 12 full) → return `*adapters.QuickCastError{Status: 409, Chip: "BANK FULL"}`.
+5. On success: `writeTogglePresetJSON(w, 200, true, "", slot, cleared)` with one of `slot` (added) or `cleared` (removed) populated.
+6. On error: `errors.As` extraction same as cast routes; untyped fallback `500 / "CAST FAILED"`.
+
+**Responses:**
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{"ok":true,"slot":N}` | Channel newly added to slot N (1..12) |
+| 200 | `{"ok":true,"cleared":[N,...]}` | Channel removed from slot(s) N |
+| 400 | `{"ok":false,"chip":"BAD INPUT"}` | Missing provider or channel |
+| 403 | (middleware) | Wrong origin |
+| 404 | `{"ok":false,"chip":"NOT FOUND"}` | `PresetEditor` nil OR unknown provider/channel |
+| 409 | `{"ok":false,"chip":"BANK FULL"}` | All 12 slots full and channel not currently starred |
+| 500 | `{"ok":false,"chip":"CAST FAILED"}` | Untyped error fallback |
+
+### `POST /receiver/preset/move` (drag reorder)
+
+**Headers:** `Sec-Fetch-Site: same-origin`.
+
+**Body:** `from=7&to=3`
+
+**Server logic:**
+
+1. Parse `from` and `to` as integers in 1..12. Out-of-range or non-integer → `400 BAD SLOT`.
+2. `from == to` → `200 {"ok":true}` no-op (no persistence write, no SSE emission).
+3. If `s.presetEditor == nil` → `404 NOT FOUND`.
+4. Call `presetEditor.MovePreset(ctx, from, to)` (swap semantics).
+5. Emit `presets` SSE event with the post-swap slot array.
+
+**Responses:**
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{"ok":true}` | Swap completed (or from == to no-op) |
+| 400 | `{"ok":false,"chip":"BAD SLOT"}` | `from`/`to` not in 1..12 |
+| 403 | (middleware) | Wrong origin |
+| 404 | `{"ok":false,"chip":"NOT FOUND"}` | `PresetEditor` nil |
+| 500 | `{"ok":false,"chip":"CAST FAILED"}` | Untyped error fallback |
+
+### Chip Vocabulary additions
+
+| Chip | When |
+|---|---|
+| `BANK FULL` | Preset toggle attempted with all 12 slots already occupied by other channels (409) |
+| `BAD SLOT` | Preset move `from`/`to` out of 1..12 range (400) — already in 3A vocabulary for preset cast; same semantics here |
+
+All other chips (`BAD INPUT`, `NOT FOUND`, `NOT READY`, `CAST FAILED`, etc.) inherit unchanged from 3A.
+
+## Architecture
+
+### Adapter interfaces — `internal/adapters/`
+
+```go
+// source.go
+
+// SourceAvailabilityViewer reports whether a source-adapter is
+// configured/ready to receive casts. The chassis uses this to drive
+// the source-cluster lamp state distinction between "unavailable"
+// (lamp dark) and "configured-idle" (lamp dim amber).
+//
+// Implementations should treat Configured() as a fast in-memory
+// check — it's called per chassis snapshot tick. Anything that
+// requires I/O should be cached behind an internal field that the
+// adapter updates on its own clock.
+type SourceAvailabilityViewer interface {
+    SourceID() string // "streams" | "plex" | "jellyfin" | "dlna"
+    Configured() bool
+}
+
+// catalog.go
+
+type CatalogProvider struct {
+    ID             string         // "mtv-rewind"
+    DisplayName    string         // "MTV Rewind"
+    BadgeLabel     string         // "MTV" — small text in .ic glyph
+    BadgeClass     string         // "mtv" | "cartoon" | "toonami" — CSS hook
+    Live           bool           // whole provider is always-live (direct streams)
+    DefaultChannel string         // for the catalog's initial selection
+    Groups         []CatalogGroup
+}
+
+type CatalogGroup struct {
+    ID       string
+    Name     string
+    Channels []CatalogChannel
+}
+
+type CatalogChannel struct {
+    ID       string
+    Name     string
+    PlayMode string // "SEQ" | "SHUFFLE" — uppercased PlayMode for the .meta line
+    Live     bool   // channel is live (always true when provider.Live)
+}
+
+type StreamsCatalogViewer interface {
+    Catalog() []CatalogProvider
+}
+
+type StreamsCaster interface {
+    CastChannel(ctx context.Context, providerID, channelID string) error
+}
+
+// preset.go (extends 3A)
+
+type PresetViewer interface {
+    Presets() [12]PresetEntry // renamed from BundledPresets()
+}
+
+type PresetEditor interface {
+    TogglePreset(ctx context.Context, providerID, channelID string) (PresetToggleResult, error)
+    MovePreset(ctx context.Context, from, to int) error
+}
+
+type PresetToggleResult struct {
+    Added   bool  // true: channel newly added to Slot. false: channel removed from Slot(s).
+    Slot    int   // slot affected by Add (1..12), 0 if removal
+    Cleared []int // slots cleared by Remove; empty if Added
+}
+```
+
+### Streams adapter implementations
+
+**`internal/adapters/streams/source.go`** — `SourceID() = "streams"`, `Configured() = true` always.
+
+**`internal/adapters/streams/catalog.go`** — `Catalog()` walks `a.definitions` (existing post-startup field) and produces the chassis-shaped slice. Badge metadata lookup table in `assets.go`:
+
+```go
+var providerBadges = map[string]struct{ Label, Class string }{
+    "mtv-rewind":        {"MTV", "mtv"},
+    "cartoon-rewind":    {"CART", "cartoon"},
+    "toonami-aftermath": {"TOON", "toonami"},
+}
+```
+
+`CastChannel`:
+
+```go
+func (a *Adapter) CastChannel(ctx context.Context, providerID, channelID string) error {
+    if err := a.ensureStartupSnapshot(ctx); err != nil {
+        return &adapters.QuickCastError{Status: 503, Chip: "NOT READY",
+            Message: "streams catalog is not ready", Cause: err}
+    }
+    res := streamhandoff.Resolution{ProviderID: providerID, ChannelID: channelID}
+    if err := a.validatePlayRequest(res); err != nil {
+        return &adapters.QuickCastError{Status: 404, Chip: "NOT FOUND",
+            Message: err.Error(), Cause: err}
+    }
+    _, err := a.StartResolvedStream(ctx, res)
+    return err
+}
+```
+
+**`internal/adapters/streams/preset_store.go`** — new file. Owns the in-memory 12-slot array, file path, and mutation methods. On adapter `Start`:
+
+1. Try to read `{data_dir}/chassis_presets.json`.
+2. If missing → seed in-memory from the existing `bundledChassisPresets` literal; do not write the file yet (lazy write on first mutation).
+3. If present → parse, validate slot numbers, drop entries pointing to unknown providers/channels (logged at debug).
+4. Display fields (`Title`, `BadgeLabel`, `BadgeClass`, `Live`) are derived at load by looking up each `(provider, channel)` pair in the existing catalog.
+
+Mutation methods (`TogglePreset`, `MovePreset`) lock the store, mutate the in-memory array, write the new state atomically (`os.CreateTemp` in the same directory + `os.Rename`), unlock, return result.
+
+**`internal/adapters/streams/preset.go`** (renamed/extended from 3A):
+
+```go
+func (a *Adapter) Presets() [12]adapters.PresetEntry {
+    return a.presetStore.Snapshot()
+}
+
+func (a *Adapter) TogglePreset(ctx context.Context, providerID, channelID string) (adapters.PresetToggleResult, error) {
+    // Validate channel exists in catalog (return *QuickCastError{404, "NOT FOUND"} if not).
+    // Delegate to a.presetStore.Toggle(...).
+}
+
+func (a *Adapter) MovePreset(ctx context.Context, from, to int) error {
+    // Validate from, to in 1..12 (return *QuickCastError{400, "BAD SLOT"} if not).
+    // Delegate to a.presetStore.Move(from, to).
+}
+```
+
+`CastPreset` (3A) stays unchanged — it reads `a.presetStore.Snapshot()` instead of `bundledChassisPresets[slot-1]` going forward.
+
+### Per-adapter `SourceAvailabilityViewer` implementations
+
+| Adapter | `SourceID()` | `Configured()` |
+|---|---|---|
+| `streams` | `"streams"` | `true` (always; bundled) |
+| `plex` | `"plex"` | `IsEnabled() && IsLinked()` (combine existing methods) |
+| `jellyfin` | `"jellyfin"` | `IsEnabled() && len(LinkedServers()) > 0` |
+| `dlna` | `"dlna"` | `IsEnabled()` (no linking concept; SSDP discovery is passive) |
+
+Each implementation is ~10 lines; the interface methods become small thin wrappers over existing adapter accessors. Where an adapter doesn't have an `IsLinked()` or equivalent today, the implementer adds one as a single method exposing existing internal state — no new state is introduced.
+
+### Chassis `Config` additions — `internal/chassis/server.go`
+
+```go
+type Config struct {
+    // ... existing 3A fields ...
+
+    // StreamsCatalogViewer / StreamsCaster: the streams adapter wired
+    // through these so the chassis can render the catalog drawer and
+    // fire channel casts without importing internal/adapters/streams
+    // directly.
+    StreamsCatalogViewer adapters.StreamsCatalogViewer
+    StreamsCaster        adapters.StreamsCaster
+
+    // PresetEditor: streams adapter again, for star-toggle and move
+    // operations. PresetViewer (existing 3A field) is unchanged in
+    // type but its concrete method name changes from BundledPresets
+    // to Presets.
+    PresetEditor adapters.PresetEditor
+
+    // SourceAvailabilityViewers: every adapter that implements the
+    // interface, in registration order. main.go assembles the slice
+    // from the registry. The chassis does NOT inspect the registry
+    // directly for source-lamp state — passing the typed slice keeps
+    // import_check_test.go happy.
+    SourceAvailabilityViewers []adapters.SourceAvailabilityViewer
+}
+```
+
+### Chassis data model — `internal/chassis/data.go`
+
+**`SourceButton` extends:**
+
+```go
+type SourceButton struct {
+    Label       string
+    Active      bool   // unchanged — AUX
+    Lit         bool   // unchanged — AUX
+    Unavailable bool   // unchanged — AUX
+    Action      string // unchanged
+    InputID     string // unchanged — AUX
+
+    Configured bool // new: adapter present & linked/enabled (non-AUX slots)
+    Casting    bool // new: this source is the active cast (non-AUX slots)
+}
+```
+
+The template branches on `Action`: empty → render `.lamp` (uses `Configured`/`Casting`); non-empty → render `.hw-btn` (existing AUX path, untouched).
+
+**`CatalogData` new top-level field on `ReceiverPageData`:**
+
+```go
+type CatalogData struct {
+    Open             bool                   // body.browse-open class hook (always false on server-render; JS flips)
+    Providers        []CatalogProviderTab   // chassis-shaped, ready for templates
+    ActiveProviderID string                 // initial active tab
+    ActiveGroupID    string                 // initial active rail group
+    TunedProviderID  string                 // from transport.AdapterRef
+    TunedChannelID   string                 // from transport.AdapterRef
+    PresetMembership map[string]int         // "provider:channel" → slot 1..12
+    TotalChannels    int                    // sum across all providers, for "Browse full catalog (N)" label
+}
+
+type CatalogProviderTab struct {
+    ID, DisplayName, BadgeLabel, BadgeClass string
+    Live    bool
+    ChCount int                       // total across all groups in this provider
+    Groups  []CatalogGroupTab
+}
+
+type CatalogGroupTab struct {
+    ID, Name string
+    ChCount  int
+    Channels []CatalogChannelCard
+}
+
+type CatalogChannelCard struct {
+    ID, Name, PlayMode string
+    Live       bool
+    Tuned      bool // matches transport.AdapterRef
+    Starred    bool // is in a preset slot
+    PresetSlot int  // 0 if not starred; 1..12 otherwise (drives tooltip)
+}
+```
+
+`PresetSlot` extends 3A — the same `[12]PresetEntry` returned by `PresetViewer.Presets()` populates the snapshot's preset bank AND `CatalogData.PresetMembership`. Single derivation per snapshot tick.
+
+### Snapshot wiring
+
+Two new helpers, called from both `idleSnapshot` and `snapshotFromStatusView`:
+
+```go
+// applySourceLampState fills the four non-AUX source slots' Configured
+// and Casting fields. AUX (Action != "") is left to applyAUXSourceState.
+func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvailabilityViewer, adapterRef string)
+
+// buildCatalogData produces the CatalogData struct, including resolved
+// .Tuned and .Starred flags. Pass in PresetViewer to derive membership.
+func buildCatalogData(catalog adapters.StreamsCatalogViewer, presets adapters.PresetViewer, adapterRef string) CatalogData
+```
+
+Both helpers are pure functions (no I/O, no mutex acquisitions); they accept already-resolved data from the adapter interfaces.
+
+### Templates
+
+#### `internal/chassis/templates/source-cluster.html`
+
+Branches on `Action`:
+
+```html
+{{define "source-cluster"}}
+{{htmlComment "chassis:source-cluster"}}
+<div class="source-cluster" role="group" aria-label="Media source">
+  {{range .Buttons}}
+  {{- if eq .Action "" -}}
+    <div class="lamp{{if .Configured}} configured-idle{{end}}{{if .Casting}} casting{{end}}"
+         data-source-id="{{lower .Label}}"
+         role="status"
+         aria-label="{{.Label}}{{if .Casting}} currently casting{{else if .Configured}} ready{{else}} not configured{{end}}"
+         title="{{.Label}} - {{if .Casting}}currently casting{{else if .Configured}}linked, idle{{else}}not configured{{end}}">
+      <span class="led" aria-hidden="true"></span>
+      <span class="name">{{.Label}}</span>
+    </div>
+  {{- else -}}
+    <!-- existing AUX hw-btn rendering, unchanged -->
+    <button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}" ...>{{.Label}}</button>
+  {{- end -}}
+  {{end}}
+</div>
+{{end}}
+```
+
+A new `lower` helper is added to the chassis FuncMap (one-liner).
+
+#### `internal/chassis/templates/preset-bank.html`
+
+Extended from 3A. Each preset slot grows `data-slot`/`data-provider`/`data-channel` attributes (data-slot already exists in 3A; the others are new). The BROWSE button drops `disabled` and `aria-disabled`. The search input drops `disabled` and `readonly`. The mode label and BROWSE button text render their closed-state form server-side.
+
+Catalog tree pre-rendering: the preset-bank template emits one `<template id="catalog-tree-<provider-id>">` per provider holding that provider's full rail+grid DOM. Using HTML `<template>` (not `display: none`) means the inert nodes don't appear in the active document tree — `.content` provides a `DocumentFragment` that JS clones on tab switch into `.catalog-rail` and `.catalog-grid`. Total payload for the 90-channel worst case: ~6KB pre-gzip; under 2KB compressed. Acceptable. The drawer's initial active provider's tree is server-rendered directly into the visible rail+grid containers (no clone needed on first paint).
+
+#### `internal/chassis/templates/catalog-drawer.html` (new)
+
+Matches the mockup [v24:3879-3902](../reference/2026-05-21-receiver-v24.html#L3879-L3902) structure:
+
+```html
+{{define "catalog-drawer"}}
+{{htmlComment "chassis:catalog-drawer"}}
+<div class="catalog-drawer" id="catalog-drawer" aria-hidden="true">
+  <div class="catalog-browser">
+    <div class="catalog-provider-tabs">
+      <span class="catalog-tab-indicator" id="catalog-tab-indicator"></span>
+      {{range .Providers}}
+      <button class="catalog-provider-tab{{if eq .ID $.ActiveProviderID}} active{{end}}"
+              data-provider="{{.ID}}">
+        <span class="ic {{.BadgeClass}}">{{.BadgeLabel}}</span>
+        {{.DisplayName}}
+        <span class="ch-count">{{.ChCount}}</span>
+      </button>
+      {{end}}
+    </div>
+    <div class="catalog-body">
+      <div class="catalog-rail" id="catalog-rail">
+        {{template "catalog-rail" .}}
+      </div>
+      <div class="catalog-grid" id="catalog-grid">
+        {{template "catalog-grid" .}}
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}
+```
+
+#### `internal/chassis/templates/catalog-rail.html` (new)
+
+Renders the rail group buttons for the active provider:
+
+```html
+{{define "catalog-rail"}}
+{{- $active := .ActiveGroupID -}}
+{{- range $i, $g := (index .Providers (.ProviderIndex .ActiveProviderID)).Groups -}}
+<button class="catalog-rail-group{{if eq $g.ID $active}} active{{end}}"
+        data-group="{{$g.ID}}" style="--i:{{$i}}">
+  {{$g.Name}}<span class="count">{{$g.ChCount}}</span>
+</button>
+{{- end -}}
+{{end}}
+```
+
+(`ProviderIndex` is a helper method on `CatalogData` that returns the slice index of a provider by ID.)
+
+#### `internal/chassis/templates/catalog-grid.html` (new)
+
+Renders the channel cards for the active provider+group:
+
+```html
+{{define "catalog-grid"}}
+{{- $cd := . -}}
+{{- $p := index .Providers (.ProviderIndex .ActiveProviderID) -}}
+{{- $g := index $p.Groups (.GroupIndex .ActiveProviderID .ActiveGroupID) -}}
+{{- range $i, $c := $g.Channels -}}
+<div role="button" tabindex="0"
+     class="ch-card{{if $c.Tuned}} tuned{{end}}{{if $c.Starred}} starred{{end}}{{if $c.Live}} live{{end}}"
+     data-provider="{{$p.ID}}" data-channel="{{$c.ID}}" style="--i:{{$i}}">
+  <button class="star" type="button"
+          title="{{if $c.Starred}}In preset {{pad2 $c.PresetSlot}}{{else}}Save to preset{{end}}">{{if $c.Starred}}★{{else}}☆{{end}}</button>
+  <div class="name">{{$c.Name}}</div>
+  <div class="meta"><span>{{upper $c.ID}}</span><span class="mode">{{$c.PlayMode}}</span></div>
+</div>
+{{- end -}}
+{{end}}
+```
+
+Each tab/group switch in JS re-renders these by reading from the pre-rendered hidden DOM region; no server round-trip.
+
+### Client JS
+
+#### `internal/chassis/static/source-cluster.js` (new, ~40 lines)
+
+Subscribes to the `transport` SSE event. On each tick, reads `transport.adapterRef`, derives the active source (`streams` / `plex` / `jellyfin` / `dlna` / `""`), updates `.casting` class on the matching `.source-cluster .lamp` and clears it from siblings. The `.configured-idle` class is initial-rendered server-side and not migrated client-side (linkage state changes are rare; require a chassis page reload to update — documented as a known minor gap).
+
+No POST handlers, no click handlers. The four lamps are non-interactive.
+
+#### `internal/chassis/static/catalog-browser.js` (new, ~150 lines)
+
+Responsibilities:
+1. **BROWSE toggle.** Click `#browse-toggle` → flip `body.browse-open`, swap button text (closed: `▸ Browse full catalog (N)` / open: `◂ Back to presets`), swap mode-label text, trigger `body.catalog-scanning` for 600ms (VFD scan animation per mockup [v24:2507-2532](../reference/2026-05-21-receiver-v24.html#L2507-L2532)), position `.catalog-tab-indicator`.
+2. **Provider tab switching.** Click `.catalog-provider-tab` → set `.active`, swap the rail and grid contents from pre-rendered hidden DOM, update `activeProviderID` / `activeGroupID`, reposition the tab indicator, re-derive `.tuned` / `.starred` from current SSE state.
+3. **Rail group switching.** Click `.catalog-rail-group` → swap grid contents to that group's channels.
+4. **Channel cast.** Click `.ch-card` (not on `.star`) → `POST /receiver/streams/cast` with `provider`+`channel`. JSON response; on error, route the chip text through the preset-header status surface.
+5. **Star toggle.** Click `.ch-card .star` → `POST /receiver/preset/toggle` with same body. Optimistic `.starred` flip; server response or `presets` SSE migrates back if it failed.
+6. **`transport` SSE subscription.** Migrate `.ch-card.tuned` across all rendered provider trees on each tick.
+7. **`presets` SSE subscription.** Re-derive `.ch-card.starred` across all rendered provider trees from the slot data.
+8. **Keyboard.** Enter / Space on a focused `.ch-card` triggers the cast (already partially in the mockup [v24:5413-5418](../reference/2026-05-21-receiver-v24.html#L5413-L5418)).
+
+#### `internal/chassis/static/preset-bank.js` (extend from 3A, +~30 lines)
+
+Adds: subscribe to the new `presets` SSE event. On each tick, re-render slot DOM content (name, badge label, badge class, `.empty` / `.live` / `.lit` classes) from the slot array. The slot's `data-provider` / `data-channel` attributes update too — this is what makes `transport`-driven `.lit` migration continue to work after a slot's content changes.
+
+#### `internal/chassis/static/preset-reorder.js` (new, ~110 lines)
+
+Pointer-based drag implementation:
+
+1. `pointerdown` on `.preset:not(.empty)` → record source slot, prevent default scroll.
+2. `pointermove` past 5px → enter drag mode. Clone source slot to `position: fixed`, hide source via opacity, set `cursor: grabbing`.
+3. `pointermove` thereafter → reposition clone; use `document.elementFromPoint(x, y).closest('.preset')` to detect hover target. Apply `.drop-target` class to the matching slot, clear from siblings.
+4. `pointerup` → if hovered target exists and differs from source: `POST /receiver/preset/move` with `from`/`to`. On success the `presets` SSE event redraws both slots; the clone is removed when the new DOM is in place. On failure: spring clone back to source.
+5. `pointercancel` / `keydown Escape` → cancel; spring clone back to source.
+6. `keydown` on focused `.preset:not(.empty)`: `Ctrl+ArrowLeft` → `POST move {from: this, to: this-1}` (wrap to 12 at slot 1). `Ctrl+ArrowRight` → `to: this+1` (wrap to 1 at slot 12).
+
+CSS uses `transition: transform 200ms ease-out` on `.preset`; the swap animation falls out naturally from the SSE re-render.
+
+#### `internal/chassis/static/search-filter.js` (new, ~60 lines)
+
+1. Attach `input` listener to `#search-input`. On change, normalize the query (`.toLowerCase().trim()`).
+2. Walk `.preset-bank .preset` and `.catalog-grid .ch-card` (when drawer is open). For each, match against `name` / `badge label` (preset) or `name` / `channel-id` / provider display name (catalog card). Match → opacity 1, `pointer-events: auto`. No match → opacity 0.22, `pointer-events: none`.
+3. `:not(.tuned)` exception baked into selectors so the active-cast stays visible regardless of filter state.
+4. Update `#search-scope` chip text with match counts (presets: `N`, catalog: `M`).
+5. Add `.has-value` class to `#search-field` when query is non-empty.
+6. `keydown Escape` → clear input, re-apply filter (showing everything).
+7. Re-apply hooks: `presets` SSE event, drawer open, provider tab switch, group switch. Each calls `applyFilter()`.
+
+### CSS — `internal/chassis/static/chassis.css`
+
+All new rules scoped under `body.receiver` per the chassis scope-isolation invariant. Section ordering in the stylesheet:
+
+- **Source-cluster lamps** (new section, sits where the existing source-cluster button rules are): `.lamp` flex container, `.lamp .led` 8px circle, three state variants (`.configured-idle .led` amber, `.casting .led` cyan/green with full glow, default = dark glass with inset), `.lamp .name` brushed-metal engraved text with state-dependent color.
+- **Catalog drawer** (port verbatim from mockup [v24:2190-2502](../reference/2026-05-21-receiver-v24.html#L2190-L2502) with `body.receiver` prefix per the scope-isolation pass): `.catalog-drawer` collapsible container, `.catalog-browser` recessed inner frame, `.catalog-provider-tabs`, `.catalog-tab-indicator` sliding amber bar, `.catalog-rail`, `.catalog-grid`, `.ch-card` + `.star` + `.live` + `.tuned` + `.starred` variants.
+- **Catalog-scan VFD animation** (port from mockup [v24:2504-2532](../reference/2026-05-21-receiver-v24.html#L2504-L2532)): `body.catalog-scanning .vfd::after` overlay + `scan-blink` keyframe.
+- **Stagger-in animations** (port from mockup [v24:2481-2502](../reference/2026-05-21-receiver-v24.html#L2481-L2502)): `@keyframes ch-card-in`, `@keyframes rail-in`, applied via the `--i` CSS variable each template renders on the item.
+- **Drag-reorder visuals** (new): `.preset[data-dragging="source"]` opacity + scale; `.preset.drop-target` amber border glow; `.preset-drag-clone` body-attached fixed-position element.
+- **Search filter visuals** (port from mockup [v24:5493-5520](../reference/2026-05-21-receiver-v24.html#L5493-L5520) but stripped to CSS — the JS does the actual filtering): `.search-field.has-value` "active filter" treatment.
+
+### SSE — new `presets` event
+
+Emitted on every successful `TogglePreset` or `MovePreset`. Payload:
+
+```json
+{
+  "slots": [
+    {"slot": 1, "provider": "mtv-rewind", "channel": "1stday",
+     "title": "First Day on MTV", "badgeLabel": "MTV REWIND",
+     "badgeClass": "mtv", "live": false},
+    {"slot": 2, "provider": "", "channel": "", "title": "", ...},
+    ...
+  ]
+}
+```
+
+12 entries always; empty slots have `provider: ""`. Display fields are derived server-side so the client doesn't need a catalog lookup table.
+
+**Why a new event vs reusing `transport`:** the existing `transport` event fires on every play-state tick (sub-second cadence in live sessions). A dedicated `presets` event fires only on user-driven mutations — bandwidth saved on the cast-state path.
+
+**Server emission point:** `chassis.Server.publishPresets()`, called from the toggle and move handlers after the adapter returns success. Mirrors how 3A wired SSE for transport events.
+
+**Initial state:** the page-load snapshot already contains the rendered preset bank and catalog `.starred` state. No SSE replay is needed on subscription; the first `presets` event arrives only when the user toggles or moves.
+
+### Persistence — `{data_dir}/chassis_presets.json`
+
+```json
+{
+  "version": 1,
+  "slots": [
+    {"slot": 1,  "provider": "mtv-rewind",        "channel": "1stday"},
+    {"slot": 2,  "provider": "mtv-rewind",        "channel": "80s"},
+    {"slot": 3,  "provider": "mtv-rewind",        "channel": "90s"},
+    {"slot": 4,  "provider": "mtv-rewind",        "channel": "trl"},
+    {"slot": 5,  "provider": "mtv-rewind",        "channel": "120minutes"},
+    {"slot": 6,  "provider": "mtv-rewind",        "channel": "unplugged"},
+    {"slot": 7,  "provider": "cartoon-rewind",    "channel": "loonytunes"},
+    {"slot": 8,  "provider": "cartoon-rewind",    "channel": "animaniacs"},
+    {"slot": 9,  "provider": "cartoon-rewind",    "channel": "heman"},
+    {"slot": 10, "provider": "cartoon-rewind",    "channel": "all"},
+    {"slot": 11, "provider": "toonami-aftermath", "channel": "east"},
+    {"slot": 12, "provider": "toonami-aftermath", "channel": "movies"}
+  ]
+}
+```
+
+- Empty slots: absent from the array (not `null`-padded).
+- Atomic write: temp file in same directory, `os.Rename`. Same pattern as `device_uuid` and `plex.tv` token.
+- Load failure (parse error, version mismatch) → adapter logs warning, falls back to in-memory bundled defaults, leaves file alone (next mutation rewrites cleanly).
+- Stale references (channel removed from `assets.go`) drop silently at load with a debug log entry. Next mutation persists the cleaned array.
+- First-run: file is absent → in-memory seed from `bundledChassisPresets` literal in `streams/assets.go` → file written on first mutation only.
+
+### Mockup divergences (called out explicitly)
+
+| Mockup behavior | Real chassis | Why |
+|---|---|---|
+| Catalog data hardcoded in JS | Server-rendered from `StreamsCatalogViewer.Catalog()` | Single source of truth; the streams adapter owns provider/channel data. |
+| Star tooltip on unstarred channels: "Save to preset" | Same in 3B | Mockup's mockup-only star-toggle is now real. |
+| Star click on filled-bank → silently overwrites (mockup) | Star click on filled-bank → `409 BANK FULL` chip | Mockup didn't think about overflow; spec rejects per user decision. |
+| Provider/group switching re-renders cards from a JS object | Same UX, but cards live in pre-rendered hidden DOM | Avoids a roundtrip on every tab switch. |
+| Search field placeholder: `FILTER PRESETS · CATALOG` | Same | Wiring this up enables the placeholder behavior. |
+| `.ch-card.live::after` red pulse dot | Same | Port the CSS. |
+| `body.catalog-scanning` 600ms VFD overlay | Same | Port the CSS + 600ms `setTimeout` in JS. |
+| `castTo()` updates VFD title text directly | Real chassis lets `transport` SSE drive the VFD | Mockup is a mockup; the real path goes through core.Manager → SSE. |
+
+## Testing
+
+### Layer 1 — Unit (per-package)
+
+- **`internal/adapters/streams/source_test.go`**: `SourceID()` returns `"streams"`; `Configured()` returns `true`.
+- **`internal/adapters/streams/catalog_test.go`**: `Catalog()` returns three providers in `bundledManifest()` order; each provider has correct `BadgeLabel`/`BadgeClass`; toonami-aftermath has `Live: true` and all its channels have `Live: true`; mtv-rewind has `Live: false` and its channels too; group ordering preserved; channel `PlayMode` strings uppercased.
+- **`internal/adapters/streams/catalog_test.go`**: `CastChannel(ctx, valid)` reaches `StartResolvedStream` via fake core; `CastChannel(ctx, "nonexistent", "x")` returns `*QuickCastError{404, "NOT FOUND"}`; pre-startup snapshot failure returns `*QuickCastError{503, "NOT READY"}`.
+- **`internal/adapters/streams/preset_store_test.go`**: load-from-file happy path; load-with-missing-file seeds from `bundledChassisPresets`; load-with-stale-channel drops the entry and logs; load-with-parse-error falls back to defaults; `Toggle` add path finds first empty slot; `Toggle` remove path clears all matching; `Toggle` on full bank with new channel returns 409 BANK FULL; `Toggle` writes file atomically (verify temp file pattern + rename); `Move` swaps two slots and writes; `Move(from, from)` is a no-op; `Move` out-of-range returns 400 BAD SLOT.
+- **`internal/adapters/streams/preset_test.go`** (extend 3A): `Presets()` returns from the store (was: from the literal); `TogglePreset` and `MovePreset` delegate to the store.
+- **`internal/adapters/plex/source_test.go`**, **`jellyfin/source_test.go`**, **`dlna/source_test.go`**: each `SourceID()` returns the expected string; `Configured()` returns the expected logic-AND of `IsEnabled()` and link status.
+- **`internal/adapters/preset_test.go`**: `PresetToggleResult` JSON encoding; `QuickCastError` extraction round-trips through `errors.As` for new chips (`BANK FULL`).
+- **`internal/chassis/cast_test.go`** (extend 3A): `writeTogglePresetJSON` shape for success-with-slot, success-with-cleared, and error variants.
+- **`internal/chassis/streams_cast_test.go`** (new): handler success / 400 / 403 / 404 / 503 / 500 paths; same-origin guard; typed-error extraction.
+- **`internal/chassis/preset_test.go`** (extend 3A): `POST /receiver/preset/toggle` handler with fake `PresetEditor`; covers add, remove, BANK FULL; `POST /receiver/preset/move` happy + BAD SLOT + 404 + same-origin.
+- **`internal/chassis/data_test.go`**: `applySourceLampState` derives `Configured` + `Casting` correctly given a fake registry; `buildCatalogData` populates `PresetMembership` correctly given fake `PresetViewer`; `.tuned` matches `transport.AdapterRef` parsed segments.
+
+### Layer 2 — Template & CSS
+
+- **`internal/chassis/chassis_test.go`** (extend):
+  - `source-cluster.html` renders `.lamp` for empty `Action`; renders `.hw-btn` for non-empty Action (AUX). 3-state classes apply correctly.
+  - `catalog-drawer.html` renders all three provider tabs with badge metadata.
+  - `catalog-rail.html` renders one button per group in the active provider, with `--i` index.
+  - `catalog-grid.html` renders one card per channel, with star state matching `PresetMembership`.
+  - `preset-bank.html` un-disables BROWSE and `#search-input`; renders `data-provider`/`data-channel`/`data-slot` on filled slots.
+  - `shell.html` loads all four new JS files in correct order (chassis.js → vfd-live.js → source-cluster.js → preset-bank.js → catalog-browser.js → preset-reorder.js → search-filter.js).
+- `TestChassisCSS_AllSelectorsScoped` (existing) covers new rules.
+- No-fake-values JS lint: new JS files must not contain `Math.random`/`Math.sin`/etc.
+
+### Layer 3 — Integration
+
+- **`tests/integration/chassis_test.go`** (extend):
+  - `POST /receiver/streams/cast` with valid provider+channel reaches a fake `StreamsCaster.CastChannel`.
+  - `POST /receiver/preset/toggle` add path: empty bank → channel lands in slot 1; full bank with new channel → 409 BANK FULL.
+  - `POST /receiver/preset/move` swaps slots; subsequent `Presets()` call reflects swap.
+  - SSE `presets` event fires after a successful Toggle; payload matches new slot state.
+  - Page reload mid-cast shows correct `.tuned` on source-cluster STREAMS lamp + matching preset slot + matching catalog card (all three surfaces from one snapshot).
+  - Star toggle persists across simulated bridge restart: write file, restart fake bridge, verify slots loaded.
+  - Stale reference handling: pre-seed file with `(provider="gone", channel="x")` slot, restart, verify slot renders empty (no crash).
+
+### Layer 4 — Manual smoke
+
+- Open `/receiver`; observe four source-cluster lamps in default states (STREAMS amber, Plex/Jellyfin/DLNA dark unless linked).
+- Cast a Streams channel via input row → STREAMS lamp lights green, matching preset slot lights cyan, matching catalog card glows cyan (open drawer to verify).
+- Click BROWSE → drawer opens with catalog-scan VFD flash; provider tabs/rail/grid all populated; first provider's first group's channels visible.
+- Switch provider tab → rail and grid update; tab indicator slides.
+- Click a channel card → cast starts; LIT migrates across all three surfaces.
+- Click a star on an unstarred channel → starred; preset bank updates; PRESETS slot count increments.
+- Click the same star again → unstarred; preset bank slot becomes empty.
+- Fill all 12 slots; try to star a 13th → BANK FULL chip in preset header.
+- Drag preset slot 1 onto slot 7 → swap; preset bank reflects swap; persistence file rewritten.
+- Type in search field → preset bank and catalog dim non-matches; scope chip updates count; ESC clears.
+- Refresh page → search field empty (no persistence), preset bank shows persisted state from file.
+
+## Migration
+
+None for users. 3B is purely additive under `/receiver/*`. `/ui/playback/quick-cast`, `/ui/streams/*`, and all 3A routes (`/receiver/cast`, `/receiver/preset/{slot}/cast`) stay untouched.
+
+For developers: any code that called `PresetViewer.BundledPresets()` updates to `Presets()`. The only existing call site is inside the streams adapter and `internal/chassis/data.go` — three lines of change.
+
+## Forward Compatibility
+
+- **Phase 3D** can wire slot rename, restore-defaults UI, and settings-drawer integration on top of this spec's persistence and SSE plumbing. No data model change needed beyond adding an optional `title_override` field to the persisted slot entry.
+- **Plex/Jellyfin library browsing** (future phase) plugs into the same drawer shape: each adapter gets its own `LibraryViewer` interface returning the same `CatalogProvider` slice type. The drawer's provider-tab strip extends; everything below it is reused.
+- **3C-equivalent "history row"** (Phase 5) consumes the same `presets` SSE event for "currently in preset N" marker rendering.
+
+## Notes for the Implementer
+
+- **The catalog data ALREADY exists** in `internal/adapters/streams/provider.go` as `ProviderDefinition.Groups[]` and `ChannelDefinition.GroupID`. The `bundledManifest()` populates it. Do not invent a parallel data model in the chassis layer — `StreamsCatalogViewer.Catalog()` is a thin shape-shifter from existing data into the chassis-shaped `[]CatalogProvider`.
+- **The mockup's "live" annotation** is provider-type-derived: `directStreamsProviderType` providers (Toonami Aftermath) are always-live; `youtubeChannelJSONProviderType` providers are not. Use the existing provider Type field — do not invent a per-channel `Live` field on `ChannelDefinition`.
+- **The mode label string** has three forms: closed-empty, closed-filled, open. Render the closed form server-side based on slot fill count. JS swaps to the open form on BROWSE click and updates on tab/group switch.
+- **Pre-rendering all provider trees** in the preset-bank template (as hidden DOM siblings) is the right tradeoff vs server fetch on every tab switch. The full 90-channel DOM is ~6KB pre-gzip; the alternative requires `/receiver/catalog/<provider>` AJAX with a network round-trip on every tab click. Don't optimize this prematurely.
+- **The `transport` SSE event drives source-cluster `.casting`, preset `.lit`, AND catalog `.tuned` simultaneously.** All three surfaces parse the same `AdapterRef`. If a future ref-format change happens, update all three parsers in one PR. The shared parsing logic lives in `parseAdapterRefSource(ref)` in `internal/chassis/data.go` for the source ID and the existing 3A parser for the streams provider/channel pair.
+- **The `presets` SSE event carries the full 12-slot array each time** (not a diff). This is intentional — the client doesn't need to maintain prior state to apply the update; the payload is small (~2KB worst case).
+- **Pointer drag implementation: prefer `pointerdown`/`pointermove`/`pointerup`** over `mousedown`/`touchstart`/etc. — they handle all input types with one code path. Do NOT use HTML5 native DnD (`draggable="true"` + `dragstart` etc.); its touch story is too uneven.
+- **Server-side toggle semantics matter for race safety.** Two clients both seeing "channel X is in slot 7" and posting "remove" must be deterministic. The server is authoritative; the client never sends `Star` or `Unstar` — only `Toggle`.
+- **`Move(from, to)` swap semantics, not insert/shift.** Drag slot 7 onto slot 3 → 7 and 3 trade. Do not cascade 4-10 down to 5-11 or similar — that's insert semantics and doesn't match the chassis's "12 fixed positions" model.
+- **The persistence file is small enough to rewrite entirely on every mutation.** Don't introduce a journal, diff format, or partial update protocol. Atomic temp-file + `os.Rename` is the whole strategy.
+- **Search filter is `:not(.tuned)` aware.** The currently-casting item stays loud even when filtered out, so the user can always see what's playing. Bake this into the CSS selectors, not the JS — it's a styling concern.
