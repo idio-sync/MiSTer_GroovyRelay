@@ -6,27 +6,20 @@ A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media S
 
 Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. Running on a different host adds networking overhead and is slightly less stable (but I'm working on it).
 
-## Cast Sources
+## Video Cast Sources
 - Plex
 - Jellyfin
 - Plex/Jellyfin music tracks with CRT visualizer output
 - YouTube/Twitch/Vimeo/etc. URL (and other sites supported by yt-dlp)
 - URL to video file (Archive.org .mkv, .mp4, etc.)
-- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.); public live `.m3u8` casts use the HLS buffer by default.
-- Torrent streaming (magnet links, uploaded `.torrent` files, and HTTP(S) `.torrent` URLs)
+- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.); public live `.m3u8` casts use an HLS buffer to minimize playback hiccups
+- Torrent streaming (uploaded .torrent files and .torrent URLs/magnet links)
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming channels
 
 ## Music visualizer modes
 
 Plex and Jellyfin music casts automatically render a CRT visualizer for audio-only items. The adapters provide track metadata and a compatibility visualizer request, while the bridge applies the global visualizer mode when each music cast starts.
-
-Set the global mode in `config.toml`:
-
-```toml
-[bridge.visualizer]
-mode = "retro_analyzer"
-```
 
 Supported modes are:
 
@@ -40,8 +33,6 @@ Supported modes are:
 - `cover_spectrum`: cached album art with spectrum bars.
 
 Changing only the visualizer mode does not interrupt the current cast; the new mode applies to the next music cast.
-
-**Note:** Previously discussed `chiptune_equalizer` and `radial_spectrum` modes are not shipped in this wave. `chiptune_equalizer` overlaps with `retro_analyzer`; `radial_spectrum` is deferred until it can be implemented as a genuine polar/circular visualizer without a fragile FFmpeg graph.
 
 ### AUX analog visualizer
 
@@ -61,7 +52,8 @@ done
 
 The loop is required because GroovyRelay opens the stream twice per AUX start: once for probe, then once for playback.
 
-If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update the producer/container format or `url` as needed. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it.
+If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update the producer/container format or `url` as needed. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it. I will likely 
+provide a binary or script in the future to make this easier.
 
 Set `audio_output = "visual_only"` to drive the CRT visualizer without sending PCM monitor audio to MiSTer. Set `audio_output = "monitor"` to keep PCM output enabled so the captured audio can be monitored through the normal MiSTer audio path.
 
@@ -109,7 +101,7 @@ Advanced L2 container networks can work. With macvlan/ipvlan on `br0` or another
 
 ## Native builds
 
-Native archives are built for Windows, macOS, and Linux. On first run, the bridge writes a platform-specific config file and exits so you can set `bridge.mister.host`, then relaunch it. These builds are supported but are not the primary target and may lag a bit in terms of features/fixes.
+Native binaries are built for Windows, macOS, and Linux. On first run, the bridge writes a platform-specific config file and exits so you can set `bridge.mister.host`, then relaunch it. These builds are supported but are not the primary target and may lag a bit in terms of features/fixes.
 
 | OS | Default config path |
 | --- | --- |
@@ -145,7 +137,7 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | URL | Global Cast drawer or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
 | Streams | Bundled catalog entries | On | Includes Toonami Aftermath and other bundled channels. |
 | AUX | Receiver page | Off | CRT visualizer from native capture or a remote FFmpeg producer. |
-| Torrent | Global Cast drawer magnet link, `.torrent` upload, or HTTP(S) `.torrent` URL | Off | Requires explicit traffic acknowledgement. Remote torrent URLs are public HTTP(S) only. See [docs/torrent.md](docs/torrent.md). |
+| Torrent | Global Cast drawer magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
 
 ## Settings UI
@@ -171,7 +163,7 @@ Most installs only need the quick start. Use [docs/operations.md](docs/operation
 | Topic | When it matters |
 | --- | --- |
 | Multi-NIC hosts | Cast target appears, but commands never reach the bridge. |
-| Live HLS buffering | Public `.m3u8` or Toonami Aftermath freezes, unsupported HLS, or live-delay questions. |
+| Live HLS buffering | Public `.m3u8` streams freezing, unsupported HLS, or live-delay questions. |
 | Docker CPU contention | Playback shows motion glitches under host load. |
 | Fake MiSTer diagnostics | You need to prove the bridge is sending packets before debugging the real MiSTer path. |
 
