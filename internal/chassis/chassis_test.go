@@ -2535,3 +2535,74 @@ func TestInputRowTemplate_RendersChipKindAttribute(t *testing.T) {
 		t.Errorf("missing data-chip-kind attribute.\nHTML:\n%s", html)
 	}
 }
+
+func TestInputCastJS_Exists(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/input-cast.js")
+	if err != nil {
+		t.Fatalf("ReadFile input-cast.js: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "fetch") {
+		t.Errorf("input-cast.js missing fetch call")
+	}
+	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("input-cast.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
+
+func TestPresetBankJS_Exists(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/preset-bank.js")
+	if err != nil {
+		t.Fatalf("ReadFile preset-bank.js: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "window.Chassis.events.subscribe") {
+		t.Errorf("preset-bank.js does not subscribe to events (missing window.Chassis.events.subscribe)")
+	}
+	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("preset-bank.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
+
+func TestShellTemplate_LoadsNewScripts(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`/receiver/static/input-cast.js?v=`,
+		`/receiver/static/preset-bank.js?v=`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("shell.html missing %q script tag", want)
+		}
+	}
+}
+
+func TestChassisCSS_AddsCastRules(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		`body.receiver .chip[data-chip-kind="err"]`,
+		`body.receiver .badge.mtv`,
+		`body.receiver .badge.cartoon`,
+		`body.receiver .badge.toonami`,
+		`body.receiver .browse-btn[disabled]`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chassis.css missing selector %q", want)
+		}
+	}
+}
