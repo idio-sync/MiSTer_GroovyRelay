@@ -3,6 +3,7 @@ package chassis
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"mime"
 	"net/http"
@@ -267,6 +268,13 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		Presets: PresetsData{
 			ModeLabel: "Memory · 0 / 12 slots",
 			Count:     "★ 0",
+			Slots: func() [12]PresetSlot {
+				var s [12]PresetSlot
+				for i := range s {
+					s[i].Slot = i + 1
+				}
+				return s
+			}(),
 		},
 		History: HistoryData{
 			Rows:         nil,
@@ -959,7 +967,7 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 		`aria-label="STREAMS selected"`,
 		`data-source-action="aux-start"`,
 		`class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>`,
-		`class="preset empty" type="button"`,
+		`class="preset empty"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing stable hook %q", want)
@@ -2350,5 +2358,251 @@ func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIdleSnapshot_PresetsAreSlotNumberedEvenWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = nil
+	data := idleSnapshot(cfg, time.Now())
+	for i, slot := range data.Presets.Slots {
+		if slot.Slot != i+1 {
+			t.Errorf("Slots[%d].Slot = %d, want %d", i, slot.Slot, i+1)
+		}
+		if slot.Filled {
+			t.Errorf("Slots[%d].Filled = true with nil PresetViewer, want false", i)
+		}
+	}
+	if data.Presets.ModeLabel != "Memory · 0 / 12 slots" {
+		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 0 / 12 slots")
+	}
+}
+
+func TestIdleSnapshot_PresetsHydratedWhenViewerWired(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = fakePresetViewer{
+		entries: [12]adapters.PresetEntry{
+			{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day on MTV", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+			// remaining entries left zero-valued to assert hydration handles them
+		},
+	}
+	data := idleSnapshot(cfg, time.Now())
+	if !data.Presets.Slots[0].Filled || data.Presets.Slots[0].Title != "First Day on MTV" {
+		t.Errorf("slot 1 not hydrated: %+v", data.Presets.Slots[0])
+	}
+	if data.Presets.Slots[0].Subtitle != "MTV REWIND" {
+		t.Errorf("slot 1 Subtitle = %q, want %q", data.Presets.Slots[0].Subtitle, "MTV REWIND")
+	}
+	if data.Presets.Slots[0].BadgeClass != "mtv" {
+		t.Errorf("slot 1 BadgeClass = %q, want %q", data.Presets.Slots[0].BadgeClass, "mtv")
+	}
+	if data.Presets.Slots[1].Filled {
+		t.Errorf("slot 2 should be empty (zero-valued PresetEntry), got Filled=true")
+	}
+	if data.Presets.Slots[1].Slot != 2 {
+		t.Errorf("slot 2 Slot = %d, want 2 (numbered even when empty)", data.Presets.Slots[1].Slot)
+	}
+	if data.Presets.ModeLabel != "Memory · 1 / 12 slots" {
+		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 1 / 12 slots")
+	}
+	if data.Presets.Count != "★ 1" {
+		t.Errorf("Count = %q, want %q", data.Presets.Count, "★ 1")
+	}
+}
+
+func TestSnapshotFromStatusView_LitDerivesFromAdapterRef(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = bundledFakeViewer()
+	view := fakeStatusView(t, "streams:mtv-rewind:90s:sess-1:42")
+	data := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
+	if !data.Presets.Slots[2].Lit {
+		t.Errorf("slot 3 not LIT: %+v", data.Presets.Slots[2])
+	}
+	if data.Presets.Slots[0].Lit {
+		t.Errorf("slot 1 LIT, want false (not the active stream)")
+	}
+}
+
+func TestSnapshotFromStatusView_NonStreamsAdapterRefClearsAllLit(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = bundledFakeViewer()
+	view := fakeStatusView(t, "url:https://example.test/x.mp4")
+	data := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
+	for i, slot := range data.Presets.Slots {
+		if slot.Lit {
+			t.Errorf("Slots[%d].Lit = true, want false (non-streams adapter)", i)
+		}
+	}
+}
+
+type fakePresetViewer struct {
+	entries [12]adapters.PresetEntry
+}
+
+func (f fakePresetViewer) BundledPresets() [12]adapters.PresetEntry { return f.entries }
+
+func bundledFakeViewer() fakePresetViewer {
+	return fakePresetViewer{
+		entries: [12]adapters.PresetEntry{
+			{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day on MTV", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+			{Slot: 2, ProviderID: "mtv-rewind", ChannelID: "80s", Title: "MTV 80s", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+			{Slot: 3, ProviderID: "mtv-rewind", ChannelID: "90s", Title: "MTV 90s", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+		},
+	}
+}
+
+func fakeStatusView(t *testing.T, adapterRef string) core.StatusHomeView {
+	t.Helper()
+	return core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef, Source: "streams"}
+}
+
+func parseTemplatesForTest(t *testing.T) *template.Template {
+	t.Helper()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	return tmpl
+}
+
+func TestPresetBankTemplate_RendersDataAttributes(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := PresetsData{Slots: [12]PresetSlot{
+		{Slot: 1, Filled: true, Title: "First Day on MTV", Subtitle: "MTV REWIND", BadgeClass: "mtv", ProviderID: "mtv-rewind", ChannelID: "1stday"},
+		{Slot: 11, Filled: true, Title: "Toonami East", Subtitle: "TOONAMI", BadgeClass: "toonami", ProviderID: "toonami-aftermath", ChannelID: "east", Live: true},
+	}, ModeLabel: "Memory · 12 / 12 slots", Count: "★ 12"}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "preset-bank", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`data-slot="1"`,
+		`data-provider="mtv-rewind"`,
+		`data-channel="1stday"`,
+		`data-slot="11"`,
+		`data-provider="toonami-aftermath"`,
+		`data-channel="east"`,
+		`<div class="badge toonami">TOONAMI · LIVE</div>`,
+		`<div class="badge mtv">MTV REWIND</div>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("rendered HTML missing %q.\nHTML:\n%s", want, html)
+		}
+	}
+	if !strings.Contains(html, `live"`) {
+		t.Errorf("preset.live class not rendered on Live slot.\nHTML:\n%s", html)
+	}
+	if strings.Contains(html, `<div class="badge mtv">MTV REWIND · LIVE`) {
+		t.Errorf("non-live slot should not get LIVE suffix")
+	}
+}
+
+func TestPresetBankTemplate_DataSlotPopulatedEvenForEmptySlots(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := PresetsData{}
+	for i := 0; i < 12; i++ {
+		data.Slots[i] = PresetSlot{Slot: i + 1}
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "preset-bank", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	for i := 1; i <= 12; i++ {
+		want := fmt.Sprintf(`data-slot="%d"`, i)
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("missing %q for empty slot", want)
+		}
+	}
+}
+
+func TestInputRowTemplate_RendersChipKindAttribute(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := InputData{PastePlaceholder: "Paste URL or magnet", DetectedKind: "URL", CastEnabled: false}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "input-row", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `data-chip-kind=`) {
+		t.Errorf("missing data-chip-kind attribute.\nHTML:\n%s", html)
+	}
+}
+
+func TestInputCastJS_Exists(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/input-cast.js")
+	if err != nil {
+		t.Fatalf("ReadFile input-cast.js: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "fetch") {
+		t.Errorf("input-cast.js missing fetch call")
+	}
+	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("input-cast.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
+
+func TestPresetBankJS_Exists(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/preset-bank.js")
+	if err != nil {
+		t.Fatalf("ReadFile preset-bank.js: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "window.Chassis.events.subscribe") {
+		t.Errorf("preset-bank.js does not subscribe to events (missing window.Chassis.events.subscribe)")
+	}
+	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("preset-bank.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
+
+func TestShellTemplate_LoadsNewScripts(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`/receiver/static/input-cast.js?v=`,
+		`/receiver/static/preset-bank.js?v=`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("shell.html missing %q script tag", want)
+		}
+	}
+}
+
+func TestChassisCSS_AddsCastRules(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		`body.receiver .chip[data-chip-kind="err"]`,
+		`body.receiver .preset .badge.mtv`,
+		`body.receiver .preset .badge.cartoon`,
+		`body.receiver .preset .badge.toonami`,
+		`body.receiver .browse-btn[disabled]`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chassis.css missing selector %q", want)
+		}
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 type TorrentErrorKind string
@@ -106,4 +108,42 @@ func redactMagnet(raw string) string {
 func isHex(s string) bool {
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+
+// torrentChipForKind maps each TorrentError.Kind to the chassis chip
+// text. Statuses come from torrentErrorStatus (preserved from existing
+// /ui behavior). The chassis route extracts both Status and Chip via
+// errors.As.
+var torrentChipForKind = map[TorrentErrorKind]string{
+	ErrDisabled:               "BLOCKED",
+	ErrTrafficNotAcknowledged: "BLOCKED",
+	ErrNonLoopback:            "BLOCKED",
+	ErrBadInput:               "BAD INPUT",
+	ErrUploadTooLarge:         "FILE TOO BIG",
+	ErrMetadataTimeout:        "TIMEOUT",
+	ErrNoPlayableFile:         "NO VIDEO",
+	ErrExpiredToken:           "NOT FOUND",
+	ErrCoreStart:              "CAST FAILED",
+}
+
+// wrapQuickCastError wraps a *TorrentError as *adapters.QuickCastError
+// for the chassis quick-cast route. Returns nil if err is not a
+// *TorrentError — the chassis collapses plain errors to 500/CAST FAILED
+// via its untyped fallback; the helper deliberately doesn't fabricate
+// status codes for unfamiliar errors.
+func wrapQuickCastError(err error) *adapters.QuickCastError {
+	var terr *TorrentError
+	if !errors.As(err, &terr) {
+		return nil
+	}
+	chip, ok := torrentChipForKind[terr.Kind]
+	if !ok {
+		chip = "CAST FAILED"
+	}
+	return &adapters.QuickCastError{
+		Status:  torrentErrorStatus(err),
+		Chip:    chip,
+		Message: terr.Error(),
+		Cause:   err,
+	}
 }

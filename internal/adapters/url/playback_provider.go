@@ -3,6 +3,7 @@ package url
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -172,11 +173,19 @@ func (a *Adapter) QuickCastTabs() []adapters.QuickCastTab {
 
 func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastRequest) (adapters.QuickCastResult, error) {
 	if !a.IsEnabled() {
-		return adapters.QuickCastResult{}, fmt.Errorf("url adapter is disabled")
+		return adapters.QuickCastResult{}, &adapters.QuickCastError{
+			Status:  http.StatusConflict,
+			Chip:    "BLOCKED",
+			Message: "url adapter is disabled",
+		}
 	}
 	rawURL := strings.TrimSpace(req.Values["url"])
 	if rawURL == "" {
-		return adapters.QuickCastResult{}, fmt.Errorf("url is required")
+		return adapters.QuickCastResult{}, &adapters.QuickCastError{
+			Status:  http.StatusBadRequest,
+			Chip:    "BAD URL",
+			Message: "url is required",
+		}
 	}
 	mode := strings.TrimSpace(req.Values["mode"])
 	if mode == "" {
@@ -186,9 +195,31 @@ func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastReq
 	if hlsBufferMode == "" {
 		hlsBufferMode = "auto"
 	}
-	ref, _, _, err := a.castURLWithHLSBuffer(ctx, rawURL, mode, hlsBufferMode)
+	ref, _, status, err := a.castURLWithHLSBuffer(ctx, rawURL, mode, hlsBufferMode)
 	if err != nil {
-		return adapters.QuickCastResult{}, err
+		return adapters.QuickCastResult{}, wrapURLCastError(status, err)
 	}
 	return adapters.QuickCastResult{Message: "cast started", AdapterRef: ref}, nil
+}
+
+// wrapURLCastError lifts the integer status returned by castURLWithHLSBuffer
+// into a *QuickCastError with a chip derived from the status code. The
+// underlying error is preserved as Cause so errors.Unwrap still works.
+func wrapURLCastError(status int, err error) *adapters.QuickCastError {
+	chip := "CAST FAILED"
+	switch status {
+	case http.StatusBadRequest:
+		chip = "BAD URL"
+	case http.StatusForbidden:
+		chip = "BLOCKED"
+	}
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	return &adapters.QuickCastError{
+		Status:  status,
+		Chip:    chip,
+		Cause:   err,
+		Message: err.Error(),
+	}
 }

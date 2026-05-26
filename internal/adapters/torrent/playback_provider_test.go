@@ -3,6 +3,8 @@ package torrent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -227,5 +229,90 @@ func TestTorrentQuickCastStartsTorrentURL(t *testing.T) {
 	}
 	if len(rec.reqs) != 1 {
 		t.Fatalf("core requests = %d, want 1", len(rec.reqs))
+	}
+}
+
+func TestHandleQuickCast_WrapsDisabledAdapter(t *testing.T) {
+	t.Parallel()
+	a := &Adapter{core: &torrentProviderCoreStub{}, cfg: Config{Enabled: false, TrafficAcknowledged: true}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "torrent-magnet",
+		Values: map[string]string{"magnet": "magnet:?xt=urn:btih:abc"},
+	})
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("err = %v, want *QuickCastError", err)
+	}
+	if qerr.Status != http.StatusConflict || qerr.Chip != "BLOCKED" {
+		t.Errorf("got Status=%d Chip=%q, want 409/BLOCKED", qerr.Status, qerr.Chip)
+	}
+	// Inner TorrentError must still be reachable.
+	var terr *TorrentError
+	if !errors.As(err, &terr) {
+		t.Fatalf("inner TorrentError not reachable via errors.As: %v", err)
+	}
+	if terr.Kind != ErrDisabled {
+		t.Errorf("inner kind = %q, want ErrDisabled", terr.Kind)
+	}
+}
+
+func TestHandleQuickCast_WrapsTrafficNotAcknowledged(t *testing.T) {
+	t.Parallel()
+	a := &Adapter{core: &torrentProviderCoreStub{}, cfg: Config{Enabled: true, TrafficAcknowledged: false}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "torrent-magnet",
+		Values: map[string]string{"magnet": "magnet:?xt=urn:btih:abc"},
+	})
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("err = %v, want *QuickCastError", err)
+	}
+	if qerr.Status != http.StatusForbidden || qerr.Chip != "BLOCKED" {
+		t.Errorf("got Status=%d Chip=%q, want 403/BLOCKED", qerr.Status, qerr.Chip)
+	}
+}
+
+func TestHandleQuickCast_WrapsByTorrentErrorKind(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		kind     TorrentErrorKind
+		wantCode int
+		wantChip string
+	}{
+		{"bad input", ErrBadInput, 400, "BAD INPUT"},
+		{"upload too large", ErrUploadTooLarge, 413, "FILE TOO BIG"},
+		{"metadata timeout", ErrMetadataTimeout, 504, "TIMEOUT"},
+		{"no playable file", ErrNoPlayableFile, 422, "NO VIDEO"},
+		{"expired token", ErrExpiredToken, 404, "NOT FOUND"},
+		{"non-loopback", ErrNonLoopback, 403, "BLOCKED"},
+		{"core start", ErrCoreStart, 500, "CAST FAILED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := &TorrentError{Kind: tc.kind, Message: "synthetic " + string(tc.kind)}
+			got := wrapQuickCastError(raw)
+			if got.Status != tc.wantCode {
+				t.Errorf("Status = %d, want %d", got.Status, tc.wantCode)
+			}
+			if got.Chip != tc.wantChip {
+				t.Errorf("Chip = %q, want %q", got.Chip, tc.wantChip)
+			}
+			if got.Cause != raw {
+				t.Errorf("Cause = %v, want raw TorrentError", got.Cause)
+			}
+		})
+	}
+}
+
+func TestHandleQuickCast_UntypedErrorPassesThroughUnwrapped(t *testing.T) {
+	t.Parallel()
+	// Plain (non-TorrentError) errors should NOT be silently wrapped as
+	// QuickCastError — the chassis collapses them to 500/CAST FAILED via
+	// its own fallback. This ensures the wrapper helper doesn't fabricate
+	// status codes for unfamiliar errors.
+	raw := fmt.Errorf("synthetic untyped failure")
+	if got := wrapQuickCastError(raw); got != nil {
+		t.Errorf("wrapQuickCastError(plain) = %+v, want nil", got)
 	}
 }

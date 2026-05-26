@@ -3,8 +3,10 @@ package chassis
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
@@ -237,6 +239,13 @@ type PresetSlot struct {
 	Filled   bool
 	Title    string
 	Subtitle string
+
+	Slot       int    // 1..12 — needed for the POST URL
+	BadgeClass string // "mtv" | "cartoon" | "toonami" — CSS color hook
+	Lit        bool   // currently casting from this slot (server-side initial paint)
+	Live       bool   // .preset.live class — always-on live channels
+	ProviderID string // streams provider id — for client-side LIT migration
+	ChannelID  string // streams channel id — same
 }
 
 // HistoryData is the recent-casts row. It is empty in Phase 0 idle.
@@ -351,10 +360,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			DetectedKind:     "URL",
 			CastEnabled:      false,
 		},
-		Presets: PresetsData{
-			ModeLabel: "Memory · 0 / 12 slots",
-			Count:     "★ 0",
-		},
+		Presets: buildPresetsData(cfg.PresetViewer, "", ""),
 		History: HistoryData{
 			Rows:         nil,
 			EmptyMessage: "No recent casts",
@@ -363,6 +369,60 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			Open: false,
 		},
 	}
+}
+
+// buildPresetsData hydrates a PresetsData from a PresetViewer (or an
+// empty/numbered view when viewer is nil). When activeProviderID and
+// activeChannelID are non-empty, the matching slot's Lit is set.
+func buildPresetsData(viewer adapters.PresetViewer, activeProviderID, activeChannelID string) PresetsData {
+	var data PresetsData
+	for i := 0; i < 12; i++ {
+		data.Slots[i] = PresetSlot{Slot: i + 1}
+	}
+	if viewer == nil {
+		data.ModeLabel = "Memory · 0 / 12 slots"
+		data.Count = "★ 0"
+		return data
+	}
+	entries := viewer.BundledPresets()
+	filled := 0
+	for i, e := range entries {
+		slot := PresetSlot{Slot: i + 1}
+		if e.ProviderID != "" {
+			slot.Filled = true
+			slot.Title = e.Title
+			slot.Subtitle = e.BadgeLabel
+			slot.BadgeClass = e.BadgeClass
+			slot.Live = e.Live
+			slot.ProviderID = e.ProviderID
+			slot.ChannelID = e.ChannelID
+			if activeProviderID != "" && activeChannelID != "" &&
+				e.ProviderID == activeProviderID && e.ChannelID == activeChannelID {
+				slot.Lit = true
+			}
+			filled++
+		}
+		data.Slots[i] = slot
+	}
+	data.ModeLabel = fmt.Sprintf("Memory · %d / 12 slots", filled)
+	data.Count = fmt.Sprintf("★ %d", filled)
+	return data
+}
+
+// parseStreamsAdapterRef extracts (providerID, channelID) from a streams
+// AdapterRef of the form "streams:<providerID>:<channelID>:<sessionID>:
+// <itemToken>" (see queueAdapterRef in internal/adapters/streams/
+// playback.go). Returns empty strings if the ref doesn't start with
+// "streams:" or has fewer than 3 segments.
+func parseStreamsAdapterRef(ref string) (providerID, channelID string) {
+	if !strings.HasPrefix(ref, "streams:") {
+		return "", ""
+	}
+	parts := strings.SplitN(ref, ":", 5)
+	if len(parts) < 3 {
+		return "", ""
+	}
+	return parts[1], parts[2]
 }
 
 // formatUptime turns a duration into the "NH NM" string used by the VFD.

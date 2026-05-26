@@ -3,11 +3,13 @@ package url
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -155,5 +157,72 @@ func TestURLQuickCastRejectsDisabledAdapter(t *testing.T) {
 	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{Values: map[string]string{"url": "https://example.test/video.mp4"}})
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("disabled quick-cast err = %v, want disabled", err)
+	}
+}
+
+func TestHandleQuickCast_WrapsDisabledAsQuickCastErrorBlocked(t *testing.T) {
+	t.Parallel()
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(false)
+	_, err = a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "url",
+		Values: map[string]string{"url": "https://example.test/video.mp4"},
+	})
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("err = %v, want *QuickCastError", err)
+	}
+	if qerr.Status != http.StatusConflict {
+		t.Errorf("Status = %d, want 409", qerr.Status)
+	}
+	if qerr.Chip != "BLOCKED" {
+		t.Errorf("Chip = %q, want BLOCKED", qerr.Chip)
+	}
+}
+
+func TestHandleQuickCast_WrapsParseFailureAsBadURL(t *testing.T) {
+	t.Parallel()
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+	_, err = a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "url",
+		Values: map[string]string{"url": ""},
+	})
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("err = %v, want *QuickCastError", err)
+	}
+	if qerr.Status != http.StatusBadRequest {
+		t.Errorf("Status = %d, want 400", qerr.Status)
+	}
+	if qerr.Chip != "BAD URL" {
+		t.Errorf("Chip = %q, want BAD URL", qerr.Chip)
+	}
+}
+
+func TestHandleQuickCast_PreservesPlainErrorMessage(t *testing.T) {
+	t.Parallel()
+	// /ui consumers still call err.Error() so the human-readable message
+	// must be preserved through the wrap.
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetEnabled(true)
+	_, err = a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID:  "url",
+		Values: map[string]string{"url": ""},
+	})
+	if err == nil {
+		t.Fatal("err = nil, want non-nil")
+	}
+	if got := err.Error(); !strings.Contains(strings.ToLower(got), "url") {
+		t.Errorf("Error() = %q, want a message mentioning url", got)
 	}
 }

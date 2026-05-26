@@ -3779,3 +3779,25 @@ body.receiver.catalog-scanning .vfd::after {
 /* Container declarations and breakpoint rules live with their owning
    component sections above so each responsive contract stays near the
    layout it adjusts. */
+
+/* 3A: cast error chip variant */
+body.receiver .chip[data-chip-kind="err"] {
+  background: #c0392b;
+  color: #fff;
+  animation: chassis-chip-flash 220ms ease-out;
+}
+
+@keyframes chassis-chip-flash {
+  0%   { transform: scale(1.0); }
+  50%  { transform: scale(1.05); }
+  100% { transform: scale(1.0); }
+}
+
+/* 3A: preset badge colors consolidated above under body.receiver .preset .badge.* */
+
+/* 3A: browse button disabled state (catalog drawer is Phase 3B) */
+body.receiver .browse-btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
