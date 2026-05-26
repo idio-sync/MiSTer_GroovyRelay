@@ -6,14 +6,19 @@
     <div class="preset-header">
       <span class="title" id="preset-mode-label">{{.ModeLabel}}</span>
       <span class="count" id="preset-count">{{.Count}}</span>
+      <button class="browse-btn" id="browse-toggle" disabled aria-disabled="true">&#9656; Browse full catalog</button>
     </div>
     <div class="preset-bank">
       {{range $i, $slot := .Slots}}
-      <button class="preset{{if not $slot.Filled}} empty{{end}}" type="button">
+      <button class="preset{{if not $slot.Filled}} empty{{end}}{{if $slot.Lit}} lit{{end}}{{if $slot.Live}} live{{end}}"
+              type="button"
+              data-slot="{{$slot.Slot}}"
+              data-provider="{{$slot.ProviderID}}"
+              data-channel="{{$slot.ChannelID}}">
         <div class="num">{{pad2 (inc $i)}}</div>
         {{if $slot.Filled}}
         <div class="name">{{$slot.Title}}</div>
-        <div class="badge">{{$slot.Subtitle}}</div>
+        <div class="badge {{$slot.BadgeClass}}">{{$slot.Subtitle}}{{if $slot.Live}} · LIVE{{end}}</div>
         {{end}}
       </button>
       {{end}}

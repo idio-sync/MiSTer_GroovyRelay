@@ -3,6 +3,7 @@ package chassis
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"mime"
 	"net/http"
@@ -966,7 +967,7 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 		`aria-label="STREAMS selected"`,
 		`data-source-action="aux-start"`,
 		`class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>`,
-		`class="preset empty" type="button"`,
+		`class="preset empty"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing stable hook %q", want)
@@ -2457,4 +2458,80 @@ func bundledFakeViewer() fakePresetViewer {
 func fakeStatusView(t *testing.T, adapterRef string) core.StatusHomeView {
 	t.Helper()
 	return core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef, Source: "streams"}
+}
+
+func parseTemplatesForTest(t *testing.T) *template.Template {
+	t.Helper()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	return tmpl
+}
+
+func TestPresetBankTemplate_RendersDataAttributes(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := PresetsData{Slots: [12]PresetSlot{
+		{Slot: 1, Filled: true, Title: "First Day on MTV", Subtitle: "MTV REWIND", BadgeClass: "mtv", ProviderID: "mtv-rewind", ChannelID: "1stday"},
+		{Slot: 11, Filled: true, Title: "Toonami East", Subtitle: "TOONAMI", BadgeClass: "toonami", ProviderID: "toonami-aftermath", ChannelID: "east", Live: true},
+	}, ModeLabel: "Memory · 12 / 12 slots", Count: "★ 12"}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "preset-bank", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`data-slot="1"`,
+		`data-provider="mtv-rewind"`,
+		`data-channel="1stday"`,
+		`data-slot="11"`,
+		`data-provider="toonami-aftermath"`,
+		`data-channel="east"`,
+		`<div class="badge toonami">TOONAMI · LIVE</div>`,
+		`<div class="badge mtv">MTV REWIND</div>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("rendered HTML missing %q.\nHTML:\n%s", want, html)
+		}
+	}
+	if !strings.Contains(html, `live"`) {
+		t.Errorf("preset.live class not rendered on Live slot.\nHTML:\n%s", html)
+	}
+	if strings.Contains(html, `<div class="badge mtv">MTV REWIND · LIVE`) {
+		t.Errorf("non-live slot should not get LIVE suffix")
+	}
+}
+
+func TestPresetBankTemplate_DataSlotPopulatedEvenForEmptySlots(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := PresetsData{}
+	for i := 0; i < 12; i++ {
+		data.Slots[i] = PresetSlot{Slot: i + 1}
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "preset-bank", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	for i := 1; i <= 12; i++ {
+		want := fmt.Sprintf(`data-slot="%d"`, i)
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("missing %q for empty slot", want)
+		}
+	}
+}
+
+func TestInputRowTemplate_RendersChipKindAttribute(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := InputData{PastePlaceholder: "Paste URL or magnet", DetectedKind: "URL", CastEnabled: false}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "input-row", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `data-chip-kind=`) {
+		t.Errorf("missing data-chip-kind attribute.\nHTML:\n%s", html)
+	}
 }
