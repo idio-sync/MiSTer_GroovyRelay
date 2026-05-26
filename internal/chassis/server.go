@@ -200,6 +200,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
 	mux.Handle("POST /receiver/aux/start", requireSameOrigin(http.HandlerFunc(s.handleAUXStartPost)))
 	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
+	mux.Handle("POST /receiver/cast", requireSameOrigin(http.HandlerFunc(s.handleCastPost)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

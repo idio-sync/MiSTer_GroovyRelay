@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -68,6 +69,129 @@ func writeCastJSON(w http.ResponseWriter, status int, ok bool, chip string) {
 		body["chip"] = chip
 	}
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+const castKindFormField = "kind"
+const castPayloadFormField = "payload"
+
+func (s *Server) handleCastPost(w http.ResponseWriter, r *http.Request) {
+	contentType := r.Header.Get("Content-Type")
+	var (
+		payload  string
+		file     *adapters.QuickCastFile
+		formKind string
+	)
+	switch {
+	case strings.HasPrefix(contentType, "multipart/form-data"):
+		r.Body = http.MaxBytesReader(w, r.Body, adapters.MaxQuickCastBytes)
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeCastJSON(w, http.StatusRequestEntityTooLarge, false, "FILE TOO BIG")
+				return
+			}
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		if r.MultipartForm == nil {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+		formKind = strings.TrimSpace(r.FormValue(castKindFormField))
+		payload = strings.TrimSpace(r.FormValue(castPayloadFormField))
+		files := r.MultipartForm.File["torrent_file"]
+		if len(files) != 1 {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		for fieldName, headers := range r.MultipartForm.File {
+			if fieldName != "torrent_file" && len(headers) > 0 {
+				writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+				return
+			}
+		}
+		file = &adapters.QuickCastFile{FieldName: "torrent_file", Header: files[0]}
+	default:
+		if err := r.ParseForm(); err != nil {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		formKind = strings.TrimSpace(r.PostFormValue(castKindFormField))
+		payload = strings.TrimSpace(r.PostFormValue(castPayloadFormField))
+	}
+	_ = formKind // client hint only; server re-detects.
+
+	kind := detectCastKind(payload, file != nil)
+	if kind == "" {
+		writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+		return
+	}
+	tabID, ok := castKindToTab[kind]
+	if !ok {
+		writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+		return
+	}
+
+	provider, _, ok := s.quickCastProviderForTab(tabID)
+	if !ok {
+		writeCastJSON(w, http.StatusNotFound, false, "NOT FOUND")
+		return
+	}
+
+	req := adapters.QuickCastRequest{TabID: tabID, Values: map[string]string{}}
+	if file != nil {
+		expectedFieldName, ok := fileFieldForTab[kind]
+		if !ok {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		if file.FieldName != expectedFieldName {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		req.File = file
+	} else {
+		valuesKey, ok := valuesKeyForTab[kind]
+		if !ok {
+			writeCastJSON(w, http.StatusBadRequest, false, "BAD INPUT")
+			return
+		}
+		req.Values[valuesKey] = payload
+	}
+
+	_, err := provider.HandleQuickCast(r.Context(), req)
+	if err != nil {
+		var qerr *adapters.QuickCastError
+		if errors.As(err, &qerr) {
+			writeCastJSON(w, qerr.Status, false, qerr.Chip)
+			return
+		}
+		writeCastJSON(w, http.StatusInternalServerError, false, "CAST FAILED")
+		return
+	}
+	writeCastJSON(w, http.StatusOK, true, "")
+}
+
+// quickCastProviderForTab finds the QuickCastProvider that advertises
+// the given tab ID. Mirror of internal/ui/playback.go:338. Returns
+// (provider, tab, ok).
+func (s *Server) quickCastProviderForTab(tabID string) (adapters.QuickCastProvider, adapters.QuickCastTab, bool) {
+	if s.cfg.Registry == nil {
+		return nil, adapters.QuickCastTab{}, false
+	}
+	for _, a := range s.cfg.Registry.List() {
+		p, ok := a.(adapters.QuickCastProvider)
+		if !ok {
+			continue
+		}
+		for _, t := range p.QuickCastTabs() {
+			if t.ID == tabID {
+				return p, t, true
+			}
+		}
+	}
+	return nil, adapters.QuickCastTab{}, false
 }
 
 // VerifyCastTabBindings walks the registry's QuickCastProvider adapters
