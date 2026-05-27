@@ -26,7 +26,7 @@ The previous Phase 3D framing ("slot rename, restore-defaults, settings-drawer i
 **Mockup reference:** [`docs/superpowers/reference/2026-05-21-receiver-v24.html`](../reference/2026-05-21-receiver-v24.html). This spec cites mockup line numbers throughout.
 
 **Existing infrastructure to reuse, not rebuild:**
-- [`internal/uiserver/bridge_saver.go`](../../../internal/uiserver/bridge_saver.go) — `BridgeSaver` already does diff-vs-current, preflight (UDP bind check for restart-bridge port changes), atomic write, and per-scope runtime dispatch (HotSwap / NextCast / RestartCast / RestartBridge). 4A wires the chassis routes through this saver unchanged.
+- [`internal/uiserver/bridge_saver.go`](../../../internal/uiserver/bridge_saver.go) — `BridgeSaver` already does diff-vs-current, preflight (TCP/UDP bind checks and data-dir writability checks for restart-bridge changes), atomic write, current-config snapshots, and per-scope runtime dispatch (HotSwap / NextCast / RestartCast / RestartBridge). 4A wires the same saver instance into chassis through a chassis-owned interface so `internal/chassis` does **not** import `internal/uiserver`; the only saver-layer change is an additive typed-error wrapper so chassis can preserve status/chip details without string parsing.
 - [`internal/uiserver/adapter_saver.go`](../../../internal/uiserver/adapter_saver.go) — `AdapterSaver` (reused starting in 4D for adapter section writes).
 - The settings panel's **outer chrome** (`.settings-tab`, `.settings-pane`, `.settings-section`, `.settings-body`, `.settings-tabs`, `.settings-panel`, `.settings-close`, `.settings-spacer`) was ported into [`internal/chassis/static/chassis.css`](../../../internal/chassis/static/chassis.css) during Phase 0 (foundation). The **interior** rules — `.field-row`, `.field-input` (+ `.has-value`, `.num`, `.path`), `.switch` (+ `.on`, `::before`, mobile sizing), `.action-btn` (+ `.primary`, `.ghost`), `.action-result` (+ `.shown`, `.ok`, `.err`), `.scope` (+ `.hot`, `.recast`, `.reboot`), `.field-row .row-end`, `.field-row.has-err`, `.field-row .field-err` (+ `::before`) — are **not yet present** in `chassis.css`. 4A ports these from the mockup ([v24:1973-1997, 2000-2020, 2040-2060, 2936-2949, 2951, 2960-2973, 3059-3073, 3389-3391](../reference/2026-05-21-receiver-v24.html)) and adds one new rule, `.scope.next`, for the 4-tier scope vocabulary.
 
@@ -35,8 +35,8 @@ The previous Phase 3D framing ("slot rename, restore-defaults, settings-drawer i
 1. **The gear button works.** Clicking `⚙ Setup` in the transport row toggles `body.settings-open`; the existing CSS expands the settings panel from collapsed to expanded. Closing via the `✕ Close` button or by clicking the gear again collapses it back.
 2. **All five tabs visible from day one.** The tab strip renders all five tabs (Network, Pipeline, Adapters · N, Catalog · 3, Advanced) on first paint. Clicking a tab switches the active pane purely client-side; no server round trip.
 3. **Network pane is fully functional.** All 9 bridge fields (MiSTer connection × 3, Bridge HTTP × 3, External tools × 3) render with their current values, auto-save on blur, validate inline, and dispatch through `BridgeSaver.Save()` with correct scope.
-4. **One action button works.** "Test MiSTer connectivity" probes the live `groovynet.Sender` against the currently-saved `bridge.mister.{host,port,source_port}` and renders the result (latency + LZ4-Δ negotiation, or timeout, or socket error) in the `.action-result` slot under the button.
-5. **The field renderer generalizes.** A single Go template helper (`field`) supports the five field types (text, number, password, path, select, switch) that Network + Pipeline + Adapters + Catalog + Advanced all use. 4B–4F add zero new field-type primitives.
+4. **One action button works.** "Test MiSTer connectivity" runs the existing safe status-probe pattern against the currently-saved `bridge.mister.{host,port}` and renders the result (latency, timeout, or socket error) in the `.action-result` slot under the button. `mister_source_port` is still saved and preflighted, but cannot be exercised by this probe while the process's main sender already owns that UDP source port.
+5. **The field renderer generalizes.** A single Go template helper (`field`) supports the six field types (text, number, password, path, select, switch) that Network + Pipeline + Adapters + Catalog + Advanced all use. 4B–4F add zero new field-type primitives.
 6. **JSON contract is reusable.** Success: `{ok:true, scope:"hot|next|recast|reboot"}`. Field-validation failure: `{ok:false, errors:{<field>:"<msg>"}}`. Whole-form failure: `{ok:false, chip:"<chip>"}`. 4B–4F use the same envelope.
 7. **`internal/chassis/` adds no new concrete-adapter imports.** Phase 4 saves go through `BridgeSaver` (and later `AdapterSaver`); chassis never imports `internal/adapters/{streams,plex,jellyfin,dlna,torrent,url}`. `import_check_test.go` continues to enforce isolation.
 8. **`/ui/*` is unchanged.** 4A is purely additive under `/receiver/*`. Cutover happens after 4F.
@@ -50,7 +50,7 @@ The previous Phase 3D framing ("slot rename, restore-defaults, settings-drawer i
 - **Restore-defaults preset button.** Lives in the Catalog pane. Phase 4C.
 - **Drawer open/close state persistence.** Refresh closes the drawer. No localStorage, no cookie. Matches the 3B catalog drawer's ephemeral state. Could be added later as a one-line localStorage write if it becomes annoying.
 - **Pane state restoration across refresh** (last-active tab). Refresh resets to Network. Same rationale as above.
-- **Cross-field validation that requires the server.** All Network field validations are pure functions of the single field value (IPv4 format, port range, absolute-path check). Cross-field constraints (e.g., `mister_port ≠ ui_http_port` collision check) are out of scope; the existing `BridgeSaver.Save` preflight catches genuine port-bind conflicts via UDP-bind probes anyway.
+- **Cross-field validation that requires the server.** Network field decoders stay per-field where possible (IPv4 format, port range, absolute-path check, external-tool executable check). Cross-field constraints (e.g., `mister_port ≠ ui_http_port` collision check) are out of scope; the existing `BridgeSaver.Save` preflight catches genuine bind conflicts via TCP/UDP probes where the bridge would actually bind.
 - **First-run banner / setup wizard.** The `.first-run-complete` sentinel ([`internal/uiserver/bridge_saver.go:29`](../../../internal/uiserver/bridge_saver.go#L29)) stays the legacy UI's concern. The chassis settings drawer is just a settings drawer; a "first run" flow lives elsewhere if at all.
 - **Mobile-responsive polish, accessibility audit beyond visible-focus and semantic HTML.** Foundation spec defers both to Phase 5.
 - **Removing fields from the drawer.** No deprecation flow needed today.
@@ -72,14 +72,14 @@ The previous Phase 3D framing ("slot rename, restore-defaults, settings-drawer i
 | Error envelope (settings save) | `errors` and `chip` are mutually exclusive. `errors` is a `map[string]string` keyed by form-field name (server can return multiple field errors in one envelope). `chip` is a single string for whole-form errors. Client picks render target based on which key is present. |
 | Error envelope (action) | Action endpoints (probe-mister, future launch-core, etc.) use `error` (singular string, free-form) for in-handler operational results that the UI renders into the action's `.action-result` slot. They reuse `chip` only for upstream/wiring failures (`NOT READY` when the action's dependency is nil; `403` for wrong origin). Rationale: settings saves and action results land in different DOM targets and the UI wants more diagnostic data from actions (latency, host, etc.) than a single chip can carry. |
 | Field-row error UX | Inline `.field-err` div below the input, plus `.field-row.has-err` class on the outer row. Cleared when the field next saves successfully or when the operator focuses+blurs without change. |
-| Whole-form error UX | Toast via existing chassis toast surface, chip text per error (e.g. `BAD INPUT`, `PORT IN USE`, `WRITE FAILED`). Field-row stays marked with the error until next successful save attempt. |
+| Whole-form error UX | Toast via a new drawer-local settings notice slot, chip text per error (e.g. `BAD INPUT`, `PORT IN USE`, `WRITE FAILED`). Slot HTML: `<div class="settings-notice" id="settings-notice" role="status" aria-live="polite" hidden></div>`, sibling of `.settings-body` inside `.settings-panel`. Two CSS classes for variants: `.settings-notice.ok` (REBOOT-scope success), `.settings-notice.err` (chip failures). Client sets text + class + un-hides; auto-clears after 5s or on next successful save. Field-row stays marked with the error until next successful save attempt. Rejected: reusing 3A's input chip, because it is anchored to the cast input row and currently exposed only as `window.Chassis.input.showError`. |
 | REBOOT-scope success UX | Toast: `"Restart container to apply new <field-label>"`. Field renders with the new value (input already holds what was typed). Disk has the new value; live state has the old. No persistent banner in 4A. |
-| Probe action target | Uses currently-saved `bridge.mister.{host,port,source_port}`, not form values. Operator must save before probing. Probe button's help text already says "Verifies the address + ports above" — honest about this. |
-| Probe action timeout | Hard 1s server-side timeout, matching the mockup's `"ACK in 4.2ms"` example and the existing `groovynet.Sender.Probe` semantics if any. Single-flight per click (client disables button while in-flight). |
+| Probe action target | Uses currently-saved `bridge.mister.{host,port}`, not form values. Operator must save before probing. The saved `source_port` cannot be rebound for a one-off probe because the main bridge sender owns it for the process lifetime; source-port validity is covered by `BridgeSaver.Save` preflight and then by the next bridge restart. |
+| Probe action timeout | Hard 1s server-side timeout, matching the mockup's `"ACK in 4.2ms"` example and the legacy diagnostics prober's timeout. Single-flight per click (client disables button while in-flight). |
 | Probe response shape | 200 on **both** success and timeout — the probe itself ran cleanly in both cases. 5xx is reserved for socket errors (cannot construct probe). Distinct from operational ack-or-not. |
 | Field renderer surface | One template helper `field` taking a `dict`-style option bag. Supports text / number / password / path / select / switch. No bespoke helpers per type — option-bag pattern is verbose but readable in templates. |
 | Stub pane shape | Single `<div class="settings-section wide">` with an h4 and an `.action-result.shown` line saying which spec covers it. No interactive content. Identical structure across all four stubs. |
-| `internal/chassis/import_check_test.go` | Forbidden-imports list unchanged. 4A imports `internal/config` (already allowed for the data model) and `internal/uiserver` (new — `BridgeSaver` and adjacent types). |
+| `internal/chassis/import_check_test.go` | Forbidden-imports list unchanged. 4A imports `internal/config` and the existing root `internal/adapters` package only. It defines chassis-owned interfaces for bridge saving/probing so production code in `internal/chassis` still does **not** import `internal/uiserver` or any concrete adapter package. |
 | CSS additions | ~30 rules totaling ~80 lines, ported verbatim from the mockup (see §Context for full selector list and source line ranges). Scoped under `body.receiver` per chassis convention. Plus one new rule (`.scope.next`) for the 4-tier badge — color picks a tone between `.scope.hot` (cyan) and `.scope.recast` (amber); exact OKLCH chosen during implementation. |
 | Switch field POST shape | Form value `"true"` / `"false"`. Client renders `.switch.on` / `.switch` based on response (`.has-value` is not relevant for switches). Optimistic toggle on click, revert on 4xx. |
 
@@ -87,23 +87,25 @@ The previous Phase 3D framing ("slot rename, restore-defaults, settings-drawer i
 
 - `internal/chassis/settings.go` (new): `handleSettingsBridgePost`, `handleSettingsActionProbeMister`, the per-field decoder table, error envelope writers (`writeSettingsFieldErrors`, `writeSettingsChip`, `writeSettingsSuccess`, `writeProbeResult`).
 - `internal/chassis/settings_test.go` (new): handler unit tests for every success/error branch listed in §Wire Contract.
-- `internal/chassis/templates/settings-drawer.html` (rewrite from current 8-line stub): top-level drawer, 5-tab strip, 5 panes (Network + 4 stubs).
+- `internal/chassis/templates/settings-drawer.html` (rewrite from current 8-line stub): top-level drawer, drawer-local toast/notice slot, 5-tab strip, 5 panes (Network + 4 stubs).
 - `internal/chassis/templates/settings-field.html` (new): the one row template that `field` helper expands into. (Or implemented as inline `{{- define -}}` blocks in `settings-drawer.html` — implementation plan picks.)
 - `internal/chassis/static/settings-drawer.js` (new): gear button + close button toggle, tab switching, field blur → POST, switch click → POST, response handling (success / field-error / chip-error), action button click handler with single-flight, render probe result.
+- `internal/chassis/templates/shell.html` (extend): add a deferred `/receiver/static/settings-drawer.js?v={{.Version}}` script tag. Existing chassis JS is explicit-script-tag based; embedding the static file alone is not enough.
 - `internal/chassis/data.go` (extend): grow `SettingsData` from `{Open bool}` to `{Open, Bridge config.BridgeConfig, Errors map[string]string, AdapterCount, CatalogProviderCount int}`; add `buildSettingsData(bridge, registry, catalogViewer)` helper.
-- `internal/chassis/session.go` (extend): `snapshotFromStatusView` and `idleSnapshot` both call `buildSettingsData` and populate `snapshot.Settings`.
-- `internal/chassis/server.go` (extend): add `Config.BridgeSaver *uiserver.BridgeSaver` + `Config.Prober Prober` (new narrow interface); store on `*Server`; mount the two new routes.
-- `internal/chassis/templates.go` (extend): register `field`, `dict`, `stub`, `errOf`, `itoa` (or `tos` if more general) helpers in the template FuncMap.
+- `internal/chassis/session.go` (extend): `snapshotFromStatusView` and `idleSnapshot` both call `buildSettingsData` with the live bridge snapshot from `BridgeSettingsSaver.Current()` when wired, falling back to startup `cfg.Bridge` only for nil-saver tests/offline render paths.
+- `internal/chassis/settings.go` (new): define the chassis-owned `BridgeSettingsSaver`, `settingsChipError`, and `Prober` narrow interfaces.
+- `internal/chassis/server.go` (extend): add `Config.BridgeSaver BridgeSettingsSaver` + `Config.Prober Prober`; store on `*Server`; mount the two new method-specific routes.
+- `internal/chassis/templates.go` (extend): register `field`, `dict`, `stub`, `errOf`, `itoa` (or `tos` if more general), and `settingsScopeLabel` helpers in the template FuncMap.
 - `internal/chassis/templates/transport.html` (one-line edit): add `data-settings-toggle` attribute to the gear button. Existing `id="gear-btn"` stays for any test references.
-- `internal/chassis/chassis_test.go` (extend): template render tests for drawer, Network pane, field helper per type, stub pane, scope badge variants.
-- `internal/chassis/static/chassis.css` (extend, ~80 lines): port the interior settings rules listed in §Context — `.field-row` (+ variants), `.field-input` (+ `.has-value`, `.num`, `.path`), `.switch` (+ `.on`, `::before`, focus-visible, mobile @media), `.action-btn` (+ `.primary`, `.ghost`), `.action-result` (+ `.shown`, `.ok`, `.err`), `.scope` (+ `.hot`, `.recast`, `.reboot`), `.field-row .row-end`, `.field-row.has-err`, `.field-row .field-err` (+ `::before`). All scoped under `body.receiver` per chassis CSS convention. Add one new rule: `.scope.next` (color between `.scope.hot` and `.scope.recast`).
-- `internal/uiserver/bridge_saver.go` (extend): add additive `ScopeForField(name string) (adapters.ApplyScope, bool)` method. Same per-field table the saver uses internally for dispatch; exposed publicly so the chassis handler can compute the scope it returns to the client without duplicating the table. `Save()` signature unchanged.
-- `internal/uiserver/bridge_saver_test.go` (extend): one test per Network field confirming the right scope; one test confirming unknown field returns `(_, false)`.
+- `internal/chassis/chassis_test.go` (extend): template render tests for drawer, Network pane, field helper per type, stub pane, scope badge variants, drawer-local toast slot, and `settings-drawer.js` script inclusion.
+- `internal/chassis/static/chassis.css` (extend, ~80 lines): port the interior settings rules listed in §Context — `.field-row` (+ variants), `.field-input` (+ `.has-value`, `.num`, `.path`), `.switch` (+ `.on`, `::before`, focus-visible, mobile @media), `.action-btn` (+ `.primary`, `.ghost`), `.action-result` (+ `.shown`, `.ok`, `.err`), `.scope` (+ `.hot`, `.recast`, `.reboot`), `.field-row .row-end`, `.field-row.has-err`, `.field-row .field-err` (+ `::before`). All scoped under `body.receiver` per chassis CSS convention. Add two new rules: `.scope.next` (color between `.scope.hot` and `.scope.recast`) and `.settings-notice` (+ `.ok`, `.err` variants — see Design Decisions row for HTML shape; ~10 lines).
+- `internal/uiserver/bridge_saver.go` (extend): wrap validation/preflight failures in an additive typed error that exposes `StatusCode() int` and `Chip() string` while preserving `Unwrap()`. `Save()` signature stays `(adapters.ApplyScope, error)`.
+- `internal/uiserver/bridge_saver_test.go` (extend): tests for typed validation/preflight errors and the existing per-field scope returned by `Save()` for each Network field.
 - `cmd/mister-groovy-relay/main.go` (extend): construct `BridgeSaver` (already constructed for `/ui/*` — same instance reused), pass into `chassis.Config`; construct a `Prober` (wraps existing `groovynet.Sender` probe capability) and pass it.
 - `tests/integration/chassis_test.go` (extend): end-to-end save + probe coverage, see §Testing.
 
 **Files intentionally unchanged in 4A:**
-- `internal/ui/*` and `internal/uiserver/*` — 4A consumes `uiserver.BridgeSaver` unchanged. `/ui/*` keeps working.
+- `internal/ui/*` — legacy `/ui/*` keeps working.
 - `internal/core/*` — no new core surface.
 - `internal/adapters/*` — no new adapter interfaces in 4A. Adapter-touching specs are 4D–4F.
 
@@ -111,7 +113,7 @@ The previous Phase 3D framing ("slot rename, restore-defaults, settings-drawer i
 
 ### `POST /receiver/settings/bridge`
 
-**Headers:** `Sec-Fetch-Site: same-origin` (enforced by `requireSameOrigin`).
+**Headers:** browser-supplied `Sec-Fetch-Site: same-origin` or `same-site` (enforced by `requireSameOrigin`). Client JavaScript must **not** attempt to set `Sec-*` headers manually; those are browser-controlled forbidden request headers. Go handler tests set the header synthetically.
 
 **Body:**
 ```
@@ -128,11 +130,14 @@ Any subset of supported field names is accepted. Missing keys mean "don't change
 2. `r.ParseForm()`. Parse failure → 400 `{ok:false, chip:"BAD INPUT"}`.
 3. Build `touched := map[string]string{}` from `r.PostForm`. If empty → 400 `{ok:false, chip:"BAD INPUT"}`.
 4. For each touched field, look up its decoder and run it against the supplied string. Collect all errors into a `map[string]string`. If `len(errors) > 0` → 400 `{ok:false, errors:errors}`. Saver is **not** called when any field decode fails.
-5. Apply decoded values to a copy of the current `config.BridgeConfig`. Compute the patch (full BridgeConfig with touched fields overlaid).
-6. Call `BridgeSaver.Save(patch)`.
-7. On `*adapters.QuickCastError`-style typed error (the saver layer reuses this envelope for preflight failures): map status + chip directly into the response (e.g., `409 {ok:false, chip:"PORT IN USE"}`).
-8. On unexpected saver error: 500 `{ok:false, chip:"WRITE FAILED"}`.
-9. On success: derive the max-wins scope. 4A adds one small additive method to `BridgeSaver`: `ScopeForField(formName string) (adapters.ApplyScope, bool)`. **`formName` is the chassis form-key** (snake_case, e.g., `"mister_host"`, `"ui_http_port"`) — *not* the TOML dotted key. The saver maintains a single form-name → scope table colocated with its existing per-field dispatch logic; both the chassis (via `ScopeForField`) and the saver's internal dispatch read from the same source of truth. Returns `(_, false)` if the form name is unknown; the chassis handler treats unknown as a server bug → `500 {ok:false, chip:"WRITE FAILED"}` (defense-in-depth; the decoder table and the scope table are validated against each other by a unit test, so this branch should never fire in practice). The chassis handler walks the touched-field set, calls `ScopeForField` for each, takes the max via `int` comparison on `ApplyScope`, and returns the resulting string label. No change to existing `BridgeSaver.Save` signature; `/ui/*` callers are not affected. Respond `200 {ok:true, scope:"hot|next|recast|reboot"}`.
+5. Read the live saved bridge snapshot from `BridgeSettingsSaver.Current()` and overlay decoded touched fields onto that copy. Do **not** use startup `cfg.Bridge`; otherwise the drawer/probe can go stale after the first save. The form-name → `config.BridgeConfig` overlay table is colocated with the chassis decoder table in `internal/chassis/settings.go` — one entry per supported field, mapping the form-name to a closure that writes the decoded value into the right struct path (e.g., `"mister_host"` → `func(c *config.BridgeConfig, v any) { c.MiSTer.Host = v.(string) }`). The decoder, scope-label-from-`ApplyScope`, and overlay tables are validated against each other by a unit test so adding a field to one without the others fails the build.
+6. Call `BridgeSettingsSaver.Save(patch)`, which is satisfied by the existing `*uiserver.BridgeSaver` instance in production.
+7. On typed saver errors satisfying the chassis-owned `settingsChipError` interface (`{ error; StatusCode() int; Chip() string }`, declared in `internal/chassis/settings.go` — see Architecture): map status + chip directly into the response (e.g., `409 {ok:false, chip:"PORT IN USE"}`). The handler matches **structurally** — `errors.As(err, new(settingsChipError))` works against an interface type in Go 1.21+ and is the standard idiom; the chassis must not import the concrete `*uiserver.settingsError` (or whatever the wrapper is named) directly, since that would re-introduce a `internal/uiserver` import the chassis isolation contract forbids. 4A adds the wrapper in `internal/uiserver` for validation/preflight failures without changing `Save()`'s signature; the wrapper's `Unwrap()` returns the original error for compatibility with `errors.Is`/`As` on downstream consumers. Minimum mapping:
+   - TCP/UDP bind preflight failure for `ui_http_port` / `mister_source_port` → `409 PORT IN USE`
+   - `data_dir` writable preflight failure → `409 PATH NOT WRITABLE`
+   - `config.Sectioned.Validate` failure that survives chassis-side field validation → `400 BAD INPUT`
+8. On unexpected saver error (marshal/write/runtime side effect failure that is not typed): 500 `{ok:false, chip:"WRITE FAILED"}`.
+9. On success: use the `adapters.ApplyScope` returned by `Save()` and map it through a chassis response-label helper. Do **not** serialize `ApplyScope.String()` directly: current values are `"hot-swap"`, `"next-cast"`, `"restart-cast"`, `"restart-bridge"`, while the chassis JSON contract is `"hot"`, `"next"`, `"recast"`, `"reboot"`. Unknown scope → `500 {ok:false, chip:"WRITE FAILED"}`. Respond `200 {ok:true, scope:"hot|next|recast|reboot"}`.
 
 **Responses:**
 
@@ -143,44 +148,44 @@ Any subset of supported field names is accepted. Missing keys mean "don't change
 | 400 | `{"ok":false,"errors":{"mister_host":"not a valid IPv4 or hostname"}}` | One or more per-field validation failures |
 | 400 | `{"ok":false,"chip":"BAD INPUT"}` | Form parse failure or empty body |
 | 403 | (middleware) | Wrong origin |
-| 409 | `{"ok":false,"chip":"PORT IN USE"}` | Preflight UDP-bind probe failed for a port change |
-| 500 | `{"ok":false,"chip":"WRITE FAILED"}` | Disk write or unexpected saver error |
+| 409 | `{"ok":false,"chip":"PORT IN USE"}` | TCP/UDP bind preflight failed for a port change |
+| 409 | `{"ok":false,"chip":"PATH NOT WRITABLE"}` | `data_dir` preflight failed |
+| 500 | `{"ok":false,"chip":"WRITE FAILED"}` | Disk write, unexpected saver error, or unknown `ApplyScope` |
+| 503 | `{"ok":false,"chip":"NOT READY"}` | `BridgeSettingsSaver` not wired (defensive; main.go always wires) |
 
 ### `POST /receiver/settings/action/probe-mister`
 
-**Headers:** `Sec-Fetch-Site: same-origin`.
+**Headers:** browser-supplied `Sec-Fetch-Site: same-origin` or `same-site` (enforced by `requireSameOrigin`; not manually set by client JS).
 
 **Body:** Empty (action button has no parameters).
 
 **Server logic:**
 
 1. `requireSameOrigin` middleware.
-2. If `s.cfg.Prober == nil` → 503 `{ok:false, chip:"NOT READY"}`.
-3. If `s.cfg.Manager.HasActiveCast()` (or equivalent — verify the exact method name during plan) → 409 `{ok:false, chip:"CAST IN PROGRESS"}`. The probe re-runs INIT through the live `groovynet.Sender`, which would race the Drainer that's currently running for the active cast. The client also disables the Probe button when a cast is active; this server check is defense-in-depth in case the client lags behind the SSE `transport` event.
-4. Read current `bridge.mister.{host,port}` and bridge video config (for `lz4_enabled` / `delta_lz4_enabled`) from in-memory `Sectioned`.
-5. Call `prober.ProbeMister(ctx, host, port, videoCfg)` with a 1s context timeout. The prober wraps `groovynet.Sender.SendInitAwaitACK` ([`internal/groovynet/sender.go:294`](../../../internal/groovynet/sender.go#L294)) using the live sender (which is bound to `bridge.mister.source_port`), submits an INIT built from the current video config, and times the ACK.
-6. On success: `200 {ok:true, latency_ms:4.2, host:"192.168.1.42", port:32100, lz4_negotiated:true}`. `lz4_negotiated` reflects the bridge's *configured* delta-LZ4 state at probe time (`videoCfg.LZ4Enabled && videoCfg.DeltaLZ4Enabled`); the INIT ACK byte structure ([`internal/groovy/ack.go:20-26`](../../../internal/groovy/ack.go#L20-L26)) does not carry a separate capability bit, so this field documents what the bridge would send, not what the MiSTer would prefer. Frame-level delta-LZ4 still selects per-frame based on payload size.
-7. On context-deadline-exceeded: `200 {ok:false, error:"timeout", elapsed_ms:1000}`. Distinct from operational failure — the probe ran cleanly; the MiSTer didn't answer.
-8. On any other error (socket bind failure, malformed packet, INIT ACK wrong size per [`sender.go:323`](../../../internal/groovynet/sender.go#L323)): `500 {ok:false, error:"<sanitized message>"}`. The chassis sanitizes error strings to avoid leaking host details into logs (mirrors existing transport error sanitization in 3B).
+2. If `s.cfg.Prober == nil` or `s.cfg.BridgeSaver == nil` → 503 `{ok:false, chip:"NOT READY"}`.
+3. Read the current saved `config.BridgeConfig` from `BridgeSettingsSaver.Current()`; this supplies `bridge.mister.{host,port}`. Do not read startup `cfg.Bridge`.
+4. Call `prober.ProbeMister(ctx, bridgeCfg)` with a 1s context timeout. The prober wrapper lives in `cmd/mister-groovy-relay` and reuses the legacy diagnostics pattern: construct a temporary `groovynet.Sender` with saved `host` + `port` and source port `0`, send `CMD_GET_STATUS`, wait for an ACK, and time the round trip. It intentionally does **not** bind `bridge.mister.source_port`, because `cmd/mister-groovy-relay/main.go` already constructed the process-wide sender with that source port and `groovynet.NewSender` rejects duplicate source-port binds.
+5. On success: `200 {ok:true, latency_ms:4.2, host:"192.168.1.42", port:32100}`.
+6. On timeout: `200 {ok:false, error:"timeout", elapsed_ms:1000}`. The prober normalizes status-probe `net.Error` timeouts to `context.DeadlineExceeded` before returning to chassis. Distinct from operational failure — the probe ran cleanly; the MiSTer didn't answer.
+7. On any other error (socket open/send/read failure, malformed ACK packet): `500 {ok:false, error:"<sanitized message>"}`. The chassis sanitizes error strings to avoid leaking host details into logs (mirrors existing transport error sanitization in 3B).
 
 **Responses:**
 
 | Status | Body | When |
 |---|---|---|
-| 200 | `{"ok":true,"latency_ms":4.2,"host":"192.168.1.42","port":32100,"lz4_negotiated":true}` | MiSTer ACKed |
+| 200 | `{"ok":true,"latency_ms":4.2,"host":"192.168.1.42","port":32100}` | MiSTer ACKed |
 | 200 | `{"ok":false,"error":"timeout","elapsed_ms":1000}` | Probe ran cleanly, no ACK in 1s |
 | 403 | (middleware) | Wrong origin |
-| 409 | `{"ok":false,"chip":"CAST IN PROGRESS"}` | Active cast — probe would race the Drainer |
 | 500 | `{"ok":false,"error":"socket: <message>"}` | Could not run the probe |
-| 503 | `{"ok":false,"chip":"NOT READY"}` | `Prober` not wired (defensive; main.go always wires) |
+| 503 | `{"ok":false,"chip":"NOT READY"}` | `Prober` or `BridgeSettingsSaver` not wired (defensive; main.go always wires both) |
 
 Client renders into `#probe-mister-result` in the `.action-result` slot under the button:
 
-- Success: `▸ ACK in {{latency_ms}}ms · MiSTer {{host}}:{{port}}{{ if .lz4_negotiated }} · LZ4-Δ negotiated{{ end }}`
+- Success: `▸ ACK in {{latency_ms}}ms · MiSTer {{host}}:{{port}}`
 - Timeout: `▸ NO ACK · {{elapsed_ms}}ms timeout · check host/port`
 - Error: `▸ ERROR · {{error}}`
 
-The `.shown` CSS class gates visibility; `.action-result.shown.ok` and `.action-result.shown.err` provide success/error coloring (CSS already in place per mockup port).
+The `.shown` CSS class gates visibility; `.action-result.shown.ok` and `.action-result.shown.err` provide success/error coloring from the CSS rules 4A ports.
 
 ## Architecture — Data Flow
 
@@ -188,7 +193,8 @@ The `.shown` CSS class gates visibility; `.action-result.shown.ok` and `.action-
 
 ```
 chassis shell renders
-  └─ snapshotFromStatusView populates SnapshotData.Settings via buildSettingsData
+  └─ snapshotFromStatusView populates SnapshotData.Settings via buildSettingsData,
+     using BridgeSettingsSaver.Current() when wired
   └─ settings-drawer.html renders into the .settings-panel slot, hidden
      (body.settings-open is absent on initial paint)
      Server emits HTML for every Network field with the current bridge value;
@@ -275,11 +281,11 @@ Template usage:
     "Help"  "IP or hostname of your MiSTer on the LAN."
     "Value" .Bridge.MiSTer.Host
     "Scope" "reboot"
-    "Error" (errOf "mister_host")
+    "Error" (errOf .Errors "mister_host")
 ) }}
 ```
 
-`dict` is a local 6-line template helper (`func(pairs ...any) map[string]any`). `errOf` is a closure baked into the template's FuncMap that reads from `.Settings.Errors[name]`. `itoa` is `strconv.Itoa` wrapped for the FuncMap.
+`dict` is a local 6-line template helper (`func(pairs ...any) map[string]any`). `errOf` has the explicit signature `func(map[string]string, string) string` because template funcs do not receive the current dot implicitly. `itoa` is `strconv.Itoa` wrapped for the FuncMap.
 
 **Output HTML by type:**
 
@@ -287,7 +293,7 @@ Template usage:
 |---|---|
 | `text` | `<input class="field-input{{ if .Value }} has-value{{ end }}" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}">` |
 | `number` | `<input class="field-input num{{ if .Value }} has-value{{ end }}" type="number" name="{{.Name}}" value="{{.Value}}"{{ if .InputWidth }} style="max-width:{{.InputWidth}}"{{ end }}>`, optionally wrapped in `<span class="row-end">…unit + scope</span>` |
-| `password` | `<input class="field-input has-value" type="password" name="{{.Name}}" value="{{.Value}}">` |
+| `password` | `<input class="field-input{{ if .Value }} has-value{{ end }}" type="password" name="{{.Name}}" value="{{.Value}}">` |
 | `path` | `<input class="field-input path{{ if .Value }} has-value{{ end }}" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}">` |
 | `select` | `<select class="field-input has-value" name="{{.Name}}">…<option value="{{.Value}}"{{ if eq .Value $.Value }} selected{{ end }}>{{ or .Label .Value }}</option>…</select>` |
 | `switch` | `<button class="switch{{ if eq .Value "true" }} on{{ end }}" data-field="{{.Name}}" type="button" aria-pressed="{{ eq .Value "true" }}"></button>` |
@@ -322,7 +328,7 @@ Followed by the **probe-mister** action button row (see §Wire Contract).
 
 | Form name | Type | Label | Help | Scope | Default | Validation |
 |---|---|---|---|---|---|---|
-| `ffmpeg_path` | path | FFmpeg path | Empty = bundled sidecar, then PATH. | HOT | `""` (placeholder `auto`) | empty allowed; if non-empty, must be absolute. |
+| `ffmpeg_path` | path | FFmpeg path | Empty = bundled sidecar, then PATH. | HOT | `""` (placeholder `auto`) | empty allowed; if non-empty, must be absolute, exist, be a file, and be executable (or have `.exe` extension on Windows), matching `config.Sectioned.Validate`. Missing/not executable → `"not a usable executable path"`. |
 | `ffprobe_path` | path | FFprobe path | (no help text) | HOT | `""` (placeholder `auto`) | same as ffmpeg_path |
 | `ytdlp_path` | path | yt-dlp path | (no help text) | HOT | `""` (placeholder `auto`) | same as ffmpeg_path |
 
@@ -361,11 +367,13 @@ func buildSettingsData(
     // no [adapters.aux] TOML section and no fields in the Adapters pane.
     // Mockup shows "Adapters · 6" — matches 7 registered − 1 AUX = 6.
     adapterCount := 0
-    for _, a := range registry.List() {
-        if a.Name() == "aux" {
-            continue
+    if registry != nil {
+        for _, a := range registry.List() {
+            if a.Name() == "aux" {
+                continue
+            }
+            adapterCount++
         }
-        adapterCount++
     }
     catalogProviderCount := 0
     if catalog != nil {
@@ -382,7 +390,7 @@ func buildSettingsData(
 
 ### `internal/chassis/session.go`
 
-Both `snapshotFromStatusView` and `idleSnapshot` call `buildSettingsData(s.cfg.Sectioned.Bridge, s.cfg.Registry, s.cfg.StreamsCatalogViewer)` and assign to `snapshot.Settings`.
+Both `snapshotFromStatusView` and `idleSnapshot` call `buildSettingsData(currentBridge, s.cfg.Registry, s.cfg.StreamsCatalogViewer)` and assign to `snapshot.Settings`. `Server.buildSnapshot` obtains `currentBridge` from `s.bridgeSaver.Current()` when the saver is wired; nil-saver tests/offline render paths fall back to `s.cfg.Bridge`. This matters because the settings drawer and probe action must reflect saves made after process start.
 
 ### `internal/chassis/server.go`
 
@@ -390,32 +398,47 @@ Both `snapshotFromStatusView` and `idleSnapshot` call `buildSettingsData(s.cfg.S
 type Config struct {
     // … existing fields …
 
-    BridgeSaver *uiserver.BridgeSaver // 4A: bridge field saves
-    Prober      Prober                // 4A: MiSTer connectivity probe
+    BridgeSaver BridgeSettingsSaver // 4A: bridge current/read/save, satisfied by *uiserver.BridgeSaver
+    Prober      Prober              // 4A: MiSTer connectivity probe
+}
+
+// BridgeSettingsSaver is the narrow chassis-side interface for bridge
+// settings. Production passes *uiserver.BridgeSaver, but internal/chassis
+// does not import internal/uiserver.
+type BridgeSettingsSaver interface {
+    Current() config.BridgeConfig
+    Save(config.BridgeConfig) (adapters.ApplyScope, error)
+}
+
+// settingsChipError is matched structurally so saver-layer typed errors can
+// carry HTTP/chip details across the interface boundary without a uiserver import.
+type settingsChipError interface {
+    error
+    StatusCode() int
+    Chip() string
 }
 
 // Prober is the narrow chassis-side interface the probe-mister action uses.
-// Implemented by a small wrapper around the existing groovynet.Sender; lives
+// Implemented by a small wrapper around groovynet.Sender; lives
 // in main.go construction so the chassis doesn't depend on groovynet.
 type Prober interface {
-    ProbeMister(ctx context.Context, host string, port int) (ProbeResult, error)
+    ProbeMister(ctx context.Context, bridge config.BridgeConfig) (ProbeResult, error)
 }
 
 type ProbeResult struct {
-    LatencyMs     float64
-    Host          string
-    Port          int
-    LZ4Negotiated bool
+    LatencyMs float64
+    Host      string
+    Port      int
 }
 ```
 
 New mux routes in `Server.RegisterRoutes`:
 
 ```go
-mux.HandleFunc("/receiver/settings/bridge",
-    s.requireSameOrigin(s.handleSettingsBridgePost))
-mux.HandleFunc("/receiver/settings/action/probe-mister",
-    s.requireSameOrigin(s.handleSettingsActionProbeMister))
+mux.Handle("POST /receiver/settings/bridge",
+    requireSameOrigin(http.HandlerFunc(s.handleSettingsBridgePost)))
+mux.Handle("POST /receiver/settings/action/probe-mister",
+    requireSameOrigin(http.HandlerFunc(s.handleSettingsActionProbeMister)))
 ```
 
 ## Architecture — Client JS (`settings-drawer.js`)
@@ -468,13 +491,18 @@ New file. Plain ES2022, no framework. Mirrors the patterns established by `prese
     clearFieldErrors(name);
     const form = new FormData();
     form.set(name, value);
-    const res = await fetch('/receiver/settings/bridge',
-      { method: 'POST', body: new URLSearchParams(form), headers: { 'Sec-Fetch-Site': 'same-origin' } });
-    const body = await res.json().catch(() => ({}));
-    if (res.ok && body.ok) {
-      markFieldHasValue(name, value);
-      if (body.scope === 'reboot') toastReboot(name);
-      return;
+    let body = {};
+    try {
+      const res = await fetch('/receiver/settings/bridge',
+        { method: 'POST', body: new URLSearchParams(form), credentials: 'same-origin' });
+      body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) {
+        markFieldHasValue(name, value);
+        if (body.scope === 'reboot') toastReboot(name);
+        return;
+      }
+    } catch (_) {
+      body = { chip: 'WRITE FAILED' };
     }
     if (body.errors) {
       paintFieldErrors(body.errors);
@@ -496,11 +524,20 @@ New file. Plain ES2022, no framework. Mirrors the patterns established by `prese
     probeBtn.disabled = true;
     probeOut.className = 'action-result';
     probeOut.textContent = '';
-    const res = await fetch('/receiver/settings/action/probe-mister',
-      { method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } });
-    const body = await res.json().catch(() => ({}));
-    renderProbeResult(probeOut, body);
-    probeBtn.disabled = false;
+    try {
+      const res = await fetch('/receiver/settings/action/probe-mister',
+        { method: 'POST', credentials: 'same-origin' });
+      const body = await res.json().catch(() => ({}));
+      if (body.chip) {
+        toastChip(body.chip);
+      } else {
+        renderProbeResult(probeOut, body);
+      }
+    } catch (_) {
+      renderProbeResult(probeOut, { ok: false, error: 'network error' });
+    } finally {
+      probeBtn.disabled = false;
+    }
   });
 
   // Helpers (paintFieldErrors, clearFieldErrors, markFieldHasValue,
@@ -509,15 +546,16 @@ New file. Plain ES2022, no framework. Mirrors the patterns established by `prese
 })();
 ```
 
-The toast helpers reuse the existing chassis toast surface (created by 3A's input-cast.js). 4A adds nothing to that surface; it just calls into it.
+The toast helpers write into the drawer-local notice slot added by `settings-drawer.html`; they do not reuse the cast input chip because that surface belongs to the input row and auto-resets based on pasted URL state.
 
 ## Edge Cases
 
 | Case | Behavior |
 |---|---|
-| Probe vs in-flight cast | Probe sends INIT through the live `groovynet.Sender`, which would race the active session's Drainer (per [`internal/groovynet/sender.go:5-8`](../../../internal/groovynet/sender.go#L5-L8) — INIT is the one ACK-gated handshake and the Drainer must not be running during it). 4A handles this by **disabling the Probe button while a cast is active** and **rejecting the probe route with 409 `CAST IN PROGRESS`** as defense-in-depth. The client subscribes to the existing SSE `transport` event to flip the button's disabled state; on initial page load the snapshot's transport state primes it. |
+| Probe vs in-flight cast | The probe uses the existing status-probe pattern (`CMD_GET_STATUS` from an ephemeral source port), not INIT and not the bridge's stable source port. It does not share a socket with the active Drainer, so it is allowed while a cast is active. |
+| Probe vs pending source-port save | `mister_source_port` is restart-bridge scope. Saving it updates disk and preflights bindability, but the running process's main sender keeps the old bound port until restart. The Network probe therefore does not claim to validate source-port changes before restart. |
 | Concurrent edits across two browser tabs | `BridgeSaver.mu` serializes; second write wins. Stale tab is stale until refresh. No optimistic-locking machinery. |
-| REBOOT save + further edits to other fields | Each save toasts independently. Multiple REBOOT toasts stack/replace per the existing chassis toast surface (chassis toasts stack — visible queue at top-right). |
+| REBOOT save + further edits to other fields | Each save writes a short notice into the drawer-local toast slot. Later notices replace earlier ones; no queue in 4A. |
 | Switch optimistic toggle on 4xx | Client reverts the `.on` class and `aria-pressed`, then renders the field-error (`.field-err`) on the row. The field helper's error slot renders for every type uniformly when `Error != ""` (see §Architecture — The Field Renderer); switches use the same DOM as text/number fields. |
 | Single-flight on probe button | Client disables the button while a request is in flight; re-enables on response. Prevents double-click stacking. |
 | Field value with HTML metacharacters (`<`, `>`, `&`) | Go `html/template` auto-escapes `{{.Value}}` in both element content and `value="…"` attribute contexts. Server-side. |
@@ -542,8 +580,12 @@ Per-decoder:
 - `decodeOptionalAbsPath` empty → returns empty string.
 - `decodeOptionalAbsPath` relative → error `"must be an absolute path"`.
 - `decodeOptionalAbsPath` absolute → returns path.
+- `decodeOptionalExecutablePath` empty → returns empty string.
+- `decodeOptionalExecutablePath` relative → error `"must be an absolute path"`.
+- `decodeOptionalExecutablePath` missing / directory / non-executable → error `"not a usable executable path"`.
+- `decodeOptionalExecutablePath` temp executable file (or `.exe` on Windows) → returns path.
 
-Total: ~18 small tests, one per decoder branch.
+Total: ~22 small tests, one per decoder branch.
 
 `buildSettingsData`:
 - Empty registry → `AdapterCount == 0`.
@@ -561,31 +603,36 @@ Total: ~18 small tests, one per decoder branch.
 - select renders `<option selected>` matching `Value`.
 - switch with `Value == "true"` → `<button class="switch on" data-field="…" aria-pressed="true">`.
 
-`stub` and `errOf` helpers each get one test.
+`stub`, `errOf`, and `settingsScopeLabel` helpers each get one test.
 
 ### Handler tests — `internal/chassis/settings_test.go`
 
-- `POST /receiver/settings/bridge` success, hot scope → 200, `BridgeSaver.Save` called with diff, response `{ok:true, scope:"hot"}`.
+- `POST /receiver/settings/bridge` success, hot scope → 200, `BridgeSettingsSaver.Save` called with the full overlaid bridge config, response `{ok:true, scope:"hot"}`.
+- `POST /receiver/settings/bridge` success, next-cast scope returned by mock saver → 200, response `{ok:true, scope:"next"}`.
+- `POST /receiver/settings/bridge` success, restart-cast scope returned by mock saver → 200, response `{ok:true, scope:"recast"}`.
 - `POST /receiver/settings/bridge` success, reboot scope → 200, response `{ok:true, scope:"reboot"}`.
-- `POST /receiver/settings/bridge` mixed scopes → max-wins; touched HOT + REBOOT → `scope:"reboot"`.
+- `POST /receiver/settings/bridge` mixed changed fields → mock saver returns max-wins scope; changed HOT + changed REBOOT → `scope:"reboot"`.
 - `POST /receiver/settings/bridge` bad IPv4 → 400, `errors:{mister_host:"…"}`, saver NOT called.
 - `POST /receiver/settings/bridge` two bad fields → 400, both errors in `errors` map.
 - `POST /receiver/settings/bridge` empty body → 400, `chip:"BAD INPUT"`.
 - `POST /receiver/settings/bridge` wrong origin → 403 (middleware).
 - `POST /receiver/settings/bridge` mock saver returns preflight typed-error (chip=PORT IN USE, status=409) → 409 `chip:"PORT IN USE"`.
 - `POST /receiver/settings/bridge` mock saver returns unexpected error → 500 `chip:"WRITE FAILED"`.
+- `POST /receiver/settings/bridge` reads `BridgeSettingsSaver.Current()` for the base config, not startup `cfg.Bridge`.
+- `POST /receiver/settings/bridge` nil saver → 503 `chip:"NOT READY"`.
 
 Probe handler:
-- `POST /receiver/settings/action/probe-mister` mock prober returns latency → 200, response shape includes `latency_ms`, `host`, `port`, `lz4_negotiated`.
-- `POST /receiver/settings/action/probe-mister` mock prober returns context.DeadlineExceeded → 200, `{ok:false, error:"timeout", elapsed_ms:1000}`.
+- `POST /receiver/settings/action/probe-mister` mock prober returns latency → 200, response shape includes `latency_ms`, `host`, `port`.
+- `POST /receiver/settings/action/probe-mister` passes the current `config.BridgeConfig` from `BridgeSettingsSaver.Current()` to the prober; the prober uses `MiSTer.Host` and `MiSTer.Port` for the status probe and does not bind `MiSTer.SourcePort`.
+- `POST /receiver/settings/action/probe-mister` mock prober returns context.DeadlineExceeded (or a normalized `groovynet.IsInitACKTimeout` path) → 200, `{ok:false, error:"timeout", elapsed_ms:1000}`.
 - `POST /receiver/settings/action/probe-mister` mock prober returns socket error → 500 `error:"socket: …"`.
 - `POST /receiver/settings/action/probe-mister` nil prober → 503 `chip:"NOT READY"`.
-- `POST /receiver/settings/action/probe-mister` while `Manager.HasActiveCast()` returns true → 409 `chip:"CAST IN PROGRESS"`.
 - `POST /receiver/settings/action/probe-mister` wrong origin → 403.
 
-Cross-table validation (unit, lives in `internal/uiserver/bridge_saver_test.go`):
-- For every form-name in the chassis-side decoder table, `ScopeForField(name)` returns `(_, true)`. Catches drift between the decoder table and the scope table — adding a field to one without the other fails this test.
-- `ScopeForField("not_a_real_field")` returns `(_, false)`.
+Saver-layer tests (unit, lives in `internal/uiserver/bridge_saver_test.go`):
+- Validation/preflight failures return an error satisfying `StatusCode() int`, `Chip() string`, and `Unwrap()`.
+- Bind failures map to `409 PORT IN USE`; data-dir writability failures map to `409 PATH NOT WRITABLE`; leftover config validation failures map to `400 BAD INPUT`.
+- One save per Network field confirms the existing `Save()` return scope is correct.
 
 ### Template render tests — `internal/chassis/chassis_test.go`
 
@@ -593,6 +640,21 @@ Cross-table validation (unit, lives in `internal/uiserver/bridge_saver_test.go`)
 - Adapters tab badge equals `AdapterCount`; Catalog tab badge equals `CatalogProviderCount`.
 - Stub pane contains `"Spec 4X — implementation in progress"` text and the appropriate spec label.
 - Probe action template renders `#probe-mister-btn` and an empty `#probe-mister-result`.
+- Shell includes deferred `/receiver/static/settings-drawer.js?v=...`.
+- Drawer renders a settings notice/toast target for chip and REBOOT messages.
+
+### JS behavior — manual verification checklist
+
+The chassis project has no JS test runner today (no jsdom, no Playwright, no Vitest), so these contracts are exercised manually against a running dev server until JS test infra is introduced (out of scope for 4A; a Phase 5 polish candidate). Treat this as a release-checklist the implementer walks before declaring 4A done:
+
+- Gear button toggles `body.settings-open`; close button clears it.
+- Tab click toggles active tab/pane without a network request (verify via DevTools Network panel).
+- Blur on a changed text/path/number field sends exactly one form-encoded POST with the field name/value and `credentials:"same-origin"`; the client must **not** attempt to set `Sec-Fetch-Site` (browsers reject; manual check via Network panel that the request reaches the server).
+- Switch click optimistically toggles and reverts on a forced 4xx (test by stubbing the route with `mister_host=` to force a 400).
+- Field-error JSON paints `.field-err` and `.has-err`; success clears them and updates `.has-value`.
+- Chip JSON and REBOOT success render into the drawer-local notice slot.
+- Probe button single-flights, renders success/timeout/error into `.action-result`, and renders `chip` responses into the drawer-local notice slot.
+- Network exceptions on save/probe surface an error in the notice slot and leave controls usable (test by killing the bridge process mid-edit).
 
 ### Integration tests — `tests/integration/chassis_test.go`
 
@@ -600,7 +662,7 @@ Cross-table validation (unit, lives in `internal/uiserver/bridge_saver_test.go`)
 - `GET /receiver` → response body contains the drawer HTML, all 9 Network field rows, all 5 tab buttons.
 - `POST /receiver/settings/bridge` with `mister_host=192.168.1.42`, valid → 200, `scope:"reboot"`, disk file contains the new value, in-memory `Sectioned.Bridge.MiSTer.Host` updated.
 - `POST /receiver/settings/bridge` with `mister_host=` (cleared) → 400, `errors:{mister_host:"is required"}`, no disk write.
-- `POST /receiver/settings/bridge` with `ffmpeg_path=/usr/local/bin/ffmpeg`, valid → 200, `scope:"hot"`, `OverrideUpdater.UpdateOverride` was called with the new path.
+- `POST /receiver/settings/bridge` with `ffmpeg_path=<temp executable>`, valid → 200, `scope:"hot"`, `OverrideUpdater.UpdateOverride` was called with the new path.
 - `POST /receiver/settings/action/probe-mister` via a fake prober that always succeeds → 200, latency populated.
 - `POST /receiver/settings/action/probe-mister` via a fake prober that always times out → 200, `error:"timeout"`.
 
@@ -608,7 +670,7 @@ Cross-table validation (unit, lives in `internal/uiserver/bridge_saver_test.go`)
 
 - **Phase 4B** (Pipeline + Advanced) reuses the same field helper, route shape, error envelope, scope dispatch, and toast pattern. Adds: one new action button (`launch-core`); ~20 new fields all using existing field types.
 - **Phase 4C** (Catalog) adds the `restore-defaults` action button alongside a small provider-row partial (icon + meta + count + switch). The provider rows are sufficiently uniform that they can be a second template helper alongside `field`.
-- **Phase 4D** (Adapters, simple cases) introduces `POST /receiver/settings/adapter/{name}` and the `AdapterSaver` integration. Same envelope; per-adapter scope dispatch.
+- **Phase 4D** (Adapters, simple cases) introduces `POST /receiver/settings/adapter/{name}` and the `AdapterSaver` integration. Same envelope; per-adapter scope dispatch. 4D mirrors 4A's pattern with a chassis-owned `AdapterSettingsSaver` interface that `*uiserver.AdapterSaver` satisfies from outside — `internal/chassis` continues to **not** import `internal/uiserver`, and the structural `settingsChipError` interface from 4A is reused for adapter-side preflight typed errors.
 - **Phase 4E** (Plex / Jellyfin link cascades) adds a per-adapter "link state" sub-template and a small set of action routes (`/receiver/settings/adapter/plex/link`, `…/unlink`, `…/poll`). The state model is per-adapter; the wire envelope (`{ok, chip, …}`) is the same.
 - **Phase 4F** (URL adapter custom widgets) adds the yt-dlp host tag-list and the cookies textarea. Both are bespoke widgets with their own minimal POST shapes; the JSON envelope still applies.
 - **Final chassis cutover** retires `/ui/*` once 4F lands. The chassis settings drawer becomes the only settings surface. The `uiserver.{Bridge,Adapter}Saver` instances continue to exist (they're the saver layer regardless of UI); only the legacy `internal/ui/*` templates and routes are removed.
