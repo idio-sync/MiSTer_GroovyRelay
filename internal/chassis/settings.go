@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -376,4 +377,64 @@ func writeSettingsFieldErrors(w http.ResponseWriter, status int, errs map[string
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "errors": errs})
+}
+
+// handleSettingsActionProbeMister is the POST handler for
+// /receiver/settings/action/probe-mister. Hard 1s server-side timeout;
+// uses the currently-saved BridgeConfig (NOT form values). Returns 200
+// for both success and timeout (the probe ran cleanly in both cases);
+// 500 for socket/transport failures; 503 if dependencies aren't wired.
+func (s *Server) handleSettingsActionProbeMister(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Prober == nil || s.cfg.BridgeSaver == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	bridge := s.cfg.BridgeSaver.Current()
+	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	res, err := s.cfg.Prober.ProbeMister(ctx, bridge)
+	elapsed := time.Since(start)
+
+	w.Header().Set("Content-Type", "application/json")
+	if err == nil {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"latency_ms": res.LatencyMs,
+			"host":       res.Host,
+			"port":       res.Port,
+		})
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         false,
+			"error":      "timeout",
+			"elapsed_ms": float64(elapsed) / float64(time.Millisecond),
+		})
+		return
+	}
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":    false,
+		"error": sanitizeProbeError(err),
+	})
+}
+
+// sanitizeProbeError strips host/IP details from probe error messages
+// before they hit logs or the wire. Mirrors the transport-error
+// sanitization pattern established in 3B.
+func sanitizeProbeError(err error) string {
+	// For 4A, "socket: <free-form message from the prober>" is acceptable
+	// — the prober already returns a constrained shape from cmd/.
+	// If a future change introduces leak risk, restrict to a fixed
+	// vocabulary here. Keep this simple for now.
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }

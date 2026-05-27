@@ -480,3 +480,86 @@ func TestHandleSettingsBridgePost_UnknownScopeReturns500(t *testing.T) {
 		t.Fatalf("Code = %d, want 500", rec.Code)
 	}
 }
+
+func postProbe(t *testing.T, srv *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/probe-mister", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	srv.handleSettingsActionProbeMister(rec, req)
+	return rec
+}
+
+func TestHandleSettingsActionProbeMister_Success(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{
+		cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100}},
+	})
+	srv.cfg.Prober = fakeProber{res: ProbeResult{LatencyMs: 4.2, Host: "192.168.1.42", Port: 32100}}
+	rec := postProbe(t, srv)
+	if rec.Code != 200 {
+		t.Fatalf("Code = %d, want 200", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if got, _ := body["latency_ms"].(float64); got < 4.0 || got > 5.0 {
+		t.Errorf("latency_ms = %v, want ~4.2", body["latency_ms"])
+	}
+	if body["host"] != "192.168.1.42" {
+		t.Errorf("host = %v, want 192.168.1.42", body["host"])
+	}
+}
+
+func TestHandleSettingsActionProbeMister_Timeout(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{
+		cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "1.2.3.4", Port: 32100}},
+	})
+	srv.cfg.Prober = fakeProber{err: context.DeadlineExceeded}
+	rec := postProbe(t, srv)
+	if rec.Code != 200 {
+		t.Fatalf("Code = %d, want 200 (timeout is operational, not transport)", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ok"] != false || body["error"] != "timeout" {
+		t.Errorf("body = %+v, want {ok:false, error:\"timeout\"}", body)
+	}
+}
+
+func TestHandleSettingsActionProbeMister_SocketError(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{
+		cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "1.2.3.4", Port: 32100}},
+	})
+	srv.cfg.Prober = fakeProber{err: errors.New("socket: connection refused")}
+	rec := postProbe(t, srv)
+	if rec.Code != 500 {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+}
+
+func TestHandleSettingsActionProbeMister_NilProberReturns503(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{})
+	// Prober is nil
+	rec := postProbe(t, srv)
+	if rec.Code != 503 {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleSettingsActionProbeMister_NilSaverReturns503(t *testing.T) {
+	t.Parallel()
+	srv := &Server{cfg: Config{
+		Prober:   fakeProber{},
+		Registry: adapters.NewRegistry(),
+	}}
+	rec := postProbe(t, srv)
+	if rec.Code != 503 {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+}
