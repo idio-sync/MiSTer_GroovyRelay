@@ -25,8 +25,8 @@
 | `internal/adapters/streams/source_test.go` | Streams `SourceAvailabilityViewer` impl tests |
 | `internal/adapters/streams/catalog.go` | Streams `Catalog()` + `CastChannel()` impl; `bundledChassisCatalogProviderIDs` and `providerBadges` lookup |
 | `internal/adapters/streams/catalog_test.go` | Catalog shape + cast error mapping |
-| `internal/adapters/streams/preset_store.go` | In-memory 12-slot array + atomic file persistence + stale-reference scrubbing |
-| `internal/adapters/streams/preset_store_test.go` | Store lifecycle: load, seed, star add/remove, move, BANK FULL, atomic write |
+| `internal/adapters/streams/preset_store.go` | In-memory 12-slot array + atomic file persistence + stale-reference scrubbing + write-failure rollback |
+| `internal/adapters/streams/preset_store_test.go` | Store lifecycle: load, seed, star add/remove, move, BANK FULL, atomic write, persistence failure |
 | `internal/adapters/plex/source.go` | Plex `SourceID()` / `Configured()` impl |
 | `internal/adapters/plex/source_test.go` | Plex `SourceAvailabilityViewer` impl tests |
 | `internal/adapters/jellyfin/source.go` | Jellyfin `SourceID()` / `Configured()` impl |
@@ -749,7 +749,21 @@ func TestConfigured_RequiresEnabledAndLinked(t *testing.T) {
 }
 ```
 
-Inspect [internal/adapters/jellyfin/adapter.go](../../../internal/adapters/jellyfin/adapter.go) lines 283-300 to confirm `IsEnabled()` and `IsLinked()` exist (they do per the spec audit). Add the helper `newJellyfinForConfiguredTest` matching the same pattern used in Task 5: flip the minimum state to make each accessor return the desired bool.
+The jellyfin adapter's `IsLinked()` delegates to `a.link.State() == LinkLinked` where `a.link` is a `*LinkState` FSM (see [internal/adapters/jellyfin/link_state.go](../../../internal/adapters/jellyfin/link_state.go)). To flip the linked state, construct the `LinkState` via `NewLinkState()` and call `SetLinked(user, serverID)`.
+
+```go
+func newJellyfinForConfiguredTest(t *testing.T, enabled, linked bool) *Adapter {
+	t.Helper()
+	a := &Adapter{link: NewLinkState()}
+	a.SetEnabled(enabled)
+	if linked {
+		a.link.SetLinked("test-user", "test-server")
+	}
+	return a
+}
+```
+
+If the actual `Adapter` struct field names differ (inspect [internal/adapters/jellyfin/adapter.go](../../../internal/adapters/jellyfin/adapter.go) around lines 1-80 for the struct definition and lines 283-300 for `IsEnabled`/`IsLinked`), substitute the real names. The intent is fixed: construct a `*Adapter` where `IsLinked()` returns `linked` and `IsEnabled()` returns `enabled`, without invoking any network code paths or running `Start()`.
 
 - [ ] **Step 2: Run to confirm failure**
 
@@ -1509,6 +1523,38 @@ func TestPresetStore_AtomicWriteVisible(t *testing.T) {
 	}
 }
 
+func TestPresetStore_AddPersistenceFailureDoesNotMutateMemory(t *testing.T) {
+	t.Parallel()
+	st, _ := newStoreForTest(t)
+	// Make one slot available with a successful write first.
+	if _, err := st.SetStarred("cartoon-rewind", "loonytunes", false); err != nil {
+		t.Fatalf("remove pre-condition: %v", err)
+	}
+	before := st.Snapshot()
+	// Point the store at a directory so the final os.Rename file->dir fails.
+	st.path = t.TempDir()
+	if _, err := st.SetStarred("mtv-rewind", "amp", true); err == nil {
+		t.Fatalf("SetStarred add with failing persistence returned nil error")
+	}
+	if after := st.Snapshot(); after != before {
+		t.Errorf("snapshot mutated despite persistence failure\nafter=%+v\nbefore=%+v", after, before)
+	}
+}
+
+func TestPresetStore_MovePersistenceFailureDoesNotMutateMemory(t *testing.T) {
+	t.Parallel()
+	st, _ := newStoreForTest(t)
+	before := st.Snapshot()
+	// Point the store at a directory so the final os.Rename file->dir fails.
+	st.path = t.TempDir()
+	if err := st.Move(1, 7); err == nil {
+		t.Fatalf("Move with failing persistence returned nil error")
+	}
+	if after := st.Snapshot(); after != before {
+		t.Errorf("snapshot mutated despite persistence failure\nafter=%+v\nbefore=%+v", after, before)
+	}
+}
+
 func TestPresetStore_LoadStaleReferencesDropped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1771,23 +1817,33 @@ func (s *presetStore) SetStarred(providerID, channelID string, starred bool) (ad
 			}
 		}
 		entry.Slot = target + 1
-		s.slots[target] = entry
-		s.persistLocked()
+		next := s.slots
+		next[target] = entry
+		if err := s.persistSlotsLocked(next); err != nil {
+			s.mu.Unlock()
+			return adapters.PresetStarResult{}, err
+		}
+		s.slots = next
 		s.mu.Unlock()
 		return adapters.PresetStarResult{Starred: true, Slot: target + 1}, nil
 	}
 
 	// starred=false: clear all matching slots.
 	s.mu.Lock()
+	next := s.slots
 	cleared := []int{}
-	for i, e := range s.slots {
+	for i, e := range next {
 		if e.ProviderID == providerID && e.ChannelID == channelID {
 			cleared = append(cleared, i+1)
-			s.slots[i] = adapters.PresetEntry{Slot: i + 1}
+			next[i] = adapters.PresetEntry{Slot: i + 1}
 		}
 	}
 	if len(cleared) > 0 {
-		s.persistLocked()
+		if err := s.persistSlotsLocked(next); err != nil {
+			s.mu.Unlock()
+			return adapters.PresetStarResult{}, err
+		}
+		s.slots = next
 	}
 	s.mu.Unlock()
 	sort.Ints(cleared)
@@ -1809,23 +1865,26 @@ func (s *presetStore) Move(from, to int) error {
 		return nil
 	}
 	s.mu.Lock()
-	s.slots[from-1], s.slots[to-1] = s.slots[to-1], s.slots[from-1]
-	s.slots[from-1].Slot = from
-	s.slots[to-1].Slot = to
-	s.persistLocked()
+	next := s.slots
+	next[from-1], next[to-1] = next[to-1], next[from-1]
+	next[from-1].Slot = from
+	next[to-1].Slot = to
+	if err := s.persistSlotsLocked(next); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.slots = next
 	s.mu.Unlock()
 	return nil
 }
 
-// persistLocked writes the current in-memory state to s.path atomically
+// persistSlotsLocked writes the candidate state to s.path atomically
 // (temp file in the same directory + os.Rename). Called with s.mu held.
-// Errors are logged at one-per-instance cadence; the in-memory state
-// is the source of truth for the current process, so a write failure
-// does not roll the mutation back — the next successful write
-// re-syncs.
-func (s *presetStore) persistLocked() {
+// Callers commit s.slots only after this returns nil, so HTTP success
+// and SSE updates never acknowledge a mutation that failed to persist.
+func (s *presetStore) persistSlotsLocked(slots [12]adapters.PresetEntry) error {
 	doc := persistedFile{Version: presetStoreFileVersion}
-	for _, e := range s.slots {
+	for _, e := range slots {
 		if e.ProviderID == "" {
 			continue
 		}
@@ -1838,31 +1897,32 @@ func (s *presetStore) persistLocked() {
 	body, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		s.saveErrs.Warn("chassis_presets: marshal failed", "err", err)
-		return
+		return fmt.Errorf("chassis_presets: marshal: %w", err)
 	}
 	dir := filepath.Dir(s.path)
 	tmp, err := os.CreateTemp(dir, "chassis_presets-*.json.tmp")
 	if err != nil {
 		s.saveErrs.Warn("chassis_presets: create temp failed", "err", err, "dir", dir)
-		return
+		return fmt.Errorf("chassis_presets: create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(body); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		s.saveErrs.Warn("chassis_presets: write temp failed", "err", err, "path", tmpPath)
-		return
+		return fmt.Errorf("chassis_presets: write temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		s.saveErrs.Warn("chassis_presets: close temp failed", "err", err, "path", tmpPath)
-		return
+		return fmt.Errorf("chassis_presets: close temp: %w", err)
 	}
 	if err := os.Rename(tmpPath, s.path); err != nil {
 		os.Remove(tmpPath)
 		s.saveErrs.Warn("chassis_presets: rename failed", "err", err, "src", tmpPath, "dst", s.path)
-		return
+		return fmt.Errorf("chassis_presets: rename: %w", err)
 	}
+	return nil
 }
 
 // onePerInstanceLog is a tiny rate limiter so a misconfigured data
@@ -2695,12 +2755,14 @@ func buildCatalogData(cat []adapters.CatalogProvider, presets [12]adapters.Prese
 			gt := CatalogGroupTab{ID: g.ID, Name: g.Name}
 			for _, c := range g.Channels {
 				key := p.ID + ":" + c.ID
-				slot, starred := membership[key]
+				// Map-ok pattern: inPreset is true iff the key exists in
+				// membership; slot is the int value (0 when absent).
+				slot, inPreset := membership[key]
 				card := CatalogChannelCard{
 					ID: c.ID, Name: c.Name, PlayMode: c.PlayMode,
 					Live:       c.Live,
 					Tuned:      p.ID == tunedProvider && c.ID == tunedChannel && tunedProvider != "",
-					Starred:    starred,
+					Starred:    inPreset,
 					PresetSlot: slot,
 				}
 				gt.Channels = append(gt.Channels, card)
@@ -3951,33 +4013,18 @@ func presetsChanged(prev, next [12]adapters.PresetEntry) bool {
 
 - [ ] **Step 4: Integrate into `handleEvents` initial burst**
 
-In the same file, find the initial-burst emission block (lines 246-289). Insert a `presets` emit between `meter` and `audio`:
+In the same file, find the initial-burst emission block (lines 246-289). The events path must pull raw `[12]PresetEntry` values directly from `PresetViewer`; do not reconstruct the envelope from `ReceiverPageData.Presets.Slots`, because that rendered shape does not preserve the exact adapter entries.
+
+Insert the `presets` emit between `meter` and `audio`. **`lastPresets` MUST be declared at `handleEvents`'s function-body scope** — at the same indentation as `last`, `lastSource`, and `lastAudio` — so it remains visible to the tick-loop diff arm added in Step 5. If you nest `:=` inside an `if`/`for` block, the tick loop in Step 5 will fail to compile with "undefined: lastPresets".
 
 ```go
 	if err := emit(w, "meter", meterEnvelopeFrom(last.Meter)); err != nil {
 		return
 	}
 
-	// presets envelope: position between meter and audio so the high-
-	// rate audio stream stays last in the canonical order.
-	lastPresets := s.cache.Get().Presets // snapshot — already consistent with `last`
-	if err := emitPresets(w, last); err != nil {
-		return
-	}
-	_ = lastPresets // also tracked separately below for diff arming
-
-	// Audio scope initial burst — emit last in the canonical order.
-```
-
-Where `emitPresets` is a small new helper added next to `emit`. The cleanest insertion is to:
-
-1. Read `last := s.cache.Get()` (already done at line 246).
-2. Capture `lastPresetsEnvelope := presetEnvelopeFromBuildSnapshot(last)` where the helper extracts the [12]PresetEntry from a `ReceiverPageData`. The cleanest path: extend `ReceiverPageData` consumers to read `last.Presets.Slots` and pull a [12]PresetEntry out — but `PresetsData` does NOT carry the raw `[12]PresetEntry`; the snapshot only has the rendered `[12]PresetSlot` (a different shape).
-
-Solution: have the events loop pull the raw `[12]PresetEntry` directly from the `PresetViewer`. Add it to `*Server` by exposing a getter, then in the events handler:
-
-```go
-	// presets envelope (between meter and audio).
+	// presets envelope (between meter and audio). lastPresets is declared
+	// at function scope (same level as `last`, `lastSource`, `lastAudio`)
+	// so the tick-loop diff arm in Step 5 can update it.
 	rawPresets := s.presetSnapshot()
 	if err := emit(w, "presets", presetEnvelopeFromSnapshot(rawPresets)); err != nil {
 		return
@@ -3985,7 +4032,7 @@ Solution: have the events loop pull the raw `[12]PresetEntry` directly from the 
 	lastPresets := rawPresets
 ```
 
-Add to `server.go`:
+Add this helper to `server.go`:
 
 ```go
 // presetSnapshot returns the current 12-slot preset entries from the
@@ -4298,6 +4345,29 @@ func TestCatalogGridTemplate_RendersChannelCards(t *testing.T) {
 	}
 }
 
+func TestCatalogDrawerTemplate_RendersWithNilCatalogViewer(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.StreamsCatalogViewer = nil
+	cfg.PresetViewer = nil
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	html := rec.Body.String()
+	if !strings.Contains(html, `class="catalog-empty"`) {
+		t.Errorf("nil catalog render missing empty state: %s", excerpt(html, "catalog-drawer"))
+	}
+}
+
 func newTestServerWithCatalog(t *testing.T) *Server {
 	t.Helper()
 	cfg := nonZeroConfig()
@@ -4385,6 +4455,7 @@ Create [internal/chassis/templates/catalog-rail.html](../../../internal/chassis/
 
 ```html
 {{define "catalog-rail"}}
+{{- if .Providers -}}
 {{- $active := .ActiveGroupID -}}
 {{- $providerIdx := .ProviderIndex .ActiveProviderID -}}
 {{- with index .Providers $providerIdx -}}
@@ -4397,6 +4468,9 @@ Create [internal/chassis/templates/catalog-rail.html](../../../internal/chassis/
 </button>
 {{- end -}}
 {{- end -}}
+{{- else -}}
+<div class="catalog-empty">No catalog providers available</div>
+{{- end -}}
 {{end}}
 ```
 
@@ -4404,6 +4478,7 @@ Create [internal/chassis/templates/catalog-grid.html](../../../internal/chassis/
 
 ```html
 {{define "catalog-grid"}}
+{{- if .Providers -}}
 {{- $providerIdx := .ProviderIndex .ActiveProviderID -}}
 {{- $groupIdx := .GroupIndex .ActiveProviderID .ActiveGroupID -}}
 {{- with index .Providers $providerIdx -}}
@@ -4422,6 +4497,9 @@ Create [internal/chassis/templates/catalog-grid.html](../../../internal/chassis/
 </div>
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- else -}}
+<div class="catalog-empty">No catalog providers available</div>
 {{- end -}}
 {{end}}
 ```
@@ -4488,8 +4566,8 @@ func TestPresetBankTemplate_BrowseAndSearchEnabled(t *testing.T) {
 		}
 	}
 	// BROWSE label closed form: "▸ Browse full catalog (N)"
-	if !strings.Contains(html, "Browse full catalog (") {
-		t.Errorf("browse button missing 'Browse full catalog (N)' label")
+	if !strings.Contains(html, "Browse full catalog (3)") {
+		t.Errorf("browse button missing exact catalog count: %s", excerpt(html, "browse-toggle"))
 	}
 }
 
@@ -4558,7 +4636,7 @@ Replace [internal/chassis/templates/preset-bank.html](../../../internal/chassis/
 
 {{define "browse-button-label"}}
 {{- /* Closed-state label only — JS swaps to "◂ Back to presets" on open. */ -}}
-&#9656; Browse full catalog ({{.TotalChannels}})
+&#9656; Browse full catalog ({{.CatalogTotalChannels}})
 {{end}}
 ```
 
@@ -4743,7 +4821,7 @@ Also move the `source-cluster.js` tag to its required position (after `vfd-live.
 
 Run: `go test ./internal/chassis -run TestShellTemplate_LoadsNew3BScripts -count=1 -v`
 
-Expected: FAIL on the file presence checks (next step creates the JS files). The script tag count should now be correct, but the static handler may 404 for files that don't exist yet. The Step 4 test only checks that the HTML contains the script tags, so it should pass now — the actual JS files come in Tasks 23-26.
+Expected: PASS. This test only checks that the HTML contains the script tags in order; the actual JS files are created in Tasks 23-26.
 
 - [ ] **Step 5: Commit**
 
@@ -4892,6 +4970,9 @@ Replace [internal/chassis/static/preset-bank.js](../../../internal/chassis/stati
   const bank = document.querySelector('.preset-bank');
   if (!bank) return;
 
+  let lastProviderId = '';
+  let lastChannelId = '';
+
   function slots() { return Array.from(bank.querySelectorAll('.preset')); }
 
   function clearLit() {
@@ -4921,6 +5002,8 @@ Replace [internal/chassis/static/preset-bank.js](../../../internal/chassis/stati
     let data = {};
     try { data = JSON.parse(ev.data); } catch (_) { return; }
     const [providerId, channelId] = parseAdapterRef(data.adapterRef);
+    lastProviderId = providerId || '';
+    lastChannelId = channelId || '';
     applyLit(providerId, channelId);
   }
 
@@ -4984,6 +5067,7 @@ Replace [internal/chassis/static/preset-bank.js](../../../internal/chassis/stati
     // transport SSE event will fire on its own cadence, but we want
     // the LIT highlight to survive a presets-only mutation (e.g., the
     // currently-tuned channel just got starred into a new slot).
+    applyLit(lastProviderId, lastChannelId);
     document.dispatchEvent(new CustomEvent('chassis:preset-rerendered'));
   }
 
@@ -5059,6 +5143,8 @@ func TestCatalogBrowserJS_ExistsAndIntegrationPoints(t *testing.T) {
 		"/receiver/preset/star",
 		`subscribe('transport'`,
 		`subscribe('presets'`,
+		"chassis:catalog-grid-changed",
+		"star.textContent",
 		"stopPropagation",
 	} {
 		if !strings.Contains(s, want) {
@@ -5126,6 +5212,14 @@ Create [internal/chassis/static/catalog-browser.js](../../../internal/chassis/st
     return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
   }
 
+  function pad2(n) {
+    return n < 10 ? '0' + n : '' + n;
+  }
+
+  function notifyCatalogGridChanged() {
+    document.dispatchEvent(new CustomEvent('chassis:catalog-grid-changed'));
+  }
+
   function setBrowseLabel() {
     browseBtn.textContent = isOpen ? '◂ Back to presets' : browseClosedText;
     browseBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
@@ -5167,6 +5261,7 @@ Create [internal/chassis/static/catalog-browser.js](../../../internal/chassis/st
     }
     setBrowseLabel();
     setModeLabel();
+    if (isOpen) notifyCatalogGridChanged();
   }
 
   function switchProvider(providerID) {
@@ -5201,6 +5296,7 @@ Create [internal/chassis/static/catalog-browser.js](../../../internal/chassis/st
       while (cloned.firstChild) gridHost.appendChild(cloned.firstChild);
     }
     setModeLabel();
+    notifyCatalogGridChanged();
   }
 
   browseBtn.addEventListener('click', toggleBrowse);
@@ -5319,20 +5415,25 @@ Create [internal/chassis/static/catalog-browser.js](../../../internal/chassis/st
 
   function applyStars(payload) {
     if (!payload || !Array.isArray(payload.slots)) return;
-    const membership = new Set();
+    const membership = new Map();
     payload.slots.forEach((s) => {
-      if (s.provider && s.channel) membership.add(s.provider + ':' + s.channel);
+      if (s.provider && s.channel) membership.set(s.provider + ':' + s.channel, s.slot);
     });
-    const stars = document.querySelectorAll('.ch-card');
-    stars.forEach((el) => {
+
+    function updateCard(el) {
       const key = (el.dataset.provider || '') + ':' + (el.dataset.channel || '');
-      el.classList.toggle('starred', membership.has(key));
-    });
+      const slot = membership.get(key) || 0;
+      el.classList.toggle('starred', slot > 0);
+      const star = el.querySelector('.star');
+      if (star) {
+        star.textContent = slot > 0 ? '★' : '☆';
+        star.title = slot > 0 ? 'In preset ' + pad2(slot) : 'Save to preset';
+      }
+    }
+
+    document.querySelectorAll('.ch-card').forEach(updateCard);
     document.querySelectorAll('template[id^="catalog-tree-"]').forEach((tpl) => {
-      tpl.content.querySelectorAll('.ch-card').forEach((el) => {
-        const key = (el.dataset.provider || '') + ':' + (el.dataset.channel || '');
-        el.classList.toggle('starred', membership.has(key));
-      });
+      tpl.content.querySelectorAll('.ch-card').forEach(updateCard);
     });
   }
 
@@ -5404,6 +5505,9 @@ func TestPresetReorderJS_PointerEventsAndMoveRoute(t *testing.T) {
 		"Ctrl",
 		"ArrowLeft",
 		"ArrowRight",
+		"Escape",
+		"swapVisual",
+		"revert",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("preset-reorder.js missing %q", want)
@@ -5428,6 +5532,7 @@ func TestSearchFilterJS_TogglesFilterMissClass(t *testing.T) {
 		"filter-miss",
 		"Escape",
 		`subscribe('presets'`,
+		"chassis:catalog-grid-changed",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("search-filter.js missing %q", want)
@@ -5465,6 +5570,51 @@ Create [internal/chassis/static/preset-reorder.js](../../../internal/chassis/sta
 
   function preset(el) {
     return el && el.classList && el.classList.contains('preset') ? el : (el ? el.closest('.preset') : null);
+  }
+
+  function syncSlotNumber(el) {
+    const num = el.querySelector('.num');
+    if (num) num.textContent = String(el.dataset.slot || '').padStart(2, '0');
+  }
+
+  function snapshotVisual(el) {
+    return {
+      className: el.className,
+      html: el.innerHTML,
+      provider: el.dataset.provider || '',
+      channel: el.dataset.channel || '',
+    };
+  }
+
+  function restoreVisual(el, state, slot) {
+    el.className = state.className;
+    el.innerHTML = state.html;
+    el.dataset.slot = String(slot);
+    el.dataset.provider = state.provider;
+    el.dataset.channel = state.channel;
+    syncSlotNumber(el);
+  }
+
+  function swapVisual(a, b) {
+    const aSlot = a.dataset.slot;
+    const bSlot = b.dataset.slot;
+    const aState = snapshotVisual(a);
+    const bState = snapshotVisual(b);
+    restoreVisual(a, bState, aSlot);
+    restoreVisual(b, aState, bSlot);
+    return function revert() {
+      restoreVisual(a, aState, aSlot);
+      restoreVisual(b, bState, bSlot);
+    };
+  }
+
+  function cancelDrag() {
+    if (!dragging) return;
+    if (dragging.clone) dragging.clone.remove();
+    if (dragging.sourceEl) dragging.sourceEl.removeAttribute('data-dragging');
+    if (dragging.lastTarget) dragging.lastTarget.classList.remove('drop-target');
+    document.body.style.cursor = '';
+    dragging = null;
   }
 
   bank.addEventListener('pointerdown', (e) => {
@@ -5518,32 +5668,25 @@ Create [internal/chassis/static/preset-reorder.js](../../../internal/chassis/sta
 
   bank.addEventListener('pointerup', async (e) => {
     if (!dragging || e.pointerId !== dragging.pointerId) return;
-    const finish = (cleanup) => {
-      if (cleanup && dragging) {
-        if (dragging.clone) dragging.clone.remove();
-        if (dragging.sourceEl) dragging.sourceEl.removeAttribute('data-dragging');
-        if (dragging.lastTarget) dragging.lastTarget.classList.remove('drop-target');
-      }
-      document.body.style.cursor = '';
-      dragging = null;
-    };
-    if (!dragging.clone) { finish(false); return; }
+    if (!dragging.clone) { cancelDrag(); return; }
+    const source = dragging.sourceEl;
     const target = dragging.lastTarget;
-    if (!target || target === dragging.sourceEl) { finish(true); return; }
+    if (!target || target === source) { cancelDrag(); return; }
     const to = parseInt(target.dataset.slot, 10);
     const from = dragging.from;
-    finish(true);
+    cancelDrag();
     if (!Number.isFinite(from) || !Number.isFinite(to)) return;
-    await postMove(from, to);
+    const revert = swapVisual(source, target);
+    const ok = await postMove(from, to);
+    if (!ok) revert();
   });
 
-  bank.addEventListener('pointercancel', () => {
-    if (dragging) {
-      if (dragging.clone) dragging.clone.remove();
-      if (dragging.sourceEl) dragging.sourceEl.removeAttribute('data-dragging');
-      if (dragging.lastTarget) dragging.lastTarget.classList.remove('drop-target');
-      document.body.style.cursor = '';
-      dragging = null;
+  bank.addEventListener('pointercancel', cancelDrag);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dragging) {
+      e.preventDefault();
+      cancelDrag();
     }
   });
 
@@ -5561,7 +5704,10 @@ Create [internal/chassis/static/preset-reorder.js](../../../internal/chassis/sta
       to = from === 12 ? 1 : from + 1;
     }
     e.preventDefault();
-    await postMove(from, to);
+    const toEl = bank.querySelector(`.preset[data-slot="${to}"]`);
+    const revert = toEl ? swapVisual(target, toEl) : null;
+    const ok = await postMove(from, to);
+    if (!ok && revert) revert();
   });
 
   function reportChip(chip) {
@@ -5580,9 +5726,14 @@ Create [internal/chassis/static/preset-reorder.js](../../../internal/chassis/sta
         body: body.toString(),
       });
       const json = await resp.json().catch(() => ({ ok: false, chip: 'CAST FAILED' }));
-      if (!json.ok) reportChip(json.chip);
+      if (!json.ok) {
+        reportChip(json.chip);
+        return false;
+      }
+      return true;
     } catch (_) {
       reportChip('CAST FAILED');
+      return false;
     }
   }
 })();
@@ -5655,8 +5806,9 @@ Create [internal/chassis/static/search-filter.js](../../../internal/chassis/stat
   if (window.Chassis && window.Chassis.events && typeof window.Chassis.events.subscribe === 'function') {
     window.Chassis.events.subscribe('presets', () => applyFilter());
   }
-  // Re-apply when the catalog drawer opens (grid contents change).
+  // Re-apply when preset DOM or catalog-grid DOM changes.
   document.addEventListener('chassis:preset-rerendered', () => applyFilter());
+  document.addEventListener('chassis:catalog-grid-changed', () => applyFilter());
 
   // Initial paint.
   applyFilter();
@@ -5858,7 +6010,37 @@ body.receiver .source-cluster .lamp.casting .name {
 
 **Catalog drawer** (place after the existing preset-bank section):
 
-The mockup's catalog drawer CSS lives at lines 2190-2502 of `docs/superpowers/reference/2026-05-21-receiver-v24.html`. Port verbatim, scoping each selector with `body.receiver`. Use this skeleton — every selector matches a known-existing block in the reference:
+The mockup's catalog drawer CSS lives at lines 2190-2502 of `docs/superpowers/reference/2026-05-21-receiver-v24.html`. Port verbatim, scoping each selector with `body.receiver`.
+
+**⚠ Reconciliation with existing rules.** Some selectors below ALREADY exist in `chassis.css` from the Phase 0 foundation port (visual stubs). For those, do NOT add a second `body.receiver .ch-card {...}` block — instead, **edit the existing block in place** to add or update properties. The annotated list:
+
+| Selector | Status | Action |
+|---|---|---|
+| `body.receiver .catalog-drawer` | new (or stub) | verify with `grep -n "body.receiver .catalog-drawer" chassis.css`; if a stub exists with only `max-height`/`overflow`, merge properties; otherwise add fresh |
+| `body.receiver.browse-open .catalog-drawer` | **exists** | verify content matches Task 23 expectations from earlier phases; do not duplicate |
+| `body.receiver .catalog-browser` | new | add fresh |
+| `body.receiver .catalog-provider-tabs` | new | add fresh |
+| `body.receiver .catalog-provider-tab` | new | add fresh |
+| `body.receiver .catalog-provider-tab .ic` (and `.mtv`/`.cartoon`/`.toonami` variants) | new | add fresh |
+| `body.receiver .catalog-tab-indicator` | new | add fresh |
+| `body.receiver .catalog-body` | **exists** | merge new properties (display/grid-template-columns/gap/min-height) into existing block; do NOT add second block |
+| `body.receiver .catalog-rail` | new | add fresh |
+| `body.receiver .catalog-rail-group` (and `:hover` / `.active` / `.count`) | new | add fresh — these are the keyframe-animated rail buttons |
+| `body.receiver .catalog-grid` | **exists** | merge new properties (grid-template-columns/gap/align-content) into existing block |
+| `body.receiver .ch-card` | **exists** | merge animation/transition properties; existing rules already have background/border/padding/cursor/font. Add only `animation: ch-card-in ...`, `animation-delay: ...`, and `transition: ...` if absent |
+| `body.receiver .ch-card:hover` | **exists** | verify or merge |
+| `body.receiver .ch-card:focus-visible` | new | add fresh |
+| `body.receiver .ch-card .name` | **exists** | leave alone (existing rule is more thorough) |
+| `body.receiver .ch-card .meta` | **exists** | leave alone |
+| `body.receiver .ch-card .meta .mode` | **exists** | leave alone |
+| `body.receiver .ch-card .star` (and `:hover` / `.starred` / `.pending`) | new | add fresh — star affordance is 3B-only |
+| `body.receiver .ch-card.tuned` | **exists** | verify properties match (existing rule uses different background gradient); merge or replace per spec aesthetic |
+| `body.receiver .ch-card.live::after` (REC pulse) | new or exists | check; the `@keyframes rec-pulse` definitely already exists |
+| `@keyframes ch-card-in` | new | add fresh |
+| `@keyframes rail-in` | new | add fresh |
+| `@media (prefers-reduced-motion: reduce)` for the two new keyframes | new | add fresh |
+
+The full CSS block below is correct as the final output — but the implementer must reconcile each `body.receiver .ch-card{...}` etc. against the existing chassis.css rather than blindly appending a second rule block. A trivial first pass: search for each new selector in chassis.css; if it exists, edit in place; if it doesn't, append.
 
 ```css
 /* ---- Catalog drawer (3B) ---- */
@@ -6339,6 +6521,10 @@ func TestReceiverEvents_PresetsBetweenMeterAndAudio(t *testing.T) {
 }
 
 func TestReceiverPresetStar_PersistsAcrossRestart(t *testing.T) {
+	// Use newChassisIntegrationEnvIn (NOT newChassisIntegrationEnv) so
+	// the dir starts with no chassis_presets.json. The streams adapter
+	// then seeds from bundledChassisPresets in memory (slot 2 = mtv-rewind:80s),
+	// which gives us a real mutation to test the persistence path with.
 	dir := t.TempDir()
 	env1 := newChassisIntegrationEnvIn(t, dir)
 	_ = env1.PostForm("/receiver/preset/star", url.Values{
@@ -6352,6 +6538,69 @@ func TestReceiverPresetStar_PersistsAcrossRestart(t *testing.T) {
 	// 80s was bundled into slot 2; after removal+restart it should be empty.
 	if slots[1]["provider"] != "" {
 		t.Errorf("restart slot 2 provider = %v, want empty (was removed)", slots[1]["provider"])
+	}
+}
+
+func TestReceiverEvents_PresetsFollowUpChangedButNotNoop(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	stream := env.OpenEvents(t)
+	defer stream.Close()
+	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
+
+	_ = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	if !stream.WaitForEvent(t, "presets", 2*time.Second) {
+		t.Fatalf("changed star operation did not emit presets follow-up")
+	}
+
+	_ = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	if stream.WaitForEvent(t, "presets", 300*time.Millisecond) {
+		t.Fatalf("idempotent star operation emitted unexpected presets follow-up")
+	}
+}
+
+func TestReceiverReloadMidCast_TunedSurfacesHydrateFromSnapshot(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	_ = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	_ = env.PostForm("/receiver/streams/cast", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"},
+	})
+
+	html := env.GetReceiverHTML(t)
+	for _, want := range []string{
+		`data-source-id="streams"`,
+		`class="lamp configured-idle casting"`,
+		`class="preset lit`,
+		`data-provider="mtv-rewind" data-channel="80s"`,
+		`class="ch-card tuned`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("reload html missing tuned/casting surface %q", want)
+		}
+	}
+}
+
+func TestReceiverPresetStore_DropsStaleReferenceOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{"version":1,"slots":[{"slot":1,"provider":"gone","channel":"x"},{"slot":2,"provider":"mtv-rewind","channel":"80s"}]}`)
+	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), body, 0o600); err != nil {
+		t.Fatalf("seed stale presets: %v", err)
+	}
+	env := newChassisIntegrationEnvIn(t, dir)
+	defer env.Close()
+	slots := env.NextPresetsEvent(t, 2*time.Second)
+	if slots[0]["provider"] != "" {
+		t.Errorf("stale slot provider = %v, want empty", slots[0]["provider"])
+	}
+	if slots[1]["provider"] != "mtv-rewind" || slots[1]["channel"] != "80s" {
+		t.Errorf("valid slot = %v, want mtv-rewind/80s", slots[1])
 	}
 }
 ```
@@ -6372,7 +6621,7 @@ func newChassisIntegrationEnv(t *testing.T) *chassisEnv {
 }
 ```
 
-Tests that need the bundled defaults (e.g. `TestReceiverEvents_PresetsBetweenMeterAndAudio`, where the initial-burst content is incidental) call `newChassisIntegrationEnvWithDefaults` instead, which calls `newChassisIntegrationEnvIn` without pre-seeding the file (the streams adapter then seeds from `bundledChassisPresets` itself).
+Tests that need the bundled defaults call `newChassisIntegrationEnvWithDefaults` instead, which calls `newChassisIntegrationEnvIn` without pre-seeding the file (the streams adapter then seeds from `bundledChassisPresets` itself).
 
 Required helper additions if not already in the file:
 
@@ -6380,13 +6629,17 @@ Required helper additions if not already in the file:
 - `PostForm(path string, form url.Values) *http.Response`.
 - `CollectInitialEventNames(t *testing.T, deadline time.Duration) []string` — opens a fresh `/receiver/events` SSE stream, collects each `event: <name>` line until `audio` arrives or the deadline.
 - `NextPresetsEvent(t *testing.T, deadline time.Duration) []map[string]any` — opens (or reuses) the SSE stream, reads until the next `presets` envelope, returns the parsed `slots` array as `[]map[string]any` (matching the field names in `presetsEnvelope`).
+- `OpenEvents(t *testing.T)` returning a reusable SSE reader with `DrainInitialBurstThrough`, `WaitForEvent`, and `Close` helpers; used to prove changed preset edits emit a follow-up `presets` event and idempotent no-ops do not.
+- `GetReceiverHTML(t *testing.T) string` — fetches `/receiver` and returns the rendered HTML for reload-hydration assertions.
 - `drainJSON(t *testing.T, resp *http.Response) map[string]any` — reads the response body, parses JSON, fails the test on error.
 
 The integration env must wire either the real streams adapter (for star/move/persistence tests — needs a writable `data_dir`) or the fake one (for the cast-arg assertion test) as `StreamsCaster`/`StreamsCatalogViewer`/`PresetEditor`/`PresetViewer`. Stub-adapter `SourceAvailabilityViewer` impls are fine — the source-cluster lamp state isn't asserted in these tests, but the chassis snapshot path expects non-nil `SourceAvailabilityViewers` to avoid the default-empty-slice degraded mode.
 
+Add one browser/DOM test before merge. If the repository already has a browser harness, put it there; otherwise add a small Playwright-driven integration test under `tests/browser/receiver_chassis_3b.spec.ts` using the existing test server binary. It must cover: catalog tab cloning preserves star/tuned state, a failed star request leaves the previous star state visible, active search uses `.filter-miss:not(.tuned)`, Escape clears search and cancels an active drag, and pointer reorder posts the expected `from`/`to` values while reverting the optimistic swap on a forced 500.
+
 - [ ] **Step 2: Run to confirm failure**
 
-Run: `go test -tags=integration ./tests/integration -run "TestReceiverStreamsCast_EndToEnd|TestReceiverPresetStar|TestReceiverPresetMove|TestReceiverEvents_PresetsBetweenMeterAndAudio|TestReceiverPresetStar_PersistsAcrossRestart" -v`
+Run: `go test -tags=integration ./tests/integration -run "TestReceiverStreamsCast_EndToEnd|TestReceiverPresetStar|TestReceiverPresetMove|TestReceiverEvents_Presets|TestReceiverReloadMidCast|TestReceiverPresetStore_DropsStaleReference" -v`
 
 Expected: FAIL.
 
@@ -6489,9 +6742,11 @@ go vet ./...
 go test ./...
 go test -race ./...
 go test -tags=integration ./...
+# If the browser/DOM test was added via Playwright:
+npx playwright test tests/browser/receiver_chassis_3b.spec.ts
 ```
 
-All four must be green.
+All Go commands plus the browser/DOM check must be green.
 
 - [ ] **Step 8: Manual smoke (optional but recommended)**
 
@@ -6508,7 +6763,7 @@ All four must be green.
 - [ ] **Step 9: Commit and open PR**
 
 ```bash
-git add cmd/mister-groovy-relay/main.go tests/integration/chassis_test.go
+git add cmd/mister-groovy-relay/main.go tests/integration/chassis_test.go tests/browser/receiver_chassis_3b.spec.ts
 git commit -m "feat(chassis): wire 3B adapters in main.go and add end-to-end integration tests"
 ```
 
@@ -6526,13 +6781,3 @@ Open the PR against `main` with the title `feat(chassis): Phase 3B source cluste
 - 3A→3B migration: `PresetViewer.BundledPresets()` renamed to `Presets()` (single mechanical pass).
 
 ---
-
-
-
-
-
-
-
-
-
-
