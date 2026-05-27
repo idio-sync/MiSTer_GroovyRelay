@@ -353,6 +353,9 @@ func main() {
 
 	var presetViewer adapters.PresetViewer
 	var presetCaster adapters.PresetCaster
+	var streamsCatalogViewer adapters.StreamsCatalogViewer
+	var streamsCaster adapters.StreamsCaster
+	var presetEditor adapters.PresetEditor
 	if streamsA, ok := reg.Get("streams"); ok {
 		if v, ok := streamsA.(adapters.PresetViewer); ok {
 			presetViewer = v
@@ -360,26 +363,46 @@ func main() {
 		if c, ok := streamsA.(adapters.PresetCaster); ok {
 			presetCaster = c
 		}
+		if v, ok := streamsA.(adapters.StreamsCatalogViewer); ok {
+			streamsCatalogViewer = v
+		}
+		if c, ok := streamsA.(adapters.StreamsCaster); ok {
+			streamsCaster = c
+		}
+		if ed, ok := streamsA.(adapters.PresetEditor); ok {
+			presetEditor = ed
+		}
+	}
+
+	var sourceViewers []adapters.SourceAvailabilityViewer
+	for _, a := range reg.List() {
+		if v, ok := a.(adapters.SourceAvailabilityViewer); ok {
+			sourceViewers = append(sourceViewers, v)
+		}
 	}
 
 	chassisSrv, err := chassis.New(chassis.Config{
-		Bridge:              sec.Bridge,
-		Manager:             coreMgr,
-		Registry:            reg,
-		Version:             version,
-		StartedAt:           startedAt,
-		HostIP:              hostIP,
-		Session:             coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
-		TransportViewer:     playbackDispatcher,
-		TransportController: playbackDispatcher,
-		VisualizerViewer:    coreMgr,
-		VisualizerSaver:     &visualizerSaverAdapter{bs: saver},
-		VolumeViewer:        coreMgr,
-		VolumeSaver:         &volumeSaverAdapter{bs: saver},
-		AudioScopeViewer:    coreMgr,
-		AUX:                 auxAdapter,
-		PresetViewer:        presetViewer,
-		PresetCaster:        presetCaster,
+		Bridge:                    sec.Bridge,
+		Manager:                   coreMgr,
+		Registry:                  reg,
+		Version:                   version,
+		StartedAt:                 startedAt,
+		HostIP:                    hostIP,
+		Session:                   coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
+		TransportViewer:           playbackDispatcher,
+		TransportController:       playbackDispatcher,
+		VisualizerViewer:          coreMgr,
+		VisualizerSaver:           &visualizerSaverAdapter{bs: saver},
+		VolumeViewer:              coreMgr,
+		VolumeSaver:               &volumeSaverAdapter{bs: saver},
+		AudioScopeViewer:          coreMgr,
+		AUX:                       auxAdapter,
+		PresetViewer:              presetViewer,
+		PresetCaster:              presetCaster,
+		StreamsCatalogViewer:      streamsCatalogViewer,
+		StreamsCaster:             streamsCaster,
+		PresetEditor:              presetEditor,
+		SourceAvailabilityViewers: sourceViewers,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)

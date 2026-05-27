@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -1446,4 +1448,646 @@ func collectClasses(n *html.Node) map[string]bool {
 	}
 	walk(n)
 	return classes
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3B Task 28 — end-to-end integration tests
+// ---------------------------------------------------------------------------
+
+// recordingStreamsCaster satisfies adapters.StreamsCaster and records every
+// CastChannel call. It also flips the bound fakeIntegrationSession into the
+// matching "playing streams:<provider>:<channel>" state so subsequent /receiver
+// renders surface the .casting lamp and .lit preset without needing a live
+// core.Manager session.
+//
+// The name is intentionally distinct from the existing fakeStreamsCaster
+// (which satisfies PresetCaster, NOT StreamsCaster).
+type recordingStreamsCaster struct {
+	mu              sync.Mutex
+	session         *fakeIntegrationSession
+	lastProvider    string
+	lastChannel     string
+	calls           int
+	lastChannelCast string // "<provider>:<channel>" for convenience assertions
+}
+
+func (r *recordingStreamsCaster) CastChannel(_ context.Context, providerID, channelID string) error {
+	r.mu.Lock()
+	r.lastProvider = providerID
+	r.lastChannel = channelID
+	r.lastChannelCast = providerID + ":" + channelID
+	r.calls++
+	sess := r.session
+	r.mu.Unlock()
+	if sess != nil {
+		sess.set(core.StatusHomeView{
+			State:      core.StatePlaying,
+			Source:     "streams",
+			AdapterRef: fmt.Sprintf("streams:%s:%s:sess:1", providerID, channelID),
+			Title:      providerID + " · " + channelID,
+		})
+	}
+	return nil
+}
+
+// chassisEnv holds the running pieces of a chassis integration server backed
+// by the REAL streams adapter (for PresetViewer/PresetEditor/SourceAvailability/
+// StreamsCatalogViewer) and a recording StreamsCaster (to avoid spinning up
+// real playback against a zero-value *core.Manager).
+type chassisEnv struct {
+	t           *testing.T
+	dir         string
+	ts          *httptest.Server
+	srv         *chassis.Server
+	mux         *http.ServeMux
+	streamsA    *streams.Adapter
+	fakeStreams *recordingStreamsCaster
+	session     *fakeIntegrationSession
+}
+
+// Close shuts down the embedded http test server AND the chassis cache
+// refresher goroutine. Safe to call from t.Cleanup as well as end-of-test.
+func (e *chassisEnv) Close() {
+	if e == nil {
+		return
+	}
+	if e.ts != nil {
+		e.ts.Close()
+	}
+	if e.srv != nil {
+		_ = e.srv.Close()
+	}
+}
+
+// newChassisIntegrationEnv creates a fresh temp data_dir, pre-seeds an EMPTY
+// chassis_presets.json so the streams preset bank starts with zero filled
+// slots (required by TestReceiverPresetStar_AddRemoveBankFull), and delegates
+// to newChassisIntegrationEnvIn.
+func newChassisIntegrationEnv(t *testing.T) *chassisEnv {
+	t.Helper()
+	dir := t.TempDir()
+	// Empty slots so star-add tests have predictable starting state.
+	emptyStore := []byte(`{"version":1,"slots":[]}`)
+	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), emptyStore, 0o600); err != nil {
+		t.Fatalf("seed empty chassis_presets.json: %v", err)
+	}
+	return newChassisIntegrationEnvIn(t, dir)
+}
+
+// newChassisIntegrationEnvIn builds a chassis Server wired to a real streams
+// Adapter in dir. The streams adapter is enabled (SetEnabled(true)) so it
+// reports Configured()=true to the source-lamp logic; remote manifest refresh
+// is suppressed by leaving AllowRemoteManifest in its decoded-config default
+// (we never call ApplyConfig/Start with remote manifest enabled in tests).
+func newChassisIntegrationEnvIn(t *testing.T, dir string) *chassisEnv {
+	t.Helper()
+
+	streamsA, err := streams.New(streams.AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: dir},
+		Core:   &core.Manager{}, // unused by the catalog/preset/source paths these tests exercise
+	})
+	if err != nil {
+		t.Fatalf("streams.New: %v", err)
+	}
+	// Configured()=IsEnabled(); needed for the .lamp.configured-idle class.
+	streamsA.SetEnabled(true)
+
+	session := &fakeIntegrationSession{view: core.StatusHomeView{State: core.StateIdle}}
+	fakeStreams := &recordingStreamsCaster{session: session}
+
+	reg := adapters.NewRegistry()
+
+	srv, err := chassis.New(chassis.Config{
+		Bridge:                    config.BridgeConfig{DataDir: dir, UI: config.UIConfig{HTTPPort: 32500}},
+		Manager:                   &core.Manager{},
+		Registry:                  reg,
+		Version:                   "integration-test",
+		StartedAt:                 time.Now(),
+		HostIP:                    "127.0.0.1",
+		Session:                   session,
+		PresetViewer:              streamsA,
+		PresetEditor:              streamsA,
+		StreamsCatalogViewer:      streamsA,
+		StreamsCaster:             fakeStreams,
+		SourceAvailabilityViewers: []adapters.SourceAvailabilityViewer{streamsA},
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+
+	return &chassisEnv{
+		t:           t,
+		dir:         dir,
+		ts:          ts,
+		srv:         srv,
+		mux:         mux,
+		streamsA:    streamsA,
+		fakeStreams: fakeStreams,
+		session:     session,
+	}
+}
+
+// PostForm issues a same-origin form POST against the env's test server.
+// The returned response body is the caller's responsibility to Close.
+func (e *chassisEnv) PostForm(path string, form url.Values) *http.Response {
+	e.t.Helper()
+	return mustPOSTForm(e.t, e.ts.URL+path, form.Encode())
+}
+
+// GetReceiverHTML fetches GET /receiver and returns the body as a string.
+// Always fails the test on transport error or non-200 status.
+func (e *chassisEnv) GetReceiverHTML(t *testing.T) string {
+	t.Helper()
+	resp, err := http.Get(e.ts.URL + "/receiver")
+	if err != nil {
+		t.Fatalf("GET /receiver: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET /receiver status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read /receiver body: %v", err)
+	}
+	return string(body)
+}
+
+// sseStream wraps a long-lived /receiver/events connection with helpers for
+// the canonical "drain initial burst, then watch for a specific event" pattern
+// the integration tests need.
+type sseStream struct {
+	t      *testing.T
+	resp   *http.Response
+	rdr    *bufio.Reader
+	cancel context.CancelFunc
+}
+
+// OpenEvents opens a long-lived SSE connection bound to a context. The caller
+// MUST call Close on the returned stream when finished.
+func (e *chassisEnv) OpenEvents(t *testing.T) *sseStream {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.ts.URL+"/receiver/events", nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("new SSE request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	return &sseStream{
+		t:      t,
+		resp:   resp,
+		rdr:    bufio.NewReader(resp.Body),
+		cancel: cancel,
+	}
+}
+
+func (s *sseStream) Close() {
+	if s == nil {
+		return
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.resp != nil {
+		s.resp.Body.Close()
+	}
+}
+
+// readEvent reads one (event, data) pair from the SSE stream, skipping
+// "retry:" and ": heartbeat" lines and blank separators. Returns ("", "",
+// error) on read failure or context cancellation. Returns ("", "", nil)
+// if the deadline is exceeded.
+//
+// Implemented as a background read goroutine feeding a channel so the
+// deadline interrupts a blocked ReadString — bufio.Reader.ReadString
+// does not honor context cancellation directly.
+func (s *sseStream) readEvent(deadline time.Time) (string, string, error) {
+	type lineResult struct {
+		line string
+		err  error
+	}
+	var eventName, dataLine string
+	for {
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return "", "", nil
+		}
+		ch := make(chan lineResult, 1)
+		go func() {
+			line, err := s.rdr.ReadString('\n')
+			ch <- lineResult{line: line, err: err}
+		}()
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		if !deadline.IsZero() {
+			d := time.Until(deadline)
+			if d <= 0 {
+				return "", "", nil
+			}
+			timer = time.NewTimer(d)
+			timerC = timer.C
+		}
+		var res lineResult
+		select {
+		case res = <-ch:
+			if timer != nil {
+				if !timer.Stop() {
+					<-timer.C
+				}
+			}
+		case <-timerC:
+			// Deadline reached. The read goroutine still owns the
+			// reader; closing the response body will unblock it.
+			// Caller is expected to Close() the stream when done.
+			return "", "", nil
+		}
+		if res.err != nil {
+			return "", "", res.err
+		}
+		line := strings.TrimRight(res.line, "\r\n")
+		if line == "" {
+			if eventName != "" {
+				return eventName, dataLine, nil
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "retry:") {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLine = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			continue
+		}
+	}
+}
+
+// DrainInitialBurstThrough reads SSE events up to and including the
+// named event ("audio" is the canonical end-of-burst marker). Fails the
+// test if the deadline elapses first.
+func (s *sseStream) DrainInitialBurstThrough(t *testing.T, name string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		ev, _, err := s.readEvent(deadline)
+		if err != nil {
+			t.Fatalf("read SSE event: %v", err)
+		}
+		if ev == "" {
+			t.Fatalf("timed out waiting for %q during initial burst", name)
+		}
+		if ev == name {
+			return
+		}
+	}
+}
+
+// WaitForEvent reads SSE events until one matches name or the deadline
+// elapses. Returns true if name was seen, false on timeout.
+func (s *sseStream) WaitForEvent(t *testing.T, name string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		ev, _, err := s.readEvent(deadline)
+		if err != nil {
+			t.Fatalf("read SSE event: %v", err)
+		}
+		if ev == "" {
+			return false
+		}
+		if ev == name {
+			return true
+		}
+	}
+}
+
+// CollectInitialEventNames opens a one-shot SSE connection and collects
+// every event name emitted up to and including "audio" (the canonical
+// end-of-initial-burst marker). The deadline bounds the wait.
+func (e *chassisEnv) CollectInitialEventNames(t *testing.T, timeout time.Duration) []string {
+	t.Helper()
+	stream := e.OpenEvents(t)
+	defer stream.Close()
+	deadline := time.Now().Add(timeout)
+	var names []string
+	for {
+		ev, _, err := stream.readEvent(deadline)
+		if err != nil {
+			t.Fatalf("read SSE event: %v", err)
+		}
+		if ev == "" {
+			t.Fatalf("timed out collecting initial burst; got so far: %v", names)
+		}
+		names = append(names, ev)
+		if ev == "audio" {
+			return names
+		}
+	}
+}
+
+// NextPresetsEvent opens an SSE connection and reads until the first
+// "presets" event lands, then returns its parsed slots array as a slice
+// of map[string]any (length 12). Fails on timeout.
+func (e *chassisEnv) NextPresetsEvent(t *testing.T, timeout time.Duration) []map[string]any {
+	t.Helper()
+	stream := e.OpenEvents(t)
+	defer stream.Close()
+	deadline := time.Now().Add(timeout)
+	for {
+		ev, data, err := stream.readEvent(deadline)
+		if err != nil {
+			t.Fatalf("read SSE event: %v", err)
+		}
+		if ev == "" {
+			t.Fatalf("timed out waiting for presets event")
+		}
+		if ev != "presets" {
+			continue
+		}
+		var payload struct {
+			Slots []map[string]any `json:"slots"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("parse presets payload %q: %v", data, err)
+		}
+		return payload.Slots
+	}
+}
+
+// drainJSON reads a JSON response body into map[string]any and closes it.
+// Fails the test on read or parse error.
+func drainJSON(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("parse response body %q: %v", body, err)
+	}
+	return m
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+func TestReceiverStreamsCast_EndToEnd(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+
+	form := url.Values{"provider": {"mtv-rewind"}, "channel": {"80s"}}
+	resp := env.PostForm("/receiver/streams/cast", form)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if got := env.fakeStreams.lastChannelCast; got != "mtv-rewind:80s" {
+		t.Errorf("fakeStreams.lastChannelCast = %q, want mtv-rewind:80s", got)
+	}
+}
+
+func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+
+	// Empty bank: add 80s → slot 1.
+	resp := env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	body := drainJSON(t, resp)
+	if !body["ok"].(bool) || int(body["slot"].(float64)) != 1 {
+		t.Errorf("first add body = %v, want ok=true slot=1", body)
+	}
+
+	// Repeated add: no-op, returns slot 1.
+	resp = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	body = drainJSON(t, resp)
+	if !body["ok"].(bool) || int(body["slot"].(float64)) != 1 {
+		t.Errorf("repeat add body = %v, want ok=true slot=1", body)
+	}
+
+	// Fill the remaining 11 slots.
+	for i, ch := range []string{"90s", "trl", "120minutes", "unplugged", "amp", "loonytunes", "animaniacs", "heman", "all", "east", "movies"} {
+		provider := "mtv-rewind"
+		if i >= 5 {
+			provider = "cartoon-rewind"
+		}
+		if i >= 9 {
+			provider = "toonami-aftermath"
+		}
+		resp = env.PostForm("/receiver/preset/star", url.Values{
+			"provider": {provider}, "channel": {ch}, "starred": {"true"},
+		})
+		if resp.StatusCode != 200 {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("fill %d %s/%s status = %d body=%s", i, provider, ch, resp.StatusCode, b)
+		}
+		resp.Body.Close()
+	}
+
+	// Add 13th channel → 409 BANK FULL.
+	resp = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"fuse"}, "starred": {"true"},
+	})
+	if resp.StatusCode != 409 {
+		t.Errorf("13th add status = %d, want 409", resp.StatusCode)
+	}
+	body = drainJSON(t, resp)
+	if body["chip"] != "BANK FULL" {
+		t.Errorf("13th add chip = %v, want BANK FULL", body["chip"])
+	}
+
+	// Remove 80s → cleared=[1].
+	resp = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"false"},
+	})
+	body = drainJSON(t, resp)
+	cleared, _ := body["cleared"].([]any)
+	if len(cleared) != 1 || int(cleared[0].(float64)) != 1 {
+		t.Errorf("remove cleared = %v, want [1]", body["cleared"])
+	}
+
+	// Repeat remove is a no-op success.
+	resp = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"false"},
+	})
+	if resp.StatusCode != 200 {
+		t.Errorf("repeat remove status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestReceiverPresetMove_Swap(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+
+	// Seed two distinct slots first.
+	resp := env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	resp.Body.Close()
+	resp = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"cartoon-rewind"}, "channel": {"heman"}, "starred": {"true"},
+	})
+	resp.Body.Close()
+
+	resp = env.PostForm("/receiver/preset/move", url.Values{
+		"from": {"1"}, "to": {"2"},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("move status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Read presets via the SSE stream and assert the swap landed.
+	slots := env.NextPresetsEvent(t, 2*time.Second)
+	if len(slots) < 2 {
+		t.Fatalf("presets snapshot has %d slots, want 12", len(slots))
+	}
+	if slots[0]["provider"] != "cartoon-rewind" || slots[1]["provider"] != "mtv-rewind" {
+		t.Errorf("post-swap slots[1]=%v slots[2]=%v, want cartoon-rewind / mtv-rewind",
+			slots[0]["provider"], slots[1]["provider"])
+	}
+}
+
+func TestReceiverEvents_PresetsBetweenMeterAndAudio(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	names := env.CollectInitialEventNames(t, 2*time.Second)
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "meter", "presets", "audio"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("initial burst events = %v, want %v", names, want)
+	}
+}
+
+func TestReceiverPresetStar_PersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	env1 := newChassisIntegrationEnvIn(t, dir)
+	resp := env1.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"false"},
+	})
+	resp.Body.Close()
+	env1.Close()
+
+	env2 := newChassisIntegrationEnvIn(t, dir)
+	defer env2.Close()
+	slots := env2.NextPresetsEvent(t, 2*time.Second)
+	if len(slots) < 2 {
+		t.Fatalf("presets snapshot has %d slots, want 12", len(slots))
+	}
+	// 80s was bundled into slot 2; after removal+restart it should be empty.
+	if got, _ := slots[1]["provider"].(string); got != "" {
+		t.Errorf("restart slot 2 provider = %v, want empty (was removed)", slots[1]["provider"])
+	}
+}
+
+func TestReceiverEvents_PresetsFollowUpChangedButNotNoop(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	stream := env.OpenEvents(t)
+	defer stream.Close()
+	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
+
+	resp := env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	resp.Body.Close()
+	if !stream.WaitForEvent(t, "presets", 2*time.Second) {
+		t.Fatalf("changed star operation did not emit presets follow-up")
+	}
+
+	resp = env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	resp.Body.Close()
+	if stream.WaitForEvent(t, "presets", 300*time.Millisecond) {
+		t.Fatalf("idempotent star operation emitted unexpected presets follow-up")
+	}
+}
+
+func TestReceiverReloadMidCast_TunedSurfacesHydrateFromSnapshot(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	resp := env.PostForm("/receiver/preset/star", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
+	})
+	resp.Body.Close()
+	resp = env.PostForm("/receiver/streams/cast", url.Values{
+		"provider": {"mtv-rewind"}, "channel": {"80s"},
+	})
+	resp.Body.Close()
+
+	// Force a synchronous snapshot rebuild so the GET below sees the
+	// session update that the recordingStreamsCaster applied.
+	deadline := time.Now().Add(2 * time.Second)
+	var html string
+	for time.Now().Before(deadline) {
+		html = env.GetReceiverHTML(t)
+		if strings.Contains(html, "casting") && strings.Contains(html, " lit") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	for _, want := range []string{
+		`data-source-id="streams"`,
+		`class="lamp configured-idle casting"`,
+		`class="preset lit`,
+		`class="ch-card tuned`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("reload html missing tuned/casting surface %q", want)
+		}
+	}
+	// The preset-bank and catalog-tree templates split the tuned channel's
+	// data-provider / data-channel attributes across separate lines; verify
+	// both attributes are present (no single-line substring assertion is
+	// possible against the actual template output).
+	if !strings.Contains(html, `data-provider="mtv-rewind"`) {
+		t.Errorf("reload html missing data-provider=mtv-rewind attribute")
+	}
+	if !strings.Contains(html, `data-channel="80s"`) {
+		t.Errorf("reload html missing data-channel=80s attribute")
+	}
+}
+
+func TestReceiverPresetStore_DropsStaleReferenceOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{"version":1,"slots":[{"slot":1,"provider":"gone","channel":"x"},{"slot":2,"provider":"mtv-rewind","channel":"80s"}]}`)
+	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), body, 0o600); err != nil {
+		t.Fatalf("seed stale presets: %v", err)
+	}
+	env := newChassisIntegrationEnvIn(t, dir)
+	defer env.Close()
+	slots := env.NextPresetsEvent(t, 2*time.Second)
+	if len(slots) < 2 {
+		t.Fatalf("presets snapshot has %d slots, want 12", len(slots))
+	}
+	if got, _ := slots[0]["provider"].(string); got != "" {
+		t.Errorf("stale slot provider = %v, want empty", slots[0]["provider"])
+	}
+	if slots[1]["provider"] != "mtv-rewind" || slots[1]["channel"] != "80s" {
+		t.Errorf("valid slot = %v, want mtv-rewind/80s", slots[1])
+	}
 }
