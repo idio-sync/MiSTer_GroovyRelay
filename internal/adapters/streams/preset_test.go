@@ -10,19 +10,19 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
-func TestBundledPresets_ReturnsTwelveEntries(t *testing.T) {
+func TestPresets_ReturnsTwelveEntries(t *testing.T) {
 	t.Parallel()
 	a := &Adapter{}
-	presets := a.BundledPresets()
+	presets := a.Presets()
 	if len(presets) != 12 {
-		t.Fatalf("len(BundledPresets) = %d, want 12", len(presets))
+		t.Fatalf("len(Presets) = %d, want 12", len(presets))
 	}
 }
 
-func TestBundledPresets_EveryEntryResolvesAgainstBundledManifest(t *testing.T) {
+func TestPresets_EveryEntryResolvesAgainstBundledManifest(t *testing.T) {
 	t.Parallel()
 	a := &Adapter{}
-	presets := a.BundledPresets()
+	presets := a.Presets()
 	manifest := bundledManifest()
 	providers := map[string]*ProviderDefinition{}
 	for i := range manifest.Providers {
@@ -48,21 +48,21 @@ func TestBundledPresets_EveryEntryResolvesAgainstBundledManifest(t *testing.T) {
 	}
 }
 
-func TestBundledPresets_BadgeClassWithinEnum(t *testing.T) {
+func TestPresets_BadgeClassWithinEnum(t *testing.T) {
 	t.Parallel()
 	allowed := map[string]bool{"mtv": true, "cartoon": true, "toonami": true}
 	a := &Adapter{}
-	for i, p := range a.BundledPresets() {
+	for i, p := range a.Presets() {
 		if !allowed[p.BadgeClass] {
 			t.Errorf("slot %d: BadgeClass = %q, want one of {mtv, cartoon, toonami}", i+1, p.BadgeClass)
 		}
 	}
 }
 
-func TestBundledPresets_LiveFlagOnToonamiSlots(t *testing.T) {
+func TestPresets_LiveFlagOnToonamiSlots(t *testing.T) {
 	t.Parallel()
 	a := &Adapter{}
-	presets := a.BundledPresets()
+	presets := a.Presets()
 	for i, p := range presets {
 		switch i + 1 {
 		case 11, 12:
@@ -78,12 +78,12 @@ func TestBundledPresets_LiveFlagOnToonamiSlots(t *testing.T) {
 	_ = adapters.PresetEntry{} // exercise the import
 }
 
-func TestBundledPresets_SlotsAre1Indexed(t *testing.T) {
+func TestPresets_SlotsAre1Indexed(t *testing.T) {
 	t.Parallel()
 	a := &Adapter{}
-	for i, p := range a.BundledPresets() {
+	for i, p := range a.Presets() {
 		if p.Slot != i+1 {
-			t.Errorf("BundledPresets[%d].Slot = %d, want %d", i, p.Slot, i+1)
+			t.Errorf("Presets[%d].Slot = %d, want %d", i, p.Slot, i+1)
 		}
 	}
 }

@@ -2443,7 +2443,7 @@ type fakePresetViewer struct {
 	entries [12]adapters.PresetEntry
 }
 
-func (f fakePresetViewer) BundledPresets() [12]adapters.PresetEntry { return f.entries }
+func (f fakePresetViewer) Presets() [12]adapters.PresetEntry { return f.entries }
 
 func bundledFakeViewer() fakePresetViewer {
 	return fakePresetViewer{

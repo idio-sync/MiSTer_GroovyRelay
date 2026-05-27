@@ -1172,7 +1172,7 @@ func (s *fakeTorrentStub) last() adapters.QuickCastRequest {
 // streamsStub satisfies adapters.PresetViewer with static entries.
 type streamsStub struct{}
 
-func (streamsStub) BundledPresets() [12]adapters.PresetEntry {
+func (streamsStub) Presets() [12]adapters.PresetEntry {
 	var out [12]adapters.PresetEntry
 	for i := range out {
 		out[i] = adapters.PresetEntry{

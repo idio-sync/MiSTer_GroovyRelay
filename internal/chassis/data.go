@@ -384,7 +384,7 @@ func buildPresetsData(viewer adapters.PresetViewer, activeProviderID, activeChan
 		data.Count = "★ 0"
 		return data
 	}
-	entries := viewer.BundledPresets()
+	entries := viewer.Presets()
 	filled := 0
 	for i, e := range entries {
 		slot := PresetSlot{Slot: i + 1}

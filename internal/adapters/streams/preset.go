@@ -9,10 +9,10 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 )
 
-// BundledPresets returns the 12 default chassis preset slots. The
-// list is constant for the adapter's lifetime; 3A does not support
-// editing. CastPreset (in this file) consumes the same array.
-func (a *Adapter) BundledPresets() [12]adapters.PresetEntry {
+// Presets returns the current 12-slot chassis preset bank snapshot.
+// Task 10 swaps the underlying source from the bundled literal to a
+// file-backed store; for now this is a straight rename.
+func (a *Adapter) Presets() [12]adapters.PresetEntry {
 	return bundledChassisPresets
 }
 
