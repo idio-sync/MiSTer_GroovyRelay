@@ -10,6 +10,14 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
+// newTestAdapter returns an adapter from New() without seeding
+// definitions or catalogs — useful for testing the local-only
+// bootstrap path that derives from bundledManifest.
+func newTestAdapter(t *testing.T) (*Adapter, error) {
+	t.Helper()
+	return New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+}
+
 func newTestAdapterWithCatalog(t *testing.T) *Adapter {
 	t.Helper()
 	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})

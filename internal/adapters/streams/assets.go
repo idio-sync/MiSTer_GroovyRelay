@@ -260,3 +260,27 @@ var bundledChassisPresets = [12]adapters.PresetEntry{
 	{Slot: 11, ProviderID: "toonami-aftermath", ChannelID: "east", Title: "Toonami East", BadgeLabel: "TOONAMI", BadgeClass: "toonami", Live: true},
 	{Slot: 12, ProviderID: "toonami-aftermath", ChannelID: "movies", Title: "Toonami Movies", BadgeLabel: "TOONAMI", BadgeClass: "toonami", Live: true},
 }
+
+// bundledChassisCatalogProviderIDs is the subset of bundledManifest()
+// providers the chassis catalog drawer exposes. Remote/cached manifest
+// providers stay available to URL resolution and /ui/streams/*, but
+// the receiver chassis is intentionally limited to the 3 mockup
+// providers in 3B. A future spec can lift this restriction once
+// per-provider catalog browsing rules exist.
+var bundledChassisCatalogProviderIDs = []string{
+	"mtv-rewind",
+	"cartoon-rewind",
+	"toonami-aftermath",
+}
+
+// providerBadges holds the small-glyph badge metadata for each chassis
+// catalog provider. Mirrors the mockup's .ic glyph rendering (label =
+// short uppercase string; class = CSS hook for color/treatment).
+var providerBadges = map[string]struct {
+	Label string
+	Class string
+}{
+	"mtv-rewind":        {"MTV", "mtv"},
+	"cartoon-rewind":    {"CART", "cartoon"},
+	"toonami-aftermath": {"TOON", "toonami"},
+}
