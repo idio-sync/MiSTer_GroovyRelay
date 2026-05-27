@@ -2927,3 +2927,19 @@ func TestSourceClusterJS_ExistsAndSubscribesToTransport(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetBankJS_SubscribesToPresetsEvent(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/preset-bank.js")
+	if err != nil {
+		t.Fatalf("ReadFile preset-bank.js: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `subscribe('presets'`) {
+		t.Errorf("preset-bank.js does not subscribe to 'presets' event")
+	}
+	// Existing transport subscription must remain.
+	if !strings.Contains(s, `subscribe('transport'`) {
+		t.Errorf("preset-bank.js dropped transport subscription")
+	}
+}
