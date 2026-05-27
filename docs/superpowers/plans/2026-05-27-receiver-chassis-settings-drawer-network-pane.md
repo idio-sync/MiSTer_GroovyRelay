@@ -21,7 +21,6 @@
 | `internal/chassis/settings.go` | `BridgeSettingsSaver`, `Prober`, `ProbeResult`, `settingsChipError` interfaces; per-field decoder / overlay / scope tables; `scopeLabel` helper; `handleSettingsBridgePost`; `handleSettingsActionProbeMister`; response writers |
 | `internal/chassis/settings_test.go` | Unit tests for decoder/overlay/scope tables, scope label helper, both handlers' branches |
 | `internal/chassis/static/settings-drawer.js` | Gear/close toggle, tab switching, field auto-save, switch toggle, probe action, response handling |
-| `internal/chassis/templates/settings-field.html` | Inline `{{ define }}` blocks for the field renderer; lives in `settings-drawer.html` to keep the template surface small |
 | `cmd/mister-groovy-relay/chassis_prober.go` | Thin wrapper around the existing `bridgeMisterProber` exposing the chassis `Prober` interface |
 
 **Modified files:**
@@ -55,7 +54,7 @@
 
 Tasks 1–3 add foundational types: chassis-owned interfaces (Task 1), the uiserver typed-error wrapper concrete type (Task 2), and the saver-side wrapping of preflight/validation errors (Task 3). After Task 3 the saver returns typed errors the chassis can pattern-match without importing the concrete type.
 
-Tasks 4–6 build the chassis data + config layer: SettingsData extension (Task 4), snapshot wiring (Task 5), Config additions (Task 6). At this point the chassis carries the bridge config into renders without yet exposing routes.
+Tasks 4–6 build the chassis data + config layer: SettingsData extension (Task 4), Config additions (Task 5), snapshot wiring (Task 6). At this point the chassis carries the bridge config into renders without yet exposing routes.
 
 Tasks 7–9 build the three per-field tables (decoder, overlay, scope) with cross-table integrity tests. These tables are the single source of truth for which fields Network pane supports.
 
@@ -276,10 +275,16 @@ func TestSettingsError_StatusCodeAndChip(t *testing.T) {
 	if got := se.Unwrap(); got != cause {
 		t.Errorf("Unwrap = %v, want %v", got, cause)
 	}
-	// errors.As must succeed against the cause.
-	var unwrapped error
-	if !errors.As(se, &unwrapped) {
-		t.Fatalf("errors.As(se, &error) = false, want true")
+	if !errors.Is(se, cause) {
+		t.Fatalf("errors.Is(se, cause) = false, want true")
+	}
+	var shaped interface {
+		error
+		StatusCode() int
+		Chip() string
+	}
+	if !errors.As(se, &shaped) {
+		t.Fatalf("errors.As(se, &status/chip interface) = false, want true")
 	}
 }
 ```
@@ -632,96 +637,7 @@ git commit -m "feat(chassis): extend SettingsData and add buildSettingsData help
 
 ---
 
-## Task 5: Wire `buildSettingsData` into Snapshot Paths
-
-**Files:**
-- Modify: `internal/chassis/session.go`
-- Modify: `internal/chassis/session_test.go` (or `data_test.go` if session tests live there)
-
-- [ ] **Step 1: Write the failing test**
-
-Append to the appropriate session-test file:
-
-```go
-func TestSnapshot_SettingsReadsFromBridgeSaverCurrentWhenWired(t *testing.T) {
-	t.Parallel()
-	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{DataDir: "/from-saver"}}
-	srv := &Server{cfg: Config{
-		BridgeSaver: saver,
-		Registry:    adapters.NewRegistry(),
-		Bridge:      config.BridgeConfig{DataDir: "/from-startup"},
-	}}
-	snap := srv.idleSnapshot(time.Now())
-	if snap.Settings.Bridge.DataDir != "/from-saver" {
-		t.Errorf("Bridge.DataDir = %q, want /from-saver (saver wins over startup)",
-			snap.Settings.Bridge.DataDir)
-	}
-}
-
-func TestSnapshot_SettingsFallsBackToStartupConfigWhenSaverNil(t *testing.T) {
-	t.Parallel()
-	srv := &Server{cfg: Config{
-		Registry: adapters.NewRegistry(),
-		Bridge:   config.BridgeConfig{DataDir: "/from-startup"},
-	}}
-	snap := srv.idleSnapshot(time.Now())
-	if snap.Settings.Bridge.DataDir != "/from-startup" {
-		t.Errorf("Bridge.DataDir = %q, want /from-startup", snap.Settings.Bridge.DataDir)
-	}
-}
-```
-
-- [ ] **Step 2: Run to confirm failure**
-
-Run: `go test ./internal/chassis -run TestSnapshot_Settings -v`
-
-Expected: FAIL — settings snapshot doesn't read from saver.
-
-- [ ] **Step 3: Wire it in**
-
-In [internal/chassis/session.go](../../../internal/chassis/session.go), find both `snapshotFromStatusView` and `idleSnapshot`. In each, add a helper call that populates the settings block. A shared private helper avoids duplication:
-
-```go
-// settingsSnapshot reads the bridge config from the BridgeSettingsSaver
-// when wired (production), or falls back to startup cfg.Bridge for
-// offline tests / nil-saver render paths.
-func (s *Server) settingsSnapshot() SettingsData {
-	bridge := s.cfg.Bridge
-	if s.cfg.BridgeSaver != nil {
-		bridge = s.cfg.BridgeSaver.Current()
-	}
-	var catalog adapters.StreamsCatalogViewer
-	if s.cfg.StreamsCatalogViewer != nil {
-		catalog = s.cfg.StreamsCatalogViewer
-	}
-	return buildSettingsData(bridge, s.cfg.Registry, catalog)
-}
-```
-
-Then in both snapshot functions, populate the `Settings` field of the returned `SnapshotData`:
-
-```go
-snap.Settings = s.settingsSnapshot()
-```
-
-Preserve the existing `.Settings.Open` semantics (the drawer's open/close state is purely client-side; first render is always closed).
-
-- [ ] **Step 4: Run to confirm pass**
-
-Run: `go test ./internal/chassis -run TestSnapshot_Settings -v && go test ./internal/chassis -count=1 ./...`
-
-Expected: all PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add internal/chassis/session.go internal/chassis/session_test.go
-git commit -m "feat(chassis): wire buildSettingsData into idle and live snapshots"
-```
-
----
-
-## Task 6: Add `Config.BridgeSaver` and `Config.Prober`
+## Task 5: Add `Config.BridgeSaver` and `Config.Prober`
 
 **Files:**
 - Modify: `internal/chassis/server.go`
@@ -793,6 +709,119 @@ git commit -m "feat(chassis): add Config.BridgeSaver and Config.Prober fields"
 
 ---
 
+## Task 6: Wire `buildSettingsData` into Snapshot Paths
+
+**Files:**
+- Modify: `internal/chassis/data.go`
+- Modify: `internal/chassis/session_test.go` (or `data_test.go` if session tests live there)
+
+- [ ] **Step 1: Write the failing test**
+
+Append to the appropriate session-test file:
+
+```go
+func TestSnapshot_SettingsReadsFromBridgeSaverCurrentWhenWired(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{DataDir: "/from-saver"}}
+	cfg := Config{
+		BridgeSaver: saver,
+		Registry:    adapters.NewRegistry(),
+		Bridge:      config.BridgeConfig{DataDir: "/from-startup"},
+	}
+	snap := idleSnapshot(cfg, time.Now())
+	if snap.Settings.Bridge.DataDir != "/from-saver" {
+		t.Errorf("Bridge.DataDir = %q, want /from-saver (saver wins over startup)",
+			snap.Settings.Bridge.DataDir)
+	}
+}
+
+func TestSnapshot_SettingsFallsBackToStartupConfigWhenSaverNil(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Registry: adapters.NewRegistry(),
+		Bridge:   config.BridgeConfig{DataDir: "/from-startup"},
+	}
+	snap := idleSnapshot(cfg, time.Now())
+	if snap.Settings.Bridge.DataDir != "/from-startup" {
+		t.Errorf("Bridge.DataDir = %q, want /from-startup", snap.Settings.Bridge.DataDir)
+	}
+}
+
+func TestSnapshot_SettingsLivePathCarriesBridgeSaverData(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		BridgeSaver: fakeBridgeSettingsSaver{cur: config.BridgeConfig{DataDir: "/from-saver-live"}},
+		Registry:    adapters.NewRegistry(),
+		Bridge:      config.BridgeConfig{DataDir: "/from-startup"},
+	}
+	snap := snapshotFromStatusView(
+		cfg,
+		core.StatusHomeView{State: core.StatePlaying},
+		nil, nil, nil, nil,
+		time.Now(),
+	)
+	if snap.Settings.Bridge.DataDir != "/from-saver-live" {
+		t.Errorf("Bridge.DataDir = %q, want /from-saver-live", snap.Settings.Bridge.DataDir)
+	}
+}
+```
+
+(Add `"time"`, `internal/core`, and any missing `internal/adapters` / `internal/config` imports.)
+
+- [ ] **Step 2: Run to confirm failure**
+
+Run: `go test ./internal/chassis -run TestSnapshot_Settings -v`
+
+Expected: FAIL — settings snapshot doesn't read from saver.
+
+- [ ] **Step 3: Wire it in**
+
+In [internal/chassis/data.go](../../../internal/chassis/data.go), add a small helper near `idleSnapshot`:
+
+```go
+// settingsDataFromConfig reads the bridge config from the BridgeSettingsSaver
+// when wired (production), or falls back to startup cfg.Bridge for offline
+// tests / nil-saver render paths.
+func settingsDataFromConfig(cfg Config) SettingsData {
+	bridge := cfg.Bridge
+	if cfg.BridgeSaver != nil {
+		bridge = cfg.BridgeSaver.Current()
+	}
+	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer)
+}
+```
+
+Then in `idleSnapshot`, replace the existing stub settings block:
+
+```go
+Settings: SettingsData{
+	Open: false,
+},
+```
+
+with:
+
+```go
+Settings: settingsDataFromConfig(cfg),
+```
+
+`snapshotFromStatusView` already begins from `idleSnapshot(cfg, now)`, so the live path carries the same Settings data. Preserve the existing `.Settings.Open` semantics: the helper's zero-value `Open` is `false`, and drawer open/close state remains purely client-side.
+
+- [ ] **Step 4: Run to confirm pass**
+
+Run: `go test ./internal/chassis -run TestSnapshot_Settings -v && go test ./internal/chassis -count=1`
+
+Expected: all PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/chassis/data.go internal/chassis/session_test.go
+git commit -m "feat(chassis): wire buildSettingsData into idle and live snapshots"
+```
+
+---
+
 ## Task 7: Add Per-Field Decoder Table + Decoder Tests
 
 **Files:**
@@ -814,6 +843,7 @@ func TestDecodeMisterHost(t *testing.T) {
 		{"  192.168.1.42  ", "192.168.1.42", ""},
 		{"", "", "is required"},
 		{"!not a host!", "", "not a valid IPv4 or hostname"},
+		{"::1", "", "not a valid IPv4 or hostname"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -879,6 +909,42 @@ func TestDecodeOptionalAbsPath(t *testing.T) {
 	}
 }
 
+func TestDecodeOptionalExecutablePath(t *testing.T) {
+	t.Parallel()
+	tool := tempExecutable(t, "ffmpeg")
+	v, err := decodeOptionalExecutablePath(tool)
+	if err != nil || v != tool {
+		t.Fatalf("valid executable: (%q, %v), want (%q, nil)", v, err, tool)
+	}
+	if _, err := decodeOptionalExecutablePath("relative/tool"); err == nil {
+		t.Errorf("relative executable path: err = nil, want non-nil")
+	}
+	missingName := "ffmpeg"
+	if runtime.GOOS == "windows" {
+		missingName += ".exe"
+	}
+	if _, err := decodeOptionalExecutablePath(filepath.Join(t.TempDir(), missingName)); err == nil {
+		t.Errorf("missing executable path: err = nil, want non-nil")
+	}
+}
+
+func tempExecutable(t *testing.T, name string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write temp executable: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatalf("chmod temp executable: %v", err)
+		}
+	}
+	return path
+}
+
 func TestBridgeFieldDecoders_HasEntryForEveryNetworkField(t *testing.T) {
 	t.Parallel()
 	want := []string{
@@ -894,7 +960,7 @@ func TestBridgeFieldDecoders_HasEntryForEveryNetworkField(t *testing.T) {
 }
 ```
 
-(Add `"strings"` import.)
+(Add `"os"`, `"path/filepath"`, `"runtime"`, and `"strings"` imports.)
 
 - [ ] **Step 2: Run to confirm failure**
 
@@ -910,7 +976,9 @@ Append to `internal/chassis/settings.go`:
 import (
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -947,15 +1015,15 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		return v, err
 	},
 	"ffmpeg_path": func(s string) (any, error) {
-		v, err := decodeOptionalAbsPath(s)
+		v, err := decodeOptionalExecutablePath(s)
 		return v, err
 	},
 	"ffprobe_path": func(s string) (any, error) {
-		v, err := decodeOptionalAbsPath(s)
+		v, err := decodeOptionalExecutablePath(s)
 		return v, err
 	},
 	"ytdlp_path": func(s string) (any, error) {
-		v, err := decodeOptionalAbsPath(s)
+		v, err := decodeOptionalExecutablePath(s)
 		return v, err
 	},
 }
@@ -968,7 +1036,7 @@ func decodeMisterHost(raw string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("is required")
 	}
-	if net.ParseIP(s) != nil {
+	if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
 		return s, nil
 	}
 	if isValidHostname(s) {
@@ -1014,6 +1082,37 @@ func decodeOptionalAbsPath(raw string) (string, error) {
 	}
 	if !filepath.IsAbs(s) {
 		return "", fmt.Errorf("must be an absolute path")
+	}
+	return s, nil
+}
+
+// decodeOptionalExecutablePath returns "" for empty input, or an absolute
+// path to a usable executable file. This mirrors config.Sectioned.Validate's
+// external-tool checks so the drawer can show inline field errors instead
+// of a whole-form BAD INPUT chip.
+func decodeOptionalExecutablePath(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(s) {
+		return "", fmt.Errorf("must be an absolute path")
+	}
+	info, err := os.Stat(s)
+	if err != nil {
+		return "", fmt.Errorf("not usable: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("not usable: is a directory")
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.EqualFold(filepath.Ext(s), ".exe") {
+			return "", fmt.Errorf("not usable: does not have .exe extension")
+		}
+		return s, nil
+	}
+	if info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("not usable: not executable")
 	}
 	return s, nil
 }
@@ -1342,17 +1441,18 @@ func postBridge(t *testing.T, srv *Server, form url.Values) *httptest.ResponseRe
 func TestHandleSettingsBridgePost_HotSwapSuccess(t *testing.T) {
 	t.Parallel()
 	var called bool
+	toolPath := tempExecutable(t, "ffmpeg")
 	saver := fakeBridgeSettingsSaver{
 		saveFn: func(c config.BridgeConfig) (adapters.ApplyScope, error) {
 			called = true
-			if c.FFmpegPath != "/usr/bin/ffmpeg" {
-				t.Errorf("FFmpegPath = %q, want /usr/bin/ffmpeg", c.FFmpegPath)
+			if c.FFmpegPath != toolPath {
+				t.Errorf("FFmpegPath = %q, want %q", c.FFmpegPath, toolPath)
 			}
 			return adapters.ScopeHotSwap, nil
 		},
 	}
 	srv := newTestServerWithSaver(t, saver)
-	rec := postBridge(t, srv, url.Values{"ffmpeg_path": {"/usr/bin/ffmpeg"}})
+	rec := postBridge(t, srv, url.Values{"ffmpeg_path": {toolPath}})
 	if rec.Code != 200 {
 		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
@@ -1478,7 +1578,7 @@ func TestHandleSettingsBridgePost_UnknownScopeReturns500(t *testing.T) {
 		},
 	}
 	srv := newTestServerWithSaver(t, saver)
-	rec := postBridge(t, srv, url.Values{"ffmpeg_path": {"/x"}})
+	rec := postBridge(t, srv, url.Values{"mister_host": {"1.2.3.4"}})
 	if rec.Code != 500 {
 		t.Fatalf("Code = %d, want 500", rec.Code)
 	}
@@ -2045,11 +2145,17 @@ Append:
 func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
-	srv := &Server{cfg: Config{
+	srv, err := New(Config{
+		Version:     "test",
+		StartedAt:   time.Now(),
 		Registry:    adapters.NewRegistry(),
 		BridgeSaver: fakeBridgeSettingsSaver{},
 		Prober:      fakeProber{},
-	}}
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.Close()
 	srv.Mount(mux)
 	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
@@ -2066,11 +2172,17 @@ func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
 func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
-	srv := &Server{cfg: Config{
+	srv, err := New(Config{
+		Version:     "test",
+		StartedAt:   time.Now(),
 		Registry:    adapters.NewRegistry(),
 		BridgeSaver: fakeBridgeSettingsSaver{},
 		Prober:      fakeProber{},
-	}}
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.Close()
 	srv.Mount(mux)
 	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
@@ -2084,6 +2196,8 @@ func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
 	}
 }
 ```
+
+(Add `"time"` to test imports if needed.)
 
 - [ ] **Step 2: Run to confirm failure**
 
@@ -2104,7 +2218,7 @@ mux.Handle("POST /receiver/settings/action/probe-mister",
 
 - [ ] **Step 4: Run to confirm pass**
 
-Run: `go test ./internal/chassis -run TestMount_MountsBridgeAndProbeRoutes -v && go test ./internal/chassis -count=1 ./...`
+Run: `go test ./internal/chassis -run TestMount_MountsBridgeAndProbeRoutes -v && go test ./internal/chassis -count=1`
 
 Expected: all PASS.
 
@@ -2132,14 +2246,14 @@ Search for `NewBridgeSaver(`. The existing saver is constructed for `/ui/*` and 
 
 - [ ] **Step 3: Add the wiring**
 
-Inside the `chassis.Config{...}` literal, add two fields. The `BridgeSaver` is reused unchanged; the `Prober` is a new `chassisProber` wrapping the existing `bridgeMisterProber` (which must also already exist; locate its construction):
+Inside the inline `chassis.New(chassis.Config{...})` literal, add two fields. The `BridgeSaver` is reused unchanged; the `Prober` is a new `chassisProber` wrapping the existing `misterProber` local:
 
 ```go
-chassisCfg := chassis.Config{
+chassisSrv, err := chassis.New(chassis.Config{
     // ... existing fields ...
-    BridgeSaver: bridgeSaver,                          // existing *uiserver.BridgeSaver
-    Prober:      newChassisProber(misterProber),       // wraps existing *bridgeMisterProber
-}
+    BridgeSaver: saver,                         // existing *uiserver.BridgeSaver
+    Prober:      newChassisProber(misterProber), // wraps existing bridgeMisterProber
+})
 ```
 
 If `bridgeMisterProber` is constructed later than the chassis.Config{} block, move it earlier or restructure so chassis can take its reference.
@@ -2648,12 +2762,12 @@ Append:
 func TestSettingsDrawerTemplate_RendersFiveTabsAndNoticeSlot(t *testing.T) {
 	t.Parallel()
 	tmpl := loadChassisTemplates(t) // existing helper or load templates.go's parsed tmpl
-	data := SnapshotData{Settings: SettingsData{
+	data := SettingsData{
 		Bridge:               config.BridgeConfig{},
 		Errors:               map[string]string{},
 		AdapterCount:         6,
 		CatalogProviderCount: 3,
-	}}
+	}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -2683,9 +2797,9 @@ If `loadChassisTemplates` doesn't exist, write it in the test file:
 ```go
 func loadChassisTemplates(t *testing.T) *template.Template {
 	t.Helper()
-	tmpl, err := buildChassisTemplate() // or whatever the production builder is called
+	tmpl, err := parseTemplates()
 	if err != nil {
-		t.Fatalf("build templates: %v", err)
+		t.Fatalf("parse templates: %v", err)
 	}
 	return tmpl
 }
@@ -2707,8 +2821,8 @@ Replace [internal/chassis/templates/settings-drawer.html](../../../internal/chas
   <div class="settings-tabs">
     <button class="settings-tab active" data-tab="network">Network</button>
     <button class="settings-tab" data-tab="pipeline">Pipeline</button>
-    <button class="settings-tab" data-tab="adapters">Adapters<span class="badge">{{ .Settings.AdapterCount }}</span></button>
-    <button class="settings-tab" data-tab="catalog">Catalog<span class="badge">{{ .Settings.CatalogProviderCount }}</span></button>
+    <button class="settings-tab" data-tab="adapters">Adapters<span class="badge">{{ .AdapterCount }}</span></button>
+    <button class="settings-tab" data-tab="catalog">Catalog<span class="badge">{{ .CatalogProviderCount }}</span></button>
     <button class="settings-tab" data-tab="advanced">Advanced</button>
     <span class="settings-spacer"></span>
     <button class="settings-close" id="settings-close">✕ Close</button>
@@ -2773,7 +2887,7 @@ Append:
 func TestSettingsDrawerTemplate_NetworkPaneRendersAllFields(t *testing.T) {
 	t.Parallel()
 	tmpl := loadChassisTemplates(t)
-	data := SnapshotData{Settings: SettingsData{
+	data := SettingsData{
 		Bridge: config.BridgeConfig{
 			MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100, SourcePort: 32101},
 			UI:     config.UIConfig{HTTPPort: 32500},
@@ -2781,7 +2895,7 @@ func TestSettingsDrawerTemplate_NetworkPaneRendersAllFields(t *testing.T) {
 			FFmpegPath: "/usr/bin/ffmpeg",
 		},
 		Errors: map[string]string{},
-	}}
+	}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -2817,7 +2931,7 @@ func TestSettingsDrawerTemplate_NetworkPaneRendersAllFields(t *testing.T) {
 func TestSettingsDrawerTemplate_NetworkPaneFieldRowHasScope(t *testing.T) {
 	t.Parallel()
 	tmpl := loadChassisTemplates(t)
-	data := SnapshotData{Settings: SettingsData{Bridge: config.BridgeConfig{}, Errors: map[string]string{}}}
+	data := SettingsData{Bridge: config.BridgeConfig{}, Errors: map[string]string{}}
 	var buf bytes.Buffer
 	_ = tmpl.ExecuteTemplate(&buf, "settings-drawer", data)
 	s := buf.String()
@@ -2849,21 +2963,21 @@ Replace the `{{- define "settings-network" -}}` block in `settings-drawer.html` 
     {{ field (dict
       "Name" "mister_host" "Type" "text" "Label" "Host"
       "Help" "IP or hostname of your MiSTer on the LAN."
-      "Value" .Settings.Bridge.MiSTer.Host
+      "Value" .Bridge.MiSTer.Host
       "Scope" "reboot"
-      "Error" (errOf .Settings.Errors "mister_host")) }}
+      "Error" (errOf .Errors "mister_host")) }}
     {{ field (dict
       "Name" "mister_port" "Type" "number" "Label" "Port"
       "Help" "UDP port the MiSTer's Groovy core listens on."
-      "Value" (itoa .Settings.Bridge.MiSTer.Port)
+      "Value" (itoa .Bridge.MiSTer.Port)
       "Scope" "reboot"
-      "Error" (errOf .Settings.Errors "mister_port")) }}
+      "Error" (errOf .Errors "mister_port")) }}
     {{ field (dict
       "Name" "mister_source_port" "Type" "number" "Label" "Source port"
       "Help" "Our stable source UDP port. Must stay the same across restarts."
-      "Value" (itoa .Settings.Bridge.MiSTer.SourcePort)
+      "Value" (itoa .Bridge.MiSTer.SourcePort)
       "Scope" "reboot"
-      "Error" (errOf .Settings.Errors "mister_source_port")) }}
+      "Error" (errOf .Errors "mister_source_port")) }}
     {{ template "settings-action-probe-mister" . }}
   </div>
 
@@ -2872,21 +2986,21 @@ Replace the `{{- define "settings-network" -}}` block in `settings-drawer.html` 
     {{ field (dict
       "Name" "ui_http_port" "Type" "number" "Label" "HTTP port"
       "Help" "Plex Companion HTTP + Settings UI (shared listener)."
-      "Value" (itoa .Settings.Bridge.UI.HTTPPort)
+      "Value" (itoa .Bridge.UI.HTTPPort)
       "Scope" "reboot"
-      "Error" (errOf .Settings.Errors "ui_http_port")) }}
+      "Error" (errOf .Errors "ui_http_port")) }}
     {{ field (dict
       "Name" "host_ip" "Type" "text" "Label" "Host IP"
       "Help" "LAN IP advertised to Plex. Leave blank to auto-detect."
-      "Value" .Settings.Bridge.HostIP "Placeholder" "auto-detect"
+      "Value" .Bridge.HostIP "Placeholder" "auto-detect"
       "Scope" "reboot"
-      "Error" (errOf .Settings.Errors "host_ip")) }}
+      "Error" (errOf .Errors "host_ip")) }}
     {{ field (dict
       "Name" "data_dir" "Type" "path" "Label" "Data directory"
       "Help" "Where plex.json and other persistent state live. Leave empty for OS default."
-      "Value" .Settings.Bridge.DataDir "Placeholder" "auto"
+      "Value" .Bridge.DataDir "Placeholder" "auto"
       "Scope" "reboot"
-      "Error" (errOf .Settings.Errors "data_dir")) }}
+      "Error" (errOf .Errors "data_dir")) }}
   </div>
 
   <div class="settings-section wide">
@@ -2894,19 +3008,19 @@ Replace the `{{- define "settings-network" -}}` block in `settings-drawer.html` 
     {{ field (dict
       "Name" "ffmpeg_path" "Type" "path" "Label" "FFmpeg path"
       "Help" "Empty = bundled sidecar, then PATH."
-      "Value" .Settings.Bridge.FFmpegPath "Placeholder" "auto"
+      "Value" .Bridge.FFmpegPath "Placeholder" "auto"
       "Scope" "hot"
-      "Error" (errOf .Settings.Errors "ffmpeg_path")) }}
+      "Error" (errOf .Errors "ffmpeg_path")) }}
     {{ field (dict
       "Name" "ffprobe_path" "Type" "path" "Label" "FFprobe path"
-      "Value" .Settings.Bridge.FFprobePath "Placeholder" "auto"
+      "Value" .Bridge.FFprobePath "Placeholder" "auto"
       "Scope" "hot"
-      "Error" (errOf .Settings.Errors "ffprobe_path")) }}
+      "Error" (errOf .Errors "ffprobe_path")) }}
     {{ field (dict
       "Name" "ytdlp_path" "Type" "path" "Label" "yt-dlp path"
-      "Value" .Settings.Bridge.YTDLPPath "Placeholder" "auto"
+      "Value" .Bridge.YTDLPPath "Placeholder" "auto"
       "Scope" "hot"
-      "Error" (errOf .Settings.Errors "ytdlp_path")) }}
+      "Error" (errOf .Errors "ytdlp_path")) }}
   </div>
 
 </div>
@@ -2954,7 +3068,7 @@ Append:
 func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	t.Parallel()
 	tmpl := loadChassisTemplates(t)
-	data := SnapshotData{Settings: SettingsData{Errors: map[string]string{}}}
+	data := SettingsData{Errors: map[string]string{}}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -3007,7 +3121,7 @@ Append:
 func TestTransportTemplate_GearButtonHasSettingsToggle(t *testing.T) {
 	t.Parallel()
 	tmpl := loadChassisTemplates(t)
-	data := SnapshotData{Settings: SettingsData{Errors: map[string]string{}}}
+	data := TransportData{}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -3070,7 +3184,7 @@ Append:
 func TestShellTemplate_IncludesSettingsDrawerScript(t *testing.T) {
 	t.Parallel()
 	tmpl := loadChassisTemplates(t)
-	data := SnapshotData{Settings: SettingsData{Errors: map[string]string{}}}
+	data := ReceiverPageData{Settings: SettingsData{Errors: map[string]string{}}}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "shell", data); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -3093,7 +3207,7 @@ Expected: FAIL.
 In [internal/chassis/templates/shell.html](../../../internal/chassis/templates/shell.html), find the block of existing `<script>` tags (for `catalog-browser.js`, `preset-bank.js`, etc.) and append a new entry alongside, using the same cache-buster pattern they use:
 
 ```html
-<script src="/receiver/static/settings-drawer.js?v={{.Version}}" defer></script>
+<script defer src="/receiver/static/settings-drawer.js?v={{.Version}}"></script>
 ```
 
 (Match the exact attribute set the other chassis script tags use — `defer`, `?v={{.Version}}`, etc.)
@@ -3776,7 +3890,7 @@ git commit -m "feat(chassis): add probe button single-flight + result rendering"
 - Modify: `internal/chassis/static/settings-drawer.js`
 
 The save handler (Task 24) currently logs chip errors and treats them as field errors. The probe handler (Task 26) renders chip responses into `#probe-mister-result`. This task adds the drawer-local notice slot rendering so:
-- REBOOT-scope save success → `"Restart container to apply <field>"` in the notice slot.
+- REBOOT-scope save success → `"Restart container to apply new <field>"` in the notice slot.
 - Chip-style settings save failure (BAD INPUT, PORT IN USE, WRITE FAILED, NOT READY) → notice slot.
 - The notice auto-clears after 5s or on next successful save.
 
@@ -3828,7 +3942,7 @@ if (status >= 200 && status < 300 && body.ok) {
   clearNotice();
   if (body.scope === 'reboot') {
     const label = el.closest('.field-row').querySelector('label').textContent.trim().split('\n')[0];
-    showNotice(`Restart container to apply ${label}`, 'ok');
+    showNotice(`Restart container to apply new ${label}`, 'ok');
   }
   return;
 }
@@ -3875,9 +3989,21 @@ Add to the `window.Chassis.settings.*` exports:
   window.Chassis.settings.clearNotice = clearNotice;
 ```
 
-- [ ] **Step 5: Lint sanity + run tests**
+- [ ] **Step 5: Lint sanity + run tests + DOM verification**
 
-Run: `go test ./internal/chassis -count=1`
+Run:
+
+```bash
+node --check internal/chassis/static/settings-drawer.js
+go test ./internal/chassis -count=1
+```
+
+Then run one browser/DOM verification pass (Playwright, an existing browser harness, or a manual local browser check against `/receiver`) and record the result in the task notes:
+- clicking the gear toggles `body.settings-open`, and Close removes it;
+- clicking each tab moves `.active` between the tab and matching pane;
+- blurring a changed Network field POSTs `/receiver/settings/bridge` once, paints inline errors from `{errors:{...}}`, and shows chip failures in `#settings-notice`;
+- a `"reboot"` save shows `Restart container to apply new <field>`;
+- the probe button disables while in flight, POSTs `/receiver/settings/action/probe-mister`, and renders success/timeout/chip responses in the expected slots.
 
 Expected: all PASS.
 
@@ -3931,8 +4057,9 @@ func TestReceiverSettings_BridgePostHotSwapSucceeds(t *testing.T) {
 	env := newChassisIntegrationEnv(t)
 	defer env.Close()
 	// Touch a HOT-scope field (ffmpeg_path).
+	toolPath := tempExecutable(t, "ffmpeg")
 	resp := env.PostForm("/receiver/settings/bridge", url.Values{
-		"ffmpeg_path": {"/usr/bin/ffmpeg"},
+		"ffmpeg_path": {toolPath},
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -3976,34 +4103,88 @@ func TestReceiverSettings_BridgePostEmptyBodyReturns400(t *testing.T) {
 	}
 }
 
-func TestReceiverSettings_ProbePostReachesProberWiredFromMain(t *testing.T) {
-	env := newChassisIntegrationEnv(t)
+func TestReceiverSettings_ProbePostSuccess(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, fakeSettingsProber{
+		res: chassis.ProbeResult{LatencyMs: 4.2, Host: "192.168.1.42", Port: 32100},
+	})
 	defer env.Close()
-	// The integration env wires a fake prober that always returns a known
-	// latency, or no prober at all (returning 503). Adjust expectations to
-	// match what newChassisIntegrationEnv currently provides; if it does
-	// not yet wire a Prober, this test verifies the 503 NOT READY path.
 	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 && resp.StatusCode != 503 {
-		t.Fatalf("status = %d, want 200 or 503", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["host"] != "192.168.1.42" {
+		t.Errorf("body = %+v, want ok success with host", body)
+	}
+}
+
+func TestReceiverSettings_ProbePostTimeout(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, fakeSettingsProber{err: context.DeadlineExceeded})
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 for operational timeout", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != false || body["error"] != "timeout" {
+		t.Errorf("body = %+v, want timeout response", body)
+	}
+}
+
+func TestReceiverSettings_ProbePostNilProberReturns503(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, nil)
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 503 {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+type fakeSettingsProber struct {
+	res chassis.ProbeResult
+	err error
+}
+
+func (f fakeSettingsProber) ProbeMister(context.Context, config.BridgeConfig) (chassis.ProbeResult, error) {
+	return f.res, f.err
+}
+
+func tempExecutable(t *testing.T, name string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write temp executable: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatalf("chmod temp executable: %v", err)
+		}
+	}
+	return path
 }
 ```
 
-(Add `"io"`, `"encoding/json"`, `"net/url"`, `"strings"` imports if not already present in this test file.)
+(Add `"context"`, `"io"`, `"encoding/json"`, `"net/url"`, `"os"`, `"path/filepath"`, `"runtime"`, `"strings"`, and the `internal/chassis` / `internal/config` imports if not already present in this test file.)
 
 - [ ] **Step 2: Run to confirm baseline**
 
 Run: `go test -tags=integration ./tests/integration -run TestReceiverSettings -v`
 
-Expected: tests run; some may need the chassis test environment to be updated to wire `BridgeSaver` and `Prober` (look at how `newChassisIntegrationEnv` constructs the chassis Config and add the new fields).
+Expected: FAIL until the chassis test environment wires `BridgeSaver` and exposes a prober-injection helper.
 
-- [ ] **Step 3: Wire `BridgeSaver` and a fake `Prober` into the integration env**
+- [ ] **Step 3: Wire `BridgeSaver` and prober injection into the integration env**
 
 Find `newChassisIntegrationEnv` in [tests/integration/chassis_test.go](../../../tests/integration/chassis_test.go) — this is where the chassis is wired against a tmp config and started for tests. The wiring today does not include `BridgeSaver` or `Prober`; both fields default to nil in `chassis.Config`, which the new handlers respond to with 503 NOT READY.
 
-For the Phase 4A tests we want the bridge POST tests to actually save (so they can assert disk + scope), but probe-mister stays at 503 NOT READY for now (no live MiSTer in the integration env). Extend the env constructor:
+For the Phase 4A tests we want bridge POST tests to actually save (so they can assert disk + scope) and probe tests to exercise success, timeout, and nil-prober paths. Refactor the existing `newChassisIntegrationEnv(t)` so it always wires `BridgeSaver`, then add a small wrapper such as `newChassisIntegrationEnvWithProber(t, prober chassis.Prober)` that shares the same setup and passes the injected prober into `chassis.Config`.
 
 ```go
 // In newChassisIntegrationEnv (or its caller), after the tmp config.toml is
@@ -4012,13 +4193,11 @@ For the Phase 4A tests we want the bridge POST tests to actually save (so they c
 bridgeSaver := uiserver.NewBridgeSaver(
     cfgPath,                  // the tmp config path the env already creates
     sec,                      // the *config.Sectioned the env already parsed
-    fakeCoreForSettingsTests, // satisfies uiserver.Core; reuse existing helper or stub
+    fakeCoreForSettingsTests{}, // satisfies uiserver.Core; reuse existing helper or stub
     reg,                      // the *adapters.Registry the env already has
 )
 chassisCfg.BridgeSaver = bridgeSaver
-
-// Prober left nil — probe tests assert 503 NOT READY in 4A. A later spec
-// (4B+) can wire a fake chassisProber when needed.
+chassisCfg.Prober = prober
 ```
 
 If `newChassisIntegrationEnv` doesn't already expose `cfgPath` / `sec` / `reg` to its body, refactor it minimally to capture those values before constructing `chassis.Config`. The legacy `/ui/*` tests in this file already construct `BridgeSaver` against a similar fixture; reuse their pattern.
