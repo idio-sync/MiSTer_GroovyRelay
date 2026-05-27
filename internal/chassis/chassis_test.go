@@ -2907,3 +2907,23 @@ func TestShellTemplate_LoadsNew3BScripts(t *testing.T) {
 		lastIdx = idx
 	}
 }
+
+func TestSourceClusterJS_ExistsAndSubscribesToTransport(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/source-cluster.js")
+	if err != nil {
+		t.Fatalf("ReadFile source-cluster.js: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "window.Chassis.events.subscribe") {
+		t.Errorf("source-cluster.js does not subscribe to events")
+	}
+	if !strings.Contains(s, "transport") {
+		t.Errorf("source-cluster.js does not subscribe to 'transport' event")
+	}
+	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("source-cluster.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
