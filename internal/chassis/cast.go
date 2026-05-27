@@ -71,6 +71,60 @@ func writeCastJSON(w http.ResponseWriter, status int, ok bool, chip string) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// presetEditBody is the JSON envelope shared by the three preset edit
+// helpers. omitempty rules:
+//   - Success: Ok=true, Chip stays empty (omitted).
+//   - Error: Ok=false, Chip set, Starred/Slot/Cleared stay zero
+//     (omitted by *bool / omitempty rules below).
+//   - Star success: Ok=true, Starred=*true, Slot in 1..12 (omitted when 0).
+//   - Move success: Ok=true; all other fields zero/nil and omitted.
+//
+// Starred is a *bool so the unstarred-success path emits "starred":false
+// (a value bool would be omitempty-dropped when false).
+type presetEditBody struct {
+	Ok      bool   `json:"ok"`
+	Chip    string `json:"chip,omitempty"`
+	Starred *bool  `json:"starred,omitempty"`
+	Slot    int    `json:"slot,omitempty"`
+	Cleared []int  `json:"cleared,omitempty"`
+}
+
+// writePresetStarSuccess emits {"ok":true,"starred":<starred>,...} with
+// Slot populated on the starred path and Cleared populated on the
+// unstarred path. Callers pass zero values for the inapplicable fields.
+func writePresetStarSuccess(w http.ResponseWriter, starred bool, slot int, cleared []int) {
+	body := presetEditBody{Ok: true, Starred: &starred}
+	if starred {
+		body.Slot = slot
+		// Cleared MUST be nil on the starred path; the field's omitempty
+		// rule will drop it. Caller passing a non-nil cleared is a bug
+		// caught by the unit tests.
+	} else {
+		body.Cleared = cleared
+		// Slot must be zero on the unstarred path; omitempty drops it.
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writePresetMoveSuccess emits the minimal {"ok":true} success envelope
+// for a successful POST /receiver/preset/move (including the from==to
+// no-op).
+func writePresetMoveSuccess(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(presetEditBody{Ok: true})
+}
+
+// writePresetEditError emits {"ok":false,"chip":<chip>} with no slot
+// or cleared fields. Status drives the HTTP code.
+func writePresetEditError(w http.ResponseWriter, status int, chip string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(presetEditBody{Ok: false, Chip: chip})
+}
+
 const castKindFormField = "kind"
 const castPayloadFormField = "payload"
 

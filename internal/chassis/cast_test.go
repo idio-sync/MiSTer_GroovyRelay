@@ -514,3 +514,67 @@ func makeMultipartFiles(t *testing.T, files []multipartFilePart) (io.Reader, str
 	}
 	return &buf, w.FormDataContentType()
 }
+
+func TestWritePresetStarSuccess_StarredEmitsSlotNoCleared(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writePresetStarSuccess(rec, true, 5, nil)
+	if rec.Code != 200 {
+		t.Fatalf("Code = %d, want 200", rec.Code)
+	}
+	got := strings.TrimSpace(rec.Body.String())
+	want := `{"ok":true,"starred":true,"slot":5}`
+	if got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}
+
+func TestWritePresetStarSuccess_UnstarredEmitsClearedNoSlot(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writePresetStarSuccess(rec, false, 0, []int{3, 9})
+	got := strings.TrimSpace(rec.Body.String())
+	want := `{"ok":true,"starred":false,"cleared":[3,9]}`
+	if got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}
+
+func TestWritePresetStarSuccess_UnstarredEmptyClearedOmitsCleared(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writePresetStarSuccess(rec, false, 0, nil)
+	got := strings.TrimSpace(rec.Body.String())
+	want := `{"ok":true,"starred":false}`
+	if got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}
+
+func TestWritePresetMoveSuccess_MinimalShape(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writePresetMoveSuccess(rec)
+	if rec.Code != 200 {
+		t.Fatalf("Code = %d, want 200", rec.Code)
+	}
+	got := strings.TrimSpace(rec.Body.String())
+	want := `{"ok":true}`
+	if got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}
+
+func TestWritePresetEditError_NoSlotOrCleared(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writePresetEditError(rec, 409, "BANK FULL")
+	if rec.Code != 409 {
+		t.Fatalf("Code = %d, want 409", rec.Code)
+	}
+	got := strings.TrimSpace(rec.Body.String())
+	want := `{"ok":false,"chip":"BANK FULL"}`
+	if got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}
