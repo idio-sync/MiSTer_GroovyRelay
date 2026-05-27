@@ -41,9 +41,15 @@ func ProbeUDPPort(port int) error {
 // process can create files in it. Writes + removes a small zero-byte probe file.
 // The probe file name starts with "." so on platforms that refresh ls/dir
 // listings during the test the noise stays hidden.
+//
+// Relative paths are rejected: a data_dir must be absolute so that the bridge
+// can locate it deterministically regardless of the process working directory.
 func EnsureDataDirWritable(dir string) error {
 	if dir == "" {
 		return fmt.Errorf("data_dir is empty")
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("data_dir %q must be an absolute path", dir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("data_dir %q not writable: %w", dir, err)

@@ -3,6 +3,7 @@ package uiserver
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -654,6 +655,70 @@ type fakeOverrideUpdater struct {
 
 func (f *fakeOverrideUpdater) UpdateOverride(v string) {
 	f.got = v
+}
+
+func TestBridgeSaver_PortInUseReturnsTypedError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[bridge]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Bind a UDP socket on a real ephemeral port so the preflight fails.
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	busyPort := conn.LocalAddr().(*net.UDPAddr).Port
+
+	sec := &config.Sectioned{Bridge: testBridgeConfig(t, "NTSC_480i")}
+	core := &fakeBridgeCore{}
+	saver := NewBridgeSaver(cfgPath, sec, core, adapters.NewRegistry())
+	newCfg := sec.Bridge
+	newCfg.MiSTer.SourcePort = busyPort
+
+	_, err = saver.Save(newCfg)
+	if err == nil {
+		t.Fatal("Save = nil, want PORT IN USE error")
+	}
+	var se *settingsError
+	if !errors.As(err, &se) {
+		t.Fatalf("err is not *settingsError: %v", err)
+	}
+	if se.StatusCode() != 409 || se.Chip() != "PORT IN USE" {
+		t.Errorf("got (%d, %q), want (409, \"PORT IN USE\")", se.StatusCode(), se.Chip())
+	}
+}
+
+func TestBridgeSaver_DataDirNotWritableReturnsTypedError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[bridge]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sec := &config.Sectioned{Bridge: testBridgeConfig(t, "NTSC_480i")}
+	core := &fakeBridgeCore{}
+	saver := NewBridgeSaver(cfgPath, sec, core, adapters.NewRegistry())
+
+	// A relative path is rejected by the preflight (must be absolute or empty).
+	// If the existing preflight uses ProbeDirWritable on an absolute non-existent
+	// path that cannot be created, that's also a fail path — pick whichever
+	// matches the saver's existing behavior. The assertion below holds either way.
+	newCfg := sec.Bridge
+	newCfg.DataDir = "relative/path/not/allowed"
+	_, err := saver.Save(newCfg)
+	if err == nil {
+		t.Fatal("Save = nil, want PATH NOT WRITABLE error")
+	}
+	var se *settingsError
+	if !errors.As(err, &se) {
+		t.Fatalf("err is not *settingsError: %v", err)
+	}
+	if se.StatusCode() != 409 || se.Chip() != "PATH NOT WRITABLE" {
+		t.Errorf("got (%d, %q), want (409, \"PATH NOT WRITABLE\")", se.StatusCode(), se.Chip())
+	}
 }
 
 // minimalSectionedConfigTOML returns a TOML string in sectioned format

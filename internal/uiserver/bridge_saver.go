@@ -9,6 +9,7 @@ package uiserver
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,11 @@ func (r *BridgeSaver) SaveVisualizerMode(mode string) (adapters.ApplyScope, erro
 func (r *BridgeSaver) saveLocked(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
 	candidate := &config.Sectioned{Bridge: newCfg}
 	if err := candidate.Validate(); err != nil {
-		return 0, fmt.Errorf("validate bridge config: %w", err)
+		return 0, &settingsError{
+			status: http.StatusBadRequest,
+			chip:   "BAD INPUT",
+			cause:  fmt.Errorf("validate bridge config: %w", err),
+		}
 	}
 	newCfg = candidate.Bridge
 
@@ -185,17 +190,29 @@ func (r *BridgeSaver) saveLocked(newCfg config.BridgeConfig) (adapters.ApplyScop
 	if scope == adapters.ScopeRestartBridge {
 		if containsStr(changed, "ui.http_port") && newCfg.UI.HTTPPort != old.UI.HTTPPort {
 			if err := config.ProbeTCPPort(newCfg.UI.HTTPPort); err != nil {
-				return 0, fmt.Errorf("ui.http_port pre-flight failed: %w", err)
+				return 0, &settingsError{
+					status: http.StatusConflict,
+					chip:   "PORT IN USE",
+					cause:  fmt.Errorf("ui.http_port pre-flight failed: %w", err),
+				}
 			}
 		}
 		if containsStr(changed, "mister.source_port") && newCfg.MiSTer.SourcePort != old.MiSTer.SourcePort {
 			if err := config.ProbeUDPPort(newCfg.MiSTer.SourcePort); err != nil {
-				return 0, fmt.Errorf("mister.source_port pre-flight failed: %w", err)
+				return 0, &settingsError{
+					status: http.StatusConflict,
+					chip:   "PORT IN USE",
+					cause:  fmt.Errorf("mister.source_port pre-flight failed: %w", err),
+				}
 			}
 		}
 		if containsStr(changed, "data_dir") && newCfg.DataDir != old.DataDir {
 			if err := config.ProbeDirWritable(newCfg.DataDir); err != nil {
-				return 0, fmt.Errorf("data_dir pre-flight failed: %w", err)
+				return 0, &settingsError{
+					status: http.StatusConflict,
+					chip:   "PATH NOT WRITABLE",
+					cause:  fmt.Errorf("data_dir pre-flight failed: %w", err),
+				}
 			}
 		}
 	}
