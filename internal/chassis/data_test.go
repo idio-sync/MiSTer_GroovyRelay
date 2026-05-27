@@ -2,8 +2,10 @@ package chassis
 
 import (
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 type fakeSourceViewer struct {
@@ -162,3 +164,62 @@ func TestCatalogData_GroupIndexFallback(t *testing.T) {
 		t.Errorf("GroupIndex(missing,g1) = %d, want 0", got)
 	}
 }
+
+func TestSnapshotFromStatusView_PopulatesCatalogAndLamps(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	// fake viewers/casters
+	cfg.StreamsCatalogViewer = fakeCatalogViewer{
+		providers: []adapters.CatalogProvider{
+			{ID: "mtv-rewind", DisplayName: "MTV Rewind",
+				BadgeLabel: "MTV", BadgeClass: "mtv",
+				Groups: []adapters.CatalogGroup{
+					{ID: "shows", Name: "Shows", Channels: []adapters.CatalogChannel{
+						{ID: "1stday", Name: "First Day", PlayMode: "SEQ"},
+					}},
+				}},
+		},
+	}
+	cfg.PresetViewer = fakePresetViewer{entries: [12]adapters.PresetEntry{
+		{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday"},
+	}}
+	cfg.SourceAvailabilityViewers = []adapters.SourceAvailabilityViewer{
+		fakeSourceViewer{id: "streams", configured: "yes"},
+	}
+	view := core.StatusHomeView{
+		State:      core.StatePlaying,
+		AdapterRef: "streams:mtv-rewind:1stday:abc:def",
+		Generation: 5,
+	}
+	snap := snapshotFromStatusView(cfg, view, nil, nil, nil, nil, time.Now())
+	// Source-cluster STREAMS lamp shows Casting=true.
+	var streams *SourceButton
+	for i := range snap.Source.Buttons {
+		if snap.Source.Buttons[i].Label == "STREAMS" {
+			streams = &snap.Source.Buttons[i]
+		}
+	}
+	if streams == nil {
+		t.Fatal("STREAMS button missing")
+	}
+	if !streams.Configured || !streams.Casting {
+		t.Errorf("STREAMS button = %+v, want Configured=true Casting=true", streams)
+	}
+	// Catalog populated and the channel is Tuned.
+	if len(snap.Catalog.Providers) != 1 {
+		t.Fatalf("Catalog.Providers len = %d, want 1", len(snap.Catalog.Providers))
+	}
+	channel := snap.Catalog.Providers[0].Groups[0].Channels[0]
+	if !channel.Tuned {
+		t.Errorf("catalog channel Tuned = false, want true")
+	}
+	if !channel.Starred || channel.PresetSlot != 1 {
+		t.Errorf("catalog channel star = (%v, %d), want (true, 1)", channel.Starred, channel.PresetSlot)
+	}
+}
+
+type fakeCatalogViewer struct {
+	providers []adapters.CatalogProvider
+}
+
+func (f fakeCatalogViewer) Catalog() []adapters.CatalogProvider { return f.providers }

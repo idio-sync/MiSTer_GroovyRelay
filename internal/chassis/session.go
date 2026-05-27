@@ -55,6 +55,7 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, volv
 	if sv == nil {
 		base := idleSnapshot(cfg, now)
 		applyAUXSourceState(&base, aux)
+		applySourceLampState(&base, cfg.SourceAvailabilityViewers, "")
 		base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 		// Idle path: idleSnapshot seeded base.Transport.OutputVolume from
 		// cfg already. A non-nil volv overrides with the live value so the
@@ -98,6 +99,20 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 	providerID, channelID := parseStreamsAdapterRef(view.AdapterRef)
 	base.Presets = buildPresetsData(cfg.PresetViewer, providerID, channelID)
+	// applySourceLampState runs AFTER applyAUXSourceState so the AUX
+	// slot's Active/Lit handling is not clobbered. The helper guards
+	// AUX (Action != "") internally.
+	applySourceLampState(&base, cfg.SourceAvailabilityViewers, view.AdapterRef)
+	if cfg.StreamsCatalogViewer != nil && cfg.PresetViewer != nil {
+		base.Catalog = buildCatalogData(
+			cfg.StreamsCatalogViewer.Catalog(),
+			cfg.PresetViewer.Presets(),
+			view.AdapterRef,
+		)
+		// Bridge the catalog count down to PresetsData so the preset-bank
+		// template (whose `.` is PresetsData) can render the BROWSE label.
+		base.Presets.CatalogTotalChannels = base.Catalog.TotalChannels
+	}
 	return base
 }
 
