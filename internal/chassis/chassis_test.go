@@ -2401,8 +2401,8 @@ func TestIdleSnapshot_PresetsHydratedWhenViewerWired(t *testing.T) {
 	if data.Presets.Slots[1].Slot != 2 {
 		t.Errorf("slot 2 Slot = %d, want 2 (numbered even when empty)", data.Presets.Slots[1].Slot)
 	}
-	if data.Presets.ModeLabel != "Memory · 1 / 12 slots" {
-		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · 1 / 12 slots")
+	if data.Presets.ModeLabel != "Memory · drag to reorder · 1 / 12" {
+		t.Errorf("ModeLabel = %q, want %q", data.Presets.ModeLabel, "Memory · drag to reorder · 1 / 12")
 	}
 	if data.Presets.Count != "★ 1" {
 		t.Errorf("Count = %q, want %q", data.Presets.Count, "★ 1")
@@ -2815,4 +2815,53 @@ func newTestServerWithCatalog(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv
+}
+
+func TestPresetBankTemplate_BrowseAndSearchEnabled(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithCatalog(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	if strings.Contains(html, `<button class="browse-btn" id="browse-toggle" disabled`) {
+		t.Errorf("browse button should NOT be disabled after 3B")
+	}
+	if !strings.Contains(html, `id="browse-toggle"`) {
+		t.Errorf("browse button missing id browse-toggle")
+	}
+	// Search input must not have disabled/readonly.
+	if !strings.Contains(html, `id="search-input"`) {
+		t.Errorf("search input missing")
+	}
+	for _, banned := range []string{
+		`id="search-input" disabled`,
+		`id="search-input" readonly`,
+	} {
+		if strings.Contains(html, banned) {
+			t.Errorf("search input should not be %q after 3B", banned)
+		}
+	}
+	// BROWSE label closed form: "▸ Browse full catalog (N)"
+	if !strings.Contains(html, "Browse full catalog (3)") {
+		t.Errorf("browse button missing exact catalog count: %s", excerpt(html, "browse-toggle"))
+	}
+}
+
+func TestPresetBankTemplate_EmitsCatalogTreeTemplatesPerProvider(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithCatalog(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`<template id="catalog-tree-mtv-rewind">`,
+		`<template id="catalog-tree-cartoon-rewind">`,
+		`<template id="catalog-tree-toonami-aftermath">`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("preset-bank missing %q", want)
+		}
+	}
 }

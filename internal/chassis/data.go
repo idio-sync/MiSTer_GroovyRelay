@@ -564,7 +564,7 @@ func buildPresetsData(viewer adapters.PresetViewer, activeProviderID, activeChan
 		}
 		data.Slots[i] = slot
 	}
-	data.ModeLabel = fmt.Sprintf("Memory · %d / 12 slots", filled)
+	data.ModeLabel = fmt.Sprintf("Memory · drag to reorder · %d / 12", filled)
 	data.Count = fmt.Sprintf("★ %d", filled)
 	return data
 }

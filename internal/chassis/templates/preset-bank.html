@@ -6,23 +6,66 @@
     <div class="preset-header">
       <span class="title" id="preset-mode-label">{{.ModeLabel}}</span>
       <span class="count" id="preset-count">{{.Count}}</span>
-      <button class="browse-btn" id="browse-toggle" disabled aria-disabled="true">&#9656; Browse full catalog</button>
+      <div class="search-field" id="search-field">
+        <input type="search" id="search-input" placeholder="FILTER PRESETS &middot; CATALOG" aria-label="Filter presets and catalog">
+        <span class="search-scope" id="search-scope">&nbsp;</span>
+      </div>
+      <button class="browse-btn" id="browse-toggle" type="button" aria-expanded="false">{{template "browse-button-label" .}}</button>
     </div>
     <div class="preset-bank">
-      {{range $i, $slot := .Slots}}
+      {{- range $i, $slot := .Slots -}}
       <button class="preset{{if not $slot.Filled}} empty{{end}}{{if $slot.Lit}} lit{{end}}{{if $slot.Live}} live{{end}}"
               type="button"
               data-slot="{{$slot.Slot}}"
               data-provider="{{$slot.ProviderID}}"
               data-channel="{{$slot.ChannelID}}">
         <div class="num">{{pad2 (inc $i)}}</div>
-        {{if $slot.Filled}}
+        {{- if $slot.Filled -}}
         <div class="name">{{$slot.Title}}</div>
         <div class="badge {{$slot.BadgeClass}}">{{$slot.Subtitle}}{{if $slot.Live}} · LIVE{{end}}</div>
-        {{end}}
+        {{- end -}}
       </button>
-      {{end}}
+      {{- end -}}
     </div>
   </div>
 </div>
+{{end}}
+
+{{define "browse-button-label"}}
+{{- /* Closed-state label only — JS swaps to "◂ Back to presets" on open. */ -}}
+&#9656; Browse full catalog ({{.CatalogTotalChannels}})
+{{end}}
+
+{{define "preset-bank-catalog-trees"}}
+{{- $cat := .Catalog -}}
+{{- range $i, $p := $cat.Providers -}}
+<template id="catalog-tree-{{$p.ID}}">
+  <div class="catalog-tree-payload" data-provider="{{$p.ID}}">
+    {{- range $gi, $g := $p.Groups -}}
+    <button class="catalog-rail-group{{if and (eq $i 0) (eq $gi 0)}} active{{end}}"
+            type="button"
+            data-group="{{$g.ID}}"
+            style="--i:{{$gi}}">
+      {{$g.Name}}<span class="count">{{$g.ChCount}}</span>
+    </button>
+    {{- end -}}
+    {{- range $gi, $g := $p.Groups -}}
+    <div class="catalog-tree-grid" data-group="{{$g.ID}}"{{if not (and (eq $i 0) (eq $gi 0))}} hidden{{end}}>
+      {{- range $ci, $c := $g.Channels -}}
+      <div role="button" tabindex="0"
+           class="ch-card{{if $c.Tuned}} tuned{{end}}{{if $c.Starred}} starred{{end}}{{if $c.Live}} live{{end}}"
+           data-provider="{{$p.ID}}"
+           data-channel="{{$c.ID}}"
+           style="--i:{{$ci}}">
+        <button class="star" type="button"
+                title="{{if $c.Starred}}In preset {{pad2 $c.PresetSlot}}{{else}}Save to preset{{end}}">{{if $c.Starred}}&#9733;{{else}}&#9734;{{end}}</button>
+        <div class="name">{{$c.Name}}</div>
+        <div class="meta"><span>{{upper $c.ID}}</span><span class="mode">{{$c.PlayMode}}</span></div>
+      </div>
+      {{- end -}}
+    </div>
+    {{- end -}}
+  </div>
+</template>
+{{- end -}}
 {{end}}
