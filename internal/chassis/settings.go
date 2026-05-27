@@ -10,6 +10,13 @@ package chassis
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -57,4 +64,165 @@ type settingsChipError interface {
 	error
 	StatusCode() int
 	Chip() string
+}
+
+// bridgeFieldDecoder is the per-field validation entry. It takes a raw
+// form string (already trimmed by the caller) and returns the decoded
+// typed value (as an any so the overlay table can write it into the
+// right BridgeConfig field) or a human-readable error.
+type bridgeFieldDecoder func(raw string) (any, error)
+
+var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
+	"mister_host": func(s string) (any, error) {
+		v, err := decodeMisterHost(s)
+		return v, err
+	},
+	"mister_port": func(s string) (any, error) {
+		v, err := decodePort(s)
+		return v, err
+	},
+	"mister_source_port": func(s string) (any, error) {
+		v, err := decodePort(s)
+		return v, err
+	},
+	"ui_http_port": func(s string) (any, error) {
+		v, err := decodePort(s)
+		return v, err
+	},
+	"host_ip": func(s string) (any, error) {
+		v, err := decodeOptionalIPv4(s)
+		return v, err
+	},
+	"data_dir": func(s string) (any, error) {
+		v, err := decodeOptionalAbsPath(s)
+		return v, err
+	},
+	"ffmpeg_path": func(s string) (any, error) {
+		v, err := decodeOptionalExecutablePath(s)
+		return v, err
+	},
+	"ffprobe_path": func(s string) (any, error) {
+		v, err := decodeOptionalExecutablePath(s)
+		return v, err
+	},
+	"ytdlp_path": func(s string) (any, error) {
+		v, err := decodeOptionalExecutablePath(s)
+		return v, err
+	},
+}
+
+// decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
+// or RFC-952 hostname. Empty -> "is required". Otherwise -> "not a
+// valid IPv4 or hostname".
+func decodeMisterHost(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("is required")
+	}
+	if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
+		return s, nil
+	}
+	if isValidHostname(s) {
+		return s, nil
+	}
+	return "", fmt.Errorf("not a valid IPv4 or hostname")
+}
+
+// decodePort accepts a numeric string in [1, 65535]. Empty or non-numeric
+// -> "must be a whole number". Out of range -> "port out of range (1-65535)".
+func decodePort(raw string) (int, error) {
+	s := strings.TrimSpace(raw)
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number")
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("port out of range (1-65535)")
+	}
+	return n, nil
+}
+
+// decodeOptionalIPv4 returns "" for empty input (clears the field), or a
+// valid IPv4 string. Anything else -> "not a valid IPv4 address".
+func decodeOptionalIPv4(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	ip := net.ParseIP(s)
+	if ip == nil || ip.To4() == nil {
+		return "", fmt.Errorf("not a valid IPv4 address")
+	}
+	return s, nil
+}
+
+// decodeOptionalAbsPath returns "" for empty input, or an absolute path.
+// Relative -> "must be an absolute path". No existence check.
+func decodeOptionalAbsPath(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(s) {
+		return "", fmt.Errorf("must be an absolute path")
+	}
+	return s, nil
+}
+
+// decodeOptionalExecutablePath returns "" for empty input, or an absolute
+// path to a usable executable file. This mirrors config.Sectioned.Validate's
+// external-tool checks so the drawer can show inline field errors instead
+// of a whole-form BAD INPUT chip.
+func decodeOptionalExecutablePath(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(s) {
+		return "", fmt.Errorf("must be an absolute path")
+	}
+	info, err := os.Stat(s)
+	if err != nil {
+		return "", fmt.Errorf("not usable: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("not usable: is a directory")
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.EqualFold(filepath.Ext(s), ".exe") {
+			return "", fmt.Errorf("not usable: does not have .exe extension")
+		}
+		return s, nil
+	}
+	if info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("not usable: not executable")
+	}
+	return s, nil
+}
+
+// isValidHostname is a permissive RFC-952/1123-ish check: 1..253 chars
+// total, label chars in [a-z0-9-], labels non-empty, no leading/trailing
+// hyphen, dot-separated.
+func isValidHostname(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			ok := (r >= 'a' && r <= 'z') ||
+				(r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') ||
+				r == '-'
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
