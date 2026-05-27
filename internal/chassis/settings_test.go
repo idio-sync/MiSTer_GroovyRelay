@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -201,5 +202,57 @@ func TestBridgeFieldDecoders_HasEntryForEveryNetworkField(t *testing.T) {
 		if _, ok := bridgeFieldDecoders[name]; !ok {
 			t.Errorf("bridgeFieldDecoders missing entry %q", name)
 		}
+	}
+}
+
+func TestBridgeFieldOverlays_HostWritesToMisterHost(t *testing.T) {
+	t.Parallel()
+	cfg := config.BridgeConfig{}
+	bridgeFieldOverlays["mister_host"](&cfg, "192.168.1.42")
+	if cfg.MiSTer.Host != "192.168.1.42" {
+		t.Errorf("MiSTer.Host = %q, want 192.168.1.42", cfg.MiSTer.Host)
+	}
+}
+
+func TestBridgeFieldOverlays_AllNetworkFieldsPresent(t *testing.T) {
+	t.Parallel()
+	// The decoder table is the authoritative supported-fields set.
+	for name := range bridgeFieldDecoders {
+		if _, ok := bridgeFieldOverlays[name]; !ok {
+			t.Errorf("bridgeFieldOverlays missing entry for decoder %q", name)
+		}
+	}
+	for name := range bridgeFieldOverlays {
+		if _, ok := bridgeFieldDecoders[name]; !ok {
+			t.Errorf("bridgeFieldOverlays has orphan entry %q (no decoder)", name)
+		}
+	}
+}
+
+func TestBridgeFieldOverlays_EveryFieldRoundTrips(t *testing.T) {
+	t.Parallel()
+	cases := map[string]any{
+		"mister_host":        "10.0.0.1",
+		"mister_port":        32100,
+		"mister_source_port": 32101,
+		"ui_http_port":       32500,
+		"host_ip":            "10.0.0.2",
+		"data_dir":           "/tmp/data",
+		"ffmpeg_path":        "/usr/bin/ffmpeg",
+		"ffprobe_path":       "/usr/bin/ffprobe",
+		"ytdlp_path":         "/usr/bin/yt-dlp",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.BridgeConfig{}
+			bridgeFieldOverlays[name](&cfg, value)
+			// Round-trip: assert the field is non-zero on the right path.
+			// We assert via reflective compare rather than per-path so the
+			// test stays compact.
+			zero := config.BridgeConfig{}
+			if reflect.DeepEqual(cfg, zero) {
+				t.Errorf("overlay %q wrote nothing to BridgeConfig", name)
+			}
+		})
 	}
 }

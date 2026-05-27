@@ -200,6 +200,23 @@ func decodeOptionalExecutablePath(raw string) (string, error) {
 	return s, nil
 }
 
+// bridgeFieldOverlay writes the decoded value into the right path of a
+// BridgeConfig. Type asserts to the decoder's return type; a type
+// mismatch is a programmer bug and panics rather than silently failing.
+type bridgeFieldOverlay func(cfg *config.BridgeConfig, value any)
+
+var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
+	"mister_host":        func(c *config.BridgeConfig, v any) { c.MiSTer.Host = v.(string) },
+	"mister_port":        func(c *config.BridgeConfig, v any) { c.MiSTer.Port = v.(int) },
+	"mister_source_port": func(c *config.BridgeConfig, v any) { c.MiSTer.SourcePort = v.(int) },
+	"ui_http_port":       func(c *config.BridgeConfig, v any) { c.UI.HTTPPort = v.(int) },
+	"host_ip":            func(c *config.BridgeConfig, v any) { c.HostIP = v.(string) },
+	"data_dir":           func(c *config.BridgeConfig, v any) { c.DataDir = v.(string) },
+	"ffmpeg_path":        func(c *config.BridgeConfig, v any) { c.FFmpegPath = v.(string) },
+	"ffprobe_path":       func(c *config.BridgeConfig, v any) { c.FFprobePath = v.(string) },
+	"ytdlp_path":         func(c *config.BridgeConfig, v any) { c.YTDLPPath = v.(string) },
+}
+
 // isValidHostname is a permissive RFC-952/1123-ish check: 1..253 chars
 // total, label chars in [a-z0-9-], labels non-empty, no leading/trailing
 // hyphen, dot-separated.
