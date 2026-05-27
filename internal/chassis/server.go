@@ -229,6 +229,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/cast", requireSameOrigin(http.HandlerFunc(s.handleCastPost)))
 	mux.Handle("POST /receiver/preset/{slot}/cast", requireSameOrigin(http.HandlerFunc(s.handlePresetCast)))
 	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(http.HandlerFunc(s.handleStreamsCast)))
+	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
+	mux.Handle("POST /receiver/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 
@@ -273,4 +275,13 @@ func (s *Server) Close() error {
 		return fmt.Errorf("chassis: snapshot refresher did not exit within 1s")
 	}
 	return nil
+}
+
+// refreshSnapshotNow rebuilds the cached snapshot synchronously.
+// Successful preset mutations call this so connected SSE clients
+// observe the change within one diff-tick rather than waiting for the
+// next 250ms refresh. Safe to call from any goroutine; the cache uses
+// its own mutex.
+func (s *Server) refreshSnapshotNow() {
+	s.cache.Set(s.buildSnapshot(time.Now()))
 }
