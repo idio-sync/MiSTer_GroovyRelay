@@ -145,15 +145,15 @@ func (s *presetStore) Snapshot() [12]adapters.PresetEntry {
 // the current slot without writing; unstarring an absent channel
 // returns empty Cleared without writing.
 func (s *presetStore) SetStarred(providerID, channelID string, starred bool) (adapters.PresetStarResult, error) {
-	if starred {
-		entry, ok := s.resolve(providerID, channelID)
-		if !ok {
-			return adapters.PresetStarResult{}, &adapters.QuickCastError{
-				Status:  http.StatusNotFound,
-				Chip:    "NOT FOUND",
-				Message: fmt.Sprintf("streams: %s:%s not in catalog", providerID, channelID),
-			}
+	entry, ok := s.resolve(providerID, channelID)
+	if !ok {
+		return adapters.PresetStarResult{}, &adapters.QuickCastError{
+			Status:  http.StatusNotFound,
+			Chip:    "NOT FOUND",
+			Message: fmt.Sprintf("streams: %s:%s not in catalog", providerID, channelID),
 		}
+	}
+	if starred {
 		s.mu.Lock()
 		// Already in some slot? Return that slot, no write.
 		for i, e := range s.slots {

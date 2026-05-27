@@ -75,7 +75,16 @@ func TestVizEnvelope_JSONCamelCase(t *testing.T) {
 func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testing.T) {
 	t.Parallel()
 	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	data.Source.Buttons[0].Configured = true
+	data.Source.Buttons[0].Casting = true
 	env := sourceEnvelopeFromSnapshot(data)
+	body, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("json.Marshal source envelope: %v", err)
+	}
+	if !strings.Contains(string(body), `"configured":true`) || !strings.Contains(string(body), `"casting":true`) {
+		t.Fatalf("source envelope missing lamp state fields: %s", body)
+	}
 
 	// Lamp slots (STREAMS/PLEX/JELLYFIN/DLNA) render as indicator
 	// lamps with empty Action; only AUX retains a non-empty Action
@@ -103,6 +112,21 @@ func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testin
 	}
 	for label := range wantActions {
 		t.Errorf("source envelope missing button %q", label)
+	}
+}
+
+func TestSourceChangedDetectsLampStateDelta(t *testing.T) {
+	t.Parallel()
+	prevData := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	nextData := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	nextData.Source.Buttons[0].Configured = true
+	if !sourceChanged(sourceEnvelopeFromSnapshot(prevData), sourceEnvelopeFromSnapshot(nextData)) {
+		t.Errorf("sourceChanged missed Configured lamp state change")
+	}
+	nextData = idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	nextData.Source.Buttons[0].Casting = true
+	if !sourceChanged(sourceEnvelopeFromSnapshot(prevData), sourceEnvelopeFromSnapshot(nextData)) {
+		t.Errorf("sourceChanged missed Casting lamp state change")
 	}
 }
 
@@ -1434,9 +1458,9 @@ func TestReceiverEventsMeterPayloadIncludesLowRateFields(t *testing.T) {
 		Source:     "url",
 		Generation: 3,
 		Meter: core.MeterHomeView{
-			Source: core.SourceMeterView{Width: 720, Height: 480, VideoCodec: "h264", AudioCodec: "aac", AudioRate: 48000, AudioChannels: 2},
+			Source:   core.SourceMeterView{Width: 720, Height: 480, VideoCodec: "h264", AudioCodec: "aac", AudioRate: 48000, AudioChannels: 2},
 			Pipeline: core.PipelineMeterView{ModelineName: "NTSC_480i", Standard: "ntsc", FieldOrder: "tff", FieldRateHz: 59.94, HorizontalKHz: 15.7, InterlacedOutput: true, AudioSampleRate: 48000, AudioChannels: 2},
-			Runtime: core.RuntimeMeterView{Generation: 3, BlitsTotal: 100, WireBytes: 1000000, LastACKAge: 4 * time.Millisecond},
+			Runtime:  core.RuntimeMeterView{Generation: 3, BlitsTotal: 100, WireBytes: 1000000, LastACKAge: 4 * time.Millisecond},
 		},
 	}}
 	s, err := New(Config{Version: cfg.Version, StartedAt: cfg.StartedAt, Bridge: cfg.Bridge, Session: sv})

@@ -2,6 +2,8 @@
   'use strict';
   const bank = document.querySelector('.preset-bank');
   if (!bank) return;
+  const presetCount = document.getElementById('preset-count');
+  const modeLabel = document.getElementById('preset-mode-label');
 
   let lastProviderId = '';
   let lastChannelId = '';
@@ -44,13 +46,28 @@
     return n < 10 ? '0' + n : '' + n;
   }
 
+  function closedModeLabel(filled) {
+    return filled > 0 ? `Memory · drag to reorder · ${filled} / 12` : 'Memory · 0 / 12 slots';
+  }
+
+  function updateHeader(filled) {
+    if (presetCount) presetCount.textContent = '★ ' + filled;
+    if (!modeLabel) return;
+    const label = closedModeLabel(filled);
+    modeLabel.dataset.closedText = label;
+    const browseOpen = document.body && document.body.classList && document.body.classList.contains('browse-open');
+    if (!browseOpen) modeLabel.textContent = label;
+  }
+
   function applyPresets(payload) {
     if (!payload || !Array.isArray(payload.slots)) return;
     const elements = slots();
+    let filledCount = 0;
     payload.slots.forEach((s, i) => {
       const el = elements[i];
       if (!el) return;
       const filled = !!s.provider && !!s.channel;
+      if (filled) filledCount += 1;
       el.classList.toggle('empty', !filled);
       el.classList.toggle('live', !!s.live);
       el.dataset.slot = String(s.slot);
@@ -90,6 +107,7 @@
         if (badge) badge.remove();
       }
     });
+    updateHeader(filledCount);
   }
 
   function onPresets(ev) {

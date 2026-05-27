@@ -3,7 +3,7 @@
 <div class="source-cluster" role="group" aria-label="Media source">
   {{- range .Buttons -}}
   {{- if eq .Action "" -}}
-    <div class="lamp{{if .Configured}} configured-idle{{end}}{{if .Casting}} casting{{end}}"
+    <div class="lamp{{if .Configured}} configured-idle{{else}} unavailable{{end}}{{if .Casting}} casting{{end}}"
          data-source-id="{{lower .Label}}"
          role="status"
          aria-label="{{.Label}}{{if .Casting}}, currently casting{{else if .Configured}}, ready{{else}}, not configured{{end}}"

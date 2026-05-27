@@ -2921,6 +2921,14 @@ func TestSourceClusterJS_ExistsAndSubscribesToTransport(t *testing.T) {
 	if !strings.Contains(s, "transport") {
 		t.Errorf("source-cluster.js does not subscribe to 'transport' event")
 	}
+	if !strings.Contains(s, `subscribe('source'`) {
+		t.Errorf("source-cluster.js does not subscribe to 'source' event")
+	}
+	for _, want := range []string{"configured-idle", "unavailable", "aria-label"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("source-cluster.js missing lamp state update token %q", want)
+		}
+	}
 	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("source-cluster.js contains forbidden fake-data pattern %q", forbidden)
@@ -2941,6 +2949,11 @@ func TestPresetBankJS_SubscribesToPresetsEvent(t *testing.T) {
 	// Existing transport subscription must remain.
 	if !strings.Contains(s, `subscribe('transport'`) {
 		t.Errorf("preset-bank.js dropped transport subscription")
+	}
+	for _, want := range []string{"preset-count", "preset-mode-label", "dataset.closedText"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("preset-bank.js missing header refresh token %q", want)
+		}
 	}
 }
 

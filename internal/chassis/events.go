@@ -34,6 +34,8 @@ type sourceButtonEnvelope struct {
 	Lit         bool   `json:"lit"`
 	Unavailable bool   `json:"unavailable"`
 	InputID     string `json:"inputId"`
+	Configured  bool   `json:"configured"`
+	Casting     bool   `json:"casting"`
 }
 
 // vfdEnvelope is the payload for the `vfd` SSE event. Carries the
@@ -128,6 +130,8 @@ func sourceEnvelopeFromSnapshot(data ReceiverPageData) sourceEnvelope {
 			Lit:         button.Lit,
 			Unavailable: button.Unavailable,
 			InputID:     button.InputID,
+			Configured:  button.Configured,
+			Casting:     button.Casting,
 		})
 	}
 	return out

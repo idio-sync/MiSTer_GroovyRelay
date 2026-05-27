@@ -160,6 +160,19 @@ func TestPresetStore_UnknownChannelReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestPresetStore_RemoveUnknownChannelReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	st, _ := newStoreForTest(t)
+	_, err := st.SetStarred("mtv-rewind", "nonexistent", false)
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("err = %v, want *QuickCastError", err)
+	}
+	if qerr.Status != http.StatusNotFound || qerr.Chip != "NOT FOUND" {
+		t.Errorf("qerr = %+v, want Status=404 Chip=NOT FOUND", qerr)
+	}
+}
+
 func TestPresetStore_MoveSwap(t *testing.T) {
 	t.Parallel()
 	st, _ := newStoreForTest(t)
