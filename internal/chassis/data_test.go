@@ -86,3 +86,79 @@ func TestApplySourceLampState_EmptyRefClearsCasting(t *testing.T) {
 		t.Errorf("Casting = true, want false (empty ref must clear)")
 	}
 }
+
+func TestBuildCatalogData_ChannelsCarryStarredFromPresets(t *testing.T) {
+	t.Parallel()
+	cat := []adapters.CatalogProvider{
+		{
+			ID: "mtv-rewind", DisplayName: "MTV Rewind",
+			BadgeLabel: "MTV", BadgeClass: "mtv", Live: false,
+			DefaultChannel: "1stday",
+			Groups: []adapters.CatalogGroup{
+				{ID: "shows", Name: "MTV Shows", Channels: []adapters.CatalogChannel{
+					{ID: "1stday", Name: "First Day on MTV", PlayMode: "SEQ", Live: false},
+					{ID: "amp", Name: "AMP", PlayMode: "SHUFFLE", Live: false},
+				}},
+			},
+		},
+	}
+	presets := [12]adapters.PresetEntry{
+		{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday"},
+		{Slot: 2}, {Slot: 3}, {Slot: 4}, {Slot: 5}, {Slot: 6},
+		{Slot: 7}, {Slot: 8}, {Slot: 9}, {Slot: 10}, {Slot: 11}, {Slot: 12},
+	}
+	data := buildCatalogData(cat, presets, "streams:mtv-rewind:1stday:abc:def")
+	if data.ActiveProviderID != "mtv-rewind" {
+		t.Errorf("ActiveProviderID = %q, want mtv-rewind", data.ActiveProviderID)
+	}
+	if data.TotalChannels != 2 {
+		t.Errorf("TotalChannels = %d, want 2", data.TotalChannels)
+	}
+	first := data.Providers[0].Groups[0].Channels[0]
+	if !first.Starred || first.PresetSlot != 1 {
+		t.Errorf("first channel Starred/PresetSlot = (%v, %d), want (true, 1)", first.Starred, first.PresetSlot)
+	}
+	if !first.Tuned {
+		t.Errorf("first channel Tuned = false, want true")
+	}
+	second := data.Providers[0].Groups[0].Channels[1]
+	if second.Starred || second.PresetSlot != 0 {
+		t.Errorf("second channel Starred/PresetSlot = (%v, %d), want (false, 0)", second.Starred, second.PresetSlot)
+	}
+	if second.Tuned {
+		t.Errorf("second channel Tuned = true, want false")
+	}
+}
+
+func TestCatalogData_ProviderIndexFallback(t *testing.T) {
+	t.Parallel()
+	data := CatalogData{
+		Providers:        []CatalogProviderTab{{ID: "a"}, {ID: "b"}},
+		ActiveProviderID: "missing",
+	}
+	// ProviderIndex with a missing ID must return 0 (defense-in-depth).
+	if got := data.ProviderIndex("missing"); got != 0 {
+		t.Errorf("ProviderIndex(missing) = %d, want 0", got)
+	}
+	if got := data.ProviderIndex("b"); got != 1 {
+		t.Errorf("ProviderIndex(b) = %d, want 1", got)
+	}
+}
+
+func TestCatalogData_GroupIndexFallback(t *testing.T) {
+	t.Parallel()
+	data := CatalogData{
+		Providers: []CatalogProviderTab{
+			{ID: "a", Groups: []CatalogGroupTab{{ID: "g1"}, {ID: "g2"}}},
+		},
+	}
+	if got := data.GroupIndex("a", "g2"); got != 1 {
+		t.Errorf("GroupIndex(a,g2) = %d, want 1", got)
+	}
+	if got := data.GroupIndex("a", "missing"); got != 0 {
+		t.Errorf("GroupIndex(a,missing) = %d, want 0", got)
+	}
+	if got := data.GroupIndex("missing", "g1"); got != 0 {
+		t.Errorf("GroupIndex(missing,g1) = %d, want 0", got)
+	}
+}

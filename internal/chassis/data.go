@@ -25,6 +25,7 @@ type ReceiverPageData struct {
 	Visualizer VisualizerData
 	Input      InputData
 	Presets    PresetsData
+	Catalog    CatalogData
 	History    HistoryData
 	Settings   SettingsData
 }
@@ -233,11 +234,16 @@ type InputData struct {
 	CastEnabled      bool
 }
 
-// PresetsData drives the 12-slot preset bank.
+// PresetsData drives the 12-slot preset bank. CatalogTotalChannels is
+// a copy of CatalogData.TotalChannels populated by the snapshot helpers
+// — it lives on PresetsData so the preset-bank template (whose `.` is
+// PresetsData) can render the "Browse full catalog (N)" label without
+// a template wrapper.
 type PresetsData struct {
-	ModeLabel string
-	Count     string
-	Slots     [12]PresetSlot
+	ModeLabel            string
+	Count                string
+	CatalogTotalChannels int
+	Slots                [12]PresetSlot
 }
 
 // PresetSlot is one entry in the preset grid. Empty Filled=false slots
@@ -275,11 +281,139 @@ type SettingsData struct {
 	Open bool
 }
 
+// CatalogData drives the catalog drawer. Open is always false at
+// server-render time; client-side JS flips body.browse-open on
+// BROWSE click. TunedProviderID/TunedChannelID derive from
+// transport.AdapterRef so the drawer's .tuned state matches the
+// preset bank's .lit and the source cluster's .casting.
+type CatalogData struct {
+	Open             bool
+	Providers        []CatalogProviderTab
+	ActiveProviderID string
+	ActiveGroupID    string
+	TunedProviderID  string
+	TunedChannelID   string
+	PresetMembership map[string]int // "provider:channel" → slot (1..12)
+	TotalChannels    int            // sum across all providers
+}
+
+// CatalogProviderTab is one provider tab in the drawer's top strip.
+type CatalogProviderTab struct {
+	ID, DisplayName, BadgeLabel, BadgeClass string
+	Live    bool
+	ChCount int
+	Groups  []CatalogGroupTab
+}
+
+// CatalogGroupTab is one button in the rail.
+type CatalogGroupTab struct {
+	ID, Name string
+	ChCount  int
+	Channels []CatalogChannelCard
+}
+
+// CatalogChannelCard is one .ch-card in the grid.
+type CatalogChannelCard struct {
+	ID, Name, PlayMode string
+	Live       bool
+	Tuned      bool // matches transport.AdapterRef
+	Starred    bool // is in a preset slot
+	PresetSlot int  // 0 if !Starred; 1..12 otherwise
+}
+
+// ProviderIndex returns the slice index of a provider by ID for use
+// in catalog-rail.html / catalog-grid.html templates. Returns 0 if
+// the ID is not found — defense-in-depth so template execution
+// cannot panic on a transient catalog reload race.
+func (d CatalogData) ProviderIndex(id string) int {
+	for i, p := range d.Providers {
+		if p.ID == id {
+			return i
+		}
+	}
+	return 0
+}
+
+// GroupIndex returns the slice index of a group within a provider.
+// Returns 0 if either the provider or the group is not found.
+func (d CatalogData) GroupIndex(providerID, groupID string) int {
+	pi := d.ProviderIndex(providerID)
+	if pi >= len(d.Providers) {
+		return 0
+	}
+	for i, g := range d.Providers[pi].Groups {
+		if g.ID == groupID {
+			return i
+		}
+	}
+	return 0
+}
+
+// buildCatalogData shape-shifts the adapter catalog into the chassis
+// CatalogData. Resolves Starred + PresetSlot from the presets slice;
+// resolves Tuned from the supplied adapterRef. Pure function — no
+// allocations the chassis snapshot tick can't afford.
+func buildCatalogData(cat []adapters.CatalogProvider, presets [12]adapters.PresetEntry, adapterRef string) CatalogData {
+	membership := map[string]int{}
+	for _, p := range presets {
+		if p.ProviderID == "" {
+			continue
+		}
+		membership[p.ProviderID+":"+p.ChannelID] = p.Slot
+	}
+	var tunedProvider, tunedChannel string
+	if parseAdapterRefSource(adapterRef) == "streams" {
+		tunedProvider, tunedChannel = parseStreamsAdapterRef(adapterRef)
+	}
+
+	data := CatalogData{
+		TunedProviderID:  tunedProvider,
+		TunedChannelID:   tunedChannel,
+		PresetMembership: membership,
+	}
+	for _, p := range cat {
+		tab := CatalogProviderTab{
+			ID: p.ID, DisplayName: p.DisplayName,
+			BadgeLabel: p.BadgeLabel, BadgeClass: p.BadgeClass,
+			Live: p.Live,
+		}
+		for _, g := range p.Groups {
+			gt := CatalogGroupTab{ID: g.ID, Name: g.Name}
+			for _, c := range g.Channels {
+				key := p.ID + ":" + c.ID
+				// Map-ok pattern: inPreset is true iff the key exists in
+				// membership; slot is the int value (0 when absent).
+				slot, inPreset := membership[key]
+				card := CatalogChannelCard{
+					ID: c.ID, Name: c.Name, PlayMode: c.PlayMode,
+					Live:       c.Live,
+					Tuned:      p.ID == tunedProvider && c.ID == tunedChannel && tunedProvider != "",
+					Starred:    inPreset,
+					PresetSlot: slot,
+				}
+				gt.Channels = append(gt.Channels, card)
+			}
+			gt.ChCount = len(gt.Channels)
+			tab.ChCount += gt.ChCount
+			tab.Groups = append(tab.Groups, gt)
+		}
+		data.TotalChannels += tab.ChCount
+		data.Providers = append(data.Providers, tab)
+	}
+	if len(data.Providers) > 0 {
+		data.ActiveProviderID = data.Providers[0].ID
+		if len(data.Providers[0].Groups) > 0 {
+			data.ActiveGroupID = data.Providers[0].Groups[0].ID
+		}
+	}
+	return data
+}
+
 // idleSnapshot returns a fully populated ReceiverPageData with State =
 // StateIdle and placeholder content matching the mockup's idle state.
 // Later live-state specs replace this with session-derived snapshots.
 func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
-	return ReceiverPageData{
+	base := ReceiverPageData{
 		Version:   cfg.Version,
 		BrandName: "GROOVY · RELAY",
 		State:     StateIdle,
@@ -368,6 +502,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			CastEnabled:      false,
 		},
 		Presets: buildPresetsData(cfg.PresetViewer, "", ""),
+		Catalog: idleCatalogData(cfg),
 		History: HistoryData{
 			Rows:         nil,
 			EmptyMessage: "No recent casts",
@@ -376,6 +511,24 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			Open: false,
 		},
 	}
+	// Bridge catalog count to PresetsData so the preset-bank template
+	// can render "Browse full catalog (N)" without a template wrapper.
+	base.Presets.CatalogTotalChannels = base.Catalog.TotalChannels
+	return base
+}
+
+// idleCatalogData builds the page-load Catalog snapshot from the cfg
+// adapters. Returns a zero-value CatalogData when either viewer is nil
+// (test ergonomics) so idle renders cleanly without dependencies.
+func idleCatalogData(cfg Config) CatalogData {
+	if cfg.StreamsCatalogViewer == nil || cfg.PresetViewer == nil {
+		return CatalogData{}
+	}
+	return buildCatalogData(
+		cfg.StreamsCatalogViewer.Catalog(),
+		cfg.PresetViewer.Presets(),
+		"",
+	)
 }
 
 // buildPresetsData hydrates a PresetsData from a PresetViewer (or an
