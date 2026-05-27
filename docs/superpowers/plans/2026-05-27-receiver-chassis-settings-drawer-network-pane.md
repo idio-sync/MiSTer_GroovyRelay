@@ -426,56 +426,55 @@ Expected: FAIL — saver returns plain errors, not `*settingsError`.
 
 - [ ] **Step 3: Wrap preflight call sites**
 
-Find each preflight call site in [internal/uiserver/bridge_saver.go](../../../internal/uiserver/bridge_saver.go) (look around lines 185-201 for `config.ProbeTCPPort`, `config.ProbeUDPPort`, `config.ProbeDirWritable` invocations).
+In [internal/uiserver/bridge_saver.go](../../../internal/uiserver/bridge_saver.go) `saveLocked` (around lines 167-201), wrap each existing `fmt.Errorf(...)` return so the chain looks like `settingsError → fmt.Errorf → underlying err`. The existing string chain (`"mister.source_port pre-flight failed: %w"`, etc.) is preserved as the cause; legacy callers still see the same `.Error()` strings. New chassis callers match via `errors.As(err, &se)` against the `settingsError` wrapper.
 
-For each failure path, wrap the returned error:
+Replace each of these four call sites (use `return 0, ...` matching the existing pattern; scope is moot once the function errors):
 
 ```go
-// UDP source-port preflight
-if err := config.ProbeUDPPort(newCfg.MiSTer.SourcePort); err != nil {
-    return scope, &settingsError{
-        status: http.StatusConflict, // 409
-        chip:   "PORT IN USE",
-        cause:  err,
+// line 169-171: Validate
+if err := candidate.Validate(); err != nil {
+    return 0, &settingsError{
+        status: http.StatusBadRequest, // 400
+        chip:   "BAD INPUT",
+        cause:  fmt.Errorf("validate bridge config: %w", err),
     }
 }
 
-// TCP http-port preflight
-if err := config.ProbeTCPPort(newCfg.UI.HTTPPort); err != nil {
-    return scope, &settingsError{
-        status: http.StatusConflict,
-        chip:   "PORT IN USE",
-        cause:  err,
+// line 186-189: UI HTTP port TCP preflight
+if containsStr(changed, "ui.http_port") && newCfg.UI.HTTPPort != old.UI.HTTPPort {
+    if err := config.ProbeTCPPort(newCfg.UI.HTTPPort); err != nil {
+        return 0, &settingsError{
+            status: http.StatusConflict, // 409
+            chip:   "PORT IN USE",
+            cause:  fmt.Errorf("ui.http_port pre-flight failed: %w", err),
+        }
     }
 }
 
-// data_dir writability preflight
-if newCfg.DataDir != "" {
+// line 191-194: MiSTer source port UDP preflight
+if containsStr(changed, "mister.source_port") && newCfg.MiSTer.SourcePort != old.MiSTer.SourcePort {
+    if err := config.ProbeUDPPort(newCfg.MiSTer.SourcePort); err != nil {
+        return 0, &settingsError{
+            status: http.StatusConflict,
+            chip:   "PORT IN USE",
+            cause:  fmt.Errorf("mister.source_port pre-flight failed: %w", err),
+        }
+    }
+}
+
+// line 196-200: data_dir writability preflight
+if containsStr(changed, "data_dir") && newCfg.DataDir != old.DataDir {
     if err := config.ProbeDirWritable(newCfg.DataDir); err != nil {
-        return scope, &settingsError{
+        return 0, &settingsError{
             status: http.StatusConflict,
             chip:   "PATH NOT WRITABLE",
-            cause:  err,
+            cause:  fmt.Errorf("data_dir pre-flight failed: %w", err),
         }
     }
 }
 ```
 
-Also wrap any `config.Sectioned.Validate` failure that survives chassis-side field validation:
-
-```go
-if err := sec.Validate(); err != nil {
-    return scope, &settingsError{
-        status: http.StatusBadRequest, // 400
-        chip:   "BAD INPUT",
-        cause:  err,
-    }
-}
-```
-
-Add `"net/http"` to imports if not already present.
-
-**The exact call-site shape varies with the current Save() function structure — preserve the existing scope-return semantics and only wrap the error side of the return.**
+Add `"net/http"` to imports.
 
 - [ ] **Step 4: Run to confirm pass**
 
@@ -650,7 +649,7 @@ func TestSnapshot_SettingsReadsFromBridgeSaverCurrentWhenWired(t *testing.T) {
 	srv := &Server{cfg: Config{
 		BridgeSaver: saver,
 		Registry:    adapters.NewRegistry(),
-		Sectioned:   &config.Sectioned{Bridge: config.BridgeConfig{DataDir: "/from-startup"}},
+		Bridge:      config.BridgeConfig{DataDir: "/from-startup"},
 	}}
 	snap := srv.idleSnapshot(time.Now())
 	if snap.Settings.Bridge.DataDir != "/from-saver" {
@@ -662,8 +661,8 @@ func TestSnapshot_SettingsReadsFromBridgeSaverCurrentWhenWired(t *testing.T) {
 func TestSnapshot_SettingsFallsBackToStartupConfigWhenSaverNil(t *testing.T) {
 	t.Parallel()
 	srv := &Server{cfg: Config{
-		Registry:  adapters.NewRegistry(),
-		Sectioned: &config.Sectioned{Bridge: config.BridgeConfig{DataDir: "/from-startup"}},
+		Registry: adapters.NewRegistry(),
+		Bridge:   config.BridgeConfig{DataDir: "/from-startup"},
 	}}
 	snap := srv.idleSnapshot(time.Now())
 	if snap.Settings.Bridge.DataDir != "/from-startup" {
@@ -684,14 +683,12 @@ In [internal/chassis/session.go](../../../internal/chassis/session.go), find bot
 
 ```go
 // settingsSnapshot reads the bridge config from the BridgeSettingsSaver
-// when wired (production), or falls back to startup cfg.Sectioned.Bridge
-// for offline tests / nil-saver render paths.
+// when wired (production), or falls back to startup cfg.Bridge for
+// offline tests / nil-saver render paths.
 func (s *Server) settingsSnapshot() SettingsData {
-	bridge := config.BridgeConfig{}
+	bridge := s.cfg.Bridge
 	if s.cfg.BridgeSaver != nil {
 		bridge = s.cfg.BridgeSaver.Current()
-	} else if s.cfg.Sectioned != nil {
-		bridge = s.cfg.Sectioned.Bridge
 	}
 	var catalog adapters.StreamsCatalogViewer
 	if s.cfg.StreamsCatalogViewer != nil {
@@ -1327,7 +1324,7 @@ func newTestServerWithSaver(t *testing.T, saver BridgeSettingsSaver) *Server {
 	return &Server{cfg: Config{
 		BridgeSaver: saver,
 		Registry:    adapters.NewRegistry(),
-		Sectioned:   &config.Sectioned{Bridge: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "old", Port: 32100, SourcePort: 32101}}},
+		Bridge:      config.BridgeConfig{MiSTer: config.MisterConfig{Host: "old", Port: 32100, SourcePort: 32101}},
 	}}
 }
 
@@ -1486,6 +1483,11 @@ func TestHandleSettingsBridgePost_UnknownScopeReturns500(t *testing.T) {
 		t.Fatalf("Code = %d, want 500", rec.Code)
 	}
 }
+
+// Note: the wrong-origin 403 path is enforced by the requireSameOrigin
+// middleware that Task 13 wraps around the handler. The handler-only
+// tests above bypass that wrapper (calling handleSettingsBridgePost
+// directly); the 403 case is covered by Task 13's mux-level test.
 ```
 
 (Add `"encoding/json"`, `"net/http"`, `"net/http/httptest"`, `"net/url"` to settings_test.go imports.)
@@ -1618,21 +1620,13 @@ git commit -m "feat(chassis): add handleSettingsBridgePost handler"
 - Create: `cmd/mister-groovy-relay/chassis_prober.go`
 - Create: `cmd/mister-groovy-relay/chassis_prober_test.go`
 
-The chassis `Prober` interface needs an implementation that wraps the existing `bridgeMisterProber` from `launcher.go`. The wrapper translates from the chassis-shaped `(ctx, BridgeConfig) -> ProbeResult` signature to whatever the existing prober expects.
+The chassis `Prober` interface needs an implementation that wraps the existing `bridgeMisterProber` from [launcher.go:51](../../../cmd/mister-groovy-relay/launcher.go#L51). Verified signature: `func (b bridgeMisterProber) Probe(ctx context.Context) error`. It reads host/port/source-port internally from its captured `ui.BridgeSaver.Current()` and returns only an error. The wrapper must therefore:
 
-- [ ] **Step 1: Inspect the existing prober**
+1. Measure latency itself (`start := time.Now()` around the call).
+2. Map success → `chassis.ProbeResult{LatencyMs, Host, Port}` (Host/Port copied from the `BridgeConfig` argument for the response; the underlying prober reads the same values from its captured saver, so they match in production).
+3. **Normalize `net.Error` timeouts to `context.DeadlineExceeded`** — the underlying prober wraps net.Error timeouts as `fmt.Errorf("status ack timeout after %s: %w", timeout, netErr)` ([launcher.go:84-86](../../../cmd/mister-groovy-relay/launcher.go#L84-L86)). The chassis handler matches against `context.DeadlineExceeded` only; without normalization, real timeouts would fall through to the 500 socket-error branch.
 
-Read `cmd/mister-groovy-relay/launcher.go` lines around 43-96 to confirm the exact signature of `bridgeMisterProber`. The likely shape:
-
-```go
-type bridgeMisterProber struct{ /* fields */ }
-func newBridgeMisterProber(...) *bridgeMisterProber
-func (p *bridgeMisterProber) Probe(ctx context.Context, host string, port int) (latency time.Duration, err error)
-```
-
-Adjust the test and wrapper below to match the actual signature.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 Create [cmd/mister-groovy-relay/chassis_prober_test.go](../../../cmd/mister-groovy-relay/chassis_prober_test.go):
 
@@ -1642,6 +1636,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -1649,42 +1644,81 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
-// fakeUnderlyingProber implements whatever method bridgeMisterProber
-// satisfies on a per-host basis. Replace with the actual signature.
+// fakeUnderlyingProber matches the shape of the real bridgeMisterProber.Probe
+// (single ctx arg returning error). The chassis_prober wrapper measures
+// latency at its own level since the inner prober doesn't report it.
 type fakeUnderlyingProber struct {
-	latency time.Duration
-	err     error
+	sleep time.Duration
+	err   error
 }
 
-func (f *fakeUnderlyingProber) Probe(ctx context.Context, host string, port int) (time.Duration, error) {
-	return f.latency, f.err
+func (f *fakeUnderlyingProber) Probe(ctx context.Context) error {
+	if f.sleep > 0 {
+		time.Sleep(f.sleep)
+	}
+	return f.err
 }
 
-func TestChassisProber_Success(t *testing.T) {
+func TestChassisProber_SuccessReportsMeasuredLatency(t *testing.T) {
 	t.Parallel()
-	cp := &chassisProber{inner: &fakeUnderlyingProber{latency: 4200 * time.Microsecond}}
+	cp := &chassisProber{inner: &fakeUnderlyingProber{sleep: 10 * time.Millisecond}}
 	res, err := cp.ProbeMister(context.Background(), config.BridgeConfig{
 		MiSTer: config.MisterConfig{Host: "1.2.3.4", Port: 32100},
 	})
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if res.LatencyMs < 4.0 || res.LatencyMs > 5.0 {
-		t.Errorf("LatencyMs = %f, want ~4.2", res.LatencyMs)
+	if res.LatencyMs < 5.0 {
+		t.Errorf("LatencyMs = %f, want >= 5 (slept 10ms)", res.LatencyMs)
 	}
 	if res.Host != "1.2.3.4" || res.Port != 32100 {
-		t.Errorf("res = %+v, want host/port preserved", res)
+		t.Errorf("res = %+v, want host/port from arg", res)
 	}
 }
 
-func TestChassisProber_TimeoutSurfacesAsContextDeadlineExceeded(t *testing.T) {
+func TestChassisProber_ContextDeadlineExceededPassesThrough(t *testing.T) {
 	t.Parallel()
 	cp := &chassisProber{inner: &fakeUnderlyingProber{err: context.DeadlineExceeded}}
-	_, err := cp.ProbeMister(context.Background(), config.BridgeConfig{
-		MiSTer: config.MisterConfig{Host: "1.2.3.4", Port: 32100},
-	})
+	_, err := cp.ProbeMister(context.Background(), config.BridgeConfig{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// fakeNetTimeoutError mimics net.Error with Timeout()=true, which is what
+// the underlying bridgeMisterProber returns wrapped via fmt.Errorf.
+type fakeNetTimeoutError struct{}
+
+func (fakeNetTimeoutError) Error() string   { return "i/o timeout" }
+func (fakeNetTimeoutError) Timeout() bool   { return true }
+func (fakeNetTimeoutError) Temporary() bool { return false }
+
+func TestChassisProber_NetErrorTimeoutIsNormalizedToContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+	// Reproduce launcher.go:84-86's wrapping shape.
+	wrapped := errors.Join(
+		errors.New("status ack timeout after 1s"),
+		fakeNetTimeoutError{},
+	)
+	// Use the actual fmt.Errorf wrapping pattern the prober uses.
+	// The chassisProber must unwrap and detect the inner net.Error Timeout()
+	// and surface context.DeadlineExceeded.
+	cp := &chassisProber{inner: &fakeUnderlyingProber{err: wrapped}}
+	_, err := cp.ProbeMister(context.Background(), config.BridgeConfig{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded (normalized from net.Error timeout)", err)
+	}
+}
+
+func TestChassisProber_SocketErrorPassesThroughUnchanged(t *testing.T) {
+	t.Parallel()
+	cp := &chassisProber{inner: &fakeUnderlyingProber{err: errors.New("open UDP probe socket: bind: permission denied")}}
+	_, err := cp.ProbeMister(context.Background(), config.BridgeConfig{})
+	if err == nil {
+		t.Fatal("err = nil, want non-nil")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("socket error should NOT normalize to context.DeadlineExceeded")
 	}
 }
 
@@ -1692,39 +1726,60 @@ func TestChassisProber_SatisfiesChassisInterface(t *testing.T) {
 	t.Parallel()
 	var _ chassis.Prober = (*chassisProber)(nil)
 }
+
+// Compile-time check: chassisProber.inner accepts the real bridgeMisterProber
+// (which has Probe(ctx) error). If the underlying signature ever changes,
+// this fails to build first.
+func TestChassisProber_AcceptsBridgeMisterProber(t *testing.T) {
+	t.Parallel()
+	var _ underlyingProber = bridgeMisterProber{}
+}
+
+// Silence import "net" usage in the rare case the editor strips it.
+var _ net.Error = fakeNetTimeoutError{}
 ```
 
-- [ ] **Step 3: Run to confirm failure**
+- [ ] **Step 2: Run to confirm failure**
 
 Run: `go test ./cmd/mister-groovy-relay -run TestChassisProber -v`
 
-Expected: FAIL — `chassisProber` undefined.
+Expected: FAIL — `chassisProber`, `underlyingProber` undefined.
 
-- [ ] **Step 4: Implement the wrapper**
+- [ ] **Step 3: Implement the wrapper**
 
-Create [cmd/mister-groovy-relay/chassis_prober.go](../../../cmd/mister-groovy-relay/chassis_prober.go). Adjust the inner-prober method signature to match the real `bridgeMisterProber`:
+Create [cmd/mister-groovy-relay/chassis_prober.go](../../../cmd/mister-groovy-relay/chassis_prober.go):
 
 ```go
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
-// underlyingProber matches the shape of the existing bridgeMisterProber.
-// Defined as an interface in the wrapper (rather than concrete *bridgeMisterProber)
-// so chassis_prober_test.go can substitute a fake without spinning up sockets.
+// underlyingProber matches the shape of the existing bridgeMisterProber.Probe
+// in launcher.go. Defined as an interface here (rather than the concrete
+// type) so chassis_prober_test.go can substitute a fake without spinning up
+// sockets.
 type underlyingProber interface {
-	Probe(ctx context.Context, host string, port int) (time.Duration, error)
+	Probe(ctx context.Context) error
 }
 
 // chassisProber adapts the existing bridgeMisterProber to the chassis-side
 // chassis.Prober interface. The chassis package does not import groovynet
 // or any cmd-package types — this wrapper is the bridge.
+//
+// The underlying prober reads bridge.mister.{host,port,source_port=0}
+// internally from its captured ui.BridgeSaver and returns only an error.
+// This wrapper measures latency itself and normalizes net.Error timeouts
+// to context.DeadlineExceeded so the chassis handler's timeout branch
+// (errors.Is(err, context.DeadlineExceeded)) fires.
 type chassisProber struct {
 	inner underlyingProber
 }
@@ -1733,39 +1788,61 @@ func newChassisProber(inner underlyingProber) *chassisProber {
 	return &chassisProber{inner: inner}
 }
 
-// ProbeMister implements chassis.Prober. Uses BridgeConfig.MiSTer.{Host,Port}
-// from the live snapshot; the underlying prober binds an ephemeral source
-// port (not the live sender's bound source port), so this is safe to run
-// alongside an active cast as long as the underlying prober is.
+// ProbeMister implements chassis.Prober.
+//
+// The bridge argument supplies Host/Port for the response only — the
+// underlying prober uses its captured ui.BridgeSaver.Current(). In
+// production the chassis BridgeSettingsSaver and the underlying
+// prober's ui.BridgeSaver are the same instance, so the values match.
 func (p *chassisProber) ProbeMister(ctx context.Context, bridge config.BridgeConfig) (chassis.ProbeResult, error) {
-	latency, err := p.inner.Probe(ctx, bridge.MiSTer.Host, bridge.MiSTer.Port)
+	start := time.Now()
+	err := p.inner.Probe(ctx)
+	elapsed := time.Since(start)
 	if err != nil {
-		return chassis.ProbeResult{}, err
+		return chassis.ProbeResult{}, normalizeProbeError(err)
 	}
 	return chassis.ProbeResult{
-		LatencyMs: float64(latency) / float64(time.Millisecond),
+		LatencyMs: float64(elapsed) / float64(time.Millisecond),
 		Host:      bridge.MiSTer.Host,
 		Port:      bridge.MiSTer.Port,
 	}, nil
+}
+
+// normalizeProbeError unwraps net.Error timeouts (which bridgeMisterProber
+// wraps as `fmt.Errorf("status ack timeout after %s: %w", timeout, netErr)`)
+// to context.DeadlineExceeded so the chassis handler's timeout branch can
+// detect them with errors.Is. Other errors pass through unchanged.
+func normalizeProbeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		// Preserve the original chain so logs still get the underlying
+		// detail; the chassis handler only needs Is() to match.
+		return fmt.Errorf("%w: %w", context.DeadlineExceeded, err)
+	}
+	return err
 }
 
 // Compile-time conformance check.
 var _ chassis.Prober = (*chassisProber)(nil)
 ```
 
-If the actual `bridgeMisterProber.Probe` returns a different shape (e.g. a struct with multiple fields), adjust the `underlyingProber` interface and the `ProbeMister` body accordingly. The contract that matters: turn the underlying success into a `ProbeResult{LatencyMs, Host, Port}`; propagate errors unchanged.
-
-- [ ] **Step 5: Run to confirm pass**
+- [ ] **Step 4: Run to confirm pass**
 
 Run: `go test ./cmd/mister-groovy-relay -run TestChassisProber -v`
 
-Expected: PASS.
+Expected: all PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add cmd/mister-groovy-relay/chassis_prober.go cmd/mister-groovy-relay/chassis_prober_test.go
-git commit -m "feat(main): add chassisProber wrapper for the chassis.Prober interface"
+git commit -m "feat(main): add chassisProber wrapper with latency measurement and timeout normalization"
 ```
 
 ---
@@ -1954,7 +2031,7 @@ git commit -m "feat(chassis): add handleSettingsActionProbeMister handler"
 
 ---
 
-## Task 13: Mount Routes in `Server.RegisterRoutes`
+## Task 13: Mount Routes in `Server.Mount`
 
 **Files:**
 - Modify: `internal/chassis/server.go`
@@ -1965,7 +2042,7 @@ git commit -m "feat(chassis): add handleSettingsActionProbeMister handler"
 Append:
 
 ```go
-func TestRegisterRoutes_MountsBridgeAndProbeRoutes(t *testing.T) {
+func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	srv := &Server{cfg: Config{
@@ -1973,7 +2050,7 @@ func TestRegisterRoutes_MountsBridgeAndProbeRoutes(t *testing.T) {
 		BridgeSaver: fakeBridgeSettingsSaver{},
 		Prober:      fakeProber{},
 	}}
-	srv.RegisterRoutes(mux)
+	srv.Mount(mux)
 	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -1985,17 +2062,38 @@ func TestRegisterRoutes_MountsBridgeAndProbeRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	srv := &Server{cfg: Config{
+		Registry:    adapters.NewRegistry(),
+		BridgeSaver: fakeBridgeSettingsSaver{},
+		Prober:      fakeProber{},
+	}}
+	srv.Mount(mux)
+	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		// No Sec-Fetch-Site header — requireSameOrigin rejects.
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s without Sec-Fetch-Site -> %d, want 403", path, rec.Code)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: Run to confirm failure**
 
-Run: `go test ./internal/chassis -run TestRegisterRoutes_MountsBridgeAndProbeRoutes -v`
+Run: `go test ./internal/chassis -run TestMount_MountsBridgeAndProbeRoutes -v`
 
 Expected: FAIL — 404 for both routes.
 
 - [ ] **Step 3: Mount the routes**
 
-In [internal/chassis/server.go](../../../internal/chassis/server.go), find the existing `Server.RegisterRoutes` function and append the two new route handlers alongside the existing ones (line ~225-232 contains the chassis route registration block):
+In [internal/chassis/server.go](../../../internal/chassis/server.go), find the existing `Server.Mount` function (line ~218) and append the two new route handlers alongside the existing ones in the chassis route registration block (around lines 225-232):
 
 ```go
 mux.Handle("POST /receiver/settings/bridge",
@@ -2006,7 +2104,7 @@ mux.Handle("POST /receiver/settings/action/probe-mister",
 
 - [ ] **Step 4: Run to confirm pass**
 
-Run: `go test ./internal/chassis -run TestRegisterRoutes_MountsBridgeAndProbeRoutes -v && go test ./internal/chassis -count=1 ./...`
+Run: `go test ./internal/chassis -run TestMount_MountsBridgeAndProbeRoutes -v && go test ./internal/chassis -count=1 ./...`
 
 Expected: all PASS.
 
@@ -2026,7 +2124,7 @@ git commit -m "feat(chassis): mount /receiver/settings/{bridge,action/probe-mist
 
 - [ ] **Step 1: Find the chassis Config construction**
 
-Search in main.go for the existing `chassis.Config{` block. Note where `Registry`, `Sectioned`, `StreamsCatalogViewer`, `Manager`, etc. are passed in.
+Search in main.go for the existing `chassis.Config{` block. Note where `Registry`, `Bridge`, `Manager`, `StreamsCatalogViewer`, etc. are passed in. The `*config.Sectioned` is constructed at startup but only the `Bridge` field on it is passed into chassis (`chassis.Config` has no `Sectioned` field).
 
 - [ ] **Step 2: Find the existing BridgeSaver construction**
 
@@ -2194,10 +2292,10 @@ func stubHelper(id, title, spec string) stubPaneArgs {
 }
 ```
 
-And register them in the FuncMap (find the existing `template.FuncMap{...}` literal):
+And register them in the FuncMap by extending the existing package-level `var templateFuncs = template.FuncMap{...}` block (see [internal/chassis/templates.go:39](../../../internal/chassis/templates.go#L39)). Add these entries alongside the existing helpers:
 
 ```go
-FuncMap: template.FuncMap{
+var templateFuncs = template.FuncMap{
     // ... existing helpers ...
     "dict":                 dictHelper,
     "itoa":                 itoaHelper,
@@ -3028,7 +3126,7 @@ Append:
 ```go
 func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 	t.Parallel()
-	css, err := staticFS.ReadFile("static/chassis.css")
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
 	if err != nil {
 		t.Fatalf("read chassis.css: %v", err)
 	}
@@ -3067,7 +3165,7 @@ func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 }
 ```
 
-(The `staticFS` variable should already exist in the chassis package — adjust if it's named differently. Otherwise `os.ReadFile("internal/chassis/static/chassis.css")` works from the package test root.)
+(The `chassisStaticFS` embed variable is the same one all existing chassis tests use — see e.g., [chassis_test.go:560](../../../internal/chassis/chassis_test.go#L560).)
 
 - [ ] **Step 2: Run to confirm failure**
 
@@ -3304,7 +3402,7 @@ Append:
 ```go
 func TestSettingsDrawerJS_IsServedAsStaticFile(t *testing.T) {
 	t.Parallel()
-	b, err := staticFS.ReadFile("static/settings-drawer.js")
+	b, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
 	if err != nil {
 		t.Fatalf("read settings-drawer.js: %v", err)
 	}
@@ -3901,16 +3999,42 @@ Run: `go test -tags=integration ./tests/integration -run TestReceiverSettings -v
 
 Expected: tests run; some may need the chassis test environment to be updated to wire `BridgeSaver` and `Prober` (look at how `newChassisIntegrationEnv` constructs the chassis Config and add the new fields).
 
-- [ ] **Step 3: Wire `BridgeSaver` + (optionally fake) `Prober` into the integration env**
+- [ ] **Step 3: Wire `BridgeSaver` and a fake `Prober` into the integration env**
 
-Find `newChassisIntegrationEnv` or whatever constructor the integration tests use. Pass:
+Find `newChassisIntegrationEnv` in [tests/integration/chassis_test.go](../../../tests/integration/chassis_test.go) — this is where the chassis is wired against a tmp config and started for tests. The wiring today does not include `BridgeSaver` or `Prober`; both fields default to nil in `chassis.Config`, which the new handlers respond to with 503 NOT READY.
+
+For the Phase 4A tests we want the bridge POST tests to actually save (so they can assert disk + scope), but probe-mister stays at 503 NOT READY for now (no live MiSTer in the integration env). Extend the env constructor:
 
 ```go
-cfg.BridgeSaver = realBridgeSaver  // already constructed for the test env
-cfg.Prober = &fakeIntegrationProber{}  // optional; tests handle nil too
+// In newChassisIntegrationEnv (or its caller), after the tmp config.toml is
+// written and the chassis.Config is constructed, add:
+
+bridgeSaver := uiserver.NewBridgeSaver(
+    cfgPath,                  // the tmp config path the env already creates
+    sec,                      // the *config.Sectioned the env already parsed
+    fakeCoreForSettingsTests, // satisfies uiserver.Core; reuse existing helper or stub
+    reg,                      // the *adapters.Registry the env already has
+)
+chassisCfg.BridgeSaver = bridgeSaver
+
+// Prober left nil — probe tests assert 503 NOT READY in 4A. A later spec
+// (4B+) can wire a fake chassisProber when needed.
 ```
 
-Where `fakeIntegrationProber` is a small helper that returns a fixed `chassis.ProbeResult` or an error of choice.
+If `newChassisIntegrationEnv` doesn't already expose `cfgPath` / `sec` / `reg` to its body, refactor it minimally to capture those values before constructing `chassis.Config`. The legacy `/ui/*` tests in this file already construct `BridgeSaver` against a similar fixture; reuse their pattern.
+
+If no suitable `fakeCoreForSettingsTests` exists in this package, define a minimal one inline:
+
+```go
+type fakeCoreForSettingsTests struct{}
+
+func (fakeCoreForSettingsTests) UpdateBridge(b config.BridgeConfig)         {}
+func (fakeCoreForSettingsTests) SetInterlaceFieldOrder(order string) error  { return nil }
+func (fakeCoreForSettingsTests) SetOutputVolume(volume int) error           { return nil }
+func (fakeCoreForSettingsTests) DropActiveCast(reason string) error         { return nil }
+```
+
+This is enough to satisfy the `uiserver.Core` interface (see [internal/uiserver/bridge_saver.go:35-40](../../../internal/uiserver/bridge_saver.go#L35-L40)) for tests that don't exercise core-side dispatch.
 
 - [ ] **Step 4: Run all integration tests**
 
