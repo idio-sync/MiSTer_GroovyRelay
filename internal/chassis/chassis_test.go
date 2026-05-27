@@ -2865,3 +2865,45 @@ func TestPresetBankTemplate_EmitsCatalogTreeTemplatesPerProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestShellTemplate_LoadsNew3BScripts(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`/receiver/static/source-cluster.js?v=`,
+		`/receiver/static/catalog-browser.js?v=`,
+		`/receiver/static/preset-reorder.js?v=`,
+		`/receiver/static/search-filter.js?v=`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("shell.html missing %q script tag", want)
+		}
+	}
+	// Required order: chassis.js → vfd-live.js → source-cluster.js →
+	// preset-bank.js → catalog-browser.js → preset-reorder.js → search-filter.js.
+	order := []string{
+		"chassis.js",
+		"vfd-live.js",
+		"source-cluster.js",
+		"preset-bank.js",
+		"catalog-browser.js",
+		"preset-reorder.js",
+		"search-filter.js",
+	}
+	lastIdx := -1
+	for _, name := range order {
+		idx := strings.Index(html, name)
+		if idx < 0 {
+			t.Errorf("script %s missing from shell.html", name)
+			continue
+		}
+		if idx < lastIdx {
+			t.Errorf("script %s appears before its predecessor in shell.html", name)
+		}
+		lastIdx = idx
+	}
+}
