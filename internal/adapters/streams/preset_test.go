@@ -129,3 +129,52 @@ func TestCastPreset_SuccessfulSlotForwardsToFakeCore(t *testing.T) {
 		t.Errorf("lastReq.AdapterRef = %q, want prefix streams:cartoon-rewind:heman:", core.lastReq.AdapterRef)
 	}
 }
+
+func TestSetPresetStarred_DelegatesToStore(t *testing.T) {
+	t.Parallel()
+	a := newTestAdapterWithCatalog(t)
+	// Remove an existing default, then add it back.
+	res, err := a.SetPresetStarred(context.Background(), "mtv-rewind", "1stday", false)
+	if err != nil {
+		t.Fatalf("SetPresetStarred remove: %v", err)
+	}
+	if res.Starred || len(res.Cleared) != 1 {
+		t.Errorf("remove res = %+v, want Starred=false Cleared=[1]", res)
+	}
+	res, err = a.SetPresetStarred(context.Background(), "mtv-rewind", "1stday", true)
+	if err != nil {
+		t.Fatalf("SetPresetStarred add: %v", err)
+	}
+	if !res.Starred || res.Slot != 1 {
+		t.Errorf("add res = %+v, want Starred=true Slot=1", res)
+	}
+}
+
+func TestMovePreset_DelegatesToStore(t *testing.T) {
+	t.Parallel()
+	a := newTestAdapterWithCatalog(t)
+	pre := a.Presets()
+	if err := a.MovePreset(context.Background(), 1, 7); err != nil {
+		t.Fatalf("MovePreset: %v", err)
+	}
+	post := a.Presets()
+	if post[0].ChannelID != pre[6].ChannelID || post[6].ChannelID != pre[0].ChannelID {
+		t.Errorf("swap incomplete: pre[1]=%q pre[7]=%q post[1]=%q post[7]=%q",
+			pre[0].ChannelID, pre[6].ChannelID, post[0].ChannelID, post[6].ChannelID)
+	}
+}
+
+func TestPresets_ReadsFromStore(t *testing.T) {
+	t.Parallel()
+	a := newTestAdapterWithCatalog(t)
+	// Snapshot before & after a mutation diverge — proves Presets reads
+	// the store, not the bundledChassisPresets literal.
+	pre := a.Presets()
+	if _, err := a.SetPresetStarred(context.Background(), "mtv-rewind", "1stday", false); err != nil {
+		t.Fatalf("SetPresetStarred: %v", err)
+	}
+	post := a.Presets()
+	if pre[0].ProviderID == post[0].ProviderID {
+		t.Errorf("Presets did not reflect mutation: pre[1]=%+v post[1]=%+v", pre[0], post[0])
+	}
+}
