@@ -961,7 +961,7 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 		`<div class="input-panel" style="flex:1">`,
 		`id="paste-clear" type="button"`,
 		`id="torrent-file-input"`,
-		`class="source-cluster" role="radiogroup" aria-label="Media source"`,
+		`class="source-cluster" role="group" aria-label="Media source"`,
 		`data-source-action="aux-start"`,
 		`class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>`,
 		`class="preset empty"`,
@@ -2617,4 +2617,92 @@ func TestConfig_AcceptsNew3BInterfaces(t *testing.T) {
 		PresetEditor:              nil,
 		SourceAvailabilityViewers: nil,
 	}
+}
+
+func TestSourceClusterTemplate_LampSlotsForEmptyAction(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`<div class="lamp`,
+		`data-source-id="streams"`,
+		`data-source-id="plex"`,
+		`data-source-id="jellyfin"`,
+		`data-source-id="dlna"`,
+		`class="hw-btn`, // AUX still renders as hw-btn
+		`data-source-action="aux-start"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("source-cluster html missing %q", want)
+		}
+	}
+}
+
+func TestSourceClusterTemplate_LampClassReflectsState(t *testing.T) {
+	t.Parallel()
+	// Build a snapshot with STREAMS=Configured+Casting, PLEX=Configured, others unavailable.
+	srv := newTestServerWithLampState(t,
+		map[string]bool{"streams": true, "plex": true},
+		"streams:mtv-rewind:80s:abc:def",
+	)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	// STREAMS lamp must carry configured-idle AND casting classes.
+	if !strings.Contains(html, `class="lamp configured-idle casting"`) {
+		t.Errorf("STREAMS lamp missing configured-idle+casting classes: %s", excerpt(html, "STREAMS"))
+	}
+	// PLEX lamp configured-idle only.
+	if !strings.Contains(html, `class="lamp configured-idle"`) {
+		t.Errorf("PLEX lamp missing configured-idle class: %s", excerpt(html, "PLEX"))
+	}
+}
+
+// newTestServerWithLampState constructs a chassis server with the
+// supplied SourceAvailabilityViewers and a synthetic SessionViewer that
+// returns the given adapterRef. Reuses the existing fakeSessionViewer
+// helper type (which takes a full core.StatusHomeView, not just a ref).
+func newTestServerWithLampState(t *testing.T, configured map[string]bool, adapterRef string) *Server {
+	t.Helper()
+	cfg := nonZeroConfig()
+	var viewers []adapters.SourceAvailabilityViewer
+	for _, id := range []string{"streams", "plex", "jellyfin", "dlna"} {
+		viewers = append(viewers, fakeSourceViewer{id: id, configured: boolToYesNo(configured[id])})
+	}
+	cfg.SourceAvailabilityViewers = viewers
+	cfg.Session = &fakeSessionViewer{view: core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef}}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	return srv
+}
+
+func boolToYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// excerpt extracts a short region of html around a keyword for error logs.
+func excerpt(html, kw string) string {
+	i := strings.Index(html, kw)
+	if i < 0 {
+		return "<keyword not found>"
+	}
+	start := i - 80
+	if start < 0 {
+		start = 0
+	}
+	end := i + 120
+	if end > len(html) {
+		end = len(html)
+	}
+	return html[start:end]
 }

@@ -1,6 +1,28 @@
 {{define "source-cluster"}}
 {{htmlComment "chassis:source-cluster"}}
-<div class="source-cluster" role="radiogroup" aria-label="Media source">
-  {{range .Buttons}}<button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}" type="button" role="radio" aria-checked="{{if .Active}}true{{else}}false{{end}}" aria-disabled="{{if .Unavailable}}true{{else}}false{{end}}" data-source-action="{{.Action}}" data-input-id="{{.InputID}}"{{if .Unavailable}} disabled{{end}} aria-label="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}" title="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}">{{.Label}}</button>{{end}}
+<div class="source-cluster" role="group" aria-label="Media source">
+  {{- range .Buttons -}}
+  {{- if eq .Action "" -}}
+    <div class="lamp{{if .Configured}} configured-idle{{end}}{{if .Casting}} casting{{end}}"
+         data-source-id="{{lower .Label}}"
+         role="status"
+         aria-label="{{.Label}}{{if .Casting}}, currently casting{{else if .Configured}}, ready{{else}}, not configured{{end}}"
+         title="{{.Label}} - {{if .Casting}}currently casting{{else if .Configured}}linked, idle{{else}}not configured{{end}}">
+      <span class="led" aria-hidden="true"></span>
+      <span class="name">{{.Label}}</span>
+    </div>
+  {{- else -}}
+    <button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}"
+            type="button"
+            role="radio"
+            aria-checked="{{if .Active}}true{{else}}false{{end}}"
+            aria-disabled="{{if .Unavailable}}true{{else}}false{{end}}"
+            data-source-action="{{.Action}}"
+            data-input-id="{{.InputID}}"
+            {{- if .Unavailable}} disabled{{end}}
+            aria-label="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}"
+            title="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}">{{.Label}}</button>
+  {{- end -}}
+  {{- end -}}
 </div>
 {{end}}
