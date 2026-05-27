@@ -10,8 +10,11 @@ package chassis
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -284,4 +287,93 @@ func isValidHostname(s string) bool {
 		}
 	}
 	return true
+}
+
+// handleSettingsBridgePost is the POST handler for /receiver/settings/bridge.
+// Accepts any subset of the supported form fields; missing keys mean "do
+// not change that field." See the spec's Wire Contract for the response
+// envelope.
+func (s *Server) handleSettingsBridgePost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.BridgeSaver == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	touched := map[string]string{}
+	for name := range bridgeFieldDecoders {
+		if vals, ok := r.PostForm[name]; ok && len(vals) > 0 {
+			touched[name] = vals[0]
+		}
+	}
+	if len(touched) == 0 {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+
+	// Decode all touched fields; collect all errors.
+	decoded := map[string]any{}
+	errs := map[string]string{}
+	for name, raw := range touched {
+		dec := bridgeFieldDecoders[name]
+		v, err := dec(raw)
+		if err != nil {
+			errs[name] = err.Error()
+			continue
+		}
+		decoded[name] = v
+	}
+	if len(errs) > 0 {
+		writeSettingsFieldErrors(w, http.StatusBadRequest, errs)
+		return
+	}
+
+	// Compose the patch: start from BridgeSaver.Current() (NOT startup
+	// cfg.Bridge — otherwise the drawer can go stale after the first
+	// save), overlay decoded touched fields.
+	patch := s.cfg.BridgeSaver.Current()
+	for name, value := range decoded {
+		bridgeFieldOverlays[name](&patch, value)
+	}
+
+	scope, err := s.cfg.BridgeSaver.Save(patch)
+	if err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+
+	label, ok := scopeLabel(scope)
+	if !ok {
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, label)
+}
+
+// writeSettingsSuccess emits {"ok":true,"scope":"<label>"} with status 200.
+func writeSettingsSuccess(w http.ResponseWriter, scope string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "scope": scope})
+}
+
+// writeSettingsChip emits {"ok":false,"chip":"<chip>"} with the given status.
+func writeSettingsChip(w http.ResponseWriter, status int, chip string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "chip": chip})
+}
+
+// writeSettingsFieldErrors emits {"ok":false,"errors":{...}} with the given status.
+func writeSettingsFieldErrors(w http.ResponseWriter, status int, errs map[string]string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "errors": errs})
 }

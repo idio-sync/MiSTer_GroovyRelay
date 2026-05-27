@@ -2,7 +2,11 @@ package chassis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -308,5 +312,171 @@ func TestBridgeFieldScopes_NetworkPaneIsRebootOrHot(t *testing.T) {
 		if got := bridgeFieldScopes[name]; got != wantScope {
 			t.Errorf("scope[%s] = %v, want %v", name, got, wantScope)
 		}
+	}
+}
+
+func newTestServerWithSaver(t *testing.T, saver BridgeSettingsSaver) *Server {
+	t.Helper()
+	return &Server{cfg: Config{
+		BridgeSaver: saver,
+		Registry:    adapters.NewRegistry(),
+		Bridge:      config.BridgeConfig{MiSTer: config.MisterConfig{Host: "old", Port: 32100, SourcePort: 32101}},
+	}}
+}
+
+func postBridge(t *testing.T, srv *Server, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/bridge",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	srv.handleSettingsBridgePost(rec, req)
+	return rec
+}
+
+func TestHandleSettingsBridgePost_HotSwapSuccess(t *testing.T) {
+	t.Parallel()
+	var called bool
+	toolPath := tempExecutable(t, "ffmpeg")
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(c config.BridgeConfig) (adapters.ApplyScope, error) {
+			called = true
+			if c.FFmpegPath != toolPath {
+				t.Errorf("FFmpegPath = %q, want %q", c.FFmpegPath, toolPath)
+			}
+			return adapters.ScopeHotSwap, nil
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{"ffmpeg_path": {toolPath}})
+	if rec.Code != 200 {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatalf("saver.Save was not called")
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ok"] != true || body["scope"] != "hot" {
+		t.Errorf("body = %+v, want {ok:true, scope:\"hot\"}", body)
+	}
+}
+
+func TestHandleSettingsBridgePost_RebootScope(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+			return adapters.ScopeRestartBridge, nil
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{"mister_host": {"192.168.1.42"}})
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["scope"] != "reboot" {
+		t.Errorf("scope = %v, want reboot", body["scope"])
+	}
+}
+
+func TestHandleSettingsBridgePost_FieldValidationError(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+			t.Fatalf("saver must not be called on field-validation error")
+			return 0, nil
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{"mister_host": {""}})
+	if rec.Code != 400 {
+		t.Fatalf("Code = %d, want 400", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs, ok := body["errors"].(map[string]any)
+	if !ok {
+		t.Fatalf("errors not present in body: %s", rec.Body.String())
+	}
+	if msg, _ := errs["mister_host"].(string); !strings.Contains(msg, "is required") {
+		t.Errorf("errors[mister_host] = %v, want substring 'is required'", errs["mister_host"])
+	}
+}
+
+func TestHandleSettingsBridgePost_MultipleFieldErrors(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{
+		"mister_host": {""},
+		"mister_port": {"99999"},
+	})
+	if rec.Code != 400 {
+		t.Fatalf("Code = %d, want 400", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs := body["errors"].(map[string]any)
+	if _, ok := errs["mister_host"]; !ok {
+		t.Errorf("missing mister_host error")
+	}
+	if _, ok := errs["mister_port"]; !ok {
+		t.Errorf("missing mister_port error")
+	}
+}
+
+func TestHandleSettingsBridgePost_EmptyBodyReturns400BadInput(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{})
+	rec := postBridge(t, srv, url.Values{})
+	if rec.Code != 400 {
+		t.Fatalf("Code = %d, want 400", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["chip"] != "BAD INPUT" {
+		t.Errorf("chip = %v, want BAD INPUT", body["chip"])
+	}
+}
+
+func TestHandleSettingsBridgePost_NilSaverReturns503(t *testing.T) {
+	t.Parallel()
+	srv := &Server{cfg: Config{Registry: adapters.NewRegistry()}}
+	rec := postBridge(t, srv, url.Values{"mister_host": {"1.2.3.4"}})
+	if rec.Code != 503 {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleSettingsBridgePost_PreflightChipError(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+			return 0, &fakeSettingsChipError{status: 409, chip: "PORT IN USE"}
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{"ui_http_port": {"32500"}})
+	if rec.Code != 409 {
+		t.Fatalf("Code = %d, want 409", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["chip"] != "PORT IN USE" {
+		t.Errorf("chip = %v, want PORT IN USE", body["chip"])
+	}
+}
+
+func TestHandleSettingsBridgePost_UnknownScopeReturns500(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+			return adapters.ApplyScope(99), nil
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{"mister_host": {"1.2.3.4"}})
+	if rec.Code != 500 {
+		t.Fatalf("Code = %d, want 500", rec.Code)
 	}
 }
