@@ -62,7 +62,7 @@ func TestChassisCSS_RulesetCountSanity(t *testing.T) {
 	// branch is a staged Phase 0 port. The current parser count is 476
 	// scoped non-keyframe rulesets, so 450 leaves room for small cleanup
 	// while still catching accidental truncation or a dropped CSS section.
-	const minRulesets = 450
+	const minRulesets = 485
 	if count < minRulesets {
 		t.Errorf("chassis.css has %d rulesets, want at least %d for the staged Phase 0 port", count, minRulesets)
 	}

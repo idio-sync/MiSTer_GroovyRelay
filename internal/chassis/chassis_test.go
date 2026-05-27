@@ -3031,3 +3031,87 @@ func TestSearchFilterJS_TogglesFilterMissClass(t *testing.T) {
 		}
 	}
 }
+
+func TestChassisCSS_AddsLampRules(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"body.receiver .source-cluster .lamp",
+		"body.receiver .source-cluster .lamp .led",
+		"body.receiver .source-cluster .lamp .name",
+		"body.receiver .source-cluster .lamp.configured-idle .led",
+		"body.receiver .source-cluster .lamp.casting .led",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chassis.css missing lamp selector %q", want)
+		}
+	}
+}
+
+func TestChassisCSS_AddsCatalogDrawerRules(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"body.receiver .catalog-drawer",
+		"body.receiver .catalog-browser",
+		"body.receiver .catalog-provider-tabs",
+		"body.receiver .catalog-tab-indicator",
+		"body.receiver .catalog-rail",
+		"body.receiver .catalog-grid",
+		"body.receiver .ch-card",
+		"body.receiver .ch-card .star",
+		"body.receiver .ch-card.tuned",
+		"body.receiver .ch-card.starred",
+		"body.receiver .ch-card.live",
+		"@keyframes ch-card-in",
+		"@keyframes rail-in",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chassis.css missing catalog drawer selector %q", want)
+		}
+	}
+}
+
+func TestChassisCSS_AddsDragReorderRules(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		`body.receiver .preset[data-dragging="source"]`,
+		"body.receiver .preset.drop-target",
+		"body.receiver .preset-drag-clone",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chassis.css missing drag selector %q", want)
+		}
+	}
+}
+
+func TestChassisCSS_AddsSearchFilterRules(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"body.receiver .search-field",
+		"body.receiver .search-field.has-value",
+		"body.receiver .filter-miss:not(.tuned)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("chassis.css missing search filter selector %q", want)
+		}
+	}
+}
