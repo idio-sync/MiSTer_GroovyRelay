@@ -3147,3 +3147,57 @@ func TestConfig_AcceptsBridgeSaverAndProber(t *testing.T) {
 		t.Errorf("Prober = nil after assign")
 	}
 }
+
+func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	srv, err := New(Config{
+		Version:     "test",
+		StartedAt:   time.Now(),
+		Registry:    adapters.NewRegistry(),
+		BridgeSaver: fakeBridgeSettingsSaver{},
+		Prober:      fakeProber{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.Close()
+	srv.Mount(mux)
+	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+			t.Errorf("%s -> %d (not mounted)", path, rec.Code)
+		}
+	}
+}
+
+func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	srv, err := New(Config{
+		Version:     "test",
+		StartedAt:   time.Now(),
+		Registry:    adapters.NewRegistry(),
+		BridgeSaver: fakeBridgeSettingsSaver{},
+		Prober:      fakeProber{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.Close()
+	srv.Mount(mux)
+	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		// No Sec-Fetch-Site header — requireSameOrigin rejects.
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s without Sec-Fetch-Site -> %d, want 403", path, rec.Code)
+		}
+	}
+}
