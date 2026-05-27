@@ -53,10 +53,6 @@ type VFDData struct {
 }
 
 const (
-	SourceActionStreams  = "streams"
-	SourceActionPlex     = "plex"
-	SourceActionJellyfin = "jellyfin"
-	SourceActionDLNA     = "dlna"
 	SourceActionAUXStart = "aux-start"
 )
 
@@ -65,9 +61,17 @@ type SourceData struct {
 	Buttons []SourceButton
 }
 
-// SourceButton represents one hardware-style button in the source
-// cluster. Active means this tab is currently selected for browsing;
-// Lit means this source is currently casting.
+// SourceButton represents one entry in the source cluster. AUX renders
+// as an hw-btn (Action != ""); STREAMS/PLEX/JELLYFIN/DLNA render as
+// indicator lamps (Action == ""). The lamp fields Configured and
+// Casting drive three visual states:
+//
+//	Configured=false → unavailable (lamp dark)
+//	Configured=true, Casting=false → idle (lamp dim amber)
+//	Configured=true, Casting=true  → active (lamp bright green)
+//
+// Active / Lit / Unavailable / InputID remain in use for AUX only;
+// lamp slots leave them at the zero value.
 type SourceButton struct {
 	Label       string
 	Active      bool
@@ -75,6 +79,9 @@ type SourceButton struct {
 	Unavailable bool
 	Action      string
 	InputID     string
+
+	Configured bool // lamp slots only — adapter is linked/enabled
+	Casting    bool // lamp slots only — this source matches transport.AdapterRef
 }
 
 func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter) {
@@ -287,11 +294,11 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 		},
 		Source: SourceData{
 			Buttons: []SourceButton{
-				{Label: "STREAMS", Active: true, Lit: false, Action: SourceActionStreams},
-				{Label: "PLEX", Active: false, Lit: false, Action: SourceActionPlex},
-				{Label: "JELLYFIN", Active: false, Lit: false, Action: SourceActionJellyfin},
-				{Label: "DLNA", Active: false, Lit: false, Action: SourceActionDLNA},
-				{Label: "AUX", Active: false, Lit: false, Action: SourceActionAUXStart},
+				{Label: "STREAMS"}, // lamp slot — Action="" routes through applySourceLampState
+				{Label: "PLEX"},
+				{Label: "JELLYFIN"},
+				{Label: "DLNA"},
+				{Label: "AUX", Action: SourceActionAUXStart},
 			},
 		},
 		Meter: MeterData{
@@ -423,6 +430,54 @@ func parseStreamsAdapterRef(ref string) (providerID, channelID string) {
 		return "", ""
 	}
 	return parts[1], parts[2]
+}
+
+// parseAdapterRefSource extracts the leading source identifier from
+// an AdapterRef ("streams:..." → "streams", "plex:..." → "plex",
+// etc.). Returns "" for empty or unknown-format refs. Mirrors the
+// chassis source-cluster lamp identifier set.
+func parseAdapterRefSource(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	colon := strings.IndexByte(ref, ':')
+	if colon <= 0 {
+		return ""
+	}
+	switch ref[:colon] {
+	case "streams", "plex", "jellyfin", "dlna":
+		return ref[:colon]
+	}
+	return ""
+}
+
+// applySourceLampState populates Configured + Casting on every lamp
+// slot in base.Source.Buttons (Action == "") using the supplied viewers
+// for Configured() and the AdapterRef prefix for Casting. AUX
+// (Action != "") is left untouched — applyAUXSourceState owns that
+// state. Safe to call with nil viewers; lamps stay at zero (lamp dark).
+func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvailabilityViewer, adapterRef string) {
+	if base == nil {
+		return
+	}
+	castingSource := parseAdapterRefSource(adapterRef)
+	configured := map[string]bool{}
+	for _, v := range viewers {
+		if v == nil {
+			continue
+		}
+		configured[v.SourceID()] = v.Configured()
+	}
+	for i := range base.Source.Buttons {
+		b := &base.Source.Buttons[i]
+		if b.Action != "" {
+			// AUX slot — leave alone.
+			continue
+		}
+		id := strings.ToLower(b.Label)
+		b.Configured = configured[id]
+		b.Casting = id == castingSource && id != ""
+	}
 }
 
 // formatUptime turns a duration into the "NH NM" string used by the VFD.

@@ -75,22 +75,27 @@ func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testin
 	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
 	env := sourceEnvelopeFromSnapshot(data)
 
+	// Lamp slots (STREAMS/PLEX/JELLYFIN/DLNA) render as indicator
+	// lamps with empty Action; only AUX retains a non-empty Action
+	// so it renders as a clickable hw-btn.
 	wantActions := map[string]string{
-		"STREAMS":  "streams",
-		"PLEX":     "plex",
-		"JELLYFIN": "jellyfin",
-		"DLNA":     "dlna",
+		"STREAMS":  "",
+		"PLEX":     "",
+		"JELLYFIN": "",
+		"DLNA":     "",
 		"AUX":      "aux-start",
 	}
 	if len(env.Buttons) != len(wantActions) {
 		t.Fatalf("source envelope button count = %d, want %d: %+v", len(env.Buttons), len(wantActions), env.Buttons)
 	}
 	for _, button := range env.Buttons {
-		if button.Action == "" {
-			t.Fatalf("source envelope button %q has empty action; payload=%+v", button.Label, env.Buttons)
+		want, ok := wantActions[button.Label]
+		if !ok {
+			t.Errorf("source envelope unexpected button %q", button.Label)
+			continue
 		}
-		if got, want := button.Action, wantActions[button.Label]; got != want {
-			t.Errorf("source envelope action for %q = %q, want %q", button.Label, got, want)
+		if button.Action != want {
+			t.Errorf("source envelope action for %q = %q, want %q", button.Label, button.Action, want)
 		}
 		delete(wantActions, button.Label)
 	}
