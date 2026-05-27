@@ -2606,3 +2606,18 @@ func TestChassisCSS_AddsCastRules(t *testing.T) {
 		}
 	}
 }
+
+func TestConfig_AcceptsNew3BInterfaces(t *testing.T) {
+	t.Parallel()
+	// Compile-time conformance: this test fails to build if any of the
+	// new fields are missing from chassis.Config.
+	var _ = Config{
+		Bridge:                    config.BridgeConfig{},
+		Version:                   "x",
+		StartedAt:                 time.Now(),
+		StreamsCatalogViewer:      nil,
+		StreamsCaster:             nil,
+		PresetEditor:              nil,
+		SourceAvailabilityViewers: nil,
+	}
+}

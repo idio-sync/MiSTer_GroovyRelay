@@ -67,6 +67,22 @@ type Config struct {
 	// PresetCaster is the optional handler for preset slot clicks.
 	// When nil, POST /receiver/preset/{slot}/cast returns 404.
 	PresetCaster adapters.PresetCaster
+
+	// StreamsCatalogViewer / StreamsCaster: the streams adapter wired
+	// through these so the chassis can render the catalog drawer and
+	// fire channel casts without importing internal/adapters/streams.
+	StreamsCatalogViewer adapters.StreamsCatalogViewer
+	StreamsCaster        adapters.StreamsCaster
+
+	// PresetEditor: streams adapter for star-toggle and move operations.
+	PresetEditor adapters.PresetEditor
+
+	// SourceAvailabilityViewers: every adapter that implements the
+	// interface, in registration order. main.go assembles the slice
+	// from the registry. The chassis does NOT inspect the registry
+	// directly for source-lamp state — passing the typed slice keeps
+	// import_check_test.go happy.
+	SourceAvailabilityViewers []adapters.SourceAvailabilityViewer
 }
 
 // Server owns the chassis runtime state.
@@ -90,6 +106,11 @@ type Server struct {
 	aux              AUXStarter
 	presetViewer     adapters.PresetViewer
 	presetCaster     adapters.PresetCaster
+
+	streamsCatalogViewer adapters.StreamsCatalogViewer
+	streamsCaster        adapters.StreamsCaster
+	presetEditor         adapters.PresetEditor
+	sourceViewers        []adapters.SourceAvailabilityViewer
 
 	cache       *snapshotCache
 	cacheOnce   sync.Once          // Mount starts the refresher exactly once
@@ -120,25 +141,29 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:                 cfg,
-		session:             cfg.Session,
-		tmpl:                tmpl,
-		cssBytes:            cssBytes,
-		meter:               newMeterSampler(),
-		overlayPanics:       newOverlayPanicLimiter(),
-		transportViewer:     cfg.TransportViewer,
-		transportController: cfg.TransportController,
-		visualizerViewer:    cfg.VisualizerViewer,
-		visualizerSaver:     cfg.VisualizerSaver,
-		volumeViewer:        cfg.VolumeViewer,
-		volumeSaver:         cfg.VolumeSaver,
-		audioScopeViewer:    cfg.AudioScopeViewer,
-		aux:                 cfg.AUX,
-		presetViewer:        cfg.PresetViewer,
-		presetCaster:        cfg.PresetCaster,
-		cache:               &snapshotCache{},
-		cacheDone:           make(chan struct{}),
-		meterRefusalLog:     &onePerSecondLimiter{},
+		cfg:                  cfg,
+		session:              cfg.Session,
+		tmpl:                 tmpl,
+		cssBytes:             cssBytes,
+		meter:                newMeterSampler(),
+		overlayPanics:        newOverlayPanicLimiter(),
+		transportViewer:      cfg.TransportViewer,
+		transportController:  cfg.TransportController,
+		visualizerViewer:     cfg.VisualizerViewer,
+		visualizerSaver:      cfg.VisualizerSaver,
+		volumeViewer:         cfg.VolumeViewer,
+		volumeSaver:          cfg.VolumeSaver,
+		audioScopeViewer:     cfg.AudioScopeViewer,
+		aux:                  cfg.AUX,
+		presetViewer:         cfg.PresetViewer,
+		presetCaster:         cfg.PresetCaster,
+		streamsCatalogViewer: cfg.StreamsCatalogViewer,
+		streamsCaster:        cfg.StreamsCaster,
+		presetEditor:         cfg.PresetEditor,
+		sourceViewers:        cfg.SourceAvailabilityViewers,
+		cache:                &snapshotCache{},
+		cacheDone:            make(chan struct{}),
+		meterRefusalLog:      &onePerSecondLimiter{},
 	}
 	// Seed the cache synchronously so the first SSE connection always
 	// sees a coherent snapshot — no zero-value VFD or stale state.
