@@ -2973,3 +2973,61 @@ func TestCatalogBrowserJS_ExistsAndIntegrationPoints(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetReorderJS_PointerEventsAndMoveRoute(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/preset-reorder.js")
+	if err != nil {
+		t.Fatalf("ReadFile preset-reorder.js: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"pointerdown",
+		"pointermove",
+		"pointerup",
+		"/receiver/preset/move",
+		"Ctrl",
+		"ArrowLeft",
+		"ArrowRight",
+		"Escape",
+		"swapVisual",
+		"revert",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("preset-reorder.js missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"draggable=\"true\"", "dragstart"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("preset-reorder.js uses HTML5 native DnD %q (must be pointer-based)", forbidden)
+		}
+	}
+}
+
+func TestSearchFilterJS_TogglesFilterMissClass(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/search-filter.js")
+	if err != nil {
+		t.Fatalf("ReadFile search-filter.js: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"#search-input",
+		"filter-miss",
+		"Escape",
+		`subscribe('presets'`,
+		"chassis:catalog-grid-changed",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("search-filter.js missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`style.opacity`,
+		`style.pointerEvents`,
+	} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("search-filter.js uses inline-style %q (must toggle classes only)", forbidden)
+		}
+	}
+}
