@@ -112,14 +112,17 @@ func TestVerifyCastTabBindings_MissingAdapterFails(t *testing.T) {
 	if err := reg.Register(urlAdapterStub{}); err != nil {
 		t.Fatal(err)
 	}
-	// No torrent adapter registered — castKindToTab["magnet"] -> torrent-magnet
-	// should not resolve.
+	// No torrent adapter registered — both castKindToTab["magnet"] and
+	// ["file"] reference torrent-* tabs that won't resolve. We assert
+	// only that the error names a torrent tab; which one is reported
+	// first depends on sortedKeys order, which is an implementation
+	// detail the test should not couple to.
 	err := VerifyCastTabBindings(reg)
 	if err == nil {
 		t.Fatal("VerifyCastTabBindings = nil, want missing-tab error")
 	}
-	if !strings.Contains(err.Error(), "torrent-magnet") {
-		t.Errorf("err = %v, want mention of torrent-magnet", err)
+	if !strings.Contains(err.Error(), "torrent-") {
+		t.Errorf("err = %v, want mention of a torrent-* tab", err)
 	}
 }
 

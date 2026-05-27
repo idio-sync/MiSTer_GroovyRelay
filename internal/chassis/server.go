@@ -183,7 +183,7 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 		audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
 		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, audioLive, now)
 		applyAUXSourceState(&base, s.aux)
-		applySourceLampState(&base, s.cfg.SourceAvailabilityViewers, "")
+		applySourceLampState(&base, s.sourceViewers, "")
 		base.Visualizer.ActiveMode = liveVisualizerMode(s.cfg, s.visualizerViewer)
 		// idleSnapshot already seeded Transport.OutputVolume from cfg; a
 		// non-nil volumeViewer overrides with the live value so the knob

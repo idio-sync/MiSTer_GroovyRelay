@@ -1189,20 +1189,20 @@ func (streamsStub) Presets() [12]adapters.PresetEntry {
 	return out
 }
 
-// fakeStreamsCaster records CastPreset calls and satisfies adapters.PresetCaster.
-type fakeStreamsCaster struct {
+// fakePresetCaster records CastPreset calls and satisfies adapters.PresetCaster.
+type fakePresetCaster struct {
 	mu    sync.Mutex
 	slots []int
 }
 
-func (s *fakeStreamsCaster) CastPreset(_ context.Context, slot int) error {
+func (s *fakePresetCaster) CastPreset(_ context.Context, slot int) error {
 	s.mu.Lock()
 	s.slots = append(s.slots, slot)
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *fakeStreamsCaster) lastSlot() int {
+func (s *fakePresetCaster) lastSlot() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.slots) == 0 {
@@ -1213,11 +1213,11 @@ func (s *fakeStreamsCaster) lastSlot() int {
 
 // buildFakeRegistry creates a registry with url, torrent, and (optionally)
 // streams stubs that record calls, returning the stubs for assertion.
-func buildFakeRegistry(t *testing.T) (*adapters.Registry, *fakeURLStub, *fakeTorrentStub, *fakeStreamsCaster) {
+func buildFakeRegistry(t *testing.T) (*adapters.Registry, *fakeURLStub, *fakeTorrentStub, *fakePresetCaster) {
 	t.Helper()
 	urlCalls := &fakeURLStub{}
 	torrentCalls := &fakeTorrentStub{}
-	streamsCalls := &fakeStreamsCaster{}
+	streamsCalls := &fakePresetCaster{}
 
 	reg := adapters.NewRegistry()
 	if err := reg.Register(urlCalls); err != nil {
@@ -1460,8 +1460,8 @@ func collectClasses(n *html.Node) map[string]bool {
 // renders surface the .casting lamp and .lit preset without needing a live
 // core.Manager session.
 //
-// The name is intentionally distinct from the existing fakeStreamsCaster
-// (which satisfies PresetCaster, NOT StreamsCaster).
+// The name is intentionally distinct from fakePresetCaster (which
+// satisfies PresetCaster, NOT StreamsCaster).
 type recordingStreamsCaster struct {
 	mu              sync.Mutex
 	session         *fakeIntegrationSession

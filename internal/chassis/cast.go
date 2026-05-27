@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -272,12 +273,17 @@ func VerifyCastTabBindings(reg *adapters.Registry) error {
 			tabs[t.ID] = idx
 		}
 	}
-	for kind, tabID := range castKindToTab {
+	// Iterate maps in sorted-key order so the first-failure error message
+	// is deterministic; otherwise the test that asserts a specific kind
+	// in the message races against Go's randomized map iteration.
+	for _, kind := range sortedKeys(castKindToTab) {
+		tabID := castKindToTab[kind]
 		if _, ok := tabs[tabID]; !ok {
 			return fmt.Errorf("castKindToTab[%q] = %q: tab not registered", kind, tabID)
 		}
 	}
-	for kind, fieldName := range valuesKeyForTab {
+	for _, kind := range sortedKeys(valuesKeyForTab) {
+		fieldName := valuesKeyForTab[kind]
 		tabID, ok := castKindToTab[kind]
 		if !ok {
 			return fmt.Errorf("valuesKeyForTab[%q] has no castKindToTab entry", kind)
@@ -287,7 +293,8 @@ func VerifyCastTabBindings(reg *adapters.Registry) error {
 			return fmt.Errorf("valuesKeyForTab[%q] = %q: field not present on tab %q", kind, fieldName, tabID)
 		}
 	}
-	for kind, fieldName := range fileFieldForTab {
+	for _, kind := range sortedKeys(fileFieldForTab) {
+		fieldName := fileFieldForTab[kind]
 		tabID, ok := castKindToTab[kind]
 		if !ok {
 			return fmt.Errorf("fileFieldForTab[%q] has no castKindToTab entry", kind)
@@ -298,4 +305,15 @@ func VerifyCastTabBindings(reg *adapters.Registry) error {
 		}
 	}
 	return nil
+}
+
+// sortedKeys returns the keys of m in lexicographic order. Used to
+// stabilize iteration order for first-failure error messages.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

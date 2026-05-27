@@ -17,14 +17,13 @@ import (
 // Safe to call before Adapter.Start: definitions/catalogs are seeded
 // from bundledManifest() if a.definitions is empty.
 func (a *Adapter) Catalog() []adapters.CatalogProvider {
-	defs, catalogs := a.chassisCatalogSnapshot()
+	defs, _ := a.chassisCatalogSnapshot()
 	out := make([]adapters.CatalogProvider, 0, len(bundledChassisCatalogProviderIDs))
 	for _, id := range bundledChassisCatalogProviderIDs {
 		def, ok := defs[id]
 		if !ok {
 			continue
 		}
-		cat, _ := catalogs[id]
 		badge := providerBadges[id]
 		live := def.Type == directStreamsProviderType
 		p := adapters.CatalogProvider{
@@ -35,7 +34,7 @@ func (a *Adapter) Catalog() []adapters.CatalogProvider {
 			Live:           live,
 			DefaultChannel: def.DefaultChannel,
 		}
-		channelByGroup := groupChannels(def, cat)
+		channelByGroup := groupChannels(def)
 		for _, g := range def.Groups {
 			cg := adapters.CatalogGroup{ID: g.ID, Name: g.Name}
 			for _, ch := range channelByGroup[g.ID] {
@@ -81,11 +80,12 @@ func (a *Adapter) chassisCatalogSnapshot() (map[string]ProviderDefinition, map[s
 	return defs, nil
 }
 
-// groupChannels indexes a provider's channels by GroupID. When a
-// catalog is present it wins (catalogs may add per-channel items not
-// in the static definition); otherwise the definition's ChannelDefinition
-// slice is used directly.
-func groupChannels(def ProviderDefinition, cat ProviderCatalog) map[string][]ChannelDefinition {
+// groupChannels indexes a provider's static ChannelDefinition slice by
+// GroupID. The chassis catalog drawer in 3B exposes only the bundled
+// definitions, so catalog-additions-merge semantics are intentionally
+// out of scope. Lift this to (def, cat) when a future provider's
+// catalog can introduce channels not in its static definition.
+func groupChannels(def ProviderDefinition) map[string][]ChannelDefinition {
 	by := map[string][]ChannelDefinition{}
 	for _, ch := range def.Channels {
 		by[ch.GroupID] = append(by[ch.GroupID], ch)

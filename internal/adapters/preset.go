@@ -15,7 +15,7 @@ type PresetEntry struct {
 	ProviderID string // e.g. "mtv-rewind"
 	ChannelID  string // e.g. "1stday"
 	Title      string // "First Day on MTV" — derived from catalog
-	BadgeLabel string // "MTV REWIND" — derived from catalog
+	BadgeLabel string // "MTV" — derived from catalog
 	BadgeClass string // "mtv" | "cartoon" | "toonami" — derived from catalog
 	Live       bool   // derived from provider/channel Live flag
 }
