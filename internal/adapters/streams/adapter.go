@@ -71,6 +71,7 @@ type Adapter struct {
 	definitions         map[string]ProviderDefinition
 	definitionOrder     []string
 	catalogs            map[string]ProviderCatalog
+	presetStore         *presetStore
 	active              *ActiveQueue
 
 	activeOverlay *hlsMeterHandle
@@ -100,7 +101,43 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	}
 	a.fetchManifest = a.fetchManifestDefault
 	a.refreshOnce = a.refreshOnceDefault
+
+	var err error
+	a.presetStore, err = newPresetStore(
+		filepath.Join(cfg.Bridge.DataDir, "chassis_presets.json"),
+		a.resolvePresetEntry,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("streams: preset store: %w", err)
+	}
 	return a, nil
+}
+
+// resolvePresetEntry is the catalogResolver bound to this adapter.
+// Looks up (provider, channel) against the bundled chassis catalog
+// (via Catalog) and returns the populated PresetEntry. Used by the
+// presetStore for both load-time hydration and SetStarred validation.
+func (a *Adapter) resolvePresetEntry(providerID, channelID string) (adapters.PresetEntry, bool) {
+	for _, p := range a.Catalog() {
+		if p.ID != providerID {
+			continue
+		}
+		for _, g := range p.Groups {
+			for _, c := range g.Channels {
+				if c.ID == channelID {
+					return adapters.PresetEntry{
+						ProviderID: p.ID,
+						ChannelID:  c.ID,
+						Title:      c.Name,
+						BadgeLabel: p.BadgeLabel,
+						BadgeClass: p.BadgeClass,
+						Live:       c.Live,
+					}, true
+				}
+			}
+		}
+	}
+	return adapters.PresetEntry{}, false
 }
 
 func (a *Adapter) Name() string        { return "streams" }
