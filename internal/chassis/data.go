@@ -276,9 +276,48 @@ type HistoryRow struct {
 	Artwork string
 }
 
-// SettingsData is the settings drawer, closed in Phase 0.
+// SettingsData carries the settings drawer state into the snapshot.
+// First-render values come from BridgeSettingsSaver.Current() (or
+// startup cfg.Bridge in offline test paths). Errors is always empty on
+// the first server render; it is populated only when the server re-
+// renders after a redirect following a failed save, which 4A never
+// does (the JSON error path is purely client-side).
 type SettingsData struct {
-	Open bool
+	Open                 bool
+	Bridge               config.BridgeConfig
+	Errors               map[string]string
+	AdapterCount         int
+	CatalogProviderCount int
+}
+
+// buildSettingsData composes the chassis-rendered settings drawer state
+// from a bridge config, the adapter registry, and the streams catalog
+// viewer. AUX is excluded from AdapterCount: it is a hardware-button
+// surface, not a configurable adapter in the Settings UI sense.
+func buildSettingsData(
+	bridge config.BridgeConfig,
+	registry *adapters.Registry,
+	catalog adapters.StreamsCatalogViewer,
+) SettingsData {
+	adapterCount := 0
+	if registry != nil {
+		for _, a := range registry.List() {
+			if a.Name() == "aux" {
+				continue
+			}
+			adapterCount++
+		}
+	}
+	catalogProviderCount := 0
+	if catalog != nil {
+		catalogProviderCount = len(catalog.Catalog())
+	}
+	return SettingsData{
+		Bridge:               bridge,
+		Errors:               map[string]string{},
+		AdapterCount:         adapterCount,
+		CatalogProviderCount: catalogProviderCount,
+	}
 }
 
 // CatalogData drives the catalog drawer. Open is always false at

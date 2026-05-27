@@ -1,10 +1,13 @@
 package chassis
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -223,3 +226,53 @@ type fakeCatalogViewer struct {
 }
 
 func (f fakeCatalogViewer) Catalog() []adapters.CatalogProvider { return f.providers }
+
+func TestBuildSettingsData_AdapterCountExcludesAUX(t *testing.T) {
+	t.Parallel()
+	reg := adapters.NewRegistry()
+	mustRegister(t, reg, fakeNamedAdapter{name: "plex"})
+	mustRegister(t, reg, fakeNamedAdapter{name: "aux"})
+	mustRegister(t, reg, fakeNamedAdapter{name: "dlna"})
+	bridge := config.BridgeConfig{DataDir: "/var/lib/relay"}
+	got := buildSettingsData(bridge, reg, nil)
+	if got.AdapterCount != 2 {
+		t.Errorf("AdapterCount = %d, want 2 (aux excluded)", got.AdapterCount)
+	}
+	if got.Bridge.DataDir != "/var/lib/relay" {
+		t.Errorf("Bridge.DataDir = %q, want /var/lib/relay", got.Bridge.DataDir)
+	}
+	if got.Errors == nil {
+		t.Errorf("Errors map is nil; want empty initialized map")
+	}
+}
+
+func TestBuildSettingsData_NilCatalogYieldsZeroCount(t *testing.T) {
+	t.Parallel()
+	got := buildSettingsData(config.BridgeConfig{}, adapters.NewRegistry(), nil)
+	if got.CatalogProviderCount != 0 {
+		t.Errorf("CatalogProviderCount = %d, want 0", got.CatalogProviderCount)
+	}
+}
+
+// fakeNamedAdapter satisfies adapters.Adapter with the minimum surface needed
+// for registry.List() walks.
+type fakeNamedAdapter struct{ name string }
+
+func (f fakeNamedAdapter) Name() string                                             { return f.name }
+func (f fakeNamedAdapter) DisplayName() string                                      { return f.name }
+func (f fakeNamedAdapter) Fields() []adapters.FieldDef                              { return nil }
+func (f fakeNamedAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error        { return nil }
+func (f fakeNamedAdapter) IsEnabled() bool                                          { return true }
+func (f fakeNamedAdapter) Start(ctx context.Context) error                          { return nil }
+func (f fakeNamedAdapter) Stop() error                                              { return nil }
+func (f fakeNamedAdapter) Status() adapters.Status                                  { return adapters.Status{} }
+func (f fakeNamedAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
+	return adapters.ScopeHotSwap, nil
+}
+
+func mustRegister(t *testing.T, reg *adapters.Registry, a adapters.Adapter) {
+	t.Helper()
+	if err := reg.Register(a); err != nil {
+		t.Fatalf("Register(%s): %v", a.Name(), err)
+	}
+}
