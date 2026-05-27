@@ -276,3 +276,48 @@ func mustRegister(t *testing.T, reg *adapters.Registry, a adapters.Adapter) {
 		t.Fatalf("Register(%s): %v", a.Name(), err)
 	}
 }
+
+func TestSnapshot_SettingsReadsFromBridgeSaverCurrentWhenWired(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{DataDir: "/from-saver"}}
+	cfg := Config{
+		BridgeSaver: saver,
+		Registry:    adapters.NewRegistry(),
+		Bridge:      config.BridgeConfig{DataDir: "/from-startup"},
+	}
+	snap := idleSnapshot(cfg, time.Now())
+	if snap.Settings.Bridge.DataDir != "/from-saver" {
+		t.Errorf("Bridge.DataDir = %q, want /from-saver (saver wins over startup)",
+			snap.Settings.Bridge.DataDir)
+	}
+}
+
+func TestSnapshot_SettingsFallsBackToStartupConfigWhenSaverNil(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Registry: adapters.NewRegistry(),
+		Bridge:   config.BridgeConfig{DataDir: "/from-startup"},
+	}
+	snap := idleSnapshot(cfg, time.Now())
+	if snap.Settings.Bridge.DataDir != "/from-startup" {
+		t.Errorf("Bridge.DataDir = %q, want /from-startup", snap.Settings.Bridge.DataDir)
+	}
+}
+
+func TestSnapshot_SettingsLivePathCarriesBridgeSaverData(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		BridgeSaver: fakeBridgeSettingsSaver{cur: config.BridgeConfig{DataDir: "/from-saver-live"}},
+		Registry:    adapters.NewRegistry(),
+		Bridge:      config.BridgeConfig{DataDir: "/from-startup"},
+	}
+	snap := snapshotFromStatusView(
+		cfg,
+		core.StatusHomeView{State: core.StatePlaying},
+		nil, nil, nil, nil,
+		time.Now(),
+	)
+	if snap.Settings.Bridge.DataDir != "/from-saver-live" {
+		t.Errorf("Bridge.DataDir = %q, want /from-saver-live", snap.Settings.Bridge.DataDir)
+	}
+}

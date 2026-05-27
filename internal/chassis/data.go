@@ -448,6 +448,17 @@ func buildCatalogData(cat []adapters.CatalogProvider, presets [12]adapters.Prese
 	return data
 }
 
+// settingsDataFromConfig reads the bridge config from the BridgeSettingsSaver
+// when wired (production), or falls back to startup cfg.Bridge for offline
+// tests / nil-saver render paths.
+func settingsDataFromConfig(cfg Config) SettingsData {
+	bridge := cfg.Bridge
+	if cfg.BridgeSaver != nil {
+		bridge = cfg.BridgeSaver.Current()
+	}
+	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer)
+}
+
 // idleSnapshot returns a fully populated ReceiverPageData with State =
 // StateIdle and placeholder content matching the mockup's idle state.
 // Later live-state specs replace this with session-derived snapshots.
@@ -546,9 +557,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			Rows:         nil,
 			EmptyMessage: "No recent casts",
 		},
-		Settings: SettingsData{
-			Open: false,
-		},
+		Settings: settingsDataFromConfig(cfg),
 	}
 	// Bridge catalog count to PresetsData so the preset-bank template
 	// can render "Browse full catalog (N)" without a template wrapper.

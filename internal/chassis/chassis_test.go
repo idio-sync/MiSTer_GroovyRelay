@@ -282,6 +282,11 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		},
 		Settings: SettingsData{
 			Open: false,
+			Bridge: config.BridgeConfig{
+				UI:         config.UIConfig{HTTPPort: 32500},
+				Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeStereoScope},
+			},
+			Errors: map[string]string{},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
