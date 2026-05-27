@@ -1736,6 +1736,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -1795,14 +1796,12 @@ func (fakeNetTimeoutError) Temporary() bool { return false }
 
 func TestChassisProber_NetErrorTimeoutIsNormalizedToContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
-	// Reproduce launcher.go:84-86's wrapping shape.
-	wrapped := errors.Join(
-		errors.New("status ack timeout after 1s"),
-		fakeNetTimeoutError{},
-	)
-	// Use the actual fmt.Errorf wrapping pattern the prober uses.
-	// The chassisProber must unwrap and detect the inner net.Error Timeout()
-	// and surface context.DeadlineExceeded.
+	// Reproduce launcher.go:84-86's exact wrapping shape: a single
+	// fmt.Errorf("...: %w", netErr) where netErr satisfies net.Error
+	// with Timeout()=true. Using errors.Join here would not catch a
+	// regression where the production wrapping stops including the
+	// inner net.Error in the chain.
+	wrapped := fmt.Errorf("status ack timeout after 1s: %w", fakeNetTimeoutError{})
 	cp := &chassisProber{inner: &fakeUnderlyingProber{err: wrapped}}
 	_, err := cp.ProbeMister(context.Background(), config.BridgeConfig{})
 	if !errors.Is(err, context.DeadlineExceeded) {
