@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // stateEnvelope is the payload for the `state` SSE event. Explicit
@@ -206,6 +208,54 @@ func volumeChanged(a, b TransportData) bool {
 	return a.OutputVolume != b.OutputVolume
 }
 
+// presetsEnvelope is the wire payload for the `presets` SSE event. Each
+// frame carries the full 12-slot array — the client doesn't maintain
+// prior state.
+type presetsEnvelope struct {
+	Slots []presetSlotEnvelope `json:"slots"`
+}
+
+type presetSlotEnvelope struct {
+	Slot       int    `json:"slot"`
+	Provider   string `json:"provider"`
+	Channel    string `json:"channel"`
+	Title      string `json:"title"`
+	BadgeLabel string `json:"badgeLabel"`
+	BadgeClass string `json:"badgeClass"`
+	Live       bool   `json:"live"`
+}
+
+// presetEnvelopeFromSnapshot flattens a [12]PresetEntry into the wire
+// envelope, ensuring each slot has Slot in 1..12 even for empty entries
+// (display fields blank for empty slots).
+func presetEnvelopeFromSnapshot(snap [12]adapters.PresetEntry) presetsEnvelope {
+	out := presetsEnvelope{Slots: make([]presetSlotEnvelope, 12)}
+	for i, p := range snap {
+		out.Slots[i] = presetSlotEnvelope{
+			Slot:       i + 1, // always 1-indexed, regardless of p.Slot
+			Provider:   p.ProviderID,
+			Channel:    p.ChannelID,
+			Title:      p.Title,
+			BadgeLabel: p.BadgeLabel,
+			BadgeClass: p.BadgeClass,
+			Live:       p.Live,
+		}
+	}
+	return out
+}
+
+// presetsChanged compares only the persistent (slot index, provider,
+// channel) triples — display fields are intentionally excluded. A
+// catalog reload that changes a slot's Title is NOT a presets event.
+func presetsChanged(prev, next [12]adapters.PresetEntry) bool {
+	for i := range prev {
+		if prev[i].ProviderID != next[i].ProviderID || prev[i].ChannelID != next[i].ChannelID {
+			return true
+		}
+	}
+	return false
+}
+
 func sourceChanged(prev, next sourceEnvelope) bool {
 	if len(prev.Buttons) != len(next.Buttons) {
 		return true
@@ -266,6 +316,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err := emit(w, "meter", meterEnvelopeFrom(last.Meter)); err != nil {
 		return
 	}
+
+	// presets envelope (between meter and audio). lastPresets is declared
+	// at function scope (same level as `last`, `lastSource`, `lastAudio`)
+	// so the tick-loop diff arm in Step 5 can update it.
+	rawPresets := s.presetSnapshot()
+	if err := emit(w, "presets", presetEnvelopeFromSnapshot(rawPresets)); err != nil {
+		return
+	}
+	lastPresets := rawPresets
 
 	// Audio scope initial burst — emit last in the canonical order.
 	// safeAudioEnvelope recovers from panics in the viewer or marshaler
@@ -372,6 +431,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				last.Meter = curr.Meter
 			} else {
 				s.logMeterEmitRefused("unchanged")
+			}
+			currPresets := s.presetSnapshot()
+			if presetsChanged(lastPresets, currPresets) {
+				if err := emit(w, "presets", presetEnvelopeFromSnapshot(currPresets)); err != nil {
+					return
+				}
+				lastPresets = currPresets
 			}
 			flusher.Flush()
 		case <-audioTick.C:

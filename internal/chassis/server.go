@@ -285,3 +285,17 @@ func (s *Server) Close() error {
 func (s *Server) refreshSnapshotNow() {
 	s.cache.Set(s.buildSnapshot(time.Now()))
 }
+
+// presetSnapshot returns the current 12-slot preset entries from the
+// configured PresetViewer, or an empty zero-value array if no viewer
+// is wired. Used by handleEvents for the presets SSE event.
+func (s *Server) presetSnapshot() [12]adapters.PresetEntry {
+	if s.presetViewer == nil {
+		var zero [12]adapters.PresetEntry
+		for i := range zero {
+			zero[i] = adapters.PresetEntry{Slot: i + 1}
+		}
+		return zero
+	}
+	return s.presetViewer.Presets()
+}

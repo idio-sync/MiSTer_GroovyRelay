@@ -1,12 +1,14 @@
 package chassis
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1779,4 +1781,99 @@ func (m *mutableAudioViewer) setSnap(s *core.AudioScopeSnapshot) {
 	m.mu.Lock()
 	m.snap = s
 	m.mu.Unlock()
+}
+
+func TestPresetsChanged_PersistentTriplesOnly(t *testing.T) {
+	t.Parallel()
+	a := [12]adapters.PresetEntry{
+		{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "80s", Title: "MTV 80s"},
+	}
+	b := a
+	b[0].Title = "MTV 80s — Renamed" // display-only change
+	if presetsChanged(a, b) {
+		t.Errorf("presetsChanged ignored title rename, but reported a change")
+	}
+	c := a
+	c[0].ChannelID = "90s" // persistent triple changed
+	if !presetsChanged(a, c) {
+		t.Errorf("presetsChanged missed a real channel-id mutation")
+	}
+}
+
+func TestPresetsChanged_EmptyVsFilled(t *testing.T) {
+	t.Parallel()
+	empty := [12]adapters.PresetEntry{}
+	filled := empty
+	filled[2].ProviderID = "mtv-rewind"
+	filled[2].ChannelID = "amp"
+	if !presetsChanged(empty, filled) {
+		t.Errorf("presetsChanged missed an add into an empty slot")
+	}
+}
+
+func TestPresetEnvelopeFromSnapshot_Shape(t *testing.T) {
+	t.Parallel()
+	snap := [12]adapters.PresetEntry{
+		{Slot: 1, ProviderID: "mtv-rewind", ChannelID: "1stday", Title: "First Day", BadgeLabel: "MTV REWIND", BadgeClass: "mtv"},
+		// remaining slots empty (Slot will be 0 — that's OK; the envelope re-derives slot=i+1)
+	}
+	env := presetEnvelopeFromSnapshot(snap)
+	if len(env.Slots) != 12 {
+		t.Fatalf("len(Slots) = %d, want 12", len(env.Slots))
+	}
+	if env.Slots[0].Slot != 1 || env.Slots[0].Provider != "mtv-rewind" {
+		t.Errorf("Slots[0] = %+v, want Slot=1 Provider=mtv-rewind", env.Slots[0])
+	}
+	if env.Slots[1].Provider != "" {
+		t.Errorf("empty Slots[1].Provider = %q, want empty", env.Slots[1].Provider)
+	}
+	if env.Slots[1].Slot != 2 {
+		t.Errorf("empty Slots[1].Slot = %d, want 2", env.Slots[1].Slot)
+	}
+}
+
+func TestHandleEvents_InitialBurstIncludesPresetsBetweenMeterAndAudio(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.PresetViewer = bundledFakeViewer()
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/receiver/events", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the initial burst by collecting event names until we see "audio",
+	// then assert the position invariant.
+	rd := bufio.NewReader(resp.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	var names []string
+	for time.Now().Before(deadline) {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(line, "event: ") {
+			names = append(names, strings.TrimSpace(strings.TrimPrefix(line, "event: ")))
+			if names[len(names)-1] == "audio" {
+				break
+			}
+		}
+	}
+	// Expected: [state, vfd, source, visualizer, transport, volume, meter, presets, audio]
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "meter", "presets", "audio"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("initial burst events = %v, want %v", names, want)
+	}
 }
