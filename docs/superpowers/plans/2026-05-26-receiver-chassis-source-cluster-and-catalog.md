@@ -661,8 +661,6 @@ func newPlexForConfiguredTest(t *testing.T, enabled, linked bool) *Adapter {
 }
 ```
 
-If the actual `AdapterConfig` / `StoredData` field names differ from this sketch (inspect [internal/adapters/plex/adapter.go](../../../internal/adapters/plex/adapter.go) lines 30-50 for `AdapterConfig` and the `StoredData` definition), substitute the real names. The intent is fixed: construct a `*Adapter` where `IsLinked()` returns `linked` and `IsEnabled()` returns `enabled`, without invoking any network code paths.
-
 - [ ] **Step 2: Run to confirm failure**
 
 Run: `go test ./internal/adapters/plex -run "TestSourceID|TestConfigured" -v`
@@ -762,8 +760,6 @@ func newJellyfinForConfiguredTest(t *testing.T, enabled, linked bool) *Adapter {
 	return a
 }
 ```
-
-If the actual `Adapter` struct field names differ (inspect [internal/adapters/jellyfin/adapter.go](../../../internal/adapters/jellyfin/adapter.go) around lines 1-80 for the struct definition and lines 283-300 for `IsEnabled`/`IsLinked`), substitute the real names. The intent is fixed: construct a `*Adapter` where `IsLinked()` returns `linked` and `IsEnabled()` returns `enabled`, without invoking any network code paths or running `Start()`.
 
 - [ ] **Step 2: Run to confirm failure**
 
@@ -1620,8 +1616,6 @@ func TestPresetStore_NoOpRemoveDoesNotWriteFile(t *testing.T) {
 	if _, err := os.Stat(path); err == nil {
 		t.Errorf("no-op remove should not write file")
 	}
-	_ = sort.Search // import sentinel; can be removed once tests grow
-	_ = context.Background
 }
 ```
 

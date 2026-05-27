@@ -66,7 +66,7 @@ The original Phase 3 decomposition had a separate Phase 3C for "user-curated pre
 | LIT state sharing | Source-cluster STREAMS lamp, `.preset.lit`, and `.ch-card.tuned` all derive from `transport.AdapterRef`. Single source of truth; no three-way divergence. |
 | Chip vocabulary additions | `BANK FULL` (409), `BAD SLOT` (400, existing from 3A but also used by move). |
 | `BROWSE` button rename behavior | Closed: `"▸ Browse full catalog (N)"`. Open: `"◂ Back to presets"`. Server renders the closed form; JS swaps on toggle. Mirrors mockup [v24:5460-5483](../reference/2026-05-21-receiver-v24.html). |
-| Mode label content | Closed: `"Memory · N / 12 slots"` (or `"Memory · drag to reorder · N / 12"` when N ≥ 1). Open: `"Catalog · <provider> · <group> · <channel-count>"`. Server renders closed form; JS swaps on toggle and rail/tab switch. |
+| Mode label content | Closed: `"Memory · N / 12 slots"` (or `"Memory · drag to reorder · N / 12"` when N ≥ 1). Open: `"Catalog · <provider> · <group> · <channel-count> channels"` (the `channels` suffix improves scannability vs. a bare number alongside the dotted-separator chain). Server renders closed form; JS swaps on toggle and rail/tab switch. |
 | Star is read-from-catalog only | `.ch-card .star` shows ★ if the channel is in any preset slot, ☆ otherwise. Click posts the opposite desired state. The preset bank itself has no edit affordances in 3B. |
 
 ## Implementation Checklist (sketch — implementation plan elaborates)
