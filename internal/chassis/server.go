@@ -83,6 +83,21 @@ type Config struct {
 	// directly for source-lamp state — passing the typed slice keeps
 	// import_check_test.go happy.
 	SourceAvailabilityViewers []adapters.SourceAvailabilityViewer
+
+	// BridgeSaver persists bridge-side settings drawer mutations and
+	// exposes the live in-memory bridge config snapshot for renders.
+	// Production passes *uiserver.BridgeSaver; the chassis defines its
+	// own narrow interface so it does not import internal/uiserver.
+	// May be nil in unit-test fixtures; handlers respond 503 NOT READY
+	// in that case.
+	BridgeSaver BridgeSettingsSaver
+
+	// Prober runs the connectivity probe against the currently-saved
+	// MiSTer host/port. Production passes a thin wrapper around
+	// cmd/mister-groovy-relay/launcher.go's bridgeMisterProber, which
+	// uses CMD_GET_STATUS over an ephemeral source port. May be nil in
+	// unit-test fixtures; handlers respond 503 NOT READY in that case.
+	Prober Prober
 }
 
 // Server owns the chassis runtime state.

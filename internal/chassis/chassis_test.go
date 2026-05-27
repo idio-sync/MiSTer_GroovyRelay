@@ -3128,3 +3128,17 @@ func TestChassisCSS_AddsSearchFilterRules(t *testing.T) {
 		}
 	}
 }
+
+func TestConfig_AcceptsBridgeSaverAndProber(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		BridgeSaver: fakeBridgeSettingsSaver{},
+		Prober:      fakeProber{},
+	}
+	if cfg.BridgeSaver == nil {
+		t.Errorf("BridgeSaver = nil after assign")
+	}
+	if cfg.Prober == nil {
+		t.Errorf("Prober = nil after assign")
+	}
+}
