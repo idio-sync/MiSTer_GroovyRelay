@@ -1981,6 +1981,60 @@ func TestReceiverEvents_PresetsBetweenMeterAndAudio(t *testing.T) {
 	}
 }
 
+// TestReceiverPresetMove_NoOpDoesNotEmitPresets verifies the from==to
+// identity case: the handler returns 200 and calls refreshSnapshotNow for
+// uniformity, but the events-loop diff suppresses the spurious emit so no
+// presets event reaches subscribers. Mirrors the star idempotent contract
+// at TestReceiverEvents_PresetsFollowUpChangedButNotNoop.
+func TestReceiverPresetMove_NoOpDoesNotEmitPresets(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	stream := env.OpenEvents(t)
+	defer stream.Close()
+	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
+
+	resp := env.PostForm("/receiver/preset/move", url.Values{
+		"from": {"3"}, "to": {"3"},
+	})
+	if resp.StatusCode != 200 {
+		resp.Body.Close()
+		t.Fatalf("from==to move status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if stream.WaitForEvent(t, "presets", 300*time.Millisecond) {
+		t.Fatalf("identity move emitted unexpected presets follow-up")
+	}
+}
+
+// TestReceiverPresetMove_BadSlotDoesNotEmitPresets verifies that a move
+// rejected with 400 BAD SLOT (out-of-range from/to) never reaches the
+// snapshot refresh path, so no presets SSE event fires. Covers the
+// server side of the spec's "reverting the optimistic swap on a forced
+// 4xx" contract (Testing Layer 3). The client-side revert in
+// preset-reorder.js is exercised manually; this test pins the server
+// contract that the events-loop never sees a phantom mutation.
+func TestReceiverPresetMove_BadSlotDoesNotEmitPresets(t *testing.T) {
+	env := newChassisIntegrationEnv(t)
+	defer env.Close()
+	stream := env.OpenEvents(t)
+	defer stream.Close()
+	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
+
+	resp := env.PostForm("/receiver/preset/move", url.Values{
+		"from": {"13"}, "to": {"1"},
+	})
+	if resp.StatusCode != 400 {
+		resp.Body.Close()
+		t.Fatalf("out-of-range move status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if stream.WaitForEvent(t, "presets", 300*time.Millisecond) {
+		t.Fatalf("rejected move emitted unexpected presets follow-up")
+	}
+}
+
 func TestReceiverPresetStar_PersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	env1 := newChassisIntegrationEnvIn(t, dir)
