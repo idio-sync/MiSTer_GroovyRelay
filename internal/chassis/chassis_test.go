@@ -2943,3 +2943,33 @@ func TestPresetBankJS_SubscribesToPresetsEvent(t *testing.T) {
 		t.Errorf("preset-bank.js dropped transport subscription")
 	}
 }
+
+func TestCatalogBrowserJS_ExistsAndIntegrationPoints(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/catalog-browser.js")
+	if err != nil {
+		t.Fatalf("ReadFile catalog-browser.js: %v", err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"browse-open",
+		"catalog-scanning",
+		"catalog-tab-indicator",
+		"/receiver/streams/cast",
+		"/receiver/preset/star",
+		`subscribe('transport'`,
+		`subscribe('presets'`,
+		"chassis:catalog-grid-changed",
+		"star.textContent",
+		"stopPropagation",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("catalog-browser.js missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("catalog-browser.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
