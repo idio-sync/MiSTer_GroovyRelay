@@ -1,0 +1,20 @@
+{{define "catalog-grid"}}
+{{- if .Providers -}}
+{{- $providerIdx := .ProviderIndex .ActiveProviderID -}}
+{{- $groupIdx := .GroupIndex .ActiveProviderID .ActiveGroupID -}}
+{{- with index .Providers $providerIdx -}}
+{{- $p := . -}}
+{{- with index .Groups $groupIdx -}}
+{{- range $i, $c := .Channels -}}
+<div role="button" tabindex="0" class="ch-card{{if $c.Tuned}} tuned{{end}}{{if $c.Starred}} starred{{end}}{{if $c.Live}} live{{end}}" data-provider="{{$p.ID}}" data-channel="{{$c.ID}}" style="--i:{{$i}}">
+  <button class="star" type="button" title="{{if $c.Starred}}In preset {{pad2 $c.PresetSlot}}{{else}}Save to preset{{end}}">{{if $c.Starred}}&#9733;{{else}}&#9734;{{end}}</button>
+  <div class="name">{{$c.Name}}</div>
+  <div class="meta"><span>{{upper $c.ID}}</span><span class="mode">{{$c.PlayMode}}</span></div>
+</div>
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- else -}}
+<div class="catalog-empty">No catalog providers available</div>
+{{- end -}}
+{{end}}

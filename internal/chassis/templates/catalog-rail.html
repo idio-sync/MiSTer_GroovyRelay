@@ -1,0 +1,15 @@
+{{define "catalog-rail"}}
+{{- if .Providers -}}
+{{- $active := .ActiveGroupID -}}
+{{- $providerIdx := .ProviderIndex .ActiveProviderID -}}
+{{- with index .Providers $providerIdx -}}
+{{- range $i, $g := .Groups -}}
+<button type="button" class="catalog-rail-group{{if eq $g.ID $active}} active{{end}}" data-group="{{$g.ID}}" style="--i:{{$i}}">
+  {{$g.Name}}<span class="count">{{$g.ChCount}}</span>
+</button>
+{{- end -}}
+{{- end -}}
+{{- else -}}
+<div class="catalog-empty">No catalog providers available</div>
+{{- end -}}
+{{end}}

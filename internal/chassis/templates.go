@@ -66,6 +66,7 @@ var templateFuncs = template.FuncMap{
 	"until":       func(n int) []struct{} { return make([]struct{}, n) },
 	"volumeAngle": volumeAngle,
 	"lower":       strings.ToLower,
+	"upper":       strings.ToUpper,
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in

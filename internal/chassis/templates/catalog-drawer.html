@@ -1,0 +1,27 @@
+{{define "catalog-drawer"}}
+{{htmlComment "chassis:catalog-drawer"}}
+<div class="catalog-drawer" id="catalog-drawer" aria-hidden="true">
+  <div class="catalog-browser">
+    <div class="catalog-provider-tabs">
+      <span class="catalog-tab-indicator" id="catalog-tab-indicator"></span>
+      {{- range .Providers -}}
+      <button class="catalog-provider-tab{{if eq .ID $.ActiveProviderID}} active{{end}}"
+              type="button"
+              data-provider="{{.ID}}">
+        <span class="ic {{.BadgeClass}}">{{.BadgeLabel}}</span>
+        {{.DisplayName}}
+        <span class="ch-count">{{.ChCount}}</span>
+      </button>
+      {{- end -}}
+    </div>
+    <div class="catalog-body">
+      <div class="catalog-rail" id="catalog-rail">
+        {{template "catalog-rail" .}}
+      </div>
+      <div class="catalog-grid" id="catalog-grid">
+        {{template "catalog-grid" .}}
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}

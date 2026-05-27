@@ -2706,3 +2706,113 @@ func excerpt(html, kw string) string {
 	}
 	return html[start:end]
 }
+
+func TestCatalogDrawerTemplate_RendersProviderTabs(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithCatalog(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`<div class="catalog-drawer"`,
+		`<div class="catalog-provider-tabs">`,
+		`data-provider="mtv-rewind"`,
+		`data-provider="cartoon-rewind"`,
+		`data-provider="toonami-aftermath"`,
+		`<span class="ic mtv">MTV</span>`,
+		`<span class="ic cartoon">CART</span>`,
+		`<span class="ic toonami">TOON</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("catalog-drawer html missing %q", want)
+		}
+	}
+}
+
+func TestCatalogRailTemplate_RendersGroupsForActiveProvider(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithCatalog(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	// MTV's first group renders with --i:0; second with --i:1, etc.
+	if !strings.Contains(html, `class="catalog-rail-group active" data-group="shows" style="--i:0"`) {
+		t.Errorf("catalog-rail missing active MTV shows group: %s", excerpt(html, "catalog-rail"))
+	}
+}
+
+func TestCatalogGridTemplate_RendersChannelCards(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithCatalog(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	for _, want := range []string{
+		`data-provider="mtv-rewind" data-channel="1stday"`,
+		`<button class="star"`,
+		`<div class="name">First Day on MTV</div>`,
+		`<span class="mode">SEQ</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("catalog-grid html missing %q", want)
+		}
+	}
+}
+
+func TestCatalogDrawerTemplate_RendersWithNilCatalogViewer(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.StreamsCatalogViewer = nil
+	cfg.PresetViewer = nil
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	html := rec.Body.String()
+	if !strings.Contains(html, `class="catalog-empty"`) {
+		t.Errorf("nil catalog render missing empty state: %s", excerpt(html, "catalog-drawer"))
+	}
+}
+
+func newTestServerWithCatalog(t *testing.T) *Server {
+	t.Helper()
+	cfg := nonZeroConfig()
+	cfg.StreamsCatalogViewer = fakeCatalogViewer{providers: []adapters.CatalogProvider{
+		{ID: "mtv-rewind", DisplayName: "MTV Rewind", BadgeLabel: "MTV", BadgeClass: "mtv", Live: false,
+			Groups: []adapters.CatalogGroup{
+				{ID: "shows", Name: "MTV Shows", Channels: []adapters.CatalogChannel{
+					{ID: "1stday", Name: "First Day on MTV", PlayMode: "SEQ"},
+				}},
+			}},
+		{ID: "cartoon-rewind", DisplayName: "Cartoon Rewind", BadgeLabel: "CART", BadgeClass: "cartoon", Live: false,
+			Groups: []adapters.CatalogGroup{
+				{ID: "g1", Name: "Group 1", Channels: []adapters.CatalogChannel{
+					{ID: "c1", Name: "Cartoon 1", PlayMode: "SHUFFLE"},
+				}},
+			}},
+		{ID: "toonami-aftermath", DisplayName: "Toonami Aftermath", BadgeLabel: "TOON", BadgeClass: "toonami", Live: true,
+			Groups: []adapters.CatalogGroup{
+				{ID: "g1", Name: "Group 1", Channels: []adapters.CatalogChannel{
+					{ID: "east", Name: "Toonami East", PlayMode: "", Live: true},
+				}},
+			}},
+	}}
+	cfg.PresetViewer = bundledFakeViewer()
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	return srv
+}
