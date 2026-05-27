@@ -217,6 +217,48 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"ytdlp_path":         func(c *config.BridgeConfig, v any) { c.YTDLPPath = v.(string) },
 }
 
+// bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
+// field dispatches to. It is validated at startup (see the cross-table
+// tests in settings_test.go) against the decoder + overlay tables, and
+// against the existing /ui/* saver's per-field dispatch logic.
+//
+// The HTTP handler's "max-wins scope" output uses the ApplyScope value
+// returned by BridgeSaver.Save() (which is authoritative). This table
+// is used only by the chassis when it wants to know a single field's
+// scope ahead of time (e.g., for badge rendering — but Network pane
+// scopes are already encoded directly in the template).
+var bridgeFieldScopes = map[string]adapters.ApplyScope{
+	"mister_host":        adapters.ScopeRestartBridge,
+	"mister_port":        adapters.ScopeRestartBridge,
+	"mister_source_port": adapters.ScopeRestartBridge,
+	"ui_http_port":       adapters.ScopeRestartBridge,
+	"host_ip":            adapters.ScopeRestartBridge,
+	"data_dir":           adapters.ScopeRestartBridge,
+	"ffmpeg_path":        adapters.ScopeHotSwap,
+	"ffprobe_path":       adapters.ScopeHotSwap,
+	"ytdlp_path":         adapters.ScopeHotSwap,
+}
+
+// scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
+// (_, false) for unknown scopes; the chassis handler treats unknown as
+// a server bug and responds 500 WRITE FAILED. Do NOT use
+// ApplyScope.String() directly: it returns "hot-swap" / "next-cast" /
+// "restart-cast" / "restart-bridge", which is the wrong wire shape.
+func scopeLabel(s adapters.ApplyScope) (string, bool) {
+	switch s {
+	case adapters.ScopeHotSwap:
+		return "hot", true
+	case adapters.ScopeNextCast:
+		return "next", true
+	case adapters.ScopeRestartCast:
+		return "recast", true
+	case adapters.ScopeRestartBridge:
+		return "reboot", true
+	default:
+		return "", false
+	}
+}
+
 // isValidHostname is a permissive RFC-952/1123-ish check: 1..253 chars
 // total, label chars in [a-z0-9-], labels non-empty, no leading/trailing
 // hyphen, dot-separated.

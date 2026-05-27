@@ -256,3 +256,57 @@ func TestBridgeFieldOverlays_EveryFieldRoundTrips(t *testing.T) {
 		})
 	}
 }
+
+func TestScopeLabel(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   adapters.ApplyScope
+		want string
+	}{
+		{adapters.ScopeHotSwap, "hot"},
+		{adapters.ScopeNextCast, "next"},
+		{adapters.ScopeRestartCast, "recast"},
+		{adapters.ScopeRestartBridge, "reboot"},
+	}
+	for _, tc := range cases {
+		got, ok := scopeLabel(tc.in)
+		if !ok {
+			t.Errorf("scopeLabel(%v) ok = false, want true", tc.in)
+		}
+		if got != tc.want {
+			t.Errorf("scopeLabel(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if _, ok := scopeLabel(adapters.ApplyScope(99)); ok {
+		t.Errorf("scopeLabel(unknown) ok = true, want false")
+	}
+}
+
+func TestBridgeFieldScopes_AllNetworkFieldsPresent(t *testing.T) {
+	t.Parallel()
+	for name := range bridgeFieldDecoders {
+		if _, ok := bridgeFieldScopes[name]; !ok {
+			t.Errorf("bridgeFieldScopes missing entry for decoder %q", name)
+		}
+	}
+}
+
+func TestBridgeFieldScopes_NetworkPaneIsRebootOrHot(t *testing.T) {
+	t.Parallel()
+	want := map[string]adapters.ApplyScope{
+		"mister_host":        adapters.ScopeRestartBridge,
+		"mister_port":        adapters.ScopeRestartBridge,
+		"mister_source_port": adapters.ScopeRestartBridge,
+		"ui_http_port":       adapters.ScopeRestartBridge,
+		"host_ip":            adapters.ScopeRestartBridge,
+		"data_dir":           adapters.ScopeRestartBridge,
+		"ffmpeg_path":        adapters.ScopeHotSwap,
+		"ffprobe_path":       adapters.ScopeHotSwap,
+		"ytdlp_path":         adapters.ScopeHotSwap,
+	}
+	for name, wantScope := range want {
+		if got := bridgeFieldScopes[name]; got != wantScope {
+			t.Errorf("scope[%s] = %v, want %v", name, got, wantScope)
+		}
+	}
+}
