@@ -749,3 +749,32 @@ func TestBridgeSaver_EmitsConfigSavedWhenPersistedEvenIfDropFails(t *testing.T) 
 		t.Errorf("Message: got %q", entries[0].Message)
 	}
 }
+
+func TestSettingsError_StatusCodeAndChip(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("bind: address in use")
+	se := &settingsError{status: 409, chip: "PORT IN USE", cause: cause}
+	if got := se.StatusCode(); got != 409 {
+		t.Errorf("StatusCode = %d, want 409", got)
+	}
+	if got := se.Chip(); got != "PORT IN USE" {
+		t.Errorf("Chip = %q, want PORT IN USE", got)
+	}
+	if got := se.Error(); got == "" {
+		t.Errorf("Error() is empty, want non-empty")
+	}
+	if got := se.Unwrap(); got != cause {
+		t.Errorf("Unwrap = %v, want %v", got, cause)
+	}
+	if !errors.Is(se, cause) {
+		t.Fatalf("errors.Is(se, cause) = false, want true")
+	}
+	var shaped interface {
+		error
+		StatusCode() int
+		Chip() string
+	}
+	if !errors.As(se, &shaped) {
+		t.Fatalf("errors.As(se, &status/chip interface) = false, want true")
+	}
+}

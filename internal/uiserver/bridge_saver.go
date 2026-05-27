@@ -528,3 +528,28 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		return adapters.ScopeRestartBridge
 	}
 }
+
+// settingsError is the typed wrapper around validation/preflight errors
+// that BridgeSaver.Save returns starting in Phase 4A. The chassis
+// handler matches against an interface { StatusCode() int; Chip() string }
+// structurally (errors.As against the interface in Go 1.21+) so
+// internal/chassis can map status + chip into its JSON envelope without
+// importing internal/uiserver.
+//
+// Existing /ui/* callers that ignore typed errors are unaffected; the
+// concrete error still wraps the underlying cause via Unwrap.
+type settingsError struct {
+	status int
+	chip   string
+	cause  error
+}
+
+func (e *settingsError) Error() string {
+	if e.cause != nil {
+		return e.chip + ": " + e.cause.Error()
+	}
+	return e.chip
+}
+func (e *settingsError) StatusCode() int { return e.status }
+func (e *settingsError) Chip() string    { return e.chip }
+func (e *settingsError) Unwrap() error   { return e.cause }
