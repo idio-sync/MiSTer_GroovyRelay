@@ -405,6 +405,7 @@ func main() {
 		SourceAvailabilityViewers: sourceViewers,
 		BridgeSaver:               saver,                         // existing *uiserver.BridgeSaver
 		Prober:                    newChassisProber(misterProber), // wraps existing bridgeMisterProber
+		CoreLauncher:              misterLauncher,                 // same instance as ui.Config.MisterLauncher
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
