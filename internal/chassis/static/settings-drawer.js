@@ -107,6 +107,28 @@
     else input.classList.remove('has-value');
   }
 
+  // Drawer-local notice slot (#settings-notice).
+  const notice = document.getElementById('settings-notice');
+  let noticeTimer = null;
+
+  function showNotice(text, variant) {
+    if (!notice) return;
+    notice.className = 'settings-notice ' + (variant || '');
+    notice.textContent = text;
+    notice.hidden = false;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      notice.hidden = true;
+    }, 5000);
+  }
+  function clearNotice() {
+    if (!notice) return;
+    notice.hidden = true;
+    notice.className = 'settings-notice';
+    notice.textContent = '';
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+  }
+
   // Wire blur on text/number/password/path inputs; change on selects.
   drawer.querySelectorAll('input.field-input, select.field-input').forEach(el => {
     const evt = el.tagName === 'SELECT' ? 'change' : 'blur';
@@ -124,7 +146,11 @@
       const { status, body } = result;
       if (status >= 200 && status < 300 && body.ok) {
         markHasValue(name, el.value);
-        // Task 27 handles the REBOOT toast.
+        clearNotice();
+        if (body.scope === 'reboot') {
+          const label = el.closest('.field-row').querySelector('label').textContent.trim().split('\n')[0];
+          showNotice(`Restart container to apply new ${label}`, 'ok');
+        }
         return;
       }
       if (body && body.errors) {
@@ -133,8 +159,12 @@
         }
         return;
       }
-      // Chip-style failure or unknown shape — Task 27 handles the notice.
-      paintFieldError(name, (body && body.chip) || 'save failed');
+      if (body && body.chip) {
+        showNotice(body.chip, 'err');
+        paintFieldError(name, body.chip);
+        return;
+      }
+      paintFieldError(name, 'save failed');
     });
   });
 
@@ -162,8 +192,11 @@
       btn.setAttribute('aria-pressed', !next ? 'true' : 'false');
       if (body && body.errors && body.errors[name]) {
         paintFieldError(name, body.errors[name]);
+      } else if (body && body.chip) {
+        showNotice(body.chip, 'err');
+        paintFieldError(name, body.chip);
       } else {
-        paintFieldError(name, (body && body.chip) || 'save failed');
+        paintFieldError(name, 'save failed');
       }
     });
   });
@@ -193,6 +226,7 @@
     }
     if (body.chip) {
       out.textContent = `▸ ${body.chip}`;
+      showNotice(body.chip, 'err');
       return;
     }
     out.textContent = `▸ ERROR · ${body.error || 'unknown'}`;
@@ -228,4 +262,6 @@
   window.Chassis.settings.paintFieldError = paintFieldError;
   window.Chassis.settings.clearFieldError = clearFieldError;
   window.Chassis.settings.markHasValue = markHasValue;
+  window.Chassis.settings.showNotice = showNotice;
+  window.Chassis.settings.clearNotice = clearNotice;
 })();
