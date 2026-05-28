@@ -403,6 +403,8 @@ func main() {
 		StreamsCaster:             streamsCaster,
 		PresetEditor:              presetEditor,
 		SourceAvailabilityViewers: sourceViewers,
+		BridgeSaver:               saver,                         // existing *uiserver.BridgeSaver
+		Prober:                    newChassisProber(misterProber), // wraps existing bridgeMisterProber
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
