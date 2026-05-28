@@ -667,3 +667,83 @@ func TestCoreLauncher_StructuralConformance(t *testing.T) {
 		t.Errorf("Launch err = %v, want nil", err)
 	}
 }
+
+func TestDecodeVideoModeline(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want, errSub string
+	}{
+		{"NTSC_480i", "NTSC_480i", ""},
+		{"NTSC_240p", "NTSC_240p", ""},
+		{"PAL_576i", "PAL_576i", ""},
+		{"PAL_288p", "PAL_288p", ""},
+		{"", "", "must be one of"},
+		{"720p", "", "must be one of"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			v, err := decodeVideoModeline(tc.in)
+			if tc.errSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+					t.Fatalf("err = %v, want substring %q", err, tc.errSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if v != tc.want {
+				t.Errorf("v = %q, want %q", v, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeInterlaceFieldOrder(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"tff", "bff"} {
+		v, err := decodeInterlaceFieldOrder(ok)
+		if err != nil || v != ok {
+			t.Errorf("decodeInterlaceFieldOrder(%q) = (%q, %v)", ok, v, err)
+		}
+	}
+	for _, bad := range []string{"", "xyz", "TFF"} {
+		if _, err := decodeInterlaceFieldOrder(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be tff or bff") {
+			t.Errorf("decodeInterlaceFieldOrder(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeAspectMode(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"auto", "letterbox", "zoom"} {
+		if v, err := decodeAspectMode(ok); err != nil || v != ok {
+			t.Errorf("decodeAspectMode(%q) = (%q, %v)", ok, v, err)
+		}
+	}
+	if _, err := decodeAspectMode("stretch"); err == nil ||
+		!strings.Contains(err.Error(), "must be auto, letterbox, or zoom") {
+		t.Errorf("decodeAspectMode(stretch) err = %v, want substring", err)
+	}
+}
+
+func TestDecodeBool(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"true", "false"} {
+		v, err := decodeBool(in)
+		if err != nil {
+			t.Errorf("decodeBool(%q) err = %v", in, err)
+		}
+		want := in == "true"
+		if v != want {
+			t.Errorf("decodeBool(%q) = %v, want %v", in, v, want)
+		}
+	}
+	for _, bad := range []string{"", "yes", "TRUE", "1"} {
+		if _, err := decodeBool(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be true or false") {
+			t.Errorf("decodeBool(%q) err = %v, want substring", bad, err)
+		}
+	}
+}

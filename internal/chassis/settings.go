@@ -140,6 +140,26 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeOptionalExecutablePath(s)
 		return v, err
 	},
+	"video_modeline": func(s string) (any, error) {
+		v, err := decodeVideoModeline(s)
+		return v, err
+	},
+	"video_interlace_field_order": func(s string) (any, error) {
+		v, err := decodeInterlaceFieldOrder(s)
+		return v, err
+	},
+	"video_aspect_mode": func(s string) (any, error) {
+		v, err := decodeAspectMode(s)
+		return v, err
+	},
+	"video_lz4_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"video_delta_lz4_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
 }
 
 // decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
@@ -231,6 +251,49 @@ func decodeOptionalExecutablePath(raw string) (string, error) {
 	return s, nil
 }
 
+// decodeVideoModeline accepts one of the four supported modelines.
+func decodeVideoModeline(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch s {
+	case "NTSC_480i", "NTSC_240p", "PAL_576i", "PAL_288p":
+		return s, nil
+	}
+	return "", fmt.Errorf("must be one of NTSC_480i, NTSC_240p, PAL_576i, PAL_288p")
+}
+
+// decodeInterlaceFieldOrder accepts "tff" or "bff" (case-sensitive,
+// matching config.Sectioned.Validate).
+func decodeInterlaceFieldOrder(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "tff" || s == "bff" {
+		return s, nil
+	}
+	return "", fmt.Errorf("must be tff or bff")
+}
+
+// decodeAspectMode accepts "auto", "letterbox", or "zoom".
+func decodeAspectMode(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch s {
+	case "auto", "letterbox", "zoom":
+		return s, nil
+	}
+	return "", fmt.Errorf("must be auto, letterbox, or zoom")
+}
+
+// decodeBool accepts exactly "true" or "false". Used by switch fields.
+// Strict matching catches form-data drift early; the legacy strconv.ParseBool
+// would accept "0"/"1"/"TRUE" which the chassis JS contract does not emit.
+func decodeBool(raw string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("must be true or false")
+}
+
 // bridgeFieldOverlay writes the decoded value into the right path of a
 // BridgeConfig. Type asserts to the decoder's return type; a type
 // mismatch is a programmer bug and panics rather than silently failing.
@@ -246,6 +309,11 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"ffmpeg_path":        func(c *config.BridgeConfig, v any) { c.FFmpegPath = v.(string) },
 	"ffprobe_path":       func(c *config.BridgeConfig, v any) { c.FFprobePath = v.(string) },
 	"ytdlp_path":         func(c *config.BridgeConfig, v any) { c.YTDLPPath = v.(string) },
+	"video_modeline":              func(c *config.BridgeConfig, v any) { c.Video.Modeline = v.(string) },
+	"video_interlace_field_order": func(c *config.BridgeConfig, v any) { c.Video.InterlaceFieldOrder = v.(string) },
+	"video_aspect_mode":           func(c *config.BridgeConfig, v any) { c.Video.AspectMode = v.(string) },
+	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
+	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -268,6 +336,11 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"ffmpeg_path":        adapters.ScopeHotSwap,
 	"ffprobe_path":       adapters.ScopeHotSwap,
 	"ytdlp_path":         adapters.ScopeHotSwap,
+	"video_modeline":              adapters.ScopeRestartCast,
+	"video_interlace_field_order": adapters.ScopeHotSwap,
+	"video_aspect_mode":           adapters.ScopeRestartCast,
+	"video_lz4_enabled":           adapters.ScopeRestartCast,
+	"video_delta_lz4_enabled":     adapters.ScopeRestartCast,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
