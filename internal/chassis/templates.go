@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"html"
 	"html/template"
 	"math"
 	"strconv"
@@ -73,6 +74,7 @@ var templateFuncs = template.FuncMap{
 	"errOf":               errOfHelper,
 	"settingsScopeLabel":  settingsScopeLabelHelper,
 	"stub":                stubHelper,
+	"field":               fieldHelper,
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in
@@ -136,6 +138,125 @@ type stubPaneArgs struct {
 // stubHelper constructs a stubPaneArgs for use in templates.
 func stubHelper(id, title, spec string) stubPaneArgs {
 	return stubPaneArgs{ID: id, Title: title, Spec: spec}
+}
+
+// fieldHelper renders one field row. The option bag (built by dict in
+// templates) supports the keys: Name, Type, Label, Help, Value,
+// Placeholder, Scope, Unit, Options, InputWidth, Error.
+//
+// All values are HTML-escaped. Type=switch renders a <button>, not an
+// <input>; switches POST via client JS, not by form submission.
+func fieldHelper(args map[string]any) template.HTML {
+	get := func(key string) string {
+		if v, ok := args[key]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+		return ""
+	}
+	name := get("Name")
+	typ := get("Type")
+	label := get("Label")
+	help := get("Help")
+	value := get("Value")
+	placeholder := get("Placeholder")
+	scope := get("Scope")
+	unit := get("Unit")
+	inputWidth := get("InputWidth")
+	errMsg := get("Error")
+
+	rowClass := "field-row"
+	if errMsg != "" {
+		rowClass += " has-err"
+	}
+
+	// Label cell.
+	var labelHTML string
+	if help != "" {
+		labelHTML = fmt.Sprintf(`<label>%s <span class="help">%s</span></label>`,
+			html.EscapeString(label), html.EscapeString(help))
+	} else {
+		labelHTML = fmt.Sprintf(`<label>%s</label>`, html.EscapeString(label))
+	}
+
+	// Middle cell — type-specific.
+	var middleHTML string
+	switch typ {
+	case "text", "path":
+		extra := ""
+		if typ == "path" {
+			extra = " path"
+		}
+		hasValue := ""
+		if value != "" {
+			hasValue = " has-value"
+		}
+		middleHTML = fmt.Sprintf(`<input class="field-input%s%s" name="%s" value="%s" placeholder="%s">`,
+			extra, hasValue,
+			html.EscapeString(name), html.EscapeString(value), html.EscapeString(placeholder))
+	case "number":
+		hasValue := ""
+		if value != "" {
+			hasValue = " has-value"
+		}
+		style := ""
+		if inputWidth != "" {
+			style = fmt.Sprintf(` style="max-width:%s"`, html.EscapeString(inputWidth))
+		}
+		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s>`,
+			hasValue, html.EscapeString(name), html.EscapeString(value), style)
+	case "password":
+		middleHTML = fmt.Sprintf(`<input class="field-input has-value" type="password" name="%s" value="%s">`,
+			html.EscapeString(name), html.EscapeString(value))
+	case "select":
+		options, _ := args["Options"].([]map[string]any)
+		var b strings.Builder
+		fmt.Fprintf(&b, `<select class="field-input has-value" name="%s">`, html.EscapeString(name))
+		for _, opt := range options {
+			ov, _ := opt["Value"].(string)
+			ol, _ := opt["Label"].(string)
+			if ol == "" {
+				ol = ov
+			}
+			selected := ""
+			if ov == value {
+				selected = " selected"
+			}
+			fmt.Fprintf(&b, `<option value="%s"%s>%s</option>`,
+				html.EscapeString(ov), selected, html.EscapeString(ol))
+		}
+		b.WriteString(`</select>`)
+		middleHTML = b.String()
+	case "switch":
+		onClass := ""
+		aria := "false"
+		if value == "true" {
+			onClass = " on"
+			aria = "true"
+		}
+		middleHTML = fmt.Sprintf(`<button class="switch%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
+			onClass, html.EscapeString(name), aria)
+	default:
+		middleHTML = fmt.Sprintf(`<!-- unknown field type %q -->`, html.EscapeString(typ))
+	}
+
+	// Number-with-unit wraps the input + scope badge in a .row-end span;
+	// other types put the scope badge as a direct row child.
+	scopeHTML := fmt.Sprintf(`<span class="scope %s">%s</span>`, html.EscapeString(scope), strings.ToUpper(scope))
+	if typ == "number" && unit != "" {
+		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span style="font-size:10px;color:var(--vfd-faded);">%s</span>%s</span>`,
+			middleHTML, html.EscapeString(unit), scopeHTML)
+		scopeHTML = "" // already inside row-end
+	}
+
+	errHTML := ""
+	if errMsg != "" {
+		errHTML = fmt.Sprintf(`<div class="field-err">%s</div>`, html.EscapeString(errMsg))
+	}
+
+	return template.HTML(fmt.Sprintf(`<div class="%s">%s%s%s%s</div>`,
+		rowClass, labelHTML, middleHTML, errHTML, scopeHTML))
 }
 
 // parseTemplates parses the embedded chassis templates with the helper

@@ -3254,3 +3254,148 @@ func TestTemplateHelpers_Stub(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 }
+
+func TestFieldHelper_TextWithValue(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name":  "mister_host",
+		"Type":  "text",
+		"Label": "Host",
+		"Value": "192.168.1.42",
+		"Scope": "reboot",
+	})
+	s := string(html)
+	checks := []string{
+		`class="field-row"`,
+		`name="mister_host"`,
+		`value="192.168.1.42"`,
+		`has-value`,
+		`class="scope reboot"`,
+		`>Host`,
+	}
+	for _, want := range checks {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+}
+
+func TestFieldHelper_TextEmptyHasNoHasValueClass(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "host_ip", "Type": "text", "Label": "Host IP",
+		"Value": "", "Scope": "reboot", "Placeholder": "auto-detect",
+	})
+	if strings.Contains(string(html), "has-value") {
+		t.Errorf("empty value should not have .has-value class:\n%s", html)
+	}
+	if !strings.Contains(string(html), `placeholder="auto-detect"`) {
+		t.Errorf("missing placeholder:\n%s", html)
+	}
+}
+
+func TestFieldHelper_NumberWithUnit(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "mister_port", "Type": "number", "Label": "Port",
+		"Value": "32100", "Scope": "reboot", "Unit": "ms",
+	})
+	s := string(html)
+	if !strings.Contains(s, `type="number"`) {
+		t.Errorf("missing type=number")
+	}
+	if !strings.Contains(s, "ms") {
+		t.Errorf("missing unit text 'ms'")
+	}
+	if !strings.Contains(s, `class="field-input num`) {
+		t.Errorf("missing field-input.num class")
+	}
+}
+
+func TestFieldHelper_Password(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "ssh_password", "Type": "password", "Label": "Password",
+		"Value": "secret", "Scope": "hot",
+	})
+	if !strings.Contains(string(html), `type="password"`) {
+		t.Errorf("missing type=password")
+	}
+}
+
+func TestFieldHelper_Path(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "data_dir", "Type": "path", "Label": "Data dir",
+		"Value": "", "Scope": "reboot", "Placeholder": "auto",
+	})
+	if !strings.Contains(string(html), `class="field-input path`) {
+		t.Errorf("missing field-input.path class")
+	}
+}
+
+func TestFieldHelper_Select(t *testing.T) {
+	t.Parallel()
+	opts := []map[string]any{
+		{"Value": "NTSC_480i", "Label": "NTSC_480i"},
+		{"Value": "NTSC_240p", "Label": "NTSC_240p"},
+	}
+	html := fieldHelper(map[string]any{
+		"Name": "modeline", "Type": "select", "Label": "Modeline",
+		"Value": "NTSC_240p", "Scope": "recast", "Options": opts,
+	})
+	s := string(html)
+	if !strings.Contains(s, `<select`) || !strings.Contains(s, `</select>`) {
+		t.Errorf("missing select tags")
+	}
+	if !strings.Contains(s, `<option value="NTSC_240p" selected`) {
+		t.Errorf("missing selected attribute on the right option:\n%s", s)
+	}
+}
+
+func TestFieldHelper_Switch(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "lz4", "Type": "switch", "Label": "LZ4",
+		"Value": "true", "Scope": "recast",
+	})
+	s := string(html)
+	if !strings.Contains(s, `class="switch on"`) {
+		t.Errorf("missing switch.on class for true value:\n%s", s)
+	}
+	if !strings.Contains(s, `aria-pressed="true"`) {
+		t.Errorf("missing aria-pressed:\n%s", s)
+	}
+	if !strings.Contains(s, `data-field="lz4"`) {
+		t.Errorf("missing data-field attribute:\n%s", s)
+	}
+}
+
+func TestFieldHelper_WithError(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "mister_host", "Type": "text", "Label": "Host",
+		"Value": "bad", "Scope": "reboot", "Error": "not a valid IPv4 or hostname",
+	})
+	s := string(html)
+	if !strings.Contains(s, "has-err") {
+		t.Errorf("missing has-err class:\n%s", s)
+	}
+	if !strings.Contains(s, "not a valid IPv4 or hostname") {
+		t.Errorf("missing error text:\n%s", s)
+	}
+}
+
+func TestFieldHelper_HelpText(t *testing.T) {
+	t.Parallel()
+	html := fieldHelper(map[string]any{
+		"Name": "mister_host", "Type": "text", "Label": "Host",
+		"Help": "IP or hostname of your MiSTer", "Value": "1.2.3.4", "Scope": "reboot",
+	})
+	if !strings.Contains(string(html), `class="help"`) {
+		t.Errorf("missing .help span")
+	}
+	if !strings.Contains(string(html), "IP or hostname of your MiSTer") {
+		t.Errorf("missing help text")
+	}
+}
