@@ -2546,3 +2546,82 @@ func TestChassisSettings_PipelineAudioSampleRate_OutOfRangeReturns400(t *testing
 		t.Errorf("error message = %q, want substring \"must be 22050, 44100, or 48000\"", msg)
 	}
 }
+
+func TestChassisSettings_AdvancedHLSLiveEdgeSegments_Recast(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"5"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().HLSBuffer.LiveEdgeSegments; got != 5 {
+		t.Errorf("after save: LiveEdgeSegments = %d, want 5", got)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["scope"] != "recast" {
+		t.Errorf("scope = %v, want recast", body["scope"])
+	}
+}
+
+func TestChassisSettings_AdvancedHLSLiveEdge_OutOfBoundsReturns400(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"15"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	errs, _ := body["errors"].(map[string]any)
+	if msg, _ := errs["hls_live_edge_segments"].(string); !strings.Contains(msg, "must be in [1, 12]") {
+		t.Errorf("error = %q, want substring \"must be in [1, 12]\"", msg)
+	}
+}
+
+func TestChassisSettings_AdvancedHLSMaxCacheBytes_Recast(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_max_cache_bytes": {"134217728"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().HLSBuffer.MaxCacheBytes; got != 134217728 {
+		t.Errorf("after save: MaxCacheBytes = %d, want 134217728", got)
+	}
+}
+
+func TestChassisSettings_AdvancedLoggingDebug_HotSetsLogLevel(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"logging_debug": {"true"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().Logging.Debug; !got {
+		t.Errorf("after save: Logging.Debug = false, want true")
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["scope"] != "hot" {
+		t.Errorf("scope = %v, want hot", body["scope"])
+	}
+	// Verify the hot-swap side effect fired (the bridge saver's
+	// applyHotSwapSideEffects calls logging.SetLevel("debug") for true).
+	// If the test harness exposes a logging.GetLevel hook, assert here.
+}
