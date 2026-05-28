@@ -4324,9 +4324,75 @@ body.receiver .settings-notice[hidden] { display: none; }
 body.receiver .settings-notice.ok  { color: oklch(0.78 0.12 150); border-color: oklch(0.32 0.10 150); }
 body.receiver .settings-notice.err { color: oklch(0.82 0.16 25); border-color: oklch(0.40 0.16 25); }
 
+/* ===== Settings drawer chrome — tab badge, spacer, close, section card ===== */
+
+body.receiver .settings-tab .badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.1em;
+  background: #2a2a2e;
+  color: #8a8a92;
+  border-radius: 2px;
+}
+body.receiver .settings-tab.active .badge {
+  background: oklch(0.22 0.06 175);
+  color: var(--vfd);
+}
+
+body.receiver .settings-spacer { flex: 1; }
+
+body.receiver .settings-close {
+  flex: 0 0 auto;
+  background: linear-gradient(180deg, #4a2a2a 0%, #1a0a0a 100%);
+  border: 0;
+  border-left: 1px solid #0a0a0b;
+  color: oklch(0.78 0.16 25);
+  padding: 11px 18px;
+  font: 700 10px 'Inter', sans-serif;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+body.receiver .settings-close:hover {
+  color: #fff;
+  background: linear-gradient(180deg, #5a3030 0%, #2a1010 100%);
+}
+
+body.receiver .settings-section {
+  background: oklch(0.155 0.008 80);
+  border: 1px solid #0a0a0b;
+  border-radius: 3px;
+  padding: 14px 16px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+body.receiver .settings-section.wide { grid-column: 1 / -1; }
+body.receiver .settings-section h4 {
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #8a8a92;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #0a0a0b;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+body.receiver .settings-section h4 .hint {
+  margin-left: auto;
+  font: 500 9px 'DSEG14-Classic', monospace;
+  color: var(--vfd-dim);
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+
 /* Mobile sizing */
 @media (max-width: 600px) {
   body.receiver .switch { width: 50px; height: 26px; }
   body.receiver .switch::before { width: 20px; height: 20px; }
   body.receiver .switch.on::before { left: 28px; }
+  body.receiver .settings-close { min-height: 40px; }
 }

@@ -3601,6 +3601,14 @@ func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 		".settings-notice",
 		".settings-notice.ok",
 		".settings-notice.err",
+		// Drawer chrome: section card, hint, tab badge, spacer, close.
+		".settings-section",
+		".settings-section.wide",
+		".settings-section h4 .hint",
+		".settings-tab .badge",
+		".settings-tab.active .badge",
+		".settings-spacer",
+		".settings-close",
 	}
 	for _, sel := range wantSelectors {
 		if !bytes.Contains(css, []byte(sel)) {
