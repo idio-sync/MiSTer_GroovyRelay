@@ -648,3 +648,22 @@ func TestHandleSettingsActionProbeMister_NilSaverReturns503(t *testing.T) {
 		t.Fatalf("Code = %d, want 503", rec.Code)
 	}
 }
+
+// fakeCoreLauncher is the test fixture for the chassis-owned CoreLauncher interface.
+type fakeCoreLauncher struct {
+	calls int
+	err   error
+}
+
+func (f *fakeCoreLauncher) Launch(ctx context.Context) error {
+	f.calls++
+	return f.err
+}
+
+func TestCoreLauncher_StructuralConformance(t *testing.T) {
+	t.Parallel()
+	var l CoreLauncher = &fakeCoreLauncher{}
+	if err := l.Launch(context.Background()); err != nil {
+		t.Errorf("Launch err = %v, want nil", err)
+	}
+}

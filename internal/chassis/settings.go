@@ -72,6 +72,21 @@ type ProbeResult struct {
 	Port      int
 }
 
+// CoreLauncher is the chassis-side interface the launch-core action
+// invokes. Production passes the bridgeMisterLauncher from
+// cmd/mister-groovy-relay, which wraps internal/misterctl.LaunchGroovy
+// with credentials snapshotted from BridgeSaver.Current() on each call.
+// internal/chassis does NOT import internal/misterctl — the forbidden
+// imports test enforces this (see import_check_test.go).
+type CoreLauncher interface {
+	// Launch dials the configured MiSTer over SSH and runs the canonical
+	// load_core command. The chassis handler wraps the call in a 6s
+	// timeout matching the legacy /ui/* path. Implementations must
+	// snapshot host/credentials at call time (not at construction) so
+	// HOT-scope SSH credential edits apply without a restart.
+	Launch(ctx context.Context) error
+}
+
 // settingsChipError is matched structurally so saver-layer typed errors
 // can carry HTTP/chip details across the interface boundary without a
 // uiserver import. The chassis handler uses errors.As against the
