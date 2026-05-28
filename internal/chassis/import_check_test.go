@@ -12,23 +12,22 @@ import (
 	"testing"
 )
 
-func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
-	t.Parallel()
+type productionImportRule struct {
+	fromPkg   string
+	fromDir   string
+	forbidden []string
+}
 
+func productionImportRules(repoRoot string) []productionImportRule {
 	const modulePath = "github.com/idio-sync/MiSTer_GroovyRelay"
-	repoRoot := repoRootFromWD(t)
-
-	rules := []struct {
-		fromPkg   string
-		fromDir   string
-		forbidden []string
-	}{
+	return []productionImportRule{
 		{
 			fromPkg: modulePath + "/internal/chassis",
 			fromDir: filepath.Join(repoRoot, "internal", "chassis"),
 			forbidden: []string{
 				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
+				modulePath + "/internal/misterctl",
 				modulePath + "/internal/adapters/auxadapter",
 				modulePath + "/internal/adapters/streams",
 				modulePath + "/internal/adapters/url",
@@ -83,6 +82,13 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 			},
 		},
 	}
+}
+
+func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := repoRootFromWD(t)
+	rules := productionImportRules(repoRoot)
 
 	for _, rule := range rules {
 		rule := rule
@@ -125,6 +131,30 @@ func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestChassisForbiddenImports_IncludesMisterctl is a tripwire: it fails
+// if a future refactor drops internal/misterctl from the chassis
+// forbidden-imports list. The CoreLauncher interface boundary is the
+// load-bearing decoupling between internal/chassis and the SSH client.
+func TestChassisForbiddenImports_IncludesMisterctl(t *testing.T) {
+	t.Parallel()
+	const modulePath = "github.com/idio-sync/MiSTer_GroovyRelay"
+	const want = modulePath + "/internal/misterctl"
+	const chassisPkg = modulePath + "/internal/chassis"
+
+	for _, rule := range productionImportRules(repoRootFromWD(t)) {
+		if rule.fromPkg != chassisPkg {
+			continue
+		}
+		for _, f := range rule.forbidden {
+			if f == want {
+				return
+			}
+		}
+		t.Fatalf("%s rule's forbidden slice missing %s", rule.fromPkg, want)
+	}
+	t.Fatalf("chassis rule not found in production import rules")
 }
 
 func TestProductionImports_DecodesRawStringImportLiterals(t *testing.T) {
