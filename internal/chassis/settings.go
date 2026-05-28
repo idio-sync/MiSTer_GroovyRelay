@@ -160,6 +160,14 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeBool(s)
 		return v, err
 	},
+	"audio_sample_rate": func(s string) (any, error) {
+		v, err := decodeAudioSampleRate(s)
+		return v, err
+	},
+	"audio_channels": func(s string) (any, error) {
+		v, err := decodeAudioChannels(s)
+		return v, err
+	},
 }
 
 // decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
@@ -294,6 +302,30 @@ func decodeBool(raw string) (bool, error) {
 	return false, fmt.Errorf("must be true or false")
 }
 
+// decodeAudioSampleRate accepts 22050, 44100, or 48000 as a numeric string.
+func decodeAudioSampleRate(raw string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err == nil {
+		switch n {
+		case 22050, 44100, 48000:
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("must be 22050, 44100, or 48000")
+}
+
+// decodeAudioChannels accepts 1 or 2 as a numeric string.
+func decodeAudioChannels(raw string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err == nil {
+		switch n {
+		case 1, 2:
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("must be 1 or 2")
+}
+
 // bridgeFieldOverlay writes the decoded value into the right path of a
 // BridgeConfig. Type asserts to the decoder's return type; a type
 // mismatch is a programmer bug and panics rather than silently failing.
@@ -314,6 +346,8 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"video_aspect_mode":           func(c *config.BridgeConfig, v any) { c.Video.AspectMode = v.(string) },
 	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
 	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
+	"audio_sample_rate": func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
+	"audio_channels":    func(c *config.BridgeConfig, v any) { c.Audio.Channels = v.(int) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -341,6 +375,8 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"video_aspect_mode":           adapters.ScopeRestartCast,
 	"video_lz4_enabled":           adapters.ScopeRestartCast,
 	"video_delta_lz4_enabled":     adapters.ScopeRestartCast,
+	"audio_sample_rate": adapters.ScopeRestartCast,
+	"audio_channels":    adapters.ScopeRestartCast,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns

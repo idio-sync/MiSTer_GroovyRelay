@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -744,6 +745,40 @@ func TestDecodeBool(t *testing.T) {
 		if _, err := decodeBool(bad); err == nil ||
 			!strings.Contains(err.Error(), "must be true or false") {
 			t.Errorf("decodeBool(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeAudioSampleRate(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []int{22050, 44100, 48000} {
+		raw := strconv.Itoa(ok)
+		v, err := decodeAudioSampleRate(raw)
+		if err != nil || v != ok {
+			t.Errorf("decodeAudioSampleRate(%q) = (%d, %v)", raw, v, err)
+		}
+	}
+	for _, bad := range []string{"", "96000", "abc"} {
+		if _, err := decodeAudioSampleRate(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be 22050, 44100, or 48000") {
+			t.Errorf("decodeAudioSampleRate(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeAudioChannels(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []int{1, 2} {
+		raw := strconv.Itoa(ok)
+		v, err := decodeAudioChannels(raw)
+		if err != nil || v != ok {
+			t.Errorf("decodeAudioChannels(%q) = (%d, %v)", raw, v, err)
+		}
+	}
+	for _, bad := range []string{"", "0", "3", "abc"} {
+		if _, err := decodeAudioChannels(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be 1 or 2") {
+			t.Errorf("decodeAudioChannels(%q) err = %v, want substring", bad, err)
 		}
 	}
 }
