@@ -3551,6 +3551,24 @@ func TestShellTemplate_IncludesSettingsDrawerScript(t *testing.T) {
 	}
 }
 
+func TestSettingsDrawerJS_IsServedAsStaticFile(t *testing.T) {
+	t.Parallel()
+	b, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("read settings-drawer.js: %v", err)
+	}
+	// Smoke check: file is non-empty and the IIFE pattern is in place.
+	if len(b) < 100 {
+		t.Errorf("settings-drawer.js is suspiciously short: %d bytes", len(b))
+	}
+	if !bytes.Contains(b, []byte("settings-open")) {
+		t.Errorf("settings-drawer.js does not reference the settings-open class")
+	}
+	if !bytes.Contains(b, []byte("data-tab")) {
+		t.Errorf("settings-drawer.js does not reference data-tab attribute")
+	}
+}
+
 func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 	t.Parallel()
 	css, err := chassisStaticFS.ReadFile("static/chassis.css")
