@@ -11,11 +11,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 )
 
 // fakeBridgeSettingsSaver is a compile-time conformance fixture for the
@@ -645,6 +648,568 @@ func TestHandleSettingsActionProbeMister_NilSaverReturns503(t *testing.T) {
 	}}
 	rec := postProbe(t, srv)
 	if rec.Code != 503 {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+}
+
+// fakeCoreLauncher is the test fixture for the chassis-owned CoreLauncher interface.
+type fakeCoreLauncher struct {
+	calls int
+	err   error
+}
+
+func (f *fakeCoreLauncher) Launch(ctx context.Context) error {
+	f.calls++
+	return f.err
+}
+
+func TestCoreLauncher_StructuralConformance(t *testing.T) {
+	t.Parallel()
+	var l CoreLauncher = &fakeCoreLauncher{}
+	if err := l.Launch(context.Background()); err != nil {
+		t.Errorf("Launch err = %v, want nil", err)
+	}
+}
+
+func TestDecodeVideoModeline(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want, errSub string
+	}{
+		{"NTSC_480i", "NTSC_480i", ""},
+		{"NTSC_240p", "NTSC_240p", ""},
+		{"PAL_576i", "PAL_576i", ""},
+		{"PAL_288p", "PAL_288p", ""},
+		{"", "", "must be one of"},
+		{"720p", "", "must be one of"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			v, err := decodeVideoModeline(tc.in)
+			if tc.errSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+					t.Fatalf("err = %v, want substring %q", err, tc.errSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if v != tc.want {
+				t.Errorf("v = %q, want %q", v, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeInterlaceFieldOrder(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"tff", "bff"} {
+		v, err := decodeInterlaceFieldOrder(ok)
+		if err != nil || v != ok {
+			t.Errorf("decodeInterlaceFieldOrder(%q) = (%q, %v)", ok, v, err)
+		}
+	}
+	for _, bad := range []string{"", "xyz", "TFF"} {
+		if _, err := decodeInterlaceFieldOrder(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be tff or bff") {
+			t.Errorf("decodeInterlaceFieldOrder(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeAspectMode(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"auto", "letterbox", "zoom"} {
+		if v, err := decodeAspectMode(ok); err != nil || v != ok {
+			t.Errorf("decodeAspectMode(%q) = (%q, %v)", ok, v, err)
+		}
+	}
+	if _, err := decodeAspectMode("stretch"); err == nil ||
+		!strings.Contains(err.Error(), "must be auto, letterbox, or zoom") {
+		t.Errorf("decodeAspectMode(stretch) err = %v, want substring", err)
+	}
+}
+
+func TestDecodeBool(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"true", "false"} {
+		v, err := decodeBool(in)
+		if err != nil {
+			t.Errorf("decodeBool(%q) err = %v", in, err)
+		}
+		want := in == "true"
+		if v != want {
+			t.Errorf("decodeBool(%q) = %v, want %v", in, v, want)
+		}
+	}
+	for _, bad := range []string{"", "yes", "TRUE", "1"} {
+		if _, err := decodeBool(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be true or false") {
+			t.Errorf("decodeBool(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeAudioSampleRate(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []int{22050, 44100, 48000} {
+		raw := strconv.Itoa(ok)
+		v, err := decodeAudioSampleRate(raw)
+		if err != nil || v != ok {
+			t.Errorf("decodeAudioSampleRate(%q) = (%d, %v)", raw, v, err)
+		}
+	}
+	for _, bad := range []string{"", "96000", "abc"} {
+		if _, err := decodeAudioSampleRate(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be 22050, 44100, or 48000") {
+			t.Errorf("decodeAudioSampleRate(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeAudioChannels(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []int{1, 2} {
+		raw := strconv.Itoa(ok)
+		v, err := decodeAudioChannels(raw)
+		if err != nil || v != ok {
+			t.Errorf("decodeAudioChannels(%q) = (%d, %v)", raw, v, err)
+		}
+	}
+	for _, bad := range []string{"", "0", "3", "abc"} {
+		if _, err := decodeAudioChannels(bad); err == nil ||
+			!strings.Contains(err.Error(), "must be 1 or 2") {
+			t.Errorf("decodeAudioChannels(%q) err = %v, want substring", bad, err)
+		}
+	}
+}
+
+func TestDecodeMisterSSHUser(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want, errSub string
+	}{
+		{"root", "root", ""},
+		{"  root  ", "root", ""},
+		{"alice", "alice", ""},
+		{"", "", "is required"},
+		{"root:bar", "", "contains an illegal character"},
+		{"root bar", "", "contains an illegal character"},
+		{"line1\nline2", "", "contains an illegal character"},
+		{"with\x00nul", "", "contains an illegal character"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			v, err := decodeMisterSSHUser(tc.in)
+			if tc.errSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+					t.Fatalf("err = %v, want substring %q", err, tc.errSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if v != tc.want {
+				t.Errorf("v = %q, want %q", v, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeMisterSSHPassword(t *testing.T) {
+	t.Parallel()
+	// Decoder is permissive: accepts any string verbatim including empty.
+	// The overlay handles preserve-on-empty.
+	cases := []string{"", "hunter2", "  trimmed  ", "p@ssw0rd!"}
+	for _, in := range cases {
+		v, err := decodeMisterSSHPassword(in)
+		if err != nil {
+			t.Errorf("decodeMisterSSHPassword(%q) err = %v", in, err)
+		}
+		if v != in {
+			t.Errorf("decodeMisterSSHPassword(%q) = %q, want %q (no trim/transform)", in, v, in)
+		}
+	}
+}
+
+func TestMisterSSHPassword_OverlayPreservesOnEmpty(t *testing.T) {
+	t.Parallel()
+	overlay := bridgeFieldOverlays["mister_ssh_password"]
+	if overlay == nil {
+		t.Fatalf("bridgeFieldOverlays missing mister_ssh_password entry")
+	}
+	c := &config.BridgeConfig{MiSTer: config.MisterConfig{SSHPassword: "stored"}}
+
+	// Empty value must NOT change the stored password.
+	overlay(c, "")
+	if c.MiSTer.SSHPassword != "stored" {
+		t.Errorf("after overlay(empty) password = %q, want \"stored\"", c.MiSTer.SSHPassword)
+	}
+
+	// Non-empty value replaces.
+	overlay(c, "newpass")
+	if c.MiSTer.SSHPassword != "newpass" {
+		t.Errorf("after overlay(newpass) password = %q, want \"newpass\"", c.MiSTer.SSHPassword)
+	}
+}
+
+func TestDecodeIntInRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in            string
+		lo, hi, want  int
+		errSub        string
+	}{
+		{"1", 1, 12, 1, ""},
+		{"12", 1, 12, 12, ""},
+		{"6", 1, 12, 6, ""},
+		{"0", 1, 12, 0, "must be in [1, 12]"},
+		{"13", 1, 12, 0, "must be in [1, 12]"},
+		{"", 1, 12, 0, "must be a whole number"},
+		{"abc", 1, 12, 0, "must be a whole number"},
+	}
+	for _, tc := range cases {
+		v, err := decodeIntInRange(tc.in, tc.lo, tc.hi)
+		if tc.errSub != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("decodeIntInRange(%q,%d,%d) err = %v, want substring %q",
+					tc.in, tc.lo, tc.hi, err, tc.errSub)
+			}
+			continue
+		}
+		if err != nil || v != tc.want {
+			t.Errorf("decodeIntInRange(%q,%d,%d) = (%d, %v), want (%d, nil)",
+				tc.in, tc.lo, tc.hi, v, err, tc.want)
+		}
+	}
+}
+
+func TestDecodeInt64InRange(t *testing.T) {
+	t.Parallel()
+	// Uses humanizeBytes-style labels in the error message.
+	const (
+		lo = int64(16777216)
+		hi = int64(2147483648)
+	)
+	cases := []struct {
+		in     string
+		want   int64
+		errSub string
+	}{
+		{"16777216", lo, ""},
+		{"2147483648", hi, ""},
+		{"268435456", 268435456, ""},
+		{"16777215", 0, "must be in [16 MB, 2 GB]"},
+		{"2147483649", 0, "must be in [16 MB, 2 GB]"},
+		{"", 0, "must be a whole number"},
+	}
+	for _, tc := range cases {
+		v, err := decodeInt64InRange(tc.in, lo, hi)
+		if tc.errSub != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("decodeInt64InRange(%q) err = %v, want substring %q",
+					tc.in, err, tc.errSub)
+			}
+			continue
+		}
+		if err != nil || v != tc.want {
+			t.Errorf("decodeInt64InRange(%q) = (%d, %v), want (%d, nil)",
+				tc.in, v, err, tc.want)
+		}
+	}
+}
+
+func TestLoggingDebugTableEntries(t *testing.T) {
+	t.Parallel()
+	if _, ok := bridgeFieldDecoders["logging_debug"]; !ok {
+		t.Error("missing decoder for logging_debug")
+	}
+	overlay, ok := bridgeFieldOverlays["logging_debug"]
+	if !ok {
+		t.Fatal("missing overlay for logging_debug")
+	}
+	c := &config.BridgeConfig{}
+	overlay(c, true)
+	if !c.Logging.Debug {
+		t.Errorf("after overlay(true) Logging.Debug = false, want true")
+	}
+	overlay(c, false)
+	if c.Logging.Debug {
+		t.Errorf("after overlay(false) Logging.Debug = true, want false")
+	}
+	if got := bridgeFieldScopes["logging_debug"]; got != adapters.ScopeHotSwap {
+		t.Errorf("scope for logging_debug = %v, want ScopeHotSwap", got)
+	}
+}
+
+func TestHLSDecodersTableEntries(t *testing.T) {
+	t.Parallel()
+	// Smoke test: every HLS form key has decoder + overlay + scope entries
+	// and they're all RECAST except hls_enabled (also RECAST).
+	keys := []string{
+		"hls_enabled",
+		"hls_live_edge_segments",
+		"hls_start_segments",
+		"hls_max_cached_segments",
+		"hls_max_cache_bytes",
+		"hls_max_playlist_bytes",
+		"hls_max_segment_bytes",
+		"hls_segment_timeout_seconds",
+		"hls_playlist_timeout_seconds",
+		"hls_max_variant_height",
+		"hls_stale_cache_reap_hours",
+	}
+	for _, k := range keys {
+		if _, ok := bridgeFieldDecoders[k]; !ok {
+			t.Errorf("missing decoder for %s", k)
+		}
+		if _, ok := bridgeFieldOverlays[k]; !ok {
+			t.Errorf("missing overlay for %s", k)
+		}
+		got, ok := bridgeFieldScopes[k]
+		if !ok {
+			t.Errorf("missing scope for %s", k)
+			continue
+		}
+		if got != adapters.ScopeRestartCast {
+			t.Errorf("scope for %s = %v, want ScopeRestartCast", k, got)
+		}
+	}
+}
+
+// TestHLSDecoders_BoundsSubsetOfValidator asserts every chassis-accepted
+// HLS boundary value passes config.Sectioned.Validate() when placed into
+// a fixture with compatible companion fields. Catches drift between
+// chassis single-field bounds and config.Sectioned.Validate's
+// single-field + cross-field invariants.
+func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
+	t.Parallel()
+
+	// Build a baseline Sectioned with a valid HLS config, then perturb
+	// one field at a time to its low and high boundaries.
+	baseline := func() config.Sectioned {
+		return config.Sectioned{
+			Bridge: config.BridgeConfig{
+				MiSTer:     config.MisterConfig{Host: "127.0.0.1", Port: 32100, SourcePort: 32101},
+				UI:         config.UIConfig{HTTPPort: 32500},
+				Video:      config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", RGBMode: "rgb888", LZ4Enabled: true, DeltaLZ4Enabled: true},
+				Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
+				Visualizer: config.VisualizerConfig{Mode: "retro_analyzer"},
+				HLSBuffer: config.HLSBufferConfig{
+					Enabled:                true,
+					LiveEdgeSegments:       3,
+					StartSegments:          2,
+					MaxCachedSegments:      6,
+					MaxCacheBytes:          268435456,
+					MaxPlaylistBytes:       1048576,
+					MaxSegmentBytes:        52428800,
+					SegmentTimeoutSeconds:  10,
+					PlaylistTimeoutSeconds: 10,
+					MaxVariantHeight:       720,
+					StaleCacheReapHours:    24,
+				},
+			},
+		}
+	}
+
+	type tc struct {
+		field string
+		lo    int64 // use int64 to cover both int and int64 fields uniformly
+		hi    int64
+		apply func(c *config.BridgeConfig, n int64)
+		// Companion adjustments for cross-field invariants.
+		companion func(c *config.BridgeConfig, n int64)
+	}
+	cases := []tc{
+		{"live_edge_segments", 1, 12,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.LiveEdgeSegments = int(n) },
+			func(c *config.BridgeConfig, n int64) {
+				// live_edge_segments must be >= start_segments
+				if n < int64(c.HLSBuffer.StartSegments) {
+					c.HLSBuffer.StartSegments = int(n)
+				}
+			}},
+		{"start_segments", 1, 6,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.StartSegments = int(n) },
+			func(c *config.BridgeConfig, n int64) {
+				// live_edge_segments must be >= start_segments
+				if c.HLSBuffer.LiveEdgeSegments < int(n) {
+					c.HLSBuffer.LiveEdgeSegments = int(n)
+				}
+				// max_cached_segments must be >= start_segments
+				if c.HLSBuffer.MaxCachedSegments < int(n) {
+					c.HLSBuffer.MaxCachedSegments = int(n)
+				}
+			}},
+		{"max_cached_segments", 2, 24,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxCachedSegments = int(n) },
+			func(c *config.BridgeConfig, n int64) {
+				if int64(c.HLSBuffer.StartSegments) > n {
+					c.HLSBuffer.StartSegments = int(n)
+				}
+			}},
+		{"max_cache_bytes", 16777216, 2147483648,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxCacheBytes = n },
+			nil},
+		{"max_playlist_bytes", 4096, 8388608,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxPlaylistBytes = n },
+			nil},
+		{"max_segment_bytes", 1048576, 536870912,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxSegmentBytes = n },
+			nil},
+		{"segment_timeout_seconds", 1, 60,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.SegmentTimeoutSeconds = int(n) },
+			nil},
+		{"playlist_timeout_seconds", 1, 60,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.PlaylistTimeoutSeconds = int(n) },
+			nil},
+		{"max_variant_height", 240, 2160,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxVariantHeight = int(n) },
+			nil},
+		{"stale_cache_reap_hours", 1, 168,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.StaleCacheReapHours = int(n) },
+			nil},
+	}
+
+	for _, c := range cases {
+		for _, n := range []int64{c.lo, c.hi} {
+			sec := baseline()
+			c.apply(&sec.Bridge, n)
+			if c.companion != nil {
+				c.companion(&sec.Bridge, n)
+			}
+			if err := sec.Validate(); err != nil {
+				t.Errorf("%s = %d: Sectioned.Validate err = %v", c.field, n, err)
+			}
+		}
+	}
+}
+
+func newTestServerForLaunchCore(saver fakeBridgeSettingsSaver, launcher CoreLauncher) *Server {
+	return &Server{
+		cfg: Config{
+			Version:      "test",
+			StartedAt:    time.Unix(0, 0),
+			BridgeSaver:  saver,
+			CoreLauncher: launcher,
+		},
+	}
+}
+
+func postLaunchCore(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/receiver/settings/action/launch-core", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionLaunchCore(rec, req)
+	return rec
+}
+
+func TestLaunchCore_Success(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100}}}
+	launcher := &fakeCoreLauncher{}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if launcher.calls != 1 {
+		t.Errorf("launcher.calls = %d, want 1", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if ok, _ := body["ok"].(bool); !ok {
+		t.Errorf("body.ok = %v, want true", body["ok"])
+	}
+	if host, _ := body["host"].(string); host != "192.168.1.42" {
+		t.Errorf("body.host = %q, want 192.168.1.42", host)
+	}
+}
+
+func TestLaunchCore_EmptyHost(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: ""}}}
+	launcher := &fakeCoreLauncher{}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if launcher.calls != 0 {
+		t.Errorf("launcher.calls = %d, want 0 (must not dial on empty host)", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["error"].(string); got != launchcore.EmptyHostMessage {
+		t.Errorf("body.error = %q, want %q", got, launchcore.EmptyHostMessage)
+	}
+}
+
+func TestLaunchCore_LauncherError(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "host"}}}
+	launcher := &fakeCoreLauncher{err: errors.New("ssh: handshake failed")}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["error"].(string); got != "ssh: handshake failed" {
+		t.Errorf("body.error = %q, want \"ssh: handshake failed\" (no IP token to redact)", got)
+	}
+}
+
+func TestLaunchCore_LeakyErrorRedacted(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "host"}}}
+	launcher := &fakeCoreLauncher{err: errors.New("dial tcp 192.168.1.42:22: connection refused")}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	got, _ := body["error"].(string)
+	if strings.Contains(got, "192.168.1.42") || strings.Contains(got, "22") {
+		t.Errorf("body.error %q leaked IP/port — should be redacted", got)
+	}
+	if !strings.Contains(got, "<host>") {
+		t.Errorf("body.error %q missing <host> redaction marker", got)
+	}
+}
+
+func TestLaunchCore_NilLauncher(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "host"}}}
+	s := newTestServerForLaunchCore(saver, nil)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "NOT READY" {
+		t.Errorf("body.chip = %q, want NOT READY", chip)
+	}
+}
+
+func TestLaunchCore_NilSaver(t *testing.T) {
+	t.Parallel()
+	s := &Server{
+		cfg: Config{
+			Version:      "test",
+			StartedAt:    time.Unix(0, 0),
+			CoreLauncher: &fakeCoreLauncher{},
+			// BridgeSaver intentionally nil
+		},
+	}
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("Code = %d, want 503", rec.Code)
 	}
 }

@@ -514,6 +514,7 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 		{"dim", `{{dim true}}`},
 		{"htmlComment", `{{htmlComment "chassis:test"}}`},
 		{"until", `{{range until 3}}x{{end}}`},
+		{"options", `{{index (index (options (dict "Value" "a")) 0) "Value"}}`},
 	}
 	for _, p := range probes {
 		_, err := tmpl.New("probe-" + p.name).Parse(p.src)
@@ -3210,18 +3211,23 @@ func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	srv, err := New(Config{
-		Version:     "test",
-		StartedAt:   time.Now(),
-		Registry:    adapters.NewRegistry(),
-		BridgeSaver: fakeBridgeSettingsSaver{},
-		Prober:      fakeProber{},
+		Version:      "test",
+		StartedAt:    time.Now(),
+		Registry:     adapters.NewRegistry(),
+		BridgeSaver:  fakeBridgeSettingsSaver{},
+		Prober:       fakeProber{},
+		CoreLauncher: &fakeCoreLauncher{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer srv.Close()
 	srv.Mount(mux)
-	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+	for _, path := range []string{
+		"/receiver/settings/bridge",
+		"/receiver/settings/action/probe-mister",
+		"/receiver/settings/action/launch-core",
+	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -3237,18 +3243,23 @@ func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	srv, err := New(Config{
-		Version:     "test",
-		StartedAt:   time.Now(),
-		Registry:    adapters.NewRegistry(),
-		BridgeSaver: fakeBridgeSettingsSaver{},
-		Prober:      fakeProber{},
+		Version:      "test",
+		StartedAt:    time.Now(),
+		Registry:     adapters.NewRegistry(),
+		BridgeSaver:  fakeBridgeSettingsSaver{},
+		Prober:       fakeProber{},
+		CoreLauncher: &fakeCoreLauncher{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer srv.Close()
 	srv.Mount(mux)
-	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+	for _, path := range []string{
+		"/receiver/settings/bridge",
+		"/receiver/settings/action/probe-mister",
+		"/receiver/settings/action/launch-core",
+	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		// No Sec-Fetch-Site header — requireSameOrigin rejects.
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -3559,19 +3570,27 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	s := buf.String()
-	wantPairs := []struct{ pane, spec string }{
-		{"pipeline", "4B"},
+
+	// pipeline and advanced are now real panes (Tasks 14+15 landed); only
+	// adapters and catalog remain as stubs pending 4C/4D–4F.
+	stillStubs := []struct{ pane, spec string }{
 		{"adapters", "4D"},
 		{"catalog", "4C"},
-		{"advanced", "4B"},
 	}
-	for _, w := range wantPairs {
+	for _, w := range stillStubs {
 		paneTag := fmt.Sprintf(`data-pane="%s"`, w.pane)
 		if !strings.Contains(s, paneTag) {
 			t.Errorf("missing pane %q", paneTag)
 		}
 		if !strings.Contains(s, fmt.Sprintf("Spec %s", w.spec)) {
 			t.Errorf("missing Spec %s label for pane %s", w.spec, w.pane)
+		}
+	}
+
+	// Real panes must be present.
+	for _, pane := range []string{"pipeline", "advanced"} {
+		if !strings.Contains(s, fmt.Sprintf(`data-pane="%s"`, pane)) {
+			t.Errorf("missing pane %q in drawer", pane)
 		}
 	}
 }
@@ -3672,5 +3691,314 @@ func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 		if !bytes.Contains(css, []byte(sel)) {
 			t.Errorf("chassis.css missing selector %q", sel)
 		}
+	}
+}
+
+func TestHumanizeBytes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{1023, "1023 B"},
+		{1024, "1 KB"},
+		{1048576, "1 MB"},
+		{1073741824, "1 GB"},
+		{268435456, "256 MB"},
+		{52428800, "50 MB"},
+		{2147483648, "2 GB"},
+		{1048576 + 524288, "1.5 MB"}, // exercises the fractional path
+	}
+	for _, tc := range cases {
+		got := humanizeBytes(tc.in)
+		if got != tc.want {
+			t.Errorf("humanizeBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestBoolStr(t *testing.T) {
+	t.Parallel()
+	if got := boolStr(true); got != "true" {
+		t.Errorf("boolStr(true) = %q, want \"true\"", got)
+	}
+	if got := boolStr(false); got != "false" {
+		t.Errorf("boolStr(false) = %q, want \"false\"", got)
+	}
+}
+
+func TestI64toa(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"},
+		{268435456, "268435456"},
+		{-1, "-1"},
+		{1 << 40, "1099511627776"},
+	}
+	for _, tc := range cases {
+		if got := i64toa(tc.in); got != tc.want {
+			t.Errorf("i64toa(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestPasswordPlaceholder(t *testing.T) {
+	t.Parallel()
+	if got := passwordPlaceholder(""); got != "not set" {
+		t.Errorf("passwordPlaceholder(empty) = %q, want \"not set\"", got)
+	}
+	if got := passwordPlaceholder("hunter2"); got != "••••••••" {
+		t.Errorf("passwordPlaceholder(\"hunter2\") = %q, want \"••••••••\"", got)
+	}
+	if got := passwordPlaceholder("x"); got != "••••••••" {
+		t.Errorf("passwordPlaceholder(\"x\") = %q, want \"••••••••\" (any non-empty)", got)
+	}
+}
+
+func TestOptions_BuildsSelectOptions(t *testing.T) {
+	t.Parallel()
+	got := optionsHelper(
+		map[string]any{"Value": "NTSC_480i"},
+		map[string]any{"Value": "PAL_576i", "Label": "PAL_576i (experimental)"},
+	)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0]["Value"] != "NTSC_480i" {
+		t.Errorf("got[0].Value = %v, want NTSC_480i", got[0]["Value"])
+	}
+	if got[1]["Label"] != "PAL_576i (experimental)" {
+		t.Errorf("got[1].Label = %v, want PAL_576i (experimental)", got[1]["Label"])
+	}
+}
+
+func TestFieldHelper_PasswordEmptyValueAndPlaceholder(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":        "mister_ssh_password",
+		"Type":        "password",
+		"Label":       "SSH password",
+		"Value":       "", // always empty for password
+		"Placeholder": "••••••••",
+		"Scope":       "hot",
+	}))
+	if !strings.Contains(html, `type="password"`) {
+		t.Errorf("missing type=password: %s", html)
+	}
+	if !strings.Contains(html, `name="mister_ssh_password"`) {
+		t.Errorf("missing name: %s", html)
+	}
+	if !strings.Contains(html, `value=""`) {
+		t.Errorf("expected value=\"\", got: %s", html)
+	}
+	if !strings.Contains(html, `placeholder="`) {
+		t.Errorf("missing placeholder attribute: %s", html)
+	}
+	// The hex of "••••••••" is escaped under html.EscapeString; the dot
+	// glyph passes through as-is so we can match on the literal.
+	if !strings.Contains(html, "••••••••") {
+		t.Errorf("missing placeholder dots in: %s", html)
+	}
+	// Phase 4A's password branch auto-applied has-value; 4B does not.
+	if strings.Contains(html, "has-value") {
+		t.Errorf("unexpected has-value class on empty password input: %s", html)
+	}
+}
+
+func TestFieldHelper_SkipEmptyEmitsDataAttribute(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":      "mister_ssh_password",
+		"Type":      "password",
+		"Label":     "SSH password",
+		"Value":     "",
+		"SkipEmpty": true,
+		"Scope":     "hot",
+	}))
+	if !strings.Contains(html, `data-skip-empty="true"`) {
+		t.Errorf("expected data-skip-empty=true attr, got: %s", html)
+	}
+}
+
+func TestFieldHelper_SkipEmptyDefaultsOff(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":  "mister_ssh_user",
+		"Type":  "text",
+		"Label": "SSH user",
+		"Value": "root",
+		"Scope": "hot",
+	}))
+	if strings.Contains(html, `data-skip-empty`) {
+		t.Errorf("unexpected data-skip-empty attr on text field: %s", html)
+	}
+}
+
+func TestFieldHelper_SwitchIncludesNameForErrorPainting(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":  "logging_debug",
+		"Type":  "switch",
+		"Label": "Debug logging",
+		"Value": "true",
+		"Scope": "hot",
+	}))
+	if !strings.Contains(html, `data-field="logging_debug"`) {
+		t.Errorf("switch missing data-field: %s", html)
+	}
+	if !strings.Contains(html, `name="logging_debug"`) {
+		t.Errorf("switch missing name attr for settings-drawer.js error lookup: %s", html)
+	}
+}
+
+func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			Video:  config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", LZ4Enabled: true, DeltaLZ4Enabled: true},
+			Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
+			MiSTer: config.MisterConfig{SSHUser: "root", SSHPassword: "stored"},
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-pipeline", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	required := []string{
+		`data-pane="pipeline"`,
+		`name="video_modeline"`,
+		`name="video_interlace_field_order"`,
+		`name="video_aspect_mode"`,
+		`data-field="video_lz4_enabled"`,        // switch renders <button data-field=...>
+		`data-field="video_delta_lz4_enabled"`,
+		`name="audio_sample_rate"`,
+		`name="audio_channels"`,
+		`name="mister_ssh_user"`,
+		`name="mister_ssh_password"`,
+		`id="launch-core-btn"`,
+		`id="launch-core-result"`,
+		`<span class="scope hot">HOT</span>`,    // interlace + ssh_user + ssh_password
+		`<span class="scope recast">RECAST</span>`, // most other Pipeline fields
+		`data-skip-empty="true"`,
+		`••••••••`, // placeholder for stored password
+	}
+	for _, sub := range required {
+		if !strings.Contains(html, sub) {
+			t.Errorf("missing %q in:\n%s", sub, html)
+		}
+	}
+	// The password value must NEVER leak into the response.
+	if strings.Contains(html, `value="stored"`) {
+		t.Errorf("stored password leaked into rendered HTML")
+	}
+}
+
+func TestSettingsAdvancedTemplate_RendersAllFields(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			HLSBuffer: config.HLSBufferConfig{
+				Enabled:                true,
+				LiveEdgeSegments:       3,
+				StartSegments:          2,
+				MaxCachedSegments:      6,
+				MaxCacheBytes:          268435456,
+				MaxPlaylistBytes:       1048576,
+				MaxSegmentBytes:        52428800,
+				SegmentTimeoutSeconds:  10,
+				PlaylistTimeoutSeconds: 10,
+				MaxVariantHeight:       720,
+				StaleCacheReapHours:    24,
+			},
+			Logging: config.LoggingConfig{Debug: false},
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-advanced", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	required := []string{
+		`data-pane="advanced"`,
+		`data-field="hls_enabled"`, // switch
+		`name="hls_live_edge_segments"`,
+		`name="hls_start_segments"`,
+		`name="hls_max_cached_segments"`,
+		`name="hls_max_cache_bytes"`,
+		`name="hls_max_playlist_bytes"`,
+		`name="hls_max_segment_bytes"`,
+		`name="hls_segment_timeout_seconds"`,
+		`name="hls_playlist_timeout_seconds"`,
+		`name="hls_max_variant_height"`,
+		`name="hls_stale_cache_reap_hours"`,
+		`data-field="logging_debug"`, // switch
+		// Humanized byte hints render in .row-end:
+		`256 MB`,
+		`1 MB`,
+		`50 MB`,
+		// Static "px" unit:
+		`>px<`,
+	}
+	for _, sub := range required {
+		if !strings.Contains(html, sub) {
+			t.Errorf("missing %q in:\n%s", sub, html)
+		}
+	}
+}
+
+func TestSettingsDrawer_PipelineAndAdvancedReplaceStubs(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			Video:     config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto"},
+			Audio:     config.AudioConfig{SampleRate: 48000, Channels: 2},
+			MiSTer:    config.MisterConfig{SSHUser: "root"},
+			HLSBuffer: config.HLSBufferConfig{Enabled: true, LiveEdgeSegments: 3, StartSegments: 2, MaxCachedSegments: 6, MaxCacheBytes: 268435456, MaxPlaylistBytes: 1048576, MaxSegmentBytes: 52428800, SegmentTimeoutSeconds: 10, PlaylistTimeoutSeconds: 10, MaxVariantHeight: 720, StaleCacheReapHours: 24},
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+
+	// Drawer should now contain the real Pipeline + Advanced markers.
+	for _, sub := range []string{
+		`data-pane="pipeline"`,
+		`name="video_modeline"`,
+		`id="launch-core-btn"`,
+		`data-pane="advanced"`,
+		`name="hls_live_edge_segments"`,
+		`data-field="logging_debug"`,
+	} {
+		if !strings.Contains(html, sub) {
+			t.Errorf("missing %q in drawer HTML", sub)
+		}
+	}
+
+	// Stub placeholders must be gone for Pipeline and Advanced (still present
+	// for Adapters and Catalog).
+	if strings.Contains(html, "Spec 4B — implementation in progress") {
+		t.Errorf("drawer still contains 4B stub placeholder text")
 	}
 }

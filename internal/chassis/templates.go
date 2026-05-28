@@ -37,6 +37,8 @@ var chassisStaticFS embed.FS
 //   - pad2: zero-padded two-digit strings for clock display.
 //   - dim: returns the CSS class string for inactive lamps.
 //   - list: constructs a string slice for small template membership probes.
+//   - options: constructs a []map[string]any from dict invocations, used to
+//     build the Options arg the field helper consumes for select fields.
 //   - until: returns n placeholders for repeated template elements.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
@@ -65,6 +67,7 @@ var templateFuncs = template.FuncMap{
 		return template.HTML("<!-- " + s + " -->")
 	},
 	"list":        func(args ...string) []string { return args },
+	"options":     optionsHelper,
 	"until":       func(n int) []struct{} { return make([]struct{}, n) },
 	"volumeAngle": volumeAngle,
 	"lower":               strings.ToLower,
@@ -75,6 +78,10 @@ var templateFuncs = template.FuncMap{
 	"settingsScopeLabel":  settingsScopeLabelHelper,
 	"stub":                stubHelper,
 	"field":               fieldHelper,
+	"humanizeBytes":       humanizeBytes,
+	"boolStr":             boolStr,
+	"i64toa":              i64toa,
+	"passwordPlaceholder": passwordPlaceholder,
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in
@@ -109,8 +116,80 @@ func dictHelper(pairs ...any) map[string]any {
 	return m
 }
 
+// optionsHelper builds the []map[string]any shape fieldHelper expects for
+// select Options. Templates call it as:
+//
+//	{{ options (dict "Value" "a") (dict "Value" "b" "Label" "Bee") }}
+func optionsHelper(args ...map[string]any) []map[string]any {
+	return args
+}
+
 // itoaHelper wraps strconv.Itoa for the FuncMap.
 func itoaHelper(n int) string { return strconv.Itoa(n) }
+
+// boolStr returns "true" or "false" for switch value coercion in
+// templates. Use it to feed the `field` helper's Value when the
+// underlying Go field is a bool.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// i64toa wraps strconv.FormatInt for int64-backed numeric inputs (e.g.
+// HLS buffer's byte ceilings, which are int64 in BridgeConfig.HLSBuffer).
+// Sibling of itoaHelper, which is int-only.
+func i64toa(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+// passwordPlaceholder returns the placeholder string for the SSH
+// password input: "••••••••" when a password is stored, "not set"
+// otherwise. The chassis renders the password field with value="" at
+// all times, so the placeholder is the only operator signal that a
+// password is configured.
+func passwordPlaceholder(stored string) string {
+	if stored != "" {
+		return "••••••••"
+	}
+	return "not set"
+}
+
+// humanizeBytes formats an int64 byte count as a human-readable string
+// using base-1024 (IEC) with SI-style suffixes ("KB"/"MB"/"GB"), matching
+// the chassis mockup verbatim (e.g. 268435456 → "256 MB"). The
+// technically-correct KiB/MiB/GiB suffixes are intentionally not used —
+// operator familiarity wins over technical purity. Values under 1024 are
+// rendered with the "B" suffix and no decimal. Fractional values render
+// with one decimal place ("1.5 MB"); whole-unit values render integral
+// ("1 MB" — not "1.0 MB").
+func humanizeBytes(n int64) string {
+	const (
+		KB int64 = 1024
+		MB       = KB * 1024
+		GB       = MB * 1024
+	)
+	switch {
+	case n < KB:
+		return fmt.Sprintf("%d B", n)
+	case n < MB:
+		return formatBytesScale(n, KB, "KB")
+	case n < GB:
+		return formatBytesScale(n, MB, "MB")
+	default:
+		return formatBytesScale(n, GB, "GB")
+	}
+}
+
+// formatBytesScale renders n/unit with one decimal place when the result
+// is fractional, integral otherwise. Used by humanizeBytes.
+func formatBytesScale(n, unit int64, suffix string) string {
+	if n%unit == 0 {
+		return fmt.Sprintf("%d %s", n/unit, suffix)
+	}
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(unit), suffix)
+}
 
 // errOfHelper returns the error message for a given field name from a
 // settings errors map, or "" if absent or the map is nil.
@@ -165,6 +244,7 @@ func fieldHelper(args map[string]any) template.HTML {
 	unit := get("Unit")
 	inputWidth := get("InputWidth")
 	errMsg := get("Error")
+	skipEmpty, _ := args["SkipEmpty"].(bool)
 
 	rowClass := "field-row"
 	if errMsg != "" {
@@ -207,8 +287,19 @@ func fieldHelper(args map[string]any) template.HTML {
 		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s>`,
 			hasValue, html.EscapeString(name), html.EscapeString(value), style)
 	case "password":
-		middleHTML = fmt.Sprintf(`<input class="field-input has-value" type="password" name="%s" value="%s">`,
-			html.EscapeString(name), html.EscapeString(value))
+		// 4B password rendering: never echo the stored password into the
+		// HTML response — render value="" always. Placeholder communicates
+		// stored-vs-not-set state to the operator (passwordPlaceholder
+		// helper picks "••••••••" or "not set"). has-value is omitted
+		// because the input is always empty at server-render time;
+		// the client JS adds has-value on operator input.
+		skipAttr := ""
+		if skipEmpty {
+			skipAttr = ` data-skip-empty="true"`
+		}
+		middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s>`,
+			html.EscapeString(name), html.EscapeString(placeholder), skipAttr)
+		_ = value // value is intentionally not used for password — preserve-on-empty lives in the server overlay
 	case "select":
 		options, _ := args["Options"].([]map[string]any)
 		var b strings.Builder
@@ -235,8 +326,8 @@ func fieldHelper(args map[string]any) template.HTML {
 			onClass = " on"
 			aria = "true"
 		}
-		middleHTML = fmt.Sprintf(`<button class="switch%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
-			onClass, html.EscapeString(name), aria)
+		middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
+			onClass, html.EscapeString(name), html.EscapeString(name), aria)
 	default:
 		middleHTML = fmt.Sprintf(`<!-- unknown field type %q -->`, html.EscapeString(typ))
 	}

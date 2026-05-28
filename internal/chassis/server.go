@@ -98,6 +98,14 @@ type Config struct {
 	// uses CMD_GET_STATUS over an ephemeral source port. May be nil in
 	// unit-test fixtures; handlers respond 503 NOT READY in that case.
 	Prober Prober
+
+	// CoreLauncher SSH-sends the canonical load_core command to the
+	// MiSTer for the Pipeline pane's "Launch core" action button.
+	// Production passes the existing bridgeMisterLauncher instance from
+	// cmd/mister-groovy-relay/launcher.go — the same launcher already
+	// wired into ui.Config.MisterLauncher for /ui/*. May be nil in
+	// unit-test fixtures; the handler responds 503 NOT READY when nil.
+	CoreLauncher CoreLauncher
 }
 
 // Server owns the chassis runtime state.
@@ -250,6 +258,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsBridgePost)))
 	mux.Handle("POST /receiver/settings/action/probe-mister",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionProbeMister)))
+	mux.Handle("POST /receiver/settings/action/launch-core",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionLaunchCore)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

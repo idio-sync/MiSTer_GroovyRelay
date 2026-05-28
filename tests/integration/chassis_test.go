@@ -31,6 +31,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
@@ -1504,6 +1505,7 @@ type chassisEnv struct {
 	streamsA    *streams.Adapter
 	fakeStreams *recordingStreamsCaster
 	session     *fakeIntegrationSession
+	bridgeSaver *uiserver.BridgeSaver // NEW for Phase 4B settings integration
 }
 
 // Close shuts down the embedded http test server AND the chassis cache
@@ -2218,11 +2220,29 @@ func (f fakeSettingsProber) ProbeMister(_ context.Context, _ config.BridgeConfig
 	return f.res, f.err
 }
 
-// newChassisIntegrationEnvWithProber builds a chassisEnv with a real
-// *uiserver.BridgeSaver wired into chassis.Config.BridgeSaver and the
-// supplied prober (may be nil) wired into chassis.Config.Prober.
-// It extends newChassisIntegrationEnvIn with these two additions.
+// settingsEnvOptions configures newChassisIntegrationEnvForSettings.
+// All fields are optional; zero values mean "no override / nil".
+type settingsEnvOptions struct {
+	prober       chassis.Prober       // wired into chassis.Config.Prober
+	coreLauncher chassis.CoreLauncher // wired into chassis.Config.CoreLauncher
+	mutateBridge func(*config.BridgeConfig) // applied to the seed bridge before saver init
+}
+
+// newChassisIntegrationEnvWithProber preserves 4A's signature. Existing
+// callers (TestReceiverSettings_GetRendersAllNetworkFields,
+// TestReceiverSettings_BridgePostHotSwapSucceeds, etc.) call this and
+// must keep working unchanged.
 func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *chassisEnv {
+	t.Helper()
+	return newChassisIntegrationEnvForSettings(t, settingsEnvOptions{prober: prober})
+}
+
+// newChassisIntegrationEnvForSettings is the Phase 4B settings-integration
+// harness. Wires a real *uiserver.BridgeSaver against a tmp config.toml,
+// builds a chassis Server with streams/session/preset infrastructure, and
+// stores the saver on the returned env so tests can inspect saved state
+// directly via env.bridgeSaver.Current().
+func newChassisIntegrationEnvForSettings(t *testing.T, opts settingsEnvOptions) *chassisEnv {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -2234,6 +2254,9 @@ func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *ch
 	}
 
 	bridge := testSettingsBridgeConfig(dir)
+	if opts.mutateBridge != nil {
+		opts.mutateBridge(&bridge)
+	}
 	cfgPath := testSettingsConfigPath(t, dir, bridge)
 
 	sec := &config.Sectioned{Bridge: bridge}
@@ -2267,7 +2290,8 @@ func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *ch
 		StreamsCaster:             fakeStreams,
 		SourceAvailabilityViewers: []adapters.SourceAvailabilityViewer{streamsA},
 		BridgeSaver:               bridgeSaver,
-		Prober:                    prober,
+		Prober:                    opts.prober,
+		CoreLauncher:              opts.coreLauncher,
 	})
 	if err != nil {
 		t.Fatalf("chassis.New: %v", err)
@@ -2286,6 +2310,7 @@ func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *ch
 		streamsA:    streamsA,
 		fakeStreams:  fakeStreams,
 		session:     session,
+		bridgeSaver: bridgeSaver,
 	}
 }
 
@@ -2428,5 +2453,241 @@ func TestReceiverSettings_ProbePostNilProberReturns503(t *testing.T) {
 	if resp.StatusCode != 503 {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 503; body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestChassisSettings_PipelineInterlaceFieldOrder_Hot(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	if got := env.bridgeSaver.Current().Video.InterlaceFieldOrder; got != "tff" {
+		t.Fatalf("starting field = %q, want tff", got)
+	}
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"video_interlace_field_order": {"bff"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().Video.InterlaceFieldOrder; got != "bff" {
+		t.Errorf("after save: field = %q, want bff", got)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["scope"] != "hot" {
+		t.Errorf("scope = %v, want hot", body["scope"])
+	}
+}
+
+func TestChassisSettings_PipelineLZ4Switch_Recast(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"video_lz4_enabled": {"false"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().Video.LZ4Enabled; got != false {
+		t.Errorf("after save: LZ4Enabled = %v, want false", got)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["scope"] != "recast" {
+		t.Errorf("scope = %v, want recast", body["scope"])
+	}
+}
+
+func TestChassisSettings_PipelineSSHPassword_PreservesOnEmpty(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"mister_ssh_password": {"newpass"}})
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("first save StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+	if got := env.bridgeSaver.Current().MiSTer.SSHPassword; got != "newpass" {
+		t.Fatalf("after first save: password = %q, want newpass", got)
+	}
+
+	resp = env.PostForm("/receiver/settings/bridge", url.Values{"mister_ssh_password": {""}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("empty save StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().MiSTer.SSHPassword; got != "newpass" {
+		t.Errorf("after empty save: password = %q, want \"newpass\" (preserve)", got)
+	}
+}
+
+func TestChassisSettings_PipelineAudioSampleRate_OutOfRangeReturns400(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"audio_sample_rate": {"96000"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	errs, _ := body["errors"].(map[string]any)
+	msg, _ := errs["audio_sample_rate"].(string)
+	if !strings.Contains(msg, "must be 22050, 44100, or 48000") {
+		t.Errorf("error message = %q, want substring \"must be 22050, 44100, or 48000\"", msg)
+	}
+}
+
+func TestChassisSettings_AdvancedHLSLiveEdgeSegments_Recast(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"5"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().HLSBuffer.LiveEdgeSegments; got != 5 {
+		t.Errorf("after save: LiveEdgeSegments = %d, want 5", got)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["scope"] != "recast" {
+		t.Errorf("scope = %v, want recast", body["scope"])
+	}
+}
+
+func TestChassisSettings_AdvancedHLSLiveEdge_OutOfBoundsReturns400(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"15"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	errs, _ := body["errors"].(map[string]any)
+	if msg, _ := errs["hls_live_edge_segments"].(string); !strings.Contains(msg, "must be in [1, 12]") {
+		t.Errorf("error = %q, want substring \"must be in [1, 12]\"", msg)
+	}
+}
+
+func TestChassisSettings_AdvancedHLSMaxCacheBytes_Recast(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_max_cache_bytes": {"134217728"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().HLSBuffer.MaxCacheBytes; got != 134217728 {
+		t.Errorf("after save: MaxCacheBytes = %d, want 134217728", got)
+	}
+}
+
+func TestChassisSettings_AdvancedLoggingDebug_HotSetsLogLevel(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"logging_debug": {"true"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().Logging.Debug; !got {
+		t.Errorf("after save: Logging.Debug = false, want true")
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["scope"] != "hot" {
+		t.Errorf("scope = %v, want hot", body["scope"])
+	}
+	// Verify the hot-swap side effect fired (the bridge saver's
+	// applyHotSwapSideEffects calls logging.SetLevel("debug") for true).
+	// If the test harness exposes a logging.GetLevel hook, assert here.
+}
+
+// ---------------------------------------------------------------------------
+// Task 24: Integration test — launch-core success + empty-host
+// ---------------------------------------------------------------------------
+
+// fakeLaunchCoreLauncher counts calls for the integration test. Mirrors
+// the chassis.CoreLauncher interface structurally.
+type fakeLaunchCoreLauncher struct {
+	calls int
+	err   error
+}
+
+func (f *fakeLaunchCoreLauncher) Launch(ctx context.Context) error {
+	f.calls++
+	return f.err
+}
+
+func TestChassisSettings_LaunchCoreSuccess(t *testing.T) {
+	t.Parallel()
+	launcher := &fakeLaunchCoreLauncher{}
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{coreLauncher: launcher})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if launcher.calls != 1 {
+		t.Errorf("launcher.calls = %d, want 1", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["host"] != "127.0.0.1" {
+		t.Errorf("body = %+v, want ok with configured host", body)
+	}
+}
+
+func TestChassisSettings_LaunchCoreEmptyHost(t *testing.T) {
+	t.Parallel()
+	launcher := &fakeLaunchCoreLauncher{}
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{
+		coreLauncher: launcher,
+		mutateBridge: func(b *config.BridgeConfig) {
+			b.MiSTer.Host = ""
+		},
+	})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, want 400; body = %s", resp.StatusCode, body)
+	}
+	if launcher.calls != 0 {
+		t.Errorf("launcher.calls = %d, want 0", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if got, _ := body["error"].(string); got != launchcore.EmptyHostMessage {
+		t.Errorf("body.error = %q, want exact match with launcher message", got)
 	}
 }

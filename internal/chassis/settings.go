@@ -25,6 +25,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 )
 
 // BridgeSettingsSaver is the narrow chassis-side interface for bridge
@@ -70,6 +71,21 @@ type ProbeResult struct {
 	LatencyMs float64
 	Host      string
 	Port      int
+}
+
+// CoreLauncher is the chassis-side interface the launch-core action
+// invokes. Production passes the bridgeMisterLauncher from
+// cmd/mister-groovy-relay, which wraps internal/misterctl.LaunchGroovy
+// with credentials snapshotted from BridgeSaver.Current() on each call.
+// internal/chassis does NOT import internal/misterctl — the forbidden
+// imports test enforces this (see import_check_test.go).
+type CoreLauncher interface {
+	// Launch dials the configured MiSTer over SSH and runs the canonical
+	// load_core command. The chassis handler wraps the call in a 6s
+	// timeout matching the legacy /ui/* path. Implementations must
+	// snapshot host/credentials at call time (not at construction) so
+	// HOT-scope SSH credential edits apply without a restart.
+	Launch(ctx context.Context) error
 }
 
 // settingsChipError is matched structurally so saver-layer typed errors
@@ -123,6 +139,90 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 	},
 	"ytdlp_path": func(s string) (any, error) {
 		v, err := decodeOptionalExecutablePath(s)
+		return v, err
+	},
+	"video_modeline": func(s string) (any, error) {
+		v, err := decodeVideoModeline(s)
+		return v, err
+	},
+	"video_interlace_field_order": func(s string) (any, error) {
+		v, err := decodeInterlaceFieldOrder(s)
+		return v, err
+	},
+	"video_aspect_mode": func(s string) (any, error) {
+		v, err := decodeAspectMode(s)
+		return v, err
+	},
+	"video_lz4_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"video_delta_lz4_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"audio_sample_rate": func(s string) (any, error) {
+		v, err := decodeAudioSampleRate(s)
+		return v, err
+	},
+	"audio_channels": func(s string) (any, error) {
+		v, err := decodeAudioChannels(s)
+		return v, err
+	},
+	"mister_ssh_user": func(s string) (any, error) {
+		v, err := decodeMisterSSHUser(s)
+		return v, err
+	},
+	"mister_ssh_password": func(s string) (any, error) {
+		v, err := decodeMisterSSHPassword(s)
+		return v, err
+	},
+	"hls_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"hls_live_edge_segments": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 12)
+		return v, err
+	},
+	"hls_start_segments": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 6)
+		return v, err
+	},
+	"hls_max_cached_segments": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 2, 24)
+		return v, err
+	},
+	"hls_max_cache_bytes": func(s string) (any, error) {
+		v, err := decodeInt64InRange(s, 16777216, 2147483648)
+		return v, err
+	},
+	"hls_max_playlist_bytes": func(s string) (any, error) {
+		v, err := decodeInt64InRange(s, 4096, 8388608)
+		return v, err
+	},
+	"hls_max_segment_bytes": func(s string) (any, error) {
+		v, err := decodeInt64InRange(s, 1048576, 536870912)
+		return v, err
+	},
+	"hls_segment_timeout_seconds": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 60)
+		return v, err
+	},
+	"hls_playlist_timeout_seconds": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 60)
+		return v, err
+	},
+	"hls_max_variant_height": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 240, 2160)
+		return v, err
+	},
+	"hls_stale_cache_reap_hours": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 168)
+		return v, err
+	},
+	"logging_debug": func(s string) (any, error) {
+		v, err := decodeBool(s)
 		return v, err
 	},
 }
@@ -216,6 +316,73 @@ func decodeOptionalExecutablePath(raw string) (string, error) {
 	return s, nil
 }
 
+// decodeVideoModeline accepts one of the four supported modelines.
+func decodeVideoModeline(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch s {
+	case "NTSC_480i", "NTSC_240p", "PAL_576i", "PAL_288p":
+		return s, nil
+	}
+	return "", fmt.Errorf("must be one of NTSC_480i, NTSC_240p, PAL_576i, PAL_288p")
+}
+
+// decodeInterlaceFieldOrder accepts "tff" or "bff" (case-sensitive,
+// matching config.Sectioned.Validate).
+func decodeInterlaceFieldOrder(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "tff" || s == "bff" {
+		return s, nil
+	}
+	return "", fmt.Errorf("must be tff or bff")
+}
+
+// decodeAspectMode accepts "auto", "letterbox", or "zoom".
+func decodeAspectMode(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch s {
+	case "auto", "letterbox", "zoom":
+		return s, nil
+	}
+	return "", fmt.Errorf("must be auto, letterbox, or zoom")
+}
+
+// decodeBool accepts exactly "true" or "false". Used by switch fields.
+// Strict matching catches form-data drift early; the legacy strconv.ParseBool
+// would accept "0"/"1"/"TRUE" which the chassis JS contract does not emit.
+func decodeBool(raw string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("must be true or false")
+}
+
+// decodeAudioSampleRate accepts 22050, 44100, or 48000 as a numeric string.
+func decodeAudioSampleRate(raw string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err == nil {
+		switch n {
+		case 22050, 44100, 48000:
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("must be 22050, 44100, or 48000")
+}
+
+// decodeAudioChannels accepts 1 or 2 as a numeric string.
+func decodeAudioChannels(raw string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err == nil {
+		switch n {
+		case 1, 2:
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("must be 1 or 2")
+}
+
 // bridgeFieldOverlay writes the decoded value into the right path of a
 // BridgeConfig. Type asserts to the decoder's return type; a type
 // mismatch is a programmer bug and panics rather than silently failing.
@@ -231,6 +398,33 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"ffmpeg_path":        func(c *config.BridgeConfig, v any) { c.FFmpegPath = v.(string) },
 	"ffprobe_path":       func(c *config.BridgeConfig, v any) { c.FFprobePath = v.(string) },
 	"ytdlp_path":         func(c *config.BridgeConfig, v any) { c.YTDLPPath = v.(string) },
+	"video_modeline":              func(c *config.BridgeConfig, v any) { c.Video.Modeline = v.(string) },
+	"video_interlace_field_order": func(c *config.BridgeConfig, v any) { c.Video.InterlaceFieldOrder = v.(string) },
+	"video_aspect_mode":           func(c *config.BridgeConfig, v any) { c.Video.AspectMode = v.(string) },
+	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
+	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
+	"audio_sample_rate": func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
+	"audio_channels":    func(c *config.BridgeConfig, v any) { c.Audio.Channels = v.(int) },
+	"mister_ssh_user":   func(c *config.BridgeConfig, v any) { c.MiSTer.SSHUser = v.(string) },
+	"mister_ssh_password": func(c *config.BridgeConfig, v any) {
+		s, _ := v.(string)
+		if s == "" {
+			return // preserve stored password — see Phase 4B spec, SSH password autosave skip
+		}
+		c.MiSTer.SSHPassword = s
+	},
+	"hls_enabled":                  func(c *config.BridgeConfig, v any) { c.HLSBuffer.Enabled = v.(bool) },
+	"hls_live_edge_segments":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.LiveEdgeSegments = v.(int) },
+	"hls_start_segments":           func(c *config.BridgeConfig, v any) { c.HLSBuffer.StartSegments = v.(int) },
+	"hls_max_cached_segments":      func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxCachedSegments = v.(int) },
+	"hls_max_cache_bytes":          func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxCacheBytes = v.(int64) },
+	"hls_max_playlist_bytes":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxPlaylistBytes = v.(int64) },
+	"hls_max_segment_bytes":        func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxSegmentBytes = v.(int64) },
+	"hls_segment_timeout_seconds":  func(c *config.BridgeConfig, v any) { c.HLSBuffer.SegmentTimeoutSeconds = v.(int) },
+	"hls_playlist_timeout_seconds": func(c *config.BridgeConfig, v any) { c.HLSBuffer.PlaylistTimeoutSeconds = v.(int) },
+	"hls_max_variant_height":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxVariantHeight = v.(int) },
+	"hls_stale_cache_reap_hours":   func(c *config.BridgeConfig, v any) { c.HLSBuffer.StaleCacheReapHours = v.(int) },
+	"logging_debug": func(c *config.BridgeConfig, v any) { c.Logging.Debug = v.(bool) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -253,6 +447,27 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"ffmpeg_path":        adapters.ScopeHotSwap,
 	"ffprobe_path":       adapters.ScopeHotSwap,
 	"ytdlp_path":         adapters.ScopeHotSwap,
+	"video_modeline":              adapters.ScopeRestartCast,
+	"video_interlace_field_order": adapters.ScopeHotSwap,
+	"video_aspect_mode":           adapters.ScopeRestartCast,
+	"video_lz4_enabled":           adapters.ScopeRestartCast,
+	"video_delta_lz4_enabled":     adapters.ScopeRestartCast,
+	"audio_sample_rate":    adapters.ScopeRestartCast,
+	"audio_channels":       adapters.ScopeRestartCast,
+	"mister_ssh_user":      adapters.ScopeHotSwap,
+	"mister_ssh_password":  adapters.ScopeHotSwap,
+	"hls_enabled":                  adapters.ScopeRestartCast,
+	"hls_live_edge_segments":       adapters.ScopeRestartCast,
+	"hls_start_segments":           adapters.ScopeRestartCast,
+	"hls_max_cached_segments":      adapters.ScopeRestartCast,
+	"hls_max_cache_bytes":          adapters.ScopeRestartCast,
+	"hls_max_playlist_bytes":       adapters.ScopeRestartCast,
+	"hls_max_segment_bytes":        adapters.ScopeRestartCast,
+	"hls_segment_timeout_seconds":  adapters.ScopeRestartCast,
+	"hls_playlist_timeout_seconds": adapters.ScopeRestartCast,
+	"hls_max_variant_height":       adapters.ScopeRestartCast,
+	"hls_stale_cache_reap_hours":   adapters.ScopeRestartCast,
+	"logging_debug": adapters.ScopeHotSwap,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
@@ -300,6 +515,59 @@ func isValidHostname(s string) bool {
 		}
 	}
 	return true
+}
+
+// decodeMisterSSHUser trims whitespace and rejects empty / SSH-illegal
+// characters (colon, NUL, whitespace including newlines). The conservative
+// character set catches typos before they confuse the SSH layer.
+func decodeMisterSSHUser(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("is required")
+	}
+	for _, r := range s {
+		switch {
+		case r == ':' || r == 0 || r == '\n' || r == '\r' || r == ' ' || r == '\t':
+			return "", fmt.Errorf("contains an illegal character")
+		}
+	}
+	return s, nil
+}
+
+// decodeMisterSSHPassword returns the raw input verbatim (NOT trimmed —
+// trailing whitespace may be intentional). Empty is allowed at decoder
+// level; the overlay applies preserve-on-empty semantics so empty submits
+// don't clobber the stored password.
+func decodeMisterSSHPassword(raw string) (string, error) {
+	return raw, nil
+}
+
+// decodeIntInRange parses an int from raw and asserts lo <= n <= hi.
+// Used by HLS-segment-count fields and other int-typed bounded numerics.
+func decodeIntInRange(raw string, lo, hi int) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number")
+	}
+	if n < lo || n > hi {
+		return 0, fmt.Errorf("must be in [%d, %d]", lo, hi)
+	}
+	return n, nil
+}
+
+// decodeInt64InRange parses an int64 from raw and asserts lo <= n <= hi.
+// Used by HLS byte-ceiling fields (max_cache_bytes etc.). The error message
+// renders the bounds via humanizeBytes for operator readability — e.g.
+// "must be in [16 MB, 2 GB]" rather than "[16777216, 2147483648]".
+func decodeInt64InRange(raw string, lo, hi int64) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number")
+	}
+	if n < lo || n > hi {
+		return 0, fmt.Errorf("must be in [%s, %s]", humanizeBytes(lo), humanizeBytes(hi))
+	}
+	return n, nil
 }
 
 // handleSettingsBridgePost is the POST handler for /receiver/settings/bridge.
@@ -434,6 +702,56 @@ func (s *Server) handleSettingsActionProbeMister(w http.ResponseWriter, r *http.
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":    false,
 		"error": sanitizeProbeError(err),
+	})
+}
+
+// handleSettingsActionLaunchCore is the POST handler for
+// /receiver/settings/action/launch-core. It SSH-sends the canonical
+// load_core command to the MiSTer using the saved credentials.
+//
+// Response policy:
+//   - 503 NOT READY when CoreLauncher or BridgeSaver is unwired.
+//   - 400 "MiSTer host not configured ..." when the saved host is empty.
+//     The error string matches bridgeMisterLauncher.Launch's empty-host
+//     short-circuit verbatim. Task 21 extracts this into a shared
+//     internal/launchcore constant so chassis and cmd cannot drift.
+//   - 200 {ok:true, host:"..."} on success.
+//   - 500 {ok:false, error:"<redacted>"} on launcher failure; reuses 4A's
+//     sanitizeProbeError to redact IPv4:port tokens.
+//
+// Context timeout: 6s (matches the legacy /ui/* timeout budget — 5s SSH
+// dial + 1s slack).
+func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CoreLauncher == nil || s.cfg.BridgeSaver == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	cur := s.cfg.BridgeSaver.Current()
+	if cur.MiSTer.Host == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": launchcore.EmptyHostMessage,
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	if err := s.cfg.CoreLauncher.Launch(ctx); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": sanitizeProbeError(err),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":   true,
+		"host": cur.MiSTer.Host,
 	})
 }
 
