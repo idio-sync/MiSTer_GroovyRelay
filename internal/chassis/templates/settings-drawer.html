@@ -25,7 +25,83 @@
 
 {{- define "settings-network" -}}
 <div class="settings-pane active" data-pane="network">
-  <!-- Task 18 fills this in -->
+
+  <div class="settings-section">
+    <h4>MiSTer connection <span class="hint">[bridge.mister]</span></h4>
+    {{ field (dict
+      "Name" "mister_host" "Type" "text" "Label" "Host"
+      "Help" "IP or hostname of your MiSTer on the LAN."
+      "Value" .Bridge.MiSTer.Host
+      "Scope" "reboot"
+      "Error" (errOf .Errors "mister_host")) }}
+    {{ field (dict
+      "Name" "mister_port" "Type" "number" "Label" "Port"
+      "Help" "UDP port the MiSTer's Groovy core listens on."
+      "Value" (itoa .Bridge.MiSTer.Port)
+      "Scope" "reboot"
+      "Error" (errOf .Errors "mister_port")) }}
+    {{ field (dict
+      "Name" "mister_source_port" "Type" "number" "Label" "Source port"
+      "Help" "Our stable source UDP port. Must stay the same across restarts."
+      "Value" (itoa .Bridge.MiSTer.SourcePort)
+      "Scope" "reboot"
+      "Error" (errOf .Errors "mister_source_port")) }}
+    {{ template "settings-action-probe-mister" . }}
+  </div>
+
+  <div class="settings-section">
+    <h4>Bridge HTTP <span class="hint">[bridge.ui]</span></h4>
+    {{ field (dict
+      "Name" "ui_http_port" "Type" "number" "Label" "HTTP port"
+      "Help" "Plex Companion HTTP + Settings UI (shared listener)."
+      "Value" (itoa .Bridge.UI.HTTPPort)
+      "Scope" "reboot"
+      "Error" (errOf .Errors "ui_http_port")) }}
+    {{ field (dict
+      "Name" "host_ip" "Type" "text" "Label" "Host IP"
+      "Help" "LAN IP advertised to Plex. Leave blank to auto-detect."
+      "Value" .Bridge.HostIP "Placeholder" "auto-detect"
+      "Scope" "reboot"
+      "Error" (errOf .Errors "host_ip")) }}
+    {{ field (dict
+      "Name" "data_dir" "Type" "path" "Label" "Data directory"
+      "Help" "Where plex.json and other persistent state live. Leave empty for OS default."
+      "Value" .Bridge.DataDir "Placeholder" "auto"
+      "Scope" "reboot"
+      "Error" (errOf .Errors "data_dir")) }}
+  </div>
+
+  <div class="settings-section wide">
+    <h4>External tools <span class="hint">override sidecar paths</span></h4>
+    {{ field (dict
+      "Name" "ffmpeg_path" "Type" "path" "Label" "FFmpeg path"
+      "Help" "Empty = bundled sidecar, then PATH."
+      "Value" .Bridge.FFmpegPath "Placeholder" "auto"
+      "Scope" "hot"
+      "Error" (errOf .Errors "ffmpeg_path")) }}
+    {{ field (dict
+      "Name" "ffprobe_path" "Type" "path" "Label" "FFprobe path"
+      "Value" .Bridge.FFprobePath "Placeholder" "auto"
+      "Scope" "hot"
+      "Error" (errOf .Errors "ffprobe_path")) }}
+    {{ field (dict
+      "Name" "ytdlp_path" "Type" "path" "Label" "yt-dlp path"
+      "Value" .Bridge.YTDLPPath "Placeholder" "auto"
+      "Scope" "hot"
+      "Error" (errOf .Errors "ytdlp_path")) }}
+  </div>
+
+</div>
+{{- end -}}
+
+{{- define "settings-action-probe-mister" -}}
+<div class="field-row">
+  <label>Connectivity <span class="help">Send a single packet and wait up to 1&nbsp;s for the MiSTer's reply. Verifies the address + ports above.</span></label>
+  <div>
+    <button class="action-btn primary" id="probe-mister-btn" type="button">&#9656; Test MiSTer connectivity</button>
+    <div class="action-result" id="probe-mister-result"></div>
+  </div>
+  <span class="scope" style="visibility:hidden;">.</span>
 </div>
 {{- end -}}
 

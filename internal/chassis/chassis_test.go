@@ -3432,3 +3432,62 @@ func TestSettingsDrawerTemplate_RendersFiveTabsAndNoticeSlot(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsDrawerTemplate_NetworkPaneRendersAllFields(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100, SourcePort: 32101},
+			UI:     config.UIConfig{HTTPPort: 32500},
+			DataDir: "",
+			FFmpegPath: "/usr/bin/ffmpeg",
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	s := buf.String()
+	wantInputs := []string{
+		`name="mister_host"`,
+		`name="mister_port"`,
+		`name="mister_source_port"`,
+		`name="ui_http_port"`,
+		`name="host_ip"`,
+		`name="data_dir"`,
+		`name="ffmpeg_path"`,
+		`name="ffprobe_path"`,
+		`name="ytdlp_path"`,
+	}
+	for _, w := range wantInputs {
+		if !strings.Contains(s, w) {
+			t.Errorf("missing %q in rendered Network pane", w)
+		}
+	}
+	if !strings.Contains(s, `value="192.168.1.42"`) {
+		t.Errorf("mister_host value not rendered from snapshot")
+	}
+	if !strings.Contains(s, `id="probe-mister-btn"`) {
+		t.Errorf("probe button missing")
+	}
+	if !strings.Contains(s, `id="probe-mister-result"`) {
+		t.Errorf("probe result slot missing")
+	}
+}
+
+func TestSettingsDrawerTemplate_NetworkPaneFieldRowHasScope(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := SettingsData{Bridge: config.BridgeConfig{}, Errors: map[string]string{}}
+	var buf bytes.Buffer
+	_ = tmpl.ExecuteTemplate(&buf, "settings-drawer", data)
+	s := buf.String()
+	if !strings.Contains(s, `class="scope reboot"`) {
+		t.Errorf("missing REBOOT scope badge")
+	}
+	if !strings.Contains(s, `class="scope hot"`) {
+		t.Errorf("missing HOT scope badge")
+	}
+}
