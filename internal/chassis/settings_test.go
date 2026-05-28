@@ -919,6 +919,29 @@ func TestDecodeInt64InRange(t *testing.T) {
 	}
 }
 
+func TestLoggingDebugTableEntries(t *testing.T) {
+	t.Parallel()
+	if _, ok := bridgeFieldDecoders["logging_debug"]; !ok {
+		t.Error("missing decoder for logging_debug")
+	}
+	overlay, ok := bridgeFieldOverlays["logging_debug"]
+	if !ok {
+		t.Fatal("missing overlay for logging_debug")
+	}
+	c := &config.BridgeConfig{}
+	overlay(c, true)
+	if !c.Logging.Debug {
+		t.Errorf("after overlay(true) Logging.Debug = false, want true")
+	}
+	overlay(c, false)
+	if c.Logging.Debug {
+		t.Errorf("after overlay(false) Logging.Debug = true, want false")
+	}
+	if got := bridgeFieldScopes["logging_debug"]; got != adapters.ScopeHotSwap {
+		t.Errorf("scope for logging_debug = %v, want ScopeHotSwap", got)
+	}
+}
+
 func TestHLSDecodersTableEntries(t *testing.T) {
 	t.Parallel()
 	// Smoke test: every HLS form key has decoder + overlay + scope entries

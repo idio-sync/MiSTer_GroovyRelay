@@ -220,6 +220,10 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeIntInRange(s, 1, 168)
 		return v, err
 	},
+	"logging_debug": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
 }
 
 // decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
@@ -419,6 +423,7 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"hls_playlist_timeout_seconds": func(c *config.BridgeConfig, v any) { c.HLSBuffer.PlaylistTimeoutSeconds = v.(int) },
 	"hls_max_variant_height":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxVariantHeight = v.(int) },
 	"hls_stale_cache_reap_hours":   func(c *config.BridgeConfig, v any) { c.HLSBuffer.StaleCacheReapHours = v.(int) },
+	"logging_debug": func(c *config.BridgeConfig, v any) { c.Logging.Debug = v.(bool) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -461,6 +466,7 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"hls_playlist_timeout_seconds": adapters.ScopeRestartCast,
 	"hls_max_variant_height":       adapters.ScopeRestartCast,
 	"hls_stale_cache_reap_hours":   adapters.ScopeRestartCast,
+	"logging_debug": adapters.ScopeHotSwap,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
