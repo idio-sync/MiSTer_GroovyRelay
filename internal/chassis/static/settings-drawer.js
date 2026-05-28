@@ -168,6 +168,61 @@
     });
   });
 
+  // Probe action: single-flight, renders result into #probe-mister-result.
+  const probeBtn = document.getElementById('probe-mister-btn');
+  const probeOut = document.getElementById('probe-mister-result');
+
+  function renderProbeResult(out, body) {
+    if (!out) return;
+    out.className = 'action-result shown';
+    if (!body || typeof body !== 'object') {
+      out.classList.add('err');
+      out.textContent = '▸ ERROR · empty response';
+      return;
+    }
+    if (body.ok) {
+      out.classList.add('ok');
+      out.textContent = `▸ ACK in ${body.latency_ms.toFixed(1)}ms · MiSTer ${body.host}:${body.port}`;
+      return;
+    }
+    out.classList.add('err');
+    if (body.error === 'timeout') {
+      const elapsed = body.elapsed_ms ? `${body.elapsed_ms.toFixed(0)}ms` : '1000ms';
+      out.textContent = `▸ NO ACK · ${elapsed} timeout · check host/port`;
+      return;
+    }
+    if (body.chip) {
+      out.textContent = `▸ ${body.chip}`;
+      return;
+    }
+    out.textContent = `▸ ERROR · ${body.error || 'unknown'}`;
+  }
+
+  if (probeBtn) {
+    probeBtn.addEventListener('click', async () => {
+      if (probeBtn.disabled) return;
+      probeBtn.disabled = true;
+      if (probeOut) {
+        probeOut.className = 'action-result';
+        probeOut.textContent = '';
+      }
+      let res, body = {};
+      try {
+        res = await fetch('/receiver/settings/action/probe-mister', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        body = await res.json();
+      } catch (err) {
+        renderProbeResult(probeOut, { ok: false, error: String(err) });
+        probeBtn.disabled = false;
+        return;
+      }
+      renderProbeResult(probeOut, body);
+      probeBtn.disabled = false;
+    });
+  }
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
