@@ -244,6 +244,7 @@ func fieldHelper(args map[string]any) template.HTML {
 	unit := get("Unit")
 	inputWidth := get("InputWidth")
 	errMsg := get("Error")
+	skipEmpty, _ := args["SkipEmpty"].(bool)
 
 	rowClass := "field-row"
 	if errMsg != "" {
@@ -286,8 +287,19 @@ func fieldHelper(args map[string]any) template.HTML {
 		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s>`,
 			hasValue, html.EscapeString(name), html.EscapeString(value), style)
 	case "password":
-		middleHTML = fmt.Sprintf(`<input class="field-input has-value" type="password" name="%s" value="%s">`,
-			html.EscapeString(name), html.EscapeString(value))
+		// 4B password rendering: never echo the stored password into the
+		// HTML response — render value="" always. Placeholder communicates
+		// stored-vs-not-set state to the operator (passwordPlaceholder
+		// helper picks "••••••••" or "not set"). has-value is omitted
+		// because the input is always empty at server-render time;
+		// the client JS adds has-value on operator input.
+		skipAttr := ""
+		if skipEmpty {
+			skipAttr = ` data-skip-empty="true"`
+		}
+		middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s>`,
+			html.EscapeString(name), html.EscapeString(placeholder), skipAttr)
+		_ = value // value is intentionally not used for password — preserve-on-empty lives in the server overlay
 	case "select":
 		options, _ := args["Options"].([]map[string]any)
 		var b strings.Builder
@@ -314,8 +326,8 @@ func fieldHelper(args map[string]any) template.HTML {
 			onClass = " on"
 			aria = "true"
 		}
-		middleHTML = fmt.Sprintf(`<button class="switch%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
-			onClass, html.EscapeString(name), aria)
+		middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
+			onClass, html.EscapeString(name), html.EscapeString(name), aria)
 	default:
 		middleHTML = fmt.Sprintf(`<!-- unknown field type %q -->`, html.EscapeString(typ))
 	}

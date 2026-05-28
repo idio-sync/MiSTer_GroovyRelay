@@ -3728,3 +3728,82 @@ func TestOptions_BuildsSelectOptions(t *testing.T) {
 		t.Errorf("got[1].Label = %v, want PAL_576i (experimental)", got[1]["Label"])
 	}
 }
+
+func TestFieldHelper_PasswordEmptyValueAndPlaceholder(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":        "mister_ssh_password",
+		"Type":        "password",
+		"Label":       "SSH password",
+		"Value":       "", // always empty for password
+		"Placeholder": "••••••••",
+		"Scope":       "hot",
+	}))
+	if !strings.Contains(html, `type="password"`) {
+		t.Errorf("missing type=password: %s", html)
+	}
+	if !strings.Contains(html, `name="mister_ssh_password"`) {
+		t.Errorf("missing name: %s", html)
+	}
+	if !strings.Contains(html, `value=""`) {
+		t.Errorf("expected value=\"\", got: %s", html)
+	}
+	if !strings.Contains(html, `placeholder="`) {
+		t.Errorf("missing placeholder attribute: %s", html)
+	}
+	// The hex of "••••••••" is escaped under html.EscapeString; the dot
+	// glyph passes through as-is so we can match on the literal.
+	if !strings.Contains(html, "••••••••") {
+		t.Errorf("missing placeholder dots in: %s", html)
+	}
+	// Phase 4A's password branch auto-applied has-value; 4B does not.
+	if strings.Contains(html, "has-value") {
+		t.Errorf("unexpected has-value class on empty password input: %s", html)
+	}
+}
+
+func TestFieldHelper_SkipEmptyEmitsDataAttribute(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":      "mister_ssh_password",
+		"Type":      "password",
+		"Label":     "SSH password",
+		"Value":     "",
+		"SkipEmpty": true,
+		"Scope":     "hot",
+	}))
+	if !strings.Contains(html, `data-skip-empty="true"`) {
+		t.Errorf("expected data-skip-empty=true attr, got: %s", html)
+	}
+}
+
+func TestFieldHelper_SkipEmptyDefaultsOff(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":  "mister_ssh_user",
+		"Type":  "text",
+		"Label": "SSH user",
+		"Value": "root",
+		"Scope": "hot",
+	}))
+	if strings.Contains(html, `data-skip-empty`) {
+		t.Errorf("unexpected data-skip-empty attr on text field: %s", html)
+	}
+}
+
+func TestFieldHelper_SwitchIncludesNameForErrorPainting(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":  "logging_debug",
+		"Type":  "switch",
+		"Label": "Debug logging",
+		"Value": "true",
+		"Scope": "hot",
+	}))
+	if !strings.Contains(html, `data-field="logging_debug"`) {
+		t.Errorf("switch missing data-field: %s", html)
+	}
+	if !strings.Contains(html, `name="logging_debug"`) {
+		t.Errorf("switch missing name attr for settings-drawer.js error lookup: %s", html)
+	}
+}
