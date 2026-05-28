@@ -165,6 +165,22 @@ func (r *BridgeSaver) SaveVisualizerMode(mode string) (adapters.ApplyScope, erro
 	return r.saveLocked(next)
 }
 
+// SaveTouched atomically applies the given mutation against the latest
+// in-memory bridge snapshot under r.mu. This closes the TOCTOU window
+// the chassis settings drawer would otherwise have between Current()
+// and Save(): two parallel auto-saves on different fields could each
+// snapshot the same pre-mutation Bridge, each overlay their own field,
+// and the second Save would clobber the first writer's field with its
+// pre-save value. Apply runs under the lock — it MUST NOT call back
+// into any BridgeSaver method (would deadlock).
+func (r *BridgeSaver) SaveTouched(apply func(*config.BridgeConfig)) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.sec.Bridge
+	apply(&next)
+	return r.saveLocked(next)
+}
+
 func (r *BridgeSaver) saveLocked(newCfg config.BridgeConfig) (adapters.ApplyScope, error) {
 	candidate := &config.Sectioned{Bridge: newCfg}
 	if err := candidate.Validate(); err != nil {

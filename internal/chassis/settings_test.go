@@ -34,6 +34,19 @@ func (f fakeBridgeSettingsSaver) Save(c config.BridgeConfig) (adapters.ApplyScop
 	return adapters.ScopeHotSwap, nil
 }
 
+// SaveTouched mirrors the production *uiserver.BridgeSaver.SaveTouched
+// semantics for tests: it applies the closure to a copy of f.cur and
+// forwards the resulting BridgeConfig to saveFn (so existing tests that
+// inspect the saved config via saveFn continue to work).
+func (f fakeBridgeSettingsSaver) SaveTouched(apply func(*config.BridgeConfig)) (adapters.ApplyScope, error) {
+	next := f.cur
+	apply(&next)
+	if f.saveFn != nil {
+		return f.saveFn(next)
+	}
+	return adapters.ScopeHotSwap, nil
+}
+
 // fakeProber is a compile-time conformance fixture for the chassis-owned
 // Prober interface.
 type fakeProber struct {

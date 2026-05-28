@@ -32,15 +32,26 @@ import (
 // internal/uiserver — the wiring lives in cmd/mister-groovy-relay.
 type BridgeSettingsSaver interface {
 	// Current returns the live in-memory bridge config snapshot. The
-	// chassis settings drawer uses this for first render and for
-	// composing patches (current + touched-field overlay) on each save.
+	// chassis settings drawer uses this for first render.
 	Current() config.BridgeConfig
 
-	// Save persists the patch to disk and dispatches in-memory side
-	// effects. The returned ApplyScope is the max-wins scope across all
-	// changed fields; the chassis maps it via scopeLabel before emitting
-	// to the wire.
+	// Save persists a fully-composed patch to disk and dispatches in-memory
+	// side effects. The returned ApplyScope is the max-wins scope across all
+	// changed fields; the chassis maps it via scopeLabel before emitting to
+	// the wire.
+	//
+	// The chassis settings handler prefers SaveTouched to avoid the
+	// read-Current-then-Save TOCTOU window; Save remains on the interface
+	// for callers that already hold a full patch.
 	Save(config.BridgeConfig) (adapters.ApplyScope, error)
+
+	// SaveTouched applies the given mutation against the latest in-memory
+	// bridge snapshot under the saver's lock, then persists. This closes
+	// the TOCTOU window between Current() and Save() for fast multi-field
+	// auto-saves: parallel writers each see and write the most recent
+	// snapshot. The apply closure runs under the saver's lock and MUST NOT
+	// call back into any BridgeSettingsSaver method.
+	SaveTouched(apply func(*config.BridgeConfig)) (adapters.ApplyScope, error)
 }
 
 // Prober is the narrow chassis-side interface the probe-mister action
@@ -331,15 +342,16 @@ func (s *Server) handleSettingsBridgePost(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Compose the patch: start from BridgeSaver.Current() (NOT startup
-	// cfg.Bridge — otherwise the drawer can go stale after the first
-	// save), overlay decoded touched fields.
-	patch := s.cfg.BridgeSaver.Current()
-	for name, value := range decoded {
-		bridgeFieldOverlays[name](&patch, value)
-	}
-
-	scope, err := s.cfg.BridgeSaver.Save(patch)
+	// Apply touched-field overlays under the saver's lock via SaveTouched
+	// to close the TOCTOU window between read and write — two parallel
+	// auto-saves on different fields would otherwise each snapshot the
+	// same pre-mutation Bridge and the second writer would clobber the
+	// first's field.
+	scope, err := s.cfg.BridgeSaver.SaveTouched(func(patch *config.BridgeConfig) {
+		for name, value := range decoded {
+			bridgeFieldOverlays[name](patch, value)
+		}
+	})
 	if err != nil {
 		var ce settingsChipError
 		if errors.As(err, &ce) {

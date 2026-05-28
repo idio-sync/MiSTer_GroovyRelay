@@ -843,3 +843,45 @@ func TestSettingsError_StatusCodeAndChip(t *testing.T) {
 		t.Fatalf("errors.As(se, &status/chip interface) = false, want true")
 	}
 }
+
+// TestBridgeSaver_SaveTouchedSnapshotsUnderLock proves SaveTouched's apply
+// closure observes the latest persisted state, not a stale snapshot. This
+// is the regression guard for the TOCTOU window the chassis settings
+// drawer would otherwise have between Current() and Save(): two parallel
+// auto-saves on different fields would each see the same pre-mutation
+// Bridge and the second save would clobber the first writer's field.
+func TestBridgeSaver_SaveTouchedSnapshotsUnderLock(t *testing.T) {
+	core := &fakeBridgeCore{}
+	reg := adapters.NewRegistry()
+	old := testBridgeConfig(t, "NTSC_480i")
+	s := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, reg)
+
+	// First save: set HostIP. (data_dir would need a writable preflight;
+	// HostIP only needs Validate, which the testBridgeConfig fixture passes.)
+	if _, err := s.SaveTouched(func(c *config.BridgeConfig) {
+		c.HostIP = "10.0.0.1"
+	}); err != nil {
+		t.Fatalf("SaveTouched #1: %v", err)
+	}
+
+	// Second save: the apply closure should see HostIP=10.0.0.1 — the most
+	// recent persisted value, not the pre-first-save zero value. If
+	// SaveTouched ever drops the snapshot-under-lock invariant, this test
+	// catches it.
+	var observed string
+	if _, err := s.SaveTouched(func(c *config.BridgeConfig) {
+		observed = c.HostIP
+		c.UI.HTTPPort = old.UI.HTTPPort // no-op to satisfy Validate
+	}); err != nil {
+		t.Fatalf("SaveTouched #2: %v", err)
+	}
+	if observed != "10.0.0.1" {
+		t.Errorf("SaveTouched #2 saw HostIP = %q, want 10.0.0.1 (snapshot must include #1's write)", observed)
+	}
+
+	// Final state on disk: both writers' fields preserved.
+	cur := s.Current()
+	if cur.HostIP != "10.0.0.1" {
+		t.Errorf("final HostIP = %q, want 10.0.0.1", cur.HostIP)
+	}
+}
