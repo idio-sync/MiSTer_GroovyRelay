@@ -138,6 +138,36 @@
     });
   });
 
+  // Switch click handler: optimistic toggle, revert on 4xx.
+  drawer.querySelectorAll('button.switch[data-field]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      const name = btn.dataset.field;
+      const next = !btn.classList.contains('on');
+      btn.classList.toggle('on', next);
+      btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+      clearFieldError(name);
+      const result = await saveField(name, next ? 'true' : 'false');
+      if (!result) return;
+      if (result.netErr) {
+        // Revert.
+        btn.classList.toggle('on', !next);
+        btn.setAttribute('aria-pressed', !next ? 'true' : 'false');
+        return;
+      }
+      const { status, body } = result;
+      if (status >= 200 && status < 300 && body.ok) return;
+      // Revert + paint error.
+      btn.classList.toggle('on', !next);
+      btn.setAttribute('aria-pressed', !next ? 'true' : 'false');
+      if (body && body.errors && body.errors[name]) {
+        paintFieldError(name, body.errors[name]);
+      } else {
+        paintFieldError(name, (body && body.chip) || 'save failed');
+      }
+    });
+  });
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
