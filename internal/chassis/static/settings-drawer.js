@@ -45,7 +45,102 @@
     });
   });
 
-  // Tasks 24-27 extend this module below.
   window.Chassis = window.Chassis || {};
   window.Chassis.settings = {}; // shared namespace for sub-modules
+
+  // Save helper: POSTs one field-value pair, returns parsed JSON or null
+  // on network error.
+  async function saveField(name, value) {
+    const form = new URLSearchParams();
+    form.set(name, value);
+    let res;
+    try {
+      res = await fetch('/receiver/settings/bridge', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form.toString(),
+      });
+    } catch (err) {
+      console.warn('settings save network error:', err);
+      return { netErr: true };
+    }
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* leave empty */ }
+    return { status: res.status, body };
+  }
+
+  function findRow(input) {
+    let el = input;
+    while (el && !el.classList.contains('field-row')) el = el.parentElement;
+    return el;
+  }
+
+  // Field error painting + clearing (full impl lands in Task 27).
+  function clearFieldError(name) {
+    const input = drawer.querySelector(`[name="${name}"]`);
+    if (!input) return;
+    const row = findRow(input);
+    if (!row) return;
+    row.classList.remove('has-err');
+    const err = row.querySelector('.field-err');
+    if (err) err.remove();
+  }
+  function paintFieldError(name, msg) {
+    const input = drawer.querySelector(`[name="${name}"]`);
+    if (!input) return;
+    const row = findRow(input);
+    if (!row) return;
+    row.classList.add('has-err');
+    let err = row.querySelector('.field-err');
+    if (!err) {
+      err = document.createElement('div');
+      err.className = 'field-err';
+      input.parentElement.insertAdjacentElement('afterend', err);
+    }
+    err.textContent = msg;
+  }
+  function markHasValue(name, value) {
+    const input = drawer.querySelector(`[name="${name}"]`);
+    if (!input) return;
+    if (value !== '') input.classList.add('has-value');
+    else input.classList.remove('has-value');
+  }
+
+  // Wire blur on text/number/password/path inputs; change on selects.
+  drawer.querySelectorAll('input.field-input, select.field-input').forEach(el => {
+    const evt = el.tagName === 'SELECT' ? 'change' : 'blur';
+    el.addEventListener(evt, async () => {
+      const name = el.name;
+      if (!name) return;
+      clearFieldError(name);
+      const result = await saveField(name, el.value);
+      if (!result) return;
+      if (result.netErr) {
+        // Task 27 renders into #settings-notice; for now log.
+        console.warn('settings save: network error');
+        return;
+      }
+      const { status, body } = result;
+      if (status >= 200 && status < 300 && body.ok) {
+        markHasValue(name, el.value);
+        // Task 27 handles the REBOOT toast.
+        return;
+      }
+      if (body && body.errors) {
+        for (const fname of Object.keys(body.errors)) {
+          paintFieldError(fname, body.errors[fname]);
+        }
+        return;
+      }
+      // Chip-style failure or unknown shape — Task 27 handles the notice.
+      paintFieldError(name, (body && body.chip) || 'save failed');
+    });
+  });
+
+  // Expose internals for Tasks 25-27 and tests.
+  window.Chassis.settings.saveField = saveField;
+  window.Chassis.settings.paintFieldError = paintFieldError;
+  window.Chassis.settings.clearFieldError = clearFieldError;
+  window.Chassis.settings.markHasValue = markHasValue;
 })();
