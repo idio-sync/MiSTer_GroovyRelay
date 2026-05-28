@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -436,12 +438,20 @@ func TestDLNAControls_ConcurrentPlayRace(t *testing.T) {
 // session must be started in core.Manager.
 func TestDLNAControls_RedirectToCloudMetadata_Returns716(t *testing.T) {
 	f := newDLNAIntegrationFixture(t, "5s.mp4")
+	restore := dlna.SetDNSResolverForTesting(func(_ context.Context, host string) ([]net.IP, error) {
+		if host == "169.254.169.254" {
+			return []net.IP{net.ParseIP(host)}, nil
+		}
+		return []net.IP{net.ParseIP("192.168.99.1")}, nil
+	})
+	t.Cleanup(restore)
 
 	// Redirector — 302's to the metadata endpoint. The static-IP DNS
-	// resolver override above maps the loopback host to a private LAN
-	// IP, so the FIRST hop classifies as private-LAN. The redirect
-	// target's literal IP (169.254.169.254) skips DNS and is checked
-	// directly against the address policy, which rejects link-local.
+	// resolver override maps the loopback host to a private LAN IP,
+	// so the FIRST hop classifies as private-LAN. The redirect target
+	// is resolved as its real link-local literal, so validation rejects
+	// it before any host-specific network behavior can make the test
+	// platform-dependent.
 	redir := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "http://169.254.169.254/latest/meta-data/")
 		w.WriteHeader(http.StatusFound)
@@ -480,4 +490,3 @@ func TestDLNAControls_RedirectToCloudMetadata_Returns716(t *testing.T) {
 		t.Errorf("post-rejection Play missing 701: %s", snippet(body))
 	}
 }
-

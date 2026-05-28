@@ -373,6 +373,12 @@ func (f *flushRecorder) Write(b []byte) (int, error) {
 	return f.ResponseRecorder.Write(b)
 }
 
+func (f *flushRecorder) WriteString(s string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ResponseRecorder.WriteString(s)
+}
+
 func (f *flushRecorder) Flush() {
 	f.mu.Lock()
 	f.flushes++
