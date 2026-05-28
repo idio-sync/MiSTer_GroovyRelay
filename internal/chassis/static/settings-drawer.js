@@ -129,6 +129,17 @@
     if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
   }
 
+  // SkipEmpty guard: capture-phase blur listener on inputs flagged with
+  // data-skip-empty="true" (today: only mister_ssh_password). When the
+  // value is empty, stop propagation so the 4A bubble-phase blur handler
+  // never fires the no-op POST. Server-side overlay still applies
+  // preserve-on-empty as defence in depth.
+  drawer.querySelectorAll('input.field-input[data-skip-empty="true"]').forEach(el => {
+    el.addEventListener('blur', evt => {
+      if (el.value === '') evt.stopImmediatePropagation();
+    }, true); // capture phase — runs before the bubble-phase handler below
+  });
+
   // Wire blur on text/number/password/path inputs; change on selects.
   drawer.querySelectorAll('input.field-input, select.field-input').forEach(el => {
     const evt = el.tagName === 'SELECT' ? 'change' : 'blur';
