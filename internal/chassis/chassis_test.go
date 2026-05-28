@@ -3531,19 +3531,27 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	s := buf.String()
-	wantPairs := []struct{ pane, spec string }{
-		{"pipeline", "4B"},
+
+	// pipeline and advanced are now real panes (Tasks 14+15 landed); only
+	// adapters and catalog remain as stubs pending 4C/4D–4F.
+	stillStubs := []struct{ pane, spec string }{
 		{"adapters", "4D"},
 		{"catalog", "4C"},
-		{"advanced", "4B"},
 	}
-	for _, w := range wantPairs {
+	for _, w := range stillStubs {
 		paneTag := fmt.Sprintf(`data-pane="%s"`, w.pane)
 		if !strings.Contains(s, paneTag) {
 			t.Errorf("missing pane %q", paneTag)
 		}
 		if !strings.Contains(s, fmt.Sprintf("Spec %s", w.spec)) {
 			t.Errorf("missing Spec %s label for pane %s", w.spec, w.pane)
+		}
+	}
+
+	// Real panes must be present.
+	for _, pane := range []string{"pipeline", "advanced"} {
+		if !strings.Contains(s, fmt.Sprintf(`data-pane="%s"`, pane)) {
+			t.Errorf("missing pane %q in drawer", pane)
 		}
 	}
 }
@@ -3911,5 +3919,47 @@ func TestSettingsAdvancedTemplate_RendersAllFields(t *testing.T) {
 		if !strings.Contains(html, sub) {
 			t.Errorf("missing %q in:\n%s", sub, html)
 		}
+	}
+}
+
+func TestSettingsDrawer_PipelineAndAdvancedReplaceStubs(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			Video:     config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto"},
+			Audio:     config.AudioConfig{SampleRate: 48000, Channels: 2},
+			MiSTer:    config.MisterConfig{SSHUser: "root"},
+			HLSBuffer: config.HLSBufferConfig{Enabled: true, LiveEdgeSegments: 3, StartSegments: 2, MaxCachedSegments: 6, MaxCacheBytes: 268435456, MaxPlaylistBytes: 1048576, MaxSegmentBytes: 52428800, SegmentTimeoutSeconds: 10, PlaylistTimeoutSeconds: 10, MaxVariantHeight: 720, StaleCacheReapHours: 24},
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+
+	// Drawer should now contain the real Pipeline + Advanced markers.
+	for _, sub := range []string{
+		`data-pane="pipeline"`,
+		`name="video_modeline"`,
+		`id="launch-core-btn"`,
+		`data-pane="advanced"`,
+		`name="hls_live_edge_segments"`,
+		`data-field="logging_debug"`,
+	} {
+		if !strings.Contains(html, sub) {
+			t.Errorf("missing %q in drawer HTML", sub)
+		}
+	}
+
+	// Stub placeholders must be gone for Pipeline and Advanced (still present
+	// for Adapters and Catalog).
+	if strings.Contains(html, "Spec 4B — implementation in progress") {
+		t.Errorf("drawer still contains 4B stub placeholder text")
 	}
 }

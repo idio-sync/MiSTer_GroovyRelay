@@ -15,10 +15,10 @@
 
   <div class="settings-body">
     {{ template "settings-network" . }}
-    {{ template "settings-stub" (stub "pipeline" "Pipeline + MiSTer control" "4B") }}
+    {{ template "settings-pipeline" . }}
     {{ template "settings-stub" (stub "adapters" "Adapter forms" "4D – 4F") }}
     {{ template "settings-stub" (stub "catalog" "Streams catalog" "4C") }}
-    {{ template "settings-stub" (stub "advanced" "HLS buffer + logging" "4B") }}
+    {{ template "settings-advanced" . }}
   </div>
 </div>
 {{- end -}}
