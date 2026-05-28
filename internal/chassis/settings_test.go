@@ -782,3 +782,73 @@ func TestDecodeAudioChannels(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeMisterSSHUser(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want, errSub string
+	}{
+		{"root", "root", ""},
+		{"  root  ", "root", ""},
+		{"alice", "alice", ""},
+		{"", "", "is required"},
+		{"root:bar", "", "contains an illegal character"},
+		{"root bar", "", "contains an illegal character"},
+		{"line1\nline2", "", "contains an illegal character"},
+		{"with\x00nul", "", "contains an illegal character"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			v, err := decodeMisterSSHUser(tc.in)
+			if tc.errSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+					t.Fatalf("err = %v, want substring %q", err, tc.errSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if v != tc.want {
+				t.Errorf("v = %q, want %q", v, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeMisterSSHPassword(t *testing.T) {
+	t.Parallel()
+	// Decoder is permissive: accepts any string verbatim including empty.
+	// The overlay handles preserve-on-empty.
+	cases := []string{"", "hunter2", "  trimmed  ", "p@ssw0rd!"}
+	for _, in := range cases {
+		v, err := decodeMisterSSHPassword(in)
+		if err != nil {
+			t.Errorf("decodeMisterSSHPassword(%q) err = %v", in, err)
+		}
+		if v != in {
+			t.Errorf("decodeMisterSSHPassword(%q) = %q, want %q (no trim/transform)", in, v, in)
+		}
+	}
+}
+
+func TestMisterSSHPassword_OverlayPreservesOnEmpty(t *testing.T) {
+	t.Parallel()
+	overlay := bridgeFieldOverlays["mister_ssh_password"]
+	if overlay == nil {
+		t.Fatalf("bridgeFieldOverlays missing mister_ssh_password entry")
+	}
+	c := &config.BridgeConfig{MiSTer: config.MisterConfig{SSHPassword: "stored"}}
+
+	// Empty value must NOT change the stored password.
+	overlay(c, "")
+	if c.MiSTer.SSHPassword != "stored" {
+		t.Errorf("after overlay(empty) password = %q, want \"stored\"", c.MiSTer.SSHPassword)
+	}
+
+	// Non-empty value replaces.
+	overlay(c, "newpass")
+	if c.MiSTer.SSHPassword != "newpass" {
+		t.Errorf("after overlay(newpass) password = %q, want \"newpass\"", c.MiSTer.SSHPassword)
+	}
+}

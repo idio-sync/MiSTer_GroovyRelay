@@ -168,6 +168,14 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeAudioChannels(s)
 		return v, err
 	},
+	"mister_ssh_user": func(s string) (any, error) {
+		v, err := decodeMisterSSHUser(s)
+		return v, err
+	},
+	"mister_ssh_password": func(s string) (any, error) {
+		v, err := decodeMisterSSHPassword(s)
+		return v, err
+	},
 }
 
 // decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
@@ -348,6 +356,14 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
 	"audio_sample_rate": func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
 	"audio_channels":    func(c *config.BridgeConfig, v any) { c.Audio.Channels = v.(int) },
+	"mister_ssh_user":   func(c *config.BridgeConfig, v any) { c.MiSTer.SSHUser = v.(string) },
+	"mister_ssh_password": func(c *config.BridgeConfig, v any) {
+		s, _ := v.(string)
+		if s == "" {
+			return // preserve stored password — see Phase 4B spec, SSH password autosave skip
+		}
+		c.MiSTer.SSHPassword = s
+	},
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -375,8 +391,10 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"video_aspect_mode":           adapters.ScopeRestartCast,
 	"video_lz4_enabled":           adapters.ScopeRestartCast,
 	"video_delta_lz4_enabled":     adapters.ScopeRestartCast,
-	"audio_sample_rate": adapters.ScopeRestartCast,
-	"audio_channels":    adapters.ScopeRestartCast,
+	"audio_sample_rate":    adapters.ScopeRestartCast,
+	"audio_channels":       adapters.ScopeRestartCast,
+	"mister_ssh_user":      adapters.ScopeHotSwap,
+	"mister_ssh_password":  adapters.ScopeHotSwap,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
@@ -424,6 +442,31 @@ func isValidHostname(s string) bool {
 		}
 	}
 	return true
+}
+
+// decodeMisterSSHUser trims whitespace and rejects empty / SSH-illegal
+// characters (colon, NUL, whitespace including newlines). The conservative
+// character set catches typos before they confuse the SSH layer.
+func decodeMisterSSHUser(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("is required")
+	}
+	for _, r := range s {
+		switch {
+		case r == ':' || r == 0 || r == '\n' || r == '\r' || r == ' ' || r == '\t':
+			return "", fmt.Errorf("contains an illegal character")
+		}
+	}
+	return s, nil
+}
+
+// decodeMisterSSHPassword returns the raw input verbatim (NOT trimmed —
+// trailing whitespace may be intentional). Empty is allowed at decoder
+// level; the overlay applies preserve-on-empty semantics so empty submits
+// don't clobber the stored password.
+func decodeMisterSSHPassword(raw string) (string, error) {
+	return raw, nil
 }
 
 // handleSettingsBridgePost is the POST handler for /receiver/settings/bridge.
