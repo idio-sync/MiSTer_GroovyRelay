@@ -272,6 +272,61 @@
     });
   }
 
+  // Launch-core action: single-flight, renders into #launch-core-result,
+  // toasts chip responses into the drawer-local notice slot.
+  const launchBtn = document.getElementById('launch-core-btn');
+  const launchOut = document.getElementById('launch-core-result');
+
+  function renderLaunchResult(out, body) {
+    if (!out) return;
+    out.className = 'action-result shown';
+    if (!body || typeof body !== 'object') {
+      out.classList.add('err');
+      out.textContent = '▸ ERROR · empty response';
+      return;
+    }
+    if (body.ok) {
+      out.classList.add('ok');
+      out.textContent = `▸ Core sent · ${body.host || ''}`.trim();
+      return;
+    }
+    if (body.chip) {
+      // Chip responses (NOT READY) toast into the drawer notice slot;
+      // the action-result slot stays empty for chip cases per spec.
+      out.className = 'action-result';
+      out.textContent = '';
+      showNotice(body.chip, 'err');
+      return;
+    }
+    out.classList.add('err');
+    out.textContent = `▸ ERROR · ${body.error || 'unknown'}`;
+  }
+
+  if (launchBtn) {
+    launchBtn.addEventListener('click', async () => {
+      if (launchBtn.disabled) return;
+      launchBtn.disabled = true;
+      if (launchOut) {
+        launchOut.className = 'action-result';
+        launchOut.textContent = '';
+      }
+      let body = {};
+      try {
+        const res = await fetch('/receiver/settings/action/launch-core', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        body = await res.json();
+      } catch (err) {
+        renderLaunchResult(launchOut, { ok: false, error: 'network error' });
+        launchBtn.disabled = false;
+        return;
+      }
+      renderLaunchResult(launchOut, body);
+      launchBtn.disabled = false;
+    });
+  }
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
