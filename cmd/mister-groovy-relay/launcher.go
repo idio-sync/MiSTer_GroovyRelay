@@ -9,6 +9,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/misterctl"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
@@ -30,7 +31,7 @@ type bridgeMisterLauncher struct {
 func (b bridgeMisterLauncher) Launch(ctx context.Context) error {
 	cur := b.bridge.Current()
 	if cur.MiSTer.Host == "" {
-		return errors.New("MiSTer host not configured (set bridge.mister.host)")
+		return errors.New(launchcore.EmptyHostMessage)
 	}
 	return misterctl.LaunchGroovy(ctx, misterctl.Params{
 		Host:     cur.MiSTer.Host,

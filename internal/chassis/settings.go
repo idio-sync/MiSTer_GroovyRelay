@@ -25,6 +25,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 )
 
 // BridgeSettingsSaver is the narrow chassis-side interface for bridge
@@ -727,13 +728,11 @@ func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.R
 	}
 	cur := s.cfg.BridgeSaver.Current()
 	if cur.MiSTer.Host == "" {
-		// Match bridgeMisterLauncher.Launch's empty-host message verbatim
-		// until Task 21 extracts the shared internal/launchcore constant.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":    false,
-			"error": "MiSTer host not configured (set bridge.mister.host)",
+			"error": launchcore.EmptyHostMessage,
 		})
 		return
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/misterctl"
 )
 
@@ -134,5 +135,19 @@ func TestBridgeMisterProber_EmptyHostShortCircuits(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MiSTer host not configured") {
 		t.Errorf("err = %q, want 'MiSTer host not configured'", err)
+	}
+}
+
+func TestBridgeMisterLauncher_EmptyHostMessageStable(t *testing.T) {
+	saver := &fakeBridgeSaver{cur: config.BridgeConfig{
+		MiSTer: config.MisterConfig{Host: ""},
+	}}
+	launcher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
+	err := launcher.Launch(context.Background())
+	if err == nil {
+		t.Fatalf("Launch err = nil, want non-nil for empty host")
+	}
+	if err.Error() != launchcore.EmptyHostMessage {
+		t.Errorf("Launch err = %q, want %q", err.Error(), launchcore.EmptyHostMessage)
 	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 )
 
 // fakeBridgeSettingsSaver is a compile-time conformance fixture for the
@@ -1141,8 +1142,8 @@ func TestLaunchCore_EmptyHost(t *testing.T) {
 	}
 	var body map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if got, _ := body["error"].(string); got != "MiSTer host not configured (set bridge.mister.host)" {
-		t.Errorf("body.error = %q, want exact match with launcher message", got)
+	if got, _ := body["error"].(string); got != launchcore.EmptyHostMessage {
+		t.Errorf("body.error = %q, want %q", got, launchcore.EmptyHostMessage)
 	}
 }
 
