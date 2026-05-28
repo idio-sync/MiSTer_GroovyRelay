@@ -3399,3 +3399,36 @@ func TestFieldHelper_HelpText(t *testing.T) {
 		t.Errorf("missing help text")
 	}
 }
+
+func TestSettingsDrawerTemplate_RendersFiveTabsAndNoticeSlot(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := SettingsData{
+		Bridge:               config.BridgeConfig{},
+		Errors:               map[string]string{},
+		AdapterCount:         6,
+		CatalogProviderCount: 3,
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	s := buf.String()
+	for _, want := range []string{
+		`data-tab="network"`,
+		`data-tab="pipeline"`,
+		`data-tab="adapters"`,
+		`<span class="badge">6</span>`,
+		`data-tab="catalog"`,
+		`<span class="badge">3</span>`,
+		`data-tab="advanced"`,
+		`id="settings-close"`,
+		`class="settings-notice"`,
+		`aria-live="polite"`,
+		`hidden`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered drawer", want)
+		}
+	}
+}

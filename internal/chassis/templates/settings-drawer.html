@@ -1,8 +1,39 @@
-{{define "settings-drawer"}}
+{{- define "settings-drawer" -}}
 {{htmlComment "chassis:settings-drawer"}}
-<div class="settings-panel{{if .Open}} open{{end}}">
-  <div class="settings-pane single-col active">
-    <div class="settings-placeholder">Spec 8 drawer content pending.</div>
+<div class="settings-panel">
+  <div class="settings-tabs">
+    <button class="settings-tab active" data-tab="network">Network</button>
+    <button class="settings-tab" data-tab="pipeline">Pipeline</button>
+    <button class="settings-tab" data-tab="adapters">Adapters<span class="badge">{{ .AdapterCount }}</span></button>
+    <button class="settings-tab" data-tab="catalog">Catalog<span class="badge">{{ .CatalogProviderCount }}</span></button>
+    <button class="settings-tab" data-tab="advanced">Advanced</button>
+    <span class="settings-spacer"></span>
+    <button class="settings-close" id="settings-close">✕ Close</button>
+  </div>
+
+  <div class="settings-notice" id="settings-notice" role="status" aria-live="polite" hidden></div>
+
+  <div class="settings-body">
+    {{ template "settings-network" . }}
+    {{ template "settings-stub" (stub "pipeline" "Pipeline + MiSTer control" "4B") }}
+    {{ template "settings-stub" (stub "adapters" "Adapter forms" "4D – 4F") }}
+    {{ template "settings-stub" (stub "catalog" "Streams catalog" "4C") }}
+    {{ template "settings-stub" (stub "advanced" "HLS buffer + logging" "4B") }}
   </div>
 </div>
-{{end}}
+{{- end -}}
+
+{{- define "settings-network" -}}
+<div class="settings-pane active" data-pane="network">
+  <!-- Task 18 fills this in -->
+</div>
+{{- end -}}
+
+{{- define "settings-stub" -}}
+<div class="settings-pane" data-pane="{{ .ID }}">
+  <div class="settings-section wide">
+    <h4>{{ .Title }} <span class="hint">pending</span></h4>
+    <div class="action-result shown">▸ Spec {{ .Spec }} — implementation in progress</div>
+  </div>
+</div>
+{{- end -}}
