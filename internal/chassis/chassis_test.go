@@ -514,6 +514,7 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 		{"dim", `{{dim true}}`},
 		{"htmlComment", `{{htmlComment "chassis:test"}}`},
 		{"until", `{{range until 3}}x{{end}}`},
+		{"options", `{{index (index (options (dict "Value" "a")) 0) "Value"}}`},
 	}
 	for _, p := range probes {
 		_, err := tmpl.New("probe-" + p.name).Parse(p.src)
@@ -3708,5 +3709,22 @@ func TestPasswordPlaceholder(t *testing.T) {
 	}
 	if got := passwordPlaceholder("x"); got != "••••••••" {
 		t.Errorf("passwordPlaceholder(\"x\") = %q, want \"••••••••\" (any non-empty)", got)
+	}
+}
+
+func TestOptions_BuildsSelectOptions(t *testing.T) {
+	t.Parallel()
+	got := optionsHelper(
+		map[string]any{"Value": "NTSC_480i"},
+		map[string]any{"Value": "PAL_576i", "Label": "PAL_576i (experimental)"},
+	)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0]["Value"] != "NTSC_480i" {
+		t.Errorf("got[0].Value = %v, want NTSC_480i", got[0]["Value"])
+	}
+	if got[1]["Label"] != "PAL_576i (experimental)" {
+		t.Errorf("got[1].Label = %v, want PAL_576i (experimental)", got[1]["Label"])
 	}
 }

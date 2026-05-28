@@ -37,6 +37,8 @@ var chassisStaticFS embed.FS
 //   - pad2: zero-padded two-digit strings for clock display.
 //   - dim: returns the CSS class string for inactive lamps.
 //   - list: constructs a string slice for small template membership probes.
+//   - options: constructs a []map[string]any from dict invocations, used to
+//     build the Options arg the field helper consumes for select fields.
 //   - until: returns n placeholders for repeated template elements.
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
@@ -65,6 +67,7 @@ var templateFuncs = template.FuncMap{
 		return template.HTML("<!-- " + s + " -->")
 	},
 	"list":        func(args ...string) []string { return args },
+	"options":     optionsHelper,
 	"until":       func(n int) []struct{} { return make([]struct{}, n) },
 	"volumeAngle": volumeAngle,
 	"lower":               strings.ToLower,
@@ -111,6 +114,14 @@ func dictHelper(pairs ...any) map[string]any {
 		m[key] = pairs[i+1]
 	}
 	return m
+}
+
+// optionsHelper builds the []map[string]any shape fieldHelper expects for
+// select Options. Templates call it as:
+//
+//	{{ options (dict "Value" "a") (dict "Value" "b" "Label" "Bee") }}
+func optionsHelper(args ...map[string]any) []map[string]any {
+	return args
 }
 
 // itoaHelper wraps strconv.Itoa for the FuncMap.
