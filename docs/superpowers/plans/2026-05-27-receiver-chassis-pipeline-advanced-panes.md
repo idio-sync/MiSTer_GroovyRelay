@@ -4,7 +4,7 @@
 
 **Goal:** Implement Phase 4B of the receiver chassis settings drawer — replace the Pipeline and Advanced stub panes with 21 real fields (Video × 5, Audio × 2, MiSTer SSH × 2, HLS buffer × 11, Logging × 1) + a Launch core action button + a chassis-owned `CoreLauncher` interface.
 
-**Architecture:** Extends Phase 4A's already-shipped patterns without modification. `bridgeFieldDecoders`/`bridgeFieldOverlays`/`bridgeFieldScopes` tables grow from 9 to 30 entries; `fieldHelper` gains a `SkipEmpty` arg and the password branch is corrected to render `value=""` + placeholder; a new `CoreLauncher` interface satisfied by the existing `bridgeMisterLauncher` adds the launch-core action; four small template helpers (`humanizeBytes`, `boolStr`, `i64toa`, `passwordPlaceholder`) plus a re-purposed `list` for select option arrays cover the new templating needs. Two new partial files (`settings-pipeline.html`, `settings-advanced.html`) replace the existing stubs in `settings-drawer.html`.
+**Architecture:** Extends Phase 4A's already-shipped patterns without modification. `bridgeFieldDecoders`/`bridgeFieldOverlays`/`bridgeFieldScopes` tables grow from 9 to 30 entries; `fieldHelper` gains a `SkipEmpty` arg and the password branch is corrected to render `value=""` + placeholder; a new `CoreLauncher` interface satisfied by the existing `bridgeMisterLauncher` adds the launch-core action; four small template helpers (`humanizeBytes`, `boolStr`, `i64toa`, `passwordPlaceholder`) plus a new `options` helper for select option arrays cover the new templating needs. Two new partial files (`settings-pipeline.html`, `settings-advanced.html`) replace the existing stubs in `settings-drawer.html`.
 
 **Tech Stack:** Go 1.26 stdlib (`html/template`, `net/http`, `strconv`), embedded HTML/CSS/JS via `go:embed`, vanilla ES2022.
 
@@ -18,12 +18,14 @@
 
 - `internal/chassis/settings.go` — grow `bridgeFieldDecoders` (9 → 30 entries), `bridgeFieldOverlays` (9 → 30), `bridgeFieldScopes` (9 → 30). Add `CoreLauncher` interface + `handleSettingsActionLaunchCore` handler. ~250 new lines, mostly tabular.
 - `internal/chassis/settings_test.go` — per-decoder branch tests (~30 new), cross-check test, launch-core handler tests (~6 new), `mister_ssh_password` overlay-preserve test.
-- `internal/chassis/templates.go` — register five new helpers (`humanizeBytes`, `boolStr`, `i64toa`, `passwordPlaceholder`, and the repurposed `list`). Extend `fieldHelper` with `SkipEmpty` support + correct the password branch.
+- `internal/chassis/templates.go` — register five new helpers (`humanizeBytes`, `boolStr`, `i64toa`, `passwordPlaceholder`, and `options`). Extend `fieldHelper` with `SkipEmpty` support + correct the password branch.
 - `internal/chassis/templates/settings-drawer.html` — replace two `{{ template "settings-stub" (stub ...) }}` calls with `{{ template "settings-pipeline" . }}` and `{{ template "settings-advanced" . }}`.
 - `internal/chassis/server.go` — add `Config.CoreLauncher CoreLauncher` field; mount `POST /receiver/settings/action/launch-core` route.
 - `internal/chassis/static/settings-drawer.js` — add launch-core single-flight handler; add `data-skip-empty` blur guard.
 - `internal/chassis/import_check_test.go` — extend chassis forbidden list with `internal/misterctl`.
 - `internal/chassis/chassis_test.go` — template render tests for both new panes.
+- `cmd/mister-groovy-relay/launcher.go` — use the shared launch-core empty-host message.
+- `cmd/mister-groovy-relay/launcher_test.go` — pin launcher empty-host behavior to the shared message.
 - `cmd/mister-groovy-relay/main.go` — pass the existing `bridgeMisterLauncher` into `chassis.Config.CoreLauncher`.
 - `tests/integration/chassis_test.go` — end-to-end coverage for new field saves + launch-core.
 
@@ -31,7 +33,7 @@
 
 - `internal/chassis/templates/settings-pipeline.html` — defines `{{ define "settings-pipeline" }}` (Video, Audio, MiSTer control sections).
 - `internal/chassis/templates/settings-advanced.html` — defines `{{ define "settings-advanced" }}` (HLS buffer, Logging sections).
-- `tests/integration/launch_core_test.go` — cross-binary empty-host string sync test.
+- `internal/launchcore/messages.go` — shared operator-facing launch-core message constants.
 
 **Files intentionally unchanged:** `internal/uiserver/*`, `internal/misterctl/*`, `internal/core/*`, `internal/ui/*`, `internal/chassis/static/chassis.css`, `internal/chassis/data.go` (4A's `SettingsData.Bridge` already carries everything 4B needs).
 
@@ -176,7 +178,55 @@ git commit -m "feat(chassis): add CoreLauncher to Server.Config"
 **Files:**
 - Modify: `internal/chassis/import_check_test.go`
 
-- [ ] **Step 1: Write a failing test asserting the rule includes misterctl**
+- [ ] **Step 1: Refactor the production import rules into an inspectable helper**
+
+Edit `internal/chassis/import_check_test.go`. Hoist the anonymous rules struct out of `TestProductionImports_NoCrossPackageCoupling` so both the production scan and the tripwire below inspect the same source of truth:
+
+```go
+type productionImportRule struct {
+	fromPkg   string
+	fromDir   string
+	forbidden []string
+}
+
+func productionImportRules(repoRoot string) []productionImportRule {
+	const modulePath = "github.com/idio-sync/MiSTer_GroovyRelay"
+	return []productionImportRule{
+		{
+			fromPkg: modulePath + "/internal/chassis",
+			fromDir: filepath.Join(repoRoot, "internal", "chassis"),
+			forbidden: []string{
+				modulePath + "/internal/ui",
+				modulePath + "/internal/uiserver",
+				modulePath + "/internal/adapters/auxadapter",
+				modulePath + "/internal/adapters/streams",
+				modulePath + "/internal/adapters/url",
+				modulePath + "/internal/adapters/torrent",
+				modulePath + "/internal/adapters/plex",
+				modulePath + "/internal/adapters/jellyfin",
+				modulePath + "/internal/adapters/dlna",
+			},
+		},
+		// ... move the existing ui/uiserver/playback/core/adapters rules here unchanged ...
+	}
+}
+```
+
+Then change `TestProductionImports_NoCrossPackageCoupling` to:
+
+```go
+func TestProductionImports_NoCrossPackageCoupling(t *testing.T) {
+	t.Parallel()
+	repoRoot := repoRootFromWD(t)
+	rules := productionImportRules(repoRoot)
+
+	for _, rule := range rules {
+		// existing test body unchanged
+	}
+}
+```
+
+- [ ] **Step 2: Add a failing tripwire against the real rule helper**
 
 Append to `internal/chassis/import_check_test.go`:
 
@@ -187,37 +237,11 @@ Append to `internal/chassis/import_check_test.go`:
 // load-bearing decoupling between internal/chassis and the SSH client.
 func TestChassisForbiddenImports_IncludesMisterctl(t *testing.T) {
 	t.Parallel()
-	const want = "github.com/idio-sync/MiSTer_GroovyRelay/internal/misterctl"
-	const chassisPkg = "github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
+	const modulePath = "github.com/idio-sync/MiSTer_GroovyRelay"
+	const want = modulePath + "/internal/misterctl"
+	const chassisPkg = modulePath + "/internal/chassis"
 
-	// Re-run the rules block from TestProductionImports_NoCrossPackageCoupling
-	// in inspect-only mode. Locate the chassis rule and confirm its
-	// forbidden slice contains internal/misterctl.
-	repoRoot := repoRootFromWD(t)
-	_ = repoRoot // silence unused if rules synthesized below
-	rules := []struct {
-		fromPkg   string
-		forbidden []string
-	}{
-		// Mirror the chassis rule from TestProductionImports_NoCrossPackageCoupling.
-		// Keep in sync with the source of truth above.
-		{
-			fromPkg: chassisPkg,
-			forbidden: []string{
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/misterctl",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/auxadapter",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin",
-				"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna",
-			},
-		},
-	}
-	for _, rule := range rules {
+	for _, rule := range productionImportRules(repoRootFromWD(t)) {
 		if rule.fromPkg != chassisPkg {
 			continue
 		}
@@ -228,19 +252,16 @@ func TestChassisForbiddenImports_IncludesMisterctl(t *testing.T) {
 		}
 		t.Fatalf("%s rule's forbidden slice missing %s", rule.fromPkg, want)
 	}
-	t.Fatalf("chassis rule not found in test rules block")
+	t.Fatalf("chassis rule not found in production import rules")
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run test to verify it fails**
 
 Run: `go test ./internal/chassis -run TestChassisForbiddenImports_IncludesMisterctl -v`
-Expected: PASS (the tripwire fixture has the expected entry in its mirror slice — but the production `TestProductionImports_NoCrossPackageCoupling` rule does not yet enforce it. Continue to Step 3.)
+Expected: FAIL because the actual chassis rule does not yet include `internal/misterctl`.
 
-Run: `go test ./internal/chassis -run TestProductionImports_NoCrossPackageCoupling -v`
-Expected: PASS (currently passes because no chassis file imports misterctl; the gap is that the rule allows it).
-
-- [ ] **Step 3: Add `internal/misterctl` to the actual forbidden slice**
+- [ ] **Step 4: Add `internal/misterctl` to the actual forbidden slice**
 
 Edit `internal/chassis/import_check_test.go` around line 28-39:
 
@@ -283,12 +304,12 @@ New:
 		},
 ```
 
-- [ ] **Step 4: Run all import_check tests**
+- [ ] **Step 5: Run all import_check tests**
 
 Run: `go test ./internal/chassis -run TestProductionImports -v && go test ./internal/chassis -run TestChassisForbiddenImports -v`
 Expected: PASS for both.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/chassis/import_check_test.go
@@ -542,22 +563,22 @@ git commit -m "feat(chassis): add boolStr/i64toa/passwordPlaceholder template he
 
 ---
 
-## Task 6: Repurpose `list` helper for select option arrays
+## Task 6: Add `options` helper for select option arrays
 
 **Files:**
 - Modify: `internal/chassis/templates.go`
 - Modify: `internal/chassis/chassis_test.go`
 
-**Context:** The existing `list` helper at `internal/chassis/templates.go:67` is `func(args ...string) []string` with the documented purpose "constructs a string slice for small template membership probes." A grep of `internal/chassis/templates/*.html` shows zero callers — it was added speculatively and never used. 4B repurposes it for select option arrays, returning `[]map[string]any` so `fieldHelper`'s `Options` arg can be built by passing multiple `dict (...)` calls. The signature change is safe because nothing uses the old form.
+**Context:** The existing `list` helper at `internal/chassis/templates.go:67` is still exercised by `TestTemplatesExpectedHelpersAvailable` through `{{hasString (list "a" "b") "b"}}`. Leave that helper intact for string slices. 4B adds a separate `options` helper returning `[]map[string]any` so `fieldHelper`'s `Options` arg can be built by passing multiple `dict (...)` calls without breaking the existing helper probe.
 
 - [ ] **Step 1: Write the failing test**
 
 Append to `internal/chassis/chassis_test.go`:
 
 ```go
-func TestList_BuildsSelectOptions(t *testing.T) {
+func TestOptions_BuildsSelectOptions(t *testing.T) {
 	t.Parallel()
-	got := list(
+	got := optionsHelper(
 		map[string]any{"Value": "NTSC_480i"},
 		map[string]any{"Value": "PAL_576i", "Label": "PAL_576i (experimental)"},
 	)
@@ -575,24 +596,41 @@ func TestList_BuildsSelectOptions(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/chassis -run TestList_BuildsSelectOptions -v`
-Expected: FAIL with `cannot use map[string]any literal (...) as string value` (the existing `list` signature returns `[]string`).
+Run: `go test ./internal/chassis -run TestOptions_BuildsSelectOptions -v`
+Expected: FAIL with `undefined: optionsHelper`.
 
-- [ ] **Step 3: Change the `list` helper signature**
+- [ ] **Step 3: Add the helper and register it**
 
-Edit `internal/chassis/templates.go`. Replace
+Edit `internal/chassis/templates.go`. Keep the existing `list` FuncMap entry unchanged:
 
 ```go
 	"list":        func(args ...string) []string { return args },
 ```
 
-with
+Add a sibling `options` FuncMap entry:
 
 ```go
-	"list":        func(args ...map[string]any) []map[string]any { return args },
+	"options":     optionsHelper,
 ```
 
-Also update the FuncMap comment block above (~lines 34-40) — remove the now-obsolete "list" entry's old docstring:
+Add the package helper near `dictHelper`:
+
+```go
+// optionsHelper builds the []map[string]any shape fieldHelper expects for
+// select Options. Templates call it as:
+//   {{ options (dict "Value" "a") (dict "Value" "b" "Label" "Bee") }}
+func optionsHelper(args ...map[string]any) []map[string]any {
+	return args
+}
+```
+
+Also add an `options` probe to `TestTemplatesExpectedHelpersAvailable` while leaving the existing `list`/`hasString` probe intact:
+
+```go
+{"options", `{{index (index (options (dict "Value" "a")) 0) "Value"}}`},
+```
+
+Also update the FuncMap comment block above (~lines 34-40):
 
 Old:
 ```go
@@ -602,26 +640,27 @@ Old:
 
 New:
 ```go
-//   - list: constructs a []map[string]any from dict invocations, used to
+//   - list: constructs a string slice for small template membership probes.
+//   - options: constructs a []map[string]any from dict invocations, used to
 //     build the Options arg the field helper consumes for select fields.
 //   - until: returns n placeholders for repeated template elements.
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./internal/chassis -run TestList_BuildsSelectOptions -v`
+Run: `go test ./internal/chassis -run TestOptions_BuildsSelectOptions -v`
 Expected: PASS.
 
 - [ ] **Step 5: Run the full chassis test suite to confirm no regressions**
 
 Run: `go test ./internal/chassis`
-Expected: PASS (the old `list` had no callers).
+Expected: PASS. This specifically keeps the existing `hasString (list "a" "b")` helper probe green while adding the new select-options path.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add internal/chassis/templates.go internal/chassis/chassis_test.go
-git commit -m "feat(chassis): repurpose list helper to build select Options arrays"
+git commit -m "feat(chassis): add options helper to build select Options arrays"
 ```
 
 ---
@@ -704,12 +743,29 @@ func TestFieldHelper_SkipEmptyDefaultsOff(t *testing.T) {
 		t.Errorf("unexpected data-skip-empty attr on text field: %s", html)
 	}
 }
+
+func TestFieldHelper_SwitchIncludesNameForErrorPainting(t *testing.T) {
+	t.Parallel()
+	html := string(fieldHelper(map[string]any{
+		"Name":  "logging_debug",
+		"Type":  "switch",
+		"Label": "Debug logging",
+		"Value": "true",
+		"Scope": "hot",
+	}))
+	if !strings.Contains(html, `data-field="logging_debug"`) {
+		t.Errorf("switch missing data-field: %s", html)
+	}
+	if !strings.Contains(html, `name="logging_debug"`) {
+		t.Errorf("switch missing name attr for settings-drawer.js error lookup: %s", html)
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./internal/chassis -run 'TestFieldHelper_Password|TestFieldHelper_SkipEmpty' -v`
-Expected: FAIL (the password branch currently echoes stored value + has-value; SkipEmpty is not supported).
+Run: `go test ./internal/chassis -run 'TestFieldHelper_Password|TestFieldHelper_SkipEmpty|TestFieldHelper_SwitchIncludesName' -v`
+Expected: FAIL (the password branch currently echoes stored value + has-value; SkipEmpty is not supported; switch buttons do not yet carry `name`, so `settings-drawer.js` cannot locate them for inline errors).
 
 - [ ] **Step 3: Update the password branch and add `SkipEmpty` support in `fieldHelper`**
 
@@ -768,15 +824,45 @@ New:
 		if skipEmpty {
 			skipAttr = ` data-skip-empty="true"`
 		}
-		middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s>`,
-			html.EscapeString(name), html.EscapeString(placeholder), skipAttr)
-		_ = value // value is intentionally not used for password — preserve-on-empty lives in the server overlay
+			middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s>`,
+				html.EscapeString(name), html.EscapeString(placeholder), skipAttr)
+			_ = value // value is intentionally not used for password — preserve-on-empty lives in the server overlay
 ```
+
+Then locate the `switch` case in the same `switch typ` block:
+
+Old:
+```go
+		case "switch":
+			onClass := ""
+			aria := "false"
+			if value == "true" {
+				onClass = " on"
+				aria = "true"
+			}
+			middleHTML = fmt.Sprintf(`<button class="switch%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
+				onClass, html.EscapeString(name), aria)
+```
+
+New:
+```go
+		case "switch":
+			onClass := ""
+			aria := "false"
+			if value == "true" {
+				onClass = " on"
+				aria = "true"
+			}
+			middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
+				onClass, html.EscapeString(name), html.EscapeString(name), aria)
+```
+
+The `name` attribute is intentional: `settings-drawer.js`'s `paintFieldError` / `clearFieldError` lookup uses `[name="<field>"]`, and 4B adds switch fields that can receive field errors or chips. `data-field` remains the click-handler contract.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./internal/chassis -run 'TestFieldHelper_Password|TestFieldHelper_SkipEmpty' -v`
-Expected: PASS for all three.
+Run: `go test ./internal/chassis -run 'TestFieldHelper_Password|TestFieldHelper_SkipEmpty|TestFieldHelper_SwitchIncludesName' -v`
+Expected: PASS for all four.
 
 - [ ] **Step 5: Run the full chassis test suite to confirm no regressions**
 
@@ -1842,7 +1928,7 @@ Create `internal/chassis/templates/settings-pipeline.html`:
       "Help" "CRT output. PAL modes work over the wire but aren't tested on real PAL CRT hardware."
       "Value" .Bridge.Video.Modeline
       "Scope" "recast"
-      "Options" (list
+      "Options" (options
         (dict "Value" "NTSC_480i")
         (dict "Value" "NTSC_240p")
         (dict "Value" "PAL_576i" "Label" "PAL_576i (experimental)")
@@ -1853,14 +1939,14 @@ Create `internal/chassis/templates/settings-pipeline.html`:
       "Help" "Flip if you see shimmer on the CRT. Live hot-swappable."
       "Value" .Bridge.Video.InterlaceFieldOrder
       "Scope" "hot"
-      "Options" (list (dict "Value" "bff") (dict "Value" "tff"))
+      "Options" (options (dict "Value" "bff") (dict "Value" "tff"))
       "Error" (errOf .Errors "video_interlace_field_order")) }}
     {{ field (dict
       "Name" "video_aspect_mode" "Type" "select" "Label" "Aspect mode"
       "Help" "How the source fits to 4:3 NTSC."
       "Value" .Bridge.Video.AspectMode
       "Scope" "recast"
-      "Options" (list (dict "Value" "auto") (dict "Value" "letterbox") (dict "Value" "zoom"))
+      "Options" (options (dict "Value" "auto") (dict "Value" "letterbox") (dict "Value" "zoom"))
       "Error" (errOf .Errors "video_aspect_mode")) }}
     {{ field (dict
       "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
@@ -1881,14 +1967,14 @@ Create `internal/chassis/templates/settings-pipeline.html`:
       "Help" "PCM sample rate."
       "Value" (itoa .Bridge.Audio.SampleRate)
       "Scope" "recast"
-      "Options" (list (dict "Value" "48000") (dict "Value" "44100") (dict "Value" "22050"))
+      "Options" (options (dict "Value" "48000") (dict "Value" "44100") (dict "Value" "22050"))
       "Error" (errOf .Errors "audio_sample_rate")) }}
     {{ field (dict
       "Name" "audio_channels" "Type" "select" "Label" "Channels"
       "Help" "1 = mono · 2 = stereo"
       "Value" (itoa .Bridge.Audio.Channels)
       "Scope" "recast"
-      "Options" (list (dict "Value" "2") (dict "Value" "1"))
+      "Options" (options (dict "Value" "2") (dict "Value" "1"))
       "Error" (errOf .Errors "audio_channels")) }}
   </div>
 
@@ -2380,8 +2466,8 @@ Append to `internal/chassis/settings.go` (after `handleSettingsActionProbeMister
 //   - 503 NOT READY when CoreLauncher or BridgeSaver is unwired.
 //   - 400 "MiSTer host not configured ..." when the saved host is empty.
 //     The error string matches bridgeMisterLauncher.Launch's empty-host
-//     short-circuit verbatim — see the cross-binary sync test under
-//     tests/integration/launch_core_test.go for the drift tripwire.
+//     short-circuit verbatim. Task 21 extracts this into a shared
+//     internal/launchcore constant so chassis and cmd cannot drift.
 //   - 200 {ok:true, host:"..."} on success.
 //   - 500 {ok:false, error:"<redacted>"} on launcher failure; reuses 4A's
 //     sanitizeProbeError to redact IPv4:port tokens.
@@ -2396,8 +2482,7 @@ func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.R
 	cur := s.cfg.BridgeSaver.Current()
 	if cur.MiSTer.Host == "" {
 		// Match bridgeMisterLauncher.Launch's empty-host message verbatim
-		// so a single tests/integration/launch_core_test.go can byte-equal
-		// compare the two strings.
+		// until Task 21 extracts the shared internal/launchcore constant.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -2444,15 +2529,37 @@ Append after the probe-mister mount:
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionLaunchCore)))
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 5: Update mounted-route and same-origin tests**
 
-Run: `go test ./internal/chassis -run TestLaunchCore -v && go test ./internal/chassis`
+Edit `internal/chassis/chassis_test.go`. In both `TestMount_MountsBridgeAndProbeRoutes` and `TestMount_WrongOriginRejectsBothNewRoutes`, include the new route in the path list:
+
+```go
+for _, path := range []string{
+	"/receiver/settings/bridge",
+	"/receiver/settings/action/probe-mister",
+	"/receiver/settings/action/launch-core",
+} {
+	// existing assertion body unchanged
+}
+```
+
+Also wire a launcher fixture in the `Config` literals so the mounted same-origin request reaches the handler dependency check instead of only exercising nil wiring:
+
+```go
+CoreLauncher: &fakeCoreLauncher{},
+```
+
+This verifies the new route is both mounted and protected by `requireSameOrigin`; direct handler tests above only cover handler behavior.
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `go test ./internal/chassis -run 'TestLaunchCore|TestMount_MountsBridgeAndProbeRoutes|TestMount_WrongOriginRejectsBothNewRoutes' -v && go test ./internal/chassis`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add internal/chassis/settings.go internal/chassis/settings_test.go internal/chassis/server.go
+git add internal/chassis/settings.go internal/chassis/settings_test.go internal/chassis/server.go internal/chassis/chassis_test.go
 git commit -m "feat(chassis): add launch-core action handler + route"
 ```
 
@@ -2637,30 +2744,74 @@ git commit -m "feat(chassis): wire bridgeMisterLauncher as chassis.Config.CoreLa
 
 ---
 
-## Task 21: Cross-binary empty-host sync integration test
+## Task 21: Share launch-core empty-host message
 
 **Files:**
-- Create: `tests/integration/launch_core_test.go`
+- Create: `internal/launchcore/messages.go`
+- Modify: `internal/chassis/settings.go`
+- Modify: `internal/chassis/settings_test.go`
+- Modify: `cmd/mister-groovy-relay/launcher.go`
+- Modify: `cmd/mister-groovy-relay/launcher_test.go`
 
-**Context:** Per the spec's "Drift caveat (Important)" — neither the chassis handler unit test nor the launcher unit test catches the case where one side updates its empty-host string but the other doesn't. This integration test imports both `internal/chassis` and `cmd/mister-groovy-relay` test seams to byte-compare the two strings at run time.
+**Context:** Per the spec's empty-host drift caveat, the chassis handler and the cmd launcher must surface the same operator-facing message. A literal-only "integration" test would not exercise either side and would not prevent drift. 4B instead extracts a tiny shared internal constant used by both packages. `internal/chassis` remains forbidden from importing `internal/misterctl`; importing this neutral message package preserves the boundary.
 
-The cmd `main` package can't be imported, but the empty-host check itself can be exercised through `misterctl.SwapDialForTesting` plus a minimal stand-in launcher matching the production policy. Alternatively, place the constant in a shared internal location.
+- [ ] **Step 1: Create the shared message package**
 
-For 4B we take the pragmatic route: assert against a verbatim copy of the launcher's string. The companion `cmd/mister-groovy-relay/launcher_test.go` test (Step 1 of this task) asserts that the launcher's empty-host string is the same verbatim constant. Both tests check the same byte sequence — drift requires both tests to update together.
+Create `internal/launchcore/messages.go`:
 
-- [ ] **Step 1: Add a launcher-side test pinning the string constant**
+```go
+package launchcore
+
+// EmptyHostMessage is the operator-facing error used when a launch-core
+// action is requested before bridge.mister.host is configured. It is shared
+// by cmd/mister-groovy-relay's SSH launcher and internal/chassis's handler so
+// the two surfaces cannot drift.
+const EmptyHostMessage = "MiSTer host not configured (set bridge.mister.host)"
+```
+
+- [ ] **Step 2: Update the chassis handler and test**
+
+In `internal/chassis/settings.go`, import:
+
+```go
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
+```
+
+Replace the literal empty-host response in `handleSettingsActionLaunchCore`:
+
+```go
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": launchcore.EmptyHostMessage,
+		})
+```
+
+In `internal/chassis/settings_test.go`, import the same package and update `TestLaunchCore_EmptyHost` to compare against `launchcore.EmptyHostMessage`.
+
+- [ ] **Step 3: Update the cmd launcher and add launcher-side coverage**
+
+In `cmd/mister-groovy-relay/launcher.go`, import:
+
+```go
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
+```
+
+Replace:
+
+```go
+return errors.New("MiSTer host not configured (set bridge.mister.host)")
+```
+
+with:
+
+```go
+return errors.New(launchcore.EmptyHostMessage)
+```
 
 Append to `cmd/mister-groovy-relay/launcher_test.go`:
 
 ```go
-// TestBridgeMisterLauncher_EmptyHostMessageStable pins the operator-facing
-// string the launcher returns for an empty MiSTer host. The chassis
-// handleSettingsActionLaunchCore handler asserts the same literal in
-// internal/chassis/settings_test.go::TestLaunchCore_EmptyHost. Both
-// constants must change together — see the Phase 4B spec's "Drift caveat"
-// in tests/integration/launch_core_test.go.
 func TestBridgeMisterLauncher_EmptyHostMessageStable(t *testing.T) {
-	const want = "MiSTer host not configured (set bridge.mister.host)"
 	saver := &fakeBridgeSaver{cur: config.BridgeConfig{
 		MiSTer: config.MisterConfig{Host: ""},
 	}}
@@ -2669,75 +2820,29 @@ func TestBridgeMisterLauncher_EmptyHostMessageStable(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Launch err = nil, want non-nil for empty host")
 	}
-	if err.Error() != want {
-		t.Errorf("Launch err = %q, want %q", err.Error(), want)
+	if err.Error() != launchcore.EmptyHostMessage {
+		t.Errorf("Launch err = %q, want %q", err.Error(), launchcore.EmptyHostMessage)
 	}
 }
 ```
 
 (If `fakeBridgeSaver` isn't already defined, reuse the existing `saver := &stubBridgeSaver{...}` pattern from the file — check `launcher_test.go:30-45` for the exact fixture name used in the existing tests.)
 
-- [ ] **Step 2: Create the integration test**
-
-Create `tests/integration/launch_core_test.go`:
-
-```go
-//go:build integration
-
-package integration
-
-import (
-	"testing"
-)
-
-// TestLaunchCore_EmptyHostStringIsCrossModuleConsistent is the cross-side
-// drift tripwire for the empty-host operator-facing message.
-//
-// Both sides of the wire — the chassis handler and the cmd launcher —
-// hardcode this string verbatim. Neither side can import the other's
-// constant (the chassis is forbidden from importing internal/misterctl,
-// and cmd/mister-groovy-relay is package main). This integration test
-// asserts the literal in one place; the per-side unit tests assert
-// against the same literal. Any drift requires updating ALL THREE
-// assertions together, which raises the bar enough to make accidental
-// drift obvious in code review.
-//
-// Companion assertions:
-//   - internal/chassis/settings_test.go::TestLaunchCore_EmptyHost
-//   - cmd/mister-groovy-relay/launcher_test.go::TestBridgeMisterLauncher_EmptyHostMessageStable
-func TestLaunchCore_EmptyHostStringIsCrossModuleConsistent(t *testing.T) {
-	const want = "MiSTer host not configured (set bridge.mister.host)"
-
-	// Sanity: a constant test that this file is in sync with itself.
-	// The real enforcement is the cross-reference in the comment above.
-	if want == "" {
-		t.Fatal("empty-host string constant is empty — test self-consistency failure")
-	}
-
-	// If a future refactor extracts the message into a shared package
-	// (e.g. internal/config or a new tiny internal/launchermsg package),
-	// this test should import that constant and assert equality with the
-	// chassis/launcher copies directly. Until then, the trio of assertions
-	// across this file + the two unit tests is the drift gate.
-	t.Logf("empty-host string consistency anchor: %q", want)
-}
-```
-
-- [ ] **Step 3: Run all three tests**
+- [ ] **Step 4: Run both sides**
 
 Run:
 ```bash
 go test ./internal/chassis -run TestLaunchCore_EmptyHost -v
 go test ./cmd/mister-groovy-relay -run TestBridgeMisterLauncher_EmptyHostMessageStable -v
-go test -tags=integration ./tests/integration -run TestLaunchCore_EmptyHostStringIsCrossModuleConsistent -v
+go test ./internal/launchcore -v
 ```
 Expected: PASS for all three.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tests/integration/launch_core_test.go cmd/mister-groovy-relay/launcher_test.go
-git commit -m "test(integration): pin empty-host string consistency across chassis + launcher"
+git add internal/launchcore/messages.go internal/chassis/settings.go internal/chassis/settings_test.go cmd/mister-groovy-relay/launcher.go cmd/mister-groovy-relay/launcher_test.go
+git commit -m "refactor(chassis): share launch-core empty-host message"
 ```
 
 ---
@@ -2747,33 +2852,101 @@ git commit -m "test(integration): pin empty-host string consistency across chass
 **Files:**
 - Modify: `tests/integration/chassis_test.go` (or add a new file if the existing one is large)
 
-**Context:** Look at the existing 4A integration tests for the pattern (commit `88cf58d test(integration): cover settings bridge POST + probe end-to-end`). They construct a real `BridgeSaver` against a tmp `config.toml` and POST through the mounted route.
+**Context:** Use the existing integration harness around `chassisEnv`. `chassisEnv.PostForm` returns `*http.Response`, not an `httptest.ResponseRecorder`; use `resp.StatusCode`, `defer resp.Body.Close()`, and `json.NewDecoder(resp.Body)`. The harness currently constructs a real `*uiserver.BridgeSaver` but does not expose it, so first extend the helper.
 
-- [ ] **Step 1: Add tests for one save per new Pipeline field type**
+- [ ] **Step 1: Extend the settings integration harness**
 
-Append to `tests/integration/chassis_test.go` (or whichever file holds the 4A settings integration tests — find it via `grep -l "POST /receiver/settings/bridge" tests/integration`):
+Edit `tests/integration/chassis_test.go`. Add the saver to `chassisEnv`:
 
 ```go
-//go:build integration
+type chassisEnv struct {
+	// existing fields...
+	bridgeSaver *uiserver.BridgeSaver
+}
+```
 
+Add an options helper for settings-backed integration environments:
+
+```go
+type settingsEnvOptions struct {
+	prober       chassis.Prober
+	coreLauncher chassis.CoreLauncher
+	mutateBridge func(*config.BridgeConfig)
+}
+
+func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *chassisEnv {
+	t.Helper()
+	return newChassisIntegrationEnvForSettings(t, settingsEnvOptions{prober: prober})
+}
+
+func newChassisIntegrationEnvForSettings(t *testing.T, opts settingsEnvOptions) *chassisEnv {
+	t.Helper()
+	dir := t.TempDir()
+
+	emptyStore := []byte(`{"version":1,"slots":[]}`)
+	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), emptyStore, 0o600); err != nil {
+		t.Fatalf("seed empty chassis_presets.json: %v", err)
+	}
+
+	bridge := testSettingsBridgeConfig(dir)
+	if opts.mutateBridge != nil {
+		opts.mutateBridge(&bridge)
+	}
+	cfgPath := testSettingsConfigPath(t, dir, bridge)
+
+	sec := &config.Sectioned{Bridge: bridge}
+	reg := adapters.NewRegistry()
+	bridgeSaver := uiserver.NewBridgeSaver(cfgPath, sec, fakeCoreForSettingsTests{}, reg)
+
+	// Continue with the existing newChassisIntegrationEnvWithProber body,
+	// but wire opts.prober / opts.coreLauncher into chassis.Config and store
+	// bridgeSaver on the returned env.
+	srv, err := chassis.New(chassis.Config{
+		// existing fields unchanged...
+		Bridge:       bridge,
+		BridgeSaver:  bridgeSaver,
+		Prober:       opts.prober,
+		CoreLauncher: opts.coreLauncher,
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+
+	// existing mux/test-server setup unchanged...
+	return &chassisEnv{
+		// existing fields...
+		bridgeSaver: bridgeSaver,
+	}
+}
+```
+
+The snippet above intentionally elides already-existing streams/session setup; preserve that code and only add the options, `CoreLauncher` wiring, and returned `bridgeSaver` field.
+
+- [ ] **Step 2: Add tests for one save per new Pipeline field type**
+
+Append to `tests/integration/chassis_test.go` (or whichever file holds the 4A settings integration tests — find it via `rg "settings/bridge" tests/integration`):
+
+```go
 func TestChassisSettings_PipelineInterlaceFieldOrder_Hot(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t) // existing 4A helper
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	// Confirm the field starts at "bff" (the default).
-	if got := srv.bridgeSaver.Current().Video.InterlaceFieldOrder; got != "bff" {
-		t.Fatalf("starting field = %q, want bff", got)
+	if got := env.bridgeSaver.Current().Video.InterlaceFieldOrder; got != "tff" {
+		t.Fatalf("starting field = %q, want tff", got)
 	}
 
-	resp := postSettingsBridge(t, srv, url.Values{"video_interlace_field_order": {"tff"}})
-	if resp.Code != 200 {
-		t.Fatalf("Code = %d, body = %s", resp.Code, resp.Body.String())
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"video_interlace_field_order": {"bff"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().Video.InterlaceFieldOrder; got != "tff" {
-		t.Errorf("after save: field = %q, want tff", got)
+	if got := env.bridgeSaver.Current().Video.InterlaceFieldOrder; got != "bff" {
+		t.Errorf("after save: field = %q, want bff", got)
 	}
 	var body map[string]any
-	_ = json.Unmarshal(resp.Body.Bytes(), &body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["scope"] != "hot" {
 		t.Errorf("scope = %v, want hot", body["scope"])
 	}
@@ -2781,17 +2954,20 @@ func TestChassisSettings_PipelineInterlaceFieldOrder_Hot(t *testing.T) {
 
 func TestChassisSettings_PipelineLZ4Switch_Recast(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	resp := postSettingsBridge(t, srv, url.Values{"video_lz4_enabled": {"false"}})
-	if resp.Code != 200 {
-		t.Fatalf("Code = %d", resp.Code)
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"video_lz4_enabled": {"false"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().Video.LZ4Enabled; got != false {
+	if got := env.bridgeSaver.Current().Video.LZ4Enabled; got != false {
 		t.Errorf("after save: LZ4Enabled = %v, want false", got)
 	}
 	var body map[string]any
-	_ = json.Unmarshal(resp.Body.Bytes(), &body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["scope"] != "recast" {
 		t.Errorf("scope = %v, want recast", body["scope"])
 	}
@@ -2799,37 +2975,43 @@ func TestChassisSettings_PipelineLZ4Switch_Recast(t *testing.T) {
 
 func TestChassisSettings_PipelineSSHPassword_PreservesOnEmpty(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	// Set a new password.
-	resp := postSettingsBridge(t, srv, url.Values{"mister_ssh_password": {"newpass"}})
-	if resp.Code != 200 {
-		t.Fatalf("first save Code = %d, body = %s", resp.Code, resp.Body.String())
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"mister_ssh_password": {"newpass"}})
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("first save StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().MiSTer.SSHPassword; got != "newpass" {
+	resp.Body.Close()
+	if got := env.bridgeSaver.Current().MiSTer.SSHPassword; got != "newpass" {
 		t.Fatalf("after first save: password = %q, want newpass", got)
 	}
 
-	// Now submit empty — must preserve.
-	resp = postSettingsBridge(t, srv, url.Values{"mister_ssh_password": {""}})
-	if resp.Code != 200 {
-		t.Fatalf("empty save Code = %d", resp.Code)
+	resp = env.PostForm("/receiver/settings/bridge", url.Values{"mister_ssh_password": {""}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("empty save StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().MiSTer.SSHPassword; got != "newpass" {
+	if got := env.bridgeSaver.Current().MiSTer.SSHPassword; got != "newpass" {
 		t.Errorf("after empty save: password = %q, want \"newpass\" (preserve)", got)
 	}
 }
 
 func TestChassisSettings_PipelineAudioSampleRate_OutOfRangeReturns400(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	resp := postSettingsBridge(t, srv, url.Values{"audio_sample_rate": {"96000"}})
-	if resp.Code != 400 {
-		t.Fatalf("Code = %d, want 400", resp.Code)
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"audio_sample_rate": {"96000"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
 	}
 	var body map[string]any
-	_ = json.Unmarshal(resp.Body.Bytes(), &body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	errs, _ := body["errors"].(map[string]any)
 	msg, _ := errs["audio_sample_rate"].(string)
 	if !strings.Contains(msg, "must be 22050, 44100, or 48000") {
@@ -2838,14 +3020,12 @@ func TestChassisSettings_PipelineAudioSampleRate_OutOfRangeReturns400(t *testing
 }
 ```
 
-If `startSettingsTestServer` and `postSettingsBridge` don't exist as helpers in the file, find the analogous Network pane integration tests and copy their setup blocks (the 4A integration tests already construct real `BridgeSaver` instances against tmp config files).
-
-- [ ] **Step 2: Run the integration tests**
+- [ ] **Step 3: Run the integration tests**
 
 Run: `go test -tags=integration ./tests/integration -run 'TestChassisSettings_Pipeline' -v`
 Expected: PASS for all four.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/integration/chassis_test.go
@@ -2866,17 +3046,20 @@ Append to `tests/integration/chassis_test.go`:
 ```go
 func TestChassisSettings_AdvancedHLSLiveEdgeSegments_Recast(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	resp := postSettingsBridge(t, srv, url.Values{"hls_live_edge_segments": {"5"}})
-	if resp.Code != 200 {
-		t.Fatalf("Code = %d, body = %s", resp.Code, resp.Body.String())
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"5"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().HLSBuffer.LiveEdgeSegments; got != 5 {
+	if got := env.bridgeSaver.Current().HLSBuffer.LiveEdgeSegments; got != 5 {
 		t.Errorf("after save: LiveEdgeSegments = %d, want 5", got)
 	}
 	var body map[string]any
-	_ = json.Unmarshal(resp.Body.Bytes(), &body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["scope"] != "recast" {
 		t.Errorf("scope = %v, want recast", body["scope"])
 	}
@@ -2884,14 +3067,16 @@ func TestChassisSettings_AdvancedHLSLiveEdgeSegments_Recast(t *testing.T) {
 
 func TestChassisSettings_AdvancedHLSLiveEdge_OutOfBoundsReturns400(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	resp := postSettingsBridge(t, srv, url.Values{"hls_live_edge_segments": {"15"}})
-	if resp.Code != 400 {
-		t.Fatalf("Code = %d, want 400", resp.Code)
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"15"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
 	}
 	var body map[string]any
-	_ = json.Unmarshal(resp.Body.Bytes(), &body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	errs, _ := body["errors"].(map[string]any)
 	if msg, _ := errs["hls_live_edge_segments"].(string); !strings.Contains(msg, "must be in [1, 12]") {
 		t.Errorf("error = %q, want substring \"must be in [1, 12]\"", msg)
@@ -2900,30 +3085,36 @@ func TestChassisSettings_AdvancedHLSLiveEdge_OutOfBoundsReturns400(t *testing.T)
 
 func TestChassisSettings_AdvancedHLSMaxCacheBytes_Recast(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	resp := postSettingsBridge(t, srv, url.Values{"hls_max_cache_bytes": {"134217728"}})
-	if resp.Code != 200 {
-		t.Fatalf("Code = %d, body = %s", resp.Code, resp.Body.String())
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_max_cache_bytes": {"134217728"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().HLSBuffer.MaxCacheBytes; got != 134217728 {
+	if got := env.bridgeSaver.Current().HLSBuffer.MaxCacheBytes; got != 134217728 {
 		t.Errorf("after save: MaxCacheBytes = %d, want 134217728", got)
 	}
 }
 
 func TestChassisSettings_AdvancedLoggingDebug_HotSetsLogLevel(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
 
-	resp := postSettingsBridge(t, srv, url.Values{"logging_debug": {"true"}})
-	if resp.Code != 200 {
-		t.Fatalf("Code = %d, body = %s", resp.Code, resp.Body.String())
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{"logging_debug": {"true"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := srv.bridgeSaver.Current().Logging.Debug; !got {
+	if got := env.bridgeSaver.Current().Logging.Debug; !got {
 		t.Errorf("after save: Logging.Debug = false, want true")
 	}
 	var body map[string]any
-	_ = json.Unmarshal(resp.Body.Bytes(), &body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["scope"] != "hot" {
 		t.Errorf("scope = %v, want hot", body["scope"])
 	}
@@ -2954,7 +3145,7 @@ git commit -m "test(integration): Advanced pane end-to-end saves (HLS bounds, de
 
 - [ ] **Step 1: Add the launch-core integration tests**
 
-Append to `tests/integration/chassis_test.go`:
+Append to `tests/integration/chassis_test.go` and add `github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore` to the import block:
 
 ```go
 // fakeLaunchCoreLauncher counts calls for the integration test. Mirrors
@@ -2971,74 +3162,55 @@ func (f *fakeLaunchCoreLauncher) Launch(ctx context.Context) error {
 
 func TestChassisSettings_LaunchCoreSuccess(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
-
-	// Replace the wired CoreLauncher with our fake (the helper currently
-	// wires the real bridgeMisterLauncher; for the integration test we
-	// substitute a fake to avoid SSH-ing in CI).
 	launcher := &fakeLaunchCoreLauncher{}
-	srv.SetCoreLauncherForTesting(launcher) // add this seam if missing
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{coreLauncher: launcher})
+	defer env.Close()
 
-	// Set a non-empty host so the handler proceeds.
-	resp := postSettingsBridge(t, srv, url.Values{"mister_host": {"127.0.0.1"}})
-	if resp.Code != 200 {
-		t.Fatalf("setup save Code = %d", resp.Code)
-	}
-
-	req := httptest.NewRequest("POST", "/receiver/settings/action/launch-core", nil)
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("launch Code = %d, body = %s", rec.Code, rec.Body.String())
+	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
 	if launcher.calls != 1 {
 		t.Errorf("launcher.calls = %d, want 1", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["host"] != "127.0.0.1" {
+		t.Errorf("body = %+v, want ok with configured host", body)
 	}
 }
 
 func TestChassisSettings_LaunchCoreEmptyHost(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := startSettingsTestServer(t)
-
 	launcher := &fakeLaunchCoreLauncher{}
-	srv.SetCoreLauncherForTesting(launcher)
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{
+		coreLauncher: launcher,
+		mutateBridge: func(b *config.BridgeConfig) {
+			b.MiSTer.Host = ""
+		},
+	})
+	defer env.Close()
 
-	// Host starts empty in the default test fixture; verify.
-	if got := srv.bridgeSaver.Current().MiSTer.Host; got != "" {
-		// If the fixture starts with a host, clear it first.
-		// (Implementation detail — adapt to your startSettingsTestServer.)
-		t.Logf("starting host = %q, expected empty in default fixture", got)
-	}
-
-	req := httptest.NewRequest("POST", "/receiver/settings/action/launch-core", nil)
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, want 400; body = %s", resp.StatusCode, body)
 	}
 	if launcher.calls != 0 {
 		t.Errorf("launcher.calls = %d, want 0", launcher.calls)
 	}
 	var body map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if got, _ := body["error"].(string); got != "MiSTer host not configured (set bridge.mister.host)" {
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if got, _ := body["error"].(string); got != launchcore.EmptyHostMessage {
 		t.Errorf("body.error = %q, want exact match with launcher message", got)
 	}
 }
 ```
 
-If `srv.SetCoreLauncherForTesting` doesn't exist, add a minimal test seam to `internal/chassis/server.go`:
-
-```go
-// SetCoreLauncherForTesting replaces the CoreLauncher on a running server.
-// Intended for integration tests that need to substitute a fake without
-// reconstructing the entire chassis.Config.
-func (s *Server) SetCoreLauncherForTesting(l CoreLauncher) {
-	s.cfg.CoreLauncher = l
-}
-```
+The tests rely on the harness extension from Task 22. Do not add a `SetCoreLauncherForTesting` method to `internal/chassis/server.go`; wiring the fake before `chassis.New` avoids a production test seam.
 
 - [ ] **Step 2: Run the integration tests**
 
@@ -3048,7 +3220,7 @@ Expected: PASS.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/integration/chassis_test.go internal/chassis/server.go
+git add tests/integration/chassis_test.go
 git commit -m "test(integration): launch-core success + empty-host end-to-end coverage"
 ```
 
@@ -3109,12 +3281,12 @@ If the smoke test reveals anything, file the fix as its own task and commit.
 - Goal 7 (chassis isolation extended) → Task 3 (import_check_test extension).
 - Goal 8 (/ui/* unchanged) → enforced by import_check_test + no Task touches internal/ui.
 - Spec field renderer changes (SkipEmpty, password branch) → Task 7.
-- Spec sync-test for empty-host → Task 21.
-- Spec helper additions (humanizeBytes, boolStr, i64toa, passwordPlaceholder, list repurpose) → Tasks 4, 5, 6.
+- Spec empty-host drift prevention → Task 21 (shared `internal/launchcore.EmptyHostMessage`).
+- Spec helper additions (humanizeBytes, boolStr, i64toa, passwordPlaceholder, options) → Tasks 4, 5, 6.
 
 All spec requirements have a task. ✓
 
-**2. Placeholder scan:** No TBD/TODO/"implement later" in tasks. Every code step shows actual code. Each test step has the exact test code. Each command step has expected output. ✓
+**2. Placeholder scan:** No TBD/TODO/"implement later" in tasks. Code steps either show exact code or explicitly mark where to preserve an existing helper body while adding the new fields. Each test step has concrete test code. Each command step has expected output. ✓
 
 **3. Type consistency check:**
 
