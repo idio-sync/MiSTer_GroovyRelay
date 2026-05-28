@@ -3669,3 +3669,44 @@ func TestHumanizeBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestBoolStr(t *testing.T) {
+	t.Parallel()
+	if got := boolStr(true); got != "true" {
+		t.Errorf("boolStr(true) = %q, want \"true\"", got)
+	}
+	if got := boolStr(false); got != "false" {
+		t.Errorf("boolStr(false) = %q, want \"false\"", got)
+	}
+}
+
+func TestI64toa(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"},
+		{268435456, "268435456"},
+		{-1, "-1"},
+		{1 << 40, "1099511627776"},
+	}
+	for _, tc := range cases {
+		if got := i64toa(tc.in); got != tc.want {
+			t.Errorf("i64toa(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestPasswordPlaceholder(t *testing.T) {
+	t.Parallel()
+	if got := passwordPlaceholder(""); got != "not set" {
+		t.Errorf("passwordPlaceholder(empty) = %q, want \"not set\"", got)
+	}
+	if got := passwordPlaceholder("hunter2"); got != "••••••••" {
+		t.Errorf("passwordPlaceholder(\"hunter2\") = %q, want \"••••••••\"", got)
+	}
+	if got := passwordPlaceholder("x"); got != "••••••••" {
+		t.Errorf("passwordPlaceholder(\"x\") = %q, want \"••••••••\" (any non-empty)", got)
+	}
+}

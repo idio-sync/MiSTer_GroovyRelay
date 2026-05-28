@@ -76,6 +76,9 @@ var templateFuncs = template.FuncMap{
 	"stub":                stubHelper,
 	"field":               fieldHelper,
 	"humanizeBytes":       humanizeBytes,
+	"boolStr":             boolStr,
+	"i64toa":              i64toa,
+	"passwordPlaceholder": passwordPlaceholder,
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in
@@ -112,6 +115,35 @@ func dictHelper(pairs ...any) map[string]any {
 
 // itoaHelper wraps strconv.Itoa for the FuncMap.
 func itoaHelper(n int) string { return strconv.Itoa(n) }
+
+// boolStr returns "true" or "false" for switch value coercion in
+// templates. Use it to feed the `field` helper's Value when the
+// underlying Go field is a bool.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// i64toa wraps strconv.FormatInt for int64-backed numeric inputs (e.g.
+// HLS buffer's byte ceilings, which are int64 in BridgeConfig.HLSBuffer).
+// Sibling of itoaHelper, which is int-only.
+func i64toa(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+// passwordPlaceholder returns the placeholder string for the SSH
+// password input: "••••••••" when a password is stored, "not set"
+// otherwise. The chassis renders the password field with value="" at
+// all times, so the placeholder is the only operator signal that a
+// password is configured.
+func passwordPlaceholder(stored string) string {
+	if stored != "" {
+		return "••••••••"
+	}
+	return "not set"
+}
 
 // humanizeBytes formats an int64 byte count as a human-readable string
 // using base-1024 (IEC) with SI-style suffixes ("KB"/"MB"/"GB"), matching
