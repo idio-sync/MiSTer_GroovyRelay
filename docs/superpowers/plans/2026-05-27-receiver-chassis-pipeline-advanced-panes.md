@@ -1852,6 +1852,8 @@ git commit -m "test(chassis): HLS decoder bounds are a subset of Sectioned.Valid
 - Create: `internal/chassis/templates/settings-pipeline.html`
 - Modify: `internal/chassis/chassis_test.go`
 
+**Context:** This test renders the partial in isolation via `tmpl.ExecuteTemplate(buf, "settings-pipeline", data)` — it does NOT invoke `config.Sectioned.Validate`, so the `Bridge` fixture only needs the fields the template actually reads. `RGBMode`, `Visualizer.Mode`, port numbers, output volume, etc. can be omitted without making the test brittle. Tasks 15 and 16 follow the same fixture-minimization policy.
+
 - [ ] **Step 1: Write a failing template render test**
 
 Append to `internal/chassis/chassis_test.go`:
@@ -2850,39 +2852,59 @@ git commit -m "refactor(chassis): share launch-core empty-host message"
 ## Task 22: Integration test — Pipeline field saves end-to-end
 
 **Files:**
-- Modify: `tests/integration/chassis_test.go` (or add a new file if the existing one is large)
+- Modify: `tests/integration/chassis_test.go`
 
-**Context:** Use the existing integration harness around `chassisEnv`. `chassisEnv.PostForm` returns `*http.Response`, not an `httptest.ResponseRecorder`; use `resp.StatusCode`, `defer resp.Body.Close()`, and `json.NewDecoder(resp.Body)`. The harness currently constructs a real `*uiserver.BridgeSaver` but does not expose it, so first extend the helper.
+**Context:** Use the existing integration harness around `chassisEnv`. `chassisEnv.PostForm` returns `*http.Response`, not an `httptest.ResponseRecorder`; use `resp.StatusCode`, `defer resp.Body.Close()`, and `json.NewDecoder(resp.Body)`. The harness currently constructs a real `*uiserver.BridgeSaver` (`newChassisIntegrationEnvWithProber` at `tests/integration/chassis_test.go:2225`) but does not expose it, and there is no way to inject a `CoreLauncher`. Step 1 widens the harness to a general settings-integration constructor; Step 2 adds the Pipeline tests against it. The existing `newChassisIntegrationEnvWithProber` becomes a one-line wrapper so existing 4A callers (`TestReceiverSettings_GetRendersAllNetworkFields`, `TestReceiverSettings_BridgePostHotSwapSucceeds`, `TestReceiverSettings_BridgePostInvalidHostReturns400`, `TestReceiverSettings_BridgePostEmptyBodyReturns400`, `TestReceiverSettings_ProbePostSuccess`) keep working unchanged.
 
-- [ ] **Step 1: Extend the settings integration harness**
+- [ ] **Step 1: Refactor the settings-integration harness in `tests/integration/chassis_test.go`**
 
-Edit `tests/integration/chassis_test.go`. Add the saver to `chassisEnv`:
+First, extend the `chassisEnv` struct (existing definition is around line 1583 in the `newChassisIntegrationEnvIn` return — search for `type chassisEnv struct` and add the new field):
 
 ```go
 type chassisEnv struct {
-	// existing fields...
-	bridgeSaver *uiserver.BridgeSaver
+	t           *testing.T
+	dir         string
+	ts          *httptest.Server
+	srv         *chassis.Server
+	mux         *http.ServeMux
+	streamsA    *streams.Adapter
+	fakeStreams *recordingStreamsCaster
+	session     *fakeIntegrationSession
+	bridgeSaver *uiserver.BridgeSaver // NEW for Phase 4B settings integration
 }
 ```
 
-Add an options helper for settings-backed integration environments:
+Then locate the existing `newChassisIntegrationEnvWithProber` function (around line 2225) and **replace its entire body** with a thin wrapper plus the new general constructor:
 
 ```go
+// settingsEnvOptions configures newChassisIntegrationEnvForSettings.
+// All fields are optional; zero values mean "no override / nil".
 type settingsEnvOptions struct {
-	prober       chassis.Prober
-	coreLauncher chassis.CoreLauncher
-	mutateBridge func(*config.BridgeConfig)
+	prober       chassis.Prober      // wired into chassis.Config.Prober
+	coreLauncher chassis.CoreLauncher // wired into chassis.Config.CoreLauncher
+	mutateBridge func(*config.BridgeConfig) // applied to the seed bridge before saver init
 }
 
+// newChassisIntegrationEnvWithProber preserves 4A's signature. Existing
+// callers (TestReceiverSettings_GetRendersAllNetworkFields,
+// TestReceiverSettings_BridgePostHotSwapSucceeds, etc.) call this and
+// must keep working unchanged.
 func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *chassisEnv {
 	t.Helper()
 	return newChassisIntegrationEnvForSettings(t, settingsEnvOptions{prober: prober})
 }
 
+// newChassisIntegrationEnvForSettings is the Phase 4B settings-integration
+// harness. Wires a real *uiserver.BridgeSaver against a tmp config.toml,
+// builds a chassis Server with streams/session/preset infrastructure, and
+// stores the saver on the returned env so tests can inspect saved state
+// directly via env.bridgeSaver.Current().
 func newChassisIntegrationEnvForSettings(t *testing.T, opts settingsEnvOptions) *chassisEnv {
 	t.Helper()
 	dir := t.TempDir()
 
+	// Pre-seed empty chassis_presets.json so the preset bank starts at
+	// zero filled (matches newChassisIntegrationEnv's policy).
 	emptyStore := []byte(`{"version":1,"slots":[]}`)
 	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), emptyStore, 0o600); err != nil {
 		t.Fatalf("seed empty chassis_presets.json: %v", err)
@@ -2898,29 +2920,58 @@ func newChassisIntegrationEnvForSettings(t *testing.T, opts settingsEnvOptions) 
 	reg := adapters.NewRegistry()
 	bridgeSaver := uiserver.NewBridgeSaver(cfgPath, sec, fakeCoreForSettingsTests{}, reg)
 
-	// Continue with the existing newChassisIntegrationEnvWithProber body,
-	// but wire opts.prober / opts.coreLauncher into chassis.Config and store
-	// bridgeSaver on the returned env.
+	streamsA, err := streams.New(streams.AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: dir},
+		Core:   &core.Manager{},
+	})
+	if err != nil {
+		t.Fatalf("streams.New: %v", err)
+	}
+	streamsA.SetEnabled(true)
+
+	session := &fakeIntegrationSession{view: core.StatusHomeView{State: core.StateIdle}}
+	fakeStreams := &recordingStreamsCaster{session: session}
+
 	srv, err := chassis.New(chassis.Config{
-		// existing fields unchanged...
-		Bridge:       bridge,
-		BridgeSaver:  bridgeSaver,
-		Prober:       opts.prober,
-		CoreLauncher: opts.coreLauncher,
+		Bridge:                    bridge,
+		Manager:                   &core.Manager{},
+		Registry:                  reg,
+		Version:                   "integration-test",
+		StartedAt:                 time.Now(),
+		HostIP:                    "127.0.0.1",
+		Session:                   session,
+		PresetViewer:              streamsA,
+		PresetEditor:              streamsA,
+		StreamsCatalogViewer:      streamsA,
+		StreamsCaster:             fakeStreams,
+		SourceAvailabilityViewers: []adapters.SourceAvailabilityViewer{streamsA},
+		BridgeSaver:               bridgeSaver,
+		Prober:                    opts.prober,
+		CoreLauncher:              opts.coreLauncher,
 	})
 	if err != nil {
 		t.Fatalf("chassis.New: %v", err)
 	}
 
-	// existing mux/test-server setup unchanged...
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+
 	return &chassisEnv{
-		// existing fields...
+		t:           t,
+		dir:         dir,
+		ts:          ts,
+		srv:         srv,
+		mux:         mux,
+		streamsA:    streamsA,
+		fakeStreams: fakeStreams,
+		session:     session,
 		bridgeSaver: bridgeSaver,
 	}
 }
 ```
 
-The snippet above intentionally elides already-existing streams/session setup; preserve that code and only add the options, `CoreLauncher` wiring, and returned `bridgeSaver` field.
+The bodies of `streams.New`, `fakeIntegrationSession{}`, `recordingStreamsCaster{}`, `testSettingsBridgeConfig`, `testSettingsConfigPath`, `fakeCoreForSettingsTests{}`, `uiserver.NewBridgeSaver`, and the chassis.New + Mount + httptest.NewServer + return-struct flow are identical to the existing `newChassisIntegrationEnvWithProber` (around `chassis_test.go:2225-2290`) plus the two new field assignments (`CoreLauncher: opts.coreLauncher`, `bridgeSaver: bridgeSaver`). If you find anything that differs from the existing function, prefer the existing version's exact line — the only intentional changes are: (a) parameterized options struct, (b) `CoreLauncher` added to `chassis.Config`, (c) `bridgeSaver` stored on returned env.
 
 - [ ] **Step 2: Add tests for one save per new Pipeline field type**
 
