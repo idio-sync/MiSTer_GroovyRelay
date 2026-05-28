@@ -65,9 +65,9 @@
             <span class="std-ind{{if .MidRow.StandardNTSC}} active{{end}} seg-display" data-meter-standard-ntsc><span class="seg-ghost" aria-hidden="true">~~~~</span><span class="seg-text">NTSC</span></span>
             <span class="std-ind{{if .MidRow.StandardPAL}} active{{end}} seg-display" data-meter-standard-pal><span class="seg-ghost" aria-hidden="true">~~~</span><span class="seg-text">PAL</span></span>
           </div>
-          <div class="field-flip" title="Interlace field interleave &middot; field order &middot; lock">
-            <div class="row"><span class="dot odd"></span><span class="lbl">ODD</span></div>
-            <div class="row"><span class="dot even"></span><span class="lbl">EVEN</span></div>
+          <div class="field-flip" data-meter-field-order data-field-order="{{.MidRow.FieldOrder}}" title="Interlace field interleave &middot; field order &middot; lock">
+            <div class="row" data-field-row="tff"><span class="dot odd"></span><span class="lbl">ODD</span></div>
+            <div class="row" data-field-row="bff"><span class="dot even"></span><span class="lbl">EVEN</span></div>
             <span class="lock" data-meter-field-lock>{{.MidRow.FieldFlip}}</span>
           </div>
         </div>

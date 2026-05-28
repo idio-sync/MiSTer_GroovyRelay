@@ -26,9 +26,10 @@
     {{if not .ActionsEnabled.Seek}}data-transport-seek-disabled{{end}}
     data-transport-offset-ms="{{.OffsetMS}}"
     data-transport-duration-ms="{{.DurationMS}}"
+    style="--seek-percent: {{.SeekFillPercent}}%;"
     role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"
     aria-valuenow="{{.SeekFillPercent}}" aria-disabled="{{if .ActionsEnabled.Seek}}false{{else}}true{{end}}" title="Cast position">
-    <div class="fill" data-transport-seek-fill style="width: {{.SeekFillPercent}}%"></div>
+    <div class="fill" data-transport-seek-fill></div>
     <div class="head"><span class="grip"></span></div>
   </div>
   <div class="seek-time">

@@ -19,6 +19,13 @@
     if (el) el.classList.toggle('active', !!active);
   }
 
+  function setFieldOrder(value) {
+    const el = document.querySelector('[data-meter-field-order]');
+    if (el) {
+      el.setAttribute('data-field-order', String(value || '').toLowerCase());
+    }
+  }
+
   function updateHLS(strip) {
     const cached = Math.max(0, Number(strip.hlsCachedSegments || 0));
     const max = Math.max(0, Number(strip.hlsMaxSegments || 0));
@@ -68,6 +75,7 @@
     setText('[data-meter-mode]', mid.mode);
     setLamp('[data-meter-standard-ntsc]', mid.standard === 'ntsc');
     setLamp('[data-meter-standard-pal]', mid.standard === 'pal');
+    setFieldOrder(mid.fieldOrder);
     setText('[data-meter-field-lock]', mid.fieldLock);
     setText('[data-meter-throughput]', mid.throughputMBs);
     setText('[data-meter-ack]', mid.ackMS);

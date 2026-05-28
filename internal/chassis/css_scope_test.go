@@ -469,6 +469,130 @@ func TestSourceClusterResponsiveFiveButtonLayout(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_AudioScopeCanvasesFillFrames(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+
+	spectrumRule := cssRuleBlock(t, text, "body.receiver .meter-screen--compact .spectrum")
+	if strings.Contains(spectrumRule, "grid-template-columns") {
+		t.Fatalf("spectrum canvas frame must not keep the old miniature grid layout: %s", spectrumRule)
+	}
+	for _, want := range []string{
+		"position: relative;",
+		"overflow: hidden;",
+		"width: clamp(250px",
+		"height: clamp(74px",
+	} {
+		if !strings.Contains(spectrumRule, want) {
+			t.Fatalf("spectrum frame missing %q: %s", want, spectrumRule)
+		}
+	}
+	canvasRule := cssRuleBlock(t, text, "body.receiver .meter-screen--compact .spectrum canvas")
+	for _, want := range []string{"display: block;", "width: 100%;", "height: 100%;"} {
+		if !strings.Contains(canvasRule, want) {
+			t.Fatalf("spectrum canvas rule missing %q: %s", want, canvasRule)
+		}
+	}
+	gonioRule := cssRuleBlock(t, text, "body.receiver .gonio")
+	if !strings.Contains(gonioRule, "height: clamp(74px") {
+		t.Fatalf("goniometer frame should match the enlarged audio scope height: %s", gonioRule)
+	}
+}
+
+func TestChassisCSS_FieldOrderLockIsStaticNotAnimated(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+
+	for _, selector := range []string{
+		"body.receiver .field-flip .dot",
+		"body.receiver .field-flip .lbl",
+	} {
+		rule := cssRuleBlock(t, text, selector)
+		if strings.Contains(rule, "animation:") {
+			t.Fatalf("%s must reflect configured field order, not animate between odd/even: %s", selector, rule)
+		}
+	}
+	for _, want := range []string{
+		`body.receiver .field-flip[data-field-order="tff"] .dot.odd`,
+		`body.receiver .field-flip[data-field-order="tff"] .row[data-field-row="tff"] .lbl`,
+		`body.receiver .field-flip[data-field-order="bff"] .dot.even`,
+		`body.receiver .field-flip[data-field-order="bff"] .row[data-field-row="bff"] .lbl`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("field-order CSS missing static selector %q", want)
+		}
+	}
+}
+
+func TestChassisCSS_SeekHeadTracksSeekPercentVariable(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	seekRule := cssRuleBlock(t, text, "body.receiver .seek-bar")
+	if !strings.Contains(seekRule, "--seek-percent: 0%;") {
+		t.Fatalf("seek bar should define a stable seek-position variable: %s", seekRule)
+	}
+	fillRule := cssRuleBlock(t, text, "body.receiver .seek-bar .fill")
+	if !strings.Contains(fillRule, "width: var(--seek-percent);") {
+		t.Fatalf("seek fill should be driven by --seek-percent: %s", fillRule)
+	}
+	headRule := cssRuleBlock(t, text, "body.receiver .seek-bar .head")
+	if !strings.Contains(headRule, "left: calc(var(--seek-percent) - 6px);") {
+		t.Fatalf("seek head should track --seek-percent: %s", headRule)
+	}
+}
+
+func TestChassisCSS_VolumeTickRingUsesCenteredRadialTransforms(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	tickRule := cssRuleBlock(t, text, "body.receiver .volume-tick")
+	if strings.Contains(tickRule, "transform-origin: 0 30px") {
+		t.Fatalf("volume ticks should not rotate around an off-center origin: %s", tickRule)
+	}
+	if !strings.Contains(tickRule, `transform: translate(-50%, -50%) rotate(var(--tick-angle)) translateY(-34px);`) {
+		t.Fatalf("volume ticks should use one centered radial transform: %s", tickRule)
+	}
+	if !strings.Contains(text, "body.receiver .volume-tick.tick-10 { --tick-angle: 0deg; }") {
+		t.Fatalf("volume tick angle classes should assign --tick-angle values")
+	}
+}
+
+func TestChassisCSS_BrowseButtonHasBaseButtonChrome(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	rule := cssRuleBlock(t, text, "body.receiver .browse-btn")
+	for _, want := range []string{
+		"background:",
+		"border: 1px solid",
+		"box-shadow:",
+		"text-transform: uppercase;",
+		"cursor: pointer;",
+	} {
+		if !strings.Contains(rule, want) {
+			t.Fatalf("browse button base chrome missing %q: %s", want, rule)
+		}
+	}
+}
+
 func TestFindUnscopedSelectors_FixtureGood(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

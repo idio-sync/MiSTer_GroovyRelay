@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1267,9 +1266,9 @@ func TestTransportTemplate_SeekFillStyleReflectsPercent(t *testing.T) {
 		if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
 			t.Fatalf("execute transport partial with percent %d: %v", percent, err)
 		}
-		want := `style="width: ` + strconv.Itoa(percent) + `%"`
+		want := fmt.Sprintf(`--seek-percent: %d%%`, percent)
 		if !strings.Contains(buf.String(), want) {
-			t.Errorf("seek fill style with percent %d missing %q; full output:\n%s", percent, want, buf.String())
+			t.Errorf("seek CSS variable with percent %d missing %q; full output:\n%s", percent, want, buf.String())
 		}
 	}
 }
@@ -2220,6 +2219,7 @@ func TestMeterTemplateHasDataHooks(t *testing.T) {
 		"data-meter-mode",
 		"data-meter-standard-ntsc",
 		"data-meter-standard-pal",
+		"data-meter-field-order",
 		"data-meter-field-lock",
 		"data-meter-throughput",
 		"data-meter-ack",
@@ -2236,6 +2236,33 @@ func TestMeterTemplateHasDataHooks(t *testing.T) {
 	}
 }
 
+func TestMeterTemplate_FieldOrderDrivesStaticOddEvenLock(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0)).Meter
+	data.MidRow.FieldOrder = "bff"
+	data.MidRow.FieldLock = "BFF LOCK"
+	data.MidRow.FieldFlip = "BFF LOCK"
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "meter", data); err != nil {
+		t.Fatalf("execute meter: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{
+		`data-meter-field-order data-field-order="bff"`,
+		`data-field-row="tff"`,
+		`data-field-row="bff"`,
+		`data-meter-field-lock>BFF LOCK`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("meter template missing field-order contract %q; body:\n%s", want, body)
+		}
+	}
+}
+
 func TestMeterStaticUsesSubscribeAndNoDemoGenerators(t *testing.T) {
 	t.Parallel()
 	js, err := chassisStaticFS.ReadFile("static/meter.js")
@@ -2245,6 +2272,8 @@ func TestMeterStaticUsesSubscribeAndNoDemoGenerators(t *testing.T) {
 	body := string(js)
 	for _, want := range []string{
 		"window.Chassis.events.subscribe('meter'",
+		"data-meter-field-order",
+		"setFieldOrder",
 		"data-meter-audio-in",
 		"data-meter-hls-seg",
 		"throughput-canvas",
@@ -3438,9 +3467,9 @@ func TestSettingsDrawerTemplate_NetworkPaneRendersAllFields(t *testing.T) {
 	tmpl := parseTemplatesForTest(t)
 	data := SettingsData{
 		Bridge: config.BridgeConfig{
-			MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100, SourcePort: 32101},
-			UI:     config.UIConfig{HTTPPort: 32500},
-			DataDir: "",
+			MiSTer:     config.MisterConfig{Host: "192.168.1.42", Port: 32100, SourcePort: 32101},
+			UI:         config.UIConfig{HTTPPort: 32500},
+			DataDir:    "",
 			FFmpegPath: "/usr/bin/ffmpeg",
 		},
 		Errors: map[string]string{},

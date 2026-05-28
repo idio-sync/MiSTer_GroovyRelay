@@ -32,6 +32,7 @@ class FakeElement extends FakeTarget {
     super();
     this.value = value;
     this.dataset = {};
+    this.rect = { left: 0, top: 0, width: 100, height: 100 };
     this.styleValues = new Map();
     this.style = {
       setProperty: (name, value) => this.styleValues.set(name, value),
@@ -45,12 +46,23 @@ class FakeElement extends FakeTarget {
           this.classes.delete(name);
         }
       },
+      contains: (name) => this.classes.has(name),
     };
   }
 
   matches(selector) {
     return selector === ':hover';
   }
+
+  getBoundingClientRect() {
+    return this.rect;
+  }
+
+  setPointerCapture() {}
+
+  releasePointerCapture() {}
+
+  focus() {}
 }
 
 class FakeSource extends FakeTarget {
@@ -64,6 +76,7 @@ function createHarness(initialValue = 40) {
   root.dataset.volumeValue = String(initialValue);
   const range = new FakeElement(String(initialValue));
   const source = new FakeSource();
+  const subscriptions = new Map();
   const requests = [];
   const timers = new Map();
   let now = 0;
@@ -124,9 +137,25 @@ function createHarness(initialValue = 40) {
     }
     return null;
   };
+  range.focus = () => {
+    document.activeElement = range;
+  };
+  source.emitVolume = (outputVolume) => {
+    const fn = subscriptions.get('volume');
+    if (fn) {
+      fn({ data: JSON.stringify({ outputVolume }) });
+    }
+  };
 
   const window = {
-    Chassis: { events: { source } },
+    Chassis: {
+      events: {
+        source,
+        subscribe(name, fn) {
+          subscriptions.set(name, fn);
+        },
+      },
+    },
     setTimeout: setTimeoutFake,
     clearTimeout: clearTimeoutFake,
   };
@@ -227,4 +256,34 @@ test('defers SSE while editing and rolls failed final save back to last authorit
   await settle();
   assert.equal(h.range.value, '30');
   assert.equal(h.root.classes.has('failed'), true);
+});
+
+test('turning the knob with pointer drag commits the radial volume value', async () => {
+  const h = createHarness(40);
+
+  h.root.dispatch('pointerdown', {
+    button: 0,
+    pointerId: 7,
+    clientX: 50,
+    clientY: 0,
+    preventDefault() {},
+  });
+  assert.equal(h.range.value, '50');
+
+  h.root.dispatch('pointermove', {
+    pointerId: 7,
+    clientX: 100,
+    clientY: 50,
+    preventDefault() {},
+  });
+  h.root.dispatch('pointerup', {
+    pointerId: 7,
+    clientX: 100,
+    clientY: 50,
+    preventDefault() {},
+  });
+
+  h.advance(0);
+  assert.equal(h.requests.length, 1);
+  assert.equal(postedVolume(h.requests[0]), '83');
 });

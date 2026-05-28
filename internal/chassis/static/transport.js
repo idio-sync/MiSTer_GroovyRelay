@@ -74,6 +74,9 @@
       return;
     }
     const nextPercent = clamp(Math.round(percent), 0, 100);
+    if (bar.style && bar.style.setProperty) {
+      bar.style.setProperty('--seek-percent', `${nextPercent}%`);
+    }
     const fill = bar.querySelector('[data-transport-seek-fill]');
     if (fill) {
       fill.style.width = `${nextPercent}%`;

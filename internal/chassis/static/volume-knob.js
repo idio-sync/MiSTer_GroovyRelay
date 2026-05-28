@@ -23,6 +23,7 @@
   let inFlight = false;
   let queuedValue = null;
   let editing = false;
+  let draggingPointer = null;
   let finalCommitNeeded = false;
   let saveTimer = 0;
 
@@ -36,6 +37,26 @@
 
   function angleFor(value) {
     return START_DEG + (ARC_DEG * clamp(value) / MAX);
+  }
+
+  function valueFromPointer(ev) {
+    if (!root || !root.getBoundingClientRect) {
+      return localValue;
+    }
+    const rect = root.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = ev.clientX - cx;
+    const dy = ev.clientY - cy;
+    if (Math.hypot(dx, dy) < 8) {
+      return localValue;
+    }
+    let deg = Math.atan2(dy, dx) * 180 / Math.PI + 90;
+    if (deg > 180) {
+      deg -= 360;
+    }
+    const angle = Math.min(START_DEG + ARC_DEG, Math.max(START_DEG, deg));
+    return Math.round(((angle - START_DEG) / ARC_DEG) * MAX);
   }
 
   function setVisual(value, className) {
@@ -144,6 +165,59 @@
     scheduleSave(next, true);
   }
 
+  function beginPointerTurn(ev) {
+    if (ev.button != null && ev.button !== 0) {
+      return;
+    }
+    if (ev.preventDefault) {
+      ev.preventDefault();
+    }
+    draggingPointer = ev.pointerId;
+    if (range && range.focus) {
+      range.focus({ preventScroll: true });
+    }
+    beginEdit();
+    if (root.setPointerCapture && ev.pointerId != null) {
+      root.setPointerCapture(ev.pointerId);
+    }
+    updateEdit(valueFromPointer(ev));
+  }
+
+  function updatePointerTurn(ev) {
+    if (draggingPointer === null || ev.pointerId !== draggingPointer) {
+      return;
+    }
+    if (ev.preventDefault) {
+      ev.preventDefault();
+    }
+    updateEdit(valueFromPointer(ev));
+  }
+
+  function endPointerTurn(ev) {
+    if (draggingPointer === null || ev.pointerId !== draggingPointer) {
+      return;
+    }
+    if (ev.preventDefault) {
+      ev.preventDefault();
+    }
+    draggingPointer = null;
+    if (root.releasePointerCapture && ev.pointerId != null) {
+      root.releasePointerCapture(ev.pointerId);
+    }
+    commitEdit(valueFromPointer(ev));
+  }
+
+  function cancelPointerTurn(ev) {
+    if (draggingPointer === null || ev.pointerId !== draggingPointer) {
+      return;
+    }
+    draggingPointer = null;
+    if (root.releasePointerCapture && ev.pointerId != null) {
+      root.releasePointerCapture(ev.pointerId);
+    }
+    commitEdit(localValue);
+  }
+
   function handleVolumeEvent(ev) {
     try {
       const data = JSON.parse(ev.data);
@@ -177,6 +251,10 @@
         beginEdit();
       }
     });
+    root.addEventListener('pointerdown', beginPointerTurn);
+    root.addEventListener('pointermove', updatePointerTurn);
+    root.addEventListener('pointerup', endPointerTurn);
+    root.addEventListener('pointercancel', cancelPointerTurn);
     root.addEventListener('wheel', (ev) => {
       if (document.activeElement !== range && !root.matches(':hover')) {
         return;
