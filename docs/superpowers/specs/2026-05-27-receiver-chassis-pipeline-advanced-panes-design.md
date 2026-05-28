@@ -16,6 +16,17 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 
 **Mockup reference:** [`docs/superpowers/reference/2026-05-21-receiver-v24.html`](../reference/2026-05-21-receiver-v24.html). Pipeline pane lives at lines 4190-4269; Advanced pane at lines 4585-4651.
 
+**What changed since 4A** (everything else is reuse):
+
+| Change | Scope |
+|---|---|
+| New route `POST /receiver/settings/action/launch-core` | One handler, one CSS-free template row |
+| New chassis-owned interface `CoreLauncher` | One method, one production binding (existing `bridgeMisterLauncher`) |
+| New template helper `humanizeBytes(int64) string` | Used in 3 HLS rows |
+| Four trivial template helpers (`boolStr`, `i64toa`, `list`, `passwordPlaceholder`) | One-line stringification each |
+| New `FieldArgs.SkipEmpty bool` flag | Rendered as `data-skip-empty="true"` for password fields; client JS reads it |
+| Add `internal/misterctl` to chassis forbidden-imports list | One-line edit to `import_check_test.go` |
+
 **4A patterns 4B reuses verbatim (do not redesign):**
 
 - `field` template helper with six types (text / number / password / path / select / switch) and the option-bag `dict` calling convention.
@@ -26,7 +37,7 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 - Drawer-local `.settings-notice` slot for chip/REBOOT toasts; `.field-row .field-err` for per-field errors.
 - `requireSameOrigin` middleware on every save and action route; same-origin posture, no CSRF token.
 - `settingsChipError` structural interface for saver-layer typed errors.
-- `internal/chassis/import_check_test.go` forbids `internal/uiserver`, `internal/misterctl`, and every concrete adapter package. 4B preserves this — `CoreLauncher` is a new chassis-owned interface, satisfied by the existing `bridgeMisterLauncher` from outside.
+- `internal/chassis/import_check_test.go` forbids `internal/ui`, `internal/uiserver`, and every concrete adapter package for `internal/chassis`. 4B **extends** the forbidden list by adding `internal/misterctl` — the `CoreLauncher` chassis-owned interface is the boundary, satisfied by the existing `bridgeMisterLauncher` from outside. Without this rule update, the implementer could accidentally `import "...internal/misterctl"` from `internal/chassis/settings.go` and pass tests.
 
 ## Goals
 
@@ -35,8 +46,8 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 3. **Launch-core action works.** Clicking `▶ Launch core` in the MiSTer control section SSH-sends `load_core /media/fat/_Utility/Groovy_20240928.rbf` to `/dev/MiSTer_cmd` using the saved credentials and renders the result in the action's `.action-result` slot.
 4. **Three new humanized byte labels render.** `hls_max_cache_bytes`, `hls_max_playlist_bytes`, `hls_max_segment_bytes` show their stored values converted to `"256 MB"`, `"1 MB"`, `"50 MB"` style hints in `.row-end` next to the input.
 5. **Per-field error UX for HLS bounds.** Numeric out-of-range submissions surface as per-field `errors` messages (e.g., `"must be in [1, 12]"`) rather than a generic `BAD INPUT` chip.
-6. **Zero new structural wire primitives.** No new envelope keys, no new scope tier, no new route shape, no new helper categories beyond `humanizeBytes`. 4C–4F continue to layer onto the same surface.
-7. **Chassis isolation contract intact.** `internal/chassis` still has zero imports of `internal/uiserver`, `internal/misterctl`, or any concrete adapter. `import_check_test.go` continues to enforce this.
+6. **Zero new structural wire primitives.** No new envelope keys, no new scope tier, no new route prefix, no new field-renderer field type. The only non-trivial new template helper is `humanizeBytes`; four small stringification helpers (`boolStr`, `i64toa`, `list`, `passwordPlaceholder`) and one new `FieldArgs.SkipEmpty bool` flag are introduced as the minimum surface to render the two panes. 4C–4F continue to layer onto the same surface without further extensions to the core renderer.
+7. **Chassis isolation contract extended.** `internal/chassis` still has zero imports of `internal/uiserver` or any concrete adapter, and 4B **adds** `internal/misterctl` to the chassis forbidden list at [internal/chassis/import_check_test.go:29-39](../../../internal/chassis/import_check_test.go#L29-L39). `import_check_test.go` then enforces all of these.
 8. **`/ui/*` unchanged.** 4B is purely additive under `/receiver/*`. Cutover happens after 4F.
 
 ## Non-Goals
@@ -44,7 +55,7 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 - **Diagnostics section in the Advanced pane.** The mockup shows three read-only diagnostic rows (activity ring, build info, reset-to-defaults) at [v24:4654-4671](../reference/2026-05-21-receiver-v24.html#L4654-L4671). Activity-ring/event-log integration belongs to Phase 5 (Observability). "Reset to defaults" is a destructive whole-config action that deserves its own brainstorm (confirm modal, scope dispatch, sentinel handling) — not folded into 4B.
 - **Catalog, Adapters tabs.** Stubs continue to render the "Spec 4X — implementation in progress" placeholder card. 4C, 4D/4E/4F own those.
 - **Probe-after-launch chaining.** The mockup's `"▸ Core loaded · session up · 4.2ms ACK"` suggests a status probe after the SSH command lands. 4B does not chain a probe — the success line is `"▸ Core sent · {host}"`, which is what the SSH call actually proves. An ACK-after-launch confirmation feature could be a Phase 5 polish.
-- **Active-cast guard for launch-core.** Loading a core re-flashes the FPGA, which by definition terminates any in-flight session. The chassis does not block this — clicking `▶ Launch core` is the operator's deliberate action. Matches legacy `/ui/*` behaviour at [internal/ui/bridge.go:497](../../../internal/ui/bridge.go#L497).
+- **Active-cast guard for launch-core.** Loading a core re-flashes the FPGA, which by definition terminates any in-flight session. The chassis does not block this — clicking `▶ Launch core` is the operator's deliberate action. Matches legacy `/ui/*` behaviour in `handleBridgeMisterLaunch` at [internal/ui/bridge.go:489-508](../../../internal/ui/bridge.go#L489-L508), which calls `MisterLauncher.Launch(ctx)` with no session-state check.
 - **NEXT-scope exercise.** The 4-tier scope vocabulary 4A established is reused verbatim, but no 4B field is `ScopeNextCast` per [`scopeForBridgeField`](../../../internal/uiserver/bridge_saver.go#L522-L563) — the only NEXT field, `visualizer.mode`, lives on the visualizer bank and saves via `SaveVisualizerMode`, not the drawer. The `.scope.next` badge CSS still ships in 4A but stays dormant in 4B. 4C may activate it (Catalog per-provider HLS overrides are a possibility) — that decision belongs to 4C's brainstorm.
 - **Field-renderer extensions.** No new field type. No bespoke widget. The Pipeline and Advanced panes are entirely buildable from 4A's six primitives.
 - **`mister.host` / `mister.port` overlap.** Network owns those (REBOOT scope). Pipeline owns the SSH credentials (HOT). The `[bridge.mister]` TOML section header is intentionally split between two panes; the Pipeline section heading is "MiSTer control · SSH credentials" so the split reads honestly.
@@ -60,6 +71,7 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 | 4B field count vs 4A | 4A ships 9 Network fields. 4B ships 21 fields across two panes. The combined `bridgeFieldDecoders` table grows from 9 entries to 30 — still readable, still one file. No split. |
 | Per-field decoder bounds for HLS | Each HLS numeric decoder enforces the same single-field bound `validateHLSBufferConfig` checks (e.g., `live_edge_segments ∈ [1, 12]`). Per-field error messages mirror the validator phrasing (`"must be in [1, 12]"`). Cross-field rules (`live_edge_segments ≥ start_segments`, `max_cached_segments ≥ start_segments`) stay in `Sectioned.Validate` and surface as `400 chip:"BAD INPUT"` — rare in practice, and worth catching server-side anyway. A unit test asserts every chassis-accepted boundary value passes `validateHLSBufferConfig`. |
 | Humanized byte labels | New `humanizeBytes(int64) string` template helper rendering `"256 MB"`, `"1 MB"`, etc. Plugged through the field renderer's `Unit` option for `hls_max_cache_bytes`, `hls_max_playlist_bytes`, `hls_max_segment_bytes`. Server-rendered at template execution time. Goes stale between save and refresh — accepted. |
+| Byte-unit base | Base-1024 (IEC) with SI suffixes (`KB`, `MB`, `GB`) — matches the mockup hints verbatim (`268435456 → "256 MB"` which is `256 × 1024 × 1024`). The technically-correct `KiB`/`MiB`/`GiB` suffixes are NOT used. Operator familiarity wins over technical purity. The decoder error messages (`"must be in [16 MB, 2 GB]"`) use the same convention. |
 | Static "px" unit | `hls_max_variant_height` passes `Unit: "px"` to the field renderer — static string, no helper. |
 | SSH password rendering | Render with `value=""` (empty attribute) regardless of stored value. Placeholder is `"••••••••"` when `BridgeConfig.MiSTer.SSHPassword != ""` and `"not set"` otherwise. The empty `value=""` keeps the stored plaintext out of the HTML response body. |
 | SSH password autosave skip | Two layers. **Server overlay** preserves-on-empty: the `mister_ssh_password` overlay entry leaves `BridgeConfig.MiSTer.SSHPassword` unchanged when the submitted value is empty. Mirrors the legacy UI's behaviour at [internal/ui/bridge.go:126-133](../../../internal/ui/bridge.go#L126-L133). **Client guard** avoids the no-op POST: when an `<input class="field-input">` carries `data-skip-empty="true"` and blurs with `value === ""`, the JS save handler short-circuits without issuing a request. Only the password field carries the attribute today. |
@@ -68,7 +80,7 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 | Launch-core interface | New chassis-owned `CoreLauncher` interface with one method, `Launch(ctx context.Context) error`. Satisfied structurally by the existing `bridgeMisterLauncher` from [cmd/mister-groovy-relay/launcher.go](../../../cmd/mister-groovy-relay/launcher.go). No chassis import of `internal/misterctl` or `internal/ui`. |
 | Launch-core timeout | 6s context budget, matching legacy `/ui/*` at [internal/ui/bridge.go:494](../../../internal/ui/bridge.go#L494). 5s for the SSH dial + 1s slack. |
 | Launch-core success line | `▸ Core sent · {host}` — what the SSH call actually proves. The host comes from `BridgeSettingsSaver.Current().MiSTer.Host`, snapshotted in the handler for the response body. |
-| Launch-core empty-host handling | If `BridgeSettingsSaver.Current().MiSTer.Host == ""` → `400 {ok:false, error:"MiSTer host not configured"}`. Operator sees `▸ ERROR · MiSTer host not configured` in the result slot. Pre-empts the SSH layer's similar error so the UI message is operator-friendly. (The legacy `bridgeMisterLauncher.Launch` already short-circuits on empty host, returning a Go error; chassis duplicates the check for cleaner UX phrasing.) |
+| Launch-core empty-host handling | If `BridgeSettingsSaver.Current().MiSTer.Host == ""` → `400 {ok:false, error:"MiSTer host not configured (set bridge.mister.host)"}`. Operator sees `▸ ERROR · MiSTer host not configured (set bridge.mister.host)` in the result slot. The chassis pre-checks empty host (instead of letting `bridgeMisterLauncher.Launch` short-circuit and returning its error as a 500) so the response status is `400` (operator action required) rather than `500` (server error). The error string **matches the launcher's verbatim** at [cmd/mister-groovy-relay/launcher.go:33](../../../cmd/mister-groovy-relay/launcher.go#L33); a unit test asserts the two strings stay in sync. |
 | Launch-core active-cast policy | Match legacy: no guard. Documented in the field-row help text via "Sends `load_core` to `/dev/MiSTer_cmd`." — the existing language implies a deliberate FPGA core swap. |
 | Launch-core single-flight | Client disables `#launch-core-btn` while the POST is in flight; re-enables on response. Same pattern as `probe-mister`. |
 | Cross-pane scope semantics | Each save touches at most one form key (autosave is per-field). The `BridgeSaver.Save` max-wins scope dispatch from 4A still applies — but with one-field touched, the returned scope equals `scopeForBridgeField(touchedKey)`. No new max-wins surprises from 4B. |
@@ -78,7 +90,8 @@ Every Phase 4B field already exists in [internal/config/config.go](../../../inte
 
 ## Implementation Checklist (sketch — implementation plan elaborates)
 
-- [internal/chassis/settings.go](../../../internal/chassis/settings.go): extend with `handleSettingsActionLaunchCore` and the `CoreLauncher` interface declaration. Extend `bridgeFieldDecoders` and the form-name → `*config.BridgeConfig` overlay table with 21 new entries.
+- [internal/chassis/settings.go](../../../internal/chassis/settings.go): extend with `handleSettingsActionLaunchCore` and the `CoreLauncher` interface declaration. The new handler reuses 4A's `sanitizeProbeError` helper for the error response field. Extend `bridgeFieldDecoders` and the form-name → `*config.BridgeConfig` overlay table with 21 new entries.
+- [internal/chassis/import_check_test.go](../../../internal/chassis/import_check_test.go): add `modulePath + "/internal/misterctl"` to the `internal/chassis` `forbidden` slice at lines 29-39. The chassis-owned `CoreLauncher` interface is satisfied by the existing `bridgeMisterLauncher` from outside; the rule prevents an accidental future direct import.
 - [internal/chassis/settings_test.go](../../../internal/chassis/settings_test.go): per-decoder branch tests for every new field (~30 tests), handler tests for launch-core (success / empty-host / launcher error / nil launcher / wrong origin), cross-check test that chassis HLS bounds ⊆ `validateHLSBufferConfig` bounds, and end-to-end overlay round-trip tests for one field per type.
 - [internal/chassis/templates.go](../../../internal/chassis/templates.go): register `humanizeBytes` in the template FuncMap. Function signature `func(int64) string`, output style `"256 MB"` / `"1 MB"` / `"50 MB"` matching the mockup hints.
 - [internal/chassis/templates/settings-pipeline.html](../../../internal/chassis/templates/settings-pipeline.html) (new): defines `{{define "settings-pipeline"}}`. Three `.settings-section` blocks (Video, Audio, MiSTer control). Each field is a `{{field (dict …) }}` invocation. The MiSTer control section ends with a manually-templated action-button row + `.action-result#launch-core-result` slot (the field helper does not render action buttons; the existing `.action-btn` / `.action-result` chassis CSS pattern is templated inline, same as 4A's probe-mister row).
@@ -138,18 +151,18 @@ The byte bounds in error messages use `humanizeBytes`-style strings (`"16 MB"`) 
 
 1. `requireSameOrigin` middleware. Wrong origin → 403.
 2. If `s.cfg.CoreLauncher == nil` or `s.cfg.BridgeSaver == nil` → 503 `{ok:false, chip:"NOT READY"}`.
-3. Snapshot `cur := s.cfg.BridgeSaver.Current()`. If `cur.MiSTer.Host == ""` → 400 `{ok:false, error:"MiSTer host not configured"}`.
+3. Snapshot `cur := s.cfg.BridgeSaver.Current()`. If `cur.MiSTer.Host == ""` → 400 `{ok:false, error:"MiSTer host not configured (set bridge.mister.host)"}`.
 4. `ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second); defer cancel()`.
 5. Call `s.cfg.CoreLauncher.Launch(ctx)`.
 6. On success → 200 `{ok:true, host:"192.168.1.42"}`.
-7. On error → 500 `{ok:false, error:"<sanitized message>"}`. The handler sanitizes error strings to avoid leaking host details (same pattern as 4A's probe error handling).
+7. On error → 500 `{ok:false, error:"<sanitized message>"}`. The handler **reuses 4A's `sanitizeProbeError` helper** from [internal/chassis/settings.go](../../../internal/chassis/settings.go) (introduced by 4A's final-review fix commit `d778940`), which redacts dotted-quad IPv4 (with optional `:port`) tokens and caps the message at 200 chars. SSH-layer errors rarely contain raw IPs (they read like `"ssh: handshake failed"`), but the redaction is defence-in-depth against future launcher changes that surface socket details.
 
 **Responses:**
 
 | Status | Body | When |
 |---|---|---|
 | 200 | `{"ok":true,"host":"192.168.1.42"}` | SSH dial + exec succeeded |
-| 400 | `{"ok":false,"error":"MiSTer host not configured"}` | Saved `mister.host` is empty |
+| 400 | `{"ok":false,"error":"MiSTer host not configured (set bridge.mister.host)"}` | Saved `mister.host` is empty |
 | 403 | (middleware) | Wrong origin |
 | 500 | `{"ok":false,"error":"ssh: <sanitized>"}` | Dial/auth/exec failure |
 | 503 | `{"ok":false,"chip":"NOT READY"}` | `CoreLauncher` or `BridgeSettingsSaver` not wired (defensive; `main.go` always wires both) |
@@ -464,9 +477,10 @@ The capture-phase `stopImmediatePropagation` on the password field cleanly suppr
 |---|---|
 | Operator clicks Launch core during an active cast | SSH command lands; FPGA core swaps; the live Groovy session dies as the MiSTer reboots into the new core. The chassis does not block, does not warn beyond the help text. Matches legacy `/ui/*`. Operator should expect this — they just clicked `▶ Launch core`. |
 | Operator tabs through SSH password field without typing | Client capture-phase blur listener stops propagation. No POST. Server is never told the operator looked at the field. |
+| Empty `mister_ssh_password` POST reaches the server (e.g., via curl) | Overlay no-ops; `BridgeSaver.Save` sees zero diff; `diffBridgeConfig` returns no keys; the initial `scope = ScopeHotSwap` survives; handler returns `200 {ok:true, scope:"hot"}`. UX side effect is none: the password input always renders `value=""` so `.has-value` is unchanged, and HOT scope produces no toast per 4A. The no-op save is invisibly successful — acceptable. |
 | Operator types new SSH password, then blurs | POST fires with the new value; `BridgeSaver.Save` writes it; `applyHotSwapSideEffects` does nothing (no SSH-credential side effect needed — the launcher snapshots on each call). Next launch-core POST uses the new password. |
 | Operator submits HLS field with value out of bounds | Per-field decoder rejects; response is `400 {ok:false, errors:{<field>:"must be in [...]"}}`; saver not called; `.field-row.has-err` paints inline. |
-| Operator submits HLS field violating cross-field rule (e.g., live_edge_segments=2 when start_segments=3) | Per-field decoder accepts (both are in their individual bounds); `BridgeSaver.Save` calls `Sectioned.Validate`, which fails; saver returns 400 typed error with chip `"BAD INPUT"`; toast appears in the drawer-local notice slot. Operator must read the chip + recall the dependency. Could improve in a future polish pass; not 4B's problem. |
+| Operator submits HLS field violating cross-field rule (e.g., live_edge_segments=2 when start_segments=3) | Per-field decoder accepts (both are in their individual bounds); `BridgeSaver.Save` calls `Sectioned.Validate`, which fails; saver returns 400 `settingsError{chip:"BAD INPUT", cause: <validator error>}`; toast in the drawer-local notice slot. 4B keeps the toast text at the bare chip ("BAD INPUT") and does not surface the cause text, matching 4A's chip convention. A future polish pass could include a one-line excerpt of `errors.Unwrap(err).Error()` in the toast so the operator sees `"live_edge_segments must be ≥ start_segments"` — explicitly out of scope here to keep 4B aligned with 4A's chip vocabulary. |
 | Empty HLS field on blur (e.g., operator cleared the value) | Numeric decoder rejects empty → per-field error `"must be a whole number"`. No HLS field accepts empty. (Contrast: HOT external-tool path fields in 4A accept empty as "use default.") |
 | Saving any HLS field while a cast is active | RECAST scope → `BridgeSaver` calls `core.DropActiveCast`. Cast stops. Disk holds new value. Next play uses new config. |
 | `humanizeBytes` hint stale after save | Mockup shows `268435456 → "256 MB"`. If operator changes to 134217728, the input updates immediately, but the adjacent `"256 MB"` hint stays until next page-load. Acceptable. |
@@ -476,7 +490,7 @@ The capture-phase `stopImmediatePropagation` on the password field cleanly suppr
 | Operator changes `video_modeline` while cast active | RECAST scope, but `BridgeSaver.saveLocked` has special handling for `video.modeline`: it notifies `VideoConfigSubscriber` adapters before dropping the cast. 4B does not touch this path. |
 | Two tabs editing simultaneously | `BridgeSaver` uses `SaveTouched` semantics in 4A — read-modify-write under `r.mu`. Concurrent saves on different fields don't clobber each other. Last writer wins per field. Stale tab is stale until refresh. |
 | Operator-disabled JS | Drawer opens closed at page load and cannot be opened — the gear toggle, tab switch, autosave, and action-button click handlers are JS-only. Same posture as 4A. The bridge save and launch-core routes still respond to direct same-origin POSTs via curl (LAN tooling). |
-| Help-text characters needing escape | `html/template` auto-escapes the values from `Help`, `Label`, etc. Mockup uses backticks-as-code (`<code>load_core …</code>`) — 4B renders these as literal `<code>` HTML by relaxing the `Help` field to `template.HTML` *only* in spots where the help text contains marked-up code spans. Implementation plan picks: either keep `Help` as `string` and have callers wrap the code spans in template-safe HTML strings, or extend `FieldArgs` with a `HelpHTML template.HTML` alternative. Default plan: keep `Help` as `string` (auto-escaped) and accept that the `<code>` styling in the SSH password / Launch core help texts renders as backtick-quoted text instead of styled code. The legacy UI does the same — readability is preserved. |
+| Help-text characters needing escape | `html/template` auto-escapes every `Help` and `Label` value 4B passes to the field helper. None of 4B's `Help` strings contain HTML markup — the mockup's `<code>` styling appears only in the launch-core action row's directly-templated help text (not via the `field` helper), where the markup renders normally. 4F (URL adapter) may need a `HelpHTML template.HTML` alternative on `FieldArgs` for richer help text; that decision belongs to 4F's brainstorm. |
 
 ## Testing
 
@@ -499,8 +513,8 @@ For every new decoder, one test per success/failure branch. Approximate count: 3
 ### Handler tests — launch-core
 
 - Success path: mock `CoreLauncher` returns nil; `BridgeSaver.Current()` returns host `"192.168.1.42"`; expect `200 {ok:true, host:"192.168.1.42"}`.
-- Empty-host path: `BridgeSaver.Current()` returns host `""`; expect `400 {ok:false, error:"MiSTer host not configured"}`; mock launcher NOT called.
-- Launcher error path: mock `CoreLauncher` returns `errors.New("ssh: handshake failed")`; expect `500 {ok:false, error:"ssh: handshake failed"}` (error string passes through; sanitization is a no-op for messages without host/credential leak — implementation plan picks the exact sanitization rule).
+- Empty-host path: `BridgeSaver.Current()` returns host `""`; expect `400 {ok:false, error:"MiSTer host not configured (set bridge.mister.host)"}`; mock launcher NOT called. A companion `TestLaunchCore_EmptyHostMessageMatchesLauncher` asserts the chassis empty-host message equals what `bridgeMisterLauncher.Launch` returns for the same scenario, so the two strings can't drift.
+- Launcher error path: mock `CoreLauncher` returns `errors.New("ssh: handshake failed")`; expect `500 {ok:false, error:"ssh: handshake failed"}` — `sanitizeProbeError` is a no-op for messages with no IPv4:port tokens. A second test with a synthetic leaky error (`"dial tcp 192.168.1.42:22: connection refused"`) expects the redacted form `"dial tcp <host>: connection refused"`.
 - Nil-launcher path: `s.cfg.CoreLauncher == nil`; expect `503 {ok:false, chip:"NOT READY"}`.
 - Nil-saver path (defensive): `s.cfg.BridgeSaver == nil`; expect `503 {ok:false, chip:"NOT READY"}`.
 - Wrong-origin path: bad `Sec-Fetch-Site`; expect `403` (middleware).
@@ -530,7 +544,7 @@ For `mister_ssh_password`:
 - `POST /receiver/settings/bridge` with `hls_live_edge_segments=15` → 400, `errors:{"hls_live_edge_segments":"must be in [1, 12]"}`, no disk write.
 - `POST /receiver/settings/bridge` with `logging_debug=true` → 200, `scope:"hot"`; verify `logging.GetLevel()` is now debug.
 - `POST /receiver/settings/action/launch-core` with a fake `CoreLauncher` that records the call and returns nil → 200, `host` populated; fake recorded one call.
-- `POST /receiver/settings/action/launch-core` against a real `BridgeSaver` holding `MiSTer.Host=""` → 400, `error:"MiSTer host not configured"`, fake launcher never called.
+- `POST /receiver/settings/action/launch-core` against a real `BridgeSaver` holding `MiSTer.Host=""` → 400, `error:"MiSTer host not configured (set bridge.mister.host)"`, fake launcher never called.
 
 ### JS behavior — manual verification checklist
 
