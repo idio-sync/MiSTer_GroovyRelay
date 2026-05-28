@@ -3535,3 +3535,18 @@ func TestTransportTemplate_GearButtonHasSettingsToggle(t *testing.T) {
 		t.Errorf("gear button missing id=\"gear-btn\":\n%s", s)
 	}
 }
+
+func TestShellTemplate_IncludesSettingsDrawerScript(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "settings-drawer.js") {
+		t.Errorf("shell template missing settings-drawer.js <script> tag")
+	}
+}
