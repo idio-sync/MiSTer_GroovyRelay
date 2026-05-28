@@ -25,7 +25,7 @@ Spec reference: §Architecture — Streams Adapter Changes, "Edit 5: `adapters.C
 Verify current shape:
 
 ```bash
-grep -n "type CatalogProvider struct" internal/adapters/catalog.go
+rg -n "type CatalogProvider struct" internal/adapters/catalog.go
 ```
 
 Expected: a line number matching the struct definition at or around line 9.
@@ -438,9 +438,43 @@ func TestAdapter_ApplyConfigValue_SaveFailureNoInMemoryChange(t *testing.T) {
 		t.Fatalf("in-memory state mutated after save failure")
 	}
 }
+
+func TestAdapter_ApplyConfigValue_SnapshotRebuildFailureNoSaveNoInMemoryChange(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.cfg.Providers = map[string]ProviderConfig{
+		"mtv-rewind": {Disabled: false},
+	}
+	original := a.cfg.Providers["mtv-rewind"].Disabled
+	called := false
+	save := func(name string, raw []byte) error {
+		called = true
+		return nil
+	}
+
+	rebuildErr := errors.New("snapshot rebuild failed")
+	oldBuild := buildStartupSnapshotForApplyConfigValue
+	buildStartupSnapshotForApplyConfigValue = func(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
+		return nil, nil, rebuildErr
+	}
+	t.Cleanup(func() { buildStartupSnapshotForApplyConfigValue = oldBuild })
+
+	newCfg := a.ConfigSnapshot()
+	newCfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+
+	_, err := a.ApplyConfigValue(newCfg, save)
+	if !errors.Is(err, rebuildErr) {
+		t.Fatalf("expected rebuild error to surface; got %v", err)
+	}
+	if called {
+		t.Fatalf("saver should NOT be called when snapshot rebuild fails")
+	}
+	if a.cfg.Providers["mtv-rewind"].Disabled != original {
+		t.Fatalf("in-memory state mutated after snapshot rebuild failure")
+	}
+}
 ```
 
-(If `errors` is not yet imported in the test file, add `"errors"` to the import block.)
+(If `context` or `errors` is not yet imported in the test file, add them to the import block.)
 
 - [ ] **Step 2: Run; expect FAIL because `ApplyConfigValue` does not exist.**
 
@@ -452,17 +486,25 @@ Expected: compile error.
 Append:
 
 ```go
-// ApplyConfigValue persists newCfg via save (which writes the
-// [adapters.streams] section to disk under the AdapterSaver mutex) and
-// installs it as the live config. Validates first; on validation
-// failure, neither writes to disk nor mutates in-memory state.
-// Returns the aggregated ApplyScope from configChangeScope(old, new).
+var buildStartupSnapshotForApplyConfigValue = buildStartupSnapshot
+
+// ApplyConfigValue validates and rebuilds the startup snapshot before
+// persisting newCfg via save (which writes the [adapters.streams]
+// section to disk under the AdapterSaver mutex) and installing it as
+// the live config. Validation or snapshot-rebuild failures leave both
+// disk and in-memory state untouched. Returns the aggregated ApplyScope
+// from configChangeScope(old, new).
 //
-// Save is invoked exactly once on a successful validation; in-memory
-// install happens after save returns nil so disk and memory stay
-// coherent (matches the BridgeSaver write-before-apply contract).
+// Save is invoked exactly once after validation and snapshot rebuild
+// both succeed; in-memory install happens after save returns nil so
+// disk and memory stay coherent (matches the BridgeSaver write-before-
+// apply contract).
 func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []byte) error) (adapters.ApplyScope, error) {
 	if err := newCfg.Validate(); err != nil {
+		return 0, err
+	}
+	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir)
+	if err != nil {
 		return 0, err
 	}
 	tomlBytes, err := encodeSectionTOML(newCfg)
@@ -470,10 +512,6 @@ func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []b
 		return 0, fmt.Errorf("streams: encode section: %w", err)
 	}
 	if err := save("streams", tomlBytes); err != nil {
-		return 0, err
-	}
-	defs, catalogs, err := buildStartupSnapshot(context.Background(), newCfg, a.cacheDir)
-	if err != nil {
 		return 0, err
 	}
 	a.mu.Lock()
@@ -502,7 +540,7 @@ Add `"bytes"` to the file's imports if not already present.
 - [ ] **Step 4: Run; expect PASS.**
 
 Run: `go test ./internal/adapters/streams -run TestAdapter_ApplyConfigValue -v`
-Expected: all three subtests PASS.
+Expected: all four subtests PASS.
 
 - [ ] **Step 5: Run race detector.**
 
@@ -516,8 +554,9 @@ git add internal/adapters/streams/adapter.go internal/adapters/streams/adapter_t
 git commit -m "feat(streams): add Adapter.ApplyConfigValue for chassis Catalog pane
 
 Config-value entry point parallel to the existing ApplyConfig (which
-takes toml.Primitive). Validates → encodes via encodeSectionTOML →
-saves → installs snapshot under a.mu → reconciles refresh loop.
+takes toml.Primitive). Validates → rebuilds startup snapshot → encodes
+via encodeSectionTOML → saves → installs snapshot under a.mu →
+reconciles refresh loop.
 Returns configChangeScope(old, new) just like ApplyConfig. Used by the
 chassis catalogManager wrapper after a ConfigSnapshot/mutate cycle."
 ```
@@ -537,23 +576,16 @@ Spec reference: §Architecture — Streams Adapter Changes "Edit 3: `Adapter.Sto
 Append to `internal/adapters/streams/adapter_test.go`:
 
 ```go
-// fakeCoreSession is a minimal coreSession that records StopIfAdapterRef calls.
-type fakeCoreSession struct {
-	calls []string
-	stopOK bool
-}
-
-func (f *fakeCoreSession) StopIfAdapterRef(ref string) (bool, error) {
-	f.calls = append(f.calls, ref)
-	return f.stopOK, nil
-}
-
 func TestAdapter_StopActiveCast_DropsActiveQueueAndCallsCore(t *testing.T) {
 	a := mustTestAdapter(t)
-	core := &fakeCoreSession{stopOK: true}
+	core := &fakeCore{}
 	a.core = core
-	// Seed an active queue with a known AdapterRef.
-	a.active = newFakeActiveQueueWithRef(t, "streams:mtv-rewind:1stday")
+	a.active = newFakeActiveQueueForStopActiveCast(t)
+	activeRef := activeAdapterRef(a.active)
+	if activeRef == "" {
+		t.Fatalf("activeAdapterRef returned empty ref for seeded queue")
+	}
+	core.status.AdapterRef = activeRef
 
 	if err := a.StopActiveCast(); err != nil {
 		t.Fatalf("StopActiveCast: %v", err)
@@ -561,29 +593,32 @@ func TestAdapter_StopActiveCast_DropsActiveQueueAndCallsCore(t *testing.T) {
 	if a.active != nil {
 		t.Fatalf("expected a.active to be cleared; got non-nil")
 	}
-	if len(core.calls) != 1 || core.calls[0] != "streams:mtv-rewind:1stday" {
-		t.Fatalf("expected one StopIfAdapterRef call with the active ref; got %#v", core.calls)
+	if core.stopCalls != 1 {
+		t.Fatalf("StopIfAdapterRef calls = %d; want 1", core.stopCalls)
+	}
+	if core.status.AdapterRef != "" {
+		t.Fatalf("core AdapterRef = %q; want cleared", core.status.AdapterRef)
 	}
 }
 
 func TestAdapter_StopActiveCast_NoActiveQueue_NoOp(t *testing.T) {
 	a := mustTestAdapter(t)
-	core := &fakeCoreSession{}
+	core := &fakeCore{}
 	a.core = core
 	a.active = nil
 
 	if err := a.StopActiveCast(); err != nil {
 		t.Fatalf("StopActiveCast: %v", err)
 	}
-	if len(core.calls) != 0 {
-		t.Fatalf("expected no StopIfAdapterRef call; got %#v", core.calls)
+	if core.stopCalls != 0 {
+		t.Fatalf("StopIfAdapterRef calls = %d; want 0", core.stopCalls)
 	}
 }
 
 func TestAdapter_StopActiveCast_NoCoreManager_NoOp(t *testing.T) {
 	a := mustTestAdapter(t)
 	a.core = nil
-	a.active = newFakeActiveQueueWithRef(t, "streams:mtv-rewind:1stday")
+	a.active = newFakeActiveQueueForStopActiveCast(t)
 
 	if err := a.StopActiveCast(); err != nil {
 		t.Fatalf("StopActiveCast: %v", err)
@@ -593,24 +628,20 @@ func TestAdapter_StopActiveCast_NoCoreManager_NoOp(t *testing.T) {
 		t.Fatalf("expected a.active to be cleared even without core; got non-nil")
 	}
 }
-```
 
-Add `newFakeActiveQueueWithRef` as a helper (search the existing test files first; if a fake-active-queue helper already exists, reuse it). If absent, add a minimal helper:
-
-```go
-func newFakeActiveQueueWithRef(t *testing.T, ref string) *ActiveQueue {
+func newFakeActiveQueueForStopActiveCast(t *testing.T) *ActiveQueue {
 	t.Helper()
 	return &ActiveQueue{
 		ProviderID: "mtv-rewind",
 		ChannelID:  "1stday",
-		// The activeAdapterRef helper in adapter.go derives ref from
-		// ProviderID + ChannelID + adapter name; if the existing helper
-		// requires more fields, populate them here.
+		SessionID:  "streams-session",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "one", URL: "https://media.example/one.m3u8"}},
 	}
 }
 ```
 
-If `activeAdapterRef` requires additional fields, mirror what the existing `Stop()` test path sets up — search the existing tests for `a.active` usage.
+This reuses the existing streams-package `fakeCore` from `test_helpers_test.go`, which already satisfies the full `SessionManager` interface. The nonzero `SessionID` and `ItemToken` are required because `activeAdapterRef` returns an empty string for queues without an item token.
 
 - [ ] **Step 2: Run; expect FAIL.**
 
@@ -681,7 +712,7 @@ per-provider HLS toggles. No internal/core change required."
 ## Task 6: Extend `streams.Adapter.Catalog()` to populate `Origin` + `Kind`
 
 **Files:**
-- Modify: `internal/adapters/streams/catalog.go` (where `Catalog()` is currently defined per `grep -n "func.*Catalog()" internal/adapters/streams/`)
+- Modify: `internal/adapters/streams/catalog.go` (where `Catalog()` is currently defined per `rg -n "func.*Catalog()" internal/adapters/streams/`)
 - Test: `internal/adapters/streams/adapter_test.go` (extend)
 
 Spec reference: §Architecture — Streams Adapter Changes "Edit 4: `Catalog()` populates `Origin` and `Kind`".
@@ -692,8 +723,6 @@ Append to `internal/adapters/streams/adapter_test.go`:
 
 ```go
 func TestAdapter_Catalog_PopulatesOriginAndKindForBundledProviders(t *testing.T) {
-	ctx := context.Background()
-	_ = ctx // not needed — Catalog() is safe before Start
 	a := mustTestAdapter(t)
 
 	want := map[string]struct {
@@ -728,7 +757,7 @@ func TestAdapter_Catalog_PopulatesOriginAndKindForBundledProviders(t *testing.T)
 }
 ```
 
-`mustTestAdapter(t)` resolves via the wrapper introduced in Task 3 around the existing `newTestAdapter` helper. A freshly `New()`'d streams adapter returns a populated `Catalog()` thanks to the local-only bootstrap path at [catalog.go:74-80](../../../internal/adapters/streams/catalog.go#L74-L80) — `Start()` is not required for this test. Also drop the `ctx := context.Background()` line (it is unused).
+`mustTestAdapter(t)` resolves via the wrapper introduced in Task 3 around the existing `newTestAdapter` helper. A freshly `New()`'d streams adapter returns a populated `Catalog()` thanks to the local-only bootstrap path at [catalog.go:74-80](../../../internal/adapters/streams/catalog.go#L74-L80) — `Start()` is not required for this test.
 
 - [ ] **Step 2: Run; expect FAIL — assertions on `p.Origin` and `p.Kind` evaluate against empty strings.**
 
@@ -738,7 +767,7 @@ Expected: per-provider errors like `provider "mtv-rewind" Origin = ""; want "wan
 - [ ] **Step 3: Find the `Catalog()` builder and extend it.**
 
 ```bash
-grep -n "func .* Catalog()" internal/adapters/streams/*.go
+rg -n "func .* Catalog\\(\\)" internal/adapters/streams
 ```
 
 Open the file (`catalog.go`). Locate where the returned `adapters.CatalogProvider` value is constructed for each provider. Add:
@@ -811,7 +840,7 @@ Spec reference: §Architecture — Chassis-Owned Interfaces.
 - [ ] **Step 1: Open `internal/chassis/settings.go` and locate the existing interface declarations.**
 
 ```bash
-grep -n "^type .* interface" internal/chassis/settings.go
+rg -n "^type .* interface" internal/chassis/settings.go
 ```
 
 You will see `BridgeSettingsSaver`, `Prober`, `CoreLauncher`, `settingsChipError`. Add the new interfaces and types alongside.
@@ -927,7 +956,7 @@ Spec reference: §Architecture — `SettingsData` and Snapshot Wiring.
 Append to `internal/chassis/data_test.go`:
 
 ```go
-func TestBuildSettingsData_CatalogProviderCountAndChannels(t *testing.T) {
+func TestBuildSettingsData_CatalogPaneProviderCountAndChannels(t *testing.T) {
 	mgr := &fakeCatalogManager{
 		providers: []CatalogProviderState{
 			{ID: "mtv-rewind", ChannelCount: 73, Live: false},
@@ -935,9 +964,15 @@ func TestBuildSettingsData_CatalogProviderCountAndChannels(t *testing.T) {
 			{ID: "toonami-aftermath", ChannelCount: 4, Live: true, HLSBufferDisabled: false},
 		},
 	}
-	got := buildSettingsData(config.BridgeConfig{}, nil, nil, mgr)
-	if got.CatalogProviderCount != 3 {
-		t.Errorf("CatalogProviderCount = %d; want 3", got.CatalogProviderCount)
+	catalog := fakeCatalogViewer{providers: []adapters.CatalogProvider{
+		{ID: "browse-only"},
+	}}
+	got := buildSettingsData(config.BridgeConfig{}, nil, catalog, mgr)
+	if got.CatalogProviderCount != 1 {
+		t.Errorf("CatalogProviderCount = %d; want 1 (existing tab badge from StreamsCatalogViewer)", got.CatalogProviderCount)
+	}
+	if got.CatalogPaneProviderCount != 3 {
+		t.Errorf("CatalogPaneProviderCount = %d; want 3", got.CatalogPaneProviderCount)
 	}
 	if got.CatalogChannelCount != 90 {
 		t.Errorf("CatalogChannelCount = %d; want 90", got.CatalogChannelCount)
@@ -985,7 +1020,17 @@ func TestBuildSettingsData_NoLiveProvidersDirectStreamHLSFalse(t *testing.T) {
 }
 
 func TestBuildSettingsData_NilCatalogManagerEmpty(t *testing.T) {
-	got := buildSettingsData(config.BridgeConfig{}, nil, nil, nil)
+	catalog := fakeCatalogViewer{providers: []adapters.CatalogProvider{
+		{ID: "mtv-rewind"},
+		{ID: "cartoon-rewind"},
+	}}
+	got := buildSettingsData(config.BridgeConfig{}, nil, catalog, nil)
+	if got.CatalogProviderCount != 2 {
+		t.Errorf("CatalogProviderCount = %d; want 2 (tab badge fallback)", got.CatalogProviderCount)
+	}
+	if got.CatalogPaneProviderCount != 0 {
+		t.Errorf("CatalogPaneProviderCount = %d; want 0", got.CatalogPaneProviderCount)
+	}
 	if got.CatalogProviders != nil {
 		t.Errorf("CatalogProviders = %v; want nil", got.CatalogProviders)
 	}
@@ -1027,7 +1072,8 @@ type SettingsData struct {
 	Bridge                        config.BridgeConfig
 	Errors                        map[string]string
 	AdapterCount                  int
-	CatalogProviderCount          int
+	CatalogProviderCount          int                    // existing tab badge count from StreamsCatalogViewer
+	CatalogPaneProviderCount      int                    // 4C — len(CatalogProviders)
 	CatalogProviders              []CatalogProviderState // 4C
 	CatalogChannelCount           int                    // 4C — sum across CatalogProviders
 	DirectStreamHLSBufferDisabled bool                   // 4C — true iff every Live provider has hls_buffer_disabled
@@ -1049,10 +1095,13 @@ func buildSettingsData(
 		Bridge:       bridge,
 		AdapterCount: countConfigurableAdapters(registry),
 	}
+	if catalog != nil {
+		out.CatalogProviderCount = len(catalog.Catalog())
+	}
 	if catalogManager != nil {
 		providers := catalogManager.Providers()
 		out.CatalogProviders = providers
-		out.CatalogProviderCount = len(providers)
+		out.CatalogPaneProviderCount = len(providers)
 		channelTotal := 0
 		liveCount := 0
 		liveDisabledCount := 0
@@ -1067,21 +1116,17 @@ func buildSettingsData(
 		}
 		out.CatalogChannelCount = channelTotal
 		out.DirectStreamHLSBufferDisabled = liveCount > 0 && liveDisabledCount == liveCount
-	} else if catalog != nil {
-		// Fallback for nil-saver tests / offline render: count via the
-		// existing 3B viewer. CatalogProviders remains nil → empty pane.
-		out.CatalogProviderCount = len(catalog.Catalog())
 	}
 	return out
 }
 ```
 
-The helper `countConfigurableAdapters` is the existing 4A logic; preserve it.
+The helper `countConfigurableAdapters` is the existing 4A logic; preserve it. The existing `CatalogProviderCount` remains the settings-tab badge count from the 3B browse drawer's `StreamsCatalogViewer`; the new `CatalogPaneProviderCount` is the Catalog-pane header count from `CatalogManager.Providers()`.
 
 - [ ] **Step 5: Update `internal/chassis/session.go` callers.**
 
 ```bash
-grep -n "buildSettingsData(" internal/chassis/session.go
+rg -n "buildSettingsData\\(" internal/chassis/session.go
 ```
 
 Update each call site to pass `s.cfg.CatalogManager` (which will be wired by Task 16). For now, since `Config.CatalogManager` does not yet exist, callers must pass `nil`. Add `nil` as the fourth argument at each call site.
@@ -1103,10 +1148,12 @@ git add internal/chassis/data.go internal/chassis/data_test.go internal/chassis/
 git commit -m "feat(chassis): SettingsData carries Catalog provider state
 
 buildSettingsData gains a CatalogSettingsManager arg and populates
-CatalogProviders + CatalogChannelCount + DirectStreamHLSBufferDisabled.
-The global HLS switch reflects \"every Live provider disabled\" —
-mixed state renders as off per spec. Session callers pass nil until
-main.go wires the production manager in a later task."
+CatalogPaneProviderCount + CatalogProviders + CatalogChannelCount +
+DirectStreamHLSBufferDisabled. The global HLS switch reflects \"every
+Live provider disabled\" — mixed state renders as off per spec. The
+existing CatalogProviderCount stays the 3B browse drawer tab badge.
+Session callers pass nil until main.go wires the production manager in
+a later task."
 ```
 
 ---
@@ -1121,7 +1168,7 @@ Spec reference: §Architecture — Chassis-Owned Interfaces, `Server.Config` ext
 - [ ] **Step 1: Open `internal/chassis/server.go` and locate the `Config` struct.**
 
 ```bash
-grep -n "type Config struct" internal/chassis/server.go
+rg -n "type Config struct" internal/chassis/server.go
 ```
 
 - [ ] **Step 2: Add the two new fields.**
@@ -1137,7 +1184,7 @@ ConfigReset    ConfigReset
 - [ ] **Step 3: Update internal Server wiring if the existing pattern stores fields on `*Server`.**
 
 ```bash
-grep -n "cfg\.BridgeSaver\|s\.bridgeSaver" internal/chassis/server.go | head -5
+rg -n -m 5 "cfg\\.BridgeSaver|s\\.bridgeSaver" internal/chassis/server.go
 ```
 
 If the existing pattern is `s.cfg.<field>`, no further wiring is needed — the field is read directly from the `Config` value. If the pattern is to store into `*Server`, mirror it for the two new fields.
@@ -1178,17 +1225,28 @@ package main
 import (
 	"testing"
 
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
+// seedProviderCfg mutates the streams adapter's per-provider config
+// via the public ApplyConfigValue path so cmd-side tests can stage
+// state without touching unexported fields.
+func seedProviderCfg(t *testing.T, a *streams.Adapter, providers map[string]streams.ProviderConfig) {
+	t.Helper()
+	cfg := a.ConfigSnapshot()
+	cfg.Providers = providers
+	if _, err := a.ApplyConfigValue(cfg, func(name string, raw []byte) error { return nil }); err != nil {
+		t.Fatalf("seedProviderCfg: %v", err)
+	}
+}
+
 func TestCatalogManager_Providers_EnrichesWithCfgState(t *testing.T) {
 	a := newStreamsForCatalogTest(t)
 	seedProviderCfg(t, a, map[string]streams.ProviderConfig{
 		"mtv-rewind": {Disabled: true, HLSBufferDisabled: false},
-	}
+	})
 	m := &catalogManager{adapter: a, adapterSaver: nil}
 
 	got := m.Providers()
@@ -1230,18 +1288,6 @@ func TestCatalogManager_Providers_AbsentCfgEntryDefaultsToEnabled(t *testing.T) 
 	}
 }
 
-// streams.Adapter.cfg is unexported; tests in package main cannot
-// write a.cfg.Providers from outside the streams package. Replace the
-// inline cfg.Providers seeds above with calls to ApplyConfigValue:
-//
-//	cfg := a.ConfigSnapshot()
-//	cfg.Providers = map[string]streams.ProviderConfig{...}
-//	_, err := a.ApplyConfigValue(cfg, func(name string, raw []byte) error { return nil })
-//	if err != nil { t.Fatalf("seed: %v", err) }
-//
-// (Tasks 3 and 4 add ConfigSnapshot and ApplyConfigValue; this test
-// file lives in cmd/mister-groovy-relay so it must use the public API.)
-
 // newStreamsForCatalogTest constructs a streams.Adapter via the public
 // New() API. The local-only bootstrap inside
 // streams.Adapter.chassisCatalogSnapshot (catalog.go:74-80) populates
@@ -1256,8 +1302,6 @@ func newStreamsForCatalogTest(t *testing.T) *streams.Adapter {
 	}
 	return a
 }
-
-var _ = adapters.ScopeHotSwap // import use; replaced by real assertions later
 ```
 
 The tests use `chassis.CatalogProviderState` directly — the production wrapper's `Providers()` return type already matches the chassis-owned struct declared in Task 7.
@@ -1347,7 +1391,7 @@ Spec reference: §Architecture — Production Wrappers, including the declared-s
 
 - [ ] **Step 1: Write the failing tests.**
 
-NB: `streams.Adapter.cfg` is unexported; cmd-side tests must seed provider state via the public API (`ConfigSnapshot` + `ApplyConfigValue`). Add this helper near the top of `catalog_manager_test.go`:
+NB: `streams.Adapter.cfg` is unexported; cmd-side tests must seed provider state via the public API (`ConfigSnapshot` + `ApplyConfigValue`). Task 10 already added this helper near the top of `catalog_manager_test.go`; keep it and reuse it here:
 
 ```go
 // seedProviderCfg mutates the streams adapter's per-provider config
@@ -1392,7 +1436,7 @@ func TestCatalogManager_UpdateProvider_HLSOnly_RecastScope(t *testing.T) {
 	a := newStreamsForCatalogTest(t)
 	seedProviderCfg(t, a, map[string]streams.ProviderConfig{
 		"toonami-aftermath": {HLSBufferDisabled: false},
-	}
+	})
 	tomlPath := tmpConfigPath(t)
 	saver := uiserver.NewAdapterSaver(tomlPath, &sync.Mutex{})
 	m := &catalogManager{adapter: a, adapterSaver: saver}
@@ -1414,7 +1458,7 @@ func TestCatalogManager_UpdateProvider_BothFields_MaxWinsRecast(t *testing.T) {
 	a := newStreamsForCatalogTest(t)
 	seedProviderCfg(t, a, map[string]streams.ProviderConfig{
 		"toonami-aftermath": {},
-	}
+	})
 	tomlPath := tmpConfigPath(t)
 	saver := uiserver.NewAdapterSaver(tomlPath, &sync.Mutex{})
 	m := &catalogManager{adapter: a, adapterSaver: saver}
@@ -1435,7 +1479,7 @@ func TestCatalogManager_UpdateProvider_NoopHLSStillReportsRecast(t *testing.T) {
 	a := newStreamsForCatalogTest(t)
 	seedProviderCfg(t, a, map[string]streams.ProviderConfig{
 		"toonami-aftermath": {HLSBufferDisabled: false},
-	}
+	})
 	tomlPath := tmpConfigPath(t)
 	saver := uiserver.NewAdapterSaver(tomlPath, &sync.Mutex{})
 	m := &catalogManager{adapter: a, adapterSaver: saver}
@@ -1656,8 +1700,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
@@ -1720,7 +1764,6 @@ func TestConfigReset_ResetToDefaults_DiskFailureReturnsChipError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected disk error; got nil")
 	}
-	var ce chassis.SettingsChipErrorTestInterface
 	// configResetError implements the structural interface via:
 	//   Error() string; Unwrap() error; StatusCode() int; Chip() string
 	// Verify the interface contract directly.
@@ -1762,9 +1805,34 @@ func TestConfigReset_DoesNotTouchDataDirContents(t *testing.T) {
 		t.Errorf("data_dir sentinel was disturbed; got %q", string(got))
 	}
 }
+
+func TestConfigReset_ResetToDefaults_CompletesWithoutSelfDeadlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("# initial\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := &configReset{
+		path:      path,
+		mu:        &sync.Mutex{},
+		sectioned: &config.Sectioned{Bridge: config.BridgeConfig{DataDir: "/x"}},
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- r.ResetToDefaults() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ResetToDefaults: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("ResetToDefaults timed out; possible self-deadlock on shared mutex")
+	}
+}
 ```
 
-The `chassis.SettingsChipErrorTestInterface` reference is illustrative — replace with direct anonymous interface assertions like the rest of the test uses.
+Atomic tempfile/rename failure semantics are covered by `internal/config/atomic_test.go`; this wrapper test suite verifies that `configReset` composes `config.WriteAtomic` and serializes through the shared mutex without self-deadlocking.
 
 - [ ] **Step 2: Run; expect FAIL because `configReset` does not exist.**
 
@@ -1777,7 +1845,6 @@ Expected: `configReset undefined`.
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"sync"
@@ -1834,17 +1901,14 @@ func (e *configResetError) Unwrap() error   { return e.cause }
 func (e *configResetError) StatusCode() int { return http.StatusInternalServerError }
 func (e *configResetError) Chip() string    { return "WRITE FAILED" }
 
-var (
-	_ = bytes.NewBuffer // tolerate unused if bytes not used elsewhere
-)
 ```
 
-If `config.WriteAtomic` does not exist in this codebase, locate the actual atomic-write helper in `internal/config/` and use its name. The spec consistently references `config.WriteAtomic`; verify before finalizing this task with `grep -n "WriteAtomic\b\|atomic" internal/config/*.go`.
+If `config.WriteAtomic` does not exist in this codebase, locate the actual atomic-write helper in `internal/config/` and use its name. The spec consistently references `config.WriteAtomic`; verify before finalizing this task with `rg -n "WriteAtomic\\b|atomic" internal/config`.
 
 - [ ] **Step 4: Run; expect PASS.**
 
 Run: `go test ./cmd/mister-groovy-relay -run TestConfigReset -v`
-Expected: PASS for all four subtests.
+Expected: PASS for all five subtests.
 
 - [ ] **Step 5: Run race detector.**
 
@@ -1881,7 +1945,7 @@ Spec reference: §Architecture — Production Wrappers (main.go wiring).
 - [ ] **Step 1: Locate the chassis construction block.**
 
 ```bash
-grep -n "chassis.New\|chassis.Config\|chassisCfg" cmd/mister-groovy-relay/main.go
+rg -n "chassis.New|chassis.Config|chassisCfg" cmd/mister-groovy-relay/main.go
 ```
 
 - [ ] **Step 2: Construct the wrappers and assign them.**
@@ -1917,7 +1981,7 @@ Expected: no errors.
 - [ ] **Step 4: Update the `session.go` `buildSettingsData` calls** (if not done in Task 8) to pass `s.cfg.CatalogManager` instead of `nil`.
 
 ```bash
-grep -n "buildSettingsData(" internal/chassis/session.go
+rg -n "buildSettingsData\\(" internal/chassis/session.go
 ```
 
 For each call site, replace the trailing `nil` with `s.cfg.CatalogManager`.
@@ -2527,7 +2591,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Mount the three new routes in `RegisterRoutes`.**
 
-Open `internal/chassis/server.go` and find the existing route mounts (`grep -n "mux.Handle.*settings" internal/chassis/server.go`). Add:
+Open `internal/chassis/server.go` and find the existing route mounts (`rg -n "mux.Handle.*settings" internal/chassis/server.go`). Add:
 
 ```go
 mux.Handle("POST /receiver/settings/catalog/provider/{id}",
@@ -2571,7 +2635,7 @@ Spec reference: §Architecture — Templates "CSS additions in internal/chassis/
 - [ ] **Step 1: Locate the existing 4A/4B CSS block scoped under `body.receiver`.**
 
 ```bash
-grep -n "body\.receiver" internal/chassis/static/chassis.css | head -5
+rg -n -m 5 "body\\.receiver" internal/chassis/static/chassis.css
 ```
 
 - [ ] **Step 2: Append the new rules.** Place them after the existing 4A settings-panel block so cascade order matches.
@@ -2682,8 +2746,8 @@ Append to `internal/chassis/chassis_test.go`:
 ```go
 func TestRenderCatalogPane_ProvidersRendered(t *testing.T) {
 	data := SettingsData{
-		CatalogProviderCount: 3,
-		CatalogChannelCount:  90,
+		CatalogPaneProviderCount: 3,
+		CatalogChannelCount:      90,
 		CatalogProviders: []CatalogProviderState{
 			{ID: "mtv-rewind", DisplayName: "MTV Rewind", BadgeLabel: "MTV", BadgeClass: "",
 				Origin: "wantmymtv.vercel.app", Kind: "youtube-channel-json",
@@ -2742,9 +2806,9 @@ func TestRenderCatalogPane_DefaultChannelOmittedWhenEmpty(t *testing.T) {
 
 func TestRenderCatalogPane_EmptyProvidersStillRendersHLSSection(t *testing.T) {
 	data := SettingsData{
-		CatalogProviderCount: 0,
-		CatalogChannelCount:  0,
-		CatalogProviders:     nil,
+		CatalogPaneProviderCount: 0,
+		CatalogChannelCount:      0,
+		CatalogProviders:         nil,
 	}
 	html := renderCatalogPane(t, data)
 	if !strings.Contains(html, `0 PROVIDERS · 0 CHANNELS`) {
@@ -2784,7 +2848,7 @@ Expected: template-not-defined error.
 <div class="settings-pane single-col" data-pane="catalog">
 
   <div class="settings-section wide">
-    <h4>Bundled providers <span class="hint">{{ .CatalogProviderCount }} PROVIDERS · {{ .CatalogChannelCount }} CHANNELS</span></h4>
+    <h4>Bundled providers <span class="hint">{{ .CatalogPaneProviderCount }} PROVIDERS · {{ .CatalogChannelCount }} CHANNELS</span></h4>
     {{ range .CatalogProviders }}
       {{ template "settings-catalog-provider-row" . }}
     {{ end }}
@@ -2960,7 +3024,7 @@ Spec reference: §Architecture — Client JS "Provider-row switches".
 - [ ] **Step 1: Identify the existing JS structure.**
 
 ```bash
-grep -n "drawer.querySelectorAll\|button\.switch" internal/chassis/static/settings-drawer.js
+rg -n "drawer.querySelectorAll|button\\.switch" internal/chassis/static/settings-drawer.js
 ```
 
 The 4A handler at line 187 binds `button.switch[data-field]`. The 4C handlers attach by different selectors (`data-catalog-provider`, `data-catalog-direct-hls`) so they coexist without selector overlap.
@@ -3217,7 +3281,7 @@ Spec reference: §Testing — Integration tests.
 - [ ] **Step 1: Identify the existing integration test scaffold.**
 
 ```bash
-grep -n "func TestChassis_\|startTestBridge\|startTestChassis" tests/integration/chassis_test.go | head -10
+rg -n -m 10 "func TestChassis_|startTestBridge|startTestChassis" tests/integration/chassis_test.go
 ```
 
 - [ ] **Step 2: Append the 4C integration cases (preserve the existing build tag at the top of the file).**
@@ -3421,44 +3485,41 @@ output while preserving a data_dir sentinel."
 
 ---
 
-## Task 24: Cross-side drift integration test (`tests/integration/catalog_scope_test.go`)
+## Task 24: Cross-side drift integration test (`cmd/mister-groovy-relay/catalog_scope_test.go`)
 
 **Files:**
-- Create: `tests/integration/catalog_scope_test.go`
+- Create: `cmd/mister-groovy-relay/catalog_scope_test.go`
+- Modify: `internal/chassis/settings.go` (only if `WireLabelForScope` is not already exported)
 
 Spec reference: §Testing — Cross-side drift catchers.
 
 - [ ] **Step 1: Create the new file.**
 
+Create the drift test in `cmd/mister-groovy-relay` rather than `tests/integration`: `catalogManager` is package `main`, so a separate integration package cannot import the real production wrapper without mirroring it. Same-package integration tests exercise the actual wrapper and still cross the streams/chassis boundary.
+
 ```go
 //go:build integration
 
-package integration
+package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
-// catalogManager is package main in cmd/mister-groovy-relay; for the
-// integration test we mirror its shape locally so we can compose the
-// streams adapter and saver without an import cycle.
-//
-// This catalog-side test asserts that the chassis wire-label maps
-// correctly to the streams-adapter scope reported by the wrapper for
-// each Catalog pane operation. Mirrors 4B's launch-core drift catcher
-// pattern.
-
 func TestCatalogScope_HLSBufferDisabled_WireLabelMatchesRecast(t *testing.T) {
-	a := newRealStreamsAdapter(t)
-	saver := uiserver.NewAdapterSaver(t.TempDir()+"/config.toml", &sync.Mutex{})
+	a := newStreamsForCatalogScopeTest(t, nil)
+	saver := uiserver.NewAdapterSaver(tmpConfigPath(t), &sync.Mutex{})
 
-	m := newCatalogManagerForTest(a, saver)
+	m := &catalogManager{adapter: a, adapterSaver: saver}
 	disabled := true
 	scope, err := m.UpdateProvider("toonami-aftermath", chassis.CatalogProviderPatch{HLSBufferDisabled: &disabled})
 	if err != nil {
@@ -3475,10 +3536,10 @@ func TestCatalogScope_HLSBufferDisabled_WireLabelMatchesRecast(t *testing.T) {
 }
 
 func TestCatalogScope_EnabledFalse_WireLabelMatchesHot(t *testing.T) {
-	a := newRealStreamsAdapter(t)
-	saver := uiserver.NewAdapterSaver(t.TempDir()+"/config.toml", &sync.Mutex{})
+	a := newStreamsForCatalogScopeTest(t, nil)
+	saver := uiserver.NewAdapterSaver(tmpConfigPath(t), &sync.Mutex{})
 
-	m := newCatalogManagerForTest(a, saver)
+	m := &catalogManager{adapter: a, adapterSaver: saver}
 	enabled := false
 	scope, err := m.UpdateProvider("toonami-aftermath", chassis.CatalogProviderPatch{Enabled: &enabled})
 	if err != nil {
@@ -3493,54 +3554,139 @@ func TestCatalogScope_EnabledFalse_WireLabelMatchesHot(t *testing.T) {
 	}
 }
 
-// catalogManagerForTest constructs the production wrapper shape for
-// integration testing without importing cmd/mister-groovy-relay (which
-// is package main and not importable). The struct and methods mirror
-// cmd/mister-groovy-relay/catalog_manager.go verbatim; this is a
-// load-bearing duplicate that catches drift between the chassis label
-// map and the streams adapter scope behavior.
-type catalogManagerForTest struct {
-	a    *streams.Adapter
-	save *uiserver.AdapterSaver
-}
+func TestCatalogScope_HLSBufferDisabled_StopsActiveStreamsCast(t *testing.T) {
+	fakeCore := &catalogScopeFakeCore{}
+	a := newStreamsForCatalogScopeTest(t, fakeCore)
+	enableStreamsForCatalogScopeTest(t, a)
+	channelID := firstCatalogChannelForProvider(t, a, "toonami-aftermath")
+	if err := a.CastChannel(context.Background(), "toonami-aftermath", channelID); err != nil {
+		t.Fatalf("CastChannel: %v", err)
+	}
+	if fakeCore.currentRef() == "" {
+		t.Fatalf("expected active core AdapterRef after CastChannel")
+	}
 
-func newCatalogManagerForTest(a *streams.Adapter, save *uiserver.AdapterSaver) *catalogManagerForTest {
-	return &catalogManagerForTest{a: a, save: save}
-}
-
-func (m *catalogManagerForTest) UpdateProvider(id string, patch chassis.CatalogProviderPatch) (adapters.ApplyScope, error) {
-	cfg := m.a.ConfigSnapshot()
-	if cfg.Providers == nil {
-		cfg.Providers = map[string]streams.ProviderConfig{}
-	}
-	pc := cfg.Providers[id]
-	if patch.Enabled != nil {
-		pc.Disabled = !*patch.Enabled
-	}
-	if patch.HLSBufferDisabled != nil {
-		pc.HLSBufferDisabled = *patch.HLSBufferDisabled
-	}
-	cfg.Providers[id] = pc
-	scope, err := m.a.ApplyConfigValue(cfg, m.save.Save)
+	saver := uiserver.NewAdapterSaver(tmpConfigPath(t), &sync.Mutex{})
+	m := &catalogManager{adapter: a, adapterSaver: saver}
+	disabled := true
+	scope, err := m.UpdateProvider("toonami-aftermath", chassis.CatalogProviderPatch{HLSBufferDisabled: &disabled})
 	if err != nil {
-		return 0, err
+		t.Fatalf("UpdateProvider: %v", err)
 	}
-	// Declared-scope floor mirrors the production wrapper.
-	if patch.HLSBufferDisabled != nil && scope < adapters.ScopeRestartCast {
-		scope = adapters.ScopeRestartCast
+	if scope != adapters.ScopeRestartCast {
+		t.Fatalf("scope = %v; want ScopeRestartCast", scope)
 	}
-	return scope, nil
+	if fakeCore.stopCalls() != 1 {
+		t.Fatalf("StopIfAdapterRef calls = %d; want 1", fakeCore.stopCalls())
+	}
+	if fakeCore.currentRef() != "" {
+		t.Fatalf("active core AdapterRef = %q; want cleared", fakeCore.currentRef())
+	}
 }
 
-func newRealStreamsAdapter(t *testing.T) *streams.Adapter {
+func newStreamsForCatalogScopeTest(t *testing.T, c streams.SessionManager) *streams.Adapter {
 	t.Helper()
 	a, err := streams.New(streams.AdapterConfig{
 		Bridge: config.BridgeConfig{DataDir: t.TempDir()},
+		Core:   c,
 	})
 	if err != nil {
 		t.Fatalf("streams.New: %v", err)
 	}
 	return a
+}
+
+func enableStreamsForCatalogScopeTest(t *testing.T, a *streams.Adapter) {
+	t.Helper()
+	cfg := a.ConfigSnapshot()
+	cfg.Enabled = true
+	if _, err := a.ApplyConfigValue(cfg, func(name string, raw []byte) error { return nil }); err != nil {
+		t.Fatalf("enable streams: %v", err)
+	}
+}
+
+func firstCatalogChannelForProvider(t *testing.T, a *streams.Adapter, providerID string) string {
+	t.Helper()
+	for _, p := range a.Catalog() {
+		if p.ID != providerID {
+			continue
+		}
+		for _, g := range p.Groups {
+			if len(g.Channels) > 0 {
+				return g.Channels[0].ID
+			}
+		}
+	}
+	t.Fatalf("provider %q has no channels in Catalog()", providerID)
+	return ""
+}
+
+type catalogScopeFakeCore struct {
+	mu     sync.Mutex
+	status core.SessionStatus
+	stops  int
+}
+
+func (f *catalogScopeFakeCore) StartSession(req core.SessionRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status.AdapterRef = req.AdapterRef
+	return nil
+}
+
+func (f *catalogScopeFakeCore) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.status.AdapterRef != "" {
+		return false, nil
+	}
+	f.status.AdapterRef = req.AdapterRef
+	return true, nil
+}
+
+func (f *catalogScopeFakeCore) StartSessionIfSession(req core.SessionRequest, ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ref == "" || f.status.AdapterRef != ref || f.status.Generation != generation {
+		return false, nil
+	}
+	f.status.AdapterRef = req.AdapterRef
+	return true, nil
+}
+
+func (f *catalogScopeFakeCore) PauseIfAdapterRef(ref string) (bool, error) { return false, nil }
+
+func (f *catalogScopeFakeCore) StopIfAdapterRef(ref string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ref == "" || f.status.AdapterRef != ref {
+		return false, nil
+	}
+	f.stops++
+	f.status.AdapterRef = ""
+	return true, nil
+}
+
+func (f *catalogScopeFakeCore) StopIfSession(ref string, generation uint64) (bool, error) {
+	return false, nil
+}
+
+func (f *catalogScopeFakeCore) Status() core.SessionStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
+
+func (f *catalogScopeFakeCore) currentRef() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status.AdapterRef
+}
+
+func (f *catalogScopeFakeCore) stopCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stops
 }
 ```
 
@@ -3554,22 +3700,35 @@ func WireLabelForScope(s adapters.ApplyScope) (string, bool) { return scopeLabel
 
 - [ ] **Step 2: Run the integration test.**
 
-Run: `go test -tags=integration ./tests/integration -run TestCatalogScope -v`
-Expected: PASS for both subtests.
+Run: `go test -tags=integration ./cmd/mister-groovy-relay -run TestCatalogScope -v`
+Expected: PASS for all three subtests.
 
 - [ ] **Step 3: Commit.**
 
 ```bash
-git add tests/integration/catalog_scope_test.go internal/chassis/settings.go
+git add cmd/mister-groovy-relay/catalog_scope_test.go internal/chassis/settings.go
 git commit -m "test(integration): Catalog scope cross-side drift catcher
 
-Boots a real streams.Adapter + real AdapterSaver and the production
-catalogManager shape (mirrored locally because cmd/mister-groovy-relay
-is package main and not importable). Asserts the chassis wire label
+Boots a real streams.Adapter + real AdapterSaver and the real production
+catalogManager wrapper in package main. Asserts the chassis wire label
 matches the scope returned by UpdateProvider for HLS-buffer-disabled
-(RECAST → \"recast\") and enabled (HOT → \"hot\"). Catches future drift
-between either side's mapping."
+(RECAST → \"recast\") and enabled (HOT → \"hot\"), and verifies RECAST
+saves stop an active streams cast through StopIfAdapterRef. Catches
+future drift between the wrapper's declared-scope floor, chassis scope
+labels, and runtime recast side effect."
 ```
+
+---
+
+## Pre-Task 25 Spec-Parity Gate
+
+Before the manual JS walk, verify the implementation still matches the 4C invariants that are easiest to regress while following the task snippets:
+
+- [ ] `SettingsData.CatalogProviderCount` is still the 3B browse-drawer tab badge count; `CatalogPaneProviderCount` is the Catalog pane header count.
+- [ ] `ApplyConfigValue` runs `buildStartupSnapshotForApplyConfigValue` before `encodeSectionTOML` and before `save`, so rejected snapshot rebuilds do not touch disk or memory.
+- [ ] `catalogManager.reportAndDispatch` invokes `StopActiveCast` only after a successful save/apply cycle and only for reported `ScopeRestartCast`.
+- [ ] `configReset.ResetToDefaults` reads `sectioned.Bridge.DataDir` under the shared mutex and never calls `BridgeSaver.Current()` while holding that mutex.
+- [ ] No 4C task edits `internal/ui/*` or the legacy streams `FieldDef.ApplyScope` / `configChangeScope` scope tables.
 
 ---
 
