@@ -148,8 +148,12 @@
         markHasValue(name, el.value);
         clearNotice();
         if (body.scope === 'reboot') {
-          const label = el.closest('.field-row').querySelector('label').textContent.trim().split('\n')[0];
-          showNotice(`Restart container to apply new ${label}`, 'ok');
+          // Extract only the label's first text node, excluding the help <span>.
+          // fieldHelper renders <label>Host <span class="help">...</span></label>;
+          // textContent would concatenate the help text into the toast.
+          const labelEl = el.closest('.field-row')?.querySelector('label');
+          const labelText = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() || name;
+          showNotice(`Restart container to apply new ${labelText}`, 'ok');
         }
         return;
       }
