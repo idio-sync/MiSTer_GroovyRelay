@@ -976,3 +976,111 @@ func TestHLSDecodersTableEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestHLSDecoders_BoundsSubsetOfValidator asserts every chassis-accepted
+// HLS boundary value passes config.Sectioned.Validate() when placed into
+// a fixture with compatible companion fields. Catches drift between
+// chassis single-field bounds and config.Sectioned.Validate's
+// single-field + cross-field invariants.
+func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
+	t.Parallel()
+
+	// Build a baseline Sectioned with a valid HLS config, then perturb
+	// one field at a time to its low and high boundaries.
+	baseline := func() config.Sectioned {
+		return config.Sectioned{
+			Bridge: config.BridgeConfig{
+				MiSTer:     config.MisterConfig{Host: "127.0.0.1", Port: 32100, SourcePort: 32101},
+				UI:         config.UIConfig{HTTPPort: 32500},
+				Video:      config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", RGBMode: "rgb888", LZ4Enabled: true, DeltaLZ4Enabled: true},
+				Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
+				Visualizer: config.VisualizerConfig{Mode: "retro_analyzer"},
+				HLSBuffer: config.HLSBufferConfig{
+					Enabled:                true,
+					LiveEdgeSegments:       3,
+					StartSegments:          2,
+					MaxCachedSegments:      6,
+					MaxCacheBytes:          268435456,
+					MaxPlaylistBytes:       1048576,
+					MaxSegmentBytes:        52428800,
+					SegmentTimeoutSeconds:  10,
+					PlaylistTimeoutSeconds: 10,
+					MaxVariantHeight:       720,
+					StaleCacheReapHours:    24,
+				},
+			},
+		}
+	}
+
+	type tc struct {
+		field string
+		lo    int64 // use int64 to cover both int and int64 fields uniformly
+		hi    int64
+		apply func(c *config.BridgeConfig, n int64)
+		// Companion adjustments for cross-field invariants.
+		companion func(c *config.BridgeConfig, n int64)
+	}
+	cases := []tc{
+		{"live_edge_segments", 1, 12,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.LiveEdgeSegments = int(n) },
+			func(c *config.BridgeConfig, n int64) {
+				// live_edge_segments must be >= start_segments
+				if n < int64(c.HLSBuffer.StartSegments) {
+					c.HLSBuffer.StartSegments = int(n)
+				}
+			}},
+		{"start_segments", 1, 6,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.StartSegments = int(n) },
+			func(c *config.BridgeConfig, n int64) {
+				// live_edge_segments must be >= start_segments
+				if c.HLSBuffer.LiveEdgeSegments < int(n) {
+					c.HLSBuffer.LiveEdgeSegments = int(n)
+				}
+				// max_cached_segments must be >= start_segments
+				if c.HLSBuffer.MaxCachedSegments < int(n) {
+					c.HLSBuffer.MaxCachedSegments = int(n)
+				}
+			}},
+		{"max_cached_segments", 2, 24,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxCachedSegments = int(n) },
+			func(c *config.BridgeConfig, n int64) {
+				if int64(c.HLSBuffer.StartSegments) > n {
+					c.HLSBuffer.StartSegments = int(n)
+				}
+			}},
+		{"max_cache_bytes", 16777216, 2147483648,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxCacheBytes = n },
+			nil},
+		{"max_playlist_bytes", 4096, 8388608,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxPlaylistBytes = n },
+			nil},
+		{"max_segment_bytes", 1048576, 536870912,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxSegmentBytes = n },
+			nil},
+		{"segment_timeout_seconds", 1, 60,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.SegmentTimeoutSeconds = int(n) },
+			nil},
+		{"playlist_timeout_seconds", 1, 60,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.PlaylistTimeoutSeconds = int(n) },
+			nil},
+		{"max_variant_height", 240, 2160,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.MaxVariantHeight = int(n) },
+			nil},
+		{"stale_cache_reap_hours", 1, 168,
+			func(c *config.BridgeConfig, n int64) { c.HLSBuffer.StaleCacheReapHours = int(n) },
+			nil},
+	}
+
+	for _, c := range cases {
+		for _, n := range []int64{c.lo, c.hi} {
+			sec := baseline()
+			c.apply(&sec.Bridge, n)
+			if c.companion != nil {
+				c.companion(&sec.Bridge, n)
+			}
+			if err := sec.Validate(); err != nil {
+				t.Errorf("%s = %d: Sectioned.Validate err = %v", c.field, n, err)
+			}
+		}
+	}
+}
