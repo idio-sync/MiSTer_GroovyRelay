@@ -4137,3 +4137,196 @@ body.receiver .filter-miss:not(.tuned) {
   pointer-events: none;
   transition: opacity 180ms ease-out;
 }
+
+/* ===== Settings drawer interior — ported from v24 mockup ===== */
+
+body.receiver .field-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 70px;
+  gap: 10px;
+  align-items: start;
+  padding: 8px 0;
+  border-bottom: 1px solid oklch(0.18 0.012 80);
+}
+body.receiver .field-row:last-child { border-bottom: 0; }
+body.receiver .field-row label {
+  font: 500 11px 'Inter', sans-serif;
+  color: #b0b0b8;
+  letter-spacing: 0.02em;
+}
+body.receiver .field-row .help {
+  font: 400 10px 'Inter', sans-serif;
+  color: #6a6a6e;
+  margin-top: 2px;
+  display: block;
+  letter-spacing: 0.01em;
+}
+
+body.receiver .field-row .field-input {
+  width: 100%;
+  background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
+  border: 1px solid oklch(0.22 0.012 80);
+  color: oklch(0.78 0.012 80);
+  padding: 5px 8px;
+  font: 500 11px 'DSEG14-Classic', 'DSEG7-Classic', monospace;
+  letter-spacing: 0.04em;
+  border-radius: 2px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+body.receiver .field-row .field-input.has-value {
+  color: var(--vfd);
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+body.receiver .field-row .field-input.num {
+  text-align: right;
+  font-family: 'DSEG7-Classic', monospace;
+  font-weight: 700;
+  font-size: 13px;
+}
+body.receiver .field-row .field-input.path { font-size: 10px; }
+body.receiver .field-row .field-input:focus {
+  outline: none;
+  border-color: oklch(0.32 0.06 175);
+}
+
+body.receiver .switch {
+  width: 44px; height: 22px;
+  position: relative;
+  background: linear-gradient(180deg, #1a1a1c 0%, #0d0d0f 100%);
+  border: 1px solid oklch(0.22 0.012 80);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+body.receiver .switch::before {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  background: linear-gradient(180deg, #6a6a6e 0%, #3a3a3e 100%);
+  border-radius: 50%;
+  transition: left 120ms ease, background 120ms ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+body.receiver .switch.on {
+  background: linear-gradient(180deg, oklch(0.18 0.06 175) 0%, oklch(0.10 0.05 175) 100%);
+  border-color: oklch(0.30 0.06 175);
+}
+body.receiver .switch.on::before {
+  left: 24px;
+  background: linear-gradient(180deg, var(--vfd) 0%, oklch(0.65 0.18 175) 100%);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 5px var(--vfd-glow), inset 0 1px 0 rgba(255,255,255,0.3);
+}
+body.receiver .switch:focus-visible {
+  outline: 2px solid var(--vfd-glow-soft);
+  outline-offset: 2px;
+}
+
+body.receiver .action-btn {
+  font: 500 11px 'Inter', sans-serif;
+  padding: 5px 12px;
+  background: linear-gradient(180deg, #2a2a30 0%, #1a1a1f 100%);
+  color: #b0b0b8;
+  border: 1px solid oklch(0.26 0.012 80);
+  border-radius: 2px;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 100ms ease, color 100ms ease;
+}
+body.receiver .action-btn:hover {
+  background: linear-gradient(180deg, #35353c 0%, #20202a 100%);
+  color: #d4d4d8;
+}
+body.receiver .action-btn.primary {
+  background: linear-gradient(180deg, oklch(0.30 0.06 175) 0%, oklch(0.18 0.05 175) 100%);
+  color: var(--vfd);
+  border-color: oklch(0.32 0.06 175);
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+body.receiver .action-btn.ghost {
+  background: transparent;
+  border-color: oklch(0.22 0.012 80);
+  color: var(--vfd-faded);
+}
+body.receiver .action-btn.ghost:hover {
+  border-color: oklch(0.28 0.06 175);
+  color: var(--vfd);
+}
+body.receiver .action-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+body.receiver .action-result {
+  display: none;
+  margin-top: 6px;
+  padding: 4px 8px;
+  font: 500 10px 'DSEG14-Classic', monospace;
+  color: var(--vfd-dim);
+  border: 1px solid oklch(0.18 0.012 80);
+  border-radius: 2px;
+  letter-spacing: 0.04em;
+}
+body.receiver .action-result.shown { display: block; }
+body.receiver .action-result.ok { color: oklch(0.78 0.12 150); border-color: oklch(0.32 0.10 150); }
+body.receiver .action-result.err { color: oklch(0.78 0.16 25); border-color: oklch(0.40 0.16 25); }
+
+body.receiver .scope {
+  display: inline-block;
+  padding: 1px 5px;
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: 0.06em;
+  border-radius: 2px;
+  border: 1px solid;
+  vertical-align: middle;
+  align-self: start;
+  margin-top: 5px;
+}
+body.receiver .scope.hot    { background: oklch(0.20 0.06 175); border-color: oklch(0.32 0.06 175); color: var(--vfd); }
+body.receiver .scope.next   { background: oklch(0.20 0.06 125); border-color: oklch(0.30 0.06 125); color: oklch(0.82 0.16 125); }
+body.receiver .scope.recast { background: oklch(0.20 0.06 75);  border-color: oklch(0.30 0.06 75);  color: oklch(0.82 0.18 75); }
+body.receiver .scope.reboot { background: oklch(0.20 0.06 25);  border-color: oklch(0.30 0.06 25);  color: oklch(0.82 0.16 25); }
+
+body.receiver .field-row .row-end {
+  display: flex; gap: 6px; align-items: center; justify-content: flex-end;
+}
+
+body.receiver .field-row.has-err .field-input {
+  border-color: oklch(0.40 0.16 25);
+}
+body.receiver .field-row .field-err {
+  grid-column: 2 / 3;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: oklch(0.18 0.06 25 / 0.4);
+  color: oklch(0.82 0.16 25);
+  border: 1px solid oklch(0.32 0.10 25);
+  border-radius: 2px;
+  font: 500 10px 'Inter', sans-serif;
+  letter-spacing: 0.02em;
+}
+body.receiver .field-row .field-err::before {
+  content: '⚠ ';
+}
+
+/* Drawer-local notice slot (Task 4A) */
+body.receiver .settings-notice {
+  margin: 8px 12px 0 12px;
+  padding: 6px 10px;
+  font: 500 11px 'Inter', sans-serif;
+  letter-spacing: 0.04em;
+  border: 1px solid oklch(0.22 0.012 80);
+  border-radius: 2px;
+  background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
+  color: var(--vfd-dim);
+}
+body.receiver .settings-notice[hidden] { display: none; }
+body.receiver .settings-notice.ok  { color: oklch(0.78 0.12 150); border-color: oklch(0.32 0.10 150); }
+body.receiver .settings-notice.err { color: oklch(0.82 0.16 25); border-color: oklch(0.40 0.16 25); }
+
+/* Mobile sizing */
+@media (max-width: 600px) {
+  body.receiver .switch { width: 50px; height: 26px; }
+  body.receiver .switch::before { width: 20px; height: 20px; }
+  body.receiver .switch.on::before { left: 28px; }
+}

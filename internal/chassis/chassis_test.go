@@ -3550,3 +3550,43 @@ func TestShellTemplate_IncludesSettingsDrawerScript(t *testing.T) {
 		t.Errorf("shell template missing settings-drawer.js <script> tag")
 	}
 }
+
+func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("read chassis.css: %v", err)
+	}
+	wantSelectors := []string{
+		".field-row",
+		".field-input",
+		".field-input.has-value",
+		".field-input.num",
+		".field-input.path",
+		".switch",
+		".switch.on",
+		".switch::before",
+		".action-btn",
+		".action-btn.primary",
+		".action-result",
+		".action-result.shown",
+		".action-result.ok",
+		".action-result.err",
+		".scope",
+		".scope.hot",
+		".scope.next",
+		".scope.recast",
+		".scope.reboot",
+		".field-row.has-err",
+		".field-row .field-err",
+		".field-row .row-end",
+		".settings-notice",
+		".settings-notice.ok",
+		".settings-notice.err",
+	}
+	for _, sel := range wantSelectors {
+		if !bytes.Contains(css, []byte(sel)) {
+			t.Errorf("chassis.css missing selector %q", sel)
+		}
+	}
+}
