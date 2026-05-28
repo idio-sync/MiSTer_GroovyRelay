@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -2785,13 +2786,23 @@ func TestFFmpegVisualizerSpecMapsModes(t *testing.T) {
 }
 
 func TestFFmpegVisualizerSpecCarriesValidatedArtworkPath(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "artwork-cache")
+	realDataDir := filepath.Join(t.TempDir(), "real")
+	root := filepath.Join(realDataDir, "artwork-cache")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cover := filepath.Join(root, "cover.png")
+	aliasDataDir := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realDataDir, aliasDataDir); err == nil {
+		root = filepath.Join(aliasDataDir, "artwork-cache")
+		cover = filepath.Join(root, "cover.png")
+	}
 	if err := os.WriteFile(cover, []byte("not decoded at core boundary"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	wantArtworkPath, ok := artworkcache.ValidatePath(root, cover)
+	if !ok {
+		t.Fatalf("ValidatePath(%q, %q) rejected test artwork", root, cover)
 	}
 	got := ffmpegVisualizerSpec(root, VisualizerRequest{
 		Enabled: true,
@@ -2804,8 +2815,8 @@ func TestFFmpegVisualizerSpecCarriesValidatedArtworkPath(t *testing.T) {
 			ArtworkPath: cover,
 		},
 	})
-	if got.Metadata.ArtworkPath != cover {
-		t.Fatalf("ArtworkPath = %q, want %q", got.Metadata.ArtworkPath, cover)
+	if got.Metadata.ArtworkPath != wantArtworkPath {
+		t.Fatalf("ArtworkPath = %q, want %q", got.Metadata.ArtworkPath, wantArtworkPath)
 	}
 	if got.Metadata.Title != "Blue Monday" || got.Metadata.Artist != "New Order" ||
 		got.Metadata.Album != "Power Corruption & Lies" || got.Metadata.Duration != 449*time.Second {
