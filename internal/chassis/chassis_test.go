@@ -3491,3 +3491,29 @@ func TestSettingsDrawerTemplate_NetworkPaneFieldRowHasScope(t *testing.T) {
 		t.Errorf("missing HOT scope badge")
 	}
 }
+
+func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := SettingsData{Errors: map[string]string{}}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	s := buf.String()
+	wantPairs := []struct{ pane, spec string }{
+		{"pipeline", "4B"},
+		{"adapters", "4D"},
+		{"catalog", "4C"},
+		{"advanced", "4B"},
+	}
+	for _, w := range wantPairs {
+		paneTag := fmt.Sprintf(`data-pane="%s"`, w.pane)
+		if !strings.Contains(s, paneTag) {
+			t.Errorf("missing pane %q", paneTag)
+		}
+		if !strings.Contains(s, fmt.Sprintf("Spec %s", w.spec)) {
+			t.Errorf("missing Spec %s label for pane %s", w.spec, w.pane)
+		}
+	}
+}
