@@ -75,6 +75,7 @@ var templateFuncs = template.FuncMap{
 	"settingsScopeLabel":  settingsScopeLabelHelper,
 	"stub":                stubHelper,
 	"field":               fieldHelper,
+	"humanizeBytes":       humanizeBytes,
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in
@@ -111,6 +112,41 @@ func dictHelper(pairs ...any) map[string]any {
 
 // itoaHelper wraps strconv.Itoa for the FuncMap.
 func itoaHelper(n int) string { return strconv.Itoa(n) }
+
+// humanizeBytes formats an int64 byte count as a human-readable string
+// using base-1024 (IEC) with SI-style suffixes ("KB"/"MB"/"GB"), matching
+// the chassis mockup verbatim (e.g. 268435456 → "256 MB"). The
+// technically-correct KiB/MiB/GiB suffixes are intentionally not used —
+// operator familiarity wins over technical purity. Values under 1024 are
+// rendered with the "B" suffix and no decimal. Fractional values render
+// with one decimal place ("1.5 MB"); whole-unit values render integral
+// ("1 MB" — not "1.0 MB").
+func humanizeBytes(n int64) string {
+	const (
+		KB int64 = 1024
+		MB       = KB * 1024
+		GB       = MB * 1024
+	)
+	switch {
+	case n < KB:
+		return fmt.Sprintf("%d B", n)
+	case n < MB:
+		return formatBytesScale(n, KB, "KB")
+	case n < GB:
+		return formatBytesScale(n, MB, "MB")
+	default:
+		return formatBytesScale(n, GB, "GB")
+	}
+}
+
+// formatBytesScale renders n/unit with one decimal place when the result
+// is fractional, integral otherwise. Used by humanizeBytes.
+func formatBytesScale(n, unit int64, suffix string) string {
+	if n%unit == 0 {
+		return fmt.Sprintf("%d %s", n/unit, suffix)
+	}
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(unit), suffix)
+}
 
 // errOfHelper returns the error message for a given field name from a
 // settings errors map, or "" if absent or the map is nil.

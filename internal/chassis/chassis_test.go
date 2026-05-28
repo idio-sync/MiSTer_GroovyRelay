@@ -3645,3 +3645,27 @@ func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 		}
 	}
 }
+
+func TestHumanizeBytes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{1023, "1023 B"},
+		{1024, "1 KB"},
+		{1048576, "1 MB"},
+		{1073741824, "1 GB"},
+		{268435456, "256 MB"},
+		{52428800, "50 MB"},
+		{2147483648, "2 GB"},
+		{1048576 + 524288, "1.5 MB"}, // exercises the fractional path
+	}
+	for _, tc := range cases {
+		got := humanizeBytes(tc.in)
+		if got != tc.want {
+			t.Errorf("humanizeBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
