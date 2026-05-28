@@ -1,0 +1,91 @@
+{{- define "settings-pipeline" -}}
+<div class="settings-pane" data-pane="pipeline">
+
+  <div class="settings-section">
+    <h4>Video <span class="hint">[bridge.video]</span></h4>
+    {{ field (dict
+      "Name" "video_modeline" "Type" "select" "Label" "Modeline"
+      "Help" "CRT output. PAL modes work over the wire but aren't tested on real PAL CRT hardware."
+      "Value" .Bridge.Video.Modeline
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "NTSC_480i")
+        (dict "Value" "NTSC_240p")
+        (dict "Value" "PAL_576i" "Label" "PAL_576i (experimental)")
+        (dict "Value" "PAL_288p" "Label" "PAL_288p (experimental)"))
+      "Error" (errOf .Errors "video_modeline")) }}
+    {{ field (dict
+      "Name" "video_interlace_field_order" "Type" "select" "Label" "Interlace order"
+      "Help" "Flip if you see shimmer on the CRT. Live hot-swappable."
+      "Value" .Bridge.Video.InterlaceFieldOrder
+      "Scope" "hot"
+      "Options" (options (dict "Value" "bff") (dict "Value" "tff"))
+      "Error" (errOf .Errors "video_interlace_field_order")) }}
+    {{ field (dict
+      "Name" "video_aspect_mode" "Type" "select" "Label" "Aspect mode"
+      "Help" "How the source fits to 4:3 NTSC."
+      "Value" .Bridge.Video.AspectMode
+      "Scope" "recast"
+      "Options" (options (dict "Value" "auto") (dict "Value" "letterbox") (dict "Value" "zoom"))
+      "Error" (errOf .Errors "video_aspect_mode")) }}
+    {{ field (dict
+      "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
+      "Help" "Compresses BLIT payloads. Strongly recommended."
+      "Value" (boolStr .Bridge.Video.LZ4Enabled)
+      "Scope" "recast") }}
+    {{ field (dict
+      "Name" "video_delta_lz4_enabled" "Type" "switch" "Label" "Delta-LZ4"
+      "Help" "Adaptive delta-compressed BLITs when they beat full-field LZ4."
+      "Value" (boolStr .Bridge.Video.DeltaLZ4Enabled)
+      "Scope" "recast") }}
+  </div>
+
+  <div class="settings-section">
+    <h4>Audio <span class="hint">[bridge.audio]</span></h4>
+    {{ field (dict
+      "Name" "audio_sample_rate" "Type" "select" "Label" "Sample rate"
+      "Help" "PCM sample rate."
+      "Value" (itoa .Bridge.Audio.SampleRate)
+      "Scope" "recast"
+      "Options" (options (dict "Value" "48000") (dict "Value" "44100") (dict "Value" "22050"))
+      "Error" (errOf .Errors "audio_sample_rate")) }}
+    {{ field (dict
+      "Name" "audio_channels" "Type" "select" "Label" "Channels"
+      "Help" "1 = mono · 2 = stereo"
+      "Value" (itoa .Bridge.Audio.Channels)
+      "Scope" "recast"
+      "Options" (options (dict "Value" "2") (dict "Value" "1"))
+      "Error" (errOf .Errors "audio_channels")) }}
+  </div>
+
+  <div class="settings-section wide">
+    <h4>MiSTer control <span class="hint">SSH credentials</span></h4>
+    {{ field (dict
+      "Name" "mister_ssh_user" "Type" "text" "Label" "SSH user"
+      "Help" "MiSTer's stock user is root."
+      "Value" .Bridge.MiSTer.SSHUser
+      "Scope" "hot"
+      "Error" (errOf .Errors "mister_ssh_user")) }}
+    {{ field (dict
+      "Name" "mister_ssh_password" "Type" "password" "Label" "SSH password"
+      "Help" "Leave empty to keep existing. Stored plaintext in config.toml (LAN-only trust model)."
+      "Value" ""
+      "Placeholder" (passwordPlaceholder .Bridge.MiSTer.SSHPassword)
+      "SkipEmpty" true
+      "Scope" "hot") }}
+    {{ template "settings-action-launch-core" . }}
+  </div>
+
+</div>
+{{- end -}}
+
+{{- define "settings-action-launch-core" -}}
+<div class="field-row">
+  <label>Launch GroovyMiSTer <span class="help">Sends <code>load_core /media/fat/_Utility/Groovy_20240928.rbf</code> to <code>/dev/MiSTer_cmd</code> using the credentials above.</span></label>
+  <div>
+    <button class="action-btn primary" id="launch-core-btn" type="button">&#9656; Launch core</button>
+    <div class="action-result" id="launch-core-result"></div>
+  </div>
+  <span class="scope" style="visibility:hidden;">.</span>
+</div>
+{{- end -}}

@@ -3807,3 +3807,51 @@ func TestFieldHelper_SwitchIncludesNameForErrorPainting(t *testing.T) {
 		t.Errorf("switch missing name attr for settings-drawer.js error lookup: %s", html)
 	}
 }
+
+func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			Video:  config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", LZ4Enabled: true, DeltaLZ4Enabled: true},
+			Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
+			MiSTer: config.MisterConfig{SSHUser: "root", SSHPassword: "stored"},
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-pipeline", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	required := []string{
+		`data-pane="pipeline"`,
+		`name="video_modeline"`,
+		`name="video_interlace_field_order"`,
+		`name="video_aspect_mode"`,
+		`data-field="video_lz4_enabled"`,        // switch renders <button data-field=...>
+		`data-field="video_delta_lz4_enabled"`,
+		`name="audio_sample_rate"`,
+		`name="audio_channels"`,
+		`name="mister_ssh_user"`,
+		`name="mister_ssh_password"`,
+		`id="launch-core-btn"`,
+		`id="launch-core-result"`,
+		`<span class="scope hot">HOT</span>`,    // interlace + ssh_user + ssh_password
+		`<span class="scope recast">RECAST</span>`, // most other Pipeline fields
+		`data-skip-empty="true"`,
+		`••••••••`, // placeholder for stored password
+	}
+	for _, sub := range required {
+		if !strings.Contains(html, sub) {
+			t.Errorf("missing %q in:\n%s", sub, html)
+		}
+	}
+	// The password value must NEVER leak into the response.
+	if strings.Contains(html, `value="stored"`) {
+		t.Errorf("stored password leaked into rendered HTML")
+	}
+}
