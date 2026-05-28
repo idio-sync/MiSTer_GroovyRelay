@@ -133,8 +133,8 @@ func TestBridgeMisterProber_EmptyHostShortCircuits(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected empty-host error, got nil")
 	}
-	if !strings.Contains(err.Error(), "MiSTer host not configured") {
-		t.Errorf("err = %q, want 'MiSTer host not configured'", err)
+	if err.Error() != launchcore.EmptyHostMessage {
+		t.Errorf("err = %q, want %q", err.Error(), launchcore.EmptyHostMessage)
 	}
 }
 

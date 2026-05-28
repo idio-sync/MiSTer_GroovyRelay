@@ -52,7 +52,7 @@ type bridgeMisterProber struct {
 func (b bridgeMisterProber) Probe(ctx context.Context) error {
 	cur := b.bridge.Current()
 	if cur.MiSTer.Host == "" {
-		return errors.New("MiSTer host not configured (set bridge.mister.host)")
+		return errors.New(launchcore.EmptyHostMessage)
 	}
 
 	timeout := b.timeout
