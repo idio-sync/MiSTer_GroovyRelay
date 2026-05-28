@@ -3517,3 +3517,21 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportTemplate_GearButtonHasSettingsToggle(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := TransportData{}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "transport", data); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	s := buf.String()
+	if !strings.Contains(s, `data-settings-toggle`) {
+		t.Errorf("gear button missing data-settings-toggle attribute:\n%s", s)
+	}
+	// Preserve the existing id for legacy test references.
+	if !strings.Contains(s, `id="gear-btn"`) {
+		t.Errorf("gear button missing id=\"gear-btn\":\n%s", s)
+	}
+}
