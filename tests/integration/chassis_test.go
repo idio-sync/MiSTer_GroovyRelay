@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -2143,5 +2144,289 @@ func TestReceiverPresetStore_DropsStaleReferenceOnRestart(t *testing.T) {
 	}
 	if slots[1]["provider"] != "mtv-rewind" || slots[1]["channel"] != "80s" {
 		t.Errorf("valid slot = %v, want mtv-rewind/80s", slots[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4A: Settings drawer + Bridge POST + Probe integration tests
+// ---------------------------------------------------------------------------
+
+// testSettingsBridgeConfig returns a fully-valid BridgeConfig suitable for
+// seeding a *uiserver.BridgeSaver in settings integration tests. All
+// mandatory sub-structs (including HLSBuffer) are populated so
+// config.Sectioned.Validate passes on every Save call.
+func testSettingsBridgeConfig(dataDir string) config.BridgeConfig {
+	return config.BridgeConfig{
+		DataDir: dataDir,
+		Video: config.VideoConfig{
+			Modeline:            "NTSC_480i",
+			InterlaceFieldOrder: "tff",
+			AspectMode:          "auto",
+			RGBMode:             "rgb888",
+			LZ4Enabled:          true,
+		},
+		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
+		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
+		MiSTer:     config.MisterConfig{Host: "127.0.0.1", Port: 32100, SourcePort: 32101},
+		UI:         config.UIConfig{HTTPPort: 32500},
+		HLSBuffer: config.HLSBufferConfig{
+			Enabled:                true,
+			LiveEdgeSegments:       3,
+			StartSegments:          2,
+			MaxCachedSegments:      6,
+			MaxCacheBytes:          268435456,
+			MaxPlaylistBytes:       1048576,
+			MaxSegmentBytes:        52428800,
+			SegmentTimeoutSeconds:  10,
+			PlaylistTimeoutSeconds: 10,
+			MaxVariantHeight:       720,
+			StaleCacheReapHours:    24,
+		},
+	}
+}
+
+// testSettingsConfigPath writes a minimal config.toml to dir and returns its
+// path. marshalBridgeSection reads the existing file on every Save, so the
+// file must exist before the first Save call.
+func testSettingsConfigPath(t *testing.T, dir string, bridge config.BridgeConfig) string {
+	t.Helper()
+	path := filepath.Join(dir, "config.toml")
+	// Write a minimal stub; BridgeSaver.Save will overwrite the [bridge*]
+	// sections atomically on the first successful save.
+	const stub = "" // empty is fine; marshalBridgeSection strips bridge sections before appending
+	if err := os.WriteFile(path, []byte(stub), 0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	return path
+}
+
+// fakeCoreForSettingsTests satisfies uiserver.Core with no-op methods.
+type fakeCoreForSettingsTests struct{}
+
+func (fakeCoreForSettingsTests) UpdateBridge(config.BridgeConfig)         {}
+func (fakeCoreForSettingsTests) SetInterlaceFieldOrder(string) error      { return nil }
+func (fakeCoreForSettingsTests) SetOutputVolume(int) error                { return nil }
+func (fakeCoreForSettingsTests) DropActiveCast(string) error              { return nil }
+
+// fakeSettingsProber satisfies chassis.Prober for settings integration tests.
+type fakeSettingsProber struct {
+	res chassis.ProbeResult
+	err error
+}
+
+func (f fakeSettingsProber) ProbeMister(_ context.Context, _ config.BridgeConfig) (chassis.ProbeResult, error) {
+	return f.res, f.err
+}
+
+// newChassisIntegrationEnvWithProber builds a chassisEnv with a real
+// *uiserver.BridgeSaver wired into chassis.Config.BridgeSaver and the
+// supplied prober (may be nil) wired into chassis.Config.Prober.
+// It extends newChassisIntegrationEnvIn with these two additions.
+func newChassisIntegrationEnvWithProber(t *testing.T, prober chassis.Prober) *chassisEnv {
+	t.Helper()
+	dir := t.TempDir()
+
+	// Pre-seed the empty chassis_presets.json that newChassisIntegrationEnv
+	// would normally seed (keeps the preset bank at a known zero state).
+	emptyStore := []byte(`{"version":1,"slots":[]}`)
+	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), emptyStore, 0o600); err != nil {
+		t.Fatalf("seed empty chassis_presets.json: %v", err)
+	}
+
+	bridge := testSettingsBridgeConfig(dir)
+	cfgPath := testSettingsConfigPath(t, dir, bridge)
+
+	sec := &config.Sectioned{Bridge: bridge}
+	reg := adapters.NewRegistry()
+
+	bridgeSaver := uiserver.NewBridgeSaver(cfgPath, sec, fakeCoreForSettingsTests{}, reg)
+
+	streamsA, err := streams.New(streams.AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: dir},
+		Core:   &core.Manager{},
+	})
+	if err != nil {
+		t.Fatalf("streams.New: %v", err)
+	}
+	streamsA.SetEnabled(true)
+
+	session := &fakeIntegrationSession{view: core.StatusHomeView{State: core.StateIdle}}
+	fakeStreams := &recordingStreamsCaster{session: session}
+
+	srv, err := chassis.New(chassis.Config{
+		Bridge:                    bridge,
+		Manager:                   &core.Manager{},
+		Registry:                  reg,
+		Version:                   "integration-test",
+		StartedAt:                 time.Now(),
+		HostIP:                    "127.0.0.1",
+		Session:                   session,
+		PresetViewer:              streamsA,
+		PresetEditor:              streamsA,
+		StreamsCatalogViewer:      streamsA,
+		StreamsCaster:             fakeStreams,
+		SourceAvailabilityViewers: []adapters.SourceAvailabilityViewer{streamsA},
+		BridgeSaver:               bridgeSaver,
+		Prober:                    prober,
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+
+	return &chassisEnv{
+		t:           t,
+		dir:         dir,
+		ts:          ts,
+		srv:         srv,
+		mux:         mux,
+		streamsA:    streamsA,
+		fakeStreams:  fakeStreams,
+		session:     session,
+	}
+}
+
+// tempExecutable writes a stub executable to t.TempDir() and returns its path.
+// On Windows the file gets a .exe suffix; on Unix it is chmod'd 0755.
+func tempExecutable(t *testing.T, name string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write temp executable: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatalf("chmod temp executable: %v", err)
+		}
+	}
+	return path
+}
+
+func TestReceiverSettings_GetRendersAllNetworkFields(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, nil)
+	defer env.Close()
+	resp, err := http.Get(env.ts.URL + "/receiver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	wantInputs := []string{
+		`name="mister_host"`, `name="mister_port"`, `name="mister_source_port"`,
+		`name="ui_http_port"`, `name="host_ip"`, `name="data_dir"`,
+		`name="ffmpeg_path"`, `name="ffprobe_path"`, `name="ytdlp_path"`,
+		`id="probe-mister-btn"`,
+		`class="settings-notice"`,
+	}
+	for _, w := range wantInputs {
+		if !strings.Contains(s, w) {
+			t.Errorf("/receiver missing %q", w)
+		}
+	}
+}
+
+func TestReceiverSettings_BridgePostHotSwapSucceeds(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, nil)
+	defer env.Close()
+	// Touch a HOT-scope field (ffmpeg_path) with a real temp executable.
+	toolPath := tempExecutable(t, "ffmpeg")
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{
+		"ffmpeg_path": {toolPath},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["scope"] != "hot" {
+		t.Errorf("body = %+v, want {ok:true, scope:\"hot\"}", body)
+	}
+}
+
+func TestReceiverSettings_BridgePostInvalidHostReturns400(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, nil)
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{
+		"mister_host": {""},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	errs, ok := body["errors"].(map[string]any)
+	if !ok {
+		t.Fatalf("errors not present: %v", body)
+	}
+	if msg, _ := errs["mister_host"].(string); !strings.Contains(msg, "is required") {
+		t.Errorf("errors[mister_host] = %v, want 'is required'", errs["mister_host"])
+	}
+}
+
+func TestReceiverSettings_BridgePostEmptyBodyReturns400(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, nil)
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/bridge", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestReceiverSettings_ProbePostSuccess(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, fakeSettingsProber{
+		res: chassis.ProbeResult{LatencyMs: 4.2, Host: "192.168.1.42", Port: 32100},
+	})
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["host"] != "192.168.1.42" {
+		t.Errorf("body = %+v, want ok success with host", body)
+	}
+}
+
+func TestReceiverSettings_ProbePostTimeout(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, fakeSettingsProber{err: context.DeadlineExceeded})
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 for operational timeout; body=%s", resp.StatusCode, body)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != false || body["error"] != "timeout" {
+		t.Errorf("body = %+v, want timeout response", body)
+	}
+}
+
+func TestReceiverSettings_ProbePostNilProberReturns503(t *testing.T) {
+	env := newChassisIntegrationEnvWithProber(t, nil)
+	defer env.Close()
+	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 503 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 503; body=%s", resp.StatusCode, body)
 	}
 }
