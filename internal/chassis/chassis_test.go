@@ -1986,6 +1986,35 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	}
 }
 
+func TestVfdTemplate_LiveDataUsesLiveStateVariant(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	var buf bytes.Buffer
+	data := VFDData{
+		State:        string(StateLive),
+		Title:        "Burning Down the House",
+		Marquee:      "PLEX · 00:08 / 04:01",
+		QueueCurrent: 0,
+		QueueTotal:   0,
+		SystemTime:   "22:47",
+		Uptime:       "4H 12M",
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "vfd", data); err != nil {
+		t.Fatalf("execute vfd partial: %v", err)
+	}
+	body := buf.String()
+	liveIdx := strings.Index(body, `class="vfd-state vfd-state--live"`)
+	if liveIdx < 0 {
+		t.Fatalf("live VFD data must render in a live state wrapper; body:\n%s", body)
+	}
+	if !strings.Contains(body[liveIdx:], `data-vfd-title>Burning Down the House</span>`) {
+		t.Fatalf("live VFD state wrapper missing live title hook; body:\n%s", body)
+	}
+}
+
 func TestShellTemplate_LoadsVfdLiveScript(t *testing.T) {
 	t.Parallel()
 	s, err := New(nonZeroConfig())
