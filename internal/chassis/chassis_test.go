@@ -3855,3 +3855,61 @@ func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 		t.Errorf("stored password leaked into rendered HTML")
 	}
 }
+
+func TestSettingsAdvancedTemplate_RendersAllFields(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := SettingsData{
+		Bridge: config.BridgeConfig{
+			HLSBuffer: config.HLSBufferConfig{
+				Enabled:                true,
+				LiveEdgeSegments:       3,
+				StartSegments:          2,
+				MaxCachedSegments:      6,
+				MaxCacheBytes:          268435456,
+				MaxPlaylistBytes:       1048576,
+				MaxSegmentBytes:        52428800,
+				SegmentTimeoutSeconds:  10,
+				PlaylistTimeoutSeconds: 10,
+				MaxVariantHeight:       720,
+				StaleCacheReapHours:    24,
+			},
+			Logging: config.LoggingConfig{Debug: false},
+		},
+		Errors: map[string]string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-advanced", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	required := []string{
+		`data-pane="advanced"`,
+		`data-field="hls_enabled"`, // switch
+		`name="hls_live_edge_segments"`,
+		`name="hls_start_segments"`,
+		`name="hls_max_cached_segments"`,
+		`name="hls_max_cache_bytes"`,
+		`name="hls_max_playlist_bytes"`,
+		`name="hls_max_segment_bytes"`,
+		`name="hls_segment_timeout_seconds"`,
+		`name="hls_playlist_timeout_seconds"`,
+		`name="hls_max_variant_height"`,
+		`name="hls_stale_cache_reap_hours"`,
+		`data-field="logging_debug"`, // switch
+		// Humanized byte hints render in .row-end:
+		`256 MB`,
+		`1 MB`,
+		`50 MB`,
+		// Static "px" unit:
+		`>px<`,
+	}
+	for _, sub := range required {
+		if !strings.Contains(html, sub) {
+			t.Errorf("missing %q in:\n%s", sub, html)
+		}
+	}
+}
