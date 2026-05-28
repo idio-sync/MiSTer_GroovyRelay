@@ -3182,18 +3182,23 @@ func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	srv, err := New(Config{
-		Version:     "test",
-		StartedAt:   time.Now(),
-		Registry:    adapters.NewRegistry(),
-		BridgeSaver: fakeBridgeSettingsSaver{},
-		Prober:      fakeProber{},
+		Version:      "test",
+		StartedAt:    time.Now(),
+		Registry:     adapters.NewRegistry(),
+		BridgeSaver:  fakeBridgeSettingsSaver{},
+		Prober:       fakeProber{},
+		CoreLauncher: &fakeCoreLauncher{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer srv.Close()
 	srv.Mount(mux)
-	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+	for _, path := range []string{
+		"/receiver/settings/bridge",
+		"/receiver/settings/action/probe-mister",
+		"/receiver/settings/action/launch-core",
+	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -3209,18 +3214,23 @@ func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	srv, err := New(Config{
-		Version:     "test",
-		StartedAt:   time.Now(),
-		Registry:    adapters.NewRegistry(),
-		BridgeSaver: fakeBridgeSettingsSaver{},
-		Prober:      fakeProber{},
+		Version:      "test",
+		StartedAt:    time.Now(),
+		Registry:     adapters.NewRegistry(),
+		BridgeSaver:  fakeBridgeSettingsSaver{},
+		Prober:       fakeProber{},
+		CoreLauncher: &fakeCoreLauncher{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer srv.Close()
 	srv.Mount(mux)
-	for _, path := range []string{"/receiver/settings/bridge", "/receiver/settings/action/probe-mister"} {
+	for _, path := range []string{
+		"/receiver/settings/bridge",
+		"/receiver/settings/action/probe-mister",
+		"/receiver/settings/action/launch-core",
+	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		// No Sec-Fetch-Site header — requireSameOrigin rejects.
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

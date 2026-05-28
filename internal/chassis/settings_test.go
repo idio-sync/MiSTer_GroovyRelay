@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -1082,5 +1083,132 @@ func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
 				t.Errorf("%s = %d: Sectioned.Validate err = %v", c.field, n, err)
 			}
 		}
+	}
+}
+
+func newTestServerForLaunchCore(saver fakeBridgeSettingsSaver, launcher CoreLauncher) *Server {
+	return &Server{
+		cfg: Config{
+			Version:      "test",
+			StartedAt:    time.Unix(0, 0),
+			BridgeSaver:  saver,
+			CoreLauncher: launcher,
+		},
+	}
+}
+
+func postLaunchCore(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/receiver/settings/action/launch-core", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionLaunchCore(rec, req)
+	return rec
+}
+
+func TestLaunchCore_Success(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "192.168.1.42", Port: 32100}}}
+	launcher := &fakeCoreLauncher{}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if launcher.calls != 1 {
+		t.Errorf("launcher.calls = %d, want 1", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if ok, _ := body["ok"].(bool); !ok {
+		t.Errorf("body.ok = %v, want true", body["ok"])
+	}
+	if host, _ := body["host"].(string); host != "192.168.1.42" {
+		t.Errorf("body.host = %q, want 192.168.1.42", host)
+	}
+}
+
+func TestLaunchCore_EmptyHost(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: ""}}}
+	launcher := &fakeCoreLauncher{}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if launcher.calls != 0 {
+		t.Errorf("launcher.calls = %d, want 0 (must not dial on empty host)", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["error"].(string); got != "MiSTer host not configured (set bridge.mister.host)" {
+		t.Errorf("body.error = %q, want exact match with launcher message", got)
+	}
+}
+
+func TestLaunchCore_LauncherError(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "host"}}}
+	launcher := &fakeCoreLauncher{err: errors.New("ssh: handshake failed")}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["error"].(string); got != "ssh: handshake failed" {
+		t.Errorf("body.error = %q, want \"ssh: handshake failed\" (no IP token to redact)", got)
+	}
+}
+
+func TestLaunchCore_LeakyErrorRedacted(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "host"}}}
+	launcher := &fakeCoreLauncher{err: errors.New("dial tcp 192.168.1.42:22: connection refused")}
+	s := newTestServerForLaunchCore(saver, launcher)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	got, _ := body["error"].(string)
+	if strings.Contains(got, "192.168.1.42") || strings.Contains(got, "22") {
+		t.Errorf("body.error %q leaked IP/port — should be redacted", got)
+	}
+	if !strings.Contains(got, "<host>") {
+		t.Errorf("body.error %q missing <host> redaction marker", got)
+	}
+}
+
+func TestLaunchCore_NilLauncher(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "host"}}}
+	s := newTestServerForLaunchCore(saver, nil)
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "NOT READY" {
+		t.Errorf("body.chip = %q, want NOT READY", chip)
+	}
+}
+
+func TestLaunchCore_NilSaver(t *testing.T) {
+	t.Parallel()
+	s := &Server{
+		cfg: Config{
+			Version:      "test",
+			StartedAt:    time.Unix(0, 0),
+			CoreLauncher: &fakeCoreLauncher{},
+			// BridgeSaver intentionally nil
+		},
+	}
+	rec := postLaunchCore(t, s)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503", rec.Code)
 	}
 }

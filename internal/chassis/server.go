@@ -258,6 +258,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsBridgePost)))
 	mux.Handle("POST /receiver/settings/action/probe-mister",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionProbeMister)))
+	mux.Handle("POST /receiver/settings/action/launch-core",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionLaunchCore)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

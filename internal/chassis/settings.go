@@ -704,6 +704,58 @@ func (s *Server) handleSettingsActionProbeMister(w http.ResponseWriter, r *http.
 	})
 }
 
+// handleSettingsActionLaunchCore is the POST handler for
+// /receiver/settings/action/launch-core. It SSH-sends the canonical
+// load_core command to the MiSTer using the saved credentials.
+//
+// Response policy:
+//   - 503 NOT READY when CoreLauncher or BridgeSaver is unwired.
+//   - 400 "MiSTer host not configured ..." when the saved host is empty.
+//     The error string matches bridgeMisterLauncher.Launch's empty-host
+//     short-circuit verbatim. Task 21 extracts this into a shared
+//     internal/launchcore constant so chassis and cmd cannot drift.
+//   - 200 {ok:true, host:"..."} on success.
+//   - 500 {ok:false, error:"<redacted>"} on launcher failure; reuses 4A's
+//     sanitizeProbeError to redact IPv4:port tokens.
+//
+// Context timeout: 6s (matches the legacy /ui/* timeout budget — 5s SSH
+// dial + 1s slack).
+func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CoreLauncher == nil || s.cfg.BridgeSaver == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	cur := s.cfg.BridgeSaver.Current()
+	if cur.MiSTer.Host == "" {
+		// Match bridgeMisterLauncher.Launch's empty-host message verbatim
+		// until Task 21 extracts the shared internal/launchcore constant.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": "MiSTer host not configured (set bridge.mister.host)",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	if err := s.cfg.CoreLauncher.Launch(ctx); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": sanitizeProbeError(err),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":   true,
+		"host": cur.MiSTer.Host,
+	})
+}
+
 // probeErrorHostPortRe matches dotted-quad IPv4 with an optional :port
 // suffix, e.g. "192.168.1.42" or "10.0.0.1:32100". The chassis only
 // validates IPv4 host_ip / mister_host shapes that the regex can catch;
