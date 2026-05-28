@@ -31,6 +31,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
@@ -2624,4 +2625,69 @@ func TestChassisSettings_AdvancedLoggingDebug_HotSetsLogLevel(t *testing.T) {
 	// Verify the hot-swap side effect fired (the bridge saver's
 	// applyHotSwapSideEffects calls logging.SetLevel("debug") for true).
 	// If the test harness exposes a logging.GetLevel hook, assert here.
+}
+
+// ---------------------------------------------------------------------------
+// Task 24: Integration test — launch-core success + empty-host
+// ---------------------------------------------------------------------------
+
+// fakeLaunchCoreLauncher counts calls for the integration test. Mirrors
+// the chassis.CoreLauncher interface structurally.
+type fakeLaunchCoreLauncher struct {
+	calls int
+	err   error
+}
+
+func (f *fakeLaunchCoreLauncher) Launch(ctx context.Context) error {
+	f.calls++
+	return f.err
+}
+
+func TestChassisSettings_LaunchCoreSuccess(t *testing.T) {
+	t.Parallel()
+	launcher := &fakeLaunchCoreLauncher{}
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{coreLauncher: launcher})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if launcher.calls != 1 {
+		t.Errorf("launcher.calls = %d, want 1", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["ok"] != true || body["host"] != "127.0.0.1" {
+		t.Errorf("body = %+v, want ok with configured host", body)
+	}
+}
+
+func TestChassisSettings_LaunchCoreEmptyHost(t *testing.T) {
+	t.Parallel()
+	launcher := &fakeLaunchCoreLauncher{}
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{
+		coreLauncher: launcher,
+		mutateBridge: func(b *config.BridgeConfig) {
+			b.MiSTer.Host = ""
+		},
+	})
+	defer env.Close()
+
+	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, want 400; body = %s", resp.StatusCode, body)
+	}
+	if launcher.calls != 0 {
+		t.Errorf("launcher.calls = %d, want 0", launcher.calls)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if got, _ := body["error"].(string); got != launchcore.EmptyHostMessage {
+		t.Errorf("body.error = %q, want exact match with launcher message", got)
+	}
 }
