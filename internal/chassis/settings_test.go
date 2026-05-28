@@ -852,3 +852,104 @@ func TestMisterSSHPassword_OverlayPreservesOnEmpty(t *testing.T) {
 		t.Errorf("after overlay(newpass) password = %q, want \"newpass\"", c.MiSTer.SSHPassword)
 	}
 }
+
+func TestDecodeIntInRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in            string
+		lo, hi, want  int
+		errSub        string
+	}{
+		{"1", 1, 12, 1, ""},
+		{"12", 1, 12, 12, ""},
+		{"6", 1, 12, 6, ""},
+		{"0", 1, 12, 0, "must be in [1, 12]"},
+		{"13", 1, 12, 0, "must be in [1, 12]"},
+		{"", 1, 12, 0, "must be a whole number"},
+		{"abc", 1, 12, 0, "must be a whole number"},
+	}
+	for _, tc := range cases {
+		v, err := decodeIntInRange(tc.in, tc.lo, tc.hi)
+		if tc.errSub != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("decodeIntInRange(%q,%d,%d) err = %v, want substring %q",
+					tc.in, tc.lo, tc.hi, err, tc.errSub)
+			}
+			continue
+		}
+		if err != nil || v != tc.want {
+			t.Errorf("decodeIntInRange(%q,%d,%d) = (%d, %v), want (%d, nil)",
+				tc.in, tc.lo, tc.hi, v, err, tc.want)
+		}
+	}
+}
+
+func TestDecodeInt64InRange(t *testing.T) {
+	t.Parallel()
+	// Uses humanizeBytes-style labels in the error message.
+	const (
+		lo = int64(16777216)
+		hi = int64(2147483648)
+	)
+	cases := []struct {
+		in     string
+		want   int64
+		errSub string
+	}{
+		{"16777216", lo, ""},
+		{"2147483648", hi, ""},
+		{"268435456", 268435456, ""},
+		{"16777215", 0, "must be in [16 MB, 2 GB]"},
+		{"2147483649", 0, "must be in [16 MB, 2 GB]"},
+		{"", 0, "must be a whole number"},
+	}
+	for _, tc := range cases {
+		v, err := decodeInt64InRange(tc.in, lo, hi)
+		if tc.errSub != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("decodeInt64InRange(%q) err = %v, want substring %q",
+					tc.in, err, tc.errSub)
+			}
+			continue
+		}
+		if err != nil || v != tc.want {
+			t.Errorf("decodeInt64InRange(%q) = (%d, %v), want (%d, nil)",
+				tc.in, v, err, tc.want)
+		}
+	}
+}
+
+func TestHLSDecodersTableEntries(t *testing.T) {
+	t.Parallel()
+	// Smoke test: every HLS form key has decoder + overlay + scope entries
+	// and they're all RECAST except hls_enabled (also RECAST).
+	keys := []string{
+		"hls_enabled",
+		"hls_live_edge_segments",
+		"hls_start_segments",
+		"hls_max_cached_segments",
+		"hls_max_cache_bytes",
+		"hls_max_playlist_bytes",
+		"hls_max_segment_bytes",
+		"hls_segment_timeout_seconds",
+		"hls_playlist_timeout_seconds",
+		"hls_max_variant_height",
+		"hls_stale_cache_reap_hours",
+	}
+	for _, k := range keys {
+		if _, ok := bridgeFieldDecoders[k]; !ok {
+			t.Errorf("missing decoder for %s", k)
+		}
+		if _, ok := bridgeFieldOverlays[k]; !ok {
+			t.Errorf("missing overlay for %s", k)
+		}
+		got, ok := bridgeFieldScopes[k]
+		if !ok {
+			t.Errorf("missing scope for %s", k)
+			continue
+		}
+		if got != adapters.ScopeRestartCast {
+			t.Errorf("scope for %s = %v, want ScopeRestartCast", k, got)
+		}
+	}
+}

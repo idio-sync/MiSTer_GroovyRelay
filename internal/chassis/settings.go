@@ -176,6 +176,50 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeMisterSSHPassword(s)
 		return v, err
 	},
+	"hls_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"hls_live_edge_segments": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 12)
+		return v, err
+	},
+	"hls_start_segments": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 6)
+		return v, err
+	},
+	"hls_max_cached_segments": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 2, 24)
+		return v, err
+	},
+	"hls_max_cache_bytes": func(s string) (any, error) {
+		v, err := decodeInt64InRange(s, 16777216, 2147483648)
+		return v, err
+	},
+	"hls_max_playlist_bytes": func(s string) (any, error) {
+		v, err := decodeInt64InRange(s, 4096, 8388608)
+		return v, err
+	},
+	"hls_max_segment_bytes": func(s string) (any, error) {
+		v, err := decodeInt64InRange(s, 1048576, 536870912)
+		return v, err
+	},
+	"hls_segment_timeout_seconds": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 60)
+		return v, err
+	},
+	"hls_playlist_timeout_seconds": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 60)
+		return v, err
+	},
+	"hls_max_variant_height": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 240, 2160)
+		return v, err
+	},
+	"hls_stale_cache_reap_hours": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, 1, 168)
+		return v, err
+	},
 }
 
 // decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
@@ -364,6 +408,17 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 		}
 		c.MiSTer.SSHPassword = s
 	},
+	"hls_enabled":                  func(c *config.BridgeConfig, v any) { c.HLSBuffer.Enabled = v.(bool) },
+	"hls_live_edge_segments":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.LiveEdgeSegments = v.(int) },
+	"hls_start_segments":           func(c *config.BridgeConfig, v any) { c.HLSBuffer.StartSegments = v.(int) },
+	"hls_max_cached_segments":      func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxCachedSegments = v.(int) },
+	"hls_max_cache_bytes":          func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxCacheBytes = v.(int64) },
+	"hls_max_playlist_bytes":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxPlaylistBytes = v.(int64) },
+	"hls_max_segment_bytes":        func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxSegmentBytes = v.(int64) },
+	"hls_segment_timeout_seconds":  func(c *config.BridgeConfig, v any) { c.HLSBuffer.SegmentTimeoutSeconds = v.(int) },
+	"hls_playlist_timeout_seconds": func(c *config.BridgeConfig, v any) { c.HLSBuffer.PlaylistTimeoutSeconds = v.(int) },
+	"hls_max_variant_height":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxVariantHeight = v.(int) },
+	"hls_stale_cache_reap_hours":   func(c *config.BridgeConfig, v any) { c.HLSBuffer.StaleCacheReapHours = v.(int) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -395,6 +450,17 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"audio_channels":       adapters.ScopeRestartCast,
 	"mister_ssh_user":      adapters.ScopeHotSwap,
 	"mister_ssh_password":  adapters.ScopeHotSwap,
+	"hls_enabled":                  adapters.ScopeRestartCast,
+	"hls_live_edge_segments":       adapters.ScopeRestartCast,
+	"hls_start_segments":           adapters.ScopeRestartCast,
+	"hls_max_cached_segments":      adapters.ScopeRestartCast,
+	"hls_max_cache_bytes":          adapters.ScopeRestartCast,
+	"hls_max_playlist_bytes":       adapters.ScopeRestartCast,
+	"hls_max_segment_bytes":        adapters.ScopeRestartCast,
+	"hls_segment_timeout_seconds":  adapters.ScopeRestartCast,
+	"hls_playlist_timeout_seconds": adapters.ScopeRestartCast,
+	"hls_max_variant_height":       adapters.ScopeRestartCast,
+	"hls_stale_cache_reap_hours":   adapters.ScopeRestartCast,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
@@ -467,6 +533,34 @@ func decodeMisterSSHUser(raw string) (string, error) {
 // don't clobber the stored password.
 func decodeMisterSSHPassword(raw string) (string, error) {
 	return raw, nil
+}
+
+// decodeIntInRange parses an int from raw and asserts lo <= n <= hi.
+// Used by HLS-segment-count fields and other int-typed bounded numerics.
+func decodeIntInRange(raw string, lo, hi int) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number")
+	}
+	if n < lo || n > hi {
+		return 0, fmt.Errorf("must be in [%d, %d]", lo, hi)
+	}
+	return n, nil
+}
+
+// decodeInt64InRange parses an int64 from raw and asserts lo <= n <= hi.
+// Used by HLS byte-ceiling fields (max_cache_bytes etc.). The error message
+// renders the bounds via humanizeBytes for operator readability — e.g.
+// "must be in [16 MB, 2 GB]" rather than "[16777216, 2147483648]".
+func decodeInt64InRange(raw string, lo, hi int64) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number")
+	}
+	if n < lo || n > hi {
+		return 0, fmt.Errorf("must be in [%s, %s]", humanizeBytes(lo), humanizeBytes(hi))
+	}
+	return n, nil
 }
 
 // handleSettingsBridgePost is the POST handler for /receiver/settings/bridge.
