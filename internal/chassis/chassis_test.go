@@ -3201,3 +3201,56 @@ func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestTemplateHelpers_Dict(t *testing.T) {
+	t.Parallel()
+	tmpl := template.Must(template.New("t").Funcs(template.FuncMap{
+		"dict": dictHelper,
+	}).Parse(`{{ $d := dict "k" "v" "n" 42 }}{{ index $d "k" }}|{{ index $d "n" }}`))
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, nil); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := buf.String(); got != "v|42" {
+		t.Errorf("got %q, want v|42", got)
+	}
+}
+
+func TestTemplateHelpers_Itoa(t *testing.T) {
+	t.Parallel()
+	if got := itoaHelper(32100); got != "32100" {
+		t.Errorf("itoaHelper(32100) = %q, want 32100", got)
+	}
+}
+
+func TestTemplateHelpers_ErrOf(t *testing.T) {
+	t.Parallel()
+	errs := map[string]string{"mister_host": "is required"}
+	if got := errOfHelper(errs, "mister_host"); got != "is required" {
+		t.Errorf("got %q, want 'is required'", got)
+	}
+	if got := errOfHelper(errs, "missing"); got != "" {
+		t.Errorf("missing key -> %q, want empty", got)
+	}
+	if got := errOfHelper(nil, "any"); got != "" {
+		t.Errorf("nil map -> %q, want empty", got)
+	}
+}
+
+func TestTemplateHelpers_SettingsScopeLabel(t *testing.T) {
+	t.Parallel()
+	if got := settingsScopeLabelHelper("hot"); got != "HOT" {
+		t.Errorf("got %q, want HOT", got)
+	}
+	if got := settingsScopeLabelHelper("reboot"); got != "REBOOT" {
+		t.Errorf("got %q, want REBOOT", got)
+	}
+}
+
+func TestTemplateHelpers_Stub(t *testing.T) {
+	t.Parallel()
+	got := stubHelper("pipeline", "Pipeline", "4B")
+	if got.ID != "pipeline" || got.Title != "Pipeline" || got.Spec != "4B" {
+		t.Errorf("got %+v", got)
+	}
+}
