@@ -555,6 +555,78 @@ func TestHandleSettingsActionProbeMister_SocketError(t *testing.T) {
 	}
 }
 
+// TestHandleSettingsActionProbeMister_SocketErrorRedactsHosts verifies the
+// JSON error body has dotted-quad IPv4:port tokens replaced with <host>,
+// so a leaky upstream socket message can't echo internal addresses on
+// the wire.
+func TestHandleSettingsActionProbeMister_SocketErrorRedactsHosts(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{
+		cur: config.BridgeConfig{MiSTer: config.MisterConfig{Host: "1.2.3.4", Port: 32100}},
+	})
+	srv.cfg.Prober = fakeProber{err: errors.New("read udp 127.0.0.1:54321->192.168.1.42:32100: connection refused")}
+	rec := postProbe(t, srv)
+	if rec.Code != 500 {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errStr, _ := body["error"].(string)
+	for _, leak := range []string{"127.0.0.1", "192.168.1.42", "54321", "32100"} {
+		if strings.Contains(errStr, leak) {
+			t.Errorf("response error %q contains %q (must be redacted)", errStr, leak)
+		}
+	}
+	if !strings.Contains(errStr, "<host>") {
+		t.Errorf("response error %q missing <host> redaction marker", errStr)
+	}
+	if !strings.Contains(errStr, "connection refused") {
+		t.Errorf("response error %q lost the actionable suffix", errStr)
+	}
+}
+
+func TestSanitizeProbeError_RedactsIPv4AndPort(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "ip-with-port",
+			in:   "read udp 127.0.0.1:54321->192.168.1.42:32100: connection refused",
+			want: "read udp <host>-><host>: connection refused",
+		},
+		{
+			name: "ip-without-port",
+			in:   "dial 10.0.0.1: network unreachable",
+			want: "dial <host>: network unreachable",
+		},
+		{
+			name: "no-ip-passthrough",
+			in:   "open UDP probe socket: bind: permission denied",
+			want: "open UDP probe socket: bind: permission denied",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeProbeError(errors.New(tc.in))
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeProbeError_CapsLengthAt200(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 250)
+	got := sanitizeProbeError(errors.New(long))
+	if len(got) != 200 {
+		t.Errorf("len = %d, want 200", len(got))
+	}
+}
+
 func TestHandleSettingsActionProbeMister_NilProberReturns503(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{})

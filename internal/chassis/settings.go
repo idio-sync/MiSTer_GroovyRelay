@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -436,15 +437,23 @@ func (s *Server) handleSettingsActionProbeMister(w http.ResponseWriter, r *http.
 	})
 }
 
-// sanitizeProbeError strips host/IP details from probe error messages
-// before they hit logs or the wire. Mirrors the transport-error
-// sanitization pattern established in 3B.
+// probeErrorHostPortRe matches dotted-quad IPv4 with an optional :port
+// suffix, e.g. "192.168.1.42" or "10.0.0.1:32100". The chassis only
+// validates IPv4 host_ip / mister_host shapes that the regex can catch;
+// hostnames pass through unchanged because the prober's host text mirrors
+// the operator's own bridge.mister.host value (no information leak beyond
+// what they typed). Pre-compiled at package init to avoid re-parsing per
+// probe.
+var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)
+
+// sanitizeProbeError redacts dotted-quad IPv4[:port] tokens from probe
+// error messages and caps the length so a long upstream socket error
+// doesn't blow up the JSON payload. The prober's output is already
+// constrained from cmd/, so the regex covers the realistic leak shapes
+// (e.g. "read udp 127.0.0.1:54321->192.168.1.42:32100: connection refused"
+// → "read udp <host>-><host>: connection refused").
 func sanitizeProbeError(err error) string {
-	// For 4A, "socket: <free-form message from the prober>" is acceptable
-	// — the prober already returns a constrained shape from cmd/.
-	// If a future change introduces leak risk, restrict to a fixed
-	// vocabulary here. Keep this simple for now.
-	msg := err.Error()
+	msg := probeErrorHostPortRe.ReplaceAllString(err.Error(), "<host>")
 	if len(msg) > 200 {
 		msg = msg[:200]
 	}
