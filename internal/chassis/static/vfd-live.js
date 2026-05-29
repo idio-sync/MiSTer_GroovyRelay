@@ -50,6 +50,17 @@
       const { state } = JSON.parse(ev.data);
       if (state === 'idle' || state === 'live') {
         window.Chassis.State.set(state);
+        // The .vfd-state element's --idle/--live modifier is only set at
+        // server-render time. chassis.css hides the modifier that does not
+        // match the body class (body:not(.idle) .vfd-state--idle, and
+        // body.idle .vfd-state--live both display:none). Since State.set
+        // only flips the body class, the modifier must be re-synced here or
+        // the whole VFD block is hidden on the idle->live transition.
+        const vfdState = document.querySelector('.vfd-state');
+        if (vfdState) {
+          vfdState.classList.toggle('vfd-state--live', state === 'live');
+          vfdState.classList.toggle('vfd-state--idle', state === 'idle');
+        }
       }
     } catch (err) {
       console.warn('vfd-live: bad state payload', ev.data, err);
