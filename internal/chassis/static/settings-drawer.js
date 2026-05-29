@@ -256,6 +256,39 @@
     });
   });
 
+  // 4C: global HLS-override switch — single switch under the "Per-provider
+  // HLS buffer override" section. Flips hls_buffer_disabled on every Live
+  // provider in one save (server side). Same optimistic-toggle pattern
+  // as the per-provider switches.
+  const directHlsBtn = drawer.querySelector('button.switch[data-catalog-direct-hls]');
+  if (directHlsBtn) directHlsBtn.addEventListener('click', async () => {
+    if (directHlsBtn.disabled) return;
+    const next = !directHlsBtn.classList.contains('on');
+    directHlsBtn.classList.toggle('on', next);
+    directHlsBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+    const form = new URLSearchParams();
+    form.set('disabled', next ? 'true' : 'false');
+    let body = {};
+    try {
+      const res = await fetch('/receiver/settings/catalog/direct-stream-hls-buffer', {
+        method: 'POST', body: form, credentials: 'same-origin'
+      });
+      body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) return;
+    } catch (_) {
+      body = { chip: 'WRITE FAILED' };
+    }
+    directHlsBtn.classList.toggle('on', !next);
+    directHlsBtn.setAttribute('aria-pressed', !next ? 'true' : 'false');
+    if (body.errors) {
+      showNotice('BAD INPUT', 'err');
+    } else if (body.chip) {
+      showNotice(body.chip, 'err');
+    } else {
+      showNotice('WRITE FAILED', 'err');
+    }
+  });
+
   // Probe action: single-flight, renders result into #probe-mister-result.
   const probeBtn = document.getElementById('probe-mister-btn');
   const probeOut = document.getElementById('probe-mister-result');
