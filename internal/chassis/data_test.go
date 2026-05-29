@@ -462,3 +462,54 @@ func TestSettingsData_PopulatesAdapters(t *testing.T) {
 		t.Errorf("dlna pane not populated: %+v", byName)
 	}
 }
+
+func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"streams": {
+				"enabled":      true,
+				"manifest_url": "https://x/y.json",
+			},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	cat := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "youtube", DisplayName: "YouTube", CatalogRefreshHours: 12},
+			{ID: "radio", DisplayName: "Radio", CatalogRefreshHours: 0},
+		},
+	}
+	s := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+		CatalogManager:       cat,
+	}}
+	data := s.buildSettingsData()
+	var streams *AdapterPaneData
+	for i, a := range data.Adapters {
+		if a.Name == "streams" {
+			streams = &data.Adapters[i]
+			break
+		}
+	}
+	if streams == nil {
+		t.Fatalf("streams pane missing")
+	}
+	if len(streams.Providers) != 2 {
+		t.Fatalf("len(Providers) = %d, want 2", len(streams.Providers))
+	}
+	byID := map[string]AdapterProviderRow{}
+	for _, p := range streams.Providers {
+		byID[p.ID] = p
+	}
+	if got := byID["youtube"]; got.DisplayName != "YouTube" || got.CatalogRefreshHours != 12 {
+		t.Errorf("youtube row = %+v", got)
+	}
+	if got := byID["radio"]; got.CatalogRefreshHours != 0 {
+		t.Errorf("radio row CatalogRefreshHours = %d, want 0 (no override)", got.CatalogRefreshHours)
+	}
+}

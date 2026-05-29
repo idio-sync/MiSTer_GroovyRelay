@@ -519,15 +519,38 @@ func (s *Server) buildSettingsData() SettingsData {
 				continue
 			}
 			values, _ := saver.Current(name)
-			data.Adapters = append(data.Adapters, AdapterPaneData{
+			pane := AdapterPaneData{
 				Name:   name,
 				Hint:   "", // populated by Task 19
 				Fields: fields,
 				Values: values,
-			})
+			}
+			if name == "streams" {
+				pane.Providers = s.buildStreamsProviderRows()
+			}
+			data.Adapters = append(data.Adapters, pane)
 		}
 	}
 	return data
+}
+
+// buildStreamsProviderRows projects 4C's CatalogManager.Providers()
+// output into the Streams-pane per-provider override row shape.
+// Returns nil when CatalogManager is unwired (offline tests).
+func (s *Server) buildStreamsProviderRows() []AdapterProviderRow {
+	if s.cfg.CatalogManager == nil {
+		return nil
+	}
+	providers := s.cfg.CatalogManager.Providers()
+	rows := make([]AdapterProviderRow, 0, len(providers))
+	for _, p := range providers {
+		rows = append(rows, AdapterProviderRow{
+			ID:                  p.ID,
+			DisplayName:         p.DisplayName,
+			CatalogRefreshHours: p.CatalogRefreshHours,
+		})
+	}
+	return rows
 }
 
 // idleSnapshot returns a fully populated ReceiverPageData with State =
