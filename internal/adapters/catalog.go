@@ -11,6 +11,8 @@ type CatalogProvider struct {
 	DisplayName    string         // e.g. "MTV Rewind"
 	BadgeLabel     string         // e.g. "MTV" — small text in .ic glyph
 	BadgeClass     string         // e.g. "mtv" | "cartoon" | "toonami" — CSS hook
+	Origin         string         // 4C: parsed BaseURL.Host of the provider's manifest, e.g. "wantmymtv.vercel.app"
+	Kind           string         // 4C: provider-type tag, e.g. "youtube-channel-json" | "direct-streams"
 	Live           bool           // whole provider is always-live (direct streams)
 	DefaultChannel string         // for the catalog's initial selection
 	Groups         []CatalogGroup // ordered
