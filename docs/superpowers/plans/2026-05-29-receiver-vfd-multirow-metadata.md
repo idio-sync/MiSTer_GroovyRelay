@@ -302,7 +302,7 @@ Append to `internal/chassis/chassis_test.go` (it already imports `net/http`, `ne
 
 ```go
 func TestHandleIndex_RendersThreeVfdTierHooks(t *testing.T) {
-	s := newTestChassisServer(t) // same constructor used by TestHandleIndex_RendersShell200
+	s := newTestServer(t) // existing helper at chassis_test.go:83
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
@@ -320,7 +320,7 @@ func TestHandleIndex_RendersThreeVfdTierHooks(t *testing.T) {
 }
 ```
 
-> If `newTestChassisServer` is not the exact helper name, mirror the construction in `TestHandleIndex_RendersShell200` (~chassis_test.go:889) verbatim — same `chassis.New(cfg)` / `Config` it builds.
+> `newTestServer(t)` is defined at chassis_test.go:83 and returns a `*Server` ready to `Mount`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -365,7 +365,7 @@ Append to `internal/chassis/chassis_test.go`:
 
 ```go
 func TestStaticCSS_HasVfdTierAndScrollRules(t *testing.T) {
-	s := newTestChassisServer(t)
+	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
@@ -491,7 +491,7 @@ Append to `internal/chassis/chassis_test.go`:
 
 ```go
 func TestStaticJS_VfdLiveUsesTierHooks(t *testing.T) {
-	s := newTestChassisServer(t)
+	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
@@ -800,7 +800,7 @@ Append to `internal/adapters/plex/companion_test.go`:
 
 ```go
 func TestMusicSessionRequestForPlay_SetsDisplayTiers(t *testing.T) {
-	c := &Companion{cfg: Config{DeviceUUID: "dev", DeviceName: "Relay"}}
+	c := NewCompanion(CompanionConfig{DeviceUUID: "dev", DeviceName: "Relay"}, nil)
 	p := PlayMediaRequest{Title: "Midnight City", MediaKey: "/library/metadata/1", TranscodeSessionID: "ts"}
 	md := MusicMetadata{Title: "Midnight City", Artist: "M83", Album: "Hurry Up, We're Dreaming"}
 	req := c.musicSessionRequestForPlay(p, md)
@@ -810,7 +810,7 @@ func TestMusicSessionRequestForPlay_SetsDisplayTiers(t *testing.T) {
 }
 ```
 
-> If `Companion{cfg: Config{...}}` literal construction differs, mirror the construction used by the nearest existing `companion_test.go` test for `musicSessionRequestForPlay` / `sessionRequestForPreset`.
+> `NewCompanion(CompanionConfig{...}, nil)` matches the existing pattern (e.g. companion_test.go:59).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1218,8 +1218,9 @@ Append to `internal/adapters/url/ytdlp/resolver_test.go` (mirror an existing res
 
 ```go
 func TestResolve_ParsesChannelAndUploadDate(t *testing.T) {
-	json := `{"url":"https://v/stream.mp4","title":"Repaired a Trinitron","channel":"Tech Connections","upload_date":"20240315"}`
-	r := &Resolver{Binary: "yt-dlp", Timeout: time.Second, Runner: stubRunner(json, "")}
+	jsonOut := `{"url":"https://v/stream.mp4","title":"Repaired a Trinitron","channel":"Tech Connections","upload_date":"20240315"}`
+	runner := &stubRunner{stdouts: [][]byte{[]byte(jsonOut)}}
+	r := &Resolver{Binary: "yt-dlp", Timeout: time.Second, Runner: runner}
 	res, err := r.Resolve(context.Background(), "https://example/watch", "best", "")
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -1230,7 +1231,7 @@ func TestResolve_ParsesChannelAndUploadDate(t *testing.T) {
 }
 ```
 
-> Use whatever the existing tests name the runner stub (grep `Runner` in `resolver_test.go`); the JSON content is what matters.
+> `stubRunner{stdouts: [][]byte{...}}` matches the existing resolver_test.go stub (resolver_test.go:13, used at :53).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1408,13 +1409,14 @@ git commit -m "feat(streams): VFD tiers (channel/provider/item) for streams + sa
 ## Task 15: DLNA title plumbing + tiers
 
 **Files:**
-- Modify: `internal/adapters/dlna/play.go:406-414` (set `Title` + `DisplayMetadata`), and the `SetAVTransportURI` DIDL-parse site to store the last title on the adapter struct.
+- Modify: `internal/adapters/dlna/play.go:406-414` (set `Title` + `DisplayMetadata` from the already-parsed DIDL metadata)
 - Test: `internal/adapters/dlna/play_test.go`
 
-- [ ] **Step 1: Inspect the DIDL parse + adapter struct**
+The adapter already stores parsed DIDL-Lite metadata: `a.loadedMeta DIDLMetadata` (adapter.go:150), set during `SetAVTransportURI` (set_avtransport_uri.go:68) and read elsewhere under `a.mu` (avtransport.go:119). `DIDLMetadata.Title` exists (metadata.go:170). `play()` currently sets NO `Title` — we add `Title` + `DisplayMetadata` from `a.loadedMeta.Title`, so **no new struct field is needed.**
 
-Run: `grep -n "DIDLMetadata\|lastDIDL\|SetAVTransportURI\|type Adapter struct" internal/adapters/dlna/*.go`
-This locates (a) the `Adapter` struct, (b) where `SetAVTransportURI` parses the DIDL title.
+- [ ] **Step 1: Confirm the source field**
+
+`a.loadedMeta.Title` (field of type `DIDLMetadata`, adapter.go:150) holds the parsed title; `play()` reads it under `a.mu`. No new field is required.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -1439,21 +1441,7 @@ Expected: FAIL — undefined `dlnaDisplayMetadata`.
 
 - [ ] **Step 4: Implement**
 
-Add a field to the DLNA `Adapter` struct (guarded by the existing `a.mu` it already uses around `loadedPlaybackURI`):
-
-```go
-	lastDIDLTitle string // most recent DIDL-Lite title from SetAVTransportURI
-```
-
-In `SetAVTransportURI`, where the DIDL metadata is parsed, store the title under the lock:
-
-```go
-	a.mu.Lock()
-	a.lastDIDLTitle = strings.TrimSpace(didl.Title) // use the parsed DIDLMetadata.Title variable name from that site
-	a.mu.Unlock()
-```
-
-Add the helper and use it in `play()`:
+Add the helper and use it in `play()` (the parsed title already lives on `a.loadedMeta`):
 
 ```go
 func dlnaDisplayMetadata(title string) core.DisplayMetadata {
@@ -1465,7 +1453,7 @@ In `play()` (406-414), read the stored title and set both `Title` and `DisplayMe
 
 ```go
 	a.mu.Lock()
-	didlTitle := a.lastDIDLTitle
+	didlTitle := a.loadedMeta.Title
 	a.mu.Unlock()
 	req := core.SessionRequest{
 		StreamURL:        playbackURI,
