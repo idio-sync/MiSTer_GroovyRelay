@@ -4442,3 +4442,23 @@ body.receiver .settings-panel .action-btn.confirm {
   color: oklch(0.78 0.16 25);
   border-color: oklch(0.40 0.16 25);
 }
+
+/* 4D: adapter pane — hint badge inline in section heading. */
+body.receiver .settings-section .hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--vfd-faded);
+  letter-spacing: 0;
+  margin-left: 8px;
+  text-transform: uppercase;
+}
+
+/* 4D: adapter pane — subheading between field groups. */
+body.receiver .settings-subhead {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vfd-faded);
+  letter-spacing: 0;
+  text-transform: uppercase;
+  margin: 18px 0 6px 0;
+}

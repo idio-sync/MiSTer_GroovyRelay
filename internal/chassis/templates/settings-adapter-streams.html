@@ -1,0 +1,32 @@
+{{- define "settings-adapter-streams" -}}
+<section class="settings-section">
+  <h4>Streams catalog <span class="hint">{{ .Hint }}</span></h4>
+  {{ range .Fields }}
+    {{ if not (isProviderOverrideField .Key) }}
+    {{ if isStreamsBytesField .Key }}
+      {{ template "adapter-field-row-bytes" (dict "Adapter" "streams" "Field" . "Values" $.Values) }}
+    {{ else }}
+      {{ template "adapter-field-row" (dict "Adapter" "streams" "Field" . "Values" $.Values) }}
+    {{ end }}
+    {{ end }}
+  {{ end }}
+
+  {{ if .Providers }}
+  <h5 class="settings-subhead">Provider overrides</h5>
+  {{ range .Providers }}
+  <div class="field-row provider-override">
+    <label>{{ .DisplayName }} <span class="help">Refresh cadence override; 0 = inherit global.</span></label>
+    <input class="field-input num" name="providers.{{ .ID }}.catalog_refresh_hours"
+      data-adapter="streams" value="{{ if gt .CatalogRefreshHours 0 }}{{ .CatalogRefreshHours }}{{ end }}">
+    <span class="scope hot">HOT</span>
+  </div>
+  {{ end }}
+  {{ end }}
+
+  <div class="field-row action-row">
+    <label>Manifest refresh</label>
+    <button class="action-btn" data-settings-action="streams-refresh" type="button">↻ Refresh manifest now</button>
+    <span class="action-result" id="streams-refresh-result"></span>
+  </div>
+</section>
+{{- end -}}

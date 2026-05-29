@@ -110,6 +110,10 @@ type Config struct {
 	// 4C: catalog pane state mutation + restore-defaults action.
 	CatalogManager CatalogSettingsManager
 	ConfigReset    ConfigReset
+
+	// 4D: adapter settings pane persistence and streams manifest refresh.
+	AdapterSettingsSaver AdapterSettingsSaver
+	StreamsRefresher     StreamsRefresher
 }
 
 // Server owns the chassis runtime state.
@@ -143,6 +147,11 @@ type Server struct {
 	cacheOnce   sync.Once          // Mount starts the refresher exactly once
 	cacheCancel context.CancelFunc // Close() signals the refresher to exit
 	cacheDone   chan struct{}      // closed when the refresher goroutine returns
+
+	// streamsRefreshGate enforces single-flight for the /streams-refresh
+	// action on this server instance. Per-server (not process-wide) so that
+	// tests with independent Server values do not share state.
+	streamsRefreshGate sync.Mutex
 
 	meterRefusalLog *onePerSecondLimiter
 }
@@ -270,6 +279,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsCatalogDirectStreamHLSBufferPost)))
 	mux.Handle("POST /receiver/settings/action/restore-defaults",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionRestoreDefaults)))
+	mux.Handle("POST /receiver/settings/adapter/{name}",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterPost)))
+	mux.Handle("POST /receiver/settings/action/streams-refresh",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionStreamsRefresh)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

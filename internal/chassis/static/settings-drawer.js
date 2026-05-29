@@ -141,7 +141,7 @@
   });
 
   // Wire blur on text/number/password/path inputs; change on selects.
-  drawer.querySelectorAll('input.field-input, select.field-input').forEach(el => {
+  drawer.querySelectorAll('input.field-input[data-field], select.field-input[data-field]').forEach(el => {
     const evt = el.tagName === 'SELECT' ? 'change' : 'blur';
     el.addEventListener(evt, async () => {
       const name = el.name;
@@ -480,6 +480,129 @@
 
     idleBtn.addEventListener('click', toArmed);
   })();
+
+  // Adapter save handlers — mirror the 4A bridge handlers but POST to
+  // /receiver/settings/adapter/{adapter} with the adapter name pulled
+  // from the data-adapter attribute. [data-field] and [data-adapter]
+  // never coexist on one element, so bridge + adapter paths never both fire.
+
+  document.addEventListener('click', (ev) => {
+    const sw = ev.target.closest('button.switch[data-adapter]');
+    if (!sw) return;
+    ev.preventDefault();
+    toggleAdapterSwitch(sw);
+  });
+
+  document.addEventListener('blur', (ev) => {
+    const inp = ev.target.closest && ev.target.closest('input.field-input[data-adapter]');
+    if (!inp) return;
+    saveAdapterField(inp);
+  }, true);
+
+  async function toggleAdapterSwitch(btn) {
+    const adapter = btn.getAttribute('data-adapter');
+    const key = btn.getAttribute('name');
+    const wasOn = btn.classList.contains('on');
+    btn.classList.toggle('on');
+    const body = new URLSearchParams();
+    body.set(key, wasOn ? 'false' : 'true');
+    try {
+      const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const payload = await res.json();
+      if (!payload.ok) {
+        btn.classList.toggle('on', wasOn); // revert optimistic toggle to pre-click state
+      }
+      handleAdapterSaveResponse(btn, payload);
+    } catch (e) {
+      btn.classList.toggle('on');
+      showNotice('NETWORK ERROR', 'err');
+    }
+  }
+
+  async function saveAdapterField(inp) {
+    const adapter = inp.getAttribute('data-adapter');
+    const key = inp.getAttribute('name');
+    if (inp.dataset.lastSaved === inp.value) return;
+    const body = new URLSearchParams();
+    body.set(key, inp.value);
+    try {
+      const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const payload = await res.json();
+      handleAdapterSaveResponse(inp, payload);
+      if (payload.ok) inp.dataset.lastSaved = inp.value;
+    } catch (e) {
+      showNotice('NETWORK ERROR', 'err');
+    }
+  }
+
+  function handleAdapterSaveResponse(target, payload) {
+    const key = target.getAttribute('name');
+    if (payload.ok) {
+      if (payload.scope === 'reboot') {
+        const labelEl = target.closest('.field-row')?.querySelector('label');
+        const labelText = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() || key;
+        showNotice(`Restart container to apply new ${labelText}`, 'ok');
+      }
+      clearFieldError(key);
+      return;
+    }
+    if (payload.errors) {
+      const msg = payload.errors[key];
+      if (msg) paintFieldError(key, msg);
+      return;
+    }
+    if (payload.chip) {
+      showNotice(payload.chip, 'err');
+    }
+  }
+
+  // Streams-refresh action handler: single-flight, renders result into
+  // #streams-refresh-result. Toasts chip errors into the drawer notice slot.
+  document.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-settings-action="streams-refresh"]');
+    if (!btn) return;
+    ev.preventDefault();
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const slot = document.getElementById('streams-refresh-result');
+    if (slot) {
+      slot.textContent = '…';
+      slot.classList.remove('ok', 'err', 'shown');
+      slot.classList.add('shown');
+    }
+    try {
+      const res = await fetch('/receiver/settings/action/streams-refresh', { method: 'POST' });
+      const payload = await res.json();
+      if (slot) {
+        if (payload.ok) {
+          slot.textContent = payload.summary || 'Refreshed';
+          slot.classList.add('ok');
+        } else if (payload.chip) {
+          showNotice(payload.chip, 'err');
+          slot.textContent = '';
+          slot.classList.remove('shown');
+        } else if (payload.error) {
+          slot.textContent = payload.error;
+          slot.classList.add('err');
+        }
+      }
+    } catch (e) {
+      if (slot) {
+        slot.textContent = 'Network error';
+        slot.classList.add('err');
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;

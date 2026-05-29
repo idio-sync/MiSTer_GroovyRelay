@@ -3577,23 +3577,17 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	}
 	s := buf.String()
 
-	// pipeline, advanced, and catalog are now real panes; only adapters
-	// remains as a stub pending 4D–4F.
-	stillStubs := []struct{ pane, spec string }{
-		{"adapters", "4D"},
-	}
-	for _, w := range stillStubs {
-		paneTag := fmt.Sprintf(`data-pane="%s"`, w.pane)
-		if !strings.Contains(s, paneTag) {
-			t.Errorf("missing pane %q", paneTag)
-		}
-		if !strings.Contains(s, fmt.Sprintf("Spec %s", w.spec)) {
-			t.Errorf("missing Spec %s label for pane %s", w.spec, w.pane)
+	// pipeline, advanced, catalog, and adapters are now real panes. The
+	// adapters pane (4D) still carries the per-adapter Plex/URL/Jellyfin
+	// stubs pending specs 4E/4F, so those spec labels remain visible.
+	for _, spec := range []string{"Spec 4E", "Spec 4F"} {
+		if !strings.Contains(s, spec) {
+			t.Errorf("missing %q label (per-adapter stub) in adapters pane", spec)
 		}
 	}
 
 	// Real panes must be present.
-	for _, pane := range []string{"pipeline", "advanced", "catalog"} {
+	for _, pane := range []string{"adapters", "pipeline", "advanced", "catalog"} {
 		if !strings.Contains(s, fmt.Sprintf(`data-pane="%s"`, pane)) {
 			t.Errorf("missing pane %q in drawer", pane)
 		}
@@ -3860,6 +3854,49 @@ func TestFieldHelper_SwitchIncludesNameForErrorPainting(t *testing.T) {
 	}
 }
 
+// TestFieldHelper_BridgeInputsCarryDataField pins the mutual-exclusivity
+// invariant: bridge fields (no Adapter) are addressed by data-field; adapter
+// fields (Adapter set) by data-adapter, never both. This keeps the 4A bridge
+// JS handlers ([data-field]) from matching adapter inputs and the 4D adapter
+// JS handlers ([data-adapter]) from matching bridge inputs.
+func TestFieldHelper_BridgeInputsCarryDataField(t *testing.T) {
+	t.Parallel()
+
+	// Bridge text field (no Adapter) must carry data-field, not data-adapter.
+	bridge := string(fieldHelper(map[string]any{
+		"Name":  "logging_debug",
+		"Type":  "text",
+		"Label": "Debug logging",
+		"Value": "x",
+		"Scope": "hot",
+	}))
+	if !strings.Contains(bridge, `type="text"`) && !strings.Contains(bridge, `class="field-input`) {
+		t.Fatalf("expected a text input in bridge render: %s", bridge)
+	}
+	if !strings.Contains(bridge, `data-field="logging_debug"`) {
+		t.Errorf("bridge text field missing data-field: %s", bridge)
+	}
+	if strings.Contains(bridge, `data-adapter=`) {
+		t.Errorf("bridge text field must not carry data-adapter: %s", bridge)
+	}
+
+	// Adapter text field (Adapter set) must carry data-adapter, not data-field.
+	adapter := string(fieldHelper(map[string]any{
+		"Name":    "download_dir",
+		"Type":    "text",
+		"Label":   "Download dir",
+		"Value":   "/downloads",
+		"Scope":   "recast",
+		"Adapter": "torrent",
+	}))
+	if !strings.Contains(adapter, `data-adapter="torrent"`) {
+		t.Errorf("adapter text field missing data-adapter: %s", adapter)
+	}
+	if strings.Contains(adapter, `data-field=`) {
+		t.Errorf("adapter text field must not carry data-field: %s", adapter)
+	}
+}
+
 func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 	t.Parallel()
 	tmpl, err := parseTemplates()
@@ -3884,7 +3921,7 @@ func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 		`name="video_modeline"`,
 		`name="video_interlace_field_order"`,
 		`name="video_aspect_mode"`,
-		`data-field="video_lz4_enabled"`,        // switch renders <button data-field=...>
+		`data-field="video_lz4_enabled"`, // switch renders <button data-field=...>
 		`data-field="video_delta_lz4_enabled"`,
 		`name="audio_sample_rate"`,
 		`name="audio_channels"`,
@@ -3892,7 +3929,7 @@ func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 		`name="mister_ssh_password"`,
 		`id="launch-core-btn"`,
 		`id="launch-core-result"`,
-		`<span class="scope hot">HOT</span>`,    // interlace + ssh_user + ssh_password
+		`<span class="scope hot">HOT</span>`,       // interlace + ssh_user + ssh_password
 		`<span class="scope recast">RECAST</span>`, // most other Pipeline fields
 		`data-skip-empty="true"`,
 		`••••••••`, // placeholder for stored password
@@ -4140,4 +4177,430 @@ func renderAdvancedPane(t *testing.T, data SettingsData) string {
 		t.Fatalf("execute settings-advanced: %v", err)
 	}
 	return buf.String()
+}
+
+// renderDrawer renders the full settings-drawer template against the given
+// SettingsData. Shared by the 4D adapters-pane render tests. The adapters
+// pane is composed inside the drawer, so executing the drawer exercises the
+// real composition path (settings-adapters -> per-adapter sub-templates).
+func renderDrawer(t *testing.T, data SettingsData) string {
+	t.Helper()
+	tmpl := parseTemplatesForTest(t)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-drawer", data); err != nil {
+		t.Fatalf("execute settings-drawer: %v", err)
+	}
+	return buf.String()
+}
+
+// streamsTopLevelFieldsForTest returns the streams adapter top-level field
+// set used by the 4D render tests. Mirrors the real streams adapter Fields()
+// shape closely enough to exercise the template's kind/scope/bytes branches.
+func streamsTopLevelFieldsForTest() []adapters.FieldDef {
+	return []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "manifest_url", Kind: adapters.KindText, Label: "Manifest URL", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "manifest_refresh_hours", Kind: adapters.KindInt, Label: "Manifest refresh (h)", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "catalog_refresh_hours", Kind: adapters.KindInt, Label: "Catalog refresh (h)", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "max_manifest_bytes", Kind: adapters.KindInt, Label: "Max manifest bytes", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "youtube_format", Kind: adapters.KindText, Label: "YouTube format", ApplyScope: adapters.ScopeRestartCast},
+		{Key: "allow_remote_manifest", Kind: adapters.KindBool, Label: "Allow remote manifest", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "allow_local_manifest_urls", Kind: adapters.KindBool, Label: "Allow local manifest URLs", ApplyScope: adapters.ScopeHotSwap},
+		{Key: "remote_provider_allowed_hosts", Kind: adapters.KindText, Label: "Remote provider allowed hosts", ApplyScope: adapters.ScopeHotSwap},
+	}
+}
+
+func TestSettingsAdaptersTemplate_RendersSixSections(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Errors: map[string]string{},
+		Adapters: []AdapterPaneData{
+			{Name: "dlna", Hint: "PUSH · LISTENING", Fields: []adapters.FieldDef{
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+			}, Values: map[string]any{"enabled": true}},
+			{Name: "torrent", Hint: "PASTE-IN · BT", Fields: []adapters.FieldDef{
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+			}, Values: map[string]any{"enabled": false}},
+			{Name: "streams", Hint: "PULL · 0 CHANNELS", Fields: []adapters.FieldDef{
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+			}, Values: map[string]any{"enabled": true}},
+		},
+	}
+	s := renderDrawer(t, data)
+	// Section headers carry a trailing space before the <span class="hint">,
+	// so the faithful header assertion is ">Plex " not ">Plex<".
+	for _, want := range []string{
+		">Plex ", ">DLNA ", ">URL ", ">Torrent ", ">Jellyfin ", ">Streams catalog ",
+		">— pending<",
+		"Spec 4E", "Spec 4F",
+		"PUSH ·", "PASTE-IN · BT", "PULL ·",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered adapters pane", want)
+		}
+	}
+}
+
+func TestSettingsAdapterDLNATemplate_RendersFields(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Errors: map[string]string{},
+		Adapters: []AdapterPaneData{
+			{Name: "dlna", Hint: "PUSH · LISTENING", Fields: []adapters.FieldDef{
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "device_name", Kind: adapters.KindText, Label: "Device name", ApplyScope: adapters.ScopeRestartBridge},
+				{Key: "autoplay_on_set_uri", Kind: adapters.KindBool, Label: "Autoplay on SetAVTransportURI", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "allow_public_source_urls", Kind: adapters.KindBool, Label: "Allow public source URLs", ApplyScope: adapters.ScopeHotSwap},
+			}, Values: map[string]any{
+				"enabled":                  true,
+				"device_name":              "GROOVY",
+				"autoplay_on_set_uri":      true,
+				"allow_public_source_urls": false,
+			}},
+		},
+	}
+	s := renderDrawer(t, data)
+	for _, want := range []string{
+		`name="enabled"`,
+		`name="device_name"`,
+		`name="autoplay_on_set_uri"`,
+		`name="allow_public_source_urls"`,
+		`<span class="scope hot">HOT</span>`,
+		`<span class="scope reboot">REBOOT</span>`,
+		`data-adapter="dlna"`,
+		"PUSH · LISTENING",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered DLNA pane", want)
+		}
+	}
+}
+
+func TestSettingsAdapterTorrentTemplate_RendersFields(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Errors: map[string]string{},
+		Adapters: []AdapterPaneData{
+			{Name: "torrent", Hint: "PASTE-IN · BT", Fields: []adapters.FieldDef{
+				{Key: "traffic_acknowledged", Kind: adapters.KindBool, Label: "BT traffic acknowledged", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "download_dir", Kind: adapters.KindText, Label: "Download dir", ApplyScope: adapters.ScopeRestartCast},
+				{Key: "max_cache_bytes", Kind: adapters.KindInt, Label: "Max cache bytes", ApplyScope: adapters.ScopeRestartCast},
+			}, Values: map[string]any{
+				"traffic_acknowledged": false,
+				"download_dir":         "/downloads",
+				"max_cache_bytes":      int64(20 * 1024 * 1024 * 1024),
+			}},
+		},
+	}
+	s := renderDrawer(t, data)
+	for _, want := range []string{
+		`<section class="settings-section wide"`,
+		">Torrent <",
+		"PASTE-IN · BT",
+		`name="traffic_acknowledged"`,
+		`name="download_dir"`,
+		`name="max_cache_bytes"`,
+		"20 GB",
+		`<span class="scope recast">RECAST</span>`,
+		`<span class="scope hot">HOT</span>`,
+		`data-adapter="torrent"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered Torrent pane", want)
+		}
+	}
+}
+
+func TestSettingsAdapterStreamsTemplate_RendersTopLevelFields(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Errors: map[string]string{},
+		Adapters: []AdapterPaneData{
+			{Name: "streams", Hint: "PULL · 0 CHANNELS", Fields: streamsTopLevelFieldsForTest(), Values: map[string]any{
+				"enabled":                       true,
+				"manifest_url":                  "https://x/y.json",
+				"manifest_refresh_hours":        int64(6),
+				"catalog_refresh_hours":         int64(12),
+				"max_manifest_bytes":            int64(4 * 1024 * 1024),
+				"youtube_format":                "bestvideo",
+				"allow_remote_manifest":         false,
+				"allow_local_manifest_urls":     false,
+				"remote_provider_allowed_hosts": "",
+			}},
+		},
+	}
+	s := renderDrawer(t, data)
+	for _, want := range []string{
+		">Streams catalog <",
+		"PULL ·",
+		`name="enabled"`,
+		`name="manifest_url"`,
+		`name="manifest_refresh_hours"`,
+		`name="catalog_refresh_hours"`,
+		`name="max_manifest_bytes"`,
+		`name="youtube_format"`,
+		`name="allow_remote_manifest"`,
+		`name="allow_local_manifest_urls"`,
+		`name="remote_provider_allowed_hosts"`,
+		`data-adapter="streams"`,
+		`<span class="scope recast">RECAST</span>`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered Streams pane", want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 25 — provider rows + refresh action render tests
+// ---------------------------------------------------------------------------
+
+func TestSettingsAdapterStreams_RendersProviderRows(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"streams": {"enabled": true, "manifest_url": "https://x/y.json"},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "manifest_url", Kind: adapters.KindText, Label: "Manifest URL", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	cat := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "youtube", DisplayName: "YouTube", CatalogRefreshHours: 12},
+			{ID: "radio", DisplayName: "Radio", CatalogRefreshHours: 0},
+		},
+	}
+	srv := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+		CatalogManager:       cat,
+	}}
+	html := renderDrawer(t, srv.buildSettingsData())
+	for _, want := range []string{
+		`<h5 class="settings-subhead">Provider overrides</h5>`,
+		`name="providers.youtube.catalog_refresh_hours"`,
+		`name="providers.radio.catalog_refresh_hours"`,
+		`value="12"`,
+		`>YouTube `,
+		`>Radio `,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in rendered Streams provider rows", want)
+		}
+	}
+}
+
+func TestSettingsAdapterStreams_RendersRefreshAction(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"streams": {"enabled": true},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	srv := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+	}}
+	html := renderDrawer(t, srv.buildSettingsData())
+	for _, want := range []string{
+		`data-settings-action="streams-refresh"`,
+		`↻ Refresh manifest now`,
+		`id="streams-refresh-result"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in rendered Streams refresh action row", want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 26 — mockup scope-mismatch test
+// ---------------------------------------------------------------------------
+
+func TestMockupScopeMismatches(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"torrent": {
+				"enabled": false, "download_dir": "", "startup_buffer_seconds": int64(10),
+				"max_upload_rate_kbps": int64(512), "max_download_rate_kbps": int64(0),
+				"listen_port": int64(0), "max_cache_bytes": int64(20 << 30),
+				"metadata_timeout_seconds": int64(60), "keep_completed": false, "traffic_acknowledged": false,
+			},
+			"dlna": {"enabled": false, "device_name": "M"},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"torrent": {
+				{Key: "enabled", Kind: adapters.KindBool, ApplyScope: adapters.ScopeHotSwap},
+				{Key: "download_dir", Kind: adapters.KindText, ApplyScope: adapters.ScopeRestartCast},
+				{Key: "startup_buffer_seconds", Kind: adapters.KindInt, ApplyScope: adapters.ScopeHotSwap},
+				{Key: "max_upload_rate_kbps", Kind: adapters.KindInt, ApplyScope: adapters.ScopeRestartCast},
+				{Key: "max_download_rate_kbps", Kind: adapters.KindInt, ApplyScope: adapters.ScopeRestartCast},
+				{Key: "listen_port", Kind: adapters.KindInt, ApplyScope: adapters.ScopeRestartCast},
+			},
+			"dlna": {
+				{Key: "enabled", Kind: adapters.KindBool, ApplyScope: adapters.ScopeHotSwap},
+				{Key: "device_name", Kind: adapters.KindText, ApplyScope: adapters.ScopeRestartBridge},
+			},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	html := renderDrawer(t, s.buildSettingsData())
+	pairs := []struct{ key, scope string }{
+		{"name=\"enabled\"", "hot"},
+		{"name=\"download_dir\"", "recast"},
+		{"name=\"startup_buffer_seconds\"", "hot"},
+		{"name=\"max_upload_rate_kbps\"", "recast"},
+		{"name=\"max_download_rate_kbps\"", "recast"},
+		{"name=\"listen_port\"", "recast"},
+		{"name=\"device_name\"", "reboot"},
+	}
+	for _, p := range pairs {
+		idx := strings.Index(html, p.key)
+		if idx < 0 {
+			t.Errorf("row for %s missing", p.key)
+			continue
+		}
+		end := idx + 500
+		if end > len(html) {
+			end = len(html)
+		}
+		window := html[idx:end]
+		want := fmt.Sprintf(`scope %s`, p.scope)
+		if !strings.Contains(window, want) {
+			t.Errorf("row for %s does not contain scope %s; window:\n%s", p.key, p.scope, window)
+		}
+	}
+}
+
+func TestChassisCSS_ContainsSettingsHintRule(t *testing.T) {
+	t.Parallel()
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile chassis.css: %v", err)
+	}
+	css := string(cssBytes)
+	for _, want := range []string{
+		`body.receiver .settings-section .hint`,
+		`body.receiver .settings-subhead`,
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("chassis.css missing selector %q", want)
+		}
+	}
+}
+
+func TestSettingsDrawerJS_BridgeSelectorsNarrowedToDataField(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	src := string(js)
+	for _, want := range []string{
+		`input.field-input[data-field]`,
+		`select.field-input[data-field]`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("settings-drawer.js missing narrowed selector %q", want)
+		}
+	}
+	for _, banned := range []string{
+		`'input.field-input'`,
+		`"input.field-input"`,
+		`'select.field-input'`,
+		`"select.field-input"`,
+	} {
+		if strings.Contains(src, banned) {
+			t.Errorf("settings-drawer.js still contains un-narrowed selector %q — adapter inputs would double-fire", banned)
+		}
+	}
+}
+
+func TestSettingsDrawerJS_HandlesAdapterAttribute(t *testing.T) {
+	t.Parallel()
+	jsBytes, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		`button.switch[data-adapter]`,
+		`input.field-input[data-adapter]`,
+		`/receiver/settings/adapter/`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("settings-drawer.js missing %q", want)
+		}
+	}
+}
+
+func TestSettingsDrawerJS_StreamsRefreshHandler(t *testing.T) {
+	t.Parallel()
+	jsBytes, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		`data-settings-action="streams-refresh"`,
+		`/receiver/settings/action/streams-refresh`,
+		`disabled`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("settings-drawer.js missing %q", want)
+		}
+	}
+}
+
+func TestSettingsDrawerJS_AdapterRebootToastUsesLabel(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	src := string(js)
+	// The adapter reboot-toast path must derive the human label from the
+	// field row's <label> (like the 4A bridge handler), not the raw key or aria-label.
+	if strings.Contains(src, "getAttribute('aria-label') || key") {
+		t.Errorf("adapter reboot toast still uses aria-label||key instead of the field-row label")
+	}
+}
+
+func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T) {
+	t.Parallel()
+	// Even if catalog-owned per-provider keys reach the pane's Fields (they
+	// shouldn't in production — the cmd projection strips them), the template's
+	// isProviderOverrideField guard must keep them out of the rendered form.
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "providers.youtube.disabled", Kind: adapters.KindBool, Label: "Disabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "providers.youtube.hls_buffer_disabled", Kind: adapters.KindBool, Label: "HLS buffer disabled", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	html := renderDrawer(t, s.buildSettingsData())
+	for _, banned := range []string{
+		`name="providers.youtube.disabled"`,
+		`name="providers.youtube.hls_buffer_disabled"`,
+	} {
+		if strings.Contains(html, banned) {
+			t.Errorf("Streams form rendered Catalog-owned key as input: %q", banned)
+		}
+	}
 }

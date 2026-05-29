@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -86,6 +87,51 @@ type CoreLauncher interface {
 	// snapshot host/credentials at call time (not at construction) so
 	// HOT-scope SSH credential edits apply without a restart.
 	Launch(ctx context.Context) error
+}
+
+// AdapterSettingsSaver is the chassis-side mirror of BridgeSettingsSaver
+// for adapter-section writes. Production binding wraps
+// *uiserver.AdapterSaver + the adapter registry; the chassis does not
+// import internal/uiserver or any concrete adapter package.
+type AdapterSettingsSaver interface {
+	// Current returns the adapter's current in-memory values, keyed by
+	// FieldDef.Key. Returns (nil, false) for unknown adapter names.
+	Current(name string) (map[string]any, bool)
+
+	// Fields returns the 4D writable FieldDef surface. DLNA/Torrent return
+	// their full FieldDef table; Streams returns top-level fields plus a
+	// wildcard providers.*.catalog_refresh_hours allowlist entry. Template
+	// rendering skips provider wildcard rows and renders provider overrides
+	// from AdapterPaneData. Returns (nil, false) for unknown adapter names.
+	Fields(name string) ([]adapters.FieldDef, bool)
+
+	// SaveTouched applies the touched-keys subset to the adapter's
+	// [adapters.<name>] TOML section, validates, writes atomically,
+	// and dispatches the runtime apply. Returns the wire scope label
+	// ("hot" / "next" / "recast" / "reboot") and a typed error
+	// implementing settingsChipError on failure. Mirror of
+	// BridgeSettingsSaver.SaveTouched.
+	SaveTouched(name string, touched map[string]string) (string, error)
+}
+
+// StreamsRefresher is the chassis-side interface backing the
+// /receiver/settings/action/streams-refresh action. Production binding
+// wraps *streams.Adapter.RefreshNow(ctx, "") — the canonical manifest-
+// refresh entry point. The chassis does not import internal/adapters/streams.
+type StreamsRefresher interface {
+	// RefreshNow fetches the streams manifest (and ripples to provider
+	// catalogs as a side effect). The returned result carries the
+	// source label ("remote" / "cache") and a non-nil Err if the
+	// refresh failed. The chassis handler wraps the call in a 30s
+	// context.
+	RefreshNow(ctx context.Context) (StreamsRefreshResult, error)
+}
+
+// StreamsRefreshResult is the scalar status returned by RefreshNow.
+type StreamsRefreshResult struct {
+	Source     string
+	DurationMS int64
+	Err        error
 }
 
 // settingsChipError is matched structurally so saver-layer typed errors
@@ -558,7 +604,9 @@ func scopeLabel(s adapters.ApplyScope) (string, bool) {
 }
 
 // WireLabelForScope returns the JSON wire label ("hot"/"next"/"recast"/"reboot")
-// for the given ApplyScope. Exported for cross-package drift tests.
+// for the given ApplyScope. Exported for cross-package use (drift tests and the
+// cmd-side adapter-save wrapper) to translate adapters.ApplyScope into the wire
+// label.
 func WireLabelForScope(s adapters.ApplyScope) (string, bool) { return scopeLabel(s) }
 
 // isValidHostname is a permissive RFC-952/1123-ish check: 1..253 chars
@@ -986,6 +1034,219 @@ func (s *Server) handleSettingsActionRestoreDefaults(w http.ResponseWriter, r *h
 		return
 	}
 	writeSettingsSuccess(w, "reboot")
+}
+
+// handleSettingsAdapterPost is the POST handler for
+// /receiver/settings/adapter/{name}. Validates the adapter name against the
+// saver's Fields table, rejects unknown form keys (BAD INPUT chip), then
+// delegates to AdapterSettingsSaver.SaveTouched. Error shapes are unwrapped
+// via emitSaveError.
+func (s *Server) handleSettingsAdapterPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterSettingsSaver == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	fields, ok := s.cfg.AdapterSettingsSaver.Fields(name)
+	if !ok {
+		writeSettingsChip(w, http.StatusNotFound, "UNKNOWN ADAPTER")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	touched, ferrs := touchedFromForm(r.PostForm, fields)
+	if len(ferrs) > 0 {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	if !atLeastOneKey(touched) {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	scope, err := s.cfg.AdapterSettingsSaver.SaveTouched(name, touched)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsSuccess(w, scope)
+}
+
+// touchedFromForm extracts form keys that match the adapter's FieldDef
+// schema. Unknown keys accumulate into ferrs; on any unknown key the
+// whole map is rejected (BAD INPUT). Returns (touched, nil) on clean
+// input, (nil, ferrs) if any key was unrecognised.
+func touchedFromForm(form url.Values, fields []adapters.FieldDef) (map[string]string, map[string]string) {
+	touched := map[string]string{}
+	ferrs := map[string]string{}
+	for key, values := range form {
+		if len(values) == 0 {
+			continue
+		}
+		if !keyMatchesSchema(key, fields) {
+			ferrs[key] = "unknown field"
+			continue
+		}
+		touched[key] = values[0]
+	}
+	if len(ferrs) > 0 {
+		return nil, ferrs
+	}
+	return touched, nil
+}
+
+// keyMatchesSchema reports whether key matches any FieldDef in fields.
+// Exact matches take priority; wildcard patterns (e.g. "providers.*.foo")
+// are matched via dottedKeyMatchesPattern.
+func keyMatchesSchema(key string, fields []adapters.FieldDef) bool {
+	for _, fd := range fields {
+		if fd.Key == key {
+			return true
+		}
+		if strings.Contains(fd.Key, "*") && dottedKeyMatchesPattern(key, fd.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+// dottedKeyMatchesPattern performs segment-wise matching of a dotted key
+// against a dotted pattern where "*" matches any single segment.
+// "providers.foo.bar" matches "providers.*.bar"; length mismatch is a
+// fast-reject. Used for the Streams wildcard allowlist entry
+// "providers.*.catalog_refresh_hours".
+func dottedKeyMatchesPattern(key, pattern string) bool {
+	keyParts := strings.Split(key, ".")
+	patParts := strings.Split(pattern, ".")
+	if len(keyParts) != len(patParts) {
+		return false
+	}
+	for i, p := range patParts {
+		if p == "*" {
+			continue
+		}
+		if p != keyParts[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// atLeastOneKey reports whether m has at least one entry. Named for
+// clarity at the call site; inlined by the compiler in release builds.
+func atLeastOneKey(m map[string]string) bool {
+	for range m {
+		return true
+	}
+	return false
+}
+
+// fieldErrorBearerForChassis is the named interface emitSaveError
+// unwraps adapter field errors against. cmd's *cmdAdapterFieldErrors
+// (declared in Task 32) satisfies this structurally — no concrete-type
+// coupling between layers. Declared at package scope because Go's
+// errors.As requires a named target type; anonymous interface targets
+// do not compile.
+type fieldErrorBearerForChassis interface {
+	error
+	FieldErrors() []adapters.FieldError
+}
+
+// emitSaveError unwraps typed saver errors into the appropriate JSON
+// envelope. settingsChipError carries chip + status; fieldErrorBearerForChassis
+// becomes the errors map. Falls back to a generic WRITE FAILED chip.
+func emitSaveError(w http.ResponseWriter, err error) {
+	var chipErr settingsChipError
+	if errors.As(err, &chipErr) {
+		writeSettingsChip(w, chipErr.StatusCode(), chipErr.Chip())
+		return
+	}
+	var feb fieldErrorBearerForChassis
+	if errors.As(err, &feb) {
+		ferrs := map[string]string{}
+		for _, fe := range feb.FieldErrors() {
+			ferrs[fe.Key] = fe.Msg
+		}
+		writeSettingsFieldErrors(w, http.StatusBadRequest, ferrs)
+		return
+	}
+	writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+}
+
+const streamsRefreshTimeout = 30 * time.Second
+
+// handleSettingsActionStreamsRefresh is the POST handler for
+// /receiver/settings/action/streams-refresh. Single-flight via
+// s.streamsRefreshGate.TryLock (second concurrent click → 409 BUSY).
+// The 30s timeout chains off r.Context(). Refresh failures return
+// HTTP 200 with {ok:false, error} — the action ran cleanly; the
+// refresh itself failed.
+func (s *Server) handleSettingsActionStreamsRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.StreamsRefresher == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if !s.streamsRefreshGate.TryLock() {
+		writeSettingsChip(w, http.StatusConflict, "BUSY")
+		return
+	}
+	defer s.streamsRefreshGate.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), streamsRefreshTimeout)
+	defer cancel()
+	start := time.Now()
+	result, err := s.cfg.StreamsRefresher.RefreshNow(ctx)
+	elapsed := time.Since(start)
+	if err != nil {
+		writeStreamsRefreshError(w, sanitizeRefreshError(err))
+		return
+	}
+	if result.Err != nil {
+		writeStreamsRefreshError(w, sanitizeRefreshError(result.Err))
+		return
+	}
+	durationMS := result.DurationMS
+	if durationMS == 0 {
+		durationMS = elapsed.Milliseconds()
+	}
+	writeStreamsRefreshSuccess(w, result.Source, durationMS)
+}
+
+func writeStreamsRefreshSuccess(w http.ResponseWriter, source string, durationMS int64) {
+	w.Header().Set("Content-Type", "application/json")
+	body := map[string]any{
+		"ok":          true,
+		"summary":     fmt.Sprintf("Manifest refreshed from %s in %dms", source, durationMS),
+		"source":      source,
+		"duration_ms": durationMS,
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeStreamsRefreshError(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	body := map[string]any{
+		"ok":    false,
+		"error": fmt.Sprintf("manifest refresh failed: %s", reason),
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// sanitizeRefreshError trims the upstream error message to 200 chars
+// (matching 4A's sanitizeProbeError cap) so the .action-result slot
+// has predictable size.
+func sanitizeRefreshError(err error) string {
+	const cap = 200
+	msg := strings.TrimSpace(err.Error())
+	if len(msg) > cap {
+		msg = msg[:cap-3] + "..."
+	}
+	return msg
 }
 
 var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)

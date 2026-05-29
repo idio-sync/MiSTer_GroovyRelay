@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -419,5 +420,190 @@ func TestSnapshot_SettingsLivePathCarriesBridgeSaverData(t *testing.T) {
 	)
 	if snap.Settings.Bridge.DataDir != "/from-saver-live" {
 		t.Errorf("Bridge.DataDir = %q, want /from-saver-live", snap.Settings.Bridge.DataDir)
+	}
+}
+
+func TestSettingsData_PopulatesAdapters(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"dlna":    {"enabled": true, "device_name": "M"},
+			"torrent": {"enabled": false, "traffic_acknowledged": false},
+			"streams": {"enabled": true, "manifest_url": "https://x/y.json"},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "device_name", Kind: adapters.KindText, Label: "Device name", ApplyScope: adapters.ScopeRestartBridge},
+			},
+			"torrent": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "traffic_acknowledged", Kind: adapters.KindBool, Label: "BT traffic acknowledged", ApplyScope: adapters.ScopeHotSwap},
+			},
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "manifest_url", Kind: adapters.KindText, Label: "Manifest URL", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	s := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+	}}
+	data := s.buildSettingsData()
+	if len(data.Adapters) != 3 {
+		t.Fatalf("len(Adapters) = %d, want 3", len(data.Adapters))
+	}
+	byName := map[string]AdapterPaneData{}
+	for _, a := range data.Adapters {
+		byName[a.Name] = a
+	}
+	if dlna, ok := byName["dlna"]; !ok || len(dlna.Fields) != 2 {
+		t.Errorf("dlna pane not populated: %+v", byName)
+	}
+}
+
+func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"streams": {
+				"enabled":      true,
+				"manifest_url": "https://x/y.json",
+			},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	cat := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "youtube", DisplayName: "YouTube", CatalogRefreshHours: 12},
+			{ID: "radio", DisplayName: "Radio", CatalogRefreshHours: 0},
+		},
+	}
+	s := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+		CatalogManager:       cat,
+	}}
+	data := s.buildSettingsData()
+	var streams *AdapterPaneData
+	for i, a := range data.Adapters {
+		if a.Name == "streams" {
+			streams = &data.Adapters[i]
+			break
+		}
+	}
+	if streams == nil {
+		t.Fatalf("streams pane missing")
+	}
+	if len(streams.Providers) != 2 {
+		t.Fatalf("len(Providers) = %d, want 2", len(streams.Providers))
+	}
+	byID := map[string]AdapterProviderRow{}
+	for _, p := range streams.Providers {
+		byID[p.ID] = p
+	}
+	if got := byID["youtube"]; got.DisplayName != "YouTube" || got.CatalogRefreshHours != 12 {
+		t.Errorf("youtube row = %+v", got)
+	}
+	if got := byID["radio"]; got.CatalogRefreshHours != 0 {
+		t.Errorf("radio row CatalogRefreshHours = %d, want 0 (no override)", got.CatalogRefreshHours)
+	}
+}
+
+func TestSettingsData_DLNAHint_Listening(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "dlna" {
+			if a.Hint != "PUSH · LISTENING" {
+				t.Errorf("dlna hint = %q, want 'PUSH · LISTENING'", a.Hint)
+			}
+		}
+	}
+}
+
+func TestSettingsData_DLNAHint_Disabled(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "dlna" && a.Hint != "PUSH · DISABLED" {
+			t.Errorf("dlna hint = %q, want 'PUSH · DISABLED'", a.Hint)
+		}
+	}
+}
+
+func TestSettingsData_TorrentHint_Static(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"torrent": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"torrent": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "torrent" && a.Hint != "PASTE-IN · BT" {
+			t.Errorf("torrent hint = %q, want 'PASTE-IN · BT'", a.Hint)
+		}
+	}
+}
+
+func TestSettingsData_StreamsHint_ChannelCount(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "streams" {
+			if !strings.HasPrefix(a.Hint, "PULL") || !strings.Contains(a.Hint, "CHANNELS") {
+				t.Errorf("streams hint = %q, want PULL · N CHANNELS prefix", a.Hint)
+			}
+		}
+	}
+}
+
+// TestSettingsDataFromConfig_PopulatesAdaptersInProductionPath pins the fix
+// for the Tasks 17-19 bug: the production drawer-render path runs through the
+// PACKAGE-level settingsDataFromConfig (via idleSnapshot / snapshotFromStatusView),
+// never the *Server method. This calls the package function directly and
+// asserts adapters are populated, so a regression that moves the loop back onto
+// the method (leaving production empty) fails here.
+func TestSettingsDataFromConfig_PopulatesAdaptersInProductionPath(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	cfg := Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}
+	data := settingsDataFromConfig(cfg)
+	if len(data.Adapters) < 1 {
+		t.Fatalf("len(Adapters) = %d, want >= 1 (production path must populate adapter panes)", len(data.Adapters))
 	}
 }

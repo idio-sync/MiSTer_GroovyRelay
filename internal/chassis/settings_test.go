@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1087,6 +1088,38 @@ func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
 	}
 }
 
+func TestAdapterSettingsSaver_NotReadyWhenNil(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsAdapterPost(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "NOT READY" {
+		t.Errorf("body.chip = %q, want NOT READY", got)
+	}
+}
+
+func TestStreamsRefresher_NotReadyWhenNil(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionStreamsRefresh(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "NOT READY" {
+		t.Errorf("body.chip = %q, want NOT READY", got)
+	}
+}
+
 func newTestServerForLaunchCore(saver fakeBridgeSettingsSaver, launcher CoreLauncher) *Server {
 	return &Server{
 		cfg: Config{
@@ -1538,4 +1571,546 @@ func (e *fakeChipErr) Chip() string    { return e.chip }
 func newTestServerForReset(t *testing.T, cr ConfigReset) *Server {
 	t.Helper()
 	return &Server{cfg: Config{ConfigReset: cr}}
+}
+
+// fakeAdapterSettingsSaver implements chassis.AdapterSettingsSaver for tests.
+type fakeAdapterSettingsSaver struct {
+	current map[string]map[string]any
+	fields  map[string][]adapters.FieldDef
+	saveErr error
+	scope   string
+	touched map[string]map[string]string // adapter name -> last touched map
+}
+
+func (f *fakeAdapterSettingsSaver) Current(name string) (map[string]any, bool) {
+	cur, ok := f.current[name]
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]any, len(cur))
+	for k, v := range cur {
+		out[k] = v
+	}
+	return out, true
+}
+
+func (f *fakeAdapterSettingsSaver) Fields(name string) ([]adapters.FieldDef, bool) {
+	fd, ok := f.fields[name]
+	return fd, ok
+}
+
+func (f *fakeAdapterSettingsSaver) SaveTouched(name string, touched map[string]string) (string, error) {
+	if f.touched == nil {
+		f.touched = map[string]map[string]string{}
+	}
+	f.touched[name] = touched
+	if f.saveErr != nil {
+		return "", f.saveErr
+	}
+	return f.scope, nil
+}
+
+func TestAdapterSettingsSaver_StructuralConformance(t *testing.T) {
+	t.Parallel()
+	var s AdapterSettingsSaver = &fakeAdapterSettingsSaver{}
+	_ = s
+}
+
+type fakeStreamsRefresher struct {
+	result StreamsRefreshResult
+	err    error
+	calls  atomic.Int32
+	gate   chan struct{} // optional; close to release
+}
+
+func (f *fakeStreamsRefresher) RefreshNow(ctx context.Context) (StreamsRefreshResult, error) {
+	f.calls.Add(1)
+	if f.gate != nil {
+		select {
+		case <-f.gate:
+		case <-ctx.Done():
+			return StreamsRefreshResult{}, ctx.Err()
+		}
+	}
+	if f.err != nil {
+		return f.result, f.err
+	}
+	return f.result, nil
+}
+
+func TestStreamsRefresher_StructuralConformance(t *testing.T) {
+	t.Parallel()
+	var r StreamsRefresher = &fakeStreamsRefresher{}
+	_ = r
+}
+
+func TestAdapterSettingsPost_RequiresSameOrigin(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", strings.NewReader("enabled=true"))
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Host", "127.0.0.1:32102")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Code = %d, want 403", rec.Code)
+	}
+}
+
+func TestStreamsRefresh_RequiresSameOrigin(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Host", "127.0.0.1:32102")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Code = %d, want 403", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Adapter settings POST handler tests (Task 13)
+// ---------------------------------------------------------------------------
+
+func newTestServerForAdapterSave(saver AdapterSettingsSaver) *Server {
+	return &Server{
+		cfg: Config{
+			Version:              "test",
+			StartedAt:            time.Unix(0, 0),
+			AdapterSettingsSaver: saver,
+		},
+	}
+}
+
+func postAdapterSave(t *testing.T, s *Server, name, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/"+name, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("name", name)
+	rec := httptest.NewRecorder()
+	s.handleSettingsAdapterPost(rec, req)
+	return rec
+}
+
+func TestAdapterSave_UnknownAdapter(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{},
+		fields:  map[string][]adapters.FieldDef{},
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "doesnotexist", "enabled=true")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("Code = %d, want 404", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "UNKNOWN ADAPTER" {
+		t.Errorf("body.chip = %q, want UNKNOWN ADAPTER", got)
+	}
+}
+
+func TestAdapterSave_UnknownField(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "dlna", "bogus_field=true")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "BAD INPUT" {
+		t.Errorf("body.chip = %q, want BAD INPUT", got)
+	}
+}
+
+func TestAdapterSave_MalformedBody(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := newTestServerForAdapterSave(saver)
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", strings.NewReader("%ZZ"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("name", "dlna")
+	rec := httptest.NewRecorder()
+	s.handleSettingsAdapterPost(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Adapter settings POST handler tests (Task 14) — success + error envelopes
+// ---------------------------------------------------------------------------
+
+// chassisAdapterFieldErrors is a chassis-side concrete shim that the
+// production AdapterSettingsSaver wrapper returns when SaveTouched
+// fails with per-field errors. The chassis handler unwraps it via
+// errors.As to render {ok:false, errors:{...}}.
+type chassisAdapterFieldErrors struct {
+	Errs []adapters.FieldError
+}
+
+func (e *chassisAdapterFieldErrors) Error() string                       { return "adapter field errors" }
+func (e *chassisAdapterFieldErrors) FieldErrors() []adapters.FieldError { return e.Errs }
+
+// chassisChipError is a chassis-side concrete shim for chip-style
+// errors (matches the 4A settingsChipError contract).
+type chassisChipError struct {
+	httpStatus int
+	chip       string
+}
+
+func (e *chassisChipError) Error() string   { return e.chip }
+func (e *chassisChipError) StatusCode() int { return e.httpStatus }
+func (e *chassisChipError) Chip() string    { return e.chip }
+
+// fakeSaverWithFieldErrors lets us inject a typed FieldErrors-bearing error.
+type fakeSaverWithFieldErrors struct {
+	fakeAdapterSettingsSaver
+}
+
+func (f *fakeSaverWithFieldErrors) SaveTouched(name string, touched map[string]string) (string, error) {
+	return "", &chassisAdapterFieldErrors{Errs: []adapters.FieldError{
+		{Key: "max_cache_bytes", Msg: "must be in [1 GiB, 1 TiB]"},
+	}}
+}
+
+func TestAdapterSave_Success(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "dlna", "enabled=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if ok, _ := body["ok"].(bool); !ok {
+		t.Errorf("body.ok = %v, want true", body["ok"])
+	}
+	if scope, _ := body["scope"].(string); scope != "hot" {
+		t.Errorf("body.scope = %q, want 'hot'", scope)
+	}
+	if got := saver.touched["dlna"]; got["enabled"] != "true" {
+		t.Errorf("saver.touched = %v, want enabled=true", got)
+	}
+}
+
+func TestAdapterSave_DottedProviderKey(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "streams", "providers.youtube.catalog_refresh_hours=12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	got := saver.touched["streams"]
+	if got["providers.youtube.catalog_refresh_hours"] != "12" {
+		t.Errorf("touched = %v, want dotted-key entry", got)
+	}
+}
+
+func TestAdapterSave_FieldErrors(t *testing.T) {
+	t.Parallel()
+	saver := &fakeSaverWithFieldErrors{fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"torrent": {"max_cache_bytes": int64(1 << 30)}},
+		fields: map[string][]adapters.FieldDef{
+			"torrent": {{Key: "max_cache_bytes", Kind: adapters.KindInt}},
+		},
+	}}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "torrent", "max_cache_bytes=99")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); okv {
+		t.Errorf("body.ok = true, want false")
+	}
+	errsMap, _ := body["errors"].(map[string]any)
+	if errsMap["max_cache_bytes"] != "must be in [1 GiB, 1 TiB]" {
+		t.Errorf("body.errors = %v, want max_cache_bytes message", errsMap)
+	}
+}
+
+func TestAdapterSave_ChipError(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		saveErr: &chassisChipError{httpStatus: http.StatusInternalServerError, chip: "WRITE FAILED"},
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "dlna", "enabled=true")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "WRITE FAILED" {
+		t.Errorf("body.chip = %q, want WRITE FAILED", chip)
+	}
+}
+
+func TestAdapterSave_StreamsCatalogOwnedKeysRejected(t *testing.T) {
+	t.Parallel()
+	// Saver returns the streams adapter's *projected* Fields() schema —
+	// the per-provider disabled / hls_buffer_disabled rows (Catalog-owned)
+	// are absent. The chassis handler must reject touches against those
+	// keys because they're not in the projected schema.
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	for _, key := range []string{
+		"providers.foo.disabled",
+		"providers.foo.hls_buffer_disabled",
+	} {
+		rec := postAdapterSave(t, s, "streams", key+"=true")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %s Code = %d, want 400", key, rec.Code)
+			continue
+		}
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if chip, _ := body["chip"].(string); chip != "BAD INPUT" {
+			t.Errorf("POST %s body.chip = %q, want BAD INPUT", key, chip)
+		}
+	}
+}
+
+func TestAdapterSave_StreamsCatalogRefreshHoursAccepted(t *testing.T) {
+	t.Parallel()
+	// Counter-test: the chassis-owned key MUST pass through, so the
+	// rejection above is the projection's responsibility, not a blanket
+	// providers.* rejection.
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "streams", "providers.foo.catalog_refresh_hours=12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// streams-refresh action handler tests (Task 15)
+// ---------------------------------------------------------------------------
+
+func newTestServerForStreamsRefresh(r StreamsRefresher) *Server {
+	return &Server{
+		cfg: Config{
+			Version:          "test",
+			StartedAt:        time.Unix(0, 0),
+			StreamsRefresher: r,
+		},
+	}
+}
+
+func postStreamsRefresh(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionStreamsRefresh(rec, req)
+	return rec
+}
+
+func TestStreamsRefresh_Success(t *testing.T) {
+	t.Parallel()
+	refresher := &fakeStreamsRefresher{result: StreamsRefreshResult{Source: "remote", DurationMS: 42}}
+	s := newTestServerForStreamsRefresh(refresher)
+	rec := postStreamsRefresh(t, s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); !okv {
+		t.Errorf("body.ok = %v, want true", body["ok"])
+	}
+	if src, _ := body["source"].(string); src != "remote" {
+		t.Errorf("body.source = %q, want 'remote'", src)
+	}
+	if dur, _ := body["duration_ms"].(float64); int64(dur) < 1 {
+		t.Errorf("body.duration_ms = %v, want a positive measured value", body["duration_ms"])
+	}
+	if calls := refresher.calls.Load(); calls != 1 {
+		t.Errorf("refresher.calls = %d, want 1", calls)
+	}
+}
+
+func TestStreamsRefresh_RefreshFailure(t *testing.T) {
+	t.Parallel()
+	refresher := &fakeStreamsRefresher{
+		result: StreamsRefreshResult{Source: "remote"},
+		err:    errors.New("connection refused"),
+	}
+	s := newTestServerForStreamsRefresh(refresher)
+	rec := postStreamsRefresh(t, s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200 (action ran cleanly); body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); okv {
+		t.Errorf("body.ok = true, want false")
+	}
+	got, _ := body["error"].(string)
+	if !strings.Contains(got, "connection refused") {
+		t.Errorf("body.error = %q, want substring 'connection refused'", got)
+	}
+}
+
+func TestStreamsRefresh_BusyOnConcurrentClick(t *testing.T) {
+	t.Parallel()
+	gate := make(chan struct{})
+	refresher := &fakeStreamsRefresher{
+		result: StreamsRefreshResult{Source: "remote"},
+		gate:   gate,
+	}
+	s := newTestServerForStreamsRefresh(refresher)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- postStreamsRefresh(t, s)
+	}()
+
+	// Wait for the first request to be inside RefreshNow.
+	deadline := time.Now().Add(2 * time.Second)
+	for refresher.calls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if calls := refresher.calls.Load(); calls < 1 {
+		t.Fatalf("first refresh never reached RefreshNow; calls = %d", calls)
+	}
+
+	rec := postStreamsRefresh(t, s)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("second-click Code = %d, want 409", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "BUSY" {
+		t.Errorf("body.chip = %q, want BUSY", chip)
+	}
+
+	close(gate)
+	first := <-done
+	if first.Code != http.StatusOK {
+		t.Errorf("first-click Code = %d, want 200", first.Code)
+	}
+}
+
+func TestStreamsRefresh_ContextTimeout(t *testing.T) {
+	t.Parallel()
+	// The fake honors ctx via its `gate` channel; never close gate, so
+	// ctx.Done fires first.
+	refresher := &fakeStreamsRefresher{
+		result: StreamsRefreshResult{Source: "remote"},
+		gate:   make(chan struct{}),
+	}
+	s := &Server{cfg: Config{
+		Version:          "test",
+		StartedAt:        time.Unix(0, 0),
+		StreamsRefresher: refresher,
+	}}
+
+	// Drive the test with a 50ms request-context override so we don't
+	// wait the full 30s. The handler should respect r.Context()'s
+	// deadline via its WithTimeout wrap.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, "POST", "/receiver/settings/action/streams-refresh", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionStreamsRefresh(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200 (action ran cleanly even on timeout)", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); okv {
+		t.Errorf("body.ok = true, want false")
+	}
+	got, _ := body["error"].(string)
+	if !strings.Contains(got, "deadline exceeded") && !strings.Contains(got, "context canceled") {
+		t.Errorf("body.error = %q, want substring 'deadline exceeded' or 'context canceled'", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 27 — stale provider key race test
+// ---------------------------------------------------------------------------
+
+func TestAdapterSave_StaleProviderKeyAccepted(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "streams", "providers.dead_provider.catalog_refresh_hours=12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := saver.touched["streams"]; got["providers.dead_provider.catalog_refresh_hours"] != "12" {
+		t.Errorf("touched = %v, want dead_provider override forwarded", got)
+	}
 }
