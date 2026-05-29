@@ -286,3 +286,70 @@ func prefixAdapterSubtableHeaders(name string, body []byte) []byte {
 	}
 	return []byte(strings.Join(out, "\n"))
 }
+
+// decodeAdapterSection wraps a bare body snippet (key = value lines,
+// no [adapters.<name>] header) in the appropriate header and decodes
+// it into a toml.Primitive + MetaData handle the adapter's
+// Validate() / ApplyConfig() methods can consume. Mirrors the same
+// pattern internal/ui/adapter.go uses; lives in uiserver so the new
+// SaveTouched method can call it without importing internal/ui.
+func decodeAdapterSection(body []byte, name string) (toml.Primitive, toml.MetaData, error) {
+	wrapper := fmt.Sprintf("[adapters.%s]\n%s", name, body)
+	var envelope struct {
+		Adapters map[string]toml.Primitive `toml:"adapters"`
+	}
+	meta, err := toml.Decode(wrapper, &envelope)
+	if err != nil {
+		return toml.Primitive{}, toml.MetaData{}, fmt.Errorf("decode adapter section %q: %w", name, err)
+	}
+	return envelope.Adapters[name], meta, nil
+}
+
+// readAdapterSectionMap reads the latest on-disk [adapters.<name>] table
+// plus all [adapters.<name>.*] descendant tables into a generic map. This
+// is the source of truth for SaveTouched overlays; CurrentValues() is only
+// a fallback for a missing section, never the primary preservation path.
+func readAdapterSectionMap(doc []byte, name string) (map[string]any, bool, error) {
+	body, ok := extractAdapterSectionBody(doc, name)
+	if !ok {
+		return nil, false, nil
+	}
+	prim, meta, err := decodeAdapterSection(body, name)
+	if err != nil {
+		return nil, true, err
+	}
+	current := map[string]any{}
+	if err := meta.PrimitiveDecode(prim, &current); err != nil {
+		return nil, true, fmt.Errorf("decode current adapter section %q: %w", name, err)
+	}
+	return current, true, nil
+}
+
+func extractAdapterSectionBody(doc []byte, name string) ([]byte, bool) {
+	parent := fmt.Sprintf("[adapters.%s]", name)
+	descendantPrefix := fmt.Sprintf("[adapters.%s.", name)
+	lines := strings.Split(string(doc), "\n")
+	out := make([]string, 0)
+	found := false
+	for i := 0; i < len(lines); {
+		tr := strings.TrimSpace(lines[i])
+		if tr == parent || (strings.HasPrefix(tr, descendantPrefix) && strings.HasSuffix(tr, "]")) {
+			found = true
+			if tr != parent {
+				out = append(out, lines[i])
+			}
+			i++
+			for i < len(lines) {
+				next := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(next, "[") && strings.HasSuffix(next, "]") {
+					break
+				}
+				out = append(out, lines[i])
+				i++
+			}
+			continue
+		}
+		i++
+	}
+	return []byte(strings.Join(out, "\n")), found
+}

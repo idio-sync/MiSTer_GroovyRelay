@@ -293,3 +293,22 @@ func TestEncodeAdapterMap_NestedProviders(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeAdapterSection_RoundTrip(t *testing.T) {
+	t.Parallel()
+	snippet := []byte("enabled = true\ndevice_name = \"MiSTer\"\n")
+	prim, meta, err := decodeAdapterSection(snippet, "dlna")
+	if err != nil {
+		t.Fatalf("decodeAdapterSection err = %v", err)
+	}
+	var got struct {
+		Enabled    bool   `toml:"enabled"`
+		DeviceName string `toml:"device_name"`
+	}
+	if err := meta.PrimitiveDecode(prim, &got); err != nil {
+		t.Fatalf("PrimitiveDecode err = %v", err)
+	}
+	if got.Enabled != true || got.DeviceName != "MiSTer" {
+		t.Errorf("decoded = %+v", got)
+	}
+}
