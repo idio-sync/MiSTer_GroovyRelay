@@ -145,7 +145,7 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	snap, _ := a.StartLink(r.Context(), nil)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if snap.Phase == adapters.LinkPhaseError {
-		http.Error(w, "plex.tv unreachable: "+snap.Error, http.StatusServiceUnavailable)
+		http.Error(w, snap.Error, http.StatusServiceUnavailable)
 		return
 	}
 	_, _ = w.Write([]byte(renderPending(a.snapshotPending())))
