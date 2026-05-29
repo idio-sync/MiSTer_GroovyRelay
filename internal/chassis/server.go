@@ -274,6 +274,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsCatalogDirectStreamHLSBufferPost)))
 	mux.Handle("POST /receiver/settings/action/restore-defaults",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionRestoreDefaults)))
+	mux.Handle("POST /receiver/settings/adapter/{name}",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterPost)))
+	mux.Handle("POST /receiver/settings/action/streams-refresh",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionStreamsRefresh)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

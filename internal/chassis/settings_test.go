@@ -1643,3 +1643,33 @@ func TestStreamsRefresher_StructuralConformance(t *testing.T) {
 	var r StreamsRefresher = &fakeStreamsRefresher{}
 	_ = r
 }
+
+func TestAdapterSettingsPost_RequiresSameOrigin(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", strings.NewReader("enabled=true"))
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Host", "127.0.0.1:32102")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Code = %d, want 403", rec.Code)
+	}
+}
+
+func TestStreamsRefresh_RequiresSameOrigin(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Host", "127.0.0.1:32102")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Code = %d, want 403", rec.Code)
+	}
+}
