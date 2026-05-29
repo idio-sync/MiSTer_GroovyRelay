@@ -510,7 +510,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
 	// the prior package-builder behavior exactly.
 	if saver := cfg.AdapterSettingsSaver; saver != nil {
-		for _, name := range []string{"dlna", "torrent", "streams"} {
+		for _, name := range []string{"dlna", "torrent", "streams", "plex", "jellyfin"} {
 			fields, ok := saver.Fields(name)
 			if !ok {
 				continue
@@ -524,6 +524,12 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 			}
 			if name == "streams" {
 				pane.Providers = buildStreamsProviderRows(cfg)
+			}
+			if cfg.AdapterLinker != nil {
+				if lv, ok := cfg.AdapterLinker.LinkView(name); ok {
+					pane.Linkable = true
+					pane.LinkView = lv
+				}
 			}
 			data.Adapters = append(data.Adapters, pane)
 		}
@@ -562,6 +568,10 @@ func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 			return fmt.Sprintf("PULL · %d CHANNELS · see Catalog tab", n)
 		}
 		return fmt.Sprintf("PULL · %d CHANNELS", n)
+	case "plex":
+		return "CAST · PIN"
+	case "jellyfin":
+		return "CAST · CREDENTIALS"
 	}
 	return ""
 }
