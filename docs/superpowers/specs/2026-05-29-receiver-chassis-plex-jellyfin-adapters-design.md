@@ -26,8 +26,8 @@ The link cascade is the only genuinely new work. Config-field saves already func
 | Symbol | Location | 4E use |
 |---|---|---|
 | `bridgeAdapterSettingsSaver` (adapter-agnostic by-name lookup) | [cmd/.../adapter_settings_saver.go:26-88](../../../cmd/mister-groovy-relay/adapter_settings_saver.go#L26-L88) | Plex/Jellyfin **config saves work unchanged** — both are registered, implement `CurrentValues()`/`Fields()`/`Validate()`. `projectWritableSurface` returns their fields as-is (only `streams` is special-cased). |
-| `buildSettingsData` render loop `{"dlna","torrent","streams"}` | [data.go:511](../../../internal/chassis/data.go#L511) | **Must add `plex`, `jellyfin`.** |
-| `AdapterPaneData` | [data.go:299](../../../internal/chassis/data.go#L299) | **Extended** with `Linkable bool` + `LinkView`. |
+| `settingsDataFromConfig` adapter render loop `{"dlna","torrent","streams"}` | [data.go:511](../../../internal/chassis/data.go#L511) | **Must add `plex`, `jellyfin`.** The pure `buildSettingsData` helper stays adapter-pane agnostic; production drawer population happens in `settingsDataFromConfig(cfg Config)`. |
+| `AdapterPaneData` | [data.go:299](../../../internal/chassis/data.go#L299) | **4E extends it** with `Linkable bool` + `LinkView` (the struct has neither today). |
 | `StreamsRefresher` action precedent | [settings.go:117-135](../../../internal/chassis/settings.go#L117-L135), [server.go:284](../../../internal/chassis/server.go#L284) | Template for the chassis-owned `AdapterLinker` interface + route mounting + `cmd/` binding. |
 | `adapter-field-row` / `field` helper | [settings-adapter-dlna.html:14-28](../../../internal/chassis/templates/settings-adapter-dlna.html#L14-L28) | Renders every config field including `enabled` (as a row, **not** a header toggle). |
 
@@ -48,8 +48,8 @@ The link cascade is the only genuinely new work. Config-field saves already func
 1. **Plex section renders** in mockup order (near the top of the pane) with: an Account sub-section on top, then the config field block (`enabled`, `device_name`, `profile_name`, `server_url`, `max_video_bitrate_kbps`) via 4D's `adapter-field-row`, with correct scope chips (HOT / REBOOT / RECAST / RECAST / RECAST per [plex/adapter.go:328-382](../../../internal/adapters/plex/adapter.go#L328-L382)).
 2. **Jellyfin section renders** lower in the pane with the same structure: Account sub-section on top, then `enabled`, `server_url`, `device_name`, `max_video_bitrate_kbps` (HOT / REBOOT / HOT / RECAST per [jellyfin/adapter.go:222-259](../../../internal/adapters/jellyfin/adapter.go#L222-L259)).
 3. **Both stubs are deleted** from [settings-adapters.html](../../../internal/chassis/templates/settings-adapters.html).
-4. **Shared link sub-section.** Both sections render the Account sub-section through one template (`settings-link.html`) that branches on `Kind` (`pin`|`credential`) and `Phase` (`unlinked`|`pending`|`linked`|`error`). Structure, chrome, the collapsed `linked` one-liner, and the error treatment are identical between the two adapters; only the expanded-unlinked body differs (PIN button vs credential form) — the one intrinsic divergence.
-5. **Plex PIN flow works end-to-end in the drawer:** click → PIN + countdown rendered → JS polls every 2s → transitions to `linked` (or `error` on expiry) → collapses to `✓ Linked as <user>` with Unlink.
+4. **Shared link sub-section.** Both sections render the Account sub-section through one template (`settings-link.html`) that branches on `Kind` (`pin`|`credential`) and `Phase` (`unlinked`|`pending`|`linked`|`error`). Structure, chrome, the collapsed `linked` one-liner, and the error treatment are identical between the two adapters; only the expanded-unlinked body differs (PIN button vs credential form) — the one intrinsic divergence. The linked label is `✓ Linked` when no identity is available (Plex today) and `✓ Linked as <identity>` when `LinkedAs` is populated (Jellyfin today).
+5. **Plex PIN flow works end-to-end in the drawer:** click → PIN + countdown rendered → JS polls every 2s → transitions to `linked` (or `error` on expiry) → collapses to `✓ Linked` with Unlink. Plex does **not** add an account-identity lookup in 4E; the current token model persists only device UUID + auth token.
 6. **Jellyfin credential flow works end-to-end in the drawer:** form submit → synchronous `linked` (or `error` with the message re-rendered on the form). When no `server_url` is configured, the sub-section shows the "set a Server URL first" hint.
 7. **Unlink works** for both: revokes/logs out best-effort, clears the token, repaints to `unlinked`.
 8. **Config saves unchanged.** Editing any Plex/Jellyfin config field saves through 4D's `SaveTouched` with the correct wire scope and toast.
@@ -98,22 +98,22 @@ type LinkController interface {
     // Phase=pending + Code + ExpiresInSec, and arms the poll goroutine.
     // Jellyfin: params{"username","password"}; returns a terminal
     // snapshot (Phase=linked or error) synchronously.
-    Start(params map[string]string) (LinkSnapshot, error)
+    Start(ctx context.Context, params map[string]string) (LinkSnapshot, error)
     // Poll advances/reads the pending flow. Plex: reads pending state,
     // returning pending|linked|error. Jellyfin: returns Snapshot().
-    Poll() (LinkSnapshot, error)
+    Poll(ctx context.Context) (LinkSnapshot, error)
     // Unlink revokes (Plex RevokeDevice) / logs out (Jellyfin Logout)
     // best-effort, clears the token, returns Phase=unlinked. Idempotent.
-    Unlink() (LinkSnapshot, error)
+    Unlink(ctx context.Context) (LinkSnapshot, error)
 }
 
 type LinkSnapshot struct {
     Phase          string // "unlinked" | "pending" | "linked" | "error"
-    LinkedAs       string // Plex: username; Jellyfin: "<user> on <serverID>"
+    LinkedAs       string // optional linked label; empty means render plain "Linked" (Plex today). Jellyfin: "<user> on <serverID>"
     Code           string // Plex pending only
     ExpiresInSec   int    // Plex pending only
     NeedsServerURL bool   // Jellyfin only: true when server_url is empty
-    Error          string // human-readable, Phase=error only
+    Error          string // human-readable error, or linked-phase warning after a successful auth with restart trouble
 }
 ```
 
@@ -123,7 +123,7 @@ Native-phase → snapshot mapping:
 |---|---|---|---|
 | Plex | `idle` | `LinkPhase()` ([plex/adapter.go:434](../../../internal/adapters/plex/adapter.go#L434)) | `unlinked` |
 | Plex | `pin-issued` | `LinkPhase()` (pending, not expired) | `pending` (+ Code, ExpiresInSec) |
-| Plex | `linked` | token present | `linked` (+ LinkedAs) |
+| Plex | `linked` | token present | `linked` (LinkedAs empty; no username is stored today) |
 | Plex | `error` | expired / failed | `error` |
 | Jellyfin | `LinkIdle` | `link.Phase()` ([jellyfin/link_state.go:11-18](../../../internal/adapters/jellyfin/link_state.go#L11-L18)) | `unlinked` (+ NeedsServerURL if `server_url==""`) |
 | Jellyfin | `LinkLinking` | in-flight auth | `pending` |
@@ -131,6 +131,12 @@ Native-phase → snapshot mapping:
 | Jellyfin | `LinkError` | last attempt failed | `error` (+ Error from `LastError()`) |
 
 Reused primitives (already present): Plex `RequestPIN`/`PollPIN`/`RevokeDevice` ([plex/linking.go](../../../internal/adapters/plex/linking.go)), token store ([plex/tokenstore.go](../../../internal/adapters/plex/tokenstore.go)); Jellyfin `AuthenticateByName`/`Logout` ([jellyfin/linking.go](../../../internal/adapters/jellyfin/linking.go)), token store ([jellyfin/tokenstore.go](../../../internal/adapters/jellyfin/tokenstore.go)).
+
+`Start`, `Poll`, and `Unlink` take a `context.Context` because they can touch network or disk-backed operations (Plex PIN/revoke; Jellyfin auth/logout). The chassis route handlers wrap `r.Context()` in action-specific timeouts and pass the derived context through `AdapterLinker` into the adapter controller. Plex's long PIN wait remains a background pending-flow concern; `status` reads the server-side pending snapshot and must not stack plex.tv network polls per browser tick.
+
+**Context plumbing is additive at the adapter boundary, with an asymmetry to honor.** Jellyfin's `AuthenticateByName`/`Logout` already take a `context.Context`, so its controller passes the derived context straight through. Plex's `RequestPIN`/`PollPIN`/`RevokeDevice` ([plex/linking.go:52,94,185](../../../internal/adapters/plex/linking.go#L52)) are **not** context-aware — `PollPIN` takes a `time.Duration`; the others are plain synchronous HTTP. The Plex `LinkController` therefore accepts the context and honors it by deriving the bounded-call deadline from it and aborting the short `RequestPIN`/`RevokeDevice` round-trips on cancellation — **without changing the primitive signatures**, so the adapter change stays additive. The long-lived background PIN-poll goroutine is deliberately **decoupled** from the per-request context (it must outlive the `start` request, up to the 15-minute expiry); only the short round-trips are request-context-bound. Adding a `ctx` parameter to the Plex primitives is an acceptable but optional additive refinement, not a prerequisite for 4E.
+
+Jellyfin `Snapshot()` must not depend solely on the in-memory `LinkState`, because that state is hydrated from disk during `Start()`. The snapshot source of truth for initial drawer render is: load the persisted token, return `linked` when an access token exists (including disabled/not-started adapters), return `unlinked` when no token exists, and return `error` (surfacing the load/parse error message) for token-load/parse failures. It must not probe the Jellyfin server or wipe tokens; the existing `Start()` reconcile path remains responsible for server-url drift and token rejection.
 
 ---
 
@@ -152,23 +158,23 @@ type AdapterLinker interface {
     // StartLink begins pairing. PIN adapters (plex) ignore params and
     // return a pending view. Credential adapters (jellyfin) read
     // params["username"]/["password"] and return a terminal view.
-    StartLink(name string, params map[string]string) (LinkView, error)
+    StartLink(ctx context.Context, name string, params map[string]string) (LinkView, error)
     // LinkStatus polls progress (PIN adapters). Credential adapters
     // return the current view unchanged.
-    LinkStatus(name string) (LinkView, error)
+    LinkStatus(ctx context.Context, name string) (LinkView, error)
     // Unlink revokes/logs out and clears the token. Idempotent.
-    Unlink(name string) (LinkView, error)
+    Unlink(ctx context.Context, name string) (LinkView, error)
 }
 
 // LinkView is the wire/render shape for the Account sub-section.
 type LinkView struct {
     Kind           string      // "pin" | "credential"
     Phase          string      // "unlinked" | "pending" | "linked" | "error"
-    LinkedAs       string      // linked phase
+    LinkedAs       string      // optional linked identity; empty renders plain "Linked"
     Code           string      // pin/pending
     ExpiresInSec   int         // pin/pending
     NeedsServerURL bool        // credential adapter with empty server_url
-    Error          string      // error phase
+    Error          string      // error phase message, or linked-phase warning for post-link restart failure
     Fields         []LinkField // credential inputs to render (keeps the chassis ignorant of which credentials)
 }
 
@@ -182,6 +188,8 @@ type LinkField struct {
 **`Fields` is non-empty only for credential adapters.** PIN adapters (Plex) return an empty slice and render a single action button. Jellyfin returns exactly two entries — `{Key:"username", Label:"Username", Kind:"text"}` and `{Key:"password", Label:"Password", Kind:"secret"}`.
 
 `Config.AdapterLinker AdapterLinker` is added in [server.go](../../../internal/chassis/server.go); when nil, the handlers return `{ok:false, chip:"NOT READY"}` (same shape as `StreamsRefresher` nil — see [settings_test.go:1107](../../../internal/chassis/settings_test.go#L1107)).
+
+`AdapterPaneData.Linkable` means "render the Account sub-section for this pane." It is true only when `cfg.AdapterLinker != nil` and `LinkView(name)` returns `ok=true`; otherwise the Plex/Jellyfin templates render their config fields and omit Account rather than attempting to execute `settings-link` on a zero-value `LinkView`. This keeps offline tests, nil-saver paths, and partial production wiring from producing a blank or panicking Account block. Handler calls still return `NOT READY` when the linker is nil. Template/data tests cover both nil linker and absent adapter saver.
 
 ---
 
@@ -197,9 +205,26 @@ All three routes mount behind `requireSameOrigin` next to the 4D adapter save ro
 
 Status-code discipline matches the 4D handlers: same-origin failures and method mismatches are handled by the shared middleware/mux; `400` for caller input errors; chip errors carry their `StatusCode()`. The `NOT READY` chip (linker nil) returns **503 Service Unavailable** on all three routes, matching the `StreamsRefresher` precedent.
 
+Each handler derives an action timeout from `r.Context()` before calling `AdapterLinker`: `start` uses 15s (Plex PIN request / Jellyfin auth), `status` uses 5s (snapshot read only in the Plex design), and `unlink` uses 5s (best-effort revoke/logout plus local cleanup). Context timeout/cancellation that happens after a well-formed request reaches the linker is rendered as a link `error` view when possible, not as a chip.
+
 **Concurrency / single-flight.** `start` holds a per-adapter `sync.Mutex` for the whole operation (Plex `RequestPIN`; Jellyfin auth). Starting a link while one is already pending **abandons and replaces** the prior pending flow — matching the existing Plex `handleLinkStart`, which serializes on `linkStartMu` and drops any prior pending PIN. The JS additionally disables the trigger while a `start`/`unlink` request is in flight, so the replace path is normally reachable only across separate drawer sessions.
 
 **Link failure is a state, not an HTTP error.** "Code expired" (Plex) and "invalid credentials" (Jellyfin) return **`200` with `view.Phase="error"`** and a populated `view.Error`, so the shared renderer simply repaints into the error state. `400` is reserved for malformed requests (e.g. a credential `start` with a blank username before it ever reaches the adapter).
+
+Error mapping for adapter/linker failures:
+
+| Scenario | HTTP response | View/result |
+|---|---|---|
+| Unknown adapter / non-linkable adapter | `404 {ok:false, chip:"UNKNOWN ADAPTER"}` | No view |
+| Linker nil | `503 {ok:false, chip:"NOT READY"}` | No view |
+| Missing/blank credential fields | `400 {ok:false, error:"<msg>"}` | No view |
+| Plex PIN request fails or times out | `200 {ok:true, view:{Phase:"error", Error:"plex.tv unreachable: ..."}}` | Try Again visible |
+| Plex PIN expires, poll fails terminally, or token persist fails | `200 {ok:true, view:{Phase:"error", Error:"..."}}` from `status` | Try Again visible |
+| Plex/Jellyfin revoke/logout fails during unlink | `200 {ok:true, view:{Phase:"unlinked"}}` | Best-effort remote cleanup; local unlink wins |
+| Local unlink cannot clear persisted token/state | `500 {ok:false, error:"<msg>"}` | No false `unlinked` view |
+| Jellyfin auth fails, server unreachable, or auth times out | `200 {ok:true, view:{Phase:"error", Error:"..."}}` | Credential form re-rendered |
+| Jellyfin token persistence fails | `200 {ok:true, view:{Phase:"error", Error:"link succeeded but persist failed: ..."}}` | Credential form re-rendered |
+| Jellyfin adapter restart after auth fails | `200 {ok:true, view:{Phase:"linked", LinkedAs:"..." , Error:"adapter restart failed: ..."}}` | Token is valid; surface restart warning without undoing link |
 
 Route shape: explicit `POST`/`GET` verbs on `…/link/{start,status,unlink}` (not REST `DELETE`), matching the readable action style of `…/action/streams-refresh` and keeping every chassis mutation a POST.
 
@@ -208,16 +233,16 @@ Route shape: explicit `POST`/`GET` verbs on `…/link/{start,status,unlink}` (no
 ## Rendering (placement C — Account on top, collapses when linked)
 
 - **Container:** [settings-adapters.html](../../../internal/chassis/templates/settings-adapters.html) replaces the Plex stub with `{{ template "settings-adapter-plex" (adapterPane .Adapters "plex") }}` and the Jellyfin stub with `{{ template "settings-adapter-jellyfin" (adapterPane .Adapters "jellyfin") }}`, preserving 4D's mockup order (Plex near the top, Jellyfin lower).
-- **New section templates** `settings-adapter-plex.html` / `settings-adapter-jellyfin.html`: each emits `<section class="settings-section">` → `<h4>` → `{{ template "settings-link" .LinkView }}` (Account sub-section, on top) → the config field block (`{{ range .Fields }}{{ template "adapter-field-row" … }}`). `enabled` renders as a field-row exactly like DLNA — **no header toggle**.
+- **New section templates** `settings-adapter-plex.html` / `settings-adapter-jellyfin.html`: each emits `<section class="settings-section">` → `<h4>` → `{{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}` (Account sub-section, on top when the linker is wired) → the config field block (`{{ range .Fields }}{{ template "adapter-field-row" … }}`). `enabled` renders as a field-row exactly like DLNA — **no header toggle**.
 - **Shared `settings-link.html`:** branches on `.Kind` and `.Phase`:
-  - `linked` → collapsed one-liner: `✓ Linked as {{.LinkedAs}}` + Unlink button.
+  - `linked` → collapsed one-liner: `✓ Linked{{if .LinkedAs}} as {{.LinkedAs}}{{end}}` + Unlink button; if `.Error` is non-empty, show it as a warning line without expanding back into the credential form.
   - `unlinked` + `pin` → "OFF · not linked" + help + **Link Plex Account** button.
   - `unlinked` + `credential` + `NeedsServerURL` → "set a Server URL below (it saves automatically), then link" hint.
   - `unlinked` + `credential` (URL present) → render `.Fields` inputs (username/password) + **Link ▸** submit.
   - `pending` + `pin` → PIN code + countdown + "waiting for plex.tv…".
   - `pending` + `credential` → "↻ Linking…".
   - `error` → badge + `.Error`; PIN shows **Try Again**, credential re-renders the form with the error.
-- **Initial state is server-rendered.** `buildSettingsData` gains an `AdapterLinker` parameter (mirroring how 4C extended the signature with `catalogManager`) and calls `LinkView(name)` for linkable adapters at drawer-paint time, baking the result into `AdapterPaneData.LinkView`, so opening the drawer needs no fetch. The `status` GET exists only for the Plex poll.
+- **Initial state is server-rendered.** `settingsDataFromConfig(cfg Config)` stays the production entry point for adapter-pane population. It adds `plex`/`jellyfin` to the adapter loop and, when `cfg.AdapterLinker != nil`, calls `LinkView(name)` at drawer-paint time, baking the result into `AdapterPaneData.LinkView` and setting `Linkable=true`. The pure `buildSettingsData` helper does not gain linker parameters. Opening the drawer needs no fetch; the `status` GET exists only for the Plex poll.
 - **Collapse-when-linked** is CSS/JS driven off `Phase`; `pending`/`error`/`unlinked` are expanded.
 - **CSS** (chassis.css): PIN typography (DSEG-ish monospace, VFD glow), countdown, "waiting" amber, the collapsed linked one-liner. Reuses `.settings-subhead`, `.action-result`, `.settings-notice` from 4B–4D.
 
@@ -238,6 +263,7 @@ In [settings-drawer.js](../../../internal/chassis/static/settings-drawer.js), al
   - Network error on a tick: surface transient text, keep the loop until expiry (don't kill on one failed poll).
 - **Unlink (delegated click):** POST `…/link/unlink` → repaint to `unlinked`; tear down any poll controller.
 - Reuses `showNotice` for `chip` errors and the `action-result` slot conventions from 4D.
+- **Safe repaint rule:** JSON-driven link repainting must build DOM with `createElement`, `textContent`, attribute setters, and `replaceChildren` (or use server-rendered escaped HTML fragments). It must not concatenate `LinkView.Error`, `LinkedAs`, PIN codes, or field labels into `innerHTML`. Credential inputs use `data-link-field`/plain form names, **not** `data-adapter` or `data-field`, so the 4D config autosave delegate cannot grab username/password values. Password inputs are cleared after submit and after error repaint.
 
 ---
 
@@ -258,7 +284,7 @@ Link/unlink are **actions**, out-of-band of the field-save scope vocabulary (lik
 **Modified — chassis:**
 - `internal/chassis/settings.go` — `AdapterLinker` interface, `LinkView`/`LinkField` structs, three handlers, per-adapter `start` single-flight gate.
 - `internal/chassis/server.go` — `Config.AdapterLinker`; mount the 3 routes behind `requireSameOrigin`.
-- `internal/chassis/data.go` — add `plex`/`jellyfin` to the render loop ([:511](../../../internal/chassis/data.go#L511)); extend `AdapterPaneData` with `Linkable`/`LinkView`; populate `LinkView` for linkable adapters.
+- `internal/chassis/data.go` — add `plex`/`jellyfin` to the `settingsDataFromConfig` adapter loop ([:511](../../../internal/chassis/data.go#L511)); extend `AdapterPaneData` with `Linkable`/`LinkView`; populate `LinkView` for linkable adapters from `cfg.AdapterLinker`. Also update the now-stale `AdapterPaneData` doc comment ([data.go:295-296](../../../internal/chassis/data.go#L295)), which currently says the struct is populated solely from the `AdapterSettingsSaver`.
 - `internal/chassis/templates/settings-adapters.html` — swap both stubs for the real section templates.
 - `internal/chassis/static/settings-drawer.js` — link handlers + poll controller.
 - `internal/chassis/static/chassis.css` — PIN/countdown/linked-collapse styles.
@@ -285,10 +311,10 @@ Link/unlink are **actions**, out-of-band of the field-save scope vocabulary (lik
 
 ## Testing surface (mirrors 4D)
 
-- **Chassis handler tests:** `start`/`status`/`unlink` × {PIN (plex), credential (jellyfin)} × {success, link-failure→`view.Phase=error`, bad input→`400`, linker-nil→`NOT READY`, unknown-adapter→`404`}.
-- **Template render tests:** the nine render states — `(pin, unlinked|pending|linked|error)`, `(credential, unlinked|pending|linked|error)`, and `(credential, NeedsServerURL)` — i.e. the approved state gallery; assert the collapsed `linked` one-liner is structurally identical across both adapters; assert `enabled` renders as a field-row (no header toggle); assert section order (Plex above Jellyfin).
-- **JS behavior test** (the `testdata/*.behavior.test.js` pattern, cf. [source-cluster.behavior.test.js](../../../internal/chassis/testdata/source-cluster.behavior.test.js)): poll controller single-flight, stop-on-terminal, stop-on-pane-close, countdown decrement, no request stacking.
-- **Adapter core tests:** the extracted `LinkController` for each adapter, plus a regression assert that the legacy `/ui` handlers still produce their prior HTML by delegating to the core.
+- **Chassis handler tests:** `start`/`status`/`unlink` × {PIN (plex), credential (jellyfin)} × {success, link-failure→`view.Phase=error`, bad input→`400`, linker-nil→`NOT READY`, unknown-adapter→`404`, local-cleanup failure→`500`}. Add wrong-method, same-origin rejection on both mutating POST routes, GET `status` non-mutating behavior, and route registration through `Server.Mount`.
+- **Template render tests:** the nine render states — `(pin, unlinked|pending|linked|error)`, `(credential, unlinked|pending|linked|error)`, and `(credential, NeedsServerURL)` — i.e. the approved state gallery; assert the collapsed `linked` one-liner is structurally identical across both adapters except the optional `as <identity>` suffix; assert `enabled` renders as a field-row (no header toggle); assert section order (Plex above Jellyfin); assert nil `AdapterLinker` / absent saver render config fields without Account and do not panic.
+- **JS behavior test** (the `testdata/*.behavior.test.js` pattern, cf. [source-cluster.behavior.test.js](../../../internal/chassis/testdata/source-cluster.behavior.test.js)): poll controller single-flight, stop-on-terminal, stop-on-pane-close, countdown decrement, no request stacking, safe repaint without `innerHTML`, password clearing, and link credentials not matching `[data-adapter]` / `[data-field]` autosave selectors.
+- **Adapter core tests:** the extracted `LinkController` for each adapter, including context timeout/cancel paths and Jellyfin disabled + token-present `Snapshot()` hydration, plus a regression assert that the legacy `/ui` handlers still produce their prior HTML by delegating to the core.
 - **cmd/ wrapper + e2e:** snapshot→view mapping; one integration-tag end-to-end save+link.
 - **Isolation:** `TestProductionImports_NoCrossPackageCoupling` stays green.
 
@@ -301,6 +327,7 @@ Link/unlink are **actions**, out-of-band of the field-save scope vocabulary (lik
 | PIN polling is a new JS surface (no prior poll loop in the drawer). | `setTimeout` (not `setInterval`), single-flight per adapter, hard stop on terminal phase / expiry / pane-close. Bounded by the 15-min PIN expiry. Covered by a dedicated behavior test. |
 | Extracting the link core could regress the legacy `/ui` flow. | The extraction is additive; handlers delegate to the same core; a regression test asserts the legacy HTML is unchanged. Both surfaces share one orchestration, so they cannot diverge. |
 | Jellyfin `server_url` re-link cascade misunderstood and double-wired. | Documented above as a no-op for the drawer (standard REBOOT toast + post-restart server-rendered state). |
+| JSON repaint accidentally trusts remote/user-controlled link text. | Renderer must use DOM APIs/`textContent` or server-escaped fragments; behavior tests cover no `innerHTML` and password clearing. |
 | Stub sections become dead code. | Deleted in this phase (Goal 3); 5-line blocks. |
 | `LinkView.Fields` over-engineering (only one credential adapter). | Kept minimal (two entries for Jellyfin); preserves chassis adapter-agnosticism without a registry — cheaper than baking Jellyfin's credentials into a chassis template. |
 
