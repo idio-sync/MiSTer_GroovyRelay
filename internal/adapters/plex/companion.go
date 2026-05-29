@@ -399,6 +399,11 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		DirectPlay:   directPlay,
 		Title:        title,
 		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
+		DisplayMetadata: core.DisplayMetadata{
+			Primary:   title,
+			Secondary: md.Artist,
+			Tertiary:  md.Album,
+		},
 		Visualizer: core.VisualizerRequest{
 			Enabled: true,
 			Mode:    core.VisualizerModeRetroAnalyzer,

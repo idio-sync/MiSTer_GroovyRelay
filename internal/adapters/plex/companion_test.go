@@ -1968,3 +1968,13 @@ func TestMediaKeyBasename(t *testing.T) {
 		})
 	}
 }
+
+func TestMusicSessionRequestForPlay_SetsDisplayTiers(t *testing.T) {
+	c := NewCompanion(CompanionConfig{DeviceUUID: "dev", DeviceName: "Relay"}, nil)
+	p := PlayMediaRequest{Title: "Midnight City", MediaKey: "/library/metadata/1", TranscodeSessionID: "ts"}
+	md := MusicMetadata{Title: "Midnight City", Artist: "M83", Album: "Hurry Up, We're Dreaming"}
+	req := c.musicSessionRequestForPlay(p, md)
+	if req.DisplayMetadata.Primary != "Midnight City" || req.DisplayMetadata.Secondary != "M83" || req.DisplayMetadata.Tertiary != "Hurry Up, We're Dreaming" {
+		t.Fatalf("DisplayMetadata = %+v", req.DisplayMetadata)
+	}
+}
