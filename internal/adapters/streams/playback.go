@@ -350,6 +350,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			OnStop:           onStop,
 			Source:           a.Name(),
 			Title:            title,
+			DisplayMetadata:  streamsDisplayMetadata(q.ProviderName, q.ChannelName, streamSessionTitle(item, "")),
 		}
 		cancel()
 		a.playbackMu.Lock()
@@ -438,6 +439,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		OnStop:            a.makeOnStop(capture),
 		Source:            a.Name(),
 		Title:             title,
+		DisplayMetadata:   streamsDisplayMetadata(q.ProviderName, q.ChannelName, streamSessionTitle(item, resolved.Title)),
 	}
 	a.playbackMu.Lock()
 	if !a.captureStillActive(capture) {
@@ -571,6 +573,26 @@ func streamSessionTitle(item StreamItem, resolvedTitle string) string {
 		return title
 	}
 	return strings.TrimSpace(item.Title)
+}
+
+// streamsDisplayMetadata composes VFD tiers for a stream/saved cast:
+// Primary = channel name (the recognizable station), Secondary =
+// provider, Tertiary = the specific item title when it differs from the
+// channel (the "what's on right now" within a channel). Empty channel
+// falls back to the item title as Primary. (The spec named "group" for
+// the tertiary; the per-item title is what's in scope at this callsite
+// and is more informative for now-playing.)
+func streamsDisplayMetadata(providerName, channelName, itemTitle string) core.DisplayMetadata {
+	channel := strings.TrimSpace(channelName)
+	item := strings.TrimSpace(itemTitle)
+	if channel == "" {
+		channel = item
+	}
+	d := core.DisplayMetadata{Primary: channel, Secondary: strings.TrimSpace(providerName)}
+	if item != "" && !strings.EqualFold(item, channel) {
+		d.Tertiary = item
+	}
+	return d
 }
 
 func setActiveItemTitleLocked(q *ActiveQueue, itemID, title string) {
