@@ -356,13 +356,14 @@ func fieldHelper(args map[string]any) template.HTML {
 	rowEnd := get("RowEnd")
 	skipEmpty, _ := args["SkipEmpty"].(bool)
 
-	// adapterAttr is emitted on the input/switch/select element for adapter
-	// fields so the client JS can scope the save POST to the right adapter.
-	// Empty for bridge (4A) fields — the markup is then byte-for-byte
-	// identical to the pre-4D output, so bridge rendering is unchanged.
-	adapterAttr := ""
+	// Identity attribute: bridge fields are addressed by data-field (the field
+	// key); adapter fields by data-adapter (the adapter name). Mutually
+	// exclusive so the 4A bridge JS handlers (which select [data-field]) never
+	// match adapter inputs, and the 4D adapter JS handlers (which select
+	// [data-adapter]) never match bridge inputs.
+	identAttr := fmt.Sprintf(` data-field="%s"`, html.EscapeString(name))
 	if adapter != "" {
-		adapterAttr = fmt.Sprintf(` data-adapter="%s"`, html.EscapeString(adapter))
+		identAttr = fmt.Sprintf(` data-adapter="%s"`, html.EscapeString(adapter))
 	}
 
 	rowClass := "field-row"
@@ -393,7 +394,7 @@ func fieldHelper(args map[string]any) template.HTML {
 		}
 		middleHTML = fmt.Sprintf(`<input class="field-input%s%s" name="%s" value="%s" placeholder="%s"%s>`,
 			extra, hasValue,
-			html.EscapeString(name), html.EscapeString(value), html.EscapeString(placeholder), adapterAttr)
+			html.EscapeString(name), html.EscapeString(value), html.EscapeString(placeholder), identAttr)
 	case "number":
 		hasValue := ""
 		if value != "" {
@@ -404,7 +405,7 @@ func fieldHelper(args map[string]any) template.HTML {
 			style = fmt.Sprintf(` style="max-width:%s"`, html.EscapeString(inputWidth))
 		}
 		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s%s>`,
-			hasValue, html.EscapeString(name), html.EscapeString(value), style, adapterAttr)
+			hasValue, html.EscapeString(name), html.EscapeString(value), style, identAttr)
 	case "password":
 		// 4B password rendering: never echo the stored password into the
 		// HTML response — render value="" always. Placeholder communicates
@@ -417,12 +418,12 @@ func fieldHelper(args map[string]any) template.HTML {
 			skipAttr = ` data-skip-empty="true"`
 		}
 		middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s%s>`,
-			html.EscapeString(name), html.EscapeString(placeholder), skipAttr, adapterAttr)
+			html.EscapeString(name), html.EscapeString(placeholder), skipAttr, identAttr)
 		_ = value // value is intentionally not used for password — preserve-on-empty lives in the server overlay
 	case "select":
 		options, _ := args["Options"].([]map[string]any)
 		var b strings.Builder
-		fmt.Fprintf(&b, `<select class="field-input has-value" name="%s"%s>`, html.EscapeString(name), adapterAttr)
+		fmt.Fprintf(&b, `<select class="field-input has-value" name="%s"%s>`, html.EscapeString(name), identAttr)
 		for _, opt := range options {
 			ov, _ := opt["Value"].(string)
 			ol, _ := opt["Label"].(string)
@@ -445,8 +446,8 @@ func fieldHelper(args map[string]any) template.HTML {
 			onClass = " on"
 			aria = "true"
 		}
-		middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s" data-field="%s" type="button" aria-pressed="%s"%s></button>`,
-			onClass, html.EscapeString(name), html.EscapeString(name), aria, adapterAttr)
+		middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s"%s type="button" aria-pressed="%s"></button>`,
+			onClass, html.EscapeString(name), identAttr, aria)
 	default:
 		middleHTML = fmt.Sprintf(`<!-- unknown field type %q -->`, html.EscapeString(typ))
 	}

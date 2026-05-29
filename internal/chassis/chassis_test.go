@@ -3848,6 +3848,49 @@ func TestFieldHelper_SwitchIncludesNameForErrorPainting(t *testing.T) {
 	}
 }
 
+// TestFieldHelper_BridgeInputsCarryDataField pins the mutual-exclusivity
+// invariant: bridge fields (no Adapter) are addressed by data-field; adapter
+// fields (Adapter set) by data-adapter, never both. This keeps the 4A bridge
+// JS handlers ([data-field]) from matching adapter inputs and the 4D adapter
+// JS handlers ([data-adapter]) from matching bridge inputs.
+func TestFieldHelper_BridgeInputsCarryDataField(t *testing.T) {
+	t.Parallel()
+
+	// Bridge text field (no Adapter) must carry data-field, not data-adapter.
+	bridge := string(fieldHelper(map[string]any{
+		"Name":  "logging_debug",
+		"Type":  "text",
+		"Label": "Debug logging",
+		"Value": "x",
+		"Scope": "hot",
+	}))
+	if !strings.Contains(bridge, `type="text"`) && !strings.Contains(bridge, `class="field-input`) {
+		t.Fatalf("expected a text input in bridge render: %s", bridge)
+	}
+	if !strings.Contains(bridge, `data-field="logging_debug"`) {
+		t.Errorf("bridge text field missing data-field: %s", bridge)
+	}
+	if strings.Contains(bridge, `data-adapter=`) {
+		t.Errorf("bridge text field must not carry data-adapter: %s", bridge)
+	}
+
+	// Adapter text field (Adapter set) must carry data-adapter, not data-field.
+	adapter := string(fieldHelper(map[string]any{
+		"Name":    "download_dir",
+		"Type":    "text",
+		"Label":   "Download dir",
+		"Value":   "/downloads",
+		"Scope":   "recast",
+		"Adapter": "torrent",
+	}))
+	if !strings.Contains(adapter, `data-adapter="torrent"`) {
+		t.Errorf("adapter text field missing data-adapter: %s", adapter)
+	}
+	if strings.Contains(adapter, `data-field=`) {
+		t.Errorf("adapter text field must not carry data-field: %s", adapter)
+	}
+}
+
 func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 	t.Parallel()
 	tmpl, err := parseTemplates()
