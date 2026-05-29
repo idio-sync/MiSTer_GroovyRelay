@@ -821,6 +821,95 @@ func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.R
 	})
 }
 
+// writeJSON emits any JSON-serialisable body with the given status code.
+// Used by handlers that need a custom envelope shape not covered by
+// writeSettingsChip / writeSettingsSuccess / writeSettingsFieldErrors.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// handleSettingsCatalogProviderPost is the POST handler for
+// /receiver/settings/catalog/provider/{id}. Accepts any subset of the
+// supported form keys (enabled, hls_buffer_disabled); missing keys mean
+// "do not change that field." Returns 404 for an unknown id, 400 for bad
+// bools or an empty body, 503 if the manager is unwired.
+func (s *Server) handleSettingsCatalogProviderPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CatalogManager == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	id := r.PathValue("id")
+	known := s.cfg.CatalogManager.Providers()
+	if !catalogContainsProvider(known, id) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"ok": false, "error": "unknown provider",
+		})
+		return
+	}
+
+	var patch CatalogProviderPatch
+	errs := map[string]string{}
+	if vals, ok := r.PostForm["enabled"]; ok && len(vals) > 0 {
+		v, err := decodeBool(vals[0])
+		if err != nil {
+			errs["enabled"] = "must be true or false"
+		} else {
+			patch.Enabled = &v
+		}
+	}
+	if vals, ok := r.PostForm["hls_buffer_disabled"]; ok && len(vals) > 0 {
+		v, err := decodeBool(vals[0])
+		if err != nil {
+			errs["hls_buffer_disabled"] = "must be true or false"
+		} else {
+			patch.HLSBufferDisabled = &v
+		}
+	}
+	if len(errs) > 0 {
+		writeSettingsFieldErrors(w, http.StatusBadRequest, errs)
+		return
+	}
+	if patch.Enabled == nil && patch.HLSBufferDisabled == nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+
+	scope, err := s.cfg.CatalogManager.UpdateProvider(id, patch)
+	if err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	label, ok := scopeLabel(scope)
+	if !ok {
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, label)
+}
+
+// catalogContainsProvider reports whether any element of providers has the
+// given id. Used by handleSettingsCatalogProviderPost to gate unknown-id
+// requests before invoking UpdateProvider.
+func catalogContainsProvider(providers []CatalogProviderState, id string) bool {
+	for _, p := range providers {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // probeErrorHostPortRe matches dotted-quad IPv4 with an optional :port
 // suffix, e.g. "192.168.1.42" or "10.0.0.1:32100". The chassis only
 // validates IPv4 host_ip / mister_host shapes that the regex can catch;

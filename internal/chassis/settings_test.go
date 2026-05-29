@@ -1213,3 +1213,201 @@ func TestLaunchCore_NilSaver(t *testing.T) {
 		t.Fatalf("Code = %d, want 503", rec.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Catalog provider POST handler tests (Task 14)
+// ---------------------------------------------------------------------------
+
+// assertJSONField decodes b as JSON and asserts that the top-level key
+// equals the expected string. Fails the test if b is not valid JSON or
+// if the key is absent / wrong type.
+func assertJSONField(t *testing.T, b []byte, key, want string) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("assertJSONField: unmarshal: %v (body=%s)", err, b)
+	}
+	got, ok := m[key].(string)
+	if !ok {
+		t.Errorf("assertJSONField: key %q not a string in body %s", key, b)
+		return
+	}
+	if got != want {
+		t.Errorf("assertJSONField: %q = %q, want %q (body=%s)", key, got, want, b)
+	}
+}
+
+// assertJSONFieldErrors decodes b as JSON and asserts that each entry in
+// wantErrs appears verbatim under body["errors"][key]. Extra error keys in
+// the body are silently ignored.
+func assertJSONFieldErrors(t *testing.T, b []byte, wantErrs map[string]string) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("assertJSONFieldErrors: unmarshal: %v (body=%s)", err, b)
+	}
+	errs, ok := m["errors"].(map[string]any)
+	if !ok {
+		t.Fatalf("assertJSONFieldErrors: body[\"errors\"] not a map (body=%s)", b)
+	}
+	for k, want := range wantErrs {
+		got, _ := errs[k].(string)
+		if got != want {
+			t.Errorf("assertJSONFieldErrors: errors[%q] = %q, want %q (body=%s)", k, got, want, b)
+		}
+	}
+}
+
+// fakeCatalogManagerMutating is a test double for CatalogSettingsManager
+// that records the arguments passed to UpdateProvider and returns a
+// configurable scope.
+type fakeCatalogManagerMutating struct {
+	providers                []CatalogProviderState
+	scope                    adapters.ApplyScope
+	err                      error
+	lastID                   string
+	lastPatch                CatalogProviderPatch
+	lastDirectStreamDisabled *bool
+}
+
+func (f *fakeCatalogManagerMutating) Providers() []CatalogProviderState { return f.providers }
+func (f *fakeCatalogManagerMutating) UpdateProvider(id string, patch CatalogProviderPatch) (adapters.ApplyScope, error) {
+	f.lastID = id
+	f.lastPatch = patch
+	return f.scope, f.err
+}
+func (f *fakeCatalogManagerMutating) SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error) {
+	f.lastDirectStreamDisabled = &disabled
+	return f.scope, f.err
+}
+
+// newCatalogFormReq builds a POST request with an
+// application/x-www-form-urlencoded body.
+func newCatalogFormReq(t *testing.T, path, body string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+// newTestServerForCatalog constructs a Server with only CatalogManager
+// wired, bypassing New() validation (Version/StartedAt are not required
+// by the catalog handler). Matches the pattern used by newTestServerWithSaver.
+func newTestServerForCatalog(t *testing.T, mgr CatalogSettingsManager) *Server {
+	t.Helper()
+	return &Server{cfg: Config{CatalogManager: mgr}}
+}
+
+func TestHandleSettingsCatalogProviderPost_EnabledOnly_HotScope(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{
+		providers: []CatalogProviderState{{ID: "mtv-rewind"}},
+		scope:     adapters.ScopeHotSwap,
+	}
+	srv := newTestServerForCatalog(t, mgr)
+
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/mtv-rewind", "enabled=false")
+	req.SetPathValue("id", "mtv-rewind")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONField(t, rr.Body.Bytes(), "scope", "hot")
+	if mgr.lastID != "mtv-rewind" {
+		t.Errorf("UpdateProvider id = %q; want mtv-rewind", mgr.lastID)
+	}
+	if mgr.lastPatch.Enabled == nil || *mgr.lastPatch.Enabled != false {
+		t.Errorf("patch.Enabled = %v; want &false", mgr.lastPatch.Enabled)
+	}
+	if mgr.lastPatch.HLSBufferDisabled != nil {
+		t.Errorf("patch.HLSBufferDisabled = %v; want nil", mgr.lastPatch.HLSBufferDisabled)
+	}
+}
+
+func TestHandleSettingsCatalogProviderPost_HLSOnly_RecastScope(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{
+		providers: []CatalogProviderState{{ID: "toonami-aftermath"}},
+		scope:     adapters.ScopeRestartCast,
+	}
+	srv := newTestServerForCatalog(t, mgr)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/toonami-aftermath", "hls_buffer_disabled=true")
+	req.SetPathValue("id", "toonami-aftermath")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONField(t, rr.Body.Bytes(), "scope", "recast")
+}
+
+func TestHandleSettingsCatalogProviderPost_BothFields_RecastMaxWins(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{
+		providers: []CatalogProviderState{{ID: "toonami-aftermath"}},
+		scope:     adapters.ScopeRestartCast,
+	}
+	srv := newTestServerForCatalog(t, mgr)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/toonami-aftermath", "enabled=true&hls_buffer_disabled=true")
+	req.SetPathValue("id", "toonami-aftermath")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONField(t, rr.Body.Bytes(), "scope", "recast")
+}
+
+func TestHandleSettingsCatalogProviderPost_UnknownProvider_404(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{providers: []CatalogProviderState{{ID: "mtv-rewind"}}}
+	srv := newTestServerForCatalog(t, mgr)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/does-not-exist", "enabled=true")
+	req.SetPathValue("id", "does-not-exist")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404", rr.Code)
+	}
+	if mgr.lastID != "" {
+		t.Errorf("UpdateProvider should NOT be called; got id=%q", mgr.lastID)
+	}
+}
+
+func TestHandleSettingsCatalogProviderPost_BadBool_400FieldError(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{providers: []CatalogProviderState{{ID: "mtv-rewind"}}}
+	srv := newTestServerForCatalog(t, mgr)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/mtv-rewind", "enabled=maybe")
+	req.SetPathValue("id", "mtv-rewind")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONFieldErrors(t, rr.Body.Bytes(), map[string]string{
+		"enabled": "must be true or false",
+	})
+}
+
+func TestHandleSettingsCatalogProviderPost_EmptyBody_BadInputChip(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{providers: []CatalogProviderState{{ID: "mtv-rewind"}}}
+	srv := newTestServerForCatalog(t, mgr)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/mtv-rewind", "")
+	req.SetPathValue("id", "mtv-rewind")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONField(t, rr.Body.Bytes(), "chip", "BAD INPUT")
+}
+
+func TestHandleSettingsCatalogProviderPost_NilManager_NotReady503(t *testing.T) {
+	srv := newTestServerForCatalog(t, nil)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/x", "enabled=true")
+	req.SetPathValue("id", "x")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogProviderPost(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rr.Code)
+	}
+	assertJSONField(t, rr.Body.Bytes(), "chip", "NOT READY")
+}
