@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -225,3 +227,15 @@ func (f *fakeStreamsAdapter) ApplyConfig(prim toml.Primitive, meta toml.MetaData
 }
 func (f *fakeStreamsAdapter) Start(ctx context.Context) error { return nil }
 func (f *fakeStreamsAdapter) Stop() error                     { return nil }
+
+func TestTranslateSaverError_ApplyErrorMapsToApplyFailed(t *testing.T) {
+	t.Parallel()
+	err := translateSaverError(&uiserver.ApplyError{Err: errors.New("upstream apply failure")})
+	var chip *cmdChipError
+	if !errors.As(err, &chip) {
+		t.Fatalf("err = %v (%T), want *cmdChipError", err, err)
+	}
+	if chip.Chip() != "APPLY FAILED" || chip.StatusCode() != http.StatusInternalServerError {
+		t.Errorf("chip = %q status = %d, want APPLY FAILED / 500", chip.Chip(), chip.StatusCode())
+	}
+}

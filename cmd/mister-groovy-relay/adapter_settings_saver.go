@@ -92,6 +92,12 @@ func translateSaverError(err error) error {
 	if errors.As(err, &feb) {
 		return &cmdAdapterFieldErrors{errs: feb.FieldErrors()}
 	}
+	var ae *uiserver.ApplyError
+	if errors.As(err, &ae) {
+		// Config was written to disk but the runtime apply failed — tell the
+		// operator the truth (distinct from a disk-write failure).
+		return &cmdChipError{status: http.StatusInternalServerError, chip: "APPLY FAILED"}
+	}
 	return &cmdChipError{status: http.StatusInternalServerError, chip: "WRITE FAILED"}
 }
 

@@ -378,6 +378,9 @@ func extractAdapterSectionBody(doc []byte, name string) ([]byte, bool) {
 // failures) are wrapped in *adapterFieldErrors so the chassis-side
 // AdapterSettingsSaver wrapper can extract them and render
 // {ok:false, errors:{...}}.
+//
+// Note: comments within the [adapters.<name>] section are not preserved
+// across a save (the section is re-encoded from decoded values).
 func (r *AdapterSaver) SaveTouched(name string, touched map[string]string, adapter adapters.Adapter, fields []adapters.FieldDef) (adapters.ApplyScope, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -429,7 +432,7 @@ func (r *AdapterSaver) SaveTouched(name string, touched map[string]string, adapt
 
 	scope, err := adapter.ApplyConfig(prim, meta)
 	if err != nil {
-		return scope, fmt.Errorf("apply config: %w", err)
+		return scope, &ApplyError{Scope: scope, Err: err}
 	}
 	return scope, nil
 }
@@ -451,3 +454,16 @@ func (e *adapterFieldErrors) Error() string {
 func (e *adapterFieldErrors) FieldErrors() []adapters.FieldError {
 	return e.Errs
 }
+
+// ApplyError indicates the adapter config was validated and atomically
+// written to disk successfully, but the adapter's ApplyConfig runtime
+// side-effect failed afterward. The on-disk config IS updated; the
+// running adapter may not reflect the change until restart. Callers
+// should surface this distinctly from a write failure.
+type ApplyError struct {
+	Scope adapters.ApplyScope
+	Err   error
+}
+
+func (e *ApplyError) Error() string { return "apply config: " + e.Err.Error() }
+func (e *ApplyError) Unwrap() error { return e.Err }
