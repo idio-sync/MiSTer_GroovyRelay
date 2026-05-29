@@ -450,7 +450,30 @@ func (c *Companion) sessionRequestForPlay(ctx context.Context, p PlayMediaReques
 	if md, ok := c.musicMetadataForPlay(ctx, p); ok {
 		return c.musicSessionRequestForPlay(p, md)
 	}
-	return c.sessionRequestForPreset(p, preset)
+	req := c.sessionRequestForPreset(p, preset)
+	// Re-fetch display metadata on every (re)start that flows through here.
+	// skip-next/prev (restartFromPlayQueueItem) changes p.MediaKey, so fresh
+	// metadata is required; seek/setStreams re-fetch the same key but the
+	// lookup is 2s-bounded and degrades to the controller title, so the cost
+	// is acceptable.
+	req.DisplayMetadata = c.videoDisplayForPlay(ctx, p)
+	return req
+}
+
+// videoDisplayForPlay fetches PMS video metadata under a 2s deadline and
+// maps it to VFD tiers. On any failure/timeout it degrades to the
+// controller-supplied title as Primary (no regression vs. today).
+func (c *Companion) videoDisplayForPlay(ctx context.Context, p PlayMediaRequest) core.DisplayMetadata {
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	md, ok, err := VideoMetadataFor(lookupCtx, p.serverURL(), p.MediaKey, p.PlexToken)
+	if err != nil {
+		slog.Debug("plex video metadata lookup failed", "key", p.MediaKey, "err", err)
+	}
+	if !ok {
+		return core.DisplayMetadata{Primary: p.Title}
+	}
+	return plexVideoDisplay(md, p.Title)
 }
 
 func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.ModelinePreset) core.SessionRequest {
@@ -947,6 +970,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := c.sessionRequestForPreset(p, preset)
+	req.DisplayMetadata = c.videoDisplayForPlay(r.Context(), p)
 	// Resolve subtitle: if the controller asked for a stream and PMS has
 	// one, download to a temp file so libass can read it. On any error
 	// (PMS miss, network hiccup, transient 5xx), fall back to no burn-in

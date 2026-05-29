@@ -345,12 +345,63 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	}
 }
 
+// TestPlayMedia_VideoPopulatesDisplayMetadata proves the PRIMARY initial
+// video-cast path (handlePlayMedia) fetches PMS metadata and composes the
+// three VFD tiers show-first, not just seek/skip restarts. The mock PMS
+// serves an episode <Video> for the metadata key.
+func TestPlayMedia_VideoPopulatesDisplayMetadata(t *testing.T) {
+	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer><Video type="episode" title="The Constant" grandparentTitle="Lost" index="5" parentIndex="4" year="2008"/></MediaContainer>`))
+	}))
+	defer pms.Close()
+	u, err := url.Parse(pms.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{DeviceName: "MiSTer", DeviceUUID: "our-uuid"}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	q := url.Values{}
+	q.Set("address", u.Hostname())
+	q.Set("port", u.Port())
+	q.Set("protocol", "http")
+	q.Set("key", "/library/metadata/42")
+	q.Set("offset", "0")
+	q.Set("token", "tok")
+	q.Set("type", "episode")
+	q.Set("title", "controller title")
+	req, _ := http.NewRequest("GET", ts.URL+"/player/playback/playMedia?"+q.Encode(), nil)
+	req.Header.Set("X-Plex-Target-Client-Identifier", "our-uuid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	d := fc.lastReq.DisplayMetadata
+	if d.Primary != "Lost" || d.Secondary != "The Constant" || d.Tertiary != "S04E05 · 2008" {
+		t.Fatalf("video initial-play display = %+v", d)
+	}
+}
+
 func TestPlayMedia_ResolvesPlayQueueItemIDFromContainerKey(t *testing.T) {
 	var gotPath string
 	var gotQuery url.Values
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotQuery = r.URL.Query()
+		// Capture only play-queue fetches; the video metadata fetch
+		// (videoDisplayForPlay) arrives afterward and would otherwise
+		// overwrite gotPath/gotQuery.
+		if strings.HasPrefix(r.URL.Path, "/playQueues/") {
+			gotPath = r.URL.Path
+			gotQuery = r.URL.Query()
+		}
 		w.Header().Set("Content-Type", "application/xml")
 		_, _ = w.Write([]byte(`<MediaContainer size="3" playQueueID="99" playQueueVersion="2">
 			<Video key="/library/metadata/41" ratingKey="41" playQueueItemID="1"/>
@@ -1508,8 +1559,12 @@ func TestSkipNext_FetchesPlayQueueAndRestartsNextItem(t *testing.T) {
 	var gotPath string
 	var gotQuery url.Values
 	pms := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotQuery = r.URL.Query()
+		// Capture only play-queue fetches; video metadata fetches arrive
+		// after the queue fetch and would overwrite gotPath/gotQuery.
+		if strings.HasPrefix(r.URL.Path, "/playQueues/") {
+			gotPath = r.URL.Path
+			gotQuery = r.URL.Query()
+		}
 		w.Header().Set("Content-Type", "application/xml")
 		_, _ = w.Write([]byte(`<MediaContainer size="3">
 			<Video key="/library/metadata/41" ratingKey="41" playQueueItemID="1"/>
