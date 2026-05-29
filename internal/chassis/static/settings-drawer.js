@@ -141,7 +141,7 @@
   });
 
   // Wire blur on text/number/password/path inputs; change on selects.
-  drawer.querySelectorAll('input.field-input, select.field-input').forEach(el => {
+  drawer.querySelectorAll('input.field-input[data-field], select.field-input[data-field]').forEach(el => {
     const evt = el.tagName === 'SELECT' ? 'change' : 'blur';
     el.addEventListener(evt, async () => {
       const name = el.name;
