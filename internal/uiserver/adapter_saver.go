@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -90,6 +91,154 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 		return []byte(out)
 	}
 	return []byte(strings.Join(outLines, "\n"))
+}
+
+// overlayTouched merges typed values from `touched` (string-encoded
+// form values) onto `current` (the adapter's in-memory snapshot),
+// using the FieldDef table for type dispatch. Returns the merged map
+// plus per-field errors for any key that fails to decode or is not
+// in the schema. The result is a fresh map; `current` is not mutated.
+//
+// Dotted-key keys (e.g. providers.foo.catalog_refresh_hours) are
+// matched against schema entries whose Key uses the * wildcard
+// (providers.*.catalog_refresh_hours). Wildcard-matching values are
+// nested into a map-of-maps shape compatible with the BurntSushi
+// TOML encoder.
+func overlayTouched(current map[string]any, touched map[string]string, fields []adapters.FieldDef) (map[string]any, []adapters.FieldError) {
+	out := cloneMap(current)
+	var errs []adapters.FieldError
+	for key, raw := range touched {
+		fd, dotted, ok := matchFieldDef(fields, key)
+		if !ok {
+			errs = append(errs, adapters.FieldError{Key: key, Msg: "unknown field"})
+			continue
+		}
+		if fd.Kind == adapters.KindAction {
+			// Action buttons carry no value; skip silently rather than
+			// treating them as an unsupported kind.
+			continue
+		}
+		val, perr := decodeTouchedValue(raw, fd.Kind)
+		if perr != "" {
+			errs = append(errs, adapters.FieldError{Key: key, Msg: perr})
+			continue
+		}
+		if dotted {
+			if err := setDottedValue(out, key, val); err != nil {
+				errs = append(errs, adapters.FieldError{Key: key, Msg: err.Error()})
+			}
+			continue
+		}
+		out[key] = val
+	}
+	return out, errs
+}
+
+func cloneMap(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		// Deep-copies nested map[string]any; slices are copied by
+		// reference (safe today — adapter CurrentValues() never nests
+		// slices; revisit if that changes).
+		if child, ok := v.(map[string]any); ok {
+			out[k] = cloneMap(child)
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// matchFieldDef returns the FieldDef matching key. Exact match wins;
+// otherwise a wildcard FieldDef whose Key uses * in dotted segments
+// (e.g. providers.*.catalog_refresh_hours) is matched against the
+// dotted form of key. The dotted bool tells the caller whether to
+// invoke setDottedValue or assign directly.
+func matchFieldDef(fields []adapters.FieldDef, key string) (adapters.FieldDef, bool, bool) {
+	for _, fd := range fields {
+		if fd.Key == key {
+			return fd, false, true
+		}
+	}
+	for _, fd := range fields {
+		if !strings.Contains(fd.Key, "*") {
+			continue
+		}
+		if dottedKeyMatchesWildcard(key, fd.Key) {
+			return fd, true, true
+		}
+	}
+	return adapters.FieldDef{}, false, false
+}
+
+func dottedKeyMatchesWildcard(key, pattern string) bool {
+	keyParts := strings.Split(key, ".")
+	patParts := strings.Split(pattern, ".")
+	if len(keyParts) != len(patParts) {
+		return false
+	}
+	for i, p := range patParts {
+		if p == "*" {
+			continue
+		}
+		if p != keyParts[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeTouchedValue parses a string-encoded form value into the
+// typed Go value the TOML encoder expects. Numeric kinds become
+// int64; bool kind parses "true"/"false"; text kinds pass through.
+func decodeTouchedValue(raw string, kind adapters.FieldKind) (any, string) {
+	switch kind {
+	case adapters.KindBool:
+		switch raw {
+		case "true":
+			return true, ""
+		case "false":
+			return false, ""
+		default:
+			return nil, fmt.Sprintf("not a bool: %q", raw)
+		}
+	case adapters.KindInt:
+		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			return nil, fmt.Sprintf("not an integer: %q", raw)
+		}
+		return n, ""
+	case adapters.KindText, adapters.KindSecret, adapters.KindEnum:
+		return raw, ""
+	default:
+		return nil, fmt.Sprintf("unsupported kind: %v", kind)
+	}
+}
+
+// setDottedValue assigns val at the dotted path in m, creating
+// intermediate map[string]any nodes as needed.
+func setDottedValue(m map[string]any, key string, val any) error {
+	parts := strings.Split(key, ".")
+	cur := m
+	for i, p := range parts[:len(parts)-1] {
+		child, ok := cur[p]
+		if !ok {
+			next := map[string]any{}
+			cur[p] = next
+			cur = next
+			continue
+		}
+		nextMap, ok := child.(map[string]any)
+		if !ok {
+			return fmt.Errorf("path %q: segment %q is not a table", key, strings.Join(parts[:i+1], "."))
+		}
+		cur = nextMap
+	}
+	cur[parts[len(parts)-1]] = val
+	return nil
 }
 
 // currentValuesOf returns the adapter's current in-memory values as a

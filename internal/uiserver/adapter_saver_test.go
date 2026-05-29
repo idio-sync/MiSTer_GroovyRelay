@@ -101,3 +101,150 @@ func TestCurrentValuesOf_NoMethod(t *testing.T) {
 		t.Errorf("currentValuesOf returned ok=true for adapter without CurrentValues; want false")
 	}
 }
+
+func TestOverlayTouched_BoolField(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{"enabled": false, "name": "M"}
+	touched := map[string]string{"enabled": "true"}
+	fields := []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool},
+		{Key: "name", Kind: adapters.KindText},
+	}
+	got, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) != 0 {
+		t.Fatalf("ferrs = %v, want none", ferrs)
+	}
+	if got["enabled"] != true {
+		t.Errorf("enabled = %v, want true", got["enabled"])
+	}
+	if got["name"] != "M" {
+		t.Errorf("name = %v, want unchanged 'M'", got["name"])
+	}
+}
+
+func TestOverlayTouched_IntField(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{"port": int64(32100)}
+	touched := map[string]string{"port": "32200"}
+	fields := []adapters.FieldDef{{Key: "port", Kind: adapters.KindInt}}
+	got, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) != 0 {
+		t.Fatalf("ferrs = %v, want none", ferrs)
+	}
+	if got["port"] != int64(32200) {
+		t.Errorf("port = %v (%T), want int64(32200)", got["port"], got["port"])
+	}
+}
+
+func TestOverlayTouched_BadInt(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{"port": int64(32100)}
+	touched := map[string]string{"port": "not-a-number"}
+	fields := []adapters.FieldDef{{Key: "port", Kind: adapters.KindInt}}
+	_, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) == 0 {
+		t.Fatalf("ferrs empty, want one entry for 'port'")
+	}
+	if ferrs[0].Key != "port" {
+		t.Errorf("ferrs[0].Key = %q, want 'port'", ferrs[0].Key)
+	}
+}
+
+func TestOverlayTouched_UnknownKey(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{"enabled": true}
+	touched := map[string]string{"unknown": "x"}
+	fields := []adapters.FieldDef{{Key: "enabled", Kind: adapters.KindBool}}
+	_, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) == 0 {
+		t.Fatalf("ferrs empty, want one entry for unknown key")
+	}
+	if ferrs[0].Key != "unknown" {
+		t.Errorf("ferrs[0].Key = %q, want 'unknown'", ferrs[0].Key)
+	}
+}
+
+func TestOverlayTouched_DottedProviderKey(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{
+		"enabled":   true,
+		"providers": map[string]any{},
+	}
+	touched := map[string]string{"providers.foo.catalog_refresh_hours": "12"}
+	fields := []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool},
+		{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+	}
+	got, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) != 0 {
+		t.Fatalf("ferrs = %v, want none", ferrs)
+	}
+	providers, ok := got["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers not a map: %#v", got["providers"])
+	}
+	foo, ok := providers["foo"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers.foo not a map: %#v", providers["foo"])
+	}
+	if foo["catalog_refresh_hours"] != int64(12) {
+		t.Errorf("providers.foo.catalog_refresh_hours = %v, want 12", foo["catalog_refresh_hours"])
+	}
+}
+
+func TestOverlayTouched_DottedCollision(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{"providers": "not-a-map"}
+	touched := map[string]string{"providers.foo.catalog_refresh_hours": "12"}
+	fields := []adapters.FieldDef{
+		{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+	}
+	_, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) == 0 {
+		t.Fatalf("ferrs empty, want one entry for collision on non-table segment")
+	}
+	if ferrs[0].Key != "providers.foo.catalog_refresh_hours" {
+		t.Errorf("ferrs[0].Key = %q, want 'providers.foo.catalog_refresh_hours'", ferrs[0].Key)
+	}
+}
+
+func TestOverlayTouched_DoesNotMutateCurrent(t *testing.T) {
+	t.Parallel()
+	current := map[string]any{
+		"enabled": false,
+		"providers": map[string]any{
+			"foo": map[string]any{"catalog_refresh_hours": int64(6)},
+		},
+	}
+	touched := map[string]string{
+		"enabled":                             "true",
+		"providers.foo.catalog_refresh_hours": "12",
+	}
+	fields := []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool},
+		{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+	}
+	got, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) != 0 {
+		t.Fatalf("ferrs = %v, want none", ferrs)
+	}
+	// Sanity: the returned map reflects the changes.
+	if got["enabled"] != true {
+		t.Errorf("got enabled = %v, want true", got["enabled"])
+	}
+	// The original current must be untouched at both levels.
+	if current["enabled"] != false {
+		t.Errorf("current[enabled] mutated to %v, want false", current["enabled"])
+	}
+	origProviders, ok := current["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("current providers not a map: %#v", current["providers"])
+	}
+	origFoo, ok := origProviders["foo"].(map[string]any)
+	if !ok {
+		t.Fatalf("current providers.foo not a map: %#v", origProviders["foo"])
+	}
+	if origFoo["catalog_refresh_hours"] != int64(6) {
+		t.Errorf("current providers.foo.catalog_refresh_hours mutated to %v, want 6", origFoo["catalog_refresh_hours"])
+	}
+}
