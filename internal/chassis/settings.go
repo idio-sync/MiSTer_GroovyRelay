@@ -98,6 +98,72 @@ type settingsChipError interface {
 	Chip() string
 }
 
+// CatalogSettingsManager is the chassis-side interface for Catalog-pane
+// state mutation. Production passes a thin wrapper around *streams.Adapter
+// from cmd/mister-groovy-relay; internal/chassis does NOT import
+// internal/adapters/streams.
+type CatalogSettingsManager interface {
+	// Providers returns the renderable Catalog-pane state. Stable order
+	// matches StreamsCatalogViewer.Catalog() so the two surfaces agree
+	// on ID/order. Safe to call before adapter Start.
+	Providers() []CatalogProviderState
+
+	// UpdateProvider applies the patch's non-nil flags to providers.<id>
+	// in a single snapshot/save/apply cycle. Either pointer may be nil
+	// (means "do not change that field"); both nil is rejected by the
+	// chassis handler before invoking the interface. Returns the
+	// aggregated ApplyScope (with the Catalog-side declared-scope floor
+	// already applied by the production wrapper).
+	UpdateProvider(id string, patch CatalogProviderPatch) (adapters.ApplyScope, error)
+
+	// SetDirectStreamHLSBuffer flips providers.<id>.hls_buffer_disabled
+	// for every provider where Live == true in one save. Returns the
+	// max-wins scope (RECAST after the declared-scope floor).
+	SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error)
+}
+
+// CatalogProviderPatch is the optional-field patch consumed by
+// UpdateProvider. Pointer-to-bool encodes the tri-state {unset, true,
+// false} the chassis handler needs to distinguish "this form key was
+// omitted" from "this form key was set to false."
+type CatalogProviderPatch struct {
+	Enabled           *bool
+	HLSBufferDisabled *bool
+}
+
+// CatalogProviderState is the chassis-shaped per-provider state for
+// rendering and mutation. All fields are populated by the production
+// wrapper from streams.Config + adapters.CatalogProvider; the chassis
+// renders directly from this struct.
+type CatalogProviderState struct {
+	ID                string
+	DisplayName       string
+	BadgeLabel        string
+	BadgeClass        string
+	Origin            string
+	Kind              string
+	DefaultChannel    string
+	Live              bool
+	ChannelCount      int
+	Enabled           bool
+	HLSBufferDisabled bool
+}
+
+// ConfigReset is the chassis-side interface for the restore-defaults
+// action. Production passes a wrapper that calls config.WriteAtomic
+// with the bundled defaults TOML, preserving the operator's data_dir.
+// Scope is REBOOT (live process continues with old config; restart
+// applies defaults).
+type ConfigReset interface {
+	// ResetToDefaults atomically rewrites the on-disk config.toml with
+	// the bundled defaults (data_dir preserved from the live config).
+	// MUST NOT touch data_dir contents, MUST NOT mutate in-memory
+	// bridge/adapter state. Disk-write failures return a typed error
+	// satisfying settingsChipError so the chassis can map to
+	// {chip:"WRITE FAILED"} cleanly.
+	ResetToDefaults() error
+}
+
 // bridgeFieldDecoder is the per-field validation entry. It takes a raw
 // form string (already trimmed by the caller) and returns the decoded
 // typed value (as an any so the overlay table can write it into the
