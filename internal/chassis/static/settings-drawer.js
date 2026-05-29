@@ -547,7 +547,9 @@
     const key = target.getAttribute('name');
     if (payload.ok) {
       if (payload.scope === 'reboot') {
-        showNotice(`Restart container to apply new ${target.getAttribute('aria-label') || key}`, 'ok');
+        const labelEl = target.closest('.field-row')?.querySelector('label');
+        const labelText = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() || key;
+        showNotice(`Restart container to apply new ${labelText}`, 'ok');
       }
       clearFieldError(key);
       return;

@@ -4542,3 +4542,17 @@ func TestSettingsDrawerJS_StreamsRefreshHandler(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsDrawerJS_AdapterRebootToastUsesLabel(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	src := string(js)
+	// The adapter reboot-toast path must derive the human label from the
+	// field row's <label> (like the 4A bridge handler), not the raw key or aria-label.
+	if strings.Contains(src, "getAttribute('aria-label') || key") {
+		t.Errorf("adapter reboot toast still uses aria-label||key instead of the field-row label")
+	}
+}
