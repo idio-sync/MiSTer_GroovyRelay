@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1034,16 +1035,145 @@ func (s *Server) handleSettingsActionRestoreDefaults(w http.ResponseWriter, r *h
 }
 
 // handleSettingsAdapterPost is the POST handler for
-// /receiver/settings/adapter/{name}. Real save logic is wired in Task 13.
-// Returns 503 NOT READY when AdapterSettingsSaver is nil (e.g. unit-test
-// fixtures without a wired saver), mirroring the nil-guard pattern used
-// by handleSettingsBridgePost and handleSettingsActionLaunchCore.
+// /receiver/settings/adapter/{name}. Validates the adapter name against the
+// saver's Fields table, rejects unknown form keys (BAD INPUT chip), then
+// delegates to AdapterSettingsSaver.SaveTouched. Error shapes are unwrapped
+// via emitSaveError.
 func (s *Server) handleSettingsAdapterPost(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.AdapterSettingsSaver == nil {
 		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
 		return
 	}
-	writeSettingsChip(w, http.StatusInternalServerError, "NOT IMPLEMENTED")
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	fields, ok := s.cfg.AdapterSettingsSaver.Fields(name)
+	if !ok {
+		writeSettingsChip(w, http.StatusNotFound, "UNKNOWN ADAPTER")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	touched, ferrs := touchedFromForm(r.PostForm, fields)
+	if len(ferrs) > 0 {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	if !atLeastOneKey(touched) {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	scope, err := s.cfg.AdapterSettingsSaver.SaveTouched(name, touched)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsSuccess(w, scope)
+}
+
+// touchedFromForm extracts form keys that match the adapter's FieldDef
+// schema. Unknown keys accumulate into ferrs; on any unknown key the
+// whole map is rejected (BAD INPUT). Returns (touched, nil) on clean
+// input, (nil, ferrs) if any key was unrecognised.
+func touchedFromForm(form url.Values, fields []adapters.FieldDef) (map[string]string, map[string]string) {
+	touched := map[string]string{}
+	ferrs := map[string]string{}
+	for key, values := range form {
+		if len(values) == 0 {
+			continue
+		}
+		if !keyMatchesSchema(key, fields) {
+			ferrs[key] = "unknown field"
+			continue
+		}
+		touched[key] = values[0]
+	}
+	if len(ferrs) > 0 {
+		return nil, ferrs
+	}
+	return touched, nil
+}
+
+// keyMatchesSchema reports whether key matches any FieldDef in fields.
+// Exact matches take priority; wildcard patterns (e.g. "providers.*.foo")
+// are matched via dottedKeyMatchesPattern.
+func keyMatchesSchema(key string, fields []adapters.FieldDef) bool {
+	for _, fd := range fields {
+		if fd.Key == key {
+			return true
+		}
+		if strings.Contains(fd.Key, "*") && dottedKeyMatchesPattern(key, fd.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+// dottedKeyMatchesPattern performs segment-wise matching of a dotted key
+// against a dotted pattern where "*" matches any single segment.
+// "providers.foo.bar" matches "providers.*.bar"; length mismatch is a
+// fast-reject. Used for the Streams wildcard allowlist entry
+// "providers.*.catalog_refresh_hours".
+func dottedKeyMatchesPattern(key, pattern string) bool {
+	keyParts := strings.Split(key, ".")
+	patParts := strings.Split(pattern, ".")
+	if len(keyParts) != len(patParts) {
+		return false
+	}
+	for i, p := range patParts {
+		if p == "*" {
+			continue
+		}
+		if p != keyParts[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// atLeastOneKey reports whether m has at least one entry. Named for
+// clarity at the call site; inlined by the compiler in release builds.
+func atLeastOneKey(m map[string]string) bool {
+	for range m {
+		return true
+	}
+	return false
+}
+
+// fieldErrorBearerForChassis is the named interface emitSaveError
+// unwraps adapter field errors against. cmd's *cmdAdapterFieldErrors
+// (declared in Task 32) satisfies this structurally — no concrete-type
+// coupling between layers. Declared at package scope because Go's
+// errors.As requires a named target type; anonymous interface targets
+// do not compile.
+type fieldErrorBearerForChassis interface {
+	error
+	FieldErrors() []adapters.FieldError
+}
+
+// emitSaveError unwraps typed saver errors into the appropriate JSON
+// envelope. settingsChipError carries chip + status; fieldErrorBearerForChassis
+// becomes the errors map. Falls back to a generic WRITE FAILED chip.
+func emitSaveError(w http.ResponseWriter, err error) {
+	var chipErr settingsChipError
+	if errors.As(err, &chipErr) {
+		writeSettingsChip(w, chipErr.StatusCode(), chipErr.Chip())
+		return
+	}
+	var feb fieldErrorBearerForChassis
+	if errors.As(err, &feb) {
+		ferrs := map[string]string{}
+		for _, fe := range feb.FieldErrors() {
+			ferrs[fe.Key] = fe.Msg
+		}
+		writeSettingsFieldErrors(w, http.StatusBadRequest, ferrs)
+		return
+	}
+	writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
 }
 
 // handleSettingsActionStreamsRefresh is the POST handler for

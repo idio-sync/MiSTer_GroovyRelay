@@ -1673,3 +1673,85 @@ func TestStreamsRefresh_RequiresSameOrigin(t *testing.T) {
 		t.Errorf("Code = %d, want 403", rec.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Adapter settings POST handler tests (Task 13)
+// ---------------------------------------------------------------------------
+
+func newTestServerForAdapterSave(saver AdapterSettingsSaver) *Server {
+	return &Server{
+		cfg: Config{
+			Version:              "test",
+			StartedAt:            time.Unix(0, 0),
+			AdapterSettingsSaver: saver,
+		},
+	}
+}
+
+func postAdapterSave(t *testing.T, s *Server, name, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/"+name, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("name", name)
+	rec := httptest.NewRecorder()
+	s.handleSettingsAdapterPost(rec, req)
+	return rec
+}
+
+func TestAdapterSave_UnknownAdapter(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{},
+		fields:  map[string][]adapters.FieldDef{},
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "doesnotexist", "enabled=true")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("Code = %d, want 404", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "UNKNOWN ADAPTER" {
+		t.Errorf("body.chip = %q, want UNKNOWN ADAPTER", got)
+	}
+}
+
+func TestAdapterSave_UnknownField(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "dlna", "bogus_field=true")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "BAD INPUT" {
+		t.Errorf("body.chip = %q, want BAD INPUT", got)
+	}
+}
+
+func TestAdapterSave_MalformedBody(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := newTestServerForAdapterSave(saver)
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", strings.NewReader("%ZZ"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("name", "dlna")
+	rec := httptest.NewRecorder()
+	s.handleSettingsAdapterPost(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+}
