@@ -3,6 +3,7 @@ package streams
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -26,11 +27,22 @@ func (a *Adapter) Catalog() []adapters.CatalogProvider {
 		}
 		badge := providerBadges[id]
 		live := def.Type == directStreamsProviderType
+		origin := ""
+		if u, err := url.Parse(def.BaseURL); err == nil {
+			origin = u.Host
+		}
+		if origin == "" {
+			if u, err := url.Parse(def.PlaylistURL); err == nil {
+				origin = u.Host
+			}
+		}
 		p := adapters.CatalogProvider{
 			ID:             def.ID,
 			DisplayName:    def.DisplayName,
 			BadgeLabel:     badge.Label,
 			BadgeClass:     badge.Class,
+			Origin:         origin,
+			Kind:           def.Type,
 			Live:           live,
 			DefaultChannel: def.DefaultChannel,
 		}

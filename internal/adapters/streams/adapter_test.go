@@ -324,3 +324,37 @@ func newFakeActiveQueueForStopActiveCast(t *testing.T) *ActiveQueue {
 		Items:      []StreamItem{{ID: "one", URL: "https://media.example/one.m3u8"}},
 	}
 }
+
+func TestAdapter_Catalog_PopulatesOriginAndKindForBundledProviders(t *testing.T) {
+	a := mustTestAdapter(t)
+
+	want := map[string]struct {
+		origin string
+		kind   string
+	}{
+		"mtv-rewind":        {origin: "wantmymtv.vercel.app", kind: "youtube-channel-json"},
+		"cartoon-rewind":    {origin: "cartoonrewind.tv", kind: "youtube-channel-json"},
+		"toonami-aftermath": {origin: "www.toonamiaftermath.com", kind: "direct-streams"},
+	}
+
+	got := a.Catalog()
+	if len(got) < len(want) {
+		t.Fatalf("expected at least %d providers; got %d", len(want), len(got))
+	}
+	byID := map[string]adapters.CatalogProvider{}
+	for _, p := range got {
+		byID[p.ID] = p
+	}
+	for id, expect := range want {
+		p, ok := byID[id]
+		if !ok {
+			t.Fatalf("provider %q missing from Catalog()", id)
+		}
+		if p.Origin != expect.origin {
+			t.Errorf("provider %q Origin = %q; want %q", id, p.Origin, expect.origin)
+		}
+		if p.Kind != expect.kind {
+			t.Errorf("provider %q Kind = %q; want %q", id, p.Kind, expect.kind)
+		}
+	}
+}
