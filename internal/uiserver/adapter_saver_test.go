@@ -482,3 +482,55 @@ func TestSaveTouched_ApplyConfigError(t *testing.T) {
 		t.Errorf("err = %v, want wrapped 'apply config' message", err)
 	}
 }
+
+func TestSaveTouched_PreservesNestedSubtables(t *testing.T) {
+	t.Parallel()
+	body := `enabled = true
+manifest_url = "https://example/manifest.json"
+
+[adapters.streams.providers.foo]
+catalog_refresh_hours = 6
+
+[adapters.streams.providers.foo.channels.alpha]
+hls_buffer_disabled = true
+`
+	path := newTempConfigWithSection(t, "streams", body)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{
+		values: map[string]any{
+			"enabled":      true,
+			"manifest_url": "https://example/manifest.json",
+			// Intentionally omit provider channel subtables from CurrentValues.
+			// SaveTouched must preserve them by reading the current disk section.
+			"providers": map[string]any{
+				"foo": map[string]any{"catalog_refresh_hours": int64(6)},
+			},
+		},
+		fields: []adapters.FieldDef{
+			{Key: "enabled", Kind: adapters.KindBool},
+			{Key: "manifest_url", Kind: adapters.KindText},
+			{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+		},
+		scope: adapters.ScopeHotSwap,
+	}
+	// Touch a per-provider catalog_refresh_hours field; expect the nested
+	// channels.alpha subtable to survive the round-trip.
+	touched := map[string]string{"providers.foo.catalog_refresh_hours": "12"}
+	if _, err := saver.SaveTouched("streams", touched, adapter, adapter.Fields()); err != nil {
+		t.Fatalf("SaveTouched err = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(got), `catalog_refresh_hours = 12`) {
+		t.Errorf("touched field not written:\n%s", got)
+	}
+	if !strings.Contains(string(got), `[adapters.streams.providers.foo.channels.alpha]`) {
+		t.Errorf("nested channels subtable lost:\n%s", got)
+	}
+	if !strings.Contains(string(got), `hls_buffer_disabled = true`) {
+		t.Errorf("nested channels.alpha.hls_buffer_disabled lost:\n%s", got)
+	}
+}
