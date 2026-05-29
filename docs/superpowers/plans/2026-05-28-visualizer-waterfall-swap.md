@@ -209,6 +209,11 @@ body.receiver .viz-icon--waterfall::before {
 
 - [ ] **Step 7: Build and run unit tests (green)**
 
+First re-format the edited Go files — `VisualizerModeSpectrumWaterfall` (31 chars) is now the longest identifier in the `config.go`, `core/types.go`, and `pipeline.go` const blocks, so gofmt reflows each block's `=` alignment:
+
+Run: `gofmt -w internal/config/config.go internal/core/types.go internal/core/manager.go internal/ffmpeg/pipeline.go internal/chassis/data.go`
+Expected: no error (files reformatted in place if needed).
+
 Run: `go build ./...`
 Expected: builds with no errors.
 
