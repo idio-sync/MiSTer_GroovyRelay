@@ -384,6 +384,12 @@ func main() {
 	cm := &catalogManager{adapter: streamsAdapter, adapterSaver: adapterSaver}
 	cr := &configReset{path: *cfgPath, mu: saver.Mu(), sectioned: sec}
 
+	adapterSaverWrapper := newBridgeAdapterSettingsSaver(adapterSaver, reg)
+	var streamsRefresherWrapper chassis.StreamsRefresher
+	if streamsAdapter != nil {
+		streamsRefresherWrapper = newBridgeStreamsRefresher(streamsAdapter)
+	}
+
 	chassisSrv, err := chassis.New(chassis.Config{
 		Bridge:                    sec.Bridge,
 		Manager:                   coreMgr,
@@ -411,6 +417,8 @@ func main() {
 		CoreLauncher:              misterLauncher,                 // same instance as ui.Config.MisterLauncher
 		CatalogManager:            cm,
 		ConfigReset:               cr,
+		AdapterSettingsSaver:      adapterSaverWrapper,
+		StreamsRefresher:          streamsRefresherWrapper,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
