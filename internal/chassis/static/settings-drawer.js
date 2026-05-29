@@ -481,6 +481,84 @@
     idleBtn.addEventListener('click', toArmed);
   })();
 
+  // Adapter save handlers — mirror the 4A bridge handlers but POST to
+  // /receiver/settings/adapter/{adapter} with the adapter name pulled
+  // from the data-adapter attribute. [data-field] and [data-adapter]
+  // never coexist on one element, so bridge + adapter paths never both fire.
+
+  document.addEventListener('click', (ev) => {
+    const sw = ev.target.closest('button.switch[data-adapter]');
+    if (!sw) return;
+    ev.preventDefault();
+    toggleAdapterSwitch(sw);
+  });
+
+  document.addEventListener('blur', (ev) => {
+    const inp = ev.target.closest && ev.target.closest('input.field-input[data-adapter]');
+    if (!inp) return;
+    saveAdapterField(inp);
+  }, true);
+
+  async function toggleAdapterSwitch(btn) {
+    const adapter = btn.getAttribute('data-adapter');
+    const key = btn.getAttribute('name');
+    const wasOn = btn.classList.contains('on');
+    btn.classList.toggle('on');
+    const body = new URLSearchParams();
+    body.set(key, wasOn ? 'false' : 'true');
+    try {
+      const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const payload = await res.json();
+      handleAdapterSaveResponse(btn, payload, !wasOn);
+    } catch (e) {
+      btn.classList.toggle('on');
+      showNotice('NETWORK ERROR', 'err');
+    }
+  }
+
+  async function saveAdapterField(inp) {
+    const adapter = inp.getAttribute('data-adapter');
+    const key = inp.getAttribute('name');
+    if (inp.dataset.lastSaved === inp.value) return;
+    const body = new URLSearchParams();
+    body.set(key, inp.value);
+    try {
+      const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const payload = await res.json();
+      handleAdapterSaveResponse(inp, payload, inp.value);
+      if (payload.ok) inp.dataset.lastSaved = inp.value;
+    } catch (e) {
+      showNotice('NETWORK ERROR', 'err');
+    }
+  }
+
+  function handleAdapterSaveResponse(target, payload, currentValue) {
+    const key = target.getAttribute('name');
+    if (payload.ok) {
+      if (payload.scope === 'reboot') {
+        showNotice(`Restart container to apply new ${target.getAttribute('aria-label') || key}`, 'ok');
+      }
+      clearFieldError(key);
+      return;
+    }
+    if (payload.errors) {
+      const msg = payload.errors[key];
+      if (msg) paintFieldError(key, msg);
+      return;
+    }
+    if (payload.chip) {
+      showNotice(payload.chip, 'err');
+    }
+  }
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;

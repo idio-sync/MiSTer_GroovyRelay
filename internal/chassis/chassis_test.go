@@ -4506,3 +4506,21 @@ func TestSettingsDrawerJS_BridgeSelectorsNarrowedToDataField(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsDrawerJS_HandlesAdapterAttribute(t *testing.T) {
+	t.Parallel()
+	jsBytes, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		`button.switch[data-adapter]`,
+		`input.field-input[data-adapter]`,
+		`/receiver/settings/adapter/`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("settings-drawer.js missing %q", want)
+		}
+	}
+}
