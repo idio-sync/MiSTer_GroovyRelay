@@ -521,7 +521,7 @@ func (s *Server) buildSettingsData() SettingsData {
 			values, _ := saver.Current(name)
 			pane := AdapterPaneData{
 				Name:   name,
-				Hint:   "", // populated by Task 19
+				Hint:   s.buildAdapterHint(name, values),
 				Fields: fields,
 				Values: values,
 			}
@@ -532,6 +532,32 @@ func (s *Server) buildSettingsData() SettingsData {
 		}
 	}
 	return data
+}
+
+// buildAdapterHint returns the section-header subtitle for each adapter pane.
+// DLNA reflects the enabled state (LISTENING/DISABLED), torrent is a static
+// protocol tag, and streams sums provider channel counts from CatalogManager.
+// Returns "" for any unknown adapter name (forward-compatible).
+func (s *Server) buildAdapterHint(name string, values map[string]any) string {
+	switch name {
+	case "dlna":
+		if v, _ := values["enabled"].(bool); v {
+			return "PUSH · LISTENING"
+		}
+		return "PUSH · DISABLED"
+	case "torrent":
+		return "PASTE-IN · BT"
+	case "streams":
+		n := 0
+		if s.cfg.CatalogManager != nil {
+			for _, p := range s.cfg.CatalogManager.Providers() {
+				n += p.ChannelCount
+			}
+			return fmt.Sprintf("PULL · %d CHANNELS · see Catalog tab", n)
+		}
+		return fmt.Sprintf("PULL · %d CHANNELS", n)
+	}
+	return ""
 }
 
 // buildStreamsProviderRows projects 4C's CatalogManager.Providers()

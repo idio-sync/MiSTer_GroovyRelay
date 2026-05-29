@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -511,5 +512,77 @@ func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
 	}
 	if got := byID["radio"]; got.CatalogRefreshHours != 0 {
 		t.Errorf("radio row CatalogRefreshHours = %d, want 0 (no override)", got.CatalogRefreshHours)
+	}
+}
+
+func TestSettingsData_DLNAHint_Listening(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "dlna" {
+			if a.Hint != "PUSH · LISTENING" {
+				t.Errorf("dlna hint = %q, want 'PUSH · LISTENING'", a.Hint)
+			}
+		}
+	}
+}
+
+func TestSettingsData_DLNAHint_Disabled(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "dlna" && a.Hint != "PUSH · DISABLED" {
+			t.Errorf("dlna hint = %q, want 'PUSH · DISABLED'", a.Hint)
+		}
+	}
+}
+
+func TestSettingsData_TorrentHint_Static(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"torrent": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"torrent": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "torrent" && a.Hint != "PASTE-IN · BT" {
+			t.Errorf("torrent hint = %q, want 'PASTE-IN · BT'", a.Hint)
+		}
+	}
+}
+
+func TestSettingsData_StreamsHint_ChannelCount(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	data := s.buildSettingsData()
+	for _, a := range data.Adapters {
+		if a.Name == "streams" {
+			if !strings.HasPrefix(a.Hint, "PULL") || !strings.Contains(a.Hint, "CHANNELS") {
+				t.Errorf("streams hint = %q, want PULL · N CHANNELS prefix", a.Hint)
+			}
+		}
 	}
 }
