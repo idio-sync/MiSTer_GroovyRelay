@@ -3578,12 +3578,13 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	s := buf.String()
 
 	// pipeline, advanced, catalog, and adapters are now real panes. The
-	// adapters pane (4D) still carries the per-adapter Plex/URL/Jellyfin
-	// stubs pending specs 4E/4F, so those spec labels remain visible.
-	for _, spec := range []string{"Spec 4E", "Spec 4F"} {
-		if !strings.Contains(s, spec) {
-			t.Errorf("missing %q label (per-adapter stub) in adapters pane", spec)
-		}
+	// adapters pane still carries the URL stub pending spec 4F; Plex and
+	// Jellyfin are real sections as of 4E.
+	if !strings.Contains(s, "Spec 4F") {
+		t.Errorf("missing %q label (URL adapter stub) in adapters pane", "Spec 4F")
+	}
+	if strings.Contains(s, "Spec 4E") {
+		t.Errorf("Spec 4E stub still present; Plex and Jellyfin have real sections now")
 	}
 
 	// Real panes must be present.
@@ -4231,13 +4232,16 @@ func TestSettingsAdaptersTemplate_RendersSixSections(t *testing.T) {
 	// so the faithful header assertion is ">Plex " not ">Plex<".
 	for _, want := range []string{
 		">Plex ", ">DLNA ", ">URL ", ">Torrent ", ">Jellyfin ", ">Streams catalog ",
-		">— pending<",
-		"Spec 4E", "Spec 4F",
+		"Spec 4F",
 		"PUSH ·", "PASTE-IN · BT", "PULL ·",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in rendered adapters pane", want)
 		}
+	}
+	// Plex and Jellyfin stubs are gone; real section templates are now in place.
+	if strings.Contains(s, "Spec 4E") {
+		t.Errorf("Spec 4E stub still present in rendered adapters pane")
 	}
 }
 
@@ -4637,5 +4641,46 @@ func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T
 		if strings.Contains(html, banned) {
 			t.Errorf("Streams form rendered Catalog-owned key as input: %q", banned)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 14 — Plex/Jellyfin section templates + stub swap
+// ---------------------------------------------------------------------------
+
+// renderAdaptersPane renders the settings-adapters template against
+// settingsDataFromConfig(cfg). The settings-adapters template is composed
+// inside the settings-drawer, so we execute the drawer and return its output;
+// equivalently we could execute "settings-adapters" directly — the drawer
+// guarantees composition has run through the real adapterPane/dict path.
+func renderAdaptersPane(t *testing.T, cfg Config) string {
+	t.Helper()
+	return renderDrawer(t, settingsDataFromConfig(cfg))
+}
+
+func TestAdaptersPane_PlexJellyfinSections(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		fields: map[string][]adapters.FieldDef{
+			"plex":     {{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled"}},
+			"jellyfin": {{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled"}},
+		},
+		current: map[string]map[string]any{"plex": {"enabled": true}, "jellyfin": {"enabled": false}},
+	}
+	linker := &fakeAdapterLinker{views: map[string]LinkView{
+		"plex":     {Kind: "pin", Phase: "unlinked"},
+		"jellyfin": {Kind: "credential", Phase: "unlinked", NeedsServerURL: true},
+	}}
+	html := renderAdaptersPane(t, Config{AdapterSettingsSaver: saver, AdapterLinker: linker})
+
+	if strings.Contains(html, "Spec 4E") {
+		t.Errorf("stub copy still present:\n%s", html)
+	}
+	// Section order: Plex above Jellyfin.
+	if strings.Index(html, ">Plex<") > strings.Index(html, ">Jellyfin<") {
+		t.Errorf("Plex should render above Jellyfin")
+	}
+	if !strings.Contains(html, "Link Plex Account") {
+		t.Errorf("plex Account sub-section missing")
 	}
 }
