@@ -1088,6 +1088,38 @@ func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
 	}
 }
 
+func TestAdapterSettingsSaver_NotReadyWhenNil(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsAdapterPost(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "NOT READY" {
+		t.Errorf("body.chip = %q, want NOT READY", got)
+	}
+}
+
+func TestStreamsRefresher_NotReadyWhenNil(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionStreamsRefresh(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if got, _ := body["chip"].(string); got != "NOT READY" {
+		t.Errorf("body.chip = %q, want NOT READY", got)
+	}
+}
+
 func newTestServerForLaunchCore(saver fakeBridgeSettingsSaver, launcher CoreLauncher) *Server {
 	return &Server{
 		cfg: Config{

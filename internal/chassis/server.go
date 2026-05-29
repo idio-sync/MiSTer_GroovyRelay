@@ -110,6 +110,10 @@ type Config struct {
 	// 4C: catalog pane state mutation + restore-defaults action.
 	CatalogManager CatalogSettingsManager
 	ConfigReset    ConfigReset
+
+	// 4D: adapter settings pane persistence and streams manifest refresh.
+	AdapterSettingsSaver AdapterSettingsSaver
+	StreamsRefresher     StreamsRefresher
 }
 
 // Server owns the chassis runtime state.

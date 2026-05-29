@@ -1033,6 +1033,31 @@ func (s *Server) handleSettingsActionRestoreDefaults(w http.ResponseWriter, r *h
 	writeSettingsSuccess(w, "reboot")
 }
 
+// handleSettingsAdapterPost is the POST handler for
+// /receiver/settings/adapter/{name}. Real save logic is wired in Task 13.
+// Returns 503 NOT READY when AdapterSettingsSaver is nil (e.g. unit-test
+// fixtures without a wired saver), mirroring the nil-guard pattern used
+// by handleSettingsBridgePost and handleSettingsActionLaunchCore.
+func (s *Server) handleSettingsAdapterPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterSettingsSaver == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	writeSettingsChip(w, http.StatusInternalServerError, "NOT IMPLEMENTED")
+}
+
+// handleSettingsActionStreamsRefresh is the POST handler for
+// /receiver/settings/action/streams-refresh. Real refresh logic is wired
+// in Task 14. Returns 503 NOT READY when StreamsRefresher is nil,
+// mirroring the nil-guard pattern used by other settings handlers.
+func (s *Server) handleSettingsActionStreamsRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.StreamsRefresher == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	writeSettingsChip(w, http.StatusInternalServerError, "NOT IMPLEMENTED")
+}
+
 var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)
 
 // sanitizeProbeError redacts dotted-quad IPv4[:port] tokens from probe
