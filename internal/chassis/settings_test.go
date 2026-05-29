@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1581,4 +1582,32 @@ func TestAdapterSettingsSaver_StructuralConformance(t *testing.T) {
 	t.Parallel()
 	var s AdapterSettingsSaver = &fakeAdapterSettingsSaver{}
 	_ = s
+}
+
+type fakeStreamsRefresher struct {
+	result StreamsRefreshResult
+	err    error
+	calls  atomic.Int32
+	gate   chan struct{} // optional; close to release
+}
+
+func (f *fakeStreamsRefresher) RefreshNow(ctx context.Context) (StreamsRefreshResult, error) {
+	f.calls.Add(1)
+	if f.gate != nil {
+		select {
+		case <-f.gate:
+		case <-ctx.Done():
+			return StreamsRefreshResult{}, ctx.Err()
+		}
+	}
+	if f.err != nil {
+		return f.result, f.err
+	}
+	return f.result, nil
+}
+
+func TestStreamsRefresher_StructuralConformance(t *testing.T) {
+	t.Parallel()
+	var r StreamsRefresher = &fakeStreamsRefresher{}
+	_ = r
 }

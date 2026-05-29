@@ -113,6 +113,26 @@ type AdapterSettingsSaver interface {
 	SaveTouched(name string, touched map[string]string) (string, error)
 }
 
+// StreamsRefresher is the chassis-side interface backing the
+// /receiver/settings/action/streams-refresh action. Production binding
+// wraps *streams.Adapter.RefreshNow(ctx, "") — the canonical manifest-
+// refresh entry point. The chassis does not import internal/adapters/streams.
+type StreamsRefresher interface {
+	// RefreshNow fetches the streams manifest (and ripples to provider
+	// catalogs as a side effect). The returned result carries the
+	// source label ("remote" / "cache") and a non-nil Err if the
+	// refresh failed. The chassis handler wraps the call in a 30s
+	// context.
+	RefreshNow(ctx context.Context) (StreamsRefreshResult, error)
+}
+
+// StreamsRefreshResult is the scalar status returned by RefreshNow.
+type StreamsRefreshResult struct {
+	Source     string
+	DurationMS int64
+	Err        error
+}
+
 // settingsChipError is matched structurally so saver-layer typed errors
 // can carry HTTP/chip details across the interface boundary without a
 // uiserver import. The chassis handler uses errors.As against the
