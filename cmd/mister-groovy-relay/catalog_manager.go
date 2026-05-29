@@ -31,17 +31,18 @@ func (m *catalogManager) Providers() []chassis.CatalogProviderState {
 		}
 		pc := cfg.Providers[p.ID]
 		out = append(out, chassis.CatalogProviderState{
-			ID:                p.ID,
-			DisplayName:       p.DisplayName,
-			BadgeLabel:        p.BadgeLabel,
-			BadgeClass:        p.BadgeClass,
-			Origin:            p.Origin,
-			Kind:              p.Kind,
-			DefaultChannel:    p.DefaultChannel,
-			Live:              p.Live,
-			ChannelCount:      channels,
-			Enabled:           !pc.Disabled,
-			HLSBufferDisabled: pc.HLSBufferDisabled,
+			ID:                  p.ID,
+			DisplayName:         p.DisplayName,
+			BadgeLabel:          p.BadgeLabel,
+			BadgeClass:          p.BadgeClass,
+			Origin:              p.Origin,
+			Kind:                p.Kind,
+			DefaultChannel:      p.DefaultChannel,
+			Live:                p.Live,
+			ChannelCount:        channels,
+			Enabled:             !pc.Disabled,
+			HLSBufferDisabled:   pc.HLSBufferDisabled,
+			CatalogRefreshHours: pc.CatalogRefreshHours,
 		})
 	}
 	return out

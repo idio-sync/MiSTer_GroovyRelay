@@ -71,6 +71,44 @@ func TestCatalogManager_Providers_AbsentCfgEntryDefaultsToEnabled(t *testing.T) 
 	}
 }
 
+func TestCatalogManager_Providers_PropagatesCatalogRefreshHours(t *testing.T) {
+	// 4D's streams pane per-provider override row renders
+	// value="{{.CatalogRefreshHours}}" — verify the wrapper threads the
+	// streams.ProviderConfig.CatalogRefreshHours value through to the
+	// chassis-shaped state. Absence (zero value) is treated as
+	// "inherit the streams-global default" by the renderer.
+	a := newStreamsForCatalogTest(t)
+	seedProviderCfg(t, a, map[string]streams.ProviderConfig{
+		"mtv-rewind": {CatalogRefreshHours: 24},
+	})
+	m := &catalogManager{adapter: a, adapterSaver: nil}
+
+	got := m.Providers()
+	var mtv chassis.CatalogProviderState
+	other := chassis.CatalogProviderState{ID: "sentinel-not-mtv"}
+	for _, p := range got {
+		switch p.ID {
+		case "mtv-rewind":
+			mtv = p
+		default:
+			if other.ID == "sentinel-not-mtv" {
+				other = p
+			}
+		}
+	}
+	if mtv.ID == "" {
+		t.Fatalf("mtv-rewind missing from Providers() output")
+	}
+	if mtv.CatalogRefreshHours != 24 {
+		t.Errorf("mtv-rewind CatalogRefreshHours = %d; want 24", mtv.CatalogRefreshHours)
+	}
+	// A provider with no override returns zero, the renderer's
+	// "inherit global" sentinel.
+	if other.ID != "sentinel-not-mtv" && other.CatalogRefreshHours != 0 {
+		t.Errorf("provider %q CatalogRefreshHours = %d; want 0 (zero-value override)", other.ID, other.CatalogRefreshHours)
+	}
+}
+
 // newStreamsForCatalogTest constructs a streams.Adapter via the public
 // New() API. The local-only bootstrap inside
 // streams.Adapter.chassisCatalogSnapshot (catalog.go:74-80) populates

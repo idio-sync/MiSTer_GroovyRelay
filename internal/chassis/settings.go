@@ -136,17 +136,18 @@ type CatalogProviderPatch struct {
 // wrapper from streams.Config + adapters.CatalogProvider; the chassis
 // renders directly from this struct.
 type CatalogProviderState struct {
-	ID                string
-	DisplayName       string
-	BadgeLabel        string
-	BadgeClass        string
-	Origin            string
-	Kind              string
-	DefaultChannel    string
-	Live              bool
-	ChannelCount      int
-	Enabled           bool
-	HLSBufferDisabled bool
+	ID                  string
+	DisplayName         string
+	BadgeLabel          string
+	BadgeClass          string
+	Origin              string
+	Kind                string
+	DefaultChannel      string
+	Live                bool
+	ChannelCount        int
+	Enabled             bool
+	HLSBufferDisabled   bool
+	CatalogRefreshHours int // 4D — per-provider override; 0 = inherit the streams-global catalog_refresh_hours
 }
 
 // ConfigReset is the chassis-side interface for the restore-defaults
