@@ -35,6 +35,12 @@ Examples the design must cover:
   Tertiary.
 - **Music ordering: title-first.** Track title is Primary, artist
   Secondary, album Tertiary — the dominant now-playing convention.
+- **Rationale for the asymmetry** (TV leads with the *container*, music
+  leads with the *track*): a show is the recognizable brand and the
+  episode is one of many, so the series name is the headline; a song's
+  identity *is* the track title, so it leads. This is intentional, not an
+  inconsistency. Adapters that populate `DisplayMetadata` should carry a
+  short comment noting this ordering rule.
 - **CRT visualizer realigned to title-first** to match the VFD.
 - The big clock / queue / uptime **right panel is unchanged**.
 - Empty tiers **collapse** (row hidden); the left block stays vertically
@@ -99,17 +105,22 @@ Formatting notes:
   what is available; if neither, the tertiary is the year alone (or
   empty).
 - Upload date converts yt-dlp's `YYYYMMDD` to ISO `YYYY-MM-DD`.
-- Values are uppercased at render time consistent with the existing VFD
-  treatment (the DSEG14 font is uppercase-oriented).
+- **Casing boundary:** adapters store **natural-case** strings in
+  `DisplayMetadata`; the chassis renders them uppercase via CSS
+  (`text-transform: uppercase` on the tier rows). Uppercasing is a
+  presentation concern and happens once, in one place — not in adapters.
+  (The CRT visualizer continues to uppercase in code via
+  `strings.ToUpper`, since drawtext has no CSS layer; both surfaces look
+  the same.)
 
 ## Adapter population
 
 | Adapter | Work | Notes |
 |---|---|---|
 | **Plex music** | Trivial | `Artist`/`Album` already fetched for the visualizer ([transcode.go](../../../internal/adapters/plex/transcode.go)); set the three tiers from the same values. |
-| **Plex TV/movie** | **Main new work** | Add a bounded PMS metadata fetch reusing the music-metadata path. Extend the XML container to read `type` (movie/episode), `grandparentTitle` (show), `title` (episode), `index`/`parentIndex` (S·E), `year`. On fetch failure, fall back to `Primary = controller title`. Reuses existing HTTP/token/XML + 2s timeout discipline. |
-| **Jellyfin** | Low | Extract `SeriesName`, `IndexNumber`/`ParentIndexNumber`, `ProductionYear` from the DTO it **already fetches** ([playback.go](../../../internal/adapters/jellyfin/playback.go)); map by `ItemType` (Audio/Movie/Episode). Artist/Album already extracted. |
-| **URL / YouTube** | Low | Parse `channel`/`uploader` + `upload_date` from the **existing** yt-dlp JSON ([ytdlp/resolver.go](../../../internal/adapters/url/ytdlp/resolver.go)); add to the `Resolution` struct; format the date. Direct URLs: `Primary = filename`, `Secondary = "URL"`. |
+| **Plex TV/movie** | **Main new work** | Add a bounded PMS metadata fetch reusing the music-metadata path (`MusicMetadataFor`/`pmsMediaContainer` in [transcode.go](../../../internal/adapters/plex/transcode.go)). Extend the XML container to read `type` (movie/episode), `grandparentTitle` (show), `title` (episode), `index`/`parentIndex` (S·E), `year`. **Wrap the call in a 2s `context.WithTimeout`** mirroring the existing music lookup at [companion.go:250](../../../internal/adapters/plex/companion.go#L250) — independent of the shared 10s `plexHTTPClient`. On fetch failure/timeout, fall back to `Primary = controller title` (no regression vs. today). |
+| **Jellyfin** | Low–moderate | The needed fields (`SeriesName`, `IndexNumber`, `ParentIndexNumber`, `ProductionYear`) are **not yet parsed** — neither `playbackInfoResponseDTO.Item` nor `itemMetadataDTO` ([playback.go:73-79, 115-122](../../../internal/adapters/jellyfin/playback.go#L73)) declares them. Work is **struct extension, not a new request**: add the fields to `itemMetadataDTO` (Jellyfin's `/Items/{id}` already returns them), ensure `FetchItemMetadata` runs for the video path (today it's an audio-hint/best-effort call), thread them into `PlaybackInfoResult`/`ItemMetadataResult`, and map by `ItemType` (Audio/Movie/Episode). Artist/Album already extracted. Fall back to `Name` when series/index fields are absent. |
+| **URL / YouTube** | Low | yt-dlp's `--dump-json` output **already contains** `channel`/`uploader` and `upload_date`, but the resolver does not currently unmarshal them. Add the three keys to the **raw JSON struct** AND to the `Resolution` struct ([ytdlp/resolver.go:53-60, 144-154](../../../internal/adapters/url/ytdlp/resolver.go#L53)); format the date `YYYYMMDD → YYYY-MM-DD`. Direct URLs: `Primary = filename`, `Secondary = "URL"`. |
 | **Streams** | Low–moderate | Split today's `"Provider / Channel"` title into tiers; add channel group (fallback description) as tertiary. Covers m3u8 live + saved casts/presets. yt-dlp-resolved stream items reuse the URL adapter's parsed channel where available. |
 | **DLNA** | Low | Wire the already-parsed DIDL title → `Primary`. |
 | **Torrent / AUX** | Trivial | Primary from existing title; AUX `Secondary = "AUX"`. |
@@ -127,7 +138,9 @@ Formatting notes:
   `Tertiary`; keep `SystemTime`, `QueueCurrent/Total`, `Uptime`.
 - `snapshotFromStatusView` live branch sets the three tiers from
   `view.Display`, `Primary` falling back to `view.Title`. Idle snapshot:
-  `Primary:"STANDBY"`, `Secondary:<hint>`.
+  `Primary:"STANDBY"`, `Secondary:` the existing idle hint string already
+  produced by `idleSnapshot` (today's `"MISTER LINK OK · …"` marquee
+  text), `Tertiary:""`.
 - **Remove `formatLiveMarquee` from the VFD path** (and its tests). The
   `SOURCE · 04:23 / 09:56` line is dropped: source is shown by the
   source-cluster lamps, and elapsed/total + seek already live in the
@@ -147,7 +160,11 @@ Formatting notes:
   scrolling: measure each row's `scrollWidth` vs `clientWidth`; on
   overflow add `.scroll` and set CSS custom properties for distance +
   duration (constant px/sec so long titles aren't dizzyingly fast).
-  Re-run on each update and on resize. Honor `prefers-reduced-motion`
+  **Measurement correctness:** measure *after* the `textContent` write
+  and gate the first measurement on `document.fonts.ready` so the DSEG14
+  metrics are final (a pre-font measurement mis-sizes the marquee).
+  Re-measure on a `window` `resize` listener. The existing `.seg-ghost`
+  span stays as the stable layout baseline. Honor `prefers-reduced-motion`
   (no animation; static/clipped).
 
 **CSS ([chassis.css](../../../internal/chassis/static/chassis.css)):**
@@ -178,6 +195,14 @@ Keep all four CI gates green (`go vet`, `go test`, `go test -race`,
 - **Chassis** — `snapshotFromStatusView` maps `Display`→`VFDData`;
   `vfdEnvelope` serialization; `vfdChanged` fires only on tier change;
   template renders three rows and collapses empties.
+- **Existing chassis tests to migrate** (the rename touches them): in
+  [events_test.go](../../../internal/chassis/events_test.go) the
+  `vfdChanged` field-mutation cases (~lines 147-148), the idle/VFDData
+  fixtures using `Title`/`Marquee` (~45-46, 136-137, 166, 177), and the
+  SSE-body assertion `"title":"Seeded Title"` (~632) plus
+  `TestHandleEvents_EmitsVfdEventOnTitleChange` (~768) must move to the
+  `primary`/`secondary`/`tertiary` field names. This is mechanical but
+  must be enumerated so coverage isn't silently lost.
 - **FFmpeg** — `visualizerTextLines` emits title-first; existing pipeline
   tests updated.
 - **Manual** — `fake-mister` smoke for the CRT overlay order.
@@ -202,5 +227,8 @@ Keep all four CI gates green (`go vet`, `go test`, `go test -race`,
   fonts loaded before measuring; measure in `handleVfdEvent` after the
   write and on `resize`/`load`. Reduced-motion users skip animation
   entirely.
-- **Wire-format change** — `vfdEnvelope` field rename is internal
-  (server + bundled JS ship together); no external consumers.
+- **Wire-format change** — `vfdEnvelope` field rename (`title`/`marquee`
+  → `primary`/`secondary`/`tertiary`) is internal (server + bundled JS
+  ship together); no external consumers. The only fallout is the chassis
+  test suite, enumerated under Testing above — update those in the same
+  task as the rename so coverage tracks the new fields.
