@@ -4524,3 +4524,21 @@ func TestSettingsDrawerJS_HandlesAdapterAttribute(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsDrawerJS_StreamsRefreshHandler(t *testing.T) {
+	t.Parallel()
+	jsBytes, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		`data-settings-action="streams-refresh"`,
+		`/receiver/settings/action/streams-refresh`,
+		`disabled`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("settings-drawer.js missing %q", want)
+		}
+	}
+}

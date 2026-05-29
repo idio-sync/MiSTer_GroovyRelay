@@ -559,6 +559,46 @@
     }
   }
 
+  // Streams-refresh action handler: single-flight, renders result into
+  // #streams-refresh-result. Toasts chip errors into the drawer notice slot.
+  document.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-settings-action="streams-refresh"]');
+    if (!btn) return;
+    ev.preventDefault();
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const slot = document.getElementById('streams-refresh-result');
+    if (slot) {
+      slot.textContent = '…';
+      slot.classList.remove('ok', 'err', 'shown');
+      slot.classList.add('shown');
+    }
+    try {
+      const res = await fetch('/receiver/settings/action/streams-refresh', { method: 'POST' });
+      const payload = await res.json();
+      if (slot) {
+        if (payload.ok) {
+          slot.textContent = payload.summary || 'Refreshed';
+          slot.classList.add('ok');
+        } else if (payload.chip) {
+          showNotice(payload.chip, 'err');
+          slot.textContent = '';
+          slot.classList.remove('shown');
+        } else if (payload.error) {
+          slot.textContent = payload.error;
+          slot.classList.add('err');
+        }
+      }
+    } catch (e) {
+      if (slot) {
+        slot.textContent = 'Network error';
+        slot.classList.add('err');
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
