@@ -483,6 +483,51 @@ func TestSaveTouched_ApplyConfigError(t *testing.T) {
 	}
 }
 
+func TestSaveTouched_ConcurrentSaves(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "dlna", `enabled = false
+device_name = "M"
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	// Shared adapter fake across goroutines. Each save should observe the
+	// prior writer's disk state before overlaying its own.
+	adapter := &fakeFullAdapter{
+		values: map[string]any{"enabled": false, "device_name": "M"},
+		scope:  adapters.ScopeHotSwap,
+	}
+	// applyHook updates adapter.values under adapter.mu (the same mutex that
+	// CurrentValues holds). This is the ONLY mutex guarding the shared map,
+	// so the -race detector sees a single lock owner and won't flag a race.
+	adapter.applyHook = func(decoded map[string]any) {
+		// Called inside ApplyConfig while f.mu is already held — safe to write.
+		for k, v := range decoded {
+			adapter.values[k] = v
+		}
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			touched := map[string]string{}
+			if n%2 == 0 {
+				touched["enabled"] = "true"
+			} else {
+				touched["device_name"] = fmt.Sprintf("M%d", n)
+			}
+			if _, err := saver.SaveTouched("dlna", touched, adapter, adapter.Fields()); err != nil {
+				t.Errorf("SaveTouched(n=%d) err = %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `enabled = true`) {
+		t.Errorf("final disk does not contain enabled = true:\n%s", got)
+	}
+}
+
 func TestSaveTouched_PreservesNestedSubtables(t *testing.T) {
 	t.Parallel()
 	body := `enabled = true
