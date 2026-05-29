@@ -134,6 +134,44 @@ type StreamsRefreshResult struct {
 	Err        error
 }
 
+// AdapterLinker is the chassis-side interface backing the per-adapter
+// /receiver/settings/adapter/{name}/link/* routes. The production binding
+// (cmd/mister-groovy-relay) wraps each adapter's adapters.LinkController
+// and maps its LinkSnapshot onto LinkView. The chassis imports no adapter
+// package.
+type AdapterLinker interface {
+	// LinkView returns the current render state for an adapter's Account
+	// sub-section, or ok=false if the named adapter is not linkable.
+	LinkView(name string) (LinkView, bool)
+	// StartLink begins pairing. PIN adapters ignore params; credential
+	// adapters read params["username"]/["password"].
+	StartLink(ctx context.Context, name string, params map[string]string) (LinkView, error)
+	// LinkStatus polls progress (PIN adapters); credential adapters return
+	// the current view.
+	LinkStatus(ctx context.Context, name string) (LinkView, error)
+	// Unlink revokes/logs out and clears the token. Idempotent.
+	Unlink(ctx context.Context, name string) (LinkView, error)
+}
+
+// LinkView is the JSON wire/render shape for the Account sub-section.
+type LinkView struct {
+	Kind           string      `json:"kind"`                     // "pin" | "credential"
+	Phase          string      `json:"phase"`                    // "unlinked"|"pending"|"linked"|"error"
+	LinkedAs       string      `json:"linkedAs,omitempty"`
+	Code           string      `json:"code,omitempty"`
+	ExpiresInSec   int         `json:"expiresInSec,omitempty"`
+	NeedsServerURL bool        `json:"needsServerURL,omitempty"`
+	Error          string      `json:"error,omitempty"`
+	Fields         []LinkField `json:"fields,omitempty"`
+}
+
+// LinkField is one credential input a credential adapter wants rendered.
+type LinkField struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"` // "text" | "secret"
+}
+
 // settingsChipError is matched structurally so saver-layer typed errors
 // can carry HTTP/chip details across the interface boundary without a
 // uiserver import. The chassis handler uses errors.As against the

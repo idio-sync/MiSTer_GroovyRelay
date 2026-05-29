@@ -2114,3 +2114,30 @@ func TestAdapterSave_StaleProviderKeyAccepted(t *testing.T) {
 		t.Errorf("touched = %v, want dead_provider override forwarded", got)
 	}
 }
+
+type fakeAdapterLinker struct {
+	views    map[string]LinkView
+	startErr error
+}
+
+func (f *fakeAdapterLinker) LinkView(name string) (LinkView, bool) {
+	v, ok := f.views[name]
+	return v, ok
+}
+func (f *fakeAdapterLinker) StartLink(_ context.Context, name string, _ map[string]string) (LinkView, error) {
+	if f.startErr != nil {
+		return LinkView{}, f.startErr
+	}
+	return LinkView{Kind: "pin", Phase: "pending", Code: "K3F9", ExpiresInSec: 600}, nil
+}
+func (f *fakeAdapterLinker) LinkStatus(_ context.Context, name string) (LinkView, error) {
+	v, _ := f.views[name]
+	return v, nil
+}
+func (f *fakeAdapterLinker) Unlink(_ context.Context, name string) (LinkView, error) {
+	return LinkView{Kind: "pin", Phase: "unlinked"}, nil
+}
+
+func TestAdapterLinker_StructuralConformance(t *testing.T) {
+	var _ AdapterLinker = &fakeAdapterLinker{}
+}
