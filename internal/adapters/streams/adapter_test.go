@@ -1,6 +1,8 @@
 package streams
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -144,5 +146,117 @@ func TestAdapter_ConfigSnapshot_IndependentAllowedHostsSlice(t *testing.T) {
 	if len(a.cfg.RemoteProviderAllowedHosts) != 1 {
 		t.Fatalf("appending to snapshot slice mutated adapter slice; len=%d",
 			len(a.cfg.RemoteProviderAllowedHosts))
+	}
+}
+
+func TestAdapter_ApplyConfigValue_PersistsAndApplies(t *testing.T) {
+	a := mustTestAdapter(t)
+	// Seed a non-default starting config.
+	a.cfg.Providers = map[string]ProviderConfig{
+		"mtv-rewind": {Disabled: false},
+	}
+
+	var savedName string
+	var savedBytes []byte
+	save := func(name string, raw []byte) error {
+		savedName = name
+		savedBytes = append([]byte(nil), raw...)
+		return nil
+	}
+
+	newCfg := a.ConfigSnapshot()
+	newCfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+
+	scope, err := a.ApplyConfigValue(newCfg, save)
+	if err != nil {
+		t.Fatalf("ApplyConfigValue: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Fatalf("expected ScopeHotSwap; got %v", scope)
+	}
+	if savedName != "streams" {
+		t.Fatalf("expected saver to be called with name=%q; got %q", "streams", savedName)
+	}
+	if len(savedBytes) == 0 {
+		t.Fatalf("expected saver to receive non-empty TOML bytes")
+	}
+	if !a.cfg.Providers["mtv-rewind"].Disabled {
+		t.Fatalf("expected in-memory cfg to reflect Disabled=true; got false")
+	}
+}
+
+func TestAdapter_ApplyConfigValue_ValidationFailureNoSave(t *testing.T) {
+	a := mustTestAdapter(t)
+	called := false
+	save := func(name string, raw []byte) error {
+		called = true
+		return nil
+	}
+
+	bad := a.ConfigSnapshot()
+	bad.ManifestURL = "   " // Validate() rejects empty/whitespace.
+
+	_, err := a.ApplyConfigValue(bad, save)
+	if err == nil {
+		t.Fatalf("expected validation error; got nil")
+	}
+	if called {
+		t.Fatalf("saver should NOT be called on validation failure")
+	}
+}
+
+func TestAdapter_ApplyConfigValue_SaveFailureNoInMemoryChange(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.cfg.Providers = map[string]ProviderConfig{
+		"mtv-rewind": {Disabled: false},
+	}
+	original := a.cfg.Providers["mtv-rewind"].Disabled
+
+	saveErr := errors.New("disk write failed")
+	save := func(name string, raw []byte) error { return saveErr }
+
+	newCfg := a.ConfigSnapshot()
+	newCfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+
+	_, err := a.ApplyConfigValue(newCfg, save)
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("expected save error to surface; got %v", err)
+	}
+	if a.cfg.Providers["mtv-rewind"].Disabled != original {
+		t.Fatalf("in-memory state mutated after save failure")
+	}
+}
+
+func TestAdapter_ApplyConfigValue_SnapshotRebuildFailureNoSaveNoInMemoryChange(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.cfg.Providers = map[string]ProviderConfig{
+		"mtv-rewind": {Disabled: false},
+	}
+	original := a.cfg.Providers["mtv-rewind"].Disabled
+	called := false
+	save := func(name string, raw []byte) error {
+		called = true
+		return nil
+	}
+
+	rebuildErr := errors.New("snapshot rebuild failed")
+	oldBuild := buildStartupSnapshotForApplyConfigValue
+	buildStartupSnapshotForApplyConfigValue = func(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
+		return nil, nil, rebuildErr
+	}
+	t.Cleanup(func() { buildStartupSnapshotForApplyConfigValue = oldBuild })
+
+	newCfg := a.ConfigSnapshot()
+	newCfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+
+	_, err := a.ApplyConfigValue(newCfg, save)
+	if !errors.Is(err, rebuildErr) {
+		t.Fatalf("expected rebuild error to surface; got %v", err)
+	}
+	if called {
+		t.Fatalf("saver should NOT be called when snapshot rebuild fails")
+	}
+	if a.cfg.Providers["mtv-rewind"].Disabled != original {
+		t.Fatalf("in-memory state mutated after snapshot rebuild failure")
 	}
 }

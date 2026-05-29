@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -512,4 +513,52 @@ func (a *Adapter) reconcileRefreshLoop() {
 	a.loopDone = done
 	a.mu.Unlock()
 	go a.refreshLoop(loopCtx, done)
+}
+
+var buildStartupSnapshotForApplyConfigValue = buildStartupSnapshot
+
+// ApplyConfigValue validates and rebuilds the startup snapshot before
+// persisting newCfg via save (which writes the [adapters.streams]
+// section to disk under the AdapterSaver mutex) and installing it as
+// the live config. Validation or snapshot-rebuild failures leave both
+// disk and in-memory state untouched. Returns the aggregated ApplyScope
+// from configChangeScope(old, new).
+//
+// Save is invoked exactly once after validation and snapshot rebuild
+// both succeed; in-memory install happens after save returns nil so
+// disk and memory stay coherent (matches the BridgeSaver write-before-
+// apply contract).
+func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []byte) error) (adapters.ApplyScope, error) {
+	if err := newCfg.Validate(); err != nil {
+		return 0, err
+	}
+	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir)
+	if err != nil {
+		return 0, err
+	}
+	tomlBytes, err := encodeSectionTOML(newCfg)
+	if err != nil {
+		return 0, fmt.Errorf("streams: encode section: %w", err)
+	}
+	if err := save("streams", tomlBytes); err != nil {
+		return 0, err
+	}
+	a.mu.Lock()
+	oldCfg := a.cfg
+	a.cfg = newCfg
+	a.installSnapshotLocked(defs, catalogs)
+	a.mu.Unlock()
+	a.reconcileRefreshLoop()
+	return configChangeScope(oldCfg, newCfg), nil
+}
+
+// encodeSectionTOML encodes a Config to the TOML bytes that belong
+// inside the [adapters.streams] section. Sibling of the existing
+// configToWire conversion.
+func encodeSectionTOML(cfg Config) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(configToWire(cfg)); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
