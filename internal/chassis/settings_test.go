@@ -2088,3 +2088,29 @@ func TestStreamsRefresh_ContextTimeout(t *testing.T) {
 		t.Errorf("body.error = %q, want substring 'deadline exceeded' or 'context canceled'", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Task 27 — stale provider key race test
+// ---------------------------------------------------------------------------
+
+func TestAdapterSave_StaleProviderKeyAccepted(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "streams", "providers.dead_provider.catalog_refresh_hours=12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := saver.touched["streams"]; got["providers.dead_provider.catalog_refresh_hours"] != "12" {
+		t.Errorf("touched = %v, want dead_provider override forwarded", got)
+	}
+}
