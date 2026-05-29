@@ -67,7 +67,12 @@ func (m *catalogManager) UpdateProvider(id string, patch chassis.CatalogProvider
 }
 
 func (m *catalogManager) SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error) {
-	cat := m.adapter.Catalog()
+	// BundledCatalog (not Catalog) so the write side covers the SAME provider
+	// set as Providers()/the rendered switch. Catalog() omits disabled
+	// providers (mergeManifests filters them from a.definitions), which would
+	// silently skip a disabled-but-Live direct-stream provider here and leave
+	// the read and write sides disagreeing.
+	cat := m.adapter.BundledCatalog()
 	scope, err := m.patch(func(cfg *streams.Config) {
 		if cfg.Providers == nil {
 			cfg.Providers = map[string]streams.ProviderConfig{}
@@ -99,6 +104,9 @@ func (m *catalogManager) patch(apply func(*streams.Config)) (adapters.ApplyScope
 // rejected streams snapshot never drops the active cast.
 func (m *catalogManager) reportAndDispatch(actual, floor adapters.ApplyScope) (adapters.ApplyScope, error) {
 	reported := maxScope(actual, floor)
+	// Exact RECAST match is intentional: HOT needs no runtime side effect, and
+	// a scope above RECAST (REBOOT) is remediated by a container restart, not a
+	// mid-session cast drop. 4C never produces a scope above RECAST.
 	if reported == adapters.ScopeRestartCast {
 		if err := m.adapter.StopActiveCast(); err != nil {
 			return reported, err

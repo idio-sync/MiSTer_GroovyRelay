@@ -32,7 +32,13 @@
   <div class="icon{{ if .BadgeClass }} {{ .BadgeClass }}{{ end }}">{{ .BadgeLabel }}</div>
   <div class="meta">
     <div class="name">{{ .DisplayName }}</div>
-    <div class="stat">{{ .Origin }} · {{ .Kind }}{{ if .DefaultChannel }} · default: <code>{{ .DefaultChannel }}</code>{{ end }}</div>
+    <div class="stat">
+      {{- if .Origin }}{{ .Origin }}{{ end -}}
+      {{- if and .Origin .Kind }} · {{ end -}}
+      {{- if .Kind }}{{ .Kind }}{{ end -}}
+      {{- if and (or .Origin .Kind) .DefaultChannel }} · {{ end -}}
+      {{- if .DefaultChannel }}default: <code>{{ .DefaultChannel }}</code>{{ end -}}
+    </div>
   </div>
   <div class="channel-count">{{ .ChannelCount }} CH</div>
   <button class="switch{{ if .Enabled }} on{{ end }}"

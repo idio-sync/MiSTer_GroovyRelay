@@ -4070,6 +4070,21 @@ func TestRenderCatalogPane_DefaultChannelOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderCatalogPane_EmptyOriginOmitsLeadingSeparator(t *testing.T) {
+	// When Origin is empty (a provider whose BaseURL/PlaylistURL fail to parse),
+	// the stat line must not begin with a dangling " · " separator — Kind leads.
+	data := SettingsData{
+		CatalogProviders: []CatalogProviderState{
+			{ID: "x", DisplayName: "X", BadgeLabel: "X", Origin: "", Kind: "direct-streams",
+				DefaultChannel: "", ChannelCount: 1},
+		},
+	}
+	html := renderCatalogPane(t, data)
+	if !strings.Contains(html, `<div class="stat">direct-streams`) {
+		t.Errorf("empty Origin should make the stat line start with Kind (no leading separator); got: %s", html)
+	}
+}
+
 func TestRenderCatalogPane_EmptyProvidersStillRendersHLSSection(t *testing.T) {
 	data := SettingsData{
 		CatalogPaneProviderCount: 0,

@@ -235,6 +235,38 @@ func TestCatalogManager_SetDirectStreamHLSBuffer_FlipsOnlyLive(t *testing.T) {
 	}
 }
 
+// Regression for the read/write asymmetry: a DISABLED direct-stream provider
+// is filtered out of Catalog() (mergeManifests drops it from a.definitions),
+// so the global HLS toggle must iterate BundledCatalog() to still flip it —
+// matching the set that Providers()/the rendered switch reflects. Before the
+// fix this silently no-op'd while reporting RECAST success.
+func TestCatalogManager_SetDirectStreamHLSBuffer_FlipsDisabledLiveProvider(t *testing.T) {
+	a := newStreamsForCatalogTest(t)
+	seedProviderCfg(t, a, map[string]streams.ProviderConfig{
+		"toonami-aftermath": {Disabled: true, HLSBufferDisabled: false},
+	})
+	tomlPath := tmpConfigPath(t)
+	saver := uiserver.NewAdapterSaver(tomlPath, &sync.Mutex{})
+	m := &catalogManager{adapter: a, adapterSaver: saver}
+
+	scope, err := m.SetDirectStreamHLSBuffer(true)
+	if err != nil {
+		t.Fatalf("SetDirectStreamHLSBuffer: %v", err)
+	}
+	if scope != adapters.ScopeRestartCast {
+		t.Errorf("scope = %v; want ScopeRestartCast", scope)
+	}
+	// toonami-aftermath is Live (direct-streams) but Disabled; it must still be
+	// flipped. Assert against the config directly since Catalog() omits it.
+	pc := a.ConfigSnapshot().Providers["toonami-aftermath"]
+	if !pc.HLSBufferDisabled {
+		t.Errorf("disabled Live provider toonami-aftermath HLSBufferDisabled = false; want true")
+	}
+	if !pc.Disabled {
+		t.Errorf("toonami-aftermath Disabled = false; want true (SetDirect must not re-enable it)")
+	}
+}
+
 // tmpConfigPath writes a minimal valid config.toml fixture and returns
 // the path. Cleanup is handled by t.TempDir().
 func tmpConfigPath(t *testing.T) string {

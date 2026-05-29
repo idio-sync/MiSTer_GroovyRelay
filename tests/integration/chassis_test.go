@@ -2750,7 +2750,10 @@ func (m *integrationCatalogManager) UpdateProvider(id string, patch chassis.Cata
 }
 
 func (m *integrationCatalogManager) SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error) {
-	cat := m.adapter.Catalog()
+	// BundledCatalog (not Catalog) — symmetric with Providers() so a disabled
+	// direct-stream provider still receives the flag (mirrors the production
+	// catalogManager fix).
+	cat := m.adapter.BundledCatalog()
 	scope, err := m.patchStreams(func(cfg *streams.Config) {
 		if cfg.Providers == nil {
 			cfg.Providers = map[string]streams.ProviderConfig{}
