@@ -216,6 +216,46 @@
     });
   });
 
+  // 4C: provider-row switches. The catalog switches deliberately use
+  // data-catalog-field instead of data-field so the existing 4A bridge
+  // switch handler at this same file's button.switch[data-field] selector
+  // does NOT match — otherwise both handlers would fire on click and
+  // the 4A path would POST a stray enabled=true to /receiver/settings/bridge.
+  drawer.querySelectorAll('button.switch[data-catalog-provider]').forEach(el => {
+    el.addEventListener('click', async () => {
+      if (el.disabled) return;
+      const id = el.dataset.catalogProvider;
+      const field = el.dataset.catalogField;
+      const next = !el.classList.contains('on');
+      el.classList.toggle('on', next);
+      el.setAttribute('aria-pressed', next ? 'true' : 'false');
+      const form = new URLSearchParams();
+      form.set(field, next ? 'true' : 'false');
+      let body = {};
+      try {
+        const res = await fetch(`/receiver/settings/catalog/provider/${encodeURIComponent(id)}`, {
+          method: 'POST', body: form, credentials: 'same-origin'
+        });
+        body = await res.json().catch(() => ({}));
+        if (res.ok && body.ok) return;
+      } catch (_) {
+        body = { chip: 'WRITE FAILED' };
+      }
+      // Revert optimistic toggle.
+      el.classList.toggle('on', !next);
+      el.setAttribute('aria-pressed', !next ? 'true' : 'false');
+      if (body.errors) {
+        showNotice('BAD INPUT', 'err');
+      } else if (body.error) {
+        showNotice(body.error, 'err');
+      } else if (body.chip) {
+        showNotice(body.chip, 'err');
+      } else {
+        showNotice('WRITE FAILED', 'err');
+      }
+    });
+  });
+
   // Probe action: single-flight, renders result into #probe-mister-result.
   const probeBtn = document.getElementById('probe-mister-btn');
   const probeOut = document.getElementById('probe-mister-result');
