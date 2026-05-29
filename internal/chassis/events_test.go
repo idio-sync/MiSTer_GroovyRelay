@@ -1473,13 +1473,16 @@ func TestReceiverEventsMeterPayloadIncludesLowRateFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Mount starts the shared cache refresher. The meter sampler's ACK
-	// readout (ackMS) requires at least one 500ms sampling window to
-	// accumulate, so we connect and collect SSE body until a meter event
-	// with a non-"--" ackMS appears (up to 1.5s).
+	// Mount starts the shared cache refresher. The meter sampler's ackMS
+	// readout only populates after a 500ms sampling window fires, observed
+	// through a chain of 250ms refresher + SSE ticks — nominally ~0.5-1.1s
+	// even on a fast box. Wait generously (5s): under `go test -race` on CI
+	// the goroutine-scheduling slowdown inflates that chain well past a tight
+	// 1.5s deadline (the original flake). The deadline only bounds failure
+	// latency; a healthy run returns as soon as the populated event lands.
 	s.Mount(http.NewServeMux())
 	t.Cleanup(func() { _ = s.Close() })
-	body := readSSEUntilMeterACK(t, s, 1500*time.Millisecond)
+	body := readSSEUntilMeterACK(t, s, 5*time.Second)
 	if !strings.Contains(body, "event: meter\n") {
 		t.Fatalf("missing meter event:\n%s", body)
 	}
