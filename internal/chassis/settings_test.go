@@ -2011,3 +2011,80 @@ func TestStreamsRefresh_RefreshFailure(t *testing.T) {
 		t.Errorf("body.error = %q, want substring 'connection refused'", got)
 	}
 }
+
+func TestStreamsRefresh_BusyOnConcurrentClick(t *testing.T) {
+	t.Parallel()
+	gate := make(chan struct{})
+	refresher := &fakeStreamsRefresher{
+		result: StreamsRefreshResult{Source: "remote"},
+		gate:   gate,
+	}
+	s := newTestServerForStreamsRefresh(refresher)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- postStreamsRefresh(t, s)
+	}()
+
+	// Wait for the first request to be inside RefreshNow.
+	deadline := time.Now().Add(2 * time.Second)
+	for refresher.calls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if calls := refresher.calls.Load(); calls < 1 {
+		t.Fatalf("first refresh never reached RefreshNow; calls = %d", calls)
+	}
+
+	rec := postStreamsRefresh(t, s)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("second-click Code = %d, want 409", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "BUSY" {
+		t.Errorf("body.chip = %q, want BUSY", chip)
+	}
+
+	close(gate)
+	first := <-done
+	if first.Code != http.StatusOK {
+		t.Errorf("first-click Code = %d, want 200", first.Code)
+	}
+}
+
+func TestStreamsRefresh_ContextTimeout(t *testing.T) {
+	t.Parallel()
+	// The fake honors ctx via its `gate` channel; never close gate, so
+	// ctx.Done fires first.
+	refresher := &fakeStreamsRefresher{
+		result: StreamsRefreshResult{Source: "remote"},
+		gate:   make(chan struct{}),
+	}
+	s := &Server{cfg: Config{
+		Version:          "test",
+		StartedAt:        time.Unix(0, 0),
+		StreamsRefresher: refresher,
+	}}
+
+	// Drive the test with a 50ms request-context override so we don't
+	// wait the full 30s. The handler should respect r.Context()'s
+	// deadline via its WithTimeout wrap.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, "POST", "/receiver/settings/action/streams-refresh", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionStreamsRefresh(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200 (action ran cleanly even on timeout)", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); okv {
+		t.Errorf("body.ok = true, want false")
+	}
+	got, _ := body["error"].(string)
+	if !strings.Contains(got, "deadline exceeded") && !strings.Contains(got, "context canceled") {
+		t.Errorf("body.error = %q, want substring 'deadline exceeded' or 'context canceled'", got)
+	}
+}
