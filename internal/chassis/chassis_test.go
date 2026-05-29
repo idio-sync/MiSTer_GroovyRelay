@@ -4359,3 +4359,63 @@ func TestSettingsAdapterStreams_RendersRefreshAction(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Task 26 — mockup scope-mismatch test
+// ---------------------------------------------------------------------------
+
+func TestMockupScopeMismatches(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"torrent": {
+				"enabled": false, "download_dir": "", "startup_buffer_seconds": int64(10),
+				"max_upload_rate_kbps": int64(512), "max_download_rate_kbps": int64(0),
+				"listen_port": int64(0), "max_cache_bytes": int64(20 << 30),
+				"metadata_timeout_seconds": int64(60), "keep_completed": false, "traffic_acknowledged": false,
+			},
+			"dlna": {"enabled": false, "device_name": "M"},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"torrent": {
+				{Key: "enabled", Kind: adapters.KindBool, ApplyScope: adapters.ScopeHotSwap},
+				{Key: "download_dir", Kind: adapters.KindText, ApplyScope: adapters.ScopeRestartCast},
+				{Key: "startup_buffer_seconds", Kind: adapters.KindInt, ApplyScope: adapters.ScopeHotSwap},
+				{Key: "max_upload_rate_kbps", Kind: adapters.KindInt, ApplyScope: adapters.ScopeRestartCast},
+				{Key: "max_download_rate_kbps", Kind: adapters.KindInt, ApplyScope: adapters.ScopeRestartCast},
+				{Key: "listen_port", Kind: adapters.KindInt, ApplyScope: adapters.ScopeRestartCast},
+			},
+			"dlna": {
+				{Key: "enabled", Kind: adapters.KindBool, ApplyScope: adapters.ScopeHotSwap},
+				{Key: "device_name", Kind: adapters.KindText, ApplyScope: adapters.ScopeRestartBridge},
+			},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	html := renderDrawer(t, s.buildSettingsData())
+	pairs := []struct{ key, scope string }{
+		{"name=\"enabled\"", "hot"},
+		{"name=\"download_dir\"", "recast"},
+		{"name=\"startup_buffer_seconds\"", "hot"},
+		{"name=\"max_upload_rate_kbps\"", "recast"},
+		{"name=\"max_download_rate_kbps\"", "recast"},
+		{"name=\"listen_port\"", "recast"},
+		{"name=\"device_name\"", "reboot"},
+	}
+	for _, p := range pairs {
+		idx := strings.Index(html, p.key)
+		if idx < 0 {
+			t.Errorf("row for %s missing", p.key)
+			continue
+		}
+		end := idx + 500
+		if end > len(html) {
+			end = len(html)
+		}
+		window := html[idx:end]
+		want := fmt.Sprintf(`scope %s`, p.scope)
+		if !strings.Contains(window, want) {
+			t.Errorf("row for %s does not contain scope %s; window:\n%s", p.key, p.scope, window)
+		}
+	}
+}
