@@ -88,6 +88,31 @@ type CoreLauncher interface {
 	Launch(ctx context.Context) error
 }
 
+// AdapterSettingsSaver is the chassis-side mirror of BridgeSettingsSaver
+// for adapter-section writes. Production binding wraps
+// *uiserver.AdapterSaver + the adapter registry; the chassis does not
+// import internal/uiserver or any concrete adapter package.
+type AdapterSettingsSaver interface {
+	// Current returns the adapter's current in-memory values, keyed by
+	// FieldDef.Key. Returns (nil, false) for unknown adapter names.
+	Current(name string) (map[string]any, bool)
+
+	// Fields returns the 4D writable FieldDef surface. DLNA/Torrent return
+	// their full FieldDef table; Streams returns top-level fields plus a
+	// wildcard providers.*.catalog_refresh_hours allowlist entry. Template
+	// rendering skips provider wildcard rows and renders provider overrides
+	// from AdapterPaneData. Returns (nil, false) for unknown adapter names.
+	Fields(name string) ([]adapters.FieldDef, bool)
+
+	// SaveTouched applies the touched-keys subset to the adapter's
+	// [adapters.<name>] TOML section, validates, writes atomically,
+	// and dispatches the runtime apply. Returns the wire scope label
+	// ("hot" / "next" / "recast" / "reboot") and a typed error
+	// implementing settingsChipError on failure. Mirror of
+	// BridgeSettingsSaver.SaveTouched.
+	SaveTouched(name string, touched map[string]string) (string, error)
+}
+
 // settingsChipError is matched structurally so saver-layer typed errors
 // can carry HTTP/chip details across the interface boundary without a
 // uiserver import. The chassis handler uses errors.As against the

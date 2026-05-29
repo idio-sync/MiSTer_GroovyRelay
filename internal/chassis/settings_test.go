@@ -1539,3 +1539,46 @@ func newTestServerForReset(t *testing.T, cr ConfigReset) *Server {
 	t.Helper()
 	return &Server{cfg: Config{ConfigReset: cr}}
 }
+
+// fakeAdapterSettingsSaver implements chassis.AdapterSettingsSaver for tests.
+type fakeAdapterSettingsSaver struct {
+	current map[string]map[string]any
+	fields  map[string][]adapters.FieldDef
+	saveErr error
+	scope   string
+	touched map[string]map[string]string // adapter name -> last touched map
+}
+
+func (f *fakeAdapterSettingsSaver) Current(name string) (map[string]any, bool) {
+	cur, ok := f.current[name]
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]any, len(cur))
+	for k, v := range cur {
+		out[k] = v
+	}
+	return out, true
+}
+
+func (f *fakeAdapterSettingsSaver) Fields(name string) ([]adapters.FieldDef, bool) {
+	fd, ok := f.fields[name]
+	return fd, ok
+}
+
+func (f *fakeAdapterSettingsSaver) SaveTouched(name string, touched map[string]string) (string, error) {
+	if f.touched == nil {
+		f.touched = map[string]map[string]string{}
+	}
+	f.touched[name] = touched
+	if f.saveErr != nil {
+		return "", f.saveErr
+	}
+	return f.scope, nil
+}
+
+func TestAdapterSettingsSaver_StructuralConformance(t *testing.T) {
+	t.Parallel()
+	var s AdapterSettingsSaver = &fakeAdapterSettingsSaver{}
+	_ = s
+}
