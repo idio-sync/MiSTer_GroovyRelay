@@ -604,6 +604,165 @@
     }
   });
 
+  // ─── Task 16: Link sub-section renderer + handlers ───────────────────────
+  //
+  // renderLinkView rebuilds a .settings-link container's inner DOM from a
+  // LinkView object. Untrusted strings (error, linkedAs, code) go through
+  // textContent — never innerHTML — so remote/operator text can't inject markup.
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function renderLinkView(container, view) {
+    container.setAttribute('data-link-kind', view.kind || '');
+    container.setAttribute('data-link-phase', view.phase || '');
+    container.replaceChildren();
+    container.appendChild(el('h5', 'settings-subhead', 'Account'));
+
+    if (view.phase === 'linked') {
+      const line = el('div', 'link-line ok');
+      line.appendChild(el('span', 'link-status', view.linkedAs ? `✓ Linked as ${view.linkedAs}` : '✓ Linked'));
+      const btn = el('button', 'action-btn ghost', 'Unlink');
+      btn.type = 'button'; btn.setAttribute('data-link-action', 'unlink');
+      line.appendChild(btn);
+      container.appendChild(line);
+      if (view.error) container.appendChild(el('div', 'link-warn', view.error));
+      return;
+    }
+    if (view.phase === 'pending') {
+      if (view.kind === 'pin') {
+        const wrap = el('div', 'link-pin-wrap');
+        wrap.appendChild(el('div', 'help', 'Enter this code at plex.tv/link:'));
+        wrap.appendChild(el('div', 'link-pin', view.code || ''));
+        const c = el('div', 'link-count');
+        c.setAttribute('data-link-expires', String(view.expiresInSec || 0));
+        c.appendChild(document.createTextNode('expires in '));
+        c.appendChild(el('span', 'link-count-val', String(view.expiresInSec || 0)));
+        c.appendChild(document.createTextNode('s'));
+        wrap.appendChild(c);
+        wrap.appendChild(el('div', 'link-waiting', '● waiting for plex.tv…'));
+        container.appendChild(wrap);
+      } else {
+        container.appendChild(el('div', 'link-waiting', '↻ Linking…'));
+      }
+      return;
+    }
+    if (view.phase === 'unlinked' && view.kind === 'pin') {
+      const line = el('div', 'link-line');
+      const left = el('div');
+      left.appendChild(el('span', 'badge off', 'OFF · not linked'));
+      left.appendChild(el('div', 'help', 'Link this bridge to your Plex account to receive casts.'));
+      line.appendChild(left);
+      const btn = el('button', 'action-btn', 'Link Plex Account');
+      btn.type = 'button'; btn.setAttribute('data-link-action', 'start');
+      line.appendChild(btn);
+      container.appendChild(line);
+      return;
+    }
+    if (view.kind === 'credential' && view.phase === 'unlinked' && view.needsServerURL) {
+      container.appendChild(el('div', 'help', 'Set a Server URL in the fields below — it saves automatically — then link.'));
+      return;
+    }
+    // credential unlinked-with-url OR error → form
+    const form = el('form', 'link-credform');
+    form.setAttribute('data-link-action', 'start');
+    (view.fields || []).forEach((f) => {
+      const row = el('div', 'field-row');
+      row.appendChild(el('label', null, f.label));
+      const inp = el('input', 'field-input');
+      inp.type = f.kind === 'secret' ? 'password' : 'text';
+      inp.setAttribute('data-link-field', f.key);
+      inp.setAttribute('name', f.key);
+      inp.setAttribute('autocomplete', 'off');
+      row.appendChild(inp);
+      row.appendChild(el('span'));
+      form.appendChild(row);
+    });
+    if (view.error) form.appendChild(el('div', 'link-warn', view.error));
+    const actionRow = el('div', 'field-row action-row');
+    actionRow.appendChild(el('label'));
+    const submit = el('button', 'action-btn', 'Link ▸');
+    submit.type = 'submit'; submit.setAttribute('data-link-submit', '');
+    actionRow.appendChild(submit);
+    actionRow.appendChild(el('span'));
+    form.appendChild(actionRow);
+    container.appendChild(form);
+  }
+
+  function adapterOfLink(node) {
+    const sec = node.closest('[data-adapter-section]');
+    return sec ? sec.getAttribute('data-adapter-section') : null;
+  }
+
+  async function postLink(adapter, action, body) {
+    const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}/link/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body ? body.toString() : '',
+    });
+    return res.json();
+  }
+
+  // Start (PIN button or credential form submit) + Unlink, delegated.
+  document.addEventListener('click', async (ev) => {
+    const startBtn = ev.target.closest('button[data-link-action="start"]');
+    const unlinkBtn = ev.target.closest('button[data-link-action="unlink"]');
+    if (!startBtn && !unlinkBtn) return;
+    ev.preventDefault();
+    const btn = startBtn || unlinkBtn;
+    if (btn.disabled) return;
+    const container = btn.closest('.settings-link');
+    const adapter = adapterOfLink(btn);
+    if (!adapter) return;
+    btn.disabled = true;
+    try {
+      const payload = await postLink(adapter, unlinkBtn ? 'unlink' : 'start', null);
+      if (payload.ok && payload.view) {
+        renderLinkView(container, payload.view);
+        // startPoll is defined in Task 17; guard the call so Task 16 is
+        // self-contained with no dangling ReferenceError.
+        if (payload.view.phase === 'pending' && payload.view.kind === 'pin') {
+          if (typeof startPoll === 'function') startPoll(adapter, container);
+        }
+      } else if (payload.chip) {
+        showNotice(payload.chip, 'err');
+      }
+    } catch (e) {
+      showNotice('NETWORK ERROR', 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.addEventListener('submit', async (ev) => {
+    const form = ev.target.closest('form.link-credform');
+    if (!form) return;
+    ev.preventDefault();
+    const container = form.closest('.settings-link');
+    const adapter = adapterOfLink(form);
+    if (!adapter) return;
+    const body = new URLSearchParams();
+    form.querySelectorAll('[data-link-field]').forEach((inp) => body.set(inp.getAttribute('data-link-field'), inp.value));
+    const submit = form.querySelector('[data-link-submit]');
+    if (submit) submit.disabled = true;
+    // Optimistic "Linking…" — rebuilds form with empty inputs (passwords cleared).
+    renderLinkView(container, { kind: 'credential', phase: 'pending' });
+    try {
+      const payload = await postLink(adapter, 'start', body);
+      if (payload.ok && payload.view) {
+        renderLinkView(container, payload.view); // clears password (fresh inputs)
+      } else if (payload.chip) {
+        showNotice(payload.chip, 'err');
+      }
+    } catch (e) {
+      showNotice('NETWORK ERROR', 'err');
+    }
+  });
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
@@ -611,4 +770,5 @@
   window.Chassis.settings.markHasValue = markHasValue;
   window.Chassis.settings.showNotice = showNotice;
   window.Chassis.settings.clearNotice = clearNotice;
+  window.Chassis.settings.renderLinkView = renderLinkView;
 })();
