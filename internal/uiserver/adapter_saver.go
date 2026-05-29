@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
@@ -89,4 +90,21 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 		return []byte(out)
 	}
 	return []byte(strings.Join(outLines, "\n"))
+}
+
+// currentValuesOf returns the adapter's current in-memory values as a
+// generic map[string]any, or false if the adapter does not implement
+// the optional CurrentValues() method. This is the same duck-typed
+// interface internal/ui consumes for form prefill — keeping it
+// optional preserves backwards compatibility with adapters that only
+// implement the core adapters.Adapter contract.
+func currentValuesOf(a adapters.Adapter) (map[string]any, bool) {
+	type currentValuer interface {
+		CurrentValues() map[string]any
+	}
+	cv, ok := a.(currentValuer)
+	if !ok {
+		return nil, false
+	}
+	return cv.CurrentValues(), true
 }
