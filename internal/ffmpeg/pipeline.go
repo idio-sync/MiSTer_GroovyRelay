@@ -388,16 +388,16 @@ func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 	layout := visualizerLayoutFor(s.Visualizer.Mode, logicalW)
 	lines := make([]visualizerTextLine, 0, 4)
 	y := 0
-	if artist := strings.TrimSpace(md.Artist); artist != "" {
-		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleArtist, artist, layout.MetadataY[y], 20, visualizerMetadataColor))
-		y++
-	}
 	title := strings.TrimSpace(md.Title)
 	if title == "" {
 		title = "Now Playing"
 	}
 	lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleTitle, title, layout.MetadataY[y], 20, visualizerMetadataColor))
 	y++
+	if artist := strings.TrimSpace(md.Artist); artist != "" {
+		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleArtist, artist, layout.MetadataY[y], 20, visualizerMetadataColor))
+		y++
+	}
 	if album := strings.TrimSpace(md.Album); album != "" {
 		lines = append(lines, visualizerMetadataLine(layout, visualizerTextRoleAlbum, album, layout.MetadataY[y], 18, visualizerAlbumColor))
 	}

@@ -203,8 +203,8 @@ func TestVisualizerTextLines_MetadataOrderStylesAndProgress(t *testing.T) {
 		t.Fatalf("visualizerTextLines len = %d, want 4: %#v", len(lines), lines)
 	}
 	want := []visualizerTextLine{
-		{Role: visualizerTextRoleArtist, Text: "NEW ORDER", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "24", WindowWidth: 392, Marquee: true},
-		{Role: visualizerTextRoleTitle, Text: "BLUE MONDAY", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "48", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleTitle, Text: "BLUE MONDAY", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "24", WindowWidth: 392, Marquee: true},
+		{Role: visualizerTextRoleArtist, Text: "NEW ORDER", FontSize: 20, FontColor: "0x9dff9d", X: "24", Y: "48", WindowWidth: 392, Marquee: true},
 		{Role: visualizerTextRoleAlbum, Text: "POWER CORRUPTION & LIES", FontSize: 18, FontColor: "0x7fdc7f", X: "24", Y: "72", WindowWidth: 392, Marquee: true},
 		{Role: visualizerTextRoleProgress, Text: "%{pts\\:hms} / 7:29", FontSize: 16, FontColor: "0x70c870", X: "w-tw-24", Y: "24"},
 	}
@@ -1922,5 +1922,27 @@ func TestBuildFilterChain_SourceRateProducesCorrectNormalizer(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVisualizerTextLines_TitleFirstOrder(t *testing.T) {
+	s := PipelineSpec{OutputHeight: 480}
+	s.Visualizer.Metadata = VisualizerMetadata{Title: "Song", Artist: "Band", Album: "Record"}
+	lines := visualizerTextLines(s)
+	var roles []string
+	for _, l := range lines {
+		if l.Role == visualizerTextRoleProgress {
+			continue
+		}
+		roles = append(roles, l.Role)
+	}
+	want := []string{visualizerTextRoleTitle, visualizerTextRoleArtist, visualizerTextRoleAlbum}
+	if len(roles) != len(want) {
+		t.Fatalf("roles = %v, want %v", roles, want)
+	}
+	for i := range want {
+		if roles[i] != want[i] {
+			t.Fatalf("roles = %v, want %v", roles, want)
+		}
 	}
 }
