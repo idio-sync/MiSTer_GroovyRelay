@@ -80,7 +80,7 @@ func (b *bridgeAdapterSettingsSaver) SaveTouched(name string, touched map[string
 	if err != nil {
 		return "", translateSaverError(err)
 	}
-	label, labelOK := chassis.WireScopeLabel(scope)
+	label, labelOK := chassis.WireLabelForScope(scope)
 	if !labelOK {
 		return "", &cmdChipError{status: http.StatusInternalServerError, chip: "WRITE FAILED"}
 	}

@@ -604,12 +604,10 @@ func scopeLabel(s adapters.ApplyScope) (string, bool) {
 }
 
 // WireLabelForScope returns the JSON wire label ("hot"/"next"/"recast"/"reboot")
-// for the given ApplyScope. Exported for cross-package drift tests.
+// for the given ApplyScope. Exported for cross-package use (drift tests and the
+// cmd-side adapter-save wrapper) to translate adapters.ApplyScope into the wire
+// label.
 func WireLabelForScope(s adapters.ApplyScope) (string, bool) { return scopeLabel(s) }
-
-// WireScopeLabel exports the wire-label form of scopeLabel for production
-// wrappers translating adapters.ApplyScope into "hot"/"next"/"recast"/"reboot".
-func WireScopeLabel(s adapters.ApplyScope) (string, bool) { return scopeLabel(s) }
 
 // isValidHostname is a permissive RFC-952/1123-ish check: 1..253 chars
 // total, label chars in [a-z0-9-], labels non-empty, no leading/trailing
