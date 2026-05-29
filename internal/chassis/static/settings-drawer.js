@@ -400,6 +400,87 @@
     });
   }
 
+  // 4C: restore-defaults inline two-step confirm. Click ⚠ Reset… → button
+  // row morphs to "[This wipes config.toml.] [Cancel] [Confirm reset]";
+  // confirm POSTs; cancel or 10s armed timeout returns to idle.
+  // DOM construction uses createElement + textContent + replaceChildren
+  // rather than innerHTML — even though the prompt content is fully
+  // static, modeling safe patterns here prevents an implementer from
+  // later interpolating dynamic content into the same code path and
+  // reintroducing an XSS surface.
+  (function initRestoreDefaults() {
+    const row = document.getElementById('restore-defaults-row');
+    if (!row) return;
+    const idleBtn = document.getElementById('restore-defaults-btn');
+    const result = document.getElementById('restore-defaults-result');
+    if (!idleBtn || !result) return;
+
+    let armTimer = null;
+
+    function toIdle() {
+      if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+      row.classList.remove('confirming');
+      const rightCell = idleBtn.parentElement;
+      rightCell.replaceChildren(idleBtn, result);
+      idleBtn.disabled = false;
+    }
+
+    function toArmed() {
+      row.classList.add('confirming');
+      const rightCell = idleBtn.parentElement;
+      const prompt = document.createElement('span');
+      prompt.className = 'confirm-prompt';
+      prompt.textContent = 'This wipes config.toml. ';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'action-btn cancel';
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', toIdle);
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'action-btn confirm';
+      confirmBtn.type = 'button';
+      confirmBtn.textContent = 'Confirm reset';
+      confirmBtn.addEventListener('click', fire);
+      rightCell.replaceChildren(prompt, cancelBtn, confirmBtn, result);
+      armTimer = setTimeout(toIdle, 10_000);
+    }
+
+    async function fire() {
+      if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+      row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+      result.className = 'action-result';
+      result.textContent = '';
+      let body = {};
+      try {
+        const res = await fetch('/receiver/settings/action/restore-defaults', {
+          method: 'POST', credentials: 'same-origin'
+        });
+        body = await res.json().catch(() => ({}));
+        if (res.ok && body.ok && body.scope === 'reboot') {
+          toIdle();
+          result.className = 'action-result shown ok';
+          result.textContent = '▸ Defaults restored · restart to apply';
+          showNotice('Defaults restored — restart container to apply', 'ok');
+          return;
+        }
+      } catch (_) {
+        body = { chip: 'WRITE FAILED' };
+      }
+      toIdle();
+      if (body.chip) {
+        showNotice(body.chip, 'err');
+      } else if (body.error) {
+        result.className = 'action-result shown err';
+        result.textContent = `▸ ERROR · ${body.error}`;
+      } else {
+        result.className = 'action-result shown err';
+        result.textContent = '▸ ERROR · unknown';
+      }
+    }
+
+    idleBtn.addEventListener('click', toArmed);
+  })();
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
