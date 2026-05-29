@@ -353,3 +353,98 @@ func extractAdapterSectionBody(doc []byte, name string) ([]byte, bool) {
 	}
 	return []byte(strings.Join(out, "\n")), found
 }
+
+// SaveTouched applies a touched-key envelope to the latest on-disk
+// [adapters.<name>] TOML section: reads the parent table plus all
+// descendant subtables under the shared saver mutex, overlays only the
+// submitted keys, re-encodes the full section, validates it, writes
+// atomically to disk, and dispatches runtime side effects via
+// adapter.ApplyConfig. The shared mutex (the same one BridgeSaver uses)
+// serializes against bridge saves and other adapter auto-saves.
+//
+// The fields argument is the writable-surface allowlist — the chassis
+// wrapper passes the projection of adapter.Fields() that excludes
+// keys owned by other panes (e.g., for streams, providers.*.disabled
+// and providers.*.hls_buffer_disabled are owned by 4C's Catalog pane
+// and rejected here). Passing adapter.Fields() unchanged is also
+// valid for adapters without a split surface (DLNA, Torrent).
+//
+// Returns the wire scope (max-wins across changed fields, as
+// determined by adapter.ApplyConfig) and a typed error on failure.
+// Per-field errors (decode failures, schema-unknown keys, validation
+// failures) are wrapped in *adapterFieldErrors so the chassis-side
+// AdapterSettingsSaver wrapper can extract them and render
+// {ok:false, errors:{...}}.
+func (r *AdapterSaver) SaveTouched(name string, touched map[string]string, adapter adapters.Adapter, fields []adapters.FieldDef) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	doc, err := os.ReadFile(r.path)
+	if err != nil {
+		return 0, fmt.Errorf("read config: %w", err)
+	}
+	current, found, err := readAdapterSectionMap(doc, name)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		var ok bool
+		current, ok = currentValuesOf(adapter)
+		if !ok {
+			current = map[string]any{}
+		}
+	}
+
+	merged, ferrs := overlayTouched(current, touched, fields)
+	if len(ferrs) > 0 {
+		return 0, &adapterFieldErrors{Errs: ferrs}
+	}
+
+	snippet, err := encodeAdapterMap(name, merged)
+	if err != nil {
+		return 0, fmt.Errorf("encode merged config: %w", err)
+	}
+
+	prim, meta, err := decodeAdapterSection(snippet, name)
+	if err != nil {
+		return 0, fmt.Errorf("decode re-encoded section: %w", err)
+	}
+
+	if validator, ok := adapter.(adapters.Validator); ok {
+		if err := validator.Validate(prim, meta); err != nil {
+			if ferr, ok := err.(adapters.FieldErrors); ok {
+				return 0, &adapterFieldErrors{Errs: []adapters.FieldError(ferr)}
+			}
+			return 0, fmt.Errorf("validate: %w", err)
+		}
+	}
+
+	updated := replaceAdapterSection(doc, name, snippet)
+	if err := config.WriteAtomic(r.path, updated); err != nil {
+		return 0, fmt.Errorf("write config: %w", err)
+	}
+
+	scope, err := adapter.ApplyConfig(prim, meta)
+	if err != nil {
+		return scope, fmt.Errorf("apply config: %w", err)
+	}
+	return scope, nil
+}
+
+// adapterFieldErrors is the typed error SaveTouched returns when per-
+// field decoding or validation fails. The chassis-side wrapper unwraps
+// this and renders the JSON envelope {ok:false, errors:{...}}.
+type adapterFieldErrors struct {
+	Errs []adapters.FieldError
+}
+
+func (e *adapterFieldErrors) Error() string {
+	if len(e.Errs) == 0 {
+		return "adapter field errors"
+	}
+	return fmt.Sprintf("%d adapter field error(s)", len(e.Errs))
+}
+
+func (e *adapterFieldErrors) FieldErrors() []adapters.FieldError {
+	return e.Errs
+}

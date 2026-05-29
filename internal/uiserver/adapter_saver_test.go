@@ -2,7 +2,11 @@ package uiserver
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -310,5 +314,108 @@ func TestDecodeAdapterSection_RoundTrip(t *testing.T) {
 	}
 	if got.Enabled != true || got.DeviceName != "MiSTer" {
 		t.Errorf("decoded = %+v", got)
+	}
+}
+
+// fakeFullAdapter implements adapters.Adapter plus CurrentValues; it
+// records the ApplyConfig call for assertions and reports a fixed
+// scope from ApplyConfig. The `fields` slice is per-test so Task 7's
+// nested-subtable preservation test can inject a wildcard schema
+// (providers.*.catalog_refresh_hours) without retrofitting Tasks 5/6.
+type fakeFullAdapter struct {
+	mu        sync.Mutex
+	values    map[string]any
+	fields    []adapters.FieldDef
+	scope     adapters.ApplyScope
+	validErr  error
+	applyErr  error
+	applied   []map[string]any
+	applyHook func(decoded map[string]any) // used by Task 8
+}
+
+func (f *fakeFullAdapter) Name() string            { return "fake" }
+func (f *fakeFullAdapter) DisplayName() string     { return "Fake" }
+func (f *fakeFullAdapter) Status() adapters.Status { return adapters.Status{} }
+func (f *fakeFullAdapter) IsEnabled() bool         { return false }
+func (f *fakeFullAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
+func (f *fakeFullAdapter) Start(context.Context) error                      { return nil }
+func (f *fakeFullAdapter) Stop() error                                      { return nil }
+func (f *fakeFullAdapter) Fields() []adapters.FieldDef {
+	if f.fields != nil {
+		return f.fields
+	}
+	return []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool},
+		{Key: "device_name", Kind: adapters.KindText},
+	}
+}
+func (f *fakeFullAdapter) CurrentValues() map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]any, len(f.values))
+	for k, v := range f.values {
+		out[k] = v
+	}
+	return out
+}
+func (f *fakeFullAdapter) Validate(prim toml.Primitive, meta toml.MetaData) error {
+	return f.validErr
+}
+func (f *fakeFullAdapter) ApplyConfig(prim toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
+	if f.applyErr != nil {
+		return 0, f.applyErr
+	}
+	var decoded map[string]any
+	_ = meta.PrimitiveDecode(prim, &decoded)
+	f.mu.Lock()
+	f.applied = append(f.applied, decoded)
+	if f.applyHook != nil {
+		f.applyHook(decoded)
+	}
+	f.mu.Unlock()
+	return f.scope, nil
+}
+
+func newTempConfigWithSection(t *testing.T, name string, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	contents := fmt.Sprintf("[bridge]\nmister.host = \"x\"\n\n[adapters.%s]\n%s", name, body)
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+func TestSaveTouched_HappyPath(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "dlna", `enabled = false
+device_name = "Old"
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{
+		values: map[string]any{"enabled": false, "device_name": "Old"},
+		scope:  adapters.ScopeHotSwap,
+	}
+	scope, err := saver.SaveTouched("dlna", map[string]string{"enabled": "true"}, adapter, adapter.Fields())
+	if err != nil {
+		t.Fatalf("SaveTouched err = %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Errorf("scope = %v, want ScopeHotSwap", scope)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(got), `enabled = true`) {
+		t.Errorf("disk does not contain enabled = true:\n%s", got)
+	}
+	if !strings.Contains(string(got), `device_name = "Old"`) {
+		t.Errorf("disk does not preserve device_name:\n%s", got)
+	}
+	if n := len(adapter.applied); n != 1 {
+		t.Fatalf("ApplyConfig calls = %d, want 1", n)
 	}
 }
