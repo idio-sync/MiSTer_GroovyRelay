@@ -64,6 +64,66 @@ func (a *Adapter) Catalog() []adapters.CatalogProvider {
 	return out
 }
 
+// BundledCatalog returns the chassis-shaped view of ALL bundled streams
+// providers, including those whose ProviderConfig.Disabled == true. It
+// always reads from bundledManifest() rather than the installed runtime
+// definitions, so a disabled provider never disappears from the list.
+//
+// Use this instead of Catalog() when the caller needs to show every
+// provider with its current enabled/disabled state (e.g. the 4C Catalog
+// settings pane where the enabled switch must remain visible even for
+// disabled providers so the operator can re-enable them).
+func (a *Adapter) BundledCatalog() []adapters.CatalogProvider {
+	m := bundledManifest()
+	defs := make(map[string]ProviderDefinition, len(m.Providers))
+	for _, p := range m.Providers {
+		defs[p.ID] = p
+	}
+	out := make([]adapters.CatalogProvider, 0, len(bundledChassisCatalogProviderIDs))
+	for _, id := range bundledChassisCatalogProviderIDs {
+		def, ok := defs[id]
+		if !ok {
+			continue
+		}
+		badge := providerBadges[id]
+		live := def.Type == directStreamsProviderType
+		origin := ""
+		if u, err := url.Parse(def.BaseURL); err == nil {
+			origin = u.Host
+		}
+		if origin == "" {
+			if u, err := url.Parse(def.PlaylistURL); err == nil {
+				origin = u.Host
+			}
+		}
+		p := adapters.CatalogProvider{
+			ID:             def.ID,
+			DisplayName:    def.DisplayName,
+			BadgeLabel:     badge.Label,
+			BadgeClass:     badge.Class,
+			Origin:         origin,
+			Kind:           def.Type,
+			Live:           live,
+			DefaultChannel: def.DefaultChannel,
+		}
+		channelByGroup := groupChannels(def)
+		for _, g := range def.Groups {
+			cg := adapters.CatalogGroup{ID: g.ID, Name: g.Name}
+			for _, ch := range channelByGroup[g.ID] {
+				cg.Channels = append(cg.Channels, adapters.CatalogChannel{
+					ID:       ch.ID,
+					Name:     ch.Name,
+					PlayMode: strings.ToUpper(string(ch.PlayMode)),
+					Live:     live,
+				})
+			}
+			p.Groups = append(p.Groups, cg)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // chassisCatalogSnapshot returns the definitions and catalogs maps,
 // seeding from bundledManifest if the adapter has not yet completed
 // Start-time installation. Always returns non-empty maps.
