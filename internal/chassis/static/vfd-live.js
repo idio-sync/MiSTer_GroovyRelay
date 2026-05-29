@@ -2,7 +2,8 @@
 //
 // Subscribes to /receiver/events (SSE), routes named events:
 //   state -> window.Chassis.State.set(idle|live)
-//   vfd   -> textContent updates on data-vfd-{title,marquee,queue,uptime}
+//   vfd   -> textContent updates on data-vfd-{primary,secondary,tertiary,queue,uptime}
+//            (overflowing tier rows marquee-scroll; empty tiers collapse)
 //
 // Loaded after chassis.js (Phase 0) so window.Chassis is populated.
 // Each later spec ships its own JS file that hangs off window.Chassis
