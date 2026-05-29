@@ -4419,3 +4419,47 @@ func TestMockupScopeMismatches(t *testing.T) {
 		}
 	}
 }
+
+func TestChassisCSS_ContainsSettingsHintRule(t *testing.T) {
+	t.Parallel()
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile chassis.css: %v", err)
+	}
+	css := string(cssBytes)
+	for _, want := range []string{
+		`body.receiver .settings-section .hint`,
+		`body.receiver .settings-subhead`,
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("chassis.css missing selector %q", want)
+		}
+	}
+}
+
+func TestSettingsDrawerJS_BridgeSelectorsNarrowedToDataField(t *testing.T) {
+	t.Parallel()
+	js, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	src := string(js)
+	for _, want := range []string{
+		`input.field-input[data-field]`,
+		`select.field-input[data-field]`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("settings-drawer.js missing narrowed selector %q", want)
+		}
+	}
+	for _, banned := range []string{
+		`'input.field-input'`,
+		`"input.field-input"`,
+		`'select.field-input'`,
+		`"select.field-input"`,
+	} {
+		if strings.Contains(src, banned) {
+			t.Errorf("settings-drawer.js still contains un-narrowed selector %q — adapter inputs would double-fire", banned)
+		}
+	}
+}
