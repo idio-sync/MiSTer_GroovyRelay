@@ -1887,3 +1887,59 @@ func TestAdapterSave_ChipError(t *testing.T) {
 		t.Errorf("body.chip = %q, want WRITE FAILED", chip)
 	}
 }
+
+func TestAdapterSave_StreamsCatalogOwnedKeysRejected(t *testing.T) {
+	t.Parallel()
+	// Saver returns the streams adapter's *projected* Fields() schema —
+	// the per-provider disabled / hls_buffer_disabled rows (Catalog-owned)
+	// are absent. The chassis handler must reject touches against those
+	// keys because they're not in the projected schema.
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	for _, key := range []string{
+		"providers.foo.disabled",
+		"providers.foo.hls_buffer_disabled",
+	} {
+		rec := postAdapterSave(t, s, "streams", key+"=true")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %s Code = %d, want 400", key, rec.Code)
+			continue
+		}
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if chip, _ := body["chip"].(string); chip != "BAD INPUT" {
+			t.Errorf("POST %s body.chip = %q, want BAD INPUT", key, chip)
+		}
+	}
+}
+
+func TestAdapterSave_StreamsCatalogRefreshHoursAccepted(t *testing.T) {
+	t.Parallel()
+	// Counter-test: the chassis-owned key MUST pass through, so the
+	// rejection above is the projection's responsibility, not a blanket
+	// providers.* rejection.
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "streams", "providers.foo.catalog_refresh_hours=12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
