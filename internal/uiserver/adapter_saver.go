@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
@@ -256,4 +257,32 @@ func currentValuesOf(a adapters.Adapter) (map[string]any, bool) {
 		return nil, false
 	}
 	return cv.CurrentValues(), true
+}
+
+// encodeAdapterMap serializes a generic map[string]any into a TOML body
+// for [adapters.<name>]. Top-level keys remain bare `key = value` lines;
+// nested tables are rewritten from BurntSushi's relative [providers.foo]
+// form to absolute [adapters.<name>.providers.foo] headers. That keeps
+// replaceAdapterSection's existing contract (it inserts the parent header)
+// while preserving descendant adapter subtables.
+func encodeAdapterMap(name string, m map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	if err := enc.Encode(m); err != nil {
+		return nil, fmt.Errorf("encode adapter map: %w", err)
+	}
+	return prefixAdapterSubtableHeaders(name, buf.Bytes()), nil
+}
+
+func prefixAdapterSubtableHeaders(name string, body []byte) []byte {
+	var out []string
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inner := strings.Trim(trimmed, "[]")
+			line = fmt.Sprintf("[adapters.%s.%s]", name, inner)
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }

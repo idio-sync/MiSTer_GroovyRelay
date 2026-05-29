@@ -248,3 +248,48 @@ func TestOverlayTouched_DoesNotMutateCurrent(t *testing.T) {
 		t.Errorf("current providers.foo.catalog_refresh_hours mutated to %v, want 6", origFoo["catalog_refresh_hours"])
 	}
 }
+
+func TestEncodeAdapterMap_TopLevelFields(t *testing.T) {
+	t.Parallel()
+	merged := map[string]any{
+		"enabled":     true,
+		"device_name": "MiSTer",
+		"port":        int64(32100),
+	}
+	got, err := encodeAdapterMap("dlna", merged)
+	if err != nil {
+		t.Fatalf("encodeAdapterMap err = %v", err)
+	}
+	for _, want := range []string{
+		`enabled = true`,
+		`device_name = "MiSTer"`,
+		`port = 32100`,
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("encoded does not contain %q\nencoded:\n%s", want, got)
+		}
+	}
+}
+
+func TestEncodeAdapterMap_NestedProviders(t *testing.T) {
+	t.Parallel()
+	merged := map[string]any{
+		"enabled": true,
+		"providers": map[string]any{
+			"foo": map[string]any{"catalog_refresh_hours": int64(12)},
+		},
+	}
+	got, err := encodeAdapterMap("streams", merged)
+	if err != nil {
+		t.Fatalf("encodeAdapterMap err = %v", err)
+	}
+	for _, want := range []string{
+		`enabled = true`,
+		`[adapters.streams.providers.foo]`,
+		`catalog_refresh_hours = 12`,
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("encoded does not contain %q\nencoded:\n%s", want, got)
+		}
+	}
+}
