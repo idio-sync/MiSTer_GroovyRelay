@@ -37,9 +37,12 @@ mode count:
 
 - Adding any of the future catalog modes (Appendix A). This change ships only
   `spectrum_waterfall`.
-- Changing core/manager, the data plane, adapters, or apply-scope behavior.
-  Visualizer mode is an opaque string to the manager; mode changes remain
-  `ScopeRestartCast` (apply on next music cast).
+- Changing the manager's session FSM, the data plane, adapters, or
+  apply-scope behavior. Mode changes remain `ScopeRestartCast` (apply on next
+  music cast). NOTE: the visualizer mode is *not* an opaque string to core —
+  core mirrors the full mode enum and validates/maps it (see Part D). Those
+  per-mode touchpoints are in scope; the manager's session/data-plane
+  *behavior* is not.
 - Live switching the running visualizer mode, per-track/per-adapter
   preferences, album-art plumbing — all unchanged and out of scope.
 
@@ -54,9 +57,14 @@ These carry over from the existing visualizer specs and constrain this work:
 3. Required FFmpeg filters are gated by `RequiredVisualizerFilters` +
    `CheckVisualizerFilters`; a mode whose filter is missing fails fast before
    plane spawn rather than silently degrading the visual.
-4. The Go constant set (`config.go` + `pipeline.go`) and the UI-exposed enum
-   must stay in sync. The UI dropdown derives from
-   `config.SupportedVisualizerModes()`
+4. The mode enum is **mirrored as three independent typed constant sets** —
+   `internal/config` (canonical `string` set), `internal/core`
+   (`core.VisualizerMode`), and `internal/ffmpeg` (`ffmpeg.VisualizerMode`) —
+   connected by two mapping functions in `core` (`coreVisualizerModeFromConfig`
+   maps config→core, `ffmpegVisualizerMode` maps core→ffmpeg) and a core
+   validation switch (`validateVisualizerRequest`). All three sets plus both
+   mappings and the validation switch must change in lockstep (see Part D).
+   The UI dropdown derives from `config.SupportedVisualizerModes()`
    (`internal/ui/bridge_fields.go`), so the config list is the single source
    of truth for the Settings UI; the chassis button bank
    (`internal/chassis/data.go`) is maintained in parallel.
@@ -78,7 +86,9 @@ removed for the `neon_grid` deletion.
 ### Identity
 
 - Go constant: `VisualizerModeSpectrumWaterfall = "spectrum_waterfall"` in
-  both `internal/config/config.go` and `internal/ffmpeg/pipeline.go`.
+  all three mirrored sets — `internal/config/config.go`,
+  `internal/core/types.go`, and `internal/ffmpeg/pipeline.go` — plus the core
+  mapping/validation switches (see Part D).
 - Chassis button: label `WATERFALL`, placed in the slot `neon_grid` vacated,
   with a new `IconKind: "waterfall"`.
 - The name avoids the bare word "spectrum-as-bars" collision with
@@ -183,18 +193,58 @@ Behavior that intentionally stays (independent of the button):
   as a generic unknown-mode-fallback test; rename to drop the "preview"
   framing is optional.
 
+## Part D — Core layer mode mirror (applies to BOTH removal and addition)
+
+`internal/core` is **not** mode-agnostic. It re-types the mode for the
+adapter/core/ffmpeg type-safety boundary and enumerates every mode in four
+places. All four change for both the `neon_grid` removal and the
+`spectrum_waterfall` addition; missing any one either breaks the build or
+silently rejects the new mode:
+
+1. **`internal/core/types.go` (constants, lines 37–48).** Core's own
+   `VisualizerMode` typed constant set, currently including
+   `VisualizerModeNeonGrid`. Remove that constant; add
+   `VisualizerModeSpectrumWaterfall VisualizerMode = "spectrum_waterfall"`.
+
+2. **`internal/core/manager.go` `validateVisualizerRequest` (switch, lines
+   381–392).** This switch **rejects** any mode not listed (returns
+   "unsupported visualizer mode"). The new mode MUST be added here or core
+   refuses every `spectrum_waterfall` session. Remove the `neon_grid` case.
+
+3. **`internal/core/manager.go` `coreVisualizerModeFromConfig` (lines
+   480–500).** Maps the config string → `core.VisualizerMode`. It contains an
+   explicit `case config.VisualizerModeNeonGrid:` — **removing the config
+   constant without deleting this case is a compile error.** Remove the
+   `neon_grid` case; add a `case config.VisualizerModeSpectrumWaterfall:`
+   returning the new core constant.
+
+4. **`internal/core/manager.go` `ffmpegVisualizerMode` (lines 516–535).**
+   Maps `core.VisualizerMode` → `ffmpeg.VisualizerMode`. Remove the
+   `neon_grid` case; add the `spectrum_waterfall` case.
+
+Both mapping functions have a `default` that passes the raw string through, so
+a missing addition would *not* break compilation for the new mode — but the
+validation switch in (2) would still reject it, so (2) is mandatory for the
+addition. The removal touchpoints in (1) and (3) are mandatory to compile.
+
+The manager's session FSM, preemption, data-plane lifecycle, `Manager.mu`
+discipline, and apply-scope tier are all unchanged.
+
 ## Consolidated Touchpoints
 
 | File | neon_grid → spectrum_waterfall | radial / preview cleanup |
 |------|--------------------------------|--------------------------|
 | `internal/config/config.go` | Remove `VisualizerModeNeonGrid` const, slice entry, and validate-switch case; add `VisualizerModeSpectrumWaterfall` in all three. | — |
+| `internal/core/types.go` | Remove the `VisualizerModeNeonGrid` const; add `VisualizerModeSpectrumWaterfall` (Part D.1). | — |
+| `internal/core/manager.go` | Remove `neon_grid` from all three switches — `validateVisualizerRequest`, `coreVisualizerModeFromConfig`, `ffmpegVisualizerMode`; add `spectrum_waterfall` to all three (Part D.2–4). | — |
 | `internal/ffmpeg/pipeline.go` | Remove `neon_grid` const + `RequiredVisualizerFilters` case + `visualizerCoreGraph` case; add the three for `spectrum_waterfall`. | — |
 | `internal/chassis/data.go` | Replace the NEON GRID button with the WATERFALL button (`IconKind: "waterfall"`) in the same slot. | Remove the RADIAL button and the `IsPreview` field + doc comment. |
 | `internal/chassis/templates/visualizer-bank.html` | — | Collapse the `IsPreview` branch to the single live-button path. |
 | `internal/chassis/static/chassis.css` | Add `viz-icon--waterfall::before`. | Remove `viz-btn--preview*` rules and `viz-icon--radial*` rule. |
 | `internal/chassis/static/visualizer-bank.js` | — | Remove `isPreview()` and its two call sites. |
 | `internal/config/example.toml` | Update the documented visualizer-mode comment/options. | — |
-| `README.md` | Document `spectrum_waterfall`; note `neon_grid` removed (alongside the already-listed not-shipped `chiptune_equalizer`/`radial_spectrum`). | — |
+| `README.md` | Add `spectrum_waterfall` to the supported-modes list; note `neon_grid` has been removed, consistent with how the already-not-shipped `chiptune_equalizer`/`radial_spectrum` are documented. | — |
+| Test files (see Testing) | `config_test.go`, `pipeline_test.go`, `core/manager_test.go` — drop `neon_grid` rows, add `spectrum_waterfall`. | `chassis_test.go`, `visualizer_modes_test.go` (integration) — drop radial/preview + `neon_grid` rows, add WATERFALL. |
 
 ## Testing
 
@@ -210,6 +260,11 @@ Keep `go vet`, unit, `-race`, and integration green (CI runs all four).
   - core-graph substring table — replace the `neon_grid` row with a
     `spectrum_waterfall` row asserting the graph contains
     `showspectrum=`, `slide=scroll`, `fscale=log`, and `color=intensity`.
+- `internal/core/manager_test.go`: the all-modes slice (~line 2731) and the
+  core→ffmpeg mapping table (~line 2773, rows like
+  `{VisualizerModeNeonGrid, ffmpeg.VisualizerModeNeonGrid}`) — drop the
+  `neon_grid` entries, add `spectrum_waterfall` entries. This is the test that
+  guards the Part D mappings.
 - `internal/chassis/chassis_test.go`:
   - Expected visualizer-button list (currently 9 rows: 8 live modes + the
     radial preview) — remove the `neon_grid` and `radial_spectrum` rows and
