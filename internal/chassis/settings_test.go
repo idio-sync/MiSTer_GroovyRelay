@@ -2205,3 +2205,20 @@ func TestLinkUnlink_Success(t *testing.T) {
 		t.Errorf("status=%d body=%s, want 200 unlinked", rec.Code, rec.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Task 12 — route registration via Mount
+// ---------------------------------------------------------------------------
+
+func TestLinkRoutesMounted(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "unlinked"}}})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mounted start route status = %d, want 200", rec.Code)
+	}
+}

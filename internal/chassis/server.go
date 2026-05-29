@@ -290,6 +290,12 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterPost)))
 	mux.Handle("POST /receiver/settings/action/streams-refresh",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionStreamsRefresh)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/link/start",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStart)))
+	mux.Handle("GET /receiver/settings/adapter/{name}/link/status",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStatus)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/link/unlink",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkUnlink)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 
