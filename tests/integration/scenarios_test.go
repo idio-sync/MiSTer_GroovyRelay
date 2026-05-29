@@ -280,10 +280,24 @@ func TestScenario_Pause(t *testing.T) {
 	if err := h.Manager.Play(); err != nil {
 		t.Fatalf("play: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
-	afterResume := h.Recorder.Snapshot().Counts[groovy.CmdBlitFieldVSync]
+	// Poll until the resumed plane has clearly produced fields, proving Play
+	// restarted streaming. A fixed 500ms window is fragile: resume cold-starts
+	// a fresh ffmpeg (INIT handshake + SWITCHRES + prebuffer), and on a
+	// CPU-starved runner that startup can consume the whole window, leaving
+	// fewer than 10 fields (observed delta=9 on Windows CI). The generous
+	// deadline absorbs the cold-start latency while still asserting the same
+	// semantic: resume re-establishes streaming.
+	deadline := time.Now().Add(5 * time.Second)
+	afterResume := duringPause
+	for time.Now().Before(deadline) {
+		afterResume = h.Recorder.Snapshot().Counts[groovy.CmdBlitFieldVSync]
+		if afterResume-duringPause >= 10 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if afterResume-duringPause < 10 {
-		t.Errorf("resume: expected BLIT count to grow post-Play, delta=%d",
+		t.Errorf("resume: expected BLIT count to grow post-Play within deadline, delta=%d",
 			afterResume-duringPause)
 	}
 }

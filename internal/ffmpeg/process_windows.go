@@ -101,6 +101,17 @@ func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		p.wg.Wait()
+		// Cancellation aborts the accept by closing the listener (the watcher
+		// goroutine above), which surfaces as "use of closed network
+		// connection" rather than context.Canceled. Map it back to ctx.Err()
+		// so callers (core.Manager.handlePlaneExit) treat a preempt/stop as a
+		// clean cancel instead of an error — otherwise the error branch fires a
+		// spurious OnStop that races the preempt path's own OnStop. When the
+		// 10s accept deadline fires (ffmpeg never connected) ctx.Err() is nil,
+		// so a genuine spawn failure still returns the raw error.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, acceptErr
 	}
 
