@@ -1470,3 +1470,72 @@ func TestHandleSettingsCatalogDirectStreamHLSBufferPost_NilManager_503(t *testin
 	}
 	assertJSONField(t, rr.Body.Bytes(), "chip", "NOT READY")
 }
+
+func TestHandleSettingsActionRestoreDefaults_Success(t *testing.T) {
+	cr := &fakeConfigReset{}
+	srv := newTestServerForReset(t, cr)
+
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/restore-defaults", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSettingsActionRestoreDefaults(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONField(t, rr.Body.Bytes(), "scope", "reboot")
+	if cr.calls != 1 {
+		t.Errorf("ResetToDefaults called %d times; want 1", cr.calls)
+	}
+}
+
+func TestHandleSettingsActionRestoreDefaults_NilReset_503(t *testing.T) {
+	srv := newTestServerForReset(t, nil)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/restore-defaults", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSettingsActionRestoreDefaults(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rr.Code)
+	}
+	assertJSONField(t, rr.Body.Bytes(), "chip", "NOT READY")
+}
+
+func TestHandleSettingsActionRestoreDefaults_ChipError(t *testing.T) {
+	cr := &fakeConfigReset{err: &fakeChipErr{status: 500, chip: "WRITE FAILED"}}
+	srv := newTestServerForReset(t, cr)
+
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/restore-defaults", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSettingsActionRestoreDefaults(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+	assertJSONField(t, rr.Body.Bytes(), "chip", "WRITE FAILED")
+}
+
+type fakeConfigReset struct {
+	calls int
+	err   error
+}
+
+func (f *fakeConfigReset) ResetToDefaults() error {
+	f.calls++
+	return f.err
+}
+
+type fakeChipErr struct {
+	status int
+	chip   string
+}
+
+func (e *fakeChipErr) Error() string   { return e.chip }
+func (e *fakeChipErr) StatusCode() int { return e.status }
+func (e *fakeChipErr) Chip() string    { return e.chip }
+
+// newTestServerForReset constructs a Server with only ConfigReset wired,
+// bypassing New() validation. Matches the pattern used by newTestServerForCatalog.
+func newTestServerForReset(t *testing.T, cr ConfigReset) *Server {
+	t.Helper()
+	return &Server{cfg: Config{ConfigReset: cr}}
+}

@@ -961,6 +961,28 @@ func (s *Server) handleSettingsCatalogDirectStreamHLSBufferPost(w http.ResponseW
 	writeSettingsSuccess(w, label)
 }
 
+// handleSettingsActionRestoreDefaults is the POST handler for
+// /receiver/settings/action/restore-defaults. Empty body. Returns
+// success with scope:"reboot" so the client toasts the dedicated
+// "Defaults restored — restart container to apply" message via the
+// 4A REBOOT toast helper.
+func (s *Server) handleSettingsActionRestoreDefaults(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.ConfigReset == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := s.cfg.ConfigReset.ResetToDefaults(); err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, "reboot")
+}
+
 var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)
 
 // sanitizeProbeError redacts dotted-quad IPv4[:port] tokens from probe
