@@ -106,6 +106,10 @@ type Config struct {
 	// wired into ui.Config.MisterLauncher for /ui/*. May be nil in
 	// unit-test fixtures; the handler responds 503 NOT READY when nil.
 	CoreLauncher CoreLauncher
+
+	// 4C: catalog pane state mutation + restore-defaults action.
+	CatalogManager CatalogSettingsManager
+	ConfigReset    ConfigReset
 }
 
 // Server owns the chassis runtime state.
