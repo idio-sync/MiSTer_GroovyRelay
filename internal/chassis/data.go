@@ -547,9 +547,10 @@ func (s *Server) buildSettingsData() SettingsData {
 }
 
 // buildAdapterHint returns the section-header subtitle for each adapter pane.
-// DLNA reflects the enabled state (LISTENING/DISABLED), torrent is a static
-// protocol tag, and streams sums provider channel counts from CatalogManager.
-// Returns "" for any unknown adapter name (forward-compatible).
+// DLNA, plex, and jellyfin reflect the enabled state (LISTENING/DISABLED),
+// torrent is a static protocol tag, and streams sums provider channel counts
+// from CatalogManager. Returns "" for any unknown adapter name
+// (forward-compatible).
 func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 	switch name {
 	case "dlna":
@@ -569,9 +570,15 @@ func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 		}
 		return fmt.Sprintf("PULL · %d CHANNELS", n)
 	case "plex":
-		return "CAST · PIN"
+		if v, _ := values["enabled"].(bool); v {
+			return "CAST · LISTENING"
+		}
+		return "CAST · DISABLED"
 	case "jellyfin":
-		return "CAST · CREDENTIALS"
+		if v, _ := values["enabled"].(bool); v {
+			return "CAST · LISTENING"
+		}
+		return "CAST · DISABLED"
 	}
 	return ""
 }

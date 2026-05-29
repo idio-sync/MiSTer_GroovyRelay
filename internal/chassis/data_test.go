@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -548,6 +549,50 @@ func TestSettingsData_DLNAHint_Disabled(t *testing.T) {
 		if a.Name == "dlna" && a.Hint != "PUSH · DISABLED" {
 			t.Errorf("dlna hint = %q, want 'PUSH · DISABLED'", a.Hint)
 		}
+	}
+}
+
+// TestSettingsData_CastHint_EnabledState pins that plex and jellyfin hints
+// reflect the live enabled state (CAST · LISTENING/DISABLED), mirroring the
+// DLNA PUSH · LISTENING/DISABLED convention rather than a static auth-mechanism
+// label.
+func TestSettingsData_CastHint_EnabledState(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{"plex", true, "CAST · LISTENING"},
+		{"plex", false, "CAST · DISABLED"},
+		{"jellyfin", true, "CAST · LISTENING"},
+		{"jellyfin", false, "CAST · DISABLED"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(fmt.Sprintf("%s_%t", tc.name, tc.enabled), func(t *testing.T) {
+			t.Parallel()
+			saver := &fakeAdapterSettingsSaver{
+				current: map[string]map[string]any{tc.name: {"enabled": tc.enabled}},
+				fields: map[string][]adapters.FieldDef{
+					tc.name: {{Key: "enabled", Kind: adapters.KindBool}},
+				},
+			}
+			s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+			data := s.buildSettingsData()
+			found := false
+			for _, a := range data.Adapters {
+				if a.Name == tc.name {
+					found = true
+					if a.Hint != tc.want {
+						t.Errorf("%s hint = %q, want %q", tc.name, a.Hint, tc.want)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s pane missing from data.Adapters", tc.name)
+			}
+		})
 	}
 }
 
