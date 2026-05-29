@@ -2000,8 +2000,9 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	}
 	body := buf.String()
 	for _, want := range []string{
-		"data-vfd-title",
-		"data-vfd-marquee",
+		"data-vfd-primary",
+		"data-vfd-secondary",
+		"data-vfd-tertiary",
 		"data-vfd-queue",
 		"data-vfd-uptime",
 	} {
@@ -2041,8 +2042,8 @@ func TestVfdTemplate_LiveDataUsesLiveStateVariant(t *testing.T) {
 	if liveIdx < 0 {
 		t.Fatalf("live VFD data must render in a live state wrapper; body:\n%s", body)
 	}
-	if !strings.Contains(body[liveIdx:], `data-vfd-title>Burning Down the House</span>`) {
-		t.Fatalf("live VFD state wrapper missing live title hook; body:\n%s", body)
+	if !strings.Contains(body[liveIdx:], `data-vfd-primary>Burning Down the House</span>`) {
+		t.Fatalf("live VFD state wrapper missing live primary hook; body:\n%s", body)
 	}
 }
 
@@ -4634,5 +4635,23 @@ func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T
 		if strings.Contains(html, banned) {
 			t.Errorf("Streams form rendered Catalog-owned key as input: %q", banned)
 		}
+	}
+}
+
+func TestHandleIndex_RendersThreeVfdTierHooks(t *testing.T) {
+	s := newTestServer(t) // existing helper at chassis_test.go:83
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	body := rr.Body.String()
+	for _, hook := range []string{"data-vfd-primary", "data-vfd-secondary", "data-vfd-tertiary"} {
+		if !strings.Contains(body, hook) {
+			t.Errorf("rendered shell missing %q", hook)
+		}
+	}
+	if strings.Contains(body, "data-vfd-title") || strings.Contains(body, "data-vfd-marquee") {
+		t.Errorf("rendered shell still contains old data-vfd-title/marquee hooks")
 	}
 }
