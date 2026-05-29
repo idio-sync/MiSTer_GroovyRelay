@@ -1943,3 +1943,71 @@ func TestAdapterSave_StreamsCatalogRefreshHoursAccepted(t *testing.T) {
 		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// streams-refresh action handler tests (Task 15)
+// ---------------------------------------------------------------------------
+
+func newTestServerForStreamsRefresh(r StreamsRefresher) *Server {
+	return &Server{
+		cfg: Config{
+			Version:          "test",
+			StartedAt:        time.Unix(0, 0),
+			StreamsRefresher: r,
+		},
+	}
+}
+
+func postStreamsRefresh(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsActionStreamsRefresh(rec, req)
+	return rec
+}
+
+func TestStreamsRefresh_Success(t *testing.T) {
+	t.Parallel()
+	refresher := &fakeStreamsRefresher{result: StreamsRefreshResult{Source: "remote", DurationMS: 42}}
+	s := newTestServerForStreamsRefresh(refresher)
+	rec := postStreamsRefresh(t, s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); !okv {
+		t.Errorf("body.ok = %v, want true", body["ok"])
+	}
+	if src, _ := body["source"].(string); src != "remote" {
+		t.Errorf("body.source = %q, want 'remote'", src)
+	}
+	if dur, _ := body["duration_ms"].(float64); int64(dur) < 1 {
+		t.Errorf("body.duration_ms = %v, want a positive measured value", body["duration_ms"])
+	}
+	if calls := refresher.calls.Load(); calls != 1 {
+		t.Errorf("refresher.calls = %d, want 1", calls)
+	}
+}
+
+func TestStreamsRefresh_RefreshFailure(t *testing.T) {
+	t.Parallel()
+	refresher := &fakeStreamsRefresher{
+		result: StreamsRefreshResult{Source: "remote"},
+		err:    errors.New("connection refused"),
+	}
+	s := newTestServerForStreamsRefresh(refresher)
+	rec := postStreamsRefresh(t, s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200 (action ran cleanly); body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); okv {
+		t.Errorf("body.ok = true, want false")
+	}
+	got, _ := body["error"].(string)
+	if !strings.Contains(got, "connection refused") {
+		t.Errorf("body.error = %q, want substring 'connection refused'", got)
+	}
+}

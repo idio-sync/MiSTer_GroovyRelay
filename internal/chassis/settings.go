@@ -1176,16 +1176,75 @@ func emitSaveError(w http.ResponseWriter, err error) {
 	writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
 }
 
+const streamsRefreshTimeout = 30 * time.Second
+
 // handleSettingsActionStreamsRefresh is the POST handler for
-// /receiver/settings/action/streams-refresh. Real refresh logic is wired
-// in Task 14. Returns 503 NOT READY when StreamsRefresher is nil,
-// mirroring the nil-guard pattern used by other settings handlers.
+// /receiver/settings/action/streams-refresh. Single-flight via
+// s.streamsRefreshGate.TryLock (second concurrent click → 409 BUSY).
+// The 30s timeout chains off r.Context(). Refresh failures return
+// HTTP 200 with {ok:false, error} — the action ran cleanly; the
+// refresh itself failed.
 func (s *Server) handleSettingsActionStreamsRefresh(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.StreamsRefresher == nil {
 		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
 		return
 	}
-	writeSettingsChip(w, http.StatusInternalServerError, "NOT IMPLEMENTED")
+	if !s.streamsRefreshGate.TryLock() {
+		writeSettingsChip(w, http.StatusConflict, "BUSY")
+		return
+	}
+	defer s.streamsRefreshGate.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), streamsRefreshTimeout)
+	defer cancel()
+	start := time.Now()
+	result, err := s.cfg.StreamsRefresher.RefreshNow(ctx)
+	elapsed := time.Since(start)
+	if err != nil {
+		writeStreamsRefreshError(w, sanitizeRefreshError(err))
+		return
+	}
+	if result.Err != nil {
+		writeStreamsRefreshError(w, sanitizeRefreshError(result.Err))
+		return
+	}
+	durationMS := result.DurationMS
+	if durationMS == 0 {
+		durationMS = elapsed.Milliseconds()
+	}
+	writeStreamsRefreshSuccess(w, result.Source, durationMS)
+}
+
+func writeStreamsRefreshSuccess(w http.ResponseWriter, source string, durationMS int64) {
+	w.Header().Set("Content-Type", "application/json")
+	body := map[string]any{
+		"ok":          true,
+		"summary":     fmt.Sprintf("Manifest refreshed from %s in %dms", source, durationMS),
+		"source":      source,
+		"duration_ms": durationMS,
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeStreamsRefreshError(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	body := map[string]any{
+		"ok":    false,
+		"error": fmt.Sprintf("manifest refresh failed: %s", reason),
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// sanitizeRefreshError trims the upstream error message to 200 chars
+// (matching 4A's sanitizeProbeError cap) so the .action-result slot
+// has predictable size.
+func sanitizeRefreshError(err error) string {
+	const cap = 200
+	msg := strings.TrimSpace(err.Error())
+	if len(msg) > cap {
+		msg = msg[:cap-3] + "..."
+	}
+	return msg
 }
 
 var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)

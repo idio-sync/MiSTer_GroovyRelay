@@ -148,6 +148,11 @@ type Server struct {
 	cacheCancel context.CancelFunc // Close() signals the refresher to exit
 	cacheDone   chan struct{}      // closed when the refresher goroutine returns
 
+	// streamsRefreshGate enforces single-flight for the /streams-refresh
+	// action on this server instance. Per-server (not process-wide) so that
+	// tests with independent Server values do not share state.
+	streamsRefreshGate sync.Mutex
+
 	meterRefusalLog *onePerSecondLimiter
 }
 
