@@ -1755,3 +1755,135 @@ func TestAdapterSave_MalformedBody(t *testing.T) {
 		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Adapter settings POST handler tests (Task 14) — success + error envelopes
+// ---------------------------------------------------------------------------
+
+// chassisAdapterFieldErrors is a chassis-side concrete shim that the
+// production AdapterSettingsSaver wrapper returns when SaveTouched
+// fails with per-field errors. The chassis handler unwraps it via
+// errors.As to render {ok:false, errors:{...}}.
+type chassisAdapterFieldErrors struct {
+	Errs []adapters.FieldError
+}
+
+func (e *chassisAdapterFieldErrors) Error() string                       { return "adapter field errors" }
+func (e *chassisAdapterFieldErrors) FieldErrors() []adapters.FieldError { return e.Errs }
+
+// chassisChipError is a chassis-side concrete shim for chip-style
+// errors (matches the 4A settingsChipError contract).
+type chassisChipError struct {
+	httpStatus int
+	chip       string
+}
+
+func (e *chassisChipError) Error() string   { return e.chip }
+func (e *chassisChipError) StatusCode() int { return e.httpStatus }
+func (e *chassisChipError) Chip() string    { return e.chip }
+
+// fakeSaverWithFieldErrors lets us inject a typed FieldErrors-bearing error.
+type fakeSaverWithFieldErrors struct {
+	fakeAdapterSettingsSaver
+}
+
+func (f *fakeSaverWithFieldErrors) SaveTouched(name string, touched map[string]string) (string, error) {
+	return "", &chassisAdapterFieldErrors{Errs: []adapters.FieldError{
+		{Key: "max_cache_bytes", Msg: "must be in [1 GiB, 1 TiB]"},
+	}}
+}
+
+func TestAdapterSave_Success(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "dlna", "enabled=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if ok, _ := body["ok"].(bool); !ok {
+		t.Errorf("body.ok = %v, want true", body["ok"])
+	}
+	if scope, _ := body["scope"].(string); scope != "hot" {
+		t.Errorf("body.scope = %q, want 'hot'", scope)
+	}
+	if got := saver.touched["dlna"]; got["enabled"] != "true" {
+		t.Errorf("saver.touched = %v, want enabled=true", got)
+	}
+}
+
+func TestAdapterSave_DottedProviderKey(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool},
+				{Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
+			},
+		},
+		scope: "hot",
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "streams", "providers.youtube.catalog_refresh_hours=12")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	got := saver.touched["streams"]
+	if got["providers.youtube.catalog_refresh_hours"] != "12" {
+		t.Errorf("touched = %v, want dotted-key entry", got)
+	}
+}
+
+func TestAdapterSave_FieldErrors(t *testing.T) {
+	t.Parallel()
+	saver := &fakeSaverWithFieldErrors{fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"torrent": {"max_cache_bytes": int64(1 << 30)}},
+		fields: map[string][]adapters.FieldDef{
+			"torrent": {{Key: "max_cache_bytes", Kind: adapters.KindInt}},
+		},
+	}}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "torrent", "max_cache_bytes=99")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if okv, _ := body["ok"].(bool); okv {
+		t.Errorf("body.ok = true, want false")
+	}
+	errsMap, _ := body["errors"].(map[string]any)
+	if errsMap["max_cache_bytes"] != "must be in [1 GiB, 1 TiB]" {
+		t.Errorf("body.errors = %v, want max_cache_bytes message", errsMap)
+	}
+}
+
+func TestAdapterSave_ChipError(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": false}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		saveErr: &chassisChipError{httpStatus: http.StatusInternalServerError, chip: "WRITE FAILED"},
+	}
+	s := newTestServerForAdapterSave(saver)
+	rec := postAdapterSave(t, s, "dlna", "enabled=true")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "WRITE FAILED" {
+		t.Errorf("body.chip = %q, want WRITE FAILED", chip)
+	}
+}
