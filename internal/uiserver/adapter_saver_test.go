@@ -528,6 +528,41 @@ device_name = "M"
 	}
 }
 
+func TestEncodeAdapterMap_ArrayOfTablesPreserved(t *testing.T) {
+	t.Parallel()
+	// A slice-of-maps value encodes as a TOML array-of-tables ([[...]]).
+	// prefixAdapterSubtableHeaders must keep the double brackets (absolute),
+	// not collapse them into a single table.
+	merged := map[string]any{
+		"enabled": true,
+		"entries": []map[string]any{
+			{"id": "a"},
+			{"id": "b"},
+		},
+	}
+	got, err := encodeAdapterMap("streams", merged)
+	if err != nil {
+		t.Fatalf("encodeAdapterMap err = %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "[[adapters.streams.entries]]") {
+		t.Errorf("array-of-tables header not preserved as [[adapters.streams.entries]]:\n%s", s)
+	}
+	if strings.Contains(s, "[adapters.streams.entries]\n") || strings.Contains(s, "\n[adapters.streams.entries]") {
+		t.Errorf("array-of-tables collapsed into a single table:\n%s", s)
+	}
+
+	// Also verify via direct prefixAdapterSubtableHeaders call.
+	raw := []byte("[[providers]]\nid = \"x\"\n")
+	prefixed := string(prefixAdapterSubtableHeaders("streams", raw))
+	if !strings.Contains(prefixed, "[[adapters.streams.providers]]") {
+		t.Errorf("direct prefixAdapterSubtableHeaders: [[...]] not preserved:\n%s", prefixed)
+	}
+	if strings.Contains(prefixed, "[adapters.streams.providers]\n") {
+		t.Errorf("direct prefixAdapterSubtableHeaders: [[...]] collapsed to single table:\n%s", prefixed)
+	}
+}
+
 func TestSaveTouched_PreservesNestedSubtables(t *testing.T) {
 	t.Parallel()
 	body := `enabled = true

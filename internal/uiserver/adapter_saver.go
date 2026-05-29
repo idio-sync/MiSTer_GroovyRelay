@@ -278,7 +278,10 @@ func prefixAdapterSubtableHeaders(name string, body []byte) []byte {
 	var out []string
 	for _, line := range strings.Split(string(body), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		if strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]") {
+			inner := strings.TrimSuffix(strings.TrimPrefix(trimmed, "[["), "]]")
+			line = fmt.Sprintf("[[adapters.%s.%s]]", name, inner)
+		} else if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 			inner := strings.Trim(trimmed, "[]")
 			line = fmt.Sprintf("[adapters.%s.%s]", name, inner)
 		}
