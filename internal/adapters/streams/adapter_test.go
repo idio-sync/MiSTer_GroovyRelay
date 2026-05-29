@@ -89,3 +89,60 @@ catalog_refresh_hours = 3
 		t.Fatalf("providers.zeta.catalog_refresh_hours = %#v, want 9", values["providers.zeta.catalog_refresh_hours"])
 	}
 }
+
+func mustTestAdapter(t *testing.T) *Adapter {
+	t.Helper()
+	a, err := newTestAdapter(t)
+	if err != nil {
+		t.Fatalf("newTestAdapter: %v", err)
+	}
+	return a
+}
+
+func TestAdapter_ConfigSnapshot_IndependentProvidersMap(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.cfg.Providers = map[string]ProviderConfig{
+		"mtv-rewind": {Disabled: false, HLSBufferDisabled: false},
+	}
+
+	snap := a.ConfigSnapshot()
+	snap.Providers["mtv-rewind"] = ProviderConfig{Disabled: true, HLSBufferDisabled: true}
+
+	if a.cfg.Providers["mtv-rewind"].Disabled {
+		t.Fatalf("mutating snapshot mutated adapter Providers[id].Disabled")
+	}
+	if a.cfg.Providers["mtv-rewind"].HLSBufferDisabled {
+		t.Fatalf("mutating snapshot mutated adapter Providers[id].HLSBufferDisabled")
+	}
+}
+
+func TestAdapter_ConfigSnapshot_IndependentChannelsMap(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.cfg.Providers = map[string]ProviderConfig{
+		"toonami-aftermath": {
+			Channels: map[string]ChannelConfig{
+				"east": {HLSBufferDisabled: false},
+			},
+		},
+	}
+
+	snap := a.ConfigSnapshot()
+	snap.Providers["toonami-aftermath"].Channels["east"] = ChannelConfig{HLSBufferDisabled: true}
+
+	if a.cfg.Providers["toonami-aftermath"].Channels["east"].HLSBufferDisabled {
+		t.Fatalf("mutating snapshot mutated adapter nested ChannelConfig")
+	}
+}
+
+func TestAdapter_ConfigSnapshot_IndependentAllowedHostsSlice(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.cfg.RemoteProviderAllowedHosts = []string{"example.com"}
+
+	snap := a.ConfigSnapshot()
+	snap.RemoteProviderAllowedHosts = append(snap.RemoteProviderAllowedHosts, "evil.example")
+
+	if len(a.cfg.RemoteProviderAllowedHosts) != 1 {
+		t.Fatalf("appending to snapshot slice mutated adapter slice; len=%d",
+			len(a.cfg.RemoteProviderAllowedHosts))
+	}
+}

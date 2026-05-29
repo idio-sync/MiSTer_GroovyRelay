@@ -401,6 +401,43 @@ func (a *Adapter) configSnapshot() Config {
 	return a.cfg
 }
 
+// ConfigSnapshot returns a deep copy of the adapter's current Config.
+// Maps (Providers, per-provider Channels) are independently allocated;
+// the caller can mutate the returned value without affecting the live
+// adapter state. Used by the chassis Catalog manager wrapper to read
+// provider state for rendering and to mutate a snapshot prior to
+// ApplyConfigValue.
+func (a *Adapter) ConfigSnapshot() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return deepCopyConfig(a.cfg)
+}
+
+// deepCopyConfig returns a value copy of in with independently allocated
+// Providers and per-provider Channels maps. Scalar fields and the
+// RemoteProviderAllowedHosts slice are copied so callers cannot leak
+// mutations back into the source.
+func deepCopyConfig(in Config) Config {
+	out := in
+	if in.RemoteProviderAllowedHosts != nil {
+		out.RemoteProviderAllowedHosts = append([]string(nil), in.RemoteProviderAllowedHosts...)
+	}
+	if in.Providers != nil {
+		out.Providers = make(map[string]ProviderConfig, len(in.Providers))
+		for id, pc := range in.Providers {
+			pcCopy := pc
+			if pc.Channels != nil {
+				pcCopy.Channels = make(map[string]ChannelConfig, len(pc.Channels))
+				for cid, cc := range pc.Channels {
+					pcCopy.Channels[cid] = cc
+				}
+			}
+			out.Providers[id] = pcCopy
+		}
+	}
+	return out
+}
+
 func (a *Adapter) installSnapshotLocked(defs []ProviderDefinition, catalogs []ProviderCatalog) {
 	a.definitions = map[string]ProviderDefinition{}
 	a.definitionOrder = a.definitionOrder[:0]
