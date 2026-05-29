@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -52,4 +53,20 @@ func TestLinkSnapshot_Expired(t *testing.T) {
 	if got.Phase != adapters.LinkPhaseError {
 		t.Errorf("Phase = %q, want error", got.Phase)
 	}
+}
+
+func TestLinkController_PollReadsState(t *testing.T) {
+	a := &Adapter{}
+	a.cfg.TokenStore = &StoredData{AuthToken: "tok"}
+	got, err := a.PollLink(context.Background())
+	if err != nil {
+		t.Fatalf("PollLink err = %v", err)
+	}
+	if got.Phase != adapters.LinkPhaseLinked {
+		t.Errorf("Phase = %q, want linked", got.Phase)
+	}
+}
+
+func TestLinkController_Conformance(t *testing.T) {
+	var _ adapters.LinkController = (*Adapter)(nil)
 }
