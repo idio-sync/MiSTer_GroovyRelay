@@ -2,6 +2,7 @@ package uiserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -417,5 +418,67 @@ device_name = "Old"
 	}
 	if n := len(adapter.applied); n != 1 {
 		t.Fatalf("ApplyConfig calls = %d, want 1", n)
+	}
+}
+
+func TestSaveTouched_BadDecode(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "dlna", `enabled = false
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": false}}
+	_, err := saver.SaveTouched("dlna", map[string]string{"enabled": "yes-please"}, adapter, adapter.Fields())
+	var ferrs *adapterFieldErrors
+	if !errors.As(err, &ferrs) {
+		t.Fatalf("err = %v (%T), want *adapterFieldErrors", err, err)
+	}
+	if len(ferrs.Errs) != 1 || ferrs.Errs[0].Key != "enabled" {
+		t.Errorf("ferrs = %+v, want one entry for 'enabled'", ferrs.Errs)
+	}
+}
+
+func TestSaveTouched_ValidateFieldErrors(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "dlna", `enabled = true
+device_name = "Old"
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{
+		values:   map[string]any{"enabled": true, "device_name": "Old"},
+		validErr: adapters.FieldErrors{{Key: "device_name", Msg: "must not be empty"}},
+	}
+	_, err := saver.SaveTouched("dlna", map[string]string{"device_name": ""}, adapter, adapter.Fields())
+	var ferrs *adapterFieldErrors
+	if !errors.As(err, &ferrs) {
+		t.Fatalf("err = %v (%T), want *adapterFieldErrors", err, err)
+	}
+	if len(ferrs.Errs) != 1 || ferrs.Errs[0].Key != "device_name" {
+		t.Errorf("ferrs = %+v, want device_name error", ferrs.Errs)
+	}
+	// Disk side: nothing was written because Validate failed.
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `device_name = "Old"`) {
+		t.Errorf("disk was mutated despite Validate failure:\n%s", got)
+	}
+}
+
+func TestSaveTouched_ApplyConfigError(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "dlna", `enabled = false
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{
+		values:   map[string]any{"enabled": false},
+		applyErr: errors.New("upstream failure"),
+	}
+	_, err := saver.SaveTouched("dlna", map[string]string{"enabled": "true"}, adapter, adapter.Fields())
+	if err == nil {
+		t.Fatalf("err = nil, want apply config error")
+	}
+	if !strings.Contains(err.Error(), "apply config") {
+		t.Errorf("err = %v, want wrapped 'apply config' message", err)
 	}
 }
