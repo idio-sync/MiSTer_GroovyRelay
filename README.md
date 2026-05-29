@@ -27,7 +27,7 @@ Supported modes are:
 - `oscilloscope_wave`: horizontal waveform trace.
 - `stereo_scope`: stereo/vector-scope display.
 - `vu_cabinet`: stereo VU meter cabinet display.
-- `neon_grid`: arcade spectrum bars with a neon grid treatment.
+- `spectrum_waterfall`: scrolling spectrogram waterfall (showspectrum).
 - `raster_pulse`: mirrored reactive waveform bands.
 - `cover_vu`: cached album art with VU meters.
 - `cover_spectrum`: cached album art with spectrum bars.
