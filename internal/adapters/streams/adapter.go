@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -401,6 +402,43 @@ func (a *Adapter) configSnapshot() Config {
 	return a.cfg
 }
 
+// ConfigSnapshot returns a deep copy of the adapter's current Config.
+// Maps (Providers, per-provider Channels) are independently allocated;
+// the caller can mutate the returned value without affecting the live
+// adapter state. Used by the chassis Catalog manager wrapper to read
+// provider state for rendering and to mutate a snapshot prior to
+// ApplyConfigValue.
+func (a *Adapter) ConfigSnapshot() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return deepCopyConfig(a.cfg)
+}
+
+// deepCopyConfig returns a value copy of in with independently allocated
+// Providers and per-provider Channels maps. Scalar fields and the
+// RemoteProviderAllowedHosts slice are copied so callers cannot leak
+// mutations back into the source.
+func deepCopyConfig(in Config) Config {
+	out := in
+	if in.RemoteProviderAllowedHosts != nil {
+		out.RemoteProviderAllowedHosts = append([]string(nil), in.RemoteProviderAllowedHosts...)
+	}
+	if in.Providers != nil {
+		out.Providers = make(map[string]ProviderConfig, len(in.Providers))
+		for id, pc := range in.Providers {
+			pcCopy := pc
+			if pc.Channels != nil {
+				pcCopy.Channels = make(map[string]ChannelConfig, len(pc.Channels))
+				for cid, cc := range pc.Channels {
+					pcCopy.Channels[cid] = cc
+				}
+			}
+			out.Providers[id] = pcCopy
+		}
+	}
+	return out
+}
+
 func (a *Adapter) installSnapshotLocked(defs []ProviderDefinition, catalogs []ProviderCatalog) {
 	a.definitions = map[string]ProviderDefinition{}
 	a.definitionOrder = a.definitionOrder[:0]
@@ -475,4 +513,82 @@ func (a *Adapter) reconcileRefreshLoop() {
 	a.loopDone = done
 	a.mu.Unlock()
 	go a.refreshLoop(loopCtx, done)
+}
+
+var buildStartupSnapshotForApplyConfigValue = buildStartupSnapshot
+
+// ApplyConfigValue validates and rebuilds the startup snapshot before
+// persisting newCfg via save (which writes the [adapters.streams]
+// section to disk under the AdapterSaver mutex) and installing it as
+// the live config. Validation or snapshot-rebuild failures leave both
+// disk and in-memory state untouched. Returns the aggregated ApplyScope
+// from configChangeScope(old, new).
+//
+// Save is invoked exactly once after validation and snapshot rebuild
+// both succeed; in-memory install happens after save returns nil so
+// disk and memory stay coherent (matches the BridgeSaver write-before-
+// apply contract).
+func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []byte) error) (adapters.ApplyScope, error) {
+	if err := newCfg.Validate(); err != nil {
+		return 0, err
+	}
+	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir)
+	if err != nil {
+		return 0, err
+	}
+	tomlBytes, err := encodeSectionTOML(newCfg)
+	if err != nil {
+		return 0, fmt.Errorf("streams: encode section: %w", err)
+	}
+	if err := save("streams", tomlBytes); err != nil {
+		return 0, err
+	}
+	a.mu.Lock()
+	oldCfg := a.cfg
+	a.cfg = newCfg
+	a.installSnapshotLocked(defs, catalogs)
+	a.mu.Unlock()
+	a.reconcileRefreshLoop()
+	return configChangeScope(oldCfg, newCfg), nil
+}
+
+// StopActiveCast drops the streams adapter's active queue and stops the
+// underlying core session via SessionManager.StopIfAdapterRef. It does
+// NOT cancel the manifest refresh loop or change the adapter's State —
+// this is intentionally a narrower operation than Stop(). Used by the
+// chassis catalogManager wrapper as the RECAST runtime side effect
+// when Catalog-pane saves change per-provider HLS posture.
+//
+// Locking discipline mirrors Adapter.Stop(): playbackMu first, then
+// mu for the snapshot read and clearActiveLocked, then mu released
+// before the (potentially blocking) StopIfAdapterRef call.
+func (a *Adapter) StopActiveCast() error {
+	a.playbackMu.Lock()
+	defer a.playbackMu.Unlock()
+
+	a.mu.Lock()
+	ref := activeAdapterRef(a.active)
+	hadActive := a.active != nil
+	coreManager := a.core
+	if hadActive {
+		a.clearActiveLocked()
+	}
+	a.mu.Unlock()
+
+	if hadActive && coreManager != nil && ref != "" {
+		_, err := coreManager.StopIfAdapterRef(ref)
+		return err
+	}
+	return nil
+}
+
+// encodeSectionTOML encodes a Config to the TOML bytes that belong
+// inside the [adapters.streams] section. Sibling of the existing
+// configToWire conversion.
+func encodeSectionTOML(cfg Config) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(configToWire(cfg)); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

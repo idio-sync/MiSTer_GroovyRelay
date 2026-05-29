@@ -82,5 +82,20 @@
       "Scope" "hot") }}
   </div>
 
+  <div class="settings-section">
+    <h4>Diagnostics <span class="hint">read-only</span></h4>
+    <div class="field-row" id="restore-defaults-row">
+      <label>Reset to defaults <span class="help">Rewrites <code>config.toml</code> with application defaults. Persisted state in <code>data_dir</code> (device UUID, Plex token, streams cache) is preserved. Requires a container restart to apply.</span></label>
+      <div>
+        <button class="action-btn"
+                id="restore-defaults-btn"
+                type="button"
+                style="color:oklch(0.78 0.16 25);border-color:oklch(0.40 0.16 25);">⚠ Reset…</button>
+        <div class="action-result" id="restore-defaults-result"></div>
+      </div>
+      <span class="scope reboot">REBOOT</span>
+    </div>
+  </div>
+
 </div>
 {{- end -}}

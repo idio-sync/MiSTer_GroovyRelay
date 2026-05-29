@@ -1,0 +1,44 @@
+{{- define "settings-catalog" -}}
+{{htmlComment "chassis:settings-catalog"}}
+<div class="settings-pane single-col" data-pane="catalog">
+
+  <div class="settings-section wide">
+    <h4>Bundled providers <span class="hint">{{ .CatalogPaneProviderCount }} PROVIDERS · {{ .CatalogChannelCount }} CHANNELS</span></h4>
+    {{ range .CatalogProviders }}
+      {{ template "settings-catalog-provider-row" . }}
+    {{ end }}
+  </div>
+
+  <div class="settings-section wide">
+    <h4>Per-provider HLS buffer override</h4>
+    <div class="field-row" id="direct-stream-hls-buffer-row">
+      <label>Disable HLS buffer for direct-stream providers <span class="help">Toonami Aftermath etc. bypass the shared HLS cache. Safer for live feeds with strict origin policies.</span></label>
+      <div></div>
+      <span class="row-end">
+        <button class="switch{{ if .DirectStreamHLSBufferDisabled }} on{{ end }}"
+                type="button"
+                data-catalog-direct-hls
+                aria-pressed="{{ .DirectStreamHLSBufferDisabled }}"></button>
+        <span class="scope recast">RECAST</span>
+      </span>
+    </div>
+  </div>
+
+</div>
+{{- end -}}
+
+{{- define "settings-catalog-provider-row" -}}
+<div class="provider-row" data-provider="{{ .ID }}">
+  <div class="icon{{ if .BadgeClass }} {{ .BadgeClass }}{{ end }}">{{ .BadgeLabel }}</div>
+  <div class="meta">
+    <div class="name">{{ .DisplayName }}</div>
+    <div class="stat">{{ .Origin }} · {{ .Kind }}{{ if .DefaultChannel }} · default: <code>{{ .DefaultChannel }}</code>{{ end }}</div>
+  </div>
+  <div class="channel-count">{{ .ChannelCount }} CH</div>
+  <button class="switch{{ if .Enabled }} on{{ end }}"
+          type="button"
+          data-catalog-provider="{{ .ID }}"
+          data-catalog-field="enabled"
+          aria-pressed="{{ .Enabled }}"></button>
+</div>
+{{- end -}}

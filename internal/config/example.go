@@ -65,3 +65,27 @@ func defaultConfigTOML() ([]byte, error) {
 	}
 	return out, nil
 }
+
+// DefaultConfigTOML returns the bundled example.toml with the supplied
+// dataDir substituted into the `data_dir = ""` template marker. When
+// dataDir is empty, falls through to the platform default via
+// defaultDataDirForConfigWrite() so the output matches first-run
+// semantics. Used by the 4C restore-defaults action wrapper.
+//
+// Why not toml.NewEncoder(&buf).Encode(Sectioned): BurntSushi/toml does
+// not round-trip toml.Primitive values, so re-encoding Sectioned would
+// silently drop adapter sections. The embedded example.toml is the
+// authoritative round-trippable source — see
+// internal/uiserver/adapter_saver.go:13-18 for the parallel rationale.
+func DefaultConfigTOML(dataDir string) ([]byte, error) {
+	if dataDir == "" {
+		return defaultConfigTOML()
+	}
+	line := []byte(`data_dir = ""`)
+	repl := []byte(`data_dir = ` + strconv.Quote(dataDir))
+	out := bytes.Replace(ExampleTOML(), line, repl, 1)
+	if bytes.Equal(out, exampleTOML) {
+		return nil, fmt.Errorf("DefaultConfigTOML: data_dir template marker missing")
+	}
+	return out, nil
+}

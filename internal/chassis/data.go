@@ -280,21 +280,27 @@ type HistoryRow struct {
 // renders after a redirect following a failed save, which 4A never
 // does (the JSON error path is purely client-side).
 type SettingsData struct {
-	Open                 bool
-	Bridge               config.BridgeConfig
-	Errors               map[string]string
-	AdapterCount         int
-	CatalogProviderCount int
+	Open                          bool
+	Bridge                        config.BridgeConfig
+	Errors                        map[string]string
+	AdapterCount                  int
+	CatalogProviderCount          int                    // existing tab badge count from StreamsCatalogViewer
+	CatalogPaneProviderCount      int                    // 4C — len(CatalogProviders)
+	CatalogProviders              []CatalogProviderState // 4C
+	CatalogChannelCount           int                    // 4C — sum across CatalogProviders
+	DirectStreamHLSBufferDisabled bool                   // 4C — true iff every Live provider has hls_buffer_disabled
 }
 
 // buildSettingsData composes the chassis-rendered settings drawer state
-// from a bridge config, the adapter registry, and the streams catalog
-// viewer. AUX is excluded from AdapterCount: it is a hardware-button
-// surface, not a configurable adapter in the Settings UI sense.
+// from a bridge config, the adapter registry, the streams catalog
+// viewer, and an optional CatalogSettingsManager. AUX is excluded from
+// AdapterCount: it is a hardware-button surface, not a configurable
+// adapter in the Settings UI sense.
 func buildSettingsData(
 	bridge config.BridgeConfig,
 	registry *adapters.Registry,
 	catalog adapters.StreamsCatalogViewer,
+	catalogManager CatalogSettingsManager,
 ) SettingsData {
 	adapterCount := 0
 	if registry != nil {
@@ -309,12 +315,32 @@ func buildSettingsData(
 	if catalog != nil {
 		catalogProviderCount = len(catalog.Catalog())
 	}
-	return SettingsData{
+	out := SettingsData{
 		Bridge:               bridge,
 		Errors:               map[string]string{},
 		AdapterCount:         adapterCount,
 		CatalogProviderCount: catalogProviderCount,
 	}
+	if catalogManager != nil {
+		providers := catalogManager.Providers()
+		out.CatalogProviders = providers
+		out.CatalogPaneProviderCount = len(providers)
+		channelTotal := 0
+		liveCount := 0
+		liveDisabledCount := 0
+		for _, p := range providers {
+			channelTotal += p.ChannelCount
+			if p.Live {
+				liveCount++
+				if p.HLSBufferDisabled {
+					liveDisabledCount++
+				}
+			}
+		}
+		out.CatalogChannelCount = channelTotal
+		out.DirectStreamHLSBufferDisabled = liveCount > 0 && liveDisabledCount == liveCount
+	}
+	return out
 }
 
 // CatalogData drives the catalog drawer. Open is always false at
@@ -453,7 +479,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	if cfg.BridgeSaver != nil {
 		bridge = cfg.BridgeSaver.Current()
 	}
-	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer)
+	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, cfg.CatalogManager)
 }
 
 // idleSnapshot returns a fully populated ReceiverPageData with State =

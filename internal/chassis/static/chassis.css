@@ -4376,3 +4376,69 @@ body.receiver .settings-section h4 .hint {
   body.receiver .switch.on::before { left: 28px; }
   body.receiver .settings-close { min-height: 40px; }
 }
+
+/* 4C: bundled-provider rows in the Catalog pane — ported verbatim
+   from the v24 mockup, lines 2098-2121. */
+body.receiver .settings-panel .provider-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #2b2b2f;
+}
+body.receiver .settings-panel .provider-row:last-child { border-bottom: 0; }
+body.receiver .settings-panel .provider-row .icon {
+  background: #1a1a1d;
+  color: oklch(0.62 0.06 200);
+  font: 700 11px 'DSEG14-Classic', monospace;
+  text-align: center;
+  padding: 6px 8px;
+  border-radius: 2px;
+  letter-spacing: 0.06em;
+}
+body.receiver .settings-panel .provider-row .icon.cartoon { color: oklch(0.62 0.06 80); }
+body.receiver .settings-panel .provider-row .icon.toonami { color: oklch(0.62 0.06 280); }
+body.receiver .settings-panel .provider-row .meta .name {
+  font: 600 12px 'Inter', sans-serif;
+  color: #d4d4d8;
+}
+body.receiver .settings-panel .provider-row .meta .stat {
+  font: 400 10px 'DSEG14-Classic', monospace;
+  color: var(--vfd-dim);
+  margin-top: 2px;
+  letter-spacing: 0.08em;
+}
+body.receiver .settings-panel .provider-row .meta .stat code {
+  font-family: inherit;
+  color: var(--vfd);
+  background: transparent;
+}
+body.receiver .settings-panel .provider-row .channel-count {
+  font: 700 11px 'DSEG7-Classic', monospace;
+  color: var(--vfd);
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+
+/* 4C: single-column pane override (Catalog pane uses .single-col). */
+body.receiver .settings-pane.single-col.active { grid-template-columns: 1fr; }
+
+/* 4C: inline-confirm state for the destructive restore-defaults action. */
+body.receiver .settings-panel .field-row.confirming > .scope { visibility: hidden; }
+body.receiver .settings-panel .field-row.confirming > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+body.receiver .settings-panel .confirm-prompt {
+  font-size: 11px;
+  color: var(--vfd-dim);
+}
+body.receiver .settings-panel .action-btn.cancel {
+  /* uses the default .action-btn cyan border + neutral text */
+}
+body.receiver .settings-panel .action-btn.confirm {
+  color: oklch(0.78 0.16 25);
+  border-color: oklch(0.40 0.16 25);
+}

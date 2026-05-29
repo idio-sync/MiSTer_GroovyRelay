@@ -216,6 +216,79 @@
     });
   });
 
+  // 4C: provider-row switches. The catalog switches deliberately use
+  // data-catalog-field instead of data-field so the existing 4A bridge
+  // switch handler at this same file's button.switch[data-field] selector
+  // does NOT match — otherwise both handlers would fire on click and
+  // the 4A path would POST a stray enabled=true to /receiver/settings/bridge.
+  drawer.querySelectorAll('button.switch[data-catalog-provider]').forEach(el => {
+    el.addEventListener('click', async () => {
+      if (el.disabled) return;
+      const id = el.dataset.catalogProvider;
+      const field = el.dataset.catalogField;
+      const next = !el.classList.contains('on');
+      el.classList.toggle('on', next);
+      el.setAttribute('aria-pressed', next ? 'true' : 'false');
+      const form = new URLSearchParams();
+      form.set(field, next ? 'true' : 'false');
+      let body = {};
+      try {
+        const res = await fetch(`/receiver/settings/catalog/provider/${encodeURIComponent(id)}`, {
+          method: 'POST', body: form, credentials: 'same-origin'
+        });
+        body = await res.json().catch(() => ({}));
+        if (res.ok && body.ok) return;
+      } catch (_) {
+        body = { chip: 'WRITE FAILED' };
+      }
+      // Revert optimistic toggle.
+      el.classList.toggle('on', !next);
+      el.setAttribute('aria-pressed', !next ? 'true' : 'false');
+      if (body.errors) {
+        showNotice('BAD INPUT', 'err');
+      } else if (body.error) {
+        showNotice(body.error, 'err');
+      } else if (body.chip) {
+        showNotice(body.chip, 'err');
+      } else {
+        showNotice('WRITE FAILED', 'err');
+      }
+    });
+  });
+
+  // 4C: global HLS-override switch — single switch under the "Per-provider
+  // HLS buffer override" section. Flips hls_buffer_disabled on every Live
+  // provider in one save (server side). Same optimistic-toggle pattern
+  // as the per-provider switches.
+  const directHlsBtn = drawer.querySelector('button.switch[data-catalog-direct-hls]');
+  if (directHlsBtn) directHlsBtn.addEventListener('click', async () => {
+    if (directHlsBtn.disabled) return;
+    const next = !directHlsBtn.classList.contains('on');
+    directHlsBtn.classList.toggle('on', next);
+    directHlsBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+    const form = new URLSearchParams();
+    form.set('disabled', next ? 'true' : 'false');
+    let body = {};
+    try {
+      const res = await fetch('/receiver/settings/catalog/direct-stream-hls-buffer', {
+        method: 'POST', body: form, credentials: 'same-origin'
+      });
+      body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) return;
+    } catch (_) {
+      body = { chip: 'WRITE FAILED' };
+    }
+    directHlsBtn.classList.toggle('on', !next);
+    directHlsBtn.setAttribute('aria-pressed', !next ? 'true' : 'false');
+    if (body.errors) {
+      showNotice('BAD INPUT', 'err');
+    } else if (body.chip) {
+      showNotice(body.chip, 'err');
+    } else {
+      showNotice('WRITE FAILED', 'err');
+    }
+  });
+
   // Probe action: single-flight, renders result into #probe-mister-result.
   const probeBtn = document.getElementById('probe-mister-btn');
   const probeOut = document.getElementById('probe-mister-result');
@@ -326,6 +399,87 @@
       launchBtn.disabled = false;
     });
   }
+
+  // 4C: restore-defaults inline two-step confirm. Click ⚠ Reset… → button
+  // row morphs to "[This wipes config.toml.] [Cancel] [Confirm reset]";
+  // confirm POSTs; cancel or 10s armed timeout returns to idle.
+  // DOM construction uses createElement + textContent + replaceChildren
+  // rather than innerHTML — even though the prompt content is fully
+  // static, modeling safe patterns here prevents an implementer from
+  // later interpolating dynamic content into the same code path and
+  // reintroducing an XSS surface.
+  (function initRestoreDefaults() {
+    const row = document.getElementById('restore-defaults-row');
+    if (!row) return;
+    const idleBtn = document.getElementById('restore-defaults-btn');
+    const result = document.getElementById('restore-defaults-result');
+    if (!idleBtn || !result) return;
+
+    let armTimer = null;
+
+    function toIdle() {
+      if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+      row.classList.remove('confirming');
+      const rightCell = idleBtn.parentElement;
+      rightCell.replaceChildren(idleBtn, result);
+      idleBtn.disabled = false;
+    }
+
+    function toArmed() {
+      row.classList.add('confirming');
+      const rightCell = idleBtn.parentElement;
+      const prompt = document.createElement('span');
+      prompt.className = 'confirm-prompt';
+      prompt.textContent = 'This wipes config.toml. ';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'action-btn cancel';
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', toIdle);
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'action-btn confirm';
+      confirmBtn.type = 'button';
+      confirmBtn.textContent = 'Confirm reset';
+      confirmBtn.addEventListener('click', fire);
+      rightCell.replaceChildren(prompt, cancelBtn, confirmBtn, result);
+      armTimer = setTimeout(toIdle, 10_000);
+    }
+
+    async function fire() {
+      if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+      row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+      result.className = 'action-result';
+      result.textContent = '';
+      let body = {};
+      try {
+        const res = await fetch('/receiver/settings/action/restore-defaults', {
+          method: 'POST', credentials: 'same-origin'
+        });
+        body = await res.json().catch(() => ({}));
+        if (res.ok && body.ok && body.scope === 'reboot') {
+          toIdle();
+          result.className = 'action-result shown ok';
+          result.textContent = '▸ Defaults restored · restart to apply';
+          showNotice('Defaults restored — restart container to apply', 'ok');
+          return;
+        }
+      } catch (_) {
+        body = { chip: 'WRITE FAILED' };
+      }
+      toIdle();
+      if (body.chip) {
+        showNotice(body.chip, 'err');
+      } else if (body.error) {
+        result.className = 'action-result shown err';
+        result.textContent = `▸ ERROR · ${body.error}`;
+      } else {
+        result.className = 'action-result shown err';
+        result.textContent = '▸ ERROR · unknown';
+      }
+    }
+
+    idleBtn.addEventListener('click', toArmed);
+  })();
 
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;

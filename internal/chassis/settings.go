@@ -98,6 +98,73 @@ type settingsChipError interface {
 	Chip() string
 }
 
+// CatalogSettingsManager is the chassis-side interface for Catalog-pane
+// state mutation. Production passes a thin wrapper around *streams.Adapter
+// from cmd/mister-groovy-relay; internal/chassis does NOT import
+// internal/adapters/streams.
+type CatalogSettingsManager interface {
+	// Providers returns the renderable Catalog-pane state. Stable order
+	// matches StreamsCatalogViewer.Catalog() so the two surfaces agree
+	// on ID/order. Safe to call before adapter Start.
+	Providers() []CatalogProviderState
+
+	// UpdateProvider applies the patch's non-nil flags to providers.<id>
+	// in a single snapshot/save/apply cycle. Either pointer may be nil
+	// (means "do not change that field"); both nil is rejected by the
+	// chassis handler before invoking the interface. Returns the
+	// aggregated ApplyScope (with the Catalog-side declared-scope floor
+	// already applied by the production wrapper).
+	UpdateProvider(id string, patch CatalogProviderPatch) (adapters.ApplyScope, error)
+
+	// SetDirectStreamHLSBuffer flips providers.<id>.hls_buffer_disabled
+	// for every provider where Live == true in one save. Returns the
+	// max-wins scope (RECAST after the declared-scope floor).
+	SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error)
+}
+
+// CatalogProviderPatch is the optional-field patch consumed by
+// UpdateProvider. Pointer-to-bool encodes the tri-state {unset, true,
+// false} the chassis handler needs to distinguish "this form key was
+// omitted" from "this form key was set to false."
+type CatalogProviderPatch struct {
+	Enabled           *bool
+	HLSBufferDisabled *bool
+}
+
+// CatalogProviderState is the chassis-shaped per-provider state for
+// rendering and mutation. All fields are populated by the production
+// wrapper from streams.Config + adapters.CatalogProvider; the chassis
+// renders directly from this struct.
+type CatalogProviderState struct {
+	ID                  string
+	DisplayName         string
+	BadgeLabel          string
+	BadgeClass          string
+	Origin              string
+	Kind                string
+	DefaultChannel      string
+	Live                bool
+	ChannelCount        int
+	Enabled             bool
+	HLSBufferDisabled   bool
+	CatalogRefreshHours int // 4D — per-provider override; 0 = inherit the streams-global catalog_refresh_hours
+}
+
+// ConfigReset is the chassis-side interface for the restore-defaults
+// action. Production passes a wrapper that calls config.WriteAtomic
+// with the bundled defaults TOML, preserving the operator's data_dir.
+// Scope is REBOOT (live process continues with old config; restart
+// applies defaults).
+type ConfigReset interface {
+	// ResetToDefaults atomically rewrites the on-disk config.toml with
+	// the bundled defaults (data_dir preserved from the live config).
+	// MUST NOT touch data_dir contents, MUST NOT mutate in-memory
+	// bridge/adapter state. Disk-write failures return a typed error
+	// satisfying settingsChipError so the chassis can map to
+	// {chip:"WRITE FAILED"} cleanly.
+	ResetToDefaults() error
+}
+
 // bridgeFieldDecoder is the per-field validation entry. It takes a raw
 // form string (already trimmed by the caller) and returns the decoded
 // typed value (as an any so the overlay table can write it into the
@@ -490,6 +557,10 @@ func scopeLabel(s adapters.ApplyScope) (string, bool) {
 	}
 }
 
+// WireLabelForScope returns the JSON wire label ("hot"/"next"/"recast"/"reboot")
+// for the given ApplyScope. Exported for cross-package drift tests.
+func WireLabelForScope(s adapters.ApplyScope) (string, bool) { return scopeLabel(s) }
+
 // isValidHostname is a permissive RFC-952/1123-ish check: 1..253 chars
 // total, label chars in [a-z0-9-], labels non-empty, no leading/trailing
 // hyphen, dot-separated.
@@ -755,6 +826,95 @@ func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.R
 	})
 }
 
+// writeJSON emits any JSON-serialisable body with the given status code.
+// Used by handlers that need a custom envelope shape not covered by
+// writeSettingsChip / writeSettingsSuccess / writeSettingsFieldErrors.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// handleSettingsCatalogProviderPost is the POST handler for
+// /receiver/settings/catalog/provider/{id}. Accepts any subset of the
+// supported form keys (enabled, hls_buffer_disabled); missing keys mean
+// "do not change that field." Returns 404 for an unknown id, 400 for bad
+// bools or an empty body, 503 if the manager is unwired.
+func (s *Server) handleSettingsCatalogProviderPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CatalogManager == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	id := r.PathValue("id")
+	known := s.cfg.CatalogManager.Providers()
+	if !catalogContainsProvider(known, id) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"ok": false, "error": "unknown provider",
+		})
+		return
+	}
+
+	var patch CatalogProviderPatch
+	errs := map[string]string{}
+	if vals, ok := r.PostForm["enabled"]; ok && len(vals) > 0 {
+		v, err := decodeBool(vals[0])
+		if err != nil {
+			errs["enabled"] = "must be true or false"
+		} else {
+			patch.Enabled = &v
+		}
+	}
+	if vals, ok := r.PostForm["hls_buffer_disabled"]; ok && len(vals) > 0 {
+		v, err := decodeBool(vals[0])
+		if err != nil {
+			errs["hls_buffer_disabled"] = "must be true or false"
+		} else {
+			patch.HLSBufferDisabled = &v
+		}
+	}
+	if len(errs) > 0 {
+		writeSettingsFieldErrors(w, http.StatusBadRequest, errs)
+		return
+	}
+	if patch.Enabled == nil && patch.HLSBufferDisabled == nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+
+	scope, err := s.cfg.CatalogManager.UpdateProvider(id, patch)
+	if err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	label, ok := scopeLabel(scope)
+	if !ok {
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, label)
+}
+
+// catalogContainsProvider reports whether any element of providers has the
+// given id. Used by handleSettingsCatalogProviderPost to gate unknown-id
+// requests before invoking UpdateProvider.
+func catalogContainsProvider(providers []CatalogProviderState, id string) bool {
+	for _, p := range providers {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // probeErrorHostPortRe matches dotted-quad IPv4 with an optional :port
 // suffix, e.g. "192.168.1.42" or "10.0.0.1:32100". The chassis only
 // validates IPv4 host_ip / mister_host shapes that the regex can catch;
@@ -762,6 +922,72 @@ func (s *Server) handleSettingsActionLaunchCore(w http.ResponseWriter, r *http.R
 // the operator's own bridge.mister.host value (no information leak beyond
 // what they typed). Pre-compiled at package init to avoid re-parsing per
 // probe.
+// handleSettingsCatalogDirectStreamHLSBufferPost handles
+// POST /receiver/settings/catalog/direct-stream-hls-buffer.
+// It reads a single form field "disabled" (strict "true"/"false") and
+// calls CatalogSettingsManager.SetDirectStreamHLSBuffer, which flips
+// hls_buffer_disabled on every Live provider in one atomic save.
+func (s *Server) handleSettingsCatalogDirectStreamHLSBufferPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CatalogManager == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	vals, ok := r.PostForm["disabled"]
+	if !ok || len(vals) == 0 {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	v, err := decodeBool(vals[0])
+	if err != nil {
+		writeSettingsFieldErrors(w, http.StatusBadRequest, map[string]string{
+			"disabled": "must be true or false",
+		})
+		return
+	}
+	scope, err := s.cfg.CatalogManager.SetDirectStreamHLSBuffer(v)
+	if err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	label, ok := scopeLabel(scope)
+	if !ok {
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, label)
+}
+
+// handleSettingsActionRestoreDefaults is the POST handler for
+// /receiver/settings/action/restore-defaults. Empty body. Returns
+// success with scope:"reboot" so the client toasts the dedicated
+// "Defaults restored — restart container to apply" message via the
+// 4A REBOOT toast helper.
+func (s *Server) handleSettingsActionRestoreDefaults(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.ConfigReset == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := s.cfg.ConfigReset.ResetToDefaults(); err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, "reboot")
+}
+
 var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)
 
 // sanitizeProbeError redacts dotted-quad IPv4[:port] tokens from probe

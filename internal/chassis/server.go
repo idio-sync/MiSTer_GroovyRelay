@@ -106,6 +106,10 @@ type Config struct {
 	// wired into ui.Config.MisterLauncher for /ui/*. May be nil in
 	// unit-test fixtures; the handler responds 503 NOT READY when nil.
 	CoreLauncher CoreLauncher
+
+	// 4C: catalog pane state mutation + restore-defaults action.
+	CatalogManager CatalogSettingsManager
+	ConfigReset    ConfigReset
 }
 
 // Server owns the chassis runtime state.
@@ -260,6 +264,12 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionProbeMister)))
 	mux.Handle("POST /receiver/settings/action/launch-core",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionLaunchCore)))
+	mux.Handle("POST /receiver/settings/catalog/provider/{id}",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsCatalogProviderPost)))
+	mux.Handle("POST /receiver/settings/catalog/direct-stream-hls-buffer",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsCatalogDirectStreamHLSBufferPost)))
+	mux.Handle("POST /receiver/settings/action/restore-defaults",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionRestoreDefaults)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 
