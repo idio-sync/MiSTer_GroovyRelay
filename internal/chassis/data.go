@@ -292,6 +292,26 @@ type SettingsData struct {
 	CatalogProviders              []CatalogProviderState // 4C
 	CatalogChannelCount           int                    // 4C — sum across CatalogProviders
 	DirectStreamHLSBufferDisabled bool                   // 4C — true iff every Live provider has hls_buffer_disabled
+	Adapters                      []AdapterPaneData      // 4D — per-adapter render context
+}
+
+// AdapterPaneData carries the per-adapter render context for the
+// Adapters pane. Populated by buildSettingsData from
+// AdapterSettingsSaver for the three real adapters; stubs are
+// emitted by the template directly without an AdapterPaneData entry.
+type AdapterPaneData struct {
+	Name      string
+	Hint      string
+	Fields    []adapters.FieldDef
+	Values    map[string]any
+	Providers []AdapterProviderRow
+}
+
+// AdapterProviderRow is one row in the Streams per-provider sub-section.
+type AdapterProviderRow struct {
+	ID                  string
+	DisplayName         string
+	CatalogRefreshHours int
 }
 
 // buildSettingsData composes the chassis-rendered settings drawer state
@@ -483,6 +503,31 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 		bridge = cfg.BridgeSaver.Current()
 	}
 	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, cfg.CatalogManager)
+}
+
+// buildSettingsData (method) wraps the package-level buildSettingsData and
+// adds the 4D-owned Adapters slice. Delegates bridge/registry/catalog
+// resolution to settingsDataFromConfig (same nil-safe fallback path used
+// by idleSnapshot and all live-session snapshot helpers). The package-level
+// function's signature is unchanged; 4D adds no parameters to it.
+func (s *Server) buildSettingsData() SettingsData {
+	data := settingsDataFromConfig(s.cfg)
+	if saver := s.cfg.AdapterSettingsSaver; saver != nil {
+		for _, name := range []string{"dlna", "torrent", "streams"} {
+			fields, ok := saver.Fields(name)
+			if !ok {
+				continue
+			}
+			values, _ := saver.Current(name)
+			data.Adapters = append(data.Adapters, AdapterPaneData{
+				Name:   name,
+				Hint:   "", // populated by Task 19
+				Fields: fields,
+				Values: values,
+			})
+		}
+	}
+	return data
 }
 
 // idleSnapshot returns a fully populated ReceiverPageData with State =

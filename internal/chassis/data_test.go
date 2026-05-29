@@ -421,3 +421,44 @@ func TestSnapshot_SettingsLivePathCarriesBridgeSaverData(t *testing.T) {
 		t.Errorf("Bridge.DataDir = %q, want /from-saver-live", snap.Settings.Bridge.DataDir)
 	}
 }
+
+func TestSettingsData_PopulatesAdapters(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"dlna":    {"enabled": true, "device_name": "M"},
+			"torrent": {"enabled": false, "traffic_acknowledged": false},
+			"streams": {"enabled": true, "manifest_url": "https://x/y.json"},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "device_name", Kind: adapters.KindText, Label: "Device name", ApplyScope: adapters.ScopeRestartBridge},
+			},
+			"torrent": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "traffic_acknowledged", Kind: adapters.KindBool, Label: "BT traffic acknowledged", ApplyScope: adapters.ScopeHotSwap},
+			},
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "manifest_url", Kind: adapters.KindText, Label: "Manifest URL", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	s := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+	}}
+	data := s.buildSettingsData()
+	if len(data.Adapters) != 3 {
+		t.Fatalf("len(Adapters) = %d, want 3", len(data.Adapters))
+	}
+	byName := map[string]AdapterPaneData{}
+	for _, a := range data.Adapters {
+		byName[a.Name] = a
+	}
+	if dlna, ok := byName["dlna"]; !ok || len(dlna.Fields) != 2 {
+		t.Errorf("dlna pane not populated: %+v", byName)
+	}
+}
