@@ -4090,3 +4090,33 @@ func renderCatalogPane(t *testing.T, data SettingsData) string {
 	}
 	return buf.String()
 }
+
+func TestRenderAdvancedPane_DiagnosticsRestoreDefaults(t *testing.T) {
+	data := SettingsData{Bridge: config.BridgeConfig{}}
+	html := renderAdvancedPane(t, data)
+
+	wantContains := []string{
+		`<h4>Diagnostics <span class="hint">read-only</span></h4>`,
+		`id="restore-defaults-row"`,
+		`id="restore-defaults-btn"`,
+		`⚠ Reset…`,
+		`id="restore-defaults-result"`,
+		`<span class="scope reboot">REBOOT</span>`,
+		`config.toml`,
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(html, want) {
+			t.Errorf("advanced pane HTML missing %q\n---\n%s\n---", want, html)
+		}
+	}
+}
+
+func renderAdvancedPane(t *testing.T, data SettingsData) string {
+	t.Helper()
+	tmpl := parseTemplatesForTest(t)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-advanced", data); err != nil {
+		t.Fatalf("execute settings-advanced: %v", err)
+	}
+	return buf.String()
+}
