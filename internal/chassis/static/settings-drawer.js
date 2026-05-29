@@ -28,7 +28,10 @@
   // Close button always closes.
   const close = document.getElementById('settings-close');
   if (close) {
-    close.addEventListener('click', () => body.classList.remove('settings-open'));
+    close.addEventListener('click', () => {
+      body.classList.remove('settings-open');
+      stopAllPolls(); // stop any active PIN polls when drawer hides
+    });
   }
 
   // Tab switching — each tab carries a data-tab attribute whose value
@@ -42,6 +45,7 @@
       t.classList.add('active');
       const target = drawer.querySelector(`.settings-pane[data-pane="${t.dataset.tab}"]`);
       if (target) target.classList.add('active');
+      stopAllPolls(); // leaving the Adapters pane (or any pane) stops stale polls
     });
   });
 
@@ -723,10 +727,10 @@
       const payload = await postLink(adapter, unlinkBtn ? 'unlink' : 'start', null);
       if (payload.ok && payload.view) {
         renderLinkView(container, payload.view);
-        // startPoll is defined in Task 17; guard the call so Task 16 is
-        // self-contained with no dangling ReferenceError.
-        if (payload.view.phase === 'pending' && payload.view.kind === 'pin') {
-          if (typeof startPoll === 'function') startPoll(adapter, container);
+        if (unlinkBtn) {
+          stopPoll(adapter); // cancel any active PIN poll on successful unlink
+        } else if (payload.view.phase === 'pending' && payload.view.kind === 'pin') {
+          startPoll(adapter, container);
         }
       } else if (payload.chip) {
         showNotice(payload.chip, 'err');
@@ -763,6 +767,67 @@
     }
   });
 
+  // ─── Task 17: PIN poll controller ────────────────────────────────────────
+  //
+  // One poller per adapter. Uses setTimeout (never setInterval) so a slow
+  // network response cannot stack concurrent requests. Stops on terminal
+  // phase (linked|error), on expiry (expiresInSec ≤ 0), on explicit
+  // stopPoll/stopAllPolls, or when the drawer/Adapters pane is hidden.
+
+  // pollers: adapter name → { container, stopped, timer }
+  const pollers = {};
+
+  async function pollOnce(adapter) {
+    const p = pollers[adapter];
+    if (!p || p.stopped) return;
+    let payload;
+    try {
+      const res = await fetch(
+        `/receiver/settings/adapter/${encodeURIComponent(adapter)}/link/status`,
+        { method: 'GET' }
+      );
+      payload = await res.json();
+    } catch (e) {
+      // Transient network error — keep polling until expiry.
+      scheduleNextPoll(adapter);
+      return;
+    }
+    if (!payload.ok || !payload.view) { stopPoll(adapter); return; }
+    renderLinkView(p.container, payload.view);
+    const v = payload.view;
+    // Stop priority: (1) terminal phase, (2) expiry; unlink + pane-close
+    // are handled by stopPoll/stopAllPolls callers.
+    if (v.phase === 'linked' || v.phase === 'error' || (v.expiresInSec || 0) <= 0) {
+      stopPoll(adapter);
+      return;
+    }
+    scheduleNextPoll(adapter);
+  }
+
+  function scheduleNextPoll(adapter) {
+    const p = pollers[adapter];
+    if (!p || p.stopped) return;
+    p.timer = setTimeout(() => pollOnce(adapter), 2000);
+  }
+
+  function startPoll(adapter, container) {
+    // Single-flight: no-op if already polling.
+    if (pollers[adapter] && !pollers[adapter].stopped) return;
+    pollers[adapter] = { container, stopped: false, timer: null };
+    scheduleNextPoll(adapter);
+  }
+
+  function stopPoll(adapter) {
+    const p = pollers[adapter];
+    if (!p) return;
+    p.stopped = true;
+    if (p.timer) { clearTimeout(p.timer); p.timer = null; }
+  }
+
+  function stopAllPolls() {
+    Object.keys(pollers).forEach(stopPoll);
+  }
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
@@ -771,4 +836,11 @@
   window.Chassis.settings.showNotice = showNotice;
   window.Chassis.settings.clearNotice = clearNotice;
   window.Chassis.settings.renderLinkView = renderLinkView;
+  // Task 17 — poll controller (used by Task 16 handlers + tests).
+  window.Chassis.settings.startPoll = startPoll;
+  window.Chassis.settings.stopPoll = stopPoll;
+  window.Chassis.settings.stopAllPolls = stopAllPolls;
+  // Test hooks — deterministic control without real timers.
+  window.Chassis.settings.__pollTick = (adapter) => pollOnce(adapter);
+  window.Chassis.settings.__pollActive = (adapter) => !!(pollers[adapter] && !pollers[adapter].stopped);
 })();

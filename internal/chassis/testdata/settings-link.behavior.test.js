@@ -239,7 +239,7 @@ function createHarness() {
   );
   vm.runInContext(code, context, { filename: 'settings-drawer.js' });
 
-  return { window: context.window, document, clickHandlers, submitHandlers };
+  return { window: context.window, document, clickHandlers, submitHandlers, context };
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -378,4 +378,104 @@ test('pin unlinked phase renders start button not a form', () => {
 
   assert.equal(container.querySelector('[data-link-action="start"]') !== null, true, 'must have start button');
   assert.equal(container.querySelector('form'), null, 'must not have a form in pin unlinked');
+});
+
+// ─── Task 17: poll controller ─────────────────────────────────────────────
+// Uses __pollTick / __pollActive test hooks for deterministic control —
+// no real setTimeout fires in tests.
+
+test('poll controller single-flight + stop on terminal', async () => {
+  const h = createHarness();
+  const { startPoll, __pollTick, __pollActive } = h.window.Chassis.settings;
+
+  assert.equal(typeof startPoll, 'function', 'startPoll must be exported');
+  assert.equal(typeof __pollTick, 'function', '__pollTick must be exported');
+  assert.equal(typeof __pollActive, 'function', '__pollActive must be exported');
+
+  let calls = 0;
+  // Override fetch in the sandbox context so pollOnce sees it.
+  h.context.fetch = async () => {
+    calls++;
+    const phase = calls >= 2 ? 'linked' : 'pending';
+    return { json: async () => ({ ok: true, view: { kind: 'pin', phase, code: 'K3F9', expiresInSec: 100 } }) };
+  };
+
+  const container = h.document.createElement('div');
+  container.className = 'settings-link';
+
+  startPoll('plex', container);
+  startPoll('plex', container); // second call must be a no-op (single-flight)
+
+  assert.equal(__pollActive('plex'), true, 'poller should be active after startPoll');
+
+  await __pollTick('plex'); // first tick → pending (calls=1)
+  assert.equal(container.getAttribute('data-link-phase'), 'pending', 'should be pending after first tick');
+  assert.equal(__pollActive('plex'), true, 'still active after pending tick');
+
+  await __pollTick('plex'); // second tick → linked (calls=2), stops
+  assert.equal(container.getAttribute('data-link-phase'), 'linked', 'should reach linked');
+  assert.equal(__pollActive('plex'), false, 'poller stopped on terminal phase');
+});
+
+test('poll controller stops on error phase', async () => {
+  const h = createHarness();
+  const { startPoll, __pollTick, __pollActive } = h.window.Chassis.settings;
+
+  h.context.fetch = async () => ({
+    json: async () => ({ ok: true, view: { kind: 'pin', phase: 'error', expiresInSec: 0 } }),
+  });
+
+  const container = h.document.createElement('div');
+  container.className = 'settings-link';
+
+  startPoll('plex', container);
+  await __pollTick('plex');
+  assert.equal(__pollActive('plex'), false, 'poller must stop on error phase');
+});
+
+test('poll controller stops on expiry (expiresInSec <= 0)', async () => {
+  const h = createHarness();
+  const { startPoll, __pollTick, __pollActive } = h.window.Chassis.settings;
+
+  h.context.fetch = async () => ({
+    json: async () => ({ ok: true, view: { kind: 'pin', phase: 'pending', expiresInSec: 0 } }),
+  });
+
+  const container = h.document.createElement('div');
+  container.className = 'settings-link';
+
+  startPoll('plex', container);
+  await __pollTick('plex');
+  assert.equal(__pollActive('plex'), false, 'poller must stop when expiresInSec reaches 0');
+});
+
+test('stopPoll cancels an active poller', () => {
+  const h = createHarness();
+  const { startPoll, stopPoll, __pollActive } = h.window.Chassis.settings;
+
+  const container = h.document.createElement('div');
+  container.className = 'settings-link';
+
+  startPoll('plex', container);
+  assert.equal(__pollActive('plex'), true, 'should be active');
+  stopPoll('plex');
+  assert.equal(__pollActive('plex'), false, 'should be stopped after stopPoll');
+});
+
+test('stopAllPolls cancels all active pollers', () => {
+  const h = createHarness();
+  const { startPoll, stopAllPolls, __pollActive } = h.window.Chassis.settings;
+
+  const c1 = h.document.createElement('div');
+  c1.className = 'settings-link';
+  const c2 = h.document.createElement('div');
+  c2.className = 'settings-link';
+
+  startPoll('plex', c1);
+  startPoll('jellyfin', c2);
+  assert.equal(__pollActive('plex'), true, 'plex active');
+  assert.equal(__pollActive('jellyfin'), true, 'jellyfin active');
+  stopAllPolls();
+  assert.equal(__pollActive('plex'), false, 'plex stopped');
+  assert.equal(__pollActive('jellyfin'), false, 'jellyfin stopped');
 });
