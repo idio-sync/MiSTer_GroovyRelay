@@ -3571,11 +3571,10 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	}
 	s := buf.String()
 
-	// pipeline and advanced are now real panes (Tasks 14+15 landed); only
-	// adapters and catalog remain as stubs pending 4C/4D–4F.
+	// pipeline, advanced, and catalog are now real panes; only adapters
+	// remains as a stub pending 4D–4F.
 	stillStubs := []struct{ pane, spec string }{
 		{"adapters", "4D"},
-		{"catalog", "4C"},
 	}
 	for _, w := range stillStubs {
 		paneTag := fmt.Sprintf(`data-pane="%s"`, w.pane)
@@ -3588,7 +3587,7 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	}
 
 	// Real panes must be present.
-	for _, pane := range []string{"pipeline", "advanced"} {
+	for _, pane := range []string{"pipeline", "advanced", "catalog"} {
 		if !strings.Contains(s, fmt.Sprintf(`data-pane="%s"`, pane)) {
 			t.Errorf("missing pane %q in drawer", pane)
 		}
@@ -3996,9 +3995,98 @@ func TestSettingsDrawer_PipelineAndAdvancedReplaceStubs(t *testing.T) {
 		}
 	}
 
-	// Stub placeholders must be gone for Pipeline and Advanced (still present
-	// for Adapters and Catalog).
+	// Stub placeholders must be gone for Pipeline, Advanced, and Catalog
+	// (still present for Adapters only).
 	if strings.Contains(html, "Spec 4B — implementation in progress") {
 		t.Errorf("drawer still contains 4B stub placeholder text")
 	}
+	if strings.Contains(html, "Spec 4C — implementation in progress") {
+		t.Errorf("drawer still contains 4C stub placeholder text")
+	}
+}
+
+func TestRenderCatalogPane_ProvidersRendered(t *testing.T) {
+	data := SettingsData{
+		CatalogPaneProviderCount: 3,
+		CatalogChannelCount:      90,
+		CatalogProviders: []CatalogProviderState{
+			{ID: "mtv-rewind", DisplayName: "MTV Rewind", BadgeLabel: "MTV", BadgeClass: "",
+				Origin: "wantmymtv.vercel.app", Kind: "youtube-channel-json",
+				DefaultChannel: "1stday", ChannelCount: 73, Enabled: true},
+			{ID: "cartoon-rewind", DisplayName: "Cartoon Rewind", BadgeLabel: "CART", BadgeClass: "cartoon",
+				Origin: "cartoonrewind.tv", Kind: "youtube-channel-json",
+				DefaultChannel: "all", ChannelCount: 13, Enabled: true},
+			{ID: "toonami-aftermath", DisplayName: "Toonami Aftermath", BadgeLabel: "TOON", BadgeClass: "toonami",
+				Origin: "api.toonamiaftermath.com", Kind: "direct-streams",
+				DefaultChannel: "", ChannelCount: 4, Live: true, Enabled: true,
+				HLSBufferDisabled: false},
+		},
+		DirectStreamHLSBufferDisabled: false,
+	}
+	html := renderCatalogPane(t, data)
+
+	wantContains := []string{
+		`data-pane="catalog"`,
+		`3 PROVIDERS · 90 CHANNELS`,
+		`data-catalog-provider="mtv-rewind"`,
+		`data-catalog-field="enabled"`,
+		`data-catalog-direct-hls`,
+		`wantmymtv.vercel.app · youtube-channel-json`,
+		`<code>1stday</code>`,
+		`73 CH`,
+		`data-catalog-provider="toonami-aftermath"`,
+		`<span class="scope recast">RECAST</span>`,
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(html, want) {
+			t.Errorf("catalog pane HTML missing %q\n---\n%s\n---", want, html)
+		}
+	}
+
+	// Critical: data-field MUST NOT appear on the catalog switches —
+	// collision guard against the existing 4A handler.
+	if strings.Contains(html, `data-field="enabled"`) {
+		t.Errorf("catalog switch must not carry data-field=enabled; would double-fire 4A handler")
+	}
+}
+
+func TestRenderCatalogPane_DefaultChannelOmittedWhenEmpty(t *testing.T) {
+	data := SettingsData{
+		CatalogProviders: []CatalogProviderState{
+			{ID: "toonami-aftermath", BadgeLabel: "TOON", BadgeClass: "toonami",
+				Origin: "api.toonamiaftermath.com", Kind: "direct-streams",
+				DefaultChannel: "", ChannelCount: 4, Live: true},
+		},
+	}
+	html := renderCatalogPane(t, data)
+	if strings.Contains(html, `default: <code>`) {
+		t.Errorf("expected no `default:` segment when DefaultChannel is empty; got: %s", html)
+	}
+}
+
+func TestRenderCatalogPane_EmptyProvidersStillRendersHLSSection(t *testing.T) {
+	data := SettingsData{
+		CatalogPaneProviderCount: 0,
+		CatalogChannelCount:      0,
+		CatalogProviders:         nil,
+	}
+	html := renderCatalogPane(t, data)
+	if !strings.Contains(html, `0 PROVIDERS · 0 CHANNELS`) {
+		t.Errorf("expected `0 PROVIDERS · 0 CHANNELS` heading; got: %s", html)
+	}
+	if !strings.Contains(html, `Per-provider HLS buffer override`) {
+		t.Errorf("HLS override section should still render when no providers; got: %s", html)
+	}
+}
+
+// renderCatalogPane executes the chassis template suite against the given
+// SettingsData and returns the rendered settings-catalog block.
+func renderCatalogPane(t *testing.T, data SettingsData) string {
+	t.Helper()
+	tmpl := parseTemplatesForTest(t)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-catalog", data); err != nil {
+		t.Fatalf("execute settings-catalog: %v", err)
+	}
+	return buf.String()
 }
