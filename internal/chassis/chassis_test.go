@@ -4655,3 +4655,18 @@ func TestHandleIndex_RendersThreeVfdTierHooks(t *testing.T) {
 		t.Errorf("rendered shell still contains old data-vfd-title/marquee hooks")
 	}
 }
+
+func TestStaticCSS_HasVfdTierAndScrollRules(t *testing.T) {
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	css := rr.Body.String()
+	for _, want := range []string{".tier-primary", ".tier-secondary", ".tier-tertiary", "vfd-marquee", "prefers-reduced-motion", ".vfd-row.is-empty"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("chassis.css missing %q", want)
+		}
+	}
+}
