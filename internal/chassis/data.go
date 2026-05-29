@@ -482,7 +482,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	if cfg.BridgeSaver != nil {
 		bridge = cfg.BridgeSaver.Current()
 	}
-	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, nil)
+	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, cfg.CatalogManager)
 }
 
 // idleSnapshot returns a fully populated ReceiverPageData with State =

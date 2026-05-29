@@ -381,6 +381,9 @@ func main() {
 		}
 	}
 
+	cm := &catalogManager{adapter: streamsAdapter, adapterSaver: adapterSaver}
+	cr := &configReset{path: *cfgPath, mu: saver.Mu(), sectioned: sec}
+
 	chassisSrv, err := chassis.New(chassis.Config{
 		Bridge:                    sec.Bridge,
 		Manager:                   coreMgr,
@@ -406,6 +409,8 @@ func main() {
 		BridgeSaver:               saver,                         // existing *uiserver.BridgeSaver
 		Prober:                    newChassisProber(misterProber), // wraps existing bridgeMisterProber
 		CoreLauncher:              misterLauncher,                 // same instance as ui.Config.MisterLauncher
+		CatalogManager:            cm,
+		ConfigReset:               cr,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)
