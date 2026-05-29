@@ -2141,3 +2141,67 @@ func (f *fakeAdapterLinker) Unlink(_ context.Context, name string) (LinkView, er
 func TestAdapterLinker_StructuralConformance(t *testing.T) {
 	var _ AdapterLinker = &fakeAdapterLinker{}
 }
+
+// ---------------------------------------------------------------------------
+// Task 11 — link start / status / unlink handler tests
+// ---------------------------------------------------------------------------
+
+func newServerWithLinker(linker AdapterLinker) *Server {
+	s, err := New(Config{
+		Version:       "test-1.0.0",
+		StartedAt:     time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC),
+		AdapterLinker: linker,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func TestLinkStart_NilLinker(t *testing.T) {
+	s := newServerWithLinker(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req.SetPathValue("name", "plex")
+	s.handleSettingsAdapterLinkStart(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestLinkStart_UnknownAdapter(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/nope/link/start", nil)
+	req.SetPathValue("name", "nope")
+	s.handleSettingsAdapterLinkStart(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestLinkStart_Success(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "unlinked"}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req.SetPathValue("name", "plex")
+	s.handleSettingsAdapterLinkStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"phase":"pending"`) ||
+		!strings.Contains(rec.Body.String(), `"code":"K3F9"`) {
+		t.Errorf("body = %s, want pending view with code", rec.Body.String())
+	}
+}
+
+func TestLinkUnlink_Success(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "linked"}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/unlink", nil)
+	req.SetPathValue("name", "plex")
+	s.handleSettingsAdapterLinkUnlink(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"phase":"unlinked"`) {
+		t.Errorf("status=%d body=%s, want 200 unlinked", rec.Code, rec.Body.String())
+	}
+}
