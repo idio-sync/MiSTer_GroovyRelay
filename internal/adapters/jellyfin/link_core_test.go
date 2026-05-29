@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,3 +77,25 @@ func TestJFSnapshot_ParseError(t *testing.T) {
 		t.Errorf("Phase = %q, want error", got.Phase)
 	}
 }
+
+func TestJFController_StartMissingURL(t *testing.T) {
+	a := newSnapshotTestAdapter(t, "")
+	got, _ := a.StartLink(contextTODO(), map[string]string{"username": "x", "password": "y"})
+	if got.Phase != adapters.LinkPhaseError {
+		t.Errorf("Phase = %q, want error (no server_url)", got.Phase)
+	}
+}
+
+func TestJFController_StartBlankCreds(t *testing.T) {
+	a := newSnapshotTestAdapter(t, "http://jf.local:8096")
+	got, _ := a.StartLink(contextTODO(), map[string]string{"username": "", "password": ""})
+	if got.Phase != adapters.LinkPhaseError {
+		t.Errorf("Phase = %q, want error (blank creds)", got.Phase)
+	}
+}
+
+func TestJFController_Conformance(t *testing.T) {
+	var _ adapters.LinkController = (*Adapter)(nil)
+}
+
+func contextTODO() context.Context { return context.TODO() }
