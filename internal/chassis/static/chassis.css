@@ -2335,48 +2335,6 @@ body.receiver .viz-icon--waterfall::before {
   mask: linear-gradient(180deg, #000 0 45%, rgba(0, 0, 0, 0.4) 100%);
 }
 
-body.receiver .viz-icon--radial::before {
-  content: "";
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle, currentColor 0 2px, transparent 2px),
-    repeating-conic-gradient(currentColor 0deg 6deg, transparent 6deg 45deg);
-  opacity: 0.92;
-  -webkit-mask: radial-gradient(circle, transparent 0 2px, #000 2px 7px);
-  mask: radial-gradient(circle, transparent 0 2px, #000 2px 7px);
-}
-
-body.receiver .viz-btn--preview {
-  opacity: 0.55;
-  cursor: not-allowed;
-  filter: saturate(0.6);
-}
-
-body.receiver .viz-btn--preview:hover,
-body.receiver .viz-btn--preview:disabled {
-  opacity: 0.55;
-}
-
-body.receiver .viz-btn--preview .viz-badge {
-  font: 700 7px 'Inter', sans-serif;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: oklch(0.62 0.14 70);
-  margin-top: 1px;
-  padding: 1px 5px;
-  border: 1px solid oklch(0.45 0.12 70 / 0.55);
-  border-radius: 1px;
-  text-shadow: 0 0 2px oklch(0.62 0.14 70 / 0.5);
-  line-height: 1;
-}
-
-body.receiver.idle .viz-btn--preview .viz-badge {
-  color: oklch(0.38 0.06 70);
-  border-color: oklch(0.28 0.04 70);
-  text-shadow: none;
-}
 
 @container chassis (max-width: 900px) {
   body.receiver .viz-bank .viz-btn {

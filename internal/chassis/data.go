@@ -211,20 +211,17 @@ type ActionsEnabled struct {
 	Seek        bool
 }
 
-// VisualizerData drives the 4-button visualizer-bank selector. One of
-// the buttons, radial_spectrum, is rendered as a deferred preview.
+// VisualizerData drives the visualizer-bank selector.
 type VisualizerData struct {
 	ActiveMode string
 	Buttons    []VisualizerButton
 }
 
-// VisualizerButton represents one visualizer-bank button. IsPreview
-// renders the deferred-state badge and short-circuits click handlers.
+// VisualizerButton represents one visualizer-bank button.
 type VisualizerButton struct {
-	Mode      string
-	Label     string
-	IconKind  string
-	IsPreview bool
+	Mode     string
+	Label    string
+	IconKind string
 }
 
 // InputData drives the paste/cast row.
@@ -535,15 +532,14 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 		Visualizer: VisualizerData{
 			ActiveMode: defaultVisualizerMode(cfg),
 			Buttons: []VisualizerButton{
-				{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
-				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
-				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeSpectrumWaterfall, Label: "WATERFALL", IconKind: "waterfall", IsPreview: false},
-				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
-				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
-				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+				{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer"},
+				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave"},
+				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope"},
+				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope"},
+				{Mode: config.VisualizerModeSpectrumWaterfall, Label: "WATERFALL", IconKind: "waterfall"},
+				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave"},
+				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope"},
+				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer"},
 			},
 		},
 		Input: InputData{

@@ -248,15 +248,14 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
 			Buttons: []VisualizerButton{
-				{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer", IsPreview: false},
-				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
-				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeSpectrumWaterfall, Label: "WATERFALL", IconKind: "waterfall", IsPreview: false},
-				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
-				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
-				{Mode: "radial_spectrum", Label: "RADIAL", IconKind: "radial", IsPreview: true},
+				{Mode: config.VisualizerModeRetroAnalyzer, Label: "ANALYZER", IconKind: "analyzer"},
+				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave"},
+				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope"},
+				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope"},
+				{Mode: config.VisualizerModeSpectrumWaterfall, Label: "WATERFALL", IconKind: "waterfall"},
+				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave"},
+				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope"},
+				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer"},
 			},
 		},
 		Input: InputData{
@@ -608,8 +607,6 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 		`grid-area: gear;`,
 		`body.receiver .seek-time`,
 		`display: none;`,
-		`body.receiver .viz-btn--preview:disabled`,
-		`cursor: not-allowed;`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("chassis.css missing transport/preview contract %q", want)
@@ -733,7 +730,6 @@ func TestVisualizerBankJS_RuntimeContracts(t *testing.T) {
 		"window.Chassis.events.subscribe('visualizer'",
 		"/receiver/visualizer",
 		"data-viz",
-		"viz-btn--preview",
 		"queuedMode",
 		"res.status !== 204",
 		"visualizer-bank: save failed",
@@ -1177,7 +1173,6 @@ func TestHandleIndex_RendersTransportAndVisualizerAccessibilityHooks(t *testing.
 		`aria-label="Replay" title="Replay"`,
 		`class="seek-bar" data-transport-seek`,
 		`role="progressbar" aria-label="Cast position" aria-valuemin="0" aria-valuemax="100"`,
-		`class="hw-btn viz-btn viz-btn--preview" type="button" role="radio" aria-checked="false" aria-disabled="true" disabled`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing transport/visualizer accessibility hook %q", want)

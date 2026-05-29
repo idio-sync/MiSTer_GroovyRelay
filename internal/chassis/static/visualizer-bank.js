@@ -17,17 +17,13 @@
     return Array.from(document.querySelectorAll('[data-viz]'));
   }
 
-  function isPreview(btn) {
-    return btn.classList.contains('viz-btn--preview') || btn.disabled || btn.getAttribute('aria-disabled') === 'true';
-  }
-
   function setMode(mode) {
     if (!mode) {
       return;
     }
 
     buttons().forEach((btn) => {
-      const active = !isPreview(btn) && btn.dataset.viz === mode;
+      const active = btn.dataset.viz === mode;
       btn.classList.toggle('active', active);
       btn.classList.toggle('lit', active);
       btn.setAttribute('aria-checked', active ? 'true' : 'false');
@@ -94,9 +90,6 @@
 
   function bindClicks() {
     buttons().forEach((btn) => {
-      if (isPreview(btn)) {
-        return;
-      }
       btn.addEventListener('click', () => {
         const mode = btn.dataset.viz;
         if (!mode) {
