@@ -1411,3 +1411,62 @@ func TestHandleSettingsCatalogProviderPost_NilManager_NotReady503(t *testing.T) 
 	}
 	assertJSONField(t, rr.Body.Bytes(), "chip", "NOT READY")
 }
+
+func TestHandleSettingsCatalogDirectStreamHLSBufferPost_Success(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{scope: adapters.ScopeRestartCast}
+	srv := newTestServerForCatalog(t, mgr)
+
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "disabled=true")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONField(t, rr.Body.Bytes(), "scope", "recast")
+	if mgr.lastDirectStreamDisabled == nil || *mgr.lastDirectStreamDisabled != true {
+		t.Errorf("manager.SetDirectStreamHLSBuffer arg = %v; want &true", mgr.lastDirectStreamDisabled)
+	}
+}
+
+func TestHandleSettingsCatalogDirectStreamHLSBufferPost_BadBool_400(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{}
+	srv := newTestServerForCatalog(t, mgr)
+
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "disabled=maybe")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	assertJSONFieldErrors(t, rr.Body.Bytes(), map[string]string{
+		"disabled": "must be true or false",
+	})
+}
+
+func TestHandleSettingsCatalogDirectStreamHLSBufferPost_EmptyBody_BadInput(t *testing.T) {
+	mgr := &fakeCatalogManagerMutating{}
+	srv := newTestServerForCatalog(t, mgr)
+
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rr.Code)
+	}
+	assertJSONField(t, rr.Body.Bytes(), "chip", "BAD INPUT")
+}
+
+func TestHandleSettingsCatalogDirectStreamHLSBufferPost_NilManager_503(t *testing.T) {
+	srv := newTestServerForCatalog(t, nil)
+	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "disabled=false")
+	rr := httptest.NewRecorder()
+	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rr.Code)
+	}
+	assertJSONField(t, rr.Body.Bytes(), "chip", "NOT READY")
+}

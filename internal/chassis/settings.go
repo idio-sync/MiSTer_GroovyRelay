@@ -917,6 +917,50 @@ func catalogContainsProvider(providers []CatalogProviderState, id string) bool {
 // the operator's own bridge.mister.host value (no information leak beyond
 // what they typed). Pre-compiled at package init to avoid re-parsing per
 // probe.
+// handleSettingsCatalogDirectStreamHLSBufferPost handles
+// POST /receiver/settings/catalog/direct-stream-hls-buffer.
+// It reads a single form field "disabled" (strict "true"/"false") and
+// calls CatalogSettingsManager.SetDirectStreamHLSBuffer, which flips
+// hls_buffer_disabled on every Live provider in one atomic save.
+func (s *Server) handleSettingsCatalogDirectStreamHLSBufferPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CatalogManager == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	vals, ok := r.PostForm["disabled"]
+	if !ok || len(vals) == 0 {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	v, err := decodeBool(vals[0])
+	if err != nil {
+		writeSettingsFieldErrors(w, http.StatusBadRequest, map[string]string{
+			"disabled": "must be true or false",
+		})
+		return
+	}
+	scope, err := s.cfg.CatalogManager.SetDirectStreamHLSBuffer(v)
+	if err != nil {
+		var ce settingsChipError
+		if errors.As(err, &ce) {
+			writeSettingsChip(w, ce.StatusCode(), ce.Chip())
+			return
+		}
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	label, ok := scopeLabel(scope)
+	if !ok {
+		writeSettingsChip(w, http.StatusInternalServerError, "WRITE FAILED")
+		return
+	}
+	writeSettingsSuccess(w, label)
+}
+
 var probeErrorHostPortRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?\b`)
 
 // sanitizeProbeError redacts dotted-quad IPv4[:port] tokens from probe
