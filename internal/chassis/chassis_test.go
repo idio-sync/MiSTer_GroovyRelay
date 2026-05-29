@@ -4676,9 +4676,17 @@ func TestAdaptersPane_PlexJellyfinSections(t *testing.T) {
 	if strings.Contains(html, "Spec 4E") {
 		t.Errorf("stub copy still present:\n%s", html)
 	}
-	// Section order: Plex above Jellyfin.
-	if strings.Index(html, ">Plex<") > strings.Index(html, ">Jellyfin<") {
-		t.Errorf("Plex should render above Jellyfin")
+	// Section order: Plex above Jellyfin. Assert against the robust
+	// data-adapter-section attributes the section templates emit (the <h4>
+	// header text is ">Plex <span..." with a trailing space, so ">Plex<"
+	// would never match — making the check a silent no-op).
+	plexIdx := strings.Index(html, `data-adapter-section="plex"`)
+	jfIdx := strings.Index(html, `data-adapter-section="jellyfin"`)
+	if plexIdx < 0 || jfIdx < 0 {
+		t.Fatalf("plex/jellyfin sections missing: plexIdx=%d jfIdx=%d", plexIdx, jfIdx)
+	}
+	if plexIdx > jfIdx {
+		t.Errorf("Plex section should render above Jellyfin (plexIdx=%d jfIdx=%d)", plexIdx, jfIdx)
 	}
 	if !strings.Contains(html, "Link Plex Account") {
 		t.Errorf("plex Account sub-section missing")
