@@ -78,7 +78,7 @@ Three layers, mirroring the 4D `StreamsRefresher` action precedent:
 
 ### Why the adapter-side API is required (and why it's additive)
 
-The chassis-initiated link **must** drive the adapter's own state machine: Plex's pending-PIN state (`a.pending`, the `pollPendingLink` goroutine) backs `LinkPhase()` ([plex/adapter.go:428-448](../../../internal/adapters/plex/adapter.go#L428-L448)) and the `adapter-linked` / `adapter-link-failed` event emissions; Jellyfin's `link.SetLinked/SetIdle` ([jellyfin/link_state.go](../../../internal/adapters/jellyfin/link_state.go)) drives its phase + eventlog. If the `cmd/` binding re-implemented the PIN-poll loop or the auth sequence, that state would diverge and those signals would break. So the orchestration that lives inside the legacy handlers ([plex/link_ui.go](../../../internal/adapters/plex/link_ui.go), [jellyfin/link_ui.go](../../../internal/adapters/jellyfin/link_ui.go)) is **extracted** into exported, transport-agnostic methods. The HTML handlers then delegate to the same core. No existing behavior changes; the extraction is removed/simplified when `/ui` retires after 4F.
+The chassis-initiated link **must** drive the adapter's own state machine: Plex's pending-PIN state (`a.pending`, the `pollPendingLink` goroutine) backs `LinkPhase()` ([plex/adapter.go:428-448](../../../internal/adapters/plex/adapter.go#L428-L448)) and the `adapter-linked` / `adapter-link-failed` event emissions; Jellyfin's `link.SetLinked/SetIdle` ([jellyfin/link_state.go](../../../internal/adapters/jellyfin/link_state.go)) drives its phase + eventlog. Two non-options force the extraction: (a) the `cmd/` binding **can't just call the existing handlers** — they return HTML fragments for htmx, while the drawer needs `LinkView` JSON; (b) it **can't re-implement** the PIN-poll loop / auth sequence either — a second copy of the state machine would diverge from `a.pending` / `LinkState`, breaking `LinkPhase()` and the `adapter-linked` / `adapter-link-failed` emissions. So the orchestration that lives inside the legacy handlers ([plex/link_ui.go](../../../internal/adapters/plex/link_ui.go), [jellyfin/link_ui.go](../../../internal/adapters/jellyfin/link_ui.go)) is **extracted** into exported, transport-agnostic methods. The HTML handlers then delegate to the same core. No existing behavior changes; the extraction is removed/simplified when `/ui` retires after 4F.
 
 ---
 
@@ -179,6 +179,8 @@ type LinkField struct {
 }
 ```
 
+**`Fields` is non-empty only for credential adapters.** PIN adapters (Plex) return an empty slice and render a single action button. Jellyfin returns exactly two entries — `{Key:"username", Label:"Username", Kind:"text"}` and `{Key:"password", Label:"Password", Kind:"secret"}`.
+
 `Config.AdapterLinker AdapterLinker` is added in [server.go](../../../internal/chassis/server.go); when nil, the handlers return `{ok:false, chip:"NOT READY"}` (same shape as `StreamsRefresher` nil — see [settings_test.go:1107](../../../internal/chassis/settings_test.go#L1107)).
 
 ---
@@ -193,7 +195,9 @@ All three routes mount behind `requireSameOrigin` next to the 4D adapter save ro
 | `GET  /receiver/settings/adapter/{name}/link/status` | — | `200 {ok:true, view:{…}}` | `{ok:false, chip:"NOT READY"}` · `404` |
 | `POST /receiver/settings/adapter/{name}/link/unlink` | — | `200 {ok:true, view:{…}}` | `{ok:false, error:"<msg>"}` · `{ok:false, chip:"NOT READY"}` · `404` |
 
-Status-code discipline matches the 4D handlers: same-origin failures and method mismatches are handled by the shared middleware/mux; `400` for caller input errors; chip errors carry their `StatusCode()`.
+Status-code discipline matches the 4D handlers: same-origin failures and method mismatches are handled by the shared middleware/mux; `400` for caller input errors; chip errors carry their `StatusCode()`. The `NOT READY` chip (linker nil) returns **503 Service Unavailable** on all three routes, matching the `StreamsRefresher` precedent.
+
+**Concurrency / single-flight.** `start` holds a per-adapter `sync.Mutex` for the whole operation (Plex `RequestPIN`; Jellyfin auth). Starting a link while one is already pending **abandons and replaces** the prior pending flow — matching the existing Plex `handleLinkStart`, which serializes on `linkStartMu` and drops any prior pending PIN. The JS additionally disables the trigger while a `start`/`unlink` request is in flight, so the replace path is normally reachable only across separate drawer sessions.
 
 **Link failure is a state, not an HTTP error.** "Code expired" (Plex) and "invalid credentials" (Jellyfin) return **`200` with `view.Phase="error"`** and a populated `view.Error`, so the shared renderer simply repaints into the error state. `400` is reserved for malformed requests (e.g. a credential `start` with a blank username before it ever reaches the adapter).
 
@@ -229,7 +233,8 @@ In [settings-drawer.js](../../../internal/chassis/static/settings-drawer.js), al
 - **Poll controller (new surface — the drawer had no poll loop):**
   - One controller **per adapter**; single-flight (guard against duplicate starts; a second start cancels/replaces).
   - `setTimeout` cadence 2s (not `setInterval`, so a slow response can't stack requests); each tick GETs `…/link/status` and repaints.
-  - **Stops** when `view.Phase ∈ {linked, error}` or `ExpiresInSec ≤ 0`, on Unlink, and on drawer close / Adapters-pane switch (so a hidden drawer isn't polling).
+  - **Stops**, in priority order: (1) `view.Phase ∈ {linked, error}`, (2) `ExpiresInSec ≤ 0`, (3) Unlink, (4) drawer close / Adapters-pane switch (so a hidden drawer isn't polling). The first condition that holds wins.
+  - The PIN countdown is re-rendered from each poll response; the server's expiry is authoritative, so a slow tick may make the displayed countdown lag slightly — acceptable.
   - Network error on a tick: surface transient text, keep the loop until expiry (don't kill on one failed poll).
 - **Unlink (delegated click):** POST `…/link/unlink` → repaint to `unlinked`; tear down any poll controller.
 - Reuses `showNotice` for `chip` errors and the `action-result` slot conventions from 4D.
@@ -238,7 +243,7 @@ In [settings-drawer.js](../../../internal/chassis/static/settings-drawer.js), al
 
 ## `server_url` → re-link cascade (documented; no special drawer wiring)
 
-Jellyfin's `server_url` is an ordinary config field saved through 4D's `SaveTouched`. Its `ApplyConfig` scope is **`ScopeRestartBridge`** (REBOOT) ([jellyfin/adapter.go:448-450](../../../internal/adapters/jellyfin/adapter.go#L448-L450)) — the live token is **not** wiped on save. The drawer therefore shows the standard REBOOT toast ("Restart container to apply new Server URL"). The token reconcile happens at the next **`Start()`** ([jellyfin/adapter.go:352-358](../../../internal/adapters/jellyfin/adapter.go#L352-L358)): if `cfg.ServerURL` has drifted from `token.ServerURL`, the adapter wipes the token and `SetIdle`. After the operator restarts, the server-rendered `LinkView` shows `unlinked` and they re-link. **The drawer adds nothing for this case** — recorded here so the implementation does not double-wire it.
+Jellyfin's `server_url` is an ordinary config field saved through 4D's `SaveTouched`. Its `ApplyConfig` scope is **`ScopeRestartBridge`** (REBOOT) ([jellyfin/adapter.go:448-450](../../../internal/adapters/jellyfin/adapter.go#L448-L450)) — the live token is **not** wiped on save. The drawer therefore shows the standard REBOOT toast ("Restart container to apply new Server URL"). The token reconcile happens at the next **`Start()`** ([jellyfin/adapter.go:352-358](../../../internal/adapters/jellyfin/adapter.go#L352-L358)): if `cfg.ServerURL` has drifted from `token.ServerURL`, the adapter wipes the token and `SetIdle`. After the operator restarts, the server-rendered `LinkView` shows `unlinked` and they re-link. **The drawer adds nothing for this case** — recorded here so the implementation does not double-wire it. (Edge: *clearing* `server_url` to empty while linked does not wipe the token — the reconcile guard is `cfg.ServerURL != "" && tok.ServerURL != ""` — but Jellyfin's `Validate` already rejects an empty `server_url` when `enabled=true`, so the drawer surfaces it as a field error at save time rather than a silent broken state.)
 
 ---
 
@@ -281,7 +286,7 @@ Link/unlink are **actions**, out-of-band of the field-save scope vocabulary (lik
 ## Testing surface (mirrors 4D)
 
 - **Chassis handler tests:** `start`/`status`/`unlink` × {PIN (plex), credential (jellyfin)} × {success, link-failure→`view.Phase=error`, bad input→`400`, linker-nil→`NOT READY`, unknown-adapter→`404`}.
-- **Template render tests:** each `Phase` for each `Kind` — the approved state gallery, asserted; assert the collapsed `linked` one-liner is structurally identical across both adapters; assert `enabled` renders as a field-row (no header toggle); assert section order (Plex above Jellyfin).
+- **Template render tests:** the nine render states — `(pin, unlinked|pending|linked|error)`, `(credential, unlinked|pending|linked|error)`, and `(credential, NeedsServerURL)` — i.e. the approved state gallery; assert the collapsed `linked` one-liner is structurally identical across both adapters; assert `enabled` renders as a field-row (no header toggle); assert section order (Plex above Jellyfin).
 - **JS behavior test** (the `testdata/*.behavior.test.js` pattern, cf. [source-cluster.behavior.test.js](../../../internal/chassis/testdata/source-cluster.behavior.test.js)): poll controller single-flight, stop-on-terminal, stop-on-pane-close, countdown decrement, no request stacking.
 - **Adapter core tests:** the extracted `LinkController` for each adapter, plus a regression assert that the legacy `/ui` handlers still produce their prior HTML by delegating to the core.
 - **cmd/ wrapper + e2e:** snapshot→view mapping; one integration-tag end-to-end save+link.
