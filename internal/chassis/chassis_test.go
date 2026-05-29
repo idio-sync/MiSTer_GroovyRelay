@@ -4556,3 +4556,30 @@ func TestSettingsDrawerJS_AdapterRebootToastUsesLabel(t *testing.T) {
 		t.Errorf("adapter reboot toast still uses aria-label||key instead of the field-row label")
 	}
 }
+
+func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T) {
+	t.Parallel()
+	// Even if catalog-owned per-provider keys reach the pane's Fields (they
+	// shouldn't in production — the cmd projection strips them), the template's
+	// isProviderOverrideField guard must keep them out of the rendered form.
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"streams": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "providers.youtube.disabled", Kind: adapters.KindBool, Label: "Disabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "providers.youtube.hls_buffer_disabled", Kind: adapters.KindBool, Label: "HLS buffer disabled", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+	html := renderDrawer(t, s.buildSettingsData())
+	for _, banned := range []string{
+		`name="providers.youtube.disabled"`,
+		`name="providers.youtube.hls_buffer_disabled"`,
+	} {
+		if strings.Contains(html, banned) {
+			t.Errorf("Streams form rendered Catalog-owned key as input: %q", banned)
+		}
+	}
+}
