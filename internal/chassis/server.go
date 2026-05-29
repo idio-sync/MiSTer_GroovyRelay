@@ -114,6 +114,9 @@ type Config struct {
 	// 4D: adapter settings pane persistence and streams manifest refresh.
 	AdapterSettingsSaver AdapterSettingsSaver
 	StreamsRefresher     StreamsRefresher
+
+	// 4E: per-adapter link/pairing flow (Plex PIN, Jellyfin credentials).
+	AdapterLinker AdapterLinker
 }
 
 // Server owns the chassis runtime state.
@@ -152,6 +155,10 @@ type Server struct {
 	// action on this server instance. Per-server (not process-wide) so that
 	// tests with independent Server values do not share state.
 	streamsRefreshGate sync.Mutex
+
+	// linkStartGates enforces single-flight per adapter for the link/start
+	// action. sync.Map keyed by adapter name → *sync.Mutex.
+	linkStartGates sync.Map
 
 	meterRefusalLog *onePerSecondLimiter
 }
@@ -350,4 +357,10 @@ func (s *Server) presetSnapshot() [12]adapters.PresetEntry {
 		return zero
 	}
 	return s.presetViewer.Presets()
+}
+
+// linkStartGate returns the per-adapter single-flight mutex for link/start.
+func (s *Server) linkStartGate(name string) *sync.Mutex {
+	v, _ := s.linkStartGates.LoadOrStore(name, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }

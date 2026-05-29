@@ -292,16 +292,18 @@ type SettingsData struct {
 	Adapters                      []AdapterPaneData      // 4D — per-adapter render context
 }
 
-// AdapterPaneData carries the per-adapter render context for the
-// Adapters pane. Populated by buildSettingsData from
-// AdapterSettingsSaver for the three real adapters; stubs are
-// emitted by the template directly without an AdapterPaneData entry.
+// AdapterPaneData carries the per-adapter render context for the Adapters
+// pane. Populated by settingsDataFromConfig: config Fields/Values from the
+// AdapterSettingsSaver, and (4E) Linkable + LinkView from the AdapterLinker
+// for adapters that expose a link/pairing flow (Plex, Jellyfin).
 type AdapterPaneData struct {
 	Name      string
 	Hint      string
 	Fields    []adapters.FieldDef
 	Values    map[string]any
 	Providers []AdapterProviderRow
+	Linkable  bool     // 4E — render the Account sub-section for this pane
+	LinkView  LinkView // 4E — valid only when Linkable is true
 }
 
 // AdapterProviderRow is one row in the Streams per-provider sub-section.
