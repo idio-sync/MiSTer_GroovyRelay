@@ -4286,3 +4286,76 @@ func TestSettingsAdapterStreamsTemplate_RendersTopLevelFields(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Task 25 — provider rows + refresh action render tests
+// ---------------------------------------------------------------------------
+
+func TestSettingsAdapterStreams_RendersProviderRows(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"streams": {"enabled": true, "manifest_url": "https://x/y.json"},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+				{Key: "manifest_url", Kind: adapters.KindText, Label: "Manifest URL", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	cat := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "youtube", DisplayName: "YouTube", CatalogRefreshHours: 12},
+			{ID: "radio", DisplayName: "Radio", CatalogRefreshHours: 0},
+		},
+	}
+	srv := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+		CatalogManager:       cat,
+	}}
+	html := renderDrawer(t, srv.buildSettingsData())
+	for _, want := range []string{
+		`<h5 class="settings-subhead">Provider overrides</h5>`,
+		`name="providers.youtube.catalog_refresh_hours"`,
+		`name="providers.radio.catalog_refresh_hours"`,
+		`value="12"`,
+		`>YouTube `,
+		`>Radio `,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in rendered Streams provider rows", want)
+		}
+	}
+}
+
+func TestSettingsAdapterStreams_RendersRefreshAction(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"streams": {"enabled": true},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"streams": {
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap},
+			},
+		},
+	}
+	srv := &Server{cfg: Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+	}}
+	html := renderDrawer(t, srv.buildSettingsData())
+	for _, want := range []string{
+		`data-settings-action="streams-refresh"`,
+		`↻ Refresh manifest now`,
+		`id="streams-refresh-result"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in rendered Streams refresh action row", want)
+		}
+	}
+}
