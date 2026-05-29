@@ -586,3 +586,24 @@ func TestSettingsData_StreamsHint_ChannelCount(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsDataFromConfig_PopulatesAdaptersInProductionPath pins the fix
+// for the Tasks 17-19 bug: the production drawer-render path runs through the
+// PACKAGE-level settingsDataFromConfig (via idleSnapshot / snapshotFromStatusView),
+// never the *Server method. This calls the package function directly and
+// asserts adapters are populated, so a regression that moves the loop back onto
+// the method (leaving production empty) fails here.
+func TestSettingsDataFromConfig_PopulatesAdaptersInProductionPath(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{"dlna": {"enabled": true}},
+		fields: map[string][]adapters.FieldDef{
+			"dlna": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	cfg := Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}
+	data := settingsDataFromConfig(cfg)
+	if len(data.Adapters) < 1 {
+		t.Fatalf("len(Adapters) = %d, want >= 1 (production path must populate adapter panes)", len(data.Adapters))
+	}
+}

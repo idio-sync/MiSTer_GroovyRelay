@@ -496,23 +496,21 @@ func buildCatalogData(cat []adapters.CatalogProvider, presets [12]adapters.Prese
 
 // settingsDataFromConfig reads the bridge config from the BridgeSettingsSaver
 // when wired (production), or falls back to startup cfg.Bridge for offline
-// tests / nil-saver render paths.
+// tests / nil-saver render paths. It is the single production entry point for
+// the settings drawer snapshot: idleSnapshot and all live-session snapshot
+// helpers call it, so the 4D-owned Adapters population must live here (not on
+// the *Server method) to render in the running app. Mirrors how 4C threaded
+// catalog data through this package path via cfg fields.
 func settingsDataFromConfig(cfg Config) SettingsData {
 	bridge := cfg.Bridge
 	if cfg.BridgeSaver != nil {
 		bridge = cfg.BridgeSaver.Current()
 	}
-	return buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, cfg.CatalogManager)
-}
-
-// buildSettingsData (method) wraps the package-level buildSettingsData and
-// adds the 4D-owned Adapters slice. Delegates bridge/registry/catalog
-// resolution to settingsDataFromConfig (same nil-safe fallback path used
-// by idleSnapshot and all live-session snapshot helpers). The package-level
-// function's signature is unchanged; 4D adds no parameters to it.
-func (s *Server) buildSettingsData() SettingsData {
-	data := settingsDataFromConfig(s.cfg)
-	if saver := s.cfg.AdapterSettingsSaver; saver != nil {
+	data := buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, cfg.CatalogManager)
+	// 4D — append per-adapter panes from the AdapterSettingsSaver. Nil-guarded
+	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
+	// the prior package-builder behavior exactly.
+	if saver := cfg.AdapterSettingsSaver; saver != nil {
 		for _, name := range []string{"dlna", "torrent", "streams"} {
 			fields, ok := saver.Fields(name)
 			if !ok {
@@ -521,12 +519,12 @@ func (s *Server) buildSettingsData() SettingsData {
 			values, _ := saver.Current(name)
 			pane := AdapterPaneData{
 				Name:   name,
-				Hint:   s.buildAdapterHint(name, values),
+				Hint:   buildAdapterHint(cfg, name, values),
 				Fields: fields,
 				Values: values,
 			}
 			if name == "streams" {
-				pane.Providers = s.buildStreamsProviderRows()
+				pane.Providers = buildStreamsProviderRows(cfg)
 			}
 			data.Adapters = append(data.Adapters, pane)
 		}
@@ -534,11 +532,20 @@ func (s *Server) buildSettingsData() SettingsData {
 	return data
 }
 
+// buildSettingsData (method) is the single named entry point for the settings
+// drawer snapshot. It now simply delegates to the package-level
+// settingsDataFromConfig, which both this method and the production
+// idleSnapshot / live-session paths share. Kept for the plan's
+// single-entry-point intent and existing test callers.
+func (s *Server) buildSettingsData() SettingsData {
+	return settingsDataFromConfig(s.cfg)
+}
+
 // buildAdapterHint returns the section-header subtitle for each adapter pane.
 // DLNA reflects the enabled state (LISTENING/DISABLED), torrent is a static
 // protocol tag, and streams sums provider channel counts from CatalogManager.
 // Returns "" for any unknown adapter name (forward-compatible).
-func (s *Server) buildAdapterHint(name string, values map[string]any) string {
+func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 	switch name {
 	case "dlna":
 		if v, _ := values["enabled"].(bool); v {
@@ -549,8 +556,8 @@ func (s *Server) buildAdapterHint(name string, values map[string]any) string {
 		return "PASTE-IN · BT"
 	case "streams":
 		n := 0
-		if s.cfg.CatalogManager != nil {
-			for _, p := range s.cfg.CatalogManager.Providers() {
+		if cfg.CatalogManager != nil {
+			for _, p := range cfg.CatalogManager.Providers() {
 				n += p.ChannelCount
 			}
 			return fmt.Sprintf("PULL · %d CHANNELS · see Catalog tab", n)
@@ -563,11 +570,11 @@ func (s *Server) buildAdapterHint(name string, values map[string]any) string {
 // buildStreamsProviderRows projects 4C's CatalogManager.Providers()
 // output into the Streams-pane per-provider override row shape.
 // Returns nil when CatalogManager is unwired (offline tests).
-func (s *Server) buildStreamsProviderRows() []AdapterProviderRow {
-	if s.cfg.CatalogManager == nil {
+func buildStreamsProviderRows(cfg Config) []AdapterProviderRow {
+	if cfg.CatalogManager == nil {
 		return nil
 	}
-	providers := s.cfg.CatalogManager.Providers()
+	providers := cfg.CatalogManager.Providers()
 	rows := make([]AdapterProviderRow, 0, len(providers))
 	for _, p := range providers {
 		rows = append(rows, AdapterProviderRow{
