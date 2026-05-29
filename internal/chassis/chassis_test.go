@@ -4670,3 +4670,18 @@ func TestStaticCSS_HasVfdTierAndScrollRules(t *testing.T) {
 		}
 	}
 }
+
+func TestStaticJS_VfdLiveUsesTierHooks(t *testing.T) {
+	s := newTestServer(t)
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	js := rr.Body.String()
+	for _, want := range []string{"data-vfd-primary", "data-vfd-secondary", "data-vfd-tertiary", "is-scrolling", "fonts"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("vfd-live.js missing %q", want)
+		}
+	}
+}

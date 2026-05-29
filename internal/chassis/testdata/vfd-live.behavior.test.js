@@ -44,6 +44,47 @@ class FakeElement {
   constructor() {
     this.textContent = '';
     this.classes = new Set();
+    this.style = {
+      _props: new Map(),
+      setProperty(k, v) { this._props.set(k, v); },
+      removeProperty(k) { this._props.delete(k); },
+    };
+    // jsdom returns 0 for layout measurements; scrollWidth === clientWidth
+    // so the marquee branch does not fire in the test env — that's fine.
+    this.scrollWidth = 0;
+    this.parent = null;
+    this.classList = {
+      toggle: (name, on) => {
+        const want = on === undefined ? !this.classes.has(name) : on;
+        if (want) {
+          this.classes.add(name);
+        } else {
+          this.classes.delete(name);
+        }
+        return want;
+      },
+      add: (...names) => names.forEach((n) => this.classes.add(n)),
+      remove: (...names) => names.forEach((n) => this.classes.delete(n)),
+      contains: (name) => this.classes.has(name),
+    };
+    this.closest = (selector) => {
+      if (selector === '.vfd-row') return this.parent;
+      return null;
+    };
+  }
+}
+
+// FakeRow simulates the .vfd-row wrapper that vfd-live.js calls
+// closest('.vfd-row') on each tier span to find.
+class FakeRow {
+  constructor() {
+    this.classes = new Set(['vfd-row']);
+    this.clientWidth = 0;
+    this.style = {
+      _props: new Map(),
+      setProperty(k, v) { this._props.set(k, v); },
+      removeProperty(k) { this._props.delete(k); },
+    };
     this.classList = {
       toggle: (name, on) => {
         const want = on === undefined ? !this.classes.has(name) : on;
@@ -76,33 +117,28 @@ class FakeEventSource extends FakeTarget {
 function createHarness(initialState = 'idle') {
   const vfdState = new FakeElement();
   vfdState.classes.add(initialState === 'live' ? 'vfd-state--live' : 'vfd-state--idle');
-  const title = new FakeElement();
-  const marquee = new FakeElement();
+
+  // Three tier spans, each wrapped in a FakeRow so closest('.vfd-row') works.
+  const primaryRow = new FakeRow();
+  const secondaryRow = new FakeRow();
+  const tertiaryRow = new FakeRow();
+
+  const primary = new FakeElement();
+  const secondary = new FakeElement();
+  const tertiary = new FakeElement();
+
+  primary.parent = primaryRow;
+  secondary.parent = secondaryRow;
+  tertiary.parent = tertiaryRow;
+
   const queue = new FakeElement();
   const uptime = new FakeElement();
 
-  const stateCalls = [];
-  const document = new FakeTarget();
-  document.querySelector = (selector) => {
-    switch (selector) {
-      case '.vfd-state':
-        return vfdState;
-      case '[data-vfd-title]':
-        return title;
-      case '[data-vfd-marquee]':
-        return marquee;
-      case '[data-vfd-queue]':
-        return queue;
-      case '[data-vfd-uptime]':
-        return uptime;
-      default:
-        return null;
-    }
-  };
-  document.dispatchEvent = () => {};
-
-  const bodyClasses = new Set(['receiver', initialState]);
+  const resizeListeners = [];
   const window = {
+    addEventListener(name, fn) {
+      if (name === 'resize') resizeListeners.push(fn);
+    },
     Chassis: {
       State: {
         set(next) {
@@ -115,6 +151,31 @@ function createHarness(initialState = 'idle') {
       events: {},
     },
   };
+
+  const stateCalls = [];
+  const bodyClasses = new Set(['receiver', initialState]);
+  const document = new FakeTarget();
+  document.querySelector = (selector) => {
+    switch (selector) {
+      case '.vfd-state':
+        return vfdState;
+      case '[data-vfd-primary]':
+        return primary;
+      case '[data-vfd-secondary]':
+        return secondary;
+      case '[data-vfd-tertiary]':
+        return tertiary;
+      case '[data-vfd-queue]':
+        return queue;
+      case '[data-vfd-uptime]':
+        return uptime;
+      default:
+        return null;
+    }
+  };
+  document.dispatchEvent = () => {};
+  // document.fonts is absent in the vm context — the guard in handleVfdEvent
+  // checks `document.fonts && document.fonts.ready` so this is safe.
 
   const context = {
     console: { warn() {}, info() {} },
@@ -135,7 +196,21 @@ function createHarness(initialState = 'idle') {
   // Fire DOMContentLoaded so connect() builds the EventSource + listeners.
   document.dispatch('DOMContentLoaded');
   const source = FakeEventSource.last;
-  return { source, vfdState, title, marquee, stateCalls, bodyClasses };
+  return {
+    source,
+    vfdState,
+    primary,
+    secondary,
+    tertiary,
+    primaryRow,
+    secondaryRow,
+    tertiaryRow,
+    queue,
+    uptime,
+    stateCalls,
+    bodyClasses,
+    resizeListeners,
+  };
 }
 
 test('live state event syncs the .vfd-state modifier so the VFD is not hidden', () => {
@@ -165,19 +240,93 @@ test('idle state event restores the .vfd-state idle modifier', () => {
   assert.equal(h.vfdState.classList.contains('vfd-state--live'), false);
 });
 
-test('vfd event still updates the title text content', () => {
+test('vfd event updates primary, secondary, and tertiary tier spans', () => {
   const h = createHarness('idle');
 
   h.source.dispatch('vfd', {
     data: JSON.stringify({
-      title: 'Blade Runner',
-      marquee: 'PLEX · 00:12 / 01:57',
-      queueCurrent: 0,
-      queueTotal: 0,
+      primary: 'Blade Runner',
+      secondary: 'PLEX · 00:12 / 01:57',
+      tertiary: '1982 · Ridley Scott',
+      queueCurrent: 1,
+      queueTotal: 3,
       uptime: '1H 2M',
     }),
   });
 
-  assert.equal(h.title.textContent, 'Blade Runner');
-  assert.equal(h.marquee.textContent, 'PLEX · 00:12 / 01:57');
+  assert.equal(h.primary.textContent, 'Blade Runner');
+  assert.equal(h.secondary.textContent, 'PLEX · 00:12 / 01:57');
+  assert.equal(h.tertiary.textContent, '1982 · Ridley Scott');
+});
+
+test('vfd event updates queue and uptime spans', () => {
+  const h = createHarness('idle');
+
+  h.source.dispatch('vfd', {
+    data: JSON.stringify({
+      primary: 'Test',
+      secondary: '',
+      tertiary: '',
+      queueCurrent: 2,
+      queueTotal: 5,
+      uptime: '3H 15M',
+    }),
+  });
+
+  assert.equal(h.queue.textContent, '2 / 5');
+  assert.equal(h.uptime.textContent, '3H 15M');
+});
+
+test('vfd event marks rows with is-empty when tier text is empty', () => {
+  const h = createHarness('idle');
+
+  h.source.dispatch('vfd', {
+    data: JSON.stringify({
+      primary: 'Title',
+      secondary: '',
+      tertiary: '',
+      queueCurrent: 0,
+      queueTotal: 0,
+      uptime: '',
+    }),
+  });
+
+  assert.equal(h.primaryRow.classList.contains('is-empty'), false, 'primary row with text should not be empty');
+  assert.equal(h.secondaryRow.classList.contains('is-empty'), true, 'secondary row without text should be empty');
+  assert.equal(h.tertiaryRow.classList.contains('is-empty'), true, 'tertiary row without text should be empty');
+});
+
+test('vfd event clears is-empty when tier receives text', () => {
+  const h = createHarness('idle');
+
+  // First dispatch sets tertiary empty
+  h.source.dispatch('vfd', {
+    data: JSON.stringify({
+      primary: 'First',
+      secondary: '',
+      tertiary: '',
+      queueCurrent: 0,
+      queueTotal: 0,
+      uptime: '',
+    }),
+  });
+  assert.equal(h.tertiaryRow.classList.contains('is-empty'), true);
+
+  // Second dispatch fills tertiary
+  h.source.dispatch('vfd', {
+    data: JSON.stringify({
+      primary: 'First',
+      secondary: 'Sub',
+      tertiary: 'Details',
+      queueCurrent: 0,
+      queueTotal: 0,
+      uptime: '',
+    }),
+  });
+  assert.equal(h.tertiaryRow.classList.contains('is-empty'), false, 'is-empty must be cleared when text is provided');
+});
+
+test('connect wires a resize listener for re-measuring tier overflow', () => {
+  const h = createHarness('idle');
+  assert.equal(h.resizeListeners.length, 1, 'resize listener must be registered exactly once at load, not per connect()/reconnect()');
 });
