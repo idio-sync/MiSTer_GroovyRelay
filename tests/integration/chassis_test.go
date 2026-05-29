@@ -2691,3 +2691,361 @@ func TestChassisSettings_LaunchCoreEmptyHost(t *testing.T) {
 		t.Errorf("body.error = %q, want exact match with launcher message", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4C: Catalog pane + restore-defaults integration tests (Task 23)
+// ---------------------------------------------------------------------------
+
+// integrationCatalogManager satisfies chassis.CatalogSettingsManager for
+// the integration test package. Mirrors cmd/mister-groovy-relay/catalog_manager.go
+// but lives here since package main is not importable.
+type integrationCatalogManager struct {
+	adapter      *streams.Adapter
+	adapterSaver *uiserver.AdapterSaver
+}
+
+func (m *integrationCatalogManager) Providers() []chassis.CatalogProviderState {
+	cfg := m.adapter.ConfigSnapshot()
+	cat := m.adapter.BundledCatalog()
+	out := make([]chassis.CatalogProviderState, 0, len(cat))
+	for _, p := range cat {
+		channels := 0
+		for _, g := range p.Groups {
+			channels += len(g.Channels)
+		}
+		pc := cfg.Providers[p.ID]
+		out = append(out, chassis.CatalogProviderState{
+			ID:                p.ID,
+			DisplayName:       p.DisplayName,
+			BadgeLabel:        p.BadgeLabel,
+			BadgeClass:        p.BadgeClass,
+			Origin:            p.Origin,
+			Kind:              p.Kind,
+			DefaultChannel:    p.DefaultChannel,
+			Live:              p.Live,
+			ChannelCount:      channels,
+			Enabled:           !pc.Disabled,
+			HLSBufferDisabled: pc.HLSBufferDisabled,
+		})
+	}
+	return out
+}
+
+func (m *integrationCatalogManager) UpdateProvider(id string, patch chassis.CatalogProviderPatch) (adapters.ApplyScope, error) {
+	scope, err := m.patchStreams(func(cfg *streams.Config) {
+		integrationEnsureProvider(cfg, id)
+		pc := cfg.Providers[id]
+		if patch.Enabled != nil {
+			pc.Disabled = !*patch.Enabled
+		}
+		if patch.HLSBufferDisabled != nil {
+			pc.HLSBufferDisabled = *patch.HLSBufferDisabled
+		}
+		cfg.Providers[id] = pc
+	})
+	if err != nil {
+		return 0, err
+	}
+	return integrationMaxScope(scope, integrationDeclaredProviderScope(patch)), nil
+}
+
+func (m *integrationCatalogManager) SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error) {
+	cat := m.adapter.Catalog()
+	scope, err := m.patchStreams(func(cfg *streams.Config) {
+		if cfg.Providers == nil {
+			cfg.Providers = map[string]streams.ProviderConfig{}
+		}
+		for _, p := range cat {
+			if !p.Live {
+				continue
+			}
+			pc := cfg.Providers[p.ID]
+			pc.HLSBufferDisabled = disabled
+			cfg.Providers[p.ID] = pc
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	return integrationMaxScope(scope, adapters.ScopeRestartCast), nil
+}
+
+func (m *integrationCatalogManager) patchStreams(apply func(*streams.Config)) (adapters.ApplyScope, error) {
+	cfg := m.adapter.ConfigSnapshot()
+	apply(&cfg)
+	return m.adapter.ApplyConfigValue(cfg, m.adapterSaver.Save)
+}
+
+func integrationEnsureProvider(cfg *streams.Config, id string) {
+	if cfg.Providers == nil {
+		cfg.Providers = map[string]streams.ProviderConfig{}
+	}
+	if _, ok := cfg.Providers[id]; !ok {
+		cfg.Providers[id] = streams.ProviderConfig{}
+	}
+}
+
+func integrationDeclaredProviderScope(patch chassis.CatalogProviderPatch) adapters.ApplyScope {
+	s := adapters.ApplyScope(0)
+	if patch.Enabled != nil {
+		s = integrationMaxScope(s, adapters.ScopeHotSwap)
+	}
+	if patch.HLSBufferDisabled != nil {
+		s = integrationMaxScope(s, adapters.ScopeRestartCast)
+	}
+	return s
+}
+
+func integrationMaxScope(a, b adapters.ApplyScope) adapters.ApplyScope {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// integrationConfigReset satisfies chassis.ConfigReset for the integration
+// test package. Mirrors cmd/mister-groovy-relay/config_reset.go.
+type integrationConfigReset struct {
+	path    string
+	mu      *sync.Mutex
+	dataDir string
+}
+
+func (r *integrationConfigReset) ResetToDefaults() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rendered, err := config.DefaultConfigTOML(r.dataDir)
+	if err != nil {
+		return fmt.Errorf("render defaults: %w", err)
+	}
+	return config.WriteAtomic(r.path, rendered)
+}
+
+// newChassisIntegrationEnvForCatalog builds a chassis env identical to
+// newChassisIntegrationEnvForSettings but also wires CatalogManager and
+// ConfigReset so the 4C catalog-pane routes are live.
+func newChassisIntegrationEnvForCatalog(t *testing.T) *chassisEnv {
+	t.Helper()
+	dir := t.TempDir()
+
+	emptyStore := []byte(`{"version":1,"slots":[]}`)
+	if err := os.WriteFile(filepath.Join(dir, "chassis_presets.json"), emptyStore, 0o600); err != nil {
+		t.Fatalf("seed empty chassis_presets.json: %v", err)
+	}
+
+	bridge := testSettingsBridgeConfig(dir)
+	cfgPath := testSettingsConfigPath(t, dir, bridge)
+
+	sec := &config.Sectioned{Bridge: bridge}
+	reg := adapters.NewRegistry()
+
+	bridgeSaver := uiserver.NewBridgeSaver(cfgPath, sec, fakeCoreForSettingsTests{}, reg)
+	adapterSaver := uiserver.NewAdapterSaver(cfgPath, bridgeSaver.Mu())
+
+	streamsA, err := streams.New(streams.AdapterConfig{
+		Bridge: config.BridgeConfig{DataDir: dir},
+		Core:   &core.Manager{},
+	})
+	if err != nil {
+		t.Fatalf("streams.New: %v", err)
+	}
+	streamsA.SetEnabled(true)
+
+	session := &fakeIntegrationSession{view: core.StatusHomeView{State: core.StateIdle}}
+	fakeStreams := &recordingStreamsCaster{session: session}
+
+	cm := &integrationCatalogManager{adapter: streamsA, adapterSaver: adapterSaver}
+	cr := &integrationConfigReset{path: cfgPath, mu: bridgeSaver.Mu(), dataDir: dir}
+
+	srv, err := chassis.New(chassis.Config{
+		Bridge:                    bridge,
+		Manager:                   &core.Manager{},
+		Registry:                  reg,
+		Version:                   "integration-test",
+		StartedAt:                 time.Now(),
+		HostIP:                    "127.0.0.1",
+		Session:                   session,
+		PresetViewer:              streamsA,
+		PresetEditor:              streamsA,
+		StreamsCatalogViewer:      streamsA,
+		StreamsCaster:             fakeStreams,
+		SourceAvailabilityViewers: []adapters.SourceAvailabilityViewer{streamsA},
+		BridgeSaver:               bridgeSaver,
+		CatalogManager:            cm,
+		ConfigReset:               cr,
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	srv.Mount(mux)
+	ts := httptest.NewServer(mux)
+
+	return &chassisEnv{
+		t:           t,
+		dir:         dir,
+		ts:          ts,
+		srv:         srv,
+		mux:         mux,
+		streamsA:    streamsA,
+		fakeStreams:  fakeStreams,
+		session:     session,
+		bridgeSaver: bridgeSaver,
+	}
+}
+
+// readConfigTOML reads the config.toml at cfgPath and returns it as a string.
+func readConfigTOML(t *testing.T, cfgPath string) string {
+	t.Helper()
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", cfgPath, err)
+	}
+	return string(b)
+}
+
+func TestChassis_CatalogPane_RendersProviderRows(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	res, err := http.Get(env.ts.URL + "/receiver")
+	if err != nil {
+		t.Fatalf("GET /receiver: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	defer res.Body.Close()
+
+	for _, want := range []string{
+		`data-pane="catalog"`,
+		`data-catalog-provider="mtv-rewind"`,
+		`data-catalog-direct-hls`,
+		`id="restore-defaults-btn"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("GET /receiver body missing %q", want)
+		}
+	}
+}
+
+func TestChassis_PostCatalogProvider_EnabledFalse_DiskAndMemoryUpdated(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	// Catalog routes require Sec-Fetch-Site: same-origin (requireSameOrigin middleware).
+	res := env.PostForm("/receiver/settings/catalog/provider/mtv-rewind", url.Values{"enabled": {"false"}})
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %d; body %s", res.StatusCode, string(body))
+	}
+
+	cfgPath := filepath.Join(env.dir, "config.toml")
+	tomlContent := readConfigTOML(t, cfgPath)
+	// encodeSectionTOML writes providers as a [providers.<id>] subtable inside
+	// the [adapters.streams] section (not [adapters.streams.providers.<id>]).
+	if !strings.Contains(tomlContent, "[providers.mtv-rewind]") || !strings.Contains(tomlContent, "disabled = true") {
+		t.Errorf("disk TOML did not record mtv-rewind disabled = true; got:\n%s", tomlContent)
+	}
+}
+
+func TestChassis_PostCatalogProvider_HLSBufferDisabled_RecastScope(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	res := env.PostForm("/receiver/settings/catalog/provider/toonami-aftermath", url.Values{"hls_buffer_disabled": {"true"}})
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(body), `"scope":"recast"`) {
+		t.Errorf("expected scope:recast; got: %s", string(body))
+	}
+}
+
+func TestChassis_PostCatalogProvider_BothKeys_RecastMaxWins(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	res := env.PostForm("/receiver/settings/catalog/provider/toonami-aftermath", url.Values{
+		"enabled":             {"true"},
+		"hls_buffer_disabled": {"true"},
+	})
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(body), `"scope":"recast"`) {
+		t.Errorf("expected scope:recast (max-wins); got: %s", string(body))
+	}
+}
+
+func TestChassis_PostCatalogDirectStreamHLS_FlipsLiveOnly(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	res := env.PostForm("/receiver/settings/catalog/direct-stream-hls-buffer", url.Values{"disabled": {"true"}})
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(body), `"scope":"recast"`) {
+		t.Errorf("expected scope:recast; got: %s", string(body))
+	}
+
+	cfgPath := filepath.Join(env.dir, "config.toml")
+	tomlContent := readConfigTOML(t, cfgPath)
+	// toonami-aftermath is the only Live provider; it must be flipped.
+	if !strings.Contains(tomlContent, "[providers.toonami-aftermath]") || !strings.Contains(tomlContent, "hls_buffer_disabled = true") {
+		t.Errorf("disk TOML did not record toonami-aftermath hls_buffer_disabled = true; got:\n%s", tomlContent)
+	}
+	// mtv-rewind is NOT Live; it must not be flipped.
+	if strings.Contains(tomlContent, "[providers.mtv-rewind]") && strings.Contains(tomlContent, "hls_buffer_disabled = true") {
+		t.Errorf("non-Live provider mtv-rewind was incorrectly flipped")
+	}
+}
+
+func TestChassis_PostCatalogProvider_UnknownID_404(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	res := env.PostForm("/receiver/settings/catalog/provider/does-not-exist", url.Values{"enabled": {"true"}})
+	defer res.Body.Close()
+	if res.StatusCode != 404 {
+		t.Errorf("status %d; want 404", res.StatusCode)
+	}
+}
+
+func TestChassis_PostActionRestoreDefaults_DiskMatchesDefaults(t *testing.T) {
+	env := newChassisIntegrationEnvForCatalog(t)
+	defer env.Close()
+
+	// Dirty the config first.
+	preRes := env.PostForm("/receiver/settings/catalog/provider/mtv-rewind", url.Values{"enabled": {"false"}})
+	preRes.Body.Close()
+	if preRes.StatusCode != 200 {
+		t.Fatalf("pre-reset POST status = %d", preRes.StatusCode)
+	}
+
+	// Seed a sentinel file in data_dir; reset must not disturb it.
+	sentinel := filepath.Join(env.dir, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("survives"), 0o644); err != nil {
+		t.Fatalf("seed sentinel: %v", err)
+	}
+
+	res := env.PostForm("/receiver/settings/action/restore-defaults", url.Values{})
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(body), `"scope":"reboot"`) {
+		t.Errorf("expected scope:reboot; got %s", string(body))
+	}
+
+	cfgPath := filepath.Join(env.dir, "config.toml")
+	gotTOML := readConfigTOML(t, cfgPath)
+	wantTOML, err := config.DefaultConfigTOML(env.dir)
+	if err != nil {
+		t.Fatalf("DefaultConfigTOML: %v", err)
+	}
+	if gotTOML != string(wantTOML) {
+		t.Errorf("disk TOML differs from DefaultConfigTOML(%q);\ngot:\n%s\nwant:\n%s",
+			env.dir, gotTOML, string(wantTOML))
+	}
+
+	if got, _ := os.ReadFile(sentinel); string(got) != "survives" {
+		t.Errorf("data_dir sentinel was disturbed by reset")
+	}
+}
