@@ -260,3 +260,67 @@ func TestAdapter_ApplyConfigValue_SnapshotRebuildFailureNoSaveNoInMemoryChange(t
 		t.Fatalf("in-memory state mutated after snapshot rebuild failure")
 	}
 }
+
+func TestAdapter_StopActiveCast_DropsActiveQueueAndCallsCore(t *testing.T) {
+	a := mustTestAdapter(t)
+	core := &fakeCore{}
+	a.core = core
+	a.active = newFakeActiveQueueForStopActiveCast(t)
+	activeRef := activeAdapterRef(a.active)
+	if activeRef == "" {
+		t.Fatalf("activeAdapterRef returned empty ref for seeded queue")
+	}
+	core.status.AdapterRef = activeRef
+
+	if err := a.StopActiveCast(); err != nil {
+		t.Fatalf("StopActiveCast: %v", err)
+	}
+	if a.active != nil {
+		t.Fatalf("expected a.active to be cleared; got non-nil")
+	}
+	if core.stopCalls != 1 {
+		t.Fatalf("StopIfAdapterRef calls = %d; want 1", core.stopCalls)
+	}
+	if core.status.AdapterRef != "" {
+		t.Fatalf("core AdapterRef = %q; want cleared", core.status.AdapterRef)
+	}
+}
+
+func TestAdapter_StopActiveCast_NoActiveQueue_NoOp(t *testing.T) {
+	a := mustTestAdapter(t)
+	core := &fakeCore{}
+	a.core = core
+	a.active = nil
+
+	if err := a.StopActiveCast(); err != nil {
+		t.Fatalf("StopActiveCast: %v", err)
+	}
+	if core.stopCalls != 0 {
+		t.Fatalf("StopIfAdapterRef calls = %d; want 0", core.stopCalls)
+	}
+}
+
+func TestAdapter_StopActiveCast_NoCoreManager_NoOp(t *testing.T) {
+	a := mustTestAdapter(t)
+	a.core = nil
+	a.active = newFakeActiveQueueForStopActiveCast(t)
+
+	if err := a.StopActiveCast(); err != nil {
+		t.Fatalf("StopActiveCast: %v", err)
+	}
+	// active is still cleared even when core is nil — clearActiveLocked runs.
+	if a.active != nil {
+		t.Fatalf("expected a.active to be cleared even without core; got non-nil")
+	}
+}
+
+func newFakeActiveQueueForStopActiveCast(t *testing.T) *ActiveQueue {
+	t.Helper()
+	return &ActiveQueue{
+		ProviderID: "mtv-rewind",
+		ChannelID:  "1stday",
+		SessionID:  "streams-session",
+		ItemToken:  1,
+		Items:      []StreamItem{{ID: "one", URL: "https://media.example/one.m3u8"}},
+	}
+}

@@ -552,6 +552,36 @@ func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []b
 	return configChangeScope(oldCfg, newCfg), nil
 }
 
+// StopActiveCast drops the streams adapter's active queue and stops the
+// underlying core session via SessionManager.StopIfAdapterRef. It does
+// NOT cancel the manifest refresh loop or change the adapter's State —
+// this is intentionally a narrower operation than Stop(). Used by the
+// chassis catalogManager wrapper as the RECAST runtime side effect
+// when Catalog-pane saves change per-provider HLS posture.
+//
+// Locking discipline mirrors Adapter.Stop(): playbackMu first, then
+// mu for the snapshot read and clearActiveLocked, then mu released
+// before the (potentially blocking) StopIfAdapterRef call.
+func (a *Adapter) StopActiveCast() error {
+	a.playbackMu.Lock()
+	defer a.playbackMu.Unlock()
+
+	a.mu.Lock()
+	ref := activeAdapterRef(a.active)
+	hadActive := a.active != nil
+	coreManager := a.core
+	if hadActive {
+		a.clearActiveLocked()
+	}
+	a.mu.Unlock()
+
+	if hadActive && coreManager != nil && ref != "" {
+		_, err := coreManager.StopIfAdapterRef(ref)
+		return err
+	}
+	return nil
+}
+
 // encodeSectionTOML encodes a Config to the TOML bytes that belong
 // inside the [adapters.streams] section. Sibling of the existing
 // configToWire conversion.
