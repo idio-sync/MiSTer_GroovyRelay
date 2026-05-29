@@ -1605,3 +1605,12 @@ func contains(s []string, want string) bool {
 	}
 	return false
 }
+
+func TestDLNADisplayMetadata(t *testing.T) {
+	if d := dlnaDisplayMetadata("Big Buck Bunny"); d.Primary != "Big Buck Bunny" {
+		t.Fatalf("d = %+v", d)
+	}
+	if got := dlnaDisplayMetadata("  ").Primary; got != "" {
+		t.Fatalf("blank title primary = %q", got)
+	}
+}

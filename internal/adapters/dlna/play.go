@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
@@ -93,6 +94,13 @@ func dlnaInputPolicyForSource(canSeek bool) core.MediaInputPolicy {
 		BlockedHeaders:    []string{"Referer"},
 		DisablePlaylists:  true,
 	}
+}
+
+// dlnaDisplayMetadata builds the core.DisplayMetadata for a DLNA session
+// from the DIDL-Lite title. The title is trimmed so whitespace-only
+// strings produce an empty Primary row rather than a blank VFD line.
+func dlnaDisplayMetadata(title string) core.DisplayMetadata {
+	return core.DisplayMetadata{Primary: strings.TrimSpace(title)}
 }
 
 var playBeforeStartAdmissionHook func()
@@ -403,6 +411,10 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 	}
 	onStop := a.onStopForRef(ref, playbackURI, sessionCleanup)
 
+	a.mu.Lock()
+	didlTitle := a.loadedMeta.Title
+	a.mu.Unlock()
+
 	req := core.SessionRequest{
 		StreamURL:        playbackURI,
 		Capabilities:     core.Capabilities{CanSeek: canSeek, CanPause: true},
@@ -411,6 +423,8 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 		SeekOffsetMs:     seekOffsetMs,
 		OnStop:           onStop,
 		MediaInputPolicy: dlnaInputPolicyForSource(canSeek),
+		Title:            didlTitle,
+		DisplayMetadata:  dlnaDisplayMetadata(didlTitle),
 	}
 
 	matched, err := a.core.StartSessionIfAdapterRef(req, expectedCoreRef)
