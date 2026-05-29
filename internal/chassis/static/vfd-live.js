@@ -2,7 +2,8 @@
 //
 // Subscribes to /receiver/events (SSE), routes named events:
 //   state -> window.Chassis.State.set(idle|live)
-//   vfd   -> textContent updates on data-vfd-{title,marquee,queue,uptime}
+//   vfd   -> textContent updates on data-vfd-{primary,secondary,tertiary,queue,uptime}
+//            (overflowing tier rows marquee-scroll; empty tiers collapse)
 //
 // Loaded after chassis.js (Phase 0) so window.Chassis is populated.
 // Each later spec ships its own JS file that hangs off window.Chassis
@@ -67,17 +68,56 @@
     }
   }
 
+  function applyTier(attr, text) {
+    const el = document.querySelector(`[${attr}]`);
+    if (!el) return;
+    el.textContent = text || '';
+    const row = el.closest('.vfd-row');
+    if (row) row.classList.toggle('is-empty', !text);
+    measureScroll(row, el);
+  }
+
+  // measureScroll toggles marquee animation when a tier's text overflows
+  // its column. Distance + duration are set as CSS custom properties so
+  // the @keyframes can translate by exactly the overflow (constant ~40px/s
+  // so long titles aren't dizzyingly fast).
+  function measureScroll(row, el) {
+    if (!row || !el) return;
+    row.classList.remove('is-scrolling');
+    row.style.removeProperty('--vfd-scroll-dist');
+    row.style.removeProperty('--vfd-scroll-dur');
+    const overflow = el.scrollWidth - row.clientWidth;
+    if (overflow > 4) {
+      const dist = overflow + 24; // trailing gap before the loop restarts
+      const dur = Math.max(6, dist / 40);
+      row.style.setProperty('--vfd-scroll-dist', dist + 'px');
+      row.style.setProperty('--vfd-scroll-dur', dur + 's');
+      row.classList.add('is-scrolling');
+    }
+  }
+
+  function remeasureAllTiers() {
+    ['[data-vfd-primary]', '[data-vfd-secondary]', '[data-vfd-tertiary]'].forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (el) measureScroll(el.closest('.vfd-row'), el);
+    });
+  }
+
   function handleVfdEvent(ev) {
     try {
       const data = JSON.parse(ev.data);
-      const title = document.querySelector('[data-vfd-title]');
-      const marquee = document.querySelector('[data-vfd-marquee]');
+      applyTier('data-vfd-primary', data.primary);
+      applyTier('data-vfd-secondary', data.secondary);
+      applyTier('data-vfd-tertiary', data.tertiary);
       const queue = document.querySelector('[data-vfd-queue]');
       const uptime = document.querySelector('[data-vfd-uptime]');
-      if (title) title.textContent = data.title || '';
-      if (marquee) marquee.textContent = data.marquee || '';
       if (queue) queue.textContent = `${data.queueCurrent} / ${data.queueTotal}`;
       if (uptime) uptime.textContent = data.uptime || '';
+      // Re-measure once fonts are final (DSEG14 metrics differ from the
+      // fallback monospace; a pre-font measurement mis-sizes the marquee).
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(remeasureAllTiers);
+      }
     } catch (err) {
       console.warn('vfd-live: bad vfd payload', ev.data, err);
     }
@@ -141,6 +181,11 @@
       connect();
     },
   });
+
+  // Register the resize re-measure exactly once at load. connect() can run
+  // multiple times (reconnect() re-invokes it), so binding inside connect()
+  // would stack a new handler per SSE reconnect in a long-running kiosk.
+  window.addEventListener('resize', remeasureAllTiers);
 
   document.addEventListener('DOMContentLoaded', connect);
 })();

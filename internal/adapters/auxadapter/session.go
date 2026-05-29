@@ -198,8 +198,9 @@ func (a *Adapter) buildSessionRequestLocked(ctx context.Context, input AUXInput)
 	req := core.SessionRequest{
 		AdapterRef: ref,
 		Source:     auxSourceName,
-		Title:      input.Name,
-		MediaKind:  core.MediaKindMusic,
+		Title:           input.Name,
+		DisplayMetadata: core.DisplayMetadata{Primary: input.Name, Secondary: "AUX"},
+		MediaKind:       core.MediaKindMusic,
 		Capabilities: core.Capabilities{
 			CanPause: false,
 			CanSeek:  false,

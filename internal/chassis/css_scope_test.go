@@ -359,9 +359,9 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			want:     []string{"flex: 1 1 100% !important;", "flex-basis: 100% !important;"},
 		},
 		{
-			name:     "520 tightens VFD marquee readability",
+			name:     "520 tightens VFD tertiary readability",
 			atRule:   "@container chassis (max-width: 520px)",
-			selector: "body.receiver .vfd .marquee-line",
+			selector: "body.receiver .vfd .tier-tertiary",
 			want:     []string{"font-size: 10px;", "letter-spacing: 0.04em;"},
 		},
 		{

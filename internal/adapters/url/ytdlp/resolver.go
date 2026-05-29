@@ -57,6 +57,8 @@ type Resolution struct {
 	AudioHeaders map[string]string // empty in single-stream case
 	IsLive       bool              // true for live streams (YouTube Live, Twitch)
 	Title        string            // surfaced in the URL adapter's history panel + slog
+	Channel      string            // yt-dlp channel/uploader — VFD secondary
+	UploadDate   string            // yt-dlp upload_date, raw "YYYYMMDD" — formatted by the caller
 }
 
 // Resolver runs yt-dlp and parses its JSON output. Construct one per
@@ -146,6 +148,9 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		HTTPHeaders      map[string]string `json:"http_headers"`
 		IsLive           bool              `json:"is_live"`
 		Title            string            `json:"title"`
+		Channel          string            `json:"channel"`
+		Uploader         string            `json:"uploader"`
+		UploadDate       string            `json:"upload_date"`
 		RequestedFormats []struct {
 			URL         string            `json:"url"`
 			HTTPHeaders map[string]string `json:"http_headers"`
@@ -185,6 +190,8 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 			AudioHeaders: sanitizeHeaders(a.HTTPHeaders),
 			IsLive:       raw.IsLive,
 			Title:        raw.Title,
+			Channel:      firstNonEmptyStr(raw.Channel, raw.Uploader),
+			UploadDate:   raw.UploadDate,
 		}, nil
 	}
 
@@ -206,11 +213,21 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 	headers := sanitizeHeaders(raw.HTTPHeaders)
 
 	return &Resolution{
-		URL:     raw.URL,
-		Headers: headers,
-		IsLive:  raw.IsLive,
-		Title:   raw.Title,
+		URL:        raw.URL,
+		Headers:    headers,
+		IsLive:     raw.IsLive,
+		Title:      raw.Title,
+		Channel:    firstNonEmptyStr(raw.Channel, raw.Uploader),
+		UploadDate: raw.UploadDate,
 	}, nil
+}
+
+// firstNonEmptyStr returns a if non-empty, else b.
+func firstNonEmptyStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // classifyDualFormats inspects the (vcodec, acodec) of two requested_formats

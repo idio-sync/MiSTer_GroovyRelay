@@ -482,6 +482,60 @@ func TestResolve_ContextTimeout(t *testing.T) {
 	}
 }
 
+func TestResolve_ParsesChannelAndUploadDate(t *testing.T) {
+	jsonOut := `{"url":"https://v/stream.mp4","title":"Repaired a Trinitron","channel":"Tech Connections","upload_date":"20240315"}`
+	runner := &stubRunner{stdouts: [][]byte{[]byte(jsonOut)}}
+	r := &Resolver{Binary: "yt-dlp", Timeout: time.Second, Runner: runner}
+	res, err := r.Resolve(context.Background(), "https://example/watch", "best", "")
+	if err != nil {
+		t.Fatalf("Resolve err = %v", err)
+	}
+	if res.Channel != "Tech Connections" || res.UploadDate != "20240315" {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// TestResolve_DualStreamParsesChannelAndUploadDate covers the DASH
+// dual-stream return site: top-level channel + upload_date must be
+// surfaced even when yt-dlp reports a merged video+audio pair via
+// requested_formats.
+func TestResolve_DualStreamParsesChannelAndUploadDate(t *testing.T) {
+	const dashJSON = `{
+"url": "https://video.googlevideo.com/v.mp4?sig=v",
+"http_headers": {"User-Agent": "Mozilla/5.0"},
+"is_live": false,
+"title": "Test DASH Video",
+"channel": "Tech Connections",
+"upload_date": "20240315",
+"requested_formats": [
+  {
+    "url": "https://video.googlevideo.com/v.mp4?sig=v",
+    "http_headers": {"User-Agent": "yt-dlp/video"},
+    "vcodec": "avc1.4d401f",
+    "acodec": "none"
+  },
+  {
+    "url": "https://audio.googlevideo.com/a.m4a?sig=a",
+    "http_headers": {"User-Agent": "yt-dlp/audio"},
+    "vcodec": "none",
+    "acodec": "mp4a.40.2"
+  }
+]
+}`
+	runner := &stubRunner{stdouts: [][]byte{[]byte(dashJSON)}}
+	r := &Resolver{Binary: "yt-dlp", Timeout: time.Second, Runner: runner}
+	res, err := r.Resolve(context.Background(), "https://example/watch", "bv*+ba", "")
+	if err != nil {
+		t.Fatalf("Resolve err = %v", err)
+	}
+	if res.AudioURL == "" {
+		t.Fatalf("expected dual-stream path; AudioURL empty: res = %+v", res)
+	}
+	if res.Channel != "Tech Connections" || res.UploadDate != "20240315" {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
 // helpers
 
 func mustContain(t *testing.T, argv []string, want string) {

@@ -37,6 +37,12 @@ func TestStartAUXStreamURLBuildsProbeAndPlayURLs(t *testing.T) {
 	if req.Title != "Analog In" || req.Visualizer.Metadata.Title != "Analog In" || req.Visualizer.Metadata.Artist != "AUX" {
 		t.Fatalf("bad title/metadata: %+v", req)
 	}
+	if req.DisplayMetadata.Primary != "Analog In" {
+		t.Fatalf("DisplayMetadata.Primary = %q, want Analog In", req.DisplayMetadata.Primary)
+	}
+	if req.DisplayMetadata.Secondary != "AUX" {
+		t.Fatalf("DisplayMetadata.Secondary = %q, want AUX", req.DisplayMetadata.Secondary)
+	}
 	if req.StreamProbeURL == "" || req.StreamURL == "" || req.StreamProbeURL == req.StreamURL {
 		t.Fatalf("probe/play URLs not distinct: probe=%q play=%q", req.StreamProbeURL, req.StreamURL)
 	}

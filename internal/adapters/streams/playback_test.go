@@ -1297,3 +1297,18 @@ func TestStreamsMeterOverlayClearsBeforeBaseOnStopAndClose(t *testing.T) {
 func TestAdapterImplementsMeterOverlayProvider(t *testing.T) {
 	var _ adapters.MeterOverlayProvider = (*Adapter)(nil)
 }
+
+func TestStreamsDisplayMetadata(t *testing.T) {
+	d := streamsDisplayMetadata("Adult Swim", "Toonami Aftermath", "Action Block")
+	if d.Primary != "Toonami Aftermath" || d.Secondary != "Adult Swim" || d.Tertiary != "Action Block" {
+		t.Fatalf("d = %+v", d)
+	}
+	same := streamsDisplayMetadata("YouTube", "Lofi Radio", "Lofi Radio")
+	if same.Tertiary != "" {
+		t.Fatalf("expected empty tertiary, got %+v", same)
+	}
+	fb := streamsDisplayMetadata("YouTube", "", "Some Video")
+	if fb.Primary != "Some Video" {
+		t.Fatalf("fallback primary = %+v", fb)
+	}
+}

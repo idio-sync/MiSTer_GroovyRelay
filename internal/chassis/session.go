@@ -3,7 +3,6 @@ package chassis
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -38,9 +37,10 @@ type TransportController interface {
 
 // snapshotFromSession builds the page-render data from current bridge
 // session state. When sv is nil OR the bridge is idle, falls back to
-// idleSnapshot. When live (playing or paused), overrides VFD title +
-// marquee + State; queue stays 0/0 placeholder until a later spec
-// surfaces real queue data on StatusHomeView. Visualizer mode is always
+// idleSnapshot. When live (playing or paused), overrides VFD
+// primary/secondary/tertiary tiers + State; queue stays 0/0 placeholder
+// until a later spec surfaces real queue data on StatusHomeView.
+// Visualizer mode is always
 // sourced from vv when available, falling back to cfg.
 //
 // State mapping (per spec):
@@ -78,8 +78,7 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 	case core.StatePlaying, core.StatePaused:
 		base.State = StateLive
 		base.VFD.State = string(StateLive)
-		base.VFD.Title = view.Title
-		base.VFD.Marquee = formatLiveMarquee(view)
+		base.VFD.Primary, base.VFD.Secondary, base.VFD.Tertiary = vfdTiersFromView(view)
 		// QueueCurrent / QueueTotal stay 0/0 (Phase 1 placeholder).
 		// SystemTime + Uptime are computed in idleSnapshot from `now` and
 		// cfg.StartedAt; they remain valid in live state.
@@ -213,25 +212,15 @@ func actionsEnabledFromAdapterView(view adapters.PlaybackBannerAdapterView) Acti
 	return out
 }
 
-// formatLiveMarquee composes the VFD marquee string for live state per
-// spec §"Field mapping": "<UPPER(Source)> · <position> / <duration>".
-// Examples:
-//
-//	PLEX, 04:23, 09:56  → "PLEX · 04:23 / 09:56"
-//	PLEX, 04:23, 0      → "PLEX · 04:23 / --:--"   (unknown duration)
-//	plex, 0,      0     → "PLEX · 00:00 / --:--"   (start of unknown stream)
-//	"",   0,      0     → "BRIDGE · 00:00 / --:--" (empty source fallback)
-//	1h4m5s position with same duration → "PLEX · 1:04:05 / 1:04:05"
-//
-// Source fallback is "BRIDGE" (NOT "PLAYING") per spec §"Field mapping".
-func formatLiveMarquee(view core.StatusHomeView) string {
-	src := strings.ToUpper(view.Source)
-	if src == "" {
-		src = "BRIDGE"
+// vfdTiersFromView maps the adapter-composed DisplayMetadata onto the
+// VFD's three rows. Primary falls back to the legacy Title so adapters
+// that have not yet populated DisplayMetadata still show their label.
+func vfdTiersFromView(view core.StatusHomeView) (primary, secondary, tertiary string) {
+	primary = view.Display.Primary
+	if primary == "" {
+		primary = view.Title
 	}
-	return fmt.Sprintf("%s · %s / %s", src,
-		formatPlaybackPosition(view.Position),
-		formatPlaybackDuration(view.Duration))
+	return primary, view.Display.Secondary, view.Display.Tertiary
 }
 
 // formatPlaybackPosition renders the current position. Negative durations

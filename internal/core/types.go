@@ -55,6 +55,17 @@ type VisualizerMetadata struct {
 	ArtworkPath string
 }
 
+// DisplayMetadata is the adapter-agnostic, pre-formatted text the
+// receiver VFD renders as three stacked rows. Adapters compose these
+// strings (they own per-media-type formatting); core never interprets
+// them. Empty tiers render as collapsed rows. See
+// docs/superpowers/specs/2026-05-29-receiver-vfd-multirow-metadata-design.md.
+type DisplayMetadata struct {
+	Primary   string // headline row (biggest)
+	Secondary string // attribution row
+	Tertiary  string // detail row (dim)
+}
+
 type VisualizerRequest struct {
 	Enabled  bool
 	Mode     VisualizerMode
@@ -173,6 +184,10 @@ type SessionRequest struct {
 	// Surfaced by the status home; never inspected by core. May be empty.
 	Title string
 
+	// DisplayMetadata is the adapter-composed three-row VFD text. When
+	// zero-valued, consumers fall back to Title for the primary row.
+	DisplayMetadata DisplayMetadata
+
 	// MediaKind identifies whether the active item should be reported as
 	// video or music. Empty is treated as video for legacy adapters.
 	MediaKind MediaKind
@@ -223,8 +238,9 @@ type SessionStatus struct {
 type StatusHomeView struct {
 	State       State
 	MediaKind   MediaKind
-	Title       string // empty when idle
-	AdapterRef  string // empty when idle
+	Title       string          // empty when idle
+	Display     DisplayMetadata // adapter-composed VFD rows; empty when idle
+	AdapterRef  string          // empty when idle
 	Source      string // adapter name ("plex", "jellyfin", "url"); empty when idle
 	Generation  uint64
 	Modeline    string // e.g. "NTSC_480i"; empty when idle

@@ -39,12 +39,12 @@ type sourceButtonEnvelope struct {
 }
 
 // vfdEnvelope is the payload for the `vfd` SSE event. Carries the
-// minimal Phase 1 fields the client needs to update the VFD spans;
-// Spec 5 (telemetry) and later specs add their own envelope types
-// for other event names.
+// three display tiers plus queue and uptime; Spec 5 (telemetry) and
+// later specs add their own envelope types for other event names.
 type vfdEnvelope struct {
-	Title        string `json:"title"`
-	Marquee      string `json:"marquee"`
+	Primary      string `json:"primary"`
+	Secondary    string `json:"secondary"`
+	Tertiary     string `json:"tertiary"`
 	QueueCurrent int    `json:"queueCurrent"`
 	QueueTotal   int    `json:"queueTotal"`
 	Uptime       string `json:"uptime"`
@@ -56,8 +56,9 @@ type vfdEnvelope struct {
 // handleEvents.
 func vfdEnvelopeFrom(v VFDData) vfdEnvelope {
 	return vfdEnvelope{
-		Title:        v.Title,
-		Marquee:      v.Marquee,
+		Primary:      v.Primary,
+		Secondary:    v.Secondary,
+		Tertiary:     v.Tertiary,
 		QueueCurrent: v.QueueCurrent,
 		QueueTotal:   v.QueueTotal,
 		Uptime:       v.Uptime,
@@ -161,8 +162,9 @@ func emit(w io.Writer, name string, payload any) error {
 // (no reflection) and clarity (the function definition IS the spec
 // of which fields are part of the Phase 1 VFD wire-format surface).
 func vfdChanged(a, b VFDData) bool {
-	return a.Title != b.Title ||
-		a.Marquee != b.Marquee ||
+	return a.Primary != b.Primary ||
+		a.Secondary != b.Secondary ||
+		a.Tertiary != b.Tertiary ||
 		a.QueueCurrent != b.QueueCurrent ||
 		a.QueueTotal != b.QueueTotal ||
 		a.Uptime != b.Uptime
