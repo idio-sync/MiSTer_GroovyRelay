@@ -4,8 +4,8 @@
   <div class="screen vfd">
     <div class="vfd-state {{if eq .State "live"}}vfd-state--live{{else}}vfd-state--idle{{end}}">
       <div>
-        <div class="title-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~</span><span class="seg-text" data-vfd-title>{{.Title}}</span></div>
-        <div class="marquee-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~~~~ ~~ ~ ~~~~ ~~ ~~ ~~~~~~~ ~ ~~ ~~~~~~~ ~ ~ ~~~~~ ~~~ ~~ ~~~~ ~ ~~~~~~</span><span class="seg-text" data-vfd-marquee>{{.Marquee}}</span></div>
+        <div class="title-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~~</span><span class="seg-text" data-vfd-title>{{.Primary}}</span></div>
+        <div class="marquee-line seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~ ~~~~ ~~ ~ ~~~~ ~~ ~~ ~~~~~~~ ~ ~~ ~~~~~~~ ~ ~ ~~~~~ ~~~ ~~ ~~~~ ~ ~~~~~~</span><span class="seg-text" data-vfd-marquee>{{.Secondary}}</span></div>
       </div>
       <div class="right-panel">
         <div class="lbl">System time</div>

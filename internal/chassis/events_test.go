@@ -42,8 +42,8 @@ func TestEmit_VfdEnvelopeUsesCamelCaseFieldNames(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	err := emit(&buf, "vfd", vfdEnvelope{
-		Title:        "STANDBY",
-		Marquee:      "MISTER LINK OK",
+		Primary:      "STANDBY",
+		Secondary:    "MISTER LINK OK",
 		QueueCurrent: 0,
 		QueueTotal:   0,
 		Uptime:       "4H 12M",
@@ -52,7 +52,7 @@ func TestEmit_VfdEnvelopeUsesCamelCaseFieldNames(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 	got := buf.String()
-	for _, want := range []string{`"title":"STANDBY"`, `"marquee":"MISTER LINK OK"`,
+	for _, want := range []string{`"primary":"STANDBY"`, `"secondary":"MISTER LINK OK"`,
 		`"queueCurrent":0`, `"queueTotal":0`, `"uptime":"4H 12M"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("emit output missing %q\nfull output:\n%s", want, got)
@@ -133,8 +133,8 @@ func TestSourceChangedDetectsLampStateDelta(t *testing.T) {
 func TestVfdChanged_DetectsEveryFieldDelta(t *testing.T) {
 	t.Parallel()
 	base := VFDData{
-		Title:        "STANDBY",
-		Marquee:      "hint",
+		Primary:      "STANDBY",
+		Secondary:    "hint",
 		QueueCurrent: 0,
 		QueueTotal:   0,
 		Uptime:       "0H 0M",
@@ -144,8 +144,9 @@ func TestVfdChanged_DetectsEveryFieldDelta(t *testing.T) {
 		name   string
 		mutate func(*VFDData)
 	}{
-		{"title", func(v *VFDData) { v.Title = "Live Title" }},
-		{"marquee", func(v *VFDData) { v.Marquee = "PLEX · 00:00 / 03:00" }},
+		{"primary", func(v *VFDData) { v.Primary = "Live Primary" }},
+		{"secondary", func(v *VFDData) { v.Secondary = "Sec" }},
+		{"tertiary", func(v *VFDData) { v.Tertiary = "Ter" }},
 		{"queueCurrent", func(v *VFDData) { v.QueueCurrent = 1 }},
 		{"queueTotal", func(v *VFDData) { v.QueueTotal = 12 }},
 		{"uptime", func(v *VFDData) { v.Uptime = "0H 1M" }},
@@ -163,7 +164,7 @@ func TestVfdChanged_DetectsEveryFieldDelta(t *testing.T) {
 
 func TestVfdChanged_IgnoresSystemTimeAndState(t *testing.T) {
 	t.Parallel()
-	base := VFDData{Title: "X", State: "idle", SystemTime: "10:30"}
+	base := VFDData{Primary: "X", State: "idle", SystemTime: "10:30"}
 	next := base
 	next.SystemTime = "10:31"
 	next.State = "live" // duplicate of ReceiverPageData.State; handled separately
@@ -174,7 +175,7 @@ func TestVfdChanged_IgnoresSystemTimeAndState(t *testing.T) {
 
 func TestVfdChanged_IdenticalReturnsFalse(t *testing.T) {
 	t.Parallel()
-	v := VFDData{Title: "X", Marquee: "Y", QueueCurrent: 3, QueueTotal: 12, Uptime: "1H 2M"}
+	v := VFDData{Primary: "X", Secondary: "Y", QueueCurrent: 3, QueueTotal: 12, Uptime: "1H 2M"}
 	if vfdChanged(v, v) {
 		t.Errorf("vfdChanged should be false for identical inputs")
 	}
@@ -499,8 +500,8 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	if !strings.Contains(body, "event: vfd\n") {
 		t.Errorf("body missing initial vfd event")
 	}
-	if !strings.Contains(body, `"title":"STANDBY"`) {
-		t.Errorf("body missing STANDBY title payload")
+	if !strings.Contains(body, `"primary":"STANDBY"`) {
+		t.Errorf("body missing STANDBY primary payload")
 	}
 	if !strings.Contains(body, "event: transport\n") {
 		t.Errorf("body missing initial transport event")
@@ -629,7 +630,7 @@ func TestHandleEvents_InitialBurstReadsFromCache(t *testing.T) {
 	if !strings.Contains(body, `"state":"live"`) {
 		t.Errorf("initial SSE burst should reflect cached live state; body:\n%s", body)
 	}
-	if !strings.Contains(body, `"title":"Seeded Title"`) {
+	if !strings.Contains(body, `"primary":"Seeded Title"`) {
 		t.Errorf("initial SSE VFD payload should match cache seed; body:\n%s", body)
 	}
 }
@@ -797,11 +798,11 @@ func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	s.handleEvents(w, req)
 
 	body := w.Body.String()
-	if !strings.Contains(body, `"title":"First Track"`) {
-		t.Errorf("missing initial title event:\n%s", body)
+	if !strings.Contains(body, `"primary":"First Track"`) {
+		t.Errorf("missing initial primary event:\n%s", body)
 	}
-	if !strings.Contains(body, `"title":"Second Track"`) {
-		t.Errorf("missing title-change vfd event:\n%s", body)
+	if !strings.Contains(body, `"primary":"Second Track"`) {
+		t.Errorf("missing primary-change vfd event:\n%s", body)
 	}
 }
 
@@ -1414,8 +1415,8 @@ func TestSnapshotCache_SeedsSynchronouslyBeforeFirstSSE(t *testing.T) {
 	if snap.State != StateLive {
 		t.Errorf("cached snapshot State = %q, want %q (the live SessionViewer)", snap.State, StateLive)
 	}
-	if snap.VFD.Title != "Live Title" {
-		t.Errorf("cached snapshot VFD.Title = %q, want %q", snap.VFD.Title, "Live Title")
+	if snap.VFD.Primary != "Live Title" {
+		t.Errorf("cached snapshot VFD.Primary = %q, want %q", snap.VFD.Primary, "Live Title")
 	}
 }
 

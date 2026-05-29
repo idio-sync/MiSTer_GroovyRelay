@@ -183,8 +183,8 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		State:     StateIdle,
 		VFD: VFDData{
 			State:        string(StateIdle),
-			Title:        "STANDBY",
-			Marquee:      "MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET",
+			Primary:      "STANDBY",
+			Secondary:    "MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET",
 			QueueCurrent: 0,
 			QueueTotal:   0,
 			SystemTime:   "22:47",
@@ -1824,11 +1824,8 @@ func TestSnapshotFromSession_LiveStateOverridesIdleDefaults(t *testing.T) {
 	if got.State != StateLive {
 		t.Errorf("State = %q, want %q", got.State, StateLive)
 	}
-	if got.VFD.Title != "First Day on MTV" {
-		t.Errorf("VFD.Title = %q, want First Day on MTV", got.VFD.Title)
-	}
-	if got.VFD.Marquee != "PLEX · 04:23 / 09:56" {
-		t.Errorf("VFD.Marquee = %q, want PLEX · 04:23 / 09:56", got.VFD.Marquee)
+	if got.VFD.Primary != "First Day on MTV" {
+		t.Errorf("VFD.Primary = %q, want First Day on MTV", got.VFD.Primary)
 	}
 	if got.VFD.State != string(StateLive) {
 		t.Errorf("VFD.State = %q, want %q (mirrors top-level State)", got.VFD.State, StateLive)
@@ -1912,12 +1909,42 @@ func TestSnapshotFromSession_MapsStatusHomeViewToVFDData(t *testing.T) {
 	}}
 	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
 
-	if got.VFD.Marquee != "JELLYFIN · 00:30 / 03:00" {
-		t.Errorf("VFD.Marquee = %q, want JELLYFIN · 00:30 / 03:00", got.VFD.Marquee)
+	if got.VFD.Secondary != "" {
+		t.Errorf("VFD.Secondary = %q, want empty (no DisplayMetadata set)", got.VFD.Secondary)
 	}
 	if got.VFD.QueueCurrent != 0 || got.VFD.QueueTotal != 0 {
 		t.Errorf("queue should be 0/0 placeholder in Phase 1; got %d/%d",
 			got.VFD.QueueCurrent, got.VFD.QueueTotal)
+	}
+}
+
+func TestSnapshotFromSession_PropagatesAllDisplayTiers(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 21, 22, 47, 0, 0, time.UTC)
+	cfg := nonZeroConfig()
+
+	sv := &fakeSessionViewer{view: core.StatusHomeView{
+		State:  core.StatePlaying,
+		Title:  "Legacy Title",
+		Source: "jellyfin",
+		Display: core.DisplayMetadata{
+			Primary:   "Burning Down the House",
+			Secondary: "Talking Heads",
+			Tertiary:  "Speaking in Tongues · 1983",
+		},
+	}}
+	got := snapshotFromSession(cfg, sv, nil, nil, nil, nil, fixedNow)
+
+	// Display.Primary wins over the legacy Title fallback, and all three
+	// tiers propagate end-to-end onto the VFD rows.
+	if got.VFD.Primary != "Burning Down the House" {
+		t.Errorf("VFD.Primary = %q, want Burning Down the House", got.VFD.Primary)
+	}
+	if got.VFD.Secondary != "Talking Heads" {
+		t.Errorf("VFD.Secondary = %q, want Talking Heads", got.VFD.Secondary)
+	}
+	if got.VFD.Tertiary != "Speaking in Tongues · 1983" {
+		t.Errorf("VFD.Tertiary = %q, want Speaking in Tongues · 1983", got.VFD.Tertiary)
 	}
 }
 
@@ -1949,10 +1976,7 @@ func TestHandleIndex_RendersLiveStateFromSession(t *testing.T) {
 		t.Errorf("body missing live body class: %s", body[:min(200, len(body))])
 	}
 	if !strings.Contains(body, "Burning Down the House") {
-		t.Errorf("body missing live title")
-	}
-	if !strings.Contains(body, "PLEX · 00:08 / 04:01") {
-		t.Errorf("body missing live marquee")
+		t.Errorf("body missing live title (VFD primary)")
 	}
 }
 
@@ -1964,8 +1988,8 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	data := VFDData{
-		Title:        "TEST-TITLE",
-		Marquee:      "TEST-MARQUEE",
+		Primary:      "TEST-PRIMARY",
+		Secondary:    "TEST-SECONDARY",
 		QueueCurrent: 1,
 		QueueTotal:   12,
 		SystemTime:   "22:47",
@@ -2002,8 +2026,8 @@ func TestVfdTemplate_LiveDataUsesLiveStateVariant(t *testing.T) {
 	var buf bytes.Buffer
 	data := VFDData{
 		State:        string(StateLive),
-		Title:        "Burning Down the House",
-		Marquee:      "PLEX · 00:08 / 04:01",
+		Primary:      "Burning Down the House",
+		Secondary:    "PLEX · 00:08 / 04:01",
 		QueueCurrent: 0,
 		QueueTotal:   0,
 		SystemTime:   "22:47",
@@ -2121,43 +2145,51 @@ func TestShellTemplate_EmitsChassisMetaTags(t *testing.T) {
 	}
 }
 
-func TestFormatLiveMarquee_HandlesUnknownDurationAndHours(t *testing.T) {
+func TestVfdTiersFromView_FallsBackToTitleWhenDisplayPrimaryEmpty(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		view core.StatusHomeView
-		want string
+		name            string
+		view            core.StatusHomeView
+		wantPrimary     string
+		wantSecondary   string
+		wantTertiary    string
 	}{
 		{
-			name: "unknown duration",
-			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex",
-				Position: 4*time.Minute + 23*time.Second},
-			want: "PLEX · 04:23 / --:--",
+			name: "legacy title fallback when Display is empty",
+			view: core.StatusHomeView{State: core.StatePlaying, Title: "My Track"},
+			wantPrimary:   "My Track",
+			wantSecondary: "",
+			wantTertiary:  "",
 		},
 		{
-			name: "zero position unknown duration",
-			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex"},
-			want: "PLEX · 00:00 / --:--",
+			name: "Display.Primary overrides Title",
+			view: core.StatusHomeView{
+				State: core.StatePlaying, Title: "Old Title",
+				Display: core.DisplayMetadata{Primary: "New Primary", Secondary: "Sec", Tertiary: "Ter"},
+			},
+			wantPrimary:   "New Primary",
+			wantSecondary: "Sec",
+			wantTertiary:  "Ter",
 		},
 		{
-			name: "empty source fallback",
-			view: core.StatusHomeView{State: core.StatePlaying, Source: "",
-				Position: 30 * time.Second, Duration: 3 * time.Minute},
-			want: "BRIDGE · 00:30 / 03:00",
-		},
-		{
-			name: "hour-long position single-digit hours",
-			view: core.StatusHomeView{State: core.StatePlaying, Source: "plex",
-				Position: time.Hour + 4*time.Minute + 5*time.Second,
-				Duration: time.Hour + 30*time.Minute},
-			want: "PLEX · 1:04:05 / 1:30:00",
+			name: "empty title and empty Display yields empty primary",
+			view: core.StatusHomeView{State: core.StatePlaying},
+			wantPrimary:   "",
+			wantSecondary: "",
+			wantTertiary:  "",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatLiveMarquee(tc.view)
-			if got != tc.want {
-				t.Errorf("formatLiveMarquee = %q, want %q", got, tc.want)
+			p, s, ter := vfdTiersFromView(tc.view)
+			if p != tc.wantPrimary {
+				t.Errorf("primary = %q, want %q", p, tc.wantPrimary)
+			}
+			if s != tc.wantSecondary {
+				t.Errorf("secondary = %q, want %q", s, tc.wantSecondary)
+			}
+			if ter != tc.wantTertiary {
+				t.Errorf("tertiary = %q, want %q", ter, tc.wantTertiary)
 			}
 		})
 	}
