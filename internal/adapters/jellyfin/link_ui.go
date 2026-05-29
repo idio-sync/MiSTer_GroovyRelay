@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // linkVersion is the build version sent in the MediaBrowser auth
@@ -32,76 +33,19 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 		a.renderLinkFragment(w, "Bad form")
 		return
 	}
-	serverURL := a.configuredServerURL()
-	username := strings.TrimSpace(r.FormValue("username"))
-	password := r.FormValue("password")
-
-	if serverURL == "" {
-		a.link.SetError("set Server URL above and save before linking")
-		a.renderLinkFragment(w, "Set a Server URL above and click Save before linking.")
-		return
-	}
-	if username == "" || password == "" {
-		a.link.SetError("username and password are required")
-		a.renderLinkFragment(w, "Username and password are required.")
-		return
-	}
-
-	a.link.SetLinking()
-
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-
-	res, err := AuthenticateByName(ctx, AuthRequest{
-		ServerURL: serverURL,
-		Username:  username,
-		Password:  password,
-		DeviceID:  a.deviceID,
-		Version:   linkVersion,
+	snap, _ := a.StartLink(ctx, map[string]string{
+		"username": r.FormValue("username"),
+		"password": r.FormValue("password"),
 	})
-	if err != nil {
-		a.link.SetError(err.Error())
-		a.renderLinkFragment(w, err.Error())
-		return
+	// Preserve legacy fragment behavior: error text under the form,
+	// linked/linking callout otherwise.
+	errMsg := ""
+	if snap.Phase == adapters.LinkPhaseError || (snap.Phase == adapters.LinkPhaseLinked && snap.Error != "") {
+		errMsg = snap.Error
 	}
-
-	tok := Token{
-		AccessToken: res.AccessToken,
-		UserID:      res.UserID,
-		UserName:    res.UserName,
-		ServerID:    res.ServerID,
-		ServerURL:   serverURL,
-	}
-	if err := SaveToken(a.tokenPath(), tok); err != nil {
-		a.link.SetError("link succeeded but persist failed: " + err.Error())
-		a.renderLinkFragment(w, err.Error())
-		return
-	}
-
-	a.link.SetLinked(res.UserName, res.ServerID)
-
-	// Bring the adapter into sync with the freshly-minted token. JF
-	// rotates the AccessToken when the same DeviceId re-authenticates,
-	// so a runSession goroutine spawned against an earlier token will
-	// 401 forever. Stop tears down the stale goroutine; Start spawns a
-	// new one that re-reads the token from disk. Idempotent for both
-	// adapters that were never started and adapters in StateError.
-	a.mu.Lock()
-	enabled := a.cfg.Enabled
-	a.mu.Unlock()
-	if enabled {
-		_ = a.Stop()
-		if startErr := a.Start(context.Background()); startErr != nil {
-			// Link itself succeeded; the adapter restart didn't. Surface
-			// the start error to the link fragment so the operator sees
-			// it without having to hunt in logs. Fragment still reads as
-			// linked because the on-disk token IS valid.
-			a.renderLinkFragment(w, "Linked, but adapter restart failed: "+startErr.Error())
-			return
-		}
-	}
-
-	a.renderLinkFragment(w, "")
+	a.renderLinkFragment(w, errMsg)
 }
 
 // handleLinkCancel resets a stuck Linking state to Idle. The browser
@@ -127,32 +71,9 @@ func (a *Adapter) handleLinkCancel(w http.ResponseWriter, r *http.Request) {
 // server side. Bridge-side state must always converge to "unlinked"
 // when the operator clicks Unlink, regardless of what JF says.
 func (a *Adapter) handleUnlink(w http.ResponseWriter, r *http.Request) {
-	tok, _ := LoadToken(a.tokenPath())
-	if tok.AccessToken != "" {
-		a.mu.Lock()
-		cfg := a.cfg
-		a.mu.Unlock()
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		if err := Logout(ctx, LogoutInput{
-			ServerURL:  tok.ServerURL,
-			Token:      tok.AccessToken,
-			DeviceID:   a.deviceID,
-			DeviceName: cfg.DeviceName,
-			Version:    linkVersion,
-		}); err != nil {
-			// Logged at info — operators don't need to act on this.
-			// Local unlink still proceeds.
-			slog.Info("jellyfin: server-side logout failed; proceeding with local unlink", "err", err)
-		}
-		cancel()
-	}
-	_ = WipeToken(a.tokenPath())
-	a.link.SetIdle()
-	// Stop is idempotent: a no-op when the adapter was never started or
-	// is already stopped. We always call it on unlink so any in-flight
-	// runSession goroutine — which holds the now-wiped token in its
-	// closure — exits instead of pounding JF with 401s.
-	_ = a.Stop()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	_, _ = a.Unlink(ctx)
 	a.renderLinkFragment(w, "")
 }
 
