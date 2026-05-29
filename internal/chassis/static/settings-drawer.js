@@ -513,7 +513,10 @@
         body: body.toString(),
       });
       const payload = await res.json();
-      handleAdapterSaveResponse(btn, payload, !wasOn);
+      if (!payload.ok) {
+        btn.classList.toggle('on', wasOn); // revert optimistic toggle to pre-click state
+      }
+      handleAdapterSaveResponse(btn, payload);
     } catch (e) {
       btn.classList.toggle('on');
       showNotice('NETWORK ERROR', 'err');
@@ -533,14 +536,14 @@
         body: body.toString(),
       });
       const payload = await res.json();
-      handleAdapterSaveResponse(inp, payload, inp.value);
+      handleAdapterSaveResponse(inp, payload);
       if (payload.ok) inp.dataset.lastSaved = inp.value;
     } catch (e) {
       showNotice('NETWORK ERROR', 'err');
     }
   }
 
-  function handleAdapterSaveResponse(target, payload, currentValue) {
+  function handleAdapterSaveResponse(target, payload) {
     const key = target.getAttribute('name');
     if (payload.ok) {
       if (payload.scope === 'reboot') {
