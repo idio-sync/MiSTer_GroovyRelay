@@ -234,7 +234,7 @@ func TestBuildSettingsData_AdapterCountExcludesAUX(t *testing.T) {
 	mustRegister(t, reg, fakeNamedAdapter{name: "aux"})
 	mustRegister(t, reg, fakeNamedAdapter{name: "dlna"})
 	bridge := config.BridgeConfig{DataDir: "/var/lib/relay"}
-	got := buildSettingsData(bridge, reg, nil)
+	got := buildSettingsData(bridge, reg, nil, nil)
 	if got.AdapterCount != 2 {
 		t.Errorf("AdapterCount = %d, want 2 (aux excluded)", got.AdapterCount)
 	}
@@ -248,10 +248,110 @@ func TestBuildSettingsData_AdapterCountExcludesAUX(t *testing.T) {
 
 func TestBuildSettingsData_NilCatalogYieldsZeroCount(t *testing.T) {
 	t.Parallel()
-	got := buildSettingsData(config.BridgeConfig{}, adapters.NewRegistry(), nil)
+	got := buildSettingsData(config.BridgeConfig{}, adapters.NewRegistry(), nil, nil)
 	if got.CatalogProviderCount != 0 {
 		t.Errorf("CatalogProviderCount = %d, want 0", got.CatalogProviderCount)
 	}
+}
+
+func TestBuildSettingsData_CatalogPaneProviderCountAndChannels(t *testing.T) {
+	mgr := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "mtv-rewind", ChannelCount: 73, Live: false},
+			{ID: "cartoon-rewind", ChannelCount: 13, Live: false},
+			{ID: "toonami-aftermath", ChannelCount: 4, Live: true, HLSBufferDisabled: false},
+		},
+	}
+	catalog := fakeCatalogViewer{providers: []adapters.CatalogProvider{
+		{ID: "browse-only"},
+	}}
+	got := buildSettingsData(config.BridgeConfig{}, nil, catalog, mgr)
+	if got.CatalogProviderCount != 1 {
+		t.Errorf("CatalogProviderCount = %d; want 1 (existing tab badge from StreamsCatalogViewer)", got.CatalogProviderCount)
+	}
+	if got.CatalogPaneProviderCount != 3 {
+		t.Errorf("CatalogPaneProviderCount = %d; want 3", got.CatalogPaneProviderCount)
+	}
+	if got.CatalogChannelCount != 90 {
+		t.Errorf("CatalogChannelCount = %d; want 90", got.CatalogChannelCount)
+	}
+	if got.DirectStreamHLSBufferDisabled {
+		t.Errorf("DirectStreamHLSBufferDisabled = true; want false (one Live, HLSBufferDisabled=false)")
+	}
+}
+
+func TestBuildSettingsData_DirectStreamHLSAllLiveDisabled(t *testing.T) {
+	mgr := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "toonami-aftermath", Live: true, HLSBufferDisabled: true},
+		},
+	}
+	got := buildSettingsData(config.BridgeConfig{}, nil, nil, mgr)
+	if !got.DirectStreamHLSBufferDisabled {
+		t.Errorf("DirectStreamHLSBufferDisabled = false; want true (all Live disabled)")
+	}
+}
+
+func TestBuildSettingsData_DirectStreamHLSMixedStateRendersOff(t *testing.T) {
+	mgr := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "toonami-aftermath", Live: true, HLSBufferDisabled: true},
+			{ID: "live2", Live: true, HLSBufferDisabled: false},
+		},
+	}
+	got := buildSettingsData(config.BridgeConfig{}, nil, nil, mgr)
+	if got.DirectStreamHLSBufferDisabled {
+		t.Errorf("DirectStreamHLSBufferDisabled = true; want false (mixed renders as off)")
+	}
+}
+
+func TestBuildSettingsData_NoLiveProvidersDirectStreamHLSFalse(t *testing.T) {
+	mgr := &fakeCatalogManager{
+		providers: []CatalogProviderState{
+			{ID: "mtv-rewind", Live: false, HLSBufferDisabled: true},
+		},
+	}
+	got := buildSettingsData(config.BridgeConfig{}, nil, nil, mgr)
+	if got.DirectStreamHLSBufferDisabled {
+		t.Errorf("DirectStreamHLSBufferDisabled = true; want false (no Live)")
+	}
+}
+
+func TestBuildSettingsData_NilCatalogManagerEmpty(t *testing.T) {
+	catalog := fakeCatalogViewer{providers: []adapters.CatalogProvider{
+		{ID: "mtv-rewind"},
+		{ID: "cartoon-rewind"},
+	}}
+	got := buildSettingsData(config.BridgeConfig{}, nil, catalog, nil)
+	if got.CatalogProviderCount != 2 {
+		t.Errorf("CatalogProviderCount = %d; want 2 (tab badge fallback)", got.CatalogProviderCount)
+	}
+	if got.CatalogPaneProviderCount != 0 {
+		t.Errorf("CatalogPaneProviderCount = %d; want 0", got.CatalogPaneProviderCount)
+	}
+	if got.CatalogProviders != nil {
+		t.Errorf("CatalogProviders = %v; want nil", got.CatalogProviders)
+	}
+	if got.CatalogChannelCount != 0 {
+		t.Errorf("CatalogChannelCount = %d; want 0", got.CatalogChannelCount)
+	}
+	if got.DirectStreamHLSBufferDisabled {
+		t.Errorf("DirectStreamHLSBufferDisabled = true; want false")
+	}
+}
+
+// fakeCatalogManager is a CatalogSettingsManager test double. Mutation
+// methods record their args; Providers returns the configured slice.
+type fakeCatalogManager struct {
+	providers []CatalogProviderState
+}
+
+func (f *fakeCatalogManager) Providers() []CatalogProviderState { return f.providers }
+func (f *fakeCatalogManager) UpdateProvider(id string, patch CatalogProviderPatch) (adapters.ApplyScope, error) {
+	return 0, nil
+}
+func (f *fakeCatalogManager) SetDirectStreamHLSBuffer(disabled bool) (adapters.ApplyScope, error) {
+	return 0, nil
 }
 
 // fakeNamedAdapter satisfies adapters.Adapter with the minimum surface needed
