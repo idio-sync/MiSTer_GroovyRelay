@@ -16,7 +16,10 @@ import (
 // or cached manifest providers do NOT appear in /receiver in 3B.
 //
 // Safe to call before Adapter.Start: definitions/catalogs are seeded
-// from bundledManifest() if a.definitions is empty.
+// from bundledManifest() if a.definitions is empty. Disabled providers
+// are absent because mergeManifests filters them from the installed
+// definitions; use BundledCatalog() when disabled providers must remain
+// visible.
 func (a *Adapter) Catalog() []adapters.CatalogProvider {
 	defs, _ := a.chassisCatalogSnapshot()
 	out := make([]adapters.CatalogProvider, 0, len(bundledChassisCatalogProviderIDs))
@@ -25,41 +28,7 @@ func (a *Adapter) Catalog() []adapters.CatalogProvider {
 		if !ok {
 			continue
 		}
-		badge := providerBadges[id]
-		live := def.Type == directStreamsProviderType
-		origin := ""
-		if u, err := url.Parse(def.BaseURL); err == nil {
-			origin = u.Host
-		}
-		if origin == "" {
-			if u, err := url.Parse(def.PlaylistURL); err == nil {
-				origin = u.Host
-			}
-		}
-		p := adapters.CatalogProvider{
-			ID:             def.ID,
-			DisplayName:    def.DisplayName,
-			BadgeLabel:     badge.Label,
-			BadgeClass:     badge.Class,
-			Origin:         origin,
-			Kind:           def.Type,
-			Live:           live,
-			DefaultChannel: def.DefaultChannel,
-		}
-		channelByGroup := groupChannels(def)
-		for _, g := range def.Groups {
-			cg := adapters.CatalogGroup{ID: g.ID, Name: g.Name}
-			for _, ch := range channelByGroup[g.ID] {
-				cg.Channels = append(cg.Channels, adapters.CatalogChannel{
-					ID:       ch.ID,
-					Name:     ch.Name,
-					PlayMode: strings.ToUpper(string(ch.PlayMode)),
-					Live:     live, // inherit provider.Live
-				})
-			}
-			p.Groups = append(p.Groups, cg)
-		}
-		out = append(out, p)
+		out = append(out, buildChassisCatalogProvider(def))
 	}
 	return out
 }
@@ -85,43 +54,51 @@ func (a *Adapter) BundledCatalog() []adapters.CatalogProvider {
 		if !ok {
 			continue
 		}
-		badge := providerBadges[id]
-		live := def.Type == directStreamsProviderType
-		origin := ""
-		if u, err := url.Parse(def.BaseURL); err == nil {
-			origin = u.Host
-		}
-		if origin == "" {
-			if u, err := url.Parse(def.PlaylistURL); err == nil {
-				origin = u.Host
-			}
-		}
-		p := adapters.CatalogProvider{
-			ID:             def.ID,
-			DisplayName:    def.DisplayName,
-			BadgeLabel:     badge.Label,
-			BadgeClass:     badge.Class,
-			Origin:         origin,
-			Kind:           def.Type,
-			Live:           live,
-			DefaultChannel: def.DefaultChannel,
-		}
-		channelByGroup := groupChannels(def)
-		for _, g := range def.Groups {
-			cg := adapters.CatalogGroup{ID: g.ID, Name: g.Name}
-			for _, ch := range channelByGroup[g.ID] {
-				cg.Channels = append(cg.Channels, adapters.CatalogChannel{
-					ID:       ch.ID,
-					Name:     ch.Name,
-					PlayMode: strings.ToUpper(string(ch.PlayMode)),
-					Live:     live,
-				})
-			}
-			p.Groups = append(p.Groups, cg)
-		}
-		out = append(out, p)
+		out = append(out, buildChassisCatalogProvider(def))
 	}
 	return out
+}
+
+// buildChassisCatalogProvider converts a ProviderDefinition into the
+// chassis-shaped adapters.CatalogProvider (badge, parsed Origin with
+// PlaylistURL fallback, Kind, and grouped channels). Shared by
+// Catalog() and BundledCatalog() so the conversion lives in one place.
+func buildChassisCatalogProvider(def ProviderDefinition) adapters.CatalogProvider {
+	badge := providerBadges[def.ID]
+	live := def.Type == directStreamsProviderType
+	origin := ""
+	if u, err := url.Parse(def.BaseURL); err == nil {
+		origin = u.Host
+	}
+	if origin == "" {
+		if u, err := url.Parse(def.PlaylistURL); err == nil {
+			origin = u.Host
+		}
+	}
+	p := adapters.CatalogProvider{
+		ID:             def.ID,
+		DisplayName:    def.DisplayName,
+		BadgeLabel:     badge.Label,
+		BadgeClass:     badge.Class,
+		Origin:         origin,
+		Kind:           def.Type,
+		Live:           live,
+		DefaultChannel: def.DefaultChannel,
+	}
+	channelByGroup := groupChannels(def)
+	for _, g := range def.Groups {
+		cg := adapters.CatalogGroup{ID: g.ID, Name: g.Name}
+		for _, ch := range channelByGroup[g.ID] {
+			cg.Channels = append(cg.Channels, adapters.CatalogChannel{
+				ID:       ch.ID,
+				Name:     ch.Name,
+				PlayMode: strings.ToUpper(string(ch.PlayMode)),
+				Live:     live, // inherit provider.Live
+			})
+		}
+		p.Groups = append(p.Groups, cg)
+	}
+	return p
 }
 
 // chassisCatalogSnapshot returns the definitions and catalogs maps,
