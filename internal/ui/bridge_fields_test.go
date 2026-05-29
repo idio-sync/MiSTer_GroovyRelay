@@ -263,7 +263,7 @@ func TestBridgeFields_HasVisualizerMode(t *testing.T) {
 		config.VisualizerModeOscilloscopeWave,
 		config.VisualizerModeStereoScope,
 		config.VisualizerModeVUCabinet,
-		config.VisualizerModeNeonGrid,
+		config.VisualizerModeSpectrumWaterfall,
 		config.VisualizerModeRasterPulse,
 		config.VisualizerModeCoverVU,
 		config.VisualizerModeCoverSpectrum,

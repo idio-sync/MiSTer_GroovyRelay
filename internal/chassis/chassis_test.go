@@ -252,7 +252,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				{Mode: config.VisualizerModeOscilloscopeWave, Label: "OSCILLOSCOPE", IconKind: "wave", IsPreview: false},
 				{Mode: config.VisualizerModeStereoScope, Label: "STEREO SCOPE", IconKind: "scope", IsPreview: false},
 				{Mode: config.VisualizerModeVUCabinet, Label: "VU CABINET", IconKind: "scope", IsPreview: false},
-				{Mode: config.VisualizerModeNeonGrid, Label: "NEON GRID", IconKind: "analyzer", IsPreview: false},
+				{Mode: config.VisualizerModeSpectrumWaterfall, Label: "WATERFALL", IconKind: "waterfall", IsPreview: false},
 				{Mode: config.VisualizerModeRasterPulse, Label: "RASTER PULSE", IconKind: "wave", IsPreview: false},
 				{Mode: config.VisualizerModeCoverVU, Label: "COVER VU", IconKind: "scope", IsPreview: false},
 				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer", IsPreview: false},
@@ -631,6 +631,17 @@ func TestChassisCSS_VisualizerPressedStateScoped(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("chassis.css missing visualizer pressed-state selector %q", want)
 		}
+	}
+}
+
+func TestChassisCSS_HasWaterfallIcon(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	if !strings.Contains(string(css), "viz-icon--waterfall") {
+		t.Error("chassis.css missing .viz-icon--waterfall rule for the WATERFALL button")
 	}
 }
 

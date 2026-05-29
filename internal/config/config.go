@@ -53,14 +53,14 @@ type Config struct {
 }
 
 const (
-	VisualizerModeRetroAnalyzer    = "retro_analyzer"
-	VisualizerModeOscilloscopeWave = "oscilloscope_wave"
-	VisualizerModeStereoScope      = "stereo_scope"
-	VisualizerModeVUCabinet        = "vu_cabinet"
-	VisualizerModeNeonGrid         = "neon_grid"
-	VisualizerModeRasterPulse      = "raster_pulse"
-	VisualizerModeCoverVU          = "cover_vu"
-	VisualizerModeCoverSpectrum    = "cover_spectrum"
+	VisualizerModeRetroAnalyzer     = "retro_analyzer"
+	VisualizerModeOscilloscopeWave  = "oscilloscope_wave"
+	VisualizerModeStereoScope       = "stereo_scope"
+	VisualizerModeVUCabinet         = "vu_cabinet"
+	VisualizerModeSpectrumWaterfall = "spectrum_waterfall"
+	VisualizerModeRasterPulse       = "raster_pulse"
+	VisualizerModeCoverVU           = "cover_vu"
+	VisualizerModeCoverSpectrum     = "cover_spectrum"
 )
 
 var supportedVisualizerModes = []string{
@@ -68,7 +68,7 @@ var supportedVisualizerModes = []string{
 	VisualizerModeOscilloscopeWave,
 	VisualizerModeStereoScope,
 	VisualizerModeVUCabinet,
-	VisualizerModeNeonGrid,
+	VisualizerModeSpectrumWaterfall,
 	VisualizerModeRasterPulse,
 	VisualizerModeCoverVU,
 	VisualizerModeCoverSpectrum,
@@ -312,7 +312,7 @@ func (s *Sectioned) Validate() error {
 		VisualizerModeOscilloscopeWave,
 		VisualizerModeStereoScope,
 		VisualizerModeVUCabinet,
-		VisualizerModeNeonGrid,
+		VisualizerModeSpectrumWaterfall,
 		VisualizerModeRasterPulse,
 		VisualizerModeCoverVU,
 		VisualizerModeCoverSpectrum:

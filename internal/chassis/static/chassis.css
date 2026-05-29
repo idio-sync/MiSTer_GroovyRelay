@@ -2321,6 +2321,20 @@ body.receiver .viz-icon--scope::after {
   opacity: 0.7;
 }
 
+body.receiver .viz-icon--waterfall::before {
+  content: "";
+  width: 28px;
+  height: 12px;
+  background: repeating-linear-gradient(
+    90deg,
+    currentColor 0 2px,
+    transparent 2px 4px
+  );
+  opacity: 0.85;
+  -webkit-mask: linear-gradient(180deg, #000 0 45%, rgba(0, 0, 0, 0.4) 100%);
+  mask: linear-gradient(180deg, #000 0 45%, rgba(0, 0, 0, 0.4) 100%);
+}
+
 body.receiver .viz-icon--radial::before {
   content: "";
   width: 14px;

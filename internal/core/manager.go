@@ -383,7 +383,7 @@ func validateVisualizerRequest(req SessionRequest) error {
 		VisualizerModeOscilloscopeWave,
 		VisualizerModeStereoScope,
 		VisualizerModeVUCabinet,
-		VisualizerModeNeonGrid,
+		VisualizerModeSpectrumWaterfall,
 		VisualizerModeRasterPulse,
 		VisualizerModeCoverVU,
 		VisualizerModeCoverSpectrum:
@@ -488,8 +488,8 @@ func coreVisualizerModeFromConfig(mode string) VisualizerMode {
 		return VisualizerModeStereoScope
 	case config.VisualizerModeVUCabinet:
 		return VisualizerModeVUCabinet
-	case config.VisualizerModeNeonGrid:
-		return VisualizerModeNeonGrid
+	case config.VisualizerModeSpectrumWaterfall:
+		return VisualizerModeSpectrumWaterfall
 	case config.VisualizerModeRasterPulse:
 		return VisualizerModeRasterPulse
 	case config.VisualizerModeCoverVU:
@@ -523,8 +523,8 @@ func ffmpegVisualizerMode(mode VisualizerMode) ffmpeg.VisualizerMode {
 		return ffmpeg.VisualizerModeStereoScope
 	case VisualizerModeVUCabinet:
 		return ffmpeg.VisualizerModeVUCabinet
-	case VisualizerModeNeonGrid:
-		return ffmpeg.VisualizerModeNeonGrid
+	case VisualizerModeSpectrumWaterfall:
+		return ffmpeg.VisualizerModeSpectrumWaterfall
 	case VisualizerModeRasterPulse:
 		return ffmpeg.VisualizerModeRasterPulse
 	case VisualizerModeCoverVU:

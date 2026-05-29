@@ -19,7 +19,7 @@ func TestVisualizerModesSpawnRealFFmpeg(t *testing.T) {
 		usesCover     bool
 	}{
 		{"vu cabinet", ffmpeg.VisualizerModeVUCabinet, false, false},
-		{"neon grid", ffmpeg.VisualizerModeNeonGrid, false, false},
+		{"waterfall", ffmpeg.VisualizerModeSpectrumWaterfall, false, false},
 		{"raster pulse", ffmpeg.VisualizerModeRasterPulse, false, false},
 		{"cover vu", ffmpeg.VisualizerModeCoverVU, false, true},
 		{"cover spectrum", ffmpeg.VisualizerModeCoverSpectrum, false, true},

@@ -421,13 +421,14 @@ func TestBuildVisualizerFilterChain_ModeGraphs(t *testing.T) {
 			},
 		},
 		{
-			name: "neon grid",
-			mode: VisualizerModeNeonGrid,
+			name: "spectrum waterfall",
+			mode: VisualizerModeSpectrumWaterfall,
 			want: []string{
-				"showfreqs=s=640x480:mode=bar",
-				"drawgrid=w=iw/12:h=ih/6",
-				"hue=h=2*PI*t:s=1.35",
-				"[visualizer_video]",
+				"[0:a:0]showspectrum=s=640x480:slide=scroll:mode=combined:color=intensity:scale=cbrt:fscale=log:overlap=0.5:saturation=1.4:legend=0,format=rgba[viz0]",
+				"overlay=x=24:y=24",
+				"overlay=x=24:y=48",
+				"overlay=x=24:y=72",
+				"drawtext=text='%{pts\\:hms} / 7\\:29':x=w-tw-24:y=24",
 			},
 		},
 		{
@@ -618,7 +619,7 @@ func TestBuildVisualizerFilterChain_AllModesBarsOnlyWhenDrawTextUnavailable(t *t
 		{"oscilloscope wave", VisualizerModeOscilloscopeWave, "showwaves=s=640x480:mode=line:colors=0x58e8ff"},
 		{"stereo scope", VisualizerModeStereoScope, "avectorscope=s=640x480:mode=lissajous:draw=line:scale=lin:swap=0,format=rgba"},
 		{"vu cabinet", VisualizerModeVUCabinet, "showvolume="},
-		{"neon grid", VisualizerModeNeonGrid, "showfreqs=s=640x480:mode=bar"},
+		{"spectrum waterfall", VisualizerModeSpectrumWaterfall, "showspectrum=s=640x480:slide=scroll"},
 		{"raster pulse", VisualizerModeRasterPulse, "showwaves=s=640x480:mode=cline"},
 	}
 	for _, tc := range cases {
@@ -665,7 +666,7 @@ func TestVisualizerRequiredFilters(t *testing.T) {
 		{VisualizerModeOscilloscopeWave, []string{"showwaves"}},
 		{VisualizerModeStereoScope, []string{"avectorscope"}},
 		{VisualizerModeVUCabinet, []string{"showvolume", "scale", "pad", "drawbox", "drawgrid"}},
-		{VisualizerModeNeonGrid, []string{"showfreqs", "drawgrid", "hue"}},
+		{VisualizerModeSpectrumWaterfall, []string{"showspectrum"}},
 		{VisualizerModeRasterPulse, []string{"showwaves", "format", "split", "hflip", "blend"}},
 		{VisualizerModeCoverVU, []string{"showvolume", "color", "fps", "format", "scale", "crop", "overlay"}},
 		{VisualizerModeCoverSpectrum, []string{"showfreqs", "color", "fps", "format", "scale", "crop", "overlay"}},

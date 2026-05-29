@@ -19,14 +19,14 @@ type CropRect struct {
 type VisualizerMode string
 
 const (
-	VisualizerModeRetroAnalyzer    VisualizerMode = "retro_analyzer"
-	VisualizerModeOscilloscopeWave VisualizerMode = "oscilloscope_wave"
-	VisualizerModeStereoScope      VisualizerMode = "stereo_scope"
-	VisualizerModeVUCabinet        VisualizerMode = "vu_cabinet"
-	VisualizerModeNeonGrid         VisualizerMode = "neon_grid"
-	VisualizerModeRasterPulse      VisualizerMode = "raster_pulse"
-	VisualizerModeCoverVU          VisualizerMode = "cover_vu"
-	VisualizerModeCoverSpectrum    VisualizerMode = "cover_spectrum"
+	VisualizerModeRetroAnalyzer     VisualizerMode = "retro_analyzer"
+	VisualizerModeOscilloscopeWave  VisualizerMode = "oscilloscope_wave"
+	VisualizerModeStereoScope       VisualizerMode = "stereo_scope"
+	VisualizerModeVUCabinet         VisualizerMode = "vu_cabinet"
+	VisualizerModeSpectrumWaterfall VisualizerMode = "spectrum_waterfall"
+	VisualizerModeRasterPulse       VisualizerMode = "raster_pulse"
+	VisualizerModeCoverVU           VisualizerMode = "cover_vu"
+	VisualizerModeCoverSpectrum     VisualizerMode = "cover_spectrum"
 )
 
 type VisualizerMetadata struct {
@@ -495,8 +495,8 @@ func RequiredVisualizerFilters(mode VisualizerMode) []string {
 		return []string{"avectorscope"}
 	case VisualizerModeVUCabinet:
 		return []string{"showvolume", "scale", "pad", "drawbox", "drawgrid"}
-	case VisualizerModeNeonGrid:
-		return []string{"showfreqs", "drawgrid", "hue"}
+	case VisualizerModeSpectrumWaterfall:
+		return []string{"showspectrum"}
 	case VisualizerModeRasterPulse:
 		return []string{"showwaves", "format", "split", "hflip", "blend"}
 	case VisualizerModeCoverVU:
@@ -530,8 +530,8 @@ func visualizerCoreGraph(mode VisualizerMode, audioMap string, logicalW, logical
 			meterH = 24
 		}
 		return fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=p:ds=log:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=0x05050a,drawbox=x=8:y=8:w=iw-16:h=ih-16:color=0x29ffc6@0.65:t=2,drawgrid=w=iw/8:h=ih/4:t=1:c=0x29ffc6@0.18[viz0]", audioMap, logicalW-64, meterH, logicalW, logicalH, logicalW, logicalH), "viz0"
-	case VisualizerModeNeonGrid:
-		return fmt.Sprintf("[%s]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:colors=0xff2bd6|0x28f7ff,drawgrid=w=iw/12:h=ih/6:t=1:c=0x28f7ff@0.22,hue=h=2*PI*t:s=1.35[viz0]", audioMap, logicalW, logicalH), "viz0"
+	case VisualizerModeSpectrumWaterfall:
+		return fmt.Sprintf("[%s]showspectrum=s=%dx%d:slide=scroll:mode=combined:color=intensity:scale=cbrt:fscale=log:overlap=0.5:saturation=1.4:legend=0,format=rgba[viz0]", audioMap, logicalW, logicalH), "viz0"
 	case VisualizerModeRasterPulse:
 		return fmt.Sprintf("[%s]showwaves=s=%dx%d:mode=cline:colors=0x58e8ff|0xff4fd8:scale=sqrt,format=rgba,split[wave_a][wave_b];[wave_b]hflip[wave_flip];[wave_a][wave_flip]blend=all_mode=screen:all_opacity=0.70[viz0]", audioMap, logicalW, logicalH), "viz0"
 	default:
