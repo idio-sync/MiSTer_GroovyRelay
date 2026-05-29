@@ -4578,6 +4578,41 @@ func TestSettingsDrawerJS_AdapterRebootToastUsesLabel(t *testing.T) {
 	}
 }
 
+func renderLink(t *testing.T, view LinkView) string {
+	t.Helper()
+	tmpl := parseTemplatesForTest(t)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-link", view); err != nil {
+		t.Fatalf("execute settings-link: %v", err)
+	}
+	return buf.String()
+}
+
+func TestSettingsLink_Renders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		view LinkView
+		want string
+	}{
+		{"pin-unlinked", LinkView{Kind: "pin", Phase: "unlinked"}, "Link Plex Account"},
+		{"pin-pending", LinkView{Kind: "pin", Phase: "pending", Code: "K3F9", ExpiresInSec: 120}, "K3F9"},
+		{"pin-linked", LinkView{Kind: "pin", Phase: "linked"}, "✓ Linked"},
+		{"cred-linked", LinkView{Kind: "credential", Phase: "linked", LinkedAs: "jake on s"}, "jake on s"},
+		{"cred-needurl", LinkView{Kind: "credential", Phase: "unlinked", NeedsServerURL: true}, "Server URL"},
+		{"cred-form", LinkView{Kind: "credential", Phase: "unlinked", Fields: []LinkField{{Key: "username", Label: "Username", Kind: "text"}, {Key: "password", Label: "Password", Kind: "secret"}}}, "data-link-field"},
+		{"error", LinkView{Kind: "credential", Phase: "error", Error: "Invalid credentials", Fields: []LinkField{{Key: "username", Label: "Username", Kind: "text"}}}, "Invalid credentials"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderLink(t, tc.view)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("render(%+v) missing %q:\n%s", tc.view, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T) {
 	t.Parallel()
 	// Even if catalog-owned per-provider keys reach the pane's Fields (they
