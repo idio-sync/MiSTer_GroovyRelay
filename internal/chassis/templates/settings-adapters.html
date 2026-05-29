@@ -1,0 +1,29 @@
+{{- define "settings-adapters" -}}
+<div class="settings-pane" data-pane="adapters">
+
+  <!-- Plex (4E) -->
+  <section class="settings-section">
+    <h4>Plex <span class="hint">— pending</span></h4>
+    <div class="action-result shown">▸ Spec 4E — implementation in progress</div>
+  </section>
+
+  {{ template "settings-adapter-dlna" (adapterPane .Adapters "dlna") }}
+
+  <!-- URL (4F) -->
+  <section class="settings-section">
+    <h4>URL <span class="hint">— pending</span></h4>
+    <div class="action-result shown">▸ Spec 4F — implementation in progress</div>
+  </section>
+
+  {{ template "settings-adapter-torrent" (adapterPane .Adapters "torrent") }}
+
+  <!-- Jellyfin (4E) -->
+  <section class="settings-section">
+    <h4>Jellyfin <span class="hint">— pending</span></h4>
+    <div class="action-result shown">▸ Spec 4E — implementation in progress</div>
+  </section>
+
+  {{ template "settings-adapter-streams" (adapterPane .Adapters "streams") }}
+
+</div>
+{{- end -}}

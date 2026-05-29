@@ -1,0 +1,28 @@
+{{- define "settings-adapter-dlna" -}}
+<section class="settings-section">
+  <h4>DLNA <span class="hint">{{ .Hint }}</span></h4>
+  {{ range .Fields }}
+  {{ template "adapter-field-row" (dict
+    "Adapter" "dlna"
+    "Field" .
+    "Values" $.Values
+  ) }}
+  {{ end }}
+</section>
+{{- end -}}
+
+{{- define "adapter-field-row" -}}
+{{- $fd := .Field -}}
+{{- $val := index .Values $fd.Key -}}
+{{- $scope := adapterScopeWire $fd.ApplyScope -}}
+{{- $kind := fieldKindWire $fd.Kind -}}
+{{ field (dict
+  "Name" $fd.Key
+  "Type" $kind
+  "Label" $fd.Label
+  "Help" $fd.Help
+  "Value" (adapterFieldValue $val $kind)
+  "Scope" $scope
+  "Adapter" .Adapter
+  "Required" $fd.Required) }}
+{{- end -}}

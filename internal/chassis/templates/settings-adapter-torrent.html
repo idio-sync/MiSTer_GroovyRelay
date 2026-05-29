@@ -1,0 +1,27 @@
+{{- define "settings-adapter-torrent" -}}
+<section class="settings-section wide">
+  <h4>Torrent <span class="hint">{{ .Hint }}</span></h4>
+  {{ range .Fields }}
+    {{ if eq .Key "max_cache_bytes" }}
+      {{ template "adapter-field-row-bytes" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
+    {{ else }}
+      {{ template "adapter-field-row" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
+    {{ end }}
+  {{ end }}
+</section>
+{{- end -}}
+
+{{- define "adapter-field-row-bytes" -}}
+{{- $fd := .Field -}}
+{{- $val := index .Values $fd.Key -}}
+{{- $scope := adapterScopeWire $fd.ApplyScope -}}
+{{ field (dict
+  "Name" $fd.Key
+  "Type" "number"
+  "Label" $fd.Label
+  "Help" $fd.Help
+  "Value" (adapterFieldValue $val "number")
+  "Scope" $scope
+  "Adapter" .Adapter
+  "RowEnd" (humanizeBytes (asInt64 $val))) }}
+{{- end -}}

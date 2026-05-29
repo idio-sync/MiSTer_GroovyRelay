@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	textTemplate "text/template"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // chassisTemplatesFS holds the html/template files used to render the
@@ -66,22 +68,128 @@ var templateFuncs = template.FuncMap{
 	"htmlComment": func(s string) template.HTML {
 		return template.HTML("<!-- " + s + " -->")
 	},
-	"list":        func(args ...string) []string { return args },
-	"options":     optionsHelper,
-	"until":       func(n int) []struct{} { return make([]struct{}, n) },
-	"volumeAngle": volumeAngle,
-	"lower":               strings.ToLower,
-	"upper":               strings.ToUpper,
-	"dict":                dictHelper,
-	"itoa":                itoaHelper,
-	"errOf":               errOfHelper,
-	"settingsScopeLabel":  settingsScopeLabelHelper,
-	"stub":                stubHelper,
-	"field":               fieldHelper,
-	"humanizeBytes":       humanizeBytes,
-	"boolStr":             boolStr,
-	"i64toa":              i64toa,
-	"passwordPlaceholder": passwordPlaceholder,
+	"list":                    func(args ...string) []string { return args },
+	"options":                 optionsHelper,
+	"until":                   func(n int) []struct{} { return make([]struct{}, n) },
+	"volumeAngle":             volumeAngle,
+	"lower":                   strings.ToLower,
+	"upper":                   strings.ToUpper,
+	"dict":                    dictHelper,
+	"itoa":                    itoaHelper,
+	"errOf":                   errOfHelper,
+	"settingsScopeLabel":      settingsScopeLabelHelper,
+	"stub":                    stubHelper,
+	"field":                   fieldHelper,
+	"humanizeBytes":           humanizeBytes,
+	"boolStr":                 boolStr,
+	"i64toa":                  i64toa,
+	"passwordPlaceholder":     passwordPlaceholder,
+	"adapterPane":             adapterPane,
+	"fieldKindWire":           fieldKindWire,
+	"adapterScopeWire":        adapterScopeWire,
+	"adapterFieldValue":       adapterFieldValue,
+	"asInt64":                 asInt64,
+	"isProviderOverrideField": isProviderOverrideField,
+	"isStreamsBytesField":     isStreamsBytesField,
+}
+
+// adapterPane returns the AdapterPaneData for the named adapter from the
+// SettingsData.Adapters slice. Returns a zero-value pane carrying only the
+// name when the adapter is absent (offline test paths / unwired saver) so
+// the sub-template renders an empty section rather than erroring.
+func adapterPane(adapters []AdapterPaneData, name string) AdapterPaneData {
+	for _, a := range adapters {
+		if a.Name == name {
+			return a
+		}
+	}
+	return AdapterPaneData{Name: name}
+}
+
+// fieldKindWire maps an adapters.FieldKind to the Type token fieldHelper
+// switches on ("switch"/"number"/"password"/"select"/"text").
+func fieldKindWire(k adapters.FieldKind) string {
+	switch k {
+	case adapters.KindBool:
+		return "switch"
+	case adapters.KindInt:
+		return "number"
+	case adapters.KindSecret:
+		return "password"
+	case adapters.KindEnum:
+		return "select"
+	case adapters.KindText:
+		return "text"
+	}
+	return "text"
+}
+
+// adapterScopeWire maps an adapters.ApplyScope to the chassis wire scope
+// label ("hot"/"next"/"recast"/"reboot"). Unknown scopes degrade to "hot"
+// so a forward-compatible field still renders a valid badge.
+func adapterScopeWire(scope adapters.ApplyScope) string {
+	label, ok := scopeLabel(scope)
+	if !ok {
+		return "hot"
+	}
+	return label
+}
+
+// adapterFieldValue stringifies a config value (sourced from the adapter
+// saver's map[string]any) for the fieldHelper Value option. The kind hint
+// lets bool values render as "true"/"false" for switch coercion.
+func adapterFieldValue(v any, kind string) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case int:
+		return strconv.Itoa(x)
+	case float64:
+		return strconv.FormatInt(int64(x), 10)
+	}
+	return ""
+}
+
+// asInt64 coerces a config byte-ceiling value to int64 for humanizeBytes.
+// TOML integers decode as int64; the int / float64 arms guard test and
+// JSON-roundtrip paths.
+func asInt64(v any) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	}
+	return 0
+}
+
+// isProviderOverrideField reports whether a streams field key is a
+// per-provider catalog-refresh override ("providers.<id>.catalog_refresh_hours").
+// Those rows are rendered by the dedicated provider-override loop, not the
+// generic field loop.
+func isProviderOverrideField(key string) bool {
+	return strings.HasPrefix(key, "providers.")
+}
+
+// isStreamsBytesField reports whether a streams field key is a byte-ceiling
+// field that should render with a humanizeBytes row-end annotation.
+func isStreamsBytesField(key string) bool {
+	switch key {
+	case "max_manifest_bytes", "max_catalog_bytes":
+		return true
+	}
+	return false
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in
@@ -244,7 +352,18 @@ func fieldHelper(args map[string]any) template.HTML {
 	unit := get("Unit")
 	inputWidth := get("InputWidth")
 	errMsg := get("Error")
+	adapter := get("Adapter")
+	rowEnd := get("RowEnd")
 	skipEmpty, _ := args["SkipEmpty"].(bool)
+
+	// adapterAttr is emitted on the input/switch/select element for adapter
+	// fields so the client JS can scope the save POST to the right adapter.
+	// Empty for bridge (4A) fields — the markup is then byte-for-byte
+	// identical to the pre-4D output, so bridge rendering is unchanged.
+	adapterAttr := ""
+	if adapter != "" {
+		adapterAttr = fmt.Sprintf(` data-adapter="%s"`, html.EscapeString(adapter))
+	}
 
 	rowClass := "field-row"
 	if errMsg != "" {
@@ -272,9 +391,9 @@ func fieldHelper(args map[string]any) template.HTML {
 		if value != "" {
 			hasValue = " has-value"
 		}
-		middleHTML = fmt.Sprintf(`<input class="field-input%s%s" name="%s" value="%s" placeholder="%s">`,
+		middleHTML = fmt.Sprintf(`<input class="field-input%s%s" name="%s" value="%s" placeholder="%s"%s>`,
 			extra, hasValue,
-			html.EscapeString(name), html.EscapeString(value), html.EscapeString(placeholder))
+			html.EscapeString(name), html.EscapeString(value), html.EscapeString(placeholder), adapterAttr)
 	case "number":
 		hasValue := ""
 		if value != "" {
@@ -284,8 +403,8 @@ func fieldHelper(args map[string]any) template.HTML {
 		if inputWidth != "" {
 			style = fmt.Sprintf(` style="max-width:%s"`, html.EscapeString(inputWidth))
 		}
-		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s>`,
-			hasValue, html.EscapeString(name), html.EscapeString(value), style)
+		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s%s>`,
+			hasValue, html.EscapeString(name), html.EscapeString(value), style, adapterAttr)
 	case "password":
 		// 4B password rendering: never echo the stored password into the
 		// HTML response — render value="" always. Placeholder communicates
@@ -297,13 +416,13 @@ func fieldHelper(args map[string]any) template.HTML {
 		if skipEmpty {
 			skipAttr = ` data-skip-empty="true"`
 		}
-		middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s>`,
-			html.EscapeString(name), html.EscapeString(placeholder), skipAttr)
+		middleHTML = fmt.Sprintf(`<input class="field-input" type="password" name="%s" value="" placeholder="%s"%s%s>`,
+			html.EscapeString(name), html.EscapeString(placeholder), skipAttr, adapterAttr)
 		_ = value // value is intentionally not used for password — preserve-on-empty lives in the server overlay
 	case "select":
 		options, _ := args["Options"].([]map[string]any)
 		var b strings.Builder
-		fmt.Fprintf(&b, `<select class="field-input has-value" name="%s">`, html.EscapeString(name))
+		fmt.Fprintf(&b, `<select class="field-input has-value" name="%s"%s>`, html.EscapeString(name), adapterAttr)
 		for _, opt := range options {
 			ov, _ := opt["Value"].(string)
 			ol, _ := opt["Label"].(string)
@@ -326,16 +445,23 @@ func fieldHelper(args map[string]any) template.HTML {
 			onClass = " on"
 			aria = "true"
 		}
-		middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s" data-field="%s" type="button" aria-pressed="%s"></button>`,
-			onClass, html.EscapeString(name), html.EscapeString(name), aria)
+		middleHTML = fmt.Sprintf(`<button class="switch%s" name="%s" data-field="%s" type="button" aria-pressed="%s"%s></button>`,
+			onClass, html.EscapeString(name), html.EscapeString(name), aria, adapterAttr)
 	default:
 		middleHTML = fmt.Sprintf(`<!-- unknown field type %q -->`, html.EscapeString(typ))
 	}
 
 	// Number-with-unit wraps the input + scope badge in a .row-end span;
-	// other types put the scope badge as a direct row child.
+	// other types put the scope badge as a direct row child. The RowEnd
+	// option (e.g. humanizeBytes output for byte-ceiling fields) renders the
+	// same .row-end wrapper; it takes precedence over Unit when both are set.
 	scopeHTML := fmt.Sprintf(`<span class="scope %s">%s</span>`, html.EscapeString(scope), strings.ToUpper(scope))
-	if typ == "number" && unit != "" {
+	switch {
+	case rowEnd != "":
+		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span style="font-size:10px;color:var(--vfd-faded);">%s</span>%s</span>`,
+			middleHTML, html.EscapeString(rowEnd), scopeHTML)
+		scopeHTML = "" // already inside row-end
+	case typ == "number" && unit != "":
 		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span style="font-size:10px;color:var(--vfd-faded);">%s</span>%s</span>`,
 			middleHTML, html.EscapeString(unit), scopeHTML)
 		scopeHTML = "" // already inside row-end
