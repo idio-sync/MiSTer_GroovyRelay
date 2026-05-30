@@ -1645,7 +1645,7 @@ func TestRenderURLPane_EmptyHostsStillShowsEditor(t *testing.T) {
 }
 ```
 
-If a `renderSettingsAdapters` helper does not already exist, add it next to the other render helpers in `chassis_test.go`. Use the package's real test template loader, `parseTemplatesForTest(t)` (defined at `chassis_test.go:4207`, returns `*template.Template`; used the same way at `chassis_test.go:1031` for the `source-cluster` render test):
+If a `renderSettingsAdapters` helper does not already exist, add it next to the other render helpers in `chassis_test.go`. Use the package's real test template loader, `parseTemplatesForTest(t)` (defined at `chassis_test.go:2563`, returns `*template.Template`; used the same way at `chassis_test.go:1035` for the `source-cluster` render test):
 
 ```go
 func renderSettingsAdapters(t *testing.T, data SettingsData) string {
