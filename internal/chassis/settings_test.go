@@ -2223,9 +2223,25 @@ func TestLinkRoutesMounted(t *testing.T) {
 	}
 }
 
+// newURLWidgetTestServer builds a fully-initialized Server via New (so the
+// snapshot refresher's meter/cacheDone are non-nil) for the URL-widget route
+// tests, which call Mount to exercise route registration + requireSameOrigin.
+// A bare &Server{} literal would nil-deref in the refresher's 100ms tick.
+func newURLWidgetTestServer(t *testing.T, cfg Config) *Server {
+	t.Helper()
+	cfg.Version = "test"
+	cfg.StartedAt = time.Unix(0, 0)
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
 func TestHandleSettingsAdapterHostsPost_NotReadyWhenNil(t *testing.T) {
 	t.Parallel()
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	s := newURLWidgetTestServer(t, Config{})
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/hosts",
@@ -2290,7 +2306,7 @@ func postHosts(t *testing.T, s *Server, name, jsonBody string) *httptest.Respons
 func TestHandleSettingsAdapterHostsPost_Success(t *testing.T) {
 	t.Parallel()
 	fe := &fakeHostEditor{scope: "hot", normalized: []string{"youtube.com", "twitch.tv"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	s := newURLWidgetTestServer(t, Config{AdapterHostEditor: fe})
 	rec := postHosts(t, s, "url", `{"hosts":["YouTube.com","Twitch.tv"]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -2312,7 +2328,7 @@ func TestHandleSettingsAdapterHostsPost_Success(t *testing.T) {
 func TestHandleSettingsAdapterHostsPost_FieldError(t *testing.T) {
 	t.Parallel()
 	fe := &fakeHostEditor{err: &fakeFieldErr{key: "hosts", msg: "entry contains URL syntax characters"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	s := newURLWidgetTestServer(t, Config{AdapterHostEditor: fe})
 	rec := postHosts(t, s, "url", `{"hosts":["https://x/"]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
@@ -2328,7 +2344,7 @@ func TestHandleSettingsAdapterHostsPost_FieldError(t *testing.T) {
 func TestHandleSettingsAdapterHostsPost_UnknownAdapter(t *testing.T) {
 	t.Parallel()
 	fe := &fakeHostEditor{err: &fakeChipErr{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	s := newURLWidgetTestServer(t, Config{AdapterHostEditor: fe})
 	rec := postHosts(t, s, "nope", `{"hosts":[]}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("Code = %d, want 404; body=%s", rec.Code, rec.Body.String())
@@ -2338,7 +2354,7 @@ func TestHandleSettingsAdapterHostsPost_UnknownAdapter(t *testing.T) {
 func TestHandleSettingsAdapterHostsPost_CrossOriginBlocked(t *testing.T) {
 	t.Parallel()
 	fe := &fakeHostEditor{scope: "hot"}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	s := newURLWidgetTestServer(t, Config{AdapterHostEditor: fe})
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/hosts",
@@ -2393,7 +2409,7 @@ func postCookies(t *testing.T, s *Server, path, contentType, body string) *httpt
 func TestHandleSettingsAdapterCookiesPost_SuccessForm(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true, Bytes: 128, SetAt: "2026-05-29 00:00:00Z"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies="+url.QueryEscape("data"))
 	if rec.Code != http.StatusOK {
@@ -2413,7 +2429,7 @@ func TestHandleSettingsAdapterCookiesPost_SuccessForm(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_SuccessJSON(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true, Bytes: 5}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
 		"application/json", `{"cookies":"abcde"}`)
 	if rec.Code != http.StatusOK {
@@ -2427,7 +2443,7 @@ func TestHandleSettingsAdapterCookiesPost_SuccessJSON(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_FieldError(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveErr: &fakeFieldErr{key: "cookies", msg: "no Netscape-format lines"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies=junk")
 	if rec.Code != http.StatusBadRequest {
@@ -2444,7 +2460,7 @@ func TestHandleSettingsAdapterCookiesPost_FieldError(t *testing.T) {
 func TestHandleSettingsAdapterCookiesClear_Success(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
 		"application/x-www-form-urlencoded", "")
 	if rec.Code != http.StatusOK {
@@ -2460,7 +2476,7 @@ func TestHandleSettingsAdapterCookiesClear_Success(t *testing.T) {
 
 func TestHandleSettingsAdapterCookiesPost_NotReadyWhenNil(t *testing.T) {
 	t.Parallel()
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	s := newURLWidgetTestServer(t, Config{})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies=x")
 	if rec.Code != http.StatusServiceUnavailable {
@@ -2471,7 +2487,7 @@ func TestHandleSettingsAdapterCookiesPost_NotReadyWhenNil(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_CrossOriginBlocked(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/cookies",
@@ -2491,7 +2507,7 @@ func TestHandleSettingsAdapterCookiesPost_CrossOriginBlocked(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_UnknownAdapter(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/streams/cookies",
 		"application/x-www-form-urlencoded", "cookies=x")
 	if rec.Code != http.StatusNotFound {
@@ -2505,7 +2521,7 @@ func TestHandleSettingsAdapterCookiesPost_UnknownAdapter(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_OversizeIsFieldError(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies="+strings.Repeat("x", (1<<20)+2))
 	if rec.Code != http.StatusBadRequest {
@@ -2525,7 +2541,7 @@ func TestHandleSettingsAdapterCookiesPost_OversizeIsFieldError(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_WriteFailureIsGenericChip(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies=x")
 	if rec.Code != http.StatusInternalServerError {
@@ -2539,7 +2555,7 @@ func TestHandleSettingsAdapterCookiesPost_WriteFailureIsGenericChip(t *testing.T
 func TestHandleSettingsAdapterCookiesClear_WriteFailureIsGenericChip(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{clearErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
-	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
 		"application/x-www-form-urlencoded", "")
 	if rec.Code != http.StatusInternalServerError {
