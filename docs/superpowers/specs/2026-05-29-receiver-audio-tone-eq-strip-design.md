@@ -60,7 +60,9 @@ same stage with a biquad filter chain. The codebase already designs RBJ biquads 
 ([audiometer.go:456](../../../internal/dataplane/audiometer.go#L456)) and
 `designHighpass`
 ([audiometer.go:477](../../../internal/dataplane/audiometer.go#L477)), plus
-the `biquadCoeffs` / `biquadState` types — which this feature reuses.
+the `biquadCoeffs` / `biquadState` types — whose formulas and state model this
+feature moves into the shared `audiodsp` package instead of reaching across
+package boundaries.
 
 Rejected alternatives:
 - **FFmpeg `-af` filtergraph** — filters are fixed at spawn, so every knob
@@ -70,8 +72,27 @@ Rejected alternatives:
 
 ## Architecture
 
+> **New vs existing.** Symbols introduced by this feature —
+> `config.AudioDSP`, the `internal/dataplane/audiodsp` package (`Coeffs`,
+> `BiquadState`, `Design*`, `Processor`, `Params`),
+> `Manager.SetAudioDSP` / `PreviewAudioDSP` and the new `StatusHomeView` DSP
+> fields, `planeRunner.SetAudioDSP`, and `BridgeSaver.SaveAudioDSP` — **do not
+> exist yet**; the implementation creates them. Cited `file:line` references
+> (`scalePCMVolumeInPlace`, `SetOutputVolume`, `diffBridgeConfig` /
+> `scopeForBridgeField` / `applyHotSwapSideEffects`, `VolumeSaver` /
+> `VolumeViewer`, `config.AudioConfig`) point at **existing** code this
+> feature mirrors or extends.
+
 A new package **`internal/dataplane/audiodsp`** owns biquad design + the
-per-chunk apply. `plane.go` stays thin.
+per-chunk apply. `plane.go` stays thin. The existing RBJ formulas in
+[audiometer.go](../../../internal/dataplane/audiometer.go) are not reusable
+"as-is" because they are unexported members of package `dataplane`; the
+implementation moves the shared coefficient/state primitives into
+`audiodsp` (`Coeffs`, `BiquadState`, `DesignHighShelf`,
+`DesignHighpass`, plus the new `DesignLowShelf` and `DesignPeaking`) and
+updates the meter to call the shared package. The design must not leave
+`audiodsp` importing from `dataplane`, which would create the wrong dependency
+boundary.
 
 **Two-object split (live + click-free):**
 
@@ -79,27 +100,42 @@ per-chunk apply. `plane.go` stays thin.
    behind an `atomic.Pointer[audiodsp.Coeffs]` on the `Plane`. A UI change
    recomputes it **off the audio path** and atomically swaps the pointer
    (the many-parameter analogue of the existing `outputVolume atomic.Int32`).
-2. **Per-channel biquad state** (`z1/z2` history) — owned by the
-   audio-send goroutine and **never swapped**. Because filter state lives
-   outside the swapped object, *incremental* coefficient changes (dragging a
-   knob/slider) stay click-free: the filter memory carries over instead of
-   being reset to zero. See "Parameter smoothing" below for hard on/off
-   transitions.
+2. **Per-channel biquad state** (`z1/z2` history for the new DSP path) —
+   owned by the audio-send goroutine and **never swapped**. Because filter
+   state lives outside the swapped object, *incremental* coefficient changes
+   (dragging a knob/slider) stay click-free: the filter memory carries over
+   instead of being reset to zero. See "Parameter smoothing" below for hard
+   on/off transitions.
 
 **Fixed-slot chain (unity when off).** The chain is always the same ordered
 set of biquad slots; a disabled stage (or a whole **defeat**) becomes a
 pass-through biquad (`b0=1, b1=b2=a1=a2=0`). This keeps state indices stable
 across swaps, so toggling stages never scrambles the per-slot history.
 
-**Parameter smoothing (hard transitions).** A unity biquad in transposed
-Direct-Form II still carries one settling sample of accumulated state, so an
+**Parameter smoothing (hard transitions).** A unity biquad in the new
+transposed Direct-Form II DSP path still carries settling state, so an
 *abrupt* coefficient jump — enabling/disabling a slot (defeat, subsonic),
 flipping Mono, or a large gain step — can produce an audible transient even
-though state is retained. Hard toggles and large jumps therefore **ramp**:
-either linearly interpolate the slot's gain (in dB) over a short window
-(~5–10 ms) or crossfade dry/wet over that window. Small per-drag deltas need
-no ramp. This is the load-bearing detail behind the click-free guarantee and
-is covered by the swap test (below).
+though state is retained.
+
+`audiodsp.Processor` therefore owns the runtime transition state in the
+audio-send goroutine, separate from the atomically swapped target coeffs:
+`current`, `target`, `fromState`, `toState`, `remainingSamples`, and
+`totalSamples`. When a new coeff generation arrives, the processor classifies
+the change:
+
+- **Incremental drag** (same enabled/mono topology and every gain delta
+  <= 1.0 dB): switch to the new coeffs at the next chunk boundary and retain
+  state.
+- **Hard change** (defeat/subsonic/loudness/mono toggle, a slot entering or
+  leaving unity, or any gain delta > 1.0 dB): run old and new cascades in
+  parallel for ~5–10 ms and crossfade their outputs. The new cascade starts
+  from a copy of the old per-slot state, not zeros. If another hard update
+  arrives mid-ramp, start a new ramp from the current effective output state
+  toward the newest target. There is no middle classification.
+
+This is the load-bearing detail behind the click-free guarantee and is
+covered by the swap tests below.
 
 Slots, in order:
 
@@ -113,7 +149,7 @@ Slots, in order:
 int16 → float32
   → mono fold (avg L,R when Mono on)
   → biquad cascade (subsonic, bass, mid, treble, EQ0..9, loud-lo, loud-hi; unity slots are no-ops)
-  → balance per-channel gain
+  → balance per-channel gain when !mono && channels == 2
   → output volume gain (existing)
   → saturating clamp → int16
 ```
@@ -121,17 +157,28 @@ int16 → float32
 Processing is done in **float32** across the whole cascade and clamped to
 int16 exactly once at the end: the 16-slot int16 cascade (subsonic + 3 tone +
 10 EQ + 2 loudness, per channel) would otherwise accumulate rounding noise
-and could wrap.
+and could wrap. When DSP is fully transparent (enabled, no shaping, mono off,
+balance centered), the data plane bypasses the float cascade and uses the
+existing `scalePCMVolumeInPlace` behavior so legacy output-volume math remains
+bit-identical. When shaping is active, volume is applied in the float path and
+tests allow a defined ±1 LSB tolerance for the final PCM conversion.
 
 ## DSP specifics
 
 Biquads use the RBJ Audio EQ Cookbook forms, designed at the session sample
-rate (48000/44100/22050). The existing `designShelfHigh`
-([audiometer.go:456](../../../internal/dataplane/audiometer.go#L456)) and
-`designHighpass`
-([audiometer.go:477](../../../internal/dataplane/audiometer.go#L477)) are
-reused as-is; this feature **adds only `designShelfLow` and `designPeaking`**
-(the low-shelf and peaking forms are not yet in the tree).
+rate (48000/44100/22050). `audiodsp` owns the shared design functions:
+high-shelf and high-pass are moved from the meter implementation, and this
+feature adds low-shelf and peaking forms.
+
+**Nyquist safety:** coefficient design must never request a center frequency
+at or above Nyquist. At 44100 and 48000 all v1 slots are designable. At
+22050, the 12 kHz loudness high shelf and 16 kHz EQ band are above Nyquist
+and compile to unity no-op slots; their persisted slider/switch values are
+kept so changing the bridge sample rate back to 44100/48000 restores the
+voicing. The UI may leave those controls visible to avoid layout churn, but
+the data plane exposes the effective inactive slots for tests. The EQ status
+LED lights from requested non-flat params, while the sample-rate tests assert
+the inactive high slots produce no NaN/Inf and no audible change at 22050.
 
 | Slot | Type | Center | Q | Gain |
 |---|---|---|---|---|
@@ -216,7 +263,9 @@ balance  = 0           # -100 (L) .. +100 (R); 0 = center
 eq       = [0,0,0,0,0,0,0,0,0,0]   # 10 bands, 31 Hz .. 16 kHz, dB
 
 [[bridge.audio.dsp.memory]]        # EQ memories M1–M3 (voicing = tone + curve)
+slot = 1                           # 1..3; absent slot = empty
 name = "M1"
+stored = true                      # distinguishes saved-flat from empty
 bass = 0.0
 mid  = 0.0
 treble = 0.0
@@ -230,36 +279,70 @@ eq   = [0,0,0,0,0,0,0,0,0,0]
   and the 10 EQ band gains. It does **not** store `mono`, `balance`,
   `loudness`, `subsonic`, `enabled` (defeat), or `volume`; those are
   live-only and are left unchanged when a memory is recalled. Three slots.
+  Missing memory tables normalize to empty UI slots; a present slot with
+  `stored=true` is recallable even if the saved voicing is all zeros.
 - **Validation** (bridge save path, like the `output_volume` 0–100 check):
-  dB clamped to **±12**, balance to **±100**, `eq` length exactly 10,
-  preset/memory names known. Bad input is rejected before any disk write.
+  dB outside **±12**, balance outside **±100**, an `eq` length other than 10,
+  duplicate/out-of-range memory slots, or unknown preset/memory names are
+  rejected before any disk write or live apply. Handlers return field errors;
+  they do not silently clamp invalid input.
 
 ## Core plumbing
 
 Mirror the `OutputVolume` dual-write pattern
-([manager.go:1210](../../../internal/core/manager.go#L1210)):
+([manager.go:1210](../../../internal/core/manager.go#L1210)), with one extra
+runtime slot for previews:
 
-- `Manager.SetAudioDSP(config.AudioDSP) error` — under `m.mu`: validate →
-  update in-memory `m.bridge.Audio.DSP` → if a plane is live, call
+- `m.bridge.Audio.DSP` remains the persisted source of truth.
+- `m.audioDSPRuntime config.AudioDSP` holds the currently auditioned params
+  (committed or preview).
+- `m.audioDSPPersisted bool` marks whether runtime equals the persisted
+  bridge snapshot.
+
+- `Manager.SetAudioDSP(config.AudioDSP) error` — the committed path. Under
+  `m.mu`: validate → update `m.bridge.Audio.DSP` and `m.audioDSPRuntime` →
+  mark `m.audioDSPPersisted=true` → if a plane is live, call
   `plane.SetAudioDSP(...)` (recompute coeffs + atomic swap).
-- `Manager.AudioDSP() config.AudioDSP` — reads in-memory config, like
-  `OutputVolume()`, so a new cast and a fresh browser both start from the
-  persisted state.
+- `Manager.PreviewAudioDSP(config.AudioDSP) error` — the unpersisted drag
+  path. It uses the same validation/apply helper, updates the current runtime
+  snapshot (`m.audioDSPRuntime`) without touching `m.bridge.Audio.DSP`, marks
+  `m.audioDSPPersisted=false`, and is allowed to run ahead of disk until the
+  trailing commit succeeds or rolls back.
+- `Manager.AudioDSP() config.AudioDSP` — reads the current in-memory/runtime
+  params, like `OutputVolume()`. On process start and new casts this starts
+  from persisted config; during an active preview it may be ahead of disk.
 - New `Plane` config field `AudioDSP` set at plane start
   ([plane.go:270](../../../internal/dataplane/plane.go#L270) area), so a new
-  cast picks up saved settings on its first field.
+  cast picks up `m.bridge.Audio.DSP` (the persisted settings) on its first
+  field. Uncommitted previews do not leak into a recast/preemption; subsequent
+  preview posts can still apply to the new plane live.
 - **Memories:** save = write a slot to config; recall = `SetAudioDSP` with
   the stored voicing. Pure config + the same setter.
-- `StatusHomeView` gains `AudioDSP config.AudioDSP` (plus a derived
-  `engaged bool` for the LED), populated next to `OutputVolume`/`Title`.
+- `StatusHomeView` gains `AudioDSP config.AudioDSP` plus exported
+  `AudioDSPEngaged bool` for the LED and `AudioDSPPersisted bool` for the
+  preview/commit wire state, populated next to `OutputVolume`/`Title`.
 - **ApplyScope: `ScopeHotSwap`** — a bridge-level live control like volume
   and field-order; never a recast.
+
+`m.mu` guards only the in-memory `m.bridge.Audio.DSP` / `m.audioDSPRuntime` /
+`m.audioDSPPersisted` fields and the live `plane.SetAudioDSP` coeff swap (no
+I/O under the lock); it is released before the uiserver saver performs the
+atomic config write, preserving the "`Manager.mu` is never held across I/O"
+invariant.
 
 **Persistence/saver:** add `BridgeSaver.SaveAudioDSP` (+ memory save/recall)
 in `internal/uiserver`, and a chassis-owned `AudioDSPSaver` / `AudioDSPViewer`
 interface wired in `cmd/mister-groovy-relay/main.go`, exactly paralleling the
-existing `VolumeSaver`/`VolumeViewer` pair. Validate-then-atomic-write, then
-apply live.
+existing `VolumeSaver`/`VolumeViewer` pair. The bridge saver touchpoints are
+explicit:
+
+- `diffBridgeConfig` reports `audio.dsp` when any nested DSP value or memory
+  slot changes.
+- `scopeForBridgeField("audio.dsp")` returns `adapters.ScopeHotSwap`.
+- `applyHotSwapSideEffects` calls `core.SetAudioDSP(newCfg.Audio.DSP)` after
+  a successful atomic config write.
+- Bridge-saver tests cover diff detection, hot-swap scope, side-effect
+  dispatch, and write-failure/no-apply behavior.
 
 ## Chassis UI
 
@@ -273,8 +356,9 @@ apply live.
 - **Data:** new `AudioStripData` in
   [data.go](../../../internal/chassis/data.go) (tone/balance/volume values,
   10 EQ bands, toggle states, preset list + active preset, memory names +
-  active slot, `engaged`), populated in the `snapshotFromStatusView` path
-  from `view.AudioDSP`, so initial render shows real positions.
+  active slot, `engaged`, `persisted`), populated in the
+  `snapshotFromStatusView` path from `view.AudioDSP`, so initial render shows
+  real positions.
 - **Controls reuse existing idioms.** Knobs (bass/mid/treble/balance/volume)
   generalize [volume-knob.js](../../../internal/chassis/static/volume-knob.js)
   — a hidden `<input type=range>` under a styled dial for keyboard/scroll/a11y.
@@ -284,28 +368,64 @@ apply live.
   flash). Presets snap the 10 sliders to a voicing.
 - **Live + multi-client sync.** Each change posts to new same-origin routes
   behind `requireSameOrigin`:
-  - `POST /receiver/audio/dsp` — set params (touched-field envelope).
+  - `POST /receiver/audio/dsp` — merge a partial params patch into the current
+    runtime DSP params.
   - `POST /receiver/audio/dsp/memory` — save/recall a slot.
-  **Apply is immediate** (cheap atomic coeff swap); **the config write is
-  debounced/trailing** (on drag-end) so dragging a slider doesn't hammer the
-  disk. A new SSE `audioDsp` event broadcasts param changes (with `engaged`)
-  so a second browser tracks in real time — same pattern as the volume / VFD
-  events ([events.go](../../../internal/chassis/events.go)). Change-detection
-  fires on param/`engaged` change only; idle wire stays quiet.
+  Dragging uses preview posts for live audio and a trailing commit post on
+  pointer/key release. Buttons and switches commit immediately. A new SSE
+  `audioDsp` event broadcasts param changes (with `engaged`) so a second
+  browser tracks in real time — same pattern as the volume / VFD events
+  ([events.go](../../../internal/chassis/events.go)). Change-detection fires
+  on param/`engaged`/`persisted` change only; idle wire stays quiet.
+
+  Canonical request examples:
+
+  ```json
+  { "commit": false, "params": { "eq": [0,0,0,2,3,3,2,1,0,-1] } }
+  { "commit": true,  "params": { "bass": 4.0, "balance": -12 } }
+  { "op": "recall", "slot": 1 }
+  { "op": "store",  "slot": 2, "name": "M2" }
+  ```
+
+  `commit=false` validates and applies a preview through
+  `Manager.PreviewAudioDSP` without writing disk. `commit=true` validates,
+  writes the bridge config atomically through `SaveAudioDSP`, then applies via
+  the saver hot-swap side effect.
+  SSE payloads use one shape for both cases:
+
+  ```json
+  {
+    "params": { "enabled": true, "mono": false, "subsonic": false,
+      "loudness": false, "bass": 0, "mid": 0, "treble": 0,
+      "balance": 0, "eq": [0,0,0,0,0,0,0,0,0,0] },
+    "engaged": false,
+    "persisted": true
+  }
+  ```
 - New static `audio-strip.js` (registered in shell.html's script list) +
   styles in [chassis.css](../../../internal/chassis/static/chassis.css).
   `prefers-reduced-motion` is honored on dial/needle transitions.
 
 ## Error handling & edge cases
 
-- **Validation before disk:** out-of-range → `400` with a field error, no
-  apply, no write (mirrors the volume handler).
-- **Save ordering:** validate → atomic config write → apply live. Write
-  failure returns an error and skips the live apply, so config and runtime
-  never diverge. Concurrent saves serialize on the shared saver mutex;
-  debounced writes coalesce.
-- **No active session:** setter updates in-memory config; applies on the
-  next cast start (like volume when idle).
+- **Validation before apply/disk:** out-of-range → `400` with a field error,
+  no apply, no write (mirrors the volume handler).
+- **Preview/commit ordering:** previews intentionally let runtime run ahead
+  of disk during a drag. Commits use validate → atomic config write → apply
+  live. If the write fails before the hot-swap side effect, the handler rolls
+  runtime back to the old `BridgeSaver.Current().Audio.DSP`, emits an
+  `audioDsp` SSE update with `persisted=true`, and returns the error. If the
+  write succeeds but the hot-swap apply fails, disk is now authoritative; the
+  handler reconciles runtime to the committed `BridgeSaver.Current().Audio.DSP`
+  as a best-effort retry, emits the same SSE shape, and returns the apply
+  error. After a commit succeeds or fails, runtime and persisted config
+  converge again. Concurrent commits serialize on the shared saver mutex;
+  preview posts are throttled by the client and the final commit coalesces the
+  drag.
+- **No active session:** committed `SetAudioDSP` updates persisted + runtime
+  state and applies on the next cast start (like volume when idle). Preview
+  updates runtime/UI state only; without a commit, the next cast still starts
+  from persisted DSP.
 - **Preemption:** each new plane reads persisted DSP at start and owns its
   own coeff pointer + filter state.
 - **Backward-compat:** missing `[bridge.audio.dsp]` → transparent defaults;
@@ -323,32 +443,42 @@ Keep all four CI gates green: `go vet ./...`, `go test ./...`,
 
 - **`audiodsp` unit tests:** per-filter gain correctness (known sine at band
   center → measured gain within tolerance), pass-through slot = identity,
-  cascade stability, **float→int16 saturates (never wraps)**, mono fold,
+  cascade stability at 22050/44100/48000 including inactive above-Nyquist
+  slots, **float→int16 saturates (never wraps)**, mono fold,
   the **attenuate-only balance law** (full-left mutes R, leaves L at unity;
   never exceeds unity), and **click-free transitions** — both an incremental
   coeff swap (retained state, no discontinuity) **and** a hard on/off toggle
   (assert the ramp/crossfade bounds the boundary discontinuity, e.g. within a
-  small dB threshold, rather than a full-amplitude step).
+  small dB threshold, rather than a full-amplitude step), including an update
+  that supersedes a ramp mid-flight.
 - **Transparency guarantee:** defaults (flat + nothing engaged) → output PCM
-  equals input within ±1 LSB. The no-regression anchor.
+  equals input within ±1 LSB, and the transparent+volume path remains
+  bit-identical to the existing `scalePCMVolumeInPlace` tests. The
+  no-regression anchor.
 - **dataplane:** `SetAudioDSP` applies; DSP↔volume interaction; existing
   `TestSendAudioAppliesOutputVolume` still passes.
-- **core:** `SetAudioDSP` dual-write (memory + live plane), `AudioDSP()`
-  getter, range rejection, `StatusHomeView` carries params + `engaged` —
-  mirrors the volume tests.
+- **core:** `SetAudioDSP` committed path, `PreviewAudioDSP` unpersisted path,
+  `AudioDSP()` getter, range rejection, rollback to persisted params, and
+  `StatusHomeView` carries params + `engaged` + `persisted` — mirrors the
+  volume tests.
 - **config + uiserver:** `[bridge.audio.dsp]` + memories round-trip,
-  missing-table defaults, `SaveAudioDSP`/memory save-recall
-  validate-then-atomic-write, concurrent serialize.
+  missing-table defaults, saved-flat memory distinguished from empty memory,
+  `diffBridgeConfig`/`scopeForBridgeField("audio.dsp")` hot-swap coverage,
+  `SaveAudioDSP`/memory save-recall validate-then-atomic-write, concurrent
+  serialize, and write-failure skips live apply.
 - **chassis:** `snapshotFromStatusView` maps `view.AudioDSP` →
   `AudioStripData`; `audioDsp` SSE envelope + change-detection (fires on
-  param/`engaged` change, not on unrelated fields); template renders the
-  strip + states; **migrate the volume tests** (volume relocated out of
+  param/`engaged`/`persisted` change, not on unrelated fields); route tests
+  cover preview apply, commit save, failed commit rollback, memory store/recall
+  envelopes, and same-origin rejection; template renders the strip + states;
+  **migrate the volume tests** (volume relocated out of
   transport into the strip) — including any
   [transport.html](../../../internal/chassis/templates/transport.html)
   template assertions and behavior tests; new JS behavior test for the strip
   (knob/slider/preset/memory/switch + debounced POST + reduced-motion).
 - **integration:** SSE body includes `audioDsp`; end-to-end POST applies;
-  fake-mister smoke confirms flat DSP = unchanged audio.
+  fake-mister smoke confirms flat DSP = unchanged audio and 22050 Hz does not
+  design above-Nyquist filters.
 
 Before implementation, enumerate the volume-relocation fallout:
 
