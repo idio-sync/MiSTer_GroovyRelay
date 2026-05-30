@@ -4521,3 +4521,46 @@ body.receiver .settings-link .link-credform .action-row .action-btn { margin-lef
 /* Collapse-when-linked: linked phase shows only the one-liner (the template
    already emits just .link-line for linked); pending/error/unlinked expand. */
 body.receiver .settings-link[data-link-phase="linked"] { padding-bottom: 8px; }
+
+/* ---- Audio / EQ strip --------------------------------------------- */
+body.receiver .audio-strip {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+body.receiver .audio-deck {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #26262a 0%, #1c1c20 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), inset 0 2px 8px rgba(0,0,0,0.5);
+}
+body.receiver .audio-deck .deck-sect { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
+body.receiver .audio-deck .deck-cap {
+  color: #6a6a70; font: 700 7px 'Inter', sans-serif; letter-spacing: 0.2em;
+  text-transform: uppercase; text-align: center;
+}
+body.receiver .audio-deck .deck-div { width: 1px; background: #0a0a0b; box-shadow: 1px 0 0 rgba(255,255,255,0.04); }
+body.receiver .audio-deck .knob-row { display: flex; gap: 10px; }
+body.receiver .audio-deck .dsp-knob { width: 64px; height: 64px; }
+/* EQ vertical sliders — metal thumb matches .volume-dial */
+body.receiver .eq-bank { display: flex; gap: 9px; align-items: flex-end; }
+body.receiver .eq-band { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+body.receiver .eq-range {
+  writing-mode: vertical-lr; direction: rtl; width: 6px; height: 88px;
+  accent-color: var(--vfd);
+}
+body.receiver .eq-band .eq-hz { color: #6a6a70; font: 600 7px 'Inter', sans-serif; }
+body.receiver .audio-deck .btn-row { display: flex; gap: 5px; }
+body.receiver .action-btn.eqbtn { padding: 5px 8px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+body.receiver .action-btn.eqbtn.stored { color: var(--vfd); border-color: oklch(0.30 0.06 175); }
+body.receiver .sw-grid { display: grid; grid-template-columns: auto auto; gap: 7px 12px; align-items: center; }
+body.receiver .sw-cell { display: flex; align-items: center; gap: 7px; }
+body.receiver .sw-cell .sw-lbl { color: #8a8a8e; font: 700 8px 'Inter', sans-serif; letter-spacing: 0.14em; text-transform: uppercase; }
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .dsp-knob .volume-dial { transition: none; }
+}
