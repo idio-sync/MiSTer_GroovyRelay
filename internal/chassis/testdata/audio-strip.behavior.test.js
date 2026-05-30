@@ -36,8 +36,17 @@ class FakeElement extends FakeTarget {
     super();
     this.value = value;
     this.dataset = {};
+    this.min = '';
+    this.max = '';
+    this.step = '';
     this.textContent = '';
     this.attrs = new Map();
+    this.parentElement = null;
+    this.rect = { left: 0, top: 0, width: 100, height: 100 };
+    this.styleValues = new Map();
+    this.style = {
+      setProperty: (name, value) => this.styleValues.set(name, value),
+    };
     this.classes = new Set();
     this.classList = {
       toggle: (name, on) => {
@@ -59,6 +68,24 @@ class FakeElement extends FakeTarget {
     };
   }
 
+  closest(selector) {
+    if (selector === '[data-dsp-knob]') {
+      if (this.dataset.dspKnob) return this;
+      return this.parentElement && this.parentElement.closest
+        ? this.parentElement.closest(selector)
+        : null;
+    }
+    return null;
+  }
+
+  matches(selector) {
+    return selector === ':hover';
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
+  }
+
   getAttribute(name) {
     return this.attrs.get(name) || null;
   }
@@ -66,6 +93,12 @@ class FakeElement extends FakeTarget {
   setAttribute(name, value) {
     this.attrs.set(name, value);
   }
+
+  setPointerCapture() {}
+
+  releasePointerCapture() {}
+
+  focus() {}
 }
 
 // ---------------------------------------------------------------------------
@@ -83,15 +116,29 @@ function createHarness() {
     return el;
   });
 
+  function makeKnob(key, value, min, max) {
+    const root = new FakeElement();
+    root.dataset.dspKnob = key;
+    root.dataset.dspValue = String(value);
+    const range = new FakeElement(String(value));
+    range.dataset.dspKnobRange = key;
+    range.min = String(min);
+    range.max = String(max);
+    range.step = '1';
+    range.parentElement = root;
+    return { root, range };
+  }
+
   // 4 knob ranges
-  const knobBass = new FakeElement('0');
-  knobBass.dataset.dspKnobRange = 'bass';
-  const knobMid = new FakeElement('0');
-  knobMid.dataset.dspKnobRange = 'mid';
-  const knobTreble = new FakeElement('0');
-  knobTreble.dataset.dspKnobRange = 'treble';
-  const knobBalance = new FakeElement('0');
-  knobBalance.dataset.dspKnobRange = 'balance';
+  const bassKnob = makeKnob('bass', 0, -12, 12);
+  const midKnob = makeKnob('mid', 0, -12, 12);
+  const trebleKnob = makeKnob('treble', 0, -12, 12);
+  const balanceKnob = makeKnob('balance', 0, -100, 100);
+  const knobBass = bassKnob.range;
+  const knobMid = midKnob.range;
+  const knobTreble = trebleKnob.range;
+  const knobBalance = balanceKnob.range;
+  const knobRoots = [bassKnob.root, midKnob.root, trebleKnob.root, balanceKnob.root];
   const knobRanges = [knobBass, knobMid, knobTreble, knobBalance];
 
   // 4 switches
@@ -135,6 +182,7 @@ function createHarness() {
 
   function querySelectorAll(selector) {
     if (selector === '[data-dsp-eq]') return eqSliders.slice();
+    if (selector === '[data-dsp-knob]') return knobRoots.slice();
     if (selector === '[data-dsp-knob-range]') return knobRanges.slice();
     if (selector === '[data-dsp-switch]') return switches.slice();
     if (selector === '[data-dsp-preset]') return presets.slice();
@@ -245,6 +293,10 @@ function createHarness() {
   return {
     eqSliders,
     knobBass, knobMid, knobTreble, knobBalance,
+    knobBassRoot: bassKnob.root,
+    knobMidRoot: midKnob.root,
+    knobTrebleRoot: trebleKnob.root,
+    knobBalanceRoot: balanceKnob.root,
     swLoudness, swMono, swSubsonic, swDefeat,
     presetFlat, presetRock, presetJazz, presetVocal,
     memButtons,
@@ -491,4 +543,36 @@ test('knob bass input posts preview, change posts commit', () => {
   assert.equal(h.requests.length, 2);
   assert.equal(body(h.requests[1]).commit, true);
   assert.equal(body(h.requests[1]).params.bass, 5);
+});
+
+test('tone knob pointer drag behaves like the volume knob', () => {
+  const h = createHarness();
+
+  h.knobBassRoot.dispatch('pointerdown', {
+    button: 0,
+    pointerId: 7,
+    clientX: 0,
+    clientY: 50,
+    preventDefault() {},
+  });
+  assert.equal(h.knobBass.value, '-8');
+  assert.equal(h.knobBassRoot.styleValues.get('--volume-angle'), '-90deg');
+
+  h.knobBassRoot.dispatch('pointermove', {
+    pointerId: 7,
+    clientX: 100,
+    clientY: 50,
+    preventDefault() {},
+  });
+  h.knobBassRoot.dispatch('pointerup', {
+    pointerId: 7,
+    clientX: 100,
+    clientY: 50,
+    preventDefault() {},
+  });
+
+  assert.equal(h.requests.length, 1);
+  assert.equal(body(h.requests[0]).commit, true);
+  assert.equal(body(h.requests[0]).params.bass, 8);
+  assert.equal(h.knobBassRoot.styleValues.get('--volume-angle'), '90deg');
 });

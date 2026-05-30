@@ -11,6 +11,8 @@
 
   const PREVIEW_MS = 120;
   const HOLD_MS = 500;
+  const KNOB_START_DEG = -135;
+  const KNOB_ARC_DEG = 270;
   const PRESETS = {
     flat:  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     rock:  [4, 3, 1, 0, -1, -1, 0, 2, 3, 4],
@@ -61,6 +63,86 @@
       .map((el) => Number(el.value));
   }
 
+  function numeric(value, fallback) {
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function knobMin(el) {
+    return numeric(el.min, 0);
+  }
+
+  function knobMax(el) {
+    return numeric(el.max, 100);
+  }
+
+  function knobStep(el) {
+    const step = numeric(el.step, 1);
+    return step > 0 ? step : 1;
+  }
+
+  function formatKnobValue(value) {
+    const rounded = Math.round(value * 1000) / 1000;
+    return String(rounded);
+  }
+
+  function normalizeKnobValue(el, value) {
+    const min = knobMin(el);
+    const max = knobMax(el);
+    if (max === min) return min;
+    const lo = Math.min(min, max);
+    const hi = Math.max(min, max);
+    let next = numeric(value, numeric(el.value, min));
+    next = Math.min(hi, Math.max(lo, next));
+    const stepped = min + Math.round((next - min) / knobStep(el)) * knobStep(el);
+    return Math.min(hi, Math.max(lo, stepped));
+  }
+
+  function angleForKnob(el, value) {
+    const min = knobMin(el);
+    const max = knobMax(el);
+    if (max === min) return KNOB_START_DEG;
+    return KNOB_START_DEG + (KNOB_ARC_DEG * (normalizeKnobValue(el, value) - min) / (max - min));
+  }
+
+  function knobRoot(el) {
+    return el && el.closest ? el.closest('[data-dsp-knob]') : null;
+  }
+
+  function paintKnob(el, value) {
+    const next = normalizeKnobValue(el, value);
+    const formatted = formatKnobValue(next);
+    if (el.value !== formatted) {
+      el.value = formatted;
+    }
+    const root = knobRoot(el);
+    if (root) {
+      root.dataset.dspValue = formatted;
+      root.style.setProperty('--volume-angle', `${Math.round(angleForKnob(el, next))}deg`);
+    }
+    return next;
+  }
+
+  function valueFromKnobPointer(root, el, ev) {
+    if (!root || !root.getBoundingClientRect) {
+      return normalizeKnobValue(el, el.value);
+    }
+    const rect = root.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = ev.clientX - cx;
+    const dy = ev.clientY - cy;
+    if (Math.hypot(dx, dy) < 8) {
+      return normalizeKnobValue(el, el.value);
+    }
+    let deg = Math.atan2(dy, dx) * 180 / Math.PI + 90;
+    if (deg > 180) {
+      deg -= 360;
+    }
+    const angle = Math.min(KNOB_START_DEG + KNOB_ARC_DEG, Math.max(KNOB_START_DEG, deg));
+    return normalizeKnobValue(el, knobMin(el) + ((angle - KNOB_START_DEG) / KNOB_ARC_DEG) * (knobMax(el) - knobMin(el)));
+  }
+
   // Drive the VFD-cyan fill bar so it rises with the fader value. The track is
   // styled in CSS via --eq-fill (0%..100%); the native input handles dragging.
   function paintEQFill(el) {
@@ -86,9 +168,69 @@
       const key = el.dataset.dspKnobRange;
       const field = key === 'balance' ? 'balance' : key; // bass/mid/treble/balance
       const read = () => (key === 'balance' ? parseInt(el.value, 10) : parseFloat(el.value));
+      const root = knobRoot(el);
+      let draggingPointer = null;
+
+      const previewValue = (value) => {
+        paintKnob(el, value);
+        preview({ [field]: read() });
+      };
+      const commitValue = (value) => {
+        paintKnob(el, value);
+        commit({ [field]: read() });
+      };
+
+      paintKnob(el, el.value);
       el.addEventListener('pointerdown', () => { editing = true; });
-      el.addEventListener('input', () => { editing = true; preview({ [field]: read() }); });
-      el.addEventListener('change', () => { editing = false; commit({ [field]: read() }); });
+      el.addEventListener('input', () => { editing = true; previewValue(el.value); });
+      el.addEventListener('change', () => { editing = false; commitValue(el.value); });
+
+      if (!root) return;
+      root.addEventListener('pointerdown', (ev) => {
+        if (ev.button != null && ev.button !== 0) return;
+        if (ev.preventDefault) ev.preventDefault();
+        draggingPointer = ev.pointerId;
+        if (el.focus) el.focus({ preventScroll: true });
+        editing = true;
+        if (root.setPointerCapture && ev.pointerId != null) {
+          root.setPointerCapture(ev.pointerId);
+        }
+        previewValue(valueFromKnobPointer(root, el, ev));
+      });
+      root.addEventListener('pointermove', (ev) => {
+        if (draggingPointer === null || ev.pointerId !== draggingPointer) return;
+        if (ev.preventDefault) ev.preventDefault();
+        previewValue(valueFromKnobPointer(root, el, ev));
+      });
+      root.addEventListener('pointerup', (ev) => {
+        if (draggingPointer === null || ev.pointerId !== draggingPointer) return;
+        if (ev.preventDefault) ev.preventDefault();
+        draggingPointer = null;
+        if (root.releasePointerCapture && ev.pointerId != null) {
+          root.releasePointerCapture(ev.pointerId);
+        }
+        editing = false;
+        commitValue(valueFromKnobPointer(root, el, ev));
+      });
+      root.addEventListener('pointercancel', (ev) => {
+        if (draggingPointer === null || ev.pointerId !== draggingPointer) return;
+        draggingPointer = null;
+        if (root.releasePointerCapture && ev.pointerId != null) {
+          root.releasePointerCapture(ev.pointerId);
+        }
+        editing = false;
+        commitValue(el.value);
+      });
+      root.addEventListener('wheel', (ev) => {
+        if (document.activeElement !== el && !root.matches(':hover')) return;
+        if (ev.preventDefault) ev.preventDefault();
+        editing = true;
+        const delta = ev.deltaY < 0 ? knobStep(el) : -knobStep(el);
+        const next = normalizeKnobValue(el, numeric(el.value, knobMin(el)) + delta);
+        previewValue(next);
+        editing = false;
+        commitValue(next);
+      }, { passive: false });
     });
   }
 
@@ -155,13 +297,19 @@
   function applyFromEvent(params, engaged, persisted) {
     if (editing) return; // don't fight the operator mid-drag
     const setRange = (sel, v) => {
+      if (v === undefined || v === null) return;
       const el = document.querySelector(sel);
       if (el && el.value !== String(v)) el.value = String(v);
     };
-    setRange('[data-dsp-knob-range="bass"]', params.bass);
-    setRange('[data-dsp-knob-range="mid"]', params.mid);
-    setRange('[data-dsp-knob-range="treble"]', params.treble);
-    setRange('[data-dsp-knob-range="balance"]', params.balance);
+    const setKnob = (sel, v) => {
+      if (v === undefined || v === null) return;
+      const el = document.querySelector(sel);
+      if (el) paintKnob(el, v);
+    };
+    setKnob('[data-dsp-knob-range="bass"]', params.bass);
+    setKnob('[data-dsp-knob-range="mid"]', params.mid);
+    setKnob('[data-dsp-knob-range="treble"]', params.treble);
+    setKnob('[data-dsp-knob-range="balance"]', params.balance);
     (params.eq || []).forEach((g, i) => {
       const sel = `[data-dsp-eq="${i}"]`;
       setRange(sel, g);
