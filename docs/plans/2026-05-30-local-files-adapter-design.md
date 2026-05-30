@@ -8,7 +8,10 @@
 > revised again after review to fix the `SessionRequest` field mapping, make the
 > receiver-chassis route/template work explicit, scope embedded artwork extraction,
 > and tighten library-name, child-entry, readable-root, and FFmpeg child-resource
-> requirements.
+> requirements. A third review confirmed every codebase claim and added small
+> fixes: `DisableRedirects` is also a no-argv contract marker, TOCTOU mitigation
+> is scoped (fd during browse, re-jail-on-cast for cast), and a real-ffprobe-under-
+> `file`-whitelist task de-risks the "free transport" claim.
 >
 > This is "A2" from a broader feature brainstorm exploring two axes: new cast
 > sources and baked-in CRT visuals. The remaining menu items (internet radio,
@@ -187,9 +190,14 @@ inside a valid folder from being probed outside the library root.
 **Known gaps to handle explicitly (this is billed as the test centerpiece, so
 do not hand-wave them):**
 
-- **TOCTOU.** `EvalSymlinks`-then-later-`os.Open` is a swap window. Resolve once
-  and, where practical, operate on the returned `*os.File`/fd rather than
-  re-opening by path. At minimum, document the race.
+- **TOCTOU.** `EvalSymlinks`-then-later-`os.Open` is a swap window. **Scope the
+  mitigation by path:** during *browse*, the handler does its own `ReadDir`/probe,
+  so resolve once and operate on the returned `*os.File`/fd rather than re-opening
+  by path. For the *cast* path there is **no fd to thread** — `SessionRequest`
+  carries a `StreamURL` string and core re-opens it in ffprobe/ffmpeg
+  ([manager.go:638,803](../../internal/core/manager.go#L638)), so the cast-path
+  mitigation is **re-jail-on-cast + accept-and-document the race**, not fd
+  passing. Do not waste effort trying to hand core a file descriptor.
 - **Case-insensitive filesystems** (default macOS/Windows — both listed as
   native targets). A case-varied path can defeat a case-sensitive `Rel` check.
   Normalize case for the containment comparison on those platforms.
@@ -217,8 +225,12 @@ the existing HLS buffer policy documents that Alpine FFmpeg 6.x can reject
 ([internal/hlsbuffer/session.go:96-103](../../internal/hlsbuffer/session.go#L96-L103)).
 
 That policy is necessary but not sufficient. `ProtocolWhitelist=["file"]` still
-allows nested child `file:` reads; `DisablePlaylists` is currently an
-adapter-enforced contract marker, not an FFmpeg argv flag. Therefore the
+allows nested child `file:` reads; and both `DisablePlaylists` **and**
+`DisableRedirects` are currently adapter-enforced contract markers that emit
+**no** FFmpeg argv flag (`ProtocolWhitelist` is the only field of the three that
+produces a real `-protocol_whitelist` argument — so the policy test should assert
+the struct fields for the two markers and assert argv only for the whitelist).
+Therefore the
 extension/content allowlist is also a security boundary: v1 accepts only direct
 audio/video container formats and rejects playlist, manifest, link, concat,
 cue/EDL, sidecar-subtitle, and other external-reference formats (`.m3u`,
@@ -301,7 +313,7 @@ should not be the only UI surface.
 
 ### Browse UX (receiver settings drawer)
 
-- The adapter pane shows **settings + a "Browse" control**. The browser is
+- The receiver settings pane shows **settings + a "Browse" control**. The browser is
   **hidden by default** and **opens as a drawer** when picked.
 - Drawer: libraries at top level → folder drill-down with breadcrumb → playable
   files → pick one to cast. Single-file only in v1.
@@ -398,6 +410,12 @@ This turns the #1 anticipated support question into a self-explaining error.
   `DisableRedirects`, `DisablePlaylists`, and **no** `DisableReconnect`) plus
   tests that playlist/external-reference extensions are rejected before ffprobe
   or ffmpeg can dereference child files outside the jail.
+- **Real-probe verification (de-risks the "free transport" claim)**: run an
+  actual `ffprobe` against a fixture media file under `ProtocolWhitelist=["file"]`
+  and assert it succeeds and reports a duration. A scheme-less local path is
+  treated by FFmpeg as the `file` protocol, so this *should* pass under the
+  restrictive policy — but the whole "full transport is free" claim rests on it,
+  so verify rather than assume. Land this before the UI work.
 - **Visualizer-request test**: audio-only file produces a `SessionRequest` with
   `Visualizer.Enabled`, `MediaKindMusic`, a supported placeholder `Mode`, and
   no artwork path unless an explicit extraction/cache path is implemented.
