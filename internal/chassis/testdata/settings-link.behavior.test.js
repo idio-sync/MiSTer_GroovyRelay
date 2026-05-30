@@ -327,6 +327,31 @@ test('password input type is password for secret fields', () => {
   assert.equal(userInput.getAttribute('type'), 'text', 'text field must use type=text');
 });
 
+test('credential error view renders a retryable form (I-2 recovery)', () => {
+  // When a credential link fails (network error / chip / {ok:false}), the submit
+  // handler re-renders the form via renderLinkView({phase:'error', fields}) so the
+  // operator can retry — it must NOT leave the form stuck on "Linking…".
+  const h = createHarness();
+  const renderLinkView = h.window.Chassis.settings.renderLinkView;
+
+  const container = h.document.createElement('div');
+  container.className = 'settings-link';
+  renderLinkView(container, {
+    kind: 'credential',
+    phase: 'error',
+    error: 'Network error',
+    fields: [
+      { key: 'username', label: 'Username', kind: 'text' },
+      { key: 'password', label: 'Password', kind: 'secret' },
+    ],
+  });
+
+  assert.notEqual(container.querySelector('[data-link-submit]'), null, 'submit button restored for retry');
+  assert.notEqual(container.querySelector('[data-link-field="username"]'), null, 'username input restored');
+  assert.notEqual(container.querySelector('[data-link-field="password"]'), null, 'password input restored');
+  assert.ok(container.textContent.includes('Network error'), 'error message shown to operator');
+});
+
 test('renderLinkView clears inputs on repaint (password not retained)', () => {
   const h = createHarness();
   const renderLinkView = h.window.Chassis.settings.renderLinkView;

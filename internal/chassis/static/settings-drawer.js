@@ -749,21 +749,35 @@
     const container = form.closest('.settings-link');
     const adapter = adapterOfLink(form);
     if (!adapter) return;
+    // Capture the field definitions before the optimistic repaint destroys the
+    // live form, so we can rebuild it (submit re-enabled, inputs cleared) if the
+    // link fails — otherwise "Linking…" stays stuck with no way to retry.
+    const fields = Array.from(form.querySelectorAll('[data-link-field]')).map((inp) => {
+      const row = inp.closest('.field-row');
+      const label = row && row.querySelector('label');
+      return {
+        key: inp.getAttribute('data-link-field'),
+        label: label ? label.textContent : inp.getAttribute('data-link-field'),
+        kind: inp.type === 'password' ? 'secret' : 'text',
+      };
+    });
     const body = new URLSearchParams();
     form.querySelectorAll('[data-link-field]').forEach((inp) => body.set(inp.getAttribute('data-link-field'), inp.value));
-    const submit = form.querySelector('[data-link-submit]');
-    if (submit) submit.disabled = true;
     // Optimistic "Linking…" — rebuilds form with empty inputs (passwords cleared).
     renderLinkView(container, { kind: 'credential', phase: 'pending' });
     try {
       const payload = await postLink(adapter, 'start', body);
       if (payload.ok && payload.view) {
-        renderLinkView(container, payload.view); // clears password (fresh inputs)
-      } else if (payload.chip) {
-        showNotice(payload.chip, 'err');
+        renderLinkView(container, payload.view); // linked, or error with the form
+      } else {
+        // chip (BUSY/NOT READY) or {ok:false,error}: restore the form so the
+        // operator can retry instead of being stranded on "Linking…".
+        if (payload.chip) showNotice(payload.chip, 'err');
+        renderLinkView(container, { kind: 'credential', phase: 'error', error: payload.error || '', fields });
       }
     } catch (e) {
       showNotice('NETWORK ERROR', 'err');
+      renderLinkView(container, { kind: 'credential', phase: 'error', error: 'Network error', fields });
     }
   });
 
@@ -792,6 +806,9 @@
       scheduleNextPoll(adapter);
       return;
     }
+    // The drawer/pane may have closed (stopAllPolls) during the await — don't
+    // repaint a now-hidden container with a late response.
+    if (p.stopped) return;
     if (!payload.ok || !payload.view) { stopPoll(adapter); return; }
     renderLinkView(p.container, payload.view);
     const v = payload.view;

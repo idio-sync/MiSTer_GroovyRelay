@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -160,6 +161,15 @@ func (a *Adapter) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 func (a *Adapter) pollPendingLink(pl *pendingLink, pinID int, deviceUUID string) {
 	token, err := pollForTokenCtx(pl.ctx, pinID, deviceUUID, 15*time.Minute)
 	if err != nil {
+		// An abandoned flow (rapid re-click, or Stop/disable while a PIN is
+		// pending) cancels pl.ctx. That is a race artifact, not a link
+		// failure: complete silently — no adapter-link-failed emission — and
+		// with an empty error so linkSnapshot reports the flow as unlinked,
+		// not errored. Mirrors the success-race abandon guard below.
+		if errors.Is(err, context.Canceled) {
+			pl.complete("", "")
+			return
+		}
 		a.finishPendingLink(pl, "", err.Error())
 		return
 	}
