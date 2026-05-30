@@ -149,6 +149,19 @@ advances to item 3 by the identical mechanism; the chain is self-perpetuating
 and terminates only at end-of-queue, an unplayable item, or the toggle going
 off.
 
+**Implementation note (attach point).** The auto-advance `OnStop` wrapper is
+applied inside the two request builders themselves —
+`musicSessionRequestForPlay` and `sessionRequestForPreset` — not inside
+`sessionRequestForPlay`. This is required because `handlePlayMedia` (the
+*initial* controller cast) inlines the music/video dispatch and calls those two
+builders directly, bypassing `sessionRequestForPlay`; wrapping only the
+dispatcher would leave the first item without an auto-advance hook. Wrapping
+both builders covers every construction site — initial cast, skip-next, and
+auto-advance's own next request — for both media types. `advanceAfterEOF` still
+builds its next request via `sessionRequestForPlay` (the dispatcher) so it picks
+the right builder per media kind. See the implementation plan for the exact
+wrap points.
+
 **Timeline sync.** The existing 1 Hz timeline broker reports the new item's
 metadata/state back to Plex automatically (it reads the freshly-remembered
 session via `lastPlaySession`), so a still-connected controller's UI stays in
