@@ -4532,29 +4532,101 @@ body.receiver .audio-strip {
 body.receiver .audio-deck {
   display: flex;
   align-items: stretch;
-  gap: 16px;
+  gap: 26px;
   overflow-x: auto;
-  padding: 10px 12px;
+  padding: 16px 20px;
   border-radius: 3px;
   background: linear-gradient(180deg, #26262a 0%, #1c1c20 100%);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), inset 0 2px 8px rgba(0,0,0,0.5);
 }
-body.receiver .audio-deck .deck-sect { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
+body.receiver .audio-deck .deck-sect { display: flex; flex-direction: column; gap: 12px; justify-content: center; }
 body.receiver .audio-deck .deck-cap {
   color: #6a6a70; font: 700 7px 'Inter', sans-serif; letter-spacing: 0.2em;
-  text-transform: uppercase; text-align: center;
+  text-transform: uppercase; text-align: center; margin-bottom: 2px;
 }
 body.receiver .audio-deck .deck-div { width: 1px; background: #0a0a0b; box-shadow: 1px 0 0 rgba(255,255,255,0.04); }
-body.receiver .audio-deck .knob-row { display: flex; gap: 10px; }
-body.receiver .audio-deck .dsp-knob { width: 64px; height: 64px; }
-/* EQ vertical sliders — metal thumb matches .volume-dial */
-body.receiver .eq-bank { display: flex; gap: 9px; align-items: flex-end; }
-body.receiver .eq-band { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+body.receiver .audio-deck .knob-row { display: flex; gap: 14px; }
+/* Tone/balance knobs share the volume knob's geometry so their labels clear
+   the dial with identical breathing room and legibility. */
+body.receiver .audio-deck .dsp-knob { width: 66px; height: 72px; }
+body.receiver .audio-deck .deck-eq { padding: 0 4px; }
+
+/* EQ graphic faders — recessed machined channel, VFD-cyan fill, metal cap. */
+body.receiver .eq-bank { display: flex; gap: 16px; align-items: flex-end; }
+body.receiver .eq-band { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 body.receiver .eq-range {
-  writing-mode: vertical-lr; direction: rtl; width: 6px; height: 88px;
-  accent-color: var(--vfd);
+  -webkit-appearance: none; appearance: none;
+  writing-mode: vertical-lr; direction: rtl;
+  width: 26px; height: 104px; margin: 0; padding: 0;
+  background: transparent; cursor: ns-resize;
+  --eq-fill: 50%;
 }
-body.receiver .eq-band .eq-hz { color: #6a6a70; font: 600 7px 'Inter', sans-serif; }
+body.receiver .eq-range:focus { outline: none; }
+/* WebKit/Blink: track = faceplate + recessed channel + VFD fill from bottom */
+body.receiver .eq-range::-webkit-slider-runnable-track {
+  width: 26px; height: 104px; border-radius: 5px;
+  background:
+    /* VFD fill: glowing bar rising through the channel to the cap */
+    linear-gradient(to top, var(--vfd) 0 var(--eq-fill), rgba(0,0,0,0) var(--eq-fill)) center / 8px 100% no-repeat,
+    /* 0 dB reference hairline at mid-throw */
+    linear-gradient(to top, rgba(0,0,0,0) calc(50% - 1px), rgba(168,168,174,0.45) calc(50% - 1px) calc(50% + 1px), rgba(0,0,0,0) calc(50% + 1px)) center / 14px 100% no-repeat,
+    /* recessed dark channel walls */
+    linear-gradient(90deg, rgba(0,0,0,0) calc(50% - 5px), #050506 calc(50% - 5px), #131316 50%, #050506 calc(50% + 5px), rgba(0,0,0,0) calc(50% + 5px)) center / 100% 100% no-repeat,
+    /* fader faceplate */
+    linear-gradient(180deg, #2c2c30, #1a1a1e);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.07),
+    inset 0 0 0 1px rgba(0,0,0,0.55),
+    inset 0 0 6px rgba(0,0,0,0.5);
+}
+body.receiver .eq-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 26px; height: 13px; border-radius: 3px;
+  border: 1px solid #050506;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,0) 45%, rgba(0,0,0,0.55) 47%, rgba(255,255,255,0.18) 50%, rgba(0,0,0,0) 53%),
+    linear-gradient(180deg, #dadade 0%, #a0a0a6 42%, #4c4c50 60%, #18181a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    inset 0 -2px 3px rgba(0,0,0,0.6),
+    0 2px 5px rgba(0,0,0,0.65);
+}
+/* Firefox */
+body.receiver .eq-range::-moz-range-track {
+  width: 26px; height: 104px; border-radius: 5px;
+  background:
+    linear-gradient(to top, rgba(0,0,0,0) calc(50% - 1px), rgba(168,168,174,0.45) calc(50% - 1px) calc(50% + 1px), rgba(0,0,0,0) calc(50% + 1px)) center / 14px 100% no-repeat,
+    linear-gradient(90deg, rgba(0,0,0,0) calc(50% - 5px), #050506 calc(50% - 5px), #131316 50%, #050506 calc(50% + 5px), rgba(0,0,0,0) calc(50% + 5px)) center / 100% 100% no-repeat,
+    linear-gradient(180deg, #2c2c30, #1a1a1e);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.07),
+    inset 0 0 0 1px rgba(0,0,0,0.55),
+    inset 0 0 6px rgba(0,0,0,0.5);
+}
+body.receiver .eq-range::-moz-range-progress {
+  width: 8px; border-radius: 4px;
+  background: var(--vfd);
+}
+body.receiver .eq-range::-moz-range-thumb {
+  width: 26px; height: 13px; border-radius: 3px;
+  border: 1px solid #050506;
+  background: linear-gradient(180deg, #dadade 0%, #a0a0a6 42%, #4c4c50 60%, #18181a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    inset 0 -2px 3px rgba(0,0,0,0.6),
+    0 2px 5px rgba(0,0,0,0.65);
+}
+body.receiver .eq-range:focus::-webkit-slider-thumb {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    inset 0 -2px 3px rgba(0,0,0,0.6),
+    0 0 0 2px var(--vfd-glow-soft),
+    0 0 10px var(--vfd-glow-soft);
+}
+body.receiver .eq-band .eq-hz {
+  color: #8a8a8e; font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.08em;
+}
 body.receiver .audio-deck .btn-row { display: flex; gap: 5px; }
 body.receiver .action-btn.eqbtn { padding: 5px 8px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
 body.receiver .action-btn.eqbtn.stored { color: var(--vfd); border-color: oklch(0.30 0.06 175); }

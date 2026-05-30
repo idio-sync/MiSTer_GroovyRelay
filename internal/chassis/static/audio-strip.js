@@ -61,10 +61,22 @@
       .map((el) => Number(el.value));
   }
 
+  // Drive the VFD-cyan fill bar so it rises with the fader value. The track is
+  // styled in CSS via --eq-fill (0%..100%); the native input handles dragging.
+  function paintEQFill(el) {
+    if (!el || !el.style || !el.style.setProperty) return;
+    const min = Number(el.min) || -12;
+    const max = Number(el.max) || 12;
+    const v = Number(el.value);
+    const pct = max > min ? ((v - min) / (max - min)) * 100 : 0;
+    el.style.setProperty('--eq-fill', `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`);
+  }
+
   function bindEQ() {
     document.querySelectorAll('[data-dsp-eq]').forEach((el) => {
+      paintEQFill(el);
       el.addEventListener('pointerdown', () => { editing = true; });
-      el.addEventListener('input', () => { editing = true; preview({ eq: currentEQ() }); });
+      el.addEventListener('input', () => { editing = true; paintEQFill(el); preview({ eq: currentEQ() }); });
       el.addEventListener('change', () => { editing = false; commit({ eq: currentEQ() }); });
     });
   }
@@ -103,6 +115,7 @@
         if (!curve) return;
         document.querySelectorAll('[data-dsp-eq]').forEach((slider) => {
           slider.value = String(curve[Number(slider.dataset.dspEq)] || 0);
+          paintEQFill(slider);
         });
         commit({ eq: curve.slice() });
       });
@@ -149,7 +162,12 @@
     setRange('[data-dsp-knob-range="mid"]', params.mid);
     setRange('[data-dsp-knob-range="treble"]', params.treble);
     setRange('[data-dsp-knob-range="balance"]', params.balance);
-    (params.eq || []).forEach((g, i) => setRange(`[data-dsp-eq="${i}"]`, g));
+    (params.eq || []).forEach((g, i) => {
+      const sel = `[data-dsp-eq="${i}"]`;
+      setRange(sel, g);
+      const el = document.querySelector(sel);
+      if (el) paintEQFill(el);
+    });
     const sw = (key, on) => {
       const el = document.querySelector(`[data-dsp-switch="${key}"]`);
       if (!el) return;
