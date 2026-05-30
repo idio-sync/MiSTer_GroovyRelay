@@ -153,6 +153,61 @@ func (r *BridgeSaver) SaveOutputVolume(volume int) (adapters.ApplyScope, error) 
 	return r.saveLocked(next)
 }
 
+// SaveAudioDSP atomically persists bridge.audio.dsp against the latest
+// in-memory bridge snapshot, then applies it live via the saveLocked
+// hot-swap pipeline (audio.dsp → ScopeHotSwap → core.SetAudioDSP).
+func (r *BridgeSaver) SaveAudioDSP(dsp config.AudioDSP) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.sec.Bridge
+	next.Audio.DSP = dsp
+	return r.saveLocked(next)
+}
+
+// SaveAudioDSPMemory stores a voicing (tone + EQ) into slot 1..3, replacing
+// any existing entry for that slot, and persists it. Returns the applied
+// scope from saveLocked. Mono/balance/loudness/volume are not stored.
+func (r *BridgeSaver) SaveAudioDSPMemory(slot int, name string, voicing config.AudioDSP) (adapters.ApplyScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.sec.Bridge
+	mem := config.AudioDSPMemory{
+		Slot:   slot,
+		Name:   name,
+		Stored: true,
+		Bass:   voicing.Bass,
+		Mid:    voicing.Mid,
+		Treble: voicing.Treble,
+		EQ:     append([]float64(nil), voicing.EQ...),
+	}
+	replaced := false
+	for i := range next.Audio.DSP.Memory {
+		if next.Audio.DSP.Memory[i].Slot == slot {
+			next.Audio.DSP.Memory[i] = mem
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next.Audio.DSP.Memory = append(append([]config.AudioDSPMemory(nil), next.Audio.DSP.Memory...), mem)
+	}
+	return r.saveLocked(next)
+}
+
+// RecallAudioDSPMemory returns the stored voicing for a slot, or ok=false if
+// the slot is empty. The chassis applies it via SaveAudioDSP (commit) — this
+// method only reads.
+func (r *BridgeSaver) RecallAudioDSPMemory(slot int) (config.AudioDSPMemory, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.sec.Bridge.Audio.DSP.Memory {
+		if m.Slot == slot && m.Stored {
+			return m, true
+		}
+	}
+	return config.AudioDSPMemory{}, false
+}
+
 // SaveVisualizerMode atomically persists only bridge.visualizer.mode
 // against the latest in-memory bridge snapshot. Mirrors the
 // SaveOutputVolume pattern so concurrent saves of other fields don't

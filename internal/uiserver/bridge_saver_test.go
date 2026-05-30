@@ -919,3 +919,55 @@ func TestScopeForBridgeField_DSPIsHotSwap(t *testing.T) {
 		t.Errorf("scopeForBridgeField(audio.dsp) = %v, want ScopeHotSwap", got)
 	}
 }
+
+// newBridgeSaverForTest constructs a BridgeSaver backed by a temp config file
+// and a fakeBridgeCore so tests can inspect core.lastDSP / core.dspCalls.
+func newBridgeSaverForTest(t *testing.T) (*BridgeSaver, *fakeBridgeCore) {
+	t.Helper()
+	core := &fakeBridgeCore{}
+	old := testBridgeConfig(t, "NTSC_480i")
+	r := NewBridgeSaver(testConfigPath(t), &config.Sectioned{Bridge: old}, core, adapters.NewRegistry())
+	return r, core
+}
+
+func TestSaveAudioDSP_PersistsAndHotSwaps(t *testing.T) {
+	t.Parallel()
+	r, core := newBridgeSaverForTest(t)
+	dsp := config.DefaultAudioDSP()
+	dsp.Bass = 4
+	scope, err := r.SaveAudioDSP(dsp)
+	if err != nil {
+		t.Fatalf("SaveAudioDSP: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Errorf("scope = %v, want ScopeHotSwap", scope)
+	}
+	if r.Current().Audio.DSP.Bass != 4 {
+		t.Error("in-memory bridge not updated")
+	}
+	if core.lastDSP.Bass != 4 || core.dspCalls != 1 {
+		t.Errorf("core.SetAudioDSP not dispatched once with new params: %+v calls=%d", core.lastDSP, core.dspCalls)
+	}
+}
+
+func TestSaveAudioDSPMemory_StoreAndRecall(t *testing.T) {
+	t.Parallel()
+	r, _ := newBridgeSaverForTest(t)
+	store := config.DefaultAudioDSP()
+	store.EQ[5] = 6
+	if _, err := r.SaveAudioDSPMemory(2, "Rock", store); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	mem := r.Current().Audio.DSP.Memory
+	if len(mem) != 1 || mem[0].Slot != 2 || !mem[0].Stored || mem[0].EQ[5] != 6 {
+		t.Fatalf("memory slot 2 not stored: %+v", mem)
+	}
+	// Recall returns the stored voicing for the chassis to apply.
+	got, ok := r.RecallAudioDSPMemory(2)
+	if !ok || got.EQ[5] != 6 {
+		t.Errorf("recall slot 2 = %+v ok=%v", got, ok)
+	}
+	if _, ok := r.RecallAudioDSPMemory(3); ok {
+		t.Error("empty slot 3 should not recall")
+	}
+}
