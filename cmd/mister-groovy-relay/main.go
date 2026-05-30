@@ -68,6 +68,23 @@ func (a *volumeSaverAdapter) SaveOutputVolume(volume int) error {
 	return err
 }
 
+type audioDSPSaverAdapter struct{ bs *uiserver.BridgeSaver }
+
+func (a *audioDSPSaverAdapter) SaveAudioDSP(dsp config.AudioDSP) error {
+	_, err := a.bs.SaveAudioDSP(dsp)
+	return err
+}
+func (a *audioDSPSaverAdapter) SaveAudioDSPMemory(slot int, name string, voicing config.AudioDSP) error {
+	_, err := a.bs.SaveAudioDSPMemory(slot, name, voicing)
+	return err
+}
+func (a *audioDSPSaverAdapter) RecallAudioDSPMemory(slot int) (config.AudioDSPMemory, bool) {
+	return a.bs.RecallAudioDSPMemory(slot)
+}
+func (a *audioDSPSaverAdapter) CurrentAudioDSP() config.AudioDSP {
+	return a.bs.Current().Audio.DSP
+}
+
 func main() {
 	startedAt := time.Now()
 	defaultCfg := defaultConfigForRuntime()
@@ -404,6 +421,8 @@ func main() {
 		VisualizerSaver:           &visualizerSaverAdapter{bs: saver},
 		VolumeViewer:              coreMgr,
 		VolumeSaver:               &volumeSaverAdapter{bs: saver},
+		AudioDSPController:        coreMgr,
+		AudioDSPSaver:             &audioDSPSaverAdapter{bs: saver},
 		AudioScopeViewer:          coreMgr,
 		AUX:                       auxAdapter,
 		PresetViewer:              presetViewer,
