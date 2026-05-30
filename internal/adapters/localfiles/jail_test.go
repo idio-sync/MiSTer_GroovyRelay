@@ -97,6 +97,24 @@ func TestResolveInLibraryPermissionDeniedAncestorFailsClosed(t *testing.T) {
 	}
 }
 
+func TestCaseInsensitivePathsOnlyOnWindows(t *testing.T) {
+	tests := []struct {
+		goos string
+		want bool
+	}{
+		{goos: "windows", want: true},
+		{goos: "darwin", want: false},
+		{goos: "linux", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.goos, func(t *testing.T) {
+			if got := caseInsensitivePathsForGOOS(tc.goos); got != tc.want {
+				t.Fatalf("caseInsensitivePathsForGOOS(%q) = %v, want %v", tc.goos, got, tc.want)
+			}
+		})
+	}
+}
+
 func mustWrite(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {

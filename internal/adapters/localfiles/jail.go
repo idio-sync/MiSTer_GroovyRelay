@@ -126,5 +126,9 @@ func samePath(a, b string) bool {
 }
 
 func caseInsensitivePaths() bool {
-	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	return caseInsensitivePathsForGOOS(runtime.GOOS)
+}
+
+func caseInsensitivePathsForGOOS(goos string) bool {
+	return goos == "windows"
 }
