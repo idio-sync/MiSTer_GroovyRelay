@@ -2313,6 +2313,53 @@ func TestMeterTemplateHasDataHooks(t *testing.T) {
 	}
 }
 
+func TestMeterTemplate_LinkReadoutReservesStableLatencyWidth(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0)).Meter
+	data.Readout.Link = "MiSTer - 4ms"
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "meter", data); err != nil {
+		t.Fatalf("execute meter: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{
+		`class="link-value seg-display"`,
+		`class="seg-ghost" aria-hidden="true">~~~~~~ - 888~~</span><span class="seg-text" data-meter-link>MiSTer - 4ms</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("meter LINK readout does not reserve stable latency width %q; body:\n%s", want, body)
+		}
+	}
+
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	cssText := string(cssBytes)
+	linkValueRule := cssRuleBlock(t, cssText, "body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .link-value")
+	for _, want := range []string{
+		"display: inline-grid;",
+		"justify-items: end;",
+	} {
+		if !strings.Contains(linkValueRule, want) {
+			t.Fatalf("LINK value fixed-width rule missing %q: %s", want, linkValueRule)
+		}
+	}
+	linkGhostRule := cssRuleBlock(t, cssText, "body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .link-value .seg-ghost")
+	for _, want := range []string{
+		"position: static;",
+		"grid-area: 1 / 1;",
+	} {
+		if !strings.Contains(linkGhostRule, want) {
+			t.Fatalf("LINK ghost must reserve width in normal layout, missing %q: %s", want, linkGhostRule)
+		}
+	}
+}
+
 func TestMeterTemplate_FieldOrderDrivesStaticOddEvenLock(t *testing.T) {
 	t.Parallel()
 	tmpl, err := parseTemplates()

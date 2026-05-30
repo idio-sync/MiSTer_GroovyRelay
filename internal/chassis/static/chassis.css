@@ -1270,8 +1270,25 @@ body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .key {
 }
 
 body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .val {
+  display: inline-flex;
+  align-items: center;
   color: oklch(0.78 0.14 150);
   text-shadow: 0 0 3px oklch(0.62 0.14 150 / 0.5);
+}
+
+body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .link-value {
+  display: inline-grid;
+  justify-items: end;
+}
+
+body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .link-value .seg-ghost {
+  grid-area: 1 / 1;
+  position: static;
+  inset: auto;
+}
+
+body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .link-value .seg-text {
+  grid-area: 1 / 1;
 }
 
 body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .val::before {
