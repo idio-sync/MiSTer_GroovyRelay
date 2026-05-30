@@ -1905,9 +1905,49 @@ func TestHandleEvents_InitialBurstIncludesPresetsBetweenMeterAndAudio(t *testing
 			}
 		}
 	}
-	// Expected: [state, vfd, source, visualizer, transport, volume, meter, presets, audio]
-	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "meter", "presets", "audio"}
+	// Expected: [state, vfd, source, visualizer, transport, volume, audioDsp, meter, presets, audio]
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "audio"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("initial burst events = %v, want %v", names, want)
+	}
+}
+
+func TestAudioDSPChanged(t *testing.T) {
+	t.Parallel()
+	a := AudioStripData{EQ: make([]float64, 10)}
+	b := a
+	if audioDSPChanged(a, b) {
+		t.Error("identical strips should not change")
+	}
+	b.Bass = 3
+	if !audioDSPChanged(a, b) {
+		t.Error("bass change should be detected")
+	}
+	c := a
+	c.EQ = append([]float64(nil), a.EQ...)
+	c.EQ[2] = -1
+	if !audioDSPChanged(a, c) {
+		t.Error("EQ change should be detected")
+	}
+	d := a
+	d.Persisted = !a.Persisted
+	if !audioDSPChanged(a, d) {
+		t.Error("persisted flip should be detected")
+	}
+}
+
+func TestAudioDspEnvelope_Shape(t *testing.T) {
+	t.Parallel()
+	s := AudioStripData{Enabled: true, Bass: 4, EQ: make([]float64, 10), Engaged: true, Persisted: true}
+	env := audioDspEnvelopeFrom(s)
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(b)
+	for _, want := range []string{`"params"`, `"bass":4`, `"engaged":true`, `"persisted":true`, `"eq":[`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("envelope JSON missing %q: %s", want, got)
+		}
 	}
 }

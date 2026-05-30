@@ -214,6 +214,62 @@ func volumeChanged(a, b TransportData) bool {
 	return a.OutputVolume != b.OutputVolume
 }
 
+// audioDspEnvelope is the payload for the `audioDsp` SSE event. One shape for
+// both preview and commit; `persisted` tells clients whether the runtime is
+// ahead of disk.
+type audioDspEnvelope struct {
+	Params    audioDspParams `json:"params"`
+	Engaged   bool           `json:"engaged"`
+	Persisted bool           `json:"persisted"`
+}
+
+type audioDspParams struct {
+	Enabled  bool      `json:"enabled"`
+	Mono     bool      `json:"mono"`
+	Subsonic bool      `json:"subsonic"`
+	Loudness bool      `json:"loudness"`
+	Bass     float64   `json:"bass"`
+	Mid      float64   `json:"mid"`
+	Treble   float64   `json:"treble"`
+	Balance  int       `json:"balance"`
+	EQ       []float64 `json:"eq"`
+}
+
+func audioDspEnvelopeFrom(s AudioStripData) audioDspEnvelope {
+	eq := s.EQ
+	if eq == nil {
+		eq = make([]float64, 10)
+	}
+	return audioDspEnvelope{
+		Params: audioDspParams{
+			Enabled: s.Enabled, Mono: s.Mono, Subsonic: s.Subsonic, Loudness: s.Loudness,
+			Bass: s.Bass, Mid: s.Mid, Treble: s.Treble, Balance: s.Balance, EQ: eq,
+		},
+		Engaged:   s.Engaged,
+		Persisted: s.Persisted,
+	}
+}
+
+// audioDSPChanged isolates the audio-strip diff so the `audioDsp` event only
+// emits when a tone/EQ/toggle/engaged/persisted value actually changed.
+func audioDSPChanged(a, b AudioStripData) bool {
+	if a.Enabled != b.Enabled || a.Mono != b.Mono || a.Subsonic != b.Subsonic ||
+		a.Loudness != b.Loudness || a.Bass != b.Bass || a.Mid != b.Mid ||
+		a.Treble != b.Treble || a.Balance != b.Balance ||
+		a.Engaged != b.Engaged || a.Persisted != b.Persisted {
+		return true
+	}
+	if len(a.EQ) != len(b.EQ) {
+		return true
+	}
+	for i := range a.EQ {
+		if a.EQ[i] != b.EQ[i] {
+			return true
+		}
+	}
+	return false
+}
+
 // presetsEnvelope is the wire payload for the `presets` SSE event. Each
 // frame carries the full 12-slot array — the client doesn't maintain
 // prior state.
@@ -317,6 +373,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := emit(w, "volume", volumeEnvelopeFrom(last.Transport)); err != nil {
+		return
+	}
+	if err := emit(w, "audioDsp", audioDspEnvelopeFrom(last.AudioStrip)); err != nil {
 		return
 	}
 	if err := emit(w, "meter", meterEnvelopeFrom(last.Meter)); err != nil {
@@ -444,6 +503,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				lastPresets = currPresets
+			}
+			if audioDSPChanged(curr.AudioStrip, last.AudioStrip) {
+				if err := emit(w, "audioDsp", audioDspEnvelopeFrom(curr.AudioStrip)); err != nil {
+					return
+				}
+				last.AudioStrip = curr.AudioStrip
 			}
 			flusher.Flush()
 		case <-audioTick.C:
