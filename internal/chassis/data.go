@@ -68,12 +68,13 @@ type SourceData struct {
 
 // SourceButton represents one entry in the source cluster. AUX renders
 // as an hw-btn (Action != ""); STREAMS/PLEX/JELLYFIN/DLNA render as
-// indicator lamps (Action == ""). The lamp fields Configured and
-// Casting drive three visual states:
+// indicator lamps (Action == ""). The lamp fields Configured, Casting,
+// and Issue drive four visual states:
 //
 //	Configured=false → unavailable (lamp dark)
 //	Configured=true, Casting=false → idle (lamp dim amber)
 //	Configured=true, Casting=true  → active (lamp bright green)
+//	Issue=true                    → issue (lamp red; LastError gives detail)
 //
 // Active / Lit / Unavailable / InputID remain in use for AUX only;
 // lamp slots leave them at the zero value.
@@ -87,6 +88,8 @@ type SourceButton struct {
 
 	Configured bool // lamp slots only — adapter is linked/enabled
 	Casting    bool // lamp slots only — this source matches transport.AdapterRef
+	Issue      bool // lamp slots only — adapter Status() reports StateError
+	LastError  string
 }
 
 func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter) {
@@ -996,9 +999,9 @@ func parseAdapterRefSource(ref string) string {
 	return ""
 }
 
-// applySourceLampState populates Configured + Casting on every lamp
-// slot in base.Source.Buttons (Action == "") using the supplied viewers
-// for Configured() and the AdapterRef prefix for Casting. AUX
+// applySourceLampState populates Configured, Casting, and Issue on every
+// lamp slot in base.Source.Buttons (Action == "") using the supplied
+// viewers for Configured()/Status() and the AdapterRef prefix for Casting. AUX
 // (Action != "") is left untouched — applyAUXSourceState owns that
 // state. Safe to call with nil viewers; lamps stay at zero (lamp dark).
 func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvailabilityViewer, adapterRef string) {
@@ -1007,11 +1010,19 @@ func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvail
 	}
 	castingSource := parseAdapterRefSource(adapterRef)
 	configured := map[string]bool{}
+	issues := map[string]adapters.Status{}
 	for _, v := range viewers {
 		if v == nil {
 			continue
 		}
-		configured[v.SourceID()] = v.Configured()
+		id := v.SourceID()
+		configured[id] = v.Configured()
+		if statusViewer, ok := v.(interface{ Status() adapters.Status }); ok {
+			st := statusViewer.Status()
+			if st.State == adapters.StateError {
+				issues[id] = st
+			}
+		}
 	}
 	for i := range base.Source.Buttons {
 		b := &base.Source.Buttons[i]
@@ -1022,6 +1033,13 @@ func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvail
 		id := strings.ToLower(b.Label)
 		b.Configured = configured[id]
 		b.Casting = id == castingSource && id != ""
+		if st, ok := issues[id]; ok {
+			b.Issue = true
+			b.LastError = st.LastError
+		} else {
+			b.Issue = false
+			b.LastError = ""
+		}
 	}
 }
 

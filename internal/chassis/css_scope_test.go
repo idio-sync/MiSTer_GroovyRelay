@@ -455,7 +455,7 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 	}
 }
 
-func TestSourceClusterResponsiveFiveButtonLayout(t *testing.T) {
+func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
 	if err != nil {
@@ -465,27 +465,29 @@ func TestSourceClusterResponsiveFiveButtonLayout(t *testing.T) {
 
 	for _, want := range []string{
 		"body.receiver .source-cluster {\n  display: grid;",
-		"grid-template-columns: repeat(5, minmax(96px, 1fr));",
+		"width: clamp(480px, 38vw, 600px);",
+		"grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));",
 		"grid-template-rows: 1fr;",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("base source cluster five-button layout missing %q", want)
+			t.Fatalf("base source cluster six-capable layout missing %q", want)
 		}
 	}
 
 	wideCompact := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 1180px)", "body.receiver .vfd-source-row .source-cluster")
 	for _, want := range []string{
-		"grid-template-columns: repeat(3, minmax(96px, 1fr));",
+		"width: 100%;",
+		"grid-template-columns: repeat(3, minmax(82px, 1fr));",
 		"grid-template-rows: 1fr 1fr;",
 	} {
 		if !strings.Contains(wideCompact, want) {
-			t.Fatalf("1180 source cluster five-button layout missing %q: %s", want, wideCompact)
+			t.Fatalf("1180 source cluster six-capable layout missing %q: %s", want, wideCompact)
 		}
 	}
 
 	narrowRule := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .vfd-source-row .source-cluster")
-	if !strings.Contains(narrowRule, "grid-template-columns: repeat(5, minmax(0, 1fr));") {
-		t.Fatalf("900 source cluster five-button layout missing equal columns: %s", narrowRule)
+	if !strings.Contains(narrowRule, "grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));") {
+		t.Fatalf("900 source cluster six-capable layout missing auto-fit columns: %s", narrowRule)
 	}
 
 	narrowButtonRule := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .vfd-source-row .source-cluster .hw-btn")

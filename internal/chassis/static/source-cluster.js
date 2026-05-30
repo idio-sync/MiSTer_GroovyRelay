@@ -5,7 +5,7 @@
     return;
   }
 
-  const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna'];
+  const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna', 'url', 'local', 'localfiles'];
 
   function parseAdapterRefSource(ref) {
     if (!ref || typeof ref !== 'string') return '';
@@ -23,24 +23,44 @@
     const label = lampLabel(el);
     const configured = el.classList.contains('configured-idle');
     const casting = el.classList.contains('casting');
+    const issue = el.classList.contains('issue');
+    const lastError = el.dataset.lastError || '';
+    const stateEl = el.querySelector('.state');
+    const ledWell = el.querySelector('.led-well');
     let status = 'not configured';
     let titleStatus = 'not configured';
-    if (casting) {
+    let shortStatus = 'OFF';
+    if (issue) {
+      status = lastError ? `issue: ${lastError}` : 'issue';
+      titleStatus = status;
+      shortStatus = 'ISSUE';
+    } else if (casting) {
       status = 'currently casting';
       titleStatus = 'currently casting';
+      shortStatus = 'LIVE';
     } else if (configured) {
       status = 'ready';
       titleStatus = 'linked, idle';
+      shortStatus = 'READY';
     }
+    if (stateEl) stateEl.textContent = shortStatus;
+    if (ledWell) ledWell.dataset.status = shortStatus.toLowerCase();
+    el.dataset.sourceStatus = shortStatus.toLowerCase();
     el.setAttribute('aria-label', `${label}, ${status}`);
     el.setAttribute('title', `${label} - ${titleStatus}`);
   }
 
-  function setLampState(el, configured, casting, label) {
+  function setLampState(el, configured, casting, issue, lastError, label) {
     if (label) el.dataset.label = label;
     el.classList.toggle('configured-idle', configured);
-    el.classList.toggle('unavailable', !configured);
+    el.classList.toggle('unavailable', !configured && !issue);
     el.classList.toggle('casting', casting);
+    el.classList.toggle('issue', issue);
+    if (lastError) {
+      el.dataset.lastError = lastError;
+    } else {
+      delete el.dataset.lastError;
+    }
     syncLampText(el);
   }
 
@@ -64,7 +84,14 @@
       const id = el.getAttribute('data-source-id') || '';
       const button = bySource.get(id);
       if (!button) return;
-      setLampState(el, !!button.configured, !!button.casting, button.label || id.toUpperCase());
+      setLampState(
+        el,
+        !!button.configured,
+        !!button.casting,
+        !!button.issue,
+        button.lastError || '',
+        button.label || id.toUpperCase()
+      );
     });
   }
 

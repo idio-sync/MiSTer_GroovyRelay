@@ -77,12 +77,15 @@ func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testin
 	data := idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
 	data.Source.Buttons[0].Configured = true
 	data.Source.Buttons[0].Casting = true
+	data.Source.Buttons[0].Issue = true
 	env := sourceEnvelopeFromSnapshot(data)
 	body, err := json.Marshal(env)
 	if err != nil {
 		t.Fatalf("json.Marshal source envelope: %v", err)
 	}
-	if !strings.Contains(string(body), `"configured":true`) || !strings.Contains(string(body), `"casting":true`) {
+	if !strings.Contains(string(body), `"configured":true`) ||
+		!strings.Contains(string(body), `"casting":true`) ||
+		!strings.Contains(string(body), `"issue":true`) {
 		t.Fatalf("source envelope missing lamp state fields: %s", body)
 	}
 
@@ -127,6 +130,11 @@ func TestSourceChangedDetectsLampStateDelta(t *testing.T) {
 	nextData.Source.Buttons[0].Casting = true
 	if !sourceChanged(sourceEnvelopeFromSnapshot(prevData), sourceEnvelopeFromSnapshot(nextData)) {
 		t.Errorf("sourceChanged missed Casting lamp state change")
+	}
+	nextData = idleSnapshot(nonZeroConfig(), time.Unix(1, 0))
+	nextData.Source.Buttons[0].Issue = true
+	if !sourceChanged(sourceEnvelopeFromSnapshot(prevData), sourceEnvelopeFromSnapshot(nextData)) {
+		t.Errorf("sourceChanged missed Issue lamp state change")
 	}
 }
 
