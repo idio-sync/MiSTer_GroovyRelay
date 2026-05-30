@@ -359,6 +359,9 @@ func (s *Sectioned) Validate() error {
 	if b.Audio.OutputVolume < 0 || b.Audio.OutputVolume > 100 {
 		return fmt.Errorf("bridge.audio.output_volume must be in 0..100, got %d", b.Audio.OutputVolume)
 	}
+	if err := ValidateAudioDSP(b.Audio.DSP); err != nil {
+		return err
+	}
 	b.Visualizer.Mode = NormalizeVisualizerMode(b.Visualizer.Mode)
 	switch b.Visualizer.Mode {
 	case VisualizerModeRetroAnalyzer,
@@ -450,6 +453,73 @@ func validateExternalToolPath(label, path string) error {
 func validPort(p int, label string) error {
 	if p < 1 || p > 65535 {
 		return fmt.Errorf("%s must be in 1..65535, got %d", label, p)
+	}
+	return nil
+}
+
+const (
+	audioDSPMaxDB   = 12.0
+	audioDSPMaxBal  = 100
+	audioDSPBands   = 10
+	audioDSPMaxSlot = 3
+)
+
+// ValidateAudioDSP enforces the spec's bounds. EQ must already be length 10
+// (normalizeSectionedRuntimeDefaults pads omitted arrays before Validate).
+func ValidateAudioDSP(a AudioDSP) error {
+	if err := dspDBInRange("bass", a.Bass); err != nil {
+		return err
+	}
+	if err := dspDBInRange("mid", a.Mid); err != nil {
+		return err
+	}
+	if err := dspDBInRange("treble", a.Treble); err != nil {
+		return err
+	}
+	if a.Balance < -audioDSPMaxBal || a.Balance > audioDSPMaxBal {
+		return fmt.Errorf("bridge.audio.dsp.balance must be in -100..100, got %d", a.Balance)
+	}
+	if len(a.EQ) != audioDSPBands {
+		return fmt.Errorf("bridge.audio.dsp.eq must have %d bands, got %d", audioDSPBands, len(a.EQ))
+	}
+	for i, g := range a.EQ {
+		if err := dspDBInRange(fmt.Sprintf("eq[%d]", i), g); err != nil {
+			return err
+		}
+	}
+	seen := map[int]bool{}
+	for _, m := range a.Memory {
+		if m.Slot < 1 || m.Slot > audioDSPMaxSlot {
+			return fmt.Errorf("bridge.audio.dsp.memory slot must be 1..%d, got %d", audioDSPMaxSlot, m.Slot)
+		}
+		if seen[m.Slot] {
+			return fmt.Errorf("bridge.audio.dsp.memory has duplicate slot %d", m.Slot)
+		}
+		seen[m.Slot] = true
+		if err := dspDBInRange("memory.bass", m.Bass); err != nil {
+			return err
+		}
+		if err := dspDBInRange("memory.mid", m.Mid); err != nil {
+			return err
+		}
+		if err := dspDBInRange("memory.treble", m.Treble); err != nil {
+			return err
+		}
+		if len(m.EQ) != audioDSPBands {
+			return fmt.Errorf("bridge.audio.dsp.memory[%d].eq must have %d bands, got %d", m.Slot, audioDSPBands, len(m.EQ))
+		}
+		for i, g := range m.EQ {
+			if err := dspDBInRange(fmt.Sprintf("memory[%d].eq[%d]", m.Slot, i), g); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func dspDBInRange(name string, v float64) error {
+	if v < -audioDSPMaxDB || v > audioDSPMaxDB {
+		return fmt.Errorf("bridge.audio.dsp.%s must be in -12..12 dB, got %g", name, v)
 	}
 	return nil
 }

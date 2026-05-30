@@ -254,7 +254,27 @@ func normalizeSectionedRuntimeDefaults(s *Sectioned) error {
 		return err
 	}
 	s.Bridge.DataDir = dataDir
+	normalizeAudioDSP(&s.Bridge.Audio.DSP)
 	return nil
+}
+
+// normalizeAudioDSP pads omitted EQ arrays to the canonical 10 bands so a
+// table that sets only some keys still validates. Pure shape fix-up; values
+// are bounds-checked by ValidateAudioDSP afterward.
+func normalizeAudioDSP(a *AudioDSP) {
+	a.EQ = padEQ(a.EQ)
+	for i := range a.Memory {
+		a.Memory[i].EQ = padEQ(a.Memory[i].EQ)
+	}
+}
+
+func padEQ(eq []float64) []float64 {
+	if len(eq) == audioDSPBands {
+		return eq
+	}
+	out := make([]float64, audioDSPBands)
+	copy(out, eq) // truncates if longer, zero-pads if shorter
+	return out
 }
 
 // defaultBridge returns a BridgeConfig populated with the same values

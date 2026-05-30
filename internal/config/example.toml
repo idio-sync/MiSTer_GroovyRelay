@@ -21,6 +21,17 @@ sample_rate = 48000
 channels = 2
 output_volume = 100              # Global output gain sent to the MiSTer, 0..100
 
+[bridge.audio.dsp]
+enabled = true                   # false = DSP defeat (bypass all shaping)
+mono = false                     # Downmix stereo to mono
+subsonic = false                 # 20 Hz subsonic cut filter
+loudness = false                 # Equal-loudness compensation at low volumes
+bass = 0.0                       # Low-shelf gain, -12..+12 dB
+mid = 0.0                        # Mid-peak gain, -12..+12 dB
+treble = 0.0                     # High-shelf gain, -12..+12 dB
+balance = 0                      # L/R balance, -100..+100 (negative = left)
+eq = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # 10-band ISO-octave gains (31 Hz–16 kHz), -12..+12 dB
+
 [bridge.visualizer]
 mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_scope, vu_cabinet, spectrum_waterfall, raster_pulse, cover_vu, cover_spectrum
 
