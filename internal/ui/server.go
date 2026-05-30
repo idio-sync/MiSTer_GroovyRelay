@@ -124,8 +124,8 @@ type Config struct {
 	CompanionDisplay      CompanionDisplayProvider
 	CompanionVolumeViewer CompanionVolumeViewer
 	CompanionVolumeSaver  CompanionVolumeSaver
-	MisterProber          MisterProber  // nil disables reachability probe on diagnostics page
-	StatusViewer          StatusViewer  // nil disables live data on status home
+	MisterProber          MisterProber // nil disables reachability probe on diagnostics page
+	StatusViewer          StatusViewer // nil disables live data on status home
 	Playback              PlaybackService
 	EventLog              *eventlog.Log // nil disables activity feed
 	Version               string        // build version, displayed in diagnostics
