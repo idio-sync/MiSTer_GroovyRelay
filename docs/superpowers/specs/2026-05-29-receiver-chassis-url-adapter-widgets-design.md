@@ -152,11 +152,17 @@ wrappers may import `internal/adapters/url`):
   calls the lower-level functions so the chassis route owns its own
   envelope.
 
-**Verification gate (plan):** confirm the legacy `/ui/*` URL panel
-(`renderPanel` in [`internal/adapters/url/ui.go`](../../internal/adapters/url/ui.go),
-a custom panel — *not* the generic field renderer) does not double-render the
-three newly-exposed fields. Legacy is retired right after 4F, so even a
-transient surfacing is low-risk, but the plan checks it.
+**Verification gate (plan):** expanding `Fields()` will surface the three new
+rows in the **legacy generic `/ui/*` adapter form**, which renders `Fields()`
+directly — *not* in the URL adapter's custom `renderPanel`
+([`internal/adapters/url/ui.go`](../../internal/adapters/url/ui.go)), which only
+emits the hosts line / version / cookies section / history and never rendered
+these as form fields. The plan should confirm the legacy generic form tolerates
+the three new rows (it should — they are ordinary fields) and that
+`renderPanel`'s read-only hosts line merely *coexists* with (does not double)
+the new chassis tag editor, since they live on different surfaces. Legacy is
+retired right after 4F, so any transient overlap is low-risk; the gate just
+verifies the right surface.
 
 ### 5.2 Host tag-list — `AdapterHostEditor` (chassis-owned)
 
@@ -191,8 +197,14 @@ type AdapterHostEditor interface {
   double-apply hazard (the URL adapter's `ApplyConfig` rebuilds the resolver,
   adapter.go:339-365). It maps the returned `adapters.ApplyScope` → the `"hot"`
   wire label (same conversion `AdapterSettingsSaver` performs) and returns the
-  normalized list. An optional cheap pre-validate may run first purely to
-  surface the `400` path before touching disk; it must not also apply.
+  normalized list. **Order:** the wrapper first calls the §5.1 exported
+  validate+normalize surface — this is both the `400` source and the cleaned
+  list it echoes back — then hands the cleaned hosts to `SaveValues` (the sole
+  applier; see §5.5 on why normalization can't live inside `SaveValues`). It does
+  **not** reach for the chassis-side `isValidHostname` (settings.go:615), an RFC-1123
+  validator that is intentionally *unused* here: host validity is the URL
+  adapter's contract (its rules are deliberately more lenient), so keeping one
+  source of truth avoids two diverging notions of a "valid" host.
 - **Client (JS):** each ✕ / "+ add host" mutates a client-side `Set`, then
   `POST`s the *whole* list (immediate, like a switch — no explicit Save). A
   rejected host paints the error chip on the widget and rolls the set back.
@@ -242,9 +254,9 @@ type AdapterCookieStore interface {
 ### 5.4 Chassis isolation (unchanged invariant)
 
 `AdapterHostEditor`, `AdapterCookieStore`, and `CookieStatusView` are defined
-in `internal/chassis`. `chassis.Config`
-([`server.go:115`](../../internal/chassis/server.go)) gains two nil-safe
-fields. `internal/chassis` continues to import **neither**
+in `internal/chassis`. The `chassis.Config` struct
+([`server.go:17`](../../internal/chassis/server.go)) gains two nil-safe fields,
+added near the 4D adapter fields (~server.go:114-116). `internal/chassis` continues to import **neither**
 `internal/adapters/url` **nor** `internal/uiserver`;
 `import_check_test.go` needs **zero edits** and stays green. The cmd wrappers
 (which may import both) bind the interfaces, exactly as 4D bound
@@ -284,13 +296,19 @@ rejected before anything hits disk. `SaveValues` returns `adapters.ApplyScope`
 (the uiserver layer's type); the cmd wrapper converts it to the `"hot"` wire
 label.
 
-**Normalization is also load-bearing:** host validation lowercases entries on
-the decoded `url.Config`. `SaveValues` must persist the normalized values, not
-the pre-validation input. The simplest safe contract is: validate/decode into
-the adapter config, recover the normalized section map from that decoded config,
-re-encode that normalized map, then write atomically and call `ApplyConfig` with
-the same normalized primitive. Returning `hosts:[…]` from the chassis route uses
-this normalized list.
+**Normalization happens in the cmd wrapper, not in `SaveValues`.** Host
+validation lowercases entries, but `SaveValues` **cannot** recover the
+normalized list: `uiserver` does not import `internal/adapters/url` (verified),
+so it only has the abstract `adapters.Validator` interface — whose contract is
+*"Validate … does not return normalized values"* ([`adapter.go:120-122`](../../internal/adapters/adapter.go)).
+The lowercasing happens inside the adapter's `Validate` on a throwaway config the
+saver never sees. Therefore the host route's **wrapper** normalizes first via the
+§5.1 exported validate+normalize surface (which constructs a `url.Config`, runs
+the rules, and returns the cleaned `[]string`), then hands the **already-cleaned**
+list to `SaveValues`. `SaveValues` persists exactly what it is given; its internal
+`Validate` re-check is a defensive, idempotent gate (clean input passes
+unchanged) and still runs strictly before `WriteAtomic`. The `hosts:[…]` the
+chassis route echoes back is the wrapper's cleaned list.
 
 ### 5.6 SettingsData / paint + templates + assets
 
@@ -322,8 +340,10 @@ this normalized list.
   80) resolve `[name="<name>"]` and walk up to a `.field-row` via `findRow`
   (line 74) — the bespoke widgets are deliberately not `[data-field]` inputs
   and have no such named row, so a naive reuse silently no-ops. Each widget
-  therefore renders its **own** inline error element, and the JS writes errors
-  to it directly (or via a small widget-scoped painter). The 4A `[data-field]`
+  therefore renders its **own** inline error element under a distinct class
+  (e.g. `.widget-err`, *not* the field renderer's `.field-err` — so a future
+  generic `clearFieldError` sweep never touches it), and the JS writes errors to
+  it directly (or via a small widget-scoped painter). The 4A `[data-field]`
   selector narrowing (4D Task 29) already prevents the standard-field blur
   handler from firing on these widgets.
 
