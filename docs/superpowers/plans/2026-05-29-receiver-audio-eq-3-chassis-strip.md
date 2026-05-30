@@ -383,6 +383,7 @@ func (f *fakeDSPController) PreviewAudioDSP(d config.AudioDSP) error {
 type fakeDSPSaver struct {
 	saved    *config.AudioDSP
 	mem      map[int]config.AudioDSPMemory
+	current  config.AudioDSP
 }
 
 func (f *fakeDSPSaver) SaveAudioDSP(d config.AudioDSP) error { f.saved = &d; return nil }
@@ -397,6 +398,7 @@ func (f *fakeDSPSaver) RecallAudioDSPMemory(slot int) (config.AudioDSPMemory, bo
 	m, ok := f.mem[slot]
 	return m, ok
 }
+func (f *fakeDSPSaver) CurrentAudioDSP() config.AudioDSP { return f.current }
 
 func newDSPTestServer(t *testing.T, ctl *fakeDSPController, saver *fakeDSPSaver) *http.ServeMux {
 	t.Helper()
@@ -496,6 +498,9 @@ type AudioDSPSaver interface {
 	SaveAudioDSP(config.AudioDSP) error
 	SaveAudioDSPMemory(slot int, name string, voicing config.AudioDSP) error
 	RecallAudioDSPMemory(slot int) (config.AudioDSPMemory, bool)
+	// CurrentAudioDSP returns the persisted (on-disk) params, used to
+	// reconcile the live runtime after a failed commit.
+	CurrentAudioDSP() config.AudioDSP
 }
 
 // audioDSPRequest is the POST /receiver/audio/dsp body. Params is a partial
@@ -533,6 +538,11 @@ func (s *Server) handleAudioDSPPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Commit {
 		if err := s.audioDSPSaver.SaveAudioDSP(merged); err != nil {
+			// Spec §Error handling: a failed commit (disk write or hot-swap
+			// apply) must not leave a live preview that never landed.
+			// Reconcile the runtime to the persisted truth; the audioDsp SSE
+			// re-emits with persisted=true on the next tick.
+			_ = s.audioDSPController.PreviewAudioDSP(s.audioDSPSaver.CurrentAudioDSP())
 			audioDSPWriteError(w, err)
 			return
 		}
@@ -1003,6 +1013,23 @@ In `internal/chassis/templates/transport.html`, **delete** the
 `<div class="volume-control" ...>...</div>` block (transport.html:41-50). Leave
 the transport grid; CSS Task 8 adjusts the now-empty grid column.
 
+**Light the status-bar EQ LED.** In
+`internal/chassis/templates/status-bar.html`, the `EQ` indicator is currently
+a permanently-inactive `<span class="led">`. Make it reflect engagement
+(status-bar receives the whole page data `.`, so it can read `.AudioStrip.Engaged`)
+and tag it for the live JS toggle. Replace the EQ led line (status-bar.html:12):
+
+```html
+      <span class="led aqua{{if .AudioStrip.Engaged}} on{{end}}" data-eq-led role="status"
+            aria-label="EQ {{if .AudioStrip.Engaged}}active{{else}}inactive{{end}}"
+            title="Tone/EQ {{if .AudioStrip.Engaged}}engaged{{else}}flat / defeated{{end}}"><span class="light"></span><span class="lbl">EQ</span></span>
+```
+
+(The other status LEDs use `on aqua`; the EQ led carries `aqua` always and
+toggles only `on`, so `audio-strip.js` can flip it live without re-rendering.)
+Add a render assertion to the Task 6 test that `data-eq-led` is present and
+gains `on` when `AudioStrip.Engaged` is true.
+
 - [ ] **Step 4: Run render tests**
 
 Run: `go test ./internal/chassis/ -run 'TestRender_AudioStrip|TestRender_VolumeNotInTransport' -v`
@@ -1185,7 +1212,7 @@ Create `internal/chassis/static/audio-strip.js`:
     window.setTimeout(() => { el.textContent = prev; }, 600);
   }
 
-  function applyFromEvent(params, persisted) {
+  function applyFromEvent(params, engaged, persisted) {
     if (editing) return; // don't fight the operator mid-drag
     const setRange = (sel, v) => {
       const el = document.querySelector(sel);
@@ -1206,6 +1233,8 @@ Create `internal/chassis/static/audio-strip.js`:
     sw('mono', params.mono);
     sw('subsonic', params.subsonic);
     sw('defeat', !params.enabled);
+    const led = document.querySelector('[data-eq-led]');
+    if (led) led.classList.toggle('on', Boolean(engaged));
     const root = document.querySelector('[data-audio-strip]');
     if (root) root.dataset.dspPersisted = String(persisted);
   }
@@ -1213,7 +1242,7 @@ Create `internal/chassis/static/audio-strip.js`:
   function handleEvent(ev) {
     try {
       const data = JSON.parse(ev.data);
-      applyFromEvent(data.params || {}, Boolean(data.persisted));
+      applyFromEvent(data.params || {}, Boolean(data.engaged), Boolean(data.persisted));
     } catch (err) {
       console.warn('audio-strip: bad audioDsp payload', ev.data, err);
     }
@@ -1362,6 +1391,9 @@ func (a *audioDSPSaverAdapter) SaveAudioDSPMemory(slot int, name string, voicing
 }
 func (a *audioDSPSaverAdapter) RecallAudioDSPMemory(slot int) (config.AudioDSPMemory, bool) {
 	return a.bs.RecallAudioDSPMemory(slot)
+}
+func (a *audioDSPSaverAdapter) CurrentAudioDSP() config.AudioDSP {
+	return a.bs.Current().Audio.DSP
 }
 ```
 
