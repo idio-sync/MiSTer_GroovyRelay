@@ -60,12 +60,23 @@ type companionStatusResponse struct {
 	Health     companionHealth         `json:"health"`
 	Session    companionSessionPayload `json:"session"`
 	History    []CompanionHistoryEntry `json:"history"`
+
+	OutputVolume int `json:"output_volume"`
 }
 
 type companionHealth struct {
 	Bridge     string `json:"bridge"`
 	Mister     string `json:"mister"`
 	URLAdapter string `json:"url_adapter"`
+}
+
+// companionOutputVolume returns the live output volume, or 0 when no
+// viewer is wired (tests / degraded config).
+func (s *Server) companionOutputVolume() int {
+	if s.cfg.CompanionVolumeViewer == nil {
+		return 0
+	}
+	return s.cfg.CompanionVolumeViewer.OutputVolume()
 }
 
 // State uses the same enum values as core.SessionStatus.State:
@@ -142,8 +153,9 @@ func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
 			Mister:     "unknown",
 			URLAdapter: s.companionAdapterHealth("url"),
 		},
-		Session: s.companionSession(st),
-		History: history,
+		Session:      s.companionSession(st),
+		History:      history,
+		OutputVolume: s.companionOutputVolume(),
 	})
 }
 

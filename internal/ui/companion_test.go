@@ -443,3 +443,38 @@ func TestCompanionLaunchEmptyBodyNoContentTypeAccepted(t *testing.T) {
 		t.Fatalf("launcher was not called")
 	}
 }
+
+type fakeCompanionVolume struct{ level int }
+
+func (f *fakeCompanionVolume) OutputVolume() int            { return f.level }
+func (f *fakeCompanionVolume) SaveOutputVolume(v int) error { f.level = v; return nil }
+
+func TestCompanionStatusIncludesOutputVolume(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{
+		Registry:              reg,
+		CompanionVolumeViewer: &fakeCompanionVolume{level: 73},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	rw := companionJSONRequest(t, mux, http.MethodGet, "/ui/companion/status", "")
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var body struct {
+		OutputVolume int `json:"output_volume"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.OutputVolume != 73 {
+		t.Fatalf("output_volume = %d, want 73", body.OutputVolume)
+	}
+}
