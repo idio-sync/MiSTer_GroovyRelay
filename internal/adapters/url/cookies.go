@@ -257,3 +257,32 @@ func (a *Adapter) handleCookiesClear(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
 }
+
+// ValidateCookies runs the lenient Netscape-format check on raw cookie
+// bytes without writing anything. Exported for the chassis cookie route
+// wrapper (package main cannot call the unexported validateCookies).
+func (a *Adapter) ValidateCookies(raw []byte) error {
+	return validateCookies(raw)
+}
+
+// SaveCookies validates then atomically writes raw cookie bytes to the
+// adapter's cookies file, returning the resulting stat. Exported wrapper
+// over saveCookies for the chassis cookie route.
+func (a *Adapter) SaveCookies(raw []byte) (CookiesStat, error) {
+	if err := validateCookies(raw); err != nil {
+		return CookiesStat{}, err
+	}
+	return saveCookies(a.cookiesPath, raw)
+}
+
+// ClearCookies removes the cookies file (idempotent). Exported wrapper
+// over clearCookies for the chassis cookie route.
+func (a *Adapter) ClearCookies() error {
+	return clearCookies(a.cookiesPath)
+}
+
+// CookieStat reports the cookies file size + mtime, or ok=false if the
+// file is absent. Exported wrapper over statCookies for paint-time status.
+func (a *Adapter) CookieStat() (CookiesStat, bool, error) {
+	return statCookies(a.cookiesPath)
+}

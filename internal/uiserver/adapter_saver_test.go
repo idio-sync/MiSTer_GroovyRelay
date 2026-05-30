@@ -614,3 +614,147 @@ hls_buffer_disabled = true
 		t.Errorf("nested channels.alpha.hls_buffer_disabled lost:\n%s", got)
 	}
 }
+
+func TestSaveValues_PersistsArrayField(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "url", `enabled = true
+ytdlp_format = "best"
+ytdlp_hosts = ["youtube.com"]
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{
+		values: map[string]any{"enabled": true, "ytdlp_format": "best"},
+		scope:  adapters.ScopeHotSwap,
+	}
+	scope, err := saver.SaveValues(
+		"url",
+		map[string]any{"ytdlp_hosts": []string{"youtube.com", "twitch.tv"}},
+		[]string{"ytdlp_hosts"},
+		adapter,
+	)
+	if err != nil {
+		t.Fatalf("SaveValues: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Errorf("scope = %v, want ScopeHotSwap", scope)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `"youtube.com"`) || !strings.Contains(string(got), `"twitch.tv"`) {
+		t.Errorf("disk missing new hosts array:\n%s", got)
+	}
+	// Other keys preserved.
+	if !strings.Contains(string(got), `enabled = true`) || !strings.Contains(string(got), `ytdlp_format = "best"`) {
+		t.Errorf("disk dropped sibling keys:\n%s", got)
+	}
+	if n := len(adapter.applied); n != 1 {
+		t.Fatalf("ApplyConfig calls = %d, want 1", n)
+	}
+}
+
+func TestSaveValues_RejectsDisallowedKey(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "url", "enabled = true\n")
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": true}}
+	_, err := saver.SaveValues("url", map[string]any{"enabled": false}, []string{"ytdlp_hosts"}, adapter)
+	var ferrs *adapterFieldErrors
+	if !errors.As(err, &ferrs) {
+		t.Fatalf("err = %v (%T), want *adapterFieldErrors", err, err)
+	}
+	if len(ferrs.Errs) != 1 || ferrs.Errs[0].Key != "enabled" {
+		t.Errorf("ferrs = %+v, want one entry for disallowed 'enabled'", ferrs.Errs)
+	}
+	if len(adapter.applied) != 0 {
+		t.Errorf("ApplyConfig must not run when a key is rejected")
+	}
+}
+func TestSaveValues_ValidateFailureLeavesDiskUntouched(t *testing.T) {
+	t.Parallel()
+	original := `enabled = true
+ytdlp_hosts = ["youtube.com"]
+`
+	path := newTempConfigWithSection(t, "url", original)
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{
+		values:   map[string]any{"enabled": true},
+		validErr: adapters.FieldErrors{{Key: "ytdlp_hosts", Msg: "entry contains URL syntax characters"}},
+	}
+	_, err := saver.SaveValues(
+		"url",
+		map[string]any{"ytdlp_hosts": []string{"https://bad/"}},
+		[]string{"ytdlp_hosts"},
+		adapter,
+	)
+	var ferrs *adapterFieldErrors
+	if !errors.As(err, &ferrs) {
+		t.Fatalf("err = %v (%T), want *adapterFieldErrors", err, err)
+	}
+	if len(ferrs.Errs) != 1 || ferrs.Errs[0].Key != "ytdlp_hosts" {
+		t.Errorf("ferrs = %+v, want ytdlp_hosts error", ferrs.Errs)
+	}
+	got, _ := os.ReadFile(path)
+	if strings.Contains(string(got), "bad") {
+		t.Errorf("disk was mutated despite Validate failure:\n%s", got)
+	}
+	if len(adapter.applied) != 0 {
+		t.Errorf("ApplyConfig ran despite Validate failure")
+	}
+}
+func TestSaveValues_PreservesNestedSubtables(t *testing.T) {
+	t.Parallel()
+	body := `enabled = true
+ytdlp_hosts = ["youtube.com"]
+
+[adapters.url.nested]
+keep = "me"
+`
+	path := newTempConfigWithSection(t, "url", body)
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{
+		values: map[string]any{
+			"enabled":     true,
+			"ytdlp_hosts": []any{"youtube.com"},
+			"nested":      map[string]any{"keep": "me"},
+		},
+		scope: adapters.ScopeHotSwap,
+	}
+	if _, err := saver.SaveValues("url", map[string]any{"ytdlp_hosts": []string{"vimeo.com"}}, []string{"ytdlp_hosts"}, adapter); err != nil {
+		t.Fatalf("SaveValues: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `"vimeo.com"`) {
+		t.Errorf("new host not written:\n%s", got)
+	}
+	if !strings.Contains(string(got), `[adapters.url.nested]`) || !strings.Contains(string(got), `keep = "me"`) {
+		t.Errorf("nested subtable lost:\n%s", got)
+	}
+}
+
+func TestSaveValues_ConcurrentSavesSerialize(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "url", "enabled = true\nytdlp_hosts = [\"a.com\"]\n")
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": true}, scope: adapters.ScopeHotSwap}
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			host := fmt.Sprintf("h%d.com", n)
+			if _, err := saver.SaveValues("url", map[string]any{"ytdlp_hosts": []string{host}}, []string{"ytdlp_hosts"}, adapter); err != nil {
+				t.Errorf("SaveValues(n=%d): %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	// File must remain valid TOML parseable as a section after the storm.
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "[adapters.url]") {
+		t.Errorf("section header lost after concurrent saves:\n%s", got)
+	}
+	var decoded map[string]any
+	if _, err := toml.Decode(string(got), &decoded); err != nil {
+		t.Fatalf("config is not valid TOML after concurrent saves: %v\n%s", err, got)
+	}
+}

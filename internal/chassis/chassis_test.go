@@ -3610,11 +3610,10 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	}
 	s := buf.String()
 
-	// pipeline, advanced, catalog, and adapters are now real panes. The
-	// adapters pane still carries the URL stub pending spec 4F; Plex and
-	// Jellyfin are real sections as of 4E.
-	if !strings.Contains(s, "Spec 4F") {
-		t.Errorf("missing %q label (URL adapter stub) in adapters pane", "Spec 4F")
+	// pipeline, advanced, catalog, and adapters are now real panes. Plex and
+	// Jellyfin are real sections as of 4E; URL is real as of 4F — no stubs remain.
+	if strings.Contains(s, "Spec 4F") {
+		t.Errorf("Spec 4F stub still present; URL adapter has a real section now")
 	}
 	if strings.Contains(s, "Spec 4E") {
 		t.Errorf("Spec 4E stub still present; Plex and Jellyfin have real sections now")
@@ -4265,16 +4264,17 @@ func TestSettingsAdaptersTemplate_RendersSixSections(t *testing.T) {
 	// so the faithful header assertion is ">Plex " not ">Plex<".
 	for _, want := range []string{
 		">Plex ", ">DLNA ", ">URL ", ">Torrent ", ">Jellyfin ", ">Streams catalog ",
-		"Spec 4F",
 		"PUSH ·", "PASTE-IN · BT", "PULL ·",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in rendered adapters pane", want)
 		}
 	}
-	// Plex and Jellyfin stubs are gone; real section templates are now in place.
-	if strings.Contains(s, "Spec 4E") {
-		t.Errorf("Spec 4E stub still present in rendered adapters pane")
+	// Plex, Jellyfin, and URL stubs are gone; real section templates are now in place.
+	for _, gone := range []string{"Spec 4E", "Spec 4F"} {
+		if strings.Contains(s, gone) {
+			t.Errorf("%q stub still present in rendered adapters pane", gone)
+		}
 	}
 }
 
@@ -4771,5 +4771,88 @@ func TestStaticJS_VfdLiveUsesTierHooks(t *testing.T) {
 		if !strings.Contains(js, want) {
 			t.Errorf("vfd-live.js missing %q", want)
 		}
+	}
+}
+
+func TestFieldByKey(t *testing.T) {
+	t.Parallel()
+	fields := []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool},
+		{Key: "ytdlp_format", Kind: adapters.KindText},
+	}
+	got := fieldByKey(fields, "ytdlp_format")
+	if got == nil || got.Key != "ytdlp_format" || got.Kind != adapters.KindText {
+		t.Errorf("fieldByKey = %+v, want ytdlp_format/Text", got)
+	}
+	missing := fieldByKey(fields, "nope")
+	if missing != nil {
+		t.Errorf("fieldByKey(missing) = %+v, want nil", missing)
+	}
+}
+
+func renderSettingsAdapters(t *testing.T, data SettingsData) string {
+	t.Helper()
+	tmpl := parseTemplatesForTest(t)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-adapters", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	return buf.String()
+}
+
+func TestRenderURLPane_TagsAndCookiePill(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Adapters: []AdapterPaneData{{
+			Name:           "url",
+			Hint:           "PASTE-IN",
+			Fields:         []adapters.FieldDef{{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap}, {Key: "ytdlp_enabled", Kind: adapters.KindBool, Label: "yt-dlp resolver", ApplyScope: adapters.ScopeHotSwap}, {Key: "ytdlp_format", Kind: adapters.KindText, Label: "yt-dlp format", ApplyScope: adapters.ScopeHotSwap}, {Key: "ytdlp_resolve_timeout_seconds", Kind: adapters.KindInt, Label: "Resolve timeout (s)", ApplyScope: adapters.ScopeHotSwap}},
+			Values:         map[string]any{"enabled": true, "ytdlp_enabled": true, "ytdlp_format": "best", "ytdlp_resolve_timeout_seconds": 30},
+			HasHostEditor:  true,
+			Hosts:          []string{"youtube.com", "twitch.tv"},
+			HasCookieStore: true,
+			Cookie:         &CookieStatusView{Loaded: true, Bytes: 64, SetAt: "2026-05-29 00:00:00Z"},
+		}},
+	}
+	out := renderSettingsAdapters(t, data)
+	for _, want := range []string{
+		`data-host-editor="url"`,
+		`data-host="youtube.com"`,
+		`data-remove-host="twitch.tv"`,
+		`data-add-host`,
+		`data-cookies="url"`,
+		`data-cookies-save`,
+		`data-cookies-clear`,
+		`64 B · set 2026-05-29 00:00:00Z`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered URL pane missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderURLPane_EmptyHostsStillShowsEditor(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Adapters: []AdapterPaneData{{
+			Name:          "url",
+			Hint:          "PASTE-IN",
+			Fields:        []adapters.FieldDef{{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap}},
+			Values:        map[string]any{"enabled": false},
+			HasHostEditor: true,
+			Hosts:         nil,
+			HasCookieStore: true,
+			Cookie:        &CookieStatusView{Loaded: false},
+		}},
+	}
+	out := renderSettingsAdapters(t, data)
+	if !strings.Contains(out, `data-add-host`) {
+		t.Errorf("empty host list dropped the tag editor:\n%s", out)
+	}
+	if !strings.Contains(out, "not loaded") {
+		t.Errorf("cookie pill missing 'not loaded':\n%s", out)
+	}
+	if strings.Contains(out, `name=""`) {
+		t.Errorf("missing URL fields rendered an empty-name input:\n%s", out)
 	}
 }

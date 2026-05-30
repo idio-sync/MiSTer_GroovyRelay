@@ -693,3 +693,43 @@ func TestSettingsData_NilLinkerNotLinkable(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsData_URLPanePopulatesWidgets(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		fields: map[string][]adapters.FieldDef{
+			"url": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		current: map[string]map[string]any{
+			"url": {"enabled": true},
+		},
+	}
+	he := &fakeHostEditor{hosts: []string{"youtube.com"}, hostsOK: true}
+	cs := &fakeCookieStore{status: CookieStatusView{Loaded: true, Bytes: 64, SetAt: "2026-05-29 00:00:00Z"}, statusOK: true}
+	cfg := Config{
+		Version:              "test",
+		StartedAt:            time.Unix(0, 0),
+		AdapterSettingsSaver: saver,
+		AdapterHostEditor:    he,
+		AdapterCookieStore:   cs,
+	}
+	data := settingsDataFromConfig(cfg)
+	var urlPane *AdapterPaneData
+	for i := range data.Adapters {
+		if data.Adapters[i].Name == "url" {
+			urlPane = &data.Adapters[i]
+		}
+	}
+	if urlPane == nil {
+		t.Fatal("url pane not present in SettingsData.Adapters")
+	}
+	if !urlPane.HasHostEditor || len(urlPane.Hosts) != 1 || urlPane.Hosts[0] != "youtube.com" {
+		t.Errorf("host editor data = %+v", urlPane)
+	}
+	if !urlPane.HasCookieStore || urlPane.Cookie == nil || !urlPane.Cookie.Loaded || urlPane.Cookie.Bytes != 64 {
+		t.Errorf("cookie data = %+v", urlPane.Cookie)
+	}
+	if urlPane.Hint != "PASTE-IN" {
+		t.Errorf("Hint = %q, want PASTE-IN", urlPane.Hint)
+	}
+}
