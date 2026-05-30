@@ -9,10 +9,15 @@ import (
 )
 
 const (
-	audioTargetHzDefault     = 30
-	audioBytesPerSample      = 2
-	audioFFTSize             = 1024
-	audioSpectrumBands       = 32
+	audioTargetHzDefault = 30
+	audioBytesPerSample  = 2
+	// audioFFTSize is the spectrum FFT length. At 48 kHz this is a
+	// 5.86 Hz bin width (≈171 ms window), fine enough that every one of
+	// the 32 log-spaced bands from 20 Hz–20 kHz maps to a distinct FFT
+	// bin set. A 1024-pt FFT (46.9 Hz/bin) collapsed the lowest ~8 bands
+	// onto a single bin, rendering them bit-identical.
+	audioFFTSize       = 8192
+	audioSpectrumBands = 32
 	audioGoniometerSize      = 256
 	audioGoniometerWindowSec = 0.050
 	audioPhaseWindowSec      = 0.300
@@ -72,6 +77,7 @@ type AudioMeter struct {
 	kHighCoeffs biquadCoeffs
 
 	// FFT scratch (Task 5 will populate)
+	fftPlan     *fft.Plan
 	fftWindowed [audioFFTSize]float32
 	fftOut      []complex64
 	hannWindow  []float32
@@ -173,8 +179,9 @@ func NewAudioMeter(generation uint64, sampleRate, channels int) *AudioMeter {
 		m.gonioDecimStep = 1
 	}
 
+	m.fftPlan = fft.NewPlan(audioFFTSize)
 	m.fftOut = make([]complex64, audioFFTSize/2+1)
-	m.hannWindow = fft.Hann1024()
+	m.hannWindow = m.fftPlan.Hann()
 	return m
 }
 
@@ -363,7 +370,7 @@ func (m *AudioMeter) computeSpectrum() {
 		return
 	}
 
-	bins := fft.Real1024(m.fftWindowed[:], m.fftOut)
+	bins := m.fftPlan.Real(m.fftWindowed[:], m.fftOut)
 	nyquist := float64(m.sampleRate) / 2
 
 	// Compute Hann-corrected per-bin power (one-sided: ×2 for bins 1..N/2-1).
