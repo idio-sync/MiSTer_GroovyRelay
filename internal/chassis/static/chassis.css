@@ -813,9 +813,10 @@ body.receiver .vfd .right-panel .freq {
 
 body.receiver .source-cluster {
   display: grid;
-  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  width: clamp(480px, 38vw, 600px);
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   grid-template-rows: 1fr;
-  gap: 6px;
+  gap: 4px;
   align-items: stretch;
 }
 
@@ -895,7 +896,8 @@ body.receiver.idle .source-cluster .hw-btn.active {
 
 @container chassis (max-width: 1180px) {
   body.receiver .vfd-source-row .source-cluster {
-    grid-template-columns: repeat(3, minmax(96px, 1fr));
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(82px, 1fr));
     grid-template-rows: 1fr 1fr;
   }
 
@@ -910,7 +912,7 @@ body.receiver.idle .source-cluster .hw-btn.active {
   }
 
   body.receiver .vfd-source-row .source-cluster {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
     grid-template-rows: 1fr;
   }
 
@@ -3885,50 +3887,161 @@ body.receiver .browse-btn[disabled] {
 /* ---- Source-cluster lamps (3B) ---- */
 
 body.receiver .source-cluster .lamp {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  min-height: 32px;
-  border-radius: 3px;
-  background: linear-gradient(180deg, #1a1a1d, #0e0e10);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.6);
-  font: 600 11px Inter, sans-serif;
-  letter-spacing: 0.16em;
+  position: relative;
+  display: grid;
+  grid-template-rows: 18px minmax(34px, 1fr) 16px;
+  gap: 5px;
+  min-width: 0;
+  min-height: 84px;
+  padding: 6px 5px 5px;
+  border: 1px solid #070708;
+  border-radius: 2px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.055), transparent 18%, rgba(0, 0, 0, 0.24) 80%),
+    linear-gradient(180deg, #303035 0%, #202024 48%, #151517 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.75),
+    0 1px 1px rgba(0, 0, 0, 0.75);
+  font: 700 9px Inter, sans-serif;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
-body.receiver .source-cluster .lamp .led {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, #2a2a2e, #050506 75%);
-  box-shadow: inset 0 0 1px rgba(0,0,0,0.6);
-  transition: background 200ms ease-out, box-shadow 200ms ease-out;
+body.receiver .source-cluster .lamp::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.035);
+  border-bottom-color: rgba(0, 0, 0, 0.42);
+}
+
+body.receiver .source-cluster .lamp .nameplate {
+  min-width: 0;
+  align-self: center;
+  padding: 3px 4px 2px;
+  color: #111113;
+  text-align: center;
+  background: linear-gradient(180deg, #c4c4c8, #74747b);
+  border: 1px solid #0b0b0c;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 
 body.receiver .source-cluster .lamp .name {
-  color: #5a5a5e;
-  transition: color 200ms ease-out, text-shadow 200ms ease-out;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: none;
+}
+
+body.receiver .source-cluster .lamp .led-well {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  background: radial-gradient(circle at center, #121214, #050506 76%);
+  border: 1px solid #030304;
+  box-shadow:
+    inset 0 0 11px rgba(0, 0, 0, 0.92),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+body.receiver .source-cluster .lamp .led {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.16) 0 12%, #252529 34%, #050506 76%);
+  border: 1px solid #020203;
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.1),
+    inset 0 -3px 5px rgba(0, 0, 0, 0.82),
+    0 1px 1px #000;
+  transition: background 200ms ease-out, box-shadow 200ms ease-out;
+}
+
+body.receiver .source-cluster .lamp .led::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid #303036;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.08),
+    0 1px 0 rgba(0, 0, 0, 0.8);
+}
+
+body.receiver .source-cluster .lamp .led::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 7px;
+  width: 8px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+  filter: blur(0.2px);
+}
+
+body.receiver .source-cluster .lamp .state {
+  min-width: 0;
+  align-self: end;
+  padding: 3px 4px 2px;
+  overflow: hidden;
+  color: #77777e;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #101012;
+  border: 1px solid #050506;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.82);
 }
 
 body.receiver .source-cluster .lamp.configured-idle .led {
-  background: radial-gradient(circle at 35% 35%, #d99340, #6b3c10 70%);
-  box-shadow: 0 0 6px rgba(217,147,64,0.4), inset 0 0 1px rgba(0,0,0,0.4);
+  background:
+    radial-gradient(circle at 34% 28%, #fff1ae 0 15%, var(--lock-amber, #d99340) 34%, #5a350c 77%);
+  box-shadow:
+    0 0 13px rgba(217, 147, 64, 0.52),
+    0 0 2px rgba(255, 255, 255, 0.4),
+    inset 0 1px 2px rgba(255, 255, 255, 0.38),
+    inset 0 -3px 5px rgba(0, 0, 0, 0.52);
 }
 
-body.receiver .source-cluster .lamp.configured-idle .name {
+body.receiver .source-cluster .lamp.configured-idle .state {
   color: var(--lock-amber, #d99340);
 }
 
 body.receiver .source-cluster .lamp.casting .led {
-  background: radial-gradient(circle at 35% 35%, #67ffb5, #105d3a 70%);
-  box-shadow: 0 0 10px rgba(103,255,181,0.7), inset 0 0 1px rgba(0,0,0,0.4);
+  background:
+    radial-gradient(circle at 34% 28%, #d7fff2 0 15%, var(--vfd, #67ffb5) 34%, #0b5634 77%);
+  box-shadow:
+    0 0 16px rgba(103, 255, 181, 0.74),
+    0 0 3px rgba(255, 255, 255, 0.55),
+    inset 0 1px 2px rgba(255, 255, 255, 0.42),
+    inset 0 -3px 5px rgba(0, 0, 0, 0.5);
 }
 
-body.receiver .source-cluster .lamp.casting .name {
+body.receiver .source-cluster .lamp.casting .state {
   color: var(--vfd, #67ffb5);
-  text-shadow: 0 0 6px rgba(103,255,181,0.4);
+  text-shadow: 0 0 4px rgba(103, 255, 181, 0.46);
+}
+
+body.receiver .source-cluster .lamp.issue .led {
+  background:
+    radial-gradient(circle at 34% 28%, #ffd0c6 0 15%, #c0392b 34%, #571407 77%);
+  box-shadow:
+    0 0 15px rgba(192, 57, 43, 0.7),
+    inset 0 1px 2px rgba(255, 255, 255, 0.35),
+    inset 0 -3px 5px rgba(0, 0, 0, 0.54);
+}
+
+body.receiver .source-cluster .lamp.issue .state {
+  color: #e15b4c;
+  text-shadow: 0 0 4px rgba(192, 57, 43, 0.46);
 }
 
 /* ---- Catalog drawer (3B) ---- */

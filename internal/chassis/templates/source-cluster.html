@@ -3,13 +3,15 @@
 <div class="source-cluster" role="group" aria-label="Media source">
   {{- range .Buttons -}}
   {{- if eq .Action "" -}}
-    <div class="lamp{{if .Configured}} configured-idle{{else}} unavailable{{end}}{{if .Casting}} casting{{end}}"
+    <div class="lamp{{if .Configured}} configured-idle{{else if not .Issue}} unavailable{{end}}{{if .Casting}} casting{{end}}{{if .Issue}} issue{{end}}"
          data-source-id="{{lower .Label}}"
+         data-source-status="{{if .Issue}}issue{{else if .Casting}}live{{else if .Configured}}ready{{else}}off{{end}}"
          role="status"
-         aria-label="{{.Label}}{{if .Casting}}, currently casting{{else if .Configured}}, ready{{else}}, not configured{{end}}"
-         title="{{.Label}} - {{if .Casting}}currently casting{{else if .Configured}}linked, idle{{else}}not configured{{end}}">
-      <span class="led" aria-hidden="true"></span>
-      <span class="name">{{.Label}}</span>
+         aria-label="{{.Label}}{{if .Issue}}, issue{{if .LastError}}: {{.LastError}}{{end}}{{else if .Casting}}, currently casting{{else if .Configured}}, ready{{else}}, not configured{{end}}"
+         title="{{.Label}} - {{if .Issue}}issue{{if .LastError}}: {{.LastError}}{{end}}{{else if .Casting}}currently casting{{else if .Configured}}linked, idle{{else}}not configured{{end}}">
+      <span class="nameplate"><span class="name">{{.Label}}</span></span>
+      <span class="led-well" aria-hidden="true"><span class="led" aria-hidden="true"></span></span>
+      <span class="state">{{if .Issue}}ISSUE{{else if .Casting}}LIVE{{else if .Configured}}READY{{else}}OFF{{end}}</span>
     </div>
   {{- else -}}
     <button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}"

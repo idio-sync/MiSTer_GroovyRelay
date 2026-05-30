@@ -15,10 +15,17 @@ import (
 
 type fakeSourceViewer struct {
 	id, configured string
+	status         adapters.Status
 }
 
 func (f fakeSourceViewer) SourceID() string { return f.id }
 func (f fakeSourceViewer) Configured() bool { return f.configured == "yes" }
+func (f fakeSourceViewer) Status() adapters.Status {
+	if f.status.State != 0 || f.status.LastError != "" {
+		return f.status
+	}
+	return adapters.Status{State: adapters.StateRunning}
+}
 
 func TestParseAdapterRefSource_KnownPrefixes(t *testing.T) {
 	t.Parallel()
@@ -78,6 +85,30 @@ func TestApplySourceLampState_LampSlotsDerivedFromViewersAndRef(t *testing.T) {
 		if got.Casting != w.casting {
 			t.Errorf("button[%d=%s].Casting = %v, want %v", i, w.label, got.Casting, w.casting)
 		}
+	}
+}
+
+func TestApplySourceLampState_DerivesIssueFromAdapterStatus(t *testing.T) {
+	t.Parallel()
+	base := &ReceiverPageData{Source: SourceData{Buttons: []SourceButton{
+		{Label: "DLNA", Action: ""},
+	}}}
+	applySourceLampState(base, []adapters.SourceAvailabilityViewer{
+		fakeSourceViewer{
+			id:         "dlna",
+			configured: "yes",
+			status: adapters.Status{
+				State:     adapters.StateError,
+				LastError: "DLNA requires a reachable bridge.host_ip",
+			},
+		},
+	}, "")
+	got := base.Source.Buttons[0]
+	if !got.Configured {
+		t.Fatalf("Configured = false, want true so issue is distinguishable from disabled")
+	}
+	if !got.Issue {
+		t.Fatalf("Issue = false, want true for adapters.StateError")
 	}
 }
 

@@ -2786,6 +2786,8 @@ func TestSourceClusterTemplate_LampSlotsForEmptyAction(t *testing.T) {
 	html := rec.Body.String()
 	for _, want := range []string{
 		`<div class="lamp`,
+		`<span class="led-well"`,
+		`<span class="state">OFF</span>`,
 		`data-source-id="streams"`,
 		`data-source-id="plex"`,
 		`data-source-id="jellyfin"`,
@@ -2820,6 +2822,34 @@ func TestSourceClusterTemplate_LampClassReflectsState(t *testing.T) {
 	}
 }
 
+func TestSourceClusterTemplate_IssueStateUsesSingleLargeLED(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithLampStatus(t,
+		map[string]adapters.Status{
+			"dlna": {State: adapters.StateError, LastError: "missing bridge host"},
+		},
+		"",
+	)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, req)
+	html := rec.Body.String()
+	dlna := regexp.MustCompile(`(?s)<div class="lamp configured-idle issue"[^>]*data-source-id="dlna"[^>]*>.*?</div>`).FindString(html)
+	if dlna == "" {
+		t.Fatalf("DLNA issue source module not found: %s", excerpt(html, "DLNA"))
+	}
+	for _, want := range []string{
+		`<span class="led-well"`,
+		`<span class="led" aria-hidden="true"></span>`,
+		`<span class="state">ISSUE</span>`,
+		`aria-label="DLNA, issue: missing bridge host"`,
+	} {
+		if !strings.Contains(dlna, want) {
+			t.Errorf("DLNA issue source module missing %q: %s", want, dlna)
+		}
+	}
+}
+
 // newTestServerWithLampState constructs a chassis server with the
 // supplied SourceAvailabilityViewers and a synthetic SessionViewer that
 // returns the given adapterRef. Reuses the existing fakeSessionViewer
@@ -2830,6 +2860,30 @@ func newTestServerWithLampState(t *testing.T, configured map[string]bool, adapte
 	var viewers []adapters.SourceAvailabilityViewer
 	for _, id := range []string{"streams", "plex", "jellyfin", "dlna"} {
 		viewers = append(viewers, fakeSourceViewer{id: id, configured: boolToYesNo(configured[id])})
+	}
+	cfg.SourceAvailabilityViewers = viewers
+	cfg.Session = &fakeSessionViewer{view: core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef}}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	return srv
+}
+
+func newTestServerWithLampStatus(t *testing.T, statuses map[string]adapters.Status, adapterRef string) *Server {
+	t.Helper()
+	cfg := nonZeroConfig()
+	var viewers []adapters.SourceAvailabilityViewer
+	for _, id := range []string{"streams", "plex", "jellyfin", "dlna"} {
+		configured := "no"
+		st, ok := statuses[id]
+		if ok {
+			configured = "yes"
+		} else {
+			st = adapters.Status{State: adapters.StateRunning}
+		}
+		viewers = append(viewers, fakeSourceViewer{id: id, configured: configured, status: st})
 	}
 	cfg.SourceAvailabilityViewers = viewers
 	cfg.Session = &fakeSessionViewer{view: core.StatusHomeView{State: core.StatePlaying, AdapterRef: adapterRef}}
@@ -3087,6 +3141,11 @@ func TestSourceClusterJS_ExistsAndSubscribesToTransport(t *testing.T) {
 			t.Errorf("source-cluster.js missing lamp state update token %q", want)
 		}
 	}
+	for _, want := range []string{"issue", "led-well", "state"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("source-cluster.js missing single-LED status token %q", want)
+		}
+	}
 	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("source-cluster.js contains forbidden fake-data pattern %q", forbidden)
@@ -3212,10 +3271,13 @@ func TestChassisCSS_AddsLampRules(t *testing.T) {
 	s := string(src)
 	for _, want := range []string{
 		"body.receiver .source-cluster .lamp",
+		"body.receiver .source-cluster .lamp .led-well",
 		"body.receiver .source-cluster .lamp .led",
 		"body.receiver .source-cluster .lamp .name",
+		"body.receiver .source-cluster .lamp .state",
 		"body.receiver .source-cluster .lamp.configured-idle .led",
 		"body.receiver .source-cluster .lamp.casting .led",
+		"body.receiver .source-cluster .lamp.issue .led",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("chassis.css missing lamp selector %q", want)
