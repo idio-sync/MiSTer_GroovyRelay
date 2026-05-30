@@ -985,20 +985,35 @@ Register the `dspKnobAngle` template func where the other funcs (`volumeAngle`,
 `"volumeAngle"`):
 
 ```go
-"dspKnobAngle": func(value, min, max int) int {
-	if max == min {
+"dspKnobAngle": func(value, min, max any) int {
+	v, lo, hi := dspToFloat(value), dspToFloat(min), dspToFloat(max)
+	if hi == lo {
 		return -135
 	}
-	frac := float64(value-min) / float64(max-min)
-	return int(-135 + frac*270)
+	return int(-135 + (v-lo)/(hi-lo)*270)
 },
 ```
 
-(Use `float64` value/min/max if the knob values are floats; tone values are
-dB floats, balance is int — pass them through a numeric template func that
-accepts `any` and coerces, or split into `dspKnobAngleF`/`dspKnobAngleI`. The
-simplest is one func taking `float64` and templating with `printf`-free calls;
-adapt to the existing func style in `templates.go`.)
+The params are `any` because `html/template` is strict about func arg types,
+and the template passes a mix: **float64** tone values (bass/mid/treble) but an
+**int** balance value plus int min/max literals (`-12`, `12`, `-100`, `100`).
+A single `float64`-typed func would error on the int args. Add the coercion
+helper next to it in `templates.go`:
+
+```go
+func dspToFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
+	}
+}
+```
 
 In `internal/chassis/templates/shell.html`, mount the strip between transport
 and visualizer (line 35-36):
@@ -1062,7 +1077,9 @@ pattern this project uses). The test must assert:
 - Toggling the Loud switch posts `{commit:true, params:{loudness:true}}`.
 - Toggling EQ Out posts `{commit:true, params:{enabled:false}}` (inverted).
 - Clicking a preset sets the 10 sliders to the preset curve and commits.
-- Tapping a memory posts `{op:"recall", slot}`; a long-press posts `{op:"store", slot}`.
+- Tapping a memory posts `{op:"recall", slot}`; a long-press (≥ `HOLD_MS`) posts
+  `{op:"store", slot}`; dragging off the button before `HOLD_MS` cancels the
+  store (no post). The "STORED" flash is an implementation detail, not asserted.
 - An incoming `audioDsp` SSE event updates the controls when not editing.
 
 (Mirror the structure/assert style of `volume-knob.behavior.test.js`; that
