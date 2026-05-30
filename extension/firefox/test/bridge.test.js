@@ -316,6 +316,29 @@ describe("control()", () => {
   });
 });
 
+describe("volume()", () => {
+  it("POSTs output_volume to the companion volume endpoint", async () => {
+    let captured;
+    server.use(
+      http.post("http://192.168.1.50:32500/ui/companion/volume", async ({ request }) => {
+        captured = {
+          headers: Object.fromEntries(request.headers),
+          body: await request.json(),
+        };
+        return HttpResponse.json({ ok: true, output_volume: 55 });
+      })
+    );
+    await browser.storage.sync.set({ bridgeURL: "http://192.168.1.50:32500" });
+
+    const result = await bridge.volume(55);
+
+    expect(result).toEqual({ ok: true, output_volume: 55 });
+    expect(captured.body).toEqual({ output_volume: 55 });
+    expect(captured.headers["x-bridge-extension"]).toBe("1");
+    expect(captured.headers["content-type"]).toBe("application/json");
+  });
+});
+
 describe("launchGroovyMister()", () => {
   it("POSTs launch to the companion launch route", async () => {
     let captured;

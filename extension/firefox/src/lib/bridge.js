@@ -82,17 +82,10 @@ export async function control(action, extra = {}) {
   });
 }
 
-export async function historyPlay(id) {
-  return companionFetch("/ui/companion/history/play", {
+export async function volume(level) {
+  return companionFetch("/ui/companion/volume", {
     method: "POST",
-    body: { id },
-  });
-}
-
-export async function historyDelete(id) {
-  return companionFetch("/ui/companion/history/delete", {
-    method: "POST",
-    body: { id },
+    body: { output_volume: level },
   });
 }
 
