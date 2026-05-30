@@ -96,6 +96,11 @@ type Manager struct {
 	active         *activeSession
 	nextGeneration uint64
 
+	// audioDSPRuntime is the currently auditioned tone/EQ params (committed
+	// or preview). audioDSPPersisted is true when runtime == m.bridge.Audio.DSP.
+	audioDSPRuntime   config.AudioDSP
+	audioDSPPersisted bool
+
 	eventLog *eventlog.Log // nilable; nil disables event emission
 }
 
@@ -245,6 +250,8 @@ func (m *Manager) startGuardMatchesLocked(guard sessionGuard, requireIdle bool) 
 // across the process lifetime so its source UDP port remains stable).
 func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender, opts ...ManagerOption) *Manager {
 	m := &Manager{bridge: bridge, sender: sender, fsm: New()}
+	m.audioDSPRuntime = bridge.Audio.DSP
+	m.audioDSPPersisted = true
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -1219,6 +1226,60 @@ func (m *Manager) SetOutputVolume(volume int) error {
 	m.bridge.Audio.OutputVolume = volume
 	if m.plane != nil {
 		return m.plane.SetOutputVolume(volume)
+	}
+	return nil
+}
+
+// AudioDSP returns the current runtime tone/EQ params under m.mu. On process
+// start and new casts this equals the persisted bridge config; during an
+// active preview it may run ahead of disk.
+func (m *Manager) AudioDSP() config.AudioDSP {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.audioDSPRuntime
+}
+
+// AudioDSPPersisted reports whether the runtime params equal the persisted
+// bridge snapshot (false while a preview is auditioning).
+func (m *Manager) AudioDSPPersisted() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.audioDSPPersisted
+}
+
+// SetAudioDSP is the committed path: validate, update persisted + runtime
+// state, and apply live to the active plane. Mirrors SetOutputVolume's
+// dual-write. m.mu guards only the in-memory fields and the atomic coeff
+// swap (no I/O under the lock); disk persistence happens in the uiserver
+// saver before this is called via applyHotSwapSideEffects.
+func (m *Manager) SetAudioDSP(dsp config.AudioDSP) error {
+	if err := config.ValidateAudioDSP(dsp); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bridge.Audio.DSP = dsp
+	m.audioDSPRuntime = dsp
+	m.audioDSPPersisted = true
+	if m.plane != nil {
+		return m.plane.SetAudioDSP(dspParamsFromConfig(dsp, m.bridge.Audio.SampleRate, m.bridge.Audio.Channels))
+	}
+	return nil
+}
+
+// PreviewAudioDSP is the unpersisted drag path: validate, update only the
+// runtime snapshot (not m.bridge), and apply live. The next cast still starts
+// from persisted config until a commit (SetAudioDSP) lands.
+func (m *Manager) PreviewAudioDSP(dsp config.AudioDSP) error {
+	if err := config.ValidateAudioDSP(dsp); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioDSPRuntime = dsp
+	m.audioDSPPersisted = false
+	if m.plane != nil {
+		return m.plane.SetAudioDSP(dspParamsFromConfig(dsp, m.bridge.Audio.SampleRate, m.bridge.Audio.Channels))
 	}
 	return nil
 }

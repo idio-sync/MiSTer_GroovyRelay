@@ -3476,3 +3476,60 @@ func TestDSPParamsFromConfig_Maps(t *testing.T) {
 		t.Errorf("mapped params = %+v", p)
 	}
 }
+
+func TestManager_SetAudioDSP_DualWrite(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	fp := &volumePlane{}
+	m.mu.Lock()
+	m.plane = fp
+	m.mu.Unlock()
+	dsp := config.DefaultAudioDSP()
+	dsp.Bass = 6
+	if err := m.SetAudioDSP(dsp); err != nil {
+		t.Fatalf("SetAudioDSP: %v", err)
+	}
+	if m.bridge.Audio.DSP.Bass != 6 {
+		t.Errorf("persisted bridge DSP not updated: %+v", m.bridge.Audio.DSP)
+	}
+	got := m.AudioDSP()
+	if got.Bass != 6 {
+		t.Errorf("AudioDSP() = %+v, want Bass 6", got)
+	}
+	if !m.audioDSPPersisted {
+		t.Error("committed SetAudioDSP should mark persisted=true")
+	}
+}
+
+func TestManager_PreviewAudioDSP_RuntimeOnly(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.plane = &volumePlane{}
+	m.mu.Unlock()
+	persisted := m.bridge.Audio.DSP
+	preview := config.DefaultAudioDSP()
+	preview.Treble = 5
+	if err := m.PreviewAudioDSP(preview); err != nil {
+		t.Fatalf("PreviewAudioDSP: %v", err)
+	}
+	if m.bridge.Audio.DSP.Treble != persisted.Treble {
+		t.Error("preview must not touch persisted bridge config")
+	}
+	if m.AudioDSP().Treble != 5 {
+		t.Error("preview should be visible via AudioDSP()")
+	}
+	if m.audioDSPPersisted {
+		t.Error("preview should mark persisted=false")
+	}
+}
+
+func TestManager_SetAudioDSP_RejectsBad(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	bad := config.DefaultAudioDSP()
+	bad.Bass = 50
+	if err := m.SetAudioDSP(bad); err == nil {
+		t.Fatal("SetAudioDSP should reject out-of-range bass")
+	}
+}
