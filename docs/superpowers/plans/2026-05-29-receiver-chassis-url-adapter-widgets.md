@@ -809,6 +809,10 @@ func TestSaveValues_ConcurrentSavesSerialize(t *testing.T) {
 	if !strings.Contains(string(got), "[adapters.url]") {
 		t.Errorf("section header lost after concurrent saves:\n%s", got)
 	}
+	var decoded map[string]any
+	if _, err := toml.Decode(string(got), &decoded); err != nil {
+		t.Fatalf("config is not valid TOML after concurrent saves: %v\n%s", err, got)
+	}
 }
 ```
 
@@ -1255,6 +1259,88 @@ func TestHandleSettingsAdapterCookiesPost_NotReadyWhenNil(t *testing.T) {
 		t.Fatalf("Code = %d, want 503", rec.Code)
 	}
 }
+
+func TestHandleSettingsAdapterCookiesPost_CrossOriginBlocked(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/cookies",
+		strings.NewReader("cookies=x"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Code = %d, want 403", rec.Code)
+	}
+	if cs.gotRaw != "" {
+		t.Errorf("cross-origin request reached SaveCookies with %q", cs.gotRaw)
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_UnknownAdapter(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/streams/cookies",
+		"application/x-www-form-urlencoded", "cookies=x")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("Code = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "streams") {
+		t.Errorf("unknown-adapter response leaked adapter details: %s", rec.Body.String())
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_OversizeIsFieldError(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies="+strings.Repeat("x", (1<<20)+2))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs, _ := body["errors"].(map[string]any)
+	if _, ok := errs["cookies"]; !ok {
+		t.Errorf("oversize response missing errors.cookies: %v", body)
+	}
+	if cs.gotRaw != "" {
+		t.Errorf("oversize request reached SaveCookies with %d bytes", len(cs.gotRaw))
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_WriteFailureIsGenericChip(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies=x")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "WRITE FAILED") {
+		t.Errorf("write failure response missing generic chip: %s", rec.Body.String())
+	}
+}
+
+func TestHandleSettingsAdapterCookiesClear_WriteFailureIsGenericChip(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{clearErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
+		"application/x-www-form-urlencoded", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "WRITE FAILED") {
+		t.Errorf("clear failure response missing generic chip: %s", rec.Body.String())
+	}
+}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1269,6 +1355,21 @@ Append to `internal/chassis/settings.go`:
 ```go
 const maxCookiesBody = 1 << 20 // 1 MiB; mirrors the URL adapter's legacy cap.
 
+type cookieFieldError string
+
+func (e cookieFieldError) Error() string { return string(e) }
+func (e cookieFieldError) FieldErrors() []adapters.FieldError {
+	return []adapters.FieldError{{Key: "cookies", Msg: string(e)}}
+}
+
+func cookiesReadError(err error) error {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return cookieFieldError("cookies file must be 1 MiB or smaller")
+	}
+	return cookieFieldError("invalid cookies payload")
+}
+
 // readCookiesField extracts the cookies payload from a form-encoded or
 // JSON body under a 1 MiB cap. Chassis-local (it must not import the URL
 // adapter); mirrors the legacy adapter parser shape.
@@ -1279,12 +1380,12 @@ func readCookiesField(r *http.Request) (string, error) {
 			Cookies string `json:"cookies"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			return "", err
+			return "", cookiesReadError(err)
 		}
 		return payload.Cookies, nil
 	}
 	if err := r.ParseForm(); err != nil {
-		return "", err
+		return "", cookiesReadError(err)
 	}
 	return r.PostForm.Get("cookies"), nil
 }
@@ -1302,7 +1403,7 @@ func (s *Server) handleSettingsAdapterCookiesPost(w http.ResponseWriter, r *http
 	}
 	raw, err := readCookiesField(r)
 	if err != nil {
-		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		emitSaveError(w, err)
 		return
 	}
 	view, err := s.cfg.AdapterCookieStore.SaveCookies(name, raw)
@@ -1511,7 +1612,7 @@ git commit -m "feat(chassis): populate URL adapter pane host + cookie widget dat
 - Modify: `internal/chassis/templates.go`
 - Test: `internal/chassis/chassis_test.go`
 
-The URL template must interleave the host editor between `ytdlp_enabled` and `ytdlp_format`, so it renders standard fields by key rather than ranging. `fieldByKey` returns the `FieldDef` for a key (zero value if absent).
+The URL template must interleave the host editor between `ytdlp_enabled` and `ytdlp_format`, so it renders standard fields by key rather than ranging. `fieldByKey` returns the `FieldDef` pointer for a key (`nil` if absent) so templates can skip missing fields instead of rendering empty `name=""` controls.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1525,12 +1626,12 @@ func TestFieldByKey(t *testing.T) {
 		{Key: "ytdlp_format", Kind: adapters.KindText},
 	}
 	got := fieldByKey(fields, "ytdlp_format")
-	if got.Key != "ytdlp_format" || got.Kind != adapters.KindText {
+	if got == nil || got.Key != "ytdlp_format" || got.Kind != adapters.KindText {
 		t.Errorf("fieldByKey = %+v, want ytdlp_format/Text", got)
 	}
 	missing := fieldByKey(fields, "nope")
-	if missing.Key != "" {
-		t.Errorf("fieldByKey(missing) = %+v, want zero FieldDef", missing)
+	if missing != nil {
+		t.Errorf("fieldByKey(missing) = %+v, want nil", missing)
 	}
 }
 ```
@@ -1545,16 +1646,16 @@ Expected: FAIL (`undefined: fieldByKey`).
 In `internal/chassis/templates.go`, add the function:
 
 ```go
-// fieldByKey returns the FieldDef with the given key, or a zero FieldDef
-// if absent. Used by the URL pane template to render specific standard
-// fields in mockup order with the host editor interleaved.
-func fieldByKey(fields []adapters.FieldDef, key string) adapters.FieldDef {
-	for _, f := range fields {
-		if f.Key == key {
-			return f
+// fieldByKey returns the FieldDef with the given key, or nil if absent.
+// Used by the URL pane template to render specific standard fields in
+// mockup order with the host editor interleaved.
+func fieldByKey(fields []adapters.FieldDef, key string) *adapters.FieldDef {
+	for i := range fields {
+		if fields[i].Key == key {
+			return &fields[i]
 		}
 	}
-	return adapters.FieldDef{}
+	return nil
 }
 ```
 
@@ -1642,6 +1743,9 @@ func TestRenderURLPane_EmptyHostsStillShowsEditor(t *testing.T) {
 	if !strings.Contains(out, "not loaded") {
 		t.Errorf("cookie pill missing 'not loaded':\n%s", out)
 	}
+	if strings.Contains(out, `name=""`) {
+		t.Errorf("missing URL fields rendered an empty-name input:\n%s", out)
+	}
 }
 ```
 
@@ -1674,11 +1778,11 @@ Create `internal/chassis/templates/settings-adapter-url.html`:
 {{- define "settings-adapter-url" -}}
 <section class="settings-section wide">
   <h4>URL <span class="hint">{{ .Hint }}</span></h4>
-  {{ template "adapter-field-row" (dict "Adapter" "url" "Field" (fieldByKey .Fields "enabled") "Values" .Values) }}
-  {{ template "adapter-field-row" (dict "Adapter" "url" "Field" (fieldByKey .Fields "ytdlp_enabled") "Values" .Values) }}
+  {{ with fieldByKey .Fields "enabled" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+  {{ with fieldByKey .Fields "ytdlp_enabled" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
   {{ if .HasHostEditor }}{{ template "url-host-editor" . }}{{ end }}
-  {{ template "adapter-field-row" (dict "Adapter" "url" "Field" (fieldByKey .Fields "ytdlp_format") "Values" .Values) }}
-  {{ template "adapter-field-row" (dict "Adapter" "url" "Field" (fieldByKey .Fields "ytdlp_resolve_timeout_seconds") "Values" .Values) }}
+  {{ with fieldByKey .Fields "ytdlp_format" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+  {{ with fieldByKey .Fields "ytdlp_resolve_timeout_seconds" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
   {{ if .HasCookieStore }}{{ template "url-cookies" . }}{{ end }}
 </section>
 {{- end -}}
@@ -2038,6 +2142,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -2142,6 +2247,22 @@ func TestBridgeAdapterHostEditor_UnknownAdapter(t *testing.T) {
 	}
 }
 
+func TestBridgeAdapterHostEditor_SetHostsRejectsNonHostAdapter(t *testing.T) {
+	saver := uiserver.NewAdapterSaver(t.TempDir()+"/config.toml", &sync.Mutex{})
+	reg := &fakeRegistry{entries: map[string]adapters.Adapter{
+		"streams": &fakeStreamsAdapter{current: map[string]any{"enabled": true}},
+	}}
+	ed := newBridgeAdapterHostEditor(saver, reg)
+	_, _, err := ed.SetHosts("streams", []string{"youtube.com"})
+	ce, ok := err.(interface {
+		StatusCode() int
+		Chip() string
+	})
+	if !ok || ce.StatusCode() != http.StatusNotFound || ce.Chip() != "UNKNOWN ADAPTER" {
+		t.Fatalf("err = %v, want 404 UNKNOWN ADAPTER chip", err)
+	}
+}
+
 func TestBridgeAdapterHostEditor_EmptyEntryReKeyedToHosts(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := dir + "/config.toml"
@@ -2216,6 +2337,9 @@ func (b *bridgeAdapterHostEditor) SetHosts(name string, hosts []string) (string,
 	if !ok {
 		return "", nil, &cmdChipError{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}
 	}
+	if _, ok := a.(interface{ CurrentHosts() []string }); !ok {
+		return "", nil, &cmdChipError{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}
+	}
 	cleaned, err := url.NormalizeHosts(hosts)
 	if err != nil {
 		return "", nil, mapHostFieldErrors(err)
@@ -2277,7 +2401,9 @@ Create `cmd/mister-groovy-relay/adapter_cookie_store_test.go`:
 package main
 
 import (
-	"sync"
+	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -2348,6 +2474,65 @@ func TestBridgeAdapterCookieStore_UnknownAdapter(t *testing.T) {
 	ce, ok := err.(interface{ StatusCode() int })
 	if !ok || ce.StatusCode() != 404 {
 		t.Fatalf("SaveCookies(unknown) err = %v, want 404 chip", err)
+	}
+}
+
+func TestBridgeAdapterCookieStore_NonCookieAdapter(t *testing.T) {
+	reg := &fakeRegistry{entries: map[string]adapters.Adapter{
+		"streams": &fakeStreamsAdapter{current: map[string]any{"enabled": true}},
+	}}
+	store := newBridgeAdapterCookieStore(reg)
+	if _, ok := store.CookieStatus("streams"); ok {
+		t.Errorf("CookieStatus(non-cookie) ok=true, want false")
+	}
+	_, err := store.SaveCookies("streams", sampleNetscape)
+	ce, ok := err.(interface {
+		StatusCode() int
+		Chip() string
+	})
+	if !ok || ce.StatusCode() != http.StatusNotFound || ce.Chip() != "UNKNOWN ADAPTER" {
+		t.Fatalf("SaveCookies(non-cookie) err = %v, want 404 UNKNOWN ADAPTER", err)
+	}
+}
+
+type fakeCookieAdapter struct {
+	fakeStreamsAdapter
+	saveErr  error
+	clearErr error
+}
+
+func (f *fakeCookieAdapter) ValidateCookies(raw []byte) error { return nil }
+func (f *fakeCookieAdapter) SaveCookies(raw []byte) (url.CookiesStat, error) {
+	return url.CookiesStat{}, f.saveErr
+}
+func (f *fakeCookieAdapter) ClearCookies() error { return f.clearErr }
+func (f *fakeCookieAdapter) CookieStat() (url.CookiesStat, bool, error) {
+	return url.CookiesStat{}, false, nil
+}
+
+func TestBridgeAdapterCookieStore_FilesystemFailuresAreGenericChips(t *testing.T) {
+	reg := &fakeRegistry{entries: map[string]adapters.Adapter{
+		"url": &fakeCookieAdapter{
+			fakeStreamsAdapter: fakeStreamsAdapter{current: map[string]any{"enabled": true}},
+			saveErr:            errors.New("/tmp/secret/url_cookies.txt: permission denied"),
+			clearErr:           errors.New("/tmp/secret/url_cookies.txt: permission denied"),
+		},
+	}}
+	store := newBridgeAdapterCookieStore(reg)
+	for name, err := range map[string]error{
+		"save":  func() error { _, err := store.SaveCookies("url", sampleNetscape); return err }(),
+		"clear": func() error { _, err := store.ClearCookies("url"); return err }(),
+	} {
+		ce, ok := err.(interface {
+			StatusCode() int
+			Chip() string
+		})
+		if !ok || ce.StatusCode() != http.StatusInternalServerError || ce.Chip() != "WRITE FAILED" {
+			t.Fatalf("%s err = %v, want 500 WRITE FAILED", name, err)
+		}
+		if strings.Contains(err.Error(), "/tmp/secret") {
+			t.Fatalf("%s error leaked filesystem path: %v", name, err)
+		}
 	}
 }
 ```
