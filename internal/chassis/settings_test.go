@@ -2243,3 +2243,111 @@ func TestHandleSettingsAdapterHostsPost_NotReadyWhenNil(t *testing.T) {
 		t.Errorf("chip = %q, want NOT READY", chip)
 	}
 }
+
+type fakeFieldErr struct {
+	key string
+	msg string
+}
+
+func (e *fakeFieldErr) Error() string { return e.msg }
+func (e *fakeFieldErr) FieldErrors() []adapters.FieldError {
+	return []adapters.FieldError{{Key: e.key, Msg: e.msg}}
+}
+
+type fakeHostEditor struct {
+	hosts      []string
+	hostsOK    bool
+	scope      string
+	normalized []string
+	err        error
+	gotName    string
+	gotHosts   []string
+}
+
+func (f *fakeHostEditor) Hosts(name string) ([]string, bool) { return f.hosts, f.hostsOK }
+func (f *fakeHostEditor) SetHosts(name string, hosts []string) (string, []string, error) {
+	f.gotName = name
+	f.gotHosts = hosts
+	if f.err != nil {
+		return "", nil, f.err
+	}
+	return f.scope, f.normalized, nil
+}
+
+func postHosts(t *testing.T, s *Server, name, jsonBody string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/"+name+"/hosts",
+		strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestHandleSettingsAdapterHostsPost_Success(t *testing.T) {
+	t.Parallel()
+	fe := &fakeHostEditor{scope: "hot", normalized: []string{"youtube.com", "twitch.tv"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	rec := postHosts(t, s, "url", `{"hosts":["YouTube.com","Twitch.tv"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ok"] != true || body["scope"] != "hot" {
+		t.Errorf("body = %v, want ok=true scope=hot", body)
+	}
+	hosts, _ := body["hosts"].([]any)
+	if len(hosts) != 2 || hosts[0] != "youtube.com" {
+		t.Errorf("hosts = %v, want normalized [youtube.com twitch.tv]", body["hosts"])
+	}
+	if fe.gotName != "url" || len(fe.gotHosts) != 2 {
+		t.Errorf("SetHosts got (%q, %v)", fe.gotName, fe.gotHosts)
+	}
+}
+
+func TestHandleSettingsAdapterHostsPost_FieldError(t *testing.T) {
+	t.Parallel()
+	fe := &fakeHostEditor{err: &fakeFieldErr{key: "hosts", msg: "entry contains URL syntax characters"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	rec := postHosts(t, s, "url", `{"hosts":["https://x/"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs, _ := body["errors"].(map[string]any)
+	if msg, _ := errs["hosts"].(string); !strings.Contains(msg, "URL syntax") {
+		t.Errorf("errors[hosts] = %v, want URL-syntax message", errs["hosts"])
+	}
+}
+
+func TestHandleSettingsAdapterHostsPost_UnknownAdapter(t *testing.T) {
+	t.Parallel()
+	fe := &fakeHostEditor{err: &fakeChipErr{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	rec := postHosts(t, s, "nope", `{"hosts":[]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("Code = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSettingsAdapterHostsPost_CrossOriginBlocked(t *testing.T) {
+	t.Parallel()
+	fe := &fakeHostEditor{scope: "hot"}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterHostEditor: fe}}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/hosts",
+		strings.NewReader(`{"hosts":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Code = %d, want 403", rec.Code)
+	}
+}
