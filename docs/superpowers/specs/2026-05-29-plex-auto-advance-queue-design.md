@@ -95,10 +95,14 @@ ffmpeg exits cleanly
                                         something; stand down (guard wins)
 ```
 
-This **reuses the existing `fetchPlayQueue` / `nextPlayQueueItem` /
-`restartFromPlayQueueItem` code** that `skipNext` already relies on. Auto-
-advance is "trigger the skip-next logic from EOF instead of from an HTTP
-command," with one addition: the start is **guarded**, not unconditional.
+This **reuses the existing `fetchPlayQueue` / `nextPlayQueueItem` behavior**
+that `skipNext` already relies on, but it should not call
+`restartFromPlayQueueItem` directly: that function is HTTP-handler-shaped
+(`ResponseWriter`/`Request`, HTTP errors, unconditional `StartSession`). The
+implementation plan should extract a pure shared helper that resolves the next
+play-queue item and builds the next `PlayMediaRequest`/`SessionRequest`.
+Manual skip handlers can continue to start unconditionally; auto-advance uses
+the same resolution/request construction with a guarded start.
 
 **Controller coordination (the load-bearing detail).** If the Plex app is
 still connected and *it* sends a `skipNext`/`playMedia` when the track ends,
@@ -111,7 +115,10 @@ advancing ourselves too would double-skip. Two mechanisms combine:
    session, the guard returns `false` and we stand down. This — not timing —
    is what prevents a double-advance. (If we ever want to bind to the exact
    prior session, `StartSessionIfSession(req, AdapterRef, generation)` at
-   `manager.go:898` is the stricter variant.)
+   `manager.go:898` is the stricter variant.) The Plex adapter currently sees
+   core through its narrow `SessionManager` interface, so v1 must add
+   `StartSessionIfIdle(core.SessionRequest) (bool, error)` there and update
+   companion tests/fakes; the underlying core method already exists.
 2. **Smoothness — the settle delay.** A brief delay (~1s) before the guarded
    start lets a present controller win the race cleanly. Without it the local
    relay would usually beat the network controller, start the item, then get
@@ -171,6 +178,12 @@ auto_advance = false   # default OFF
   immediately; the EOF hook reads the *current* config value at the moment an
   item ends, so toggling mid-cast arms/disarms the next boundary live. Wire
   into `scopeForPlexField` (or the adapter's scope table).
+- **Live mirror:** do not read `Adapter.plexCfg` directly from the EOF
+  goroutine. Add an `atomic.Bool` (or mutex-protected equivalent) on
+  `Companion`, initialize it from the decoded config in `NewCompanion`, expose
+  `SetAutoAdvance(bool)`, and have `Adapter.ApplyConfig` push
+  `auto_advance` changes into the running companion, matching the existing
+  atomic mirror pattern for live-updatable companion fields.
 - **Validation:** a bool needs none, but the save still flows through the
   existing validate-then-write `AdapterSaver` path so it serializes against
   other saves on the shared mutex.
@@ -180,9 +193,12 @@ auto_advance = false   # default OFF
 **Transport-row button.** A dedicated toggle labeled **CONTINUOUS**, lit when
 active and dim when off, beside the existing transport controls in
 `internal/chassis/`. Tapping it POSTs to a new chassis route (e.g.
-`POST /receiver/continuous/toggle`) which calls the **same `AdapterSaver`
-path** the settings-drawer field uses, then returns the updated button
-fragment via htmx swap.
+`POST /receiver/continuous/toggle`) which goes through the chassis-side
+`AdapterSettingsSaver.SaveTouched` interface with adapter `"plex"` and touched
+field `{"auto_advance": nextValue}`, then returns the updated button fragment
+via htmx swap. Production wiring may still wrap `uiserver.AdapterSaver`
+outside `internal/chassis`; the chassis package must keep its existing boundary
+and avoid importing `internal/uiserver` or a concrete Plex adapter.
 
 **VFD indicator.** A small `AUTO` segment on the VFD lights when the toggle is
 on. Low cost — the chassis already renders VFD state from live data; we add
@@ -210,7 +226,7 @@ button is just a second view onto the same config field.
 | Single item, empty `ContainerKey` | Nothing to advance to → stop |
 | End of queue | `nextPlayQueueItem` returns none → log "end of queue" at info → stop |
 | Controller still active | `StartSessionIfIdle` guard returns `false` (controller already started a session) → stand down. Settle delay makes this glitch-free in the common case. |
-| Toggle flipped off mid-cast | Next EOF reads `false` → stop normally (boolean read is atomic) |
+| Toggle flipped off mid-cast | Next EOF reads `false` from the companion's live mirror → stop normally (boolean read is atomic or mutex-protected) |
 | playQueue fetch fails | Log at warn (item key + error), stop gracefully (no retry storm) |
 | Next item unplayable (probe fails) | `StartSessionIfIdle` fails as a manual cast would; log at warn with item key + error; do **not** auto-skip further (no runaway loop) → stop |
 
@@ -219,15 +235,19 @@ behavior (stop) — never a crash, never an infinite skip loop.
 
 ## Testing
 
-- **Unit (core):** `OnStop` reason routing — EOF arms; user-stop and error do
-  not. Toggle on/off gates the advance.
-- **Unit (plex adapter):** given a mock playQueue, `nextPlayQueueItem`
-  selection; end-of-queue returns none; empty `ContainerKey` no-ops.
+- **Unit (core):** `OnStop` reason propagation and non-blocking callback
+  dispatch stay intact; core remains unaware of Plex auto-advance and the
+  toggle.
+- **Unit (plex adapter):** EOF/user-stop/error gating; toggle on/off gating;
+  given a mock playQueue, `nextPlayQueueItem` selection; end-of-queue returns
+  none; empty `ContainerKey` no-ops.
   - *Captured-context:* the OnStop closure advances from the **captured**
-    queue context, not `lastPlay`. Test: cast A (queue Qa), then overwrite
-    `lastPlay` via a simulated cast B (queue Qb); fire A's OnStop(eof); assert
-    the advance targets Qa's next item, never Qb's. This is the stale-context
-    regression guard.
+    queue context, not `lastPlay`. Test: cast A (queue Qa), then overwrite only
+    Plex companion bookkeeping (`lastPlay`) with a simulated cast B (queue Qb)
+    while the fake manager still reports idle; fire A's OnStop(eof); assert the
+    advance targets Qa's next item, never Qb's. This is the stale-context
+    regression guard. A separate non-idle fake-manager case should prove stale
+    OnStop work stands down under `StartSessionIfIdle`.
   - *Guard / controller coordination:* use a fake manager that records
     `StartSessionIfIdle` calls and can report itself non-idle. Assert: idle →
     advance starts the next item; non-idle (controller already cast) →
@@ -245,15 +265,20 @@ behavior (stop) — never a crash, never an infinite skip loop.
 
 - `internal/adapters/plex/` — capture queue context into the OnStop closure
   (`captured := p` pattern); EOF-triggered advance guarded by
-  `Manager.StartSessionIfIdle`; reuse `fetchPlayQueue` / `nextPlayQueueItem`;
-  build the next request through the shared `playMedia` construction path so
-  the chain self-perpetuates.
+  `Manager.StartSessionIfIdle`; extend the local `SessionManager` interface
+  and tests/fakes to expose that method; extract shared play-queue resolution
+  and request construction from `restartFromPlayQueueItem` so manual skip and
+  background auto-advance can use different start strategies; build the next
+  request through the shared `playMedia` construction path so the chain
+  self-perpetuates.
 - `internal/adapters/plex/` `Fields()` + scope table — new `auto_advance`
-  field at `ScopeHotSwap`.
+  field at `ScopeHotSwap`; `Companion` live mirror + `SetAutoAdvance(bool)`;
+  `Adapter.ApplyConfig` wiring to update the mirror.
 - `internal/config/` — `[adapters.plex]` decode for the new field (via the
   adapter's `DecodeConfig`).
 - `internal/chassis/` — transport-row toggle route/handler, button partial,
-  VFD `AutoAdvance` view-model field.
+  VFD `AutoAdvance` view-model field, using `AdapterSettingsSaver.SaveTouched`
+  rather than a direct `uiserver` dependency.
 - Tests across the above plus `tests/integration`.
 
 ## Open items for the implementation plan
