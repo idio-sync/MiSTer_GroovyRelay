@@ -17,6 +17,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane/audiodsp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -92,6 +93,7 @@ func (f *fakePlane) Done() <-chan struct{}                           { ch := mak
 func (f *fakePlane) Position() time.Duration                        { return 0 }
 func (f *fakePlane) SetFieldOrder(string) error                     { return nil }
 func (f *fakePlane) SetOutputVolume(int) error                      { return nil }
+func (f *fakePlane) SetAudioDSP(audiodsp.Params) error              { return nil }
 func (f *fakePlane) BlitsTotal() uint64                             { return 0 }
 func (f *fakePlane) FramesTotal() uint64                            { return 0 }
 func (f *fakePlane) Underruns() uint64                              { return 0 }
@@ -113,6 +115,7 @@ func (f *contextDonePlane) Done() <-chan struct{}      { return f.done }
 func (f *contextDonePlane) Position() time.Duration    { return 0 }
 func (f *contextDonePlane) SetFieldOrder(string) error { return nil }
 func (f *contextDonePlane) SetOutputVolume(int) error  { return nil }
+func (f *contextDonePlane) SetAudioDSP(audiodsp.Params) error { return nil }
 func (f *contextDonePlane) BlitsTotal() uint64         { return 0 }
 func (f *contextDonePlane) FramesTotal() uint64        { return 0 }
 func (f *contextDonePlane) Underruns() uint64          { return 0 }
@@ -129,6 +132,7 @@ func (f *blockingDonePlane) Done() <-chan struct{}                        { retu
 func (f *blockingDonePlane) Position() time.Duration                     { return f.pos }
 func (f *blockingDonePlane) SetFieldOrder(string) error                  { return nil }
 func (f *blockingDonePlane) SetOutputVolume(int) error                   { return nil }
+func (f *blockingDonePlane) SetAudioDSP(audiodsp.Params) error           { return nil }
 func (f *blockingDonePlane) BlitsTotal() uint64                          { return 0 }
 func (f *blockingDonePlane) FramesTotal() uint64                         { return 0 }
 func (f *blockingDonePlane) Underruns() uint64                           { return 0 }
@@ -159,6 +163,7 @@ func (f *errorPlane) Done() <-chan struct{}                        { return f.do
 func (f *errorPlane) Position() time.Duration                     { return 0 }
 func (f *errorPlane) SetFieldOrder(string) error                  { return nil }
 func (f *errorPlane) SetOutputVolume(int) error                   { return nil }
+func (f *errorPlane) SetAudioDSP(audiodsp.Params) error           { return nil }
 func (f *errorPlane) BlitsTotal() uint64                          { return 0 }
 func (f *errorPlane) FramesTotal() uint64                         { return 0 }
 func (f *errorPlane) Underruns() uint64                           { return 0 }
@@ -3456,5 +3461,18 @@ func TestManager_StatusHomeView_CarriesDisplayMetadata(t *testing.T) {
 	view := m.StatusHomeView()
 	if view.Display.Primary != "P" || view.Display.Secondary != "S" || view.Display.Tertiary != "T" {
 		t.Fatalf("Display = %+v, want {P S T}", view.Display)
+	}
+}
+
+func TestDSPParamsFromConfig_Maps(t *testing.T) {
+	t.Parallel()
+	c := config.DefaultAudioDSP()
+	c.Bass = 4
+	c.EQ[3] = -2
+	c.Balance = -10
+	p := dspParamsFromConfig(c, 48000, 2)
+	if !p.Enabled || p.Bass != 4 || p.EQ[3] != -2 || p.Balance != -10 ||
+		p.SampleRate != 48000 || p.Channels != 2 {
+		t.Errorf("mapped params = %+v", p)
 	}
 }

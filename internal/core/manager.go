@@ -20,6 +20,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane/audiodsp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
@@ -104,6 +105,7 @@ type planeRunner interface {
 	Position() time.Duration
 	SetFieldOrder(string) error
 	SetOutputVolume(int) error
+	SetAudioDSP(audiodsp.Params) error
 	BlitsTotal() uint64
 	FramesTotal() uint64
 	Underruns() uint64
@@ -831,6 +833,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioChans:          audioChans,
 		SuppressAudioOutput: suppressAudio,
 		OutputVolume:        m.bridge.Audio.OutputVolume,
+		AudioDSP:            dspParamsFromConfig(m.bridge.Audio.DSP, audioRate, audioChans),
 		SeekOffsetMs:        offsetMs,
 		Generation:          generation,
 		OnInit:              m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),
@@ -1218,6 +1221,29 @@ func (m *Manager) SetOutputVolume(volume int) error {
 		return m.plane.SetOutputVolume(volume)
 	}
 	return nil
+}
+
+// dspParamsFromConfig maps the persisted/runtime config.AudioDSP into the
+// dataplane's plain audiodsp.Params (no config dependency leaks into the
+// dataplane). EQ is copied into the fixed-size array; a normalized config
+// always carries exactly 10 bands.
+func dspParamsFromConfig(a config.AudioDSP, sampleRate, channels int) audiodsp.Params {
+	p := audiodsp.Params{
+		Enabled:    a.Enabled,
+		Mono:       a.Mono,
+		Subsonic:   a.Subsonic,
+		Loudness:   a.Loudness,
+		Bass:       a.Bass,
+		Mid:        a.Mid,
+		Treble:     a.Treble,
+		Balance:    a.Balance,
+		SampleRate: sampleRate,
+		Channels:   channels,
+	}
+	for i := 0; i < len(p.EQ) && i < len(a.EQ); i++ {
+		p.EQ[i] = a.EQ[i]
+	}
+	return p
 }
 
 // CurrentInterlaceOrder returns the in-memory interlace field order.
