@@ -1578,6 +1578,9 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 	defer m.mu.Unlock()
 
 	view := StatusHomeView{State: m.fsm.State(), MediaKind: MediaKindVideo}
+	view.AudioDSP = m.audioDSPRuntime
+	view.AudioDSPEngaged = m.audioDSPRuntime.Engaged()
+	view.AudioDSPPersisted = m.audioDSPPersisted
 	if m.active != nil {
 		view.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
 		view.Title = m.active.req.Title

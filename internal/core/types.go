@@ -3,6 +3,7 @@ package core
 import (
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 )
 
@@ -253,6 +254,9 @@ type StatusHomeView struct {
 	WireBytes   uint64        // post-LZ4 bytes sent (drives throughput; §S10)
 	LastACKAge  time.Duration // 0 when no plane or no ACK yet
 	Meter       MeterHomeView
+	AudioDSP          config.AudioDSP // live tone/EQ params (runtime snapshot)
+	AudioDSPEngaged   bool            // shaping active → status-bar EQ LED
+	AudioDSPPersisted bool            // false while a preview runs ahead of disk
 }
 
 type MeterHomeView struct {

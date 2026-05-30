@@ -3533,3 +3533,23 @@ func TestManager_SetAudioDSP_RejectsBad(t *testing.T) {
 		t.Fatal("SetAudioDSP should reject out-of-range bass")
 	}
 }
+
+func TestStatusHomeView_CarriesAudioDSP(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	dsp := config.DefaultAudioDSP()
+	dsp.Loudness = true
+	if err := m.SetAudioDSP(dsp); err != nil {
+		t.Fatalf("SetAudioDSP: %v", err)
+	}
+	v := m.StatusHomeView()
+	if !v.AudioDSP.Loudness {
+		t.Error("StatusHomeView.AudioDSP should carry the params")
+	}
+	if !v.AudioDSPEngaged {
+		t.Error("loudness on should set AudioDSPEngaged")
+	}
+	if !v.AudioDSPPersisted {
+		t.Error("committed DSP should report persisted")
+	}
+}
