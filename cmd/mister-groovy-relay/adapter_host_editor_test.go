@@ -27,7 +27,7 @@ func (f *fakeURLAdapter) IsEnabled() bool         { return true }
 func (f *fakeURLAdapter) Fields() []adapters.FieldDef {
 	return []adapters.FieldDef{{Key: "enabled", Kind: adapters.KindBool}}
 }
-func (f *fakeURLAdapter) CurrentValues() map[string]any { return map[string]any{"enabled": true} }
+func (f *fakeURLAdapter) CurrentValues() map[string]any                    { return map[string]any{"enabled": true} }
 func (f *fakeURLAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
 func (f *fakeURLAdapter) Validate(toml.Primitive, toml.MetaData) error     { return nil }
 func (f *fakeURLAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
