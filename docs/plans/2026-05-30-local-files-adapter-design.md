@@ -4,7 +4,11 @@
 > revised same day after a codebase-grounded review (fixed: audio visualizer is
 > adapter-built not automatic; browse must be POST for CSRF; added `MediaInputPolicy`
 > as a second required control; flagged array-of-tables wire type + non-stock
-> library-list UI; hardened the path-jail; chose the streams-adapter cast model).
+> library-list UI; hardened the path-jail; chose the streams-adapter cast model);
+> revised again after review to fix the `SessionRequest` field mapping, make the
+> receiver-chassis route/template work explicit, scope embedded artwork extraction,
+> and tighten library-name, child-entry, readable-root, and FFmpeg child-resource
+> requirements.
 >
 > This is "A2" from a broader feature brainstorm exploring two axes: new cast
 > sources and baked-in CRT visuals. The remaining menu items (internet radio,
@@ -30,17 +34,19 @@ reads the path directly. So the overwhelming majority of the work is the
 - A new `localfiles` adapter implementing the standard `Adapter` interface,
   **disabled by default** (like `torrent` and `dlna`).
 - **Named libraries**: a list of `{ name, root }` entries (e.g.
-  `Movies → /media/movies`, `Music → /media/music`), configured in the adapter's
+  `Movies → /media/movies`, `Music → /media/music`), configured in the receiver
   settings pane.
-- A **file-browser drawer** in the chassis adapter pane: hidden by default,
-  opens drawer-style when picked. Top level lists libraries; drill into folders
-  with breadcrumb navigation; playable files are listed and castable.
+- A **file-browser drawer** in the receiver chassis settings drawer: hidden by
+  default, opens drawer-style when picked. Top level lists libraries; drill into
+  folders with breadcrumb navigation; playable files are listed and castable.
 - **Single-file cast** → builds a `SessionRequest` and starts a session through
   the existing spine.
-- **Strict path jailing** per library root; read-only; same-origin CSRF like the
-  rest of `/ui/*`.
-- Light `ffprobe` metadata (title/duration, embedded cover art) feeding the
-  existing display/artwork-cache path.
+- **Strict path jailing** per library root; read-only; same-origin protection on
+  the receiver POST routes.
+- Light `ffprobe` metadata (duration/audio-video shape) for display. Embedded
+  cover art extraction is **not** inherited from the current probe/cache path and
+  is deferred unless the implementation plan adds an explicit extraction +
+  cache-cleanup task.
 
 ## Non-goals (v1)
 
@@ -62,8 +68,11 @@ reads the path directly. So the overwhelming majority of the work is the
 - `Validator` — validate the candidate `[adapters.localfiles]` section
   (including each library root) before any on-disk write, per the
   "validate before disk write" contract.
-- `RouteProvider` — mounts the browse + cast routes under
-  `/ui/adapter/localfiles/`.
+- Chassis route integration — mounts same-origin browse + cast routes under the
+  receiver chassis namespace (e.g. `/receiver/settings/adapter/localfiles/*`).
+  The legacy `/ui/adapter/*` `RouteProvider` scan does not surface anything in
+  the receiver chassis; implementing only `RouteProvider` would leave the v1 UI
+  invisible in the target experience.
 - Optionally `SourceAvailabilityViewer` later, if a chassis source-cluster lamp
   is wanted; not required for v1. Note: `SourceID()` is documented to return one
   of `"streams"|"plex"|"jellyfin"|"dlna"`
@@ -72,8 +81,9 @@ reads the path directly. So the overwhelming majority of the work is the
   not just an adapter method — flagged so the future lamp work isn't assumed free.
 
 There is **no** `LinkAware` (no auth handshake) and **no**
-`PublicRouteProvider` (all routes live behind the standard `/ui/*` CSRF
-middleware).
+`PublicRouteProvider` (no public unauthenticated HTTP surface). Receiver routes
+use `requireSameOrigin`; any optional legacy `/ui/*` routes must remain POSTs
+behind `csrfMiddleware`.
 
 ### Config
 
@@ -92,7 +102,12 @@ enabled = false
 
 `root` is **always an absolute path this process can read** — a container-side
 path under Docker, a real OS path on native. Library config is editable in the
-adapter settings pane (the file-picker section), not TOML-only.
+receiver settings pane (the file-picker section), not TOML-only.
+
+`name` is a user-facing selector and therefore part of the request contract:
+trim it, reject empty names, and reject duplicate names after the same
+case-folding used by the browse lookup. If the UI later needs stable renames,
+add an explicit immutable library ID rather than overloading display names.
 
 **Two non-trivial plumbing problems the planner must solve (no in-repo
 precedent for either):**
@@ -110,22 +125,28 @@ precedent for either):**
    ([internal/adapters/adapter.go:117-134](../../internal/adapters/adapter.go#L117-L134));
    there is no built-in "repeating group" control. Editing a list of
    `{name, root}` pairs through that schema is unsolved and is **real UI design
-   work** — likely a custom widget/route (à la the URL adapter's host tag-list
-   pane), not a stock `FieldDef`. This is the biggest unmodeled gap; do not
-   assume the standard form renderer covers it.
+   work** — a custom receiver-chassis widget/route like the URL adapter's
+   host/cookie panes, not a stock `FieldDef`. This is the biggest unmodeled gap;
+   do not assume the standard form renderer covers it. The chassis settings
+   surface is currently explicit, not automatically adapter-discovered:
+   `settings-adapters.html` enumerates named templates, and
+   `settingsDataFromConfig` walks a hardcoded adapter-name list, so `localfiles`
+   must be added to that chassis data/template/route path deliberately.
 
 ### Browse endpoint
 
 ```
-POST /ui/adapter/localfiles/browse   (form body: lib=<name>&path=<rel>)
+POST /receiver/settings/adapter/localfiles/browse
+  form body: lib=<name>&path=<rel>
 ```
 
 - `lib` selects a configured library; `path` is **relative to that library's
   root** (empty = library root).
 - Returns the folder listing: subfolders + playable files (filtered by a
-  media-extension allowlist), with light `ffprobe`-derived title/duration for
-  files. ffprobe is best-effort and must not block the listing on failure.
-- **Must be a POST, not a GET.** Verified against the codebase:
+  media-extension allowlist), with light `ffprobe`-derived duration/audio-video
+  shape for files. ffprobe is best-effort and must not block the listing on
+  failure.
+- **Must be a POST, not a GET.** Verified against the legacy `/ui/*` codebase:
   `csrfMiddleware` unconditionally allows all GET/HEAD/OPTIONS
   ([internal/ui/csrf.go:34-38](../../internal/ui/csrf.go#L34-L38)), and the
   RouteProvider mount wraps **only** POST/DELETE/PUT/PATCH with
@@ -138,7 +159,9 @@ POST /ui/adapter/localfiles/browse   (form body: lib=<name>&path=<rel>)
   the simplest correct option; the alternative is an explicit `Sec-Fetch-Site:
   same-origin` check inside a GET handler. Note `s.guard` provides
   auth/first-run gating, **not** cross-origin protection — the two are
-  independent.
+  independent. The receiver chassis has its own `requireSameOrigin` middleware
+  on POST routes; the browse route should use that receiver path rather than a
+  GET or an unguarded adapter asset route.
 
 ### Path jailing (the security core)
 
@@ -154,6 +177,12 @@ For every request, resolve the target as:
    `/media/movies-secret` pass a `/media/movies` jail. Reuse the tested pattern
    in [internal/adapters/torrent/cache.go:95-101](../../internal/adapters/torrent/cache.go#L95-L101).
 4. Read-only throughout — no write/delete/rename surface exists.
+
+For directory listings, do not jail only the parent directory and then trust
+child names. Each child returned by `os.ReadDir` must be joined as a relative
+child, resolved through the same jail helper, and rejected/degraded before it is
+shown, classified, or ffprobed. This prevents a symlinked media-looking child
+inside a valid folder from being probed outside the library root.
 
 **Known gaps to handle explicitly (this is billed as the test centerpiece, so
 do not hand-wave them):**
@@ -181,9 +210,23 @@ explicitly: "adapter-only URL validation is not sufficient because
 ffprobe/ffmpeg can otherwise … demux child resources").
 
 So the cast route **must** set a restrictive `MediaInputPolicy` for local files:
-a minimal `-protocol_whitelist` (`file` only, plus what the demuxer strictly
-needs), no reconnect/redirect following, no nested external fetch. The path-jail
-and the ffmpeg policy are **two distinct controls and both are required.**
+`ProtocolWhitelist: []string{"file"}`, `DisableRedirects: true`, and
+`DisablePlaylists: true`. Do **not** set `DisableReconnect` for file-only inputs:
+the existing HLS buffer policy documents that Alpine FFmpeg 6.x can reject
+`-reconnect*` with `ProtocolWhitelist=["file"]`
+([internal/hlsbuffer/session.go:96-103](../../internal/hlsbuffer/session.go#L96-L103)).
+
+That policy is necessary but not sufficient. `ProtocolWhitelist=["file"]` still
+allows nested child `file:` reads; `DisablePlaylists` is currently an
+adapter-enforced contract marker, not an FFmpeg argv flag. Therefore the
+extension/content allowlist is also a security boundary: v1 accepts only direct
+audio/video container formats and rejects playlist, manifest, link, concat,
+cue/EDL, sidecar-subtitle, and other external-reference formats (`.m3u`,
+`.m3u8`, `.pls`, `.xspf`, `.strm`, `.url`, `.sdp`, `.smil`, `.ffconcat`,
+`.cue`, `.edl`, `.srt`, `.ass`, etc.). If a future version wants any format
+that can dereference child resources, it must add per-child validation or a
+stronger FFmpeg sandbox before enabling that format. The path-jail, direct-media
+allowlist, and FFmpeg policy are **distinct controls and all are required.**
 
 This is the primary test surface: traversal attempts, symlink escapes, absolute
 paths, boundary-collision roots, missing/!directory roots, case-variation
@@ -192,20 +235,28 @@ get explicit tests.
 
 ### Cast path
 
-Picking a file POSTs to a cast route that:
+Picking a file POSTs to a cast route:
+
+```
+POST /receiver/settings/adapter/localfiles/cast
+  form body: lib=<name>&path=<rel>
+```
+
+The handler:
 
 1. Re-resolves + re-jails the file path (never trust a path round-tripped
    through the client).
 2. Builds a `core.SessionRequest` — `DirectPlay: true`, full `Capabilities`
-   (`CanSeek`/`CanPause`), `Source` = the local file path, `MediaKind`,
-   `Title`, `DisplayMetadata`, and a `MediaInputPolicy` (see below).
+   (`CanSeek`/`CanPause`), `StreamURL` = the jailed local file path,
+   `Source: "localfiles"`, an opaque `AdapterRef`, `MediaKind`, `Title`,
+   `DisplayMetadata`, and the local-file `MediaInputPolicy` above.
 3. Calls `Manager.StartSession`.
 
-The **streams adapter is the closest precedent** for a browse-then-cast
-adapter: it owns its cast route via `RouteProvider`
-(`/ui/adapter/streams/play`) and calls `core.StartSession` directly
+The **streams adapter is the closest behavior precedent** for a browse-then-cast
+adapter: it owns a cast route and calls `core.StartSession` directly
 ([internal/adapters/streams/playback.go:341-348](../../internal/adapters/streams/playback.go#L341-L348)).
-`localfiles` follows that model — its own `RouteProvider` POST cast route — **not**
+`localfiles` follows that ownership model, but its v1 receiver routes are
+explicit chassis routes — **not** only a legacy `/ui` `RouteProvider`, and not
 the chassis `QuickCastProvider` drawer spine (see "Cast wiring" below).
 
 **Audio is not an automatic visualizer — the adapter must build the
@@ -213,32 +264,42 @@ the chassis `QuickCastProvider` drawer spine (see "Cast wiring" below).
 adapter explicitly sets `Visualizer.Enabled = true`, `MediaKind = MediaKindMusic`,
 and a valid `Visualizer.Mode`
 ([internal/core/manager.go:383-401](../../internal/core/manager.go#L383-L401)).
-So for audio files the cast route must: detect audio-only (via ffprobe), resolve
-the **global visualizer mode** from config, populate
-`VisualizerRequest{Enabled, Mode, Metadata}` including artwork, and set
+So for audio files the cast route must: detect audio-only (via ffprobe),
+populate `VisualizerRequest{Enabled, Mode, Metadata}`, and set
 `MediaKind = MediaKindMusic` — mirroring
 [internal/adapters/plex/companion.go:407-410](../../internal/adapters/plex/companion.go#L407-L410).
+Core normalizes the enabled request to the live global visualizer mode before
+start, so the adapter only needs to supply a supported placeholder mode (for
+example `core.VisualizerModeRetroAnalyzer`) and accurate metadata.
+`ArtworkPath` should remain empty in v1 unless a separate embedded-artwork task
+extracts the cover image into `artworkcache.Root(dataDir)`, validates it with
+the existing artwork-cache rules, and wires cleanup on failed start / stop.
 This is real work, not inherited for free (see corrected "Free wins").
 
 Everything downstream of a correctly-built request — transcode, transport,
 visualizer rendering, artwork cache — is reused unchanged.
 
-### Cast wiring (which contract)
+### Cast wiring and UI surface
 
 The chassis cast drawer dispatches through `adapters.QuickCastProvider`
 (`QuickCastTabs()` / `HandleQuickCast`,
 [internal/adapters/playback.go:76-78](../../internal/adapters/playback.go#L76-L78))
 with a hardcoded `castKindToTab` map
 ([internal/chassis/cast.go:19-23](../../internal/chassis/cast.go#L19-L23)).
-Adapter *settings panes* are a separate surface served by the UI server
-(`handleAdapterGET`, [internal/ui/server.go:255](../../internal/ui/server.go#L255)).
-v1 wires `localfiles` as: a UI-server adapter pane (settings + browse drawer) +
-its own `RouteProvider` browse/cast POST routes calling `core.StartSession` —
-the streams model. It does **not** register a `QuickCastProvider` tab in v1
-(the file browser needs a tree UI, not a one-line paste box). "Chassis adapter
-pane" in this doc means the adapter settings pane, not the QuickCast drawer.
+Receiver chassis adapter settings are a separate, explicit surface:
+`settings-adapters.html` enumerates adapter templates, `settingsDataFromConfig`
+builds panes from a hardcoded adapter-name list, and custom adapter endpoints
+such as URL hosts/cookies are mounted directly under `/receiver/settings`.
 
-### Browse UX (chassis pane)
+v1 wires `localfiles` as: a receiver-chassis settings pane (library editor +
+browse drawer) plus explicit receiver POST routes for browse/cast that call the
+localfiles adapter/core service and then `core.StartSession`. It does **not**
+register a `QuickCastProvider` tab in v1 (the file browser needs a tree UI, not
+a one-line paste box). A legacy `/ui/adapter/localfiles` panel can be added for
+old-UI parity, but it is not sufficient for the receiver-chassis feature and
+should not be the only UI surface.
+
+### Browse UX (receiver settings drawer)
 
 - The adapter pane shows **settings + a "Browse" control**. The browser is
   **hidden by default** and **opens as a drawer** when picked.
@@ -256,8 +317,9 @@ pane" in this doc means the adapter settings pane, not the QuickCast drawer.
 - **Visualizer for audio (NOT free — requires adapter work).** The bridge does
   **not** auto-route audio to the visualizer; the adapter must build the
   `VisualizerRequest` (see "Cast path" / C1 above). The *rendering* and artwork
-  cache are reused, but resolving the global mode, populating metadata, and
-  detecting audio-only items is a required build step, not a freebie.
+  cache are reused, but populating metadata and detecting audio-only items is a
+  required build step, not a freebie. Embedded cover art is not reused unless an
+  explicit extraction/cache-cleanup step is added.
 - **Sidecar subtitles** (`movie.srt` beside `movie.mkv`) are a natural future
   burn-in hook (not built in v1).
 
@@ -302,11 +364,14 @@ mounted/UNC, the adapter just sees a path.
 
 ### Config-time validation (deployment-aware error)
 
-When a library root is saved (`Validator`), stat it in-process:
+When a library root is saved (`Validator`), verify it in-process:
 
 - missing or not a directory → reject with a **deployment-aware message**, e.g.
   *"path not found — in Docker this must be a path you've mounted into the
   container."*
+- existing but unreadable → reject with a permissions-focused message. Use an
+  actual `os.Open` + minimal `ReadDir`/`Readdirnames` check, not `stat` alone,
+  because the contract is "this process can browse this directory."
 
 This turns the #1 anticipated support question into a self-explaining error.
 
@@ -326,41 +391,56 @@ This turns the #1 anticipated support question into a self-explaining error.
 - **Path jail unit tests** (highest priority): `..` traversal, absolute-path
   input, symlink escape, root == file, non-existent root, nested-library
   overlap, **boundary collision** (`/media/movies-secret` vs `/media/movies`),
-  **case-variation escape** on case-insensitive FS, non-existent leaf, platform
-  separators.
+  **case-variation escape** on case-insensitive FS, non-existent leaf, child
+  symlink entries during listing, platform separators.
 - **FFmpeg input policy test**: confirm the cast `SessionRequest` carries a
-  restrictive `MediaInputPolicy` (file-only protocol whitelist, no redirect/
-  nested fetch) so a crafted container can't demux outside the jail.
+  restrictive local-file `MediaInputPolicy` (`ProtocolWhitelist=["file"]`,
+  `DisableRedirects`, `DisablePlaylists`, and **no** `DisableReconnect`) plus
+  tests that playlist/external-reference extensions are rejected before ffprobe
+  or ffmpeg can dereference child files outside the jail.
 - **Visualizer-request test**: audio-only file produces a `SessionRequest` with
-  `Visualizer.Enabled`, `MediaKindMusic`, and a valid resolved `Mode`.
-- **Validator tests**: missing/!dir root produces a `FieldError`; valid config
-  passes and writes.
+  `Visualizer.Enabled`, `MediaKindMusic`, a supported placeholder `Mode`, and
+  no artwork path unless an explicit extraction/cache path is implemented.
+- **Validator tests**: missing/!dir/unreadable root produces a `FieldError`;
+  empty or duplicate library names produce field errors; valid config passes and
+  writes.
 - **Browse endpoint tests**: listing shape, extension filtering, same-origin
-  enforcement, ffprobe-failure degradation.
+  enforcement, child re-jail before probe/listing, ffprobe-failure degradation,
+  and a bounded-probe test proving slow probes do not stall the whole browse
+  response.
 - **Cast tests**: file → `SessionRequest` mapping (DirectPlay + caps), re-jail
-  on cast, audio file routes to visualizer branch.
+  on cast, `StreamURL` holds the jailed file path, `Source` is `"localfiles"`,
+  audio file routes to visualizer branch.
 - Follow the existing adapter test conventions (`*_test.go` alongside source).
 
 ## Open questions for planning
 
 - Exact media-extension allowlist (video + audio) and whether it's
   user-overridable (lean: fixed list v1).
-- Whether to ffprobe eagerly per-listing or lazily on hover/selection
-  (perf vs. richness; lean: cheap probe per file, bounded concurrency).
+- Exact browse-probe budget numbers. Lean default for planning: best-effort
+  eager probe of visible/playable entries with a small concurrency cap (e.g. 4),
+  short per-file timeout (sub-second), and a total browse deadline that returns
+  unprobed entries with empty metadata rather than blocking the drawer.
 - Drawer markup/JS reuse vs. new component within the chassis templates.
 
 ## Build sequence (high level — detailed plan via writing-plans)
 
 1. Config types + wire type for the `[[library]]` array-of-tables (decode →
    validate → re-serialize), `DecodeConfig`/`Validator` (named libraries, root
-   validation with deployment-aware error).
+   validation with deployment-aware error, unique non-empty names, readable-root
+   check).
 2. Path-jail helper (boundary-aware `filepath.Rel` containment, symlink resolve,
-   case-fold on case-insensitive FS, TOCTOU note) + exhaustive tests.
+   case-fold on case-insensitive FS, child-entry re-jail, TOCTOU note) +
+   exhaustive tests.
 3. Adapter skeleton (`Adapter` interface, disabled-by-default, status).
-4. Browse endpoint as a **POST** `RouteProvider` route (inherits CSRF) +
-   extension filter + best-effort ffprobe metadata.
-5. Cast route → build `SessionRequest` (incl. **`MediaInputPolicy`** for `file:`,
-   and the **`VisualizerRequest`** for audio-only items) → `Manager.StartSession`.
-6. Adapter settings pane: library-list editor (custom repeating-group widget,
-   not stock `FieldDef`) + browse drawer UI.
-7. Docs: README volume-mount + permissions note; deployment-aware validation copy.
+4. Direct-media extension/content allowlist + local-file `MediaInputPolicy`
+   helper with tests proving playlist/external-reference formats are rejected.
+5. Receiver browse endpoint as a **POST** route guarded by `requireSameOrigin` +
+   child re-jail + extension filter + best-effort bounded ffprobe metadata.
+6. Cast route → build `SessionRequest` (`StreamURL` = jailed path,
+   `Source: "localfiles"`, caps, local-file `MediaInputPolicy`, and
+   `VisualizerRequest` for audio-only items) → `Manager.StartSession`.
+7. Receiver settings pane: add `localfiles` to chassis data/template route
+   plumbing, implement library-list editor (custom repeating-group widget, not
+   stock `FieldDef`) + browse drawer UI.
+8. Docs: README volume-mount + permissions note; deployment-aware validation copy.
