@@ -6,14 +6,15 @@
     {"id": 2, "subject": "Task 2: Wire config into adapter (Fields/DecodeConfig/Validate/ApplyConfig)", "status": "pending", "blockedBy": [1]},
     {"id": 3, "subject": "Task 3: Path-jail helper (security core)", "status": "pending", "blockedBy": [0]},
     {"id": 4, "subject": "Task 4: Direct-media allow-list + local-file MediaInputPolicy", "status": "pending", "blockedBy": [0]},
-    {"id": 5, "subject": "Task 5: Browse service (jailed listing + bounded ffprobe)", "status": "pending", "blockedBy": [2, 3, 4]},
+    {"id": 5, "subject": "Task 5: Browse service (jailed listing + bounded ffprobe via injected resolver)", "status": "pending", "blockedBy": [2, 3, 4]},
     {"id": 6, "subject": "Task 6: Cast service (SessionRequest + audio visualizer)", "status": "pending", "blockedBy": [3, 4]},
-    {"id": 7, "subject": "Task 7: Register adapter in main.go", "status": "pending", "blockedBy": [2]},
+    {"id": 7, "subject": "Task 7: Register adapter in main.go (inject ffprobeResolver)", "status": "pending", "blockedBy": [2]},
     {"id": 8, "subject": "Task 8: Chassis browse + cast HTTP routes", "status": "pending", "blockedBy": [5, 6, 7]},
-    {"id": 9, "subject": "Task 9: Real-ffprobe integration verification", "status": "pending", "blockedBy": [4]},
+    {"id": 9, "subject": "Task 9: Real-ffprobe integration verification (tests/integration/)", "status": "pending", "blockedBy": [4]},
     {"id": 10, "subject": "Task 10: Receiver settings pane (data + template)", "status": "pending", "blockedBy": [8]},
-    {"id": 11, "subject": "Task 11: Library editor + browse drawer JS + persistence", "status": "pending", "blockedBy": [10]},
-    {"id": 12, "subject": "Task 12: Docs (mounts, paths, permissions)", "status": "pending", "blockedBy": [11]}
+    {"id": 11, "subject": "Task 11a: Library-list persistence (prove array-of-tables round-trip first)", "status": "pending", "blockedBy": [2, 8]},
+    {"id": 12, "subject": "Task 11b: Library editor + browse drawer JS (manual-verified)", "status": "pending", "blockedBy": [10, 11]},
+    {"id": 13, "subject": "Task 12: Docs (mounts, paths, permissions)", "status": "pending", "blockedBy": [12]}
   ],
   "lastUpdated": "2026-05-30T00:00:00Z"
 }

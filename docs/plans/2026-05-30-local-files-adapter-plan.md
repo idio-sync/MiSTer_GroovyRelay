@@ -10,6 +10,8 @@
 
 **Design reference:** [docs/plans/2026-05-30-local-files-adapter-design.md](2026-05-30-local-files-adapter-design.md) (passed three codebase-grounded review rounds).
 
+> **Plan revised after a codebase-grounded review** (2026-05-30). Fixes: the ffprobe binary path is resolved via an injected `extbin.Resolver`, NOT `BridgeConfig.FFprobePath` (C1, Tasks 0/5/7); the integration test moved to `tests/integration/` so `make test-integration` actually runs it (C2, Task 9); `evalExistingPrefix` is now real code with its own test cases incl. an escaping leaf-symlink (I1, Task 3); the `joined`-vs-`real` jail return is documented as deliberate (I2); library array-of-tables persistence is split into its own TDD task that proves the round-trip before any wiring/JS (I3+granularity, Task 11a/11b); `errors.Is(err, io.EOF)` replaces a string compare (M1). The reviewer independently CONFIRMED ~30 codebase claims (interface surface, module path, `SessionRequest` fields, `MediaKind` is a string type, normalize-before-validate, registration site, chassis wiring, and that a plain `[]Library` decodes directly — no wire type needed).
+
 ---
 
 ## Conventions for every task
@@ -64,37 +66,63 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 )
+```
+
+> The `probe` field references `ffmpeg.ProbeResult`/`ffmpeg.MediaInputPolicy` and `a.probeDefault` (added in Task 5). To keep Task 0 compiling on its own, add a temporary `func (a *Adapter) probeDefault(ctx context.Context, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) { return nil, nil }` stub at the bottom of `adapter.go`; Task 5 replaces it with the resolver-backed implementation.
 
 // SessionManager is the subset of *core.Manager the localfiles cast path uses.
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
 }
 
+// BinaryResolver resolves the ffprobe binary path. *extbin.Resolver satisfies
+// it (see internal/extbin/resolver.go:33). MUST be injected — the ffprobe path
+// is NOT readable off config.BridgeConfig.FFprobePath (that field is a usually-
+// empty operator override; real resolution goes through extbin, which falls
+// back to the bundled sidecar then PATH). main.go already builds
+// `ffprobeResolver := extbin.New("ffprobe", sec.Bridge.FFprobePath, selfDir)`
+// (main.go:125) and wires it into core (:194) and the chassis (:341); Task 7
+// threads that same value in here.
+type BinaryResolver interface {
+	Resolve() (string, error)
+}
+
 type AdapterConfig struct {
-	Bridge config.BridgeConfig
-	Core   SessionManager
+	Bridge   config.BridgeConfig
+	Core     SessionManager
+	FFprobe  BinaryResolver
 }
 
 type Adapter struct {
-	core   SessionManager
-	bridge config.BridgeConfig
+	core    SessionManager
+	bridge  config.BridgeConfig
+	ffprobe BinaryResolver
 
 	mu         sync.Mutex
 	cfg        Config
 	state      adapters.State
 	lastErr    string
 	stateSince time.Time
+
+	// probe is the injection seam for tests; defaults to a wrapper that
+	// resolves the ffprobe path via a.ffprobe then calls ffmpeg.Probe.
+	// Set in New (see Task 5).
+	probe func(ctx context.Context, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error)
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
-	return &Adapter{
+	a := &Adapter{
 		core:       cfg.Core,
 		bridge:     cfg.Bridge,
+		ffprobe:    cfg.FFprobe,
 		cfg:        DefaultConfig(),
 		state:      adapters.StateStopped,
 		stateSince: time.Now(),
-	}, nil
+	}
+	a.probe = a.probeDefault // implemented in Task 5
+	return a, nil
 }
 
 func (a *Adapter) Name() string        { return "localfiles" }
@@ -219,6 +247,8 @@ func TestValidateLibraries(t *testing.T) {
 package localfiles
 
 import (
+	"errors"
+	"io"
 	"os"
 	"strings"
 
@@ -290,8 +320,8 @@ func validateRoot(root string) string {
 		return "exists but is not readable by the bridge — check filesystem permissions / container UID"
 	}
 	defer f.Close()
-	if _, err := f.Readdirnames(1); err != nil && err.Error() != "EOF" {
-		// EOF = empty but readable, which is fine.
+	if _, err := f.Readdirnames(1); err != nil && !errors.Is(err, io.EOF) {
+		// io.EOF = empty but readable, which is fine.
 		return "exists but is not readable by the bridge — check filesystem permissions / container UID"
 	}
 	return ""
@@ -470,7 +500,44 @@ func sameFold(a, b string) bool {
 }
 ```
 
-Implement `evalExistingPrefix` (walk up to the deepest existing ancestor, `EvalSymlinks` it, rejoin the missing tail) and make `withinRoot`'s `Rel` comparison case-fold on case-insensitive FS (compare `strings.ToLower` of both when `sameFold` platform). Add a TOCTOU comment per design: browse handlers operate on the opened dir/file; the cast path re-jails and accepts the documented race (no fd to thread into `SessionRequest`).
+Make `withinRoot`'s `Rel` comparison case-fold on case-insensitive FS (compare `strings.ToLower` of both when on a `sameFold` platform).
+
+**`evalExistingPrefix` — code it, don't paraphrase it (this is the security core).** The subtle trap: if the *leaf itself* exists and is a symlink (`root/escape -> /outside`), it MUST be resolved and caught — so the walk has to start at the full path, not the parent. Resolve the deepest existing prefix (which includes an existing leaf), then rejoin only the genuinely-missing tail:
+
+```go
+// evalExistingPrefix resolves symlinks on the longest existing prefix of p
+// (including the leaf if it exists), then rejoins any non-existent tail
+// segments unresolved. This catches an existing leaf symlink that escapes the
+// jail while still allowing a not-yet-existing leaf (browse never needs that;
+// kept for cast-path symmetry).
+func evalExistingPrefix(p string) (string, error) {
+	p = filepath.Clean(p)
+	missing := []string{}
+	cur := p
+	for {
+		real, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			return filepath.Join(append([]string{real}, reverse(missing)...)...), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err // permission error, etc. — fail closed
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur { // reached root and nothing resolved
+			return "", err
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
+	}
+}
+// reverse returns a new slice with elements in reverse order.
+```
+
+**Its own test cases (Task 3 table must include these):** existing file leaf (resolves, stays in jail → ok); existing **symlink leaf escaping** root (`root/escape -> /tmp/outside` → rejected by `withinRoot`); missing single-segment leaf under a real dir (ok, returns joined-with-tail); missing multi-segment tail (`root/sub/none/x.mkv` → resolves `root/sub`, rejoins `none/x.mkv`); permission-denied ancestor (fails closed, not treated as "missing").
+
+**Return-value note (I2 — make this explicit in a code comment so a future reviewer doesn't "fix" it):** `resolveInLibrary` checks containment on the **resolved** path (`real` from `evalExistingPrefix`) but **returns `joined` (the cleaned, un-resolved path)**. This is deliberate: for a non-existent leaf there is no resolved path to return, and for the cast path the design explicitly accepts the TOCTOU race and re-jails rather than threading an fd (there is no fd field on `SessionRequest`). Containment is validated on `real`; `joined` is what ffmpeg consumes. Do not change the return to `real` — it breaks the missing-leaf case.
+
+**TOCTOU comment per design:** browse handlers operate on the opened dir/file; the cast path re-jails and accepts the documented race (no fd to thread into `SessionRequest`).
 
 **Step 4 — PASS (run the full jail table). Step 5 — commit:** `feat(localfiles): path-jail helper with symlink + case-fold + boundary checks`.
 
@@ -594,6 +661,23 @@ func (a *Adapter) Browse(libName, rel string) ([]browseEntry, error) {
 
 `libraryRoot(name)` does a **case-folded** lookup matching the validation fold.
 
+**Also implement `probeDefault`** (replaces the Task 0 stub) — this is the real ffprobe seam. It resolves the binary via the injected `BinaryResolver` (NOT off `bridge.FFprobePath`) and calls `ffmpeg.Probe`:
+
+```go
+func (a *Adapter) probeDefault(ctx context.Context, url string, policy ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+	if a.ffprobe == nil {
+		return nil, fmt.Errorf("localfiles: no ffprobe resolver configured")
+	}
+	bin, err := a.ffprobe.Resolve()
+	if err != nil {
+		return nil, fmt.Errorf("localfiles: resolve ffprobe: %w", err)
+	}
+	return ffmpeg.Probe(ctx, bin, url, policy)
+}
+```
+
+Add a unit test that injects a fake `BinaryResolver` returning a path and asserts `probeDefault` forwards to a stubbed probe — but note the *real* binary path is exercised only by Task 9's integration test. All other tests in Tasks 5/6 inject `a.probe` directly and never call `probeDefault`.
+
 **Step 4 — PASS. Step 5 — commit:** `feat(localfiles): jailed browse service with child re-jail + bounded probe`.
 
 ---
@@ -659,12 +743,13 @@ Add `randHex8()` (crypto/rand → 8 hex chars, mirror url adapter's session-id h
 
 **Files:** Modify `cmd/mister-groovy-relay/main.go`.
 
-**Step 1 — Implementation** (no unit test; verified by build + a smoke check). Construct and register alongside torrent (after the torrent block, ~line 284), passing `Bridge` + `Core`:
+**Step 1 — Implementation** (no unit test; verified by build + a smoke check). Construct and register alongside torrent (after the torrent block, ~line 284), passing `Bridge`, `Core`, and the **already-constructed `ffprobeResolver`** (built at main.go:125 as `extbin.New("ffprobe", sec.Bridge.FFprobePath, selfDir)` — reuse that same variable; do NOT build a new one and do NOT pass `sec.Bridge.FFprobePath` as a path):
 
 ```go
 localFilesAdapter, err := localfiles.New(localfiles.AdapterConfig{
-	Bridge: sec.Bridge,
-	Core:   coreMgr,
+	Bridge:  sec.Bridge,
+	Core:    coreMgr,
+	FFprobe: ffprobeResolver, // *extbin.Resolver, same value wired into core/chassis
 })
 if err != nil {
 	dieFriendly("localfiles adapter init", err)
@@ -733,11 +818,13 @@ Implement the two handlers in `settings.go` mirroring `handleSettingsAdapterHost
 
 ## Task 9: Real-ffprobe verification (de-risks the "free transport" claim)
 
-**Files:** Create `internal/adapters/localfiles/probe_integration_test.go` (build-tagged `//go:build integration`).
+**Files:** Create `tests/integration/localfiles_probe_test.go` (build-tagged `//go:build integration`).
 
-**Step 1 — Test:** generate a tiny fixture with the bundled ffmpeg (e.g. `ffmpeg -f lavfi -i sine -t 1 fixture.flac` into `t.TempDir()`), then call `ffmpeg.Probe(ctx, ffprobePath, fixtureAbsPath, localFilePolicy())` and assert `err == nil`, `Duration > 0`, and audio detected. This proves a scheme-less local path is accepted under `ProtocolWhitelist=["file"]` — the assumption the whole "transport is free" claim rests on.
+> **Location matters.** `make test-integration` runs `go test -tags=integration ./tests/integration/...` ([Makefile:15](../../Makefile#L15)) — it ONLY walks `tests/integration/`. A `//go:build integration` file under `internal/adapters/localfiles/` is invisible to that target AND skipped by plain `make test` (no build tag), so it would never run anywhere. Put it under `tests/integration/` to match the existing convention. Resolve the bundled ffmpeg/ffprobe via `extbin.New(...)` (mirror how main.go:124-125 builds the resolvers) inside the test.
 
-**Step 2 — Run:** `go test -tags=integration ./internal/adapters/localfiles/ -run TestProbeLocalFileUnderPolicy -v`
+**Step 1 — Test:** generate a tiny fixture with the bundled ffmpeg (e.g. `ffmpeg -f lavfi -i sine -t 1 fixture.flac` into `t.TempDir()`), then call `ffmpeg.Probe(ctx, ffprobePath, fixtureAbsPath, localFilePolicy())` and assert `err == nil`, `Duration > 0`, and audio detected (`AudioRate > 0`). This proves a scheme-less local path is accepted under `ProtocolWhitelist=["file"]` — the assumption the whole "transport is free" claim rests on. (`localFilePolicy()` is unexported in `localfiles`; either duplicate the 3-field policy literal in the test or export a small `LocalFilePolicy()` helper — prefer duplicating in the test to avoid widening the adapter's API.)
+
+**Step 2 — Run:** `make test-integration` (or `go test -tags=integration ./tests/integration/ -run TestLocalFilesProbeUnderPolicy -v`).
 Expected: PASS. If it FAILS (Alpine FFmpeg rejects the bare path), the fix is to prefix `file:` on the URL in `cast.go`/`browse.go` and document it — do this before any UI polish.
 
 **Step 3 — commit:** `test(localfiles): integration probe proves file-only policy accepts local paths`.
@@ -763,32 +850,46 @@ Expected: PASS. If it FAILS (Alpine FFmpeg rejects the bare path), the fix is to
 
 ---
 
-## Task 11: Library editor + browse drawer JS
+## Task 11a: Library-list persistence (the highest-risk plumbing — TDD, prove the round-trip FIRST)
 
 **Files:**
-- Modify: `internal/chassis/static/settings-drawer.js` (or a new `localfiles.js` if the build bundles it)
-- Add: a `POST /receiver/settings/adapter/localfiles/libraries` route + handler (persist the library list — mirror the hosts editor `SetHosts` → typed editor precedent; add a `SetLibraries` method on the adapter + `bridgeLocalFiles` wrapper)
-- Test: `internal/chassis/settings_test.go` (libraries POST round-trip)
+- Modify: `internal/adapters/localfiles/` (add `SetLibraries`)
+- Modify: `internal/chassis/settings.go` + `internal/chassis/server.go` (route + handler) and the chassis `Config` (a `LocalFilesLibraryEditor` interface)
+- Modify: `cmd/mister-groovy-relay/` (a `bridgeLocalFiles` wrapper, mirroring `cmd/.../adapter_host_editor.go`)
+- Test: `internal/adapters/localfiles/save_test.go` (end-to-end round-trip) + `internal/chassis/settings_test.go` (handler)
 
-**Step 1 — Library persistence (Go side, TDD first):** add `SetLibraries([]Library) (adapters.ApplyScope, error)` to the adapter that validates and persists the `[adapters.localfiles]` section to disk, then add the chassis route/handler + cmd wrapper mirroring hosts. Test the handler round-trips and rejects invalid (empty/dup/missing-root) with field errors.
+> **Why this is its own task and goes first:** persisting a variable-length `[[adapters.localfiles.library]]` **array-of-tables** is the single unproven assumption left in the plan. The URL host editor's `SaveValues` path ([internal/uiserver/adapter_saver.go:483](../../internal/uiserver/adapter_saver.go#L483)) is verified to work for `ytdlp_hosts`, but that is a **flat `[]string` scalar array** — NOT a table array. The `SaveValues` flow encodes the merged map → re-reads it as `map[string]any` → re-encodes (`encodeAdapterMap` → `readAdapterSectionMap` → `replaceAdapterSection`); the lossy spot for table arrays lives in that round-trip. **Do not assume it carries `[]Library`.**
 
-> Persistence detail to confirm during this task: how the URL host editor's `SetHosts` actually writes to `config.toml` (trace `bridgeAdapterHostEditor` → `AdapterSaver.SaveValues`). Mirror that exact mechanism for the library array-of-tables section. This is the one "investigate-then-mirror" step the design flagged as the biggest plumbing gap.
+**Step 1 — Failing round-trip test FIRST** (`save_test.go`): write a `config.toml` to `t.TempDir()` with `[adapters.localfiles]` and one library, call `SetLibraries([]Library{{ "Movies", dirA }, { "Music", dirB }})`, then re-read the file from disk (fresh `toml.Decode`) and assert both libraries survived with exact field equality and correct ordering. This proves array-of-tables persistence before any wiring.
 
-**Step 2 — Drawer JS (manual-verified):** follow the `urlHostEditor`/`putHosts` fetch pattern:
-- "Open" button reveals `[data-browse-modal]`; closing hides it (progressive disclosure, hidden by default).
-- Browsing POSTs `lib`+`path` to `/browse`, renders folders/files (folders drill in, breadcrumb back), files show duration when present.
-- "Cast" on a file POSTs to `/cast`; on `{ok:true}` show a notice chip and close the drawer; on error render the widget error.
-- Use `fetch` with form body; the browser sets `Sec-Fetch-Site` automatically (do not set it manually).
+**Step 2 — Run, expect FAIL.**
 
-**Step 3 — Manual verification** (record in the commit message / PR):
+**Step 3 — Implement `SetLibraries`.** First try mirroring `SaveValues` (pass `values["library"] = []map[string]any{{"name":..,"root":..}, ...}`). **If the round-trip test shows `SaveValues` cannot carry the table array** (lossy/reordered/dropped), fall back to a dedicated path: have `SetLibraries` validate, then re-serialize the whole `[adapters.localfiles]` section itself via `toml`-marshal-and-replace (the adapter owns its section), returning `adapters.ApplyScope`. Reject invalid lists (empty/dup/missing-root) with `adapters.FieldErrors` before writing — never leave a partial file.
+
+**Step 4 — Round-trip test PASS.** Then add the chassis route `POST /receiver/settings/adapter/localfiles/libraries` (wrapped in `requireSameOrigin`) + handler mirroring `handleSettingsAdapterHostsPost`, the `LocalFilesLibraryEditor` interface on chassis `Config`, and the `bridgeLocalFiles` cmd wrapper. Handler test: valid list 200s and persists; invalid returns field errors via `emitSaveError`.
+
+**Step 5 — `make test` + commit:** `feat(localfiles): persist library list via SetLibraries + chassis route`.
+
+---
+
+## Task 11b: Library editor + browse drawer JS (manual-verified)
+
+**Files:** Modify `internal/chassis/static/settings-drawer.js` (or a new `localfiles.js` if the build bundles it — check how `settings-drawer.js` is included first).
+
+Follow the `urlHostEditor`/`putHosts` fetch pattern verbatim:
+- **Library editor:** add/remove `{name, root}` rows; each change POSTs the full list to `/libraries` (whole-list replace, like hosts) and re-renders from the server's normalized response; field errors render inline.
+- **Browse drawer:** an "Open" button reveals `[data-browse-modal]` (hidden by default → progressive disclosure); closing hides it. Browsing POSTs `lib`+`path` to `/browse`, renders folders/files (folders drill in, breadcrumb back), files show duration when present. "Cast" on a file POSTs to `/cast`; on `{ok:true}` show a notice chip and close the drawer; on error render the widget error.
+- Use `fetch` with a form body; the browser sets `Sec-Fetch-Site` automatically (never set it manually).
+
+**Manual verification** (record in the commit message / PR — JS has no unit harness here):
 ```bash
 make build-bridge && ./mister-groovy-relay      # with a config.toml that has a localfiles library
 # Open http://localhost:32500/receiver, Settings → Local Files:
-#  - add a library, see it persist across reload
-#  - open the browse drawer, navigate folders, cast a file, confirm playback starts
+#  - add a library, reload the page, confirm it persisted (exercises Task 11a end-to-end)
+#  - open the browse drawer, navigate folders, cast a file, confirm playback starts on the CRT/fake-mister
 ```
 
-**Step 4 — Go tests PASS + `make test` + `make lint`. Step 5 — commit:** `feat(chassis): localfiles library editor + browse drawer UI`.
+**`make test` + `make lint` clean. Commit:** `feat(chassis): localfiles library editor + browse drawer UI`.
 
 ---
 
