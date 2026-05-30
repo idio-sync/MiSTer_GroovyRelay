@@ -4521,3 +4521,68 @@ body.receiver .settings-link .link-credform .action-row .action-btn { margin-lef
 /* Collapse-when-linked: linked phase shows only the one-liner (the template
    already emits just .link-line for linked); pending/error/unlinked expand. */
 body.receiver .settings-link[data-link-phase="linked"] { padding-bottom: 8px; }
+/* 4F — URL adapter custom widgets */
+body.receiver .tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+body.receiver .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: oklch(0.12 0.02 250);
+  border: 1px solid oklch(0.18 0.02 250);
+  border-radius: 4px;
+  font-size: 12px;
+}
+body.receiver .tag .x {
+  cursor: pointer;
+  opacity: 0.6;
+}
+body.receiver .tag .x:hover { opacity: 1; }
+body.receiver .tag.add {
+  cursor: pointer;
+  color: var(--vfd);
+  border-style: dashed;
+  background: transparent;
+}
+body.receiver .cookies-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+body.receiver .cookies-paste {
+  width: 100%;
+  resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  background: oklch(0.08 0.02 250);
+  border: 1px solid oklch(0.16 0.02 250);
+  color: inherit;
+  padding: 8px;
+  border-radius: 4px;
+}
+body.receiver .cookies-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+body.receiver .status-pill {
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: oklch(0.20 0.06 175);
+  color: var(--vfd);
+}
+body.receiver .status-pill.dim {
+  background: oklch(0.12 0.02 250);
+  color: oklch(0.55 0.02 250);
+}
+body.receiver .widget-err {
+  color: oklch(0.72 0.18 25);
+  font-size: 11px;
+  margin-top: 4px;
+}
