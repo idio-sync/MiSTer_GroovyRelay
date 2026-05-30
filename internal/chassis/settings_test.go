@@ -996,7 +996,7 @@ func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
 				MiSTer:     config.MisterConfig{Host: "127.0.0.1", Port: 32100, SourcePort: 32101},
 				UI:         config.UIConfig{HTTPPort: 32500},
 				Video:      config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", RGBMode: "rgb888", LZ4Enabled: true, DeltaLZ4Enabled: true},
-				Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
+				Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100, DSP: config.DefaultAudioDSP()},
 				Visualizer: config.VisualizerConfig{Mode: "retro_analyzer"},
 				HLSBuffer: config.HLSBufferConfig{
 					Enabled:                true,
