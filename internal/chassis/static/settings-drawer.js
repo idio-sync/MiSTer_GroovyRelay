@@ -890,14 +890,14 @@ async function putHosts(hosts) {
         errEl.textContent = payload.errors.hosts;
         errEl.hidden = false;
       } else if (payload.chip) {
-        showNotice(payload.chip, 'err');
+        window.Chassis.settings.showNotice(payload.chip, 'err');
       }
       return false;
     }
     renderHostTags(payload.hosts || []);
     return true;
   } catch (e) {
-    showNotice('NETWORK ERROR', 'err');
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
     return false;
   }
 }
@@ -975,13 +975,13 @@ async function postCookies(path, body, contentType) {
         errEl.textContent = payload.errors.cookies;
         errEl.hidden = false;
       } else if (payload.chip) {
-        showNotice(payload.chip, 'err');
+        window.Chassis.settings.showNotice(payload.chip, 'err');
       }
       return;
     }
     paintCookiePill(payload.cookie);
   } catch (e) {
-    showNotice('NETWORK ERROR', 'err');
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
   }
 }
 
