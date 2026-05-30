@@ -228,6 +228,8 @@ type AudioStripData struct {
 	Treble       float64
 	Balance      int
 	EQ           []float64 // 10 bands
+	EQLabels     []string  // frequency labels for EQ bands (e.g. "31", "63", ..., "16K")
+	Presets      []string  // named preset buttons (e.g. "Flat", "Rock", ...)
 	Memory       [3]AudioStripMemory
 	Engaged      bool // status-bar EQ LED
 	Persisted    bool // false while a preview runs ahead of disk
@@ -255,6 +257,8 @@ func audioStripFromDSP(d config.AudioDSP, engaged, persisted bool, volume int) A
 		Treble:       d.Treble,
 		Balance:      d.Balance,
 		EQ:           append([]float64(nil), d.EQ...),
+		EQLabels:     []string{"31", "63", "125", "250", "500", "1K", "2K", "4K", "8K", "16K"},
+		Presets:      []string{"Flat", "Rock", "Jazz", "Vocal"},
 		Engaged:      engaged,
 		Persisted:    persisted,
 		OutputVolume: volume,

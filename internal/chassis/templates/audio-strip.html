@@ -1,0 +1,87 @@
+{{define "audio-strip"}}
+{{htmlComment "chassis:audio-strip"}}
+<div class="audio-strip" data-audio-strip data-dsp-persisted="{{.Persisted}}" aria-label="Audio tone and equalizer">
+  <span class="strip-label">Equalizer</span>
+  <div class="audio-deck">
+
+    <div class="deck-sect">
+      <span class="deck-cap">Tone &middot; Balance</span>
+      <div class="knob-row">
+        {{ template "dsp-knob" (dict "Key" "bass" "Label" "Bass" "Value" .Bass "Min" -12 "Max" 12) }}
+        {{ template "dsp-knob" (dict "Key" "mid" "Label" "Mid" "Value" .Mid "Min" -12 "Max" 12) }}
+        {{ template "dsp-knob" (dict "Key" "treble" "Label" "Treble" "Value" .Treble "Min" -12 "Max" 12) }}
+        {{ template "dsp-knob" (dict "Key" "balance" "Label" "Bal" "Value" .Balance "Min" -100 "Max" 100) }}
+      </div>
+    </div>
+
+    <div class="deck-div"></div>
+
+    <div class="deck-sect deck-eq">
+      <span class="deck-cap">Graphic Equalizer &middot; dB</span>
+      <div class="eq-bank">
+        {{ range $i, $g := .EQ }}
+        <div class="eq-band">
+          <input class="eq-range" type="range" min="-12" max="12" step="1" value="{{ $g }}"
+                 data-dsp-eq="{{ $i }}" aria-label="EQ band {{ $i }}">
+          <span class="eq-hz">{{ index $.EQLabels $i }}</span>
+        </div>
+        {{ end }}
+      </div>
+    </div>
+
+    <div class="deck-div"></div>
+
+    <div class="deck-sect">
+      <span class="deck-cap">Preset / Memory</span>
+      <div class="btn-row">
+        {{ range $p := .Presets }}<button class="action-btn eqbtn" type="button" data-dsp-preset="{{ $p }}">{{ $p }}</button>{{ end }}
+      </div>
+      <div class="btn-row">
+        {{ range $m := .Memory }}<button class="action-btn eqbtn{{ if $m.Stored }} stored{{ end }}" type="button" data-dsp-memory="{{ $m.Slot }}" title="Tap recall &middot; hold store">{{ if $m.Name }}{{ $m.Name }}{{ else }}M{{ $m.Slot }}{{ end }}</button>{{ end }}
+      </div>
+      <div class="sw-grid">
+        {{ template "dsp-switch" (dict "Key" "loudness" "Label" "Loud" "On" .Loudness) }}
+        {{ template "dsp-switch" (dict "Key" "mono" "Label" "Mono" "On" .Mono) }}
+        {{ template "dsp-switch" (dict "Key" "subsonic" "Label" "Subsonic" "On" .Subsonic) }}
+        {{ template "dsp-switch" (dict "Key" "defeat" "Label" "EQ Out" "On" (not .Enabled)) }}
+      </div>
+    </div>
+
+    <div class="deck-div"></div>
+
+    <div class="deck-sect">
+      <span class="deck-cap">Level</span>
+      {{ template "volume-control" . }}
+    </div>
+
+  </div>
+</div>
+{{end}}
+
+{{define "dsp-knob"}}
+<div class="dsp-knob volume-control" data-dsp-knob="{{.Key}}" data-dsp-value="{{.Value}}"
+     style="--volume-angle: {{ dspKnobAngle .Value .Min .Max }}deg">
+  <label class="volume-label">{{.Label}}</label>
+  <div class="volume-tick-ring" aria-hidden="true">{{ range $i, $_ := until 21 }}<span class="volume-tick tick-{{$i}}"></span>{{ end }}</div>
+  <div class="volume-dial" aria-hidden="true"><span class="volume-notch"></span></div>
+  <input class="volume-range dsp-knob-range" type="range" min="{{.Min}}" max="{{.Max}}" step="1" value="{{.Value}}"
+         data-dsp-knob-range="{{.Key}}" aria-label="{{.Label}}">
+</div>
+{{end}}
+
+{{define "dsp-switch"}}
+<div class="sw-cell">
+  <button class="switch{{ if .On }} on{{ end }}" type="button" role="switch"
+          aria-checked="{{ if .On }}true{{ else }}false{{ end }}" data-dsp-switch="{{.Key}}"></button>
+  <span class="sw-lbl">{{.Label}}</span>
+</div>
+{{end}}
+
+{{define "volume-control"}}
+<div class="volume-control" data-volume-knob data-volume-value="{{.OutputVolume}}" style="--volume-angle: {{volumeAngle .OutputVolume}}deg">
+  <label class="volume-label" for="receiver-volume-range">Volume</label>
+  <div class="volume-tick-ring" aria-hidden="true">{{range $i, $_ := until 21}}<span class="volume-tick tick-{{$i}}"></span>{{end}}</div>
+  <div class="volume-dial" aria-hidden="true"><span class="volume-notch"></span></div>
+  <input id="receiver-volume-range" class="volume-range" data-volume-range type="range" name="output_volume" min="0" max="100" step="1" value="{{.OutputVolume}}" aria-label="Volume">
+</div>
+{{end}}

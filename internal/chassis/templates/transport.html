@@ -38,16 +38,6 @@
     <span class="total seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-transport-total>{{.TotalTime}}</span></span>
     <span class="pct" data-transport-percent title="Playback position">{{.PercentPlayed}}</span>
   </div>
-  <div class="volume-control" data-volume-knob data-volume-value="{{.OutputVolume}}" style="--volume-angle: {{volumeAngle .OutputVolume}}deg">
-    <label class="volume-label" for="receiver-volume-range">Volume</label>
-    <div class="volume-tick-ring" aria-hidden="true">
-      {{range $i, $_ := until 21}}<span class="volume-tick tick-{{$i}}"></span>{{end}}
-    </div>
-    <div class="volume-dial" aria-hidden="true">
-      <span class="volume-notch"></span>
-    </div>
-    <input id="receiver-volume-range" class="volume-range" data-volume-range type="range" name="output_volume" min="0" max="100" step="1" value="{{.OutputVolume}}" aria-label="Volume">
-  </div>
   <button class="gear-btn" id="gear-btn" data-settings-toggle type="button">&#x2699; Setup</button>
 </div>
 {{end}}

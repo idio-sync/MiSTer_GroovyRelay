@@ -247,6 +247,8 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		},
 		AudioStrip: AudioStripData{
 			EQ:        make([]float64, 10),
+			EQLabels:  []string{"31", "63", "125", "250", "500", "1K", "2K", "4K", "8K", "16K"},
+			Presets:   []string{"Flat", "Rock", "Jazz", "Vocal"},
 			Memory:    [3]AudioStripMemory{{Slot: 1}, {Slot: 2}, {Slot: 3}},
 			Persisted: true,
 		},
@@ -936,6 +938,7 @@ func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 		`<!-- chassis:source-cluster -->`,
 		`<!-- chassis:meter -->`,
 		`<!-- chassis:transport -->`,
+		`<!-- chassis:audio-strip -->`,
 		`<!-- chassis:visualizer-bank -->`,
 		`<!-- chassis:input-row -->`,
 		`<!-- chassis:preset-bank -->`,
@@ -1133,9 +1136,9 @@ func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 	}
 	body := rr.Body.String()
 	transportStart := strings.Index(body, `<!-- chassis:transport -->`)
-	transportEnd := strings.Index(body, `<!-- chassis:visualizer-bank -->`)
+	transportEnd := strings.Index(body, `<!-- chassis:audio-strip -->`)
 	if transportStart == -1 || transportEnd == -1 || transportEnd <= transportStart {
-		t.Fatalf("rendered body missing ordered transport/visualizer markers")
+		t.Fatalf("rendered body missing ordered transport/audio-strip markers")
 	}
 	transportHTML := body[transportStart:transportEnd]
 	for _, want := range []string{
@@ -4761,6 +4764,102 @@ func TestStaticCSS_HasVfdTierAndScrollRules(t *testing.T) {
 		if !strings.Contains(css, want) {
 			t.Errorf("chassis.css missing %q", want)
 		}
+	}
+}
+
+func TestRender_AudioStripPresent(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.OutputVolume = 50
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-audio-strip`,
+		`data-dsp-knob="bass"`,
+		`data-dsp-eq="0"`,
+		`data-dsp-eq="9"`,
+		`data-dsp-switch="loudness"`,
+		`data-dsp-preset="Flat"`,
+		`data-dsp-memory="1"`,
+		`data-volume-knob`, // volume relocated into the strip
+		`data-eq-led`,      // status-bar EQ LED tagged for live toggle
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered page missing %q", want)
+		}
+	}
+}
+
+func TestRender_VolumeNotInTransport(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// Locate the transport section (between transport and audio-strip markers).
+	transportStart := strings.Index(body, `<!-- chassis:transport -->`)
+	transportEnd := strings.Index(body, `<!-- chassis:audio-strip -->`)
+	if transportStart == -1 || transportEnd == -1 || transportEnd <= transportStart {
+		t.Fatalf("rendered body missing ordered transport/audio-strip markers")
+	}
+	transportSection := body[transportStart:transportEnd]
+	if strings.Contains(transportSection, "data-volume-knob") {
+		t.Error("transport section still contains the volume knob; it should have moved to the audio strip")
+	}
+
+	// Volume knob must appear inside the audio strip section.
+	stripStart := strings.Index(body, `<!-- chassis:audio-strip -->`)
+	stripEnd := strings.Index(body, `<!-- chassis:visualizer-bank -->`)
+	if stripStart == -1 || stripEnd == -1 || stripEnd <= stripStart {
+		t.Fatalf("rendered body missing ordered audio-strip/visualizer markers")
+	}
+	stripSection := body[stripStart:stripEnd]
+	if !strings.Contains(stripSection, "data-volume-knob") {
+		t.Error("audio strip section missing volume knob; relocation failed")
+	}
+}
+
+func TestRender_EQLedOnWhenEngaged(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	// Engaged=true: Enabled=true + at least one shaping parameter non-zero.
+	cfg.Bridge.Audio.DSP.Enabled = true
+	cfg.Bridge.Audio.DSP.Loudness = true
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="led aqua on"`) {
+		t.Errorf("EQ LED should have class 'led aqua on' when AudioStrip.Engaged=true; body snippet around EQ: %s",
+			body[max(0, strings.Index(body, "data-eq-led")-50):min(len(body), strings.Index(body, "data-eq-led")+100)])
+	}
+	if !strings.Contains(body, `data-eq-led`) {
+		t.Error("EQ LED missing data-eq-led attribute")
 	}
 }
 

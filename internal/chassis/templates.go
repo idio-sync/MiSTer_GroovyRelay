@@ -91,6 +91,13 @@ var templateFuncs = template.FuncMap{
 	"asInt64":                 asInt64,
 	"isProviderOverrideField": isProviderOverrideField,
 	"isStreamsBytesField":     isStreamsBytesField,
+	"dspKnobAngle": func(value, min, max any) int {
+		v, lo, hi := dspToFloat(value), dspToFloat(min), dspToFloat(max)
+		if hi == lo {
+			return -135
+		}
+		return int(-135 + (v-lo)/(hi-lo)*270)
+	},
 }
 
 // adapterPane returns the AdapterPaneData for the named adapter from the
@@ -190,6 +197,20 @@ func isStreamsBytesField(key string) bool {
 		return true
 	}
 	return false
+}
+
+// dspToFloat coerces a template any value (float64, int, or int64) to
+// float64 for dspKnobAngle arithmetic. Returns 0 for unrecognised types.
+func dspToFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	}
+	return 0
 }
 
 // volumeAngle maps the output_volume (0..100) to the dial rotation in
