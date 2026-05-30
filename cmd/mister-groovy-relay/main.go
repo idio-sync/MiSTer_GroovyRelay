@@ -348,20 +348,24 @@ func main() {
 	misterLauncher := bridgeMisterLauncher{bridge: saver, timeout: 5 * time.Second}
 	misterProber := bridgeMisterProber{bridge: saver, timeout: 1 * time.Second}
 
+	volumeBridge := &volumeSaverAdapter{bs: saver}
+
 	uiSrv, err := ui.New(ui.Config{
-		Registry:         reg,
-		BridgeSaver:      saver,
-		AdapterSaver:     adapterSaver,
-		MisterLauncher:   misterLauncher,
-		CompanionSession: coreMgr,
-		CompanionURL:     urlAdapter,
-		CompanionDisplay: urlAdapter,
-		StatusViewer:     coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
-		Playback:         playbackDispatcher,
-		EventLog:         elog,    // in-memory ring buffer constructed above
-		Version:          version, // build-time ldflags variable
-		MisterProber:     misterProber,
-		StartedAt:        startedAt,
+		Registry:              reg,
+		BridgeSaver:           saver,
+		AdapterSaver:          adapterSaver,
+		MisterLauncher:        misterLauncher,
+		CompanionSession:      coreMgr,
+		CompanionURL:          urlAdapter,
+		CompanionDisplay:      urlAdapter,
+		CompanionVolumeViewer: coreMgr,
+		CompanionVolumeSaver:  volumeBridge,
+		StatusViewer:          coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
+		Playback:              playbackDispatcher,
+		EventLog:              elog,    // in-memory ring buffer constructed above
+		Version:               version, // build-time ldflags variable
+		MisterProber:          misterProber,
+		StartedAt:             startedAt,
 	})
 	if err != nil {
 		dieFriendly("ui init", err)
@@ -422,7 +426,7 @@ func main() {
 		VisualizerViewer:          coreMgr,
 		VisualizerSaver:           &visualizerSaverAdapter{bs: saver},
 		VolumeViewer:              coreMgr,
-		VolumeSaver:               &volumeSaverAdapter{bs: saver},
+		VolumeSaver:               volumeBridge,
 		AudioDSPController:        coreMgr,
 		AudioDSPSaver:             &audioDSPSaverAdapter{bs: saver},
 		AudioScopeViewer:          coreMgr,
