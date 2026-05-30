@@ -198,3 +198,39 @@ ytdlp_resolve_timeout_seconds = 30
 		t.Error("resolver was rebuilt when timeout did not change — wasted allocation")
 	}
 }
+
+func TestFields_ExposesYtdlpStandardFields(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	byKey := map[string]adapters.FieldDef{}
+	for _, f := range a.Fields() {
+		byKey[f.Key] = f
+	}
+	for _, want := range []struct {
+		key  string
+		kind adapters.FieldKind
+	}{
+		{"enabled", adapters.KindBool},
+		{"ytdlp_enabled", adapters.KindBool},
+		{"ytdlp_format", adapters.KindText},
+		{"ytdlp_resolve_timeout_seconds", adapters.KindInt},
+	} {
+		fd, ok := byKey[want.key]
+		if !ok {
+			t.Errorf("Fields() missing %q", want.key)
+			continue
+		}
+		if fd.Kind != want.kind {
+			t.Errorf("%q Kind = %v, want %v", want.key, fd.Kind, want.kind)
+		}
+		if fd.ApplyScope != adapters.ScopeHotSwap {
+			t.Errorf("%q ApplyScope = %v, want ScopeHotSwap", want.key, fd.ApplyScope)
+		}
+	}
+	// ytdlp_hosts is NOT a standard field — it is driven by the bespoke widget.
+	if _, ok := byKey["ytdlp_hosts"]; ok {
+		t.Errorf("Fields() must not expose ytdlp_hosts (bespoke widget owns it)")
+	}
+}

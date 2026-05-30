@@ -197,6 +197,30 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			Default:    false,
 			ApplyScope: adapters.ScopeHotSwap,
 		},
+		{
+			Key:        "ytdlp_enabled",
+			Label:      "yt-dlp resolver",
+			Help:       "Master switch. When on, mode=auto routes URLs whose host matches the list below through yt-dlp.",
+			Kind:       adapters.KindBool,
+			Default:    true,
+			ApplyScope: adapters.ScopeHotSwap,
+		},
+		{
+			Key:        "ytdlp_format",
+			Label:      "yt-dlp format",
+			Help:       "Format selector. Default prefers ≤720p video with broad codec compatibility.",
+			Kind:       adapters.KindText,
+			Default:    "bv*[height<=720]+ba/bv*+ba/b",
+			ApplyScope: adapters.ScopeHotSwap,
+		},
+		{
+			Key:        "ytdlp_resolve_timeout_seconds",
+			Label:      "Resolve timeout (s)",
+			Help:       "Per-URL timeout for yt-dlp resolution (5–120s).",
+			Kind:       adapters.KindInt,
+			Default:    30,
+			ApplyScope: adapters.ScopeHotSwap,
+		},
 	}
 }
 
