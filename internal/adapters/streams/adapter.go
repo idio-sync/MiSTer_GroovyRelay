@@ -74,6 +74,7 @@ type Adapter struct {
 	catalogs            map[string]ProviderCatalog
 	presetStore         *presetStore
 	active              *ActiveQueue
+	badItems            map[string]badStreamItem
 
 	activeOverlay *hlsMeterHandle
 
@@ -99,6 +100,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
 		definitions:   map[string]ProviderDefinition{},
 		catalogs:      map[string]ProviderCatalog{},
+		badItems:      map[string]badStreamItem{},
 	}
 	a.fetchManifest = a.fetchManifestDefault
 	a.refreshOnce = a.refreshOnceDefault

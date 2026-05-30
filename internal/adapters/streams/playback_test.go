@@ -1,9 +1,11 @@
 package streams
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -65,6 +67,33 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	item, ok := a.active.currentItem()
 	if !ok || item.Title != "Clip" {
 		t.Fatalf("active item title = %+v, want Clip", item)
+	}
+}
+
+func TestStartResolvedStreamLogsStartupTiming(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	a, _ := newTestAdapterWithFakeCore(t)
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		"streams playback started",
+		"provider=mtv-rewind",
+		"channel=metal",
+		"item=dQw4w9WgXcQ",
+		"resolve_ms=",
+		"core_start_ms=",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("startup log missing %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -641,6 +670,82 @@ func TestResolveFailureRecordsAndSkipsToNextItem(t *testing.T) {
 	}
 	if strings.Contains(a.active.Failures[0].Reason, "aaaaaaaaaaa") || strings.Contains(a.active.Failures[0].Reason, "secret") {
 		t.Fatalf("failure reason leaked resolver details: %q", a.active.Failures[0].Reason)
+	}
+}
+
+func TestGlobalResolveFailureFailsFastWithoutRetryingQueue(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{
+				{ID: "aaaaaaaaaaa", SourceID: "aaaaaaaaaaa", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+				{ID: "bbbbbbbbbbb", SourceID: "bbbbbbbbbbb", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+			},
+		}},
+	}})
+	resolver := &fakeResolver{err: fmt.Errorf("ytdlp: no such option: --js-runtimes")}
+	a.resolver = resolver
+
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"})
+	if err == nil {
+		t.Fatal("StartResolvedStream should fail when yt-dlp itself is incompatible")
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 fail-fast attempt", resolver.calls)
+	}
+	if core.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0", core.startCalls)
+	}
+	if a.active != nil {
+		t.Fatalf("active queue = %+v, want cleared after global resolver failure", a.active)
+	}
+}
+
+func TestResolveFailureCachesBadItemForNextColdStart(t *testing.T) {
+	a, core := newTestAdapterWithFakeCore(t)
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "mtv-rewind",
+		Name:       "MTV Rewind",
+		Channels: []Channel{{
+			ID:       "metal",
+			Name:     "Metal",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{
+				{ID: "aaaaaaaaaaa", SourceID: "aaaaaaaaaaa", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+				{ID: "bbbbbbbbbbb", SourceID: "bbbbbbbbbbb", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+			},
+		}},
+	}})
+	resolver := &fakeResolver{responses: []fakeResolveResponse{
+		{err: fmt.Errorf("ytdlp: video unavailable")},
+		{res: &ytdlp.Resolution{URL: "https://media.example/second.mp4"}},
+		{res: &ytdlp.Resolution{URL: "https://media.example/second-again.mp4"}},
+	}}
+	a.resolver = resolver
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("first StartResolvedStream: %v", err)
+	}
+	if resolver.calls != 2 {
+		t.Fatalf("first start resolver calls = %d, want 2", resolver.calls)
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("second StartResolvedStream: %v", err)
+	}
+	if resolver.calls != 3 {
+		t.Fatalf("total resolver calls = %d, want one call on second cold start", resolver.calls)
+	}
+	if got := resolver.pageURLs[2]; !strings.Contains(got, "bbbbbbbbbbb") {
+		t.Fatalf("second cold start resolved %q, want cached-bad first item skipped", got)
+	}
+	if core.startCalls != 2 || core.lastReq.StreamURL != "https://media.example/second-again.mp4" {
+		t.Fatalf("core start calls=%d lastReq=%+v", core.startCalls, core.lastReq)
 	}
 }
 

@@ -123,6 +123,7 @@ func isActiveSessionChangedPlaybackError(err error) bool {
 	var streamsErr *StreamsError
 	return errors.As(err, &streamsErr) &&
 		(streamsErr.Message == adapters.ErrActiveSessionChangedMessage ||
+			strings.HasSuffix(streamsErr.Message, ": stream start was superseded") ||
 			strings.HasSuffix(streamsErr.Message, ": "+adapters.ErrActiveSessionChangedMessage))
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
@@ -229,7 +230,7 @@ func TestStreamsPlaybackActionStopUsesFullSessionKey(t *testing.T) {
 	}
 }
 
-func TestStreamsPlaybackActionNextUsesGuardedStopAndIdleStart(t *testing.T) {
+func TestStreamsPlaybackActionNextUsesGuardedReplacementStart(t *testing.T) {
 	a, fc := newTestAdapterWithFakeCore(t)
 	a.mu.Lock()
 	a.active = &ActiveQueue{
@@ -256,14 +257,62 @@ func TestStreamsPlaybackActionNextUsesGuardedStopAndIdleStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandlePlaybackAction next: %v", err)
 	}
-	if fc.stopIfSessionCalls != 1 || fc.stopIfSessionRef != ref || fc.stopIfSessionGen != 8 {
-		t.Fatalf("StopIfSession calls=%d key=%q/%d", fc.stopIfSessionCalls, fc.stopIfSessionRef, fc.stopIfSessionGen)
+	if fc.stopIfSessionCalls != 0 {
+		t.Fatalf("StopIfSession calls=%d, want 0", fc.stopIfSessionCalls)
 	}
-	if fc.startIdleCalls != 1 {
-		t.Fatalf("StartSessionIfIdle calls = %d, want 1", fc.startIdleCalls)
+	if fc.startIfCalls != 1 || fc.startIfRef != ref || fc.startIfGen != 8 {
+		t.Fatalf("StartSessionIfSession calls=%d key=%q/%d", fc.startIfCalls, fc.startIfRef, fc.startIfGen)
+	}
+	if fc.startIdleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0", fc.startIdleCalls)
 	}
 	if a.active == nil || a.active.Index != 1 {
 		t.Fatalf("active queue after next = %+v, want second item", a.active)
+	}
+}
+
+func TestStreamsPlaybackActionNextResolveFailureKeepsCurrentSession(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.cfg.MaxConsecutiveFailures = 1
+	a.mu.Lock()
+	a.active = &ActiveQueue{
+		SessionID:  "sess",
+		ProviderID: "mtv-rewind",
+		ChannelID:  "metal",
+		Generation: 4,
+		Items: []StreamItem{
+			{ID: "aaaaaaaaaaa", SourceID: "aaaaaaaaaaa", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+			{ID: "bbbbbbbbbbb", SourceID: "bbbbbbbbbbb", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+		},
+		baseItems: []StreamItem{
+			{ID: "aaaaaaaaaaa", SourceID: "aaaaaaaaaaa", URL: "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+			{ID: "bbbbbbbbbbb", SourceID: "bbbbbbbbbbb", URL: "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+		},
+		Index:     0,
+		ItemToken: 2,
+		loopMode:  loopSequential,
+	}
+	a.mu.Unlock()
+	ref := "streams:mtv-rewind:metal:sess:2"
+	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: ref, Generation: 8}
+	a.resolver = &fakeResolver{err: errors.New("yt-dlp could not resolve next item")}
+
+	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{
+		Action:     adapters.PlaybackActionNext,
+		AdapterRef: ref,
+		Generation: 8,
+	})
+	if err == nil {
+		t.Fatal("HandlePlaybackAction next should report the resolve failure")
+	}
+	if fc.stopIfSessionCalls != 0 {
+		t.Fatalf("StopIfSession calls = %d, want 0 so the current stream keeps playing", fc.stopIfSessionCalls)
+	}
+	if got := fc.Status().AdapterRef; got != ref {
+		t.Fatalf("core AdapterRef after failed next = %q, want current %q", got, ref)
+	}
+	if a.active == nil || a.active.Index != 0 || a.active.Generation != 4 || activeAdapterRef(a.active) != ref {
+		t.Fatalf("active queue after failed next = %+v, want original current queue", a.active)
 	}
 }
 
@@ -301,15 +350,15 @@ func TestStreamsPlaybackActionNextDoesNotMutateQueueOnStaleGenerationRace(t *tes
 	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
 		t.Fatalf("stale race err = %v, want stale-session sentinel", err)
 	}
-	if fc.stopIfSessionCalls != 1 || fc.startIdleCalls != 0 {
-		t.Fatalf("core calls stopIf=%d startIdle=%d, want stop guard only", fc.stopIfSessionCalls, fc.startIdleCalls)
+	if fc.stopIfSessionCalls != 0 || fc.startIfCalls != 0 || fc.startIdleCalls != 0 {
+		t.Fatalf("core calls stopIf=%d startIf=%d startIdle=%d, want no core mutation", fc.stopIfSessionCalls, fc.startIfCalls, fc.startIdleCalls)
 	}
 	if a.active == nil || a.active.Generation != 4 || a.active.Index != 0 {
 		t.Fatalf("active queue after stale race = %+v, want original generation/index", a.active)
 	}
 }
 
-func TestStreamsPlaybackActionNextDoesNotMutateNewerQueueAfterMatchedStop(t *testing.T) {
+func TestStreamsPlaybackActionNextDoesNotRestoreOverNewerQueue(t *testing.T) {
 	a, fc := newTestAdapterWithFakeCore(t)
 	a.mu.Lock()
 	a.active = &ActiveQueue{
@@ -350,21 +399,31 @@ func TestStreamsPlaybackActionNextDoesNotMutateNewerQueueAfterMatchedStop(t *tes
 	}
 	newerRef := "streams:mtv-rewind:metal:new-sess:1"
 	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: oldRef, Generation: 8}
-	fc.stopHook = func() {
-		a.mu.Lock()
-		a.active = newer
-		a.mu.Unlock()
-		fc.mu.Lock()
-		fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: newerRef, Generation: 12}
-		fc.mu.Unlock()
-	}
+	resolver := newBlockingSuccessResolver(&ytdlp.Resolution{URL: "https://media.example/replacement.mp4"})
+	t.Cleanup(resolver.release)
+	a.resolver = resolver
 
-	_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionNext, AdapterRef: oldRef, Generation: 8})
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.HandlePlaybackAction(context.Background(), adapters.PlaybackActionRequest{Action: adapters.PlaybackActionNext, AdapterRef: oldRef, Generation: 8})
+		done <- err
+	}()
+
+	<-resolver.entered
+	a.mu.Lock()
+	a.active = newer
+	a.mu.Unlock()
+	fc.mu.Lock()
+	fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: newerRef, Generation: 12}
+	fc.mu.Unlock()
+	resolver.release()
+
+	err := <-done
 	if !errors.Is(err, adapters.ErrActiveSessionChanged) {
 		t.Fatalf("newer queue race err = %v, want stale-session sentinel", err)
 	}
-	if fc.stopIfSessionCalls != 1 || fc.startIdleCalls != 0 {
-		t.Fatalf("core calls stopIf=%d startIdle=%d, want matched stop without new start", fc.stopIfSessionCalls, fc.startIdleCalls)
+	if fc.stopIfSessionCalls != 0 || fc.startCalls != 0 {
+		t.Fatalf("core calls stopIf=%d start=%d, want no core mutation", fc.stopIfSessionCalls, fc.startCalls)
 	}
 	if a.active != newer || newer.Index != 0 || newer.Generation != 1 {
 		t.Fatalf("newer queue after race = %+v, want untouched newer queue", a.active)
