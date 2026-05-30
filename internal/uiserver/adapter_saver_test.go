@@ -669,3 +669,35 @@ func TestSaveValues_RejectsDisallowedKey(t *testing.T) {
 		t.Errorf("ApplyConfig must not run when a key is rejected")
 	}
 }
+func TestSaveValues_ValidateFailureLeavesDiskUntouched(t *testing.T) {
+	t.Parallel()
+	original := `enabled = true
+ytdlp_hosts = ["youtube.com"]
+`
+	path := newTempConfigWithSection(t, "url", original)
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{
+		values:   map[string]any{"enabled": true},
+		validErr: adapters.FieldErrors{{Key: "ytdlp_hosts", Msg: "entry contains URL syntax characters"}},
+	}
+	_, err := saver.SaveValues(
+		"url",
+		map[string]any{"ytdlp_hosts": []string{"https://bad/"}},
+		[]string{"ytdlp_hosts"},
+		adapter,
+	)
+	var ferrs *adapterFieldErrors
+	if !errors.As(err, &ferrs) {
+		t.Fatalf("err = %v (%T), want *adapterFieldErrors", err, err)
+	}
+	if len(ferrs.Errs) != 1 || ferrs.Errs[0].Key != "ytdlp_hosts" {
+		t.Errorf("ferrs = %+v, want ytdlp_hosts error", ferrs.Errs)
+	}
+	got, _ := os.ReadFile(path)
+	if strings.Contains(string(got), "bad") {
+		t.Errorf("disk was mutated despite Validate failure:\n%s", got)
+	}
+	if len(adapter.applied) != 0 {
+		t.Errorf("ApplyConfig ran despite Validate failure")
+	}
+}
