@@ -51,6 +51,11 @@ type Config struct {
 	// changes. When nil, chassis renders the knob read-only for POSTs.
 	VolumeSaver VolumeSaver
 
+	// AudioDSPController is the live tone/EQ runtime (preview + read).
+	AudioDSPController AudioDSPController
+	// AudioDSPSaver persists committed params + manages EQ memories.
+	AudioDSPSaver AudioDSPSaver
+
 	// AudioScopeViewer is the optional read-only source for the latest
 	// audio-analysis snapshot. When nil, the chassis emits a pending audio
 	// frame on every 30 Hz tick. *core.Manager satisfies this structurally
@@ -134,9 +139,11 @@ type Server struct {
 
 	visualizerViewer VisualizerViewer
 	visualizerSaver  VisualizerSaver
-	volumeViewer     VolumeViewer
-	volumeSaver      VolumeSaver
-	audioScopeViewer AudioScopeViewer
+	volumeViewer        VolumeViewer
+	volumeSaver         VolumeSaver
+	audioDSPController  AudioDSPController
+	audioDSPSaver       AudioDSPSaver
+	audioScopeViewer    AudioScopeViewer
 	aux              AUXStarter
 	presetViewer     adapters.PresetViewer
 	presetCaster     adapters.PresetCaster
@@ -196,6 +203,8 @@ func New(cfg Config) (*Server, error) {
 		visualizerSaver:      cfg.VisualizerSaver,
 		volumeViewer:         cfg.VolumeViewer,
 		volumeSaver:          cfg.VolumeSaver,
+		audioDSPController:   cfg.AudioDSPController,
+		audioDSPSaver:        cfg.AudioDSPSaver,
 		audioScopeViewer:     cfg.AudioScopeViewer,
 		aux:                  cfg.AUX,
 		presetViewer:         cfg.PresetViewer,
@@ -267,6 +276,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
 	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
 	mux.Handle("POST /receiver/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
+	mux.Handle("POST /receiver/audio/dsp", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleAudioDSPPost))))
+	mux.Handle("POST /receiver/audio/dsp/memory", requireSameOrigin(http.HandlerFunc(s.handleAudioDSPMemoryPost)))
 	mux.Handle("POST /receiver/aux/start", requireSameOrigin(http.HandlerFunc(s.handleAUXStartPost)))
 	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
 	mux.Handle("POST /receiver/cast", requireSameOrigin(http.HandlerFunc(s.handleCastPost)))
