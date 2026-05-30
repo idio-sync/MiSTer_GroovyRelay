@@ -20,6 +20,7 @@
 
   let editing = false;
   let previewTimer = 0;
+  let pendingPreview = null;
 
   function post(body) {
     return fetch('/receiver/audio/dsp', {
@@ -35,15 +36,22 @@
       body: JSON.stringify(body),
     });
   }
+  // Trailing-edge throttle: each call records the latest params; the in-flight
+  // window posts whatever is newest when it fires (not the first value captured),
+  // so the audited audio tracks the live drag instead of lagging a window behind.
   function preview(params) {
+    pendingPreview = params;
     if (previewTimer) return;
     previewTimer = window.setTimeout(() => {
       previewTimer = 0;
-      post({ commit: false, params }).catch((e) => console.warn('audio-strip preview', e));
+      const latest = pendingPreview;
+      pendingPreview = null;
+      if (latest) post({ commit: false, params: latest }).catch((e) => console.warn('audio-strip preview', e));
     }, PREVIEW_MS);
   }
   function commit(params) {
     if (previewTimer) { window.clearTimeout(previewTimer); previewTimer = 0; }
+    pendingPreview = null;
     post({ commit: true, params }).catch((e) => console.warn('audio-strip commit', e));
   }
 

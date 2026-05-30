@@ -281,6 +281,19 @@ test('EQ slider input (pointerdown+input) then advance PREVIEW_MS posts preview'
   assert.equal(h.requests[0].url, '/receiver/audio/dsp');
 });
 
+test('preview throttle is trailing-edge: a window posts the latest value, not the first', () => {
+  const h = createHarness();
+  h.eqSliders[0].dispatch('pointerdown');
+  h.eqSliders[0].value = '3';
+  h.eqSliders[0].dispatch('input'); // arms the window
+  h.eqSliders[0].value = '9';
+  h.eqSliders[0].dispatch('input'); // newer value within the same window
+  assert.equal(h.requests.length, 0, 'no post before the window fires');
+  h.advance(PREVIEW_MS);
+  assert.equal(h.requests.length, 1, 'the window coalesces to a single preview post');
+  assert.equal(body(h.requests[0]).params.eq[0], 9, 'trailing-edge posts the newest value, not the first');
+});
+
 test('EQ slider change event posts commit=true', () => {
   const h = createHarness();
   h.eqSliders[2].dispatch('pointerdown');
