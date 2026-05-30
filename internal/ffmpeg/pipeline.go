@@ -529,7 +529,7 @@ func visualizerCoreGraph(mode VisualizerMode, audioMap string, logicalW, logical
 		if meterH < 24 {
 			meterH = 24
 		}
-		return fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=p:ds=log:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=0x05050a,drawbox=x=8:y=8:w=iw-16:h=ih-16:color=0x29ffc6@0.65:t=2,drawgrid=w=iw/8:h=ih/4:t=1:c=0x29ffc6@0.18[viz0]", audioMap, logicalW-64, meterH, logicalW, logicalH, logicalW, logicalH), "viz0"
+		return fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=r:ds=lin:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=0x05050a,drawbox=x=8:y=8:w=iw-16:h=ih-16:color=0x29ffc6@0.65:t=2,drawgrid=w=iw/8:h=ih/4:t=1:c=0x29ffc6@0.18[viz0]", audioMap, logicalW-64, meterH, logicalW, logicalH, logicalW, logicalH), "viz0"
 	case VisualizerModeSpectrumWaterfall:
 		return fmt.Sprintf("[%s]showspectrum=s=%dx%d:slide=scroll:mode=combined:color=intensity:scale=cbrt:fscale=log:overlap=0.5:saturation=1.4:legend=0,format=rgba[viz0]", audioMap, logicalW, logicalH), "viz0"
 	case VisualizerModeRasterPulse:
@@ -609,7 +609,7 @@ func coverModeGraph(s PipelineSpec, mode VisualizerMode, logicalW, logicalH int,
 			vH = 32
 		}
 		parts = append(parts,
-			fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=p:ds=log:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,format=rgba[cover_meter]",
+			fmt.Sprintf("[%s]showvolume=w=%d:h=%d:f=0.95:b=4:t=0:v=0:o=h:s=2:p=0.20:m=r:ds=lin:dm=0.7:dmc=0xfff06b,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,format=rgba[cover_meter]",
 				audioMap, meterW, vH, meterW, meterH),
 			fmt.Sprintf("[cover_base][cover_meter]overlay=x=%d:y=(H-h)/2:format=auto:shortest=1[viz0]", meterX),
 		)
