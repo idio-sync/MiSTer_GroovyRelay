@@ -132,8 +132,6 @@ function createHarness() {
   const byDspEq = new Map(eqSliders.map((el) => [el.dataset.dspEq, el]));
   const byKnobRange = new Map(knobRanges.map((el) => [el.dataset.dspKnobRange, el]));
   const bySwitch = new Map(switches.map((el) => [el.dataset.dspSwitch, el]));
-  const byPreset = new Map(presets.map((el) => [el.dataset.dspPreset.toLowerCase(), el]));
-  const byMemory = new Map(memButtons.map((el) => [el.dataset.dspMemory, el]));
 
   function querySelectorAll(selector) {
     if (selector === '[data-dsp-eq]') return eqSliders.slice();
