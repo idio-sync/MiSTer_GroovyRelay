@@ -110,6 +110,10 @@ func TestChassisCSS_PresetButtonsUseSharedPressAnimation(t *testing.T) {
 	if !strings.Contains(activeRule, "transform: translateY(1px);") {
 		t.Fatalf("preset active rule must match the setup/load-core press travel: %s", activeRule)
 	}
+	pressedRule := cssRuleBlock(t, text, "body.receiver .preset.pressed")
+	if !strings.Contains(pressedRule, "transform: translateY(1px);") {
+		t.Fatalf("preset pressed rule must match the setup/load-core press travel: %s", pressedRule)
+	}
 	lastPresetIdx := strings.LastIndex(text, "body.receiver .preset {")
 	if lastPresetIdx == -1 {
 		t.Fatalf("chassis.css missing preset button rule")

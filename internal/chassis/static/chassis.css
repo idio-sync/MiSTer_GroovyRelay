@@ -2806,6 +2806,10 @@ body.receiver .preset:active {
   transform: translateY(1px);
 }
 
+body.receiver .preset.pressed {
+  transform: translateY(1px);
+}
+
 body.receiver .preset.empty {
   color: #5a5a5e;
 }

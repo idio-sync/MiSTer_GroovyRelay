@@ -2,8 +2,11 @@ package chassis
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"sync"
 	"time"
@@ -138,6 +141,7 @@ type Server struct {
 	session  SessionViewer
 	tmpl     *template.Template
 	cssBytes []byte
+	assetVer string
 	meter    *meterSampler
 
 	overlayPanics *overlayPanicLimiter
@@ -194,7 +198,11 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("chassis: read embedded chassis.css: %w", err)
 	}
-	cssBytes, err := preprocessCSS(cssSrc, cfg.Version)
+	assetVer, err := staticAssetVersion(cfg.Version)
+	if err != nil {
+		return nil, err
+	}
+	cssBytes, err := preprocessCSS(cssSrc, assetVer)
 	if err != nil {
 		return nil, err
 	}
@@ -203,6 +211,7 @@ func New(cfg Config) (*Server, error) {
 		session:              cfg.Session,
 		tmpl:                 tmpl,
 		cssBytes:             cssBytes,
+		assetVer:             assetVer,
 		meter:                newMeterSampler(),
 		overlayPanics:        newOverlayPanicLimiter(),
 		transportViewer:      cfg.TransportViewer,
@@ -233,6 +242,33 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
+func staticAssetVersion(base string) (string, error) {
+	h := sha256.New()
+	_, _ = h.Write([]byte(base))
+	err := fs.WalkDir(chassisStaticFS, "static", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := chassisStaticFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(path))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(b)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("chassis: hash static assets: %w", err)
+	}
+	sum := h.Sum(nil)
+	return base + "-" + hex.EncodeToString(sum[:])[:12], nil
+}
+
 // buildSnapshot composes one ReceiverPageData from current session,
 // visualizer, transport, and overlay state. The single shared
 // meterSampler advances exactly once per refresher tick so multiple SSE
@@ -240,6 +276,7 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 	if s.session == nil {
 		base := idleSnapshot(s.cfg, now)
+		base.Version = s.assetVer
 		audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
 		base.Meter = s.meter.Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, audioLive, now)
 		applyAUXSourceState(&base, s.aux)
@@ -255,6 +292,7 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 	}
 	view := s.session.StatusHomeView()
 	base := snapshotFromStatusView(s.cfg, view, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, now)
+	base.Version = s.assetVer
 	overlay := s.collectMeterOverlay(context.Background(), view)
 	audioLive := audioScopeViewerIsLive(s.audioScopeViewer)
 	base.Meter = s.meter.Sample(view, overlay, audioLive, now)

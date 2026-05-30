@@ -49,7 +49,10 @@
   function cancelDrag() {
     if (!dragging) return;
     if (dragging.clone) dragging.clone.remove();
-    if (dragging.sourceEl) dragging.sourceEl.removeAttribute('data-dragging');
+    if (dragging.sourceEl) {
+      dragging.sourceEl.classList.remove('pressed');
+      dragging.sourceEl.removeAttribute('data-dragging');
+    }
     if (dragging.lastTarget) dragging.lastTarget.classList.remove('drop-target');
     document.body.style.cursor = '';
     dragging = null;
@@ -68,6 +71,7 @@
       lastTarget: null,
       pointerId: e.pointerId,
     };
+    target.classList.add('pressed');
     target.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -91,6 +95,7 @@
       clone.style.zIndex = '9999';
       document.body.appendChild(clone);
       dragging.clone = clone;
+      dragging.sourceEl.classList.remove('pressed');
       dragging.sourceEl.setAttribute('data-dragging', 'source');
       document.body.style.cursor = 'grabbing';
     }

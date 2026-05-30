@@ -1344,6 +1344,28 @@ func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_AssetURLsIncludeStaticFingerprint(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	rawVersionURL := `/receiver/static/chassis.css?v=test-1.0.0"`
+	if strings.Contains(body, rawVersionURL) {
+		t.Fatalf("asset URL uses only the app version and can stay stale across local Docker rebuilds: %s", rawVersionURL)
+	}
+	fingerprinted := regexp.MustCompile(`/receiver/static/chassis\.css\?v=test-1\.0\.0-[0-9a-f]{12}"`)
+	if !fingerprinted.MatchString(body) {
+		t.Fatalf("asset URL missing static fingerprint; body:\n%s", body)
+	}
+}
+
 func TestHandleIndex_TemplateErrorReturns500WithoutPartialBody(t *testing.T) {
 	t.Parallel()
 	tmpl := template.Must(template.New("chassis").Parse(`{{define "shell.html"}}partial body {{.MissingField}}{{end}}`))
