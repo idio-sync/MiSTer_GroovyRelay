@@ -11,9 +11,11 @@ import (
 )
 
 type fakeDSPController struct {
-	cur      config.AudioDSP
-	preview  *config.AudioDSP
-	previewN int
+	cur       config.AudioDSP
+	preview   *config.AudioDSP
+	previewN  int
+	committed *config.AudioDSP
+	setN      int
 }
 
 func (f *fakeDSPController) AudioDSP() config.AudioDSP { return f.cur }
@@ -22,14 +24,36 @@ func (f *fakeDSPController) PreviewAudioDSP(d config.AudioDSP) error {
 	f.previewN++
 	return nil
 }
+func (f *fakeDSPController) SetAudioDSP(d config.AudioDSP) error {
+	f.committed = &d
+	f.setN++
+	return nil
+}
+
+// dspStatusErr is a typed saver error exposing StatusCode(), mirroring the
+// uiserver settingsError contract the route maps to an HTTP status.
+type dspStatusErr struct {
+	status int
+	msg    string
+}
+
+func (e dspStatusErr) Error() string   { return e.msg }
+func (e dspStatusErr) StatusCode() int { return e.status }
 
 type fakeDSPSaver struct {
 	saved   *config.AudioDSP
+	saveErr error
 	mem     map[int]config.AudioDSPMemory
 	current config.AudioDSP
 }
 
-func (f *fakeDSPSaver) SaveAudioDSP(d config.AudioDSP) error { f.saved = &d; return nil }
+func (f *fakeDSPSaver) SaveAudioDSP(d config.AudioDSP) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = &d
+	return nil
+}
 func (f *fakeDSPSaver) SaveAudioDSPMemory(slot int, name string, v config.AudioDSP) error {
 	if f.mem == nil {
 		f.mem = map[int]config.AudioDSPMemory{}
@@ -104,6 +128,33 @@ func TestHandleAudioDSP_RejectsOutOfRange(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for out-of-range bass", rec.Code)
+	}
+}
+
+// TestHandleAudioDSP_FailedCommitMapsStatusAndReconciles covers both the
+// status-mapping path (a typed saver error → its StatusCode, not a blanket 500)
+// and the failed-commit reconcile (runtime restored to persisted truth via the
+// committed SetAudioDSP path so persisted is marked true again).
+func TestHandleAudioDSP_FailedCommitMapsStatusAndReconciles(t *testing.T) {
+	t.Parallel()
+	persisted := config.DefaultAudioDSP()
+	persisted.Treble = 2
+	ctl := &fakeDSPController{cur: config.DefaultAudioDSP()}
+	saver := &fakeDSPSaver{
+		current: persisted,
+		saveErr: dspStatusErr{status: http.StatusConflict, msg: "PORT IN USE"},
+	}
+	mux := newDSPTestServer(t, ctl, saver)
+	body := `{"commit":true,"params":{"bass":4}}`
+	req := httptest.NewRequest("POST", "/receiver/audio/dsp", strings.NewReader(body))
+	req.Header.Set("Origin", "http://"+req.Host)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 from the typed saver error (not a blanket 500); body=%s", rec.Code, rec.Body)
+	}
+	if ctl.setN != 1 || ctl.committed == nil || ctl.committed.Treble != 2 {
+		t.Errorf("failed commit did not reconcile runtime to persisted truth via SetAudioDSP: setN=%d committed=%+v", ctl.setN, ctl.committed)
 	}
 }
 

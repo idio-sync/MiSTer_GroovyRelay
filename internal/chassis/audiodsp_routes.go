@@ -8,11 +8,15 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
-// AudioDSPController is the live tone/EQ runtime: read current params + apply
-// an unpersisted preview. *core.Manager satisfies it (AudioDSP/PreviewAudioDSP).
+// AudioDSPController is the live tone/EQ runtime: read current params, apply an
+// unpersisted preview, or commit a reconciled value. *core.Manager satisfies it
+// (AudioDSP/PreviewAudioDSP/SetAudioDSP). SetAudioDSP is used only to reconcile
+// the runtime back to persisted truth (marking persisted=true) after a failed
+// commit — the normal commit path persists through the saver.
 type AudioDSPController interface {
 	AudioDSP() config.AudioDSP
 	PreviewAudioDSP(config.AudioDSP) error
+	SetAudioDSP(config.AudioDSP) error
 }
 
 // AudioDSPSaver persists + applies committed params and manages EQ memories.
@@ -63,9 +67,10 @@ func (s *Server) handleAudioDSPPost(w http.ResponseWriter, r *http.Request) {
 		if err := s.audioDSPSaver.SaveAudioDSP(merged); err != nil {
 			// Spec §Error handling: a failed commit (disk write or hot-swap
 			// apply) must not leave a live preview that never landed.
-			// Reconcile the runtime to the persisted truth; the audioDsp SSE
-			// re-emits with persisted=true on the next tick.
-			_ = s.audioDSPController.PreviewAudioDSP(s.audioDSPSaver.CurrentAudioDSP())
+			// Reconcile the runtime to the persisted truth via SetAudioDSP (the
+			// committed path) so persisted is marked true again — the audioDsp
+			// SSE then re-emits with persisted=true on the next tick.
+			_ = s.audioDSPController.SetAudioDSP(s.audioDSPSaver.CurrentAudioDSP())
 			audioDSPWriteError(w, err)
 			return
 		}
@@ -113,12 +118,14 @@ func mergeAudioDSPPatch(cur config.AudioDSP, req audioDSPRequest) config.AudioDS
 	return cur
 }
 
-// audioDSPWriteError maps a saver error to a status. A validation error is a
-// 400 (BAD INPUT, mirroring the bridge saver); anything else is a 500.
+// audioDSPWriteError maps a saver error to a status. The uiserver saver wraps
+// validation/preflight failures in a typed error exposing StatusCode() (e.g.
+// 400 BAD INPUT, 409 PORT IN USE) — the same interface the settings handler
+// matches; anything else is a 500.
 func audioDSPWriteError(w http.ResponseWriter, err error) {
-	var se interface{ HTTPStatus() int }
+	var se interface{ StatusCode() int }
 	if errors.As(err, &se) {
-		writeJSONError(w, se.HTTPStatus(), err.Error())
+		writeJSONError(w, se.StatusCode(), err.Error())
 		return
 	}
 	writeJSONError(w, http.StatusInternalServerError, "save failed")
