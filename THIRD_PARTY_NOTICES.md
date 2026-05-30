@@ -37,8 +37,8 @@ MiSTer Groovy Relay uses `github.com/anacrolix/torrent` for BitTorrent magnet an
 
 ## Bundled UI Fonts
 
-The bridge UI and companion extension bundle WOFF2 font assets for Space
-Grotesk, Inter Tight, and JetBrains Mono. These fonts are distributed under
-the SIL Open Font License 1.1 by their upstream projects. The bundled files
-are used locally by the web UI and extension popup and are not fetched from a
-remote font service at runtime.
+The companion extension bundles WOFF2 font assets for DSEG (7- and
+14-segment display faces), distributed under the MIT License by Keshikan,
+and Inter, distributed under the SIL Open Font License 1.1. The bundled
+files are served locally from the extension package; no remote font service
+is used at runtime.

@@ -3,10 +3,11 @@ import fs from "node:fs";
 
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
 const extensionFiles = [
-  "src/fonts/InterTight-400.woff2",
-  "src/fonts/InterTight-500.woff2",
-  "src/fonts/JetBrainsMono-400.woff2",
-  "src/fonts/SpaceGrotesk-600.woff2",
+  "src/fonts/DSEG14Classic-Regular.woff2",
+  "src/fonts/DSEG14Classic-Bold.woff2",
+  "src/fonts/DSEG7Classic-Regular.woff2",
+  "src/fonts/DSEG7Classic-Bold.woff2",
+  "src/fonts/Inter-Variable.woff2",
 ];
 
 describe("manifest data collection declaration", () => {

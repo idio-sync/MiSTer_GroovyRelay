@@ -4,8 +4,9 @@ WebExtension for the [MiSTer GroovyRelay bridge](../../README.md). Cast pages, l
 
 ## What it does (v1)
 
-- **Toolbar button:** opens a popup. Click "Cast this tab" to send the active tab's URL to the bridge.
+- **Toolbar button:** opens a receiver-styled popup that mirrors the bridge's receiver UI. Click "Cast this tab" to send the active tab's URL to the bridge.
 - **Launch button:** click "Launch GroovyMiSTer" in the popup to ask the bridge to load the GroovyMiSTer core over SSH.
+- **Volume control:** turn the popup's volume knob to set the MiSTer's output volume; it stays in sync with the bridge.
 - **Web UI button:** click "Open Web UI" in the popup to open the configured bridge UI.
 - **Right-click on a link:** "Cast link to MiSTer" sends the link target to the bridge.
 - **Right-click on an HTML5 `<video>`:** "Cast video to MiSTer" sends the video's `src`. Blob URLs from MSE-driven players such as YouTube or Twitch cannot be cast this way; use the link context menu on those sites.
