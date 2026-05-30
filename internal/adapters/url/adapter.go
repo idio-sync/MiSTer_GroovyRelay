@@ -390,11 +390,22 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 }
 
 // CurrentValues implements ui.ValueProvider via duck-typing — surfaces
-// the current cfg values to the UI for form prefill.
+// the current cfg values to the UI for form prefill. Must stay in
+// lockstep with Fields(): the chassis form prefill (4D's
+// AdapterSettingsSaver.Current path) renders blank/off for any Fields()
+// key missing here, and this map is also SaveTouched's missing-section
+// fallback. ytdlp_hosts is intentionally absent — the host widget reads
+// it via CurrentHosts(), and a first-save with no disk section keeps the
+// DefaultConfig() host list (ApplyConfig decodes onto DefaultConfig).
 func (a *Adapter) CurrentValues() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return map[string]any{"enabled": a.cfg.Enabled}
+	return map[string]any{
+		"enabled":                       a.cfg.Enabled,
+		"ytdlp_enabled":                 a.cfg.YtdlpEnabled,
+		"ytdlp_format":                  a.cfg.YtdlpFormat,
+		"ytdlp_resolve_timeout_seconds": a.cfg.YtdlpResolveTimeoutSeconds,
+	}
 }
 
 // setState atomically updates state, stateSince, and lastErr.

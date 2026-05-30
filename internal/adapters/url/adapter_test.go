@@ -234,3 +234,31 @@ func TestFields_ExposesYtdlpStandardFields(t *testing.T) {
 		t.Errorf("Fields() must not expose ytdlp_hosts (bespoke widget owns it)")
 	}
 }
+
+func TestCurrentValues_IncludesYtdlpFields(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Seed a known config so the values are deterministic.
+	a.cfg = Config{
+		Enabled:                    true,
+		YtdlpEnabled:               false,
+		YtdlpFormat:                "best",
+		YtdlpResolveTimeoutSeconds: 42,
+		YtdlpHosts:                 []string{"youtube.com"},
+	}
+	v := a.CurrentValues()
+	if v["enabled"] != true {
+		t.Errorf("enabled = %v, want true", v["enabled"])
+	}
+	if v["ytdlp_enabled"] != false {
+		t.Errorf("ytdlp_enabled = %v, want false", v["ytdlp_enabled"])
+	}
+	if v["ytdlp_format"] != "best" {
+		t.Errorf("ytdlp_format = %v, want best", v["ytdlp_format"])
+	}
+	if v["ytdlp_resolve_timeout_seconds"] != 42 {
+		t.Errorf("ytdlp_resolve_timeout_seconds = %v, want 42", v["ytdlp_resolve_timeout_seconds"])
+	}
+}
