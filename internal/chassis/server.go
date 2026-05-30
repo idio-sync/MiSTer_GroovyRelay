@@ -302,6 +302,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkUnlink)))
 	mux.Handle("POST /receiver/settings/adapter/{name}/hosts",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterHostsPost)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/cookies",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterCookiesPost)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/cookies/clear",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterCookiesClear)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

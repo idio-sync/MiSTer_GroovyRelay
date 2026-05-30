@@ -1474,3 +1474,96 @@ func writeSettingsHosts(w http.ResponseWriter, scope string, hosts []string) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "scope": scope, "hosts": hosts})
 }
+
+const maxCookiesBody = 1 << 20 // 1 MiB; mirrors the URL adapter's legacy cap.
+
+type cookieFieldError string
+
+func (e cookieFieldError) Error() string { return string(e) }
+func (e cookieFieldError) FieldErrors() []adapters.FieldError {
+	return []adapters.FieldError{{Key: "cookies", Msg: string(e)}}
+}
+
+func cookiesReadError(err error) error {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return cookieFieldError("cookies file must be 1 MiB or smaller")
+	}
+	return cookieFieldError("invalid cookies payload")
+}
+
+// readCookiesField extracts the cookies payload from a form-encoded or
+// JSON body under a 1 MiB cap. Chassis-local (it must not import the URL
+// adapter); mirrors the legacy adapter parser shape.
+func readCookiesField(r *http.Request) (string, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxCookiesBody+1)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var payload struct {
+			Cookies string `json:"cookies"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return "", cookiesReadError(err)
+		}
+		return payload.Cookies, nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return "", cookiesReadError(err)
+	}
+	return r.PostForm.Get("cookies"), nil
+}
+
+// handleSettingsAdapterCookiesPost handles POST /receiver/settings/adapter/{name}/cookies.
+func (s *Server) handleSettingsAdapterCookiesPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterCookieStore == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	raw, err := readCookiesField(r)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	view, err := s.cfg.AdapterCookieStore.SaveCookies(name, raw)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsCookie(w, view)
+}
+
+// handleSettingsAdapterCookiesClear handles POST /receiver/settings/adapter/{name}/cookies/clear.
+func (s *Server) handleSettingsAdapterCookiesClear(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterCookieStore == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	view, err := s.cfg.AdapterCookieStore.ClearCookies(name)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsCookie(w, view)
+}
+
+func writeSettingsCookie(w http.ResponseWriter, v CookieStatusView) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok": true,
+		"cookie": map[string]any{
+			"loaded": v.Loaded,
+			"bytes":  v.Bytes,
+			"set_at": v.SetAt,
+		},
+	})
+}

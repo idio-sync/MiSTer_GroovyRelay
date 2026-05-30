@@ -2351,3 +2351,201 @@ func TestHandleSettingsAdapterHostsPost_CrossOriginBlocked(t *testing.T) {
 		t.Fatalf("Code = %d, want 403", rec.Code)
 	}
 }
+
+type fakeCookieStore struct {
+	status   CookieStatusView
+	statusOK bool
+	saveView CookieStatusView
+	saveErr  error
+	clearErr error
+	gotRaw   string
+}
+
+func (f *fakeCookieStore) CookieStatus(name string) (CookieStatusView, bool) {
+	return f.status, f.statusOK
+}
+func (f *fakeCookieStore) SaveCookies(name, raw string) (CookieStatusView, error) {
+	f.gotRaw = raw
+	if f.saveErr != nil {
+		return CookieStatusView{}, f.saveErr
+	}
+	return f.saveView, nil
+}
+func (f *fakeCookieStore) ClearCookies(name string) (CookieStatusView, error) {
+	if f.clearErr != nil {
+		return CookieStatusView{}, f.clearErr
+	}
+	return CookieStatusView{Loaded: false}, nil
+}
+
+func postCookies(t *testing.T, s *Server, path, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestHandleSettingsAdapterCookiesPost_SuccessForm(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true, Bytes: 128, SetAt: "2026-05-29 00:00:00Z"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies="+url.QueryEscape("data"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if cs.gotRaw != "data" {
+		t.Errorf("SaveCookies raw = %q, want data", cs.gotRaw)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	cookie, _ := body["cookie"].(map[string]any)
+	if cookie["loaded"] != true || cookie["set_at"] != "2026-05-29 00:00:00Z" {
+		t.Errorf("cookie view = %v", cookie)
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_SuccessJSON(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true, Bytes: 5}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/json", `{"cookies":"abcde"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if cs.gotRaw != "abcde" {
+		t.Errorf("SaveCookies raw = %q, want abcde", cs.gotRaw)
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_FieldError(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveErr: &fakeFieldErr{key: "cookies", msg: "no Netscape-format lines"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies=junk")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs, _ := body["errors"].(map[string]any)
+	if _, ok := errs["cookies"]; !ok {
+		t.Errorf("errors missing 'cookies': %v", body)
+	}
+}
+
+func TestHandleSettingsAdapterCookiesClear_Success(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
+		"application/x-www-form-urlencoded", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	cookie, _ := body["cookie"].(map[string]any)
+	if cookie["loaded"] != false {
+		t.Errorf("after clear loaded = %v, want false", cookie["loaded"])
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_NotReadyWhenNil(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies=x")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_CrossOriginBlocked(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/cookies",
+		strings.NewReader("cookies=x"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Code = %d, want 403", rec.Code)
+	}
+	if cs.gotRaw != "" {
+		t.Errorf("cross-origin request reached SaveCookies with %q", cs.gotRaw)
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_UnknownAdapter(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/streams/cookies",
+		"application/x-www-form-urlencoded", "cookies=x")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("Code = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "streams") {
+		t.Errorf("unknown-adapter response leaked adapter details: %s", rec.Body.String())
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_OversizeIsFieldError(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies="+strings.Repeat("x", (1<<20)+2))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs, _ := body["errors"].(map[string]any)
+	if _, ok := errs["cookies"]; !ok {
+		t.Errorf("oversize response missing errors.cookies: %v", body)
+	}
+	if cs.gotRaw != "" {
+		t.Errorf("oversize request reached SaveCookies with %d bytes", len(cs.gotRaw))
+	}
+}
+
+func TestHandleSettingsAdapterCookiesPost_WriteFailureIsGenericChip(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+		"application/x-www-form-urlencoded", "cookies=x")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "WRITE FAILED") {
+		t.Errorf("write failure response missing generic chip: %s", rec.Body.String())
+	}
+}
+
+func TestHandleSettingsAdapterCookiesClear_WriteFailureIsGenericChip(t *testing.T) {
+	t.Parallel()
+	cs := &fakeCookieStore{clearErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterCookieStore: cs}}
+	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
+		"application/x-www-form-urlencoded", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("Code = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "WRITE FAILED") {
+		t.Errorf("clear failure response missing generic chip: %s", rec.Body.String())
+	}
+}
