@@ -97,25 +97,39 @@ type MisterProber interface {
 	Probe(ctx context.Context) error
 }
 
+// CompanionVolumeViewer reads the live global output volume for the
+// companion popup's volume knob. *core.Manager satisfies it via OutputVolume().
+type CompanionVolumeViewer interface {
+	OutputVolume() int
+}
+
+// CompanionVolumeSaver persists a new global output volume (0..100) and
+// applies it live. main.go wires the same volumeSaverAdapter used by the chassis.
+type CompanionVolumeSaver interface {
+	SaveOutputVolume(volume int) error
+}
+
 // Config is the dependencies bundle passed to New. Registry is
 // required; BridgeSaver and AdapterSaver are required only for the
 // handlers that write state (nil surfaces as a 500 at request time
 // so unit tests that only exercise read paths can construct Server
 // without them).
 type Config struct {
-	Registry         *adapters.Registry
-	BridgeSaver      BridgeSaver
-	AdapterSaver     AdapterSaver
-	MisterLauncher   MisterLauncher
-	CompanionSession CompanionSessionProvider
-	CompanionURL     CompanionURLSource
-	CompanionDisplay CompanionDisplayProvider
-	MisterProber     MisterProber // nil disables reachability probe on diagnostics page
-	StatusViewer     StatusViewer // nil disables live data on status home
-	Playback         PlaybackService
-	EventLog         *eventlog.Log // nil disables activity feed
-	Version          string        // build version, displayed in diagnostics
-	StartedAt        time.Time     // process start time for status/diagnostics uptime
+	Registry              *adapters.Registry
+	BridgeSaver           BridgeSaver
+	AdapterSaver          AdapterSaver
+	MisterLauncher        MisterLauncher
+	CompanionSession      CompanionSessionProvider
+	CompanionURL          CompanionURLSource
+	CompanionDisplay      CompanionDisplayProvider
+	CompanionVolumeViewer CompanionVolumeViewer
+	CompanionVolumeSaver  CompanionVolumeSaver
+	MisterProber          MisterProber  // nil disables reachability probe on diagnostics page
+	StatusViewer          StatusViewer  // nil disables live data on status home
+	Playback              PlaybackService
+	EventLog              *eventlog.Log // nil disables activity feed
+	Version               string        // build version, displayed in diagnostics
+	StartedAt             time.Time     // process start time for status/diagnostics uptime
 }
 
 // sectionCtxData is the context object passed to the "field-section"
