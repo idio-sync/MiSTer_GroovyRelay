@@ -1978,7 +1978,9 @@ func TestReceiverEvents_PresetsBetweenMeterAndAudio(t *testing.T) {
 	env := newChassisIntegrationEnv(t)
 	defer env.Close()
 	names := env.CollectInitialEventNames(t, 2*time.Second)
-	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "meter", "presets", "audio"}
+	// audioDsp was added to the burst (after volume, before meter) when the
+	// audio-strip feature landed; include it in the expected order.
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "audio"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("initial burst events = %v, want %v", names, want)
 	}
@@ -3051,5 +3053,130 @@ func TestChassis_PostActionRestoreDefaults_DiskMatchesDefaults(t *testing.T) {
 
 	if got, _ := os.ReadFile(sentinel); string(got) != "survives" {
 		t.Errorf("data_dir sentinel was disturbed by reset")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAudioDSP_E2E_SSEAndCommit — Task 10 (volume-tests + audio-dsp e2e)
+// ---------------------------------------------------------------------------
+
+// chassisAudioDSPSaver is the same thin adapter as main.audioDSPSaverAdapter
+// but declared here in package integration so the test does not depend on the
+// unexported package-main type.
+type chassisAudioDSPSaver struct{ bs *uiserver.BridgeSaver }
+
+func (a *chassisAudioDSPSaver) SaveAudioDSP(dsp config.AudioDSP) error {
+	_, err := a.bs.SaveAudioDSP(dsp)
+	return err
+}
+func (a *chassisAudioDSPSaver) SaveAudioDSPMemory(slot int, name string, voicing config.AudioDSP) error {
+	_, err := a.bs.SaveAudioDSPMemory(slot, name, voicing)
+	return err
+}
+func (a *chassisAudioDSPSaver) RecallAudioDSPMemory(slot int) (config.AudioDSPMemory, bool) {
+	return a.bs.RecallAudioDSPMemory(slot)
+}
+func (a *chassisAudioDSPSaver) CurrentAudioDSP() config.AudioDSP {
+	return a.bs.Current().Audio.DSP
+}
+
+// newChassisAudioDSPIntegrationServer builds a real core.Manager +
+// uiserver.BridgeSaver + chassis.Server with AudioDSPController and
+// AudioDSPSaver wired, mirroring the pattern of
+// newChassisVisualizerIntegrationServer.
+func newChassisAudioDSPIntegrationServer(t *testing.T) (*httptest.Server, *core.Manager) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfgBody := fmt.Sprintf(testChassisVisualizerConfig, filepath.ToSlash(dir))
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	sec, err := config.LoadSectioned(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	sender, err := groovynet.NewSender("127.0.0.1", 0, 0)
+	if err != nil {
+		t.Fatalf("groovynet.NewSender: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+
+	mgr := core.NewManager(sec.Bridge, sender)
+	reg := adapters.NewRegistry()
+	saver := uiserver.NewBridgeSaver(cfgPath, sec, mgr, reg)
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:             sec.Bridge,
+		Manager:            mgr,
+		Registry:           reg,
+		Version:            "integration-test",
+		StartedAt:          time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC),
+		HostIP:             "127.0.0.1",
+		Session:            mgr,
+		AudioDSPController: mgr,
+		AudioDSPSaver:      &chassisAudioDSPSaver{bs: saver},
+	})
+	if err != nil {
+		t.Fatalf("chassis.New: %v", err)
+	}
+	t.Cleanup(func() { _ = chassisSrv.Close() })
+	mux := http.NewServeMux()
+	chassisSrv.Mount(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, mgr
+}
+
+// TestAudioDSP_E2E_SSEAndCommit verifies two things end-to-end:
+//  1. The chassis SSE initial burst includes an "audioDsp" event.
+//  2. POST /receiver/audio/dsp with commit:true and bass:6 returns 204 and
+//     the committed value is reflected in mgr.AudioDSP().Bass.
+//
+// Transparency coverage (default DSP = unchanged audio vs volume-only) is
+// already provided by TestProcessor_TransparentWithinOneLSB and
+// TestSendAudioAppliesOutputVolume in internal/dataplane; no duplication
+// needed here.
+func TestAudioDSP_E2E_SSEAndCommit(t *testing.T) {
+	t.Parallel()
+	ts, mgr := newChassisAudioDSPIntegrationServer(t)
+
+	// (1) SSE initial burst includes the audioDsp event.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sseReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	sseResp, err := ts.Client().Do(sseReq)
+	if err != nil {
+		t.Fatalf("GET /receiver/events: %v", err)
+	}
+	defer sseResp.Body.Close()
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status = %d, want 200", sseResp.StatusCode)
+	}
+	// chassisReadSSEUntil reads until the eventLine and needle both appear.
+	// The audioDsp event is emitted in the initial burst (before "audio").
+	body := chassisReadSSEUntil(t, sseResp, "event: audioDsp\n", "params", 5*time.Second)
+	if !strings.Contains(body, "event: audioDsp") {
+		t.Errorf("SSE initial burst missing audioDsp event;\ncollected:\n%s", body)
+	}
+
+	// (2) Commit bass=6 and verify the manager's in-memory state is updated.
+	commitBody := `{"commit":true,"params":{"bass":6}}`
+	commitReq, err := http.NewRequest(http.MethodPost, ts.URL+"/receiver/audio/dsp", strings.NewReader(commitBody))
+	if err != nil {
+		t.Fatalf("new commit request: %v", err)
+	}
+	commitReq.Header.Set("Content-Type", "application/json")
+	commitReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	commitResp, err := ts.Client().Do(commitReq)
+	if err != nil {
+		t.Fatalf("POST /receiver/audio/dsp: %v", err)
+	}
+	defer commitResp.Body.Close()
+	if commitResp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(commitResp.Body)
+		t.Fatalf("commit status = %d body=%s", commitResp.StatusCode, respBody)
+	}
+	if got := mgr.AudioDSP().Bass; got != 6 {
+		t.Errorf("manager AudioDSP().Bass = %v, want 6", got)
 	}
 }
