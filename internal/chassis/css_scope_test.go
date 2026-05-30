@@ -99,6 +99,27 @@ func TestChassisCSS_PresetLivePulseHonorsReducedMotionCascade(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_PresetButtonsUseSharedPressAnimation(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	activeRule := cssRuleBlock(t, text, "body.receiver .preset:active")
+	if !strings.Contains(activeRule, "transform: translateY(1px);") {
+		t.Fatalf("preset active rule must match the setup/load-core press travel: %s", activeRule)
+	}
+	lastPresetIdx := strings.LastIndex(text, "body.receiver .preset {")
+	if lastPresetIdx == -1 {
+		t.Fatalf("chassis.css missing preset button rule")
+	}
+	lastPresetRule := cssRuleBlock(t, text[lastPresetIdx:], "body.receiver .preset")
+	if !strings.Contains(lastPresetRule, "transform 80ms") {
+		t.Fatalf("last preset rule must preserve the shared 80ms transform press transition: %s", lastPresetRule)
+	}
+}
+
 func TestChassisCSS_HistoryEventLogSettingsContracts(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
