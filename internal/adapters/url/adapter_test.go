@@ -262,3 +262,20 @@ func TestCurrentValues_IncludesYtdlpFields(t *testing.T) {
 		t.Errorf("ytdlp_resolve_timeout_seconds = %v, want 42", v["ytdlp_resolve_timeout_seconds"])
 	}
 }
+
+func TestCurrentHosts_ReturnsCopy(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.cfg.YtdlpHosts = []string{"youtube.com", "twitch.tv"}
+	got := a.CurrentHosts()
+	if len(got) != 2 || got[0] != "youtube.com" || got[1] != "twitch.tv" {
+		t.Fatalf("CurrentHosts() = %v", got)
+	}
+	// Mutating the returned slice must not affect the adapter's config.
+	got[0] = "evil.com"
+	if a.cfg.YtdlpHosts[0] != "youtube.com" {
+		t.Errorf("CurrentHosts returned an aliased slice; cfg mutated to %v", a.cfg.YtdlpHosts)
+	}
+}

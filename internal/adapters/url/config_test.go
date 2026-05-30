@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 func TestDefaultConfig_Disabled(t *testing.T) {
@@ -139,5 +140,45 @@ func TestConfigValidate_LowercasesHostnames(t *testing.T) {
 	}
 	if c.YtdlpHosts[0] != "youtube.com" || c.YtdlpHosts[1] != "twitch.tv" {
 		t.Errorf("hostnames not lowercased: %v", c.YtdlpHosts)
+	}
+}
+
+func TestNormalizeHosts_LowercasesAndTrims(t *testing.T) {
+	got, err := NormalizeHosts([]string{"  YouTube.com  ", "Twitch.TV"})
+	if err != nil {
+		t.Fatalf("NormalizeHosts: %v", err)
+	}
+	want := []string{"youtube.com", "twitch.tv"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNormalizeHosts_RejectsURLSyntax(t *testing.T) {
+	_, err := NormalizeHosts([]string{"https://youtube.com/watch"})
+	if err == nil {
+		t.Fatal("NormalizeHosts accepted a host with URL syntax; want error")
+	}
+	fe, ok := err.(adapters.FieldErrors)
+	if !ok {
+		t.Fatalf("err type = %T, want adapters.FieldErrors", err)
+	}
+	if len(fe) == 0 || fe[0].Key != "ytdlp_hosts" {
+		t.Errorf("FieldErrors = %v, want one keyed ytdlp_hosts", fe)
+	}
+}
+
+func TestNormalizeHosts_EmptyListOK(t *testing.T) {
+	got, err := NormalizeHosts(nil)
+	if err != nil {
+		t.Fatalf("NormalizeHosts(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want empty", got)
 	}
 }

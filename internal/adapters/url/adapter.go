@@ -408,6 +408,17 @@ func (a *Adapter) CurrentValues() map[string]any {
 	}
 }
 
+// CurrentHosts returns a copy of the current yt-dlp host allowlist for
+// paint by the chassis host-editor widget. The copy prevents callers
+// from aliasing the config slice.
+func (a *Adapter) CurrentHosts() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]string, len(a.cfg.YtdlpHosts))
+	copy(out, a.cfg.YtdlpHosts)
+	return out
+}
+
 // setState atomically updates state, stateSince, and lastErr.
 func (a *Adapter) setState(s adapters.State, errMsg string) {
 	a.mu.Lock()

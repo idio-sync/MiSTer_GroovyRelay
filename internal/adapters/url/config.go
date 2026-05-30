@@ -115,3 +115,21 @@ func (c *Config) Validate() error {
 
 	return errs.Err()
 }
+
+// NormalizeHosts validates and lowercases a candidate yt-dlp host list
+// using the exact rules Config.Validate enforces, returning the cleaned
+// list. It constructs a throwaway DefaultConfig (so the timeout range
+// check passes) and runs Validate, which lowercases YtdlpHosts in place
+// only when every entry is valid. Pure: it does not mutate any adapter
+// state. Returns adapters.FieldErrors (keyed "ytdlp_hosts") on invalid
+// input. This is the single normalization source the chassis host route
+// uses — the uiserver saver cannot recover normalized values because the
+// adapters.Validator contract returns no values.
+func NormalizeHosts(hosts []string) ([]string, error) {
+	probe := DefaultConfig()
+	probe.YtdlpHosts = hosts
+	if err := probe.Validate(); err != nil {
+		return nil, err
+	}
+	return probe.YtdlpHosts, nil
+}
