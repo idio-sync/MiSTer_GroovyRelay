@@ -2157,15 +2157,15 @@ func TestShellTemplate_EmitsChassisMetaTags(t *testing.T) {
 func TestVfdTiersFromView_FallsBackToTitleWhenDisplayPrimaryEmpty(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name            string
-		view            core.StatusHomeView
-		wantPrimary     string
-		wantSecondary   string
-		wantTertiary    string
+		name          string
+		view          core.StatusHomeView
+		wantPrimary   string
+		wantSecondary string
+		wantTertiary  string
 	}{
 		{
-			name: "legacy title fallback when Display is empty",
-			view: core.StatusHomeView{State: core.StatePlaying, Title: "My Track"},
+			name:          "legacy title fallback when Display is empty",
+			view:          core.StatusHomeView{State: core.StatePlaying, Title: "My Track"},
 			wantPrimary:   "My Track",
 			wantSecondary: "",
 			wantTertiary:  "",
@@ -2181,8 +2181,8 @@ func TestVfdTiersFromView_FallsBackToTitleWhenDisplayPrimaryEmpty(t *testing.T) 
 			wantTertiary:  "Ter",
 		},
 		{
-			name: "empty title and empty Display yields empty primary",
-			view: core.StatusHomeView{State: core.StatePlaying},
+			name:          "empty title and empty Display yields empty primary",
+			view:          core.StatusHomeView{State: core.StatePlaying},
 			wantPrimary:   "",
 			wantSecondary: "",
 			wantTertiary:  "",
@@ -4609,6 +4609,30 @@ func TestSettingsDrawerJS_StreamsRefreshHandler(t *testing.T) {
 	}
 }
 
+func TestSettingsDrawerJS_LocalFilesBrowseDrawerVisibilityContract(t *testing.T) {
+	t.Parallel()
+	jsBytes, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
+	if err != nil {
+		t.Fatalf("ReadFile settings-drawer.js: %v", err)
+	}
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile chassis.css: %v", err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		`classList.add('localfiles-open')`,
+		`classList.remove('localfiles-open')`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("settings-drawer.js missing Local Files drawer contract %q", want)
+		}
+	}
+	if !strings.Contains(string(cssBytes), `body.receiver .catalog-drawer.localfiles-open`) {
+		t.Error("chassis.css missing Local Files drawer open selector")
+	}
+}
+
 func TestSettingsDrawerJS_AdapterRebootToastUsesLabel(t *testing.T) {
 	t.Parallel()
 	js, err := chassisStaticFS.ReadFile("static/settings-drawer.js")
@@ -4939,14 +4963,14 @@ func TestRenderURLPane_EmptyHostsStillShowsEditor(t *testing.T) {
 	t.Parallel()
 	data := SettingsData{
 		Adapters: []AdapterPaneData{{
-			Name:          "url",
-			Hint:          "PASTE-IN",
-			Fields:        []adapters.FieldDef{{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap}},
-			Values:        map[string]any{"enabled": false},
-			HasHostEditor: true,
-			Hosts:         nil,
+			Name:           "url",
+			Hint:           "PASTE-IN",
+			Fields:         []adapters.FieldDef{{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeHotSwap}},
+			Values:         map[string]any{"enabled": false},
+			HasHostEditor:  true,
+			Hosts:          nil,
 			HasCookieStore: true,
-			Cookie:        &CookieStatusView{Loaded: false},
+			Cookie:         &CookieStatusView{Loaded: false},
 		}},
 	}
 	out := renderSettingsAdapters(t, data)

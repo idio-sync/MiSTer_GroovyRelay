@@ -27,6 +27,7 @@ import (
 	aux "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/auxadapter"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/localfiles"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
@@ -283,6 +284,18 @@ func main() {
 		dieFriendly("registry register torrent", err)
 	}
 
+	localFilesAdapter, err := localfiles.New(localfiles.AdapterConfig{
+		Bridge:  sec.Bridge,
+		Core:    coreMgr,
+		FFprobe: ffprobeResolver,
+	})
+	if err != nil {
+		dieFriendly("local files adapter init", err)
+	}
+	if err := reg.Register(localFilesAdapter); err != nil {
+		dieFriendly("registry register local files", err)
+	}
+
 	// DLNA / UPnP MediaRenderer adapter (Phase 1: descriptors + SSDP +
 	// Phase-1 SOAP surface; playback in Phase 2+).
 	// Spec: docs/superpowers/specs/2026-05-03-dlna-mediarenderer-design.md.
@@ -408,6 +421,7 @@ func main() {
 	adapterSaverWrapper := newBridgeAdapterSettingsSaver(adapterSaver, reg)
 	adapterHostEditor := newBridgeAdapterHostEditor(adapterSaver, reg)
 	adapterCookieStore := newBridgeAdapterCookieStore(reg)
+	localFilesBridge := newBridgeLocalFiles(localFilesAdapter, adapterSaver)
 	var streamsRefresherWrapper chassis.StreamsRefresher
 	if streamsAdapter != nil {
 		streamsRefresherWrapper = newBridgeStreamsRefresher(streamsAdapter)
@@ -437,7 +451,7 @@ func main() {
 		StreamsCaster:             streamsCaster,
 		PresetEditor:              presetEditor,
 		SourceAvailabilityViewers: sourceViewers,
-		BridgeSaver:               saver,                         // existing *uiserver.BridgeSaver
+		BridgeSaver:               saver,                          // existing *uiserver.BridgeSaver
 		Prober:                    newChassisProber(misterProber), // wraps existing bridgeMisterProber
 		CoreLauncher:              misterLauncher,                 // same instance as ui.Config.MisterLauncher
 		CatalogManager:            cm,
@@ -447,6 +461,8 @@ func main() {
 		AdapterLinker:             newAdapterLinker(reg),
 		AdapterHostEditor:         adapterHostEditor,
 		AdapterCookieStore:        adapterCookieStore,
+		LocalFiles:                localFilesBridge,
+		LocalFilesLibraryEditor:   localFilesBridge,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)

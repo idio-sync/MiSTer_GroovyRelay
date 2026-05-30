@@ -155,8 +155,8 @@ type AdapterLinker interface {
 
 // LinkView is the JSON wire/render shape for the Account sub-section.
 type LinkView struct {
-	Kind           string      `json:"kind"`                     // "pin" | "credential"
-	Phase          string      `json:"phase"`                    // "unlinked"|"pending"|"linked"|"error"
+	Kind           string      `json:"kind"`  // "pin" | "credential"
+	Phase          string      `json:"phase"` // "unlinked"|"pending"|"linked"|"error"
 	LinkedAs       string      `json:"linkedAs,omitempty"`
 	Code           string      `json:"code,omitempty"`
 	ExpiresInSec   int         `json:"expiresInSec,omitempty"`
@@ -540,23 +540,23 @@ func decodeAudioChannels(raw string) (int, error) {
 type bridgeFieldOverlay func(cfg *config.BridgeConfig, value any)
 
 var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
-	"mister_host":        func(c *config.BridgeConfig, v any) { c.MiSTer.Host = v.(string) },
-	"mister_port":        func(c *config.BridgeConfig, v any) { c.MiSTer.Port = v.(int) },
-	"mister_source_port": func(c *config.BridgeConfig, v any) { c.MiSTer.SourcePort = v.(int) },
-	"ui_http_port":       func(c *config.BridgeConfig, v any) { c.UI.HTTPPort = v.(int) },
-	"host_ip":            func(c *config.BridgeConfig, v any) { c.HostIP = v.(string) },
-	"data_dir":           func(c *config.BridgeConfig, v any) { c.DataDir = v.(string) },
-	"ffmpeg_path":        func(c *config.BridgeConfig, v any) { c.FFmpegPath = v.(string) },
-	"ffprobe_path":       func(c *config.BridgeConfig, v any) { c.FFprobePath = v.(string) },
-	"ytdlp_path":         func(c *config.BridgeConfig, v any) { c.YTDLPPath = v.(string) },
+	"mister_host":                 func(c *config.BridgeConfig, v any) { c.MiSTer.Host = v.(string) },
+	"mister_port":                 func(c *config.BridgeConfig, v any) { c.MiSTer.Port = v.(int) },
+	"mister_source_port":          func(c *config.BridgeConfig, v any) { c.MiSTer.SourcePort = v.(int) },
+	"ui_http_port":                func(c *config.BridgeConfig, v any) { c.UI.HTTPPort = v.(int) },
+	"host_ip":                     func(c *config.BridgeConfig, v any) { c.HostIP = v.(string) },
+	"data_dir":                    func(c *config.BridgeConfig, v any) { c.DataDir = v.(string) },
+	"ffmpeg_path":                 func(c *config.BridgeConfig, v any) { c.FFmpegPath = v.(string) },
+	"ffprobe_path":                func(c *config.BridgeConfig, v any) { c.FFprobePath = v.(string) },
+	"ytdlp_path":                  func(c *config.BridgeConfig, v any) { c.YTDLPPath = v.(string) },
 	"video_modeline":              func(c *config.BridgeConfig, v any) { c.Video.Modeline = v.(string) },
 	"video_interlace_field_order": func(c *config.BridgeConfig, v any) { c.Video.InterlaceFieldOrder = v.(string) },
 	"video_aspect_mode":           func(c *config.BridgeConfig, v any) { c.Video.AspectMode = v.(string) },
 	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
 	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
-	"audio_sample_rate": func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
-	"audio_channels":    func(c *config.BridgeConfig, v any) { c.Audio.Channels = v.(int) },
-	"mister_ssh_user":   func(c *config.BridgeConfig, v any) { c.MiSTer.SSHUser = v.(string) },
+	"audio_sample_rate":           func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
+	"audio_channels":              func(c *config.BridgeConfig, v any) { c.Audio.Channels = v.(int) },
+	"mister_ssh_user":             func(c *config.BridgeConfig, v any) { c.MiSTer.SSHUser = v.(string) },
 	"mister_ssh_password": func(c *config.BridgeConfig, v any) {
 		s, _ := v.(string)
 		if s == "" {
@@ -575,7 +575,7 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"hls_playlist_timeout_seconds": func(c *config.BridgeConfig, v any) { c.HLSBuffer.PlaylistTimeoutSeconds = v.(int) },
 	"hls_max_variant_height":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxVariantHeight = v.(int) },
 	"hls_stale_cache_reap_hours":   func(c *config.BridgeConfig, v any) { c.HLSBuffer.StaleCacheReapHours = v.(int) },
-	"logging_debug": func(c *config.BridgeConfig, v any) { c.Logging.Debug = v.(bool) },
+	"logging_debug":                func(c *config.BridgeConfig, v any) { c.Logging.Debug = v.(bool) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -589,24 +589,24 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 // scope ahead of time (e.g., for badge rendering — but Network pane
 // scopes are already encoded directly in the template).
 var bridgeFieldScopes = map[string]adapters.ApplyScope{
-	"mister_host":        adapters.ScopeRestartBridge,
-	"mister_port":        adapters.ScopeRestartBridge,
-	"mister_source_port": adapters.ScopeRestartBridge,
-	"ui_http_port":       adapters.ScopeRestartBridge,
-	"host_ip":            adapters.ScopeRestartBridge,
-	"data_dir":           adapters.ScopeRestartBridge,
-	"ffmpeg_path":        adapters.ScopeHotSwap,
-	"ffprobe_path":       adapters.ScopeHotSwap,
-	"ytdlp_path":         adapters.ScopeHotSwap,
-	"video_modeline":              adapters.ScopeRestartCast,
-	"video_interlace_field_order": adapters.ScopeHotSwap,
-	"video_aspect_mode":           adapters.ScopeRestartCast,
-	"video_lz4_enabled":           adapters.ScopeRestartCast,
-	"video_delta_lz4_enabled":     adapters.ScopeRestartCast,
-	"audio_sample_rate":    adapters.ScopeRestartCast,
-	"audio_channels":       adapters.ScopeRestartCast,
-	"mister_ssh_user":      adapters.ScopeHotSwap,
-	"mister_ssh_password":  adapters.ScopeHotSwap,
+	"mister_host":                  adapters.ScopeRestartBridge,
+	"mister_port":                  adapters.ScopeRestartBridge,
+	"mister_source_port":           adapters.ScopeRestartBridge,
+	"ui_http_port":                 adapters.ScopeRestartBridge,
+	"host_ip":                      adapters.ScopeRestartBridge,
+	"data_dir":                     adapters.ScopeRestartBridge,
+	"ffmpeg_path":                  adapters.ScopeHotSwap,
+	"ffprobe_path":                 adapters.ScopeHotSwap,
+	"ytdlp_path":                   adapters.ScopeHotSwap,
+	"video_modeline":               adapters.ScopeRestartCast,
+	"video_interlace_field_order":  adapters.ScopeHotSwap,
+	"video_aspect_mode":            adapters.ScopeRestartCast,
+	"video_lz4_enabled":            adapters.ScopeRestartCast,
+	"video_delta_lz4_enabled":      adapters.ScopeRestartCast,
+	"audio_sample_rate":            adapters.ScopeRestartCast,
+	"audio_channels":               adapters.ScopeRestartCast,
+	"mister_ssh_user":              adapters.ScopeHotSwap,
+	"mister_ssh_password":          adapters.ScopeHotSwap,
 	"hls_enabled":                  adapters.ScopeRestartCast,
 	"hls_live_edge_segments":       adapters.ScopeRestartCast,
 	"hls_start_segments":           adapters.ScopeRestartCast,
@@ -618,7 +618,7 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"hls_playlist_timeout_seconds": adapters.ScopeRestartCast,
 	"hls_max_variant_height":       adapters.ScopeRestartCast,
 	"hls_stale_cache_reap_hours":   adapters.ScopeRestartCast,
-	"logging_debug": adapters.ScopeHotSwap,
+	"logging_debug":                adapters.ScopeHotSwap,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns
@@ -1439,6 +1439,33 @@ type CookieStatusView struct {
 	SetAt  string // "2006-01-02 15:04:05Z" (UTC); "" when absent
 }
 
+// LocalFilesService exposes local-file browsing and single-file casts to the
+// chassis without importing the adapter package.
+type LocalFilesService interface {
+	Browse(ctx context.Context, lib, path string) ([]LocalFileEntry, error)
+	Cast(ctx context.Context, lib, path string) error
+}
+
+type LocalFileEntry struct {
+	Name      string  `json:"name"`
+	Rel       string  `json:"rel"`
+	IsDir     bool    `json:"is_dir"`
+	Playable  bool    `json:"playable"`
+	DurationS float64 `json:"duration_s"`
+	AudioOnly bool    `json:"audio_only"`
+}
+
+// LocalFilesLibraryEditor manages the adapter's named library list.
+type LocalFilesLibraryEditor interface {
+	Libraries() []LocalFileLibraryRow
+	SetLibraries([]LocalFileLibraryRow) (scope string, normalized []LocalFileLibraryRow, err error)
+}
+
+type LocalFileLibraryRow struct {
+	Name string `json:"name"`
+	Root string `json:"root"`
+}
+
 // handleSettingsAdapterHostsPost handles POST /receiver/settings/adapter/{name}/hosts.
 // Body: {"hosts":[...]}. Mirrors handleSettingsAdapterPost's error envelope.
 func (s *Server) handleSettingsAdapterHostsPost(w http.ResponseWriter, r *http.Request) {
@@ -1566,4 +1593,128 @@ func writeSettingsCookie(w http.ResponseWriter, v CookieStatusView) {
 			"set_at": v.SetAt,
 		},
 	})
+}
+
+const maxLocalFilesWidgetBody = 64 << 10
+
+func (s *Server) handleSettingsAdapterLocalfilesBrowse(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.LocalFiles == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	lib, rel, err := readLocalFileActionRequest(w, r)
+	if err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	if lib == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	entries, err := s.cfg.LocalFiles.Browse(r.Context(), lib, rel)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+	if entries == nil {
+		entries = []LocalFileEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entries": entries})
+}
+
+func (s *Server) handleSettingsAdapterLocalfilesCast(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.LocalFiles == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	lib, rel, err := readLocalFileActionRequest(w, r)
+	if err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	if lib == "" || strings.TrimSpace(rel) == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	if err := s.cfg.LocalFiles.Cast(r.Context(), lib, rel); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSettingsAdapterLocalfilesLibraries(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.LocalFilesLibraryEditor == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	libs, err := readLocalFileLibraries(w, r)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	scope, normalized, err := s.cfg.LocalFilesLibraryEditor.SetLibraries(libs)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeLocalFileLibraries(w, scope, normalized)
+}
+
+func readLocalFileActionRequest(w http.ResponseWriter, r *http.Request) (lib string, rel string, err error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxLocalFilesWidgetBody)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var payload struct {
+			Lib  string `json:"lib"`
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return "", "", err
+		}
+		return strings.TrimSpace(payload.Lib), payload.Path, nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(r.PostForm.Get("lib")), r.PostForm.Get("path"), nil
+}
+
+func readLocalFileLibraries(w http.ResponseWriter, r *http.Request) ([]LocalFileLibraryRow, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxLocalFilesWidgetBody)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var payload struct {
+			Libraries []LocalFileLibraryRow `json:"libraries"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, &cmdStyleFieldErrors{errs: []adapters.FieldError{{Key: "libraries", Msg: "invalid library payload"}}}
+		}
+		return payload.Libraries, nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return nil, &cmdStyleFieldErrors{errs: []adapters.FieldError{{Key: "libraries", Msg: "invalid library payload"}}}
+	}
+	names := r.PostForm["name"]
+	roots := r.PostForm["root"]
+	if len(names) != len(roots) {
+		return nil, &cmdStyleFieldErrors{errs: []adapters.FieldError{{Key: "libraries", Msg: "library names and roots must match"}}}
+	}
+	libs := make([]LocalFileLibraryRow, 0, len(names))
+	for i := range names {
+		libs = append(libs, LocalFileLibraryRow{Name: names[i], Root: roots[i]})
+	}
+	return libs, nil
+}
+
+type cmdStyleFieldErrors struct {
+	errs []adapters.FieldError
+}
+
+func (e *cmdStyleFieldErrors) Error() string                      { return "localfiles field errors" }
+func (e *cmdStyleFieldErrors) FieldErrors() []adapters.FieldError { return e.errs }
+
+func writeLocalFileLibraries(w http.ResponseWriter, scope string, libs []LocalFileLibraryRow) {
+	if libs == nil {
+		libs = []LocalFileLibraryRow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "scope": scope, "libraries": libs})
 }
