@@ -22,11 +22,11 @@ export async function initPopup(doc = document) {
   bindStaticActions(doc, state);
 
   if (!state.bridgeURL) {
-    showUnconfigured(doc);
+    setView(doc, "unconfigured");
     return state;
   }
 
-  showConfigured(doc);
+  buildTickRing(doc);
   const [tabs] = await Promise.all([
     browser.tabs.query({ active: true, currentWindow: true }),
     state.refresh(),
@@ -62,21 +62,24 @@ function bindStaticActions(doc, state) {
   doc.getElementById("cast")?.addEventListener("click", () => {
     runCommand(doc, state, () => bridge.play(state.activeTabURL, "auto"), "Cast failed");
   });
-  doc.getElementById("pause")?.addEventListener("click", () => {
-    runCommand(doc, state, () => bridge.control("pause"), "Pause failed");
+  doc.getElementById("pause-resume")?.addEventListener("click", () => {
+    const playing = state.snapshot?.session?.state === "playing";
+    runCommand(doc, state, () => bridge.control(playing ? "pause" : "resume"),
+      playing ? "Pause failed" : "Resume failed");
   });
-  doc.getElementById("resume")?.addEventListener("click", () => {
-    runCommand(doc, state, () => bridge.control("resume"), "Resume failed");
+  doc.getElementById("replay")?.addEventListener("click", () =>
+    runCommand(doc, state, () => bridge.control("replay"), "Replay failed"));
+  doc.getElementById("stop")?.addEventListener("click", () =>
+    runCommand(doc, state, () => bridge.control("stop"), "Stop failed"));
+  doc.getElementById("volume-range")?.addEventListener("input", (e) => {
+    // live visual feedback only; no network until change
+    renderVolumeVisual(doc, Number(e.target.value));
   });
-  doc.getElementById("stop")?.addEventListener("click", () => {
-    runCommand(doc, state, () => bridge.control("stop"), "Stop failed");
-  });
-  doc.getElementById("replay")?.addEventListener("click", () => {
-    runCommand(doc, state, () => bridge.control("replay"), "Replay failed");
-  });
-  doc.getElementById("seek")?.addEventListener("change", (event) => {
-    const offsetMs = Number(event.target.value || 0);
-    runCommand(doc, state, () => bridge.control("seek", { offset_ms: offsetMs }), "Seek failed");
+  doc.getElementById("volume-range")?.addEventListener("change", (e) => {
+    // Capture the value before runCommand's render() resets the range to the
+    // current snapshot volume (renderVolume clobbers #volume-range.value).
+    const value = Number(e.target.value);
+    runCommand(doc, state, () => bridge.volume(value), "Volume failed");
   });
 }
 
@@ -113,6 +116,13 @@ async function runCommand(doc, state, fn, fallback, opts = {}) {
   render(doc, state);
 }
 
+function setView(doc, view) {
+  // view ∈ "unconfigured" | "active" | "idle"
+  doc.getElementById("unconfigured").hidden = view !== "unconfigured";
+  doc.getElementById("active-view").hidden = view !== "active";
+  doc.getElementById("idle-view").hidden = view !== "idle";
+}
+
 function render(doc, state) {
   const snapshot = state.snapshot || {};
   const session = snapshot.session || { state: "idle", capabilities: {} };
@@ -120,45 +130,65 @@ function render(doc, state) {
   const active = session.state === "playing" || session.state === "paused";
 
   doc.getElementById("popup").dataset.state = state.stale ? "stale" : session.state || "idle";
-  renderChip(doc, state, session);
-  renderHealth(doc, snapshot.health || {});
-  renderHistory(doc, state);
 
-  const activeView = doc.getElementById("active-view");
-  const idleView = doc.getElementById("idle-view");
-  activeView.hidden = !active;
-  idleView.hidden = active;
+  renderLeds(doc, state, snapshot);
 
   if (active) {
+    setView(doc, "active");
     renderActive(doc, state, session, caps);
   } else {
+    setView(doc, "idle");
     renderIdle(doc, state, caps);
   }
+
+  renderVolume(doc, snapshot.output_volume ?? 0);
+
   doc.getElementById("launch-groovy").disabled = state.commanding;
 }
 
+function renderLeds(doc, state, snapshot) {
+  const session = snapshot.session || {};
+  const health = snapshot.health || {};
+  const reachable = !state.stale;                 // a successful poll happened
+  const playing = session.state === "playing" || session.state === "paused";
+  doc.getElementById("led-pwr").classList.toggle("on", reachable);
+  doc.getElementById("led-link").classList.toggle("on", reachable && health.bridge === "online");
+  doc.getElementById("led-cast").classList.toggle("on", playing);
+}
+
+function setTier(doc, id, text) {
+  const el = doc.getElementById(id);
+  el.textContent = text || "";
+  el.classList.toggle("is-empty", !text);
+}
+
 function renderActive(doc, state, session, caps) {
-  doc.getElementById("media-title").textContent =
-    session.title || session.source_display || session.adapter_name || "Unknown source";
-  doc.getElementById("source-line").textContent = session.source_display || session.adapter_name || "";
+  setTier(doc, "vfd-primary", session.title || session.source_display);
+  setTier(doc, "vfd-secondary", session.source_display);
+  setTier(doc, "vfd-tertiary", session.resolved_via);
+  doc.getElementById("vfd-state").textContent = (session.state || "").toUpperCase();
+
+  const playing = session.state === "playing";
+  doc.querySelector('[data-state-icon="playing"]').hidden = !playing;
+  doc.querySelector('[data-state-icon="paused"]').hidden = playing;
+
+  doc.getElementById("replay").disabled = disabledFor(state, caps.can_replay);
+  doc.getElementById("stop").disabled = disabledFor(state, caps.can_stop);
+  // pause/resume button enabled if either capability is available for the current state:
+  const canToggle = playing ? caps.can_pause : caps.can_resume;
+  doc.getElementById("pause-resume").disabled = disabledFor(state, canToggle);
 
   const duration = Number(session.duration_ms || 0);
   const position = Number(session.position_ms || 0);
-  const progress = doc.getElementById("progress-wrap");
-  progress.hidden = duration <= 0;
+  const wrap = doc.getElementById("progress-wrap");
+  wrap.hidden = duration <= 0;
   if (duration > 0) {
     doc.getElementById("position-label").textContent = formatTime(position);
     doc.getElementById("duration-label").textContent = formatTime(duration);
-    const seek = doc.getElementById("seek");
-    seek.max = String(duration);
-    seek.value = String(Math.min(position, duration));
-    seek.disabled = disabledFor(state, caps.can_seek);
+    const pct = Math.max(0, Math.min(100, Math.round((position / duration) * 100)));
+    doc.getElementById("percent-label").textContent = `${pct}%`;
+    doc.getElementById("seek").style.setProperty("--seek-percent", `${pct}%`);
   }
-
-  doc.getElementById("pause").disabled = disabledFor(state, caps.can_pause);
-  doc.getElementById("resume").disabled = disabledFor(state, caps.can_resume);
-  doc.getElementById("stop").disabled = disabledFor(state, caps.can_stop);
-  doc.getElementById("replay").disabled = disabledFor(state, caps.can_replay);
 }
 
 function renderIdle(doc, state, caps) {
@@ -169,59 +199,35 @@ function renderIdle(doc, state, caps) {
   if (!castable && url) {
     setStatus(doc, "err", "Active tab has no http(s) URL");
   }
-}
 
-function renderChip(doc, state, session) {
-  const chip = doc.getElementById("state-chip");
-  const label = state.stale ? "STALE" : String(session.state || "idle").toUpperCase();
-  chip.textContent = label;
-  chip.className = "chip" + (!state.stale && session.state === "playing" ? " live" : "");
-}
-
-function renderHealth(doc, health) {
+  const snapshot = state.snapshot || {};
+  const health = snapshot.health || {};
   doc.getElementById("health-bridge").textContent = health.bridge || "--";
   doc.getElementById("health-mister").textContent = health.mister || "--";
   doc.getElementById("health-url").textContent = health.url_adapter || "--";
 }
 
-function renderHistory(doc, state) {
-  const root = doc.getElementById("history");
-  root.textContent = "";
-  for (const item of state.snapshot?.history || []) {
-    const row = doc.createElement("div");
-    row.className = "history-row";
-
-    const playBtn = doc.createElement("button");
-    playBtn.type = "button";
-    playBtn.dataset.historyPlay = item.id;
-    playBtn.textContent = item.title || item.url_display;
-    playBtn.disabled = state.stale || state.commanding;
-    playBtn.addEventListener("click", () => {
-      runCommand(doc, state, () => bridge.historyPlay(item.id), "History play failed");
-    });
-
-    const delBtn = doc.createElement("button");
-    delBtn.type = "button";
-    delBtn.dataset.historyDelete = item.id;
-    delBtn.textContent = "Delete";
-    delBtn.disabled = state.stale || state.commanding;
-    delBtn.addEventListener("click", () => {
-      runCommand(doc, state, () => bridge.historyDelete(item.id), "History delete failed");
-    });
-
-    row.append(playBtn, delBtn);
-    root.append(row);
+function buildTickRing(doc) {
+  const ring = doc.getElementById("volume-tick-ring");
+  ring.textContent = "";
+  for (let i = 0; i < 21; i++) {
+    const t = doc.createElement("span");
+    t.className = "volume-tick";
+    ring.appendChild(t);
   }
 }
 
-function showUnconfigured(doc) {
-  doc.getElementById("configured").hidden = true;
-  doc.getElementById("unconfigured").hidden = false;
+function renderVolumeVisual(doc, v) {
+  v = Math.max(0, Math.min(100, Number(v) || 0));
+  doc.getElementById("volume-value").textContent = String(v);
+  doc.getElementById("volume-control").style.setProperty("--volume-angle", `${-135 + (v / 100) * 270}deg`);
+  const onCount = Math.round((v / 100) * 21);
+  doc.querySelectorAll(".volume-tick").forEach((t, i) => t.classList.toggle("on", i < onCount));
 }
 
-function showConfigured(doc) {
-  doc.getElementById("unconfigured").hidden = true;
-  doc.getElementById("configured").hidden = false;
+function renderVolume(doc, v) {
+  renderVolumeVisual(doc, v);
+  doc.getElementById("volume-range").value = String(Math.max(0, Math.min(100, Number(v) || 0)));
 }
 
 function disabledFor(state, capability) {
