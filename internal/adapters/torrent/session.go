@@ -205,7 +205,8 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 		AdapterRef:   "torrent:" + sessionID,
 		Source:       "torrent",
 		DirectPlay:   true,
-		Title:        s.Title,
+		Title:           s.Title,
+		DisplayMetadata: core.DisplayMetadata{Primary: s.Title},
 		MediaInputPolicy: core.MediaInputPolicy{
 			ProtocolWhitelist: []string{"http", "tcp"},
 			DisableRedirects:  true,

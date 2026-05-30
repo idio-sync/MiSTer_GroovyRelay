@@ -39,14 +39,15 @@ const (
 	StateLive ReceiverState = "live"
 )
 
-// VFDData drives the VFD frame in the top row of the chassis. Idle
-// state shows STANDBY plus the marquee hint. SystemTime is rendered
-// by the server for initial paint and ticked client-side at minute
-// boundaries.
+// VFDData drives the VFD frame in the top row of the chassis. The three
+// tiers map per media type (see the metadata design spec); empty tiers
+// render as collapsed rows. SystemTime is server-rendered for first
+// paint and ticked client-side.
 type VFDData struct {
 	State        string // "idle" | "live"
-	Title        string
-	Marquee      string
+	Primary      string
+	Secondary    string
+	Tertiary     string
 	QueueCurrent int
 	QueueTotal   int
 	SystemTime   string
@@ -612,8 +613,8 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 		State:     StateIdle,
 		VFD: VFDData{
 			State:        string(StateIdle),
-			Title:        "STANDBY",
-			Marquee:      "MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET",
+			Primary:      "STANDBY",
+			Secondary:    "MISTER LINK OK · 4MS · 12 PRESETS · 90 CHANNELS · PASTE URL OR PICK PRESET",
 			QueueCurrent: 0,
 			QueueTotal:   0,
 			SystemTime:   fmt.Sprintf("%02d:%02d", now.Hour(), now.Minute()),

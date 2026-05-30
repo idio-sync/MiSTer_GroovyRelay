@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -46,6 +47,10 @@ type PlaybackInfoResult struct {
 	Album          string
 	Duration       time.Duration
 	ArtworkPath    string
+	SeriesName     string
+	Season         int
+	Episode        int
+	Year           int
 }
 
 type playbackInfoBody struct {
@@ -71,11 +76,15 @@ type playbackInfoResponseDTO struct {
 	PlaySessionID string `json:"PlaySessionId"`
 	ErrorCode     string `json:"ErrorCode"`
 	Item          struct {
-		Type         string   `json:"Type"`
-		Name         string   `json:"Name"`
-		Artists      []string `json:"Artists"`
-		Album        string   `json:"Album"`
-		RunTimeTicks int64    `json:"RunTimeTicks"`
+		Type              string   `json:"Type"`
+		Name              string   `json:"Name"`
+		Artists           []string `json:"Artists"`
+		Album             string   `json:"Album"`
+		RunTimeTicks      int64    `json:"RunTimeTicks"`
+		SeriesName        string   `json:"SeriesName"`
+		IndexNumber       int      `json:"IndexNumber"`
+		ParentIndexNumber int      `json:"ParentIndexNumber"`
+		ProductionYear    int      `json:"ProductionYear"`
 	} `json:"Item"`
 }
 
@@ -110,15 +119,23 @@ type ItemMetadataResult struct {
 	Album       string
 	Duration    time.Duration
 	ArtworkPath string
+	SeriesName  string
+	Season      int
+	Episode     int
+	Year        int
 }
 
 type itemMetadataDTO struct {
-	ID           string   `json:"Id"`
-	Type         string   `json:"Type"`
-	Name         string   `json:"Name"`
-	Artists      []string `json:"Artists"`
-	Album        string   `json:"Album"`
-	RunTimeTicks int64    `json:"RunTimeTicks"`
+	ID                string   `json:"Id"`
+	Type              string   `json:"Type"`
+	Name              string   `json:"Name"`
+	Artists           []string `json:"Artists"`
+	Album             string   `json:"Album"`
+	RunTimeTicks      int64    `json:"RunTimeTicks"`
+	SeriesName        string   `json:"SeriesName"`
+	IndexNumber       int      `json:"IndexNumber"`
+	ParentIndexNumber int      `json:"ParentIndexNumber"`
+	ProductionYear    int      `json:"ProductionYear"`
 }
 
 // FetchPlaybackInfo POSTs /Items/{ItemId}/PlaybackInfo and returns
@@ -226,6 +243,10 @@ func fetchPlaybackInfoOnce(ctx context.Context, in PlaybackInfoInput) (PlaybackI
 		Artist:         strings.Join(dto.Item.Artists, ", "),
 		Album:          dto.Item.Album,
 		Duration:       durationFromJellyfinTicks(dto.Item.RunTimeTicks),
+		SeriesName:     dto.Item.SeriesName,
+		Season:         dto.Item.ParentIndexNumber,
+		Episode:        dto.Item.IndexNumber,
+		Year:           dto.Item.ProductionYear,
 	}, nil
 }
 
@@ -278,13 +299,17 @@ func itemMetadataFromDTO(dto itemMetadataDTO) ItemMetadataResult {
 		kind = core.MediaKindMusic
 	}
 	return ItemMetadataResult{
-		ItemID:    dto.ID,
-		Type:      dto.Type,
-		MediaKind: kind,
-		Title:     dto.Name,
-		Artist:    strings.Join(dto.Artists, ", "),
-		Album:     dto.Album,
-		Duration:  durationFromJellyfinTicks(dto.RunTimeTicks),
+		ItemID:     dto.ID,
+		Type:       dto.Type,
+		MediaKind:  kind,
+		Title:      dto.Name,
+		Artist:     strings.Join(dto.Artists, ", "),
+		Album:      dto.Album,
+		Duration:   durationFromJellyfinTicks(dto.RunTimeTicks),
+		SeriesName: dto.SeriesName,
+		Season:     dto.ParentIndexNumber,
+		Episode:    dto.IndexNumber,
+		Year:       dto.ProductionYear,
 	}
 }
 
@@ -306,6 +331,18 @@ func mergePlaybackMetadata(info PlaybackInfoResult, meta ItemMetadataResult) Pla
 	}
 	if info.ArtworkPath == "" {
 		info.ArtworkPath = meta.ArtworkPath
+	}
+	if info.SeriesName == "" {
+		info.SeriesName = meta.SeriesName
+	}
+	if info.Season == 0 {
+		info.Season = meta.Season
+	}
+	if info.Episode == 0 {
+		info.Episode = meta.Episode
+	}
+	if info.Year == 0 {
+		info.Year = meta.Year
 	}
 	return info
 }
@@ -351,6 +388,33 @@ type playRequestInput struct {
 	Token              string
 }
 
+// jellyfinDisplayMetadata maps a negotiated PlaybackInfoResult onto the
+// three VFD tiers. Episode: show-first. Movie: title + year. Audio:
+// title/artist/album. Unknown types: title only.
+func jellyfinDisplayMetadata(info PlaybackInfoResult) core.DisplayMetadata {
+	switch {
+	case strings.EqualFold(info.ItemType, "Episode"):
+		primary := info.SeriesName
+		if primary == "" {
+			primary = info.Title
+		}
+		return core.DisplayMetadata{
+			Primary:   primary,
+			Secondary: info.Title,
+			Tertiary:  adapters.FormatSeasonEpisode(info.Season, info.Episode, info.Year),
+		}
+	case strings.EqualFold(info.ItemType, "Movie"):
+		return core.DisplayMetadata{
+			Primary:   info.Title,
+			Secondary: adapters.FormatSeasonEpisode(0, 0, info.Year),
+		}
+	case info.MediaKind == core.MediaKindMusic || strings.EqualFold(info.ItemType, "Audio"):
+		return core.DisplayMetadata{Primary: info.Title, Secondary: info.Artist, Tertiary: info.Album}
+	default:
+		return core.DisplayMetadata{Primary: info.Title}
+	}
+}
+
 // buildSessionRequest assembles a core.SessionRequest from the
 // playback negotiation result. The OnStop closure captures the
 // adapter-internal "<itemId>:<playSessionId>" key so the elision
@@ -359,18 +423,19 @@ type playRequestInput struct {
 func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 	refKey := in.ItemID + ":" + in.PlayInfo.PlaySessionID
 	req := core.SessionRequest{
-		StreamURL:     BuildAbsoluteStreamURL(in.ServerURL, in.PlayInfo.TranscodingURL, in.Token),
-		InputHeaders:  nil,
-		SeekOffsetMs:  int(in.StartPositionTicks / 10_000),
-		SubtitleURL:   "",
-		SubtitlePath:  "",
-		SubtitleIndex: 0,
-		Capabilities:  core.Capabilities{CanSeek: true, CanPause: true},
-		AdapterRef:    refKey,
-		Source:        "jellyfin",
-		DirectPlay:    false,
-		OnStop:        artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey)),
-		Title:         in.PlayInfo.Title,
+		StreamURL:       BuildAbsoluteStreamURL(in.ServerURL, in.PlayInfo.TranscodingURL, in.Token),
+		InputHeaders:    nil,
+		SeekOffsetMs:    int(in.StartPositionTicks / 10_000),
+		SubtitleURL:     "",
+		SubtitlePath:    "",
+		SubtitleIndex:   0,
+		Capabilities:    core.Capabilities{CanSeek: true, CanPause: true},
+		AdapterRef:      refKey,
+		Source:          "jellyfin",
+		DirectPlay:      false,
+		OnStop:          artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey)),
+		Title:           in.PlayInfo.Title,
+		DisplayMetadata: jellyfinDisplayMetadata(in.PlayInfo),
 	}
 	if in.PlayInfo.MediaKind == core.MediaKindMusic {
 		req.MediaKind = core.MediaKindMusic

@@ -261,7 +261,14 @@ func StopTranscodeSession(ctx context.Context, serverURL, transcodeSessionID, to
 // is the Plex convention for subtitles: 3, but we match by ID per the plan).
 type pmsMediaContainer struct {
 	Video []struct {
-		Media []struct {
+		Type             string `xml:"type,attr"`
+		Title            string `xml:"title,attr"`
+		GrandparentTitle string `xml:"grandparentTitle,attr"`
+		ParentTitle      string `xml:"parentTitle,attr"`
+		Index            int    `xml:"index,attr"`
+		ParentIndex      int    `xml:"parentIndex,attr"`
+		Year             int    `xml:"year,attr"`
+		Media            []struct {
 			Part []struct {
 				ID     string `xml:"id,attr"`
 				Stream []struct {

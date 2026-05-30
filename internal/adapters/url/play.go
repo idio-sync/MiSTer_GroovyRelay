@@ -190,6 +190,8 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 	var audioStreamURL string
 	var audioHeaders map[string]string
 	var resolvedTitle string
+	var resolvedChannel string
+	var resolvedUploadDate string
 	var mediaPolicy core.MediaInputPolicy
 	var mediaKind core.MediaKind
 	var hlsSession *hlsbuffer.Session
@@ -224,6 +226,8 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		audioStreamURL = res.AudioURL
 		audioHeaders = res.AudioHeaders
 		resolvedTitle = res.Title
+		resolvedChannel = res.Channel
+		resolvedUploadDate = res.UploadDate
 		resolvedVia = "ytdlp"
 		// Backfill the title onto the just-bumped history entry so the
 		// panel shows "Big Buck Bunny" rather than just the youtu.be
@@ -289,6 +293,13 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		// adapter state may have been overwritten by a preempting
 		// session.
 		OnStop: onStop,
+	}
+	req.DisplayMetadata = core.DisplayMetadata{Primary: title}
+	if useYtdlp {
+		req.DisplayMetadata.Secondary = resolvedChannel // may be "" → row collapses
+		req.DisplayMetadata.Tertiary = adapters.FormatUploadDate(resolvedUploadDate)
+	} else {
+		req.DisplayMetadata.Secondary = "URL"
 	}
 
 	if a.core == nil {

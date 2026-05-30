@@ -369,6 +369,21 @@ func TestMergePlaybackMetadata_ReplacesItemIDTitleFallback(t *testing.T) {
 	}
 }
 
+func TestJellyfinDisplayMetadata(t *testing.T) {
+	episode := PlaybackInfoResult{ItemType: "Episode", Title: "The Constant", SeriesName: "Lost", Season: 4, Episode: 5, Year: 2008}
+	if d := jellyfinDisplayMetadata(episode); d.Primary != "Lost" || d.Secondary != "The Constant" || d.Tertiary != "S04E05 · 2008" {
+		t.Fatalf("episode = %+v", d)
+	}
+	movie := PlaybackInfoResult{ItemType: "Movie", Title: "Blade Runner 2049", Year: 2017}
+	if d := jellyfinDisplayMetadata(movie); d.Primary != "Blade Runner 2049" || d.Secondary != "2017" {
+		t.Fatalf("movie = %+v", d)
+	}
+	music := PlaybackInfoResult{ItemType: "Audio", Title: "Midnight City", Artist: "M83", Album: "Hurry Up"}
+	if d := jellyfinDisplayMetadata(music); d.Primary != "Midnight City" || d.Secondary != "M83" || d.Tertiary != "Hurry Up" {
+		t.Fatalf("music = %+v", d)
+	}
+}
+
 func TestFetchPlaybackInfo_TitleFallsBackToSourceName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -1494,6 +1494,7 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 	if m.active != nil {
 		view.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
 		view.Title = m.active.req.Title
+		view.Display = m.active.req.DisplayMetadata
 		view.AdapterRef = m.active.req.AdapterRef
 		view.Source = m.active.req.Source
 		view.StartedAt = m.active.startedAt

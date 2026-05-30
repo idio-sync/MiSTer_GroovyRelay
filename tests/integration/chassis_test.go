@@ -315,7 +315,7 @@ func TestReceiverEvents_LivePathReachesClient(t *testing.T) {
 		if strings.Contains(line, `"state":"live"`) {
 			sawLiveState = true
 		}
-		if strings.Contains(line, `"title":"Integration Live Title"`) {
+		if strings.Contains(line, `"primary":"Integration Live Title"`) {
 			sawLiveTitle = true
 		}
 	}

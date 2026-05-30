@@ -3446,3 +3446,15 @@ type audioScopesFakePlane struct {
 }
 
 func (p *audioScopesFakePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return p.snap }
+
+func TestManager_StatusHomeView_CarriesDisplayMetadata(t *testing.T) {
+	m := newTestManager(t)
+	m.active = &activeSession{req: SessionRequest{
+		Title:           "Fallback Title",
+		DisplayMetadata: DisplayMetadata{Primary: "P", Secondary: "S", Tertiary: "T"},
+	}}
+	view := m.StatusHomeView()
+	if view.Display.Primary != "P" || view.Display.Secondary != "S" || view.Display.Tertiary != "T" {
+		t.Fatalf("Display = %+v, want {P S T}", view.Display)
+	}
+}

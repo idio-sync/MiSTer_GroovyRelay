@@ -373,6 +373,9 @@ func TestStartMagnetBuildsCoreRequestWithPolicy(t *testing.T) {
 	if got := strings.Join(req.MediaInputPolicy.BlockedHeaders, ","); got != "Cookie,Authorization,Proxy-Authorization" {
 		t.Fatalf("BlockedHeaders = %q", got)
 	}
+	if req.DisplayMetadata.Primary != "movie.mkv" {
+		t.Fatalf("DisplayMetadata.Primary = %q, want movie.mkv", req.DisplayMetadata.Primary)
+	}
 }
 
 func TestSameInfoHashReusesTorrentObject(t *testing.T) {
