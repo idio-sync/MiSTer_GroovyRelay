@@ -1942,6 +1942,25 @@ body.receiver .seek-time > * {
   z-index: 1;
 }
 
+/* Stack ghost + text in one grid cell so the "88:88" placeholder always
+   defines the box width. Without this, an empty seg-text (idle: no cast)
+   collapses the seg-display to zero width and the absolutely-positioned
+   ghosts spill out and overlap each other into a jumble. */
+body.receiver .seek-time .seg-display {
+  display: inline-grid;
+  place-items: start;
+}
+
+body.receiver .seek-time .seg-ghost,
+body.receiver .seek-time .seg-text {
+  grid-area: 1 / 1;
+}
+
+body.receiver .seek-time .seg-ghost {
+  position: static;
+  inset: auto;
+}
+
 body.receiver .seek-time .sep {
   color: var(--vfd-faded);
   text-shadow: none;
