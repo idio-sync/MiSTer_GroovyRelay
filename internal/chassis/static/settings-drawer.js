@@ -940,6 +940,260 @@ document.addEventListener('click', (ev) => {
     putHosts(set.concat([host]));
   }
 });
+
+// Local Files — library editor + browse drawer.
+function localFilesSection() {
+  return document.querySelector('[data-adapter-section="localfiles"]');
+}
+
+function localFilesLibraryRows() {
+  const sec = localFilesSection();
+  if (!sec) return [];
+  return Array.from(sec.querySelectorAll('[data-localfiles-library-row]'));
+}
+
+function localFilesLibraries() {
+  return localFilesLibraryRows().map((row) => ({
+    name: (row.querySelector('[data-localfiles-library-name]')?.value || '').trim(),
+    root: (row.querySelector('[data-localfiles-library-root]')?.value || '').trim(),
+  })).filter((lib) => lib.name || lib.root);
+}
+
+function localFilesErr(kind) {
+  const sec = localFilesSection();
+  return sec ? sec.querySelector(`[data-localfiles-${kind}-err]`) : null;
+}
+
+function clearLocalFilesErr(kind) {
+  const err = localFilesErr(kind);
+  if (!err) return;
+  err.hidden = true;
+  err.textContent = '';
+}
+
+function paintLocalFilesErr(kind, msg) {
+  const err = localFilesErr(kind);
+  if (!err) return;
+  err.textContent = msg;
+  err.hidden = false;
+}
+
+function lfEl(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function renderLocalFilesLibraries(libs) {
+  const sec = localFilesSection();
+  const list = sec ? sec.querySelector('[data-localfiles-library-list]') : null;
+  const add = list ? list.querySelector('[data-localfiles-add-library]') : null;
+  if (!list || !add) return;
+  list.querySelectorAll('[data-localfiles-library-row]').forEach((row) => row.remove());
+  (libs || []).forEach((lib) => {
+    const row = lfEl('div', 'localfiles-library-row');
+    row.setAttribute('data-localfiles-library-row', '');
+    const name = lfEl('input', 'field-input');
+    name.setAttribute('data-localfiles-library-name', '');
+    name.setAttribute('placeholder', 'Name');
+    name.setAttribute('autocomplete', 'off');
+    name.value = lib.name || '';
+    const root = lfEl('input', 'field-input path');
+    root.setAttribute('data-localfiles-library-root', '');
+    root.setAttribute('placeholder', '/media/movies');
+    root.setAttribute('autocomplete', 'off');
+    root.value = lib.root || '';
+    const rm = lfEl('button', 'action-btn ghost', 'Remove');
+    rm.type = 'button';
+    rm.setAttribute('data-localfiles-remove-library', '');
+    row.append(name, root, rm);
+    list.insertBefore(row, add);
+  });
+
+  const select = sec.querySelector('[data-localfiles-browse-lib]');
+  if (select) {
+    select.replaceChildren();
+    (libs || []).forEach((lib) => {
+      const opt = lfEl('option', null, lib.name || '');
+      opt.value = lib.name || '';
+      select.appendChild(opt);
+    });
+  }
+}
+
+async function saveLocalFilesLibraries() {
+  clearLocalFilesErr('library');
+  try {
+    const res = await fetch('/receiver/settings/adapter/localfiles/libraries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ libraries: localFilesLibraries() }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!payload.ok) {
+      if (payload.errors) {
+        paintLocalFilesErr('library', Object.values(payload.errors)[0] || 'invalid library');
+      } else if (payload.chip) {
+        window.Chassis.settings.showNotice(payload.chip, 'err');
+      }
+      return false;
+    }
+    renderLocalFilesLibraries(payload.libraries || []);
+    return true;
+  } catch (_) {
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
+    return false;
+  }
+}
+
+function localFilesModal() {
+  const sec = localFilesSection();
+  return sec ? sec.querySelector('[data-localfiles-browse-modal]') : null;
+}
+
+let localFilesPath = '';
+
+async function browseLocalFiles(path) {
+  const sec = localFilesSection();
+  if (!sec) return;
+  const lib = sec.querySelector('[data-localfiles-browse-lib]')?.value || '';
+  if (!lib) {
+    paintLocalFilesErr('browse', 'no library selected');
+    return;
+  }
+  clearLocalFilesErr('browse');
+  const body = new URLSearchParams();
+  body.set('lib', lib);
+  body.set('path', path || '');
+  try {
+    const res = await fetch('/receiver/settings/adapter/localfiles/browse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!payload.ok) {
+      paintLocalFilesErr('browse', payload.error || payload.chip || 'browse failed');
+      return;
+    }
+    localFilesPath = path || '';
+    renderLocalFilesEntries(payload.entries || []);
+    const crumb = sec.querySelector('[data-localfiles-breadcrumb]');
+    if (crumb) crumb.textContent = `/${localFilesPath}`;
+    const modal = localFilesModal();
+    if (modal) {
+      modal.hidden = false;
+      modal.classList.add('localfiles-open');
+    }
+  } catch (_) {
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
+  }
+}
+
+function renderLocalFilesEntries(entries) {
+  const modal = localFilesModal();
+  const grid = modal ? modal.querySelector('[data-localfiles-entries]') : null;
+  if (!grid) return;
+  grid.replaceChildren();
+  if (localFilesPath) {
+    const up = lfEl('button', 'ch-card', '..');
+    up.type = 'button';
+    up.setAttribute('data-localfiles-dir', localFilesPath.split('/').slice(0, -1).join('/'));
+    grid.appendChild(up);
+  }
+  entries.forEach((entry) => {
+    const btn = lfEl('button', 'ch-card', entry.name || entry.rel || '');
+    btn.type = 'button';
+    if (entry.is_dir) {
+      btn.setAttribute('data-localfiles-dir', entry.rel || '');
+    } else if (entry.playable) {
+      btn.setAttribute('data-localfiles-file', entry.rel || '');
+      if (entry.duration_s) btn.appendChild(lfEl('span', 'help', ` ${Math.round(entry.duration_s)}s`));
+    } else {
+      btn.disabled = true;
+    }
+    grid.appendChild(btn);
+  });
+}
+
+async function castLocalFile(path) {
+  const sec = localFilesSection();
+  if (!sec) return;
+  const lib = sec.querySelector('[data-localfiles-browse-lib]')?.value || '';
+  const body = new URLSearchParams();
+  body.set('lib', lib);
+  body.set('path', path);
+  try {
+    const res = await fetch('/receiver/settings/adapter/localfiles/cast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!payload.ok) {
+      paintLocalFilesErr('browse', payload.error || payload.chip || 'cast failed');
+      return;
+    }
+    window.Chassis.settings.showNotice('CAST STARTED', 'ok');
+    const modal = localFilesModal();
+    if (modal) {
+      modal.classList.remove('localfiles-open');
+      modal.hidden = true;
+    }
+  } catch (_) {
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
+  }
+}
+
+document.addEventListener('click', (ev) => {
+  const add = ev.target.closest('[data-localfiles-add-library]');
+  if (add && localFilesSection()?.contains(add)) {
+    ev.preventDefault();
+    renderLocalFilesLibraries(localFilesLibraries().concat([{ name: '', root: '' }]));
+    return;
+  }
+  const rm = ev.target.closest('[data-localfiles-remove-library]');
+  if (rm && localFilesSection()?.contains(rm)) {
+    ev.preventDefault();
+    rm.closest('[data-localfiles-library-row]')?.remove();
+    saveLocalFilesLibraries();
+    return;
+  }
+  const open = ev.target.closest('[data-localfiles-open-browser]');
+  if (open && localFilesSection()?.contains(open)) {
+    ev.preventDefault();
+    browseLocalFiles('');
+    return;
+  }
+  const close = ev.target.closest('[data-localfiles-close-browser]');
+  if (close && localFilesSection()?.contains(close)) {
+    ev.preventDefault();
+    const modal = localFilesModal();
+    if (modal) {
+      modal.classList.remove('localfiles-open');
+      modal.hidden = true;
+    }
+    return;
+  }
+  const dir = ev.target.closest('[data-localfiles-dir]');
+  if (dir && localFilesSection()?.contains(dir)) {
+    ev.preventDefault();
+    browseLocalFiles(dir.getAttribute('data-localfiles-dir') || '');
+    return;
+  }
+  const file = ev.target.closest('[data-localfiles-file]');
+  if (file && localFilesSection()?.contains(file)) {
+    ev.preventDefault();
+    castLocalFile(file.getAttribute('data-localfiles-file') || '');
+  }
+});
+
+document.addEventListener('blur', (ev) => {
+  const inp = ev.target.closest && ev.target.closest('[data-localfiles-library-name], [data-localfiles-library-root]');
+  if (!inp || !localFilesSection()?.contains(inp)) return;
+  saveLocalFilesLibraries();
+}, true);
 // 4F — URL cookies widget. Explicit Save/Clear; repaint pill from response.
 function urlCookies() {
   return document.querySelector('[data-cookies="url"]');

@@ -472,6 +472,11 @@ type AdapterPaneData struct {
 	Hosts          []string
 	HasCookieStore bool
 	Cookie         *CookieStatusView
+
+	// Local Files bespoke widgets.
+	HasLibraryEditor bool
+	Libraries        []LocalFileLibraryRow
+	HasBrowseDrawer  bool
 }
 
 // AdapterProviderRow is one row in the Streams per-provider sub-section.
@@ -678,7 +683,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
 	// the prior package-builder behavior exactly.
 	if saver := cfg.AdapterSettingsSaver; saver != nil {
-		for _, name := range []string{"dlna", "torrent", "streams", "plex", "jellyfin", "url"} {
+		for _, name := range []string{"dlna", "torrent", "streams", "plex", "jellyfin", "url", "localfiles"} {
 			fields, ok := saver.Fields(name)
 			if !ok {
 				continue
@@ -707,6 +712,14 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 						v := view
 						pane.Cookie = &v
 					}
+				}
+			}
+			if name == "localfiles" {
+				pane.Hint = "LOCAL DISK"
+				if le := cfg.LocalFilesLibraryEditor; le != nil {
+					pane.HasLibraryEditor = true
+					pane.Libraries = le.Libraries()
+					pane.HasBrowseDrawer = cfg.LocalFiles != nil
 				}
 			}
 			if cfg.AdapterLinker != nil {
@@ -753,6 +766,8 @@ func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 			return fmt.Sprintf("PULL · %d CHANNELS · see Catalog tab", n)
 		}
 		return fmt.Sprintf("PULL · %d CHANNELS", n)
+	case "localfiles":
+		return "LOCAL DISK"
 	case "plex":
 		if v, _ := values["enabled"].(bool); v {
 			return "CAST · LISTENING"

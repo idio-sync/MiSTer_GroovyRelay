@@ -14,6 +14,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - URL to video file (Archive.org .mkv, .mp4, etc.)
 - URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.); public live `.m3u8` casts use an HLS buffer to minimize playback hiccups
 - Torrent streaming (uploaded .torrent files and .torrent URLs/magnet links)
+- Local media files (browse a mounted or host directory)
 - DLNA / UPnP MediaRenderer
 - Built-in catalog of streaming channels
 
@@ -138,7 +139,28 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | Streams | Bundled catalog entries | On | Includes Toonami Aftermath and other bundled channels. |
 | AUX | Receiver page | Off | CRT visualizer from native capture or a remote FFmpeg producer. |
 | Torrent | Global Cast drawer magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
+| Local Files | Receiver settings drawer | Off | Browse named on-disk libraries and cast one media file. |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
+
+## Local Files
+
+The Local Files adapter lets the receiver settings drawer browse named folders that the bridge process can read. It is disabled by default. Enable it in Settings, add one or more libraries, then use the Local Files browse drawer to cast a single direct media file.
+
+For Docker, bind-mount media into the container and use the container path in the library root:
+
+```bash
+docker run -d --name mister-groovy-relay --restart unless-stopped \
+  --network=host \
+  -v /opt/mister-groovy-relay:/config \
+  -v /mnt/user/media:/media:ro \
+  idiosync000/mister-groovy-relay:latest
+```
+
+In that example, configure the library root as `/media`, not `/mnt/user/media`. The adapter validates paths from inside the bridge process, so a host path that is not mounted into the container will fail validation.
+
+The container user must be able to read and list the mounted directory. If a library validates on the host but not in Docker, check ownership, mode bits, ACLs, and any NAS permission mapping for the UID/GID running the container.
+
+Native builds use real OS paths. Linux and macOS paths look like `/home/me/Videos` or `/Volumes/Media`; Windows paths can be drive paths like `D:\Movies` or UNC paths like `\\server\share\movies`.
 
 ## Settings UI
 

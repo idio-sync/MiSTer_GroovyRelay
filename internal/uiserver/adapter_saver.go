@@ -55,7 +55,6 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 	section = append(section, '\n')
 
 	header := fmt.Sprintf("[adapters.%s]", name)
-	descendantPrefix := fmt.Sprintf("[adapters.%s.", name)
 	lines := strings.Split(string(doc), "\n")
 
 	outLines := make([]string, 0, len(lines))
@@ -64,7 +63,7 @@ func replaceAdapterSection(doc []byte, name string, section []byte) []byte {
 
 	for i := 0; i < len(lines); {
 		tr := strings.TrimSpace(lines[i])
-		if tr == header || (strings.HasPrefix(tr, descendantPrefix) && strings.HasSuffix(tr, "]")) {
+		if adapterSectionHeaderMatches(name, tr) {
 			if !inserted {
 				outLines = append(outLines, header)
 				outLines = append(outLines, strings.Split(strings.TrimRight(string(section), "\n"), "\n")...)
@@ -330,13 +329,12 @@ func readAdapterSectionMap(doc []byte, name string) (map[string]any, bool, error
 
 func extractAdapterSectionBody(doc []byte, name string) ([]byte, bool) {
 	parent := fmt.Sprintf("[adapters.%s]", name)
-	descendantPrefix := fmt.Sprintf("[adapters.%s.", name)
 	lines := strings.Split(string(doc), "\n")
 	out := make([]string, 0)
 	found := false
 	for i := 0; i < len(lines); {
 		tr := strings.TrimSpace(lines[i])
-		if tr == parent || (strings.HasPrefix(tr, descendantPrefix) && strings.HasSuffix(tr, "]")) {
+		if adapterSectionHeaderMatches(name, tr) {
 			found = true
 			if tr != parent {
 				out = append(out, lines[i])
@@ -355,6 +353,26 @@ func extractAdapterSectionBody(doc []byte, name string) ([]byte, bool) {
 		i++
 	}
 	return []byte(strings.Join(out, "\n")), found
+}
+
+func adapterSectionHeaderMatches(name, trimmed string) bool {
+	inner, ok := tomlHeaderInner(trimmed)
+	if !ok {
+		return false
+	}
+	parent := "adapters." + name
+	return inner == parent || strings.HasPrefix(inner, parent+".")
+}
+
+func tomlHeaderInner(trimmed string) (string, bool) {
+	switch {
+	case strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]"):
+		return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "[["), "]]")), true
+	case strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]"):
+		return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")), true
+	default:
+		return "", false
+	}
 }
 
 // SaveTouched applies a touched-key envelope to the latest on-disk

@@ -334,10 +334,10 @@ type fakeFullAdapter struct {
 	applyHook func(decoded map[string]any) // used by Task 8
 }
 
-func (f *fakeFullAdapter) Name() string            { return "fake" }
-func (f *fakeFullAdapter) DisplayName() string     { return "Fake" }
-func (f *fakeFullAdapter) Status() adapters.Status { return adapters.Status{} }
-func (f *fakeFullAdapter) IsEnabled() bool         { return false }
+func (f *fakeFullAdapter) Name() string                                     { return "fake" }
+func (f *fakeFullAdapter) DisplayName() string                              { return "Fake" }
+func (f *fakeFullAdapter) Status() adapters.Status                          { return adapters.Status{} }
+func (f *fakeFullAdapter) IsEnabled() bool                                  { return false }
 func (f *fakeFullAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
 func (f *fakeFullAdapter) Start(context.Context) error                      { return nil }
 func (f *fakeFullAdapter) Stop() error                                      { return nil }
@@ -649,6 +649,40 @@ ytdlp_hosts = ["youtube.com"]
 	}
 	if n := len(adapter.applied); n != 1 {
 		t.Fatalf("ApplyConfig calls = %d, want 1", n)
+	}
+}
+
+func TestSaveValues_ReplacesArrayOfTables(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "localfiles", `enabled = true
+
+[[adapters.localfiles.library]]
+name = "Old"
+root = "/old"
+`)
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{
+		values: map[string]any{"enabled": true},
+		scope:  adapters.ScopeHotSwap,
+	}
+	if _, err := saver.SaveValues("localfiles", map[string]any{
+		"library": []map[string]any{{"name": "New", "root": "/new"}},
+	}, []string{"library"}, adapter); err != nil {
+		t.Fatalf("SaveValues: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(got)
+	if strings.Contains(text, `name = "Old"`) || strings.Contains(text, `root = "/old"`) {
+		t.Fatalf("old array-of-table entry survived replacement:\n%s", text)
+	}
+	if strings.Count(text, "[[adapters.localfiles.library]]") != 1 {
+		t.Fatalf("library table count = %d, want 1:\n%s", strings.Count(text, "[[adapters.localfiles.library]]"), text)
+	}
+	if !strings.Contains(text, `name = "New"`) || !strings.Contains(text, `root = "/new"`) {
+		t.Fatalf("new library entry missing:\n%s", text)
 	}
 }
 

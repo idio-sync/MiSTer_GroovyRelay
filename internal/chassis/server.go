@@ -126,6 +126,10 @@ type Config struct {
 	// 4F: URL adapter custom widgets.
 	AdapterHostEditor  AdapterHostEditor
 	AdapterCookieStore AdapterCookieStore
+
+	// Local Files adapter custom widgets.
+	LocalFiles              LocalFilesService
+	LocalFilesLibraryEditor LocalFilesLibraryEditor
 }
 
 // Server owns the chassis runtime state.
@@ -141,16 +145,16 @@ type Server struct {
 	transportViewer     TransportViewer
 	transportController TransportController
 
-	visualizerViewer VisualizerViewer
-	visualizerSaver  VisualizerSaver
-	volumeViewer        VolumeViewer
-	volumeSaver         VolumeSaver
-	audioDSPController  AudioDSPController
-	audioDSPSaver       AudioDSPSaver
-	audioScopeViewer    AudioScopeViewer
-	aux              AUXStarter
-	presetViewer     adapters.PresetViewer
-	presetCaster     adapters.PresetCaster
+	visualizerViewer   VisualizerViewer
+	visualizerSaver    VisualizerSaver
+	volumeViewer       VolumeViewer
+	volumeSaver        VolumeSaver
+	audioDSPController AudioDSPController
+	audioDSPSaver      AudioDSPSaver
+	audioScopeViewer   AudioScopeViewer
+	aux                AUXStarter
+	presetViewer       adapters.PresetViewer
+	presetCaster       adapters.PresetCaster
 
 	streamsCatalogViewer adapters.StreamsCatalogViewer
 	streamsCaster        adapters.StreamsCaster
@@ -317,6 +321,12 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterCookiesPost)))
 	mux.Handle("POST /receiver/settings/adapter/{name}/cookies/clear",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterCookiesClear)))
+	mux.Handle("POST /receiver/settings/adapter/localfiles/browse",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesBrowse)))
+	mux.Handle("POST /receiver/settings/adapter/localfiles/cast",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesCast)))
+	mux.Handle("POST /receiver/settings/adapter/localfiles/libraries",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesLibraries)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

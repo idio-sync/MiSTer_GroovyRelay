@@ -3775,6 +3775,18 @@ body.receiver.browse-open .catalog-drawer {
     opacity 240ms ease-out;
 }
 
+body.receiver .catalog-drawer.localfiles-open {
+  max-height: 720px;
+  margin-top: 10px;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    max-height 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms ease-out;
+}
+
 body.receiver.browse-open .catalog-browser {
   transform: translateY(0);
 }

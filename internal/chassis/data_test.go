@@ -360,14 +360,14 @@ func (f *fakeCatalogManager) SetDirectStreamHLSBuffer(disabled bool) (adapters.A
 // for registry.List() walks.
 type fakeNamedAdapter struct{ name string }
 
-func (f fakeNamedAdapter) Name() string                                             { return f.name }
-func (f fakeNamedAdapter) DisplayName() string                                      { return f.name }
-func (f fakeNamedAdapter) Fields() []adapters.FieldDef                              { return nil }
-func (f fakeNamedAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error        { return nil }
-func (f fakeNamedAdapter) IsEnabled() bool                                          { return true }
-func (f fakeNamedAdapter) Start(ctx context.Context) error                          { return nil }
-func (f fakeNamedAdapter) Stop() error                                              { return nil }
-func (f fakeNamedAdapter) Status() adapters.Status                                  { return adapters.Status{} }
+func (f fakeNamedAdapter) Name() string                                     { return f.name }
+func (f fakeNamedAdapter) DisplayName() string                              { return f.name }
+func (f fakeNamedAdapter) Fields() []adapters.FieldDef                      { return nil }
+func (f fakeNamedAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
+func (f fakeNamedAdapter) IsEnabled() bool                                  { return true }
+func (f fakeNamedAdapter) Start(ctx context.Context) error                  { return nil }
+func (f fakeNamedAdapter) Stop() error                                      { return nil }
+func (f fakeNamedAdapter) Status() adapters.Status                          { return adapters.Status{} }
 func (f fakeNamedAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
 	return adapters.ScopeHotSwap, nil
 }
@@ -513,6 +513,79 @@ func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
 	}
 	if got := byID["radio"]; got.CatalogRefreshHours != 0 {
 		t.Errorf("radio row CatalogRefreshHours = %d, want 0 (no override)", got.CatalogRefreshHours)
+	}
+}
+
+func TestSettingsData_LocalFilesPaneHasLibraryEditorAndBrowseDrawer(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"localfiles": {"enabled": true},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"localfiles": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	lf := &fakeLocalFilesService{libraries: []LocalFileLibraryRow{{Name: "Movies", Root: "/media/movies"}}}
+	s := &Server{cfg: Config{
+		Version:                 "test",
+		StartedAt:               time.Unix(0, 0),
+		AdapterSettingsSaver:    saver,
+		LocalFiles:              lf,
+		LocalFilesLibraryEditor: lf,
+	}}
+	data := s.buildSettingsData()
+	var pane *AdapterPaneData
+	for i := range data.Adapters {
+		if data.Adapters[i].Name == "localfiles" {
+			pane = &data.Adapters[i]
+			break
+		}
+	}
+	if pane == nil {
+		t.Fatal("localfiles pane missing")
+	}
+	if !pane.HasLibraryEditor || !pane.HasBrowseDrawer {
+		t.Fatalf("pane flags = library:%v browse:%v, want both true", pane.HasLibraryEditor, pane.HasBrowseDrawer)
+	}
+	if len(pane.Libraries) != 1 || pane.Libraries[0].Name != "Movies" {
+		t.Fatalf("Libraries = %+v", pane.Libraries)
+	}
+}
+
+func TestSettingsData_LocalFilesPaneDoesNotRenderBrowseDrawerWithoutService(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		current: map[string]map[string]any{
+			"localfiles": {"enabled": true},
+		},
+		fields: map[string][]adapters.FieldDef{
+			"localfiles": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+	}
+	lf := &fakeLocalFilesService{libraries: []LocalFileLibraryRow{{Name: "Movies", Root: "/media/movies"}}}
+	s := &Server{cfg: Config{
+		Version:                 "test",
+		StartedAt:               time.Unix(0, 0),
+		AdapterSettingsSaver:    saver,
+		LocalFilesLibraryEditor: lf,
+	}}
+	data := s.buildSettingsData()
+	var pane *AdapterPaneData
+	for i := range data.Adapters {
+		if data.Adapters[i].Name == "localfiles" {
+			pane = &data.Adapters[i]
+			break
+		}
+	}
+	if pane == nil {
+		t.Fatal("localfiles pane missing")
+	}
+	if !pane.HasLibraryEditor {
+		t.Fatal("HasLibraryEditor = false, want true")
+	}
+	if pane.HasBrowseDrawer {
+		t.Fatal("HasBrowseDrawer = true without LocalFiles service; want false")
 	}
 }
 

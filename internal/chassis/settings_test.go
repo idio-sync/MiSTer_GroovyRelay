@@ -69,10 +69,10 @@ type fakeSettingsChipError struct {
 	cause  error
 }
 
-func (f *fakeSettingsChipError) Error() string  { return f.chip }
+func (f *fakeSettingsChipError) Error() string   { return f.chip }
 func (f *fakeSettingsChipError) StatusCode() int { return f.status }
-func (f *fakeSettingsChipError) Chip() string   { return f.chip }
-func (f *fakeSettingsChipError) Unwrap() error  { return f.cause }
+func (f *fakeSettingsChipError) Chip() string    { return f.chip }
+func (f *fakeSettingsChipError) Unwrap() error   { return f.cause }
 
 func TestChassisSettingsInterfaces_StructuralConformance(t *testing.T) {
 	t.Parallel()
@@ -859,9 +859,9 @@ func TestMisterSSHPassword_OverlayPreservesOnEmpty(t *testing.T) {
 func TestDecodeIntInRange(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		in            string
-		lo, hi, want  int
-		errSub        string
+		in           string
+		lo, hi, want int
+		errSub       string
 	}{
 		{"1", 1, 12, 1, ""},
 		{"12", 1, 12, 12, ""},
@@ -1768,7 +1768,7 @@ type chassisAdapterFieldErrors struct {
 	Errs []adapters.FieldError
 }
 
-func (e *chassisAdapterFieldErrors) Error() string                       { return "adapter field errors" }
+func (e *chassisAdapterFieldErrors) Error() string                      { return "adapter field errors" }
 func (e *chassisAdapterFieldErrors) FieldErrors() []adapters.FieldError { return e.Errs }
 
 // chassisChipError is a chassis-side concrete shim for chip-style
@@ -2365,6 +2365,226 @@ func TestHandleSettingsAdapterHostsPost_CrossOriginBlocked(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("Code = %d, want 403", rec.Code)
+	}
+}
+
+type fakeLocalFilesService struct {
+	entries      []LocalFileEntry
+	browseErr    error
+	castErr      error
+	libraries    []LocalFileLibraryRow
+	setLibraries []LocalFileLibraryRow
+	setScope     string
+	setErr       error
+	gotLib       string
+	gotPath      string
+	castLib      string
+	castPath     string
+}
+
+func (f *fakeLocalFilesService) Browse(ctx context.Context, lib, path string) ([]LocalFileEntry, error) {
+	f.gotLib = lib
+	f.gotPath = path
+	return f.entries, f.browseErr
+}
+
+func (f *fakeLocalFilesService) Cast(ctx context.Context, lib, path string) error {
+	f.castLib = lib
+	f.castPath = path
+	return f.castErr
+}
+
+func (f *fakeLocalFilesService) Libraries() []LocalFileLibraryRow {
+	return append([]LocalFileLibraryRow(nil), f.libraries...)
+}
+
+func (f *fakeLocalFilesService) SetLibraries(libs []LocalFileLibraryRow) (string, []LocalFileLibraryRow, error) {
+	f.setLibraries = append([]LocalFileLibraryRow(nil), libs...)
+	if f.setErr != nil {
+		return "", nil, f.setErr
+	}
+	return f.setScope, libs, nil
+}
+
+func postLocalFilesForm(t *testing.T, s *Server, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func postLocalFilesJSON(t *testing.T, s *Server, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestHandleSettingsAdapterLocalfilesBrowseSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{entries: []LocalFileEntry{
+		{Name: "Movies", Rel: "Movies", IsDir: true},
+		{Name: "clip.mp4", Rel: "clip.mp4", Playable: true, DurationS: 12.5},
+	}}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/browse", url.Values{
+		"lib":  {"Media"},
+		"path": {""},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		OK      bool             `json:"ok"`
+		Entries []LocalFileEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !body.OK || len(body.Entries) != 2 || body.Entries[1].Name != "clip.mp4" {
+		t.Fatalf("body = %+v", body)
+	}
+	if lf.gotLib != "Media" || lf.gotPath != "" {
+		t.Fatalf("Browse got lib/path = %q/%q", lf.gotLib, lf.gotPath)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesBrowseJSONSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{entries: []LocalFileEntry{{Name: "clip.mp4", Rel: "clip.mp4", Playable: true}}}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesJSON(t, s, "/receiver/settings/adapter/localfiles/browse", `{"lib":"Media","path":"Movies"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if lf.gotLib != "Media" || lf.gotPath != "Movies" {
+		t.Fatalf("Browse got lib/path = %q/%q, want Media/Movies", lf.gotLib, lf.gotPath)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesBrowseCrossOriginBlocked(t *testing.T) {
+	t.Parallel()
+	s := newURLWidgetTestServer(t, Config{LocalFiles: &fakeLocalFilesService{}})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/localfiles/browse", strings.NewReader("lib=Media"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Code = %d, want 403", rec.Code)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesBrowseNotReady(t *testing.T) {
+	t.Parallel()
+	s := newURLWidgetTestServer(t, Config{})
+	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/browse", url.Values{"lib": {"Media"}})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesCastSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/cast", url.Values{
+		"lib":  {"Media"},
+		"path": {"clip.mp4"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ok"] != true {
+		t.Fatalf("body = %v, want ok=true", body)
+	}
+	if lf.castLib != "Media" || lf.castPath != "clip.mp4" {
+		t.Fatalf("Cast got lib/path = %q/%q", lf.castLib, lf.castPath)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesCastJSONSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesJSON(t, s, "/receiver/settings/adapter/localfiles/cast", `{"lib":"Media","path":"clip.mp4"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if lf.castLib != "Media" || lf.castPath != "clip.mp4" {
+		t.Fatalf("Cast got lib/path = %q/%q, want Media/clip.mp4", lf.castLib, lf.castPath)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesCastError(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{castErr: errors.New("path escapes library root")}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/cast", url.Values{
+		"lib":  {"Media"},
+		"path": {"../secret.mp4"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesLibrariesSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{setScope: "hot"}
+	s := newURLWidgetTestServer(t, Config{LocalFilesLibraryEditor: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/libraries", url.Values{
+		"name": {"Movies", "Music"},
+		"root": {"/media/movies", "/media/music"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		OK        bool                  `json:"ok"`
+		Scope     string                `json:"scope"`
+		Libraries []LocalFileLibraryRow `json:"libraries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !body.OK || body.Scope != "hot" || len(body.Libraries) != 2 {
+		t.Fatalf("body = %+v", body)
+	}
+	if len(lf.setLibraries) != 2 || lf.setLibraries[0].Name != "Movies" || lf.setLibraries[1].Root != "/media/music" {
+		t.Fatalf("SetLibraries got %+v", lf.setLibraries)
+	}
+}
+
+func TestHandleSettingsAdapterLocalfilesLibrariesFieldError(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{setErr: &fakeFieldErr{key: "library.0.root", msg: "path not found"}}
+	s := newURLWidgetTestServer(t, Config{LocalFilesLibraryEditor: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/libraries", url.Values{
+		"name": {"Movies"},
+		"root": {"/missing"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if errs, _ := body["errors"].(map[string]any); errs["library.0.root"] == nil {
+		t.Fatalf("body errors = %v, want library.0.root", body["errors"])
 	}
 }
 

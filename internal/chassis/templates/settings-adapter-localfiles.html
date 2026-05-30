@@ -1,0 +1,47 @@
+{{- define "settings-adapter-localfiles" -}}
+<section class="settings-section wide" data-adapter-section="localfiles">
+  <h4>LOCAL FILES <span class="hint">{{ .Hint }}</span></h4>
+  {{ with fieldByKey .Fields "enabled" }}{{ template "adapter-field-row" (dict "Adapter" "localfiles" "Field" . "Values" $.Values) }}{{ end }}
+  {{ if .HasLibraryEditor }}{{ template "localfiles-library-editor" . }}{{ end }}
+  {{ if .HasBrowseDrawer }}{{ template "localfiles-browse-drawer" . }}{{ end }}
+</section>
+{{- end -}}
+
+{{- define "localfiles-library-editor" -}}
+<div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-localfiles-libraries>
+  <label>Libraries <span class="help">Named roots visible to the bridge process.</span></label>
+  <div class="localfiles-library-list" data-localfiles-library-list>
+    {{ range .Libraries }}
+    <div class="localfiles-library-row" data-localfiles-library-row>
+      <input class="field-input" data-localfiles-library-name value="{{ .Name }}" placeholder="Name" autocomplete="off">
+      <input class="field-input path" data-localfiles-library-root value="{{ .Root }}" placeholder="/media/movies" autocomplete="off">
+      <button type="button" class="action-btn ghost" data-localfiles-remove-library>Remove</button>
+    </div>
+    {{ end }}
+    <button type="button" class="action-btn ghost" data-localfiles-add-library>Add library</button>
+    <div class="widget-err" data-localfiles-library-err hidden></div>
+  </div>
+  <span class="scope hot">HOT</span>
+</div>
+{{- end -}}
+
+{{- define "localfiles-browse-drawer" -}}
+<div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-localfiles-browser>
+  <label>Browse</label>
+  <div class="localfiles-browser">
+    <select class="field-input" data-localfiles-browse-lib>
+      {{ range .Libraries }}<option value="{{ .Name }}">{{ .Name }}</option>{{ end }}
+    </select>
+    <button type="button" class="action-btn" data-localfiles-open-browser>Open</button>
+    <div class="widget-err" data-localfiles-browse-err hidden></div>
+  </div>
+  <span class="scope hot">HOT</span>
+</div>
+<div class="catalog-drawer localfiles-drawer" data-localfiles-browse-modal hidden>
+  <div class="catalog-top">
+    <button type="button" class="action-btn ghost" data-localfiles-close-browser>Close</button>
+    <div class="catalog-title" data-localfiles-breadcrumb>/</div>
+  </div>
+  <div class="catalog-grid" data-localfiles-entries></div>
+</div>
+{{- end -}}
