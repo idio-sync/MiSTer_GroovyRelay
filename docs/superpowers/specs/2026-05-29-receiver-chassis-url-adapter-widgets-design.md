@@ -114,8 +114,8 @@ Extend `Fields()` from 1 → 4 entries (additive; ordering matches the mockup):
 | Key | Kind | Default | Scope | Help |
 |---|---|---|---|---|
 | `enabled` | Bool | false | HotSwap | (existing) |
-| `ytdlp_enabled` | Bool | false | HotSwap | "Master switch. When on, `mode=auto` routes URLs whose host matches the list below through yt-dlp." |
-| `ytdlp_format` | Text | `bv*[height<=720]+ba/bv*+ba/b` | HotSwap | "Format selector. Default biases to 720p H.264." |
+| `ytdlp_enabled` | Bool | true | HotSwap | "Master switch. When on, `mode=auto` routes URLs whose host matches the list below through yt-dlp." |
+| `ytdlp_format` | Text | `bv*[height<=720]+ba/bv*+ba/b` | HotSwap | "Format selector. Default prefers ≤720p video with broad codec compatibility." |
 | `ytdlp_resolve_timeout_seconds` | Int | 30 | HotSwap | "Per-URL timeout for yt-dlp resolution (5–120s)." |
 
 `Validate()` and `ApplyConfig()` already cover these keys
@@ -124,17 +124,29 @@ Extend `Fields()` from 1 → 4 entries (additive; ordering matches the mockup):
 path works as-is. `ytdlp_hosts` and cookies are **not** added to `Fields()` —
 they are driven by the bespoke widgets below.
 
+`CurrentValues()` must also expand from `enabled`-only to include the three
+new standard fields (`ytdlp_enabled`, `ytdlp_format`,
+`ytdlp_resolve_timeout_seconds`) so chassis paint reflects both defaults and
+saved values. Without this, the 4D `AdapterSettingsSaver.Current()` path would
+render the new rows blank/off even though `Validate()` and `ApplyConfig()` can
+save them.
+
 The package also gains a tiny exported surface for the cmd wrappers (the
 wrappers may import `internal/adapters/url`):
-- A way for the wrapper to read the current hosts and to validate + live-apply
-  a new set. Reuse the existing host validation in `Validate()` / `ytdlp`
-  rules — no new validation logic. Naming is the plan's call; it must not
-  collide with the chassis-side `AdapterHostEditor.SetHosts`, which is a
-  *different* method (the chassis interface persists via §5.5; the adapter
-  surface only validates + applies in memory).
-- The cookies file already has `saveCookies`/`clearCookies`/`statCookies`
-  ([`cookies.go:42-99`](../../internal/adapters/url/cookies.go)) and
-  `CookiesPath()`; the wrapper composes these. The legacy
+- A way for the wrapper to read the current hosts and to **purely validate +
+  normalize** a proposed set. Reuse the existing host validation in
+  `Validate()` / `ytdlp` rules — no new validation logic — but do not live-apply
+  from this surface. `SaveValues` (§5.5) is the only code path that persists and
+  calls `ApplyConfig`, which avoids double-apply and apply-before-disk-write
+  hazards. Naming is the plan's call; it must not collide with the chassis-side
+  `AdapterHostEditor.SetHosts`, which is a *different* method.
+- Exported cookie methods/functions for the wrapper to save, clear, stat, and
+  validate cookies without reusing HTTP handlers. The existing low-level
+  helpers (`saveCookies`/`clearCookies`/`statCookies`/`validateCookies`,
+  [`cookies.go:42-125`](../../internal/adapters/url/cookies.go)) are currently
+  unexported, so 4F either wraps them with exported adapter methods or promotes
+  package functions with the same behavior. `CookiesPath()` remains available
+  for path ownership. The legacy
   `handleCookiesSet`/`handleCookiesClear` HTTP handlers remain (they belong to
   the soon-to-be-retired `/ui/*` routes) and are **not** reused directly — 4F
   calls the lower-level functions so the chassis route owns its own
@@ -168,8 +180,9 @@ type AdapterHostEditor interface {
 - **Handler** (`handleSettingsAdapterHostsPost` in `internal/chassis/settings.go`):
   nil-interface → `503` via `writeSettingsChip(w, 503, "NOT READY")` (the
   established chassis chip — see settings.go:1046); unknown adapter →
-  `404`; validation failure → `400 {ok:false, errors:{hosts:"<msg>"}}`;
-  success → `200 {ok:true, scope:"hot", hosts:[…]}`.
+  `404`; validation failure → `400 {ok:false, errors:{hosts:"<msg>"}}`
+  (the cmd wrapper maps adapter `FieldError{Key:"ytdlp_hosts"}` to the widget
+  wire key `hosts`); success → `200 {ok:true, scope:"hot", hosts:[…]}`.
 - **Production wrapper** `cmd/mister-groovy-relay/adapter_host_editor.go`:
   delegates persistence to the new `*uiserver.AdapterSaver` array-save method
   (§5.5), which is the **sole** validator + atomic-writer + applier (it runs
@@ -181,7 +194,7 @@ type AdapterHostEditor interface {
   normalized list. An optional cheap pre-validate may run first purely to
   surface the `400` path before touching disk; it must not also apply.
 - **Client (JS):** each ✕ / "+ add host" mutates a client-side `Set`, then
-  `PUT`s the *whole* list (immediate, like a switch — no explicit Save). A
+  `POST`s the *whole* list (immediate, like a switch — no explicit Save). A
   rejected host paints the error chip on the widget and rolls the set back.
 
 ### 5.3 Cookies — `AdapterCookieStore` (chassis-owned)
@@ -209,14 +222,18 @@ type AdapterCookieStore interface {
   - `POST /receiver/settings/adapter/url/cookies/clear` — clear.
 - **Handlers:** nil-interface → `503` via `writeSettingsChip(w, 503, "NOT READY")`;
   invalid Netscape format → `400 {ok:false, errors:{cookies:"<msg>"}}`; success →
-  `200 {ok:true, cookie:{loaded, bytes, set_at}}`. The `SetAt` display string
-  uses one fixed format (`2006-01-02 15:04:05Z`, UTC) for both the pill and the
-  `set_at` JSON field — not the legacy split where the fragment used that
-  format but the JSON used RFC3339 (cookies.go:231 vs 238).
+  `200 {ok:true, cookie:{loaded, bytes, set_at}}`; filesystem save/clear/stat
+  failures → `500 {ok:false, chip:"WRITE FAILED"}` without echoing the path or
+  raw OS error. The `SetAt` display string uses one fixed format
+  (`2006-01-02 15:04:05Z`, UTC) for both the pill and the `set_at` JSON field —
+  not the legacy split where the fragment used that format but the JSON used
+  RFC3339 (cookies.go:231 vs 238).
 - **Production wrapper** `cmd/mister-groovy-relay/adapter_cookie_store.go`
-  over the URL adapter's `saveCookies`/`clearCookies`/`statCookies` +
-  `CookiesPath()`. Netscape validation already lives in `validateCookies`
-  ([`cookies.go:109-125`](../../internal/adapters/url/cookies.go)).
+  over the URL adapter's exported cookie surface (wrapping the existing
+  lower-level helpers) plus `CookiesPath()`. Netscape validation already lives
+  in `validateCookies` ([`cookies.go:109-125`](../../internal/adapters/url/cookies.go))
+  and must remain the single source of truth; the wrapper should not duplicate
+  the format checks.
 - **Status pill:** `not loaded` (dim) when `!Loaded`; `{bytes} B · set {SetAt}`
   when loaded. Painted at drawer load via `CookieStatus`; repainted from each
   action's response. Save/Clear are **explicit buttons** — the textarea is not
@@ -238,21 +255,24 @@ fields. `internal/chassis` continues to import **neither**
 Add one method to `*uiserver.AdapterSaver` (alongside `SaveTouched`):
 
 ```go
-// SaveValues writes typed values (including non-scalar values such as
-// []string arrays) into the [adapters.<name>] section, reusing
+// SaveValues writes explicitly-allowed typed values (including non-scalar
+// values such as []string arrays) into the [adapters.<name>] section, reusing
 // SaveTouched's read → merge → encode → validate → write-atomic →
-// ApplyConfig pipeline under the shared saver mutex. Unlike SaveTouched
-// it does not run the scalar overlayTouched step; callers pass already-
-// typed Go values that the TOML encoder handles directly (encodeAdapterMap
-// already serializes []string and nested tables).
+// ApplyConfig pipeline under the shared saver mutex. Unlike SaveTouched it
+// does not run the scalar overlayTouched step; callers pass already-typed Go
+// values that the TOML encoder handles directly (encodeAdapterMap already
+// serializes []string and nested tables).
 func (r *AdapterSaver) SaveValues(name string, values map[string]any,
-    adapter adapters.Adapter, fields []adapters.FieldDef) (adapters.ApplyScope, error)
+    allowedKeys []string, adapter adapters.Adapter) (adapters.ApplyScope, error)
 ```
 
 This keeps the atomic-write, shared-mutex serialization, and
 descendant-subtable preservation guarantees that already exist in
 `SaveTouched` (4D Tasks 5–8), without duplicating them in `cmd/`. The host
-editor wrapper calls `SaveValues("url", map[string]any{"ytdlp_hosts": hosts}, …)`.
+editor wrapper calls `SaveValues("url", map[string]any{"ytdlp_hosts": hosts},
+[]string{"ytdlp_hosts"}, …)`. `allowedKeys` is intentionally separate from
+`adapter.Fields()`: `ytdlp_hosts` is not a standard field, so a FieldDef
+allowlist would reject the one key this helper exists to persist.
 `encodeAdapterMap` already round-trips arrays and nested tables (4D Task 3), so
 no encoder change is needed.
 
@@ -264,12 +284,22 @@ rejected before anything hits disk. `SaveValues` returns `adapters.ApplyScope`
 (the uiserver layer's type); the cmd wrapper converts it to the `"hot"` wire
 label.
 
+**Normalization is also load-bearing:** host validation lowercases entries on
+the decoded `url.Config`. `SaveValues` must persist the normalized values, not
+the pre-validation input. The simplest safe contract is: validate/decode into
+the adapter config, recover the normalized section map from that decoded config,
+re-encode that normalized map, then write atomically and call `ApplyConfig` with
+the same normalized primitive. Returning `hosts:[…]` from the chassis route uses
+this normalized list.
+
 ### 5.6 SettingsData / paint + templates + assets
 
-- `AdapterPaneData` ([`data.go:300`](../../internal/chassis/data.go)) gains two
-  nil/zero-safe fields: `Hosts []string` and `Cookie *CookieStatusView`. Other
-  adapters leave them nil; the template renders the bespoke widgets only when
-  populated (URL only).
+- `AdapterPaneData` ([`data.go:300`](../../internal/chassis/data.go)) gains
+  explicit widget-presence flags plus nil/zero-safe data:
+  `HasHostEditor bool`, `Hosts []string`, `HasCookieStore bool`, and
+  `Cookie *CookieStatusView`. Other adapters leave the flags false; the URL
+  template renders the bespoke widgets from the flags, not from `len(Hosts)`,
+  so a valid empty host list still displays the tag editor.
 - `buildSettingsData` reads `AdapterHostEditor.Hosts("url")` and
   `AdapterCookieStore.CookieStatus("url")` (both nil-guarded) to populate the
   URL pane. Signature extends with the two interfaces (or they ride on a
@@ -307,8 +337,8 @@ the `503` chip as `"NOT READY"` (the established chassis chip — §5.2).
 | Method + path | Body | Success | Errors |
 |---|---|---|---|
 | `POST /receiver/settings/adapter/url/hosts` | `{"hosts":[…]}` | `200 {ok:true, scope:"hot", hosts:[…]}` | `400 {ok:false, errors:{hosts:"…"}}`; `404` unknown adapter; `503 {ok:false, chip:"NOT READY"}`; `403` cross-origin |
-| `POST /receiver/settings/adapter/url/cookies` | form `cookies=` or `{"cookies":"…"}` | `200 {ok:true, cookie:{loaded,bytes,set_at}}` | `400 {ok:false, errors:{cookies:"…"}}` (invalid format or oversize, >1 MiB); `503 {ok:false, chip:"NOT READY"}`; `403` |
-| `POST /receiver/settings/adapter/url/cookies/clear` | — | `200 {ok:true, cookie:{loaded:false,bytes:0,set_at:""}}` | `503 {ok:false, chip:"NOT READY"}`; `403` |
+| `POST /receiver/settings/adapter/url/cookies` | form `cookies=` or `{"cookies":"…"}` | `200 {ok:true, cookie:{loaded,bytes,set_at}}` | `400 {ok:false, errors:{cookies:"…"}}` (invalid format or oversize, >1 MiB); `500 {ok:false, chip:"WRITE FAILED"}` on storage failure; `503 {ok:false, chip:"NOT READY"}`; `403` |
+| `POST /receiver/settings/adapter/url/cookies/clear` | — | `200 {ok:true, cookie:{loaded:false,bytes:0,set_at:""}}` | `500 {ok:false, chip:"WRITE FAILED"}` on storage failure; `503 {ok:false, chip:"NOT READY"}`; `403` |
 | `POST /receiver/settings/adapter/url` (rows 1/2/4/5) | `touched` keys | `200 {ok:true, scope:"hot"}` (existing 4D envelope) | existing 4D field/chip errors |
 
 Envelope shapes are the 4A/4D JSON contract verbatim; no new envelope.
@@ -318,18 +348,22 @@ Envelope shapes are the 4A/4D JSON contract verbatim; no new envelope.
 ## 7. Testing
 
 - **`internal/adapters/url`:** `Fields()` now returns the four entries with
-  correct kinds/defaults/scopes; existing cookies + host tests unchanged.
+  correct kinds/defaults/scopes; `CurrentValues()` returns the three new
+  standard fields; exported host validation/normalization lowercases without
+  applying; exported cookie wrappers preserve the existing validation,
+  save/clear/stat behavior.
 - **`internal/uiserver`:** `SaveValues` round-trips `ytdlp_hosts` (array
   survives encode/decode), preserves other URL keys and any descendant
-  subtables, leaves disk untouched on validation failure, serializes under the
-  shared mutex (`-race`).
+  subtables, leaves disk untouched on validation failure, persists normalized
+  lowercase hosts, rejects keys outside its explicit allowlist, serializes under
+  the shared mutex (`-race`).
 - **`internal/chassis`:** handler tests for the new routes — success,
   field-error, `404`, nil-interface `503 "NOT READY"`, cross-origin `403`
-  (now meaningful because the routes are POST); template
-  render tests for the URL pane (tag rows incl. empty list; cookies pill in
-  loaded vs not-loaded states); a test asserting `ytdlp_hosts`/cookies never
-  render as plain `[data-field]` inputs (mirror of 4D's Catalog-key projection
-  guard).
+  (now meaningful because the routes are POST), cookie storage failure `500`
+  without path leakage; template render tests for the URL pane (tag rows incl.
+  empty list; cookies pill in loaded vs not-loaded states); a test asserting
+  `ytdlp_hosts`/cookies never render as plain `[data-field]` inputs (mirror of
+  4D's Catalog-key projection guard).
 - **`cmd/mister-groovy-relay`:** integration-tagged end-to-end — host
   add/remove persists to `config.toml` and re-reads correctly; cookies
   Save/Clear round-trips through the real adapter to `url_cookies.txt` with
