@@ -245,6 +245,11 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 			Generation:      0,
 			OutputVolume:    0,
 		},
+		AudioStrip: AudioStripData{
+			EQ:        make([]float64, 10),
+			Memory:    [3]AudioStripMemory{{Slot: 1}, {Slot: 2}, {Slot: 3}},
+			Persisted: true,
+		},
 		Visualizer: VisualizerData{
 			ActiveMode: config.VisualizerModeStereoScope,
 			Buttons: []VisualizerButton{

@@ -22,6 +22,7 @@ type ReceiverPageData struct {
 	Source     SourceData
 	Meter      MeterData
 	Transport  TransportData
+	AudioStrip AudioStripData
 	Visualizer VisualizerData
 	Input      InputData
 	Presets    PresetsData
@@ -210,6 +211,68 @@ type ActionsEnabled struct {
 	Stop        bool
 	Replay      bool
 	Seek        bool
+}
+
+// AudioStripData drives the always-on audio/EQ face module. Tone/balance/EQ
+// are the live tone-control values; Memory carries per-slot labels + stored
+// flags for the M1..M3 buttons. OutputVolume duplicates the transport's
+// volume so the relocated knob renders from this module's data; the volume
+// SSE event + volume-knob.js are unchanged.
+type AudioStripData struct {
+	Enabled      bool // false = defeat (EQ OUT engaged)
+	Mono         bool
+	Subsonic     bool
+	Loudness     bool
+	Bass         float64
+	Mid          float64
+	Treble       float64
+	Balance      int
+	EQ           []float64 // 10 bands
+	Memory       [3]AudioStripMemory
+	Engaged      bool // status-bar EQ LED
+	Persisted    bool // false while a preview runs ahead of disk
+	OutputVolume int
+}
+
+// AudioStripMemory is one M1..M3 preset slot for the audio strip.
+type AudioStripMemory struct {
+	Slot   int
+	Name   string
+	Stored bool
+}
+
+// audioStripFromDSP flattens a config.AudioDSP (+ volume + persisted flag)
+// into the render/SSE struct, normalizing the 3 memory slots so the template
+// always renders M1..M3.
+func audioStripFromDSP(d config.AudioDSP, engaged, persisted bool, volume int) AudioStripData {
+	out := AudioStripData{
+		Enabled:      d.Enabled,
+		Mono:         d.Mono,
+		Subsonic:     d.Subsonic,
+		Loudness:     d.Loudness,
+		Bass:         d.Bass,
+		Mid:          d.Mid,
+		Treble:       d.Treble,
+		Balance:      d.Balance,
+		EQ:           append([]float64(nil), d.EQ...),
+		Engaged:      engaged,
+		Persisted:    persisted,
+		OutputVolume: volume,
+	}
+	if len(out.EQ) != 10 {
+		eq := make([]float64, 10)
+		copy(eq, out.EQ)
+		out.EQ = eq
+	}
+	for i := range out.Memory {
+		out.Memory[i] = AudioStripMemory{Slot: i + 1}
+	}
+	for _, m := range d.Memory {
+		if m.Slot >= 1 && m.Slot <= 3 {
+			out.Memory[m.Slot-1] = AudioStripMemory{Slot: m.Slot, Name: m.Name, Stored: m.Stored}
+		}
+	}
+	return out
 }
 
 // VisualizerData drives the visualizer-bank selector.
@@ -676,6 +739,12 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			Generation:      0,
 			OutputVolume:    cfg.Bridge.Audio.OutputVolume,
 		},
+		AudioStrip: audioStripFromDSP(
+			cfg.Bridge.Audio.DSP,
+			cfg.Bridge.Audio.DSP.Engaged(),
+			true, // idle = persisted (no preview)
+			cfg.Bridge.Audio.OutputVolume,
+		),
 		Visualizer: VisualizerData{
 			ActiveMode: defaultVisualizerMode(cfg),
 			Buttons: []VisualizerButton{

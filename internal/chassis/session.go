@@ -94,6 +94,16 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 	} else {
 		base.Transport.OutputVolume = cfg.Bridge.Audio.OutputVolume
 	}
+	// AudioStrip: for live sessions use view.AudioDSP (runtime params);
+	// idle/unknown keep idleSnapshot's config-seeded value unchanged.
+	// The volume is taken from base.Transport.OutputVolume which was just
+	// resolved above, so both fields stay in sync.
+	switch view.State {
+	case core.StatePlaying, core.StatePaused:
+		base.AudioStrip = audioStripFromDSP(view.AudioDSP, view.AudioDSPEngaged, view.AudioDSPPersisted, base.Transport.OutputVolume)
+	default:
+		base.AudioStrip.OutputVolume = base.Transport.OutputVolume
+	}
 	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 	providerID, channelID := parseStreamsAdapterRef(view.AdapterRef)

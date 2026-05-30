@@ -693,3 +693,21 @@ func TestSettingsData_NilLinkerNotLinkable(t *testing.T) {
 		}
 	}
 }
+
+func TestIdleSnapshot_SeedsAudioStripFromConfig(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Bridge.Audio.DSP = config.DefaultAudioDSP()
+	cfg.Bridge.Audio.DSP.Bass = 4
+	cfg.Bridge.Audio.OutputVolume = 55
+	snap := idleSnapshot(cfg, time.Unix(0, 0))
+	if snap.AudioStrip.Bass != 4 {
+		t.Errorf("idle AudioStrip.Bass = %v, want 4", snap.AudioStrip.Bass)
+	}
+	if len(snap.AudioStrip.EQ) != 10 {
+		t.Errorf("idle AudioStrip.EQ length = %d, want 10", len(snap.AudioStrip.EQ))
+	}
+	if snap.AudioStrip.OutputVolume != 55 {
+		t.Errorf("AudioStrip.OutputVolume = %d, want 55", snap.AudioStrip.OutputVolume)
+	}
+}
