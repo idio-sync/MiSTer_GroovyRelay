@@ -370,6 +370,74 @@ func TestPlay_FreshStart_StoresRefAndPlays(t *testing.T) {
 	}
 }
 
+func TestPlay_FreshStart_AudioSourcesUseMusicVisualizer(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+		meta DIDLMetadata
+	}{
+		{
+			name: "protocolInfo audio flac",
+			uri:  "http://192.168.1.99/song",
+			meta: DIDLMetadata{
+				Title:        "Blue Monday",
+				Duration:     7*time.Minute + 29*time.Second,
+				ProtocolInfo: "http-get:*:audio/flac:*",
+			},
+		},
+		{
+			name: "UPnP audio class",
+			uri:  "http://192.168.1.99/content/1234",
+			meta: DIDLMetadata{
+				Title:    "Age of Consent",
+				Duration: 5*time.Minute + 15*time.Second,
+				Class:    "object.item.audioItem.musicTrack",
+			},
+		},
+		{
+			name: "flac URL extension",
+			uri:  "http://192.168.1.99/music/song.flac",
+			meta: DIDLMetadata{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, fake := avtPlayAdapter(t)
+			a.mu.Lock()
+			a.loadedURI = tc.uri
+			a.loadedPlaybackURI = tc.uri
+			a.loadedCanSeek = true
+			a.loadedMeta = tc.meta
+			a.mu.Unlock()
+
+			rr := avtSendPlay(t, a, "<InstanceID>0</InstanceID><Speed>1</Speed>")
+			if rr.Code != 200 {
+				t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+			}
+
+			req := fake.lastReq()
+			if req.MediaKind != core.MediaKindMusic {
+				t.Fatalf("MediaKind = %q, want %q", req.MediaKind, core.MediaKindMusic)
+			}
+			if !req.Visualizer.Enabled {
+				t.Fatalf("Visualizer.Enabled = false, want true")
+			}
+			if req.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
+				t.Errorf("Visualizer.Mode = %q, want compatibility retro analyzer", req.Visualizer.Mode)
+			}
+			if req.Visualizer.Metadata.Title != strings.TrimSpace(tc.meta.Title) {
+				t.Errorf("Visualizer.Metadata.Title = %q, want %q",
+					req.Visualizer.Metadata.Title, strings.TrimSpace(tc.meta.Title))
+			}
+			if req.Visualizer.Metadata.Duration != tc.meta.Duration {
+				t.Errorf("Visualizer.Metadata.Duration = %v, want %v",
+					req.Visualizer.Metadata.Duration, tc.meta.Duration)
+			}
+		})
+	}
+}
+
 func TestPlay_StartSession_HLSUsesCachedManifestAndNoSeekPolicy(t *testing.T) {
 	srv := newHLSTestServer(t)
 	fake := &captureSessionManager{}

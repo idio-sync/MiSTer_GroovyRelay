@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -412,8 +413,9 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 	onStop := a.onStopForRef(ref, playbackURI, sessionCleanup)
 
 	a.mu.Lock()
-	didlTitle := a.loadedMeta.Title
+	loadedMeta := a.loadedMeta
 	a.mu.Unlock()
+	didlTitle := loadedMeta.Title
 
 	req := core.SessionRequest{
 		StreamURL:        playbackURI,
@@ -425,6 +427,17 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 		MediaInputPolicy: dlnaInputPolicyForSource(canSeek),
 		Title:            didlTitle,
 		DisplayMetadata:  dlnaDisplayMetadata(didlTitle),
+	}
+	if dlnaSourceIsAudio(loadedURI, loadedMeta) {
+		req.MediaKind = core.MediaKindMusic
+		req.Visualizer = core.VisualizerRequest{
+			Enabled: true,
+			Mode:    core.VisualizerModeRetroAnalyzer,
+			Metadata: core.VisualizerMetadata{
+				Title:    strings.TrimSpace(loadedMeta.Title),
+				Duration: loadedMeta.Duration,
+			},
+		}
 	}
 
 	matched, err := a.core.StartSessionIfAdapterRef(req, expectedCoreRef)
@@ -534,6 +547,38 @@ func (a *Adapter) onStopForRef(ref string, playbackURI string, cleanup func() er
 		}
 		a.publishAVTransportLastChange()
 	}
+}
+
+func dlnaSourceIsAudio(rawURL string, meta DIDLMetadata) bool {
+	if dlnaMIMEIsAudio(mimeFromProtocolInfo(meta.ProtocolInfo)) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(meta.Class), ".audioitem") {
+		return true
+	}
+	return dlnaURLPathIsAudio(rawURL)
+}
+
+func dlnaMIMEIsAudio(mime string) bool {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "audio/flac", "audio/x-flac", "audio/mpeg", "audio/mp4":
+		return true
+	default:
+		return false
+	}
+}
+
+func dlnaURLPathIsAudio(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	path := strings.ToLower(u.Path)
+	return strings.HasSuffix(path, ".flac") ||
+		strings.HasSuffix(path, ".fla") ||
+		strings.HasSuffix(path, ".mp3") ||
+		strings.HasSuffix(path, ".m4a") ||
+		strings.HasSuffix(path, ".aac")
 }
 
 // setTransportState atomically updates transportState. Used by handlers
