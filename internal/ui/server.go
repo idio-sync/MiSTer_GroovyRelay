@@ -225,6 +225,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountCompanion(mux, http.MethodPost, "/ui/companion/history/play", s.handleCompanionHistoryPlay)
 	s.mountCompanion(mux, http.MethodPost, "/ui/companion/history/delete", s.handleCompanionHistoryDelete)
 	s.mountCompanion(mux, http.MethodPost, "/ui/companion/launch", s.handleCompanionLaunch)
+	s.mountCompanion(mux, http.MethodPost, "/ui/companion/volume", s.handleCompanionVolume)
 
 	// Static assets served out of embedded FS under /ui/static/.
 	// GETs don't pass through csrfMiddleware — reads have no side

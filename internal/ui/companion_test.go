@@ -449,6 +449,58 @@ type fakeCompanionVolume struct{ level int }
 func (f *fakeCompanionVolume) OutputVolume() int            { return f.level }
 func (f *fakeCompanionVolume) SaveOutputVolume(v int) error { f.level = v; return nil }
 
+func TestCompanionVolumeSetsAndValidates(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	saver := &fakeCompanionVolume{}
+	s, err := New(Config{Registry: reg, CompanionVolumeSaver: saver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	// happy path
+	rw := companionJSONRequest(t, mux, http.MethodPost, "/ui/companion/volume", `{"output_volume":42}`)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ok status = %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	if saver.level != 42 {
+		t.Fatalf("saved = %d, want 42", saver.level)
+	}
+
+	// out of range
+	if rw := companionJSONRequest(t, mux, http.MethodPost, "/ui/companion/volume", `{"output_volume":150}`); rw.Code != http.StatusBadRequest {
+		t.Fatalf("range status = %d, want 400", rw.Code)
+	}
+
+	// missing field
+	if rw := companionJSONRequest(t, mux, http.MethodPost, "/ui/companion/volume", `{}`); rw.Code != http.StatusBadRequest {
+		t.Fatalf("missing status = %d, want 400", rw.Code)
+	}
+}
+
+func TestCompanionVolumeRejectsNonExtension(t *testing.T) {
+	reg := adapters.NewRegistry()
+	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := New(Config{Registry: reg, CompanionVolumeSaver: &fakeCompanionVolume{}})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	// No extension Origin / header — must be rejected by the gate.
+	req := httptest.NewRequest(http.MethodPost, "/ui/companion/volume", strings.NewReader(`{"output_volume":10}`))
+	req.Header.Set("Content-Type", "application/json")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rw.Code)
+	}
+}
+
 func TestCompanionStatusIncludesOutputVolume(t *testing.T) {
 	reg := adapters.NewRegistry()
 	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {

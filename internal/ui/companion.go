@@ -297,6 +297,36 @@ func (s *Server) handleCompanionLaunch(w http.ResponseWriter, r *http.Request) {
 	writeCompanionJSON(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) handleCompanionVolume(w http.ResponseWriter, r *http.Request) {
+	if !requireCompanionJSON(w, r) {
+		return
+	}
+	var req struct {
+		OutputVolume *int `json:"output_volume"`
+	}
+	if !decodeCompanionJSON(w, r, &req) {
+		return
+	}
+	if req.OutputVolume == nil {
+		writeCompanionError(w, r, http.StatusBadRequest, "missing output_volume")
+		return
+	}
+	v := *req.OutputVolume
+	if v < 0 || v > 100 {
+		writeCompanionError(w, r, http.StatusBadRequest, "output_volume must be in 0..100")
+		return
+	}
+	if s.cfg.CompanionVolumeSaver == nil {
+		writeCompanionError(w, r, http.StatusServiceUnavailable, "volume control not available")
+		return
+	}
+	if err := s.cfg.CompanionVolumeSaver.SaveOutputVolume(v); err != nil {
+		writeCompanionError(w, r, http.StatusInternalServerError, "volume save failed")
+		return
+	}
+	writeCompanionJSON(w, r, http.StatusOK, map[string]any{"ok": true, "output_volume": v})
+}
+
 func requireCompanionJSON(w http.ResponseWriter, r *http.Request) bool {
 	ct := strings.TrimSpace(r.Header.Get("Content-Type"))
 	if ct == "" {
