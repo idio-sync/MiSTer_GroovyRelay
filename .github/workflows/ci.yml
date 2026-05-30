@@ -55,7 +55,24 @@ jobs:
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install ffmpeg -y
+        run: |
+          choco install ffmpeg -y --no-progress
+          # choco adds ffmpeg to the *machine* PATH via the registry, which
+          # GitHub Actions does not propagate to subsequent steps. Resolve the
+          # install dir here and re-export it through $GITHUB_PATH so the
+          # integration step can actually find ffmpeg/ffprobe. Without this,
+          # every real-ffmpeg integration test silently t.Skip()s on Windows
+          # and the suite only fails on the one test that probes a hung server
+          # (TestURL_ProbeTimeout), which returns instantly when ffprobe is
+          # missing instead of hitting the probe-timeout ceiling.
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+          $dir = Split-Path (Get-Command ffmpeg).Source
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+      - name: Verify ffmpeg/ffprobe on PATH
+        run: |
+          ffmpeg -version
+          ffprobe -version
       - run: go vet ./...
       - run: go test ./...
       - name: Sidecar script tests

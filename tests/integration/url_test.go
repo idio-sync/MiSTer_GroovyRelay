@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -147,6 +148,14 @@ func TestURL_RejectsBadScheme(t *testing.T) {
 func TestURL_ProbeTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("ProbeTimeout test takes ~12s; skipping in -short mode")
+	}
+	// The probe shells out to ffprobe; without it the probe errors out
+	// instantly instead of blocking on the hung server, so the timeout
+	// ceiling never fires and the elapsed-time assertion below is
+	// meaningless. Skip rather than fail, matching every other
+	// ffprobe-dependent test in this package.
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skipf("ffprobe not on PATH: %v", err)
 	}
 	h := NewHarness(t)
 	mgr := core.NewManager(urlBridgeConfig(t), h.Sender)

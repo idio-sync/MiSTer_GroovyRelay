@@ -1645,12 +1645,12 @@ func TestRenderURLPane_EmptyHostsStillShowsEditor(t *testing.T) {
 }
 ```
 
-If a `renderSettingsAdapters` helper does not already exist, add it next to the other render helpers in `chassis_test.go`:
+If a `renderSettingsAdapters` helper does not already exist, add it next to the other render helpers in `chassis_test.go`. Use the package's real test template loader, `parseTemplatesForTest(t)` (defined at `chassis_test.go:4207`, returns `*template.Template`; used the same way at `chassis_test.go:1031` for the `source-cluster` render test):
 
 ```go
 func renderSettingsAdapters(t *testing.T, data SettingsData) string {
 	t.Helper()
-	tmpl := newTemplates(t) // use the package's existing template loader; see other render tests
+	tmpl := parseTemplatesForTest(t)
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "settings-adapters", data); err != nil {
 		t.Fatalf("ExecuteTemplate: %v", err)
@@ -1659,7 +1659,7 @@ func renderSettingsAdapters(t *testing.T, data SettingsData) string {
 }
 ```
 
-> `newTemplates(t)` stands in for whatever the package already uses to parse the embedded templates in tests. Find it with `grep -n "ParseFS\|template.Must\|newTemplates\|parseTemplates" internal/chassis/*.go` and call the real loader.
+> Ensure `bytes` is imported in `chassis_test.go` (other render tests already use it). Executing the `"settings-adapters"` template directly works because the new `settings-adapter-url.html` is in the embedded `templates/` glob and `parseTemplatesForTest` parses the whole set, so the `{{ template "settings-adapter-url" ... }}` call resolves.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2139,6 +2139,25 @@ func TestBridgeAdapterHostEditor_UnknownAdapter(t *testing.T) {
 	ce, ok := err.(interface{ StatusCode() int })
 	if !ok || ce.StatusCode() != 404 {
 		t.Fatalf("err = %v, want 404 chip error", err)
+	}
+}
+
+func TestBridgeAdapterHostEditor_EmptyEntryReKeyedToHosts(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/config.toml"
+	_ = os.WriteFile(cfgPath, []byte("[bridge]\nmister.host = \"x\"\n\n[adapters.url]\nenabled = true\n"), 0o600)
+	saver := uiserver.NewAdapterSaver(cfgPath, &sync.Mutex{})
+	reg := &fakeRegistry{entries: map[string]adapters.Adapter{"url": &fakeURLAdapter{}}}
+	ed := newBridgeAdapterHostEditor(saver, reg)
+	// An empty-string entry triggers Validate's "entries must not be empty"
+	// FieldError keyed ytdlp_hosts; the wrapper must re-key it to "hosts".
+	_, _, err := ed.SetHosts("url", []string{""})
+	feb, ok := err.(interface{ FieldErrors() []adapters.FieldError })
+	if !ok {
+		t.Fatalf("err type = %T, want field-error bearer", err)
+	}
+	if feb.FieldErrors()[0].Key != "hosts" {
+		t.Errorf("field error key = %q, want hosts (re-keyed from ytdlp_hosts)", feb.FieldErrors()[0].Key)
 	}
 }
 ```
