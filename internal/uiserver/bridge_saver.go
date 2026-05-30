@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type Core interface {
 	UpdateBridge(b config.BridgeConfig)
 	SetInterlaceFieldOrder(order string) error
 	SetOutputVolume(volume int) error
+	SetAudioDSP(dsp config.AudioDSP) error
 	DropActiveCast(reason string) error
 }
 
@@ -321,6 +323,11 @@ func (r *BridgeSaver) applyHotSwapSideEffects(changed []string, newCfg config.Br
 			return fmt.Errorf("output volume hot-swap: %w", err)
 		}
 	}
+	if containsStr(changed, "audio.dsp") {
+		if err := r.core.SetAudioDSP(newCfg.Audio.DSP); err != nil {
+			return fmt.Errorf("audio dsp hot-swap: %w", err)
+		}
+	}
 	if containsStr(changed, "logging.debug") {
 		if newCfg.Logging.Debug {
 			logging.SetLevel("debug")
@@ -459,6 +466,9 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Audio.OutputVolume != newCfg.Audio.OutputVolume {
 		keys = append(keys, "audio.output_volume")
 	}
+	if !audioDSPEqual(oldCfg.Audio.DSP, newCfg.Audio.DSP) {
+		keys = append(keys, "audio.dsp")
+	}
 	if oldCfg.Visualizer.Mode != newCfg.Visualizer.Mode {
 		keys = append(keys, "visualizer.mode")
 	}
@@ -519,6 +529,13 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	return keys
 }
 
+// audioDSPEqual reports value equality across the full DSP config including
+// the EQ slice and memory slots. reflect.DeepEqual is used because EQ and
+// Memory are slices (== is illegal on them).
+func audioDSPEqual(a, b config.AudioDSP) bool {
+	return reflect.DeepEqual(a, b)
+}
+
 func scopeForBridgeField(key string) adapters.ApplyScope {
 	switch key {
 	case "visualizer.mode":
@@ -526,6 +543,8 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 	case "video.interlace_field_order":
 		return adapters.ScopeHotSwap
 	case "audio.output_volume":
+		return adapters.ScopeHotSwap
+	case "audio.dsp":
 		return adapters.ScopeHotSwap
 	case "mister.ssh_user", "mister.ssh_password":
 		return adapters.ScopeHotSwap

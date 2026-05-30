@@ -565,7 +565,7 @@ func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
 			RGBMode:             "rgb888",
 			LZ4Enabled:          true,
 		},
-		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
+		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100, DSP: config.DefaultAudioDSP()},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
 		MiSTer:     config.MisterConfig{Host: "192.0.2.10", Port: 32100, SourcePort: 32101},
 		UI:         config.UIConfig{HTTPPort: 32500},
@@ -601,6 +601,9 @@ type fakeBridgeCore struct {
 	outputVolumes   []int
 	drops           int
 	dropErr         error
+	lastDSP         config.AudioDSP
+	dspCalls        int
+	dspErr          error
 }
 
 func (f *fakeBridgeCore) UpdateBridge(b config.BridgeConfig) {
@@ -616,6 +619,12 @@ func (f *fakeBridgeCore) SetInterlaceFieldOrder(order string) error {
 func (f *fakeBridgeCore) SetOutputVolume(volume int) error {
 	f.outputVolumes = append(f.outputVolumes, volume)
 	return nil
+}
+
+func (f *fakeBridgeCore) SetAudioDSP(dsp config.AudioDSP) error {
+	f.lastDSP = dsp
+	f.dspCalls++
+	return f.dspErr
 }
 
 func (f *fakeBridgeCore) DropActiveCast(string) error {
@@ -883,5 +892,30 @@ func TestBridgeSaver_SaveTouchedSnapshotsUnderLock(t *testing.T) {
 	cur := s.Current()
 	if cur.HostIP != "10.0.0.1" {
 		t.Errorf("final HostIP = %q, want 10.0.0.1", cur.HostIP)
+	}
+}
+
+func TestDiffBridgeConfig_DetectsDSP(t *testing.T) {
+	t.Parallel()
+	old := testBridgeConfig(t, "NTSC_480i")
+	old.Audio.DSP = config.DefaultAudioDSP()
+
+	next := old
+	next.Audio.DSP.Bass = 3
+	if !containsStr(diffBridgeConfig(old, next), "audio.dsp") {
+		t.Error("bass change should surface audio.dsp")
+	}
+	next2 := old
+	next2.Audio.DSP.EQ = append([]float64(nil), old.Audio.DSP.EQ...)
+	next2.Audio.DSP.EQ[4] = -2
+	if !containsStr(diffBridgeConfig(old, next2), "audio.dsp") {
+		t.Error("EQ band change should surface audio.dsp")
+	}
+}
+
+func TestScopeForBridgeField_DSPIsHotSwap(t *testing.T) {
+	t.Parallel()
+	if got := scopeForBridgeField("audio.dsp"); got != adapters.ScopeHotSwap {
+		t.Errorf("scopeForBridgeField(audio.dsp) = %v, want ScopeHotSwap", got)
 	}
 }

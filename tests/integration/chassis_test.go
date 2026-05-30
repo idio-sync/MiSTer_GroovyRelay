@@ -2208,6 +2208,7 @@ type fakeCoreForSettingsTests struct{}
 func (fakeCoreForSettingsTests) UpdateBridge(config.BridgeConfig)         {}
 func (fakeCoreForSettingsTests) SetInterlaceFieldOrder(string) error      { return nil }
 func (fakeCoreForSettingsTests) SetOutputVolume(int) error                { return nil }
+func (fakeCoreForSettingsTests) SetAudioDSP(config.AudioDSP) error        { return nil }
 func (fakeCoreForSettingsTests) DropActiveCast(string) error              { return nil }
 
 // fakeSettingsProber satisfies chassis.Prober for settings integration tests.
