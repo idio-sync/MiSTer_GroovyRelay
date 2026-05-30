@@ -451,6 +451,17 @@ body.receiver .load-core-btn.loaded::before {
   box-shadow: 0 0 5px var(--vfd-glow);
 }
 
+body.receiver .load-core-btn.error {
+  color: #ff6b6b;
+  text-shadow: 0 0 3px rgba(255, 48, 48, 0.5);
+  background: linear-gradient(180deg, #4a3030 0%, #2a1a1a 50%, #160e0e 100%);
+}
+
+body.receiver .load-core-btn.error::before {
+  background: #ff3030;
+  box-shadow: 0 0 5px #ff3030e6;
+}
+
 body.receiver .brand-plate {
   padding: 6px 10px;
   text-align: right;

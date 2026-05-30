@@ -7,8 +7,9 @@
 // flight. Visual states mirror the existing CSS:
 //   - .loading  amber pulse while the request is in flight
 //   - .loaded   green resting/success state (also the default at render)
-// Failures revert to the resting state and surface the reason via the
-// button title + a console warning (the main page has no toast surface).
+//   - .error    red state on failure
+// Failures switch to the error state and surface the reason via the button
+// title + a console warning (the main page has no toast surface).
 (() => {
   'use strict';
 
@@ -19,7 +20,7 @@
   }
 
   function setState(btn, state, title) {
-    btn.classList.remove('loading', 'loaded');
+    btn.classList.remove('loading', 'loaded', 'error');
     if (state) {
       btn.classList.add(state);
     }
@@ -46,7 +47,7 @@
       body = await res.json().catch(() => ({}));
     } catch (err) {
       console.warn('load-core: request failed', err);
-      setState(btn, 'loaded', 'Load failed · network error');
+      setState(btn, 'error', 'Load failed · network error');
       btn.disabled = false;
       return;
     }
@@ -55,11 +56,11 @@
       setState(btn, 'loaded', `Core sent · ${body.host || ''}`.trim());
     } else if (body && body.chip) {
       console.warn('load-core: not ready', body.chip);
-      setState(btn, 'loaded', `Load failed · ${body.chip}`);
+      setState(btn, 'error', `Load failed · ${body.chip}`);
     } else {
       const reason = (body && body.error) || 'unknown error';
       console.warn('load-core: launch failed', reason);
-      setState(btn, 'loaded', `Load failed · ${reason}`);
+      setState(btn, 'error', `Load failed · ${reason}`);
     }
     btn.disabled = false;
   }
