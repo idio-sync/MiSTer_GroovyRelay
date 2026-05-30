@@ -7,8 +7,9 @@ import (
 
 const (
 	bytesPerSample = 2
-	rampSamples    = 480 // ~10 ms at 48 kHz; crossfade window for hard changes
-	hardGainDelta  = 1.0 // dB; > this on any slot is a hard change
+	rampSamples    = 480               // ~10 ms at 48 kHz; crossfade window for hard changes
+	hardGainDelta  = 1.0               // dB; > this on any slot is a hard change
+	balGainStep    = 1.0 / rampSamples // max per-sample balance-gain change (~10 ms full swing)
 )
 
 // Processor applies a Coeffs chain to interleaved s16le PCM and owns the
@@ -21,6 +22,7 @@ type Processor struct {
 	curSt      [][NumSlots]BiquadState // [channel][slot]
 	fromSt     [][NumSlots]BiquadState // old cascade during a ramp
 	ramp       int                     // samples remaining in the active crossfade (0 = none)
+	balL, balR float64                 // smoothed per-channel balance gains (track Coeffs.BalL/BalR)
 }
 
 func NewProcessor(channels int) *Processor {
@@ -32,9 +34,18 @@ func NewProcessor(channels int) *Processor {
 }
 
 // Active reports whether the processor is doing non-trivial work (shaping,
-// mono, balance, or mid-ramp) — i.e. the float path is required.
+// mono, balance, or mid-ramp) — i.e. the float path is required. It also stays
+// active while the smoothed balance gains are still approaching their target,
+// so a balance return-to-center finishes its glide instead of snapping when the
+// plane hands off to the bit-identical volume-only fast path.
 func (p *Processor) Active() bool {
-	return p.ramp > 0 || (p.cur != nil && !p.cur.Transparent)
+	if p.cur == nil {
+		return false
+	}
+	if p.ramp > 0 || !p.cur.Transparent {
+		return true
+	}
+	return p.balL != p.cur.BalL || p.balR != p.cur.BalR
 }
 
 // Process applies target to pcm in place. target is the latest atomically
@@ -65,17 +76,21 @@ func (p *Processor) Process(pcm []byte, target *Coeffs, volume int) {
 		if p.ramp > 0 {
 			t = 1 - float64(p.ramp)/float64(rampSamples)
 		}
+		// Glide the per-channel balance gains toward their target so a balance
+		// change (applied outside the biquad cascade) ramps instead of stepping.
+		p.balL = approach(p.balL, p.cur.BalL, balGainStep)
+		p.balR = approach(p.balR, p.cur.BalR, balGainStep)
 		for ch := 0; ch < p.channels; ch++ {
 			y := p.cascade(&p.curSt[ch], p.cur, s[ch])
 			if p.ramp > 0 {
 				yOld := p.cascade(&p.fromSt[ch], p.curFrom(), s[ch])
 				y = yOld*(1-t) + y*t
 			}
-			// balance (skip on mono / mono source)
+			// balance (smoothed; skip on mono / mono source where BalL=BalR=1)
 			if ch == 0 {
-				y *= p.cur.BalL
+				y *= p.balL
 			} else {
-				y *= p.cur.BalR
+				y *= p.balR
 			}
 			y *= g
 			floatToSample(pcm, (n*p.channels+ch)*bytesPerSample, y)
@@ -102,6 +117,7 @@ func (p *Processor) cascade(st *[NumSlots]BiquadState, c *Coeffs, x float64) flo
 func (p *Processor) adopt(c *Coeffs) {
 	p.cur = c
 	p.ramp = 0
+	p.balL, p.balR = c.BalL, c.BalR // start settled — no glide on the first chunk
 	for ch := 0; ch < p.channels; ch++ {
 		for i := range p.curSt[ch] {
 			p.curSt[ch][i].SetCoeffs(c.Slots[i])
@@ -116,13 +132,40 @@ func (p *Processor) transition(next *Coeffs) {
 		p.ramp = 0
 		return
 	}
-	// hard change: seed from-state from current state, start a ramp.
+	// Hard change: seed from-state from the current state, start a ramp.
+	//
+	// Limitation: a *supersede* (a second hard change while this ramp is still
+	// in flight) reseeds "from" to the in-flight target rather than the current
+	// crossfaded output, so the spec's ideal "ramp from the current effective
+	// output" is approximated, not exact. This is benign in practice: every UI
+	// param change is gated by audio-strip.js's 120 ms preview throttle (and a
+	// trailing commit), while a ramp is only ~10 ms — so consecutive hard
+	// changes are always >10x the ramp apart and never overlap. A fully exact
+	// bound across overlapping ramps would need an output-residual crossfade;
+	// deferred as unwarranted for the realistic single-transition path.
 	p.fromCoeffs = p.cur
 	for ch := 0; ch < p.channels; ch++ {
 		p.fromSt[ch] = p.curSt[ch] // value copy of the old per-slot state
 	}
 	p.cur = next
 	p.ramp = rampSamples
+}
+
+// approach moves cur toward target by at most step, without overshoot.
+func approach(cur, target, step float64) float64 {
+	if cur < target {
+		if cur+step >= target {
+			return target
+		}
+		return cur + step
+	}
+	if cur > target {
+		if cur-step <= target {
+			return target
+		}
+		return cur - step
+	}
+	return cur
 }
 
 func (p *Processor) isIncremental(a, b *Coeffs) bool {

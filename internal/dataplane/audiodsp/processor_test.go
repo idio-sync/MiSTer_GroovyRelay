@@ -110,3 +110,41 @@ func TestProcessor_HardToggleNoFullStep(t *testing.T) {
 		t.Error("processor should report Active during/after a shaping change")
 	}
 }
+
+func readR(pcm []byte, frame int) int16 { return int16(binary.LittleEndian.Uint16(pcm[frame*4+2:])) }
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// TestProcessor_BalanceGlidesNotSteps verifies the balance gain (applied
+// outside the biquad cascade) is smoothed: a return-to-center brings the muted
+// channel back up gradually rather than snapping to full level.
+func TestProcessor_BalanceGlidesNotSteps(t *testing.T) {
+	t.Parallel()
+	const fb = 4
+	p := NewProcessor(2)
+	left := flatStereo()
+	left.Balance = -100 // R fully muted
+	lc := Design(left)
+	cc := Design(flatStereo()) // both channels unity
+
+	buf := make([]byte, 600*fb)
+	for n := 0; n < 600; n++ {
+		binary.LittleEndian.PutUint16(buf[n*fb:], uint16(int16(12000)))
+		binary.LittleEndian.PutUint16(buf[n*fb+2:], uint16(int16(12000)))
+	}
+	p.Process(buf[0:64*fb], &lc, 100) // settle: R muted
+	if r := readR(buf, 63); absInt(int(r)) > 1 {
+		t.Fatalf("settled R should be muted, got %d", r)
+	}
+	p.Process(buf[64*fb:600*fb], &cc, 100) // return balance to center
+	if firstR := readR(buf, 64); absInt(int(firstR)) > 3000 {
+		t.Errorf("R jumped to %d on balance return-to-center; it should glide up from ~0", firstR)
+	}
+	if lastR := readR(buf, 599); absInt(int(lastR)) < 11000 {
+		t.Errorf("R did not finish gliding back to unity after the glide window: %d", lastR)
+	}
+}
