@@ -1,0 +1,56 @@
+/* Fonts (bundled woff2 in ../fonts) */
+@font-face { font-family:'DSEG14-Classic'; src:url('../fonts/DSEG14Classic-Regular.woff2') format('woff2'); font-weight:400; font-display:block; }
+@font-face { font-family:'DSEG14-Classic'; src:url('../fonts/DSEG14Classic-Bold.woff2') format('woff2'); font-weight:700; font-display:block; }
+@font-face { font-family:'DSEG7-Classic'; src:url('../fonts/DSEG7Classic-Regular.woff2') format('woff2'); font-weight:400; font-display:block; }
+@font-face { font-family:'DSEG7-Classic'; src:url('../fonts/DSEG7Classic-Bold.woff2') format('woff2'); font-weight:700; font-display:block; }
+@font-face { font-family:'Inter'; src:url('../fonts/Inter-Variable.woff2') format('woff2-variations'); font-weight:100 900; font-display:swap; }
+
+:root {
+  --vfd: oklch(0.92 0.20 175);
+  --vfd-bright: oklch(0.96 0.18 175);
+  --vfd-glow: oklch(0.85 0.22 175 / 0.75);
+  --vfd-glow-soft: oklch(0.85 0.22 175 / 0.32);
+  --vfd-dim: oklch(0.55 0.16 175 / 0.78);
+  --vfd-faded: oklch(0.55 0.16 175 / 0.35);
+  --amber: oklch(0.82 0.18 75);
+  --ok: oklch(0.78 0.14 150);
+  --err: oklch(0.66 0.20 28);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; padding: 34px 24px; background: #161618; color: #c9c9cf;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
+.panel { max-width: 480px; margin: 0 auto; padding: 18px 20px 20px; border-radius: 5px; position: relative;
+  background: linear-gradient(180deg,#2a2a2e,#1f1f23);
+  box-shadow: 0 1px 0 rgba(255,255,255,.08) inset, 0 0 0 1px #0a0a0b, 0 24px 60px -20px rgba(0,0,0,.8);
+  display: flex; flex-direction: column; gap: 14px; }
+.status-bar { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 11px;
+  border-bottom: 1px solid #0a0a0b; box-shadow: 0 1px 0 rgba(255,255,255,.04); }
+.led { display: flex; align-items: center; gap: 5px; }
+.led .light { width: 7px; height: 7px; border-radius: 50%; background: #2a2a2c; box-shadow: inset 0 1px 1px rgba(0,0,0,.6); }
+.led.aqua.on .light { background: oklch(0.90 0.22 175); box-shadow: 0 0 6px oklch(0.90 0.22 175 / .9); }
+.led .lbl { font-size: 8px; letter-spacing: .18em; color: #c0c0c4; text-transform: uppercase; }
+.brand-plate { padding: 5px 10px; border: 1px solid #0a0a0b; border-radius: 2px;
+  background: linear-gradient(180deg,#1a1a1c,#0a0a0b); }
+.brand-plate .name { font-size: 13px; font-weight: 900; letter-spacing: .14em; color: #d4d4d8; }
+.section-title { font-size: 11px; font-weight: 700; letter-spacing: .24em; text-transform: uppercase;
+  color: var(--vfd-dim); text-shadow: 0 0 4px var(--vfd-glow-soft); }
+.field-label { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: #8a8a92; }
+.input-frame { padding: 3px; border: 1px solid #000; border-radius: 3px; background: linear-gradient(180deg,#0a0a0b,#050506);
+  box-shadow: inset 0 2px 6px rgba(0,0,0,.8); }
+.input-frame input { width: 100%; border: 0; outline: 0; padding: 11px 12px; border-radius: 2px;
+  background: radial-gradient(ellipse at center, oklch(0.13 0.03 175), oklch(0.07 0.02 175) 90%);
+  color: var(--vfd); font-family: 'DSEG7-Classic', 'Courier New', monospace; font-size: 14px; letter-spacing: .04em;
+  text-shadow: 0 0 3px var(--vfd-glow-soft); caret-color: var(--vfd); }
+.hint { font-size: 11px; color: #7a7a82; line-height: 1.5; margin: 0; }
+.row { display: flex; gap: 9px; }
+.btn { flex: 1; height: 38px; border: 1px solid #0a0a0b; border-radius: 2px; cursor: pointer; font-size: 11px;
+  letter-spacing: .18em; text-transform: uppercase; color: #c0c0c4;
+  background: linear-gradient(180deg,#4a4a50,#2a2a2e 50%,#1a1a1c);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12), inset 0 -1px 0 rgba(0,0,0,.4), 0 1px 2px rgba(0,0,0,.4); }
+.btn.primary { color: var(--amber); }
+.result { min-height: 20px; padding: 10px 12px; border: 1px solid #0a0a0b; border-radius: 3px;
+  background: linear-gradient(180deg,#0a0a0b,#050506); font-family: 'Courier New', monospace; font-size: 12px;
+  letter-spacing: .06em; color: var(--vfd-dim); }
+.result.ok { color: var(--ok); text-shadow: 0 0 4px oklch(0.78 0.14 150 / .5); }
+.result.err { color: var(--err); }
