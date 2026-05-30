@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane/audiodsp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -267,7 +268,8 @@ type PlaneConfig struct {
 	AudioRate           int // Go-side integer (48000)
 	AudioChans          int // 2 for stereo
 	SuppressAudioOutput bool
-	OutputVolume        int // global output gain, 0..100
+	OutputVolume        int           // global output gain, 0..100
+	AudioDSP            audiodsp.Params // tone/EQ chain; zero value = transparent
 	SeekOffsetMs        int // reported as session start position
 	Generation          uint64 // session generation; stamps audio snapshots
 
@@ -344,6 +346,8 @@ type Plane struct {
 	lastACKUnix    atomic.Int64  // unix nanos of last received ACK; 0 = never
 	audioReady     atomic.Bool
 	outputVolume   atomic.Int32
+	audioDSP       atomic.Pointer[audiodsp.Coeffs]
+	audioDSPProc   *audiodsp.Processor // owned by the send goroutine
 	fpgaFrame      atomic.Uint32
 	done           chan struct{}
 
@@ -451,6 +455,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		fieldDiagEnabled: fieldDiagEnabled,
 	}
 	p.outputVolume.Store(int32(clampOutputVolume(cfg.OutputVolume)))
+	p.initAudioDSP()
 	if fieldHistoryEnabled {
 		p.fieldPrev[0] = make([]byte, fieldBytes)
 		p.fieldPrev[1] = make([]byte, fieldBytes)
@@ -484,6 +489,26 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	return p
 }
 
+// initAudioDSP seeds the atomic DSP coeffs and allocates the per-goroutine
+// Processor from the config. Called once from NewPlane (and from tests that
+// construct a bare &Plane{} directly).
+func (p *Plane) initAudioDSP() {
+	chans := p.cfg.AudioChans
+	if chans <= 0 {
+		chans = 2
+	}
+	params := p.cfg.AudioDSP
+	if params.SampleRate == 0 {
+		params.SampleRate = p.cfg.AudioRate
+	}
+	if params.Channels == 0 {
+		params.Channels = chans
+	}
+	c := audiodsp.Design(params)
+	p.audioDSP.Store(&c)
+	p.audioDSPProc = audiodsp.NewProcessor(chans)
+}
+
 // SetFieldOrder changes the interlace field polarity for subsequent
 // BLIT_FIELD_VSYNC packets. Safe to call concurrently with Run —
 // the pump loop reads fieldOrderFlip atomically per field. Inverting
@@ -511,6 +536,21 @@ func (p *Plane) SetOutputVolume(volume int) error {
 		return fmt.Errorf("output volume must be in 0..100, got %d", volume)
 	}
 	p.outputVolume.Store(int32(volume))
+	return nil
+}
+
+// SetAudioDSP recomputes the tone/EQ coefficient chain off the audio path and
+// atomically publishes it. The send goroutine's Processor picks it up on its
+// next chunk and crossfades hard changes. Safe to call concurrently with Run.
+func (p *Plane) SetAudioDSP(params audiodsp.Params) error {
+	if params.SampleRate == 0 {
+		params.SampleRate = p.cfg.AudioRate
+	}
+	if params.Channels == 0 {
+		params.Channels = p.cfg.AudioChans
+	}
+	c := audiodsp.Design(params)
+	p.audioDSP.Store(&c)
 	return nil
 }
 
@@ -1433,7 +1473,11 @@ func (p *Plane) sendAudio(pcm []byte) {
 	if len(pcm) > maxSoundSize {
 		pcm = pcm[:maxSoundSize]
 	}
-	scalePCMVolumeInPlace(pcm, int(p.outputVolume.Load()))
+	if c := p.audioDSP.Load(); c != nil && (p.audioDSPProc.Active() || !c.Transparent) {
+		p.audioDSPProc.Process(pcm, c, int(p.outputVolume.Load()))
+	} else {
+		scalePCMVolumeInPlace(pcm, int(p.outputVolume.Load()))
+	}
 	audioHeader := groovy.BuildAudioHeader(uint16(len(pcm)))
 	if err := p.fieldSender.Send(audioHeader); err != nil {
 		slog.Warn("audio header send", "err", err)

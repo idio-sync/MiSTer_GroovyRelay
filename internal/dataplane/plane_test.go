@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane/audiodsp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
@@ -2473,5 +2474,20 @@ func TestPlane_RunDoesNotPublishAudioScopesForEmptyChunks(t *testing.T) {
 
 	if snap := plane.AudioScopes(); snap != nil {
 		t.Fatalf("AudioScopes() = %#v after EOF audio pipe, want nil", snap)
+	}
+}
+
+func TestPlane_SetAudioDSPShapesAudio(t *testing.T) {
+	t.Parallel()
+	p := &Plane{cfg: PlaneConfig{AudioChans: 2, AudioRate: 48000}}
+	p.initAudioDSP() // helper added in Step 3
+	// Flat default: sendAudio path must be transparent (handled in Step 3's
+	// integration; here we assert SetAudioDSP swaps the published coeffs).
+	if err := p.SetAudioDSP(audiodsp.Params{Enabled: true, Bass: 6, SampleRate: 48000, Channels: 2}); err != nil {
+		t.Fatalf("SetAudioDSP: %v", err)
+	}
+	c := p.audioDSP.Load()
+	if c == nil || !c.Engaged {
+		t.Fatalf("expected engaged coeffs after SetAudioDSP, got %+v", c)
 	}
 }
