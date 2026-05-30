@@ -442,3 +442,50 @@ func TestHandleCookiesPOST_HTMX_ErrorFragmentTargetsCookiesStatus(t *testing.T) 
 		t.Errorf("error fragment wrongly carries id=\"url-panel\" (would break cookies form swap target); got %s", bodyStr)
 	}
 }
+
+func TestAdapter_CookieMethods_RoundTrip(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Initially absent.
+	if _, ok, err := a.CookieStat(); err != nil || ok {
+		t.Fatalf("CookieStat initial = (_, %v, %v), want (_, false, nil)", ok, err)
+	}
+	// Validate accepts good cookies.
+	if err := a.ValidateCookies([]byte(sampleCookies)); err != nil {
+		t.Fatalf("ValidateCookies(good): %v", err)
+	}
+	// Save writes the file.
+	st, err := a.SaveCookies([]byte(sampleCookies))
+	if err != nil {
+		t.Fatalf("SaveCookies: %v", err)
+	}
+	if st.Size != int64(len(sampleCookies)) {
+		t.Errorf("Size = %d, want %d", st.Size, len(sampleCookies))
+	}
+	got, ok, err := a.CookieStat()
+	if err != nil || !ok {
+		t.Fatalf("CookieStat after save = (_, %v, %v), want (_, true, nil)", ok, err)
+	}
+	if got.Size != st.Size {
+		t.Errorf("CookieStat Size = %d, want %d", got.Size, st.Size)
+	}
+	// Clear removes it.
+	if err := a.ClearCookies(); err != nil {
+		t.Fatalf("ClearCookies: %v", err)
+	}
+	if _, ok, _ := a.CookieStat(); ok {
+		t.Errorf("CookieStat after clear ok=true, want false")
+	}
+}
+
+func TestAdapter_ValidateCookies_RejectsGarbage(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.ValidateCookies([]byte("not cookies")); err == nil {
+		t.Fatal("ValidateCookies accepted garbage; want error")
+	}
+}

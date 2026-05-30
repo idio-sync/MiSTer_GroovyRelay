@@ -202,7 +202,9 @@ func TestAudioMeter_SpectrumBinCenteredSinePeak(t *testing.T) {
 	m.forcePublishEveryObserve = true
 	const freq = 3000.0
 	sine := func(i int) float32 { return float32(math.Sin(2 * math.Pi * freq * float64(i) / 48000)) }
-	for chunk := 0; chunk < 3; chunk++ {
+	// Feed more than one full FFT window (audioFFTSize samples) so the
+	// analysis ring is fully primed with the tone before the peak check.
+	for chunk := 0; chunk < 16; chunk++ {
 		pcm := makeStereoPCM(800, [2]func(int) float32{sine, sine})
 		m.Observe(pcm, 2, 48000)
 	}
@@ -226,6 +228,40 @@ func TestAudioMeter_SpectrumBinCenteredSinePeak(t *testing.T) {
 		if v > -10 {
 			t.Errorf("non-target band %d = %f dBFS, want < -10 (suppressed)", i, v)
 		}
+	}
+}
+
+// TestAudioMeter_SpectrumLowBandsResolveDistinctly is the regression test
+// for the "leftmost 8 bars always the same level" bug: a single low tone
+// must light one band, not smear identically across the bottom of the
+// spectrum. With a 1024-pt FFT @48 kHz (46.9 Hz/bin) the eight lowest
+// log-bands all collapse onto FFT bin 1 and read bit-identical.
+func TestAudioMeter_SpectrumLowBandsResolveDistinctly(t *testing.T) {
+	m := NewAudioMeter(1, 48000, 2)
+	m.forcePublishEveryObserve = true
+	const freq = 50.0
+	sine := func(i int) float32 { return float32(math.Sin(2 * math.Pi * freq * float64(i) / 48000)) }
+	// Feed well over one full FFT window so the analysis ring is primed
+	// with the tone regardless of FFT size.
+	for chunk := 0; chunk < 16; chunk++ {
+		pcm := makeStereoPCM(800, [2]func(int) float32{sine, sine})
+		m.Observe(pcm, 2, 48000)
+	}
+	snap := m.AudioScopes()
+	// The eight lowest bands must not be a single flat level. A 50 Hz tone
+	// lands in exactly one of them; the others should be clearly quieter.
+	lo8 := snap.SpectrumBands[:8]
+	mn, mx := lo8[0], lo8[0]
+	for _, v := range lo8 {
+		if v < mn {
+			mn = v
+		}
+		if v > mx {
+			mx = v
+		}
+	}
+	if mx-mn < 10 {
+		t.Errorf("lowest 8 bands span only %.1f dB (%v): they collapse to one level", mx-mn, lo8)
 	}
 }
 

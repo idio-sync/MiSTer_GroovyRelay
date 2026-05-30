@@ -861,3 +861,146 @@
   window.Chassis.settings.__pollTick = (adapter) => pollOnce(adapter);
   window.Chassis.settings.__pollActive = (adapter) => !!(pollers[adapter] && !pollers[adapter].stopped);
 })();
+
+// 4F — URL host tag-list. Whole-list replace on every add/remove.
+function urlHostEditor() {
+  return document.querySelector('[data-host-editor="url"]');
+}
+
+function currentHostSet() {
+  const ed = urlHostEditor();
+  if (!ed) return [];
+  return Array.from(ed.querySelectorAll('.tag[data-host]'))
+    .map((t) => t.getAttribute('data-host'));
+}
+
+async function putHosts(hosts) {
+  const ed = urlHostEditor();
+  const errEl = ed ? ed.querySelector('[data-host-err]') : null;
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+  try {
+    const res = await fetch('/receiver/settings/adapter/url/hosts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hosts }),
+    });
+    const payload = await res.json();
+    if (!payload.ok) {
+      if (payload.errors && payload.errors.hosts && errEl) {
+        errEl.textContent = payload.errors.hosts;
+        errEl.hidden = false;
+      } else if (payload.chip) {
+        window.Chassis.settings.showNotice(payload.chip, 'err');
+      }
+      return false;
+    }
+    renderHostTags(payload.hosts || []);
+    return true;
+  } catch (e) {
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
+    return false;
+  }
+}
+
+function renderHostTags(hosts) {
+  const ed = urlHostEditor();
+  if (!ed) return;
+  const list = ed.querySelector('.tag-list');
+  const addBtn = list.querySelector('.tag.add');
+  list.querySelectorAll('.tag[data-host]').forEach((t) => t.remove());
+  for (const h of hosts) {
+    const span = document.createElement('span');
+    span.className = 'tag';
+    span.setAttribute('data-host', h);
+    span.textContent = h;
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.setAttribute('data-remove-host', h);
+    x.textContent = '✕';
+    span.appendChild(x);
+    list.insertBefore(span, addBtn);
+  }
+}
+
+document.addEventListener('click', (ev) => {
+  const rm = ev.target.closest('[data-remove-host]');
+  if (rm && urlHostEditor() && urlHostEditor().contains(rm)) {
+    ev.preventDefault();
+    const host = rm.getAttribute('data-remove-host');
+    putHosts(currentHostSet().filter((h) => h !== host));
+    return;
+  }
+  const add = ev.target.closest('[data-add-host]');
+  if (add && urlHostEditor() && urlHostEditor().contains(add)) {
+    ev.preventDefault();
+    const host = (prompt('Add yt-dlp host (e.g. example.com):') || '').trim();
+    if (!host) return;
+    const set = currentHostSet();
+    if (set.includes(host)) return;
+    putHosts(set.concat([host]));
+  }
+});
+// 4F — URL cookies widget. Explicit Save/Clear; repaint pill from response.
+function urlCookies() {
+  return document.querySelector('[data-cookies="url"]');
+}
+
+function paintCookiePill(cookie) {
+  const w = urlCookies();
+  if (!w) return;
+  const pill = w.querySelector('[data-cookies-pill]');
+  if (!pill) return;
+  if (cookie && cookie.loaded) {
+    pill.classList.remove('dim');
+    pill.textContent = `${cookie.bytes} B · set ${cookie.set_at}`;
+  } else {
+    pill.classList.add('dim');
+    pill.textContent = 'not loaded';
+  }
+}
+
+async function postCookies(path, body, contentType) {
+  const w = urlCookies();
+  const errEl = w ? w.querySelector('[data-cookies-err]') : null;
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: contentType ? { 'Content-Type': contentType } : {},
+      body,
+    });
+    const payload = await res.json();
+    if (!payload.ok) {
+      if (payload.errors && payload.errors.cookies && errEl) {
+        errEl.textContent = payload.errors.cookies;
+        errEl.hidden = false;
+      } else if (payload.chip) {
+        window.Chassis.settings.showNotice(payload.chip, 'err');
+      }
+      return;
+    }
+    paintCookiePill(payload.cookie);
+  } catch (e) {
+    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
+  }
+}
+
+document.addEventListener('click', (ev) => {
+  const save = ev.target.closest('[data-cookies-save]');
+  if (save && urlCookies() && urlCookies().contains(save)) {
+    ev.preventDefault();
+    const text = urlCookies().querySelector('[data-cookies-text]');
+    const body = new URLSearchParams();
+    body.set('cookies', text ? text.value : '');
+    postCookies('/receiver/settings/adapter/url/cookies', body.toString(),
+      'application/x-www-form-urlencoded');
+    return;
+  }
+  const clear = ev.target.closest('[data-cookies-clear]');
+  if (clear && urlCookies() && urlCookies().contains(clear)) {
+    ev.preventDefault();
+    postCookies('/receiver/settings/adapter/url/cookies/clear', null, null);
+    const text = urlCookies().querySelector('[data-cookies-text]');
+    if (text) text.value = '';
+  }
+});

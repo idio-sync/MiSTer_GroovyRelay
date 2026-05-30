@@ -99,6 +99,22 @@ func (s *meterSampler) Sample(snap core.StatusHomeView, overlay adapters.MeterOv
 		s.prevBlits = snap.Meter.Runtime.BlitsTotal
 		s.prevUnderruns = snap.Meter.Runtime.Underruns
 		s.prevSampleTime = now
+	} else if s.lastLive.Generation == snap.Generation && s.lastLive.State != "" {
+		// Between 500 ms sample boundaries the throughput/ACK/drops/speed
+		// display values are not recomputed. meterDataFromSnapshot leaves
+		// them at idle defaults ("0.0" / "--"), so a meter frame emitted on
+		// a non-boundary diff tick (the diff ticker runs at ~250 ms and
+		// fires on LINK text jitter) would blank those readouts. Hold the
+		// last real sample instead — the histories already carry forward
+		// via s.throughput/s.ack. Mirrors the paused-path hold above.
+		out.MidRow.ThroughputSampleMBs = s.lastLive.MidRow.ThroughputSampleMBs
+		out.MidRow.ThroughputMBs = s.lastLive.MidRow.ThroughputMBs
+		out.MidRow.AckSampleMS = s.lastLive.MidRow.AckSampleMS
+		out.MidRow.MSAck = s.lastLive.MidRow.MSAck
+		out.SourceStrip.DropsPercent = s.lastLive.SourceStrip.DropsPercent
+		out.SourceStrip.Drops = s.lastLive.SourceStrip.Drops
+		out.Readout.SpeedRatio = s.lastLive.Readout.SpeedRatio
+		out.Readout.Speed = s.lastLive.Readout.Speed
 	}
 	s.lastLive = out
 	return out

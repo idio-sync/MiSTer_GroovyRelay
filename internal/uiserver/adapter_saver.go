@@ -467,3 +467,78 @@ type ApplyError struct {
 
 func (e *ApplyError) Error() string { return "apply config: " + e.Err.Error() }
 func (e *ApplyError) Unwrap() error { return e.Err }
+
+// SaveValues writes explicitly-allowed typed values (including non-scalar
+// values such as []string arrays) into the [adapters.<name>] section,
+// reusing SaveTouched's read → merge → encode → validate → write-atomic →
+// ApplyConfig pipeline under the shared saver mutex. Unlike SaveTouched it
+// does not run the scalar overlayTouched step; callers pass already-typed
+// Go values that the TOML encoder handles directly (encodeAdapterMap
+// already serializes []string and nested tables). Any key in values that
+// is not present in allowedKeys is rejected before disk is touched — this
+// is the writable-surface allowlist for keys that have no FieldDef (e.g.
+// ytdlp_hosts). Callers that need normalized values (e.g. lowercased
+// hosts) must normalize BEFORE calling: the adapters.Validator re-check
+// here returns only an error, never normalized values.
+func (r *AdapterSaver) SaveValues(name string, values map[string]any, allowedKeys []string, adapter adapters.Adapter) (adapters.ApplyScope, error) {
+	allow := make(map[string]bool, len(allowedKeys))
+	for _, k := range allowedKeys {
+		allow[k] = true
+	}
+	for k := range values {
+		if !allow[k] {
+			return 0, &adapterFieldErrors{Errs: []adapters.FieldError{{Key: k, Msg: "field not writable"}}}
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	doc, err := os.ReadFile(r.path)
+	if err != nil {
+		return 0, fmt.Errorf("read config: %w", err)
+	}
+	current, found, err := readAdapterSectionMap(doc, name)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		var ok bool
+		current, ok = currentValuesOf(adapter)
+		if !ok {
+			current = map[string]any{}
+		}
+	}
+
+	merged := cloneMap(current)
+	for k, v := range values {
+		merged[k] = v
+	}
+
+	snippet, err := encodeAdapterMap(name, merged)
+	if err != nil {
+		return 0, fmt.Errorf("encode merged config: %w", err)
+	}
+	prim, meta, err := decodeAdapterSection(snippet, name)
+	if err != nil {
+		return 0, fmt.Errorf("decode re-encoded section: %w", err)
+	}
+	if validator, ok := adapter.(adapters.Validator); ok {
+		if err := validator.Validate(prim, meta); err != nil {
+			if ferr, ok := err.(adapters.FieldErrors); ok {
+				return 0, &adapterFieldErrors{Errs: []adapters.FieldError(ferr)}
+			}
+			return 0, fmt.Errorf("validate: %w", err)
+		}
+	}
+
+	updated := replaceAdapterSection(doc, name, snippet)
+	if err := config.WriteAtomic(r.path, updated); err != nil {
+		return 0, fmt.Errorf("write config: %w", err)
+	}
+	scope, err := adapter.ApplyConfig(prim, meta)
+	if err != nil {
+		return scope, &ApplyError{Scope: scope, Err: err}
+	}
+	return scope, nil
+}

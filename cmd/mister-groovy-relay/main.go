@@ -402,6 +402,8 @@ func main() {
 	cr := &configReset{path: *cfgPath, mu: saver.Mu(), sectioned: sec}
 
 	adapterSaverWrapper := newBridgeAdapterSettingsSaver(adapterSaver, reg)
+	adapterHostEditor := newBridgeAdapterHostEditor(adapterSaver, reg)
+	adapterCookieStore := newBridgeAdapterCookieStore(reg)
 	var streamsRefresherWrapper chassis.StreamsRefresher
 	if streamsAdapter != nil {
 		streamsRefresherWrapper = newBridgeStreamsRefresher(streamsAdapter)
@@ -439,6 +441,8 @@ func main() {
 		AdapterSettingsSaver:      adapterSaverWrapper,
 		StreamsRefresher:          streamsRefresherWrapper,
 		AdapterLinker:             newAdapterLinker(reg),
+		AdapterHostEditor:         adapterHostEditor,
+		AdapterCookieStore:        adapterCookieStore,
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)

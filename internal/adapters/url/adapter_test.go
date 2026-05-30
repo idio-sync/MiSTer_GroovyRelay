@@ -198,3 +198,84 @@ ytdlp_resolve_timeout_seconds = 30
 		t.Error("resolver was rebuilt when timeout did not change — wasted allocation")
 	}
 }
+
+func TestFields_ExposesYtdlpStandardFields(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	byKey := map[string]adapters.FieldDef{}
+	for _, f := range a.Fields() {
+		byKey[f.Key] = f
+	}
+	for _, want := range []struct {
+		key  string
+		kind adapters.FieldKind
+	}{
+		{"enabled", adapters.KindBool},
+		{"ytdlp_enabled", adapters.KindBool},
+		{"ytdlp_format", adapters.KindText},
+		{"ytdlp_resolve_timeout_seconds", adapters.KindInt},
+	} {
+		fd, ok := byKey[want.key]
+		if !ok {
+			t.Errorf("Fields() missing %q", want.key)
+			continue
+		}
+		if fd.Kind != want.kind {
+			t.Errorf("%q Kind = %v, want %v", want.key, fd.Kind, want.kind)
+		}
+		if fd.ApplyScope != adapters.ScopeHotSwap {
+			t.Errorf("%q ApplyScope = %v, want ScopeHotSwap", want.key, fd.ApplyScope)
+		}
+	}
+	// ytdlp_hosts is NOT a standard field — it is driven by the bespoke widget.
+	if _, ok := byKey["ytdlp_hosts"]; ok {
+		t.Errorf("Fields() must not expose ytdlp_hosts (bespoke widget owns it)")
+	}
+}
+
+func TestCurrentValues_IncludesYtdlpFields(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Seed a known config so the values are deterministic.
+	a.cfg = Config{
+		Enabled:                    true,
+		YtdlpEnabled:               false,
+		YtdlpFormat:                "best",
+		YtdlpResolveTimeoutSeconds: 42,
+		YtdlpHosts:                 []string{"youtube.com"},
+	}
+	v := a.CurrentValues()
+	if v["enabled"] != true {
+		t.Errorf("enabled = %v, want true", v["enabled"])
+	}
+	if v["ytdlp_enabled"] != false {
+		t.Errorf("ytdlp_enabled = %v, want false", v["ytdlp_enabled"])
+	}
+	if v["ytdlp_format"] != "best" {
+		t.Errorf("ytdlp_format = %v, want best", v["ytdlp_format"])
+	}
+	if v["ytdlp_resolve_timeout_seconds"] != 42 {
+		t.Errorf("ytdlp_resolve_timeout_seconds = %v, want 42", v["ytdlp_resolve_timeout_seconds"])
+	}
+}
+
+func TestCurrentHosts_ReturnsCopy(t *testing.T) {
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.cfg.YtdlpHosts = []string{"youtube.com", "twitch.tv"}
+	got := a.CurrentHosts()
+	if len(got) != 2 || got[0] != "youtube.com" || got[1] != "twitch.tv" {
+		t.Fatalf("CurrentHosts() = %v", got)
+	}
+	// Mutating the returned slice must not affect the adapter's config.
+	got[0] = "evil.com"
+	if a.cfg.YtdlpHosts[0] != "youtube.com" {
+		t.Errorf("CurrentHosts returned an aliased slice; cfg mutated to %v", a.cfg.YtdlpHosts)
+	}
+}

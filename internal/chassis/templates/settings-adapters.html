@@ -5,11 +5,7 @@
 
   {{ template "settings-adapter-dlna" (adapterPane .Adapters "dlna") }}
 
-  <!-- URL (4F) -->
-  <section class="settings-section">
-    <h4>URL <span class="hint">— pending</span></h4>
-    <div class="action-result shown">▸ Spec 4F — implementation in progress</div>
-  </section>
+  {{ template "settings-adapter-url" (adapterPane .Adapters "url") }}
 
   {{ template "settings-adapter-torrent" (adapterPane .Adapters "torrent") }}
 

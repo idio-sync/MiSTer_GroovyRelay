@@ -1409,3 +1409,161 @@ func (s *Server) handleSettingsAdapterLinkUnlink(w http.ResponseWriter, r *http.
 	}
 	writeLinkView(w, view)
 }
+
+// AdapterHostEditor edits an adapter's host allowlist (the URL adapter's
+// ytdlp_hosts). Chassis-owned; satisfied by a cmd wrapper. Kept separate
+// from AdapterSettingsSaver because the host list is a []string with no
+// FieldDef and is persisted via uiserver.AdapterSaver.SaveValues.
+type AdapterHostEditor interface {
+	// Hosts returns the adapter's current host list for paint, ok=false
+	// for unknown / non-host-editing adapters.
+	Hosts(name string) (hosts []string, ok bool)
+	// SetHosts validates+normalizes the whole list, persists it atomically,
+	// and returns the wire scope ("hot") plus the normalized list.
+	SetHosts(name string, hosts []string) (scope string, normalized []string, err error)
+}
+
+// AdapterCookieStore manages an adapter's file-backed cookie store (the
+// URL adapter's url_cookies.txt). Chassis-owned; satisfied by a cmd
+// wrapper. Cookies are a file, never TOML, so they bypass the saver.
+type AdapterCookieStore interface {
+	CookieStatus(name string) (CookieStatusView, bool)
+	SaveCookies(name, raw string) (CookieStatusView, error)
+	ClearCookies(name string) (CookieStatusView, error)
+}
+
+// CookieStatusView is the paint-time + response view of the cookies file.
+type CookieStatusView struct {
+	Loaded bool   // false → "not loaded"
+	Bytes  int64  // file size when loaded
+	SetAt  string // "2006-01-02 15:04:05Z" (UTC); "" when absent
+}
+
+// handleSettingsAdapterHostsPost handles POST /receiver/settings/adapter/{name}/hosts.
+// Body: {"hosts":[...]}. Mirrors handleSettingsAdapterPost's error envelope.
+func (s *Server) handleSettingsAdapterHostsPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterHostEditor == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	var payload struct {
+		Hosts []string `json:"hosts"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&payload); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	scope, normalized, err := s.cfg.AdapterHostEditor.SetHosts(name, payload.Hosts)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsHosts(w, scope, normalized)
+}
+
+func writeSettingsHosts(w http.ResponseWriter, scope string, hosts []string) {
+	if hosts == nil {
+		hosts = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "scope": scope, "hosts": hosts})
+}
+
+const maxCookiesBody = 1 << 20 // 1 MiB; mirrors the URL adapter's legacy cap.
+
+type cookieFieldError string
+
+func (e cookieFieldError) Error() string { return string(e) }
+func (e cookieFieldError) FieldErrors() []adapters.FieldError {
+	return []adapters.FieldError{{Key: "cookies", Msg: string(e)}}
+}
+
+func cookiesReadError(err error) error {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return cookieFieldError("cookies file must be 1 MiB or smaller")
+	}
+	return cookieFieldError("invalid cookies payload")
+}
+
+// readCookiesField extracts the cookies payload from a form-encoded or
+// JSON body under a 1 MiB cap. Chassis-local (it must not import the URL
+// adapter); mirrors the legacy adapter parser shape.
+func readCookiesField(r *http.Request) (string, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxCookiesBody+1)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var payload struct {
+			Cookies string `json:"cookies"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return "", cookiesReadError(err)
+		}
+		return payload.Cookies, nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return "", cookiesReadError(err)
+	}
+	return r.PostForm.Get("cookies"), nil
+}
+
+// handleSettingsAdapterCookiesPost handles POST /receiver/settings/adapter/{name}/cookies.
+func (s *Server) handleSettingsAdapterCookiesPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterCookieStore == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	raw, err := readCookiesField(r)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	view, err := s.cfg.AdapterCookieStore.SaveCookies(name, raw)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsCookie(w, view)
+}
+
+// handleSettingsAdapterCookiesClear handles POST /receiver/settings/adapter/{name}/cookies/clear.
+func (s *Server) handleSettingsAdapterCookiesClear(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterCookieStore == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	view, err := s.cfg.AdapterCookieStore.ClearCookies(name)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsCookie(w, view)
+}
+
+func writeSettingsCookie(w http.ResponseWriter, v CookieStatusView) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok": true,
+		"cookie": map[string]any{
+			"loaded": v.Loaded,
+			"bytes":  v.Bytes,
+			"set_at": v.SetAt,
+		},
+	})
+}

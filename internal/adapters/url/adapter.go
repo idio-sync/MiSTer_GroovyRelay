@@ -197,6 +197,30 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			Default:    false,
 			ApplyScope: adapters.ScopeHotSwap,
 		},
+		{
+			Key:        "ytdlp_enabled",
+			Label:      "yt-dlp resolver",
+			Help:       "Master switch. When on, mode=auto routes URLs whose host matches the list below through yt-dlp.",
+			Kind:       adapters.KindBool,
+			Default:    true,
+			ApplyScope: adapters.ScopeHotSwap,
+		},
+		{
+			Key:        "ytdlp_format",
+			Label:      "yt-dlp format",
+			Help:       "Format selector. Default prefers ≤720p video with broad codec compatibility.",
+			Kind:       adapters.KindText,
+			Default:    "bv*[height<=720]+ba/bv*+ba/b",
+			ApplyScope: adapters.ScopeHotSwap,
+		},
+		{
+			Key:        "ytdlp_resolve_timeout_seconds",
+			Label:      "Resolve timeout (s)",
+			Help:       "Per-URL timeout for yt-dlp resolution (5–120s).",
+			Kind:       adapters.KindInt,
+			Default:    30,
+			ApplyScope: adapters.ScopeHotSwap,
+		},
 	}
 }
 
@@ -366,11 +390,33 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 }
 
 // CurrentValues implements ui.ValueProvider via duck-typing — surfaces
-// the current cfg values to the UI for form prefill.
+// the current cfg values to the UI for form prefill. Must stay in
+// lockstep with Fields(): the chassis form prefill (4D's
+// AdapterSettingsSaver.Current path) renders blank/off for any Fields()
+// key missing here, and this map is also SaveTouched's missing-section
+// fallback. ytdlp_hosts is intentionally absent — the host widget reads
+// it via CurrentHosts(), and a first-save with no disk section keeps the
+// DefaultConfig() host list (ApplyConfig decodes onto DefaultConfig).
 func (a *Adapter) CurrentValues() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return map[string]any{"enabled": a.cfg.Enabled}
+	return map[string]any{
+		"enabled":                       a.cfg.Enabled,
+		"ytdlp_enabled":                 a.cfg.YtdlpEnabled,
+		"ytdlp_format":                  a.cfg.YtdlpFormat,
+		"ytdlp_resolve_timeout_seconds": a.cfg.YtdlpResolveTimeoutSeconds,
+	}
+}
+
+// CurrentHosts returns a copy of the current yt-dlp host allowlist for
+// paint by the chassis host-editor widget. The copy prevents callers
+// from aliasing the config slice.
+func (a *Adapter) CurrentHosts() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]string, len(a.cfg.YtdlpHosts))
+	copy(out, a.cfg.YtdlpHosts)
+	return out
 }
 
 // setState atomically updates state, stateSince, and lastErr.

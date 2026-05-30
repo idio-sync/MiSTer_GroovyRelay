@@ -134,6 +134,58 @@ func TestMeterSamplerPausedFreezesHistoriesAndDisplayValues(t *testing.T) {
 	}
 }
 
+// TestMeterSamplerHoldsDisplayValuesBetweenSampleBoundaries is the
+// regression test for the readout flicker: MB/S and MS ACK numbers must
+// not drop to their idle defaults ("0.0" / "--") on the live frames that
+// fall between 500 ms sample boundaries. The sampler advances at 500 ms
+// but meter frames emit at the ~250 ms diff cadence, so a non-boundary
+// frame must hold the last real sample rather than reverting.
+func TestMeterSamplerHoldsDisplayValuesBetweenSampleBoundaries(t *testing.T) {
+	sampler := newMeterSampler()
+	base := time.Unix(300, 0)
+	snap := core.StatusHomeView{
+		State: core.StatePlaying, AdapterRef: "url:live", Source: "url", Generation: 5,
+		Meter: core.MeterHomeView{
+			Source: core.SourceMeterView{
+				Width: 1280, Height: 720, FrameRate: 29.97,
+				VideoCodec: "h264", AudioCodec: "aac", AudioRate: 48000, AudioChannels: 2,
+			},
+			Pipeline: core.PipelineMeterView{
+				FieldRateHz: 59.94, HorizontalKHz: 15.734, Standard: "ntsc", FieldOrder: "tff",
+				AudioSampleRate: 48000, AudioChannels: 2,
+			},
+			Runtime: core.RuntimeMeterView{
+				BlitsTotal: 100, WireBytes: 1_000_000, LastACKAge: 5 * time.Millisecond, Generation: 5,
+			},
+		},
+	}
+	// Prime (generation set; this first call is a non-boundary tick).
+	sampler.Sample(snap, adapters.MeterOverlay{}, false, base)
+	// Boundary tick 500 ms later: real throughput/ACK computed.
+	boundarySnap := snap
+	boundarySnap.Meter.Runtime.BlitsTotal = 200
+	boundarySnap.Meter.Runtime.WireBytes = 5_000_000
+	live := sampler.Sample(boundarySnap, adapters.MeterOverlay{}, false, base.Add(500*time.Millisecond))
+	if live.MidRow.ThroughputMBs == "0.0" || live.MidRow.MSAck == "--" {
+		t.Fatalf("boundary sample must have real values, got thru=%q ack=%q", live.MidRow.ThroughputMBs, live.MidRow.MSAck)
+	}
+	// Non-boundary tick 250 ms after the boundary: must HOLD the last real
+	// values, not revert to idle defaults.
+	held := sampler.Sample(boundarySnap, adapters.MeterOverlay{}, false, base.Add(750*time.Millisecond))
+	if held.MidRow.ThroughputMBs != live.MidRow.ThroughputMBs {
+		t.Errorf("ThroughputMBs flickered: live=%q held=%q", live.MidRow.ThroughputMBs, held.MidRow.ThroughputMBs)
+	}
+	if held.MidRow.MSAck != live.MidRow.MSAck {
+		t.Errorf("MSAck flickered: live=%q held=%q", live.MidRow.MSAck, held.MidRow.MSAck)
+	}
+	if held.MidRow.ThroughputSampleMBs != live.MidRow.ThroughputSampleMBs {
+		t.Errorf("ThroughputSampleMBs flickered: live=%v held=%v", live.MidRow.ThroughputSampleMBs, held.MidRow.ThroughputSampleMBs)
+	}
+	if held.MidRow.AckSampleMS != live.MidRow.AckSampleMS {
+		t.Errorf("AckSampleMS flickered: live=%v held=%v", live.MidRow.AckSampleMS, held.MidRow.AckSampleMS)
+	}
+}
+
 func TestMeterSamplerIdleDimsBothStandardLamps(t *testing.T) {
 	got := newMeterSampler().Sample(core.StatusHomeView{State: core.StateIdle}, adapters.MeterOverlay{}, false, time.Unix(1, 0))
 	if got.MidRow.StandardNTSC || got.MidRow.StandardPAL {

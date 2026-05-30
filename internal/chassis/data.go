@@ -372,6 +372,13 @@ type AdapterPaneData struct {
 	Providers []AdapterProviderRow
 	Linkable  bool     // 4E — render the Account sub-section for this pane
 	LinkView  LinkView // 4E — valid only when Linkable is true
+
+	// 4F — URL bespoke widgets. Flags gate rendering so a valid empty
+	// host list still shows the tag editor. Zero/nil for other adapters.
+	HasHostEditor  bool
+	Hosts          []string
+	HasCookieStore bool
+	Cookie         *CookieStatusView
 }
 
 // AdapterProviderRow is one row in the Streams per-provider sub-section.
@@ -578,7 +585,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
 	// the prior package-builder behavior exactly.
 	if saver := cfg.AdapterSettingsSaver; saver != nil {
-		for _, name := range []string{"dlna", "torrent", "streams", "plex", "jellyfin"} {
+		for _, name := range []string{"dlna", "torrent", "streams", "plex", "jellyfin", "url"} {
 			fields, ok := saver.Fields(name)
 			if !ok {
 				continue
@@ -592,6 +599,22 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 			}
 			if name == "streams" {
 				pane.Providers = buildStreamsProviderRows(cfg)
+			}
+			if name == "url" {
+				pane.Hint = "PASTE-IN"
+				if he := cfg.AdapterHostEditor; he != nil {
+					if hosts, ok := he.Hosts("url"); ok {
+						pane.HasHostEditor = true
+						pane.Hosts = hosts
+					}
+				}
+				if store := cfg.AdapterCookieStore; store != nil {
+					if view, ok := store.CookieStatus("url"); ok {
+						pane.HasCookieStore = true
+						v := view
+						pane.Cookie = &v
+					}
+				}
 			}
 			if cfg.AdapterLinker != nil {
 				if lv, ok := cfg.AdapterLinker.LinkView(name); ok {

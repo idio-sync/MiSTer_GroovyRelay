@@ -1,0 +1,41 @@
+{{- define "settings-adapter-url" -}}
+<section class="settings-section wide">
+  <h4>URL <span class="hint">{{ .Hint }}</span></h4>
+  {{ with fieldByKey .Fields "enabled" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+  {{ with fieldByKey .Fields "ytdlp_enabled" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+  {{ if .HasHostEditor }}{{ template "url-host-editor" . }}{{ end }}
+  {{ with fieldByKey .Fields "ytdlp_format" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+  {{ with fieldByKey .Fields "ytdlp_resolve_timeout_seconds" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+  {{ if .HasCookieStore }}{{ template "url-cookies" . }}{{ end }}
+</section>
+{{- end -}}
+
+{{- define "url-host-editor" -}}
+<div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-host-editor="url">
+  <label>yt-dlp hosts <span class="help">Hosts that auto-route through yt-dlp. Curated default — add others at your own risk (they break frequently).</span></label>
+  <div class="tag-list">
+    {{ range .Hosts }}
+    <span class="tag" data-host="{{ . }}">{{ . }}<span class="x" data-remove-host="{{ . }}">✕</span></span>
+    {{ end }}
+    <span class="tag add" data-add-host tabindex="0">+ add host</span>
+    <div class="widget-err" data-host-err hidden></div>
+  </div>
+  <span class="scope hot">HOT</span>
+</div>
+{{- end -}}
+
+{{- define "url-cookies" -}}
+<div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-cookies="url">
+  <label>Cookies <span class="help">Paste Netscape cookies.txt for authenticated streams. Stored on disk; persists across restarts.</span></label>
+  <div class="cookies-form">
+    <textarea class="cookies-paste" data-cookies-text rows="5" spellcheck="false" autocomplete="off" placeholder="# Netscape HTTP Cookie File&#10;# (paste exported cookies.txt content here)"></textarea>
+    <div class="cookies-actions">
+      <button type="button" class="action-btn" data-cookies-save>Save cookies</button>
+      <button type="button" class="action-btn ghost" data-cookies-clear>Clear</button>
+      <span class="status-pill{{ if not .Cookie.Loaded }} dim{{ end }}" data-cookies-pill>{{ if .Cookie.Loaded }}{{ .Cookie.Bytes }} B · set {{ .Cookie.SetAt }}{{ else }}not loaded{{ end }}</span>
+    </div>
+    <div class="widget-err" data-cookies-err hidden></div>
+  </div>
+  <span class="scope hot">HOT</span>
+</div>
+{{- end -}}
