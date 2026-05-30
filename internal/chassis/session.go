@@ -63,6 +63,9 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, volv
 		if volv != nil {
 			base.Transport.OutputVolume = volv.OutputVolume()
 		}
+		// Keep the relocated volume knob (rendered from AudioStrip) in sync
+		// with the transport's resolved volume, mirroring snapshotFromStatusView.
+		base.AudioStrip.OutputVolume = base.Transport.OutputVolume
 		return base
 	}
 	return snapshotFromStatusView(cfg, sv.StatusHomeView(), vv, volv, tv, aux, now)
