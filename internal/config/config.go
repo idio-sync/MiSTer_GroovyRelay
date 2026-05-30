@@ -181,9 +181,62 @@ type VideoConfig struct {
 }
 
 type AudioConfig struct {
-	SampleRate   int `toml:"sample_rate"`
-	Channels     int `toml:"channels"`
-	OutputVolume int `toml:"output_volume"`
+	SampleRate   int      `toml:"sample_rate"`
+	Channels     int      `toml:"channels"`
+	OutputVolume int      `toml:"output_volume"`
+	DSP          AudioDSP `toml:"dsp"`
+}
+
+// AudioDSP is the live tone/EQ chain configuration (spec §Config). dB
+// fields are clamped to ±12 and Balance to ±100 by ValidateAudioDSP; EQ is
+// the 10 ISO-octave band gains (31 Hz..16 kHz). A missing [bridge.audio.dsp]
+// table inherits DefaultAudioDSP() via defaultBridge() seeding.
+type AudioDSP struct {
+	Enabled  bool             `toml:"enabled"`
+	Mono     bool             `toml:"mono"`
+	Subsonic bool             `toml:"subsonic"`
+	Loudness bool             `toml:"loudness"`
+	Bass     float64          `toml:"bass"`
+	Mid      float64          `toml:"mid"`
+	Treble   float64          `toml:"treble"`
+	Balance  int              `toml:"balance"`
+	EQ       []float64        `toml:"eq"`
+	Memory   []AudioDSPMemory `toml:"memory"`
+}
+
+// AudioDSPMemory is one saved EQ voicing (M1..M3). Stored distinguishes a
+// saved-flat memory from an empty slot.
+type AudioDSPMemory struct {
+	Slot   int       `toml:"slot"`
+	Name   string    `toml:"name"`
+	Stored bool      `toml:"stored"`
+	Bass   float64   `toml:"bass"`
+	Mid    float64   `toml:"mid"`
+	Treble float64   `toml:"treble"`
+	EQ     []float64 `toml:"eq"`
+}
+
+// DefaultAudioDSP returns the transparent default: enabled (defeat off),
+// nothing engaged, a 10-band flat EQ.
+func DefaultAudioDSP() AudioDSP {
+	return AudioDSP{Enabled: true, EQ: make([]float64, 10)}
+}
+
+// Engaged reports whether shaping is active (drives the status-bar EQ LED).
+// Independent of mono/balance; false under defeat (Enabled == false).
+func (a AudioDSP) Engaged() bool {
+	if !a.Enabled {
+		return false
+	}
+	if a.Subsonic || a.Loudness || a.Bass != 0 || a.Mid != 0 || a.Treble != 0 {
+		return true
+	}
+	for _, g := range a.EQ {
+		if g != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type VisualizerConfig struct {

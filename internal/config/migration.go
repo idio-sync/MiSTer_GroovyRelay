@@ -276,6 +276,7 @@ func defaultBridge() BridgeConfig {
 			SampleRate:   d.AudioSampleRate,
 			Channels:     d.AudioChannels,
 			OutputVolume: d.AudioOutputVolume,
+			DSP:          DefaultAudioDSP(),
 		},
 		Visualizer: VisualizerConfig{
 			Mode: VisualizerModeRetroAnalyzer,
