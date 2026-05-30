@@ -70,8 +70,9 @@ closures snapshot the request into a captured local at construction time
 (`captured := p` — see `companion.go:499-503`, with the explicit comment that
 "Reading lastPlay or Manager.Status() from inside OnStop is unsafe"). Auto-
 advance reuses that exact capture: the queue context (`ContainerKey`,
-`PlayQueueID`, `PlayQueueItemID`, `AdapterRef`, server/token) is closed over,
-not re-read.
+`PlayQueueID`, `PlayQueueItemID`, `MediaKey` — which becomes the session's
+`AdapterRef` — plus the Plex server scheme/address/port and token for the
+queue fetch) is closed over, not re-read.
 
 **Advance path:**
 
@@ -81,14 +82,16 @@ ffmpeg exits cleanly
   → adapter: reason == "eof"?                     (user-stop/error → never advance)
   → adapter: is auto_advance enabled?             (read current config value)
        no  → done (stop — current behavior)
-       yes → spawn goroutine; brief settle delay (~1s, see Open items)
+       yes → spawn goroutine (OnStop itself never blocks)
               → fetchPlayQueue(captured.ContainerKey)          [uses CAPTURED ctx]
               → nextPlayQueueItem(after captured.PlayQueueItemID)
                    ├─ no next (end of queue / empty ContainerKey)
-                   │     → log "auto-advance: end of queue" → stop
-                   └─ next exists → build next PlayMediaRequest (same path
-                        as handlePlayMedia, so it gets its OWN auto-advance
-                        OnStop wiring — the chain continues past item 2)
+                   │     → log "auto-advance: end of queue" → stop (NO delay)
+                   └─ next exists → build next SessionRequest via the SHARED
+                        sessionRequestForPlay path (music + video both attach
+                        their own auto-advance OnStop → chain continues past
+                        item 2)
+                        → brief settle delay (~1s, see Open items)   [only now]
                         → Manager.StartSessionIfIdle(nextReq)
                              ├─ true  → next item plays
                              └─ false → a controller command already started
@@ -133,10 +136,16 @@ contract, `types.go:178`). `StartSessionIfIdle` runs `probeForStart` (ffprobe)
 with `Manager.mu` **not** held, preserving the "`Manager.mu` is never held
 across network I/O" invariant (CLAUDE.md).
 
-**Chain continuation.** The next item's `PlayMediaRequest` is built through the
-same construction path as a controller `playMedia`, so it carries its own
-captured context and its own auto-advance `OnStop`. Item 2's EOF therefore
-advances to item 3 by the identical mechanism — the chain is self-perpetuating
+**Chain continuation.** The next item's request **must** be built through the
+shared `sessionRequestForPlay` dispatcher (`companion.go:449`), which routes to
+`musicSessionRequestForPlay` (OnStop attached at `companion.go:420`) for audio
+or `sessionRequestForPreset` (OnStop at `companion.go:504`) for video. Routing
+the auto-advance start through that dispatcher — rather than calling
+`sessionRequestForPreset` directly — is what guarantees the next request gets
+its own auto-advance `OnStop` for **both** media types. (Bypassing the
+dispatcher would silently drop OnStop on music tracks and break the chain after
+one hop — a real trap the implementation must avoid.) Item 2's EOF therefore
+advances to item 3 by the identical mechanism; the chain is self-perpetuating
 and terminates only at end-of-queue, an unplayable item, or the toggle going
 off.
 
@@ -175,9 +184,10 @@ auto_advance = false   # default OFF
   right analogy here. (TFF/BFF is a two-value *choice* field, not a boolean,
   so it is **not** the pattern to copy for a simple on/off toggle.)
 - **ApplyScope: `ScopeHotSwap`.** Flipping the toggle takes effect
-  immediately; the EOF hook reads the *current* config value at the moment an
-  item ends, so toggling mid-cast arms/disarms the next boundary live. Wire
-  into `scopeForPlexField` (or the adapter's scope table).
+  immediately; the EOF hook reads the *current* value from the companion's
+  live mirror (below) at the moment an item ends, so toggling mid-cast
+  arms/disarms the next boundary live. Wire into `scopeForPlexField` (or the
+  adapter's scope table).
 - **Live mirror:** do not read `Adapter.plexCfg` directly from the EOF
   goroutine. Add an `atomic.Bool` (or mutex-protected equivalent) on
   `Companion`, initialize it from the decoded config in `NewCompanion`, expose
@@ -227,6 +237,7 @@ button is just a second view onto the same config field.
 | End of queue | `nextPlayQueueItem` returns none → log "end of queue" at info → stop |
 | Controller still active | `StartSessionIfIdle` guard returns `false` (controller already started a session) → stand down. Settle delay makes this glitch-free in the common case. |
 | Toggle flipped off mid-cast | Next EOF reads `false` from the companion's live mirror → stop normally (boolean read is atomic or mutex-protected) |
+| Toggle flipped off *during* an in-flight advance | Accepted race: a goroutine already past the mirror read (in the ~1s settle delay) completes its single hop and may start the next item. It does **not** loop — that item's own EOF then reads `false` and stops. For an immediate halt, STOP or a controller command preempts via the guard. |
 | playQueue fetch fails | Log at warn (item key + error), stop gracefully (no retry storm) |
 | Next item unplayable (probe fails) | `StartSessionIfIdle` fails as a manual cast would; log at warn with item key + error; do **not** auto-skip further (no runaway loop) → stop |
 
@@ -269,8 +280,9 @@ behavior (stop) — never a crash, never an infinite skip loop.
   and tests/fakes to expose that method; extract shared play-queue resolution
   and request construction from `restartFromPlayQueueItem` so manual skip and
   background auto-advance can use different start strategies; build the next
-  request through the shared `playMedia` construction path so the chain
-  self-perpetuates.
+  request through the shared `sessionRequestForPlay` dispatcher (never
+  `sessionRequestForPreset` directly) so both music and video attach OnStop and
+  the chain self-perpetuates.
 - `internal/adapters/plex/` `Fields()` + scope table — new `auto_advance`
   field at `ScopeHotSwap`; `Companion` live mirror + `SetAutoAdvance(bool)`;
   `Adapter.ApplyConfig` wiring to update the mirror.
