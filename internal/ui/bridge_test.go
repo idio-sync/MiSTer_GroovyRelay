@@ -33,7 +33,7 @@ func (f *fakeBridgeSaver) Current() config.BridgeConfig {
 			LZ4Enabled:          true,
 			DeltaLZ4Enabled:     true,
 		},
-		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
+		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100, DSP: config.DefaultAudioDSP()},
 		HLSBuffer: config.HLSBufferConfig{
 			Enabled:                true,
 			LiveEdgeSegments:       3,
@@ -884,5 +884,66 @@ func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
 	}
 	if saver.got.MiSTer.SSHPassword != "newsecret" {
 		t.Errorf("SSHPassword = %q, want overwrite to 'newsecret'", saver.got.MiSTer.SSHPassword)
+	}
+}
+
+// TestHandleBridge_POST_PreservesAudioDSP is a regression guard for the
+// Plan 2 regression: parseBridgeForm leaves Audio.DSP at its zero value
+// (nil EQ) because the bridge settings form has no dsp fields. Before the
+// fix this caused ValidateAudioDSP to reject every bridge save (nil EQ len
+// 0 != 10) AND, if validation had passed, would have silently wiped the
+// operator's tone/EQ settings and memories on every bridge save. The fix
+// unconditionally restores Audio.DSP from the current persisted config,
+// just as SSH password and visualizer mode are already preserved.
+func TestHandleBridge_POST_PreservesAudioDSP(t *testing.T) {
+	// Build a current config that has a non-default DSP state: Bass raised
+	// to 6 dB, plus one saved memory slot so we can verify the slice is
+	// preserved end-to-end (not just the scalar fields).
+	cur := (&fakeBridgeSaver{}).Current()
+	cur.Audio.DSP = config.DefaultAudioDSP()
+	cur.Audio.DSP.Bass = 6
+	cur.Audio.DSP.Memory = []config.AudioDSPMemory{
+		{Slot: 1, Name: "M1", Stored: true, EQ: make([]float64, 10)},
+	}
+	saver := &fakeBridgeSaver{current: &cur}
+	mux := newBridgeTestServer(t, saver)
+
+	// POST a normal bridge form with NO audio.dsp* fields — exactly what the
+	// real bridge settings form sends.
+	body := strings.NewReader(
+		"mister.host=192.168.1.99" +
+			"&mister.port=32100" +
+			"&mister.source_port=32101" +
+			"&mister.ssh_user=alice" +
+			"&mister.ssh_password=" +
+			"&host_ip=" +
+			"&video.modeline=NTSC_480i" +
+			"&video.interlace_field_order=tff" +
+			"&video.aspect_mode=auto" +
+			"&video.lz4_enabled=true" +
+			"&video.delta_lz4_enabled=true" +
+			"&audio.sample_rate=48000" +
+			"&audio.channels=2" +
+			"&ui.http_port=32500" +
+			"&data_dir=/config" +
+			hlsBufferFormDefaults())
+
+	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body)
+	}
+	if saver.got == nil {
+		t.Fatal("saver.Save not called — bridge save was rejected (validation tripped on nil EQ?)")
+	}
+	if saver.got.Audio.DSP.Bass != 6 {
+		t.Errorf("Audio.DSP.Bass = %v, want preserved value 6", saver.got.Audio.DSP.Bass)
+	}
+	if len(saver.got.Audio.DSP.Memory) != 1 || saver.got.Audio.DSP.Memory[0].Slot != 1 {
+		t.Errorf("Audio.DSP.Memory = %v, want preserved slot-1 entry", saver.got.Audio.DSP.Memory)
 	}
 }
