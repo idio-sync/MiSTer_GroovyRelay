@@ -701,3 +701,60 @@ ytdlp_hosts = ["youtube.com"]
 		t.Errorf("ApplyConfig ran despite Validate failure")
 	}
 }
+func TestSaveValues_PreservesNestedSubtables(t *testing.T) {
+	t.Parallel()
+	body := `enabled = true
+ytdlp_hosts = ["youtube.com"]
+
+[adapters.url.nested]
+keep = "me"
+`
+	path := newTempConfigWithSection(t, "url", body)
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{
+		values: map[string]any{
+			"enabled":     true,
+			"ytdlp_hosts": []any{"youtube.com"},
+			"nested":      map[string]any{"keep": "me"},
+		},
+		scope: adapters.ScopeHotSwap,
+	}
+	if _, err := saver.SaveValues("url", map[string]any{"ytdlp_hosts": []string{"vimeo.com"}}, []string{"ytdlp_hosts"}, adapter); err != nil {
+		t.Fatalf("SaveValues: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `"vimeo.com"`) {
+		t.Errorf("new host not written:\n%s", got)
+	}
+	if !strings.Contains(string(got), `[adapters.url.nested]`) || !strings.Contains(string(got), `keep = "me"`) {
+		t.Errorf("nested subtable lost:\n%s", got)
+	}
+}
+
+func TestSaveValues_ConcurrentSavesSerialize(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "url", "enabled = true\nytdlp_hosts = [\"a.com\"]\n")
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": true}, scope: adapters.ScopeHotSwap}
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			host := fmt.Sprintf("h%d.com", n)
+			if _, err := saver.SaveValues("url", map[string]any{"ytdlp_hosts": []string{host}}, []string{"ytdlp_hosts"}, adapter); err != nil {
+				t.Errorf("SaveValues(n=%d): %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	// File must remain valid TOML parseable as a section after the storm.
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "[adapters.url]") {
+		t.Errorf("section header lost after concurrent saves:\n%s", got)
+	}
+	var decoded map[string]any
+	if _, err := toml.Decode(string(got), &decoded); err != nil {
+		t.Fatalf("config is not valid TOML after concurrent saves: %v\n%s", err, got)
+	}
+}
