@@ -3611,12 +3611,13 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	s := buf.String()
 
 	// pipeline, advanced, catalog, and adapters are now real panes. The
-	// adapters pane (4D) still carries the per-adapter Plex/URL/Jellyfin
-	// stubs pending specs 4E/4F, so those spec labels remain visible.
-	for _, spec := range []string{"Spec 4E", "Spec 4F"} {
-		if !strings.Contains(s, spec) {
-			t.Errorf("missing %q label (per-adapter stub) in adapters pane", spec)
-		}
+	// adapters pane still carries the URL stub pending spec 4F; Plex and
+	// Jellyfin are real sections as of 4E.
+	if !strings.Contains(s, "Spec 4F") {
+		t.Errorf("missing %q label (URL adapter stub) in adapters pane", "Spec 4F")
+	}
+	if strings.Contains(s, "Spec 4E") {
+		t.Errorf("Spec 4E stub still present; Plex and Jellyfin have real sections now")
 	}
 
 	// Real panes must be present.
@@ -4264,13 +4265,16 @@ func TestSettingsAdaptersTemplate_RendersSixSections(t *testing.T) {
 	// so the faithful header assertion is ">Plex " not ">Plex<".
 	for _, want := range []string{
 		">Plex ", ">DLNA ", ">URL ", ">Torrent ", ">Jellyfin ", ">Streams catalog ",
-		">— pending<",
-		"Spec 4E", "Spec 4F",
+		"Spec 4F",
 		"PUSH ·", "PASTE-IN · BT", "PULL ·",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in rendered adapters pane", want)
 		}
+	}
+	// Plex and Jellyfin stubs are gone; real section templates are now in place.
+	if strings.Contains(s, "Spec 4E") {
+		t.Errorf("Spec 4E stub still present in rendered adapters pane")
 	}
 }
 
@@ -4611,6 +4615,41 @@ func TestSettingsDrawerJS_AdapterRebootToastUsesLabel(t *testing.T) {
 	}
 }
 
+func renderLink(t *testing.T, view LinkView) string {
+	t.Helper()
+	tmpl := parseTemplatesForTest(t)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "settings-link", view); err != nil {
+		t.Fatalf("execute settings-link: %v", err)
+	}
+	return buf.String()
+}
+
+func TestSettingsLink_Renders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		view LinkView
+		want string
+	}{
+		{"pin-unlinked", LinkView{Kind: "pin", Phase: "unlinked"}, "Link Plex Account"},
+		{"pin-pending", LinkView{Kind: "pin", Phase: "pending", Code: "K3F9", ExpiresInSec: 120}, "K3F9"},
+		{"pin-linked", LinkView{Kind: "pin", Phase: "linked"}, "✓ Linked"},
+		{"cred-linked", LinkView{Kind: "credential", Phase: "linked", LinkedAs: "jake on s"}, "jake on s"},
+		{"cred-needurl", LinkView{Kind: "credential", Phase: "unlinked", NeedsServerURL: true}, "Server URL"},
+		{"cred-form", LinkView{Kind: "credential", Phase: "unlinked", Fields: []LinkField{{Key: "username", Label: "Username", Kind: "text"}, {Key: "password", Label: "Password", Kind: "secret"}}}, "data-link-field"},
+		{"error", LinkView{Kind: "credential", Phase: "error", Error: "Invalid credentials", Fields: []LinkField{{Key: "username", Label: "Username", Kind: "text"}}}, "Invalid credentials"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderLink(t, tc.view)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("render(%+v) missing %q:\n%s", tc.view, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T) {
 	t.Parallel()
 	// Even if catalog-owned per-provider keys reach the pane's Fields (they
@@ -4635,6 +4674,55 @@ func TestSettingsAdapterStreams_CatalogOwnedKeysNotRenderedAsInputs(t *testing.T
 		if strings.Contains(html, banned) {
 			t.Errorf("Streams form rendered Catalog-owned key as input: %q", banned)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 14 — Plex/Jellyfin section templates + stub swap
+// ---------------------------------------------------------------------------
+
+// renderAdaptersPane renders the settings-adapters template against
+// settingsDataFromConfig(cfg). The settings-adapters template is composed
+// inside the settings-drawer, so we execute the drawer and return its output;
+// equivalently we could execute "settings-adapters" directly — the drawer
+// guarantees composition has run through the real adapterPane/dict path.
+func renderAdaptersPane(t *testing.T, cfg Config) string {
+	t.Helper()
+	return renderDrawer(t, settingsDataFromConfig(cfg))
+}
+
+func TestAdaptersPane_PlexJellyfinSections(t *testing.T) {
+	t.Parallel()
+	saver := &fakeAdapterSettingsSaver{
+		fields: map[string][]adapters.FieldDef{
+			"plex":     {{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled"}},
+			"jellyfin": {{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled"}},
+		},
+		current: map[string]map[string]any{"plex": {"enabled": true}, "jellyfin": {"enabled": false}},
+	}
+	linker := &fakeAdapterLinker{views: map[string]LinkView{
+		"plex":     {Kind: "pin", Phase: "unlinked"},
+		"jellyfin": {Kind: "credential", Phase: "unlinked", NeedsServerURL: true},
+	}}
+	html := renderAdaptersPane(t, Config{AdapterSettingsSaver: saver, AdapterLinker: linker})
+
+	if strings.Contains(html, "Spec 4E") {
+		t.Errorf("stub copy still present:\n%s", html)
+	}
+	// Section order: Plex above Jellyfin. Assert against the robust
+	// data-adapter-section attributes the section templates emit (the <h4>
+	// header text is ">Plex <span..." with a trailing space, so ">Plex<"
+	// would never match — making the check a silent no-op).
+	plexIdx := strings.Index(html, `data-adapter-section="plex"`)
+	jfIdx := strings.Index(html, `data-adapter-section="jellyfin"`)
+	if plexIdx < 0 || jfIdx < 0 {
+		t.Fatalf("plex/jellyfin sections missing: plexIdx=%d jfIdx=%d", plexIdx, jfIdx)
+	}
+	if plexIdx > jfIdx {
+		t.Errorf("Plex section should render above Jellyfin (plexIdx=%d jfIdx=%d)", plexIdx, jfIdx)
+	}
+	if !strings.Contains(html, "Link Plex Account") {
+		t.Errorf("plex Account sub-section missing")
 	}
 }
 

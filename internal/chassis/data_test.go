@@ -2,6 +2,7 @@ package chassis
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -551,6 +552,50 @@ func TestSettingsData_DLNAHint_Disabled(t *testing.T) {
 	}
 }
 
+// TestSettingsData_CastHint_EnabledState pins that plex and jellyfin hints
+// reflect the live enabled state (CAST · LISTENING/DISABLED), mirroring the
+// DLNA PUSH · LISTENING/DISABLED convention rather than a static auth-mechanism
+// label.
+func TestSettingsData_CastHint_EnabledState(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{"plex", true, "CAST · LISTENING"},
+		{"plex", false, "CAST · DISABLED"},
+		{"jellyfin", true, "CAST · LISTENING"},
+		{"jellyfin", false, "CAST · DISABLED"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(fmt.Sprintf("%s_%t", tc.name, tc.enabled), func(t *testing.T) {
+			t.Parallel()
+			saver := &fakeAdapterSettingsSaver{
+				current: map[string]map[string]any{tc.name: {"enabled": tc.enabled}},
+				fields: map[string][]adapters.FieldDef{
+					tc.name: {{Key: "enabled", Kind: adapters.KindBool}},
+				},
+			}
+			s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0), AdapterSettingsSaver: saver}}
+			data := s.buildSettingsData()
+			found := false
+			for _, a := range data.Adapters {
+				if a.Name == tc.name {
+					found = true
+					if a.Hint != tc.want {
+						t.Errorf("%s hint = %q, want %q", tc.name, a.Hint, tc.want)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s pane missing from data.Adapters", tc.name)
+			}
+		})
+	}
+}
+
 func TestSettingsData_TorrentHint_Static(t *testing.T) {
 	t.Parallel()
 	saver := &fakeAdapterSettingsSaver{
@@ -605,5 +650,46 @@ func TestSettingsDataFromConfig_PopulatesAdaptersInProductionPath(t *testing.T) 
 	data := settingsDataFromConfig(cfg)
 	if len(data.Adapters) < 1 {
 		t.Fatalf("len(Adapters) = %d, want >= 1 (production path must populate adapter panes)", len(data.Adapters))
+	}
+}
+
+func TestSettingsData_LinkablePanes(t *testing.T) {
+	linker := &fakeAdapterLinker{views: map[string]LinkView{
+		"plex":     {Kind: "pin", Phase: "unlinked"},
+		"jellyfin": {Kind: "credential", Phase: "linked", LinkedAs: "jake on s"},
+	}}
+	saver := &fakeAdapterSettingsSaver{
+		fields: map[string][]adapters.FieldDef{
+			"plex":     {{Key: "enabled", Kind: adapters.KindBool}},
+			"jellyfin": {{Key: "enabled", Kind: adapters.KindBool}},
+		},
+		current: map[string]map[string]any{
+			"plex": {"enabled": true}, "jellyfin": {"enabled": false},
+		},
+	}
+	data := settingsDataFromConfig(Config{AdapterSettingsSaver: saver, AdapterLinker: linker})
+
+	byName := map[string]AdapterPaneData{}
+	for _, p := range data.Adapters {
+		byName[p.Name] = p
+	}
+	if !byName["plex"].Linkable || byName["plex"].LinkView.Kind != "pin" {
+		t.Errorf("plex pane = %+v, want Linkable pin", byName["plex"])
+	}
+	if !byName["jellyfin"].Linkable || byName["jellyfin"].LinkView.LinkedAs != "jake on s" {
+		t.Errorf("jellyfin pane = %+v, want Linkable + LinkedAs", byName["jellyfin"])
+	}
+}
+
+func TestSettingsData_NilLinkerNotLinkable(t *testing.T) {
+	saver := &fakeAdapterSettingsSaver{
+		fields:  map[string][]adapters.FieldDef{"plex": {{Key: "enabled", Kind: adapters.KindBool}}},
+		current: map[string]map[string]any{"plex": {"enabled": true}},
+	}
+	data := settingsDataFromConfig(Config{AdapterSettingsSaver: saver}) // no AdapterLinker
+	for _, p := range data.Adapters {
+		if p.Name == "plex" && p.Linkable {
+			t.Errorf("plex Linkable=true with nil AdapterLinker; want false")
+		}
 	}
 }

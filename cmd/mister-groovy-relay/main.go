@@ -419,6 +419,7 @@ func main() {
 		ConfigReset:               cr,
 		AdapterSettingsSaver:      adapterSaverWrapper,
 		StreamsRefresher:          streamsRefresherWrapper,
+		AdapterLinker:             newAdapterLinker(reg),
 	})
 	if err != nil {
 		dieFriendly("chassis init", err)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
@@ -74,5 +75,22 @@ func TestLinkPoll_AbandonedDoesNotEmit(t *testing.T) {
 	entries := log.Snapshot()
 	if len(entries) != 0 {
 		t.Errorf("abandoned flow must not emit; got %d entries: %+v", len(entries), entries)
+	}
+}
+
+// TestLinkSnapshot_AbandonedCompletesUnlinked pins the snapshot side of the
+// pollPendingLink context.Canceled guard: an abandoned flow (rapid re-click or
+// Stop/disable while a PIN is pending) is completed with an empty error
+// (pl.complete("", "")), which linkSnapshot must report as UNLINKED — not as an
+// error phase — so a polling drawer doesn't flash a spurious "ERR" for a normal
+// abandon. Paired with the no-emit guarantee covered above.
+func TestLinkSnapshot_AbandonedCompletesUnlinked(t *testing.T) {
+	a := &Adapter{}
+	a.cfg.TokenStore = &StoredData{}
+	pl := newPendingLink("ABCD", 1, time.Now().Add(2*time.Minute))
+	pl.complete("", "") // exactly what the context.Canceled guard does
+	a.pending = pl
+	if got := a.linkSnapshot(); got.Phase != adapters.LinkPhaseUnlinked {
+		t.Errorf("Phase = %q, want unlinked for an abandoned (canceled) flow", got.Phase)
 	}
 }

@@ -1,0 +1,9 @@
+{{- define "settings-adapter-jellyfin" -}}
+<section class="settings-section" data-adapter-section="jellyfin">
+  <h4>Jellyfin <span class="hint">{{ .Hint }}</span></h4>
+  {{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}
+  {{ range .Fields }}
+  {{ template "adapter-field-row" (dict "Adapter" "jellyfin" "Field" . "Values" $.Values) }}
+  {{ end }}
+</section>
+{{- end -}}

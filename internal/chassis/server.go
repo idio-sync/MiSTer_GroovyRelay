@@ -114,6 +114,9 @@ type Config struct {
 	// 4D: adapter settings pane persistence and streams manifest refresh.
 	AdapterSettingsSaver AdapterSettingsSaver
 	StreamsRefresher     StreamsRefresher
+
+	// 4E: per-adapter link/pairing flow (Plex PIN, Jellyfin credentials).
+	AdapterLinker AdapterLinker
 }
 
 // Server owns the chassis runtime state.
@@ -152,6 +155,10 @@ type Server struct {
 	// action on this server instance. Per-server (not process-wide) so that
 	// tests with independent Server values do not share state.
 	streamsRefreshGate sync.Mutex
+
+	// linkStartGates enforces single-flight per adapter for the link/start
+	// action. sync.Map keyed by adapter name → *sync.Mutex.
+	linkStartGates sync.Map
 
 	meterRefusalLog *onePerSecondLimiter
 }
@@ -283,6 +290,12 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterPost)))
 	mux.Handle("POST /receiver/settings/action/streams-refresh",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionStreamsRefresh)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/link/start",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStart)))
+	mux.Handle("GET /receiver/settings/adapter/{name}/link/status",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStatus)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/link/unlink",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkUnlink)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 
@@ -350,4 +363,10 @@ func (s *Server) presetSnapshot() [12]adapters.PresetEntry {
 		return zero
 	}
 	return s.presetViewer.Presets()
+}
+
+// linkStartGate returns the per-adapter single-flight mutex for link/start.
+func (s *Server) linkStartGate(name string) *sync.Mutex {
+	v, _ := s.linkStartGates.LoadOrStore(name, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }

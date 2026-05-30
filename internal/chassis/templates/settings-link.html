@@ -1,0 +1,59 @@
+{{- define "settings-link" -}}
+<div class="settings-link" data-link-kind="{{ .Kind }}" data-link-phase="{{ .Phase }}">
+  <h5 class="settings-subhead">Account</h5>
+  {{- if eq .Phase "linked" -}}
+    <div class="link-line ok">
+      <span class="link-status">✓ Linked{{ if .LinkedAs }} as {{ .LinkedAs }}{{ end }}</span>
+      <button class="action-btn ghost" type="button" data-link-action="unlink">Unlink</button>
+    </div>
+    {{- if .Error }}<div class="link-warn">{{ .Error }}</div>{{ end -}}
+  {{- else if eq .Phase "pending" -}}
+    {{- if eq .Kind "pin" -}}
+      <div class="link-pin-wrap">
+        <div class="help">Enter this code at <b>plex.tv/link</b>:</div>
+        <div class="link-pin">{{ .Code }}</div>
+        <div class="link-count" data-link-expires="{{ .ExpiresInSec }}">expires in <span class="link-count-val">{{ .ExpiresInSec }}</span>s</div>
+        <div class="link-waiting">● waiting for plex.tv…</div>
+      </div>
+    {{- else -}}
+      <div class="link-waiting">↻ Linking…</div>
+    {{- end -}}
+  {{- else if eq .Phase "error" -}}
+    {{- if eq .Kind "pin" -}}
+      <div class="link-line err"><span class="link-status">ERR · {{ .Error }}</span>
+        <button class="action-btn" type="button" data-link-action="start">Try Again</button></div>
+    {{- else -}}
+      {{- template "settings-link-credform" . -}}
+    {{- end -}}
+  {{- else -}}
+    {{- /* unlinked */ -}}
+    {{- if eq .Kind "pin" -}}
+      <div class="link-line">
+        <div><span class="badge off">OFF · not linked</span>
+          <div class="help">Link this bridge to your Plex account to receive casts.</div></div>
+        <button class="action-btn" type="button" data-link-action="start">Link Plex Account</button>
+      </div>
+    {{- else if .NeedsServerURL -}}
+      <div class="help">Set a <b>Server URL</b> in the fields below — it saves automatically — then link.</div>
+    {{- else -}}
+      {{- template "settings-link-credform" . -}}
+    {{- end -}}
+  {{- end -}}
+</div>
+{{- end -}}
+
+{{- define "settings-link-credform" -}}
+<form class="link-credform" data-link-action="start">
+  {{- range .Fields }}
+  <div class="field-row">
+    <label>{{ .Label }}</label>
+    <input class="field-input" type="{{ if eq .Kind "secret" }}password{{ else }}text{{ end }}"
+      data-link-field="{{ .Key }}" name="{{ .Key }}" autocomplete="off">
+    <span></span>
+  </div>
+  {{- end }}
+  {{- if .Error }}<div class="link-warn">{{ .Error }}</div>{{ end }}
+  <div class="field-row action-row"><label></label>
+    <button class="action-btn" type="submit" data-link-submit>Link ▸</button><span></span></div>
+</form>
+{{- end -}}

@@ -134,6 +134,44 @@ type StreamsRefreshResult struct {
 	Err        error
 }
 
+// AdapterLinker is the chassis-side interface backing the per-adapter
+// /receiver/settings/adapter/{name}/link/* routes. The production binding
+// (cmd/mister-groovy-relay) wraps each adapter's adapters.LinkController
+// and maps its LinkSnapshot onto LinkView. The chassis imports no adapter
+// package.
+type AdapterLinker interface {
+	// LinkView returns the current render state for an adapter's Account
+	// sub-section, or ok=false if the named adapter is not linkable.
+	LinkView(name string) (LinkView, bool)
+	// StartLink begins pairing. PIN adapters ignore params; credential
+	// adapters read params["username"]/["password"].
+	StartLink(ctx context.Context, name string, params map[string]string) (LinkView, error)
+	// LinkStatus polls progress (PIN adapters); credential adapters return
+	// the current view.
+	LinkStatus(ctx context.Context, name string) (LinkView, error)
+	// Unlink revokes/logs out and clears the token. Idempotent.
+	Unlink(ctx context.Context, name string) (LinkView, error)
+}
+
+// LinkView is the JSON wire/render shape for the Account sub-section.
+type LinkView struct {
+	Kind           string      `json:"kind"`                     // "pin" | "credential"
+	Phase          string      `json:"phase"`                    // "unlinked"|"pending"|"linked"|"error"
+	LinkedAs       string      `json:"linkedAs,omitempty"`
+	Code           string      `json:"code,omitempty"`
+	ExpiresInSec   int         `json:"expiresInSec,omitempty"`
+	NeedsServerURL bool        `json:"needsServerURL,omitempty"`
+	Error          string      `json:"error,omitempty"`
+	Fields         []LinkField `json:"fields,omitempty"`
+}
+
+// LinkField is one credential input a credential adapter wants rendered.
+type LinkField struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"` // "text" | "secret"
+}
+
 // settingsChipError is matched structurally so saver-layer typed errors
 // can carry HTTP/chip details across the interface boundary without a
 // uiserver import. The chassis handler uses errors.As against the
@@ -1263,4 +1301,111 @@ func sanitizeProbeError(err error) string {
 		msg = msg[:200]
 	}
 	return msg
+}
+
+// link action timeouts (chained off r.Context()).
+const (
+	linkStartTimeout  = 15 * time.Second
+	linkStatusTimeout = 5 * time.Second
+	linkUnlinkTimeout = 5 * time.Second
+)
+
+// resolveLinkable returns (name, ok) after the nil-linker + linkability
+// guards, writing the appropriate chip on failure. ok=false means a
+// response was already written.
+func (s *Server) resolveLinkable(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if s.cfg.AdapterLinker == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return "", false
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return "", false
+	}
+	if _, ok := s.cfg.AdapterLinker.LinkView(name); !ok {
+		writeSettingsChip(w, http.StatusNotFound, "UNKNOWN ADAPTER")
+		return "", false
+	}
+	return name, true
+}
+
+// writeLinkView emits {ok:true, view:<LinkView>} with HTTP 200.
+func writeLinkView(w http.ResponseWriter, view LinkView) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "view": view})
+}
+
+// handleSettingsAdapterLinkStart is the POST handler for
+// /receiver/settings/adapter/{name}/link/start. Single-flight via
+// linkStartGate(name).TryLock — a second concurrent click returns 409
+// BUSY. Chains the 15s timeout off r.Context(). On success emits
+// {ok:true, view:<LinkView>}.
+func (s *Server) handleSettingsAdapterLinkStart(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.resolveLinkable(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	params := map[string]string{}
+	for _, k := range []string{"username", "password"} {
+		if v := r.PostForm.Get(k); v != "" {
+			params[k] = v
+		}
+	}
+	gate := s.linkStartGate(name)
+	if !gate.TryLock() {
+		writeSettingsChip(w, http.StatusConflict, "BUSY")
+		return
+	}
+	defer gate.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), linkStartTimeout)
+	defer cancel()
+	view, err := s.cfg.AdapterLinker.StartLink(ctx, name, params)
+	if err != nil {
+		writeSettingsChip(w, http.StatusInternalServerError, "LINK FAILED")
+		return
+	}
+	writeLinkView(w, view)
+}
+
+// handleSettingsAdapterLinkStatus is the GET handler for
+// /receiver/settings/adapter/{name}/link/status. Chains the 5s timeout
+// off r.Context(). PIN adapters report current pending/linked state;
+// credential adapters return the persisted snapshot.
+func (s *Server) handleSettingsAdapterLinkStatus(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.resolveLinkable(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), linkStatusTimeout)
+	defer cancel()
+	view, err := s.cfg.AdapterLinker.LinkStatus(ctx, name)
+	if err != nil {
+		writeSettingsChip(w, http.StatusInternalServerError, "LINK FAILED")
+		return
+	}
+	writeLinkView(w, view)
+}
+
+// handleSettingsAdapterLinkUnlink is the POST handler for
+// /receiver/settings/adapter/{name}/link/unlink. Best-effort revoke/
+// logout under a 5s timeout. Idempotent — always returns the unlinked
+// LinkView on success.
+func (s *Server) handleSettingsAdapterLinkUnlink(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.resolveLinkable(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), linkUnlinkTimeout)
+	defer cancel()
+	view, err := s.cfg.AdapterLinker.Unlink(ctx, name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeLinkView(w, view)
 }

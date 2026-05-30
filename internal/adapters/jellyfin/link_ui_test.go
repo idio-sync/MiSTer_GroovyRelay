@@ -264,6 +264,22 @@ func TestLinkUI_Unlink_StopsAdapter(t *testing.T) {
 	}
 }
 
+// TestJFHandleUnlink_FragmentUnchanged pins the HTML fragment that
+// handleUnlink renders. It passes a real token on disk so the Unlink
+// controller actually calls server-side logout (which will fail
+// fast against the fake/closed server) and then verifies local
+// cleanup still renders the correct fragment with "Account" heading.
+func TestJFHandleUnlink_FragmentUnchanged(t *testing.T) {
+	a := newSnapshotTestAdapter(t, "http://jf.local:8096")
+	_ = SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserName: "jake", ServerID: "s", ServerURL: "http://jf.local:8096"})
+	rec := httptest.NewRecorder()
+	a.handleUnlink(rec, httptest.NewRequest("POST", "/ui/adapter/jellyfin/unlink", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Account") {
+		t.Errorf("unlink fragment changed:\n%s", body)
+	}
+}
+
 // jfMockServer is the minimum JF surface a relink test exercises:
 // AuthenticateByName + System/Info + the bookkeeping endpoints
 // runSession touches. /socket accepts the upgrade and parks until

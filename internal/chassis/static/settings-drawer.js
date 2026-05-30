@@ -28,7 +28,10 @@
   // Close button always closes.
   const close = document.getElementById('settings-close');
   if (close) {
-    close.addEventListener('click', () => body.classList.remove('settings-open'));
+    close.addEventListener('click', () => {
+      body.classList.remove('settings-open');
+      stopAllPolls(); // stop any active PIN polls when drawer hides
+    });
   }
 
   // Tab switching — each tab carries a data-tab attribute whose value
@@ -42,6 +45,7 @@
       t.classList.add('active');
       const target = drawer.querySelector(`.settings-pane[data-pane="${t.dataset.tab}"]`);
       if (target) target.classList.add('active');
+      stopAllPolls(); // leaving the Adapters pane (or any pane) stops stale polls
     });
   });
 
@@ -604,6 +608,243 @@
     }
   });
 
+  // ─── Task 16: Link sub-section renderer + handlers ───────────────────────
+  //
+  // renderLinkView rebuilds a .settings-link container's inner DOM from a
+  // LinkView object. Untrusted strings (error, linkedAs, code) go through
+  // textContent — never innerHTML — so remote/operator text can't inject markup.
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function renderLinkView(container, view) {
+    container.setAttribute('data-link-kind', view.kind || '');
+    container.setAttribute('data-link-phase', view.phase || '');
+    container.replaceChildren();
+    container.appendChild(el('h5', 'settings-subhead', 'Account'));
+
+    if (view.phase === 'linked') {
+      const line = el('div', 'link-line ok');
+      line.appendChild(el('span', 'link-status', view.linkedAs ? `✓ Linked as ${view.linkedAs}` : '✓ Linked'));
+      const btn = el('button', 'action-btn ghost', 'Unlink');
+      btn.type = 'button'; btn.setAttribute('data-link-action', 'unlink');
+      line.appendChild(btn);
+      container.appendChild(line);
+      if (view.error) container.appendChild(el('div', 'link-warn', view.error));
+      return;
+    }
+    if (view.phase === 'pending') {
+      if (view.kind === 'pin') {
+        const wrap = el('div', 'link-pin-wrap');
+        wrap.appendChild(el('div', 'help', 'Enter this code at plex.tv/link:'));
+        wrap.appendChild(el('div', 'link-pin', view.code || ''));
+        const c = el('div', 'link-count');
+        c.setAttribute('data-link-expires', String(view.expiresInSec || 0));
+        c.appendChild(document.createTextNode('expires in '));
+        c.appendChild(el('span', 'link-count-val', String(view.expiresInSec || 0)));
+        c.appendChild(document.createTextNode('s'));
+        wrap.appendChild(c);
+        wrap.appendChild(el('div', 'link-waiting', '● waiting for plex.tv…'));
+        container.appendChild(wrap);
+      } else {
+        container.appendChild(el('div', 'link-waiting', '↻ Linking…'));
+      }
+      return;
+    }
+    if (view.phase === 'unlinked' && view.kind === 'pin') {
+      const line = el('div', 'link-line');
+      const left = el('div');
+      left.appendChild(el('span', 'badge off', 'OFF · not linked'));
+      left.appendChild(el('div', 'help', 'Link this bridge to your Plex account to receive casts.'));
+      line.appendChild(left);
+      const btn = el('button', 'action-btn', 'Link Plex Account');
+      btn.type = 'button'; btn.setAttribute('data-link-action', 'start');
+      line.appendChild(btn);
+      container.appendChild(line);
+      return;
+    }
+    if (view.kind === 'credential' && view.phase === 'unlinked' && view.needsServerURL) {
+      container.appendChild(el('div', 'help', 'Set a Server URL in the fields below — it saves automatically — then link.'));
+      return;
+    }
+    // credential unlinked-with-url OR error → form
+    const form = el('form', 'link-credform');
+    form.setAttribute('data-link-action', 'start');
+    (view.fields || []).forEach((f) => {
+      const row = el('div', 'field-row');
+      row.appendChild(el('label', null, f.label));
+      const inp = el('input', 'field-input');
+      inp.type = f.kind === 'secret' ? 'password' : 'text';
+      inp.setAttribute('data-link-field', f.key);
+      inp.setAttribute('name', f.key);
+      inp.setAttribute('autocomplete', 'off');
+      row.appendChild(inp);
+      row.appendChild(el('span'));
+      form.appendChild(row);
+    });
+    if (view.error) form.appendChild(el('div', 'link-warn', view.error));
+    const actionRow = el('div', 'field-row action-row');
+    actionRow.appendChild(el('label'));
+    const submit = el('button', 'action-btn', 'Link ▸');
+    submit.type = 'submit'; submit.setAttribute('data-link-submit', '');
+    actionRow.appendChild(submit);
+    actionRow.appendChild(el('span'));
+    form.appendChild(actionRow);
+    container.appendChild(form);
+  }
+
+  function adapterOfLink(node) {
+    const sec = node.closest('[data-adapter-section]');
+    return sec ? sec.getAttribute('data-adapter-section') : null;
+  }
+
+  async function postLink(adapter, action, body) {
+    const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}/link/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body ? body.toString() : '',
+    });
+    return res.json();
+  }
+
+  // Start (PIN button or credential form submit) + Unlink, delegated.
+  document.addEventListener('click', async (ev) => {
+    const startBtn = ev.target.closest('button[data-link-action="start"]');
+    const unlinkBtn = ev.target.closest('button[data-link-action="unlink"]');
+    if (!startBtn && !unlinkBtn) return;
+    ev.preventDefault();
+    const btn = startBtn || unlinkBtn;
+    if (btn.disabled) return;
+    const container = btn.closest('.settings-link');
+    const adapter = adapterOfLink(btn);
+    if (!adapter) return;
+    btn.disabled = true;
+    try {
+      const payload = await postLink(adapter, unlinkBtn ? 'unlink' : 'start', null);
+      if (payload.ok && payload.view) {
+        renderLinkView(container, payload.view);
+        if (unlinkBtn) {
+          stopPoll(adapter); // cancel any active PIN poll on successful unlink
+        } else if (payload.view.phase === 'pending' && payload.view.kind === 'pin') {
+          startPoll(adapter, container);
+        }
+      } else if (payload.chip) {
+        showNotice(payload.chip, 'err');
+      }
+    } catch (e) {
+      showNotice('NETWORK ERROR', 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.addEventListener('submit', async (ev) => {
+    const form = ev.target.closest('form.link-credform');
+    if (!form) return;
+    ev.preventDefault();
+    const container = form.closest('.settings-link');
+    const adapter = adapterOfLink(form);
+    if (!adapter) return;
+    // Capture the field definitions before the optimistic repaint destroys the
+    // live form, so we can rebuild it (submit re-enabled, inputs cleared) if the
+    // link fails — otherwise "Linking…" stays stuck with no way to retry.
+    const fields = Array.from(form.querySelectorAll('[data-link-field]')).map((inp) => {
+      const row = inp.closest('.field-row');
+      const label = row && row.querySelector('label');
+      return {
+        key: inp.getAttribute('data-link-field'),
+        label: label ? label.textContent : inp.getAttribute('data-link-field'),
+        kind: inp.type === 'password' ? 'secret' : 'text',
+      };
+    });
+    const body = new URLSearchParams();
+    form.querySelectorAll('[data-link-field]').forEach((inp) => body.set(inp.getAttribute('data-link-field'), inp.value));
+    // Optimistic "Linking…" — rebuilds form with empty inputs (passwords cleared).
+    renderLinkView(container, { kind: 'credential', phase: 'pending' });
+    try {
+      const payload = await postLink(adapter, 'start', body);
+      if (payload.ok && payload.view) {
+        renderLinkView(container, payload.view); // linked, or error with the form
+      } else {
+        // chip (BUSY/NOT READY) or {ok:false,error}: restore the form so the
+        // operator can retry instead of being stranded on "Linking…".
+        if (payload.chip) showNotice(payload.chip, 'err');
+        renderLinkView(container, { kind: 'credential', phase: 'error', error: payload.error || '', fields });
+      }
+    } catch (e) {
+      showNotice('NETWORK ERROR', 'err');
+      renderLinkView(container, { kind: 'credential', phase: 'error', error: 'Network error', fields });
+    }
+  });
+
+  // ─── Task 17: PIN poll controller ────────────────────────────────────────
+  //
+  // One poller per adapter. Uses setTimeout (never setInterval) so a slow
+  // network response cannot stack concurrent requests. Stops on terminal
+  // phase (linked|error), on expiry (expiresInSec ≤ 0), on explicit
+  // stopPoll/stopAllPolls, or when the drawer/Adapters pane is hidden.
+
+  // pollers: adapter name → { container, stopped, timer }
+  const pollers = {};
+
+  async function pollOnce(adapter) {
+    const p = pollers[adapter];
+    if (!p || p.stopped) return;
+    let payload;
+    try {
+      const res = await fetch(
+        `/receiver/settings/adapter/${encodeURIComponent(adapter)}/link/status`,
+        { method: 'GET' }
+      );
+      payload = await res.json();
+    } catch (e) {
+      // Transient network error — keep polling until expiry.
+      scheduleNextPoll(adapter);
+      return;
+    }
+    // The drawer/pane may have closed (stopAllPolls) during the await — don't
+    // repaint a now-hidden container with a late response.
+    if (p.stopped) return;
+    if (!payload.ok || !payload.view) { stopPoll(adapter); return; }
+    renderLinkView(p.container, payload.view);
+    const v = payload.view;
+    // Stop priority: (1) terminal phase, (2) expiry; unlink + pane-close
+    // are handled by stopPoll/stopAllPolls callers.
+    if (v.phase === 'linked' || v.phase === 'error' || (v.expiresInSec || 0) <= 0) {
+      stopPoll(adapter);
+      return;
+    }
+    scheduleNextPoll(adapter);
+  }
+
+  function scheduleNextPoll(adapter) {
+    const p = pollers[adapter];
+    if (!p || p.stopped) return;
+    p.timer = setTimeout(() => pollOnce(adapter), 2000);
+  }
+
+  function startPoll(adapter, container) {
+    // Single-flight: no-op if already polling.
+    if (pollers[adapter] && !pollers[adapter].stopped) return;
+    pollers[adapter] = { container, stopped: false, timer: null };
+    scheduleNextPoll(adapter);
+  }
+
+  function stopPoll(adapter) {
+    const p = pollers[adapter];
+    if (!p) return;
+    p.stopped = true;
+    if (p.timer) { clearTimeout(p.timer); p.timer = null; }
+  }
+
+  function stopAllPolls() {
+    Object.keys(pollers).forEach(stopPoll);
+  }
+
   // Expose internals for Tasks 25-27 and tests.
   window.Chassis.settings.saveField = saveField;
   window.Chassis.settings.paintFieldError = paintFieldError;
@@ -611,4 +852,12 @@
   window.Chassis.settings.markHasValue = markHasValue;
   window.Chassis.settings.showNotice = showNotice;
   window.Chassis.settings.clearNotice = clearNotice;
+  window.Chassis.settings.renderLinkView = renderLinkView;
+  // Task 17 — poll controller (used by Task 16 handlers + tests).
+  window.Chassis.settings.startPoll = startPoll;
+  window.Chassis.settings.stopPoll = stopPoll;
+  window.Chassis.settings.stopAllPolls = stopAllPolls;
+  // Test hooks — deterministic control without real timers.
+  window.Chassis.settings.__pollTick = (adapter) => pollOnce(adapter);
+  window.Chassis.settings.__pollActive = (adapter) => !!(pollers[adapter] && !pollers[adapter].stopped);
 })();

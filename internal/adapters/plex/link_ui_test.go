@@ -174,6 +174,33 @@ func TestLinkUnlink_RevokeFailureStillCleansUpLocally(t *testing.T) {
 	t.Error("rename target (.data.json.unlinked-*) not found after revoke failure")
 }
 
+func TestHandleLinkStatus_UnlinkedHTMLUnchanged(t *testing.T) {
+	a := &Adapter{}
+	a.cfg.TokenStore = &StoredData{}
+	rec := httptest.NewRecorder()
+	a.handleLinkStatus(rec, httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `id="plex-link-slot"`) ||
+		!strings.Contains(rec.Body.String(), "OFF · not linked") {
+		t.Errorf("unlinked fragment changed:\n%s", rec.Body.String())
+	}
+}
+
+func TestHandleLinkStatus_LinkedHTMLUnchanged(t *testing.T) {
+	a := &Adapter{}
+	a.cfg.TokenStore = &StoredData{AuthToken: "tok"}
+	rec := httptest.NewRecorder()
+	a.handleLinkStatus(rec, httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "RUN · linked") {
+		t.Errorf("linked fragment changed:\n%s", rec.Body.String())
+	}
+}
+
 func TestLinkUnlink_ClearsTokenAndRenames(t *testing.T) {
 	dir := t.TempDir()
 	store := &StoredData{DeviceUUID: "uuid", AuthToken: "tok"}

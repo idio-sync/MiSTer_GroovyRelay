@@ -2114,3 +2114,111 @@ func TestAdapterSave_StaleProviderKeyAccepted(t *testing.T) {
 		t.Errorf("touched = %v, want dead_provider override forwarded", got)
 	}
 }
+
+type fakeAdapterLinker struct {
+	views    map[string]LinkView
+	startErr error
+}
+
+func (f *fakeAdapterLinker) LinkView(name string) (LinkView, bool) {
+	v, ok := f.views[name]
+	return v, ok
+}
+func (f *fakeAdapterLinker) StartLink(_ context.Context, name string, _ map[string]string) (LinkView, error) {
+	if f.startErr != nil {
+		return LinkView{}, f.startErr
+	}
+	return LinkView{Kind: "pin", Phase: "pending", Code: "K3F9", ExpiresInSec: 600}, nil
+}
+func (f *fakeAdapterLinker) LinkStatus(_ context.Context, name string) (LinkView, error) {
+	v, _ := f.views[name]
+	return v, nil
+}
+func (f *fakeAdapterLinker) Unlink(_ context.Context, name string) (LinkView, error) {
+	return LinkView{Kind: "pin", Phase: "unlinked"}, nil
+}
+
+func TestAdapterLinker_StructuralConformance(t *testing.T) {
+	var _ AdapterLinker = &fakeAdapterLinker{}
+}
+
+// ---------------------------------------------------------------------------
+// Task 11 — link start / status / unlink handler tests
+// ---------------------------------------------------------------------------
+
+func newServerWithLinker(linker AdapterLinker) *Server {
+	s, err := New(Config{
+		Version:       "test-1.0.0",
+		StartedAt:     time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC),
+		AdapterLinker: linker,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func TestLinkStart_NilLinker(t *testing.T) {
+	s := newServerWithLinker(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req.SetPathValue("name", "plex")
+	s.handleSettingsAdapterLinkStart(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestLinkStart_UnknownAdapter(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/nope/link/start", nil)
+	req.SetPathValue("name", "nope")
+	s.handleSettingsAdapterLinkStart(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestLinkStart_Success(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "unlinked"}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req.SetPathValue("name", "plex")
+	s.handleSettingsAdapterLinkStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"phase":"pending"`) ||
+		!strings.Contains(rec.Body.String(), `"code":"K3F9"`) {
+		t.Errorf("body = %s, want pending view with code", rec.Body.String())
+	}
+}
+
+func TestLinkUnlink_Success(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "linked"}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/unlink", nil)
+	req.SetPathValue("name", "plex")
+	s.handleSettingsAdapterLinkUnlink(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"phase":"unlinked"`) {
+		t.Errorf("status=%d body=%s, want 200 unlinked", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 12 — route registration via Mount
+// ---------------------------------------------------------------------------
+
+func TestLinkRoutesMounted(t *testing.T) {
+	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "unlinked"}}})
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mounted start route status = %d, want 200", rec.Code)
+	}
+}

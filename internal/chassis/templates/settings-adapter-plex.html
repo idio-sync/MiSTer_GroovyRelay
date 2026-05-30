@@ -1,0 +1,9 @@
+{{- define "settings-adapter-plex" -}}
+<section class="settings-section" data-adapter-section="plex">
+  <h4>Plex <span class="hint">{{ .Hint }}</span></h4>
+  {{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}
+  {{ range .Fields }}
+  {{ template "adapter-field-row" (dict "Adapter" "plex" "Field" . "Values" $.Values) }}
+  {{ end }}
+</section>
+{{- end -}}
