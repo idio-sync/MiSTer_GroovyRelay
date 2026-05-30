@@ -37,14 +37,24 @@ func TestAdapter_DisplayName(t *testing.T) {
 func TestAdapter_Fields_HasEnabled(t *testing.T) {
 	a := newTestAdapter(t, nil)
 	fields := a.Fields()
-	if len(fields) != 1 || fields[0].Key != "enabled" {
-		t.Errorf("Fields = %+v, want single 'enabled' field", fields)
+	// Fields() now returns four entries (enabled + three yt-dlp standard
+	// fields); full shape is asserted in TestFields_ExposesYtdlpStandardFields.
+	// This test retains the original invariants for the 'enabled' field.
+	var enabled *adapters.FieldDef
+	for i := range fields {
+		if fields[i].Key == "enabled" {
+			enabled = &fields[i]
+			break
+		}
 	}
-	if fields[0].Kind != adapters.KindBool {
-		t.Errorf("Fields[0].Kind = %v, want KindBool", fields[0].Kind)
+	if enabled == nil {
+		t.Fatalf("Fields() missing 'enabled' field; got %+v", fields)
 	}
-	if fields[0].ApplyScope != adapters.ScopeHotSwap {
-		t.Errorf("Fields[0].ApplyScope = %v, want ScopeHotSwap", fields[0].ApplyScope)
+	if enabled.Kind != adapters.KindBool {
+		t.Errorf("enabled.Kind = %v, want KindBool", enabled.Kind)
+	}
+	if enabled.ApplyScope != adapters.ScopeHotSwap {
+		t.Errorf("enabled.ApplyScope = %v, want ScopeHotSwap", enabled.ApplyScope)
 	}
 }
 
