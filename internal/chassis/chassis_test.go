@@ -4773,3 +4773,19 @@ func TestStaticJS_VfdLiveUsesTierHooks(t *testing.T) {
 		}
 	}
 }
+
+func TestFieldByKey(t *testing.T) {
+	t.Parallel()
+	fields := []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool},
+		{Key: "ytdlp_format", Kind: adapters.KindText},
+	}
+	got := fieldByKey(fields, "ytdlp_format")
+	if got == nil || got.Key != "ytdlp_format" || got.Kind != adapters.KindText {
+		t.Errorf("fieldByKey = %+v, want ytdlp_format/Text", got)
+	}
+	missing := fieldByKey(fields, "nope")
+	if missing != nil {
+		t.Errorf("fieldByKey(missing) = %+v, want nil", missing)
+	}
+}

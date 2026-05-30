@@ -91,6 +91,7 @@ var templateFuncs = template.FuncMap{
 	"asInt64":                 asInt64,
 	"isProviderOverrideField": isProviderOverrideField,
 	"isStreamsBytesField":     isStreamsBytesField,
+	"fieldByKey":              fieldByKey,
 }
 
 // adapterPane returns the AdapterPaneData for the named adapter from the
@@ -104,6 +105,18 @@ func adapterPane(adapters []AdapterPaneData, name string) AdapterPaneData {
 		}
 	}
 	return AdapterPaneData{Name: name}
+}
+
+// fieldByKey returns the FieldDef with the given key, or nil if absent.
+// Used by the URL pane template to render specific standard fields in
+// mockup order with the host editor interleaved.
+func fieldByKey(fields []adapters.FieldDef, key string) *adapters.FieldDef {
+	for i := range fields {
+		if fields[i].Key == key {
+			return &fields[i]
+		}
+	}
+	return nil
 }
 
 // fieldKindWire maps an adapters.FieldKind to the Type token fieldHelper
