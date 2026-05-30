@@ -117,6 +117,10 @@ type Config struct {
 
 	// 4E: per-adapter link/pairing flow (Plex PIN, Jellyfin credentials).
 	AdapterLinker AdapterLinker
+
+	// 4F: URL adapter custom widgets.
+	AdapterHostEditor  AdapterHostEditor
+	AdapterCookieStore AdapterCookieStore
 }
 
 // Server owns the chassis runtime state.
@@ -296,6 +300,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStatus)))
 	mux.Handle("POST /receiver/settings/adapter/{name}/link/unlink",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkUnlink)))
+	mux.Handle("POST /receiver/settings/adapter/{name}/hosts",
+		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterHostsPost)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }
 

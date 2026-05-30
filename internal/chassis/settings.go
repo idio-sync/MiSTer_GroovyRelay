@@ -1409,3 +1409,68 @@ func (s *Server) handleSettingsAdapterLinkUnlink(w http.ResponseWriter, r *http.
 	}
 	writeLinkView(w, view)
 }
+
+// AdapterHostEditor edits an adapter's host allowlist (the URL adapter's
+// ytdlp_hosts). Chassis-owned; satisfied by a cmd wrapper. Kept separate
+// from AdapterSettingsSaver because the host list is a []string with no
+// FieldDef and is persisted via uiserver.AdapterSaver.SaveValues.
+type AdapterHostEditor interface {
+	// Hosts returns the adapter's current host list for paint, ok=false
+	// for unknown / non-host-editing adapters.
+	Hosts(name string) (hosts []string, ok bool)
+	// SetHosts validates+normalizes the whole list, persists it atomically,
+	// and returns the wire scope ("hot") plus the normalized list.
+	SetHosts(name string, hosts []string) (scope string, normalized []string, err error)
+}
+
+// AdapterCookieStore manages an adapter's file-backed cookie store (the
+// URL adapter's url_cookies.txt). Chassis-owned; satisfied by a cmd
+// wrapper. Cookies are a file, never TOML, so they bypass the saver.
+type AdapterCookieStore interface {
+	CookieStatus(name string) (CookieStatusView, bool)
+	SaveCookies(name, raw string) (CookieStatusView, error)
+	ClearCookies(name string) (CookieStatusView, error)
+}
+
+// CookieStatusView is the paint-time + response view of the cookies file.
+type CookieStatusView struct {
+	Loaded bool   // false → "not loaded"
+	Bytes  int64  // file size when loaded
+	SetAt  string // "2006-01-02 15:04:05Z" (UTC); "" when absent
+}
+
+// handleSettingsAdapterHostsPost handles POST /receiver/settings/adapter/{name}/hosts.
+// Body: {"hosts":[...]}. Mirrors handleSettingsAdapterPost's error envelope.
+func (s *Server) handleSettingsAdapterHostsPost(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdapterHostEditor == nil {
+		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	var payload struct {
+		Hosts []string `json:"hosts"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&payload); err != nil {
+		writeSettingsChip(w, http.StatusBadRequest, "BAD INPUT")
+		return
+	}
+	scope, normalized, err := s.cfg.AdapterHostEditor.SetHosts(name, payload.Hosts)
+	if err != nil {
+		emitSaveError(w, err)
+		return
+	}
+	writeSettingsHosts(w, scope, normalized)
+}
+
+func writeSettingsHosts(w http.ResponseWriter, scope string, hosts []string) {
+	if hosts == nil {
+		hosts = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "scope": scope, "hosts": hosts})
+}

@@ -2222,3 +2222,24 @@ func TestLinkRoutesMounted(t *testing.T) {
 		t.Fatalf("mounted start route status = %d, want 200", rec.Code)
 	}
 }
+
+func TestHandleSettingsAdapterHostsPost_NotReadyWhenNil(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
+	mux := http.NewServeMux()
+	s.Mount(mux)
+	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/hosts",
+		strings.NewReader(`{"hosts":["youtube.com"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Code = %d, want 503", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if chip, _ := body["chip"].(string); chip != "NOT READY" {
+		t.Errorf("chip = %q, want NOT READY", chip)
+	}
+}
