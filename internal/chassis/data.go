@@ -3,10 +3,12 @@ package chassis
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
@@ -326,19 +328,110 @@ type PresetSlot struct {
 	ChannelID  string // streams channel id — same
 }
 
-// HistoryData is the recent-casts row. It is empty in Phase 0 idle.
+// HistoryData is the recent-casts row. Rows come from registered adapters
+// that expose a redacted companion history snapshot.
 type HistoryData struct {
 	Rows         []HistoryRow
 	EmptyMessage string
 }
 
-// HistoryRow represents one entry in the recent-casts row. It is empty
-// in Phase 0 and populated in a later history spec.
+// HistoryRow represents one entry in the recent-casts row.
 type HistoryRow struct {
 	Title   string
 	Source  string
 	When    string
 	Artwork string
+}
+
+type companionHistoryProvider interface {
+	CompanionHistory() []companion.CompanionHistoryEntry
+}
+
+func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData {
+	out := HistoryData{EmptyMessage: "No recent casts"}
+	if reg == nil {
+		return out
+	}
+
+	type datedRow struct {
+		row        HistoryRow
+		lastPlayed time.Time
+	}
+	rows := []datedRow{}
+	for _, adapter := range reg.List() {
+		provider, ok := adapter.(companionHistoryProvider)
+		if !ok {
+			continue
+		}
+		source := historySourceLabel(adapter)
+		artwork := historyArtworkLabel(adapter)
+		for _, entry := range provider.CompanionHistory() {
+			title := strings.TrimSpace(entry.Title)
+			if title == "" {
+				title = strings.TrimSpace(entry.URLDisplay)
+			}
+			if title == "" {
+				continue
+			}
+			rows = append(rows, datedRow{
+				row: HistoryRow{
+					Title:   title,
+					Source:  source,
+					When:    formatHistoryAge(now, entry.LastPlayed),
+					Artwork: artwork,
+				},
+				lastPlayed: entry.LastPlayed,
+			})
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].lastPlayed.After(rows[j].lastPlayed)
+	})
+	if len(rows) == 0 {
+		return out
+	}
+	out.Rows = make([]HistoryRow, 0, len(rows))
+	for _, r := range rows {
+		out.Rows = append(out.Rows, r.row)
+	}
+	return out
+}
+
+func historySourceLabel(adapter adapters.Adapter) string {
+	label := strings.TrimSpace(adapter.DisplayName())
+	if label == "" {
+		label = adapter.Name()
+	}
+	return strings.ToUpper(label)
+}
+
+func historyArtworkLabel(adapter adapters.Adapter) string {
+	label := strings.TrimSpace(adapter.Name())
+	if label == "" {
+		label = adapter.DisplayName()
+	}
+	label = strings.ToUpper(label)
+	if len(label) > 3 {
+		return label[:3]
+	}
+	return label
+}
+
+func formatHistoryAge(now, lastPlayed time.Time) string {
+	if lastPlayed.IsZero() {
+		return "--"
+	}
+	d := now.Sub(lastPlayed)
+	if d < time.Minute {
+		return "NOW"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dM AGO", int(d/time.Minute))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dH AGO", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%dD AGO", int(d/(24*time.Hour)))
 }
 
 // SettingsData carries the settings drawer state into the snapshot.
@@ -459,9 +552,9 @@ type CatalogData struct {
 // CatalogProviderTab is one provider tab in the drawer's top strip.
 type CatalogProviderTab struct {
 	ID, DisplayName, BadgeLabel, BadgeClass string
-	Live    bool
-	ChCount int
-	Groups  []CatalogGroupTab
+	Live                                    bool
+	ChCount                                 int
+	Groups                                  []CatalogGroupTab
 }
 
 // CatalogGroupTab is one button in the rail.
@@ -474,10 +567,10 @@ type CatalogGroupTab struct {
 // CatalogChannelCard is one .ch-card in the grid.
 type CatalogChannelCard struct {
 	ID, Name, PlayMode string
-	Live       bool
-	Tuned      bool // matches transport.AdapterRef
-	Starred    bool // is in a preset slot
-	PresetSlot int  // 0 if !Starred; 1..12 otherwise
+	Live               bool
+	Tuned              bool // matches transport.AdapterRef
+	Starred            bool // is in a preset slot
+	PresetSlot         int  // 0 if !Starred; 1..12 otherwise
 }
 
 // ProviderIndex returns the slice index of a provider by ID for use
@@ -790,12 +883,9 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			DetectedKind:     "URL",
 			CastEnabled:      false,
 		},
-		Presets: buildPresetsData(cfg.PresetViewer, "", ""),
-		Catalog: idleCatalogData(cfg),
-		History: HistoryData{
-			Rows:         nil,
-			EmptyMessage: "No recent casts",
-		},
+		Presets:  buildPresetsData(cfg.PresetViewer, "", ""),
+		Catalog:  idleCatalogData(cfg),
+		History:  historyDataFromRegistry(cfg.Registry, now),
 		Settings: settingsDataFromConfig(cfg),
 	}
 	// Bridge catalog count to PresetsData so the preset-bank template
