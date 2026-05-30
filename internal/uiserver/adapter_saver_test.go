@@ -614,3 +614,58 @@ hls_buffer_disabled = true
 		t.Errorf("nested channels.alpha.hls_buffer_disabled lost:\n%s", got)
 	}
 }
+
+func TestSaveValues_PersistsArrayField(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "url", `enabled = true
+ytdlp_format = "best"
+ytdlp_hosts = ["youtube.com"]
+`)
+	mu := &sync.Mutex{}
+	saver := NewAdapterSaver(path, mu)
+	adapter := &fakeFullAdapter{
+		values: map[string]any{"enabled": true, "ytdlp_format": "best"},
+		scope:  adapters.ScopeHotSwap,
+	}
+	scope, err := saver.SaveValues(
+		"url",
+		map[string]any{"ytdlp_hosts": []string{"youtube.com", "twitch.tv"}},
+		[]string{"ytdlp_hosts"},
+		adapter,
+	)
+	if err != nil {
+		t.Fatalf("SaveValues: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Errorf("scope = %v, want ScopeHotSwap", scope)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `"youtube.com"`) || !strings.Contains(string(got), `"twitch.tv"`) {
+		t.Errorf("disk missing new hosts array:\n%s", got)
+	}
+	// Other keys preserved.
+	if !strings.Contains(string(got), `enabled = true`) || !strings.Contains(string(got), `ytdlp_format = "best"`) {
+		t.Errorf("disk dropped sibling keys:\n%s", got)
+	}
+	if n := len(adapter.applied); n != 1 {
+		t.Fatalf("ApplyConfig calls = %d, want 1", n)
+	}
+}
+
+func TestSaveValues_RejectsDisallowedKey(t *testing.T) {
+	t.Parallel()
+	path := newTempConfigWithSection(t, "url", "enabled = true\n")
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": true}}
+	_, err := saver.SaveValues("url", map[string]any{"enabled": false}, []string{"ytdlp_hosts"}, adapter)
+	var ferrs *adapterFieldErrors
+	if !errors.As(err, &ferrs) {
+		t.Fatalf("err = %v (%T), want *adapterFieldErrors", err, err)
+	}
+	if len(ferrs.Errs) != 1 || ferrs.Errs[0].Key != "enabled" {
+		t.Errorf("ferrs = %+v, want one entry for disallowed 'enabled'", ferrs.Errs)
+	}
+	if len(adapter.applied) != 0 {
+		t.Errorf("ApplyConfig must not run when a key is rejected")
+	}
+}
