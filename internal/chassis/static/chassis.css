@@ -3731,6 +3731,12 @@ body.receiver.browse-open .catalog-drawer {
   max-height: 720px;
   margin-top: 10px;
   opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    max-height 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms ease-out;
 }
 
 body.receiver.browse-open .catalog-browser {
@@ -3862,15 +3868,22 @@ body.receiver .source-cluster .lamp.casting .name {
 
 /* ---- Catalog drawer (3B) ---- */
 
+/* Collapse via max-height/visibility, mirroring .settings-panel. The
+   grid-template-rows:0fr trick does NOT reach 0 in this auto-height
+   container — it floors at the browser's min-content size, leaving the
+   provider-tabs row peeking under the presets. */
 body.receiver .catalog-drawer {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 280ms ease-out;
   overflow: hidden;
-}
-
-body.receiver.browse-open .catalog-drawer {
-  grid-template-rows: 1fr;
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    max-height 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms ease-out,
+    visibility 0s linear 280ms;
 }
 
 body.receiver .catalog-browser {
