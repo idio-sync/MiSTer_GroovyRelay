@@ -1,7 +1,7 @@
 # Jellyfin Auto-Advance (Continuous Play) — Design
 
 **Date:** 2026-05-31
-**Status:** Approved design; written spec pending user review
+**Status:** Review fixes applied; pending user review
 **Scope:** Jellyfin adapter continuous play through the client-supplied queue.
 
 ## Problem
@@ -97,7 +97,8 @@ already mutex-protected and the read is infrequent.
 `startPlayNow` plays `p.ItemIDs[0]`. For continuous play, `PlayNow` must honor
 the full list:
 
-1. Clamp `StartIndex` to a valid index; if omitted or invalid, use `0`.
+1. Use `StartIndex` only when `0 <= StartIndex < len(ItemIDs)`; otherwise use
+   `0`.
 2. Start `ItemIDs[StartIndex]`.
 3. Replace the adapter-local queue with the items after `StartIndex`, preserving
    `MediaSourceID`, `AudioStreamIndex`, and `SubtitleStreamIndex` in each
@@ -132,14 +133,17 @@ Flow:
 ffmpeg exits cleanly
   -> core calls OnStop("eof")
   -> Jellyfin reporter wakeup still runs
-  -> if auto_advance is off: done
-  -> if queue is empty: done
-  -> pop one queued item
   -> 1s settle delay
-  -> build next request through the same queued-item playback path
+  -> if auto_advance is off: done
+  -> if core is no longer idle: done
+  -> if the stopped session is no longer the adapter's current session: done
+  -> peek queue head without mutating the queue
+  -> if queue is empty: done
+  -> build next request for the peeked item
+  -> re-check core idle, stopped ref still current, and queue head still matches
   -> StartSessionIfIdle(nextReq)
-      -> started: commit currentRefKey and spawn reporter
-      -> not idle: restore/stand down without stealing controller-owned playback
+      -> started: commit only if the stopped ref is still current, conditionally remove the same queue head, spawn reporter
+      -> not idle: stand down without changing queue or adapter ownership
       -> error: log, cleanup, stop
 ```
 
@@ -149,6 +153,15 @@ track-switch restarts never advance.
 The settle delay is for smoothness only. Correctness comes from
 `StartSessionIfIdle`, which prevents a background EOF advance from double
 advancing when a controller starts something first.
+
+The EOF path must not pop the queue before the delay or before the idle guard.
+It peeks the head, starts only if core is still idle, and removes the head only
+after a successful guarded start and only if the queue head still matches the
+peeked item. Because building a next request performs network I/O, the auto path
+rechecks core idle, captured-ref identity, and queue-head identity immediately
+before calling `StartSessionIfIdle`. If a controller consumes or replaces the
+queue during the settle or build window, the background advance does not restore
+anything or reorder the queue.
 
 ## Component 4 — Shared Start Helper
 
@@ -164,9 +177,9 @@ The clean shape is to extract a helper that accepts:
 
 - the `QueuedItem`
 - a start strategy (`StartSession` vs `StartSessionIfIdle`)
-- a guard-miss restore policy
+- a queue-commit policy
 
-The helper performs the existing sequence:
+The manual helper path performs the existing sequence:
 
 1. Load token and snapshot config.
 2. Resolve the modeline preset.
@@ -178,10 +191,34 @@ The helper performs the existing sequence:
 8. Commit or rollback.
 9. Spawn a reporter with a fresh `NowPlayingQueue` snapshot.
 
-For auto-advance, if `StartSessionIfIdle` returns `started=false`, the adapter
-stands down and restores the popped item to the front of the queue. This keeps
-the controller-supplied queue intact if a Jellyfin controller wins the race and
-starts playback itself.
+The auto-advance helper path is stricter because it is autonomous and guarded:
+
+1. Sleep the settle delay before any queue mutation.
+2. Re-read `auto_advance`; if it is off, return.
+3. Check `a.core.Status()`; if core is not idle, return.
+4. Check the captured stopped `refKey` still matches `a.snapshotCurrentRefKey()`;
+   if not, return.
+5. Peek the queue head under `Adapter.mu` without removing it.
+6. Build the next `core.SessionRequest` outside `Adapter.mu`.
+7. Recheck core idle, `snapshotCurrentRefKey() == refKey`, and the queue head
+   still matching the peeked item. If any check fails, return.
+8. Call `StartSessionIfIdle(nextReq)`.
+9. If `started=false`, return without touching queue or `currentRefKey`.
+10. If `started=true`, commit adapter ownership under `Adapter.mu` only when
+   `currentRefKey` still equals the captured stopped ref. On that same critical
+   section, set `currentRefKey` to the new request ref, clear pending rollback
+   state, and remove the queue head only if it still matches the peeked item.
+11. If the compare-commit fails, leave queue and adapter ownership untouched,
+   cleanup any request-owned artwork, and do not spawn a reporter; a newer
+   controller-owned session has taken over.
+12. If the compare-commit succeeds, spawn the reporter with a fresh
+   `NowPlayingQueue` snapshot.
+
+This means the auto path does not call `beginSelfPreempt` before the guarded
+start. If implementation reuse makes pre-reservation unavoidable, rollback must
+be compare-based: rollback only when `currentRefKey` still equals the attempted
+auto-advance ref. A losing EOF goroutine must never restore an older ref over a
+newer controller-owned session.
 
 ## Concurrency and State Rules
 
@@ -191,9 +228,10 @@ starts playback itself.
   happen while holding `Adapter.mu`.
 - The `OnStop` closure must not block. It may wake the reporter synchronously,
   then spawn the EOF advance goroutine.
-- The EOF goroutine must use captured session identity only for logging and
-  stale-work checks. It must not advance because a later session's state happens
-  to be current.
+- The EOF goroutine captures the stopped `refKey`. After the settle delay and
+  before peeking the queue, it verifies that core is idle and
+  `snapshotCurrentRefKey() == refKey`. If either check fails, it returns without
+  queue or ownership mutation.
 - `StartSessionIfIdle` is the final arbiter. If another session is active, the
   background advance stands down.
 
@@ -206,11 +244,13 @@ starts playback itself.
 | User stop | No advance |
 | ffmpeg error | No advance; reporter marks failure as today |
 | Seek or track switch | No advance from the old session |
-| Controller sends `NextTrack` near EOF | Controller start wins; auto-advance guard stands down |
+| Controller sends `NextTrack` near EOF | Controller start wins; auto-advance guard stands down without restoring or reordering queue items |
+| Controller sends `PlayNow` near EOF | Controller start wins; auto-advance sees non-idle or stale `currentRefKey` and stands down |
 | Toggle flips off before EOF | EOF reads false and stops |
 | Toggle flips off after goroutine passed the check | One in-flight hop may complete; the next EOF reads false |
 | `PlaybackInfo` fails for next item | Log and stop; do not skip ahead |
-| `StartSessionIfIdle` returns error | Log, cleanup, rollback, stop |
+| `StartSessionIfIdle` returns error | Log, cleanup, no queue mutation, stop |
+| Controller preempts after guarded start but before adapter commit | Compare-commit fails; auto path leaves adapter ownership and queue untouched |
 
 ## Testing
 
@@ -227,9 +267,19 @@ Add focused tests under `internal/adapters/jellyfin/`:
 - EOF with toggle off does not pop or start.
 - EOF with non-`eof` reason does not pop or start.
 - EOF with toggle on and queued item starts through `StartSessionIfIdle`.
-- Guard miss restores the popped queued item to the front.
+- Guard miss leaves the queue unchanged because the auto path only peeked.
+- EOF auto-advance racing with manual `NextTrack` does not reorder the queue or
+  clobber `currentRefKey`.
+- EOF auto-advance racing with controller `PlayNow` does not clobber
+  `currentRefKey`.
+- Stale EOF after seek or track-switch replacement does not mutate queue or
+  adapter ownership.
+- Failed or guard-missed auto-start does not clobber `currentRefKey`.
+- Auto-start success followed by controller preemption before adapter commit does
+  not clobber `currentRefKey`.
 - Manual `NextTrack` still uses immediate `StartSession`.
 - Reporter wakeup still fires on every stop reason.
+- Wrapped `OnStop("eof")` still invokes artwork cleanup.
 
 Run:
 
