@@ -484,7 +484,7 @@ func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
 
 	for _, want := range []string{
 		"body.receiver .source-cluster {\n  display: grid;",
-		"width: clamp(480px, 38vw, 600px);",
+		"width: min(100%, clamp(420px, 38vw, 600px));",
 		"grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));",
 		"grid-template-rows: 1fr;",
 	} {
@@ -512,6 +512,206 @@ func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
 	narrowButtonRule := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .vfd-source-row .source-cluster .hw-btn")
 	if !strings.Contains(narrowButtonRule, "min-width: 0;") {
 		t.Fatalf("900 source buttons must be allowed to shrink without overflow: %s", narrowButtonRule)
+	}
+}
+
+func TestChassisCSS_DenseResponsivePassContracts(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+
+	for _, want := range []string{
+		"@container chassis (max-width: 760px)",
+		"body.receiver .input-controls",
+		"body.receiver .audio-deck > .deck-sect",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dense responsive pass missing contract %q", want)
+		}
+	}
+
+	inputRule := cssRuleBlock(t, text, "body.receiver .input-controls")
+	for _, want := range []string{
+		"display: flex;",
+		"gap: 6px;",
+		"min-width: 0;",
+	} {
+		if !strings.Contains(inputRule, want) {
+			t.Fatalf("input controls should own the flexible row layout, missing %q: %s", want, inputRule)
+		}
+	}
+
+	vfdSource1180 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 1180px)", "body.receiver .vfd-source-row")
+	if !strings.Contains(vfdSource1180, "grid-template-columns: minmax(0, 1fr) minmax(270px, 34%);") {
+		t.Fatalf("1180 VFD/source row should reserve a bounded source column: %s", vfdSource1180)
+	}
+
+	meter760 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 760px)", "body.receiver .meter-screen.meter-screen--compact .meter-row")
+	if !strings.Contains(meter760, "grid-template-columns: minmax(0, 1fr);") {
+		t.Fatalf("760 meter rows should collapse to one column before they overflow: %s", meter760)
+	}
+
+	meterAudio600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .meter-screen.meter-screen--compact .meter-mid-row .audio-grp")
+	if !strings.Contains(meterAudio600, "display: none;") {
+		t.Fatalf("phone meter should hide nonessential audio scopes: %s", meterAudio600)
+	}
+
+	sourceLamp600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .source-cluster .lamp")
+	for _, want := range []string{
+		"min-height: 46px;",
+		"grid-template-rows: 12px minmax(0, 1fr);",
+	} {
+		if !strings.Contains(sourceLamp600, want) {
+			t.Fatalf("phone source lamps should become compact indicators, missing %q: %s", want, sourceLamp600)
+		}
+	}
+
+	sourceState600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .source-cluster .lamp .state")
+	if !strings.Contains(sourceState600, "display: none;") {
+		t.Fatalf("phone source lamps should hide routine state text: %s", sourceState600)
+	}
+	sourceAlert600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .source-cluster .lamp.casting .state,\n  body.receiver .source-cluster .lamp.issue .state")
+	if !strings.Contains(sourceAlert600, "display: block;") {
+		t.Fatalf("phone source lamps should still expose live/error state text: %s", sourceAlert600)
+	}
+
+	presetSearch600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .preset-header .search-field")
+	if !strings.Contains(presetSearch600, "flex: 1 1 100%;") {
+		t.Fatalf("phone preset search should wrap to a full row: %s", presetSearch600)
+	}
+
+	audioDeck600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .audio-deck")
+	for _, want := range []string{
+		"scroll-snap-type: x proximity;",
+		"padding: 12px 12px;",
+	} {
+		if !strings.Contains(audioDeck600, want) {
+			t.Fatalf("phone audio deck should stay dense but horizontally navigable, missing %q: %s", want, audioDeck600)
+		}
+	}
+
+	transport420 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 420px)", "body.receiver .trn")
+	if !strings.Contains(transport420, "min-width: 42px;") {
+		t.Fatalf("phone transport controls should keep usable touch width: %s", transport420)
+	}
+}
+
+func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+
+	clusterStart := strings.Index(text, "body.receiver .source-cluster {\n  display: grid;")
+	if clusterStart == -1 {
+		t.Fatalf("missing primary source cluster rule")
+	}
+	clusterRule := cssRuleBlock(t, text[clusterStart:], "body.receiver .source-cluster")
+	for _, want := range []string{
+		"gap: 0;",
+		"padding: 4px;",
+		"background: linear-gradient(180deg, #202024 0%, #17171a 100%);",
+		"inset 0 -1px 0 rgba(0, 0, 0, 0.68)",
+	} {
+		if !strings.Contains(clusterRule, want) {
+			t.Fatalf("source cluster should be one shared recessed indicator rail, missing %q: %s", want, clusterRule)
+		}
+	}
+
+	lampSectionStart := strings.Index(text, "/* ---- Source-cluster lamps (3B) ---- */")
+	if lampSectionStart == -1 {
+		t.Fatalf("missing source-cluster lamp section")
+	}
+	lampText := text[lampSectionStart:]
+
+	lampRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp")
+	for _, want := range []string{
+		"grid-template-columns: minmax(0, 1fr);",
+		"grid-template-rows: 18px minmax(0, 1fr) 15px;",
+		"background: transparent;",
+		"border: 0;",
+		"inset 1px 0 0 rgba(255, 255, 255, 0.035)",
+		"cursor: default;",
+		"transition:",
+	} {
+		if !strings.Contains(lampRule, want) {
+			t.Fatalf("source lamp must read as a passive receiver indicator, missing %q: %s", want, lampRule)
+		}
+	}
+	for _, banned := range []string{
+		"background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 50%, #1a1a1c 100%);",
+		"background: linear-gradient(180deg, #252529 0%, #202024 100%);",
+		"0 1px 2px rgba(0, 0, 0, 0.4)",
+	} {
+		if strings.Contains(lampRule, banned) {
+			t.Fatalf("source lamp must not keep raised button styling %q: %s", banned, lampRule)
+		}
+	}
+
+	nameRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .nameplate")
+	for _, banned := range []string{
+		"color: #111113;",
+		"background: linear-gradient(180deg, #c4c4c8, #74747b);",
+	} {
+		if strings.Contains(nameRule, banned) {
+			t.Fatalf("source lamp nameplate must not keep the silver badge styling %q: %s", banned, nameRule)
+		}
+	}
+	if !strings.Contains(nameRule, "background: transparent;") {
+		t.Fatalf("source lamp nameplate should be label text on the hardware faceplate: %s", nameRule)
+	}
+	if !strings.Contains(nameRule, "justify-self: center;") {
+		t.Fatalf("source lamp label should sit like printed faceplate text: %s", nameRule)
+	}
+
+	wellRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led-well")
+	for _, want := range []string{
+		"width: 16px;",
+		"height: 16px;",
+		"background: radial-gradient(circle at center, #030304 0%, #0b0b0d 58%, #303036 100%);",
+		"border-radius: 50%;",
+	} {
+		if !strings.Contains(wellRule, want) {
+			t.Fatalf("source lamp LED well must look like a recessed physical indicator cup, missing %q: %s", want, wellRule)
+		}
+	}
+
+	ledRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led")
+	for _, want := range []string{
+		"width: 8px;",
+		"height: 8px;",
+		"border: 1px solid #050506;",
+		"box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.72);",
+	} {
+		if !strings.Contains(ledRule, want) {
+			t.Fatalf("source lamp LED must use the same small indicator scale as the status bar, missing %q: %s", want, ledRule)
+		}
+	}
+	if strings.Contains(ledRule, "width: 24px;") || strings.Contains(ledRule, "height: 24px;") {
+		t.Fatalf("source lamp LED must not keep the oversized lens: %s", ledRule)
+	}
+
+	stateRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .state")
+	for _, want := range []string{
+		"background: transparent;",
+		"border: 0;",
+		"box-shadow: none;",
+		"font-size: 6px;",
+		"opacity: 0.72;",
+	} {
+		if !strings.Contains(stateRule, want) {
+			t.Fatalf("source lamp state text should be printed on the faceplate, missing %q: %s", want, stateRule)
+		}
+	}
+
+	offStateRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp.unavailable .state")
+	if !strings.Contains(offStateRule, "visibility: hidden;") {
+		t.Fatalf("unavailable source lamps should communicate off state by dark lamp, not visible OFF text: %s", offStateRule)
 	}
 }
 
@@ -610,11 +810,61 @@ func TestChassisCSS_VolumeTickRingUsesCenteredRadialTransforms(t *testing.T) {
 	if strings.Contains(tickRule, "transform-origin: 0 30px") {
 		t.Fatalf("volume ticks should not rotate around an off-center origin: %s", tickRule)
 	}
-	if !strings.Contains(tickRule, `transform: translate(-50%, -50%) rotate(var(--tick-angle)) translateY(-34px);`) {
+	if !strings.Contains(tickRule, `transform: translate(-50%, -50%) rotate(var(--tick-angle)) translateY(calc(var(--volume-tick-radius, 34px) * -1));`) {
 		t.Fatalf("volume ticks should use one centered radial transform: %s", tickRule)
 	}
 	if !strings.Contains(text, "body.receiver .volume-tick.tick-10 { --tick-angle: 0deg; }") {
 		t.Fatalf("volume tick angle classes should assign --tick-angle values")
+	}
+}
+
+func TestChassisCSS_MasterVolumeUsesLargeSonyStyleIndicatorKnob(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+
+	masterRule := cssRuleBlock(t, text, "body.receiver [data-volume-knob]")
+	for _, want := range []string{
+		"width: 118px;",
+		"height: 118px;",
+		"--volume-ring-size: 112px;",
+		"--volume-dial-size: 82px;",
+		"--volume-tick-radius: 53px;",
+	} {
+		if !strings.Contains(masterRule, want) {
+			t.Fatalf("master volume should use the larger receiver-knob scale, missing %q: %s", want, masterRule)
+		}
+	}
+
+	dialRule := cssRuleBlock(t, text, "body.receiver [data-volume-knob] .volume-dial")
+	for _, want := range []string{
+		"border: 2px solid #050506;",
+		"linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0) 30%)",
+		"radial-gradient(circle at 50% 52%, #4a4a50 0 7%, #242428 32%, #111113 64%, #050506 100%)",
+		"0 2px 8px rgba(0,0,0,0.78)",
+	} {
+		if !strings.Contains(dialRule, want) {
+			t.Fatalf("master volume dial should read as a heavy Sony-style hardware knob, missing %q: %s", want, dialRule)
+		}
+	}
+
+	notchRule := cssRuleBlock(t, text, "body.receiver [data-volume-knob] .volume-notch")
+	for _, want := range []string{
+		"width: 8px;",
+		"height: 21px;",
+		"background: var(--lock-amber, #d99340);",
+		"box-shadow: 0 0 8px rgba(217, 147, 64, 0.72)",
+	} {
+		if !strings.Contains(notchRule, want) {
+			t.Fatalf("master volume should have a lit front-panel indicator, missing %q: %s", want, notchRule)
+		}
+	}
+
+	if strings.Contains(cssRuleBlock(t, text, "body.receiver .audio-deck .dsp-knob"), "width: 118px;") {
+		t.Fatalf("tone and balance knobs should stay smaller than the master volume")
 	}
 }
 

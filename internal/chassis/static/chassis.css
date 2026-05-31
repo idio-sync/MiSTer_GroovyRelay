@@ -94,6 +94,9 @@ body.receiver *::after {
 body.receiver {
   margin: 0;
   padding: 0;
+  min-width: 0;
+  min-height: 100dvh;
+  overflow-x: hidden;
   background: #0a0a0b;
   color: #c0c0c4;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -164,6 +167,9 @@ body.receiver::-webkit-scrollbar-thumb:hover {
 /* ---- 4. Chassis shell + screws + chrome ---------------------------- */
 /* Mockup source: receiver-v24.html .receiver and adjacent .screw rules. */
 body.receiver .receiver {
+  width: 100%;
+  max-width: 1680px;
+  margin: 0 auto;
   background: linear-gradient(180deg, #2a2a2e 0%, #1f1f23 100%);
   border-radius: 4px;
   padding: 18px 20px 22px;
@@ -256,6 +262,7 @@ body.receiver .status-bar {
   padding: 6px 10px 10px;
   border-bottom: 1px solid #0a0a0b;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+  min-width: 0;
 }
 
 body.receiver .status-bar > .power-cluster {
@@ -268,6 +275,7 @@ body.receiver .status-bar > .load-core-btn {
 
 body.receiver .status-bar > .brand-plate {
   grid-column: 4;
+  min-width: 0;
 }
 
 body.receiver .power-cluster {
@@ -469,12 +477,18 @@ body.receiver .brand-plate {
   border: 1px solid #0a0a0b;
   border-radius: 2px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  min-width: 0;
+  overflow: hidden;
 }
 
 body.receiver .brand-plate .name {
+  display: block;
+  overflow: hidden;
   color: #d4d4d8;
   font: 700 13px/1 'DSEG14-Modern', ui-monospace, monospace;
   letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-shadow:
     0 0 2px rgba(255, 255, 255, 0.08),
     0 1px 0 rgba(255, 255, 255, 0.04);
@@ -514,6 +528,16 @@ body.receiver.idle .brand-plate .model em {
   body.receiver .status-bar {
     gap: 10px;
     padding: 4px 6px 8px;
+    grid-template-columns: auto 1fr auto;
+  }
+
+  body.receiver .status-bar > .brand-plate {
+    grid-column: 2;
+    justify-self: end;
+  }
+
+  body.receiver .status-bar > .load-core-btn {
+    grid-column: 3;
   }
 
   body.receiver .brand-plate {
@@ -815,17 +839,25 @@ body.receiver .vfd .right-panel .freq {
 
 body.receiver .source-cluster {
   display: grid;
-  width: clamp(480px, 38vw, 600px);
+  width: min(100%, clamp(420px, 38vw, 600px));
   grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   grid-template-rows: 1fr;
-  gap: 4px;
+  gap: 0;
   align-items: stretch;
+  padding: 4px;
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #202024 0%, #17171a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.68);
 }
 
 body.receiver .source-cluster .hw-btn {
   position: relative;
   min-width: 96px;
   min-height: 0;
+  margin-left: 4px;
   padding: 12px 14px 12px 26px;
   color: #c0c0c4;
   font: 600 10px 'Inter', sans-serif;
@@ -897,6 +929,10 @@ body.receiver.idle .source-cluster .hw-btn.active {
 }
 
 @container chassis (max-width: 1180px) {
+  body.receiver .vfd-source-row {
+    grid-template-columns: minmax(0, 1fr) minmax(270px, 34%);
+  }
+
   body.receiver .vfd-source-row .source-cluster {
     width: 100%;
     grid-template-columns: repeat(3, minmax(82px, 1fr));
@@ -926,14 +962,16 @@ body.receiver.idle .source-cluster .hw-btn.active {
 
 @container chassis (max-width: 600px) {
   body.receiver .vfd-source-row .source-cluster {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+    justify-content: stretch;
   }
 
   body.receiver .vfd-source-row .source-cluster .hw-btn {
-    flex: 1 1 auto;
     min-width: 0;
+    min-height: 46px;
+    padding: 7px 6px 7px 18px;
+    font-size: 9px;
   }
 }
 
@@ -958,11 +996,10 @@ body.receiver.idle .source-cluster .hw-btn.active {
   body.receiver .vfd .tier-tertiary { font-size: 10px; }
 
   body.receiver .vfd-source-row .source-cluster {
-    flex-wrap: wrap;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   body.receiver .vfd-source-row .source-cluster .hw-btn {
-    flex: 1 1 calc(50% - 4px);
     min-width: 0;
     padding: 8px 6px 8px 18px;
     font-size: 9px;
@@ -1719,6 +1756,22 @@ body.receiver.idle .meter-screen--compact .meter-mid-row .stat .v {
 }
 
 @container chassis (max-width: 900px) {
+  body.receiver .meter-screen.meter-screen--compact .meter-row {
+    grid-template-columns: minmax(196px, 1fr) auto minmax(168px, 1fr);
+    gap: 10px;
+  }
+
+  body.receiver .meter-screen--compact .spectrum {
+    width: min(100%, 240px);
+    min-width: 0;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-row .audio-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-row .video-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-row .net-grp {
+    gap: 10px;
+  }
+
   body.receiver .meter-screen--compact .gonio-wrap {
     display: none;
   }
@@ -1734,10 +1787,54 @@ body.receiver.idle .meter-screen--compact .meter-mid-row .stat .v {
   }
 }
 
+@container chassis (max-width: 760px) {
+  body.receiver .meter-screen.meter-screen--compact {
+    padding: 6px 10px 5px;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-row .audio-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-row .video-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-row .net-grp {
+    justify-content: space-between;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-mid-row .video-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-mid-row .net-grp {
+    min-height: 38px;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .stat .v {
+    font-size: 24px;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .stat .k {
+    font-size: 10px;
+  }
+}
+
 @container chassis (max-width: 600px) {
   body.receiver .meter-screen.meter-screen--compact .meter-source-strip,
   body.receiver .field-flip {
     display: none;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-mid-row .audio-grp {
+    display: none;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-mid-row .video-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-mid-row .net-grp {
+    justify-content: space-around;
+  }
+
+  body.receiver .meter-screen.meter-screen--compact .meter-row .video-grp,
+  body.receiver .meter-screen.meter-screen--compact .meter-row .net-grp {
+    flex-wrap: wrap;
   }
 
   body.receiver .tr-vu {
@@ -2030,6 +2127,9 @@ body.receiver .volume-control {
   display: grid;
   place-items: center;
   --volume-angle: -135deg;
+  --volume-ring-size: 72px;
+  --volume-dial-size: 52px;
+  --volume-tick-radius: 34px;
 }
 
 body.receiver .volume-label {
@@ -2046,8 +2146,8 @@ body.receiver .volume-label {
 
 body.receiver .volume-tick-ring {
   position: absolute;
-  width: 72px;
-  height: 72px;
+  width: var(--volume-ring-size);
+  height: var(--volume-ring-size);
   border-radius: 50%;
   pointer-events: none;
 }
@@ -2059,7 +2159,7 @@ body.receiver .volume-tick {
   width: 1px;
   height: 7px;
   --tick-angle: 0deg;
-  transform: translate(-50%, -50%) rotate(var(--tick-angle)) translateY(-34px);
+  transform: translate(-50%, -50%) rotate(var(--tick-angle)) translateY(calc(var(--volume-tick-radius, 34px) * -1));
   background: #6d6d72;
   opacity: 0.72;
 }
@@ -2094,8 +2194,8 @@ body.receiver .volume-tick.tick-20 { --tick-angle: 135deg; }
 
 body.receiver .volume-dial {
   position: relative;
-  width: 52px;
-  height: 52px;
+  width: var(--volume-dial-size);
+  height: var(--volume-dial-size);
   border: 1px solid #050506;
   border-radius: 50%;
   background:
@@ -2109,6 +2209,66 @@ body.receiver .volume-dial {
   transition: transform 120ms cubic-bezier(0.22,1,0.36,1), filter 120ms ease;
 }
 
+body.receiver [data-volume-knob] {
+  width: 118px;
+  height: 118px;
+  --volume-ring-size: 112px;
+  --volume-dial-size: 82px;
+  --volume-tick-radius: 53px;
+}
+
+body.receiver [data-volume-knob] .volume-label {
+  bottom: 3px;
+  color: #a0a0a6;
+}
+
+body.receiver [data-volume-knob] .volume-tick {
+  width: 2px;
+  height: 4px;
+  border-radius: 2px;
+  background: #74747a;
+  opacity: 0.78;
+}
+
+body.receiver [data-volume-knob] .volume-tick:nth-child(5n + 1) {
+  height: 11px;
+  background: #b8b8be;
+  opacity: 0.95;
+}
+
+body.receiver [data-volume-knob] .volume-dial {
+  border: 2px solid #050506;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0) 30%),
+    radial-gradient(circle at 30% 23%, rgba(255,255,255,0.18) 0 7%, transparent 8%),
+    radial-gradient(circle at 50% 52%, #4a4a50 0 7%, #242428 32%, #111113 64%, #050506 100%);
+  box-shadow:
+    inset 0 2px 3px rgba(255,255,255,0.16),
+    inset 0 -7px 10px rgba(0,0,0,0.72),
+    inset 0 0 0 7px rgba(255,255,255,0.035),
+    0 2px 8px rgba(0,0,0,0.78);
+}
+
+body.receiver [data-volume-knob] .volume-dial::before,
+body.receiver [data-volume-knob] .volume-dial::after {
+  position: absolute;
+  pointer-events: none;
+  content: "";
+  border-radius: 50%;
+}
+
+body.receiver [data-volume-knob] .volume-dial::before {
+  inset: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 2px 3px rgba(0,0,0,0.55);
+}
+
+body.receiver [data-volume-knob] .volume-dial::after {
+  inset: 19px;
+  border: 1px solid rgba(0,0,0,0.74);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+}
+
 body.receiver .volume-notch {
   position: absolute;
   left: 50%;
@@ -2119,6 +2279,16 @@ body.receiver .volume-notch {
   border-radius: 2px;
   background: #121214;
   box-shadow: inset 0 1px 1px rgba(255,255,255,0.18);
+}
+
+body.receiver [data-volume-knob] .volume-notch {
+  top: 6px;
+  width: 8px;
+  height: 21px;
+  border: 1px solid rgba(0,0,0,0.68);
+  border-radius: 7px 7px 4px 4px;
+  background: var(--lock-amber, #d99340);
+  box-shadow: 0 0 8px rgba(217, 147, 64, 0.72), inset 0 1px 1px rgba(255,255,255,0.46), inset 0 -2px 2px rgba(0,0,0,0.34);
 }
 
 body.receiver .volume-range {
@@ -2197,11 +2367,17 @@ body.receiver.settings-open .gear-btn {
   body.receiver .volume-control {
     width: 66px;
     height: 62px;
+    --volume-ring-size: 62px;
+    --volume-dial-size: 44px;
+    --volume-tick-radius: 29px;
   }
 
-  body.receiver .volume-dial {
-    width: 44px;
-    height: 44px;
+  body.receiver [data-volume-knob] {
+    width: 102px;
+    height: 104px;
+    --volume-ring-size: 96px;
+    --volume-dial-size: 72px;
+    --volume-tick-radius: 45px;
   }
 }
 
@@ -2232,14 +2408,25 @@ body.receiver.settings-open .gear-btn {
   body.receiver .trn {
     flex: 1 1 34px;
     width: auto;
-    min-width: 34px;
-    height: 36px;
+    min-width: 42px;
+    height: 40px;
   }
 
   body.receiver .volume-control {
     grid-area: volume;
     width: 58px;
     height: 58px;
+    --volume-ring-size: 56px;
+    --volume-dial-size: 40px;
+    --volume-tick-radius: 26px;
+  }
+
+  body.receiver [data-volume-knob] {
+    width: 88px;
+    height: 92px;
+    --volume-ring-size: 82px;
+    --volume-dial-size: 62px;
+    --volume-tick-radius: 38px;
   }
 
   body.receiver .gear-btn {
@@ -2468,6 +2655,13 @@ body.receiver .input-section > div {
   min-width: 0;
 }
 
+body.receiver .input-controls {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+  min-width: 0;
+}
+
 body.receiver .input-panel {
   background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
   border-radius: 3px;
@@ -2480,6 +2674,12 @@ body.receiver .input-panel {
   transition: box-shadow 220ms;
   position: relative;
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+body.receiver .input-controls .cast-btn,
+body.receiver .input-controls .upload-btn {
+  flex: 0 0 auto;
 }
 
 body.receiver .input-panel:focus-within {
@@ -2732,9 +2932,17 @@ body.receiver .receiver-localfiles-drawer .widget-err {
   body.receiver .input-section .input-panel {
     width: 100%;
   }
+
+  body.receiver .input-controls {
+    align-items: stretch;
+  }
 }
 
 @container chassis (max-width: 520px) {
+  body.receiver .input-controls {
+    flex-wrap: wrap;
+  }
+
   body.receiver .input-section > div {
     flex-wrap: wrap;
   }
@@ -2742,6 +2950,14 @@ body.receiver .receiver-localfiles-drawer .widget-err {
   body.receiver .input-section .input-panel {
     flex: 1 1 100% !important;
     flex-basis: 100% !important;
+  }
+
+  body.receiver .input-controls .cast-btn {
+    flex: 1 1 90px;
+  }
+
+  body.receiver .input-controls .upload-btn {
+    flex: 1 1 128px;
   }
 }
 
@@ -2763,6 +2979,10 @@ body.receiver .preset-header {
   margin-bottom: 4px;
   border-bottom: 1px solid #0a0a0b;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.receiver .preset-header > * {
+  min-width: 0;
 }
 
 body.receiver .preset-header .title {
@@ -3115,6 +3335,15 @@ body.receiver .catalog-empty {
   body.receiver .preset-header {
     flex-wrap: wrap;
     gap: 6px;
+  }
+
+  body.receiver .preset-header .search-field {
+    order: 3;
+    flex: 1 1 100%;
+  }
+
+  body.receiver .preset-header .search-field input {
+    width: 100%;
   }
 
   body.receiver .catalog-body {
@@ -3975,47 +4204,57 @@ body.receiver .browse-btn[disabled] {
 }
 
 /* ---- Source-cluster lamps (3B) ---- */
+/* Reference: late-90s Sony STR-DB925/DE925 input indicator strip.
+   These are passive faceplate lamps, not source buttons. */
 
 body.receiver .source-cluster .lamp {
   position: relative;
   display: grid;
-  grid-template-rows: 18px minmax(34px, 1fr) 16px;
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 18px minmax(0, 1fr) 15px;
+  gap: 3px;
   min-width: 0;
   min-height: 84px;
-  padding: 6px 5px 5px;
-  border: 1px solid #070708;
-  border-radius: 2px;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.055), transparent 18%, rgba(0, 0, 0, 0.24) 80%),
-    linear-gradient(180deg, #303035 0%, #202024 48%, #151517 100%);
+  padding: 10px 8px 7px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.75),
-    0 1px 1px rgba(0, 0, 0, 0.75);
+    inset 1px 0 0 rgba(255, 255, 255, 0.035),
+    inset -1px 0 0 rgba(0, 0, 0, 0.62);
+  cursor: default;
   font: 700 9px Inter, sans-serif;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
+  transition:
+    color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    text-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 body.receiver .source-cluster .lamp::before {
   content: "";
   position: absolute;
-  inset: 2px;
+  inset: 6px 2px;
   pointer-events: none;
-  border: 1px solid rgba(255, 255, 255, 0.035);
-  border-bottom-color: rgba(0, 0, 0, 0.42);
+  border-radius: 1px;
+  border-top: 1px solid rgba(255, 255, 255, 0.018);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.42);
+  opacity: 0.9;
 }
 
 body.receiver .source-cluster .lamp .nameplate {
+  grid-column: 1;
+  grid-row: 2;
   min-width: 0;
   align-self: center;
-  padding: 3px 4px 2px;
-  color: #111113;
+  justify-self: center;
+  padding: 0;
+  color: #77777d;
   text-align: center;
-  background: linear-gradient(180deg, #c4c4c8, #74747b);
-  border: 1px solid #0b0b0c;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.55);
 }
 
 body.receiver .source-cluster .lamp .name {
@@ -4029,90 +4268,99 @@ body.receiver .source-cluster .lamp .name {
 }
 
 body.receiver .source-cluster .lamp .led-well {
+  grid-column: 1;
+  grid-row: 1;
   display: grid;
   place-items: center;
+  width: 16px;
+  height: 16px;
   min-width: 0;
-  background: radial-gradient(circle at center, #121214, #050506 76%);
-  border: 1px solid #030304;
+  align-self: center;
+  justify-self: center;
+  background: radial-gradient(circle at center, #030304 0%, #0b0b0d 58%, #303036 100%);
+  border: 1px solid #09090a;
+  border-radius: 50%;
   box-shadow:
-    inset 0 0 11px rgba(0, 0, 0, 0.92),
-    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    inset 0 1px 2px rgba(0, 0, 0, 0.85),
+    0 1px 0 rgba(255, 255, 255, 0.055);
 }
 
 body.receiver .source-cluster .lamp .led {
   position: relative;
-  width: 24px;
-  height: 24px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background:
-    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.16) 0 12%, #252529 34%, #050506 76%);
-  border: 1px solid #020203;
-  box-shadow:
-    inset 0 1px 2px rgba(255, 255, 255, 0.1),
-    inset 0 -3px 5px rgba(0, 0, 0, 0.82),
-    0 1px 1px #000;
+  background: #161618;
+  border: 1px solid #050506;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.72);
   transition: background 200ms ease-out, box-shadow 200ms ease-out;
 }
 
 body.receiver .source-cluster .lamp .led::before {
   content: "";
   position: absolute;
-  inset: -5px;
-  border: 1px solid #303036;
+  top: 1px;
+  left: 1px;
+  width: 2px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.28);
   border-radius: 50%;
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.08),
-    0 1px 0 rgba(0, 0, 0, 0.8);
 }
 
 body.receiver .source-cluster .lamp .led::after {
   content: "";
-  position: absolute;
-  top: 5px;
-  left: 7px;
-  width: 8px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.28);
-  filter: blur(0.2px);
+  display: none;
 }
 
 body.receiver .source-cluster .lamp .state {
+  grid-column: 1 / -1;
+  grid-row: 3;
   min-width: 0;
   align-self: end;
-  padding: 3px 4px 2px;
+  justify-self: center;
+  padding: 0;
   overflow: hidden;
-  color: #77777e;
+  color: #46464b;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: #101012;
-  border: 1px solid #050506;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.82);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  font-size: 6px;
+  letter-spacing: 0.18em;
+  opacity: 0.72;
 }
 
 body.receiver .source-cluster .lamp.configured-idle .led {
-  background:
-    radial-gradient(circle at 34% 28%, #fff1ae 0 15%, var(--lock-amber, #d99340) 34%, #5a350c 77%);
-  box-shadow:
-    0 0 13px rgba(217, 147, 64, 0.52),
-    0 0 2px rgba(255, 255, 255, 0.4),
-    inset 0 1px 2px rgba(255, 255, 255, 0.38),
-    inset 0 -3px 5px rgba(0, 0, 0, 0.52);
+  background: var(--lock-amber, #d99340);
+  box-shadow: 0 0 5px oklch(0.82 0.18 75 / 0.9), inset 0 0 2px rgba(255, 255, 255, 0.4);
 }
 
 body.receiver .source-cluster .lamp.configured-idle .state {
   color: var(--lock-amber, #d99340);
 }
 
+body.receiver .source-cluster .lamp.unavailable .nameplate {
+  color: #47474d;
+}
+
+body.receiver .source-cluster .lamp.unavailable .state {
+  visibility: hidden;
+}
+
 body.receiver .source-cluster .lamp.casting .led {
-  background:
-    radial-gradient(circle at 34% 28%, #d7fff2 0 15%, var(--vfd, #67ffb5) 34%, #0b5634 77%);
-  box-shadow:
-    0 0 16px rgba(103, 255, 181, 0.74),
-    0 0 3px rgba(255, 255, 255, 0.55),
-    inset 0 1px 2px rgba(255, 255, 255, 0.42),
-    inset 0 -3px 5px rgba(0, 0, 0, 0.5);
+  background: var(--vfd, #67ffb5);
+  box-shadow: 0 0 5px var(--vfd-glow), inset 0 0 2px rgba(255, 255, 255, 0.4);
+}
+
+body.receiver .source-cluster .lamp.casting {
+  color: var(--vfd, #67ffb5);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
+}
+
+body.receiver .source-cluster .lamp.casting .nameplate {
+  color: var(--vfd, #67ffb5);
 }
 
 body.receiver .source-cluster .lamp.casting .state {
@@ -4121,17 +4369,59 @@ body.receiver .source-cluster .lamp.casting .state {
 }
 
 body.receiver .source-cluster .lamp.issue .led {
-  background:
-    radial-gradient(circle at 34% 28%, #ffd0c6 0 15%, #c0392b 34%, #571407 77%);
-  box-shadow:
-    0 0 15px rgba(192, 57, 43, 0.7),
-    inset 0 1px 2px rgba(255, 255, 255, 0.35),
-    inset 0 -3px 5px rgba(0, 0, 0, 0.54);
+  background: #ff3030;
+  box-shadow: 0 0 5px #ff3030e6, inset 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+body.receiver .source-cluster .lamp.issue {
+  color: #ff6b6b;
+}
+
+body.receiver .source-cluster .lamp.issue .nameplate {
+  color: #ff6b6b;
 }
 
 body.receiver .source-cluster .lamp.issue .state {
   color: #e15b4c;
   text-shadow: 0 0 4px rgba(192, 57, 43, 0.46);
+}
+
+@container chassis (max-width: 600px) {
+  body.receiver .source-cluster .lamp {
+    min-height: 46px;
+    grid-template-rows: 12px minmax(0, 1fr);
+    gap: 2px;
+    padding: 7px 6px 6px;
+  }
+
+  body.receiver .source-cluster .lamp .led-well {
+    width: 12px;
+    height: 12px;
+  }
+
+  body.receiver .source-cluster .lamp .led {
+    width: 6px;
+    height: 6px;
+  }
+
+  body.receiver .source-cluster .lamp .name {
+    font-size: 8px;
+    letter-spacing: 0.10em;
+  }
+
+  body.receiver .source-cluster .lamp .state {
+    display: none;
+  }
+
+  body.receiver .source-cluster .lamp.casting .state,
+  body.receiver .source-cluster .lamp.issue .state {
+    display: block;
+    position: absolute;
+    right: 4px;
+    bottom: 3px;
+    font-size: 6px;
+    letter-spacing: 0.10em;
+  }
 }
 
 /* ---- Catalog drawer (3B) ---- */
@@ -4512,8 +4802,10 @@ body.receiver .search-field {
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex: 1 1 220px;
   gap: 6px;
   padding: 4px 8px;
+  max-width: 100%;
   background: #0a0a0c;
   border: 1px solid #1c1c1f;
   border-radius: 3px;
@@ -4527,7 +4819,8 @@ body.receiver .search-field input {
   color: #c0c0c4;
   font: 500 10px Inter, sans-serif;
   letter-spacing: 0.08em;
-  width: 220px;
+  width: min(220px, 100%);
+  min-width: 0;
 }
 
 body.receiver .search-field .search-scope {
@@ -4933,8 +5226,8 @@ body.receiver .audio-deck .deck-cap {
 }
 body.receiver .audio-deck .deck-div { width: 1px; background: #0a0a0b; box-shadow: 1px 0 0 rgba(255,255,255,0.04); }
 body.receiver .audio-deck .knob-row { display: flex; gap: 14px; }
-/* Tone/balance knobs share the volume knob's geometry so their labels clear
-   the dial with identical breathing room and legibility. */
+/* Tone/balance knobs keep the compact receiver-control scale while the master
+   volume gets its own larger hardware treatment. */
 body.receiver .audio-deck .dsp-knob { width: 66px; height: 72px; }
 body.receiver .audio-deck .deck-eq { padding: 0 4px; }
 
@@ -5020,6 +5313,45 @@ body.receiver .action-btn.eqbtn.stored { color: var(--vfd); border-color: oklch(
 body.receiver .sw-grid { display: grid; grid-template-columns: auto auto; gap: 7px 12px; align-items: center; }
 body.receiver .sw-cell { display: flex; align-items: center; gap: 7px; }
 body.receiver .sw-cell .sw-lbl { color: #8a8a8e; font: 700 8px 'Inter', sans-serif; letter-spacing: 0.14em; text-transform: uppercase; }
+@container chassis (max-width: 600px) {
+  body.receiver .audio-strip {
+    grid-template-columns: 60px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  body.receiver .audio-deck {
+    gap: 16px;
+    padding: 12px 12px;
+    scroll-snap-type: x proximity;
+  }
+
+  body.receiver .audio-deck > .deck-sect {
+    scroll-snap-align: start;
+  }
+
+  body.receiver .audio-deck .deck-div {
+    flex: 0 0 1px;
+  }
+
+  body.receiver .audio-deck .knob-row {
+    gap: 10px;
+  }
+
+  body.receiver .eq-bank {
+    gap: 10px;
+  }
+}
+
+@container chassis (max-width: 420px) {
+  body.receiver .audio-strip {
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  body.receiver .audio-deck {
+    padding: 10px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   body.receiver .dsp-knob .volume-dial { transition: none; }
 }

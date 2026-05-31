@@ -1003,7 +1003,8 @@ func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 		`class="load-core-btn loaded"`,
 		`<span class="label-text">&#9656; Load core</span>`,
 		`model GR-<em>480i</em> &middot; stereo bridge`,
-		`<div class="input-panel" style="flex:1">`,
+		`<div class="input-controls">`,
+		`<div class="input-panel">`,
 		`id="paste-clear" type="button"`,
 		`id="torrent-file-input"`,
 		`class="source-cluster" role="group" aria-label="Media source"`,
@@ -2782,6 +2783,28 @@ func TestInputRowTemplate_RendersChipKindAttribute(t *testing.T) {
 	html := buf.String()
 	if !strings.Contains(html, `data-chip-kind=`) {
 		t.Errorf("missing data-chip-kind attribute.\nHTML:\n%s", html)
+	}
+}
+
+func TestInputRowTemplate_UsesResponsiveControlHooks(t *testing.T) {
+	t.Parallel()
+	tmpl := parseTemplatesForTest(t)
+	data := InputData{PastePlaceholder: "Paste URL or magnet", DetectedKind: "URL", CastEnabled: true}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "input-row", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `class="input-controls"`) {
+		t.Fatalf("input row must expose a class hook for responsive wrapping.\nHTML:\n%s", html)
+	}
+	for _, forbidden := range []string{
+		`style="display:flex; gap:6px;"`,
+		`class="input-panel" style="flex:1"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("input row must not rely on brittle inline layout %q.\nHTML:\n%s", forbidden, html)
+		}
 	}
 }
 
