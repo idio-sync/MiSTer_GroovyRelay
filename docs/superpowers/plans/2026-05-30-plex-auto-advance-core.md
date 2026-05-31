@@ -53,6 +53,13 @@ Read these before starting; the tasks reference them by line:
 - **Modify:** `internal/adapters/plex/companion.go` — `CompanionConfig.AutoAdvance`, `Companion.autoAdvance`/`autoAdvanceDelay` fields, `NewCompanion` seeding, `SetAutoAdvance`, `SessionManager` interface gains `StartSessionIfIdle`, wrap calls in both builders, refactor `restartFromPlayQueueItem` to use `resolveNextQueueItem`.
 - **Modify:** `internal/adapters/plex/companion_test.go` — `fakeCore` implements `StartSessionIfIdle`.
 
+**Import-snippet rule:** every later snippet that adds imports to
+`autoadvance_test.go` means "merge these names into the single top-level import
+block." Never paste an `import` declaration after functions. By Task 4 the test
+file's import block should include `context`, `errors`, `net/http`,
+`net/http/httptest`, `net/url`, `strings`, `testing`, `time`,
+`internal/adapters`, and `internal/core` as needed.
+
 ---
 
 ## Task 1: Config field + Companion live mirror
@@ -70,7 +77,11 @@ Adds the persisted `auto_advance` toggle end-to-end through config, the adapter 
 ```go
 package plex
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+)
 
 func TestAutoAdvance_ConfigDefaultsOff(t *testing.T) {
 	if DefaultConfig().AutoAdvance {
@@ -118,12 +129,6 @@ func TestAutoAdvance_CompanionMirrorSeedsAndUpdates(t *testing.T) {
 		t.Fatal("SetAutoAdvance(false) did not update the mirror")
 	}
 }
-```
-
-Add this helper to the same test file (keeps the scope assertion readable without importing the adapters package alias twice):
-
-```go
-import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 
 func adaptersScopeHotSwapForTest() adapters.ApplyScope { return adapters.ScopeHotSwap }
 ```
@@ -366,8 +371,11 @@ func (f *fakeCore) StartSessionIfIdle(r core.SessionRequest) (bool, error) {
 		return false, nil
 	}
 	f.lastReq = r
+	if f.startErr != nil {
+		return true, f.startErr
+	}
 	f.starts++
-	return true, f.startErr
+	return true, nil
 }
 ```
 
@@ -404,6 +412,7 @@ git commit -m "feat(plex): surface StartSessionIfIdle on SessionManager"
 ```go
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -476,15 +485,13 @@ func TestResolveNextQueueItem_EndOfQueueSentinel(t *testing.T) {
 	_, err := c.resolveNextQueueItem(context.Background(), p, func(items []playQueueItem, cur PlayMediaRequest) (playQueueItem, bool) {
 		return nextPlayQueueItem(items, cur.PlayQueueItemID, cur.MediaKey, 1)
 	})
-	if !errorsIsEndOfQueue(err) {
+	if !errors.Is(err, errNoNextQueueItem) {
 		t.Fatalf("want errNoNextQueueItem at end of queue, got %v", err)
 	}
 }
-
-func errorsIsEndOfQueue(err error) bool { return err != nil && errorsIs(err, errNoNextQueueItem) }
 ```
 
-Add `import "errors"` to the test file and a tiny alias `func errorsIs(e, t error) bool { return errors.Is(e, t) }` (or just call `errors.Is` inline — the alias only exists to keep the assertion readable; inline is fine).
+Merge the imports above into the existing top-level import block.
 
 - [ ] **Step 2: Run to verify it fails to compile**
 
@@ -522,6 +529,9 @@ func (c *Companion) resolveNextQueueItem(
 ) (PlayMediaRequest, error) {
 	if p.MediaKey == "" {
 		return PlayMediaRequest{}, fmt.Errorf("no plex session")
+	}
+	if p.ContainerKey == "" {
+		return PlayMediaRequest{}, errNoNextQueueItem
 	}
 	pq, err := c.fetchPlayQueue(ctx, p)
 	if err != nil {
@@ -619,47 +629,46 @@ Wrap both request builders so a clean `"eof"` triggers a guarded background adva
 - Modify: `internal/adapters/plex/companion.go` (wrap calls in both builders)
 - Test: `internal/adapters/plex/autoadvance_test.go`
 
-- [ ] **Step 1: Write the failing tests** — append to `autoadvance_test.go`. These exercise the wrapper's gating and the end-to-end advance via the httptest queue + `fakeCore`:
+- [ ] **Step 1: Write the failing tests** — append to `autoadvance_test.go`.
+Merge `time` into the top-level import block. These exercise the wrapper's
+gating and the end-to-end advance via the httptest queue + `fakeCore`:
 
 ```go
-import "time"
-
-// fireOnStop builds a video session request via the wrapped builder and
-// invokes its OnStop with the given reason, then waits for any spawned
-// advance goroutine to settle. Returns the fakeCore for assertions.
 func TestAutoAdvance_GatingOffDoesNotAdvance(t *testing.T) {
-	srv, p := newPlayQueueServer(t, threeItemQueue)
-	defer srv.Close()
-	p.MediaType = "episode" // force the video path (no music metadata lookup)
 	fc := &fakeCore{}
 	c := NewCompanion(CompanionConfig{AutoAdvance: false}, fc)
-	c.autoAdvanceDelay = 0
+	innerCalled := false
 
-	req := c.sessionRequestForPreset(p, presetForTest(t))
-	req.OnStop("eof")
-	time.Sleep(50 * time.Millisecond)
+	stop := c.withAutoAdvance(PlayMediaRequest{MediaKey: "/library/metadata/200"}, func(reason string) {
+		innerCalled = true
+	})
+	stop("eof")
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+	if !innerCalled {
+		t.Fatal("wrapped OnStop did not call inner callback")
+	}
 	if fc.startIfIdleCalls != 0 {
 		t.Fatalf("auto-advance fired with toggle off: calls=%d", fc.startIfIdleCalls)
 	}
 }
 
 func TestAutoAdvance_NonEOFReasonDoesNotAdvance(t *testing.T) {
-	srv, p := newPlayQueueServer(t, threeItemQueue)
-	defer srv.Close()
-	p.MediaType = "episode"
 	fc := &fakeCore{}
-	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
-	c.autoAdvanceDelay = 0
+	c := NewCompanion(CompanionConfig{AutoAdvance: true}, fc)
+	innerCalled := false
 
-	req := c.sessionRequestForPreset(p, presetForTest(t))
-	req.OnStop("stop") // user stop / preempt — must not advance
-	time.Sleep(50 * time.Millisecond)
+	stop := c.withAutoAdvance(PlayMediaRequest{MediaKey: "/library/metadata/200"}, func(reason string) {
+		innerCalled = true
+	})
+	stop("stop") // user stop / preempt — must not advance
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+	if !innerCalled {
+		t.Fatal("wrapped OnStop did not call inner callback")
+	}
 	if fc.startIfIdleCalls != 0 {
 		t.Fatalf("auto-advance fired on non-eof reason: calls=%d", fc.startIfIdleCalls)
 	}
@@ -681,6 +690,25 @@ func TestAutoAdvance_EOFAdvancesToNextItem(t *testing.T) {
 	defer fc.mu.Unlock()
 	if fc.lastReq.AdapterRef != "/library/metadata/300" {
 		t.Fatalf("advanced to AdapterRef %q, want /library/metadata/300", fc.lastReq.AdapterRef)
+	}
+}
+
+func TestAutoAdvance_MusicBuilderEOFAdvancesToNextItem(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "track"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.musicSessionRequestForPlay(p, MusicMetadata{Title: "Track 2"})
+	req.OnStop("eof")
+	waitForStartIfIdle(t, fc, 1)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if !strings.HasPrefix(fc.lastReq.AdapterRef, "/library/metadata/300:") {
+		t.Fatalf("advanced to AdapterRef %q, want prefix /library/metadata/300:", fc.lastReq.AdapterRef)
 	}
 }
 
@@ -712,9 +740,9 @@ func TestAutoAdvance_EndOfQueueDoesNotStart(t *testing.T) {
 	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
 	c.autoAdvanceDelay = 0
 
-	req := c.sessionRequestForPreset(p, presetForTest(t))
-	req.OnStop("eof")
-	time.Sleep(100 * time.Millisecond)
+	// Call the worker synchronously here so the no-start assertion happens
+	// after resolveNextQueueItem has definitely returned errNoNextQueueItem.
+	c.advanceAfterEOF(p)
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
@@ -760,7 +788,9 @@ func presetForTest(t *testing.T) core.ModelinePreset {
 - [ ] **Step 2: Run to verify the gating tests fail**
 
 Run: `go test ./internal/adapters/plex/ -run TestAutoAdvance_EOF -v`
-Expected: FAIL — `sessionRequestForPreset`'s `OnStop("eof")` does nothing yet (no advance), so `startIfIdleCalls` stays 0.
+Expected: BUILD FAILS or TEST FAILS — `withAutoAdvance`/`advanceAfterEOF` do not
+exist yet; once they compile, `sessionRequestForPreset`'s `OnStop("eof")` still
+does nothing until the builders are wrapped, so `startIfIdleCalls` stays 0.
 
 - [ ] **Step 3: Add the wrapper + goroutine** to `autoadvance.go`. Add the EOF-reason const near the top:
 
@@ -880,7 +910,9 @@ In `sessionRequestForPreset`, after the `req.OnStop = func(reason string){...}` 
 - [ ] **Step 5: Run the auto-advance tests**
 
 Run: `go test ./internal/adapters/plex/ -run TestAutoAdvance_ -v`
-Expected: PASS — gating off/non-eof don't advance; eof advances to `/library/metadata/300`; non-idle stands down (no start); end-of-queue makes no `StartSessionIfIdle` call.
+Expected: PASS — gating off/non-eof don't advance; both video and music EOF
+paths advance to `/library/metadata/300`; non-idle stands down (no start);
+end-of-queue makes no `StartSessionIfIdle` call after the queue fetch resolves.
 
 - [ ] **Step 6: Add the captured-context regression test** — append to `autoadvance_test.go`. It proves the advance follows the captured request, not a clobbered `lastPlay`:
 
@@ -961,7 +993,8 @@ Expected: PASS — auto-advance changes are adapter-internal and must not regres
 - [ ] **Step 5: Commit (only if any fixups were needed)**
 
 ```bash
-git add -A
+git status --short
+git add <only the auto-advance files intentionally changed by the fixup>
 git commit -m "test(plex): green build/race/integration for auto-advance"
 ```
 
