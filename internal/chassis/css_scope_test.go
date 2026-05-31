@@ -561,8 +561,8 @@ func TestChassisCSS_DenseResponsivePassContracts(t *testing.T) {
 
 	sourceLamp600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .source-cluster .lamp")
 	for _, want := range []string{
-		"min-height: 52px;",
-		"grid-template-rows: 20px minmax(0, 1fr);",
+		"min-height: 58px;",
+		"grid-template-rows: 25px minmax(0, 1fr);",
 	} {
 		if !strings.Contains(sourceLamp600, want) {
 			t.Fatalf("phone source lamps should become compact indicators, missing %q: %s", want, sourceLamp600)
@@ -632,7 +632,7 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 	lampRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp")
 	for _, want := range []string{
 		"grid-template-columns: minmax(0, 1fr);",
-		"grid-template-rows: 30px minmax(0, 1fr) 15px;",
+		"grid-template-rows: 40px minmax(0, 1fr) 15px;",
 		"background: transparent;",
 		"border: 0;",
 		"inset 1px 0 0 rgba(255, 255, 255, 0.035)",
@@ -671,8 +671,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 
 	wellRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led-well")
 	for _, want := range []string{
-		"width: 26px;",
-		"height: 26px;",
+		"width: 34px;",
+		"height: 34px;",
 		"background: radial-gradient(circle at center, #030304 0%, #0b0b0d 58%, #303036 100%);",
 		"border-radius: 50%;",
 	} {
@@ -683,8 +683,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 
 	ledRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led")
 	for _, want := range []string{
-		"width: 15px;",
-		"height: 15px;",
+		"width: 21px;",
+		"height: 21px;",
 		"border: 1px solid #050506;",
 		"box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.72);",
 	} {
