@@ -98,6 +98,11 @@ type Companion struct {
 // tests in this package mockable without spinning up a real core.
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	// StartSessionIfIdle starts req only when no session is active, checked
+	// under the manager lock. Returns (false, nil) when a session is already
+	// active (the caller stands down). Used by Plex auto-advance to avoid
+	// double-advancing when a controller has already taken over.
+	StartSessionIfIdle(core.SessionRequest) (bool, error)
 	Pause() error
 	Play() error
 	Stop() error

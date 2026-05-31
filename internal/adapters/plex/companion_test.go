@@ -236,6 +236,10 @@ type fakeCore struct {
 	status   core.SessionStatus
 	startErr error
 	vizMode  string
+
+	// auto-advance test controls
+	notIdle          bool // when true, StartSessionIfIdle reports not-started
+	startIfIdleCalls int
 }
 
 func (f *fakeCore) StartSession(r core.SessionRequest) error {
@@ -244,6 +248,20 @@ func (f *fakeCore) StartSession(r core.SessionRequest) error {
 	f.lastReq = r
 	f.starts++
 	return f.startErr
+}
+func (f *fakeCore) StartSessionIfIdle(r core.SessionRequest) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startIfIdleCalls++
+	if f.notIdle {
+		return false, nil
+	}
+	f.lastReq = r
+	if f.startErr != nil {
+		return true, f.startErr
+	}
+	f.starts++
+	return true, nil
 }
 func (f *fakeCore) Pause() error {
 	f.mu.Lock()

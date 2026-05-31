@@ -5,6 +5,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestAutoAdvance_ConfigDefaultsOff(t *testing.T) {
@@ -96,3 +97,14 @@ auto_advance = true
 }
 
 func adaptersScopeHotSwapForTest() adapters.ApplyScope { return adapters.ScopeHotSwap }
+
+func TestAutoAdvance_FakeCoreImplementsStartSessionIfIdle(t *testing.T) {
+	var sm SessionManager = &fakeCore{}
+	started, err := sm.StartSessionIfIdle(core.SessionRequest{})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !started {
+		t.Fatal("idle fakeCore should report started=true")
+	}
+}
