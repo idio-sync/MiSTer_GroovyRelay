@@ -342,14 +342,19 @@ type HistoryData struct {
 
 // HistoryRow represents one entry in the recent-casts row.
 type HistoryRow struct {
-	Title   string
-	Source  string
-	When    string
-	Artwork string
+	Title    string
+	Source   string
+	When     string
+	Artwork  string
+	ReplayID string
 }
 
 type companionHistoryProvider interface {
 	CompanionHistory() []companion.CompanionHistoryEntry
+}
+
+type companionHistoryPlayProvider interface {
+	CompanionHistoryPlay(context.Context, string) (companion.CompanionPlayResult, error)
 }
 
 func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData {
@@ -368,6 +373,7 @@ func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData 
 		if !ok {
 			continue
 		}
+		_, canReplay := adapter.(companionHistoryPlayProvider)
 		source := historySourceLabel(adapter)
 		artwork := historyArtworkLabel(adapter)
 		for _, entry := range provider.CompanionHistory() {
@@ -378,12 +384,17 @@ func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData 
 			if title == "" {
 				continue
 			}
+			replayID := ""
+			if canReplay {
+				replayID = strings.TrimSpace(entry.ID)
+			}
 			rows = append(rows, datedRow{
 				row: HistoryRow{
-					Title:   title,
-					Source:  source,
-					When:    formatHistoryAge(now, entry.LastPlayed),
-					Artwork: artwork,
+					Title:    title,
+					Source:   source,
+					When:     formatHistoryAge(now, entry.LastPlayed),
+					Artwork:  artwork,
+					ReplayID: replayID,
 				},
 				lastPlayed: entry.LastPlayed,
 			})

@@ -136,11 +136,53 @@
     });
   }
 
+  function showInputError(text) {
+    if (window.Chassis && window.Chassis.input && typeof window.Chassis.input.showError === 'function') {
+      window.Chassis.input.showError(text);
+    }
+  }
+
+  function installHistoryReplayActions() {
+    document.querySelectorAll('[data-history-replay-id]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (btn.disabled) {
+          return;
+        }
+        const id = btn.getAttribute('data-history-replay-id') || '';
+        if (!id) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const body = new URLSearchParams();
+          body.set('id', id);
+          const res = await fetch('/receiver/history/play', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body,
+          });
+          if (!res.ok) {
+            const payload = await res.json().catch(() => ({}));
+            showInputError(payload.chip || 'CAST FAILED');
+          }
+        } catch (_) {
+          showInputError('CAST FAILED');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
   window.Chassis = { State, animators };
 
   document.addEventListener('DOMContentLoaded', () => {
     startSystemTimeTicker();
     installSourceActions();
+    installHistoryReplayActions();
     if (new URLSearchParams(location.search).get('dev') === '1') {
       installDevStateToggle();
     }

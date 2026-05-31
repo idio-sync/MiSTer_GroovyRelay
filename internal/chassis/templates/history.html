@@ -10,6 +10,11 @@
         <div class="title">{{.Title}}</div>
         <div class="source">{{.Source}}</div>
         <div class="when">{{.When}}</div>
+        {{if .ReplayID}}
+        <button class="history-replay-btn" type="button" data-history-replay-id="{{.ReplayID}}" aria-label="Recast {{.Title}} from history" title="Recast">&#9656;</button>
+        {{else}}
+        <span class="history-replay-placeholder" aria-hidden="true"></span>
+        {{end}}
       </div>
       {{end}}
     {{else}}
