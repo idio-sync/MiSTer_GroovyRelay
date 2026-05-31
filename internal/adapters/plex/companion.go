@@ -55,6 +55,9 @@ type CompanionConfig struct {
 	// request a transcode. Snapshotted at finalization from plex.Config;
 	// changes are ScopeRestartCast so the next play picks up new values.
 	MaxVideoBitrateKbps int
+	// AutoAdvance is [adapters.plex].auto_advance snapshotted at
+	// construction and mirrored live by Adapter.ApplyConfig.
+	AutoAdvance bool
 	// Modeline mirrors bridge.video.modeline so Plex transcode requests can
 	// advertise source shape matching the active CRT mode.
 	Modeline string
@@ -87,6 +90,8 @@ type Companion struct {
 	// See the type-level concurrency invariant for the other cfg fields.
 	maxVideoBitrateKbps atomic.Int64
 	modelineName        atomic.Pointer[string]
+	autoAdvance         atomic.Bool
+	autoAdvanceDelay    time.Duration
 
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
@@ -114,6 +119,8 @@ type SessionManager interface {
 func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 	c := &Companion{cfg: cfg, core: core}
 	c.maxVideoBitrateKbps.Store(int64(cfg.MaxVideoBitrateKbps))
+	c.autoAdvance.Store(cfg.AutoAdvance)
+	c.autoAdvanceDelay = autoAdvanceSettleDelay
 	c.SetModeline(cfg.Modeline)
 	return c
 }
@@ -123,6 +130,12 @@ func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 // will read the updated value through sessionRequestFor.
 func (c *Companion) SetMaxVideoBitrateKbps(kbps int) {
 	c.maxVideoBitrateKbps.Store(int64(kbps))
+}
+
+// SetAutoAdvance updates the live continuous-play mirror. Queue advancement
+// behavior is wired in a later phase.
+func (c *Companion) SetAutoAdvance(v bool) {
+	c.autoAdvance.Store(v)
 }
 
 // SetModeline updates the live modeline mirror. Bridge saves call this through

@@ -17,6 +17,7 @@ type Config struct {
 	ProfileName         string `toml:"profile_name"`
 	ServerURL           string `toml:"server_url"`
 	MaxVideoBitrateKbps int    `toml:"max_video_bitrate_kbps"`
+	AutoAdvance         bool   `toml:"auto_advance"`
 }
 
 // Bounds for max_video_bitrate_kbps. Lower bound rejects nonsense
@@ -39,6 +40,7 @@ func DefaultConfig() Config {
 		DeviceName:          "MiSTer",
 		ProfileName:         "Plex Home Theater",
 		MaxVideoBitrateKbps: 1500,
+		AutoAdvance:         false,
 	}
 }
 
