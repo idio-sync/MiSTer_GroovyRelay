@@ -322,6 +322,53 @@ func TestReporter_StatusIdleEndsLoopWithStopped(t *testing.T) {
 	}
 }
 
+func TestHandlePlaystate_StopReportsWatchedPosition(t *testing.T) {
+	cap := &capturedREST{}
+	srv := cap.install(t)
+
+	const refKey = "itm-1:ps-7"
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePlaying,
+		Position:   65 * time.Second,
+		AdapterRef: refKey,
+	}}
+	var a *Adapter
+	mgr.onStop = func() {
+		mgr.mu.Lock()
+		mgr.st = core.SessionStatus{State: core.StateIdle}
+		mgr.mu.Unlock()
+		a.makeOnStop(refKey)("stopped")
+	}
+	a = New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.currentRefKey = refKey
+
+	a.spawnReporter(reporterParams{
+		ItemID:        "itm-1",
+		PlaySessionID: "ps-7",
+		MediaSourceID: "src-1",
+		Auth:          authFor(srv),
+		TickInterval:  10 * time.Second,
+	})
+	defer a.stopReporter(refKey)
+
+	if !waitFor(t, 1*time.Second, func() bool { return cap.startCount() >= 1 }) {
+		t.Fatal("PlaybackStart not received")
+	}
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Stop"}))
+
+	if !waitFor(t, 1*time.Second, func() bool { return cap.stopCount() >= 1 }) {
+		t.Fatal("no PlaybackStopped after Stop")
+	}
+	stop := cap.lastStop()
+	if stop.PositionTicks == nil {
+		t.Fatal("PlaybackStopped PositionTicks nil")
+	}
+	if *stop.PositionTicks != 650_000_000 {
+		t.Errorf("PlaybackStopped PositionTicks = %d, want 650000000", *stop.PositionTicks)
+	}
+}
+
 func TestReporter_ExternalPreemptEmitsStoppedNotFailed(t *testing.T) {
 	cap := &capturedREST{}
 	srv := cap.install(t)

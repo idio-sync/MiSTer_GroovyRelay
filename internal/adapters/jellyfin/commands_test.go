@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,12 +35,13 @@ func jellyfinTinyPNG(t *testing.T) []byte {
 
 // fakeManager records calls into a SessionManager.
 type fakeManager struct {
-	mu    sync.Mutex
-	reqs  []core.SessionRequest
-	calls []string
-	st    core.SessionStatus
-	err   error
-	mode  string
+	mu     sync.Mutex
+	reqs   []core.SessionRequest
+	calls  []string
+	st     core.SessionStatus
+	err    error
+	mode   string
+	onStop func()
 }
 
 func (f *fakeManager) StartSession(req core.SessionRequest) error {
@@ -51,7 +53,13 @@ func (f *fakeManager) StartSession(req core.SessionRequest) error {
 }
 func (f *fakeManager) Pause() error { f.add("Pause"); return f.err }
 func (f *fakeManager) Play() error  { f.add("Play"); return f.err }
-func (f *fakeManager) Stop() error  { f.add("Stop"); return f.err }
+func (f *fakeManager) Stop() error {
+	f.add("Stop")
+	if f.onStop != nil {
+		f.onStop()
+	}
+	return f.err
+}
 func (f *fakeManager) SeekTo(ms int) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, "SeekTo")
@@ -606,16 +614,128 @@ func TestHandlePlaystate_StopCallsCoreStop(t *testing.T) {
 	}
 }
 
-func TestHandlePlaystate_SeekConvertsTicksToMs(t *testing.T) {
-	mgr := &fakeManager{}
+func startRestartPlaybackInfoServer(t *testing.T) (*httptest.Server, *atomicInt32, *atomic.Int64) {
+	t.Helper()
+	var calls atomicInt32
+	var gotStartTicks atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/PlaybackInfo") {
+			calls.inc()
+			var body struct {
+				StartTimeTicks int64  `json:"StartTimeTicks"`
+				MediaSourceID  string `json:"MediaSourceId"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			gotStartTicks.Store(body.StartTimeTicks)
+			if body.MediaSourceID != "src-1" {
+				t.Errorf("PlaybackInfo MediaSourceId = %q, want src-1", body.MediaSourceID)
+			}
+			n := calls.get()
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-1","TranscodingUrl":"/videos/itm-1/master.m3u8?call=` + strconv.Itoa(n) + `"}],
+				"PlaySessionId":"ps-` + strconv.Itoa(n) + `",
+				"Item":{"Name":"Some Movie"}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"Id":"itm-1","Name":"Some Movie"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, &calls, &gotStartTicks
+}
+
+func TestHandlePlaystate_SeekRestartsJellyfinTranscodeAtTarget(t *testing.T) {
+	jfSrv, pbCalls, gotStartTicks := startRestartPlaybackInfoServer(t)
+
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePlaying,
+		Position:   12 * time.Second,
+		AdapterRef: "itm-1:ps-old",
+	}}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-old"
+	a.reporters["itm-1:ps-old"] = &reporter{
+		capturedRefKey: "itm-1:ps-old",
+		itemID:         "itm-1",
+		playSessionID:  "ps-old",
+		mediaSourceID:  "src-1",
+	}
+
 	a.HandlePlaystate(mustMarshal(t, map[string]any{
-		"Command": "Seek", "SeekPositionTicks": 50_000_000, // 5 seconds
+		"Command":           "Seek",
+		"SeekPositionTicks": 50_000_000,
 	}))
+
+	waitForFakeManagerReq(t, mgr)
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
-	if len(mgr.calls) != 1 || mgr.calls[0] != "SeekTo" {
-		t.Errorf("calls = %v, want [SeekTo]", mgr.calls)
+	if len(mgr.reqs) != 1 {
+		t.Fatalf("StartSession calls = %d, want 1", len(mgr.reqs))
+	}
+	if pbCalls.get() != 1 {
+		t.Fatalf("PlaybackInfo calls = %d, want 1", pbCalls.get())
+	}
+	if gotStartTicks.Load() != 50_000_000 {
+		t.Errorf("PlaybackInfo StartTimeTicks = %d, want 50000000", gotStartTicks.Load())
+	}
+	got := mgr.reqs[0]
+	if got.SeekOffsetMs != 5_000 {
+		t.Errorf("SeekOffsetMs = %d, want 5000", got.SeekOffsetMs)
+	}
+	if !strings.Contains(got.StreamURL, "call=1") {
+		t.Errorf("StreamURL did not come from fresh PlaybackInfo: %s", got.StreamURL)
+	}
+	for _, call := range mgr.calls {
+		if call == "SeekTo" {
+			t.Errorf("core.SeekTo called for Jellyfin transcode restart; calls=%v", mgr.calls)
+		}
+	}
+}
+
+func TestHandlePlaystate_UnpauseRestartsJellyfinTranscodeAtPausedPosition(t *testing.T) {
+	jfSrv, _, gotStartTicks := startRestartPlaybackInfoServer(t)
+
+	mgr := &fakeManager{st: core.SessionStatus{
+		State:      core.StatePaused,
+		Position:   42 * time.Second,
+		AdapterRef: "itm-1:ps-old",
+	}}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-old"
+	a.reporters["itm-1:ps-old"] = &reporter{
+		capturedRefKey: "itm-1:ps-old",
+		itemID:         "itm-1",
+		playSessionID:  "ps-old",
+		mediaSourceID:  "src-1",
+	}
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Unpause"}))
+
+	waitForFakeManagerReq(t, mgr)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	got := mgr.reqs[0]
+	if gotStartTicks.Load() != 420_000_000 {
+		t.Errorf("PlaybackInfo StartTimeTicks = %d, want 420000000", gotStartTicks.Load())
+	}
+	if got.SeekOffsetMs != 42_000 {
+		t.Errorf("SeekOffsetMs = %d, want 42000", got.SeekOffsetMs)
+	}
+	for _, call := range mgr.calls {
+		if call == "Play" {
+			t.Errorf("core.Play called for Jellyfin transcode resume; calls=%v", mgr.calls)
+		}
 	}
 }
 

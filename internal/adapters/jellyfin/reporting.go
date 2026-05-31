@@ -172,6 +172,44 @@ func (a *Adapter) pokeActiveReporter() {
 	}
 }
 
+func (a *Adapter) rememberReporterStatus(r *reporter, st core.SessionStatus) {
+	if r == nil || st.State == core.StateIdle || st.AdapterRef != r.capturedRefKey {
+		return
+	}
+	a.mu.Lock()
+	if a.reporters[r.capturedRefKey] == r {
+		r.lastStatus = st
+		r.hasLastStatus = true
+	}
+	a.mu.Unlock()
+}
+
+func (a *Adapter) captureActiveReporterTerminalStatus(st core.SessionStatus) {
+	if st.AdapterRef == "" {
+		return
+	}
+	a.mu.Lock()
+	if r, ok := a.reporters[st.AdapterRef]; ok {
+		r.terminalStatus = st
+		r.hasTerminal = true
+	}
+	a.mu.Unlock()
+}
+
+func (a *Adapter) terminalStatusForReporter(r *reporter, observed core.SessionStatus) core.SessionStatus {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if r.hasTerminal {
+		return r.terminalStatus
+	}
+	if r.hasLastStatus && (observed.State == core.StateIdle || observed.AdapterRef != r.capturedRefKey) {
+		last := r.lastStatus
+		last.State = core.StateIdle
+		return last
+	}
+	return observed
+}
+
 // runReporter is the per-session goroutine. Emits PlaybackStart once,
 // then PlaybackProgress on each tick or wakeup poke, classifying the
 // session-end via Status() + currentRefKey identity check. Pings the
@@ -186,6 +224,7 @@ func (a *Adapter) runReporter(r *reporter) {
 	}
 	// PlaybackStart immediately.
 	st := a.core.Status()
+	a.rememberReporterStatus(r, st)
 	a.emit(r, st, msgKindStart)
 
 	for {
@@ -204,18 +243,19 @@ func (a *Adapter) runReporter(r *reporter) {
 
 		switch {
 		case st.State == core.StateIdle:
-			a.emitTerminal(r, st)
+			a.emitTerminal(r, a.terminalStatusForReporter(r, st))
 			a.stopReporter(r.capturedRefKey)
 			return
 
 		case st.AdapterRef == r.capturedRefKey:
+			a.rememberReporterStatus(r, st)
 			a.emit(r, st, msgKindProgress)
 
 		case cur == r.capturedRefKey:
 			// External preempt: someone else replaced us in core, but our
 			// adapter hasn't moved on (currentRefKey still points to us).
 			// Emit PlaybackStopped {Failed:false}.
-			a.emitTerminal(r, st)
+			a.emitTerminal(r, a.terminalStatusForReporter(r, st))
 			a.stopReporter(r.capturedRefKey)
 			return
 

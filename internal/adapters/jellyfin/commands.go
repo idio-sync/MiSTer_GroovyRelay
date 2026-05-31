@@ -213,6 +213,123 @@ func (a *Adapter) snapshotNowPlayingQueue(currentItemID string) []QueueItem {
 	return out
 }
 
+func positionTicks(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64(d / (100 * time.Nanosecond))
+}
+
+// restartCurrentPlaybackAt rebuilds Jellyfin's transcode URL at the requested
+// absolute position. Jellyfin transcode offsets live in the PlaybackInfo/
+// TranscodingUrl negotiation, so replaying core.SeekTo/core.Play against the
+// old URL restarts from that URL's original StartTimeTicks.
+func (a *Adapter) restartCurrentPlaybackAt(posTicks int64, preservePaused bool) bool {
+	if a.core == nil {
+		return false
+	}
+	st := a.core.Status()
+	if st.State != core.StatePlaying && st.State != core.StatePaused {
+		return false
+	}
+	cur := a.snapshotCurrentRefKey()
+	if cur == "" {
+		cur = st.AdapterRef
+	}
+	itemID, _, ok := splitRefKey(cur)
+	if !ok || itemID == "" {
+		return false
+	}
+
+	a.mu.Lock()
+	cfg := a.cfg
+	var mediaSourceID string
+	var audioIdx, subtitleIdx *int
+	if r, ok := a.reporters[cur]; ok {
+		mediaSourceID = r.mediaSourceID
+		audioIdx = r.audioIdx
+		subtitleIdx = r.subtitleIdx
+	}
+	a.mu.Unlock()
+
+	tok, err := LoadToken(a.tokenPath())
+	if err != nil || tok.AccessToken == "" {
+		slog.Error("jellyfin: restart playback: no token")
+		return true
+	}
+	preset, err := a.currentPreset()
+	if err != nil {
+		slog.Error("jellyfin: restart playback: modeline", "err", err)
+		return true
+	}
+	wasPaused := preservePaused && st.State == core.StatePaused
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, itemID)
+		info, err := FetchPlaybackInfo(ctx, PlaybackInfoInput{
+			ServerURL:           cfg.ServerURL,
+			Token:               tok.AccessToken,
+			DeviceID:            a.deviceID,
+			DeviceName:          cfg.DeviceName,
+			Version:             linkVersion,
+			ItemID:              itemID,
+			UserID:              tok.UserID,
+			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			Preset:              preset,
+			StartPositionTicks:  posTicks,
+			MediaSourceID:       mediaSourceID,
+			AudioStreamIndex:    audioIdx,
+			SubtitleStreamIndex: subtitleIdx,
+			MediaKind:           meta.MediaKind,
+		})
+		if err != nil {
+			artworkcache.Remove(meta.ArtworkPath)
+			slog.Error("jellyfin: restart PlaybackInfo failed", "err", err)
+			return
+		}
+		info = mergePlaybackMetadata(info, meta)
+		req := a.buildSessionRequest(playRequestInput{
+			ItemID:             itemID,
+			StartPositionTicks: posTicks,
+			PlayInfo:           info,
+			ServerURL:          cfg.ServerURL,
+			Token:              tok.AccessToken,
+		})
+
+		prev := a.beginSelfPreempt(req.AdapterRef)
+		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
+		if err := a.core.StartSession(req); err != nil {
+			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
+			slog.Error("jellyfin: restart StartSession failed", "err", err)
+			return
+		}
+		a.commitSelfPreempt()
+
+		if wasPaused {
+			_ = a.core.Pause()
+		}
+
+		a.spawnReporter(reporterParams{
+			ItemID:          itemID,
+			PlaySessionID:   info.PlaySessionID,
+			MediaSourceID:   info.MediaSourceID,
+			AudioIdx:        audioIdx,
+			SubtitleIdx:     subtitleIdx,
+			NowPlayingQueue: a.snapshotNowPlayingQueue(itemID),
+			Auth: RESTAuth{
+				ServerURL: cfg.ServerURL, Token: tok.AccessToken,
+				DeviceID: a.deviceID, DeviceName: cfg.DeviceName,
+				Version: linkVersion,
+			},
+		})
+	}()
+	return true
+}
+
 // playstateRequestData is the JF Playstate Data field.
 type playstateRequestData struct {
 	Command           string `json:"Command"`
@@ -241,28 +358,37 @@ func (a *Adapter) HandlePlaystate(data json.RawMessage) {
 		// IsPaused flip.
 		a.pokeActiveReporter()
 	case "Unpause":
-		_ = a.core.Play()
-		a.pokeActiveReporter()
+		st := a.core.Status()
+		if st.State == core.StatePaused {
+			if !a.restartCurrentPlaybackAt(positionTicks(st.Position), false) {
+				_ = a.core.Play()
+				a.pokeActiveReporter()
+			}
+		} else {
+			_ = a.core.Play()
+			a.pokeActiveReporter()
+		}
 	case "PlayPause":
 		st := a.core.Status()
 		if st.State == core.StatePlaying {
 			_ = a.core.Pause()
 		} else if st.State == core.StatePaused {
-			_ = a.core.Play()
+			if !a.restartCurrentPlaybackAt(positionTicks(st.Position), false) {
+				_ = a.core.Play()
+			}
 		}
 		a.pokeActiveReporter()
 	case "Stop":
 		// Stop fires OnStop("stopped") which pokes the reporter
 		// itself, so no explicit poke needed here.
+		a.captureActiveReporterTerminalStatus(a.core.Status())
 		_ = a.core.Stop()
 	case "Seek":
-		ms := int(p.SeekPositionTicks / 10_000)
-		_ = a.core.SeekTo(ms)
-		// SeekTo re-spawns the plane and fires OnStop("preempted")
-		// on the prior request, but that path is async and may take
-		// longer than a direct wakeup. Poke explicitly so the new
-		// PositionTicks lands in JF within ms.
-		a.pokeActiveReporter()
+		if !a.restartCurrentPlaybackAt(p.SeekPositionTicks, true) {
+			ms := int(p.SeekPositionTicks / 10_000)
+			_ = a.core.SeekTo(ms)
+			a.pokeActiveReporter()
+		}
 	case "NextTrack":
 		if qi, ok := a.popQueueHead(); ok {
 			a.startQueuedItem(qi)

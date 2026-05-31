@@ -114,8 +114,12 @@ type reporter struct {
 	startedAt       time.Time     // reported as PlaybackStartTimeTicks (.NET ticks)
 	wakeup          chan struct{} // poked by Playstate handlers and OnStop
 	errReason       string        // set when OnStop fires with reason=="error"
-	ticker          *time.Ticker  // progress cadence (10 s in prod)
-	pingTicker      *time.Ticker  // /Sessions/Playing/Ping cadence (30 s)
+	lastStatus      core.SessionStatus
+	hasLastStatus   bool
+	terminalStatus  core.SessionStatus
+	hasTerminal     bool
+	ticker          *time.Ticker // progress cadence (10 s in prod)
+	pingTicker      *time.Ticker // /Sessions/Playing/Ping cadence (30 s)
 	ctx             context.Context
 	cancel          context.CancelFunc
 }
