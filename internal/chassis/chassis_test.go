@@ -956,6 +956,29 @@ func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_SettingsDrawerSitsBelowTransport(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIndex(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	transportIdx := strings.Index(body, `<!-- chassis:transport -->`)
+	settingsIdx := strings.Index(body, `<!-- chassis:settings-drawer -->`)
+	audioIdx := strings.Index(body, `<!-- chassis:audio-strip -->`)
+	if transportIdx < 0 || settingsIdx < 0 || audioIdx < 0 {
+		t.Fatalf("missing transport/settings/audio markers")
+	}
+	if !(transportIdx < settingsIdx && settingsIdx < audioIdx) {
+		t.Fatalf("settings drawer should render as the transport service door before audio strip; transport=%d settings=%d audio=%d", transportIdx, settingsIdx, audioIdx)
+	}
+}
+
 func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
@@ -3405,6 +3428,67 @@ func TestChassisCSS_AddsCatalogDrawerRules(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_CatalogDrawerUsesHardwareControlVocabulary(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(src)
+	for _, contract := range []struct {
+		name     string
+		selector string
+		want     []string
+	}{
+		{
+			name:     "provider tab",
+			selector: "body.receiver .catalog-provider-tab",
+			want: []string{
+				"background: linear-gradient(180deg, #3a3a40 0%, #2a2a2e 50%, #1a1a1c 100%)",
+				"border: 1px solid #0a0a0b",
+				"box-shadow:",
+			},
+		},
+		{
+			name:     "provider tab led",
+			selector: "body.receiver .catalog-provider-tab::before",
+			want: []string{
+				"width: 5px",
+				"border-radius: 50%",
+				"background: #1a1a1c",
+			},
+		},
+		{
+			name:     "active provider tab led",
+			selector: "body.receiver .catalog-provider-tab.active::before",
+			want: []string{
+				"background: var(--lock-amber",
+				"box-shadow: 0 0 5px",
+			},
+		},
+		{
+			name:     "rail group",
+			selector: "body.receiver .catalog-rail-group",
+			want: []string{
+				"background: linear-gradient(180deg, #2a2a30 0%, #1a1a1f 100%)",
+				"border: 1px solid #0a0a0b",
+				"box-shadow:",
+			},
+		},
+	} {
+		rule := cssRuleBlock(t, text, contract.selector)
+		for _, want := range contract.want {
+			if !strings.Contains(rule, want) {
+				t.Errorf("%s rule missing %q:\n%s", contract.name, want, rule)
+			}
+		}
+	}
+	indicatorRule := cssRuleBlock(t, text, "body.receiver .catalog-tab-indicator")
+	if strings.Contains(indicatorRule, "width 220ms") {
+		t.Errorf("catalog tab indicator should not animate width like a web tab:\n%s", indicatorRule)
+	}
+}
+
 func TestChassisCSS_AddsDragReorderRules(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
@@ -3932,6 +4016,21 @@ func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 		if !bytes.Contains(css, []byte(sel)) {
 			t.Errorf("chassis.css missing selector %q", sel)
 		}
+	}
+}
+
+func TestChassisCSS_BrandPlateUsesReceiverDisplayFace(t *testing.T) {
+	t.Parallel()
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("read chassis.css: %v", err)
+	}
+	rule := cssRuleBlock(t, string(css), "body.receiver .brand-plate .name")
+	if !strings.Contains(rule, "'DSEG14-Modern'") {
+		t.Fatalf("brand plate should use a distinctive receiver display face, got:\n%s", rule)
+	}
+	if strings.Contains(rule, "'Inter'") {
+		t.Fatalf("brand plate should not fall back to generic product UI typography:\n%s", rule)
 	}
 }
 
