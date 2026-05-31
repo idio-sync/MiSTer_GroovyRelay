@@ -561,8 +561,8 @@ func TestChassisCSS_DenseResponsivePassContracts(t *testing.T) {
 
 	sourceLamp600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .source-cluster .lamp")
 	for _, want := range []string{
-		"min-height: 58px;",
-		"grid-template-rows: 25px minmax(0, 1fr);",
+		"min-height: 64px;",
+		"grid-template-rows: 29px minmax(0, 1fr);",
 	} {
 		if !strings.Contains(sourceLamp600, want) {
 			t.Fatalf("phone source lamps should become compact indicators, missing %q: %s", want, sourceLamp600)
@@ -632,9 +632,10 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 	lampRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp")
 	for _, want := range []string{
 		"grid-template-columns: minmax(0, 1fr);",
-		"grid-template-rows: 40px minmax(0, 1fr) 15px;",
+		"grid-template-rows: 46px minmax(0, 1fr) 18px;",
 		"background: transparent;",
 		"border: 0;",
+		"font: 700 11px Inter, sans-serif;",
 		"inset 1px 0 0 rgba(255, 255, 255, 0.035)",
 		"cursor: default;",
 		"transition:",
@@ -669,10 +670,20 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 		t.Fatalf("source lamp label should sit like printed faceplate text: %s", nameRule)
 	}
 
+	nameTextRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .name")
+	for _, want := range []string{
+		"font-size: 11px;",
+		"letter-spacing: 0.12em;",
+	} {
+		if !strings.Contains(nameTextRule, want) {
+			t.Fatalf("source lamp label text should be readable at receiver scale, missing %q: %s", want, nameTextRule)
+		}
+	}
+
 	wellRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led-well")
 	for _, want := range []string{
-		"width: 34px;",
-		"height: 34px;",
+		"width: 40px;",
+		"height: 40px;",
 		"background: radial-gradient(circle at center, #030304 0%, #0b0b0d 58%, #303036 100%);",
 		"border-radius: 50%;",
 	} {
@@ -683,8 +694,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 
 	ledRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led")
 	for _, want := range []string{
-		"width: 21px;",
-		"height: 21px;",
+		"width: 26px;",
+		"height: 26px;",
 		"border: 1px solid #050506;",
 		"box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.72);",
 	} {
@@ -701,8 +712,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 		"background: transparent;",
 		"border: 0;",
 		"box-shadow: none;",
-		"font-size: 6px;",
-		"opacity: 0.72;",
+		"font-size: 8px;",
+		"opacity: 0.78;",
 	} {
 		if !strings.Contains(stateRule, want) {
 			t.Fatalf("source lamp state text should be printed on the faceplate, missing %q: %s", want, stateRule)
