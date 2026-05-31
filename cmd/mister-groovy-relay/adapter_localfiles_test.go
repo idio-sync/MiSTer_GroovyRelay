@@ -15,6 +15,17 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
+func tomlEscape(s string) string {
+	var out []rune
+	for _, r := range s {
+		if r == '\\' || r == '"' {
+			out = append(out, '\\')
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
 func TestBridgeLocalFilesImplementsChassisInterfaces(t *testing.T) {
 	var _ chassis.LocalFilesService = (*bridgeLocalFiles)(nil)
 	var _ chassis.LocalFilesLibraryEditor = (*bridgeLocalFiles)(nil)
@@ -108,7 +119,7 @@ enabled = true
 	if strings.Count(text, "[[adapters.localfiles.library]]") != 2 {
 		t.Fatalf("config.toml localfiles library tables count mismatch:\n%s", text)
 	}
-	if !strings.Contains(text, `name = "Movies"`) || !strings.Contains(text, `root = "`+movies+`"`) {
+	if !strings.Contains(text, `name = "Movies"`) || !strings.Contains(text, `root = "`+tomlEscape(movies)+`"`) {
 		t.Fatalf("config.toml missing Movies library:\n%s", text)
 	}
 	libs := bridge.Libraries()
@@ -129,7 +140,7 @@ enabled = true
 
 [[adapters.localfiles.library]]
 name = "Movies"
-root = "` + root + `"
+root = "` + tomlEscape(root) + `"
 `)
 	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)

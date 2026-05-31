@@ -3,6 +3,7 @@ package localfiles
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,6 +138,9 @@ func TestValidateConfigAllowsEmptyReadableDirectory(t *testing.T) {
 func TestValidateConfigRejectsUnreadableDirectoryWhenEnforced(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can read directories regardless of permission bits")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows permissions model does not support unreadable directories via chmod")
 	}
 	root := t.TempDir()
 	locked := root + "/locked"

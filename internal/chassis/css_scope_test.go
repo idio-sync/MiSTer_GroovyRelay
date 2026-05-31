@@ -319,7 +319,7 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			atRule:   "@container chassis (max-width: 1180px)",
 			selector: "body.receiver .vfd-source-row .source-cluster",
 			want: []string{
-				"grid-template-columns: repeat(3, minmax(96px, 1fr));",
+				"grid-template-columns: repeat(3, minmax(82px, 1fr));",
 				"grid-template-rows: 1fr 1fr;",
 			},
 		},
@@ -336,10 +336,10 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			want:     []string{"grid-template-columns: 1fr;"},
 		},
 		{
-			name:     "900 keeps source cluster as five equal columns",
+			name:     "900 keeps source cluster with auto-fit columns",
 			atRule:   "@container chassis (max-width: 900px)",
 			selector: "body.receiver .vfd-source-row .source-cluster",
-			want:     []string{"grid-template-columns: repeat(5, minmax(0, 1fr));"},
+			want:     []string{"grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));"},
 		},
 		{
 			name:     "900 tightens the chassis chrome",
