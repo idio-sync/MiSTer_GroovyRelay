@@ -455,6 +455,25 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 	}
 }
 
+func TestReceiverLocalFilesButtonUsesUploadButtonStyle(t *testing.T) {
+	t.Parallel()
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile chassis.css: %v", err)
+	}
+	css := string(cssBytes)
+	for _, want := range []string{
+		`body.receiver .upload-btn`,
+		`body.receiver .receiver-localfiles-drawer .catalog-top`,
+		`body.receiver .receiver-localfiles-drawer .field-input`,
+		`body.receiver .receiver-localfiles-drawer .widget-err`,
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("chassis.css missing local files/input styling hook %q", want)
+		}
+	}
+}
+
 func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")

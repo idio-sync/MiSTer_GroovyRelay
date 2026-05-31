@@ -1027,6 +1027,53 @@ func TestIdleSnapshotRendersFiveSourceButtonsIncludingAUX(t *testing.T) {
 	}
 }
 
+func TestReceiverInputRendersLocalFilesButtonBesideTorrent(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{libraries: []LocalFileLibraryRow{{Name: "Movies", Root: "/media/movies"}}}
+	cfg := nonZeroConfig()
+	cfg.LocalFiles = lf
+	cfg.LocalFilesLibraryEditor = lf
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+	torrent := strings.Index(body, `id="upload-btn"`)
+	local := strings.Index(body, `id="localfiles-btn"`)
+	if torrent < 0 || local < 0 {
+		t.Fatalf("input row missing torrent/local buttons: torrent=%d local=%d", torrent, local)
+	}
+	if local < torrent {
+		t.Fatalf("LOCAL FILES button rendered before .TORRENT; want beside it after torrent")
+	}
+	for _, want := range []string{
+		`class="upload-btn" id="localfiles-btn"`,
+		`>LOCAL FILES</button>`,
+		`id="localfiles-drawer"`,
+		`data-receiver-localfiles-drawer`,
+		`<option value="Movies">Movies</option>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("receiver local files UI missing %q in:\n%s", want, excerpt(body, "localfiles-btn"))
+		}
+	}
+}
+
+func TestReceiverInputDisablesLocalFilesButtonWithoutLibraries(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="upload-btn" id="localfiles-btn" type="button" disabled`) {
+		t.Fatalf("local files button should render disabled without libraries:\n%s", excerpt(body, "localfiles-btn"))
+	}
+}
+
 func TestSourceClusterAUXButtonCarriesStartAction(t *testing.T) {
 	t.Parallel()
 	tmpl, err := parseTemplates()
@@ -3171,6 +3218,27 @@ func TestSourceClusterJS_ExistsAndSubscribesToTransport(t *testing.T) {
 	for _, forbidden := range []string{"Math.random", "Math.sin", "Math.cos"} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("source-cluster.js contains forbidden fake-data pattern %q", forbidden)
+		}
+	}
+}
+
+func TestInputCastJSWiresReceiverLocalFilesBrowser(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/input-cast.js")
+	if err != nil {
+		t.Fatalf("ReadFile input-cast.js: %v", err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		`document.getElementById('localfiles-btn')`,
+		`document.getElementById('localfiles-drawer')`,
+		`/receiver/localfiles/browse`,
+		`/receiver/localfiles/cast`,
+		`data-localfiles-dir`,
+		`data-localfiles-file`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("input-cast.js missing receiver local files hook %q", want)
 		}
 	}
 }

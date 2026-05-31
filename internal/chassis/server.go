@@ -327,6 +327,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/aux/start", requireSameOrigin(http.HandlerFunc(s.handleAUXStartPost)))
 	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
 	mux.Handle("POST /receiver/cast", requireSameOrigin(http.HandlerFunc(s.handleCastPost)))
+	mux.Handle("POST /receiver/localfiles/browse",
+		requireSameOrigin(http.HandlerFunc(s.handleReceiverLocalfilesBrowse)))
+	mux.Handle("POST /receiver/localfiles/cast",
+		requireSameOrigin(http.HandlerFunc(s.handleReceiverLocalfilesCast)))
 	mux.Handle("POST /receiver/preset/{slot}/cast", requireSameOrigin(http.HandlerFunc(s.handlePresetCast)))
 	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(http.HandlerFunc(s.handleStreamsCast)))
 	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))

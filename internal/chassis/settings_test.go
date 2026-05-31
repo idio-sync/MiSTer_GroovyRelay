@@ -2543,6 +2543,57 @@ func TestHandleSettingsAdapterLocalfilesCastError(t *testing.T) {
 	}
 }
 
+func TestHandleReceiverLocalfilesBrowseSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{entries: []LocalFileEntry{{Name: "clip.mp4", Rel: "clip.mp4", Playable: true}}}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/localfiles/browse", url.Values{
+		"lib":  {"Media"},
+		"path": {"Movies"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if lf.gotLib != "Media" || lf.gotPath != "Movies" {
+		t.Fatalf("Browse got lib/path = %q/%q, want Media/Movies", lf.gotLib, lf.gotPath)
+	}
+}
+
+func TestHandleReceiverLocalfilesCastSuccess(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/localfiles/cast", url.Values{
+		"lib":  {"Media"},
+		"path": {"clip.mp4"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if lf.castLib != "Media" || lf.castPath != "clip.mp4" {
+		t.Fatalf("Cast got lib/path = %q/%q, want Media/clip.mp4", lf.castLib, lf.castPath)
+	}
+}
+
+func TestHandleReceiverLocalfilesCastErrorIsCompact(t *testing.T) {
+	t.Parallel()
+	lf := &fakeLocalFilesService{castErr: errors.New("open /media/private/clip.mp4: permission denied")}
+	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
+	rec := postLocalFilesForm(t, s, "/receiver/localfiles/cast", url.Values{
+		"lib":  {"Media"},
+		"path": {"private/clip.mp4"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/media/private") || strings.Contains(rec.Body.String(), "permission denied") {
+		t.Fatalf("receiver localfiles error leaked raw filesystem detail: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"not found"`) {
+		t.Fatalf("receiver localfiles error should be compact not found JSON: %s", rec.Body.String())
+	}
+}
+
 func TestHandleSettingsAdapterLocalfilesLibrariesSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{setScope: "hot"}

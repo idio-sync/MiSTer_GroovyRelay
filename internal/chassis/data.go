@@ -299,9 +299,11 @@ type VisualizerButton struct {
 
 // InputData drives the paste/cast row.
 type InputData struct {
-	PastePlaceholder string
-	DetectedKind     string
-	CastEnabled      bool
+	PastePlaceholder    string
+	DetectedKind        string
+	CastEnabled         bool
+	LocalFilesAvailable bool
+	LocalFilesLibraries []LocalFileLibraryRow
 }
 
 // PresetsData drives the 12-slot preset bank. CatalogTotalChannels is
@@ -896,11 +898,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 				{Mode: config.VisualizerModeCoverSpectrum, Label: "COVER SPECTRUM", IconKind: "analyzer"},
 			},
 		},
-		Input: InputData{
-			PastePlaceholder: "Paste URL or magnet",
-			DetectedKind:     "URL",
-			CastEnabled:      false,
-		},
+		Input:    inputDataFromConfig(cfg),
 		Presets:  buildPresetsData(cfg.PresetViewer, "", ""),
 		Catalog:  idleCatalogData(cfg),
 		History:  historyDataFromRegistry(cfg.Registry, now),
@@ -910,6 +908,21 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 	// can render "Browse full catalog (N)" without a template wrapper.
 	base.Presets.CatalogTotalChannels = base.Catalog.TotalChannels
 	return base
+}
+
+func inputDataFromConfig(cfg Config) InputData {
+	data := InputData{
+		PastePlaceholder: "Paste URL or magnet",
+		DetectedKind:     "URL",
+		CastEnabled:      false,
+	}
+	if cfg.LocalFiles == nil || cfg.LocalFilesLibraryEditor == nil {
+		return data
+	}
+	libs := cfg.LocalFilesLibraryEditor.Libraries()
+	data.LocalFilesLibraries = append([]LocalFileLibraryRow(nil), libs...)
+	data.LocalFilesAvailable = len(data.LocalFilesLibraries) > 0
+	return data
 }
 
 // idleCatalogData builds the page-load Catalog snapshot from the cfg

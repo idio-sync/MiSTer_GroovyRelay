@@ -148,5 +148,152 @@
   window.Chassis = window.Chassis || {};
   window.Chassis.input = { showError: setErrorChip };
 
+  const localFilesBtn = document.getElementById('localfiles-btn');
+  const localFilesDrawer = document.getElementById('localfiles-drawer');
+  const localFilesCloseBtn = document.getElementById('localfiles-close-btn');
+  const localFilesSelect = document.getElementById('localfiles-library-select');
+  const localFilesEntries = document.getElementById('localfiles-entries');
+  const localFilesBreadcrumb = document.getElementById('localfiles-breadcrumb');
+  const localFilesError = document.getElementById('localfiles-error');
+  let localFilesPath = '';
+
+  function localFileEl(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function paintLocalFilesError(msg) {
+    if (localFilesError) {
+      localFilesError.textContent = msg;
+      localFilesError.hidden = false;
+    }
+    setErrorChip(msg.toUpperCase());
+  }
+
+  function clearLocalFilesError() {
+    if (!localFilesError) return;
+    localFilesError.hidden = true;
+    localFilesError.textContent = '';
+  }
+
+  function openLocalFilesDrawer() {
+    if (!localFilesDrawer) return;
+    localFilesDrawer.hidden = false;
+    localFilesDrawer.classList.add('localfiles-open');
+  }
+
+  function closeLocalFilesDrawer() {
+    if (!localFilesDrawer) return;
+    localFilesDrawer.classList.remove('localfiles-open');
+    localFilesDrawer.hidden = true;
+  }
+
+  async function browseLocalFiles(path) {
+    if (!localFilesSelect || !localFilesEntries) return;
+    const lib = localFilesSelect.value || '';
+    if (!lib) {
+      paintLocalFilesError('no library selected');
+      return;
+    }
+    clearLocalFilesError();
+    const body = new URLSearchParams();
+    body.set('lib', lib);
+    body.set('path', path || '');
+    try {
+      const res = await fetch('/receiver/localfiles/browse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+        credentials: 'same-origin',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!payload.ok) {
+        paintLocalFilesError(payload.error || payload.chip || 'browse failed');
+        return;
+      }
+      localFilesPath = path || '';
+      renderLocalFilesEntries(payload.entries || []);
+      if (localFilesBreadcrumb) localFilesBreadcrumb.textContent = `/${localFilesPath}`;
+      openLocalFilesDrawer();
+    } catch (_) {
+      paintLocalFilesError('network error');
+    }
+  }
+
+  function renderLocalFilesEntries(entries) {
+    if (!localFilesEntries) return;
+    localFilesEntries.replaceChildren();
+    if (localFilesPath) {
+      const up = localFileEl('button', 'ch-card', '..');
+      up.type = 'button';
+      up.setAttribute('data-localfiles-dir', localFilesPath.split('/').slice(0, -1).join('/'));
+      localFilesEntries.appendChild(up);
+    }
+    (entries || []).forEach((entry) => {
+      const btn = localFileEl('button', 'ch-card', entry.name || entry.rel || '');
+      btn.type = 'button';
+      if (entry.is_dir) {
+        btn.setAttribute('data-localfiles-dir', entry.rel || '');
+      } else if (entry.playable) {
+        btn.setAttribute('data-localfiles-file', entry.rel || '');
+        if (entry.duration_s) btn.appendChild(localFileEl('span', 'help', ` ${Math.round(entry.duration_s)}s`));
+      } else {
+        btn.disabled = true;
+      }
+      localFilesEntries.appendChild(btn);
+    });
+  }
+
+  async function castLocalFile(path) {
+    if (!localFilesSelect) return;
+    const body = new URLSearchParams();
+    body.set('lib', localFilesSelect.value || '');
+    body.set('path', path);
+    try {
+      const res = await fetch('/receiver/localfiles/cast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+        credentials: 'same-origin',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!payload.ok) {
+        paintLocalFilesError(payload.error || payload.chip || 'cast failed');
+        return;
+      }
+      closeLocalFilesDrawer();
+      clearLocalFilesError();
+    } catch (_) {
+      paintLocalFilesError('network error');
+    }
+  }
+
+  if (localFilesBtn && localFilesDrawer && localFilesSelect && localFilesEntries) {
+    localFilesBtn.addEventListener('click', () => {
+      if (localFilesBtn.disabled) {
+        paintLocalFilesError('configure local files');
+        return;
+      }
+      browseLocalFiles('');
+    });
+    if (localFilesCloseBtn) localFilesCloseBtn.addEventListener('click', closeLocalFilesDrawer);
+    localFilesSelect.addEventListener('change', () => browseLocalFiles(''));
+    localFilesEntries.addEventListener('click', (ev) => {
+      const dir = ev.target.closest('[data-localfiles-dir]');
+      if (dir && localFilesEntries.contains(dir)) {
+        ev.preventDefault();
+        browseLocalFiles(dir.getAttribute('data-localfiles-dir') || '');
+        return;
+      }
+      const file = ev.target.closest('[data-localfiles-file]');
+      if (file && localFilesEntries.contains(file)) {
+        ev.preventDefault();
+        castLocalFile(file.getAttribute('data-localfiles-file') || '');
+      }
+    });
+  }
+
   updateState();
 })();

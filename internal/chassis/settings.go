@@ -1643,6 +1643,14 @@ func (s *Server) handleSettingsAdapterLocalfilesCast(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) handleReceiverLocalfilesBrowse(w http.ResponseWriter, r *http.Request) {
+	s.handleSettingsAdapterLocalfilesBrowse(w, r)
+}
+
+func (s *Server) handleReceiverLocalfilesCast(w http.ResponseWriter, r *http.Request) {
+	s.handleSettingsAdapterLocalfilesCast(w, r)
+}
+
 func (s *Server) handleSettingsAdapterLocalfilesLibraries(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.LocalFilesLibraryEditor == nil {
 		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")

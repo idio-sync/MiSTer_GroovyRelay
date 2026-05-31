@@ -2674,6 +2674,48 @@ body.receiver .upload-btn {
   cursor: pointer;
 }
 
+body.receiver .upload-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+body.receiver .receiver-localfiles-drawer {
+  grid-column: 2 / -1;
+}
+
+body.receiver .receiver-localfiles-drawer .catalog-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  background: linear-gradient(180deg, #0c0c0e, #060606);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px 2px 0 0;
+}
+
+body.receiver .receiver-localfiles-drawer .field-input {
+  min-width: 140px;
+  background: #0a0a0b;
+  border: 1px solid #1a1a1d;
+  color: #d4d4d8;
+  border-radius: 2px;
+  padding: 7px 9px;
+  font: 600 10px 'Inter', sans-serif;
+}
+
+body.receiver .receiver-localfiles-drawer .catalog-title {
+  min-width: 0;
+  color: var(--vfd);
+  font: 700 10px 'DSEG14-Classic', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.receiver .receiver-localfiles-drawer .widget-err {
+  margin: 8px 10px 0;
+}
+
 @container chassis (max-width: 600px) {
   body.receiver .section-strip {
     grid-template-columns: 60px 1fr;
