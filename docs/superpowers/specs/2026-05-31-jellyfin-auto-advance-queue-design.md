@@ -108,7 +108,9 @@ the full list:
 
 This queue replacement happens synchronously before the start goroutine begins,
 under `Adapter.mu`, so the adapter's now-playing queue snapshot and manual
-`NextTrack` see the same ordering.
+`NextTrack` see the same ordering. If the selected item later fails to start,
+the trailing queue remains in place; the adapter accepted the controller's
+queue-bearing command, but it does not auto-skip to the following item.
 
 `PlayNext` and `PlayLast` keep their current meaning: insert at the front or
 append to the current adapter-local queue.
@@ -142,7 +144,7 @@ ffmpeg exits cleanly
   -> build next request for the peeked item
   -> re-check core idle, stopped ref still current, and queue head still matches
   -> StartSessionIfIdle(nextReq)
-      -> started: commit only if the stopped ref is still current, conditionally remove the same queue head, spawn reporter
+      -> started: commit only if the stopped ref is still current, remove the started queued item by identity, spawn reporter
       -> not idle: stand down without changing queue or adapter ownership
       -> error: log, cleanup, stop
 ```
@@ -155,13 +157,15 @@ The settle delay is for smoothness only. Correctness comes from
 advancing when a controller starts something first.
 
 The EOF path must not pop the queue before the delay or before the idle guard.
-It peeks the head, starts only if core is still idle, and removes the head only
-after a successful guarded start and only if the queue head still matches the
-peeked item. Because building a next request performs network I/O, the auto path
-rechecks core idle, captured-ref identity, and queue-head identity immediately
-before calling `StartSessionIfIdle`. If a controller consumes or replaces the
-queue during the settle or build window, the background advance does not restore
-anything or reorder the queue.
+It peeks the head, starts only if core is still idle, and mutates the queue only
+after a successful guarded start. Because building a next request performs
+network I/O, the auto path rechecks core idle, captured-ref identity, and
+queue-head identity immediately before calling `StartSessionIfIdle`. At commit
+time, it removes the started item by stable identity from wherever it currently
+appears in the queue, preserving any intervening `PlayNext` / `PlayLast`
+mutations that arrived after the guarded start. If a controller consumes or
+replaces the queue during the settle or build window, the background advance
+does not restore anything or reorder the queue.
 
 ## Component 4 — Shared Start Helper
 
@@ -207,7 +211,8 @@ The auto-advance helper path is stricter because it is autonomous and guarded:
 10. If `started=true`, commit adapter ownership under `Adapter.mu` only when
    `currentRefKey` still equals the captured stopped ref. On that same critical
    section, set `currentRefKey` to the new request ref, clear pending rollback
-   state, and remove the queue head only if it still matches the peeked item.
+   state, and remove the started item by stable queued-item identity from its
+   current queue position.
 11. If the compare-commit fails, leave queue and adapter ownership untouched,
    cleanup any request-owned artwork, and do not spawn a reporter; a newer
    controller-owned session has taken over.
@@ -248,9 +253,10 @@ newer controller-owned session.
 | Controller sends `PlayNow` near EOF | Controller start wins; auto-advance sees non-idle or stale `currentRefKey` and stands down |
 | Toggle flips off before EOF | EOF reads false and stops |
 | Toggle flips off after goroutine passed the check | One in-flight hop may complete; the next EOF reads false |
-| `PlaybackInfo` fails for next item | Log and stop; do not skip ahead |
-| `StartSessionIfIdle` returns error | Log, cleanup, no queue mutation, stop |
+| Metadata or `PlaybackInfo` fails for next item | Log, leave queue and `currentRefKey` unchanged, cleanup request-owned artwork, do not spawn a reporter, do not attempt the following item |
+| `StartSessionIfIdle` returns error | Log, cleanup, leave queue and `currentRefKey` unchanged, do not spawn a reporter, stop |
 | Controller preempts after guarded start but before adapter commit | Compare-commit fails; auto path leaves adapter ownership and queue untouched |
+| `PlayNext` inserts before the started item after guarded start | Commit preserves the inserted item and removes the started item by identity from its later queue position |
 
 ## Testing
 
@@ -277,6 +283,13 @@ Add focused tests under `internal/adapters/jellyfin/`:
 - Failed or guard-missed auto-start does not clobber `currentRefKey`.
 - Auto-start success followed by controller preemption before adapter commit does
   not clobber `currentRefKey`.
+- `PlayNext` landing after successful `StartSessionIfIdle` but before adapter
+  commit keeps the inserted item and removes the already-started item by
+  identity.
+- Auto-advance metadata or `PlaybackInfo` failure leaves queue and
+  `currentRefKey` unchanged, spawns no reporter, and does not skip ahead.
+- `StartSessionIfIdle` error leaves queue and `currentRefKey` unchanged, spawns
+  no reporter, and cleans request-owned artwork.
 - Manual `NextTrack` still uses immediate `StartSession`.
 - Reporter wakeup still fires on every stop reason.
 - Wrapped `OnStop("eof")` still invokes artwork cleanup.
