@@ -4042,18 +4042,31 @@ func TestChassisCSS_HasSettingsInteriorRules(t *testing.T) {
 	}
 }
 
-func TestChassisCSS_BrandPlateUsesReceiverDisplayFace(t *testing.T) {
+func TestChassisCSS_BrandPlateUsesPrintedComponentLabel(t *testing.T) {
 	t.Parallel()
 	css, err := chassisStaticFS.ReadFile("static/chassis.css")
 	if err != nil {
 		t.Fatalf("read chassis.css: %v", err)
 	}
 	rule := cssRuleBlock(t, string(css), "body.receiver .brand-plate .name")
-	if !strings.Contains(rule, "'DSEG14-Modern'") {
-		t.Fatalf("brand plate should use a distinctive receiver display face, got:\n%s", rule)
+	for _, want := range []string{
+		"'Inter'",
+		"font: 850 13px/1 'Inter', sans-serif;",
+		"letter-spacing: 0.18em;",
+		"text-transform: uppercase;",
+	} {
+		if !strings.Contains(rule, want) {
+			t.Fatalf("brand plate should use printed component-label typography; missing %q in:\n%s", want, rule)
+		}
 	}
-	if strings.Contains(rule, "'Inter'") {
-		t.Fatalf("brand plate should not fall back to generic product UI typography:\n%s", rule)
+	for _, banned := range []string{
+		"'DSEG14-Modern'",
+		"var(--vfd-glow",
+		"var(--vfd)",
+	} {
+		if strings.Contains(rule, banned) {
+			t.Fatalf("brand plate should not use display/VFD typography token %q in:\n%s", banned, rule)
+		}
 	}
 }
 

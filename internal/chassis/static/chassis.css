@@ -485,13 +485,14 @@ body.receiver .brand-plate .name {
   display: block;
   overflow: hidden;
   color: #d4d4d8;
-  font: 700 13px/1 'DSEG14-Modern', ui-monospace, monospace;
-  letter-spacing: 0.08em;
+  font: 850 13px/1 'Inter', sans-serif;
+  letter-spacing: 0.18em;
   text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
   text-shadow:
-    0 0 2px rgba(255, 255, 255, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.04);
+    0 1px 0 rgba(255, 255, 255, 0.05),
+    0 -1px 0 rgba(0, 0, 0, 0.85);
 }
 
 body.receiver .brand-plate .model {
