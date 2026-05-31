@@ -68,17 +68,13 @@ type CompanionConfig struct {
 
 // Companion is the Plex Companion HTTP adapter. One per process.
 //
-// Concurrency invariant for cfg: every CompanionConfig field except the
-// atomically mirrored ones (MaxVideoBitrateKbps via maxVideoBitrateKbps,
-// AutoAdvance via autoAdvance, Modeline via modelineName) is frozen after
-// NewCompanion returns. Other ScopeRestartCast / ScopeRestartBridge fields (DeviceUUID,
-// DeviceName, ProfileName, ServerURL, Version, DataDir, EventLog) are
-// snapshot-at-finalize: Adapter.ApplyConfig mutates Adapter.plexCfg but
-// does NOT update Companion.cfg, so any field read off c.cfg sees the
-// value present at construction time. That makes lock-free reads from
-// request handlers safe — and means a UI save for one of those fields
-// needs a bridge restart to take effect (a pre-existing quirk tracked
-// separately; see scopeForPlexField in adapter.go).
+// Concurrency invariant for cfg: DeviceName, DeviceUUID, Version,
+// ProfileName, DataDir, and EventLog are frozen after NewCompanion returns.
+// MaxVideoBitrateKbps, AutoAdvance, and Modeline are mirrored through
+// maxVideoBitrateKbps, autoAdvance, and modelineName for lock-free live
+// reads. Adapter.ApplyConfig mutates Adapter.plexCfg and updates mirrors for
+// adapter config fields only; bridge/build/event fields are supplied at
+// construction or through dedicated callbacks and are not plexCfg fields.
 type Companion struct {
 	cfg      CompanionConfig
 	core     SessionManager // adapter-agnostic core.Manager
