@@ -839,7 +839,7 @@ body.receiver .vfd .right-panel .freq {
 
 body.receiver .source-cluster {
   display: grid;
-  width: min(100%, clamp(420px, 38vw, 600px));
+  width: clamp(480px, 38vw, 600px);
   grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   grid-template-rows: 1fr;
   gap: 0;
@@ -2287,8 +2287,8 @@ body.receiver [data-volume-knob] .volume-notch {
   height: 21px;
   border: 1px solid rgba(0,0,0,0.68);
   border-radius: 7px 7px 4px 4px;
-  background: var(--lock-amber, #d99340);
-  box-shadow: 0 0 8px rgba(217, 147, 64, 0.72), inset 0 1px 1px rgba(255,255,255,0.46), inset 0 -2px 2px rgba(0,0,0,0.34);
+  background: var(--vfd);
+  box-shadow: 0 0 8px var(--vfd-glow), inset 0 1px 1px rgba(255,255,255,0.46), inset 0 -2px 2px rgba(0,0,0,0.34);
 }
 
 body.receiver .volume-range {
@@ -4211,11 +4211,11 @@ body.receiver .source-cluster .lamp {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 18px minmax(0, 1fr) 15px;
-  gap: 3px;
+  grid-template-rows: 30px minmax(0, 1fr) 15px;
+  gap: 4px;
   min-width: 0;
-  min-height: 84px;
-  padding: 10px 8px 7px;
+  min-height: 92px;
+  padding: 12px 8px 7px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -4272,8 +4272,8 @@ body.receiver .source-cluster .lamp .led-well {
   grid-row: 1;
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
+  width: 26px;
+  height: 26px;
   min-width: 0;
   align-self: center;
   justify-self: center;
@@ -4287,8 +4287,8 @@ body.receiver .source-cluster .lamp .led-well {
 
 body.receiver .source-cluster .lamp .led {
   position: relative;
-  width: 8px;
-  height: 8px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: #161618;
   border: 1px solid #050506;
@@ -4299,11 +4299,11 @@ body.receiver .source-cluster .lamp .led {
 body.receiver .source-cluster .lamp .led::before {
   content: "";
   position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 2px;
-  height: 2px;
-  background: rgba(255, 255, 255, 0.28);
+  top: 2px;
+  left: 2px;
+  width: 4px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.32);
   border-radius: 50%;
 }
 
@@ -4334,7 +4334,7 @@ body.receiver .source-cluster .lamp .state {
 
 body.receiver .source-cluster .lamp.configured-idle .led {
   background: var(--lock-amber, #d99340);
-  box-shadow: 0 0 5px oklch(0.82 0.18 75 / 0.9), inset 0 0 2px rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 10px oklch(0.82 0.18 75 / 0.95), inset 0 0 3px rgba(255, 255, 255, 0.44);
 }
 
 body.receiver .source-cluster .lamp.configured-idle .state {
@@ -4351,7 +4351,7 @@ body.receiver .source-cluster .lamp.unavailable .state {
 
 body.receiver .source-cluster .lamp.casting .led {
   background: var(--vfd, #67ffb5);
-  box-shadow: 0 0 5px var(--vfd-glow), inset 0 0 2px rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 10px var(--vfd-glow), inset 0 0 3px rgba(255, 255, 255, 0.44);
 }
 
 body.receiver .source-cluster .lamp.casting {
@@ -4370,7 +4370,7 @@ body.receiver .source-cluster .lamp.casting .state {
 
 body.receiver .source-cluster .lamp.issue .led {
   background: #ff3030;
-  box-shadow: 0 0 5px #ff3030e6, inset 0 0 2px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 10px #ff3030e6, inset 0 0 3px rgba(255, 255, 255, 0.38);
 }
 
 body.receiver .source-cluster .lamp.issue {
@@ -4388,20 +4388,20 @@ body.receiver .source-cluster .lamp.issue .state {
 
 @container chassis (max-width: 600px) {
   body.receiver .source-cluster .lamp {
-    min-height: 46px;
-    grid-template-rows: 12px minmax(0, 1fr);
+    min-height: 52px;
+    grid-template-rows: 20px minmax(0, 1fr);
     gap: 2px;
-    padding: 7px 6px 6px;
+    padding: 8px 6px 6px;
   }
 
   body.receiver .source-cluster .lamp .led-well {
-    width: 12px;
-    height: 12px;
+    width: 18px;
+    height: 18px;
   }
 
   body.receiver .source-cluster .lamp .led {
-    width: 6px;
-    height: 6px;
+    width: 10px;
+    height: 10px;
   }
 
   body.receiver .source-cluster .lamp .name {
@@ -5313,6 +5313,54 @@ body.receiver .action-btn.eqbtn.stored { color: var(--vfd); border-color: oklch(
 body.receiver .sw-grid { display: grid; grid-template-columns: auto auto; gap: 7px 12px; align-items: center; }
 body.receiver .sw-cell { display: flex; align-items: center; gap: 7px; }
 body.receiver .sw-cell .sw-lbl { color: #8a8a8e; font: 700 8px 'Inter', sans-serif; letter-spacing: 0.14em; text-transform: uppercase; }
+@container chassis (max-width: 900px) {
+  body.receiver .audio-deck {
+    gap: 14px;
+    padding: 14px;
+  }
+
+  body.receiver .audio-deck > .deck-div:nth-child(n+4),
+  body.receiver .audio-deck > .deck-sect:nth-child(n+5) {
+    display: none;
+  }
+
+  body.receiver .audio-deck .knob-row {
+    gap: 10px;
+  }
+
+  body.receiver .audio-deck .dsp-knob {
+    width: 58px;
+    height: 68px;
+  }
+
+  body.receiver .eq-bank {
+    gap: 8px;
+  }
+
+  body.receiver .eq-range {
+    width: 22px;
+    height: 98px;
+  }
+
+  body.receiver .eq-range::-webkit-slider-runnable-track {
+    width: 22px;
+    height: 98px;
+  }
+
+  body.receiver .eq-range::-webkit-slider-thumb {
+    width: 22px;
+  }
+
+  body.receiver .eq-range::-moz-range-track {
+    width: 22px;
+    height: 98px;
+  }
+
+  body.receiver .eq-range::-moz-range-thumb {
+    width: 22px;
+  }
+}
+
 @container chassis (max-width: 600px) {
   body.receiver .audio-strip {
     grid-template-columns: 60px minmax(0, 1fr);

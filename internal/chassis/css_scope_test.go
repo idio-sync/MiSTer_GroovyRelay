@@ -484,7 +484,7 @@ func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
 
 	for _, want := range []string{
 		"body.receiver .source-cluster {\n  display: grid;",
-		"width: min(100%, clamp(420px, 38vw, 600px));",
+		"width: clamp(480px, 38vw, 600px);",
 		"grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));",
 		"grid-template-rows: 1fr;",
 	} {
@@ -561,8 +561,8 @@ func TestChassisCSS_DenseResponsivePassContracts(t *testing.T) {
 
 	sourceLamp600 := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 600px)", "body.receiver .source-cluster .lamp")
 	for _, want := range []string{
-		"min-height: 46px;",
-		"grid-template-rows: 12px minmax(0, 1fr);",
+		"min-height: 52px;",
+		"grid-template-rows: 20px minmax(0, 1fr);",
 	} {
 		if !strings.Contains(sourceLamp600, want) {
 			t.Fatalf("phone source lamps should become compact indicators, missing %q: %s", want, sourceLamp600)
@@ -632,7 +632,7 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 	lampRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp")
 	for _, want := range []string{
 		"grid-template-columns: minmax(0, 1fr);",
-		"grid-template-rows: 18px minmax(0, 1fr) 15px;",
+		"grid-template-rows: 30px minmax(0, 1fr) 15px;",
 		"background: transparent;",
 		"border: 0;",
 		"inset 1px 0 0 rgba(255, 255, 255, 0.035)",
@@ -671,8 +671,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 
 	wellRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led-well")
 	for _, want := range []string{
-		"width: 16px;",
-		"height: 16px;",
+		"width: 26px;",
+		"height: 26px;",
 		"background: radial-gradient(circle at center, #030304 0%, #0b0b0d 58%, #303036 100%);",
 		"border-radius: 50%;",
 	} {
@@ -683,8 +683,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 
 	ledRule := cssRuleBlock(t, lampText, "body.receiver .source-cluster .lamp .led")
 	for _, want := range []string{
-		"width: 8px;",
-		"height: 8px;",
+		"width: 15px;",
+		"height: 15px;",
 		"border: 1px solid #050506;",
 		"box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.72);",
 	} {
@@ -855,11 +855,20 @@ func TestChassisCSS_MasterVolumeUsesLargeSonyStyleIndicatorKnob(t *testing.T) {
 	for _, want := range []string{
 		"width: 8px;",
 		"height: 21px;",
-		"background: var(--lock-amber, #d99340);",
-		"box-shadow: 0 0 8px rgba(217, 147, 64, 0.72)",
+		"background: var(--vfd);",
+		"box-shadow: 0 0 8px var(--vfd-glow)",
 	} {
 		if !strings.Contains(notchRule, want) {
-			t.Fatalf("master volume should have a lit front-panel indicator, missing %q: %s", want, notchRule)
+			t.Fatalf("master volume should have a VFD-colored front-panel indicator, missing %q: %s", want, notchRule)
+		}
+	}
+	for _, banned := range []string{
+		"var(--lock-amber",
+		"#d99340",
+		"217, 147, 64",
+	} {
+		if strings.Contains(notchRule, banned) {
+			t.Fatalf("master volume indicator should not use the amber accent %q: %s", banned, notchRule)
 		}
 	}
 
