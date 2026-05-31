@@ -69,9 +69,9 @@ type CompanionConfig struct {
 // Companion is the Plex Companion HTTP adapter. One per process.
 //
 // Concurrency invariant for cfg: every CompanionConfig field except the
-// two atomically mirrored ones (MaxVideoBitrateKbps via maxVideoBitrateKbps,
-// Modeline via modelineName) is frozen after NewCompanion returns. The
-// other ScopeRestartCast / ScopeRestartBridge fields (DeviceUUID,
+// atomically mirrored ones (MaxVideoBitrateKbps via maxVideoBitrateKbps,
+// AutoAdvance via autoAdvance, Modeline via modelineName) is frozen after
+// NewCompanion returns. Other ScopeRestartCast / ScopeRestartBridge fields (DeviceUUID,
 // DeviceName, ProfileName, ServerURL, Version, DataDir, EventLog) are
 // snapshot-at-finalize: Adapter.ApplyConfig mutates Adapter.plexCfg but
 // does NOT update Companion.cfg, so any field read off c.cfg sees the

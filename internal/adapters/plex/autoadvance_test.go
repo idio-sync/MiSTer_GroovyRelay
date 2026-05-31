@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
 func TestAutoAdvance_ConfigDefaultsOff(t *testing.T) {
@@ -50,6 +51,47 @@ func TestAutoAdvance_CompanionMirrorSeedsAndUpdates(t *testing.T) {
 	c.SetAutoAdvance(false)
 	if c.autoAdvance.Load() {
 		t.Fatal("SetAutoAdvance(false) did not update the mirror")
+	}
+}
+
+func TestAutoAdvance_ApplyConfigUpdatesRunningCompanionMirror(t *testing.T) {
+	a, err := NewAdapter(AdapterConfig{
+		Bridge: config.BridgeConfig{
+			DataDir: t.TempDir(),
+			UI:      config.UIConfig{HTTPPort: 32500},
+		},
+		Core:       &fakeCore{},
+		TokenStore: &StoredData{DeviceUUID: "uuid-auto-advance"},
+	})
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	a.plexCfg = DefaultConfig()
+	a.plexCfg.AutoAdvance = false
+	a.ensureFinalized()
+	if a.companion == nil {
+		t.Fatal("companion was not finalized")
+	}
+	if a.companion.autoAdvance.Load() {
+		t.Fatal("initial companion autoAdvance = true, want false")
+	}
+
+	raw, meta := sectionPrimitive(t, `
+enabled = true
+device_name = "MiSTer"
+profile_name = "Plex Home Theater"
+max_video_bitrate_kbps = 1500
+auto_advance = true
+`)
+	scope, err := a.ApplyConfig(raw, meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Fatalf("scope = %v, want ScopeHotSwap", scope)
+	}
+	if !a.companion.autoAdvance.Load() {
+		t.Fatal("ApplyConfig did not update companion autoAdvance mirror")
 	}
 }
 

@@ -380,8 +380,11 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			ApplyScope: adapters.ScopeRestartCast,
 		},
 		{
-			Key:        "auto_advance",
-			Label:      "Continuous Play",
+			Key:   "auto_advance",
+			Label: "Continuous Play",
+			Help: "When a track or episode ends, automatically play the next item" +
+				" in the Plex queue (playlist, album, TV show, or artist radio)." +
+				" Works even when the Plex app that started the cast is closed.",
 			Kind:       adapters.KindBool,
 			Default:    false,
 			ApplyScope: adapters.ScopeHotSwap,
