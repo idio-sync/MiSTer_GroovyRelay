@@ -3,6 +3,7 @@ package fakemister
 import (
 	"bytes"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -76,6 +77,9 @@ func TestListener_BuffersFullRawFieldBeforeRunStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	if actual := actualUDPReadBuffer(t, l.conn); actual > 0 && actual < fieldBytes {
+		t.Skipf("kernel UDP receive buffer is %d bytes, below %d-byte pre-run raw field burst", actual, fieldBytes)
+	}
 
 	addr := l.Addr().(*net.UDPAddr)
 	conn, err := net.DialUDP("udp", nil, addr)
@@ -111,6 +115,28 @@ func TestListener_BuffersFullRawFieldBeforeRunStarts(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for full raw field")
 	}
+}
+
+func actualUDPReadBuffer(t *testing.T, conn *net.UDPConn) int {
+	t.Helper()
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		t.Logf("cannot inspect UDP receive buffer: %v", err)
+		return 0
+	}
+	var size int
+	var sockErr error
+	if err := raw.Control(func(fd uintptr) {
+		size, sockErr = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+	}); err != nil {
+		t.Logf("cannot inspect UDP receive buffer: %v", err)
+		return 0
+	}
+	if sockErr != nil {
+		t.Logf("cannot inspect UDP receive buffer: %v", sockErr)
+		return 0
+	}
+	return size
 }
 
 func TestListener_AudioHeaderThenPayload(t *testing.T) {
