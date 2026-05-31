@@ -455,6 +455,27 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_VFDDensitySelectors(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := strings.ReplaceAll(string(src), "\r\n", "\n")
+
+	for _, selector := range []string{
+		"body.receiver .vfd .vfd-legend-rail",
+		"body.receiver .vfd .vfd-queue-memory",
+		"body.receiver .vfd .vfd-clock-module",
+		"body.receiver .vfd.vfd-density--sparse-one .tier-primary",
+		"body.receiver .vfd.vfd-density--sparse-two .tier-primary",
+	} {
+		if !strings.Contains(text, selector+" {") {
+			t.Fatalf("chassis.css missing VFD density selector %q", selector)
+		}
+	}
+}
+
 func TestReceiverLocalFilesButtonUsesUploadButtonStyle(t *testing.T) {
 	t.Parallel()
 	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")

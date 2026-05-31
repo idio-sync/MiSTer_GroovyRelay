@@ -2,7 +2,8 @@
 //
 // Subscribes to /receiver/events (SSE), routes named events:
 //   state -> window.Chassis.State.set(idle|live)
-//   vfd   -> textContent updates on data-vfd-{primary,secondary,tertiary,queue,uptime}
+//   vfd   -> textContent updates on data-vfd-{primary,secondary,tertiary,uptime}
+//            plus queue-memory slots
 //            (overflowing tier rows marquee-scroll; empty tiers collapse)
 //
 // Loaded after chassis.js (Phase 0) so window.Chassis is populated.
@@ -103,15 +104,102 @@
     });
   }
 
+  const densityClasses = [
+    'vfd-density--dense',
+    'vfd-density--sparse-two',
+    'vfd-density--sparse-one',
+    'vfd-density--empty',
+  ];
+
+  function densityClass(primary, secondary, tertiary) {
+    if (primary && secondary && tertiary) return 'vfd-density--dense';
+    if (primary && secondary) return 'vfd-density--sparse-two';
+    if (primary) return 'vfd-density--sparse-one';
+    return 'vfd-density--empty';
+  }
+
+  function applyDensity(primary, secondary, tertiary) {
+    const root = document.querySelector('.vfd');
+    if (!root) return;
+    root.classList.remove(...densityClasses);
+    root.classList.add(densityClass(primary, secondary, tertiary));
+  }
+
+  function paddedQueueNumber(value) {
+    return String(value).padStart(2, '0');
+  }
+
+  function normalizedQueueCurrent(current, total) {
+    const parsedTotal = Number(total) || 0;
+    if (parsedTotal <= 0) return 0;
+    const parsedCurrent = Number(current) || 1;
+    return Math.min(Math.max(parsedCurrent, 1), parsedTotal);
+  }
+
+  function queueWindow(current, total) {
+    const parsedTotal = Number(total) || 0;
+    if (parsedTotal <= 0) return [];
+    const active = normalizedQueueCurrent(current, parsedTotal);
+    if (parsedTotal <= 12) {
+      return Array.from({ length: parsedTotal }, (_, idx) => idx + 1);
+    }
+    const windowSize = 5;
+    let start = active - 2;
+    let end = active + 2;
+    if (start < 1) {
+      end += 1 - start;
+      start = 1;
+    }
+    if (end > parsedTotal) {
+      start -= end - parsedTotal;
+      end = parsedTotal;
+    }
+    start = Math.max(start, 1);
+    return Array.from({ length: Math.min(windowSize, end - start + 1) }, (_, idx) => start + idx);
+  }
+
+  function makeQueueSlot(text, state) {
+    const slot = document.createElement('span');
+    slot.classList.add('queue-slot');
+    if (state) slot.classList.add(state);
+    slot.textContent = text;
+    return slot;
+  }
+
+  function renderQueue(current, total) {
+    const slots = document.querySelector('[data-vfd-queue-slots]');
+    const totalLabel = document.querySelector('[data-vfd-queue-total-label]');
+    if (!slots) return;
+    slots.replaceChildren();
+    const parsedTotal = Number(total) || 0;
+    const active = normalizedQueueCurrent(current, parsedTotal);
+    if (parsedTotal <= 0) {
+      for (let idx = 0; idx < 8; idx += 1) {
+        slots.appendChild(makeQueueSlot('', 'dormant'));
+      }
+      if (totalLabel) totalLabel.textContent = '';
+      return;
+    }
+    queueWindow(active, parsedTotal).forEach((item) => {
+      let state = 'future';
+      if (item < active) state = 'past';
+      if (item === active) state = 'current';
+      slots.appendChild(makeQueueSlot(paddedQueueNumber(item), state));
+    });
+    if (totalLabel) {
+      totalLabel.textContent = parsedTotal > 1 ? `TOTAL ${paddedQueueNumber(parsedTotal)}` : '';
+    }
+  }
+
   function handleVfdEvent(ev) {
     try {
       const data = JSON.parse(ev.data);
       applyTier('data-vfd-primary', data.primary);
       applyTier('data-vfd-secondary', data.secondary);
       applyTier('data-vfd-tertiary', data.tertiary);
-      const queue = document.querySelector('[data-vfd-queue]');
       const uptime = document.querySelector('[data-vfd-uptime]');
-      if (queue) queue.textContent = `${data.queueCurrent} / ${data.queueTotal}`;
+      applyDensity(data.primary, data.secondary, data.tertiary);
+      renderQueue(data.queueCurrent, data.queueTotal);
       if (uptime) uptime.textContent = data.uptime || '';
       // Re-measure once fonts are final (DSEG14 metrics differ from the
       // fallback monospace; a pre-font measurement mis-sizes the marquee).
@@ -120,6 +208,21 @@
       }
     } catch (err) {
       console.warn('vfd-live: bad vfd payload', ev.data, err);
+    }
+  }
+
+  function initialVfdRender() {
+    const primary = document.querySelector('[data-vfd-primary]');
+    const secondary = document.querySelector('[data-vfd-secondary]');
+    const tertiary = document.querySelector('[data-vfd-tertiary]');
+    applyDensity(
+      primary ? primary.textContent : '',
+      secondary ? secondary.textContent : '',
+      tertiary ? tertiary.textContent : '',
+    );
+    const queueRail = document.querySelector('[data-vfd-queue-current]');
+    if (queueRail) {
+      renderQueue(queueRail.getAttribute('data-vfd-queue-current'), queueRail.getAttribute('data-vfd-queue-total'));
     }
   }
 
@@ -187,5 +290,8 @@
   // would stack a new handler per SSE reconnect in a long-running kiosk.
   window.addEventListener('resize', remeasureAllTiers);
 
-  document.addEventListener('DOMContentLoaded', connect);
+  document.addEventListener('DOMContentLoaded', () => {
+    initialVfdRender();
+    connect();
+  });
 })();

@@ -2093,6 +2093,7 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	data := VFDData{
 		Primary:      "TEST-PRIMARY",
 		Secondary:    "TEST-SECONDARY",
+		Tertiary:     "TEST-TERTIARY",
 		QueueCurrent: 1,
 		QueueTotal:   12,
 		SystemTime:   "22:47",
@@ -2103,15 +2104,24 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	}
 	body := buf.String()
 	for _, want := range []string{
+		"vfd-density",
+		"vfd-density--dense",
+		"vfd-legend-rail",
+		"vfd-queue-memory",
+		"data-vfd-queue-slots",
+		"data-vfd-clock-module",
 		"data-vfd-primary",
 		"data-vfd-secondary",
 		"data-vfd-tertiary",
-		"data-vfd-queue",
 		"data-vfd-uptime",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("vfd partial missing %q hook; full output:\n%s", want, body)
 		}
+	}
+	legacyQueueHook := regexp.MustCompile(`data-vfd-queue(?:\s|=|>)`)
+	if legacyQueueHook.MatchString(body) {
+		t.Errorf("vfd partial should not render the legacy right-panel data-vfd-queue hook; full output:\n%s", body)
 	}
 	// Ghost overlays must still be present — regression guard against
 	// accidentally placing data-vfd-* on the outer divs and breaking

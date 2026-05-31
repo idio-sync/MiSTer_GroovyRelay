@@ -44,6 +44,8 @@ class FakeElement {
   constructor() {
     this.textContent = '';
     this.classes = new Set();
+    this.children = [];
+    this.attributes = new Map();
     this.style = {
       _props: new Map(),
       setProperty(k, v) { this._props.set(k, v); },
@@ -71,6 +73,29 @@ class FakeElement {
       if (selector === '.vfd-row') return this.parent;
       return null;
     };
+  }
+
+  appendChild(child) {
+    child.parent = this;
+    this.children.push(child);
+    return child;
+  }
+
+  replaceChildren(...children) {
+    this.children = [];
+    children.forEach((child) => this.appendChild(child));
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) || '';
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
   }
 }
 
@@ -114,7 +139,12 @@ class FakeEventSource extends FakeTarget {
   }
 }
 
-function createHarness(initialState = 'idle') {
+function createHarness(initialState = 'idle', options = {}) {
+  const vfdRoot = new FakeElement();
+  vfdRoot.classes.add('vfd');
+  vfdRoot.classes.add('vfd-density');
+  vfdRoot.classes.add('vfd-density--sparse-one');
+
   const vfdState = new FakeElement();
   vfdState.classes.add(initialState === 'live' ? 'vfd-state--live' : 'vfd-state--idle');
 
@@ -131,7 +161,11 @@ function createHarness(initialState = 'idle') {
   secondary.parent = secondaryRow;
   tertiary.parent = tertiaryRow;
 
-  const queue = new FakeElement();
+  const queueSlots = new FakeElement();
+  const queueTotalLabel = new FakeElement();
+  const queueRail = new FakeElement();
+  queueRail.setAttribute('data-vfd-queue-current', options.queueCurrent ?? 0);
+  queueRail.setAttribute('data-vfd-queue-total', options.queueTotal ?? 0);
   const uptime = new FakeElement();
 
   const resizeListeners = [];
@@ -155,8 +189,11 @@ function createHarness(initialState = 'idle') {
   const stateCalls = [];
   const bodyClasses = new Set(['receiver', initialState]);
   const document = new FakeTarget();
+  document.createElement = () => new FakeElement();
   document.querySelector = (selector) => {
     switch (selector) {
+      case '.vfd':
+        return vfdRoot;
       case '.vfd-state':
         return vfdState;
       case '[data-vfd-primary]':
@@ -165,8 +202,12 @@ function createHarness(initialState = 'idle') {
         return secondary;
       case '[data-vfd-tertiary]':
         return tertiary;
-      case '[data-vfd-queue]':
-        return queue;
+      case '[data-vfd-queue-slots]':
+        return queueSlots;
+      case '[data-vfd-queue-total-label]':
+        return queueTotalLabel;
+      case '[data-vfd-queue-current]':
+        return queueRail;
       case '[data-vfd-uptime]':
         return uptime;
       default:
@@ -198,6 +239,7 @@ function createHarness(initialState = 'idle') {
   const source = FakeEventSource.last;
   return {
     source,
+    vfdRoot,
     vfdState,
     primary,
     secondary,
@@ -205,7 +247,9 @@ function createHarness(initialState = 'idle') {
     primaryRow,
     secondaryRow,
     tertiaryRow,
-    queue,
+    queueRail,
+    queueSlots,
+    queueTotalLabel,
     uptime,
     stateCalls,
     bodyClasses,
@@ -259,7 +303,15 @@ test('vfd event updates primary, secondary, and tertiary tier spans', () => {
   assert.equal(h.tertiary.textContent, '1982 · Ridley Scott');
 });
 
-test('vfd event updates queue and uptime spans', () => {
+test('DOMContentLoaded renders the initial server queue memory state', () => {
+  const h = createHarness('idle', { queueCurrent: 4, queueTotal: 8 });
+
+  assert.deepEqual(h.queueSlots.children.map((child) => child.textContent), ['01', '02', '03', '04', '05', '06', '07', '08']);
+  assert.equal(h.queueSlots.children[3].classList.contains('current'), true);
+  assert.equal(h.queueTotalLabel.textContent, 'TOTAL 08');
+});
+
+test('vfd event updates queue memory rail and uptime span', () => {
   const h = createHarness('idle');
 
   h.source.dispatch('vfd', {
@@ -273,8 +325,86 @@ test('vfd event updates queue and uptime spans', () => {
     }),
   });
 
-  assert.equal(h.queue.textContent, '2 / 5');
+  assert.deepEqual(h.queueSlots.children.map((child) => child.textContent), ['01', '02', '03', '04', '05']);
+  assert.equal(h.queueSlots.children[1].classList.contains('current'), true);
+  assert.equal(h.queueTotalLabel.textContent, 'TOTAL 05');
   assert.equal(h.uptime.textContent, '3H 15M');
+});
+
+test('vfd event assigns density classes from populated tiers', () => {
+  const cases = [
+    { name: 'dense', primary: 'P', secondary: 'S', tertiary: 'T', want: 'vfd-density--dense' },
+    { name: 'sparse two', primary: 'P', secondary: 'S', tertiary: '', want: 'vfd-density--sparse-two' },
+    { name: 'sparse one', primary: 'P', secondary: '', tertiary: '', want: 'vfd-density--sparse-one' },
+    { name: 'empty', primary: '', secondary: '', tertiary: '', want: 'vfd-density--empty' },
+  ];
+
+  cases.forEach((tc) => {
+    const h = createHarness('idle');
+
+    h.source.dispatch('vfd', {
+      data: JSON.stringify({
+        primary: tc.primary,
+        secondary: tc.secondary,
+        tertiary: tc.tertiary,
+        queueCurrent: 0,
+        queueTotal: 0,
+        uptime: '',
+      }),
+    });
+
+    assert.equal(h.vfdRoot.classList.contains(tc.want), true, `${tc.name} should set ${tc.want}`);
+    ['vfd-density--dense', 'vfd-density--sparse-two', 'vfd-density--sparse-one', 'vfd-density--empty']
+      .filter((name) => name !== tc.want)
+      .forEach((name) => {
+        assert.equal(h.vfdRoot.classList.contains(name), false, `${tc.name} should clear ${name}`);
+      });
+  });
+});
+
+test('vfd event renders dormant queue cells for empty queue totals', () => {
+  const h = createHarness('idle');
+
+  h.source.dispatch('vfd', {
+    data: JSON.stringify({
+      primary: 'Solo',
+      secondary: '',
+      tertiary: '',
+      queueCurrent: 0,
+      queueTotal: 0,
+      uptime: '',
+    }),
+  });
+
+  assert.equal(h.queueSlots.children.length, 8);
+  h.queueSlots.children.forEach((child) => {
+    assert.equal(child.classList.contains('dormant'), true);
+    assert.equal(child.textContent, '');
+  });
+  assert.equal(h.queueTotalLabel.textContent, '');
+});
+
+test('vfd event renders long queue as a current-centered window plus total', () => {
+  const h = createHarness('idle');
+
+  h.source.dispatch('vfd', {
+    data: JSON.stringify({
+      primary: 'Movie',
+      secondary: '1982',
+      tertiary: '',
+      queueCurrent: 9,
+      queueTotal: 32,
+      uptime: '',
+    }),
+  });
+
+  assert.deepEqual(h.queueSlots.children.map((child) => child.textContent), ['07', '08', '09', '10', '11']);
+  assert.equal(h.queueSlots.children[0].classList.contains('past'), true);
+  assert.equal(h.queueSlots.children[1].classList.contains('past'), true);
+  assert.equal(h.queueSlots.children[2].classList.contains('current'), true);
+  assert.equal(h.queueSlots.children[3].classList.contains('future'), true);
+  assert.equal(h.queueSlots.children[4].classList.contains('future'), true);
+  assert.equal(h.queueTotalLabel.textContent, 'TOTAL 32');
 });
 
 test('vfd event marks rows with is-empty when tier text is empty', () => {

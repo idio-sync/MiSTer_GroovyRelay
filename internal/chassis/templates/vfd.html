@@ -1,22 +1,26 @@
 {{define "vfd"}}
 {{htmlComment "chassis:vfd"}}
 <div class="screen-frame">
-  <div class="screen vfd">
+  <div class="screen vfd vfd-density {{if and .Primary .Secondary .Tertiary}}vfd-density--dense{{else if and .Primary .Secondary}}vfd-density--sparse-two{{else if .Primary}}vfd-density--sparse-one{{else}}vfd-density--empty{{end}}">
     <div class="vfd-state {{if eq .State "live"}}vfd-state--live{{else}}vfd-state--idle{{end}}">
-      <div>
+      <div class="vfd-metadata-zone">
+        <div class="vfd-legend-rail" aria-hidden="true">
+          <span class="on">TITLE</span><span>ARTIST</span><span>ALBUM</span><span>DATE</span><span>INDEX</span><span>TEXT</span>
+        </div>
+        <div class="vfd-tier-stack">
         <div class="vfd-row tier-primary seg-display{{if not .Primary}} is-empty{{end}}"><span class="seg-ghost" aria-hidden="true">~~~~~~~</span><span class="seg-text" data-vfd-primary>{{.Primary}}</span></div>
         <div class="vfd-row tier-secondary seg-display{{if not .Secondary}} is-empty{{end}}"><span class="seg-ghost" aria-hidden="true">~~~~ ~~~~~ ~~</span><span class="seg-text" data-vfd-secondary>{{.Secondary}}</span></div>
         <div class="vfd-row tier-tertiary seg-display{{if not .Tertiary}} is-empty{{end}}"><span class="seg-ghost" aria-hidden="true">~~ ~~ ~~~~</span><span class="seg-text" data-vfd-tertiary>{{.Tertiary}}</span></div>
-      </div>
-      <div class="right-panel">
-        <div class="lbl">System time</div>
-        <div class="time-row">
-          <div class="queue-stack">
-            <div class="queue-v seg-display"><span class="seg-ghost" aria-hidden="true">88 ~ 88</span><span class="seg-text" data-vfd-queue>{{.QueueCurrent}} / {{.QueueTotal}}</span></div>
-            <div class="queue-k">QUEUE</div>
-          </div>
-          <div class="big-time"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>{{.SystemTime}}</span></span></div>
         </div>
+        <div class="vfd-queue-memory" data-vfd-queue-current="{{.QueueCurrent}}" data-vfd-queue-total="{{.QueueTotal}}" aria-hidden="true">
+          <span class="queue-name">Q MEM</span>
+          <span class="queue-slots" data-vfd-queue-slots></span>
+          <span class="queue-total" data-vfd-queue-total-label></span>
+        </div>
+      </div>
+      <div class="right-panel vfd-clock-module" data-vfd-clock-module>
+        <div class="lbl">System time</div>
+        <div class="big-time"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">88:88</span><span class="seg-text" data-system-time>{{.SystemTime}}</span></span></div>
         <div class="freq"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~~~</span><span class="seg-text">UPTIME</span></span> <span class="seg-display"><span class="seg-ghost" aria-hidden="true">88~ 88~</span><span class="seg-text" data-vfd-uptime>{{.Uptime}}</span></span></div>
       </div>
     </div>

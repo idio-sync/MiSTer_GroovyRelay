@@ -1,7 +1,7 @@
 # Receiver VFD Density Pass Design
 
 **Date:** 2026-05-31
-**Status:** Approved direction; pending user review of written spec
+**Status:** Implemented in receiver chassis template, CSS, and VFD live JS
 **Surface:** receiver chassis web UI, top VFD only
 
 ## Goal
@@ -17,7 +17,8 @@ inactive display material.
 
 ## Design Direction
 
-Use adaptive metadata geometry plus dormant VFD texture.
+Use adaptive metadata geometry plus dormant VFD texture, with live-mode queue
+memory occupying the bottom horizontal rail.
 
 When the session has three meaningful metadata tiers, keep the existing stacked
 DSEG14 hierarchy. When there are only one or two meaningful tiers, the VFD
@@ -30,6 +31,11 @@ than the current item needs. Empty areas are filled with inactive segment masks,
 fixed character wells, small divider ticks, and short printed legends. These
 marks are visual structure, not new system state.
 
+The right clock module should use the larger standby-scale time and uptime
+treatment in both live and idle modes. Live mode removes the redundant queue
+count from that module, so the queue memory rail can own queue status while the
+right side stays a clear clock/counter readout.
+
 ## Non-Duplication Rule
 
 Do not add live playback/source/control facts that already exist elsewhere.
@@ -38,6 +44,8 @@ Allowed on the VFD:
 
 - Media title, show title, episode title, artist, album, year, season/episode,
   upload date, provider group, channel/group metadata.
+- Queue position as a bounded program-memory rail, using existing
+  `QueueCurrent` / `QueueTotal` data.
 - Static or dormant labels such as `TITLE`, `ARTIST`, `ALBUM`, `TEXT`, `INDEX`,
   `CH`, `DATE`, or `DISC` when they read as printed VFD capabilities.
 - Ghost segment masks that imply unused characters.
@@ -60,7 +68,8 @@ Used when primary, secondary, and tertiary are all present.
 - Preserve marquee measurement behavior for overflowing rows.
 - Add a subtle fixed-width character-cell feel behind rows so long and short
   text feel housed in the same hardware.
-- Keep the right clock panel visually unchanged in this mode.
+- Use the larger right-side clock pocket in live mode, matching the standby
+  time/uptime scale.
 
 ### Sparse Two-Tier Mode
 
@@ -92,6 +101,26 @@ Idle should stay clearly different from live now-playing.
 - Keep the existing idle hint as the secondary marquee.
 - Use the same dormant display texture, but dimmer, so the screen feels powered
   and ready without claiming media is loaded.
+- Keep the larger right-side system-time module in idle mode, using the same
+  scale as live mode and the space that would otherwise show a redundant
+  `0 / 0` queue count.
+
+### Queue Memory Rail
+
+The queue rail fills horizontal space only when it can read as hardware memory,
+not as a modern badge.
+
+- `QueueTotal` 0: render dormant memory cells only, with no `0 / 0` or
+  `TOTAL 00` text.
+- `QueueTotal` 1: render a short `Q MEM 01` treatment or dormant cells,
+  depending on available space.
+- `QueueTotal` 2-12: render numbered slots from `01` through total. Current
+  slot is bright; past slots are faint; future slots are dim.
+- `QueueTotal` 13 or more: render a sliding window around `QueueCurrent`, plus
+  a compact total label. Example: `Q MEM 07 08 [09] 10 11 TOTAL 32`.
+
+The rail should sit at the bottom of the metadata area and extend farther than
+the title rows, helping fill the glass without competing with the title.
 
 ## Data And DOM Shape
 
@@ -110,6 +139,7 @@ The template should add static structural elements:
 
 - A dormant legend rail.
 - Ghost segment wells per metadata row.
+- Queue memory rail with dormant fallback cells.
 - Thin divider ticks or fixed cell separators.
 
 These elements should be `aria-hidden="true"` unless they convey real text
@@ -141,6 +171,8 @@ short and state-based, and honor `prefers-reduced-motion`.
   three-tier, two-tier, one-tier, and empty payloads.
 - JS behavior test: density class recalculates when a later SSE event fills or
   clears a tier.
+- Queue rail test: queue totals 0, 1, 2-12, and 13+ render dormant cells,
+  short queue, full numbered slots, and sliding window respectively.
 - CSS scope test: new selectors remain under `body.receiver` and do not leak to
   the non-chassis UI.
 - Manual visual check: idle, music, movie, direct URL, and stream cases at wide,
@@ -153,7 +185,7 @@ short and state-based, and honor `prefers-reduced-motion`.
 - Transport, source, meter, audio strip, or visualizer-bank changes.
 - Artwork, thumbnails, waveform displays, or spectrum displays inside the top
   VFD.
-- Moving the system clock, queue, or uptime panel in this pass.
+- New queue semantics beyond existing current/total values.
 
 ## Risks
 

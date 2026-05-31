@@ -680,14 +680,55 @@ body.receiver .vfd {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 24px;
   align-items: center;
-  min-height: 110px;
-  padding: 16px 20px 14px;
+  min-height: 128px;
+  padding: 14px 20px 12px;
   container-type: inline-size;
   container-name: vfd;
 }
 
-body.receiver .vfd > .vfd-state > div:first-child,
+body.receiver .vfd::before {
+  content: "";
+  position: absolute;
+  inset: 8px 10px;
+  background:
+    linear-gradient(90deg, transparent 0 15px, var(--vfd-ghost) 15px 16px, transparent 16px 32px),
+    linear-gradient(0deg, transparent 0 23px, var(--vfd-ghost) 23px 24px, transparent 24px 48px);
+  opacity: 0.24;
+  pointer-events: none;
+  mask-image: linear-gradient(90deg, #000 0%, #000 92%, transparent 100%);
+}
+
+body.receiver .vfd > .vfd-state > .vfd-metadata-zone,
 body.receiver .vfd > div:not(.right-panel):not(.tuning-overlay):not(.lock-flash):not(.self-test-screen) {
+  min-width: 0;
+}
+
+body.receiver .vfd .vfd-metadata-zone {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+body.receiver .vfd .vfd-legend-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: var(--vfd-faded);
+  font: 700 9px/1 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-shadow: none;
+}
+
+body.receiver .vfd .vfd-legend-rail .on {
+  color: var(--vfd-dim);
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+
+body.receiver .vfd .vfd-tier-stack {
+  display: grid;
+  align-content: center;
   min-width: 0;
 }
 
@@ -776,13 +817,109 @@ body.receiver .vfd .tier-tertiary {
   text-transform: uppercase;
 }
 
+body.receiver .vfd.vfd-density--sparse-two .tier-primary {
+  margin-bottom: 10px;
+  font-size: 28px;
+  line-height: 1;
+}
+
+body.receiver .vfd.vfd-density--sparse-two .tier-secondary {
+  margin-bottom: 8px;
+  font-size: 16px;
+}
+
+body.receiver .vfd.vfd-density--sparse-two .tier-tertiary {
+  color: var(--vfd-faded);
+  text-shadow: none;
+}
+
+body.receiver .vfd.vfd-density--sparse-one .vfd-tier-stack {
+  gap: 6px;
+}
+
+body.receiver .vfd.vfd-density--sparse-one .tier-primary {
+  margin-bottom: 2px;
+  font-size: 33px;
+  line-height: 1;
+}
+
+body.receiver .vfd.vfd-density--sparse-one .tier-secondary,
+body.receiver .vfd.vfd-density--sparse-one .tier-tertiary {
+  color: var(--vfd-faded);
+  text-shadow: none;
+}
+
+body.receiver .vfd .vfd-queue-memory {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: min(100%, 760px);
+  color: var(--vfd-faded);
+  text-shadow: none;
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-name,
+body.receiver .vfd .vfd-queue-memory .queue-total {
+  font: 700 8px/1 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-slots {
+  display: flex;
+  min-width: 0;
+  gap: 5px;
+  align-items: center;
+  overflow: hidden;
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-slot {
+  display: inline-grid;
+  min-width: 26px;
+  height: 13px;
+  place-items: center;
+  color: var(--vfd-faded);
+  font: 700 9px/1 'DSEG7-Classic', monospace;
+  letter-spacing: 0.02em;
+  border: 1px solid oklch(0.42 0.12 175 / 0.18);
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-slot.past {
+  color: oklch(0.48 0.13 175 / 0.42);
+  border-color: oklch(0.42 0.12 175 / 0.15);
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-slot.current {
+  color: var(--vfd);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
+  border-color: oklch(0.76 0.18 175 / 0.72);
+  box-shadow: 0 0 6px oklch(0.85 0.22 175 / 0.15);
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-slot.future {
+  color: var(--vfd-dim);
+  border-color: oklch(0.50 0.14 175 / 0.26);
+}
+
+body.receiver .vfd .vfd-queue-memory .queue-slot.dormant {
+  color: transparent;
+  background: oklch(0.42 0.12 175 / 0.05);
+  border-color: oklch(0.42 0.12 175 / 0.14);
+}
+
 body.receiver .vfd .right-panel {
   display: grid;
-  gap: 4px;
+  align-content: center;
+  gap: 8px;
   padding-left: 24px;
   margin-left: -12px;
   text-align: right;
   border-left: 1px solid oklch(0.16 0.04 175 / 0.55);
+}
+
+body.receiver .vfd .vfd-clock-module {
+  min-width: 218px;
 }
 
 body.receiver .vfd .right-panel .lbl {
@@ -793,38 +930,9 @@ body.receiver .vfd .right-panel .lbl {
   text-transform: uppercase;
 }
 
-body.receiver .vfd .right-panel .time-row {
-  display: flex;
-  gap: 28px;
-  align-items: baseline;
-  justify-content: flex-end;
-}
-
-body.receiver .vfd .right-panel .queue-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-end;
-}
-
-body.receiver .vfd .right-panel .queue-stack .queue-v {
-  color: var(--vfd);
-  font: 700 28px/1 'DSEG7-Classic', monospace;
-  letter-spacing: 0.04em;
-  text-shadow: 0 0 4px var(--vfd-glow), 0 0 1px var(--vfd-bright);
-}
-
-body.receiver .vfd .right-panel .queue-stack .queue-k {
-  color: var(--vfd-dim);
-  font: 600 13px/1.2 'Inter', sans-serif;
-  letter-spacing: 0.22em;
-  text-shadow: none;
-  text-transform: uppercase;
-}
-
 body.receiver .vfd .right-panel .big-time {
   font-family: 'DSEG7-Classic', monospace;
-  font-size: 38px;
+  font-size: 54px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.04em;
@@ -833,8 +941,9 @@ body.receiver .vfd .right-panel .big-time {
 body.receiver .vfd .right-panel .freq {
   color: var(--vfd-dim);
   font-family: 'DSEG7-Classic', monospace;
-  font-size: 16px;
+  font-size: 21px;
   font-weight: 400;
+  line-height: 1.1;
   letter-spacing: 0.05em;
 }
 
@@ -924,6 +1033,19 @@ body.receiver.idle .source-cluster .hw-btn.active {
     display: none;
   }
 
+  body.receiver .vfd .vfd-legend-rail {
+    gap: 8px;
+  }
+
+  body.receiver .vfd .vfd-queue-memory {
+    width: 100%;
+    gap: 8px;
+  }
+
+  body.receiver .vfd .vfd-queue-memory .queue-slot {
+    min-width: 23px;
+  }
+
   body.receiver .vfd .tier-primary { font-size: 20px; }
   body.receiver .vfd .tier-secondary { font-size: 13px; }
   body.receiver .vfd .tier-tertiary { font-size: 11px; }
@@ -979,6 +1101,20 @@ body.receiver.idle .source-cluster .hw-btn.active {
 @container chassis (max-width: 520px) {
   body.receiver .vfd {
     padding: 10px 12px 8px;
+  }
+
+  body.receiver .vfd .vfd-queue-memory {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  body.receiver .vfd .vfd-queue-memory .queue-total {
+    display: none;
+  }
+
+  body.receiver .vfd .vfd-queue-memory .queue-slot {
+    min-width: 21px;
+    height: 12px;
+    font-size: 8px;
   }
 
   body.receiver .vfd .tier-primary { font-size: 18px; }
