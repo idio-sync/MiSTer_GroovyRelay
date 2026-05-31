@@ -15,6 +15,8 @@
   let transportState = '';
   let draggingSeek = null;
   let serverSeekPercent = 0;
+  let progressAnchor = null;
+  let progressFrame = 0;
 
   function metaContent(name) {
     const el = document.querySelector(`meta[name="${name}"]`);
@@ -26,8 +28,28 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  function parseMaybeInteger(raw) {
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
+  }
+
+  function nowMs() {
+    if (window.performance && typeof window.performance.now === 'function') {
+      return window.performance.now();
+    }
+    return Date.now();
+  }
+
+  function formatPercent(percent) {
+    const rounded = Math.round(clamp(percent, 0, 100) * 1000) / 1000;
+    if (Object.is(rounded, -0)) {
+      return '0';
+    }
+    return String(rounded);
   }
 
   function strip() {
@@ -73,7 +95,7 @@
     if (!bar) {
       return;
     }
-    const nextPercent = clamp(Math.round(percent), 0, 100);
+    const nextPercent = formatPercent(percent);
     if (bar.style && bar.style.setProperty) {
       bar.style.setProperty('--seek-percent', `${nextPercent}%`);
     }
@@ -84,8 +106,63 @@
     bar.setAttribute('aria-valuenow', String(nextPercent));
   }
 
+  function seekPercentFromOffset(offsetMs, durationMs) {
+    if (durationMs <= 0) {
+      return 0;
+    }
+    return clamp((offsetMs / durationMs) * 100, 0, 100);
+  }
+
   function restoreSeekVisual(bar) {
     setSeekVisual(bar, serverSeekPercent);
+  }
+
+  function stopProgressClock() {
+    progressAnchor = null;
+    if (progressFrame && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(progressFrame);
+    }
+    progressFrame = 0;
+  }
+
+  function scheduleProgressFrame() {
+    if (progressFrame || typeof window.requestAnimationFrame !== 'function') {
+      return;
+    }
+    progressFrame = window.requestAnimationFrame(tickProgress);
+  }
+
+  function tickProgress() {
+    progressFrame = 0;
+    const bar = seekBar();
+    if (
+      !bar ||
+      !progressAnchor ||
+      transportState !== 'playing' ||
+      bar.hasAttribute('data-seek-interacting')
+    ) {
+      return;
+    }
+    const elapsedMs = Math.max(0, nowMs() - progressAnchor.startedAt);
+    const offsetMs = clamp(progressAnchor.offsetMs + elapsedMs, 0, progressAnchor.durationMs);
+    serverSeekPercent = seekPercentFromOffset(offsetMs, progressAnchor.durationMs);
+    setSeekVisual(bar, serverSeekPercent);
+    if (offsetMs < progressAnchor.durationMs) {
+      scheduleProgressFrame();
+    }
+  }
+
+  function updateProgressClock(offsetMs, durationMs) {
+    if (transportState !== 'playing' || durationMs <= 0) {
+      stopProgressClock();
+      return;
+    }
+    progressAnchor = {
+      offsetMs: clamp(offsetMs, 0, durationMs),
+      durationMs,
+      startedAt: nowMs(),
+    };
+    scheduleProgressFrame();
   }
 
   function percentFromPointer(bar, ev) {
@@ -184,15 +261,22 @@
     setButton('replay', Boolean(actions.replay));
 
     if (bar) {
-      const offsetMs = parseInteger(data.offsetMs, 0);
-      const durationMs = parseInteger(data.durationMs, 0);
+      const rawOffsetMs = parseMaybeInteger(data.offsetMs);
+      const rawDurationMs = parseMaybeInteger(data.durationMs);
+      const offsetMs = rawOffsetMs === null ? 0 : rawOffsetMs;
+      const durationMs = rawDurationMs === null ? 0 : rawDurationMs;
       bar.setAttribute('data-transport-offset-ms', String(offsetMs));
       bar.setAttribute('data-transport-duration-ms', String(durationMs));
       setSeekDisabled(bar, !actions.seek);
-      serverSeekPercent = data.seekFillPercent || 0;
+      serverSeekPercent = rawOffsetMs !== null && durationMs > 0
+        ? seekPercentFromOffset(offsetMs, durationMs)
+        : data.seekFillPercent || 0;
+      updateProgressClock(offsetMs, durationMs);
       if (!bar.hasAttribute('data-seek-interacting')) {
         setSeekVisual(bar, serverSeekPercent);
       }
+    } else {
+      stopProgressClock();
     }
 
     setText('[data-transport-elapsed]', data.elapsedTime);

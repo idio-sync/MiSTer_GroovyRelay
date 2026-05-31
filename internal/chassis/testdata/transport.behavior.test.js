@@ -52,6 +52,9 @@ class FakeElement {
 
 function createHarness() {
   const handlers = new Map();
+  const rafCallbacks = new Map();
+  let rafID = 0;
+  let now = 0;
   const strip = new FakeElement();
   const bar = new FakeElement();
   const fill = new FakeElement();
@@ -75,11 +78,23 @@ function createHarness() {
         },
       },
     },
+    performance: {
+      now: () => now,
+    },
+    requestAnimationFrame(fn) {
+      rafID += 1;
+      rafCallbacks.set(rafID, fn);
+      return rafID;
+    },
+    cancelAnimationFrame(id) {
+      rafCallbacks.delete(id);
+    },
   };
   const context = {
     console: { warn() {} },
     document,
     fetch: () => Promise.resolve({ status: 204 }),
+    performance: window.performance,
     window,
     URLSearchParams,
   };
@@ -87,7 +102,19 @@ function createHarness() {
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'transport.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'transport.js' });
 
-  return { bar, fill, handlers };
+  return {
+    bar,
+    fill,
+    handlers,
+    advanceAnimation(ms) {
+      now += ms;
+      const callbacks = Array.from(rafCallbacks.entries());
+      rafCallbacks.clear();
+      for (const [, fn] of callbacks) {
+        fn(now);
+      }
+    },
+  };
 }
 
 test('transport updates both seek fill and head position variable from SSE progress', () => {
@@ -108,4 +135,30 @@ test('transport updates both seek fill and head position variable from SSE progr
   assert.equal(h.fill.style.width, '42%');
   assert.equal(h.bar.styleValues.get('--seek-percent'), '42%');
   assert.equal(h.bar.getAttribute('aria-valuenow'), '42');
+});
+
+test('transport interpolates seek progress between playing SSE updates', () => {
+  const h = createHarness();
+  const fn = h.handlers.get('transport');
+  assert.equal(typeof fn, 'function', 'missing transport subscription');
+
+  fn({
+    data: JSON.stringify({
+      state: 'playing',
+      seekFillPercent: 10,
+      offsetMs: 10000,
+      durationMs: 100000,
+      actionsEnabled: { seek: true },
+      adapterRef: 'url:item:123',
+      generation: 7,
+    }),
+  });
+
+  assert.equal(h.fill.style.width, '10%');
+
+  h.advanceAnimation(500);
+
+  assert.equal(h.fill.style.width, '10.5%');
+  assert.equal(h.bar.styleValues.get('--seek-percent'), '10.5%');
+  assert.equal(h.bar.getAttribute('aria-valuenow'), '10.5');
 });

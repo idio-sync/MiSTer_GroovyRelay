@@ -883,7 +883,9 @@ func TestTransportJS_SeekCancelRestoresServerBackedVisual(t *testing.T) {
 	body := string(js)
 	for _, want := range []string{
 		"let serverSeekPercent = 0",
-		"serverSeekPercent = data.seekFillPercent || 0",
+		"serverSeekPercent = rawOffsetMs !== null && durationMs > 0",
+		"? seekPercentFromOffset(offsetMs, durationMs)",
+		": data.seekFillPercent || 0",
 		"function restoreSeekVisual(bar)",
 		"restoreSeekVisual(bar);",
 	} {
