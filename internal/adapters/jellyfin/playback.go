@@ -433,7 +433,7 @@ func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 		AdapterRef:      refKey,
 		Source:          "jellyfin",
 		DirectPlay:      false,
-		OnStop:          artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey)),
+		OnStop:          a.withAutoAdvance(refKey, artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey))),
 		Title:           in.PlayInfo.Title,
 		DisplayMetadata: jellyfinDisplayMetadata(in.PlayInfo),
 	}

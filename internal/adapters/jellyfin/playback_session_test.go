@@ -1,9 +1,14 @@
 package jellyfin
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 func TestBuildSessionRequest_PopulatesAllFields(t *testing.T) {
@@ -41,6 +46,121 @@ func TestBuildSessionRequest_PopulatesAllFields(t *testing.T) {
 	}
 	if req.SubtitleURL != "" || req.SubtitlePath != "" {
 		t.Errorf("Subtitle fields should be empty (JF burns subs in)")
+	}
+}
+
+func TestBuildSessionRequest_OnStopEOFStillCleansArtwork(t *testing.T) {
+	dir := t.TempDir()
+	artDir := filepath.Join(dir, "artwork-cache")
+	if err := os.MkdirAll(artDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	art := filepath.Join(artDir, "00000000000000000000000000000000.png")
+	if err := os.WriteFile(art, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(&fakeManager{}, t.TempDir(), "device-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{AutoAdvance: false}
+	req := a.buildSessionRequest(playRequestInput{
+		ItemID: "itm-1",
+		PlayInfo: PlaybackInfoResult{
+			MediaSourceID:  "src-1",
+			PlaySessionID:  "ps-7",
+			TranscodingURL: "/videos/itm-1/master.m3u8?MediaSourceId=src-1",
+			ArtworkPath:    art,
+		},
+		ServerURL: "https://jf.example.com",
+		Token:     "tok",
+	})
+	req.OnStop("eof")
+	if _, err := os.Stat(art); !os.IsNotExist(err) {
+		t.Fatalf("artwork stat err = %v, want missing", err)
+	}
+}
+
+func TestBuildSessionRequest_OnStopEOFWithToggleOffDoesNotAdvance(t *testing.T) {
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}}
+	a := New(mgr, t.TempDir(), "device-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{AutoAdvance: false}
+	a.currentRefKey = "itm-1:ps-7"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+	req := a.buildSessionRequest(playRequestInput{
+		ItemID: "itm-1",
+		PlayInfo: PlaybackInfoResult{
+			MediaSourceID:  "src-1",
+			PlaySessionID:  "ps-7",
+			TranscodingURL: "/videos/itm-1/master.m3u8?MediaSourceId=src-1",
+		},
+		ServerURL: "https://jf.example.com",
+		Token:     "tok",
+	})
+	req.OnStop("eof")
+	time.Sleep(100 * time.Millisecond)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.idleReqs) != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0", len(mgr.idleReqs))
+	}
+}
+
+func TestBuildSessionRequest_OnStopNonEOFDoesNotAdvance(t *testing.T) {
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	a := New(mgr, t.TempDir(), "device-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{AutoAdvance: true}
+	a.currentRefKey = "itm-1:ps-7"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+	req := a.buildSessionRequest(playRequestInput{
+		ItemID: "itm-1",
+		PlayInfo: PlaybackInfoResult{
+			MediaSourceID:  "src-1",
+			PlaySessionID:  "ps-7",
+			TranscodingURL: "/videos/itm-1/master.m3u8?MediaSourceId=src-1",
+		},
+		ServerURL: "https://jf.example.com",
+		Token:     "tok",
+	})
+	req.OnStop("stopped")
+	time.Sleep(100 * time.Millisecond)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.idleReqs) != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0", len(mgr.idleReqs))
+	}
+}
+
+func TestBuildSessionRequest_OnStopWrapperPreservesReporterWakeup(t *testing.T) {
+	a := New(&fakeManager{}, t.TempDir(), "device-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{AutoAdvance: false}
+	req := a.buildSessionRequest(playRequestInput{
+		ItemID: "itm-1",
+		PlayInfo: PlaybackInfoResult{
+			MediaSourceID:  "src-1",
+			PlaySessionID:  "ps-7",
+			TranscodingURL: "/videos/itm-1/master.m3u8?MediaSourceId=src-1",
+		},
+		ServerURL: "https://jf.example.com",
+		Token:     "tok",
+	})
+	wakeup := make(chan struct{}, 1)
+	a.mu.Lock()
+	a.reporters["itm-1:ps-7"] = &reporter{capturedRefKey: "itm-1:ps-7", wakeup: wakeup}
+	a.mu.Unlock()
+
+	req.OnStop("error")
+
+	select {
+	case <-wakeup:
+	case <-time.After(time.Second):
+		t.Fatal("reporter wakeup not received")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if got := a.reporters["itm-1:ps-7"].errReason; got != "error" {
+		t.Fatalf("errReason = %q, want error", got)
 	}
 }
 

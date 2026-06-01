@@ -60,6 +60,10 @@ type Adapter struct {
 	history            []companionHistoryEntry
 	ws                 wsConn
 	keepaliveSet       chan time.Duration
+	autoAdvanceDelay   time.Duration
+	// beforeAutoAdvanceCommit is a test seam for deterministic interleaving
+	// between a successful guarded core start and adapter queue/ownership commit.
+	beforeAutoAdvanceCommit func()
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.
@@ -144,15 +148,16 @@ type inboundDispatcher func(messageType string, data json.RawMessage)
 // eventLog may be nil; a nil log disables event emission.
 func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string, eventLog *eventlog.Log) *Adapter {
 	a := &Adapter{
-		core:       coreMgr,
-		dataDir:    dataDir,
-		deviceID:   deviceID,
-		eventLog:   eventLog,
-		cfg:        DefaultConfig(),
-		state:      adapters.StateStopped,
-		stateSince: time.Now(),
-		link:       NewLinkState(),
-		reporters:  map[string]*reporter{},
+		core:             coreMgr,
+		dataDir:          dataDir,
+		deviceID:         deviceID,
+		eventLog:         eventLog,
+		cfg:              DefaultConfig(),
+		state:            adapters.StateStopped,
+		stateSince:       time.Now(),
+		link:             NewLinkState(),
+		reporters:        map[string]*reporter{},
+		autoAdvanceDelay: autoAdvanceSettleDelay,
 	}
 	a.SetModeline(initialModeline)
 	a.handleInbound = a.dispatchInbound
