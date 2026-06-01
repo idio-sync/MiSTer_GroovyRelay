@@ -99,6 +99,21 @@ func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint
 		slog.Debug("plex auto-advance: stood down, session no longer idle", "key", next.MediaKey)
 		return
 	}
+	if !c.autoAdvanceStillCurrent(epoch) {
+		cleanupSessionArtwork(req)
+		if stopped, stopErr := c.core.StopIfAdapterRef(req.AdapterRef); stopErr != nil {
+			slog.Warn("plex auto-advance: stale started session stop failed", "key", next.MediaKey, "err", stopErr)
+		} else if stopped {
+			slog.Debug("plex auto-advance: stopped stale session after late cancellation", "key", next.MediaKey)
+		}
+		return
+	}
+	st := c.core.Status()
+	if st.AdapterRef != req.AdapterRef {
+		cleanupSessionArtwork(req)
+		slog.Debug("plex auto-advance: stood down, started session is no longer active", "key", next.MediaKey)
+		return
+	}
 	c.emit(eventlog.SeverityInfo, fmt.Sprintf("auto-advance %s", req.AdapterRef))
 	c.rememberPlaySession(next)
 	c.notifyTimeline()

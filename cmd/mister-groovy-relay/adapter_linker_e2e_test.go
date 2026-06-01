@@ -27,9 +27,12 @@ func (*e2eSessionManager) StartSession(_ core.SessionRequest) error { return nil
 func (*e2eSessionManager) StartSessionIfIdle(_ core.SessionRequest) (bool, error) {
 	return true, nil
 }
-func (*e2eSessionManager) Pause() error                  { return nil }
-func (*e2eSessionManager) Play() error                   { return nil }
-func (*e2eSessionManager) Stop() error                   { return nil }
+func (*e2eSessionManager) Pause() error { return nil }
+func (*e2eSessionManager) Play() error  { return nil }
+func (*e2eSessionManager) Stop() error  { return nil }
+func (*e2eSessionManager) StopIfAdapterRef(string) (bool, error) {
+	return false, nil
+}
 func (*e2eSessionManager) SeekTo(_ int) error            { return nil }
 func (*e2eSessionManager) Status() core.SessionStatus    { return core.SessionStatus{} }
 func (*e2eSessionManager) VisualizerMode() string        { return "" }

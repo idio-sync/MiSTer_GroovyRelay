@@ -438,6 +438,53 @@ func TestAutoAdvance_ToggleOffThenOnCancelsPendingAdvance(t *testing.T) {
 	assertNoStartIfIdle(t, fc)
 }
 
+func TestAutoAdvance_StopDuringSettleCancelsPendingAdvance(t *testing.T) {
+	fetched := make(chan struct{}, 1)
+	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 100 * time.Millisecond
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	c.rememberPlaySession(p)
+	req.OnStop("eof")
+	waitForQueueFetch(t, fetched)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/player/playback/stop", nil)
+	c.handleStop(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, want %d", w.Code, http.StatusOK)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	assertNoStartIfIdle(t, fc)
+}
+
+func TestAutoAdvance_LateManualIntentStopsJustStartedAdvance(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+	fc.onStartIfIdle = func() {
+		finishIntent := c.beginAutoAdvanceIntent()
+		finishIntent()
+	}
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	c.rememberPlaySession(p)
+	req.OnStop("eof")
+	waitForStopIfAdapterRef(t, fc, 1)
+
+	if got := c.lastPlaySession(); got.MediaKey == "/library/metadata/300" {
+		t.Fatalf("late-canceled auto-advance remembered stale next session: %+v", got)
+	}
+}
+
 func TestAutoAdvance_DisabledByInnerCallbackStandsDownBeforeStart(t *testing.T) {
 	fetched := make(chan struct{}, 1)
 	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
@@ -495,6 +542,21 @@ func waitForStartIfIdle(t *testing.T, fc *fakeCore, want int) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d StartSessionIfIdle call(s)", want)
+}
+
+func waitForStopIfAdapterRef(t *testing.T, fc *fakeCore, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		got := fc.stopIfRefCalls
+		fc.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d StopIfAdapterRef call(s)", want)
 }
 
 func waitForQueueFetch(t *testing.T, fetched <-chan struct{}) {

@@ -110,6 +110,7 @@ type SessionManager interface {
 	Pause() error
 	Play() error
 	Stop() error
+	StopIfAdapterRef(ref string) (bool, error)
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
 	VisualizerMode() string
@@ -1679,6 +1680,7 @@ func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
 }
 
 func (c *Companion) clearPlaySession() {
+	c.cancelPendingAutoAdvance()
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = PlayMediaRequest{}

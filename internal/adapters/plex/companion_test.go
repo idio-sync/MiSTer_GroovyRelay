@@ -240,6 +240,8 @@ type fakeCore struct {
 	// auto-advance test controls
 	notIdle          bool // when true, StartSessionIfIdle reports not-started
 	startIfIdleCalls int
+	stopIfRefCalls   int
+	onStartIfIdle    func()
 }
 
 func (f *fakeCore) StartSession(r core.SessionRequest) error {
@@ -247,9 +249,13 @@ func (f *fakeCore) StartSession(r core.SessionRequest) error {
 	defer f.mu.Unlock()
 	f.lastReq = r
 	f.starts++
+	f.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: r.AdapterRef, MediaKind: core.NormalizeMediaKind(r.MediaKind)}
 	return f.startErr
 }
 func (f *fakeCore) StartSessionIfIdle(r core.SessionRequest) (bool, error) {
+	if f.onStartIfIdle != nil {
+		f.onStartIfIdle()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startIfIdleCalls++
@@ -261,6 +267,7 @@ func (f *fakeCore) StartSessionIfIdle(r core.SessionRequest) (bool, error) {
 		return true, f.startErr
 	}
 	f.starts++
+	f.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: r.AdapterRef, MediaKind: core.NormalizeMediaKind(r.MediaKind)}
 	return true, nil
 }
 func (f *fakeCore) Pause() error {
@@ -279,7 +286,19 @@ func (f *fakeCore) Stop() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = true
+	f.status = core.SessionStatus{State: core.StateIdle}
 	return nil
+}
+func (f *fakeCore) StopIfAdapterRef(ref string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopIfRefCalls++
+	if f.status.AdapterRef != ref {
+		return false, nil
+	}
+	f.stopped = true
+	f.status = core.SessionStatus{State: core.StateIdle}
+	return true, nil
 }
 func (f *fakeCore) SeekTo(ms int) error {
 	f.mu.Lock()
