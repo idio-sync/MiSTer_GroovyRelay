@@ -2,9 +2,21 @@
 
 <img align="right" width="220" src=".github/screenshots/plex_dash.png">
 
-A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
+A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video. The idea was to have a way for the MiSTer to act as a dumb cast reciever for different types of media via a headless background bridge. 
 
-Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. Running on a different host adds networking overhead and is slightly less stable (but I'm working on it).
+Now expanded to include yt-dlp compatable URLs, torrent/magnet links, DLNA casts and (soon) local files from the server's filesystem, castable via the web-ui.
+
+Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. 
+
+## Images
+
+<p align="center">
+  <img width="800" alt="image" src="https://github.com/user-attachments/assets/2cf51d90-ce01-41ac-af23-4354fb359034">
+</p>
+
+<p align="center">
+  <img width="800" alt="image" src="https://raw.githubusercontent.com/idio-sync/MiSTer_GroovyRelay/refs/heads/main/.github/screenshots/ui_and_crt.jpg">
+</p>
 
 ## Video Cast Sources
 - Plex
