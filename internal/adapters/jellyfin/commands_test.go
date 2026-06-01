@@ -41,11 +41,23 @@ type fakeManager struct {
 	calls            []string
 	st               core.SessionStatus
 	err              error
+	nextGen          uint64
 	startIdleStarted bool
 	startIdleErr     error
 	onStartIdle      func()
+	stopIfCalls      int
+	stopIfRef        string
+	stopIfGeneration uint64
 	mode             string
 	onStop           func()
+}
+
+func (f *fakeManager) nextGenerationLocked() uint64 {
+	f.nextGen++
+	if f.nextGen == 0 {
+		f.nextGen = 1
+	}
+	return f.nextGen
 }
 
 func (f *fakeManager) StartSession(req core.SessionRequest) error {
@@ -56,6 +68,10 @@ func (f *fakeManager) StartSession(req core.SessionRequest) error {
 	return f.err
 }
 func (f *fakeManager) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
+	_, started, err := f.StartSessionIfIdleSnapshot(req)
+	return started, err
+}
+func (f *fakeManager) StartSessionIfIdleSnapshot(req core.SessionRequest) (core.SessionStatus, bool, error) {
 	if f.onStartIdle != nil {
 		f.onStartIdle()
 	}
@@ -64,17 +80,17 @@ func (f *fakeManager) StartSessionIfIdle(req core.SessionRequest) (bool, error) 
 	f.idleReqs = append(f.idleReqs, req)
 	f.calls = append(f.calls, "StartSessionIfIdle:"+req.StreamURL)
 	if f.st.State != core.StateIdle || !f.startIdleStarted {
-		return false, nil
+		return core.SessionStatus{}, false, nil
 	}
 	err := f.startIdleErr
 	if err == nil {
 		err = f.err
 	}
 	if err != nil {
-		return true, err
+		return core.SessionStatus{}, true, err
 	}
-	f.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef}
-	return true, nil
+	f.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef, Generation: f.nextGenerationLocked()}
+	return f.st, true, nil
 }
 func (f *fakeManager) Pause() error { f.add("Pause"); return f.err }
 func (f *fakeManager) Play() error  { f.add("Play"); return f.err }
@@ -84,6 +100,18 @@ func (f *fakeManager) Stop() error {
 		f.onStop()
 	}
 	return f.err
+}
+func (f *fakeManager) StopIfSession(ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopIfCalls++
+	f.stopIfRef = ref
+	f.stopIfGeneration = generation
+	if ref == "" || generation == 0 || f.st.AdapterRef != ref || f.st.Generation != generation {
+		return false, nil
+	}
+	f.st = core.SessionStatus{State: core.StateIdle}
+	return true, nil
 }
 func (f *fakeManager) SeekTo(ms int) error {
 	f.mu.Lock()
@@ -1265,6 +1293,62 @@ func TestAutoAdvanceEOF_ControllerStartsDuringIdleGuardStandsDown(t *testing.T) 
 	}
 	if len(a.reporters) != 0 {
 		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	}
+}
+
+func TestAutoAdvanceEOF_CommitFailureStopsAutoStartedSession(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+	a.beforeAutoAdvanceCommit = func() {
+		a.mu.Lock()
+		a.currentRefKey = "controller-itm:ps-controller"
+		a.mu.Unlock()
+	}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "controller-itm:ps-controller" {
+		t.Fatalf("currentRefKey = %q, want controller-owned ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
 	}
 }
 

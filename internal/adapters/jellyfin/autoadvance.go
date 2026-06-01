@@ -171,7 +171,7 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
 		return
 	}
 
-	started, err := a.core.StartSessionIfIdle(req)
+	startedStatus, started, err := a.core.StartSessionIfIdleSnapshot(req)
 	if err != nil {
 		cleanupSessionArtwork(req)
 		slog.Error("jellyfin: auto-advance StartSessionIfIdle failed", "err", err)
@@ -187,6 +187,13 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
 	}
 	if !a.commitAutoAdvance(stoppedRef, req.AdapterRef, qi) {
 		cleanupSessionArtwork(req)
+		if stopped, stopErr := a.core.StopIfSession(startedStatus.AdapterRef, startedStatus.Generation); stopErr != nil {
+			slog.Warn("jellyfin: auto-advance stale started session stop failed", "ref", startedStatus.AdapterRef, "generation", startedStatus.Generation, "err", stopErr)
+		} else if stopped {
+			slog.Debug("jellyfin: auto-advance stopped stale started session", "ref", startedStatus.AdapterRef, "generation", startedStatus.Generation)
+		} else {
+			slog.Debug("jellyfin: auto-advance stale started session no longer active", "ref", startedStatus.AdapterRef, "generation", startedStatus.Generation)
+		}
 		return
 	}
 

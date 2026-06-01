@@ -23,9 +23,11 @@ import (
 type SessionManager interface {
 	StartSession(req core.SessionRequest) error
 	StartSessionIfIdle(req core.SessionRequest) (bool, error)
+	StartSessionIfIdleSnapshot(req core.SessionRequest) (core.SessionStatus, bool, error)
 	Pause() error
 	Play() error
 	Stop() error
+	StopIfSession(ref string, generation uint64) (bool, error)
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
 	VisualizerMode() string
