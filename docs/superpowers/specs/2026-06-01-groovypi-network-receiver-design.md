@@ -390,12 +390,26 @@ Phase 6 explores USB HID joystick feedback and Pi 3B+ as v2 candidates.
 ## Decision History
 
 This project intentionally starts as a network receiver rather than a full
-all-in-one Pi cast appliance. An all-in-one appliance is a plausible end-user
-goal, but the risky part is the receiver/rendering path: Groovy protocol
-compatibility, field decode, audio sync, KMS/DPI presentation, and 15 kHz RGB
-timing. Proving that as a dumb target first keeps the scope clear. Once the
-receiver works, running GroovyRelay on the same Pi and sending to loopback can
-be evaluated as a packaging step.
+all-in-one Pi cast appliance. The eventual product goal is an all-in-one SD
+card image that bundles `mister-groovy-relay` and `groovypi-receiver` on the
+same Raspberry Pi. In that image, GroovyRelay advertises the cast target and
+handles source adapters, while GroovyPi renders the final CRT output. The first
+all-in-one path should use the same Groovy protocol over loopback
+(`127.0.0.1:32100`) rather than a direct in-process renderer backend. That keeps
+the network receiver path, compatibility work, and appliance packaging aligned.
+
+The network-receiver stage comes first because the risky part is the
+receiver/rendering path: Groovy protocol compatibility, field decode, audio
+sync, KMS/DPI presentation, and 15 kHz RGB timing. Proving that as a dumb target
+keeps the scope clear. Once the receiver works, the all-in-one image becomes a
+packaging and service-composition milestone. A direct local renderer backend
+inside GroovyRelay remains an optional future optimization only if loopback has
+measurable downsides.
+
+The all-in-one image should still treat the Pi as the CRT endpoint, not as a
+replacement for a real Plex/Jellyfin/media server. Local URL, stream, or small
+source workflows may work as the Pi allows, but heavy media serving and
+transcoding remain outside the appliance promise.
 
 The design also starts inside the MiSTer_GroovyRelay monorepo. That keeps the
 first implementation close to existing Groovy protocol builders, modelines,
