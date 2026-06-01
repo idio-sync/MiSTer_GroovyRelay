@@ -89,6 +89,7 @@ type Companion struct {
 	modelineName        atomic.Pointer[string]
 	autoAdvance         atomic.Bool
 	autoAdvanceEpoch    atomic.Uint64
+	autoAdvanceCurrent  atomic.Pointer[autoAdvanceSession]
 	autoAdvanceDelay    time.Duration
 
 	sessMu   sync.Mutex
@@ -649,6 +650,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		prevStatus = c.core.Status()
 	}
 	p := c.lastPlaySession()
+	epoch := c.beginAutoAdvanceIntent()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	next, err := c.resolveNextQueueItem(ctx, p, selectItem)
@@ -676,7 +678,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	c.rememberPlaySession(next)
+	c.rememberPlaySessionAtEpoch(next, epoch)
 	if !c.restorePausedIfNeeded(w, prevStatus.State == core.StatePaused) {
 		return false
 	}
@@ -928,6 +930,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	if p.SessionID == "" {
 		p.SessionID = NewTranscodeSessionID()
 	}
+	epoch := c.beginAutoAdvanceIntent()
 	if (p.PlayQueueItemID == "" || p.PlayQueueID == "" || p.PlayQueueVersion == "") && p.ContainerKey != "" && p.MediaKey != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		pq, err := c.fetchPlayQueue(ctx, p)
@@ -962,7 +965,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		c.rememberPlaySession(p)
+		c.rememberPlaySessionAtEpoch(p, epoch)
 		c.notifyTimeline()
 		writeOKResponse(w)
 		return
@@ -1006,7 +1009,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	c.rememberPlaySession(p)
+	c.rememberPlaySessionAtEpoch(p, epoch)
 	c.notifyTimeline()
 	writeOKResponse(w)
 }
@@ -1050,6 +1053,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no plex session", 400)
 		return
 	}
+	epoch := c.beginAutoAdvanceIntent()
 	st := core.SessionStatus{}
 	if c.core != nil {
 		st = c.core.Status()
@@ -1069,7 +1073,7 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	c.rememberPlaySession(p)
+	c.rememberPlaySessionAtEpoch(p, epoch)
 	if !c.restorePausedIfNeeded(w, st.State == core.StatePaused) {
 		return
 	}
@@ -1153,6 +1157,7 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		writeOKResponse(w)
 		return
 	}
+	epoch := c.beginAutoAdvanceIntent()
 	st := core.SessionStatus{}
 	if c.core != nil {
 		st = c.core.Status()
@@ -1195,7 +1200,7 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	c.rememberPlaySession(p)
+	c.rememberPlaySessionAtEpoch(p, epoch)
 	if !c.restorePausedIfNeeded(w, st.State == core.StatePaused) {
 		return
 	}
@@ -1658,16 +1663,21 @@ func queryOrHeader(r *http.Request, names ...string) string {
 // broker (Task 7.5) can attribute status updates to the right Plex media
 // entity. Thread-safe; getter returns a copy.
 func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
+	c.rememberPlaySessionAtEpoch(p, c.beginAutoAdvanceIntent())
+}
+
+func (c *Companion) rememberPlaySessionAtEpoch(p PlayMediaRequest, epoch uint64) {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = p
-	c.autoAdvanceEpoch.Add(1)
+	c.setAutoAdvanceCurrentSession(p, epoch)
 }
 
 func (c *Companion) clearPlaySession() {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = PlayMediaRequest{}
+	c.autoAdvanceCurrent.Store(nil)
 }
 
 // clearPlaySessionIfMatches resets c.lastPlay to its zero value ONLY
@@ -1691,6 +1701,7 @@ func (c *Companion) clearPlaySessionIfMatches(transcodeSessionID string) {
 	defer c.sessMu.Unlock()
 	if c.lastPlay.TranscodeSessionID == transcodeSessionID {
 		c.lastPlay = PlayMediaRequest{}
+		c.autoAdvanceCurrent.Store(nil)
 	}
 }
 
