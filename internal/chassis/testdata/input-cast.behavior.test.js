@@ -9,12 +9,19 @@ class FakeElement {
     this.value = value;
     this.textContent = '';
     this.disabled = false;
+    this.hidden = false;
+    this.title = '';
     this.dataset = {};
     this.style = { display: '' };
     this.files = [];
+    this.children = [];
+    this.attributes = new Map();
     this.listeners = new Map();
     this.classes = new Set();
     this.classList = {
+      add: (name) => this.classes.add(name),
+      remove: (name) => this.classes.delete(name),
+      contains: (name) => this.classes.has(name),
       toggle: (name, on) => on ? this.classes.add(name) : this.classes.delete(name),
     };
   }
@@ -34,6 +41,26 @@ class FakeElement {
   click() {
     return this.dispatch('click');
   }
+
+  appendChild(child) {
+    this.children.push(child);
+    if (this.tagName === 'SELECT' && !this.value && child.value) this.value = child.value;
+    return child;
+  }
+
+  replaceChildren(...children) {
+    this.children = [];
+    this.value = this.tagName === 'SELECT' ? '' : this.value;
+    children.forEach((child) => this.appendChild(child));
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) || null;
+  }
 }
 
 function createHarness() {
@@ -44,6 +71,16 @@ function createHarness() {
   const castBtn = new FakeElement();
   const uploadBtn = new FakeElement();
   const fileInput = new FakeElement();
+  const localFilesBtn = new FakeElement();
+  localFilesBtn.disabled = true;
+  localFilesBtn.title = 'Configure Local Files in Settings';
+  const localFilesDrawer = new FakeElement();
+  const localFilesCloseBtn = new FakeElement();
+  const localFilesSelect = new FakeElement();
+  localFilesSelect.tagName = 'SELECT';
+  const localFilesEntries = new FakeElement();
+  const localFilesBreadcrumb = new FakeElement();
+  const localFilesError = new FakeElement();
   const requests = [];
   const timers = new Map();
   let now = 0;
@@ -51,6 +88,11 @@ function createHarness() {
 
   const document = {
     querySelector: (selector) => selector === '.input-section' ? panel : null,
+    createElement: (tag) => {
+      const el = new FakeElement();
+      el.tagName = String(tag).toUpperCase();
+      return el;
+    },
     getElementById: (id) => ({
       'paste-input': input,
       'paste-clear': clearBtn,
@@ -58,6 +100,13 @@ function createHarness() {
       'cast-btn': castBtn,
       'upload-btn': uploadBtn,
       'torrent-file-input': fileInput,
+      'localfiles-btn': localFilesBtn,
+      'localfiles-drawer': localFilesDrawer,
+      'localfiles-close-btn': localFilesCloseBtn,
+      'localfiles-library-select': localFilesSelect,
+      'localfiles-entries': localFilesEntries,
+      'localfiles-breadcrumb': localFilesBreadcrumb,
+      'localfiles-error': localFilesError,
     })[id] || null,
   };
 
@@ -89,6 +138,9 @@ function createHarness() {
 
   function fetchFake(url, options) {
     requests.push({ url, options, body: String(options.body) });
+    if (url === '/receiver/localfiles/browse') {
+      return Promise.resolve({ json: async () => ({ ok: true, entries: [] }) });
+    }
     return Promise.resolve({ json: async () => ({ ok: false, chip: 'BAD URL' }) });
   }
 
@@ -105,7 +157,17 @@ function createHarness() {
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'input-cast.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'input-cast.js' });
 
-  return { input, chip, castBtn, requests, advance };
+  return {
+    input,
+    chip,
+    castBtn,
+    requests,
+    advance,
+    window: context.window,
+    localFilesBtn,
+    localFilesDrawer,
+    localFilesSelect,
+  };
 }
 
 async function settle() {
@@ -131,4 +193,26 @@ test('failed cast keeps error chip after controls re-enable and clears on input'
   h.advance(120);
   assert.equal(h.chip.dataset.chipKind, 'url');
   assert.equal(h.chip.textContent, 'URL');
+});
+
+test('settings library save enables receiver local files without reload', async () => {
+  const h = createHarness();
+  assert.equal(h.localFilesBtn.disabled, true);
+  assert.equal(h.localFilesSelect.children.length, 0);
+  assert.equal(typeof h.window.Chassis.localFiles.setLibraries, 'function');
+
+  h.window.Chassis.localFiles.setLibraries([{ name: 'Array', root: '/array' }]);
+
+  assert.equal(h.localFilesBtn.disabled, false);
+  assert.equal(h.localFilesBtn.title, 'Browse Local Files');
+  assert.equal(h.localFilesSelect.children.length, 1);
+  assert.equal(h.localFilesSelect.children[0].value, 'Array');
+  assert.equal(h.localFilesSelect.value, 'Array');
+
+  await h.localFilesBtn.click();
+  await settle();
+  assert.equal(h.requests.at(-1).url, '/receiver/localfiles/browse');
+  assert.equal(h.requests.at(-1).body, 'lib=Array&path=');
+  assert.equal(h.localFilesDrawer.hidden, false);
+  assert.equal(h.localFilesDrawer.classList.contains('localfiles-open'), true);
 });

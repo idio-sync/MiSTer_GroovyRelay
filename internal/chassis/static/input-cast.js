@@ -190,6 +190,30 @@
     localFilesDrawer.hidden = true;
   }
 
+  function setLocalFilesLibraries(libs) {
+    if (!localFilesBtn || !localFilesSelect) return;
+    const current = localFilesSelect.value || '';
+    const rows = (libs || []).filter((lib) => lib && lib.name);
+    localFilesSelect.replaceChildren();
+    rows.forEach((lib) => {
+      const opt = localFileEl('option', null, lib.name);
+      opt.value = lib.name;
+      localFilesSelect.appendChild(opt);
+    });
+    if (rows.some((lib) => lib.name === current)) {
+      localFilesSelect.value = current;
+    } else if (rows.length > 0) {
+      localFilesSelect.value = rows[0].name;
+    }
+    const available = rows.length > 0;
+    localFilesBtn.disabled = !available;
+    localFilesBtn.title = available ? 'Browse Local Files' : 'Configure Local Files in Settings';
+    if (!available) closeLocalFilesDrawer();
+  }
+
+  window.Chassis.localFiles = window.Chassis.localFiles || {};
+  window.Chassis.localFiles.setLibraries = setLocalFilesLibraries;
+
   async function browseLocalFiles(path) {
     if (!localFilesSelect || !localFilesEntries) return;
     const lib = localFilesSelect.value || '';

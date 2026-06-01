@@ -1013,37 +1013,55 @@ function renderLocalFilesLibraries(libs) {
 
   const select = sec.querySelector('[data-localfiles-browse-lib]');
   if (select) {
+    const current = select.value || '';
     select.replaceChildren();
     (libs || []).forEach((lib) => {
       const opt = lfEl('option', null, lib.name || '');
       opt.value = lib.name || '';
       select.appendChild(opt);
     });
+    if ((libs || []).some((lib) => (lib.name || '') === current)) {
+      select.value = current;
+    } else if ((libs || []).length > 0) {
+      select.value = (libs[0].name || '');
+    }
   }
 }
 
+let localFilesSavePromise = null;
+
 async function saveLocalFilesLibraries() {
-  clearLocalFilesErr('library');
-  try {
-    const res = await fetch('/receiver/settings/adapter/localfiles/libraries', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ libraries: localFilesLibraries() }),
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!payload.ok) {
-      if (payload.errors) {
-        paintLocalFilesErr('library', Object.values(payload.errors)[0] || 'invalid library');
-      } else if (payload.chip) {
-        window.Chassis.settings.showNotice(payload.chip, 'err');
+  if (localFilesSavePromise) return localFilesSavePromise;
+  localFilesSavePromise = (async () => {
+    clearLocalFilesErr('library');
+    try {
+      const res = await fetch('/receiver/settings/adapter/localfiles/libraries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ libraries: localFilesLibraries() }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!payload.ok) {
+        if (payload.errors) {
+          paintLocalFilesErr('library', Object.values(payload.errors)[0] || 'invalid library');
+        } else if (payload.chip) {
+          window.Chassis.settings.showNotice(payload.chip, 'err');
+        }
+        return false;
       }
+      const libraries = payload.libraries || [];
+      renderLocalFilesLibraries(libraries);
+      window.Chassis?.localFiles?.setLibraries?.(libraries);
+      return true;
+    } catch (_) {
+      window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
       return false;
     }
-    renderLocalFilesLibraries(payload.libraries || []);
-    return true;
-  } catch (_) {
-    window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
-    return false;
+  })();
+  try {
+    return await localFilesSavePromise;
+  } finally {
+    localFilesSavePromise = null;
   }
 }
 
@@ -1146,7 +1164,7 @@ async function castLocalFile(path) {
   }
 }
 
-document.addEventListener('click', (ev) => {
+document.addEventListener('click', async (ev) => {
   const add = ev.target.closest('[data-localfiles-add-library]');
   if (add && localFilesSection()?.contains(add)) {
     ev.preventDefault();
@@ -1163,7 +1181,7 @@ document.addEventListener('click', (ev) => {
   const open = ev.target.closest('[data-localfiles-open-browser]');
   if (open && localFilesSection()?.contains(open)) {
     ev.preventDefault();
-    browseLocalFiles('');
+    if (await saveLocalFilesLibraries()) browseLocalFiles('');
     return;
   }
   const close = ev.target.closest('[data-localfiles-close-browser]');

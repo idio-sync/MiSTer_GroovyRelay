@@ -28,12 +28,26 @@ class FakeNode {
   appendChild(child) {
     child._parent = this;
     this._children.push(child);
+    if (this._tag === 'select' && !this.value && child.value) this.value = child.value;
     return child;
   }
 
   replaceChildren(...nodes) {
     this._children = [];
+    if (this._tag === 'select') this.value = '';
     for (const n of nodes) this.appendChild(n);
+  }
+
+  append(...nodes) {
+    for (const n of nodes) this.appendChild(n);
+  }
+
+  insertBefore(child, before) {
+    child._parent = this;
+    const idx = this._children.indexOf(before);
+    if (idx < 0) this._children.push(child);
+    else this._children.splice(idx, 0, child);
+    return child;
   }
 }
 
@@ -56,11 +70,28 @@ class FakeElement extends FakeNode {
     this._type = 'text'; // mirrors inp.type
     this.value = '';
     this.disabled = false;
+    this.hidden = false;
+    this.classList = {
+      add: (cls) => this._setClass(cls, true),
+      remove: (cls) => this._setClass(cls, false),
+      contains: (cls) => this._className.split(/\s+/).includes(cls),
+      toggle: (cls, on) => this._setClass(cls, on !== undefined ? on : !this.classList.contains(cls)),
+    };
   }
+
+  get tagName() { return this._tag.toUpperCase(); }
+  get parentElement() { return this._parent && this._parent._nodeType === 1 ? this._parent : null; }
 
   // ── className (syncs to data-class attribute for serialisation) ────────
   get className() { return this._className; }
   set className(v) { this._className = v || ''; }
+
+  _setClass(cls, on) {
+    const parts = new Set(this._className.split(/\s+/).filter(Boolean));
+    if (on) parts.add(cls);
+    else parts.delete(cls);
+    this._className = Array.from(parts).join(' ');
+  }
 
   // ── type (for <input>) ─────────────────────────────────────────────────
   get type() { return this._type; }
@@ -114,6 +145,21 @@ class FakeElement extends FakeNode {
 
   // ── stub event hooks (unused in these tests but prevent crashes) ───────
   addEventListener() {}
+
+  contains(node) {
+    let cur = node;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur._parent;
+    }
+    return false;
+  }
+
+  remove() {
+    if (!this._parent) return;
+    this._parent._children = this._parent._children.filter((child) => child !== this);
+    this._parent = null;
+  }
 }
 
 // Serialise a node back to HTML markup so innerHTML can be checked.
@@ -240,6 +286,107 @@ function createHarness() {
   vm.runInContext(code, context, { filename: 'settings-drawer.js' });
 
   return { window: context.window, document, clickHandlers, submitHandlers, context };
+}
+
+function createLocalFilesHarness() {
+  const drawerEl = new FakeElement('div');
+  drawerEl.className = 'settings-panel';
+  const bodyEl = new FakeElement('body');
+  const localSection = new FakeElement('section');
+  localSection.setAttribute('data-adapter-section', 'localfiles');
+
+  const list = new FakeElement('div');
+  list.setAttribute('data-localfiles-library-list', '');
+  const row = new FakeElement('div');
+  row.setAttribute('data-localfiles-library-row', '');
+  const name = new FakeElement('input');
+  name.setAttribute('data-localfiles-library-name', '');
+  name.value = 'Array';
+  const root = new FakeElement('input');
+  root.setAttribute('data-localfiles-library-root', '');
+  root.value = '/array';
+  row.append(name, root);
+  const add = new FakeElement('button');
+  add.setAttribute('data-localfiles-add-library', '');
+  list.append(row, add);
+
+  const select = new FakeElement('select');
+  select.setAttribute('data-localfiles-browse-lib', '');
+  const open = new FakeElement('button');
+  open.setAttribute('data-localfiles-open-browser', '');
+  const libraryErr = new FakeElement('div');
+  libraryErr.setAttribute('data-localfiles-library-err', '');
+  const browseErr = new FakeElement('div');
+  browseErr.setAttribute('data-localfiles-browse-err', '');
+  const modal = new FakeElement('div');
+  modal.setAttribute('data-localfiles-browse-modal', '');
+  const crumb = new FakeElement('div');
+  crumb.setAttribute('data-localfiles-breadcrumb', '');
+  const entries = new FakeElement('div');
+  entries.setAttribute('data-localfiles-entries', '');
+  modal.append(crumb, entries);
+  localSection.append(list, select, open, libraryErr, browseErr, modal);
+
+  const clickHandlers = [];
+  const requests = [];
+  const document = {
+    body: bodyEl,
+    querySelector(sel) {
+      if (sel === '.settings-panel') return drawerEl;
+      if (sel === '[data-adapter-section="localfiles"]') return localSection;
+      return null;
+    },
+    querySelectorAll() { return []; },
+    getElementById() { return null; },
+    addEventListener(type, fn) {
+      if (type === 'click') clickHandlers.push(fn);
+    },
+    createElement(tag) { return new FakeElement(tag); },
+    createTextNode(text) { return new FakeTextNode(text); },
+  };
+
+  const context = {
+    document,
+    window: { Chassis: { settings: {} } },
+    fetch: async (url, options) => {
+      requests.push({ url, body: String(options.body) });
+      if (url === '/receiver/settings/adapter/localfiles/libraries') {
+        return { json: async () => ({ ok: true, libraries: [{ name: 'Array', root: '/array' }] }) };
+      }
+      if (url === '/receiver/settings/adapter/localfiles/browse') {
+        return { json: async () => ({ ok: true, entries: [] }) };
+      }
+      return { json: async () => ({ ok: true }) };
+    },
+    URLSearchParams,
+    setTimeout() {},
+    clearTimeout() {},
+    console: { warn() {} },
+  };
+  vm.createContext(context);
+  const code = fs.readFileSync(
+    path.join(__dirname, '..', 'static', 'settings-drawer.js'),
+    'utf8'
+  );
+  vm.runInContext(code, context, { filename: 'settings-drawer.js' });
+
+  async function click(target) {
+    const ev = { target, preventDefault() {} };
+    for (const handler of clickHandlers) await handler(ev);
+  }
+
+  return {
+    click,
+    open,
+    requests,
+    select,
+    modal,
+    clickHandlerCount: clickHandlers.length,
+  };
+}
+
+async function settle() {
+  for (let i = 0; i < 4; i += 1) await Promise.resolve();
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -503,4 +650,25 @@ test('stopAllPolls cancels all active pollers', () => {
   stopAllPolls();
   assert.equal(__pollActive('plex'), false, 'plex stopped');
   assert.equal(__pollActive('jellyfin'), false, 'jellyfin stopped');
+});
+
+test('local files Open saves current libraries before browsing', async () => {
+  const h = createLocalFilesHarness();
+  assert.ok(h.clickHandlerCount > 0, 'settings-drawer.js should register delegated click handlers');
+
+  await h.click(h.open);
+  await settle();
+
+  assert.deepEqual(
+    h.requests.map((req) => req.url),
+    [
+      '/receiver/settings/adapter/localfiles/libraries',
+      '/receiver/settings/adapter/localfiles/browse',
+    ],
+    'Open should persist the edited library rows before browse uses them'
+  );
+  assert.equal(h.select.value, 'Array');
+  assert.equal(h.requests[1].body, 'lib=Array&path=');
+  assert.equal(h.modal.hidden, false);
+  assert.equal(h.modal.classList.contains('localfiles-open'), true);
 });
