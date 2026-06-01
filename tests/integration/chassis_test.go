@@ -1093,10 +1093,10 @@ func (s *fakeURLStub) Fields() []adapters.FieldDef {
 	return nil
 }
 func (s *fakeURLStub) DecodeConfig(_ toml.Primitive, _ toml.MetaData) error { return nil }
-func (s *fakeURLStub) IsEnabled() bool                                       { return true }
-func (s *fakeURLStub) Start(_ context.Context) error                         { return nil }
-func (s *fakeURLStub) Stop() error                                           { return nil }
-func (s *fakeURLStub) Status() adapters.Status                               { return adapters.Status{} }
+func (s *fakeURLStub) IsEnabled() bool                                      { return true }
+func (s *fakeURLStub) Start(_ context.Context) error                        { return nil }
+func (s *fakeURLStub) Stop() error                                          { return nil }
+func (s *fakeURLStub) Status() adapters.Status                              { return adapters.Status{} }
 func (s *fakeURLStub) ApplyConfig(_ toml.Primitive, _ toml.MetaData) (adapters.ApplyScope, error) {
 	return adapters.ScopeNextCast, nil
 }
@@ -1135,10 +1135,10 @@ func (s *fakeTorrentStub) Fields() []adapters.FieldDef {
 	return nil
 }
 func (s *fakeTorrentStub) DecodeConfig(_ toml.Primitive, _ toml.MetaData) error { return nil }
-func (s *fakeTorrentStub) IsEnabled() bool                                       { return true }
-func (s *fakeTorrentStub) Start(_ context.Context) error                         { return nil }
-func (s *fakeTorrentStub) Stop() error                                           { return nil }
-func (s *fakeTorrentStub) Status() adapters.Status                               { return adapters.Status{} }
+func (s *fakeTorrentStub) IsEnabled() bool                                      { return true }
+func (s *fakeTorrentStub) Start(_ context.Context) error                        { return nil }
+func (s *fakeTorrentStub) Stop() error                                          { return nil }
+func (s *fakeTorrentStub) Status() adapters.Status                              { return adapters.Status{} }
 func (s *fakeTorrentStub) ApplyConfig(_ toml.Primitive, _ toml.MetaData) (adapters.ApplyScope, error) {
 	return adapters.ScopeNextCast, nil
 }
@@ -1978,9 +1978,7 @@ func TestReceiverEvents_PresetsBetweenMeterAndAudio(t *testing.T) {
 	env := newChassisIntegrationEnv(t)
 	defer env.Close()
 	names := env.CollectInitialEventNames(t, 2*time.Second)
-	// audioDsp was added to the burst (after volume, before meter) when the
-	// audio-strip feature landed; include it in the expected order.
-	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "audio"}
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "history", "audio"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("initial burst events = %v, want %v", names, want)
 	}
@@ -2207,11 +2205,11 @@ func testSettingsConfigPath(t *testing.T, dir string, bridge config.BridgeConfig
 // fakeCoreForSettingsTests satisfies uiserver.Core with no-op methods.
 type fakeCoreForSettingsTests struct{}
 
-func (fakeCoreForSettingsTests) UpdateBridge(config.BridgeConfig)         {}
-func (fakeCoreForSettingsTests) SetInterlaceFieldOrder(string) error      { return nil }
-func (fakeCoreForSettingsTests) SetOutputVolume(int) error                { return nil }
-func (fakeCoreForSettingsTests) SetAudioDSP(config.AudioDSP) error        { return nil }
-func (fakeCoreForSettingsTests) DropActiveCast(string) error              { return nil }
+func (fakeCoreForSettingsTests) UpdateBridge(config.BridgeConfig)    {}
+func (fakeCoreForSettingsTests) SetInterlaceFieldOrder(string) error { return nil }
+func (fakeCoreForSettingsTests) SetOutputVolume(int) error           { return nil }
+func (fakeCoreForSettingsTests) SetAudioDSP(config.AudioDSP) error   { return nil }
+func (fakeCoreForSettingsTests) DropActiveCast(string) error         { return nil }
 
 // fakeSettingsProber satisfies chassis.Prober for settings integration tests.
 type fakeSettingsProber struct {
@@ -2226,8 +2224,8 @@ func (f fakeSettingsProber) ProbeMister(_ context.Context, _ config.BridgeConfig
 // settingsEnvOptions configures newChassisIntegrationEnvForSettings.
 // All fields are optional; zero values mean "no override / nil".
 type settingsEnvOptions struct {
-	prober       chassis.Prober       // wired into chassis.Config.Prober
-	coreLauncher chassis.CoreLauncher // wired into chassis.Config.CoreLauncher
+	prober       chassis.Prober             // wired into chassis.Config.Prober
+	coreLauncher chassis.CoreLauncher       // wired into chassis.Config.CoreLauncher
 	mutateBridge func(*config.BridgeConfig) // applied to the seed bridge before saver init
 }
 
@@ -2311,7 +2309,7 @@ func newChassisIntegrationEnvForSettings(t *testing.T, opts settingsEnvOptions) 
 		srv:         srv,
 		mux:         mux,
 		streamsA:    streamsA,
-		fakeStreams:  fakeStreams,
+		fakeStreams: fakeStreams,
 		session:     session,
 		bridgeSaver: bridgeSaver,
 	}
@@ -2895,7 +2893,7 @@ func newChassisIntegrationEnvForCatalog(t *testing.T) *chassisEnv {
 		srv:         srv,
 		mux:         mux,
 		streamsA:    streamsA,
-		fakeStreams:  fakeStreams,
+		fakeStreams: fakeStreams,
 		session:     session,
 		bridgeSaver: bridgeSaver,
 	}

@@ -957,11 +957,11 @@ func TestHandleEvents_EmitsHistoryWhenRegistryHistoryChanges(t *testing.T) {
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		history.entries = []companion.CompanionHistoryEntry{{
+		history.setEntries([]companion.CompanionHistoryEntry{{
 			Title:      "Big Buck Bunny",
 			URLDisplay: "/library/metadata/42",
 			LastPlayed: now,
-		}}
+		}})
 		time.Sleep(350 * time.Millisecond)
 		cancel()
 	}()

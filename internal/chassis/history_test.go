@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestSnapshotFromStatusView_PopulatesHistoryFromRegisteredProvider(t *testin
 	t.Parallel()
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	reg := adapters.NewRegistry()
-	if err := reg.Register(historyAdapterStub{
+	if err := reg.Register(&historyAdapterStub{
 		entries: []companion.CompanionHistoryEntry{
 			{
 				Title:      "Big Buck Bunny",
@@ -58,7 +59,7 @@ func TestSnapshotFromStatusView_PopulatesHistoryReplayIDFromReplayProvider(t *te
 	t.Parallel()
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	reg := adapters.NewRegistry()
-	if err := reg.Register(historyReplayAdapterStub{
+	if err := reg.Register(&historyReplayAdapterStub{
 		historyAdapterStub: historyAdapterStub{
 			entries: []companion.CompanionHistoryEntry{{
 				ID:         "h_11111111111111111111111111111111",
@@ -196,22 +197,31 @@ func TestHandleHistoryPlayPost_UnknownIDReturns404(t *testing.T) {
 }
 
 type historyAdapterStub struct {
+	mu      sync.RWMutex
 	entries []companion.CompanionHistoryEntry
 }
 
-func (historyAdapterStub) Name() string                                     { return "url" }
-func (historyAdapterStub) DisplayName() string                              { return "URL" }
-func (historyAdapterStub) Fields() []adapters.FieldDef                      { return nil }
-func (historyAdapterStub) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
-func (historyAdapterStub) IsEnabled() bool                                  { return true }
-func (historyAdapterStub) Start(context.Context) error                      { return nil }
-func (historyAdapterStub) Stop() error                                      { return nil }
-func (historyAdapterStub) Status() adapters.Status                          { return adapters.Status{} }
-func (historyAdapterStub) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
+func (h *historyAdapterStub) setEntries(entries []companion.CompanionHistoryEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.entries = append([]companion.CompanionHistoryEntry(nil), entries...)
+}
+
+func (*historyAdapterStub) Name() string                                     { return "url" }
+func (*historyAdapterStub) DisplayName() string                              { return "URL" }
+func (*historyAdapterStub) Fields() []adapters.FieldDef                      { return nil }
+func (*historyAdapterStub) DecodeConfig(toml.Primitive, toml.MetaData) error { return nil }
+func (*historyAdapterStub) IsEnabled() bool                                  { return true }
+func (*historyAdapterStub) Start(context.Context) error                      { return nil }
+func (*historyAdapterStub) Stop() error                                      { return nil }
+func (*historyAdapterStub) Status() adapters.Status                          { return adapters.Status{} }
+func (*historyAdapterStub) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.ApplyScope, error) {
 	return adapters.ScopeNextCast, nil
 }
-func (h historyAdapterStub) CompanionHistory() []companion.CompanionHistoryEntry {
-	return h.entries
+func (h *historyAdapterStub) CompanionHistory() []companion.CompanionHistoryEntry {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return append([]companion.CompanionHistoryEntry(nil), h.entries...)
 }
 
 type historyReplayAdapterStub struct {
@@ -219,7 +229,7 @@ type historyReplayAdapterStub struct {
 	playedID string
 }
 
-func (h historyReplayAdapterStub) CompanionHistoryPlay(context.Context, string) (companion.CompanionPlayResult, error) {
+func (*historyReplayAdapterStub) CompanionHistoryPlay(context.Context, string) (companion.CompanionPlayResult, error) {
 	return companion.CompanionPlayResult{ResolvedVia: "direct"}, nil
 }
 
