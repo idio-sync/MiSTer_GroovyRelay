@@ -63,15 +63,15 @@ func (f *fakeManager) StartSessionIfIdle(req core.SessionRequest) (bool, error) 
 	defer f.mu.Unlock()
 	f.idleReqs = append(f.idleReqs, req)
 	f.calls = append(f.calls, "StartSessionIfIdle:"+req.StreamURL)
+	if f.st.State != core.StateIdle || !f.startIdleStarted {
+		return false, nil
+	}
 	err := f.startIdleErr
 	if err == nil {
 		err = f.err
 	}
 	if err != nil {
-		return false, err
-	}
-	if f.st.State != core.StateIdle || !f.startIdleStarted {
-		return false, nil
+		return true, err
 	}
 	f.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef}
 	return true, nil
@@ -113,6 +113,41 @@ func (f *fakeManager) lastIdleReq() core.SessionRequest {
 		return core.SessionRequest{}
 	}
 	return f.idleReqs[len(f.idleReqs)-1]
+}
+
+func TestFakeManager_StartSessionIfIdleBusySuppressesStartError(t *testing.T) {
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StatePlaying, AdapterRef: "busy"},
+		startIdleStarted: true,
+		startIdleErr:     errors.New("start failed"),
+	}
+
+	started, err := mgr.StartSessionIfIdle(core.SessionRequest{AdapterRef: "next"})
+
+	if err != nil {
+		t.Fatalf("err = %v, want nil when idle admission fails", err)
+	}
+	if started {
+		t.Fatal("started = true, want false when core is busy")
+	}
+}
+
+func TestFakeManager_StartSessionIfIdleAdmittedErrorReportsStarted(t *testing.T) {
+	startErr := errors.New("start failed")
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+		startIdleErr:     startErr,
+	}
+
+	started, err := mgr.StartSessionIfIdle(core.SessionRequest{AdapterRef: "next"})
+
+	if !errors.Is(err, startErr) {
+		t.Fatalf("err = %v, want %v", err, startErr)
+	}
+	if !started {
+		t.Fatal("started = false, want true when idle admission matched but start failed")
+	}
 }
 
 func waitForFakeManagerReq(t *testing.T, mgr *fakeManager) {
