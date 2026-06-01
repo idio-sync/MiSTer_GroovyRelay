@@ -1,6 +1,12 @@
 package plex
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -106,5 +112,90 @@ func TestAutoAdvance_FakeCoreImplementsStartSessionIfIdle(t *testing.T) {
 	}
 	if !started {
 		t.Fatal("idle fakeCore should report started=true")
+	}
+}
+
+func newPlayQueueServer(t *testing.T, body string) (*httptest.Server, PlayMediaRequest) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/playQueues/") {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	u, _ := url.Parse(srv.URL)
+	host, port := u.Hostname(), u.Port()
+	p := PlayMediaRequest{
+		PlexServerScheme:  "http",
+		PlexServerAddress: host,
+		PlexServerPort:    port,
+		ContainerKey:      "/playQueues/77",
+		MediaKey:          "/library/metadata/200",
+		MediaType:         "track",
+		PlayQueueItemID:   "1002",
+		PlayQueueID:       "77",
+	}
+	return srv, p
+}
+
+const threeItemQueue = `<?xml version="1.0"?>
+<MediaContainer playQueueID="77" playQueueVersion="3">
+  <Track key="/library/metadata/100" ratingKey="100" playQueueItemID="1001"/>
+  <Track key="/library/metadata/200" ratingKey="200" playQueueItemID="1002"/>
+  <Track key="/library/metadata/300" ratingKey="300" playQueueItemID="1003"/>
+</MediaContainer>`
+
+func TestResolveNextQueueItem_AdvancesToNext(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	c := NewCompanion(CompanionConfig{}, &fakeCore{})
+
+	next, err := c.resolveNextQueueItem(context.Background(), p, func(items []playQueueItem, cur PlayMediaRequest) (playQueueItem, bool) {
+		return nextPlayQueueItem(items, cur.PlayQueueItemID, cur.MediaKey, 1)
+	})
+	if err != nil {
+		t.Fatalf("resolveNextQueueItem: %v", err)
+	}
+	if next.MediaKey != "/library/metadata/300" {
+		t.Fatalf("next.MediaKey = %q, want /library/metadata/300", next.MediaKey)
+	}
+	if next.PlayQueueItemID != "1003" {
+		t.Fatalf("next.PlayQueueItemID = %q, want 1003", next.PlayQueueItemID)
+	}
+	if next.OffsetMs != 0 {
+		t.Fatalf("next.OffsetMs = %d, want 0", next.OffsetMs)
+	}
+	if next.TranscodeSessionID == "" || next.TranscodeSessionID == p.TranscodeSessionID {
+		t.Fatalf("next.TranscodeSessionID must be freshly minted, got %q", next.TranscodeSessionID)
+	}
+}
+
+func TestResolveNextQueueItem_EndOfQueueSentinel(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.PlayQueueItemID = "1003" // last item
+	c := NewCompanion(CompanionConfig{}, &fakeCore{})
+
+	_, err := c.resolveNextQueueItem(context.Background(), p, func(items []playQueueItem, cur PlayMediaRequest) (playQueueItem, bool) {
+		return nextPlayQueueItem(items, cur.PlayQueueItemID, cur.MediaKey, 1)
+	})
+	if !errors.Is(err, errNoNextQueueItem) {
+		t.Fatalf("want errNoNextQueueItem at end of queue, got %v", err)
+	}
+}
+
+func TestResolveNextQueueItem_EmptyContainerKeySentinel(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.ContainerKey = ""
+	c := NewCompanion(CompanionConfig{}, &fakeCore{})
+
+	_, err := c.resolveNextQueueItem(context.Background(), p, func(items []playQueueItem, cur PlayMediaRequest) (playQueueItem, bool) {
+		return nextPlayQueueItem(items, cur.PlayQueueItemID, cur.MediaKey, 1)
+	})
+	if !errors.Is(err, errNoNextQueueItem) {
+		t.Fatalf("want errNoNextQueueItem for empty ContainerKey, got %v", err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -645,44 +646,24 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		prevStatus = c.core.Status()
 	}
 	p := c.lastPlaySession()
-	if p.MediaKey == "" {
-		http.Error(w, "no plex session", 400)
-		return false
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	pq, err := c.fetchPlayQueue(ctx, p)
+	next, err := c.resolveNextQueueItem(ctx, p, selectItem)
 	if err != nil {
+		if errors.Is(err, errNoNextQueueItem) {
+			http.Error(w, errNoNextQueueItem.Error(), 400)
+			return false
+		}
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	item, ok := selectItem(pq.Items, p)
-	if !ok {
-		http.Error(w, "play queue item not found", 400)
-		return false
-	}
-	key := item.Key
-	if key == "" && item.RatingKey != "" {
-		key = "/library/metadata/" + item.RatingKey
-	}
-	if key == "" {
-		http.Error(w, "play queue item has no media key", 400)
-		return false
-	}
-	p.MediaKey = key
-	p.Title = ""
-	p.PlayQueueItemID = item.PlayQueueItemID
-	p.PlayQueueID = firstNonEmpty(p.PlayQueueID, pq.PlayQueueID)
-	p.PlayQueueVersion = firstNonEmpty(p.PlayQueueVersion, pq.PlayQueueVersion)
-	p.OffsetMs = 0
-	p.CommandID = queryOrHeader(r, "commandID")
-	p.TranscodeSessionID = NewTranscodeSessionID()
+	next.CommandID = queryOrHeader(r, "commandID")
 	preset, err := c.currentPreset()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
-	req := c.sessionRequestForPlay(r.Context(), p, preset)
+	req := c.sessionRequestForPlay(r.Context(), next, preset)
 	if prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
@@ -692,7 +673,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	c.rememberPlaySession(p)
+	c.rememberPlaySession(next)
 	if !c.restorePausedIfNeeded(w, prevStatus.State == core.StatePaused) {
 		return false
 	}
