@@ -446,6 +446,7 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		}
 	}
 	req.OnStop = artworkcache.WithCleanup(md.ArtworkPath, req.OnStop)
+	req.OnStop = c.withAutoAdvance(p, req.OnStop)
 	return req
 }
 
@@ -543,6 +544,7 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 			slog.Debug("plex stop transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
 		}
 	}
+	req.OnStop = c.withAutoAdvance(p, req.OnStop)
 	return req
 }
 

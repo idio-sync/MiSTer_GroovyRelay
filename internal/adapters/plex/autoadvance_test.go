@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -198,4 +199,172 @@ func TestResolveNextQueueItem_EmptyContainerKeySentinel(t *testing.T) {
 	if !errors.Is(err, errNoNextQueueItem) {
 		t.Fatalf("want errNoNextQueueItem for empty ContainerKey, got %v", err)
 	}
+}
+
+func TestAutoAdvance_GatingOffDoesNotAdvance(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: false}, fc)
+	innerCalled := false
+
+	stop := c.withAutoAdvance(PlayMediaRequest{MediaKey: "/library/metadata/200"}, func(reason string) {
+		innerCalled = true
+	})
+	stop("eof")
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if !innerCalled {
+		t.Fatal("wrapped OnStop did not call inner callback")
+	}
+	if fc.startIfIdleCalls != 0 {
+		t.Fatalf("auto-advance fired with toggle off: calls=%d", fc.startIfIdleCalls)
+	}
+}
+
+func TestAutoAdvance_NonEOFReasonDoesNotAdvance(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true}, fc)
+	innerCalled := false
+
+	stop := c.withAutoAdvance(PlayMediaRequest{MediaKey: "/library/metadata/200"}, func(reason string) {
+		innerCalled = true
+	})
+	stop("stop")
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if !innerCalled {
+		t.Fatal("wrapped OnStop did not call inner callback")
+	}
+	if fc.startIfIdleCalls != 0 {
+		t.Fatalf("auto-advance fired on non-eof reason: calls=%d", fc.startIfIdleCalls)
+	}
+}
+
+func TestAutoAdvance_EOFAdvancesToNextItem(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	req.OnStop("eof")
+	waitForStartIfIdle(t, fc, 1)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.lastReq.AdapterRef != "/library/metadata/300" {
+		t.Fatalf("advanced to AdapterRef %q, want /library/metadata/300", fc.lastReq.AdapterRef)
+	}
+}
+
+func TestAutoAdvance_MusicBuilderEOFAdvancesToNextItem(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "track"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.musicSessionRequestForPlay(p, MusicMetadata{Title: "Track 2"})
+	req.OnStop("eof")
+	waitForStartIfIdle(t, fc, 1)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if !strings.HasPrefix(fc.lastReq.AdapterRef, "/library/metadata/300:") {
+		t.Fatalf("advanced to AdapterRef %q, want prefix /library/metadata/300:", fc.lastReq.AdapterRef)
+	}
+}
+
+func TestAutoAdvance_StandsDownWhenNotIdle(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{notIdle: true}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	req.OnStop("eof")
+	waitForStartIfIdle(t, fc, 1)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.starts != 0 {
+		t.Fatalf("stood-down advance still started a session: starts=%d", fc.starts)
+	}
+}
+
+func TestAutoAdvance_EndOfQueueDoesNotStart(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "episode"
+	p.PlayQueueItemID = "1003"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	c.advanceAfterEOF(p)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.startIfIdleCalls != 0 {
+		t.Fatalf("end-of-queue should not call StartSessionIfIdle: calls=%d", fc.startIfIdleCalls)
+	}
+}
+
+func TestAutoAdvance_UsesCapturedContextNotLastPlay(t *testing.T) {
+	srv, qA := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	qA.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.sessionRequestForPreset(qA, presetForTest(t))
+
+	c.rememberPlaySession(PlayMediaRequest{
+		PlexServerScheme:  "http",
+		PlexServerAddress: "127.0.0.1",
+		PlexServerPort:    "1",
+		ContainerKey:      "/playQueues/999",
+		MediaKey:          "/library/metadata/900",
+		PlayQueueItemID:   "9001",
+	})
+
+	req.OnStop("eof")
+	waitForStartIfIdle(t, fc, 1)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.lastReq.AdapterRef != "/library/metadata/300" {
+		t.Fatalf("advance used clobbered lastPlay; AdapterRef=%q want /library/metadata/300", fc.lastReq.AdapterRef)
+	}
+}
+
+func waitForStartIfIdle(t *testing.T, fc *fakeCore, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		got := fc.startIfIdleCalls
+		fc.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d StartSessionIfIdle call(s)", want)
+}
+
+func presetForTest(t *testing.T) core.ModelinePreset {
+	t.Helper()
+	preset, err := core.ResolvePreset("NTSC_480i")
+	if err != nil {
+		t.Fatalf("ResolvePreset: %v", err)
+	}
+	return preset
 }
