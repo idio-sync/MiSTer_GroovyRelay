@@ -476,6 +476,28 @@ func TestChassisCSS_VFDDensitySelectors(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_VFDUptimeLabelUsesPanelLabelTypography(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := strings.ReplaceAll(string(src), "\r\n", "\n")
+	labelRule := cssRuleBlock(t, text, "body.receiver .vfd .right-panel .uptime-label")
+	for _, want := range []string{
+		"font: 500 9px 'Inter', sans-serif;",
+		"text-transform: uppercase;",
+		"letter-spacing: 0.24em;",
+	} {
+		if !strings.Contains(labelRule, want) {
+			t.Fatalf("uptime label should match system time label typography; missing %q in:\n%s", want, labelRule)
+		}
+	}
+	if strings.Contains(labelRule, "DSEG") {
+		t.Fatalf("uptime label should not use seven-segment display font:\n%s", labelRule)
+	}
+}
+
 func TestReceiverLocalFilesButtonUsesUploadButtonStyle(t *testing.T) {
 	t.Parallel()
 	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")

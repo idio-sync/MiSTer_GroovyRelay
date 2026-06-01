@@ -188,7 +188,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 			QueueCurrent: 0,
 			QueueTotal:   0,
 			SystemTime:   "22:47",
-			Uptime:       "10H 47M",
+			Uptime:       "10H 47m",
 		},
 		Source: SourceData{
 			Buttons: []SourceButton{
@@ -484,8 +484,8 @@ func TestIdleSnapshot_UptimeFromStartedAt(t *testing.T) {
 	cfg := nonZeroConfig()
 	cfg.StartedAt = startedAt
 	got := idleSnapshot(cfg, now)
-	if got.VFD.Uptime != "4H 12M" {
-		t.Errorf("VFD.Uptime = %q, want 4H 12M", got.VFD.Uptime)
+	if got.VFD.Uptime != "4H 12m" {
+		t.Errorf("VFD.Uptime = %q, want 4H 12m", got.VFD.Uptime)
 	}
 }
 
@@ -2128,6 +2128,12 @@ func TestVfdTemplate_RendersDataAttributeHooks(t *testing.T) {
 	// the seg-text/seg-ghost overlay vocabulary.
 	if !strings.Contains(body, "seg-ghost") {
 		t.Errorf("vfd partial is missing seg-ghost spans; overlay vocabulary broken")
+	}
+	if !strings.Contains(body, `class="uptime-label">UPTIME</span>`) {
+		t.Errorf("vfd uptime label should use panel-label typography; full output:\n%s", body)
+	}
+	if strings.Contains(body, `<span class="seg-text">UPTIME</span>`) {
+		t.Errorf("vfd uptime label should not render as seven-segment text; full output:\n%s", body)
 	}
 }
 

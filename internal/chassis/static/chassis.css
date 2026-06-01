@@ -947,6 +947,17 @@ body.receiver .vfd .right-panel .freq {
   letter-spacing: 0.05em;
 }
 
+body.receiver .vfd .right-panel .uptime-label {
+  display: inline-block;
+  color: var(--vfd-dim);
+  font: 500 9px 'Inter', sans-serif;
+  line-height: 1;
+  letter-spacing: 0.24em;
+  text-shadow: none;
+  text-transform: uppercase;
+  vertical-align: 0.16em;
+}
+
 body.receiver .source-cluster {
   display: grid;
   width: clamp(480px, 38vw, 600px);

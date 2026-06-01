@@ -1067,16 +1067,16 @@ func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvail
 	}
 }
 
-// formatUptime turns a duration into the "NH NM" string used by the VFD.
-// Zero or negative durations render as "0H 0M".
+// formatUptime turns a duration into the "NH Nm" string used by the VFD.
+// Zero or negative durations render as "0H 0m".
 func formatUptime(d time.Duration) string {
 	if d <= 0 {
-		return "0H 0M"
+		return "0H 0m"
 	}
 	total := int(d / time.Minute)
 	hours := total / 60
 	minutes := total % 60
-	return fmt.Sprintf("%dH %dM", hours, minutes)
+	return fmt.Sprintf("%dH %dm", hours, minutes)
 }
 
 func defaultVisualizerMode(cfg Config) string {
