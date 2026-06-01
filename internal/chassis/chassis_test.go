@@ -1082,6 +1082,7 @@ func TestReceiverInputRendersLocalFilesButtonBesideTorrent(t *testing.T) {
 	}
 	for _, want := range []string{
 		`class="upload-btn" id="localfiles-btn"`,
+		`aria-expanded="false"`,
 		`>LOCAL FILES</button>`,
 		`id="localfiles-drawer"`,
 		`data-receiver-localfiles-drawer`,
@@ -1090,6 +1091,9 @@ func TestReceiverInputRendersLocalFilesButtonBesideTorrent(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("receiver local files UI missing %q in:\n%s", want, excerpt(body, "localfiles-btn"))
 		}
+	}
+	if strings.Contains(body, `id="localfiles-close-btn"`) {
+		t.Fatalf("receiver local files drawer should use the toolbar button as its close control:\n%s", excerpt(body, "localfiles-drawer"))
 	}
 }
 
@@ -1100,7 +1104,7 @@ func TestReceiverInputDisablesLocalFilesButtonWithoutLibraries(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="upload-btn" id="localfiles-btn" type="button" disabled`) {
+	if !strings.Contains(body, `class="upload-btn" id="localfiles-btn" type="button" aria-controls="localfiles-drawer" aria-expanded="false" disabled`) {
 		t.Fatalf("local files button should render disabled without libraries:\n%s", excerpt(body, "localfiles-btn"))
 	}
 }
@@ -5018,6 +5022,37 @@ func TestSettingsDrawerJS_LocalFilesBrowseDrawerVisibilityContract(t *testing.T)
 	}
 	if !strings.Contains(string(cssBytes), `body.receiver .catalog-drawer.localfiles-open`) {
 		t.Error("chassis.css missing Local Files drawer open selector")
+	}
+}
+
+func TestReceiverLocalFilesButtonToggleContract(t *testing.T) {
+	t.Parallel()
+	jsBytes, err := chassisStaticFS.ReadFile("static/input-cast.js")
+	if err != nil {
+		t.Fatalf("ReadFile input-cast.js: %v", err)
+	}
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile chassis.css: %v", err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		`document.body.classList.toggle('localfiles-open', open)`,
+		`localFilesBtn.setAttribute('aria-expanded', open ? 'true' : 'false')`,
+		`isLocalFilesDrawerOpen()`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("input-cast.js missing receiver Local Files toggle contract %q", want)
+		}
+	}
+	css := string(cssBytes)
+	for _, want := range []string{
+		`body.receiver.localfiles-open .input-controls #localfiles-btn`,
+		`body.receiver .input-controls #localfiles-btn:active`,
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("chassis.css missing receiver Local Files button state selector %q", want)
+		}
 	}
 }
 

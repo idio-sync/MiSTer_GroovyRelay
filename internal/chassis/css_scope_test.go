@@ -198,7 +198,7 @@ func TestChassisCSS_Task23IdleLiveStateOverrideContracts(t *testing.T) {
 		"body.receiver.idle .aux-screen",
 		"body.receiver.browse-open .preset-header .browse-btn",
 		"body.receiver.browse-open .preset-header .browse-btn::before",
-		"body.receiver.browse-open .catalog-drawer",
+		"body.receiver.browse-open #catalog-drawer",
 		"body.receiver.browse-open .catalog-browser",
 		"body.receiver.catalog-scanning .vfd::after",
 		"@keyframes scan-blink",

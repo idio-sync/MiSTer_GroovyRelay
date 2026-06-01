@@ -11,12 +11,11 @@
     </div>
     <button class="cast-btn{{if not .CastEnabled}} disabled{{end}}" id="cast-btn" type="button"{{if not .CastEnabled}} disabled{{end}}>CAST</button>
     <button class="upload-btn" id="upload-btn" type="button">&uarr; .TORRENT</button>
-    <button class="upload-btn" id="localfiles-btn" type="button"{{if not .LocalFilesAvailable}} disabled title="Configure Local Files in Settings"{{else}} title="Browse Local Files"{{end}}>LOCAL FILES</button>
+    <button class="upload-btn" id="localfiles-btn" type="button" aria-controls="localfiles-drawer" aria-expanded="false"{{if not .LocalFilesAvailable}} disabled title="Configure Local Files in Settings"{{else}} title="Browse Local Files"{{end}}>LOCAL FILES</button>
     <input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" style="display:none;">
   </div>
-  <div class="catalog-drawer localfiles-drawer receiver-localfiles-drawer" id="localfiles-drawer" data-receiver-localfiles-drawer hidden>
+  <div class="catalog-drawer localfiles-drawer receiver-localfiles-drawer" id="localfiles-drawer" data-receiver-localfiles-drawer aria-hidden="true">
     <div class="catalog-top">
-      <button type="button" class="action-btn ghost" id="localfiles-close-btn">Close</button>
       <select class="field-input" id="localfiles-library-select" aria-label="Local Files library">
         {{ range .LocalFilesLibraries }}<option value="{{ .Name }}">{{ .Name }}</option>{{ end }}
       </select>

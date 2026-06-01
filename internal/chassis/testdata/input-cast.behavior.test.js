@@ -64,6 +64,7 @@ class FakeElement {
 }
 
 function createHarness() {
+  const body = new FakeElement();
   const panel = new FakeElement();
   const input = new FakeElement('https://example.com/video.mp4');
   const clearBtn = new FakeElement();
@@ -87,6 +88,7 @@ function createHarness() {
   let nextTimer = 1;
 
   const document = {
+    body,
     querySelector: (selector) => selector === '.input-section' ? panel : null,
     createElement: (tag) => {
       const el = new FakeElement();
@@ -164,6 +166,7 @@ function createHarness() {
     requests,
     advance,
     window: context.window,
+    body,
     localFilesBtn,
     localFilesDrawer,
     localFilesSelect,
@@ -215,4 +218,27 @@ test('settings library save enables receiver local files without reload', async 
   assert.equal(h.requests.at(-1).body, 'lib=Array&path=');
   assert.equal(h.localFilesDrawer.hidden, false);
   assert.equal(h.localFilesDrawer.classList.contains('localfiles-open'), true);
+  assert.equal(h.localFilesDrawer.getAttribute('aria-hidden'), 'false');
+});
+
+test('receiver local files button toggles lit drawer state closed on second click', async () => {
+  const h = createHarness();
+  h.window.Chassis.localFiles.setLibraries([{ name: 'Array', root: '/array' }]);
+
+  await h.localFilesBtn.click();
+  await settle();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.localFilesDrawer.hidden, false);
+  assert.equal(h.localFilesDrawer.classList.contains('localfiles-open'), true);
+  assert.equal(h.localFilesDrawer.getAttribute('aria-hidden'), 'false');
+  assert.equal(h.body.classList.contains('localfiles-open'), true);
+  assert.equal(h.localFilesBtn.getAttribute('aria-expanded'), 'true');
+
+  await h.localFilesBtn.click();
+  await settle();
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.localFilesDrawer.classList.contains('localfiles-open'), false);
+  assert.equal(h.localFilesDrawer.getAttribute('aria-hidden'), 'true');
+  assert.equal(h.body.classList.contains('localfiles-open'), false);
+  assert.equal(h.localFilesBtn.getAttribute('aria-expanded'), 'false');
 });

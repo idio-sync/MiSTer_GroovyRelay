@@ -3022,11 +3022,55 @@ body.receiver .upload-btn {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
   text-transform: uppercase;
   cursor: pointer;
+  transition:
+    background 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 90ms ease-out;
 }
 
 body.receiver .upload-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+body.receiver .input-controls #localfiles-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+body.receiver .input-controls #localfiles-btn::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #222226;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.65);
+}
+
+body.receiver .input-controls #localfiles-btn:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.58),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body.receiver.localfiles-open .input-controls #localfiles-btn {
+  color: var(--vfd);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
+  background: linear-gradient(180deg, #5a5a60 0%, #3a3a3e 50%, #2a2a2e 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 0 9px var(--vfd-glow-soft);
+}
+
+body.receiver.localfiles-open .input-controls #localfiles-btn::before {
+  background: var(--vfd);
+  box-shadow: 0 0 5px var(--vfd-glow);
 }
 
 body.receiver .receiver-localfiles-drawer {
@@ -4255,7 +4299,7 @@ body.receiver.browse-open .preset-header .browse-btn::before {
   box-shadow: 0 0 5px var(--vfd-glow);
 }
 
-body.receiver.browse-open .catalog-drawer {
+body.receiver.browse-open #catalog-drawer {
   max-height: 720px;
   margin-top: 10px;
   opacity: 1;

@@ -150,7 +150,6 @@
 
   const localFilesBtn = document.getElementById('localfiles-btn');
   const localFilesDrawer = document.getElementById('localfiles-drawer');
-  const localFilesCloseBtn = document.getElementById('localfiles-close-btn');
   const localFilesSelect = document.getElementById('localfiles-library-select');
   const localFilesEntries = document.getElementById('localfiles-entries');
   const localFilesBreadcrumb = document.getElementById('localfiles-breadcrumb');
@@ -178,16 +177,26 @@
     localFilesError.textContent = '';
   }
 
-  function openLocalFilesDrawer() {
+  function isLocalFilesDrawerOpen() {
+    return !!(localFilesDrawer && localFilesDrawer.classList.contains('localfiles-open'));
+  }
+
+  function setLocalFilesDrawerOpen(open) {
     if (!localFilesDrawer) return;
-    localFilesDrawer.hidden = false;
-    localFilesDrawer.classList.add('localfiles-open');
+    localFilesDrawer.classList.toggle('localfiles-open', open);
+    localFilesDrawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (localFilesBtn) localFilesBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (document.body && document.body.classList) {
+      document.body.classList.toggle('localfiles-open', open);
+    }
+  }
+
+  function openLocalFilesDrawer() {
+    setLocalFilesDrawerOpen(true);
   }
 
   function closeLocalFilesDrawer() {
-    if (!localFilesDrawer) return;
-    localFilesDrawer.classList.remove('localfiles-open');
-    localFilesDrawer.hidden = true;
+    setLocalFilesDrawerOpen(false);
   }
 
   function setLocalFilesLibraries(libs) {
@@ -300,9 +309,12 @@
         paintLocalFilesError('configure local files');
         return;
       }
+      if (isLocalFilesDrawerOpen()) {
+        closeLocalFilesDrawer();
+        return;
+      }
       browseLocalFiles('');
     });
-    if (localFilesCloseBtn) localFilesCloseBtn.addEventListener('click', closeLocalFilesDrawer);
     localFilesSelect.addEventListener('change', () => browseLocalFiles(''));
     localFilesEntries.addEventListener('click', (ev) => {
       const dir = ev.target.closest('[data-localfiles-dir]');
