@@ -40,14 +40,16 @@ func (a *Adapter) HandlePlay(data json.RawMessage) {
 
 	switch p.PlayCommand {
 	case "", "PlayNow":
-		a.startPlayNow(a.replaceQueueForPlayNow(p))
+		intent := a.beginControllerStartIntent()
+		a.startPlayNow(a.replaceQueueForPlayNow(p), intent)
 	case "PlayNext":
 		a.queueAt(p, 0)
 	case "PlayLast":
 		a.queueAt(p, -1) // -1 means append
 	case "PlayInstantMix", "PlayShuffle":
 		slog.Warn("jellyfin: PlayCommand simplified to PlayNow", "requested", p.PlayCommand)
-		a.startPlayNow(a.replaceQueueForPlayNow(p))
+		intent := a.beginControllerStartIntent()
+		a.startPlayNow(a.replaceQueueForPlayNow(p), intent)
 	default:
 		slog.Warn("jellyfin: unknown PlayCommand", "cmd", p.PlayCommand)
 	}
@@ -56,22 +58,28 @@ func (a *Adapter) HandlePlay(data json.RawMessage) {
 // startPlayNow runs the PlaybackInfo -> StartSession sequence for ItemIds[0].
 // Callers that receive a multi-item PlayNow must collapse the message to the
 // selected item first via replaceQueueForPlayNow.
-func (a *Adapter) startPlayNow(p playMessageData) {
+func (a *Adapter) startPlayNow(p playMessageData, intent uint64) {
+	if intent == 0 {
+		intent = a.beginControllerStartIntent()
+	}
 	a.mu.Lock()
 	cfg := a.cfg
 	a.mu.Unlock()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: startPlayNow: no token", "err", err)
 		return
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: startPlayNow: modeline", "err", err)
 		return
 	}
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, p.ItemIDs[0])
@@ -393,8 +401,14 @@ func (a *Adapter) HandlePlaystate(data json.RawMessage) {
 			a.pokeActiveReporter()
 		}
 	case "NextTrack":
+		intent := a.beginControllerStartIntent()
 		if qi, ok := a.popQueueHead(); ok {
-			a.startQueuedItem(qi)
+			a.startQueuedItemWithOptions(qi, queuedStartOptions{
+				Starter:          startCoreSession(a.core),
+				ControllerIntent: intent,
+			})
+		} else {
+			a.finishControllerStartIntent(intent)
 		}
 	case "PreviousTrack":
 		// v1: no history; PreviousTrack is a no-op. Documented gap.
@@ -718,35 +732,45 @@ func startCoreSession(coreManager SessionManager) queuedStartStrategy {
 }
 
 type queuedStartOptions struct {
-	Starter queuedStartStrategy
+	Starter          queuedStartStrategy
+	ControllerIntent uint64
 }
 
 func (a *Adapter) startQueuedItem(qi QueuedItem) {
 	a.startQueuedItemWithOptions(qi, queuedStartOptions{
-		Starter: startCoreSession(a.core),
+		Starter:          startCoreSession(a.core),
+		ControllerIntent: a.beginControllerStartIntent(),
 	})
 }
 
 func (a *Adapter) startQueuedItemWithOptions(qi QueuedItem, opts queuedStartOptions) {
+	intent := opts.ControllerIntent
+	if intent == 0 {
+		intent = a.beginControllerStartIntent()
+	}
 	a.mu.Lock()
 	cfg := a.cfg
 	a.mu.Unlock()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: start queued item: no token", "err", err)
 		return
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: start queued item: modeline", "err", err)
 		return
 	}
 	if opts.Starter == nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: start queued item: no core starter")
 		return
 	}
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, qi.ItemID)

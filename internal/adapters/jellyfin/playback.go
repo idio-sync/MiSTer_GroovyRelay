@@ -512,6 +512,43 @@ func (a *Adapter) commitSelfPreempt() {
 	a.pendingRollback = ""
 }
 
+func (a *Adapter) beginControllerStartIntent() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.controllerStartEpoch++
+	if a.controllerStartEpoch == 0 {
+		a.controllerStartEpoch = 1
+	}
+	a.pendingControllerStarts++
+	return a.controllerStartEpoch
+}
+
+func (a *Adapter) finishControllerStartIntent(epoch uint64) {
+	if epoch == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pendingControllerStarts > 0 {
+		a.pendingControllerStarts--
+	}
+}
+
+func (a *Adapter) autoAdvanceControllerEpoch() (uint64, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pendingControllerStarts > 0 {
+		return 0, false
+	}
+	return a.controllerStartEpoch, true
+}
+
+func (a *Adapter) controllerStartBlocksAutoAdvance(epoch uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pendingControllerStarts > 0 || a.controllerStartEpoch != epoch
+}
+
 // snapshotCurrentRefKey returns currentRefKey under Adapter.mu.
 // Used by the reporter on each tick.
 func (a *Adapter) snapshotCurrentRefKey() string {

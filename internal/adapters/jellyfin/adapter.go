@@ -46,23 +46,25 @@ type Adapter struct {
 
 	eventLog *eventlog.Log // nil disables emission
 
-	mu                 sync.Mutex
-	cfg                Config
-	state              adapters.State
-	lastErr            string
-	stateSince         time.Time
-	link               *LinkState
-	currentRefKey      string               // packed "<itemId>:<playSessionId>" for self-preempt elision
-	currentSessionID   string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
-	lastSessionRecover time.Time            // rate-limits handleSessionsPush's cap re-POST
-	pendingRollback    string               // saved currentRefKey for StartSession-failure rollback
-	nextQueueEntryID   uint64               // monotonically assigned under mu for stable queued-item identity
-	queue              []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
-	reporters          map[string]*reporter // refKey → reporter
-	history            []companionHistoryEntry
-	ws                 wsConn
-	keepaliveSet       chan time.Duration
-	autoAdvanceDelay   time.Duration
+	mu                      sync.Mutex
+	cfg                     Config
+	state                   adapters.State
+	lastErr                 string
+	stateSince              time.Time
+	link                    *LinkState
+	currentRefKey           string               // packed "<itemId>:<playSessionId>" for self-preempt elision
+	currentSessionID        string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
+	lastSessionRecover      time.Time            // rate-limits handleSessionsPush's cap re-POST
+	pendingRollback         string               // saved currentRefKey for StartSession-failure rollback
+	controllerStartEpoch    uint64               // bumped before controller-owned async starts mutate queue or fetch PlaybackInfo
+	pendingControllerStarts int                  // in-flight controller-owned starts that auto-advance must not race
+	nextQueueEntryID        uint64               // monotonically assigned under mu for stable queued-item identity
+	queue                   []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
+	reporters               map[string]*reporter // refKey → reporter
+	history                 []companionHistoryEntry
+	ws                      wsConn
+	keepaliveSet            chan time.Duration
+	autoAdvanceDelay        time.Duration
 	// beforeAutoAdvanceCommit is a test seam for deterministic interleaving
 	// between a successful guarded core start and adapter queue/ownership commit.
 	beforeAutoAdvanceCommit func()

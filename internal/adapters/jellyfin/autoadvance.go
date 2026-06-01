@@ -51,11 +51,15 @@ func (a *Adapter) advanceAfterEOF(refKey string) {
 	if a.snapshotCurrentRefKey() != refKey {
 		return
 	}
+	controllerEpoch, ok := a.autoAdvanceControllerEpoch()
+	if !ok {
+		return
+	}
 	if _, ok := a.peekQueueHead(); !ok {
 		slog.Debug("jellyfin: auto-advance reached end of queue")
 		return
 	}
-	a.startQueuedItemAfterEOF(refKey)
+	a.startQueuedItemAfterEOF(refKey, controllerEpoch)
 }
 
 func (a *Adapter) peekQueueHead() (QueuedItem, bool) {
@@ -77,9 +81,12 @@ func (a *Adapter) queueHeadStillMatches(qi QueuedItem) bool {
 	return len(a.queue) > 0 && sameQueueEntry(a.queue[0], qi)
 }
 
-func (a *Adapter) commitAutoAdvance(stoppedRef string, nextRef string, started QueuedItem) bool {
+func (a *Adapter) commitAutoAdvance(stoppedRef string, nextRef string, started QueuedItem, controllerEpoch uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.pendingControllerStarts > 0 || a.controllerStartEpoch != controllerEpoch {
+		return false
+	}
 	if a.currentRefKey != stoppedRef {
 		return false
 	}
@@ -92,7 +99,7 @@ func (a *Adapter) commitAutoAdvance(stoppedRef string, nextRef string, started Q
 	return true
 }
 
-func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
+func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string, controllerEpoch uint64) {
 	qi, ok := a.peekQueueHead()
 	if !ok {
 		slog.Debug("jellyfin: auto-advance reached end of queue")
@@ -163,6 +170,10 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
 		cleanupSessionArtwork(req)
 		return
 	}
+	if a.controllerStartBlocksAutoAdvance(controllerEpoch) {
+		cleanupSessionArtwork(req)
+		return
+	}
 
 	startedStatus, started, err := a.core.StartSessionIfIdleSnapshot(req)
 	if err != nil {
@@ -183,7 +194,7 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
 		a.stopStaleAutoAdvanceSession(startedStatus)
 		return
 	}
-	if !a.commitAutoAdvance(stoppedRef, req.AdapterRef, qi) {
+	if !a.commitAutoAdvance(stoppedRef, req.AdapterRef, qi, controllerEpoch) {
 		cleanupSessionArtwork(req)
 		a.stopStaleAutoAdvanceSession(startedStatus)
 		return
