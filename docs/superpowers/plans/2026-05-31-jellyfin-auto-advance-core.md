@@ -1431,6 +1431,8 @@ git commit -m "feat(jellyfin): auto advance queued items on eof"
 - Modify: `internal/adapters/jellyfin/autoadvance.go`
 - Modify: `internal/adapters/jellyfin/commands_test.go`
 
+> **Implementation update:** Task 6 review tightened the commit invariant. Auto-advance may commit only when the auto-started queued entry is still the queue head. If a controller command inserts or replaces queue entries before adapter commit, auto-advance stands down, leaves adapter ownership unchanged, preserves the controller-mutated queue, and stops the exact core session started by auto-advance with `StopIfSession`.
+
 - [ ] **Step 1: Write stale-session race tests**
 
 Add:
@@ -1464,14 +1466,17 @@ func TestAutoAdvanceEOF_StaleCurrentRefDoesNotMutateQueue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Write post-guard PlayNext race test**
+- [ ] **Step 2: Write post-guard queue-head race tests**
 
 Add:
 
 ```go
-func TestAutoAdvanceEOF_PlayNextAfterGuardPreservesInsertedItem(t *testing.T) {
+func TestAutoAdvanceEOF_PlayNextBeforeCommitStopsStaleStart(t *testing.T) {
 	jfSrv := startMappedPlaybackInfoServer(t, nil)
-	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
@@ -1487,16 +1492,50 @@ func TestAutoAdvanceEOF_PlayNextAfterGuardPreservesInsertedItem(t *testing.T) {
 
 	a.advanceAfterEOF("itm-1:ps-itm-1")
 
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.queue) != 2 || a.queue[0].ItemID != "inserted-itm" || a.queue[1].ItemID != "tail-itm" {
-		t.Fatalf("queue = %+v, want [inserted-itm tail-itm]", a.queue)
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 3 || queue[0].ItemID != "inserted-itm" || queue[1].ItemID != "next-itm" || queue[2].ItemID != "tail-itm" {
+		t.Fatalf("queue = %+v, want [inserted-itm next-itm tail-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
 	}
 }
 
-func TestAutoAdvanceEOF_DuplicateQueuedItemsRemoveStartedEntryID(t *testing.T) {
+func TestAutoAdvanceEOF_DuplicateQueuedItemsInsertedAheadStopsStaleStart(t *testing.T) {
 	jfSrv := startMappedPlaybackInfoServer(t, nil)
-	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
@@ -1512,25 +1551,59 @@ func TestAutoAdvanceEOF_DuplicateQueuedItemsRemoveStartedEntryID(t *testing.T) {
 
 	a.advanceAfterEOF("itm-1:ps-itm-1")
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.queue) != 2 {
-		t.Fatalf("queue = %+v, want two duplicate entries remaining", a.queue)
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
 	}
-	if a.queue[0].QueueEntryID != 3 || a.queue[1].QueueEntryID != 2 {
-		t.Fatalf("remaining QueueEntryIDs = %d,%d, want inserted 3 and original second 2", a.queue[0].QueueEntryID, a.queue[1].QueueEntryID)
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 3 {
+		t.Fatalf("queue = %+v, want inserted duplicate plus original two duplicates", queue)
+	}
+	if queue[0].QueueEntryID != 3 || queue[1].QueueEntryID != 1 || queue[2].QueueEntryID != 2 {
+		t.Fatalf("QueueEntryIDs = %d,%d,%d, want inserted 3 then originals 1,2", queue[0].QueueEntryID, queue[1].QueueEntryID, queue[2].QueueEntryID)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "dup-itm:ps-dup-itm" {
+		t.Fatalf("StopIfSession ref = %q, want dup-itm:ps-dup-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "dup-itm:ps-dup-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
 	}
 }
 ```
 
-- [ ] **Step 3: Write pre-commit controller preemption test**
+- [ ] **Step 3: Verify pre-commit controller preemption coverage**
 
-Add:
+Use the existing stronger pre-commit adapter-state race test:
 
 ```go
-func TestAutoAdvanceEOF_PreCommitControllerPreemptDoesNotClobberRef(t *testing.T) {
+func TestAutoAdvanceEOF_CommitFailureStopsAutoStartedSession(t *testing.T) {
 	jfSrv := startMappedPlaybackInfoServer(t, nil)
-	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
@@ -1548,15 +1621,36 @@ func TestAutoAdvanceEOF_PreCommitControllerPreemptDoesNotClobberRef(t *testing.T
 	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	if got := a.snapshotCurrentRefKey(); got != "controller-itm:ps-controller" {
-		t.Fatalf("currentRefKey = %q, want controller-itm:ps-controller", got)
+		t.Fatalf("currentRefKey = %q, want controller-owned ref", got)
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.queue) != 1 || a.queue[0].ItemID != "next-itm" {
-		t.Fatalf("queue = %+v, want unchanged [next-itm]", a.queue)
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
 	}
-	if len(a.reporters) != 0 {
-		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
 	}
 }
 
@@ -1585,12 +1679,37 @@ func TestAutoAdvanceEOF_PlayNowQueueReplacementBeforeCommitFailsCleanly(t *testi
 		t.Fatalf("currentRefKey = %q, want old ref because commit should fail", got)
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.queue) != 1 || a.queue[0].ItemID != "replacement-tail" {
-		t.Fatalf("queue = %+v, want replacement tail only", a.queue)
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "replacement-tail" {
+		t.Fatalf("queue = %+v, want replacement tail only", queue)
 	}
-	if len(a.reporters) != 0 {
-		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
 	}
 }
 ```
@@ -1600,7 +1719,7 @@ func TestAutoAdvanceEOF_PlayNowQueueReplacementBeforeCommitFailsCleanly(t *testi
 Run:
 
 ```sh
-go test ./internal/adapters/jellyfin -run 'TestAutoAdvanceEOF_(StaleCurrentRefDoesNotMutateQueue|PlayNextAfterGuardPreservesInsertedItem|DuplicateQueuedItemsRemoveStartedEntryID|PreCommitControllerPreemptDoesNotClobberRef|PlayNowQueueReplacementBeforeCommitFailsCleanly)' -v
+go test ./internal/adapters/jellyfin -run 'TestAutoAdvanceEOF_(StaleCurrentRefDoesNotMutateQueue|PlayNextBeforeCommitStopsStaleStart|DuplicateQueuedItemsInsertedAheadStopsStaleStart|CommitFailureStopsAutoStartedSession|PlayNowQueueReplacementBeforeCommitFailsCleanly)' -v
 ```
 
 Expected: selected tests pass.
