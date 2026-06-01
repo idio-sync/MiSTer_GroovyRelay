@@ -40,20 +40,22 @@ func (a *Adapter) HandlePlay(data json.RawMessage) {
 
 	switch p.PlayCommand {
 	case "", "PlayNow":
-		a.startPlayNow(p)
+		a.startPlayNow(a.replaceQueueForPlayNow(p))
 	case "PlayNext":
 		a.queueAt(p, 0)
 	case "PlayLast":
 		a.queueAt(p, -1) // -1 means append
 	case "PlayInstantMix", "PlayShuffle":
 		slog.Warn("jellyfin: PlayCommand simplified to PlayNow", "requested", p.PlayCommand)
-		a.startPlayNow(p)
+		a.startPlayNow(a.replaceQueueForPlayNow(p))
 	default:
 		slog.Warn("jellyfin: unknown PlayCommand", "cmd", p.PlayCommand)
 	}
 }
 
-// startPlayNow runs the PlaybackInfo → StartSession sequence for ItemIds[0].
+// startPlayNow runs the PlaybackInfo -> StartSession sequence for ItemIds[0].
+// Callers that receive a multi-item PlayNow must collapse the message to the
+// selected item first via replaceQueueForPlayNow.
 func (a *Adapter) startPlayNow(p playMessageData) {
 	a.mu.Lock()
 	cfg := a.cfg
@@ -643,9 +645,33 @@ func splitRefKey(k string) (itemID, playSessionID string, ok bool) {
 // queueAt enqueues all items in p.ItemIDs into adapter.queue. pos==0
 // inserts at the front (PlayNext), pos<0 appends (PlayLast).
 func (a *Adapter) queueAt(p playMessageData, pos int) {
-	items := make([]QueuedItem, 0, len(p.ItemIDs))
-	for _, id := range p.ItemIDs {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	items := a.queuedItemsFromPlayMessageLocked(p, p.ItemIDs)
+	if pos < 0 {
+		a.queue = append(a.queue, items...)
+	} else {
+		a.queue = append(items, a.queue...)
+	}
+}
+
+func (a *Adapter) nextQueueEntryIDLocked() uint64 {
+	a.nextQueueEntryID++
+	return a.nextQueueEntryID
+}
+
+func playNowStartIndex(p playMessageData) int {
+	if p.StartIndex >= 0 && p.StartIndex < len(p.ItemIDs) {
+		return p.StartIndex
+	}
+	return 0
+}
+
+func (a *Adapter) queuedItemsFromPlayMessageLocked(p playMessageData, ids []string) []QueuedItem {
+	items := make([]QueuedItem, 0, len(ids))
+	for _, id := range ids {
 		items = append(items, QueuedItem{
+			QueueEntryID:        a.nextQueueEntryIDLocked(),
 			ItemID:              id,
 			StartPositionTicks:  0,
 			MediaSourceID:       p.MediaSourceID,
@@ -653,13 +679,18 @@ func (a *Adapter) queueAt(p playMessageData, pos int) {
 			SubtitleStreamIndex: p.SubtitleStreamIndex,
 		})
 	}
+	return items
+}
+
+func (a *Adapter) replaceQueueForPlayNow(p playMessageData) playMessageData {
+	idx := playNowStartIndex(p)
+	selected := p
+	selected.ItemIDs = []string{p.ItemIDs[idx]}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if pos < 0 {
-		a.queue = append(a.queue, items...)
-	} else {
-		a.queue = append(items, a.queue...)
-	}
+	tail := a.queuedItemsFromPlayMessageLocked(p, p.ItemIDs[idx+1:])
+	a.queue = tail
+	a.mu.Unlock()
+	return selected
 }
 
 // popQueueHead returns the next queued item or zero-value if empty.

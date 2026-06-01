@@ -847,6 +847,96 @@ func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testi
 	}
 }
 
+func TestHandlePlay_PlayNowCapturesTailQueueFromStartIndex(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":       []string{"itm-0", "itm-1", "itm-2", "itm-3"},
+		"StartIndex":    1,
+		"PlayCommand":   "PlayNow",
+		"MediaSourceId": "src-selected",
+	}))
+
+	waitForFakeManagerReq(t, mgr)
+	req := mgr.lastReq()
+	if req.AdapterRef != "itm-1:ps-1" {
+		t.Fatalf("started AdapterRef = %q, want itm-1:ps-1", req.AdapterRef)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 2 {
+		t.Fatalf("queue len = %d, want 2", len(a.queue))
+	}
+	if a.queue[0].ItemID != "itm-2" || a.queue[1].ItemID != "itm-3" {
+		t.Fatalf("queue order = %+v, want itm-2,itm-3", a.queue)
+	}
+	if a.queue[0].QueueEntryID == 0 || a.queue[1].QueueEntryID == 0 || a.queue[0].QueueEntryID == a.queue[1].QueueEntryID {
+		t.Fatalf("QueueEntryID values = %d,%d, want distinct non-zero IDs", a.queue[0].QueueEntryID, a.queue[1].QueueEntryID)
+	}
+	if a.queue[0].MediaSourceID != "src-selected" || a.queue[1].MediaSourceID != "src-selected" {
+		t.Fatalf("MediaSourceID not preserved in queue: %+v", a.queue)
+	}
+}
+
+func TestHandlePlay_PlayNowInvalidStartIndexUsesZero(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"itm-1", "itm-2"},
+		"StartIndex":  99,
+		"PlayCommand": "PlayNow",
+	}))
+
+	waitForFakeManagerReq(t, mgr)
+	if got := mgr.lastReq().AdapterRef; got != "itm-1:ps-1" {
+		t.Fatalf("started AdapterRef = %q, want itm-1:ps-1", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 1 || a.queue[0].ItemID != "itm-2" {
+		t.Fatalf("queue = %+v, want [itm-2]", a.queue)
+	}
+}
+
+func TestHandlePlay_PlayNextMultipleItemsPreservesOrderAheadOfTail(t *testing.T) {
+	a := New(&fakeManager{}, t.TempDir(), "dev-1", "", nil)
+	a.queue = []QueuedItem{{QueueEntryID: 99, ItemID: "tail-itm"}}
+	a.nextQueueEntryID = 99
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":       []string{"head-1", "head-2"},
+		"PlayCommand":   "PlayNext",
+		"MediaSourceId": "src-next",
+	}))
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 3 {
+		t.Fatalf("queue len = %d, want 3", len(a.queue))
+	}
+	if a.queue[0].ItemID != "head-1" || a.queue[1].ItemID != "head-2" || a.queue[2].ItemID != "tail-itm" {
+		t.Fatalf("queue order = %+v, want [head-1 head-2 tail-itm]", a.queue)
+	}
+	if a.queue[0].QueueEntryID != 100 || a.queue[1].QueueEntryID != 101 || a.queue[2].QueueEntryID != 99 {
+		t.Fatalf("QueueEntryIDs = %d,%d,%d, want 100,101,99", a.queue[0].QueueEntryID, a.queue[1].QueueEntryID, a.queue[2].QueueEntryID)
+	}
+	if a.queue[0].MediaSourceID != "src-next" || a.queue[1].MediaSourceID != "src-next" {
+		t.Fatalf("MediaSourceID not preserved for inserted items: %+v", a.queue)
+	}
+}
+
 func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
 	mgr := &fakeManager{}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)

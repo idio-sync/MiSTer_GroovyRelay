@@ -53,6 +53,7 @@ type Adapter struct {
 	currentSessionID   string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
 	lastSessionRecover time.Time            // rate-limits handleSessionsPush's cap re-POST
 	pendingRollback    string               // saved currentRefKey for StartSession-failure rollback
+	nextQueueEntryID   uint64               // monotonically assigned under mu for stable queued-item identity
 	queue              []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
 	reporters          map[string]*reporter // refKey → reporter
 	history            []companionHistoryEntry
@@ -91,6 +92,7 @@ func (a *Adapter) snapshotSessionID() string {
 // Defined here so config_test / adapter_interface_test compile cleanly;
 // populated in Phase 6 (Task 6.4 — Queue).
 type QueuedItem struct {
+	QueueEntryID        uint64
 	ItemID              string
 	StartPositionTicks  int64
 	MediaSourceID       string
