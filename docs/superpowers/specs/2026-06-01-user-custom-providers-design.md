@@ -84,18 +84,27 @@ Mirrors `internal/adapters/streams/preset_store.go`:
 
 ### 4.3 `ProviderDefinition` extensions
 
-Reuse the existing `ProviderDefinition` (`provider.go`) with additions:
-- `Type: "user"` — new provider type. Unlike `youtube-channel-json` (fetches a
-  remote JSON) or `direct-streams` (bundled, host-locked), a `user` provider
-  carries its `Groups` and `Channels` **inline** in the definition.
-- `BadgeColor string` (new) — an explicit color token from the curated palette
-  (see §8). User data cannot supply a hardcoded CSS `BadgeClass`, so the
-  chassis renders `BadgeColor` inline. Built-ins keep `BadgeClass`; the template
-  prefers `BadgeClass` and falls back to `BadgeColor`.
-- `ChannelDefinition.Kind string` (new) — `playlist` | `single` | `direct`,
-  set by auto-detection (overridable). Drives the catalog builder.
+Reuse the existing `ProviderDefinition`/`ChannelDefinition` (`provider.go`
+lines 23-65) — they already carry `Type`, inline `Groups`, and inline
+`Channels`. **Three new fields are added** (none exist today; confirmed against
+`provider.go`):
+
+| Type | New field | Purpose |
+|------|-----------|---------|
+| `ProviderDefinition` | `Type: "user"` (value, not field) | Selects the inline catalog builder (§5). Unlike `youtube-channel-json` (remote JSON) / `direct-streams` (bundled, host-locked), a `user` provider's `Groups`/`Channels` are authored inline. |
+| `ProviderDefinition` | `BadgeColor string` | Palette **token** (e.g. `"amber"`, `"teal"`), not raw hex (§8). |
+| `ChannelDefinition` | `Kind string` | `playlist` \| `single` \| `direct`, set by auto-detection (§4.6), overridable. Drives the catalog builder. |
 
 `PlayMode` (existing) is meaningful only for `playlist` channels.
+
+**Badge rendering (CSP-safe).** User data cannot supply a hardcoded CSS
+`BadgeClass`, and we deliberately avoid arbitrary inline `style=` (CSP +
+contrast risk). Instead the chassis maps `BadgeColor`'s token to one of ~8
+**predefined palette classes** added to `chassis.css` (e.g. `.ic.u-amber`,
+`.badge.u-amber` — each a CRT-tuned bg/fg pair). The template prefers
+`BadgeClass` (built-ins) and falls back to the `u-<token>` class derived from
+`BadgeColor`. Unknown/empty tokens are rejected at save time and fall back to a
+default palette class, so malformed data can never brick rendering.
 
 ### 4.4 Channel kinds
 
@@ -113,6 +122,30 @@ manifests are **forbidden from using the `user:` prefix** (validated on remote
 manifest load; offending remote providers are dropped). This guarantees user
 providers can never shadow — or be shadowed by — a built-in in the merged map,
 and makes "is this provider user-deletable?" a pure prefix check.
+
+`ProviderID` is auto-derived (slug of the display name) and **locked** — it is
+not user-editable, so renaming "F1 TV" → "Formula 1" keeps `user:f1-tv` and does
+not orphan presets/refs. Collisions append a numeric suffix: `user:f1-tv`,
+`user:f1-tv-2`, `user:f1-tv-3`.
+
+### 4.6 Channel-kind auto-detection
+
+When the operator pastes a channel URL, the form computes `Kind` with these
+ordered rules (first match wins); the result is shown as a chip the operator can
+override:
+
+1. **`direct`** — URL path ends in a recognized HLS/DASH manifest suffix:
+   `.m3u8`, `.m3u`, or `.mpd`.
+2. **`playlist`** — a recognized playlist URL: YouTube `…/playlist?list=…` or a
+   `watch?…&list=…` with no isolated video, or another host yt-dlp treats as a
+   playlist. (Conservative: only YouTube `list=` is auto-detected in v1; other
+   hosts default to `single` and the operator can override to `playlist`.)
+3. **`single`** — the default for anything else (Twitch channel, single video,
+   Vimeo, etc.).
+
+Detection is **purely syntactic** (no network call), so it works offline and
+before Verify (§9 item 4). If the operator overrides the chip, the chosen `Kind` is
+stored verbatim and detection does not re-run on reopen.
 
 ## 5. Playback (reuse, near-zero new code)
 
@@ -148,8 +181,29 @@ and `MaxItemsPerChannel` cap). Those become the channel's `Items[]`.
   error state with an error chip; the **provider stays usable** — same graceful
   degradation the bundled providers use.
 
-A new flat-playlist enumeration capability is added to the resolver surface
-(the existing resolver only does single-item resolve).
+**New enumerator surface.** Today the resolver runs yt-dlp with `--no-playlist`
+(`url_resolver.go`), so a flat-playlist call is genuinely new. Add:
+
+```go
+// EnumeratePlaylist lists a playlist's item IDs without resolving media.
+// Bounded by maxItems; runs under a CatalogRequestTimeoutSeconds context.
+EnumeratePlaylist(ctx, pageURL, cookiesPath string, maxItems int) ([]StreamItem, error)
+```
+
+- Invokes `yt-dlp --flat-playlist --playlist-end <maxItems>` (maxItems =
+  `MaxItemsPerChannel`); each entry → a non-direct `StreamItem` (video URL/ID).
+- **Caching/TTL:** results cache under `{data_dir}/streams/…` keyed by channel,
+  refreshed on the existing `catalog_refresh_hours` cycle — same machinery as
+  bundled catalogs.
+- **Timeout:** each enumeration runs under `CatalogRequestTimeoutSeconds` (20s
+  default). Enumerations run **sequentially within the existing refresh loop**
+  (no new parallelism), so a provider with many playlists can't fan out and
+  hammer yt-dlp.
+- **Failure → persisted channel error.** A private/region-locked/deleted
+  playlist sets a persisted per-channel error state (visible on form reopen,
+  §9 item 3) and leaves the provider usable. A previously-cached item list is
+  retained on transient refresh failure (serve-stale), matching bundled-catalog
+  behavior.
 
 ## 7. Security & URL validation
 
@@ -157,13 +211,20 @@ Posture: **allow LAN, block internals.** Enforced at two checkpoints.
 
 ### 7.1 Authoring time (form save)
 
-Each channel URL's host is parsed/normalized (reuse the
-`normalizeConfigHost`-style logic in `config.go` + `net/netip`):
+A **new** `validateUserProviderHost` helper does this — the existing
+`normalizeConfigHost` (`config.go` lines 325-338) **rejects all IP literals**
+("IP literals are not allowed"), which is the opposite of what "allow LAN"
+needs. We reuse only its scheme/userinfo/port checks; the IP logic is new and
+uses `net/netip` `IsLoopback`/`IsLinkLocalUnicast`/`IsPrivate`/etc.:
 - **Reject always:** non-`http(s)` schemes incl. `file://`; loopback
   (`127.0.0.0/8`, `::1`); link-local + cloud-metadata (`169.254.0.0/16`,
-  incl. `169.254.169.254`); unspecified/multicast/reserved; URL userinfo.
+  incl. `169.254.169.254`, and `fe80::/10`); unspecified/multicast/reserved;
+  URL userinfo.
 - **Allow:** public hosts **and** private/LAN ranges (`10/8`, `172.16/12`,
-  `192.168/16`) — so a local HDHomeRun / restreamer works.
+  `192.168/16`, `fc00::/7`) — so a local HDHomeRun / restreamer works.
+- Hostnames (not IP literals) are allowed through this checkpoint and
+  re-validated by IP after resolution (§7.2), since a name can resolve to a
+  blocked address.
 - Rejected URLs are surfaced inline by the form (validate-before-write) and
   never written to `user_providers.json`.
 
@@ -171,15 +232,31 @@ Each channel URL's host is parsed/normalized (reuse the
 
 Authoring-time checks are insufficient alone (DNS rebind, HTTP redirects), so
 revalidate at dereference:
-- **`direct` items** get a dedicated `MediaInputPolicy` (see
-  `internal/ffmpeg/policy.go`): protocol whitelist `http,https,tcp,tls,crypto`
-  — **no `file`** (unlike the bundled-Toonami policy, which allows `file` for
-  FFmpeg HLS internals); blocked `Cookie`/`Authorization`/`Referer` headers;
-  redirects revalidated against the §7.1 IP rules (max 3 hops); reconnect
-  disabled. This is the DLNA spec's proven pattern minus `file`.
+- **`direct` items** get a **new** `userDirectInputPolicy()` — separate from the
+  existing `directHLSInputPolicy()` (`playback.go` lines 537-547), which
+  whitelists `file` because it is bundled/host-locked. The user policy:
+  protocol whitelist `http,https,tcp,tls,crypto` (**no `file`**); blocked
+  `Cookie`/`Authorization`/`Referer` headers; reconnect disabled.
+- **Redirect handling.** Per the long comment in `policy.go` (lines 34-59),
+  `DisableRedirects` emits **no FFmpeg flag** — the adapter is responsible for
+  resolving each `Location` server-side (max 3 hops) and re-running the §7.1 IP
+  check on every hop before the final URL reaches FFmpeg. The spec's "redirects
+  revalidated" claim means **this adapter-side prevalidation**, not an FFmpeg
+  flag.
 - **`single`/`playlist` items** are resolved by yt-dlp; the **resolved** media
-  URL's host is re-checked against the §7.1 rules before handing to FFmpeg. The
-  entered page URL is host-checked at authoring time.
+  URL's host is re-checked against the §7.1 rules before handing to FFmpeg.
+
+### 7.4 yt-dlp extraction trust boundary (accepted)
+
+yt-dlp dereferences the **page** URL itself during extraction and may follow
+redirects to internal hosts *before* we ever see an output URL — the §7.1
+authoring-time page-host check reduces but does not eliminate this. We accept
+this as the **same operator/yt-dlp trust boundary that already exists today**:
+the Streams (bundled) and URL adapters already hand operator-supplied page URLs
+to yt-dlp. User providers add no *new* class of risk versus the existing
+quick-cast URL path; the §7.2 output-URL revalidation is the FFmpeg-side guard.
+The spec explicitly does **not** sandbox yt-dlp in v1 (noted as future work,
+§13). Enumeration/resolve runs are time-bounded (§6) to cap resource abuse.
 
 ### 7.3 Trust scope
 
@@ -215,10 +292,37 @@ A guided form rendered inside the catalog drawer (see mockup
 
 A new `adapters.UserProviderEditor` interface (Create / Update / Delete /
 Verify) implemented by the Streams adapter and consumed by the chassis — keeping
-the chassis→adapter boundary interface-only, mirroring `PresetEditor`. Backing
-HTTP routes live under the receiver namespace, e.g.
-`POST /receiver/catalog/provider`, `PUT/DELETE …/provider/{id}`,
-`POST …/channel/verify`, `POST …/provider/{id}/reorder`.
+the chassis→adapter boundary interface-only, mirroring `PresetEditor` (the
+chassis imports `internal/adapters/*` interfaces only, never the concrete
+`streams` package). Routes mount on the **existing single chassis mux** under
+`/receiver/*` (honoring the one-HTTP-listener invariant in CLAUDE.md — no new
+listener):
+- `POST /receiver/catalog/provider` — create; body = the provider form payload
+  (name, glyph, color token, groups[], channels[]). Returns the saved provider
+  (with locked `user:` ID) or a typed validation error rendered inline.
+- `PUT /receiver/catalog/provider/{id}` — update (full replace of the user
+  definition).
+- `DELETE /receiver/catalog/provider/{id}` — delete; response reports how many
+  preset slots were cleared (§9 item 8).
+- `POST /receiver/catalog/channel/verify` — **Verify** (§9 item 4): a dry-run.
+  `direct` → HEAD/GET probe of the (revalidated) URL; `single`/`playlist` →
+  `yt-dlp --simulate` (and `--flat-playlist` count for playlists). Returns
+  `{ok, kind, itemCount?, isLive?}` or a typed error → green "✓ 47 videos" /
+  red "✗ private" chip. No persistence; purely advisory.
+- `POST /receiver/catalog/provider/{id}/reorder` — persists a new channel/group
+  order (see below).
+
+**Reorder persistence.** Channels and groups carry the existing `Order` field.
+A drag updates order **in memory and persists on drop** (one atomic write via
+the store), not on every pointer move. Reorder touches only `Order` — it does
+**not** re-enumerate playlists or rebuild item lists (cached items are reused);
+it just re-sorts for display and sequential-play order.
+
+**Form lifecycle.** Save closes the form back to the provider tab on success;
+validation errors keep it open with inline chips. Playlist channels save
+immediately (their enumeration is async, §6) — the operator can close the form
+and the "N videos"/error chip resolves on the next reopen via the existing
+`GET /receiver/events` SSE stream (no dedicated polling endpoint).
 
 ## 9. Enhancements (v1 scope)
 
@@ -233,9 +337,13 @@ HTTP routes live under the receiver namespace, e.g.
    at authoring time.
 5. **Live-vs-VOD detection** — yt-dlp `is_live` drives a `LIVE` chip (no pause,
    `CanPause:false`) vs `VIDEO` (pausable); sharper than lumping both as
-   "single."
-6. **Glyph auto-suggest** — pre-fill the glyph from the provider name
-   ("F1 TV" → "F1").
+   "single." `is_live` is **not persisted** in the definition — it is derived at
+   Verify time (for the chip) and re-derived from the resolver result at play
+   time (to set `Capabilities`), so it never goes stale.
+6. **Glyph auto-suggest** — pre-fill the glyph from the provider name: take the
+   initials of the first two words, else the first 2-4 alphanumerics, uppercased
+   ("F1 TV" → "F1", "Cartoon Network" → "CN", "Lofi" → "LO"). Editable; only
+   pre-fills while the glyph field is untouched.
 7. **Drag-to-reorder** channels & groups (order drives sequential play +
    display); reuses the preset-bank drag-reorder code.
 8. **Delete-with-cleanup + confirm** — deleting a provider warns if its channels
@@ -249,7 +357,10 @@ HTTP routes live under the receiver namespace, e.g.
   path. On save: rebuild that provider's catalog, swap it into
   `definitions`/`catalogs`, re-derive presets. **No bridge restart.** Editing the
   currently-casting channel takes effect on the next cast; the active stream
-  keeps playing.
+  keeps playing. Because this is not a TOML field, it **bypasses the
+  `ApplyScope` tiers entirely** (`ScopeHotSwap`/`ScopeRestartCast`/
+  `ScopeRestartBridge` do not apply) — exactly like the existing preset
+  star/move actions.
 - **Enable gating:** saving the *first* user provider while the Streams adapter
   is disabled **auto-enables Streams** with a toast ("Streams source turned on
   so your provider can play").
