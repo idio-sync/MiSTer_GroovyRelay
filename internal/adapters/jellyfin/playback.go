@@ -433,7 +433,7 @@ func (a *Adapter) buildSessionRequest(in playRequestInput) core.SessionRequest {
 		AdapterRef:      refKey,
 		Source:          "jellyfin",
 		DirectPlay:      false,
-		OnStop:          artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey)),
+		OnStop:          a.withAutoAdvance(refKey, artworkcache.WithCleanup(in.PlayInfo.ArtworkPath, a.makeOnStop(refKey))),
 		Title:           in.PlayInfo.Title,
 		DisplayMetadata: jellyfinDisplayMetadata(in.PlayInfo),
 	}
@@ -510,6 +510,43 @@ func (a *Adapter) commitSelfPreempt() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pendingRollback = ""
+}
+
+func (a *Adapter) beginControllerStartIntent() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.controllerStartEpoch++
+	if a.controllerStartEpoch == 0 {
+		a.controllerStartEpoch = 1
+	}
+	a.pendingControllerStarts++
+	return a.controllerStartEpoch
+}
+
+func (a *Adapter) finishControllerStartIntent(epoch uint64) {
+	if epoch == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pendingControllerStarts > 0 {
+		a.pendingControllerStarts--
+	}
+}
+
+func (a *Adapter) autoAdvanceControllerEpoch() (uint64, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pendingControllerStarts > 0 {
+		return 0, false
+	}
+	return a.controllerStartEpoch, true
+}
+
+func (a *Adapter) controllerStartBlocksAutoAdvance(epoch uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pendingControllerStarts > 0 || a.controllerStartEpoch != epoch
 }
 
 // snapshotCurrentRefKey returns currentRefKey under Adapter.mu.

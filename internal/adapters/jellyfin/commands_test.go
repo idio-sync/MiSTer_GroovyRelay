@@ -35,13 +35,30 @@ func jellyfinTinyPNG(t *testing.T) []byte {
 
 // fakeManager records calls into a SessionManager.
 type fakeManager struct {
-	mu     sync.Mutex
-	reqs   []core.SessionRequest
-	calls  []string
-	st     core.SessionStatus
-	err    error
-	mode   string
-	onStop func()
+	mu               sync.Mutex
+	reqs             []core.SessionRequest
+	idleReqs         []core.SessionRequest
+	calls            []string
+	st               core.SessionStatus
+	err              error
+	nextGen          uint64
+	startIdleStarted bool
+	startIdleErr     error
+	onStartIdle      func()
+	stopIfCalls      int
+	stopIfRef        string
+	stopIfGeneration uint64
+	onStatus         func()
+	mode             string
+	onStop           func()
+}
+
+func (f *fakeManager) nextGenerationLocked() uint64 {
+	f.nextGen++
+	if f.nextGen == 0 {
+		f.nextGen = 1
+	}
+	return f.nextGen
 }
 
 func (f *fakeManager) StartSession(req core.SessionRequest) error {
@@ -50,6 +67,31 @@ func (f *fakeManager) StartSession(req core.SessionRequest) error {
 	f.calls = append(f.calls, "StartSession:"+req.StreamURL)
 	f.mu.Unlock()
 	return f.err
+}
+func (f *fakeManager) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
+	_, started, err := f.StartSessionIfIdleSnapshot(req)
+	return started, err
+}
+func (f *fakeManager) StartSessionIfIdleSnapshot(req core.SessionRequest) (core.SessionStatus, bool, error) {
+	if f.onStartIdle != nil {
+		f.onStartIdle()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.idleReqs = append(f.idleReqs, req)
+	f.calls = append(f.calls, "StartSessionIfIdle:"+req.StreamURL)
+	if f.st.State != core.StateIdle || !f.startIdleStarted {
+		return core.SessionStatus{}, false, nil
+	}
+	err := f.startIdleErr
+	if err == nil {
+		err = f.err
+	}
+	if err != nil {
+		return core.SessionStatus{}, true, err
+	}
+	f.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef, Generation: f.nextGenerationLocked()}
+	return f.st, true, nil
 }
 func (f *fakeManager) Pause() error { f.add("Pause"); return f.err }
 func (f *fakeManager) Play() error  { f.add("Play"); return f.err }
@@ -60,14 +102,33 @@ func (f *fakeManager) Stop() error {
 	}
 	return f.err
 }
+func (f *fakeManager) StopIfSession(ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopIfCalls++
+	f.stopIfRef = ref
+	f.stopIfGeneration = generation
+	if ref == "" || generation == 0 || f.st.AdapterRef != ref || f.st.Generation != generation {
+		return false, nil
+	}
+	f.st = core.SessionStatus{State: core.StateIdle}
+	return true, nil
+}
 func (f *fakeManager) SeekTo(ms int) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, "SeekTo")
 	f.mu.Unlock()
 	return f.err
 }
-func (f *fakeManager) Status() core.SessionStatus { f.mu.Lock(); defer f.mu.Unlock(); return f.st }
-func (f *fakeManager) add(name string)            { f.mu.Lock(); f.calls = append(f.calls, name); f.mu.Unlock() }
+func (f *fakeManager) Status() core.SessionStatus {
+	if f.onStatus != nil {
+		f.onStatus()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.st
+}
+func (f *fakeManager) add(name string) { f.mu.Lock(); f.calls = append(f.calls, name); f.mu.Unlock() }
 func (f *fakeManager) VisualizerMode() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -80,6 +141,49 @@ func (f *fakeManager) lastReq() core.SessionRequest {
 		return core.SessionRequest{}
 	}
 	return f.reqs[len(f.reqs)-1]
+}
+func (f *fakeManager) lastIdleReq() core.SessionRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.idleReqs) == 0 {
+		return core.SessionRequest{}
+	}
+	return f.idleReqs[len(f.idleReqs)-1]
+}
+
+func TestFakeManager_StartSessionIfIdleBusySuppressesStartError(t *testing.T) {
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StatePlaying, AdapterRef: "busy"},
+		startIdleStarted: true,
+		startIdleErr:     errors.New("start failed"),
+	}
+
+	started, err := mgr.StartSessionIfIdle(core.SessionRequest{AdapterRef: "next"})
+
+	if err != nil {
+		t.Fatalf("err = %v, want nil when idle admission fails", err)
+	}
+	if started {
+		t.Fatal("started = true, want false when core is busy")
+	}
+}
+
+func TestFakeManager_StartSessionIfIdleAdmittedErrorReportsStarted(t *testing.T) {
+	startErr := errors.New("start failed")
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+		startIdleErr:     startErr,
+	}
+
+	started, err := mgr.StartSessionIfIdle(core.SessionRequest{AdapterRef: "next"})
+
+	if !errors.Is(err, startErr) {
+		t.Fatalf("err = %v, want %v", err, startErr)
+	}
+	if !started {
+		t.Fatal("started = false, want true when idle admission matched but start failed")
+	}
 }
 
 func waitForFakeManagerReq(t *testing.T, mgr *fakeManager) {
@@ -114,6 +218,72 @@ func startTestPlaybackInfoServer(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func startMappedPlaybackInfoServer(t *testing.T, failPlaybackInfoFor map[string]bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) >= 2 && parts[0] == "Items" && parts[len(parts)-1] == "PlaybackInfo" {
+			itemID := parts[1]
+			if failPlaybackInfoFor[itemID] {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-` + itemID + `","TranscodingUrl":"/videos/` + itemID + `/master.m3u8?MediaSourceId=src-` + itemID + `"}],
+				"PlaySessionId":"ps-` + itemID + `",
+				"Item":{"Name":"` + itemID + `"}
+			}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Id":"metadata","Name":"metadata"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func startBlockingPlaybackInfoServer(t *testing.T, blockedItemID string) (*httptest.Server, <-chan struct{}, func()) {
+	t.Helper()
+	blockedStarted := make(chan struct{})
+	releaseBlocked := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) >= 2 && parts[0] == "Items" && parts[len(parts)-1] == "PlaybackInfo" {
+			itemID := parts[1]
+			if itemID == blockedItemID {
+				startedOnce.Do(func() { close(blockedStarted) })
+				select {
+				case <-releaseBlocked:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"MediaSources":[{"Id":"src-` + itemID + `","TranscodingUrl":"/videos/` + itemID + `/master.m3u8?MediaSourceId=src-` + itemID + `"}],
+				"PlaySessionId":"ps-` + itemID + `",
+				"Item":{"Name":"` + itemID + `"}
+			}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Id":"metadata","Name":"metadata"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	release := func() {
+		releaseOnce.Do(func() { close(releaseBlocked) })
+	}
+	t.Cleanup(release)
+	return srv, blockedStarted, release
 }
 
 func TestHandlePlay_PlayNow_CallsStartSession(t *testing.T) {
@@ -847,6 +1017,96 @@ func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testi
 	}
 }
 
+func TestHandlePlay_PlayNowCapturesTailQueueFromStartIndex(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":       []string{"itm-0", "itm-1", "itm-2", "itm-3"},
+		"StartIndex":    1,
+		"PlayCommand":   "PlayNow",
+		"MediaSourceId": "src-selected",
+	}))
+
+	waitForFakeManagerReq(t, mgr)
+	req := mgr.lastReq()
+	if req.AdapterRef != "itm-1:ps-1" {
+		t.Fatalf("started AdapterRef = %q, want itm-1:ps-1", req.AdapterRef)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 2 {
+		t.Fatalf("queue len = %d, want 2", len(a.queue))
+	}
+	if a.queue[0].ItemID != "itm-2" || a.queue[1].ItemID != "itm-3" {
+		t.Fatalf("queue order = %+v, want itm-2,itm-3", a.queue)
+	}
+	if a.queue[0].QueueEntryID == 0 || a.queue[1].QueueEntryID == 0 || a.queue[0].QueueEntryID == a.queue[1].QueueEntryID {
+		t.Fatalf("QueueEntryID values = %d,%d, want distinct non-zero IDs", a.queue[0].QueueEntryID, a.queue[1].QueueEntryID)
+	}
+	if a.queue[0].MediaSourceID != "src-selected" || a.queue[1].MediaSourceID != "src-selected" {
+		t.Fatalf("MediaSourceID not preserved in queue: %+v", a.queue)
+	}
+}
+
+func TestHandlePlay_PlayNowInvalidStartIndexUsesZero(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"itm-1", "itm-2"},
+		"StartIndex":  99,
+		"PlayCommand": "PlayNow",
+	}))
+
+	waitForFakeManagerReq(t, mgr)
+	if got := mgr.lastReq().AdapterRef; got != "itm-1:ps-1" {
+		t.Fatalf("started AdapterRef = %q, want itm-1:ps-1", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 1 || a.queue[0].ItemID != "itm-2" {
+		t.Fatalf("queue = %+v, want [itm-2]", a.queue)
+	}
+}
+
+func TestHandlePlay_PlayNextMultipleItemsPreservesOrderAheadOfTail(t *testing.T) {
+	a := New(&fakeManager{}, t.TempDir(), "dev-1", "", nil)
+	a.queue = []QueuedItem{{QueueEntryID: 99, ItemID: "tail-itm"}}
+	a.nextQueueEntryID = 99
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":       []string{"head-1", "head-2"},
+		"PlayCommand":   "PlayNext",
+		"MediaSourceId": "src-next",
+	}))
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 3 {
+		t.Fatalf("queue len = %d, want 3", len(a.queue))
+	}
+	if a.queue[0].ItemID != "head-1" || a.queue[1].ItemID != "head-2" || a.queue[2].ItemID != "tail-itm" {
+		t.Fatalf("queue order = %+v, want [head-1 head-2 tail-itm]", a.queue)
+	}
+	if a.queue[0].QueueEntryID != 100 || a.queue[1].QueueEntryID != 101 || a.queue[2].QueueEntryID != 99 {
+		t.Fatalf("QueueEntryIDs = %d,%d,%d, want 100,101,99", a.queue[0].QueueEntryID, a.queue[1].QueueEntryID, a.queue[2].QueueEntryID)
+	}
+	if a.queue[0].MediaSourceID != "src-next" || a.queue[1].MediaSourceID != "src-next" {
+		t.Fatalf("MediaSourceID not preserved for inserted items: %+v", a.queue)
+	}
+}
+
 func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
 	mgr := &fakeManager{}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
@@ -905,12 +1165,758 @@ func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
 	if len(mgr.reqs) == 0 {
 		t.Fatal("NextTrack didn't trigger StartSession")
 	}
+	if len(mgr.idleReqs) != 0 {
+		t.Fatalf("manual NextTrack used StartSessionIfIdle: %d calls", len(mgr.idleReqs))
+	}
 	mgr.mu.Unlock()
 	a.mu.Lock()
 	if len(a.queue) != 0 {
 		t.Errorf("queue len after NextTrack = %d, want 0", len(a.queue))
 	}
 	a.mu.Unlock()
+
+	history := a.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("CompanionHistory len = %d, want 1", len(history))
+	}
+	if history[0].Title == "" {
+		t.Fatal("history Title is empty")
+	}
+	if history[0].URLDisplay != "next-itm" {
+		t.Fatalf("history URLDisplay = %q, want next-itm", history[0].URLDisplay)
+	}
+}
+
+func TestAutoAdvanceEOF_StartsNextQueuedItemIfIdle(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := mgr.lastIdleReq().AdapterRef; got != "next-itm:ps-next-itm" {
+		t.Fatalf("idle AdapterRef = %q, want next-itm:ps-next-itm", got)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "next-itm:ps-next-itm" {
+		t.Fatalf("currentRefKey = %q, want next-itm:ps-next-itm", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 1 || a.queue[0].ItemID != "tail-itm" {
+		t.Fatalf("queue after auto advance = %+v, want [tail-itm]", a.queue)
+	}
+	if _, ok := a.reporters["next-itm:ps-next-itm"]; !ok {
+		t.Fatalf("reporter for next item not registered")
+	}
+}
+
+func TestAutoAdvanceEOF_GuardMissLeavesQueueAndRefUnchanged(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: false}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 1 || a.queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", a.queue)
+	}
+	if len(a.reporters) != 0 {
+		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	}
+}
+
+func TestAutoAdvanceEOF_PlaybackInfoFailureLeavesQueueAndRefUnchanged(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, map[string]bool{"bad-itm": true})
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "bad-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 2 || a.queue[0].ItemID != "bad-itm" || a.queue[1].ItemID != "tail-itm" {
+		t.Fatalf("queue = %+v, want unchanged [bad-itm tail-itm]", a.queue)
+	}
+	if len(a.reporters) != 0 {
+		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	}
+}
+
+func TestAutoAdvanceEOF_StartSessionIfIdleErrorLeavesQueueAndRefUnchanged(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+		startIdleErr:     errors.New("probe failed"),
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 2 || a.queue[0].ItemID != "next-itm" || a.queue[1].ItemID != "tail-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm tail-itm]", a.queue)
+	}
+	if len(a.reporters) != 0 {
+		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	}
+}
+
+func TestAutoAdvanceEOF_ControllerStartsDuringIdleGuardStandsDown(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	mgr.onStartIdle = func() {
+		mgr.mu.Lock()
+		mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "controller-itm:ps-controller"}
+		mgr.mu.Unlock()
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 1 || a.queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", a.queue)
+	}
+	if len(a.reporters) != 0 {
+		t.Fatalf("reporters = %d, want 0", len(a.reporters))
+	}
+}
+
+func TestAutoAdvanceEOF_CommitFailureStopsAutoStartedSession(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+	a.beforeAutoAdvanceCommit = func() {
+		a.mu.Lock()
+		a.currentRefKey = "controller-itm:ps-controller"
+		a.mu.Unlock()
+	}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "controller-itm:ps-controller" {
+		t.Fatalf("currentRefKey = %q, want controller-owned ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
+	}
+}
+
+func TestAutoAdvanceEOF_CorePreemptBeforeCommitDoesNotClaimStaleStart(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	var statusCalls int
+	mgr.onStatus = func() {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		statusCalls++
+		if statusCalls == 3 {
+			mgr.st = core.SessionStatus{
+				State:      core.StatePlaying,
+				AdapterRef: "other:session",
+				Generation: mgr.nextGenerationLocked(),
+			}
+		}
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.AdapterRef != "other:session" {
+		t.Fatalf("core status = %+v, want other session preserved", status)
+	}
+}
+
+func TestAutoAdvanceEOF_PlayNextBeforeCommitStopsStaleStart(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
+	a.nextQueueEntryID = 2
+	a.beforeAutoAdvanceCommit = func() {
+		a.queueAt(playMessageData{ItemIDs: []string{"inserted-itm"}, PlayCommand: "PlayNext"}, 0)
+	}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 3 || queue[0].ItemID != "inserted-itm" || queue[1].ItemID != "next-itm" || queue[2].ItemID != "tail-itm" {
+		t.Fatalf("queue = %+v, want [inserted-itm next-itm tail-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
+	}
+}
+
+func TestAutoAdvanceEOF_StaleCurrentRefDoesNotMutateQueue(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "new-itm:ps-new"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0", idleCalls)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+}
+
+func TestAutoAdvanceEOF_DuplicateQueuedItemsInsertedAheadStopsStaleStart(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "dup-itm"}, {QueueEntryID: 2, ItemID: "dup-itm"}}
+	a.nextQueueEntryID = 2
+	a.beforeAutoAdvanceCommit = func() {
+		a.queueAt(playMessageData{ItemIDs: []string{"dup-itm"}, PlayCommand: "PlayNext"}, 0)
+	}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 3 {
+		t.Fatalf("queue = %+v, want inserted duplicate plus original two duplicates", queue)
+	}
+	if queue[0].QueueEntryID != 3 || queue[1].QueueEntryID != 1 || queue[2].QueueEntryID != 2 {
+		t.Fatalf("QueueEntryIDs = %d,%d,%d, want inserted 3 then originals 1,2", queue[0].QueueEntryID, queue[1].QueueEntryID, queue[2].QueueEntryID)
+	}
+	if queue[0].ItemID != "dup-itm" || queue[1].ItemID != "dup-itm" || queue[2].ItemID != "dup-itm" {
+		t.Fatalf("queue ItemIDs = %+v, want all dup-itm", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "dup-itm:ps-dup-itm" {
+		t.Fatalf("StopIfSession ref = %q, want dup-itm:ps-dup-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "dup-itm:ps-dup-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
+	}
+}
+
+func TestAutoAdvanceEOF_PlayNowQueueReplacementBeforeCommitFailsCleanly(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
+	a.nextQueueEntryID = 2
+	a.beforeAutoAdvanceCommit = func() {
+		_ = a.replaceQueueForPlayNow(playMessageData{
+			ItemIDs:     []string{"replacement-now", "replacement-tail"},
+			PlayCommand: "PlayNow",
+		})
+	}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref because commit should fail", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "replacement-tail" {
+		t.Fatalf("queue = %+v, want replacement tail only", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
+	}
+}
+
+func TestAutoAdvanceEOF_PendingManualNextTrackBlocksAutoAdvance(t *testing.T) {
+	jfSrv, manualPlaybackInfoStarted, releaseManual := startBlockingPlaybackInfoServer(t, "manual-itm")
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "old-itm:ps-old"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "manual-itm"}, {QueueEntryID: 2, ItemID: "auto-itm"}}
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "NextTrack"}))
+	select {
+	case <-manualPlaybackInfoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for manual NextTrack PlaybackInfo")
+	}
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0 while manual NextTrack is pending", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "old-itm:ps-old" {
+		t.Fatalf("currentRefKey = %q, want old ref while manual NextTrack is pending", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "auto-itm" {
+		t.Fatalf("queue = %+v, want remaining [auto-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	releaseManual()
+	waitForFakeManagerReq(t, mgr)
+}
+
+func TestAutoAdvanceEOF_PendingPlayNowBlocksAutoAdvance(t *testing.T) {
+	jfSrv, playNowPlaybackInfoStarted, releasePlayNow := startBlockingPlaybackInfoServer(t, "now-itm")
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "old-itm:ps-old"
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"now-itm", "tail-itm"},
+		"PlayCommand": "PlayNow",
+	}))
+	select {
+	case <-playNowPlaybackInfoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PlayNow PlaybackInfo")
+	}
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0 while PlayNow is pending", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "old-itm:ps-old" {
+		t.Fatalf("currentRefKey = %q, want old ref while PlayNow is pending", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "tail-itm" {
+		t.Fatalf("queue = %+v, want PlayNow tail [tail-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	releasePlayNow()
+	waitForFakeManagerReq(t, mgr)
+}
+
+func TestAutoAdvanceEOF_PendingSeekRestartBlocksAutoAdvance(t *testing.T) {
+	jfSrv, restartPlaybackInfoStarted, releaseRestart := startBlockingPlaybackInfoServer(t, "old-itm")
+	mgr := &fakeManager{
+		st: core.SessionStatus{
+			State:      core.StatePlaying,
+			AdapterRef: "old-itm:ps-old",
+			Position:   30 * time.Second,
+		},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "old-itm:ps-old"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{
+		"Command":           "Seek",
+		"SeekPositionTicks": int64(45 * time.Second / (100 * time.Nanosecond)),
+	}))
+	select {
+	case <-restartPlaybackInfoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for seek restart PlaybackInfo")
+	}
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StateIdle}
+	mgr.mu.Unlock()
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0 while seek restart is pending", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "old-itm:ps-old" {
+		t.Fatalf("currentRefKey = %q, want old ref while seek restart is pending", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	releaseRestart()
+	waitForFakeManagerReq(t, mgr)
+}
+
+func TestAutoAdvanceEOF_PendingTrackSwitchBlocksAutoAdvance(t *testing.T) {
+	jfSrv, trackSwitchPlaybackInfoStarted, releaseTrackSwitch := startBlockingPlaybackInfoServer(t, "old-itm")
+	mgr := &fakeManager{
+		st: core.SessionStatus{
+			State:      core.StatePlaying,
+			AdapterRef: "old-itm:ps-old",
+			Position:   30 * time.Second,
+		},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "old-itm:ps-old"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetAudioStreamIndex",
+		"Arguments": map[string]string{"Index": "1"},
+	}))
+	select {
+	case <-trackSwitchPlaybackInfoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for track switch PlaybackInfo")
+	}
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StateIdle}
+	mgr.mu.Unlock()
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0 while track switch is pending", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "old-itm:ps-old" {
+		t.Fatalf("currentRefKey = %q, want old ref while track switch is pending", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	releaseTrackSwitch()
+	waitForFakeManagerReq(t, mgr)
 }
 
 func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T) {

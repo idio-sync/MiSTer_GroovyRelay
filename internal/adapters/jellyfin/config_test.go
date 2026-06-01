@@ -21,6 +21,9 @@ func TestConfig_DefaultsWhenSectionAbsent(t *testing.T) {
 	if cfg.DeviceName != "" {
 		t.Errorf("default DeviceName = %q, want empty", cfg.DeviceName)
 	}
+	if cfg.AutoAdvance {
+		t.Errorf("default AutoAdvance = true, want false")
+	}
 }
 
 func TestConfig_TOMLRoundTrip(t *testing.T) {
@@ -29,6 +32,7 @@ enabled                = true
 server_url             = "https://jellyfin.example.com"
 device_name            = "Living Room MiSTer"
 max_video_bitrate_kbps = 8000
+auto_advance           = true
 `
 	var cfg Config
 	if _, err := toml.Decode(src, &cfg); err != nil {
@@ -45,6 +49,9 @@ max_video_bitrate_kbps = 8000
 	}
 	if cfg.MaxVideoBitrateKbps != 8000 {
 		t.Errorf("MaxVideoBitrateKbps = %d", cfg.MaxVideoBitrateKbps)
+	}
+	if !cfg.AutoAdvance {
+		t.Errorf("AutoAdvance = false, want true")
 	}
 }
 

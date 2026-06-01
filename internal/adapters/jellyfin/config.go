@@ -17,6 +17,7 @@ type Config struct {
 	ServerURL           string `toml:"server_url"`
 	DeviceName          string `toml:"device_name"`
 	MaxVideoBitrateKbps int    `toml:"max_video_bitrate_kbps"`
+	AutoAdvance         bool   `toml:"auto_advance"`
 }
 
 // DefaultConfig returns the zero-value config the adapter starts with
@@ -27,6 +28,7 @@ func DefaultConfig() Config {
 		ServerURL:           "",
 		DeviceName:          "",
 		MaxVideoBitrateKbps: 4000,
+		AutoAdvance:         false,
 	}
 }
 

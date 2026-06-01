@@ -22,9 +22,12 @@ import (
 // structural typing.
 type SessionManager interface {
 	StartSession(req core.SessionRequest) error
+	StartSessionIfIdle(req core.SessionRequest) (bool, error)
+	StartSessionIfIdleSnapshot(req core.SessionRequest) (core.SessionStatus, bool, error)
 	Pause() error
 	Play() error
 	Stop() error
+	StopIfSession(ref string, generation uint64) (bool, error)
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
 	VisualizerMode() string
@@ -43,21 +46,28 @@ type Adapter struct {
 
 	eventLog *eventlog.Log // nil disables emission
 
-	mu                 sync.Mutex
-	cfg                Config
-	state              adapters.State
-	lastErr            string
-	stateSince         time.Time
-	link               *LinkState
-	currentRefKey      string               // packed "<itemId>:<playSessionId>" for self-preempt elision
-	currentSessionID   string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
-	lastSessionRecover time.Time            // rate-limits handleSessionsPush's cap re-POST
-	pendingRollback    string               // saved currentRefKey for StartSession-failure rollback
-	queue              []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
-	reporters          map[string]*reporter // refKey → reporter
-	history            []companionHistoryEntry
-	ws                 wsConn
-	keepaliveSet       chan time.Duration
+	mu                      sync.Mutex
+	cfg                     Config
+	state                   adapters.State
+	lastErr                 string
+	stateSince              time.Time
+	link                    *LinkState
+	currentRefKey           string               // packed "<itemId>:<playSessionId>" for self-preempt elision
+	currentSessionID        string               // JF session row Id; refreshed on every successful WS dial AND on each Sessions push
+	lastSessionRecover      time.Time            // rate-limits handleSessionsPush's cap re-POST
+	pendingRollback         string               // saved currentRefKey for StartSession-failure rollback
+	controllerStartEpoch    uint64               // bumped before controller-owned async starts mutate queue or fetch PlaybackInfo
+	pendingControllerStarts int                  // in-flight controller-owned starts that auto-advance must not race
+	nextQueueEntryID        uint64               // monotonically assigned under mu for stable queued-item identity
+	queue                   []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
+	reporters               map[string]*reporter // refKey → reporter
+	history                 []companionHistoryEntry
+	ws                      wsConn
+	keepaliveSet            chan time.Duration
+	autoAdvanceDelay        time.Duration
+	// beforeAutoAdvanceCommit is a test seam for deterministic interleaving
+	// between a successful guarded core start and adapter queue/ownership commit.
+	beforeAutoAdvanceCommit func()
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.
@@ -91,6 +101,7 @@ func (a *Adapter) snapshotSessionID() string {
 // Defined here so config_test / adapter_interface_test compile cleanly;
 // populated in Phase 6 (Task 6.4 — Queue).
 type QueuedItem struct {
+	QueueEntryID        uint64
 	ItemID              string
 	StartPositionTicks  int64
 	MediaSourceID       string
@@ -141,15 +152,16 @@ type inboundDispatcher func(messageType string, data json.RawMessage)
 // eventLog may be nil; a nil log disables event emission.
 func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string, eventLog *eventlog.Log) *Adapter {
 	a := &Adapter{
-		core:       coreMgr,
-		dataDir:    dataDir,
-		deviceID:   deviceID,
-		eventLog:   eventLog,
-		cfg:        DefaultConfig(),
-		state:      adapters.StateStopped,
-		stateSince: time.Now(),
-		link:       NewLinkState(),
-		reporters:  map[string]*reporter{},
+		core:             coreMgr,
+		dataDir:          dataDir,
+		deviceID:         deviceID,
+		eventLog:         eventLog,
+		cfg:              DefaultConfig(),
+		state:            adapters.StateStopped,
+		stateSince:       time.Now(),
+		link:             NewLinkState(),
+		reporters:        map[string]*reporter{},
+		autoAdvanceDelay: autoAdvanceSettleDelay,
 	}
 	a.SetModeline(initialModeline)
 	a.handleInbound = a.dispatchInbound
@@ -260,6 +272,15 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			Default:    4000,
 			ApplyScope: adapters.ScopeRestartCast,
 		},
+		{
+			Key:        "auto_advance",
+			Label:      "Continuous Play",
+			Help:       "When an item ends, automatically play the next item in the Jellyfin queue.",
+			Kind:       adapters.KindBool,
+			Default:    false,
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "Playback",
+		},
 	}
 }
 
@@ -332,6 +353,7 @@ func (a *Adapter) CurrentValues() map[string]any {
 		"server_url":             a.cfg.ServerURL,
 		"device_name":            a.cfg.DeviceName,
 		"max_video_bitrate_kbps": a.cfg.MaxVideoBitrateKbps,
+		"auto_advance":           a.cfg.AutoAdvance,
 	}
 }
 

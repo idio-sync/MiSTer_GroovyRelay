@@ -40,36 +40,46 @@ func (a *Adapter) HandlePlay(data json.RawMessage) {
 
 	switch p.PlayCommand {
 	case "", "PlayNow":
-		a.startPlayNow(p)
+		intent := a.beginControllerStartIntent()
+		a.startPlayNow(a.replaceQueueForPlayNow(p), intent)
 	case "PlayNext":
 		a.queueAt(p, 0)
 	case "PlayLast":
 		a.queueAt(p, -1) // -1 means append
 	case "PlayInstantMix", "PlayShuffle":
 		slog.Warn("jellyfin: PlayCommand simplified to PlayNow", "requested", p.PlayCommand)
-		a.startPlayNow(p)
+		intent := a.beginControllerStartIntent()
+		a.startPlayNow(a.replaceQueueForPlayNow(p), intent)
 	default:
 		slog.Warn("jellyfin: unknown PlayCommand", "cmd", p.PlayCommand)
 	}
 }
 
-// startPlayNow runs the PlaybackInfo → StartSession sequence for ItemIds[0].
-func (a *Adapter) startPlayNow(p playMessageData) {
+// startPlayNow runs the PlaybackInfo -> StartSession sequence for ItemIds[0].
+// Callers that receive a multi-item PlayNow must collapse the message to the
+// selected item first via replaceQueueForPlayNow.
+func (a *Adapter) startPlayNow(p playMessageData, intent uint64) {
+	if intent == 0 {
+		intent = a.beginControllerStartIntent()
+	}
 	a.mu.Lock()
 	cfg := a.cfg
 	a.mu.Unlock()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: startPlayNow: no token", "err", err)
 		return
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: startPlayNow: modeline", "err", err)
 		return
 	}
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, p.ItemIDs[0])
@@ -253,19 +263,23 @@ func (a *Adapter) restartCurrentPlaybackAt(posTicks int64, preservePaused bool) 
 	}
 	a.mu.Unlock()
 
+	intent := a.beginControllerStartIntent()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: restart playback: no token")
 		return true
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: restart playback: modeline", "err", err)
 		return true
 	}
 	wasPaused := preservePaused && st.State == core.StatePaused
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -391,8 +405,14 @@ func (a *Adapter) HandlePlaystate(data json.RawMessage) {
 			a.pokeActiveReporter()
 		}
 	case "NextTrack":
+		intent := a.beginControllerStartIntent()
 		if qi, ok := a.popQueueHead(); ok {
-			a.startQueuedItem(qi)
+			a.startQueuedItemWithOptions(qi, queuedStartOptions{
+				Starter:          startCoreSession(a.core),
+				ControllerIntent: intent,
+			})
+		} else {
+			a.finishControllerStartIntent(intent)
 		}
 	case "PreviousTrack":
 		// v1: no history; PreviousTrack is a no-op. Documented gap.
@@ -502,13 +522,16 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 	if nextSub == nil {
 		nextSub = cachedSub
 	}
+	intent := a.beginControllerStartIntent()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: trackSwitch: no token")
 		return
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: trackSwitch: modeline", "err", err)
 		return
 	}
@@ -517,6 +540,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 	posTicks := int64(st.Position / (100 * time.Nanosecond))
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -643,9 +667,33 @@ func splitRefKey(k string) (itemID, playSessionID string, ok bool) {
 // queueAt enqueues all items in p.ItemIDs into adapter.queue. pos==0
 // inserts at the front (PlayNext), pos<0 appends (PlayLast).
 func (a *Adapter) queueAt(p playMessageData, pos int) {
-	items := make([]QueuedItem, 0, len(p.ItemIDs))
-	for _, id := range p.ItemIDs {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	items := a.queuedItemsFromPlayMessageLocked(p, p.ItemIDs)
+	if pos < 0 {
+		a.queue = append(a.queue, items...)
+	} else {
+		a.queue = append(items, a.queue...)
+	}
+}
+
+func (a *Adapter) nextQueueEntryIDLocked() uint64 {
+	a.nextQueueEntryID++
+	return a.nextQueueEntryID
+}
+
+func playNowStartIndex(p playMessageData) int {
+	if p.StartIndex >= 0 && p.StartIndex < len(p.ItemIDs) {
+		return p.StartIndex
+	}
+	return 0
+}
+
+func (a *Adapter) queuedItemsFromPlayMessageLocked(p playMessageData, ids []string) []QueuedItem {
+	items := make([]QueuedItem, 0, len(ids))
+	for _, id := range ids {
 		items = append(items, QueuedItem{
+			QueueEntryID:        a.nextQueueEntryIDLocked(),
 			ItemID:              id,
 			StartPositionTicks:  0,
 			MediaSourceID:       p.MediaSourceID,
@@ -653,13 +701,18 @@ func (a *Adapter) queueAt(p playMessageData, pos int) {
 			SubtitleStreamIndex: p.SubtitleStreamIndex,
 		})
 	}
+	return items
+}
+
+func (a *Adapter) replaceQueueForPlayNow(p playMessageData) playMessageData {
+	idx := playNowStartIndex(p)
+	selected := p
+	selected.ItemIDs = []string{p.ItemIDs[idx]}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if pos < 0 {
-		a.queue = append(a.queue, items...)
-	} else {
-		a.queue = append(items, a.queue...)
-	}
+	tail := a.queuedItemsFromPlayMessageLocked(p, p.ItemIDs[idx+1:])
+	a.queue = tail
+	a.mu.Unlock()
+	return selected
 }
 
 // popQueueHead returns the next queued item or zero-value if empty.
@@ -675,13 +728,118 @@ func (a *Adapter) popQueueHead() (QueuedItem, bool) {
 }
 
 // startQueuedItem turns a QueuedItem into a Play and runs the PlayNow flow.
+type queuedStartStrategy func(core.SessionRequest) (bool, error)
+
+func startCoreSession(coreManager SessionManager) queuedStartStrategy {
+	return func(req core.SessionRequest) (bool, error) {
+		if coreManager == nil {
+			return false, fmt.Errorf("core playback manager is not configured")
+		}
+		return true, coreManager.StartSession(req)
+	}
+}
+
+type queuedStartOptions struct {
+	Starter          queuedStartStrategy
+	ControllerIntent uint64
+}
+
 func (a *Adapter) startQueuedItem(qi QueuedItem) {
-	a.startPlayNow(playMessageData{
-		ItemIDs:             []string{qi.ItemID},
-		StartPositionTicks:  qi.StartPositionTicks,
-		MediaSourceID:       qi.MediaSourceID,
-		AudioStreamIndex:    qi.AudioStreamIndex,
-		SubtitleStreamIndex: qi.SubtitleStreamIndex,
-		PlayCommand:         "PlayNow",
+	a.startQueuedItemWithOptions(qi, queuedStartOptions{
+		Starter:          startCoreSession(a.core),
+		ControllerIntent: a.beginControllerStartIntent(),
 	})
+}
+
+func (a *Adapter) startQueuedItemWithOptions(qi QueuedItem, opts queuedStartOptions) {
+	intent := opts.ControllerIntent
+	if intent == 0 {
+		intent = a.beginControllerStartIntent()
+	}
+	a.mu.Lock()
+	cfg := a.cfg
+	a.mu.Unlock()
+	tok, err := LoadToken(a.tokenPath())
+	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
+		slog.Error("jellyfin: start queued item: no token", "err", err)
+		return
+	}
+	preset, err := a.currentPreset()
+	if err != nil {
+		a.finishControllerStartIntent(intent)
+		slog.Error("jellyfin: start queued item: modeline", "err", err)
+		return
+	}
+	if opts.Starter == nil {
+		a.finishControllerStartIntent(intent)
+		slog.Error("jellyfin: start queued item: no core starter")
+		return
+	}
+
+	go func() {
+		defer a.finishControllerStartIntent(intent)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, qi.ItemID)
+		info, err := FetchPlaybackInfo(ctx, PlaybackInfoInput{
+			ServerURL:           cfg.ServerURL,
+			Token:               tok.AccessToken,
+			DeviceID:            a.deviceID,
+			DeviceName:          cfg.DeviceName,
+			Version:             linkVersion,
+			ItemID:              qi.ItemID,
+			UserID:              tok.UserID,
+			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			Preset:              preset,
+			StartPositionTicks:  qi.StartPositionTicks,
+			MediaSourceID:       qi.MediaSourceID,
+			AudioStreamIndex:    qi.AudioStreamIndex,
+			SubtitleStreamIndex: qi.SubtitleStreamIndex,
+			MediaKind:           meta.MediaKind,
+		})
+		if err != nil {
+			artworkcache.Remove(meta.ArtworkPath)
+			slog.Error("jellyfin: queued PlaybackInfo failed", "err", err)
+			return
+		}
+		info = mergePlaybackMetadata(info, meta)
+		req := a.buildSessionRequest(playRequestInput{
+			ItemID:             qi.ItemID,
+			StartPositionTicks: qi.StartPositionTicks,
+			PlayInfo:           info,
+			ServerURL:          cfg.ServerURL,
+			Token:              tok.AccessToken,
+		})
+
+		prev := a.beginSelfPreempt(req.AdapterRef)
+		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
+		started, err := opts.Starter(req)
+		if err != nil {
+			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
+			slog.Error("jellyfin: queued StartSession failed", "err", err)
+			return
+		}
+		if !started {
+			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
+			return
+		}
+		a.commitSelfPreempt()
+		a.recordCompanionHistory(qi.ItemID, info, time.Now())
+		a.spawnReporter(reporterParams{
+			ItemID:          qi.ItemID,
+			PlaySessionID:   info.PlaySessionID,
+			MediaSourceID:   info.MediaSourceID,
+			AudioIdx:        qi.AudioStreamIndex,
+			SubtitleIdx:     qi.SubtitleStreamIndex,
+			NowPlayingQueue: a.snapshotNowPlayingQueue(qi.ItemID),
+			Auth: RESTAuth{
+				ServerURL: cfg.ServerURL, Token: tok.AccessToken,
+				DeviceID: a.deviceID, DeviceName: cfg.DeviceName,
+				Version: linkVersion,
+			},
+		})
+	}()
 }
