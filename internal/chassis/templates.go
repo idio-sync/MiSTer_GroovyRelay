@@ -333,6 +333,37 @@ func formatBytesScale(n, unit int64, suffix string) string {
 	return fmt.Sprintf("%.1f %s", float64(n)/float64(unit), suffix)
 }
 
+// bytesUnitScale maps the fieldHelper BytesUnit option ("KB"/"MB"/"GB") to
+// its base-1024 multiplier. A byte-ceiling field declares the unit that
+// matches its range (cache/segment in MB, the KB-scale playlist in KB) so
+// the operator edits "256" instead of "268435456"; the raw byte count
+// remains the wire value — settings-drawer.js multiplies the displayed
+// number back by data-bytes-scale on save. Base-1024 to match humanizeBytes.
+var bytesUnitScale = map[string]int64{
+	"KB": 1024,
+	"MB": 1024 * 1024,
+	"GB": 1024 * 1024 * 1024,
+}
+
+// scaleBytesForDisplay renders a raw byte string in the given unit scale:
+// integral when it divides evenly ("268435456" at MB -> "256"), otherwise a
+// two-decimal value with trailing zeros trimmed ("200000000" at MB ->
+// "190.73"). A non-numeric input is returned unchanged so a malformed value
+// still round-trips into the field rather than vanishing.
+func scaleBytesForDisplay(s string, scale int64) string {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || scale <= 0 {
+		return s
+	}
+	if n%scale == 0 {
+		return strconv.FormatInt(n/scale, 10)
+	}
+	out := strconv.FormatFloat(float64(n)/float64(scale), 'f', 2, 64)
+	out = strings.TrimRight(out, "0")
+	out = strings.TrimRight(out, ".")
+	return out
+}
+
 // errOfHelper returns the error message for a given field name from a
 // settings errors map, or "" if absent or the map is nil.
 func errOfHelper(errs map[string]string, name string) string {
@@ -384,6 +415,7 @@ func fieldHelper(args map[string]any) template.HTML {
 	placeholder := get("Placeholder")
 	scope := get("Scope")
 	unit := get("Unit")
+	bytesUnit := get("BytesUnit")
 	inputWidth := get("InputWidth")
 	errMsg := get("Error")
 	adapter := get("Adapter")
@@ -430,6 +462,19 @@ func fieldHelper(args map[string]any) template.HTML {
 			extra, hasValue,
 			html.EscapeString(name), html.EscapeString(value), html.EscapeString(placeholder), identAttr)
 	case "number":
+		// Byte-ceiling fields edit in a human unit (BytesUnit) while the wire
+		// value stays raw bytes: scale the stored count down for display and
+		// stamp data-bytes-scale so the client can multiply back on save. The
+		// unit label rides the same .row-end path as a plain Unit, so set unit
+		// from BytesUnit here.
+		bytesAttr := ""
+		if bytesUnit != "" {
+			if scale, ok := bytesUnitScale[bytesUnit]; ok {
+				value = scaleBytesForDisplay(value, scale)
+				bytesAttr = fmt.Sprintf(` data-bytes-scale="%d"`, scale)
+				unit = bytesUnit
+			}
+		}
 		hasValue := ""
 		if value != "" {
 			hasValue = " has-value"
@@ -438,8 +483,8 @@ func fieldHelper(args map[string]any) template.HTML {
 		if inputWidth != "" {
 			style = fmt.Sprintf(` style="max-width:%s"`, html.EscapeString(inputWidth))
 		}
-		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s%s>`,
-			hasValue, html.EscapeString(name), html.EscapeString(value), style, identAttr)
+		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s%s%s>`,
+			hasValue, html.EscapeString(name), html.EscapeString(value), style, bytesAttr, identAttr)
 	case "password":
 		// 4B password rendering: never echo the stored password into the
 		// HTML response — render value="" always. Placeholder communicates

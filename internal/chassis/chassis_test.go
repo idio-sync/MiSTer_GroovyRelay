@@ -4422,10 +4422,15 @@ func TestSettingsAdvancedTemplate_RendersAllFields(t *testing.T) {
 		`name="hls_max_variant_height"`,
 		`name="hls_stale_cache_reap_hours"`,
 		`data-field="logging_debug"`, // switch
-		// Humanized byte hints render in .row-end:
-		`256 MB`,
-		`1 MB`,
-		`50 MB`,
+		// Byte ceilings edit in a human unit; the raw byte count stays the wire
+		// value via data-bytes-scale (settings-drawer.js multiplies back).
+		`data-bytes-scale="1048576"`, // cache + segment edit in MB
+		`data-bytes-scale="1024"`,    // playlist edits in KB
+		`value="256"`,                // 268435456 B -> 256 MB
+		`value="50"`,                 // 52428800 B -> 50 MB
+		`value="1024"`,               // 1048576 B -> 1024 KB
+		`>MB<`,
+		`>KB<`,
 		// Static "px" unit:
 		`>px<`,
 	}

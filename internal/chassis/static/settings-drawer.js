@@ -151,7 +151,20 @@
       const name = el.name;
       if (!name) return;
       clearFieldError(name);
-      const result = await saveField(name, el.value);
+      // Byte-ceiling inputs edit in a human unit (MB/KB) but the wire value is
+      // raw bytes; data-bytes-scale carries the multiplier. Convert before POST
+      // so the server still validates/stores bytes. A blank or non-numeric
+      // value is posted unchanged so the server returns its own range error,
+      // keeping these fields consistent with the other numeric inputs.
+      let wireValue = el.value;
+      const bytesScale = el.dataset.bytesScale;
+      if (bytesScale && el.value.trim() !== '') {
+        const human = parseFloat(el.value);
+        if (Number.isFinite(human)) {
+          wireValue = String(Math.round(human * Number(bytesScale)));
+        }
+      }
+      const result = await saveField(name, wireValue);
       if (!result) return;
       if (result.netErr) {
         // Task 27 renders into #settings-notice; for now log.

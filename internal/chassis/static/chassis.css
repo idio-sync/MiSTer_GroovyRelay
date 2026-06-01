@@ -4142,6 +4142,7 @@ body.receiver.settings-open .settings-panel {
 }
 
 body.receiver .settings-panel > .settings-tabs,
+body.receiver .settings-panel > .settings-legend,
 body.receiver .settings-panel > .settings-body,
 body.receiver .settings-panel > .settings-pane {
   transform: translateY(-8px);
@@ -4149,9 +4150,11 @@ body.receiver .settings-panel > .settings-pane {
 }
 
 body.receiver .settings-panel.open > .settings-tabs,
+body.receiver .settings-panel.open > .settings-legend,
 body.receiver .settings-panel.open > .settings-body,
 body.receiver .settings-panel.open > .settings-pane,
 body.receiver.settings-open .settings-panel > .settings-tabs,
+body.receiver.settings-open .settings-panel > .settings-legend,
 body.receiver.settings-open .settings-panel > .settings-body,
 body.receiver.settings-open .settings-panel > .settings-pane {
   transform: translateY(0);
@@ -5304,29 +5307,80 @@ body.receiver .settings-tab.active .badge {
 
 body.receiver .settings-spacer { flex: 1; }
 
+/* Close reads as a neutral faceplate "eject" key, not an alert. Red is
+   reserved for the REBOOT scope so the two stop colliding; the key lights
+   cyan on press like the other illuminated controls. */
 body.receiver .settings-close {
   flex: 0 0 auto;
-  background: linear-gradient(180deg, #4a2a2a 0%, #1a0a0a 100%);
+  background: linear-gradient(180deg, #34343a 0%, #1c1c20 100%);
   border: 0;
   border-left: 1px solid #0a0a0b;
-  color: oklch(0.78 0.16 25);
+  color: #b0b0b8;
   padding: 11px 18px;
   font: 700 10px 'Inter', sans-serif;
   letter-spacing: 0.22em;
   text-transform: uppercase;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 body.receiver .settings-close:hover {
-  color: #fff;
-  background: linear-gradient(180deg, #5a3030 0%, #2a1010 100%);
+  color: var(--vfd);
+  background: linear-gradient(180deg, #3e3e46 0%, #232329 100%);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
 }
 
+/* Faceplate silkscreen legend — prints the scope-chip key the way service
+   panels do, so HOT/RECAST/REBOOT tags read as a documented vocabulary
+   instead of unexplained colored tags. Sits between the tab bar and body. */
+body.receiver .settings-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 18px;
+  padding: 7px 14px;
+  background: oklch(0.135 0.008 80);
+  border: 1px solid #0a0a0b;
+  border-top: 0;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+body.receiver .settings-legend .legend-label {
+  font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #5a5a5e;
+}
+body.receiver .settings-legend .legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 9px 'Inter', sans-serif;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #7a7a80;
+}
+body.receiver .settings-legend .scope {
+  margin-top: 0;
+}
+/* Legend flattens the body's top edge the way the tab bar used to, so the
+   tabs -> legend -> body stack stays seam-free. */
+body.receiver .settings-legend + .settings-notice + .settings-body,
+body.receiver .settings-legend + .settings-body {
+  border-top: 0;
+  border-radius: 0 0 2px 2px;
+}
+
+/* Each section is a discrete brushed-metal module: a faint vertical sheen
+   plus a left highlight / right shadow bevel gives adjacent columns a seam
+   so they read as separate rack units instead of one flat panel. */
 body.receiver .settings-section {
-  background: oklch(0.155 0.008 80);
+  background: linear-gradient(180deg, oklch(0.171 0.008 80) 0%, oklch(0.149 0.008 80) 100%);
   border: 1px solid #0a0a0b;
   border-radius: 3px;
   padding: 14px 16px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 1px 0 0 rgba(255, 255, 255, 0.025),
+    inset -1px 0 0 rgba(0, 0, 0, 0.45);
 }
 body.receiver .settings-section.wide { grid-column: 1 / -1; }
 body.receiver .settings-section h4 {
@@ -5342,12 +5396,55 @@ body.receiver .settings-section h4 {
   align-items: center;
   gap: 8px;
 }
+/* Section path/state hint: lit cyan and engraved-looking, but set in Inter
+   caps — the 14-segment face can't render lowercase or "[ _ ]" glyphs, so a
+   path like [bridge.hls_buffer] turned to soup. DSEG stays reserved for the
+   numeric value readouts; printed labels read as printed labels. */
 body.receiver .settings-section h4 .hint {
   margin-left: auto;
-  font: 500 9px 'DSEG14-Classic', monospace;
+  font: 600 9px 'Inter', sans-serif;
+  text-transform: uppercase;
   color: var(--vfd-dim);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.16em;
   text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+
+/* Settings · Advanced — HLS buffer renders as a dense two-column parameter
+   sheet so the full-width section stops stranding ten readouts in a wall of
+   empty black. Each row keeps its label / readout / scope shape, but the
+   columns are pinned to fixed widths: every value input lands on the same
+   vertical line and every (uniform RECAST) chip lines up beside it, the way
+   a real spec panel is laid out. */
+body.receiver .settings-section.hls-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 30px;
+  align-items: start;
+}
+body.receiver .settings-section.hls-grid > h4 {
+  grid-column: 1 / -1;
+}
+body.receiver .settings-section.hls-grid .field-row {
+  grid-template-columns: minmax(0, 1fr) 96px 84px;
+  column-gap: 8px;
+  padding: 7px 0;
+  border-bottom: 0;
+}
+body.receiver .settings-section.hls-grid .field-row > label {
+  justify-self: start;
+}
+body.receiver .settings-section.hls-grid .field-row > .field-input,
+body.receiver .settings-section.hls-grid .field-row > .switch,
+body.receiver .settings-section.hls-grid .field-row > .row-end,
+body.receiver .settings-section.hls-grid .field-row > .scope {
+  justify-self: end;
+}
+/* One column on a narrow chassis — the two-up grid would crush the labels. */
+@container chassis (max-width: 760px) {
+  body.receiver .settings-section.hls-grid {
+    grid-template-columns: 1fr;
+    column-gap: 0;
+  }
 }
 
 /* Mobile sizing */

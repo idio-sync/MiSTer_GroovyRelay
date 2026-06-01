@@ -8,7 +8,14 @@
     <button class="settings-tab" data-tab="catalog">Catalog<span class="badge">{{ .CatalogProviderCount }}</span></button>
     <button class="settings-tab" data-tab="advanced">Advanced</button>
     <span class="settings-spacer"></span>
-    <button class="settings-close" id="settings-close">✕ Close</button>
+    <button class="settings-close" id="settings-close">⏏ Close</button>
+  </div>
+
+  <div class="settings-legend" aria-hidden="true">
+    <span class="legend-label">Apply scope</span>
+    <span class="legend-item"><span class="scope hot">HOT</span> live now</span>
+    <span class="legend-item"><span class="scope recast">RECAST</span> next cast</span>
+    <span class="legend-item"><span class="scope reboot">REBOOT</span> restart bridge</span>
   </div>
 
   <div class="settings-notice" id="settings-notice" role="status" aria-live="polite" hidden></div>

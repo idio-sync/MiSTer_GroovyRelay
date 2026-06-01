@@ -1,7 +1,7 @@
 {{- define "settings-advanced" -}}
 <div class="settings-pane" data-pane="advanced">
 
-  <div class="settings-section wide">
+  <div class="settings-section wide hls-grid">
     <h4>HLS buffer <span class="hint">[bridge.hls_buffer] · SHARED CACHE</span></h4>
     {{ field (dict
       "Name" "hls_enabled" "Type" "switch" "Label" "Enabled"
@@ -27,25 +27,25 @@
       "Scope" "recast" "InputWidth" "90px"
       "Error" (errOf .Errors "hls_max_cached_segments")) }}
     {{ field (dict
-      "Name" "hls_max_cache_bytes" "Type" "number" "Label" "Max cache bytes"
-      "Help" "Per-session cache byte ceiling."
+      "Name" "hls_max_cache_bytes" "Type" "number" "Label" "Max cache size"
+      "Help" "Per-session cache ceiling."
       "Value" (i64toa .Bridge.HLSBuffer.MaxCacheBytes)
-      "Scope" "recast" "InputWidth" "130px"
-      "Unit" (humanizeBytes .Bridge.HLSBuffer.MaxCacheBytes)
+      "Scope" "recast" "InputWidth" "96px"
+      "BytesUnit" "MB"
       "Error" (errOf .Errors "hls_max_cache_bytes")) }}
     {{ field (dict
-      "Name" "hls_max_playlist_bytes" "Type" "number" "Label" "Max playlist bytes"
-      "Help" "Maximum playlist response size accepted from origin."
+      "Name" "hls_max_playlist_bytes" "Type" "number" "Label" "Max playlist size"
+      "Help" "Maximum playlist response accepted from origin."
       "Value" (i64toa .Bridge.HLSBuffer.MaxPlaylistBytes)
-      "Scope" "recast" "InputWidth" "130px"
-      "Unit" (humanizeBytes .Bridge.HLSBuffer.MaxPlaylistBytes)
+      "Scope" "recast" "InputWidth" "96px"
+      "BytesUnit" "KB"
       "Error" (errOf .Errors "hls_max_playlist_bytes")) }}
     {{ field (dict
-      "Name" "hls_max_segment_bytes" "Type" "number" "Label" "Max segment bytes"
-      "Help" "Maximum single-segment response size accepted from origin."
+      "Name" "hls_max_segment_bytes" "Type" "number" "Label" "Max segment size"
+      "Help" "Maximum single-segment response accepted from origin."
       "Value" (i64toa .Bridge.HLSBuffer.MaxSegmentBytes)
-      "Scope" "recast" "InputWidth" "130px"
-      "Unit" (humanizeBytes .Bridge.HLSBuffer.MaxSegmentBytes)
+      "Scope" "recast" "InputWidth" "96px"
+      "BytesUnit" "MB"
       "Error" (errOf .Errors "hls_max_segment_bytes")) }}
     {{ field (dict
       "Name" "hls_segment_timeout_seconds" "Type" "number" "Label" "Segment timeout (s)"
