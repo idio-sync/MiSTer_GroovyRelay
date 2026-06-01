@@ -87,6 +87,8 @@
      the casting source lamp all share one cyan. */
   --lamp-green: oklch(0.80 0.17 150);
   --lamp-red: oklch(0.62 0.21 28);
+  --lamp-red-glow: oklch(0.62 0.21 28 / 0.85);
+  --lock-amber-glow: oklch(0.82 0.18 75 / 0.9);
 }
 
 /* Reset and base */
@@ -320,7 +322,7 @@ body.receiver .led-row {
 body.receiver .led {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 7px;
 }
 
 /* Recessed faceplate lamp, miniaturized to match the source-cluster strip
@@ -404,7 +406,9 @@ body.receiver .led.on.aqua .light::before {
 body.receiver .led .lbl {
   color: #5a5a5e;
   font: 600 8px 'Inter', sans-serif;
-  letter-spacing: 0.18em;
+  /* Match the source-cluster nameplate tracking (0.12em) so both
+     silkscreen legends on the faceplate agree. */
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -4494,7 +4498,9 @@ body.receiver .source-cluster .lamp .nameplate {
   grid-column: 1;
   grid-row: 2;
   min-width: 0;
-  align-self: center;
+  /* Anchor the name to the bottom of its row so it pairs tightly with the
+     state legend below; the flexible slack collects above, by the lamp. */
+  align-self: end;
   justify-self: center;
   padding: 0;
   color: #77777d;
@@ -4566,7 +4572,9 @@ body.receiver .source-cluster .lamp .state {
   grid-column: 1 / -1;
   grid-row: 3;
   min-width: 0;
-  align-self: end;
+  /* Sit directly under the name (top of this row) so name + status read as
+     one labeled unit; lighter weight than the name carries the hierarchy. */
+  align-self: start;
   justify-self: center;
   padding: 0;
   overflow: hidden;
@@ -4577,14 +4585,15 @@ body.receiver .source-cluster .lamp .state {
   background: transparent;
   border: 0;
   box-shadow: none;
-  font-size: 8px;
-  letter-spacing: 0.12em;
+  font-weight: 600;
+  font-size: 9px;
+  letter-spacing: 0.10em;
   opacity: 0.78;
 }
 
 body.receiver .source-cluster .lamp.configured-idle .led {
   background: var(--lock-amber, #d99340);
-  box-shadow: 0 0 10px oklch(0.82 0.18 75 / 0.95), inset 0 0 3px rgba(255, 255, 255, 0.44);
+  box-shadow: 0 0 10px var(--lock-amber-glow), inset 0 0 3px rgba(255, 255, 255, 0.44);
 }
 
 body.receiver .source-cluster .lamp.configured-idle .state {
@@ -4619,21 +4628,21 @@ body.receiver .source-cluster .lamp.casting .state {
 }
 
 body.receiver .source-cluster .lamp.issue .led {
-  background: #ff3030;
-  box-shadow: 0 0 10px #ff3030e6, inset 0 0 3px rgba(255, 255, 255, 0.38);
+  background: var(--lamp-red);
+  box-shadow: 0 0 10px var(--lamp-red-glow), inset 0 0 3px rgba(255, 255, 255, 0.4);
 }
 
 body.receiver .source-cluster .lamp.issue {
-  color: #ff6b6b;
+  color: color-mix(in oklch, var(--lamp-red) 72%, white);
 }
 
 body.receiver .source-cluster .lamp.issue .nameplate {
-  color: #ff6b6b;
+  color: color-mix(in oklch, var(--lamp-red) 72%, white);
 }
 
 body.receiver .source-cluster .lamp.issue .state {
-  color: #e15b4c;
-  text-shadow: 0 0 4px rgba(192, 57, 43, 0.46);
+  color: var(--lamp-red);
+  text-shadow: 0 0 4px color-mix(in oklch, var(--lamp-red) 50%, transparent);
 }
 
 @container chassis (max-width: 600px) {

@@ -755,7 +755,7 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 		"background: transparent;",
 		"border: 0;",
 		"box-shadow: none;",
-		"font-size: 8px;",
+		"font-size: 9px;",
 		"opacity: 0.78;",
 	} {
 		if !strings.Contains(stateRule, want) {
