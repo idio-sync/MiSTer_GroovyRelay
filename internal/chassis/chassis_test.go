@@ -3880,6 +3880,25 @@ func TestSettingsDrawerTemplate_RendersFiveTabsAndNoticeSlot(t *testing.T) {
 	}
 }
 
+func TestSettingsDrawerCSS_AllowsLongPanesToScroll(t *testing.T) {
+	t.Parallel()
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile chassis.css: %v", err)
+	}
+	css := string(cssBytes)
+	for _, want := range []string{
+		"grid-template-rows: auto auto minmax(0, 1fr);",
+		"max-height: min(1600px, calc(100dvh - 48px));",
+		"body.receiver .settings-body {\n  min-height: 0;\n  overflow-y: auto;",
+		"overscroll-behavior: contain;",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("settings drawer CSS missing scroll contract %q", want)
+		}
+	}
+}
+
 func TestSettingsDrawerTemplate_NetworkPaneRendersAllFields(t *testing.T) {
 	t.Parallel()
 	tmpl := parseTemplatesForTest(t)
