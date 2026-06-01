@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
@@ -929,6 +930,52 @@ func TestEventsEmitSourceWhenAUXStateChanges(t *testing.T) {
 	}
 	if !activeLabels["AUX"] || len(activeLabels) != 1 {
 		t.Fatalf("active source labels = %#v, want only AUX active; payload=%s", activeLabels, payload)
+	}
+}
+
+func TestHandleEvents_EmitsHistoryWhenRegistryHistoryChanges(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	history := &historyAdapterStub{}
+	reg := adapters.NewRegistry()
+	if err := reg.Register(history); err != nil {
+		t.Fatal(err)
+	}
+	cfg := nonZeroConfig()
+	cfg.Registry = reg
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Mount(http.NewServeMux())
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		history.entries = []companion.CompanionHistoryEntry{{
+			Title:      "Big Buck Bunny",
+			URLDisplay: "/library/metadata/42",
+			LastPlayed: now,
+		}}
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if got := strings.Count(body, "event: history\n"); got < 2 {
+		t.Fatalf("history event count = %d, want initial plus changed event; body:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"title":"Big Buck Bunny"`) {
+		t.Fatalf("changed history event missing Plex/Jellyfin-compatible title; body:\n%s", body)
+	}
+	if !strings.Contains(body, `"source":"URL"`) {
+		t.Fatalf("changed history event missing source label; body:\n%s", body)
 	}
 }
 
@@ -1937,8 +1984,8 @@ func TestHandleEvents_InitialBurstIncludesPresetsBetweenMeterAndAudio(t *testing
 			}
 		}
 	}
-	// Expected: [state, vfd, source, visualizer, transport, volume, audioDsp, meter, presets, audio]
-	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "audio"}
+	// Expected: [state, vfd, source, visualizer, transport, volume, audioDsp, meter, presets, history, audio]
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "history", "audio"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("initial burst events = %v, want %v", names, want)
 	}

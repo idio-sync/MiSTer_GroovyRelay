@@ -142,38 +142,113 @@
     }
   }
 
+  function historyBody() {
+    const section = document.querySelector('.history-section');
+    if (!section) {
+      return null;
+    }
+    return Array.from(section.children).find((child) => child.tagName === 'DIV') || null;
+  }
+
+  function historyCell(className, text) {
+    const cell = document.createElement('div');
+    cell.className = className;
+    cell.textContent = text || '';
+    return cell;
+  }
+
+  function historyReplayControl(row) {
+    const replayID = row.replayId || row.replayID || '';
+    if (!replayID) {
+      const placeholder = document.createElement('span');
+      placeholder.className = 'history-replay-placeholder';
+      placeholder.setAttribute('aria-hidden', 'true');
+      return placeholder;
+    }
+
+    const button = document.createElement('button');
+    button.className = 'history-replay-btn';
+    button.type = 'button';
+    button.dataset.historyReplayId = replayID;
+    button.setAttribute('aria-label', `Recast ${row.title || 'history item'} from history`);
+    button.title = 'Recast';
+    button.textContent = '\u25b6';
+    return button;
+  }
+
+  function renderHistory(payload) {
+    const body = historyBody();
+    if (!body) {
+      return;
+    }
+    const rows = Array.isArray(payload && payload.rows) ? payload.rows : [];
+    if (rows.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'history-empty';
+      empty.textContent = (payload && payload.emptyMessage) || 'No recent casts';
+      body.replaceChildren(empty);
+      return;
+    }
+
+    body.replaceChildren(...rows.map((row) => {
+      const item = document.createElement('div');
+      item.className = 'history-row';
+      item.append(
+        historyCell('artwork', row.artwork),
+        historyCell('title', row.title),
+        historyCell('source', row.source),
+        historyCell('when', row.when),
+        historyReplayControl(row),
+      );
+      return item;
+    }));
+  }
+
+  function installHistoryLiveUpdates() {
+    if (!window.Chassis || !window.Chassis.events || typeof window.Chassis.events.subscribe !== 'function') {
+      return;
+    }
+    window.Chassis.events.subscribe('history', (ev) => {
+      try {
+        renderHistory(JSON.parse(ev.data));
+      } catch (err) {
+        console.warn('history: bad payload', ev.data, err);
+      }
+    });
+  }
+
   function installHistoryReplayActions() {
-    document.querySelectorAll('[data-history-replay-id]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (btn.disabled) {
-          return;
+    document.addEventListener('click', async (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const btn = target ? target.closest('[data-history-replay-id]') : null;
+      if (!btn || btn.disabled) {
+        return;
+      }
+      const id = btn.getAttribute('data-history-replay-id') || '';
+      if (!id) {
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const body = new URLSearchParams();
+        body.set('id', id);
+        const res = await fetch('/receiver/history/play', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body,
+        });
+        if (!res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          showInputError(payload.chip || 'CAST FAILED');
         }
-        const id = btn.getAttribute('data-history-replay-id') || '';
-        if (!id) {
-          return;
-        }
-        btn.disabled = true;
-        try {
-          const body = new URLSearchParams();
-          body.set('id', id);
-          const res = await fetch('/receiver/history/play', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body,
-          });
-          if (!res.ok) {
-            const payload = await res.json().catch(() => ({}));
-            showInputError(payload.chip || 'CAST FAILED');
-          }
-        } catch (_) {
-          showInputError('CAST FAILED');
-        } finally {
-          btn.disabled = false;
-        }
-      });
+      } catch (_) {
+        showInputError('CAST FAILED');
+      } finally {
+        btn.disabled = false;
+      }
     });
   }
 
@@ -183,6 +258,7 @@
     startSystemTimeTicker();
     installSourceActions();
     installHistoryReplayActions();
+    installHistoryLiveUpdates();
     if (new URLSearchParams(location.search).get('dev') === '1') {
       installDevStateToggle();
     }

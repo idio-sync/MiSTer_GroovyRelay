@@ -2609,6 +2609,16 @@ func TestMeterJS_SubscribesToAudio(t *testing.T) {
 	}
 }
 
+func TestChassisJS_SubscribesToHistory(t *testing.T) {
+	src, err := chassisStaticFS.ReadFile("static/chassis.js")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(src), `subscribe('history'`) && !strings.Contains(string(src), `subscribe("history"`) {
+		t.Error("chassis.js does not subscribe to the history SSE event")
+	}
+}
+
 func TestChassisJS_NoRawEventSourceConsumers(t *testing.T) {
 	files := []string{
 		"static/transport.js",

@@ -40,6 +40,19 @@ type sourceButtonEnvelope struct {
 	LastError   string `json:"lastError,omitempty"`
 }
 
+type historyEnvelope struct {
+	Rows         []historyRowEnvelope `json:"rows"`
+	EmptyMessage string               `json:"emptyMessage"`
+}
+
+type historyRowEnvelope struct {
+	Title    string `json:"title"`
+	Source   string `json:"source"`
+	When     string `json:"when"`
+	Artwork  string `json:"artwork"`
+	ReplayID string `json:"replayId,omitempty"`
+}
+
 // vfdEnvelope is the payload for the `vfd` SSE event. Carries the
 // three display tiers plus queue and uptime; Spec 5 (telemetry) and
 // later specs add their own envelope types for other event names.
@@ -139,6 +152,23 @@ func sourceEnvelopeFromSnapshot(data ReceiverPageData) sourceEnvelope {
 			Casting:     button.Casting,
 			Issue:       button.Issue,
 			LastError:   button.LastError,
+		})
+	}
+	return out
+}
+
+func historyEnvelopeFrom(h HistoryData) historyEnvelope {
+	out := historyEnvelope{
+		Rows:         make([]historyRowEnvelope, 0, len(h.Rows)),
+		EmptyMessage: h.EmptyMessage,
+	}
+	for _, row := range h.Rows {
+		out.Rows = append(out.Rows, historyRowEnvelope{
+			Title:    row.Title,
+			Source:   row.Source,
+			When:     row.When,
+			Artwork:  row.Artwork,
+			ReplayID: row.ReplayID,
 		})
 	}
 	return out
@@ -325,6 +355,18 @@ func presetsChanged(prev, next [12]adapters.PresetEntry) bool {
 	return false
 }
 
+func historyChanged(curr, last HistoryData) bool {
+	if curr.EmptyMessage != last.EmptyMessage || len(curr.Rows) != len(last.Rows) {
+		return true
+	}
+	for i := range curr.Rows {
+		if curr.Rows[i] != last.Rows[i] {
+			return true
+		}
+	}
+	return false
+}
+
 func sourceChanged(prev, next sourceEnvelope) bool {
 	if len(prev.Buttons) != len(next.Buttons) {
 		return true
@@ -397,6 +439,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lastPresets := rawPresets
+	if err := emit(w, "history", historyEnvelopeFrom(last.History)); err != nil {
+		return
+	}
+	lastHistory := last.History
 
 	// Audio scope initial burst — emit last in the canonical order.
 	// safeAudioEnvelope recovers from panics in the viewer or marshaler
@@ -510,6 +556,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				lastPresets = currPresets
+			}
+			if historyChanged(curr.History, lastHistory) {
+				if err := emit(w, "history", historyEnvelopeFrom(curr.History)); err != nil {
+					return
+				}
+				lastHistory = curr.History
 			}
 			if audioDSPChanged(curr.AudioStrip, last.AudioStrip) {
 				if err := emit(w, "audioDsp", audioDspEnvelopeFrom(curr.AudioStrip)); err != nil {
