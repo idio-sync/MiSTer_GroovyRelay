@@ -20,13 +20,13 @@ var errNoNextQueueItem = errors.New("play queue item not found")
 
 type autoAdvanceSession struct {
 	transcodeSessionID string
-	epoch              uint64
 }
 
 func (c *Companion) withAutoAdvance(captured PlayMediaRequest, inner func(string)) func(string) {
 	return func(reason string) {
-		epoch, current := c.autoAdvanceEpochFor(captured)
-		shouldAdvance := reason == autoAdvanceEOFReason && c.autoAdvance.Load() && current
+		epoch := c.autoAdvanceEpoch.Load()
+		current := c.autoAdvanceRequestIsCurrent(captured)
+		shouldAdvance := reason == autoAdvanceEOFReason && current && c.autoAdvanceStillCurrent(epoch)
 		if inner != nil {
 			inner(reason)
 		}
@@ -55,6 +55,10 @@ func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint
 	next, err := c.resolveNextQueueItem(ctx, captured, func(items []playQueueItem, cur PlayMediaRequest) (playQueueItem, bool) {
 		return nextPlayQueueItem(items, cur.PlayQueueItemID, cur.MediaKey, 1)
 	})
+	if !c.autoAdvanceStillCurrent(epoch) {
+		slog.Debug("plex auto-advance: stood down after resolve, request is stale", "key", captured.MediaKey)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, errNoNextQueueItem) {
 			slog.Info("plex auto-advance: end of queue", "key", captured.MediaKey)
@@ -100,36 +104,40 @@ func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint
 	c.notifyTimeline()
 }
 
-func (c *Companion) beginAutoAdvanceIntent() uint64 {
+func (c *Companion) beginAutoAdvanceIntent() func() {
+	c.autoAdvanceIntents.Add(1)
+	c.cancelPendingAutoAdvance()
+	return func() {
+		c.autoAdvanceIntents.Add(-1)
+	}
+}
+
+func (c *Companion) cancelPendingAutoAdvance() uint64 {
 	return c.autoAdvanceEpoch.Add(1)
 }
 
-func (c *Companion) autoAdvanceEpochFor(captured PlayMediaRequest) (uint64, bool) {
+func (c *Companion) autoAdvanceRequestIsCurrent(captured PlayMediaRequest) bool {
 	current := c.autoAdvanceCurrent.Load()
 	if current == nil || captured.TranscodeSessionID == "" {
-		return 0, false
+		return false
 	}
 	if current.transcodeSessionID != captured.TranscodeSessionID {
-		return 0, false
+		return false
 	}
-	if c.autoAdvanceEpoch.Load() != current.epoch {
-		return 0, false
-	}
-	return current.epoch, true
+	return true
 }
 
 func (c *Companion) autoAdvanceStillCurrent(epoch uint64) bool {
-	return c.autoAdvance.Load() && c.autoAdvanceEpoch.Load() == epoch
+	return c.autoAdvance.Load() && c.autoAdvanceEpoch.Load() == epoch && c.autoAdvanceIntents.Load() == 0
 }
 
-func (c *Companion) setAutoAdvanceCurrentSession(p PlayMediaRequest, epoch uint64) {
-	if p.TranscodeSessionID == "" || epoch == 0 {
+func (c *Companion) setAutoAdvanceCurrentSession(p PlayMediaRequest) {
+	if p.TranscodeSessionID == "" {
 		c.autoAdvanceCurrent.Store(nil)
 		return
 	}
 	c.autoAdvanceCurrent.Store(&autoAdvanceSession{
 		transcodeSessionID: p.TranscodeSessionID,
-		epoch:              epoch,
 	})
 }
 

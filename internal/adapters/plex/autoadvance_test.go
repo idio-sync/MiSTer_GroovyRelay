@@ -378,6 +378,28 @@ func TestAutoAdvance_StaleEOFAfterSuccessorRememberedDoesNotStart(t *testing.T) 
 	assertNoStartIfIdle(t, fc)
 }
 
+func TestAutoAdvance_MusicSetStreamsNoOpDoesNotDisableCurrentEOFAdvance(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "track"
+	fc := &fakeCore{status: core.SessionStatus{State: core.StatePlaying, MediaKind: core.MediaKindMusic}}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.musicSessionRequestForPlay(p, MusicMetadata{Title: "Track 2"})
+	c.rememberPlaySession(p)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/player/playback/setStreams?subtitleStreamID=0", nil)
+	c.handleSetStreams(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("setStreams status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	req.OnStop("eof")
+	waitForStartIfIdle(t, fc, 1)
+}
+
 func TestAutoAdvance_PendingAdvanceStandsDownForInFlightPlexStartIntent(t *testing.T) {
 	fetched := make(chan struct{}, 1)
 	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
@@ -393,6 +415,26 @@ func TestAutoAdvance_PendingAdvanceStandsDownForInFlightPlexStartIntent(t *testi
 
 	req.OnStop("eof")
 	assertNoQueueFetchFor(t, fetched, 100*time.Millisecond)
+	assertNoStartIfIdle(t, fc)
+}
+
+func TestAutoAdvance_ToggleOffThenOnCancelsPendingAdvance(t *testing.T) {
+	fetched := make(chan struct{}, 1)
+	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 100 * time.Millisecond
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	c.rememberPlaySession(p)
+	req.OnStop("eof")
+	waitForQueueFetch(t, fetched)
+	c.SetAutoAdvance(false)
+	c.SetAutoAdvance(true)
+	time.Sleep(150 * time.Millisecond)
+
 	assertNoStartIfIdle(t, fc)
 }
 
