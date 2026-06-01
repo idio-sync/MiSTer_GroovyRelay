@@ -62,6 +62,35 @@ Pi 3B+ may be explored later as an experimental target, but its Ethernet path
 has little headroom for worst-case raw fields. Pi 2 and Pi 3B are not targeted
 because 100 Mbps Ethernet is below the receiver's worst-case stream rate.
 
+## Target Device Rationale
+
+The receiver code itself is expected to be lightweight. The target-device
+constraint comes from the combination of network headroom and 15 kHz RGB output,
+not from ordinary CPU/RAM needs.
+
+Raspberry Pi 4 is the first supported target because it combines:
+
+- true gigabit-class wired Ethernet for worst-case raw field bursts;
+- a known VGA666/DPI path;
+- Raspberry Pi OS Lite and KMS/DRM support;
+- existing real-world proof from a working Pi 4 + VGA666 + Recalbox + RGB PVM
+  setup.
+
+Pi 3B+ is a later experiment, not a v1 promise. It has more Ethernet headroom
+than a Pi 3B, but the Ethernet path is still constrained enough that raw
+720x240x3 fields at about 60 Hz can run close to the edge once UDP/IP overhead,
+field bursts, audio, ACK traffic, and OS jitter are included.
+
+Pi 2, Pi 3B, and Pi Zero-class boards are outside v1 because they either lack
+enough wired Ethernet bandwidth or require USB networking paths that turn a
+real-time RGB receiver into a support problem.
+
+Other SBCs may be cheaper on paper, but v1 does not target them because the
+unknown is not whether a small daemon can run. The unknown is whether the board
+can produce a stable, documented, supportable 15 kHz RGB path comparable to Pi
+4 + VGA666. Alternate SBC support belongs after the renderer boundary is proven
+and after the Pi 4 appliance works.
+
 ## Architecture
 
 Runtime data flow:
@@ -237,6 +266,32 @@ before boot, using a small file such as `groovypi.toml`.
 Development can also support copying a binary and systemd unit onto an existing
 Pi OS Lite installation before the image builder is polished.
 
+## SD Image Rationale
+
+The desired user experience is closer to a console or arcade appliance than a
+general-purpose Linux machine: flash the image, insert the SD card, power on the
+Pi, and see the idle logo without a keyboard.
+
+The release path is therefore an SD card image, while the development path can
+remain a normal binary copied onto a Pi OS Lite install. Keeping both paths
+matters: the binary/dev-service path keeps iteration fast, and the image path
+keeps the eventual user experience simple.
+
+The image is Raspberry Pi OS Lite based for v1 because it reduces kernel, KMS,
+DPI, ALSA, USB input, and networking risk. Buildroot is attractive for a later
+small appliance image, but it would move too much work into kernel/userspace
+packaging before the receiver and VGA666 renderer are proven. Recalbox is useful
+as hardware proof for the VGA666/PVM setup, but it is not the right base for a
+dumb receiver image because it brings an emulator/front-end stack that v1 does
+not need.
+
+The read-only setup is meant to survive normal power removal. It is not a
+physical write-protect switch. The root filesystem should be mounted read-only
+during normal operation; mutable runtime paths live on `tmpfs`; operator config
+lives on the boot partition; and any action that writes persistent state must be
+explicit and rare. A powered-off receiver should not corrupt itself merely
+because it was waiting for fields or rendering the idle logo.
+
 ## Hardware And Image Defaults
 
 The release image defaults to the Raspberry Pi 4 analog audio output for PCM
@@ -250,6 +305,17 @@ development switch, and ALSA device override. The read-only root owns binaries,
 systemd units, and static assets. Writable runtime paths are limited to `tmpfs`
 locations such as `/run`, `/tmp`, and the system journal strategy chosen for the
 image.
+
+Practical image defaults:
+
+- root filesystem mounted read-only after boot;
+- `/run` and `/tmp` mounted as `tmpfs`;
+- logs kept volatile by default, with optional developer diagnostics mode;
+- no desktop, launcher, or emulator front end;
+- `groovypi-receiver.service` starts automatically and restarts on failure;
+- SSH disabled in release images unless enabled through boot-partition config;
+- boot-partition config is readable from Windows, macOS, and Linux before first
+  boot.
 
 ## Error Handling
 
@@ -321,12 +387,43 @@ senders and documents any sender-specific gaps.
 
 Phase 6 explores USB HID joystick feedback and Pi 3B+ as v2 candidates.
 
+## Decision History
+
+This project intentionally starts as a network receiver rather than a full
+all-in-one Pi cast appliance. An all-in-one appliance is a plausible end-user
+goal, but the risky part is the receiver/rendering path: Groovy protocol
+compatibility, field decode, audio sync, KMS/DPI presentation, and 15 kHz RGB
+timing. Proving that as a dumb target first keeps the scope clear. Once the
+receiver works, running GroovyRelay on the same Pi and sending to loopback can
+be evaluated as a packaging step.
+
+The design also starts inside the MiSTer_GroovyRelay monorepo. That keeps the
+first implementation close to existing Groovy protocol builders, modelines,
+tests, and `fakemister` receiver code. The package boundaries are deliberately
+named so the receiver can split into a standalone project later without
+entangling itself with Plex/Jellyfin/DLNA adapter code.
+
+Controller input is preserved as a compatibility requirement but not a v1
+release blocker. The upstream Groovy API has a second socket path for joystick
+and PS2 input feedback, so the design reserves an `input` package boundary.
+Actual USB HID mapping can ship in v2 unless it falls out cheaply after the AV
+receiver is stable.
+
+Compatibility is preferred over fastest-first shortcuts. GroovyRelay is the
+first-class test sender because it is the local app, but the receiver should be
+shaped as a Groovy_MiSTer-compatible endpoint so MiSTerCast, GroovyMAME-style
+senders, and future Groovy senders are not excluded by early design choices.
+
 ## References
 
 - Groovy_MiSTer is the reference receiver behavior and protocol target:
   https://github.com/psakhis/Groovy_MiSTer
 - Raspberry Pi KMS/DPI display configuration is the v1 output stack:
   https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#manually-configure-a-display
+- Raspberry Pi 4 specifications ground the supported v1 hardware target:
+  https://www.raspberrypi.com/products/raspberry-pi-4-model-b/specifications/
+- Raspberry Pi 3B+ specifications ground the experimental-only hardware note:
+  https://www.raspberrypi.com/products/raspberry-pi-3-model-b-plus/
 - Recalbox VGA666/RGB Pi documentation is useful hardware background for the
   known Pi 4 + VGA666 + RGB PVM setup:
   https://wiki.recalbox.com/en/tutorials/video/crt/crt-screen-dpi-vga666-piscart-rgbpi
