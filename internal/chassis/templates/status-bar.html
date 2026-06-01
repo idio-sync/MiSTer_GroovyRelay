@@ -12,6 +12,9 @@
       <span class="led aqua{{if .AudioStrip.Engaged}} on{{end}}" data-eq-led role="status"
             aria-label="EQ {{if .AudioStrip.Engaged}}active{{else}}inactive{{end}}"
             title="Tone/EQ {{if .AudioStrip.Engaged}}engaged{{else}}flat / defeated{{end}}"><span class="light"></span><span class="lbl">EQ</span></span>
+      <span class="led{{if .LocalFilesStatusLED.On}} on{{end}}{{if .LocalFilesStatusLED.Tone}} {{.LocalFilesStatusLED.Tone}}{{end}}" data-localfiles-led role="status"
+            aria-label="{{.LocalFilesStatusLED.AriaLabel}}"
+            title="{{.LocalFilesStatusLED.Title}}"><span class="light"></span><span class="lbl">{{.LocalFilesStatusLED.Label}}</span></span>
     </div>
   </div>
   <button class="load-core-btn loaded" id="status-load-core-btn" type="button" aria-label="Load core"><span class="label-text">&#9656; Load core</span></button>

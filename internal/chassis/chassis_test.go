@@ -181,6 +181,11 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		Version:   "test-1.0.0",
 		BrandName: "GROOVY · RELAY",
 		State:     StateIdle,
+		LocalFilesStatusLED: StatusLEDData{
+			Label:     "LF",
+			AriaLabel: "Local Files adapter not registered",
+			Title:     "Local Files adapter not registered",
+		},
 		VFD: VFDData{
 			State:        string(StateIdle),
 			Primary:      "STANDBY",
@@ -5238,6 +5243,33 @@ func TestRender_EQLedOnWhenEngaged(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-eq-led`) {
 		t.Error("EQ LED missing data-eq-led attribute")
+	}
+}
+
+func TestRender_StatusBarShowsLocalFilesAdapterLED(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.Registry = adapters.NewRegistryWith(fakeStatusAdapter{
+		fakeNamedAdapter: fakeNamedAdapter{name: "localfiles"},
+		status:           adapters.Status{State: adapters.StateRunning},
+	})
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	s.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	lf := regexp.MustCompile(`(?s)<span class="led on green"[^>]*data-localfiles-led[^>]*>.*?<span class="lbl">LF</span>`).FindString(body)
+	if lf == "" {
+		t.Fatalf("Local Files status LED missing or not green/running: %s", excerpt(body, "data-localfiles-led"))
+	}
+	if !strings.Contains(lf, `aria-label="Local Files adapter running"`) {
+		t.Fatalf("Local Files LED missing accessible running status: %s", lf)
 	}
 }
 

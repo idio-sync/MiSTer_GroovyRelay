@@ -455,6 +455,13 @@ func (f fakeNamedAdapter) ApplyConfig(toml.Primitive, toml.MetaData) (adapters.A
 	return adapters.ScopeHotSwap, nil
 }
 
+type fakeStatusAdapter struct {
+	fakeNamedAdapter
+	status adapters.Status
+}
+
+func (f fakeStatusAdapter) Status() adapters.Status { return f.status }
+
 func mustRegister(t *testing.T, reg *adapters.Registry, a adapters.Adapter) {
 	t.Helper()
 	if err := reg.Register(a); err != nil {

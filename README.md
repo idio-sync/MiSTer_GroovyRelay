@@ -4,7 +4,7 @@
 
 A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video. The idea was to have a way for the MiSTer to act as a dumb cast reciever for different types of media via a headless background bridge. 
 
-Now expanded to include yt-dlp compatable URLs, torrent/magnet links, DLNA casts and (soon) local files from the server's filesystem, castable via the web-ui.
+Now expanded to include yt-dlp compatable URLs, torrent/magnet links, DLNA casts and local files from the server's filesystem, castable via the web-ui.
 
 Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. 
 

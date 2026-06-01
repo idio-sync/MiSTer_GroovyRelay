@@ -17,20 +17,30 @@ import (
 // live-state fields stay zero/empty in Phase 0. Subsequent specs
 // populate them, so the shape is forward-compatible by design.
 type ReceiverPageData struct {
-	Version    string
-	BrandName  string
-	State      ReceiverState
-	VFD        VFDData
-	Source     SourceData
-	Meter      MeterData
-	Transport  TransportData
-	AudioStrip AudioStripData
-	Visualizer VisualizerData
-	Input      InputData
-	Presets    PresetsData
-	Catalog    CatalogData
-	History    HistoryData
-	Settings   SettingsData
+	Version             string
+	BrandName           string
+	State               ReceiverState
+	LocalFilesStatusLED StatusLEDData
+	VFD                 VFDData
+	Source              SourceData
+	Meter               MeterData
+	Transport           TransportData
+	AudioStrip          AudioStripData
+	Visualizer          VisualizerData
+	Input               InputData
+	Presets             PresetsData
+	Catalog             CatalogData
+	History             HistoryData
+	Settings            SettingsData
+}
+
+// StatusLEDData renders a compact lamp in the receiver status bar.
+type StatusLEDData struct {
+	Label     string
+	On        bool
+	Tone      string
+	AriaLabel string
+	Title     string
 }
 
 // ReceiverState is the body-class controller, either idle or live.
@@ -823,9 +833,10 @@ func buildStreamsProviderRows(cfg Config) []AdapterProviderRow {
 // Later live-state specs replace this with session-derived snapshots.
 func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 	base := ReceiverPageData{
-		Version:   cfg.Version,
-		BrandName: "GROOVY · RELAY",
-		State:     StateIdle,
+		Version:             cfg.Version,
+		BrandName:           "GROOVY · RELAY",
+		State:               StateIdle,
+		LocalFilesStatusLED: localFilesStatusLED(cfg.Registry),
 		VFD: VFDData{
 			State:        string(StateIdle),
 			Primary:      "STANDBY",
@@ -920,6 +931,53 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 	// can render "Browse full catalog (N)" without a template wrapper.
 	base.Presets.CatalogTotalChannels = base.Catalog.TotalChannels
 	return base
+}
+
+func localFilesStatusLED(reg *adapters.Registry) StatusLEDData {
+	led := StatusLEDData{
+		Label:     "LF",
+		AriaLabel: "Local Files adapter not registered",
+		Title:     "Local Files adapter not registered",
+	}
+	if reg == nil {
+		return led
+	}
+	adapter, ok := reg.Get("localfiles")
+	if !ok || adapter == nil {
+		return led
+	}
+	status := adapter.Status()
+	state := adapterStatusText(status.State)
+	led.AriaLabel = "Local Files adapter " + state
+	led.Title = led.AriaLabel
+	switch status.State {
+	case adapters.StateRunning:
+		led.On = true
+		led.Tone = "green"
+	case adapters.StateError:
+		led.On = true
+		led.Tone = "red"
+		if msg := strings.TrimSpace(status.LastError); msg != "" {
+			led.AriaLabel += ": " + msg
+			led.Title = led.AriaLabel
+		}
+	}
+	return led
+}
+
+func adapterStatusText(state adapters.State) string {
+	switch state {
+	case adapters.StateRunning:
+		return "running"
+	case adapters.StateError:
+		return "error"
+	case adapters.StateStarting:
+		return "starting"
+	case adapters.StateStopped:
+		return "stopped"
+	default:
+		return "unknown"
+	}
 }
 
 func inputDataFromConfig(cfg Config) InputData {
