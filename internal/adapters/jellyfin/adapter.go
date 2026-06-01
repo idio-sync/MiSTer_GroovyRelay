@@ -260,6 +260,15 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			Default:    4000,
 			ApplyScope: adapters.ScopeRestartCast,
 		},
+		{
+			Key:        "auto_advance",
+			Label:      "Continuous Play",
+			Help:       "When an item ends, automatically play the next item in the Jellyfin queue.",
+			Kind:       adapters.KindBool,
+			Default:    false,
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "Playback",
+		},
 	}
 }
 
@@ -332,6 +341,7 @@ func (a *Adapter) CurrentValues() map[string]any {
 		"server_url":             a.cfg.ServerURL,
 		"device_name":            a.cfg.DeviceName,
 		"max_video_bitrate_kbps": a.cfg.MaxVideoBitrateKbps,
+		"auto_advance":           a.cfg.AutoAdvance,
 	}
 }
 

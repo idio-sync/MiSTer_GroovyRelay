@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
@@ -28,7 +29,7 @@ func TestAdapter_NameAndDisplay(t *testing.T) {
 func TestAdapter_FieldsSchema(t *testing.T) {
 	a := New(nil, "/tmp/data", "test-uuid", "", nil)
 	fields := a.Fields()
-	wantKeys := []string{"enabled", "server_url", "device_name", "max_video_bitrate_kbps"}
+	wantKeys := []string{"enabled", "server_url", "device_name", "max_video_bitrate_kbps", "auto_advance"}
 	if len(fields) != len(wantKeys) {
 		t.Fatalf("len(Fields()) = %d, want %d", len(fields), len(wantKeys))
 	}
@@ -36,6 +37,72 @@ func TestAdapter_FieldsSchema(t *testing.T) {
 		if fields[i].Key != k {
 			t.Errorf("Fields()[%d].Key = %q, want %q", i, fields[i].Key, k)
 		}
+	}
+}
+
+func TestAdapter_AutoAdvanceFieldSchema(t *testing.T) {
+	a := New(nil, "/tmp/data", "test-uuid", "", nil)
+	fields := a.Fields()
+	var found adapters.FieldDef
+	for _, f := range fields {
+		if f.Key == "auto_advance" {
+			found = f
+			break
+		}
+	}
+	if found.Key == "" {
+		t.Fatal("auto_advance field not found")
+	}
+	if found.Kind != adapters.KindBool {
+		t.Errorf("Kind = %v, want KindBool", found.Kind)
+	}
+	if found.ApplyScope != adapters.ScopeHotSwap {
+		t.Errorf("ApplyScope = %v, want ScopeHotSwap", found.ApplyScope)
+	}
+	if found.Default != false {
+		t.Errorf("Default = %v, want false", found.Default)
+	}
+	if found.Section != "Playback" {
+		t.Errorf("Section = %q, want Playback", found.Section)
+	}
+}
+
+func TestAdapter_CurrentValuesIncludesAutoAdvance(t *testing.T) {
+	a := New(nil, "/tmp/data", "test-uuid", "", nil)
+	a.cfg = Config{AutoAdvance: true}
+	got := a.CurrentValues()["auto_advance"]
+	if got != true {
+		t.Fatalf("CurrentValues[auto_advance] = %v, want true", got)
+	}
+}
+
+func TestAdapter_ApplyConfigAutoAdvanceIsHotSwap(t *testing.T) {
+	a := New(nil, "/tmp/data", "test-uuid", "", nil)
+	a.cfg = Config{ServerURL: "https://jellyfin.example.com", MaxVideoBitrateKbps: 4000}
+	raw := `
+[adapters.jellyfin]
+enabled                = false
+server_url             = "https://jellyfin.example.com"
+device_name            = ""
+max_video_bitrate_kbps = 4000
+auto_advance           = true
+`
+	var envelope struct {
+		Adapters map[string]toml.Primitive `toml:"adapters"`
+	}
+	meta, err := toml.Decode(raw, &envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := a.ApplyConfig(envelope.Adapters["jellyfin"], meta)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if scope != adapters.ScopeHotSwap {
+		t.Fatalf("scope = %v, want ScopeHotSwap", scope)
+	}
+	if got := a.CurrentValues()["auto_advance"]; got != true {
+		t.Fatalf("CurrentValues[auto_advance] = %v, want true", got)
 	}
 }
 
