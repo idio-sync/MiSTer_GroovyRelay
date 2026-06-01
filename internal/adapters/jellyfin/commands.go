@@ -263,19 +263,23 @@ func (a *Adapter) restartCurrentPlaybackAt(posTicks int64, preservePaused bool) 
 	}
 	a.mu.Unlock()
 
+	intent := a.beginControllerStartIntent()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: restart playback: no token")
 		return true
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: restart playback: modeline", "err", err)
 		return true
 	}
 	wasPaused := preservePaused && st.State == core.StatePaused
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -518,13 +522,16 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 	if nextSub == nil {
 		nextSub = cachedSub
 	}
+	intent := a.beginControllerStartIntent()
 	tok, err := LoadToken(a.tokenPath())
 	if err != nil || tok.AccessToken == "" {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: trackSwitch: no token")
 		return
 	}
 	preset, err := a.currentPreset()
 	if err != nil {
+		a.finishControllerStartIntent(intent)
 		slog.Error("jellyfin: trackSwitch: modeline", "err", err)
 		return
 	}
@@ -533,6 +540,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 	posTicks := int64(st.Position / (100 * time.Nanosecond))
 
 	go func() {
+		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 

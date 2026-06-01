@@ -1795,6 +1795,130 @@ func TestAutoAdvanceEOF_PendingPlayNowBlocksAutoAdvance(t *testing.T) {
 	waitForFakeManagerReq(t, mgr)
 }
 
+func TestAutoAdvanceEOF_PendingSeekRestartBlocksAutoAdvance(t *testing.T) {
+	jfSrv, restartPlaybackInfoStarted, releaseRestart := startBlockingPlaybackInfoServer(t, "old-itm")
+	mgr := &fakeManager{
+		st: core.SessionStatus{
+			State:      core.StatePlaying,
+			AdapterRef: "old-itm:ps-old",
+			Position:   30 * time.Second,
+		},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "old-itm:ps-old"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.HandlePlaystate(mustMarshal(t, map[string]any{
+		"Command":           "Seek",
+		"SeekPositionTicks": int64(45 * time.Second / (100 * time.Nanosecond)),
+	}))
+	select {
+	case <-restartPlaybackInfoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for seek restart PlaybackInfo")
+	}
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StateIdle}
+	mgr.mu.Unlock()
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0 while seek restart is pending", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "old-itm:ps-old" {
+		t.Fatalf("currentRefKey = %q, want old ref while seek restart is pending", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	releaseRestart()
+	waitForFakeManagerReq(t, mgr)
+}
+
+func TestAutoAdvanceEOF_PendingTrackSwitchBlocksAutoAdvance(t *testing.T) {
+	jfSrv, trackSwitchPlaybackInfoStarted, releaseTrackSwitch := startBlockingPlaybackInfoServer(t, "old-itm")
+	mgr := &fakeManager{
+		st: core.SessionStatus{
+			State:      core.StatePlaying,
+			AdapterRef: "old-itm:ps-old",
+			Position:   30 * time.Second,
+		},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "old-itm:ps-old"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
+		"Name":      "SetAudioStreamIndex",
+		"Arguments": map[string]string{"Index": "1"},
+	}))
+	select {
+	case <-trackSwitchPlaybackInfoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for track switch PlaybackInfo")
+	}
+	mgr.mu.Lock()
+	mgr.st = core.SessionStatus{State: core.StateIdle}
+	mgr.mu.Unlock()
+
+	a.advanceAfterEOF("old-itm:ps-old")
+
+	mgr.mu.Lock()
+	idleCalls := len(mgr.idleReqs)
+	mgr.mu.Unlock()
+	if idleCalls != 0 {
+		t.Fatalf("StartSessionIfIdle calls = %d, want 0 while track switch is pending", idleCalls)
+	}
+	if got := a.snapshotCurrentRefKey(); got != "old-itm:ps-old" {
+		t.Fatalf("currentRefKey = %q, want old ref while track switch is pending", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	releaseTrackSwitch()
+	waitForFakeManagerReq(t, mgr)
+}
+
 func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T) {
 	var pbCalls atomicInt32
 	jfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
