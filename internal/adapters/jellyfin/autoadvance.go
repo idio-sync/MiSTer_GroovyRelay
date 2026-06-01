@@ -185,15 +185,14 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
 	if a.beforeAutoAdvanceCommit != nil {
 		a.beforeAutoAdvanceCommit()
 	}
+	if !sameCoreSession(a.core.Status(), startedStatus) {
+		cleanupSessionArtwork(req)
+		a.stopStaleAutoAdvanceSession(startedStatus)
+		return
+	}
 	if !a.commitAutoAdvance(stoppedRef, req.AdapterRef, qi) {
 		cleanupSessionArtwork(req)
-		if stopped, stopErr := a.core.StopIfSession(startedStatus.AdapterRef, startedStatus.Generation); stopErr != nil {
-			slog.Warn("jellyfin: auto-advance stale started session stop failed", "ref", startedStatus.AdapterRef, "generation", startedStatus.Generation, "err", stopErr)
-		} else if stopped {
-			slog.Debug("jellyfin: auto-advance stopped stale started session", "ref", startedStatus.AdapterRef, "generation", startedStatus.Generation)
-		} else {
-			slog.Debug("jellyfin: auto-advance stale started session no longer active", "ref", startedStatus.AdapterRef, "generation", startedStatus.Generation)
-		}
+		a.stopStaleAutoAdvanceSession(startedStatus)
 		return
 	}
 
@@ -212,4 +211,18 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string) {
 			Version: linkVersion,
 		},
 	})
+}
+
+func sameCoreSession(a, b core.SessionStatus) bool {
+	return a.AdapterRef != "" && a.AdapterRef == b.AdapterRef && a.Generation != 0 && a.Generation == b.Generation
+}
+
+func (a *Adapter) stopStaleAutoAdvanceSession(started core.SessionStatus) {
+	if stopped, stopErr := a.core.StopIfSession(started.AdapterRef, started.Generation); stopErr != nil {
+		slog.Warn("jellyfin: auto-advance stale started session stop failed", "ref", started.AdapterRef, "generation", started.Generation, "err", stopErr)
+	} else if stopped {
+		slog.Debug("jellyfin: auto-advance stopped stale started session", "ref", started.AdapterRef, "generation", started.Generation)
+	} else {
+		slog.Debug("jellyfin: auto-advance stale started session no longer active", "ref", started.AdapterRef, "generation", started.Generation)
+	}
 }

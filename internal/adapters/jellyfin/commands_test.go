@@ -48,6 +48,7 @@ type fakeManager struct {
 	stopIfCalls      int
 	stopIfRef        string
 	stopIfGeneration uint64
+	onStatus         func()
 	mode             string
 	onStop           func()
 }
@@ -119,8 +120,15 @@ func (f *fakeManager) SeekTo(ms int) error {
 	f.mu.Unlock()
 	return f.err
 }
-func (f *fakeManager) Status() core.SessionStatus { f.mu.Lock(); defer f.mu.Unlock(); return f.st }
-func (f *fakeManager) add(name string)            { f.mu.Lock(); f.calls = append(f.calls, name); f.mu.Unlock() }
+func (f *fakeManager) Status() core.SessionStatus {
+	if f.onStatus != nil {
+		f.onStatus()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.st
+}
+func (f *fakeManager) add(name string) { f.mu.Lock(); f.calls = append(f.calls, name); f.mu.Unlock() }
 func (f *fakeManager) VisualizerMode() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1349,6 +1357,74 @@ func TestAutoAdvanceEOF_CommitFailureStopsAutoStartedSession(t *testing.T) {
 	}
 	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
 		t.Fatalf("core still playing auto-started session: %+v", status)
+	}
+}
+
+func TestAutoAdvanceEOF_CorePreemptBeforeCommitDoesNotClaimStaleStart(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	var statusCalls int
+	mgr.onStatus = func() {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		statusCalls++
+		if statusCalls == 3 {
+			mgr.st = core.SessionStatus{
+				State:      core.StatePlaying,
+				AdapterRef: "other:session",
+				Generation: mgr.nextGenerationLocked(),
+			}
+		}
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 1 || queue[0].ItemID != "next-itm" {
+		t.Fatalf("queue = %+v, want unchanged [next-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.AdapterRef != "other:session" {
+		t.Fatalf("core status = %+v, want other session preserved", status)
 	}
 }
 
