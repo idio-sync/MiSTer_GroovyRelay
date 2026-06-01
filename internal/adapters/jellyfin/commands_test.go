@@ -1072,6 +1072,17 @@ func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
 		t.Errorf("queue len after NextTrack = %d, want 0", len(a.queue))
 	}
 	a.mu.Unlock()
+
+	history := a.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("CompanionHistory len = %d, want 1", len(history))
+	}
+	if history[0].Title == "" {
+		t.Fatal("history Title is empty")
+	}
+	if history[0].URLDisplay != "next-itm" {
+		t.Fatalf("history URLDisplay = %q, want next-itm", history[0].URLDisplay)
+	}
 }
 
 func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T) {

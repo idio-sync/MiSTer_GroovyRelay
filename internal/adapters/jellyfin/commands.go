@@ -795,6 +795,7 @@ func (a *Adapter) startQueuedItemWithOptions(qi QueuedItem, opts queuedStartOpti
 			return
 		}
 		a.commitSelfPreempt()
+		a.recordCompanionHistory(qi.ItemID, info, time.Now())
 		a.spawnReporter(reporterParams{
 			ItemID:          qi.ItemID,
 			PlaySessionID:   info.PlaySessionID,
