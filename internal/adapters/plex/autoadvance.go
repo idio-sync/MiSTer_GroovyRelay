@@ -81,7 +81,7 @@ func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint
 	if c.autoAdvanceDelay > 0 {
 		time.Sleep(c.autoAdvanceDelay)
 	}
-	if !c.autoAdvance.Load() || c.autoAdvanceEpoch.Load() != epoch {
+	if !c.autoAdvanceStillCurrent(epoch) {
 		cleanupSessionArtwork(req)
 		slog.Debug("plex auto-advance: stood down, request is stale", "key", next.MediaKey)
 		return
@@ -173,9 +173,20 @@ func (c *Companion) rememberAutoAdvanceSessionIfCurrent(adapterRef string, next 
 	}
 	c.cancelPendingAutoAdvanceLocked()
 	c.sessMu.Lock()
-	defer c.sessMu.Unlock()
 	c.lastPlay = next
 	c.setAutoAdvanceCurrentSession(next)
+	c.sessMu.Unlock()
+
+	st = c.core.Status()
+	if st.AdapterRef != adapterRef {
+		c.sessMu.Lock()
+		if c.lastPlay.TranscodeSessionID == next.TranscodeSessionID {
+			c.lastPlay = PlayMediaRequest{}
+			c.autoAdvanceCurrent.Store(nil)
+		}
+		c.sessMu.Unlock()
+		return false
+	}
 	return true
 }
 

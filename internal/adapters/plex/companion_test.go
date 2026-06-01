@@ -242,6 +242,8 @@ type fakeCore struct {
 	startIfIdleCalls int
 	stopIfRefCalls   int
 	onStartIfIdle    func()
+	statusCalls      int
+	onStatus         func(core.SessionStatus, int)
 }
 
 func (f *fakeCore) StartSession(r core.SessionRequest) error {
@@ -308,8 +310,15 @@ func (f *fakeCore) SeekTo(ms int) error {
 }
 func (f *fakeCore) Status() core.SessionStatus {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.status
+	f.statusCalls++
+	call := f.statusCalls
+	st := f.status
+	hook := f.onStatus
+	f.mu.Unlock()
+	if hook != nil {
+		hook(st, call)
+	}
+	return st
 }
 func (f *fakeCore) VisualizerMode() string {
 	f.mu.Lock()

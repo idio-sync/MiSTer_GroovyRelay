@@ -485,6 +485,32 @@ func TestAutoAdvance_LateManualIntentStopsJustStartedAdvance(t *testing.T) {
 	}
 }
 
+func TestAutoAdvance_ForeignPreemptDuringFinalCommitClearsStaleSession(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+	fc.onStatus = func(st core.SessionStatus, call int) {
+		if call != 1 {
+			return
+		}
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
+		fc.status = core.SessionStatus{State: core.StatePlaying, AdapterRef: "aux:foreign"}
+	}
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	c.rememberPlaySession(p)
+	req.OnStop("eof")
+	waitForStopIfAdapterRef(t, fc, 1)
+
+	if got := c.lastPlaySession(); got.MediaKey == "/library/metadata/300" {
+		t.Fatalf("foreign-preempted auto-advance remembered stale next session: %+v", got)
+	}
+}
+
 func TestAutoAdvance_DisabledByInnerCallbackStandsDownBeforeStart(t *testing.T) {
 	fetched := make(chan struct{}, 1)
 	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
