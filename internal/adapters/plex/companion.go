@@ -108,10 +108,14 @@ type SessionManager interface {
 	// active (the caller stands down). Used by Plex auto-advance to avoid
 	// double-advancing when a controller has already taken over.
 	StartSessionIfIdle(core.SessionRequest) (bool, error)
+	// StartSessionIfIdleSnapshot is the generation-aware form used when the
+	// caller may need to clean up only the exact session it just started.
+	StartSessionIfIdleSnapshot(core.SessionRequest) (core.SessionStatus, bool, error)
 	Pause() error
 	Play() error
 	Stop() error
 	StopIfAdapterRef(ref string) (bool, error)
+	StopIfSession(ref string, generation uint64) (bool, error)
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
 	VisualizerMode() string
@@ -446,11 +450,7 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		}
 		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
 		if !directPlay {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
-				slog.Debug("plex stop music transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
-			}
+			stopTranscodeSessionAsync("plex stop music transcode", serverURL, captured, reason)
 		}
 	}
 	req.OnStop = artworkcache.WithCleanup(md.ArtworkPath, req.OnStop)
@@ -527,11 +527,9 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 	captured := p
 	req.OnStop = func(reason string) {
 		// Order matters: notify subscribed Plex controllers FIRST, then
-		// clear local state (conditionally), then make the best-effort PMS
-		// hint last. This way the controller sees the stopped state
-		// immediately even if PMS is slow/unreachable (StopTranscodeSession
-		// has a 5s timeout and we don't want to gate the controller-cleanup
-		// latency on it).
+		// clear local state (conditionally), then launch the best-effort
+		// PMS hint last. This way the controller sees the stopped state
+		// immediately and auto-advance is not gated on PMS latency.
 		if c.timeline != nil {
 			c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle}, captured)
 		}
@@ -546,14 +544,23 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 		// timeline poll would render no key/ratingKey, causing controllers
 		// to lose track of the cast.
 		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
-			slog.Debug("plex stop transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
-		}
+		stopTranscodeSessionAsync("plex stop transcode", serverURL, captured, reason)
 	}
 	req.OnStop = c.withAutoAdvance(p, req.OnStop)
 	return req
+}
+
+func stopTranscodeSessionAsync(logMessage, serverURL string, captured PlayMediaRequest, reason string) {
+	if serverURL == "" || captured.TranscodeSessionID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
+			slog.Debug(logMessage, "reason", reason, "session", captured.TranscodeSessionID, "err", err)
+		}
+	}()
 }
 
 type playQueueItem struct {

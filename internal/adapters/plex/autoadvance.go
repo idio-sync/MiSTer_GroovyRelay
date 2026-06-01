@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
@@ -87,7 +88,7 @@ func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint
 		return
 	}
 
-	started, err := c.core.StartSessionIfIdle(req)
+	startedStatus, started, err := c.core.StartSessionIfIdleSnapshot(req)
 	if err != nil {
 		cleanupSessionArtwork(req)
 		slog.Warn("plex auto-advance: start failed", "key", next.MediaKey, "err", err)
@@ -99,9 +100,9 @@ func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint
 		slog.Debug("plex auto-advance: stood down, session no longer idle", "key", next.MediaKey)
 		return
 	}
-	if !c.rememberAutoAdvanceSessionIfCurrent(req.AdapterRef, next, epoch) {
+	if !c.rememberAutoAdvanceSessionIfCurrent(startedStatus, next, epoch) {
 		cleanupSessionArtwork(req)
-		if stopped, stopErr := c.core.StopIfAdapterRef(req.AdapterRef); stopErr != nil {
+		if stopped, stopErr := c.core.StopIfSession(startedStatus.AdapterRef, startedStatus.Generation); stopErr != nil {
 			slog.Warn("plex auto-advance: stale started session stop failed", "key", next.MediaKey, "err", stopErr)
 		} else if stopped {
 			slog.Debug("plex auto-advance: stopped stale session after late cancellation", "key", next.MediaKey)
@@ -161,14 +162,14 @@ func (c *Companion) setAutoAdvanceCurrentSession(p PlayMediaRequest) {
 	})
 }
 
-func (c *Companion) rememberAutoAdvanceSessionIfCurrent(adapterRef string, next PlayMediaRequest, epoch uint64) bool {
+func (c *Companion) rememberAutoAdvanceSessionIfCurrent(started core.SessionStatus, next PlayMediaRequest, epoch uint64) bool {
 	c.autoAdvanceMu.Lock()
 	defer c.autoAdvanceMu.Unlock()
 	if !c.autoAdvanceStillCurrent(epoch) {
 		return false
 	}
 	st := c.core.Status()
-	if st.AdapterRef != adapterRef {
+	if !autoAdvanceStartedSessionMatches(st, started) {
 		return false
 	}
 	c.cancelPendingAutoAdvanceLocked()
@@ -178,7 +179,7 @@ func (c *Companion) rememberAutoAdvanceSessionIfCurrent(adapterRef string, next 
 	c.sessMu.Unlock()
 
 	st = c.core.Status()
-	if st.AdapterRef != adapterRef {
+	if !autoAdvanceStartedSessionMatches(st, started) {
 		c.sessMu.Lock()
 		if c.lastPlay.TranscodeSessionID == next.TranscodeSessionID {
 			c.lastPlay = PlayMediaRequest{}
@@ -188,6 +189,13 @@ func (c *Companion) rememberAutoAdvanceSessionIfCurrent(adapterRef string, next 
 		return false
 	}
 	return true
+}
+
+func autoAdvanceStartedSessionMatches(current, started core.SessionStatus) bool {
+	return started.AdapterRef != "" &&
+		started.Generation != 0 &&
+		current.AdapterRef == started.AdapterRef &&
+		current.Generation == started.Generation
 }
 
 func (c *Companion) resolveNextQueueItem(

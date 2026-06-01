@@ -478,7 +478,7 @@ func TestAutoAdvance_LateManualIntentStopsJustStartedAdvance(t *testing.T) {
 	req := c.sessionRequestForPreset(p, presetForTest(t))
 	c.rememberPlaySession(p)
 	req.OnStop("eof")
-	waitForStopIfAdapterRef(t, fc, 1)
+	waitForCleanupAttempt(t, fc, 1)
 
 	if got := c.lastPlaySession(); got.MediaKey == "/library/metadata/300" {
 		t.Fatalf("late-canceled auto-advance remembered stale next session: %+v", got)
@@ -504,10 +504,115 @@ func TestAutoAdvance_ForeignPreemptDuringFinalCommitClearsStaleSession(t *testin
 	req := c.sessionRequestForPreset(p, presetForTest(t))
 	c.rememberPlaySession(p)
 	req.OnStop("eof")
-	waitForStopIfAdapterRef(t, fc, 1)
+	waitForCleanupAttempt(t, fc, 1)
 
 	if got := c.lastPlaySession(); got.MediaKey == "/library/metadata/300" {
 		t.Fatalf("foreign-preempted auto-advance remembered stale next session: %+v", got)
+	}
+}
+
+func TestAutoAdvance_LateSameRefControllerStartDoesNotStopControllerSession(t *testing.T) {
+	srv, p := newPlayQueueServer(t, threeItemQueue)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+	fc.onAfterStartIfIdle = func(started core.SessionStatus) {
+		finishIntent := c.beginAutoAdvanceIntent()
+		finishIntent()
+
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
+		fc.status = core.SessionStatus{
+			State:      core.StatePlaying,
+			AdapterRef: started.AdapterRef,
+			MediaKind:  core.MediaKindVideo,
+			Generation: fc.nextGenerationLocked(),
+		}
+	}
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	c.rememberPlaySession(p)
+	req.OnStop("eof")
+	waitForCleanupAttempt(t, fc, 1)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.stopIfRefCalls != 0 {
+		t.Fatalf("cleanup used AdapterRef-only stop and can kill a same-ref controller session")
+	}
+	if fc.stopIfSessionCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", fc.stopIfSessionCalls)
+	}
+	if fc.status.AdapterRef != "/library/metadata/300" {
+		t.Fatalf("same-ref controller session was stopped: AdapterRef=%q", fc.status.AdapterRef)
+	}
+	if fc.status.Generation == 0 || fc.status.Generation == fc.stopIfSessionGen {
+		t.Fatalf("status generation = %d, stopped generation = %d; want controller session to survive with a newer generation", fc.status.Generation, fc.stopIfSessionGen)
+	}
+}
+
+func TestAutoAdvance_VideoEOFResolvesQueueWhileStopTranscodeCleanupIsBlocked(t *testing.T) {
+	fetched := make(chan struct{}, 1)
+	stopStarted := make(chan struct{}, 1)
+	unblockStop := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/playQueues/"):
+			select {
+			case fetched <- struct{}{}:
+			default:
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(threeItemQueue))
+		case strings.HasPrefix(r.URL.Path, "/transcode/session/"):
+			select {
+			case stopStarted <- struct{}{}:
+			default:
+			}
+			select {
+			case <-unblockStop:
+				w.WriteHeader(http.StatusOK)
+			case <-r.Context().Done():
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	defer close(unblockStop)
+	u, _ := url.Parse(srv.URL)
+	p := PlayMediaRequest{
+		PlexServerScheme:   "http",
+		PlexServerAddress:  u.Hostname(),
+		PlexServerPort:     u.Port(),
+		ContainerKey:       "/playQueues/77",
+		MediaKey:           "/library/metadata/200",
+		MediaType:          "episode",
+		PlayQueueItemID:    "1002",
+		PlayQueueID:        "77",
+		TranscodeSessionID: NewTranscodeSessionID(),
+		PlexToken:          "tok",
+	}
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	req := c.sessionRequestForPreset(p, presetForTest(t))
+	c.rememberPlaySession(p)
+	go req.OnStop("eof")
+
+	select {
+	case <-stopStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked StopTranscodeSession request")
+	}
+	select {
+	case <-fetched:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("auto-advance did not resolve queue while StopTranscodeSession was blocked")
 	}
 }
 
@@ -570,19 +675,19 @@ func waitForStartIfIdle(t *testing.T, fc *fakeCore, want int) {
 	t.Fatalf("timed out waiting for %d StartSessionIfIdle call(s)", want)
 }
 
-func waitForStopIfAdapterRef(t *testing.T, fc *fakeCore, want int) {
+func waitForCleanupAttempt(t *testing.T, fc *fakeCore, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		fc.mu.Lock()
-		got := fc.stopIfRefCalls
+		got := fc.stopIfRefCalls + fc.stopIfSessionCalls
 		fc.mu.Unlock()
 		if got >= want {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %d StopIfAdapterRef call(s)", want)
+	t.Fatalf("timed out waiting for %d cleanup attempt(s)", want)
 }
 
 func waitForQueueFetch(t *testing.T, fetched <-chan struct{}) {
