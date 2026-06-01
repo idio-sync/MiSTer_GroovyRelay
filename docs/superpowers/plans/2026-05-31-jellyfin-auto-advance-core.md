@@ -307,6 +307,33 @@ func TestHandlePlay_PlayNowInvalidStartIndexUsesZero(t *testing.T) {
 		t.Fatalf("queue = %+v, want [itm-2]", a.queue)
 	}
 }
+
+func TestHandlePlay_PlayNextMultipleItemsPreservesOrderAheadOfTail(t *testing.T) {
+	a := New(&fakeManager{}, t.TempDir(), "dev-1", "", nil)
+	a.queue = []QueuedItem{{QueueEntryID: 99, ItemID: "tail-itm"}}
+	a.nextQueueEntryID = 99
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":       []string{"head-1", "head-2"},
+		"PlayCommand":   "PlayNext",
+		"MediaSourceId": "src-next",
+	}))
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) != 3 {
+		t.Fatalf("queue len = %d, want 3", len(a.queue))
+	}
+	if a.queue[0].ItemID != "head-1" || a.queue[1].ItemID != "head-2" || a.queue[2].ItemID != "tail-itm" {
+		t.Fatalf("queue order = %+v, want [head-1 head-2 tail-itm]", a.queue)
+	}
+	if a.queue[0].QueueEntryID != 100 || a.queue[1].QueueEntryID != 101 || a.queue[2].QueueEntryID != 99 {
+		t.Fatalf("QueueEntryIDs = %d,%d,%d, want 100,101,99", a.queue[0].QueueEntryID, a.queue[1].QueueEntryID, a.queue[2].QueueEntryID)
+	}
+	if a.queue[0].MediaSourceID != "src-next" || a.queue[1].MediaSourceID != "src-next" {
+		t.Fatalf("MediaSourceID not preserved for inserted items: %+v", a.queue)
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -314,10 +341,10 @@ func TestHandlePlay_PlayNowInvalidStartIndexUsesZero(t *testing.T) {
 Run:
 
 ```sh
-go test ./internal/adapters/jellyfin -run 'TestHandlePlay_PlayNow(CapturesTailQueueFromStartIndex|InvalidStartIndexUsesZero)' -v
+go test ./internal/adapters/jellyfin -run 'TestHandlePlay_Play(NowCapturesTailQueueFromStartIndex|NowInvalidStartIndexUsesZero|NextMultipleItemsPreservesOrderAheadOfTail)' -v
 ```
 
-Expected: tests fail because `startPlayNow` starts `ItemIDs[0]` and does not replace the queue with the tail.
+Expected: tests fail because `QueuedItem` has no `QueueEntryID`, `startPlayNow` starts `ItemIDs[0]`, and `PlayNow` does not replace the queue with the tail.
 
 - [ ] **Step 3: Add stable queue-entry IDs**
 
@@ -434,7 +461,7 @@ Update the `startPlayNow` comment:
 Run:
 
 ```sh
-go test ./internal/adapters/jellyfin -run 'TestHandlePlay_Play(NowCapturesTailQueueFromStartIndex|NowInvalidStartIndexUsesZero|Last_AppendsToQueue|Next_InsertsAtFront)' -v
+go test ./internal/adapters/jellyfin -run 'TestHandlePlay_Play(NowCapturesTailQueueFromStartIndex|NowInvalidStartIndexUsesZero|NextMultipleItemsPreservesOrderAheadOfTail|Last_AppendsToQueue|Next_InsertsAtFront)' -v
 ```
 
 Expected: all selected tests pass.
@@ -563,7 +590,7 @@ git commit -m "test(jellyfin): add guarded session fake"
 
 ---
 
-## Task 4: Shared Queued-Item Start Helper for Manual NextTrack
+## Task 4: Queued-Item Start Helper for Manual NextTrack
 
 **Files:**
 - Modify: `internal/adapters/jellyfin/commands.go`
@@ -706,7 +733,7 @@ func (a *Adapter) startQueuedItemWithOptions(qi QueuedItem, opts queuedStartOpti
 }
 ```
 
-This intentionally matches the current manual `NextTrack` ownership behavior. Auto-advance will add a separate guarded path in Task 6 and will not use the pre-reserving branch; that guarded path repeats the small request-build sequence so it can avoid mutating queue or ownership state before `StartSessionIfIdle`.
+This helper intentionally matches the current manual `NextTrack` ownership behavior, including pre-reserving adapter ownership before `StartSession`. Auto-advance will add a separate guarded path in Task 6 and will not call this helper because EOF auto-advance must not mutate queue or ownership state before `StartSessionIfIdle` succeeds. The duplicated request-build sequence in Task 6 is intentional; only extract a smaller pure request-builder later if it preserves that no-pre-mutation invariant.
 
 - [ ] **Step 5: Run manual queue tests**
 
@@ -902,6 +929,8 @@ package jellyfin
 import (
 	"log/slog"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 const (
@@ -938,7 +967,7 @@ func (a *Adapter) advanceAfterEOF(refKey string) {
 	if a.core == nil {
 		return
 	}
-	if st := a.core.Status(); st.State != "" && st.State != "idle" {
+	if st := a.core.Status(); st.State != core.StateIdle {
 		return
 	}
 	if a.snapshotCurrentRefKey() != refKey {
@@ -958,20 +987,6 @@ func (a *Adapter) peekQueueHead() (QueuedItem, bool) {
 	}
 	return a.queue[0], true
 }
-```
-
-Immediately replace the state check with the typed constant form:
-
-```go
-	if st := a.core.Status(); st.State != core.StateIdle {
-		return
-	}
-```
-
-and add the import:
-
-```go
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 ```
 
 - [ ] **Step 5: Wrap OnStop in `buildSessionRequest`**
@@ -1066,18 +1081,8 @@ func TestAutoAdvanceEOF_StartsNextQueuedItemIfIdle(t *testing.T) {
 	a.currentRefKey = "itm-1:ps-itm-1"
 	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		mgr.mu.Lock()
-		n := len(mgr.idleReqs)
-		mgr.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 	if got := mgr.lastIdleReq().AdapterRef; got != "next-itm:ps-next-itm" {
 		t.Fatalf("idle AdapterRef = %q, want next-itm:ps-next-itm", got)
 	}
@@ -1112,8 +1117,7 @@ func TestAutoAdvanceEOF_GuardMissLeavesQueueAndRefUnchanged(t *testing.T) {
 	a.currentRefKey = "itm-1:ps-itm-1"
 	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	time.Sleep(200 * time.Millisecond)
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
 		t.Fatalf("currentRefKey = %q, want old ref", got)
@@ -1140,8 +1144,7 @@ func TestAutoAdvanceEOF_PlaybackInfoFailureLeavesQueueAndRefUnchanged(t *testing
 	a.currentRefKey = "itm-1:ps-itm-1"
 	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "bad-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	time.Sleep(200 * time.Millisecond)
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	mgr.mu.Lock()
 	idleCalls := len(mgr.idleReqs)
@@ -1178,8 +1181,7 @@ func TestAutoAdvanceEOF_StartSessionIfIdleErrorLeavesQueueAndRefUnchanged(t *tes
 	a.currentRefKey = "itm-1:ps-itm-1"
 	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	time.Sleep(300 * time.Millisecond)
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
 		t.Fatalf("currentRefKey = %q, want old ref", got)
@@ -1211,8 +1213,7 @@ func TestAutoAdvanceEOF_ControllerStartsDuringIdleGuardStandsDown(t *testing.T) 
 	a.currentRefKey = "itm-1:ps-itm-1"
 	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	time.Sleep(300 * time.Millisecond)
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
 		t.Fatalf("currentRefKey = %q, want old ref", got)
@@ -1371,7 +1372,6 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string, qi QueuedItem) {
 		return
 	}
 
-	a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("auto-advance %s", req.AdapterRef))
 	started, err := a.core.StartSessionIfIdle(req)
 	if err != nil {
 		cleanupSessionArtwork(req)
@@ -1389,6 +1389,7 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string, qi QueuedItem) {
 		cleanupSessionArtwork(req)
 		return
 	}
+	a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("auto-advance %s", req.AdapterRef))
 	a.spawnReporter(reporterParams{
 		ItemID:          qi.ItemID,
 		PlaySessionID:   info.PlaySessionID,
@@ -1447,8 +1448,7 @@ func TestAutoAdvanceEOF_StaleCurrentRefDoesNotMutateQueue(t *testing.T) {
 	a.currentRefKey = "new-itm:ps-new"
 	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}}
 
-	a.withAutoAdvance("old-itm:ps-old", nil)("eof")
-	time.Sleep(200 * time.Millisecond)
+	a.advanceAfterEOF("old-itm:ps-old")
 
 	mgr.mu.Lock()
 	idleCalls := len(mgr.idleReqs)
@@ -1485,14 +1485,7 @@ func TestAutoAdvanceEOF_PlayNextAfterGuardPreservesInsertedItem(t *testing.T) {
 		a.queueAt(playMessageData{ItemIDs: []string{"inserted-itm"}, PlayCommand: "PlayNext"}, 0)
 	}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if a.snapshotCurrentRefKey() == "next-itm:ps-next-itm" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1517,14 +1510,7 @@ func TestAutoAdvanceEOF_DuplicateQueuedItemsRemoveStartedEntryID(t *testing.T) {
 		a.queueAt(playMessageData{ItemIDs: []string{"dup-itm"}, PlayCommand: "PlayNext"}, 0)
 	}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if a.snapshotCurrentRefKey() == "dup-itm:ps-dup-itm" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1559,8 +1545,7 @@ func TestAutoAdvanceEOF_PreCommitControllerPreemptDoesNotClobberRef(t *testing.T
 		a.mu.Unlock()
 	}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	time.Sleep(300 * time.Millisecond)
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	if got := a.snapshotCurrentRefKey(); got != "controller-itm:ps-controller" {
 		t.Fatalf("currentRefKey = %q, want controller-itm:ps-controller", got)
@@ -1594,8 +1579,7 @@ func TestAutoAdvanceEOF_PlayNowQueueReplacementBeforeCommitFailsCleanly(t *testi
 		})
 	}
 
-	a.withAutoAdvance("itm-1:ps-itm-1", nil)("eof")
-	time.Sleep(300 * time.Millisecond)
+	a.advanceAfterEOF("itm-1:ps-itm-1")
 
 	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
 		t.Fatalf("currentRefKey = %q, want old ref because commit should fail", got)
@@ -1675,7 +1659,27 @@ go test -race ./internal/adapters/jellyfin/...
 
 Expected: pass.
 
-- [ ] **Step 4: Commit any verification-only fixes**
+- [ ] **Step 4: Run vet**
+
+Run:
+
+```sh
+go vet ./...
+```
+
+Expected: pass.
+
+- [ ] **Step 5: Run full repository tests**
+
+Run:
+
+```sh
+go test ./...
+```
+
+Expected: pass.
+
+- [ ] **Step 6: Commit any verification-only fixes**
 
 If verification exposed small compile/test fixes, commit them:
 
@@ -1692,6 +1696,7 @@ If no fixes were needed, do not create an empty commit.
 
 - `[adapters.jellyfin].auto_advance` exists, defaults off, and is hot-swappable.
 - Multi-item Jellyfin `PlayNow` starts the selected item and stores only following items in `Adapter.queue`.
+- Multi-item `PlayNext` and `PlayLast` preserve controller order while inserting/prepending or appending.
 - Each queued item has a stable non-zero `QueueEntryID`.
 - Manual `NextTrack` still uses `StartSession`, pops immediately, and behaves as before.
 - EOF auto-advance only runs for `OnStop("eof")`.
@@ -1699,4 +1704,4 @@ If no fixes were needed, do not create an empty commit.
 - Guard miss, PlaybackInfo failure, StartSessionIfIdle error, stale EOF, and pre-commit controller races leave queue and ownership state intact.
 - A successful auto-advance removes the started item by `QueueEntryID` from its current queue position.
 - Reporter wakeup and artwork cleanup still run through the wrapped `OnStop`.
-- `go test ./internal/adapters/jellyfin/...` and `go test -race ./internal/adapters/jellyfin/...` pass.
+- `go test ./internal/adapters/jellyfin/...`, `go test -race ./internal/adapters/jellyfin/...`, `go vet ./...`, and `go test ./...` pass.
