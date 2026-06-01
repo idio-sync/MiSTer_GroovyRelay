@@ -87,7 +87,7 @@ builds `core.SessionRequest`. This table is authoritative:
 
 | Source / form | Primary (big) | Secondary | Tertiary (dim) |
 |---|---|---|---|
-| Music (Plex / Jellyfin / AUX) | Track title | Artist | Album |
+| Music (Plex / Jellyfin library items) | Track title | Artist | Album |
 | TV episode (Plex / Jellyfin) | **Show title** | Episode title | `S04E05 · 2008` |
 | Movie (Plex / Jellyfin) | Title | Year | *(empty)* |
 | YouTube (URL / streams via yt-dlp) | Video title | Channel | Upload date `2024-03-15` |
@@ -102,9 +102,11 @@ builds `core.SessionRequest`. This table is authoritative:
 Formatting notes:
 - Season/episode renders zero-padded as `S%02dE%02d`; year appended as
   ` · %d` only when known. If only one of season/episode is known, render
-  what is available; if neither, the tertiary is the year alone (or
-  empty).
-- Upload date converts yt-dlp's `YYYYMMDD` to ISO `YYYY-MM-DD`.
+  `S04` or `E05`; if neither is known, the tertiary is the year alone
+  (`2008`) or empty.
+- Upload date converts yt-dlp's `YYYYMMDD` to ISO `YYYY-MM-DD`; malformed
+  or missing dates leave the tertiary empty. YouTube attribution prefers
+  `channel`, falling back to `uploader`.
 - **Casing boundary:** adapters store **natural-case** strings in
   `DisplayMetadata`; the chassis renders them uppercase via CSS
   (`text-transform: uppercase` on the tier rows). Uppercasing is a
@@ -119,8 +121,8 @@ Formatting notes:
 |---|---|---|
 | **Plex music** | Trivial | `Artist`/`Album` already fetched for the visualizer ([transcode.go](../../../internal/adapters/plex/transcode.go)); set the three tiers from the same values. |
 | **Plex TV/movie** | **Main new work** | Add a bounded PMS metadata fetch reusing the music-metadata path (`MusicMetadataFor`/`pmsMediaContainer` in [transcode.go](../../../internal/adapters/plex/transcode.go)). Extend the XML container to read `type` (movie/episode), `grandparentTitle` (show), `title` (episode), `index`/`parentIndex` (S·E), `year`. **Wrap the call in a 2s `context.WithTimeout`** mirroring the existing music lookup at [companion.go:250](../../../internal/adapters/plex/companion.go#L250) — independent of the shared 10s `plexHTTPClient`. On fetch failure/timeout, fall back to `Primary = controller title` (no regression vs. today). |
-| **Jellyfin** | Low–moderate | The needed fields (`SeriesName`, `IndexNumber`, `ParentIndexNumber`, `ProductionYear`) are **not yet parsed** — neither `playbackInfoResponseDTO.Item` nor `itemMetadataDTO` ([playback.go:73-79, 115-122](../../../internal/adapters/jellyfin/playback.go#L73)) declares them. Work is **struct extension, not a new request**: add the fields to `itemMetadataDTO` (Jellyfin's `/Items/{id}` already returns them), ensure `FetchItemMetadata` runs for the video path (today it's an audio-hint/best-effort call), thread them into `PlaybackInfoResult`/`ItemMetadataResult`, and map by `ItemType` (Audio/Movie/Episode). Artist/Album already extracted. Fall back to `Name` when series/index fields are absent. |
-| **URL / YouTube** | Low | yt-dlp's `--dump-json` output **already contains** `channel`/`uploader` and `upload_date`, but the resolver does not currently unmarshal them. Add the three keys to the **raw JSON struct** AND to the `Resolution` struct ([ytdlp/resolver.go:53-60, 144-154](../../../internal/adapters/url/ytdlp/resolver.go#L53)); format the date `YYYYMMDD → YYYY-MM-DD`. Direct URLs: `Primary = filename`, `Secondary = "URL"`. |
+| **Jellyfin** | Low–moderate | The needed fields (`SeriesName`, `IndexNumber`, `ParentIndexNumber`, `ProductionYear`) are **not yet parsed** — neither `playbackInfoResponseDTO.Item` nor `itemMetadataDTO` ([playback.go:73-79, 115-122](../../../internal/adapters/jellyfin/playback.go#L73)) declares them. Work is **struct extension, not a new request**: add the fields to `itemMetadataDTO` (Jellyfin's `/Items/{id}` already returns them), keep the existing best-effort metadata call, thread the new DTO/result fields into `PlaybackInfoResult`/`ItemMetadataResult`, and map by `ItemType` (Audio/Movie/Episode). Artist/Album already extracted. Fall back to `Name` when series/index fields are absent. |
+| **URL / YouTube** | Low | yt-dlp's `--dump-json` output **already contains** `channel`/`uploader` and `upload_date`, but the resolver does not currently unmarshal them. Add the three keys to the **raw JSON struct** AND to the `Resolution` struct ([ytdlp/resolver.go:53-60, 144-154](../../../internal/adapters/url/ytdlp/resolver.go#L53)); prefer `channel` over `uploader`, and format valid dates `YYYYMMDD → YYYY-MM-DD`. Direct URLs: `Primary = filename`, `Secondary = "URL"`. |
 | **Streams** | Low–moderate | Split today's `"Provider / Channel"` title into tiers; add channel group (fallback description) as tertiary. Covers m3u8 live + saved casts/presets. yt-dlp-resolved stream items reuse the URL adapter's parsed channel where available. |
 | **DLNA** | Low | Wire the already-parsed DIDL title → `Primary`. |
 | **Torrent / AUX** | Trivial | Primary from existing title; AUX `Secondary = "AUX"`. |
@@ -149,7 +151,8 @@ Formatting notes:
 **SSE ([events.go](../../../internal/chassis/events.go)):**
 - `vfdEnvelope` fields become `primary` / `secondary` / `tertiary`
   (+ `queueCurrent/Total`, `uptime`). `vfdChanged` compares the three
-  tiers so the VFD re-emits only when text changes.
+  tiers plus `QueueCurrent`, `QueueTotal`, and `Uptime`; it continues to
+  exclude `SystemTime`/receiver `State`, which are driven elsewhere.
 
 **Template ([vfd.html](../../../internal/chassis/templates/vfd.html)):**
 - Left zone becomes three rows, each a `seg-display` with a ghost span +
@@ -182,8 +185,12 @@ progress clock, and artwork modes are untouched.
 
 ## Testing
 
-Keep all four CI gates green (`go vet`, `go test`, `go test -race`,
-`go test -tags=integration ./...`).
+Keep all four CI gates green:
+
+- `go vet ./...`
+- `go test ./...`
+- `go test -race ./...`
+- `go test -tags=integration -v -timeout=5m ./tests/integration`
 
 - **Adapters** — table tests per adapter asserting the three tiers for
   each form: Plex music + new Plex movie/episode XML parse (incl.
@@ -193,16 +200,23 @@ Keep all four CI gates green (`go vet`, `go test`, `go test -race`,
 - **Core** — `StatusHomeView` carries `Display`; empty-`Display` →
   `Primary` falls back to `Title`.
 - **Chassis** — `snapshotFromStatusView` maps `Display`→`VFDData`;
-  `vfdEnvelope` serialization; `vfdChanged` fires only on tier change;
-  template renders three rows and collapses empties.
-- **Existing chassis tests to migrate** (the rename touches them): in
-  [events_test.go](../../../internal/chassis/events_test.go) the
-  `vfdChanged` field-mutation cases (~lines 147-148), the idle/VFDData
-  fixtures using `Title`/`Marquee` (~45-46, 136-137, 166, 177), and the
-  SSE-body assertion `"title":"Seeded Title"` (~632) plus
-  `TestHandleEvents_EmitsVfdEventOnTitleChange` (~768) must move to the
-  `primary`/`secondary`/`tertiary` field names. This is mechanical but
-  must be enumerated so coverage isn't silently lost.
+  `vfdEnvelope` serialization; `vfdChanged` fires on tier, queue-count,
+  and uptime changes but not `SystemTime`; template renders three rows
+  and collapses empties.
+- **Existing chassis tests to migrate** (the rename touches them): before
+  implementation, run:
+
+  ```bash
+  rg 'VFD\.Title|VFD\.Marquee|data-vfd-title|data-vfd-marquee|"title"|"marquee"' internal/chassis tests/integration
+  ```
+
+  Move the VFD-specific hits to `primary`/`secondary`/`tertiary`.
+  Known coverage includes [events_test.go](../../../internal/chassis/events_test.go)
+  VFD fixtures/SSE assertions, [chassis_test.go](../../../internal/chassis/chassis_test.go)
+  snapshot/template assertions, [vfd-live.behavior.test.js](../../../internal/chassis/testdata/vfd-live.behavior.test.js)
+  DOM selector coverage, and [tests/integration/chassis_test.go](../../../tests/integration/chassis_test.go)
+  SSE body assertions. Preserve explicit tests that queue totals and
+  uptime still trigger `vfdChanged`.
 - **FFmpeg** — `visualizerTextLines` emits title-first; existing pipeline
   tests updated.
 - **Manual** — `fake-mister` smoke for the CRT overlay order.

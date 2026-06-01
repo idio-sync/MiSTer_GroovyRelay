@@ -14,26 +14,37 @@
 
 ## Prerequisites
 
-**Phase 4C must be merged first.** Tasks 17-19, 25, and 32 reference the chassis-side `CatalogSettingsManager` interface, `CatalogProviderState` struct (with field `DisplayName`, not `Name`), `CatalogChannelCount` field on `SettingsData`, and `chassis.Config.CatalogManager` field — all introduced by Phase 4C ([`docs/superpowers/plans/2026-05-28-receiver-chassis-catalog-pane.md`](2026-05-28-receiver-chassis-catalog-pane.md)). If this check fails on the active branch, stop before Task 1 and either merge 4C or explicitly switch this plan to the fallback path below; do not half-implement against a branch missing the 4C contracts.
+**Branch 4D from `phase-4c-catalog-pane`, not from `main`.** Phase 4C is in-progress on that branch; its chassis interfaces, types, `SettingsData` extensions, `chassis.Config` fields, and production wrappers are already committed. Branching 4D from 4C's tip gives 4D the real `CatalogSettingsManager` / `CatalogProviderState` / `chassis.Config.CatalogManager` directly, without needing a fallback shim. When 4C eventually merges to `main`, 4D rebases — most of the chassis-side overlap is already in 4D's base, so the rebase should be near-clean.
 
-Before kicking off any 4D task, run:
+```bash
+git worktree add ../MiSTer_GroovyRelay-4d -b phase-4d-adapters-pane phase-4c-catalog-pane
+cd ../MiSTer_GroovyRelay-4d
+# Run 4D's subagent-driven execution here.
+```
+
+**Verify the 4C contract is in the branch before starting Task 1:**
 ```bash
 grep -n "CatalogSettingsManager\|CatalogProviderState\|CatalogManager" internal/chassis/settings.go internal/chassis/data.go internal/chassis/server.go
 ```
-Expected: at least one hit per identifier in each file. If none, 4C is unmerged — execute 4C first.
-
-If 4C is unmerged and 4D must proceed independently (not recommended), the fallback is to declare a 4D-local interface that wraps the streams adapter directly:
-```go
-type StreamsProviderLister interface {
-    ListProviders() []StreamsProviderInfo
-}
-type StreamsProviderInfo struct {
-    ID, DisplayName string
-    ChannelCount    int
-    CatalogRefreshHours int64
-}
+Expected: matches in each file. The current 4C branch tip (`1e72c87` or later) includes the `CatalogProviderState.CatalogRefreshHours int` field 4D's Streams pane consumes — confirm via:
+```bash
+grep -n "CatalogRefreshHours" internal/chassis/settings.go
 ```
-Production binding lives in `cmd/mister-groovy-relay/streams_provider_lister.go`, wrapping `streams.Adapter.Catalog()`. Tasks 17-19, 25, 32 substitute this interface in place of 4C's `CatalogManager`.
+Expected: one match on `CatalogProviderState`. If missing, the contract patch was rolled back; coordinate with whoever owns the 4C branch before proceeding.
+
+**The 4C contract 4D consumes (verified against the 4C branch as of `1e72c87`):**
+
+| Symbol | Location | Used by 4D for |
+|---|---|---|
+| `chassis.CatalogSettingsManager` interface | `internal/chassis/settings.go` | Source of provider list for the Streams pane per-provider sub-section |
+| `CatalogSettingsManager.Providers() []CatalogProviderState` | same | Read at drawer-paint time |
+| `chassis.CatalogProviderState` with fields `ID`, `DisplayName`, `ChannelCount`, `CatalogRefreshHours` (int) | same | Render-side data for per-provider override rows |
+| `chassis.Config.CatalogManager` field | `internal/chassis/server.go` | Where the production binding plugs in |
+| `chassis.SettingsData.CatalogChannelCount` int | `internal/chassis/data.go` | Streams section header N count |
+| `chassis.SettingsData.CatalogProviders []CatalogProviderState` | same | Already populated by 4C; 4D could read this slice directly instead of calling `CatalogManager.Providers()` a second time |
+| `buildSettingsData(bridge, registry, catalog, catalogManager) SettingsData` | `internal/chassis/data.go` | 4C already extends this signature; 4D's wrapper method calls it with the same args + appends `Adapters` |
+
+**Last-resort fallback (NOT recommended; document only):** If 4C is catastrophically delayed or invalidated, declare a 4D-local interface `StreamsProviderLister` wrapping `streams.Adapter.Catalog()` directly, with a `cmd/mister-groovy-relay/streams_provider_lister.go` production binding. Tasks 17-19 substitute this interface for `CatalogManager`. Reserved for the case where the 4C branch never reaches `main`; do not adopt as a parallel path.
 
 **4A and 4B must remain intact.** This plan is purely additive over 4A's drawer chrome, field renderer, and JSON envelope, plus 4B's Pipeline/Advanced helpers. The bridge save handler at `internal/chassis/settings.go:577` (`handleSettingsBridgePost`) and the JS handlers it consumes are modified only via additive selector narrowing (Task 29) — no behavior change for bridge saves.
 
@@ -45,7 +56,7 @@ Production binding lives in `cmd/mister-groovy-relay/streams_provider_lister.go`
 | `*Server` method `Handler()` | `*Server.Mount(mux *http.ServeMux)` — see `internal/chassis/server.go:241`; tests build a `*http.ServeMux`, call `Mount`, then `mux.ServeHTTP(...)` |
 | `*Server` method `requireSameOrigin` | Package-level function `requireSameOrigin(next http.Handler) http.Handler` — see `internal/chassis/sameorigin.go:12` |
 | `scopeLabel(s) string` | `scopeLabel(s adapters.ApplyScope) (string, bool)` — see `internal/chassis/settings.go:478` |
-| Method `s.buildSettingsData()` | Package function `buildSettingsData(bridge, registry, catalog) SettingsData` — see `internal/chassis/data.go:297` |
+| Method `s.buildSettingsData()` | Package function `buildSettingsData(bridge, registry, catalog, catalogManager) SettingsData` — see `internal/chassis/data.go:297` (4C extended the signature with `catalogManager`) |
 | Template helper `scopeLabel` | `settingsScopeLabel` (uppercases a wire-label string) — see `internal/chassis/templates.go:78,203` |
 | JS helpers `showSettingsChip` / `markFieldRowError` | `showNotice(text, variant)`, `paintFieldError(name, msg)`, `clearFieldError(name)` — see `internal/chassis/static/settings-drawer.js:80,89,114` |
 | Test `TestForbiddenImports` | `TestProductionImports_NoCrossPackageCoupling` — see `internal/chassis/import_check_test.go:87`; an additional fixture test is `TestChassisForbiddenImports_IncludesMisterctl` at line 140 |
@@ -765,10 +776,13 @@ import (
 
 // fakeFullAdapter implements adapters.Adapter plus CurrentValues; it
 // records the ApplyConfig call for assertions and reports a fixed
-// scope from ApplyConfig.
+// scope from ApplyConfig. The `fields` slice is per-test so Task 7's
+// nested-subtable preservation test can inject a wildcard schema
+// (providers.*.catalog_refresh_hours) without retrofitting Tasks 5/6.
 type fakeFullAdapter struct {
 	mu       sync.Mutex
 	values   map[string]any
+	fields   []adapters.FieldDef
 	scope    adapters.ApplyScope
 	validErr error
 	applyErr error
@@ -783,6 +797,10 @@ func (f *fakeFullAdapter) DecodeConfig(toml.Primitive, toml.MetaData) error { re
 func (f *fakeFullAdapter) Start(context.Context) error       { return nil }
 func (f *fakeFullAdapter) Stop() error                       { return nil }
 func (f *fakeFullAdapter) Fields() []adapters.FieldDef {
+	if f.fields != nil {
+		return f.fields
+	}
+	// Default schema covers Tasks 5/6's dlna-shaped tests.
 	return []adapters.FieldDef{
 		{Key: "enabled", Kind: adapters.KindBool},
 		{Key: "device_name", Kind: adapters.KindText},
@@ -1144,7 +1162,7 @@ Adjust `fakeFullAdapter.Fields()` (only for this test — extract it to a `Field
 {Key: "providers.*.catalog_refresh_hours", Kind: adapters.KindInt},
 ```
 
-If `fakeFullAdapter` is reused, make `Fields` a field on the struct (`Fields []adapters.FieldDef` with a `func (f *fakeFullAdapter) Fields() []adapters.FieldDef { return f.fields }` method) and set it per-test.
+Set the fake's `fields` slice on the test fixture (Task 5 already declared `fields []adapters.FieldDef` as a struct field with the default-when-nil fallback). For this test, inject the three-row schema above so `overlayTouched` routes the dotted `providers.foo.catalog_refresh_hours` key through the wildcard path.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1680,8 +1698,8 @@ func TestAdapterSave_UnknownField(t *testing.T) {
 	}
 	s := newTestServerForAdapterSave(saver)
 	rec := postAdapterSave(t, s, "dlna", "bogus_field=true")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
 	var body map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
@@ -1708,8 +1726,8 @@ func TestAdapterSave_MalformedBody(t *testing.T) {
 	req.SetPathValue("name", "dlna")
 	rec := httptest.NewRecorder()
 	s.handleSettingsAdapterPost(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Code = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
 }
 ```
@@ -2498,10 +2516,12 @@ type AdapterPaneData struct {
 }
 
 // AdapterProviderRow is one row in the Streams per-provider sub-section.
+// CatalogRefreshHours type matches CatalogProviderState.CatalogRefreshHours
+// (int) — sourced from the streams.ProviderConfig field of the same name.
 type AdapterProviderRow struct {
 	ID                  string
 	DisplayName         string
-	CatalogRefreshHours int64
+	CatalogRefreshHours int
 }
 
 type SettingsData struct {
@@ -2510,17 +2530,47 @@ type SettingsData struct {
 }
 ```
 
-Extend the existing `buildSettingsData` to populate `Adapters` when `AdapterSettingsSaver` is non-nil. **The existing `buildSettingsData` is a package function** (`data.go:297`), not a method on `*Server` — its signature is `func buildSettingsData(bridge config.BridgeConfig, registry *adapters.Registry, catalog chassis.CatalogManager) SettingsData` or similar. 4D adds the adapter saver as an additional input.
+Extend `SettingsData` (the existing struct) and add a new `*Server` method that composes the package-level `buildSettingsData` with the new adapter-populating step. **The existing `buildSettingsData` is a package function** at `data.go:297` with signature `func buildSettingsData(bridge config.BridgeConfig, registry *adapters.Registry, catalog adapters.StreamsCatalogViewer, catalogManager CatalogSettingsManager) SettingsData` (4C extended the original signature with the `catalogManager` parameter; verify the exact arg list at task start). 4D does **not** edit the existing function's signature again; instead, it adds a thin wrapper method on `*Server` that calls the function and then appends the `Adapters` slice. This keeps existing 4A/4B/4C call sites untouched and gives Tasks 18-25's test code a single entry point (`s.buildSettingsData()`).
 
-Two options for wiring it:
+Add to `internal/chassis/data.go`:
 
-**Option A — extend the package function's signature.** Add `adapterSaver AdapterSettingsSaver` as a new parameter, populate `Adapters` in the function body. Every existing caller (4A/4B/4C call sites) must also pass the new arg (use `s.cfg.AdapterSettingsSaver`). Read the existing function and its callers, then edit. Cleanest if there are 1-2 callers.
+```go
+// buildSettingsData (method) wraps the package-level buildSettingsData
+// and adds the 4D-owned Adapters slice. Used by every chassis handler
+// that renders the settings drawer. Reuses the package function's
+// existing 4-arg signature (4C extended it with catalogManager); 4D
+// adds no parameters to the function itself.
+func (s *Server) buildSettingsData() SettingsData {
+	data := buildSettingsData(
+		s.cfg.BridgeSaver.Current(),  // or s.cfg.Bridge if no saver wired (offline tests)
+		s.cfg.Registry,
+		s.cfg.CatalogViewer,           // adapters.StreamsCatalogViewer
+		s.cfg.CatalogManager,          // 4C-introduced
+	)
+	if saver := s.cfg.AdapterSettingsSaver; saver != nil {
+		for _, name := range []string{"dlna", "torrent", "streams"} {
+			fields, ok := saver.Fields(name)
+			if !ok {
+				continue
+			}
+			values, _ := saver.Current(name)
+			data.Adapters = append(data.Adapters, AdapterPaneData{
+				Name:   name,
+				Hint:   "", // populated by Task 19
+				Fields: fields,
+				Values: values,
+			})
+		}
+	}
+	return data
+}
+```
 
-**Option B — add a thin wrapper method that calls the function.** `func (s *Server) buildSettingsData() SettingsData` calls `buildSettingsData(s.cfg.Bridge.Current(), s.cfg.Registry, s.cfg.CatalogManager)` then appends Adapters. Existing call sites that use the package function continue to work; new code (Tasks 18-25) uses `s.buildSettingsData()`. Choose if there are many existing callers.
+Verify the actual Config-field names at task start — the snippet above uses placeholder names (`s.cfg.BridgeSaver`, `s.cfg.CatalogViewer`) that may differ in the merged 4C branch. Update every existing chassis HTTP handler that currently calls `buildSettingsData(...)` directly to call `s.buildSettingsData()` instead. Behavior is unchanged for 4A/4B/4C panes; only the `Adapters` slice is newly populated.
 
-For the test code in this and subsequent tasks, `s.buildSettingsData()` (the method form) is used as shorthand — substitute whichever entry point the implementer picks in step above.
+Update every chassis HTTP handler that currently calls the package function to use the new method (`s.buildSettingsData()`) — keeping a consistent entry point for 4D and beyond. The behavior is unchanged for 4A/4B/4C panes; only the `Adapters` slice is newly populated.
 
-The body that populates `Adapters` looks the same either way:
+For reference, here's the populate-`Adapters` body in isolation (it's the only new logic in the method):
 
 ```go
 // Inside whichever entry point is chosen — function body or wrapper method.
@@ -2557,6 +2607,10 @@ git commit -m "feat(chassis): extend SettingsData with AdapterPaneData entries"
 
 ## Task 18: Populate streams `Providers` from CatalogManager
 
+**Prerequisite:** This task reads from 4C surfaces that should already be present in the branch (you should have branched 4D from `phase-4c-catalog-pane` per the Prerequisites section). Specifically: `s.cfg.CatalogManager.Providers()` returns `[]chassis.CatalogProviderState` with fields `ID`, `DisplayName`, `ChannelCount`, and `CatalogRefreshHours` (int). All four fields are populated by 4C's `cmd/mister-groovy-relay/catalog_manager.go` wrapper from the streams adapter's per-provider config.
+
+If you branched 4D from `main` instead and the grep check at Prerequisites fails, fall back to the documented `StreamsProviderLister` interface and substitute `s.cfg.StreamsProviderLister` for `s.cfg.CatalogManager` here. The rest of the task structure is identical — both paths fill `AdapterProviderRow` from a sorted provider list.
+
 **Files:**
 - Modify: `internal/chassis/data.go`
 - Modify: `internal/chassis/chassis_test.go`
@@ -2581,15 +2635,15 @@ func (f *fakeCatalogManagerProviders) Providers() []CatalogProviderState {
 
 func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
 	t.Parallel()
+	// The streams adapter's CurrentValues() contents are no longer
+	// read for the per-provider override (4C's CatalogProviderState
+	// carries CatalogRefreshHours directly); the values map is still
+	// passed in for top-level fields the form needs.
 	saver := &fakeAdapterSettingsSaver{
 		current: map[string]map[string]any{
 			"streams": {
 				"enabled":      true,
 				"manifest_url": "https://x/y.json",
-				"providers": map[string]any{
-					"youtube": map[string]any{"catalog_refresh_hours": int64(12)},
-					"radio":   map[string]any{"catalog_refresh_hours": int64(0)},
-				},
 			},
 		},
 		fields: map[string][]adapters.FieldDef{
@@ -2597,8 +2651,8 @@ func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
 		},
 	}
 	cat := &fakeCatalogManagerProviders{providers: []CatalogProviderState{
-		{ID: "youtube", DisplayName: "YouTube"},
-		{ID: "radio", DisplayName: "Radio"},
+		{ID: "youtube", DisplayName: "YouTube", CatalogRefreshHours: 12},
+		{ID: "radio", DisplayName: "Radio"}, // CatalogRefreshHours zero → "inherit global"
 	}}
 	s := &Server{cfg: Config{
 		Version:              "test",
@@ -2633,8 +2687,6 @@ func TestSettingsData_StreamsProvidersFromCatalog(t *testing.T) {
 }
 ```
 
-`CatalogProviderState`, `CatalogManager`, and the `Providers()` method are 4C surface — verify the exact names against the merged 4C code before writing the test. If 4C uses different names, adjust this entire task. If 4C is not yet merged at execution time, defer this task and use the streams adapter's `Catalog()` method directly via a chassis-owned interface; treat that as the lowest-friction substitute.
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/chassis -run TestSettingsData_StreamsProvidersFromCatalog -v`
@@ -2642,57 +2694,48 @@ Expected: FAIL — `buildSettingsData` does not populate `Providers`.
 
 - [ ] **Step 3: Wire in `Providers` population**
 
-In `internal/chassis/data.go`, extend the streams branch of `buildSettingsData`:
+In `internal/chassis/data.go`, extend the `Server.buildSettingsData` wrapper method from Task 17 with a streams-branch that projects `CatalogManager.Providers()` into `AdapterProviderRow` rows. 4C's `CatalogProviderState` already carries `CatalogRefreshHours`, so no values-map dig is needed:
 
 ```go
-func (s *Server) buildSettingsData() SettingsData {
-	data := SettingsData{ /* ... existing ... */ }
-	if saver := s.cfg.AdapterSettingsSaver; saver != nil {
-		for _, name := range []string{"dlna", "torrent", "streams"} {
-			fields, ok := saver.Fields(name)
-			if !ok {
-				continue
-			}
-			values, _ := saver.Current(name)
-			pane := AdapterPaneData{
-				Name:   name,
-				Fields: fields,
-				Values: values,
-			}
-			if name == "streams" {
-				pane.Providers = s.buildStreamsProviderRows(values)
-			}
-			data.Adapters = append(data.Adapters, pane)
-		}
-	}
-	return data
+// In the per-adapter loop inside Server.buildSettingsData (Task 17):
+pane := AdapterPaneData{
+	Name:   name,
+	Fields: fields,
+	Values: values,
 }
+if name == "streams" {
+	pane.Providers = s.buildStreamsProviderRows()
+}
+data.Adapters = append(data.Adapters, pane)
+```
 
-func (s *Server) buildStreamsProviderRows(values map[string]any) []AdapterProviderRow {
+Add the helper:
+
+```go
+// buildStreamsProviderRows projects 4C's CatalogManager.Providers()
+// output into the Streams-pane per-provider override row shape.
+// CatalogRefreshHours comes directly from CatalogProviderState — the
+// 4C production wrapper (cmd/mister-groovy-relay/catalog_manager.go)
+// threads streams.ProviderConfig.CatalogRefreshHours through. Returns
+// nil when CatalogManager is unwired (offline tests).
+func (s *Server) buildStreamsProviderRows() []AdapterProviderRow {
 	if s.cfg.CatalogManager == nil {
 		return nil
 	}
-	providersMap := map[string]int64{}
-	if raw, ok := values["providers"].(map[string]any); ok {
-		for id, sub := range raw {
-			if submap, ok := sub.(map[string]any); ok {
-				if v, ok := submap["catalog_refresh_hours"].(int64); ok {
-					providersMap[id] = v
-				}
-			}
-		}
-	}
-	var rows []AdapterProviderRow
-	for _, p := range s.cfg.CatalogManager.Providers() {
+	providers := s.cfg.CatalogManager.Providers()
+	rows := make([]AdapterProviderRow, 0, len(providers))
+	for _, p := range providers {
 		rows = append(rows, AdapterProviderRow{
 			ID:                  p.ID,
 			DisplayName:         p.DisplayName,
-			CatalogRefreshHours: providersMap[p.ID],
+			CatalogRefreshHours: p.CatalogRefreshHours,
 		})
 	}
 	return rows
 }
 ```
+
+Provider ordering matches whatever order 4C's `CatalogSettingsManager.Providers()` returns (which is registration order from `streams.Adapter.BundledCatalog()`); no re-sort needed.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -2709,6 +2752,8 @@ git commit -m "feat(chassis): populate streams Providers rows from CatalogManage
 ---
 
 ## Task 19: Compute per-adapter section header hints
+
+**Prerequisite:** Same as Task 18 — the Streams hint reads channel count from 4C surfaces. Prefer the existing `s.cfg.CatalogManager.Providers()` returning `CatalogProviderState.ChannelCount`. If you branched from `main` and 4C is unmerged, substitute the `StreamsProviderLister` fallback's `ChannelCount` field.
 
 **Files:**
 - Modify: `internal/chassis/data.go`
@@ -4464,7 +4509,16 @@ func emitSaveError(w http.ResponseWriter, err error) {
 }
 ```
 
-For Task 14's test code: replace the `chassisChipError` and `chassisAdapterFieldErrors` test types with `cmdChipError` / `cmdAdapterFieldErrors` — the test fakes for `AdapterSettingsSaver.SaveTouched` now return these cmd-side concrete types and the chassis handler unwraps them via `errors.As` against the named interfaces.
+**Task 14's test shims stay in `internal/chassis/settings_test.go`** (they can't import the `cmd` package — that's both forbidden by Go's package rules for test files and would create a cycle). Both layers have their own typed errors satisfying the chassis-side structural interfaces:
+
+| Layer | Type | Lives in | Purpose |
+|---|---|---|---|
+| Production | `*cmdChipError` | `cmd/mister-groovy-relay/adapter_settings_saver.go` | Real save failures from the wrapper |
+| Production | `*cmdAdapterFieldErrors` | `cmd/mister-groovy-relay/adapter_settings_saver.go` | Real per-field errors from the wrapper |
+| Test (chassis) | `*chassisChipError` (or rename to `*testChipError`) | `internal/chassis/settings_test.go` | Inject chip errors into the chassis handler test |
+| Test (chassis) | `*chassisAdapterFieldErrors` (or rename to `*testAdapterFieldErrors`) | `internal/chassis/settings_test.go` | Inject field errors into the chassis handler test |
+
+All four implement the same two structural interfaces (`settingsChipError`, `fieldErrorBearerForChassis`). The chassis handler's `emitSaveError` (Task 13) unwraps via `errors.As` against the named interfaces — which side the concrete type comes from is invisible to the handler. Optional polish: rename Task 14's `chassisChipError`/`chassisAdapterFieldErrors` to `testChipError`/`testAdapterFieldErrors` to make the test-only intent obvious.
 
 - [ ] **Step 4: Run test to verify it passes**
 

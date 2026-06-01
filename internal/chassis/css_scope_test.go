@@ -931,6 +931,23 @@ func TestChassisCSS_MasterVolumeUsesLargeSonyStyleIndicatorKnob(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_LevelSectionCentersMasterVolumeKnob(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+
+	rule := cssRuleBlock(t, text, "body.receiver .audio-deck .deck-level")
+	if !strings.Contains(rule, "align-items: center;") {
+		t.Fatalf("level section should center the master volume knob horizontally: %s", rule)
+	}
+	if !strings.Contains(rule, "min-width: 132px;") {
+		t.Fatalf("level section should reserve enough width to visibly center the knob: %s", rule)
+	}
+}
+
 func TestChassisCSS_BrowseButtonHasBaseButtonChrome(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")

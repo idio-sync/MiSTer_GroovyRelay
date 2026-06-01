@@ -5386,6 +5386,10 @@ body.receiver .audio-deck .knob-row { display: flex; gap: 14px; }
    volume gets its own larger hardware treatment. */
 body.receiver .audio-deck .dsp-knob { width: 66px; height: 72px; }
 body.receiver .audio-deck .deck-eq { padding: 0 4px; }
+body.receiver .audio-deck .deck-level {
+  align-items: center;
+  min-width: 132px;
+}
 
 /* EQ graphic faders — recessed machined channel, VFD-cyan fill, metal cap. */
 body.receiver .eq-bank { display: flex; gap: 16px; align-items: flex-end; }
