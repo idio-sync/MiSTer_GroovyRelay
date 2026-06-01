@@ -48,6 +48,62 @@ func TestCastStartsVideoSession(t *testing.T) {
 	}
 }
 
+func TestCastRecordsReplayableCompanionHistory(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "Movie.Name.mp4"))
+	fc := &recordingCore{}
+	a := newCastAdapter(t, fc, Config{Enabled: true, Libraries: []Library{{Name: "Movies", Root: root}}})
+	a.probe = func(context.Context, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1920, AudioRate: 48000}, nil
+	}
+
+	if err := a.Cast(context.Background(), "Movies", "Movie.Name.mp4"); err != nil {
+		t.Fatalf("Cast: %v", err)
+	}
+
+	history := a.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("CompanionHistory len = %d, want 1", len(history))
+	}
+	entry := history[0]
+	if entry.ID == "" {
+		t.Fatalf("history ID is empty")
+	}
+	if entry.Title != "Movie.Name" {
+		t.Fatalf("history Title = %q, want Movie.Name", entry.Title)
+	}
+	if entry.URLDisplay != "Movies/Movie.Name.mp4" {
+		t.Fatalf("history URLDisplay = %q, want Movies/Movie.Name.mp4", entry.URLDisplay)
+	}
+	if entry.LastPlayed.IsZero() {
+		t.Fatalf("history LastPlayed is zero")
+	}
+
+	if _, err := a.CompanionHistoryPlay(context.Background(), entry.ID); err != nil {
+		t.Fatalf("CompanionHistoryPlay: %v", err)
+	}
+	if len(fc.reqs) != 2 {
+		t.Fatalf("StartSession calls = %d, want 2 after replay", len(fc.reqs))
+	}
+	if got := filepath.Base(fc.reqs[1].StreamURL); got != "Movie.Name.mp4" {
+		t.Fatalf("replay StreamURL base = %q, want Movie.Name.mp4", got)
+	}
+}
+
+func TestCastDoesNotRecordHistoryWhenStartSessionFails(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.mp4"))
+	fc := &recordingCore{err: errors.New("start failed")}
+	a := newCastAdapter(t, fc, Config{Enabled: true, Libraries: []Library{{Name: "Movies", Root: root}}})
+
+	if err := a.Cast(context.Background(), "Movies", "movie.mp4"); err == nil {
+		t.Fatalf("Cast with StartSession failure = nil error")
+	}
+	if history := a.CompanionHistory(); len(history) != 0 {
+		t.Fatalf("CompanionHistory len = %d, want 0 after failed StartSession", len(history))
+	}
+}
+
 func TestCastStartsAudioVisualizerSession(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "Song.flac"))

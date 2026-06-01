@@ -345,6 +345,58 @@ func TestPlayMedia_ParsesFields(t *testing.T) {
 	}
 }
 
+func TestPlayMediaRecordsCompanionHistory(t *testing.T) {
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{
+		DeviceName:  "MiSTer",
+		DeviceUUID:  "our-uuid",
+		ProfileName: "Custom Profile",
+	}, fc)
+	ts := newLoopbackServer(t, c.Handler())
+	defer ts.Close()
+
+	serverURL, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, port, err := net.SplitHostPort(serverURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := url.Values{}
+	q.Set("address", host)
+	q.Set("port", port)
+	q.Set("protocol", serverURL.Scheme)
+	q.Set("key", "/library/metadata/42")
+	q.Set("token", "tok")
+	q.Set("type", "video")
+	q.Set("title", "Big Buck Bunny")
+
+	resp, err := http.Get(ts.URL + "/player/playback/playMedia?" + q.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	history := c.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("CompanionHistory len = %d, want 1", len(history))
+	}
+	entry := history[0]
+	if entry.Title != "Big Buck Bunny" {
+		t.Fatalf("history Title = %q, want Big Buck Bunny", entry.Title)
+	}
+	if entry.URLDisplay != "/library/metadata/42" {
+		t.Fatalf("history URLDisplay = %q, want /library/metadata/42", entry.URLDisplay)
+	}
+	if entry.LastPlayed.IsZero() {
+		t.Fatalf("history LastPlayed is zero")
+	}
+}
+
 // TestPlayMedia_VideoPopulatesDisplayMetadata proves the PRIMARY initial
 // video-cast path (handlePlayMedia) fetches PMS metadata and composes the
 // three VFD tiers show-first, not just seek/skip restarts. The mock PMS

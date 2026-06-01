@@ -161,6 +161,39 @@ func TestHandlePlay_PlayNow_CallsStartSession(t *testing.T) {
 	}
 }
 
+func TestHandlePlayRecordsCompanionHistory(t *testing.T) {
+	jfSrv := startTestPlaybackInfoServer(t)
+
+	mgr := &fakeManager{}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.link.SetLinked("alice", "sid")
+
+	a.HandlePlay(mustMarshal(t, map[string]any{
+		"ItemIds":     []string{"itm-1"},
+		"PlayCommand": "PlayNow",
+	}))
+	waitForFakeManagerReq(t, mgr)
+
+	history := a.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("CompanionHistory len = %d, want 1", len(history))
+	}
+	entry := history[0]
+	if entry.Title != "Some Movie" {
+		t.Fatalf("history Title = %q, want Some Movie", entry.Title)
+	}
+	if entry.URLDisplay != "itm-1" {
+		t.Fatalf("history URLDisplay = %q, want itm-1", entry.URLDisplay)
+	}
+	if entry.LastPlayed.IsZero() {
+		t.Fatalf("history LastPlayed is zero")
+	}
+}
+
 func startTestAudioPlaybackInfoServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()

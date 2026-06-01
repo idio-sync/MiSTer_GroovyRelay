@@ -45,6 +45,7 @@ type Adapter struct {
 	lastErr    string
 	stateSince time.Time
 	probe      probeFunc
+	history    []companionHistoryEntry
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {

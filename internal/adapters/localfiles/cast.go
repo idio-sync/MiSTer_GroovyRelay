@@ -68,7 +68,11 @@ func (a *Adapter) Cast(ctx context.Context, libName, rel string) error {
 			},
 		}
 	}
-	return a.core.StartSession(req)
+	if err := a.core.StartSession(req); err != nil {
+		return err
+	}
+	a.recordCompanionHistory(lib.Name, rel, title, time.Now())
+	return nil
 }
 
 func (a *Adapter) probeBestEffort(ctx context.Context, url string, policy ffmpeg.MediaInputPolicy) *ffmpeg.ProbeResult {

@@ -55,6 +55,7 @@ type Adapter struct {
 	pendingRollback    string               // saved currentRefKey for StartSession-failure rollback
 	queue              []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
 	reporters          map[string]*reporter // refKey → reporter
+	history            []companionHistoryEntry
 	ws                 wsConn
 	keepaliveSet       chan time.Duration
 	// handleInbound routes inbound JF WS messages by MessageType.

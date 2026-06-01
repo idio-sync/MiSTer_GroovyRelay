@@ -119,6 +119,7 @@ func (a *Adapter) startPlayNow(p playMessageData) {
 			return
 		}
 		a.commitSelfPreempt()
+		a.recordCompanionHistory(p.ItemIDs[0], info, time.Now())
 
 		a.spawnReporter(reporterParams{
 			ItemID:          p.ItemIDs[0],
@@ -562,6 +563,7 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 			return
 		}
 		a.commitSelfPreempt()
+		a.recordCompanionHistory(itemID, info, time.Now())
 
 		// 5) Restore Pause if the prior session was paused.
 		if wasPaused {

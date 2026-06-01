@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
+	companionapi "github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
@@ -37,6 +38,7 @@ const (
 	companionProtocol             = "1.0"
 	companionProtocolVersion      = "2"
 	companionProtocolCapabilities = "timeline,playback,navigation,playqueues,provider-playback"
+	companionHistoryMaxEntries    = 10
 )
 
 // CompanionConfig carries the identity of this device as advertised to Plex
@@ -90,6 +92,7 @@ type Companion struct {
 
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
+	history  []companionapi.CompanionHistoryEntry
 }
 
 // SessionManager is the adapter's narrow view of core.Manager. Declared as
@@ -965,6 +968,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.rememberPlaySession(p)
+		c.rememberCompanionHistory(p, req)
 		c.notifyTimeline()
 		writeOKResponse(w)
 		return
@@ -1009,6 +1013,7 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.rememberPlaySession(p)
+	c.rememberCompanionHistory(p, req)
 	c.notifyTimeline()
 	writeOKResponse(w)
 }
@@ -1663,6 +1668,50 @@ func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = p
+}
+
+func (c *Companion) rememberCompanionHistory(p PlayMediaRequest, req core.SessionRequest) {
+	title := firstNonEmpty(req.DisplayMetadata.Primary, req.Title, p.Title, p.MediaKey)
+	urlDisplay := strings.TrimSpace(p.MediaKey)
+	if urlDisplay == "" {
+		urlDisplay = strings.TrimSpace(req.AdapterRef)
+	}
+	if strings.TrimSpace(title) == "" || urlDisplay == "" {
+		return
+	}
+	entry := companionapi.CompanionHistoryEntry{
+		Title:      strings.TrimSpace(title),
+		URLDisplay: urlDisplay,
+		LastPlayed: time.Now(),
+	}
+
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	for i, existing := range c.history {
+		if existing.URLDisplay == urlDisplay {
+			c.history = append([]companionapi.CompanionHistoryEntry{entry}, append(c.history[:i], c.history[i+1:]...)...)
+			return
+		}
+	}
+	c.history = append([]companionapi.CompanionHistoryEntry{entry}, c.history...)
+	if len(c.history) > companionHistoryMaxEntries {
+		c.history = c.history[:companionHistoryMaxEntries]
+	}
+}
+
+func (c *Companion) CompanionHistory() []companionapi.CompanionHistoryEntry {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	out := make([]companionapi.CompanionHistoryEntry, len(c.history))
+	copy(out, c.history)
+	return out
+}
+
+func (a *Adapter) CompanionHistory() []companionapi.CompanionHistoryEntry {
+	if a == nil || a.companion == nil {
+		return nil
+	}
+	return a.companion.CompanionHistory()
 }
 
 func (c *Companion) clearPlaySession() {
