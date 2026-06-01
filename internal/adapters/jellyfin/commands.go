@@ -706,13 +706,107 @@ func (a *Adapter) popQueueHead() (QueuedItem, bool) {
 }
 
 // startQueuedItem turns a QueuedItem into a Play and runs the PlayNow flow.
+type queuedStartStrategy func(core.SessionRequest) (bool, error)
+
+func startCoreSession(coreManager SessionManager) queuedStartStrategy {
+	return func(req core.SessionRequest) (bool, error) {
+		if coreManager == nil {
+			return false, fmt.Errorf("core playback manager is not configured")
+		}
+		return true, coreManager.StartSession(req)
+	}
+}
+
+type queuedStartOptions struct {
+	Starter queuedStartStrategy
+}
+
 func (a *Adapter) startQueuedItem(qi QueuedItem) {
-	a.startPlayNow(playMessageData{
-		ItemIDs:             []string{qi.ItemID},
-		StartPositionTicks:  qi.StartPositionTicks,
-		MediaSourceID:       qi.MediaSourceID,
-		AudioStreamIndex:    qi.AudioStreamIndex,
-		SubtitleStreamIndex: qi.SubtitleStreamIndex,
-		PlayCommand:         "PlayNow",
+	a.startQueuedItemWithOptions(qi, queuedStartOptions{
+		Starter: startCoreSession(a.core),
 	})
+}
+
+func (a *Adapter) startQueuedItemWithOptions(qi QueuedItem, opts queuedStartOptions) {
+	a.mu.Lock()
+	cfg := a.cfg
+	a.mu.Unlock()
+	tok, err := LoadToken(a.tokenPath())
+	if err != nil || tok.AccessToken == "" {
+		slog.Error("jellyfin: start queued item: no token", "err", err)
+		return
+	}
+	preset, err := a.currentPreset()
+	if err != nil {
+		slog.Error("jellyfin: start queued item: modeline", "err", err)
+		return
+	}
+	if opts.Starter == nil {
+		slog.Error("jellyfin: start queued item: no core starter")
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		meta := a.fetchItemMetadataBestEffort(ctx, cfg, tok, qi.ItemID)
+		info, err := FetchPlaybackInfo(ctx, PlaybackInfoInput{
+			ServerURL:           cfg.ServerURL,
+			Token:               tok.AccessToken,
+			DeviceID:            a.deviceID,
+			DeviceName:          cfg.DeviceName,
+			Version:             linkVersion,
+			ItemID:              qi.ItemID,
+			UserID:              tok.UserID,
+			MaxVideoBitrateKbps: cfg.MaxVideoBitrateKbps,
+			Preset:              preset,
+			StartPositionTicks:  qi.StartPositionTicks,
+			MediaSourceID:       qi.MediaSourceID,
+			AudioStreamIndex:    qi.AudioStreamIndex,
+			SubtitleStreamIndex: qi.SubtitleStreamIndex,
+			MediaKind:           meta.MediaKind,
+		})
+		if err != nil {
+			artworkcache.Remove(meta.ArtworkPath)
+			slog.Error("jellyfin: queued PlaybackInfo failed", "err", err)
+			return
+		}
+		info = mergePlaybackMetadata(info, meta)
+		req := a.buildSessionRequest(playRequestInput{
+			ItemID:             qi.ItemID,
+			StartPositionTicks: qi.StartPositionTicks,
+			PlayInfo:           info,
+			ServerURL:          cfg.ServerURL,
+			Token:              tok.AccessToken,
+		})
+
+		prev := a.beginSelfPreempt(req.AdapterRef)
+		a.emitEvent(eventlog.SeverityInfo, fmt.Sprintf("cast-requested %s", req.AdapterRef))
+		started, err := opts.Starter(req)
+		if err != nil {
+			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
+			slog.Error("jellyfin: queued StartSession failed", "err", err)
+			return
+		}
+		if !started {
+			a.rollbackSelfPreempt(prev)
+			cleanupSessionArtwork(req)
+			return
+		}
+		a.commitSelfPreempt()
+		a.spawnReporter(reporterParams{
+			ItemID:          qi.ItemID,
+			PlaySessionID:   info.PlaySessionID,
+			MediaSourceID:   info.MediaSourceID,
+			AudioIdx:        qi.AudioStreamIndex,
+			SubtitleIdx:     qi.SubtitleStreamIndex,
+			NowPlayingQueue: a.snapshotNowPlayingQueue(qi.ItemID),
+			Auth: RESTAuth{
+				ServerURL: cfg.ServerURL, Token: tok.AccessToken,
+				DeviceID: a.deviceID, DeviceName: cfg.DeviceName,
+				Version: linkVersion,
+			},
+		})
+	}()
 }

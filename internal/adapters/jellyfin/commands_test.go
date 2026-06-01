@@ -1063,6 +1063,9 @@ func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
 	if len(mgr.reqs) == 0 {
 		t.Fatal("NextTrack didn't trigger StartSession")
 	}
+	if len(mgr.idleReqs) != 0 {
+		t.Fatalf("manual NextTrack used StartSessionIfIdle: %d calls", len(mgr.idleReqs))
+	}
 	mgr.mu.Unlock()
 	a.mu.Lock()
 	if len(a.queue) != 0 {
