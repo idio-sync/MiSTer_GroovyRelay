@@ -28,6 +28,10 @@ class FakeLamp {
     this.classes = new Set(['lamp']);
     this.classList = new FakeClassList(this);
     this.attrs = new Map([['data-source-id', sourceId]]);
+    this.children = new Map([
+      ['.state', { textContent: '' }],
+      ['.led-well', { dataset: {} }],
+    ]);
   }
 
   getAttribute(name) {
@@ -36,6 +40,10 @@ class FakeLamp {
 
   setAttribute(name, value) {
     this.attrs.set(name, value);
+  }
+
+  querySelector(selector) {
+    return this.children.get(selector) || null;
   }
 }
 
@@ -100,4 +108,20 @@ test('transport event still migrates casting state', () => {
 
   assert.equal(h.lamps[0].classes.has('casting'), true);
   assert.equal(h.lamps[1].classes.has('casting'), false);
+});
+
+test('transport event uses canonical source for opaque adapter refs', () => {
+  const h = createHarness();
+  h.emit('source', {
+    buttons: [
+      { label: 'STREAMS', configured: true, casting: false },
+      { label: 'PLEX', configured: true, casting: false },
+      { label: 'JELLYFIN', configured: true, casting: false },
+    ],
+  });
+  h.emit('transport', { source: 'plex', adapterRef: '/library/metadata/42' });
+
+  assert.equal(h.lamps[0].classes.has('casting'), false);
+  assert.equal(h.lamps[1].classes.has('casting'), true);
+  assert.equal(h.lamps[2].classes.has('casting'), false);
 });

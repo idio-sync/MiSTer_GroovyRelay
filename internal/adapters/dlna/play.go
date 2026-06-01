@@ -421,6 +421,7 @@ func (a *Adapter) buildAndStartSession(seekOffsetMs int, expectedCoreRef string)
 		StreamURL:        playbackURI,
 		Capabilities:     core.Capabilities{CanSeek: canSeek, CanPause: true},
 		AdapterRef:       ref,
+		Source:           "dlna",
 		DirectPlay:       canSeek,
 		SeekOffsetMs:     seekOffsetMs,
 		OnStop:           onStop,

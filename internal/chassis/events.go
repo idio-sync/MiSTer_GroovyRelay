@@ -77,6 +77,7 @@ type transportEnvelope struct {
 	DurationMS      int             `json:"durationMs"`
 	ActionsEnabled  actionsEnabledE `json:"actionsEnabled"`
 	AdapterRef      string          `json:"adapterRef"`
+	Source          string          `json:"source,omitempty"`
 	Generation      uint64          `json:"generation"`
 }
 
@@ -119,6 +120,7 @@ func transportEnvelopeFrom(t TransportData) transportEnvelope {
 			Seek:        t.ActionsEnabled.Seek,
 		},
 		AdapterRef: t.AdapterRef,
+		Source:     t.Source,
 		Generation: t.Generation,
 	}
 }
@@ -184,6 +186,7 @@ func transportChanged(a, b TransportData) bool {
 		a.DurationMS != b.DurationMS ||
 		a.ActionsEnabled != b.ActionsEnabled ||
 		a.AdapterRef != b.AdapterRef ||
+		a.Source != b.Source ||
 		a.Generation != b.Generation
 }
 

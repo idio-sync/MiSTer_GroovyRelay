@@ -1797,6 +1797,7 @@ func TestSnapshotFromSession_PopulatesTransportFromAdapterView(t *testing.T) {
 			Seek:        true,
 		},
 		AdapterRef:   "jellyfin:item:123",
+		Source:       "jellyfin",
 		Generation:   12,
 		OutputVolume: 0,
 	}
@@ -1902,6 +1903,7 @@ func TestSnapshotFromSession_NilTransportViewerKeepsActiveReadOnlyStateAndTime(t
 		DurationMS:      0,
 		ActionsEnabled:  ActionsEnabled{},
 		AdapterRef:      "plex:track:def",
+		Source:          "plex",
 		Generation:      8,
 		OutputVolume:    0,
 	}

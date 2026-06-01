@@ -55,7 +55,7 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, volv
 	if sv == nil {
 		base := idleSnapshot(cfg, now)
 		applyAUXSourceState(&base, aux)
-		applySourceLampState(&base, cfg.SourceAvailabilityViewers, "")
+		applySourceLampState(&base, cfg.SourceAvailabilityViewers, "", "")
 		base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)
 		// Idle path: idleSnapshot seeded base.Transport.OutputVolume from
 		// cfg already. A non-nil volv overrides with the live value so the
@@ -114,7 +114,12 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 	// applySourceLampState runs AFTER applyAUXSourceState so the AUX
 	// slot's Active/Lit handling is not clobbered. The helper guards
 	// AUX (Action != "") internally.
-	applySourceLampState(&base, cfg.SourceAvailabilityViewers, view.AdapterRef)
+	activeSource, activeRef := "", ""
+	switch view.State {
+	case core.StatePlaying, core.StatePaused:
+		activeSource, activeRef = view.Source, view.AdapterRef
+	}
+	applySourceLampState(&base, cfg.SourceAvailabilityViewers, activeSource, activeRef)
 	if cfg.StreamsCatalogViewer != nil && cfg.PresetViewer != nil {
 		base.Catalog = buildCatalogData(
 			cfg.StreamsCatalogViewer.Catalog(),
@@ -145,6 +150,7 @@ func buildTransportData(view core.StatusHomeView, tv TransportViewer, ctx contex
 		OffsetMS:        clampMSNonNegative(int(view.Position / time.Millisecond)),
 		DurationMS:      clampMSNonNegative(int(view.Duration / time.Millisecond)),
 		AdapterRef:      view.AdapterRef,
+		Source:          normalizeSourceID(view.Source),
 		Generation:      view.Generation,
 	}
 	if percent > 0 || view.Duration > 0 {

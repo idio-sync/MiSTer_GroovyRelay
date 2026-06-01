@@ -63,7 +63,7 @@ func TestApplySourceLampState_LampSlotsDerivedFromViewersAndRef(t *testing.T) {
 		fakeSourceViewer{id: "jellyfin", configured: "yes"},
 		fakeSourceViewer{id: "dlna", configured: "no"},
 	}
-	applySourceLampState(base, viewers, "streams:mtv-rewind:80s:abc:def")
+	applySourceLampState(base, viewers, "", "streams:mtv-rewind:80s:abc:def")
 	want := []struct {
 		label               string
 		configured, casting bool
@@ -88,6 +88,58 @@ func TestApplySourceLampState_LampSlotsDerivedFromViewersAndRef(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromStatusView_SourceMarksOpaqueAdapterRefsCasting(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		source     string
+		adapterRef string
+		wantLabel  string
+	}{
+		{
+			name:       "plex video media key",
+			source:     "plex",
+			adapterRef: "/library/metadata/42",
+			wantLabel:  "PLEX",
+		},
+		{
+			name:       "jellyfin item play session key",
+			source:     "jellyfin",
+			adapterRef: "item-1:play-session-1",
+			wantLabel:  "JELLYFIN",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := nonZeroConfig()
+			cfg.SourceAvailabilityViewers = []adapters.SourceAvailabilityViewer{
+				fakeSourceViewer{id: "streams", configured: "yes"},
+				fakeSourceViewer{id: "plex", configured: "yes"},
+				fakeSourceViewer{id: "jellyfin", configured: "yes"},
+				fakeSourceViewer{id: "dlna", configured: "yes"},
+			}
+			snap := snapshotFromStatusView(cfg, core.StatusHomeView{
+				State:      core.StatePlaying,
+				Source:     tc.source,
+				AdapterRef: tc.adapterRef,
+			}, nil, nil, nil, nil, time.Now())
+
+			for _, button := range snap.Source.Buttons {
+				if button.Label != tc.wantLabel {
+					continue
+				}
+				if !button.Configured || !button.Casting {
+					t.Fatalf("%s button = %+v, want configured and casting", tc.wantLabel, button)
+				}
+				return
+			}
+			t.Fatalf("%s button missing", tc.wantLabel)
+		})
+	}
+}
+
 func TestApplySourceLampState_DerivesIssueFromAdapterStatus(t *testing.T) {
 	t.Parallel()
 	base := &ReceiverPageData{Source: SourceData{Buttons: []SourceButton{
@@ -102,7 +154,7 @@ func TestApplySourceLampState_DerivesIssueFromAdapterStatus(t *testing.T) {
 				LastError: "DLNA requires a reachable bridge.host_ip",
 			},
 		},
-	}, "")
+	}, "", "")
 	got := base.Source.Buttons[0]
 	if !got.Configured {
 		t.Fatalf("Configured = false, want true so issue is distinguishable from disabled")
@@ -119,7 +171,7 @@ func TestApplySourceLampState_EmptyRefClearsCasting(t *testing.T) {
 	}}}
 	applySourceLampState(base, []adapters.SourceAvailabilityViewer{
 		fakeSourceViewer{id: "streams", configured: "yes"},
-	}, "")
+	}, "", "")
 	if base.Source.Buttons[0].Casting {
 		t.Errorf("Casting = true, want false (empty ref must clear)")
 	}

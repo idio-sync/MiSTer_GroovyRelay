@@ -323,6 +323,9 @@ func TestPlay_FreshStart_StoresRefAndPlays(t *testing.T) {
 	if !strings.HasPrefix(req.AdapterRef, "dlna:") {
 		t.Errorf("AdapterRef = %q, want dlna: prefix", req.AdapterRef)
 	}
+	if req.Source != "dlna" {
+		t.Errorf("Source = %q, want dlna", req.Source)
+	}
 	if !req.Capabilities.CanSeek {
 		t.Error("Capabilities.CanSeek = false, want true (spec line 361 keeps manager gate permissive)")
 	}

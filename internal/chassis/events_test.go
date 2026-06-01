@@ -38,6 +38,25 @@ func TestEmit_FormatsValidSSERecord(t *testing.T) {
 	}
 }
 
+func TestTransportEnvelopeIncludesCanonicalSource(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	snap := snapshotFromStatusView(cfg, core.StatusHomeView{
+		State:      core.StatePlaying,
+		Source:     "plex",
+		AdapterRef: "/library/metadata/42",
+		Generation: 7,
+	}, nil, nil, nil, nil, time.Now())
+
+	body, err := json.Marshal(transportEnvelopeFrom(snap.Transport))
+	if err != nil {
+		t.Fatalf("Marshal transport envelope: %v", err)
+	}
+	if !strings.Contains(string(body), `"source":"plex"`) {
+		t.Fatalf("transport envelope missing canonical source: %s", body)
+	}
+}
+
 func TestEmit_VfdEnvelopeUsesCamelCaseFieldNames(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -207,6 +226,7 @@ func sampleTransportData() TransportData {
 			Seek:        true,
 		},
 		AdapterRef: "plex:track:abc",
+		Source:     "plex",
 		Generation: 7,
 	}
 }
@@ -239,6 +259,9 @@ func TestTransportEnvelopeFrom_FlattensTransportData(t *testing.T) {
 	}
 	if got.AdapterRef != src.AdapterRef {
 		t.Errorf("AdapterRef = %q, want %q", got.AdapterRef, src.AdapterRef)
+	}
+	if got.Source != src.Source {
+		t.Errorf("Source = %q, want %q", got.Source, src.Source)
 	}
 	if got.Generation != src.Generation {
 		t.Errorf("Generation = %d, want %d", got.Generation, src.Generation)
@@ -336,6 +359,7 @@ func TestTransportChanged_DetectsEveryFieldDelta(t *testing.T) {
 		{"offsetMS", func(v *TransportData) { v.OffsetMS = 84000 }},
 		{"durationMS", func(v *TransportData) { v.DurationMS = 202000 }},
 		{"adapterRef", func(v *TransportData) { v.AdapterRef = "plex:track:def" }},
+		{"source", func(v *TransportData) { v.Source = "jellyfin" }},
 		{"generation", func(v *TransportData) { v.Generation = 8 }},
 		{"actionsEnabled.previous", func(v *TransportData) { v.ActionsEnabled.Previous = !v.ActionsEnabled.Previous }},
 		{"actionsEnabled.next", func(v *TransportData) { v.ActionsEnabled.Next = !v.ActionsEnabled.Next }},

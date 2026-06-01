@@ -205,6 +205,7 @@ type TransportData struct {
 	DurationMS      int
 	ActionsEnabled  ActionsEnabled
 	AdapterRef      string
+	Source          string
 	Generation      uint64
 	OutputVolume    int
 }
@@ -1023,23 +1024,43 @@ func parseAdapterRefSource(ref string) string {
 	return ""
 }
 
+func normalizeSourceID(source string) string {
+	id := strings.ToLower(strings.TrimSpace(source))
+	switch id {
+	case "streams", "plex", "jellyfin", "dlna":
+		return id
+	}
+	return ""
+}
+
+func activeSourceID(source, adapterRef string) string {
+	if id := normalizeSourceID(source); id != "" {
+		return id
+	}
+	return parseAdapterRefSource(adapterRef)
+}
+
 // applySourceLampState populates Configured, Casting, and Issue on every
-// lamp slot in base.Source.Buttons (Action == "") using the supplied
-// viewers for Configured()/Status() and the AdapterRef prefix for Casting. AUX
-// (Action != "") is left untouched — applyAUXSourceState owns that
+// lamp slot in base.Source.Buttons (Action == "") using the supplied viewers
+// for Configured()/Status() and the canonical session Source for Casting.
+// AdapterRef parsing remains a legacy fallback for sessions that predate
+// Source. AUX (Action != "") is left untouched — applyAUXSourceState owns that
 // state. Safe to call with nil viewers; lamps stay at zero (lamp dark).
-func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvailabilityViewer, adapterRef string) {
+func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvailabilityViewer, source, adapterRef string) {
 	if base == nil {
 		return
 	}
-	castingSource := parseAdapterRefSource(adapterRef)
+	castingSource := activeSourceID(source, adapterRef)
 	configured := map[string]bool{}
 	issues := map[string]adapters.Status{}
 	for _, v := range viewers {
 		if v == nil {
 			continue
 		}
-		id := v.SourceID()
+		id := normalizeSourceID(v.SourceID())
+		if id == "" {
+			continue
+		}
 		configured[id] = v.Configured()
 		if statusViewer, ok := v.(interface{ Status() adapters.Status }); ok {
 			st := statusViewer.Status()

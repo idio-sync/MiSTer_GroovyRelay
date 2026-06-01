@@ -7,12 +7,18 @@
 
   const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna', 'url', 'local', 'localfiles'];
 
+  function normalizeSourceID(source) {
+    if (!source || typeof source !== 'string') return '';
+    const id = source.toLowerCase();
+    return KNOWN_SOURCES.indexOf(id) >= 0 ? id : '';
+  }
+
   function parseAdapterRefSource(ref) {
     if (!ref || typeof ref !== 'string') return '';
     const colon = ref.indexOf(':');
     if (colon <= 0) return '';
     const id = ref.slice(0, colon);
-    return KNOWN_SOURCES.indexOf(id) >= 0 ? id : '';
+    return normalizeSourceID(id);
   }
 
   function lampLabel(el) {
@@ -98,7 +104,7 @@
   function onTransport(ev) {
     let data = {};
     try { data = JSON.parse(ev.data); } catch (_) { return; }
-    applyCasting(parseAdapterRefSource(data.adapterRef));
+    applyCasting(normalizeSourceID(data.source) || parseAdapterRefSource(data.adapterRef));
   }
 
   function onSource(ev) {
