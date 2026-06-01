@@ -92,6 +92,7 @@ type Companion struct {
 	autoAdvanceIntents  atomic.Int64
 	autoAdvanceCurrent  atomic.Pointer[autoAdvanceSession]
 	autoAdvanceDelay    time.Duration
+	autoAdvanceMu       sync.Mutex
 
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
@@ -1044,6 +1045,7 @@ func (c *Companion) handleStop(w http.ResponseWriter, r *http.Request) {
 	if c.core != nil {
 		st = c.core.Status()
 	}
+	c.cancelPendingAutoAdvance()
 	if err := c.core.Stop(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -1704,6 +1706,8 @@ func (c *Companion) clearPlaySessionIfMatches(transcodeSessionID string) {
 		// TranscodeSessionID. Skip the comparison entirely.
 		return
 	}
+	c.autoAdvanceMu.Lock()
+	defer c.autoAdvanceMu.Unlock()
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	if c.lastPlay.TranscodeSessionID == transcodeSessionID {
