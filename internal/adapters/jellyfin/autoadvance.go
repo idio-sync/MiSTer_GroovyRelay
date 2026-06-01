@@ -83,19 +83,12 @@ func (a *Adapter) commitAutoAdvance(stoppedRef string, nextRef string, started Q
 	if a.currentRefKey != stoppedRef {
 		return false
 	}
-	removeIndex := -1
-	for i, qi := range a.queue {
-		if sameQueueEntry(qi, started) {
-			removeIndex = i
-			break
-		}
-	}
-	if removeIndex < 0 {
+	if len(a.queue) == 0 || !sameQueueEntry(a.queue[0], started) {
 		return false
 	}
 	a.currentRefKey = nextRef
 	a.pendingRollback = ""
-	a.queue = append(a.queue[:removeIndex], a.queue[removeIndex+1:]...)
+	a.queue = a.queue[1:]
 	return true
 }
 

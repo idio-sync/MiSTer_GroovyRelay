@@ -1428,6 +1428,65 @@ func TestAutoAdvanceEOF_CorePreemptBeforeCommitDoesNotClaimStaleStart(t *testing
 	}
 }
 
+func TestAutoAdvanceEOF_PlayNextBeforeCommitStopsStaleStart(t *testing.T) {
+	jfSrv := startMappedPlaybackInfoServer(t, nil)
+	mgr := &fakeManager{
+		st:               core.SessionStatus{State: core.StateIdle},
+		startIdleStarted: true,
+	}
+	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a.autoAdvanceDelay = 0
+	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
+	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	a.currentRefKey = "itm-1:ps-itm-1"
+	a.queue = []QueuedItem{{QueueEntryID: 1, ItemID: "next-itm"}, {QueueEntryID: 2, ItemID: "tail-itm"}}
+	a.nextQueueEntryID = 2
+	a.beforeAutoAdvanceCommit = func() {
+		a.queueAt(playMessageData{ItemIDs: []string{"inserted-itm"}, PlayCommand: "PlayNext"}, 0)
+	}
+
+	a.advanceAfterEOF("itm-1:ps-itm-1")
+
+	if got := a.snapshotCurrentRefKey(); got != "itm-1:ps-itm-1" {
+		t.Fatalf("currentRefKey = %q, want old ref", got)
+	}
+	a.mu.Lock()
+	queue := append([]QueuedItem(nil), a.queue...)
+	reporters := len(a.reporters)
+	history := len(a.history)
+	a.mu.Unlock()
+	if len(queue) != 3 || queue[0].ItemID != "inserted-itm" || queue[1].ItemID != "next-itm" || queue[2].ItemID != "tail-itm" {
+		t.Fatalf("queue = %+v, want [inserted-itm next-itm tail-itm]", queue)
+	}
+	if reporters != 0 {
+		t.Fatalf("reporters = %d, want 0", reporters)
+	}
+	if history != 0 {
+		t.Fatalf("history len = %d, want 0", history)
+	}
+
+	mgr.mu.Lock()
+	stopIfCalls := mgr.stopIfCalls
+	stopIfRef := mgr.stopIfRef
+	stopIfGeneration := mgr.stopIfGeneration
+	status := mgr.st
+	mgr.mu.Unlock()
+	if stopIfCalls != 1 {
+		t.Fatalf("StopIfSession calls = %d, want 1", stopIfCalls)
+	}
+	if stopIfRef != "next-itm:ps-next-itm" {
+		t.Fatalf("StopIfSession ref = %q, want next-itm:ps-next-itm", stopIfRef)
+	}
+	if stopIfGeneration == 0 {
+		t.Fatal("StopIfSession generation = 0, want started generation")
+	}
+	if status.State == core.StatePlaying && status.AdapterRef == "next-itm:ps-next-itm" {
+		t.Fatalf("core still playing auto-started session: %+v", status)
+	}
+}
+
 func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T) {
 	var pbCalls atomicInt32
 	jfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
