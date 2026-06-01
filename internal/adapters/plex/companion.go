@@ -99,6 +99,9 @@ type Companion struct {
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
 	history  []companionapi.CompanionHistoryEntry
+
+	historyPath            string
+	historyPersistDisabled bool
 }
 
 // SessionManager is the adapter's narrow view of core.Manager. Declared as
@@ -131,7 +134,8 @@ type SessionManager interface {
 // NewCompanion constructs a Companion. core may be nil for tests that only
 // exercise handlers which don't delegate to core (e.g. /resources).
 func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
-	c := &Companion{cfg: cfg, core: core}
+	history, historyPath := loadCompanionHistory(cfg.DataDir)
+	c := &Companion{cfg: cfg, core: core, history: history, historyPath: historyPath}
 	c.maxVideoBitrateKbps.Store(int64(cfg.MaxVideoBitrateKbps))
 	c.autoAdvance.Store(cfg.AutoAdvance)
 	c.autoAdvanceDelay = autoAdvanceSettleDelay
@@ -1713,6 +1717,7 @@ func (c *Companion) rememberCompanionHistory(p PlayMediaRequest, req core.Sessio
 	for i, existing := range c.history {
 		if existing.URLDisplay == urlDisplay {
 			c.history = append([]companionapi.CompanionHistoryEntry{entry}, append(c.history[:i], c.history[i+1:]...)...)
+			c.saveCompanionHistoryLocked()
 			return
 		}
 	}
@@ -1720,6 +1725,7 @@ func (c *Companion) rememberCompanionHistory(p PlayMediaRequest, req core.Sessio
 	if len(c.history) > companionHistoryMaxEntries {
 		c.history = c.history[:companionHistoryMaxEntries]
 	}
+	c.saveCompanionHistoryLocked()
 }
 
 func (c *Companion) CompanionHistory() []companionapi.CompanionHistoryEntry {

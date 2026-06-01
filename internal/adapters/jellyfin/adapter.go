@@ -62,6 +62,8 @@ type Adapter struct {
 	queue                   []QueuedItem         // adapter-local FIFO for PlayNext / PlayLast
 	reporters               map[string]*reporter // refKey → reporter
 	history                 []companionHistoryEntry
+	historyPath             string
+	historyPersistDisabled  bool
 	ws                      wsConn
 	keepaliveSet            chan time.Duration
 	autoAdvanceDelay        time.Duration
@@ -154,6 +156,7 @@ type inboundDispatcher func(messageType string, data json.RawMessage)
 // core may be nil for tests that don't exercise StartSession.
 // eventLog may be nil; a nil log disables event emission.
 func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string, eventLog *eventlog.Log) *Adapter {
+	history, historyPath := loadCompanionHistory(dataDir)
 	a := &Adapter{
 		core:             coreMgr,
 		dataDir:          dataDir,
@@ -164,6 +167,8 @@ func New(coreMgr SessionManager, dataDir, deviceID, initialModeline string, even
 		stateSince:       time.Now(),
 		link:             NewLinkState(),
 		reporters:        map[string]*reporter{},
+		history:          history,
+		historyPath:      historyPath,
 		autoAdvanceDelay: autoAdvanceSettleDelay,
 	}
 	a.SetModeline(initialModeline)

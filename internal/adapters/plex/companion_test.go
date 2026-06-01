@@ -493,6 +493,27 @@ func TestPlayMediaRecordsCompanionHistory(t *testing.T) {
 	}
 }
 
+func TestCompanionHistorySurvivesNewCompanion(t *testing.T) {
+	dataDir := t.TempDir()
+	c := NewCompanion(CompanionConfig{DataDir: dataDir}, &fakeCore{})
+	c.rememberCompanionHistory(
+		PlayMediaRequest{MediaKey: "/library/metadata/42", Title: "Big Buck Bunny"},
+		core.SessionRequest{AdapterRef: "plex:/library/metadata/42"},
+	)
+
+	fresh := NewCompanion(CompanionConfig{DataDir: dataDir}, &fakeCore{})
+	history := fresh.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("fresh CompanionHistory len = %d, want 1", len(history))
+	}
+	if history[0].Title != "Big Buck Bunny" || history[0].URLDisplay != "/library/metadata/42" {
+		t.Fatalf("fresh history[0] = %+v, want persisted Plex row", history[0])
+	}
+	if history[0].LastPlayed.IsZero() {
+		t.Fatalf("fresh history LastPlayed is zero")
+	}
+}
+
 // TestPlayMedia_VideoPopulatesDisplayMetadata proves the PRIMARY initial
 // video-cast path (handlePlayMedia) fetches PMS metadata and composes the
 // three VFD tiers show-first, not just seek/skip restarts. The mock PMS

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 )
@@ -87,6 +88,54 @@ func TestCastRecordsReplayableCompanionHistory(t *testing.T) {
 	}
 	if got := filepath.Base(fc.reqs[1].StreamURL); got != "Movie.Name.mp4" {
 		t.Fatalf("replay StreamURL base = %q, want Movie.Name.mp4", got)
+	}
+}
+
+func TestCastCompanionHistorySurvivesNewAdapter(t *testing.T) {
+	root := t.TempDir()
+	dataDir := t.TempDir()
+	mustWrite(t, filepath.Join(root, "Movie.Name.mp4"))
+	fc := &recordingCore{}
+	a, err := New(AdapterConfig{
+		Bridge:  config.BridgeConfig{DataDir: dataDir},
+		Core:    fc,
+		FFprobe: staticResolver{path: "/bin/ffprobe"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.mu.Lock()
+	a.cfg = Config{Enabled: true, Libraries: []Library{{Name: "Movies", Root: root}}}
+	a.probe = func(context.Context, string, ffmpeg.MediaInputPolicy) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1920, AudioRate: 48000}, nil
+	}
+	a.mu.Unlock()
+
+	if err := a.Cast(context.Background(), "Movies", "Movie.Name.mp4"); err != nil {
+		t.Fatalf("Cast: %v", err)
+	}
+
+	fresh, err := New(AdapterConfig{
+		Bridge:  config.BridgeConfig{DataDir: dataDir},
+		Core:    fc,
+		FFprobe: staticResolver{path: "/bin/ffprobe"},
+	})
+	if err != nil {
+		t.Fatalf("New fresh: %v", err)
+	}
+	fresh.mu.Lock()
+	fresh.cfg = Config{Enabled: true, Libraries: []Library{{Name: "Movies", Root: root}}}
+	fresh.mu.Unlock()
+
+	history := fresh.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("fresh CompanionHistory len = %d, want 1", len(history))
+	}
+	if history[0].Title != "Movie.Name" || history[0].URLDisplay != "Movies/Movie.Name.mp4" {
+		t.Fatalf("fresh history[0] = %+v, want persisted movie row", history[0])
+	}
+	if _, err := fresh.CompanionHistoryPlay(context.Background(), history[0].ID); err != nil {
+		t.Fatalf("fresh CompanionHistoryPlay: %v", err)
 	}
 }
 

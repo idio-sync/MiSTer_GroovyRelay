@@ -364,6 +364,24 @@ func TestHandlePlayRecordsCompanionHistory(t *testing.T) {
 	}
 }
 
+func TestCompanionHistorySurvivesNewAdapter(t *testing.T) {
+	dataDir := t.TempDir()
+	a := New(&fakeManager{}, dataDir, "dev-1", "", nil)
+	a.recordCompanionHistory("itm-1", PlaybackInfoResult{Title: "Some Movie"}, time.Now())
+
+	fresh := New(&fakeManager{}, dataDir, "dev-1", "", nil)
+	history := fresh.CompanionHistory()
+	if len(history) != 1 {
+		t.Fatalf("fresh CompanionHistory len = %d, want 1", len(history))
+	}
+	if history[0].Title != "Some Movie" || history[0].URLDisplay != "itm-1" {
+		t.Fatalf("fresh history[0] = %+v, want persisted Jellyfin row", history[0])
+	}
+	if history[0].LastPlayed.IsZero() {
+		t.Fatalf("fresh history LastPlayed is zero")
+	}
+}
+
 func startTestAudioPlaybackInfoServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()

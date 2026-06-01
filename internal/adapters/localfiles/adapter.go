@@ -46,16 +46,22 @@ type Adapter struct {
 	stateSince time.Time
 	probe      probeFunc
 	history    []companionHistoryEntry
+
+	historyPath            string
+	historyPersistDisabled bool
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
+	history, historyPath := loadCompanionHistory(cfg.Bridge.DataDir)
 	a := &Adapter{
-		core:       cfg.Core,
-		bridge:     cfg.Bridge,
-		ffprobe:    cfg.FFprobe,
-		cfg:        DefaultConfig(),
-		state:      adapters.StateStopped,
-		stateSince: time.Now(),
+		core:        cfg.Core,
+		bridge:      cfg.Bridge,
+		ffprobe:     cfg.FFprobe,
+		cfg:         DefaultConfig(),
+		state:       adapters.StateStopped,
+		stateSince:  time.Now(),
+		history:     history,
+		historyPath: historyPath,
 	}
 	a.probe = a.probeDefault
 	return a, nil
