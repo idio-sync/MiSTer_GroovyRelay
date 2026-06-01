@@ -29,6 +29,17 @@ keyboard, desktop, menu, or local user interaction during normal operation.
 - Start development in the MiSTer_GroovyRelay monorepo while keeping package
   boundaries clean enough to split the receiver and image tooling later.
 
+## Design Principles
+
+- Prefer Groovy_MiSTer compatibility over fastest-first shortcuts. The v1
+  implementation may phase sender validation, but it should not knowingly choose
+  protocol behavior that prevents MiSTerCast, GroovyMAME-style senders, or
+  GroovyRelay from working later.
+- Keep the Pi receiver a dumb endpoint. It does not discover media, transcode
+  sources, or expose a local playback UI in v1.
+- Prove the physical VGA666/KMS output path early. Receiver protocol work should
+  not get far ahead of a real Pi 4 + VGA666 + PVM smoke test.
+
 ## Non-Goals
 
 - V1 does not replace a Plex, Jellyfin, or media server host. The Pi is the CRT
@@ -64,6 +75,11 @@ example `cmd/groovypi-receiver`. It reuses `internal/groovy` and extracts the
 receiver-safe pieces of `internal/fakemister` into reusable packages instead of
 duplicating protocol logic.
 
+`internal/fakemister` is a test harness, not the production receiver. Extraction
+must produce production protocol primitives with explicit status, ACK, timeout,
+and session semantics. The appliance must not depend on fake/test package
+behavior as the source of truth.
+
 The receiver should be divided into small components:
 
 - `groovyrecv`: UDP protocol/session layer. It owns sender tracking, command
@@ -88,12 +104,32 @@ V1 supports two Pi-side output presets:
 
 Incoming modelines are not applied dynamically in v1. `modelinemap` accepts the
 sender's modeline, classifies it by shape and interlace, and selects the nearest
-supported Pi output preset. Unknown PAL or arcade modelines should not crash the
-receiver. They either map to the nearest NTSC mode when reasonable or show an
-unsupported-mode idle/status screen while keeping the process alive.
+supported Pi output preset. V1 mapping rules:
+
+- Progressive, 57-61 Hz, 200-288 active lines maps to NTSC 240p. The source
+  raster is scaled or padded into the fixed 720x240 output buffer.
+- Interlaced, 57-61 Hz, 400-525 active lines maps to NTSC 480i. Each source
+  field is scaled or padded into the fixed 720x240 field buffer.
+- 50 Hz PAL, off-rate arcade modes, and rasters outside those bands are
+  unsupported in v1. They show an unsupported-mode idle/status screen, drop
+  incoming fields for that session, and keep the receiver process alive for the
+  next `INIT`.
 
 Dynamic KMS/DPI timing changes remain a v2 compatibility goal after the fixed
 presets prove stable on real hardware.
+
+## Interlace And Field Order
+
+For NTSC 480i, the `BLIT_FIELD_VSYNC` field byte is the source of truth:
+
+- field `0` is the top/even field.
+- field `1` is the bottom/odd field.
+
+The renderer preserves that polarity when presenting fields to KMS/DPI. V1 must
+include a boot-partition config option to invert field order if a specific
+VGA666/PVM setup shows shimmer. Fake renderer tests must assert field polarity
+and duplicate-field behavior, and hardware acceptance must include a field-order
+test pattern or known interlaced clip.
 
 ## Protocol Compatibility
 
@@ -114,13 +150,47 @@ Required v1 protocol behavior:
   fields, and duplicate-field headers.
 - `AUDIO`: reassemble PCM payload chunks and feed the ALSA output buffer.
 - `CLOSE`: tear down the active session and return to idle/screensaver.
-- ACK/status replies: report enough frame echo, raster/count, and audio-ready
-  behavior to keep GroovyRelay and other Groovy senders paced correctly.
+- ACK/status replies: follow the explicit session contract below for frame echo,
+  raster/count, and audio-ready behavior.
 - `GET_VERSION` and `GET_STATUS`: respond compatibly if senders use them.
 
 The upstream Groovy API also has a second input socket path for joystick and
 PS2 keyboard/mouse feedback. The receiver design should reserve this path, but
 v1 does not block on implementing USB HID to Groovy input packets.
+
+## Protocol And Session Contract
+
+The receiver is single-session. A valid `INIT` establishes the active sender as
+the datagram's source IP and source UDP port. Payload chunks and commands from
+other sources are ignored while that session is active, except that a new valid
+`INIT` from another source preempts the old session, clears decode/audio state,
+and becomes the new active sender.
+
+Replies always go to the active sender's source address and port. The receiver
+emits 13-byte ACK/status packets:
+
+- immediately after accepting `INIT`;
+- when `GET_STATUS` is received;
+- after each complete field is accepted, decoded, and queued for presentation;
+- after each duplicate-field header is processed.
+
+The ACK frame echo reports the last accepted Groovy frame number. The raster
+fields report the receiver's current output-frame counter and an approximate
+scanline within the active NTSC preset. V1 does not need cycle-perfect
+Groovy_MiSTer raster timing, but the values must be monotonic and consistent
+enough for sender drift-correction code to avoid stalls.
+
+Status bits:
+
+- VRAM-ready is true while the renderer is initialized and can accept a field.
+- Audio-ready is true when audio is enabled for the session and the ALSA queue is
+  below its high-water mark.
+- The field/parity bit reflects the receiver's current NTSC 480i output field
+  when interlaced, and remains false for progressive output.
+
+Payload reassembly failure resets the current payload only. It does not tear
+down the session unless repeated failures cross the configured idle/error
+threshold.
 
 ## Idle Screensaver
 
@@ -154,6 +224,11 @@ Normal boot behavior:
 6. Wired DHCP comes up.
 7. The receiver waits on UDP `32100`.
 
+The service should not wait for `network-online.target` before showing the logo.
+Video initialization and idle rendering start as soon as local devices are
+available. UDP listening binds as soon as the network stack allows it, and DHCP
+completion is not required for the local idle screen.
+
 Normal operation should not write to the root filesystem. Runtime state, logs,
 PID files, and scratch files live on `tmpfs`. The release image should run with
 a read-only root filesystem. Configuration can be edited on the boot partition
@@ -161,6 +236,20 @@ before boot, using a small file such as `groovypi.toml`.
 
 Development can also support copying a binary and systemd unit onto an existing
 Pi OS Lite installation before the image builder is polished.
+
+## Hardware And Image Defaults
+
+The release image defaults to the Raspberry Pi 4 analog audio output for PCM
+monitor audio. The ALSA device name is configurable in the boot-partition
+`groovypi.toml` so a USB DAC can be selected without rebuilding the image. HDMI
+audio is not part of the v1 appliance path.
+
+The boot partition owns operator-editable configuration, including hostname,
+receiver port, video preset family, optional field-order inversion, SSH
+development switch, and ALSA device override. The read-only root owns binaries,
+systemd units, and static assets. Writable runtime paths are limited to `tmpfs`
+locations such as `/run`, `/tmp`, and the system journal strategy chosen for the
+image.
 
 ## Error Handling
 
