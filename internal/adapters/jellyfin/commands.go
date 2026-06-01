@@ -78,7 +78,9 @@ func (a *Adapter) startPlayNow(p playMessageData, intent uint64) {
 		return
 	}
 
+	a.bgStarts.Add(1)
 	go func() {
+		defer a.bgStarts.Done()
 		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -278,7 +280,9 @@ func (a *Adapter) restartCurrentPlaybackAt(posTicks int64, preservePaused bool) 
 	}
 	wasPaused := preservePaused && st.State == core.StatePaused
 
+	a.bgStarts.Add(1)
 	go func() {
+		defer a.bgStarts.Done()
 		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -539,7 +543,9 @@ func (a *Adapter) trackSwitch(in trackSwitchInput) {
 	wasPaused := st.State == core.StatePaused
 	posTicks := int64(st.Position / (100 * time.Nanosecond))
 
+	a.bgStarts.Add(1)
 	go func() {
+		defer a.bgStarts.Done()
 		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -777,7 +783,9 @@ func (a *Adapter) startQueuedItemWithOptions(qi QueuedItem, opts queuedStartOpti
 		return
 	}
 
+	a.bgStarts.Add(1)
 	go func() {
+		defer a.bgStarts.Done()
 		defer a.finishControllerStartIntent(intent)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

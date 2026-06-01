@@ -30,7 +30,11 @@ func (a *Adapter) withAutoAdvance(refKey string, base func(string)) func(string)
 		if reason != autoAdvanceStopReason {
 			return
 		}
-		go a.advanceAfterEOF(refKey)
+		a.bgStarts.Add(1)
+		go func() {
+			defer a.bgStarts.Done()
+			a.advanceAfterEOF(refKey)
+		}()
 	}
 }
 

@@ -577,6 +577,7 @@ func TestHandlePlay_AudioItemArtwork404FallsBackToEmptyPath(t *testing.T) {
 
 	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	t.Cleanup(func() { quiesceAdapter(a) })
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -691,6 +692,7 @@ func TestHandlePlaystate_NextTrackAudioItemStartsMusicVisualizerSession(t *testi
 
 	mgr := &fakeManager{}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	t.Cleanup(func() { quiesceAdapter(a) })
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -800,6 +802,22 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// quiesceAdapter drains the adapter's detached start goroutines so that
+// t.TempDir()'s automatic RemoveAll cleanup can't race their in-flight
+// writes into the data dir (artwork-cache PNGs and jellyfin_history.json).
+// On Windows that race is fatal: RemoveAll fails with "directory is not
+// empty", or the atomic history rename fails with "Access is denied".
+// Register via t.Cleanup right after New() so it runs before the TempDir
+// removal (cleanups run LIFO; t.TempDir registered its removal first).
+func quiesceAdapter(a *Adapter) {
+	// Stop reporters first so a reporter-driven OnStop can't spawn a
+	// fresh auto-advance start after we begin waiting.
+	_ = a.Stop()
+	// Then wait for any in-flight controller/auto-advance start
+	// goroutine to finish its data-dir writes.
+	a.bgStarts.Wait()
 }
 
 func TestHandlePlaystate_PauseCallsCorePause(t *testing.T) {
@@ -1778,6 +1796,7 @@ func TestAutoAdvanceEOF_PendingManualNextTrackBlocksAutoAdvance(t *testing.T) {
 		startIdleStarted: true,
 	}
 	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	t.Cleanup(func() { quiesceAdapter(a) })
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {

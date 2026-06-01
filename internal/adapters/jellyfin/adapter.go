@@ -82,6 +82,19 @@ type Adapter struct {
 	// Stop() waits on it so Start→Stop→Start cannot double-post Capabilities.
 	startCancel context.CancelFunc
 	runDone     chan struct{}
+
+	// bgStarts tracks the detached start goroutines (controller plays
+	// and auto-advance) that fetch PlaybackInfo and then write into the
+	// data dir — artwork (artworkcache.FetchToCache → <dataDir>/artwork-cache)
+	// and companion history (recordCompanionHistory → WriteAtomic of
+	// <dataDir>/jellyfin_history.json). These use context.Background()
+	// and so outlive Stop(); production never waits on them (the data
+	// dir persists), but tests drain via this group before t.TempDir()'s
+	// RemoveAll cleanup runs — otherwise on Windows the in-flight write
+	// races the directory removal ("directory is not empty" / atomic
+	// rename "Access is denied"). Add(1) is always done in the spawning
+	// goroutine before `go`.
+	bgStarts sync.WaitGroup
 }
 
 // setCurrentSessionID stores the JF session row Id captured by the
