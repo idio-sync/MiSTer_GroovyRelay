@@ -81,6 +81,12 @@
   --vfd-faded: oklch(0.55 0.16 175 / 0.35);
   --vfd-ghost: oklch(0.42 0.12 175 / 0.18);
   --lock-amber: oklch(0.82 0.18 75);
+  /* Faceplate tally lamps: period-correct AV-receiver colors, not modern
+     neon. Green is a warm ready/power emerald; red is a warm signal red.
+     Aqua intentionally reuses --vfd so the tally row, the VFD glass, and
+     the casting source lamp all share one cyan. */
+  --lamp-green: oklch(0.80 0.17 150);
+  --lamp-red: oklch(0.62 0.21 28);
 }
 
 /* Reset and base */
@@ -251,7 +257,9 @@ body.receiver .receiver > .receiver-inner > * {
 /* ---- 5. Status bar -------------------------------------------------- */
 /* Mockup source: receiver-v24.html .status-bar, .brand-plate, .led,
    .led-row, .power-cluster, and .load-core-btn rules, adapted to current
-   templates. */
+   templates. The .led lamps intentionally diverge from the v24 flat-dot
+   mockup: they were re-skinned as recessed faceplate lamps to match the
+   source-cluster indicator strip (late-90s Sony reference) below. */
 body.receiver .status-bar {
   position: relative;
   z-index: 1;
@@ -315,29 +323,71 @@ body.receiver .led {
   gap: 5px;
 }
 
+/* Recessed faceplate lamp, miniaturized to match the source-cluster strip
+   below (see "Source-cluster lamps"): the .light element is the machined
+   well; ::before is the domed lens; ::after is its specular highlight.
+   Off lamps read as dark plastic lenses, not flat grey dots. */
 body.receiver .led .light {
-  width: 7px;
-  height: 7px;
+  position: relative;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
-  background: #2a2a2c;
-  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+  background: radial-gradient(circle at 50% 38%, #050506 0%, #0c0c0e 55%, #2a2a30 100%);
+  border: 1px solid #09090a;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.85),
+    0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-body.receiver .led.on .light,
-body.receiver .led.on.green .light {
-  background: #00ff66;
-  box-shadow: 0 0 6px #00ff66cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
+body.receiver .led .light::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, #1d1d22 0%, #0e0e10 80%);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
+  transition: background 200ms ease-out, box-shadow 200ms ease-out;
 }
 
-body.receiver .led.on.red .light {
-  background: #ff3030;
-  box-shadow: 0 0 6px #ff3030cc, inset 0 0 2px rgba(255, 255, 255, 0.4);
+body.receiver .led .light::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3.5px;
+  width: 3.5px;
+  height: 3.5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.34);
+}
+
+body.receiver .led.on .light::before,
+body.receiver .led.on.green .light::before {
+  background: radial-gradient(circle at 50% 35%,
+    color-mix(in oklch, var(--lamp-green) 70%, white) 0%, var(--lamp-green) 75%);
+  box-shadow:
+    inset 0 0 2px rgba(255, 255, 255, 0.5),
+    0 0 7px color-mix(in oklch, var(--lamp-green) 80%, transparent);
+}
+
+body.receiver .led.on.red .light::before {
+  background: radial-gradient(circle at 50% 35%,
+    color-mix(in oklch, var(--lamp-red) 72%, white) 0%, var(--lamp-red) 75%);
+  box-shadow:
+    inset 0 0 2px rgba(255, 255, 255, 0.5),
+    0 0 7px color-mix(in oklch, var(--lamp-red) 82%, transparent);
   animation: rec-pulse 1.6s ease-in-out infinite;
 }
 
-body.receiver .led.on.aqua .light {
-  background: oklch(0.90 0.22 175);
-  box-shadow: 0 0 5px oklch(0.90 0.22 175 / 0.9), inset 0 0 2px rgba(255, 255, 255, 0.4);
+body.receiver .led.on.aqua .light::before {
+  background: radial-gradient(circle at 50% 35%,
+    var(--vfd-bright) 0%, var(--vfd) 75%);
+  box-shadow:
+    inset 0 0 2px rgba(255, 255, 255, 0.5),
+    0 0 7px var(--vfd-glow);
 }
 
 @keyframes rec-pulse {
@@ -362,10 +412,10 @@ body.receiver .led.on .lbl {
   color: #c0c0c4;
 }
 
-body.receiver.idle .led.on.aqua .light,
-body.receiver.idle .led.on.red .light {
-  background: #2a2a2c;
-  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+body.receiver.idle .led.on.aqua .light::before,
+body.receiver.idle .led.on.red .light::before {
+  background: radial-gradient(circle at 50% 35%, #1d1d22 0%, #0e0e10 80%);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
   animation: none;
 }
 
