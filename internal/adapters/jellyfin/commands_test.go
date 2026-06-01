@@ -35,13 +35,17 @@ func jellyfinTinyPNG(t *testing.T) []byte {
 
 // fakeManager records calls into a SessionManager.
 type fakeManager struct {
-	mu     sync.Mutex
-	reqs   []core.SessionRequest
-	calls  []string
-	st     core.SessionStatus
-	err    error
-	mode   string
-	onStop func()
+	mu               sync.Mutex
+	reqs             []core.SessionRequest
+	idleReqs         []core.SessionRequest
+	calls            []string
+	st               core.SessionStatus
+	err              error
+	startIdleStarted bool
+	startIdleErr     error
+	onStartIdle      func()
+	mode             string
+	onStop           func()
 }
 
 func (f *fakeManager) StartSession(req core.SessionRequest) error {
@@ -50,6 +54,27 @@ func (f *fakeManager) StartSession(req core.SessionRequest) error {
 	f.calls = append(f.calls, "StartSession:"+req.StreamURL)
 	f.mu.Unlock()
 	return f.err
+}
+func (f *fakeManager) StartSessionIfIdle(req core.SessionRequest) (bool, error) {
+	if f.onStartIdle != nil {
+		f.onStartIdle()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.idleReqs = append(f.idleReqs, req)
+	f.calls = append(f.calls, "StartSessionIfIdle:"+req.StreamURL)
+	err := f.startIdleErr
+	if err == nil {
+		err = f.err
+	}
+	if err != nil {
+		return false, err
+	}
+	if f.st.State != core.StateIdle || !f.startIdleStarted {
+		return false, nil
+	}
+	f.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: req.AdapterRef}
+	return true, nil
 }
 func (f *fakeManager) Pause() error { f.add("Pause"); return f.err }
 func (f *fakeManager) Play() error  { f.add("Play"); return f.err }
@@ -80,6 +105,14 @@ func (f *fakeManager) lastReq() core.SessionRequest {
 		return core.SessionRequest{}
 	}
 	return f.reqs[len(f.reqs)-1]
+}
+func (f *fakeManager) lastIdleReq() core.SessionRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.idleReqs) == 0 {
+		return core.SessionRequest{}
+	}
+	return f.idleReqs[len(f.idleReqs)-1]
 }
 
 func waitForFakeManagerReq(t *testing.T, mgr *fakeManager) {

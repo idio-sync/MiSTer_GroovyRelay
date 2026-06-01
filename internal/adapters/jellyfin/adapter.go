@@ -22,6 +22,7 @@ import (
 // structural typing.
 type SessionManager interface {
 	StartSession(req core.SessionRequest) error
+	StartSessionIfIdle(req core.SessionRequest) (bool, error)
 	Pause() error
 	Play() error
 	Stop() error
