@@ -288,6 +288,7 @@ func (a *Adapter) ensureFinalized() {
 			ProfileName:         cfgSnap.ProfileName,
 			DataDir:             a.cfg.Bridge.DataDir,
 			MaxVideoBitrateKbps: cfgSnap.MaxVideoBitrateKbps,
+			AutoAdvance:         cfgSnap.AutoAdvance,
 			Modeline:            a.cfg.Bridge.Video.Modeline,
 			EventLog:            a.cfg.EventLog,
 		}, a.cfg.Core)
@@ -377,6 +378,17 @@ func (a *Adapter) Fields() []adapters.FieldDef {
 			Required:   true,
 			Default:    1500,
 			ApplyScope: adapters.ScopeRestartCast,
+		},
+		{
+			Key:   "auto_advance",
+			Label: "Continuous Play",
+			Help: "When a track or episode ends, automatically play the next item" +
+				" in the Plex queue (playlist, album, TV show, or artist radio)." +
+				" Works even when the Plex app that started the cast is closed.",
+			Kind:       adapters.KindBool,
+			Default:    false,
+			ApplyScope: adapters.ScopeHotSwap,
+			Section:    "Playback",
 		},
 	}
 }
@@ -503,6 +515,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	// fields (profile_name, server_url) still snapshot at finalization.
 	if companion != nil {
 		companion.SetMaxVideoBitrateKbps(newCfg.MaxVideoBitrateKbps)
+		companion.SetAutoAdvance(newCfg.AutoAdvance)
 	}
 
 	// Side effects outside the lock: DropActiveCast can block on
@@ -535,6 +548,9 @@ func diffPlexConfig(oldCfg, newCfg Config) []string {
 	if oldCfg.MaxVideoBitrateKbps != newCfg.MaxVideoBitrateKbps {
 		changed = append(changed, "max_video_bitrate_kbps")
 	}
+	if oldCfg.AutoAdvance != newCfg.AutoAdvance {
+		changed = append(changed, "auto_advance")
+	}
 	return changed
 }
 
@@ -555,6 +571,8 @@ func scopeForPlexField(key string) adapters.ApplyScope {
 	switch key {
 	case "enabled":
 		return adapters.ScopeHotSwap // handled out-of-band by the toggle endpoint
+	case "auto_advance":
+		return adapters.ScopeHotSwap
 	case "device_name", "device_uuid":
 		return adapters.ScopeRestartBridge
 	case "profile_name", "server_url", "max_video_bitrate_kbps":
@@ -582,5 +600,6 @@ func (a *Adapter) CurrentValues() map[string]any {
 		"profile_name":           cfg.ProfileName,
 		"server_url":             cfg.ServerURL,
 		"max_video_bitrate_kbps": cfg.MaxVideoBitrateKbps,
+		"auto_advance":           cfg.AutoAdvance,
 	}
 }

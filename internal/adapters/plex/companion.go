@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -57,6 +58,9 @@ type CompanionConfig struct {
 	// request a transcode. Snapshotted at finalization from plex.Config;
 	// changes are ScopeRestartCast so the next play picks up new values.
 	MaxVideoBitrateKbps int
+	// AutoAdvance is [adapters.plex].auto_advance snapshotted at
+	// construction and mirrored live by Adapter.ApplyConfig.
+	AutoAdvance bool
 	// Modeline mirrors bridge.video.modeline so Plex transcode requests can
 	// advertise source shape matching the active CRT mode.
 	Modeline string
@@ -67,17 +71,13 @@ type CompanionConfig struct {
 
 // Companion is the Plex Companion HTTP adapter. One per process.
 //
-// Concurrency invariant for cfg: every CompanionConfig field except the
-// two atomically mirrored ones (MaxVideoBitrateKbps via maxVideoBitrateKbps,
-// Modeline via modelineName) is frozen after NewCompanion returns. The
-// other ScopeRestartCast / ScopeRestartBridge fields (DeviceUUID,
-// DeviceName, ProfileName, ServerURL, Version, DataDir, EventLog) are
-// snapshot-at-finalize: Adapter.ApplyConfig mutates Adapter.plexCfg but
-// does NOT update Companion.cfg, so any field read off c.cfg sees the
-// value present at construction time. That makes lock-free reads from
-// request handlers safe — and means a UI save for one of those fields
-// needs a bridge restart to take effect (a pre-existing quirk tracked
-// separately; see scopeForPlexField in adapter.go).
+// Concurrency invariant for cfg: DeviceName, DeviceUUID, Version,
+// ProfileName, DataDir, and EventLog are frozen after NewCompanion returns.
+// MaxVideoBitrateKbps, AutoAdvance, and Modeline are mirrored through
+// maxVideoBitrateKbps, autoAdvance, and modelineName for lock-free live
+// reads. Adapter.ApplyConfig mutates Adapter.plexCfg and updates mirrors for
+// adapter config fields only; bridge/build/event fields are supplied at
+// construction or through dedicated callbacks and are not plexCfg fields.
 type Companion struct {
 	cfg      CompanionConfig
 	core     SessionManager // adapter-agnostic core.Manager
@@ -89,6 +89,12 @@ type Companion struct {
 	// See the type-level concurrency invariant for the other cfg fields.
 	maxVideoBitrateKbps atomic.Int64
 	modelineName        atomic.Pointer[string]
+	autoAdvance         atomic.Bool
+	autoAdvanceEpoch    atomic.Uint64
+	autoAdvanceIntents  atomic.Int64
+	autoAdvanceCurrent  atomic.Pointer[autoAdvanceSession]
+	autoAdvanceDelay    time.Duration
+	autoAdvanceMu       sync.Mutex
 
 	sessMu   sync.Mutex
 	lastPlay PlayMediaRequest
@@ -100,9 +106,19 @@ type Companion struct {
 // tests in this package mockable without spinning up a real core.
 type SessionManager interface {
 	StartSession(core.SessionRequest) error
+	// StartSessionIfIdle starts req only when no session is active, checked
+	// under the manager lock. Returns (false, nil) when a session is already
+	// active (the caller stands down). Used by Plex auto-advance to avoid
+	// double-advancing when a controller has already taken over.
+	StartSessionIfIdle(core.SessionRequest) (bool, error)
+	// StartSessionIfIdleSnapshot is the generation-aware form used when the
+	// caller may need to clean up only the exact session it just started.
+	StartSessionIfIdleSnapshot(core.SessionRequest) (core.SessionStatus, bool, error)
 	Pause() error
 	Play() error
 	Stop() error
+	StopIfAdapterRef(ref string) (bool, error)
+	StopIfSession(ref string, generation uint64) (bool, error)
 	SeekTo(offsetMs int) error
 	Status() core.SessionStatus
 	VisualizerMode() string
@@ -117,6 +133,8 @@ type SessionManager interface {
 func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 	c := &Companion{cfg: cfg, core: core}
 	c.maxVideoBitrateKbps.Store(int64(cfg.MaxVideoBitrateKbps))
+	c.autoAdvance.Store(cfg.AutoAdvance)
+	c.autoAdvanceDelay = autoAdvanceSettleDelay
 	c.SetModeline(cfg.Modeline)
 	return c
 }
@@ -126,6 +144,15 @@ func NewCompanion(cfg CompanionConfig, core SessionManager) *Companion {
 // will read the updated value through sessionRequestFor.
 func (c *Companion) SetMaxVideoBitrateKbps(kbps int) {
 	c.maxVideoBitrateKbps.Store(int64(kbps))
+}
+
+// SetAutoAdvance updates the live continuous-play mirror. Queue advancement
+// behavior is wired in a later phase.
+func (c *Companion) SetAutoAdvance(v bool) {
+	c.autoAdvance.Store(v)
+	if !v {
+		c.cancelPendingAutoAdvance()
+	}
 }
 
 // SetModeline updates the live modeline mirror. Bridge saves call this through
@@ -426,14 +453,11 @@ func (c *Companion) musicSessionRequestForPlay(p PlayMediaRequest, md MusicMetad
 		}
 		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
 		if !directPlay {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
-				slog.Debug("plex stop music transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
-			}
+			stopTranscodeSessionAsync("plex stop music transcode", serverURL, captured, reason)
 		}
 	}
 	req.OnStop = artworkcache.WithCleanup(md.ArtworkPath, req.OnStop)
+	req.OnStop = c.withAutoAdvance(p, req.OnStop)
 	return req
 }
 
@@ -506,11 +530,9 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 	captured := p
 	req.OnStop = func(reason string) {
 		// Order matters: notify subscribed Plex controllers FIRST, then
-		// clear local state (conditionally), then make the best-effort PMS
-		// hint last. This way the controller sees the stopped state
-		// immediately even if PMS is slow/unreachable (StopTranscodeSession
-		// has a 5s timeout and we don't want to gate the controller-cleanup
-		// latency on it).
+		// clear local state (conditionally), then launch the best-effort
+		// PMS hint last. This way the controller sees the stopped state
+		// immediately and auto-advance is not gated on PMS latency.
 		if c.timeline != nil {
 			c.timeline.broadcastStoppedFor(core.SessionStatus{State: core.StateIdle}, captured)
 		}
@@ -525,13 +547,23 @@ func (c *Companion) sessionRequestForPreset(p PlayMediaRequest, preset core.Mode
 		// timeline poll would render no key/ratingKey, causing controllers
 		// to lose track of the cast.
 		c.clearPlaySessionIfMatches(captured.TranscodeSessionID)
+		stopTranscodeSessionAsync("plex stop transcode", serverURL, captured, reason)
+	}
+	req.OnStop = c.withAutoAdvance(p, req.OnStop)
+	return req
+}
+
+func stopTranscodeSessionAsync(logMessage, serverURL string, captured PlayMediaRequest, reason string) {
+	if serverURL == "" || captured.TranscodeSessionID == "" {
+		return
+	}
+	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := StopTranscodeSession(ctx, serverURL, captured.TranscodeSessionID, captured.PlexToken); err != nil {
-			slog.Debug("plex stop transcode", "reason", reason, "session", captured.TranscodeSessionID, "err", err)
+			slog.Debug(logMessage, "reason", reason, "session", captured.TranscodeSessionID, "err", err)
 		}
-	}
-	return req
+	}()
 }
 
 type playQueueItem struct {
@@ -634,44 +666,26 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		prevStatus = c.core.Status()
 	}
 	p := c.lastPlaySession()
-	if p.MediaKey == "" {
-		http.Error(w, "no plex session", 400)
-		return false
-	}
+	finishIntent := c.beginAutoAdvanceIntent()
+	defer finishIntent()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	pq, err := c.fetchPlayQueue(ctx, p)
+	next, err := c.resolveNextQueueItem(ctx, p, selectItem)
 	if err != nil {
+		if errors.Is(err, errNoNextQueueItem) {
+			http.Error(w, errNoNextQueueItem.Error(), 400)
+			return false
+		}
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	item, ok := selectItem(pq.Items, p)
-	if !ok {
-		http.Error(w, "play queue item not found", 400)
-		return false
-	}
-	key := item.Key
-	if key == "" && item.RatingKey != "" {
-		key = "/library/metadata/" + item.RatingKey
-	}
-	if key == "" {
-		http.Error(w, "play queue item has no media key", 400)
-		return false
-	}
-	p.MediaKey = key
-	p.Title = ""
-	p.PlayQueueItemID = item.PlayQueueItemID
-	p.PlayQueueID = firstNonEmpty(p.PlayQueueID, pq.PlayQueueID)
-	p.PlayQueueVersion = firstNonEmpty(p.PlayQueueVersion, pq.PlayQueueVersion)
-	p.OffsetMs = 0
-	p.CommandID = queryOrHeader(r, "commandID")
-	p.TranscodeSessionID = NewTranscodeSessionID()
+	next.CommandID = queryOrHeader(r, "commandID")
 	preset, err := c.currentPreset()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
-	req := c.sessionRequestForPlay(r.Context(), p, preset)
+	req := c.sessionRequestForPlay(r.Context(), next, preset)
 	if prevStatus.State != core.StateIdle {
 		c.notifyStoppedTimeline(prevStatus)
 	}
@@ -681,7 +695,7 @@ func (c *Companion) restartFromPlayQueueItem(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), 400)
 		return false
 	}
-	c.rememberPlaySession(p)
+	c.rememberPlaySession(next)
 	if !c.restorePausedIfNeeded(w, prevStatus.State == core.StatePaused) {
 		return false
 	}
@@ -933,6 +947,8 @@ func (c *Companion) handlePlayMedia(w http.ResponseWriter, r *http.Request) {
 	if p.SessionID == "" {
 		p.SessionID = NewTranscodeSessionID()
 	}
+	finishIntent := c.beginAutoAdvanceIntent()
+	defer finishIntent()
 	if (p.PlayQueueItemID == "" || p.PlayQueueID == "" || p.PlayQueueVersion == "") && p.ContainerKey != "" && p.MediaKey != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		pq, err := c.fetchPlayQueue(ctx, p)
@@ -1041,6 +1057,7 @@ func (c *Companion) handleStop(w http.ResponseWriter, r *http.Request) {
 	if c.core != nil {
 		st = c.core.Status()
 	}
+	c.cancelPendingAutoAdvance()
 	if err := c.core.Stop(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -1057,6 +1074,8 @@ func (c *Companion) handleSeekTo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no plex session", 400)
 		return
 	}
+	finishIntent := c.beginAutoAdvanceIntent()
+	defer finishIntent()
 	st := core.SessionStatus{}
 	if c.core != nil {
 		st = c.core.Status()
@@ -1175,6 +1194,8 @@ func (c *Companion) handleSetStreams(w http.ResponseWriter, r *http.Request) {
 		writeOKResponse(w)
 		return
 	}
+	finishIntent := c.beginAutoAdvanceIntent()
+	defer finishIntent()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := SetStreamSelection(ctx, p.serverURL(), p.MediaKey, p.PlexToken, audioStreamID, subtitleStreamID); err != nil {
@@ -1665,9 +1686,11 @@ func queryOrHeader(r *http.Request, names ...string) string {
 // broker (Task 7.5) can attribute status updates to the right Plex media
 // entity. Thread-safe; getter returns a copy.
 func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
+	c.cancelPendingAutoAdvance()
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = p
+	c.setAutoAdvanceCurrentSession(p)
 }
 
 func (c *Companion) rememberCompanionHistory(p PlayMediaRequest, req core.SessionRequest) {
@@ -1715,9 +1738,11 @@ func (a *Adapter) CompanionHistory() []companionapi.CompanionHistoryEntry {
 }
 
 func (c *Companion) clearPlaySession() {
+	c.cancelPendingAutoAdvance()
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = PlayMediaRequest{}
+	c.autoAdvanceCurrent.Store(nil)
 }
 
 // clearPlaySessionIfMatches resets c.lastPlay to its zero value ONLY
@@ -1737,10 +1762,13 @@ func (c *Companion) clearPlaySessionIfMatches(transcodeSessionID string) {
 		// TranscodeSessionID. Skip the comparison entirely.
 		return
 	}
+	c.autoAdvanceMu.Lock()
+	defer c.autoAdvanceMu.Unlock()
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	if c.lastPlay.TranscodeSessionID == transcodeSessionID {
 		c.lastPlay = PlayMediaRequest{}
+		c.autoAdvanceCurrent.Store(nil)
 	}
 }
 

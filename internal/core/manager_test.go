@@ -3352,10 +3352,14 @@ func TestManager_StatusHomeViewIncludesMeterFacts(t *testing.T) {
 	}
 
 	oldNewPlane := newPlane
+	done := make(chan struct{})
 	newPlane = func(dataplane.PlaneConfig) planeRunner {
-		return &fakePlane{}
+		return &blockingDonePlane{done: done}
 	}
-	t.Cleanup(func() { newPlane = oldNewPlane })
+	t.Cleanup(func() {
+		close(done)
+		newPlane = oldNewPlane
+	})
 
 	m.mu.Lock()
 	err := m.startPlaneLocked(req, 0, probe, crop, "ffmpeg", 42, sessionGuard{}, false)

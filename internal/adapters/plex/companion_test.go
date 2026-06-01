@@ -234,8 +234,29 @@ type fakeCore struct {
 	stopped  bool
 	lastSeek int
 	status   core.SessionStatus
+	nextGen  uint64
 	startErr error
 	vizMode  string
+
+	// auto-advance test controls
+	notIdle            bool // when true, StartSessionIfIdle reports not-started
+	startIfIdleCalls   int
+	stopIfRefCalls     int
+	stopIfSessionCalls int
+	stopIfSessionRef   string
+	stopIfSessionGen   uint64
+	onStartIfIdle      func()
+	onAfterStartIfIdle func(core.SessionStatus)
+	statusCalls        int
+	onStatus           func(core.SessionStatus, int)
+}
+
+func (f *fakeCore) nextGenerationLocked() uint64 {
+	f.nextGen++
+	if f.nextGen == 0 {
+		f.nextGen = 1
+	}
+	return f.nextGen
 }
 
 func (f *fakeCore) StartSession(r core.SessionRequest) error {
@@ -243,7 +264,50 @@ func (f *fakeCore) StartSession(r core.SessionRequest) error {
 	defer f.mu.Unlock()
 	f.lastReq = r
 	f.starts++
+	f.status = core.SessionStatus{
+		State:      core.StatePlaying,
+		AdapterRef: r.AdapterRef,
+		MediaKind:  core.NormalizeMediaKind(r.MediaKind),
+		Generation: f.nextGenerationLocked(),
+	}
 	return f.startErr
+}
+func (f *fakeCore) StartSessionIfIdle(r core.SessionRequest) (bool, error) {
+	_, started, err := f.startSessionIfIdle(r)
+	return started, err
+}
+func (f *fakeCore) StartSessionIfIdleSnapshot(r core.SessionRequest) (core.SessionStatus, bool, error) {
+	return f.startSessionIfIdle(r)
+}
+func (f *fakeCore) startSessionIfIdle(r core.SessionRequest) (core.SessionStatus, bool, error) {
+	if f.onStartIfIdle != nil {
+		f.onStartIfIdle()
+	}
+	f.mu.Lock()
+	f.startIfIdleCalls++
+	if f.notIdle {
+		f.mu.Unlock()
+		return core.SessionStatus{}, false, nil
+	}
+	f.lastReq = r
+	if f.startErr != nil {
+		f.mu.Unlock()
+		return core.SessionStatus{}, true, f.startErr
+	}
+	f.starts++
+	f.status = core.SessionStatus{
+		State:      core.StatePlaying,
+		AdapterRef: r.AdapterRef,
+		MediaKind:  core.NormalizeMediaKind(r.MediaKind),
+		Generation: f.nextGenerationLocked(),
+	}
+	startedStatus := f.status
+	hook := f.onAfterStartIfIdle
+	f.mu.Unlock()
+	if hook != nil {
+		hook(startedStatus)
+	}
+	return startedStatus, true, nil
 }
 func (f *fakeCore) Pause() error {
 	f.mu.Lock()
@@ -261,7 +325,32 @@ func (f *fakeCore) Stop() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = true
+	f.status = core.SessionStatus{State: core.StateIdle}
 	return nil
+}
+func (f *fakeCore) StopIfAdapterRef(ref string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopIfRefCalls++
+	if f.status.AdapterRef != ref {
+		return false, nil
+	}
+	f.stopped = true
+	f.status = core.SessionStatus{State: core.StateIdle}
+	return true, nil
+}
+func (f *fakeCore) StopIfSession(ref string, generation uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopIfSessionCalls++
+	f.stopIfSessionRef = ref
+	f.stopIfSessionGen = generation
+	if ref == "" || generation == 0 || f.status.AdapterRef != ref || f.status.Generation != generation {
+		return false, nil
+	}
+	f.stopped = true
+	f.status = core.SessionStatus{State: core.StateIdle}
+	return true, nil
 }
 func (f *fakeCore) SeekTo(ms int) error {
 	f.mu.Lock()
@@ -271,8 +360,15 @@ func (f *fakeCore) SeekTo(ms int) error {
 }
 func (f *fakeCore) Status() core.SessionStatus {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.status
+	f.statusCalls++
+	call := f.statusCalls
+	st := f.status
+	hook := f.onStatus
+	f.mu.Unlock()
+	if hook != nil {
+		hook(st, call)
+	}
+	return st
 }
 func (f *fakeCore) VisualizerMode() string {
 	f.mu.Lock()

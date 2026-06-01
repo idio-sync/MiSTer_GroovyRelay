@@ -897,10 +897,14 @@ func (m *Manager) StartSession(req SessionRequest) error {
 // session"; a non-empty expectedRef means "replace/replay this same adapter
 // session only."
 func (m *Manager) StartSessionIfAdapterRef(req SessionRequest, expectedRef string) (bool, error) {
+	var started bool
+	var err error
 	if expectedRef == "" {
-		return m.startSessionIfSessionGuard(req, sessionGuard{}, true)
+		_, started, err = m.startSessionIfSessionGuard(req, sessionGuard{}, true)
+		return started, err
 	}
-	return m.startSessionIfSessionGuard(req, adapterRefGuard(expectedRef), false)
+	_, started, err = m.startSessionIfSessionGuard(req, adapterRefGuard(expectedRef), false)
+	return started, err
 }
 
 // StartSessionIfSession starts req only when both AdapterRef and Generation
@@ -909,15 +913,23 @@ func (m *Manager) StartSessionIfSession(req SessionRequest, expectedRef string, 
 	if expectedRef == "" || generation == 0 {
 		return false, nil
 	}
-	return m.startSessionIfSessionGuard(req, fullSessionGuard(expectedRef, generation), false)
+	_, started, err := m.startSessionIfSessionGuard(req, fullSessionGuard(expectedRef, generation), false)
+	return started, err
 }
 
 // StartSessionIfIdle starts req only when no session is active.
 func (m *Manager) StartSessionIfIdle(req SessionRequest) (bool, error) {
+	_, started, err := m.startSessionIfSessionGuard(req, sessionGuard{}, true)
+	return started, err
+}
+
+// StartSessionIfIdleSnapshot starts req only when no session is active and
+// returns the exact session snapshot created by that start.
+func (m *Manager) StartSessionIfIdleSnapshot(req SessionRequest) (SessionStatus, bool, error) {
 	return m.startSessionIfSessionGuard(req, sessionGuard{}, true)
 }
 
-func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGuard, requireIdle bool) (bool, error) {
+func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGuard, requireIdle bool) (SessionStatus, bool, error) {
 	m.mu.Lock()
 	matched := m.startGuardMatchesLocked(guard, requireIdle)
 	if matched {
@@ -925,7 +937,7 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 	}
 	m.mu.Unlock()
 	if !matched {
-		return false, nil
+		return SessionStatus{}, false, nil
 	}
 
 	if err := validateSessionRequest(req); err != nil {
@@ -933,9 +945,9 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
 		m.mu.Unlock()
 		if !stillMatched {
-			return false, nil
+			return SessionStatus{}, false, nil
 		}
-		return true, err
+		return SessionStatus{}, true, err
 	}
 	probe, cropRect, ffmpegPath, err := m.probeForStart(req)
 	if err != nil {
@@ -943,9 +955,9 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
 		m.mu.Unlock()
 		if !stillMatched {
-			return false, nil
+			return SessionStatus{}, false, nil
 		}
-		return true, err
+		return SessionStatus{}, true, err
 	}
 	checkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	err = checkVisualizerFiltersForStart(checkCtx, ffmpegPath, req)
@@ -955,24 +967,27 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 		stillMatched := m.startGuardMatchesLocked(guard, requireIdle)
 		m.mu.Unlock()
 		if !stillMatched {
-			return false, nil
+			return SessionStatus{}, false, nil
 		}
-		return true, err
+		return SessionStatus{}, true, err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.startGuardMatchesLocked(guard, requireIdle) {
-		return false, nil
+		return SessionStatus{}, false, nil
 	}
 	generation := m.allocateGenerationLocked()
 	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation, guard, requireIdle); err != nil {
 		if errors.Is(err, errAdapterRefChanged) {
-			return false, nil
+			return SessionStatus{}, false, nil
 		}
-		return true, err
+		return SessionStatus{}, true, err
 	}
-	return true, m.fsm.Transition(EvPlayMedia)
+	if err := m.fsm.Transition(EvPlayMedia); err != nil {
+		return m.statusLocked(), true, err
+	}
+	return m.statusLocked(), true, nil
 }
 
 // Pause stops the data plane and transitions the FSM to Paused. The current
@@ -1551,6 +1566,10 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 func (m *Manager) Status() SessionStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked()
+}
+
+func (m *Manager) statusLocked() SessionStatus {
 	st := SessionStatus{State: m.fsm.State(), MediaKind: MediaKindVideo}
 	if m.active != nil {
 		st.MediaKind = NormalizeMediaKind(m.active.req.MediaKind)
