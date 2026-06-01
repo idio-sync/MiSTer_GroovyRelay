@@ -14,6 +14,7 @@ import (
 func TestAdapterImplementsInterfaces(t *testing.T) {
 	var _ adapters.Adapter = (*Adapter)(nil)
 	var _ adapters.Validator = (*Adapter)(nil)
+	var _ adapters.PlaybackControlProvider = (*Adapter)(nil)
 }
 
 func TestNewInitializesAdapter(t *testing.T) {
