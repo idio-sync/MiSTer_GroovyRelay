@@ -20,17 +20,23 @@ var errNoNextQueueItem = errors.New("play queue item not found")
 
 func (c *Companion) withAutoAdvance(captured PlayMediaRequest, inner func(string)) func(string) {
 	return func(reason string) {
+		shouldAdvance := reason == autoAdvanceEOFReason && c.autoAdvance.Load()
+		epoch := c.autoAdvanceEpoch.Load()
 		if inner != nil {
 			inner(reason)
 		}
-		if reason != autoAdvanceEOFReason || !c.autoAdvance.Load() {
+		if !shouldAdvance {
 			return
 		}
-		go c.advanceAfterEOF(captured)
+		go c.advanceAfterEOFAtEpoch(captured, epoch)
 	}
 }
 
 func (c *Companion) advanceAfterEOF(captured PlayMediaRequest) {
+	c.advanceAfterEOFAtEpoch(captured, c.autoAdvanceEpoch.Load())
+}
+
+func (c *Companion) advanceAfterEOFAtEpoch(captured PlayMediaRequest, epoch uint64) {
 	if c.core == nil {
 		return
 	}
@@ -61,6 +67,11 @@ func (c *Companion) advanceAfterEOF(captured PlayMediaRequest) {
 
 	if c.autoAdvanceDelay > 0 {
 		time.Sleep(c.autoAdvanceDelay)
+	}
+	if !c.autoAdvance.Load() || c.autoAdvanceEpoch.Load() != epoch {
+		cleanupSessionArtwork(req)
+		slog.Debug("plex auto-advance: stood down, request is stale", "key", next.MediaKey)
+		return
 	}
 
 	started, err := c.core.StartSessionIfIdle(req)

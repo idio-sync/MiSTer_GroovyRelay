@@ -118,8 +118,19 @@ func TestAutoAdvance_FakeCoreImplementsStartSessionIfIdle(t *testing.T) {
 
 func newPlayQueueServer(t *testing.T, body string) (*httptest.Server, PlayMediaRequest) {
 	t.Helper()
+	return newObservedPlayQueueServer(t, body, nil)
+}
+
+func newObservedPlayQueueServer(t *testing.T, body string, fetched chan<- struct{}) (*httptest.Server, PlayMediaRequest) {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/playQueues/") {
+			if fetched != nil {
+				select {
+				case fetched <- struct{}{}:
+				default:
+				}
+			}
 			w.Header().Set("Content-Type", "application/xml")
 			_, _ = w.Write([]byte(body))
 			return
@@ -345,6 +356,59 @@ func TestAutoAdvance_UsesCapturedContextNotLastPlay(t *testing.T) {
 	}
 }
 
+func TestAutoAdvance_DisabledByInnerCallbackStandsDownBeforeStart(t *testing.T) {
+	fetched := make(chan struct{}, 1)
+	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 20 * time.Millisecond
+
+	stop := c.withAutoAdvance(p, func(reason string) {
+		c.SetAutoAdvance(false)
+	})
+	stop("eof")
+	waitForQueueFetch(t, fetched)
+	time.Sleep(50 * time.Millisecond)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.startIfIdleCalls != 0 {
+		t.Fatalf("disabled pending auto-advance still called StartSessionIfIdle: calls=%d", fc.startIfIdleCalls)
+	}
+}
+
+func TestAutoAdvance_NewerSessionDuringInnerCallbackStandsDownBeforeStart(t *testing.T) {
+	fetched := make(chan struct{}, 1)
+	srv, p := newObservedPlayQueueServer(t, threeItemQueue, fetched)
+	defer srv.Close()
+	p.MediaType = "episode"
+	fc := &fakeCore{}
+	c := NewCompanion(CompanionConfig{AutoAdvance: true, Modeline: "NTSC_480i"}, fc)
+	c.autoAdvanceDelay = 0
+
+	stop := c.withAutoAdvance(p, func(reason string) {
+		c.rememberPlaySession(PlayMediaRequest{
+			PlexServerScheme:  "http",
+			PlexServerAddress: "127.0.0.1",
+			PlexServerPort:    "1",
+			ContainerKey:      "/playQueues/999",
+			MediaKey:          "/library/metadata/900",
+			PlayQueueItemID:   "9001",
+		})
+	})
+	stop("eof")
+	waitForQueueFetch(t, fetched)
+	time.Sleep(50 * time.Millisecond)
+
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.startIfIdleCalls != 0 {
+		t.Fatalf("stale pending auto-advance still called StartSessionIfIdle: calls=%d", fc.startIfIdleCalls)
+	}
+}
+
 func waitForStartIfIdle(t *testing.T, fc *fakeCore, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -358,6 +422,15 @@ func waitForStartIfIdle(t *testing.T, fc *fakeCore, want int) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d StartSessionIfIdle call(s)", want)
+}
+
+func waitForQueueFetch(t *testing.T, fetched <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-fetched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for play queue fetch")
+	}
 }
 
 func presetForTest(t *testing.T) core.ModelinePreset {

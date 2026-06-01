@@ -88,6 +88,7 @@ type Companion struct {
 	maxVideoBitrateKbps atomic.Int64
 	modelineName        atomic.Pointer[string]
 	autoAdvance         atomic.Bool
+	autoAdvanceEpoch    atomic.Uint64
 	autoAdvanceDelay    time.Duration
 
 	sessMu   sync.Mutex
@@ -1660,6 +1661,7 @@ func (c *Companion) rememberPlaySession(p PlayMediaRequest) {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	c.lastPlay = p
+	c.autoAdvanceEpoch.Add(1)
 }
 
 func (c *Companion) clearPlaySession() {
