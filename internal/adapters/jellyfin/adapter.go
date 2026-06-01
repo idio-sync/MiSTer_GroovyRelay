@@ -68,6 +68,9 @@ type Adapter struct {
 	// beforeAutoAdvanceCommit is a test seam for deterministic interleaving
 	// between a successful guarded core start and adapter queue/ownership commit.
 	beforeAutoAdvanceCommit func()
+	// afterAutoAdvanceCommit is a test seam for deterministic interleaving
+	// between adapter commit and auto-advance reporter/history finalization.
+	afterAutoAdvanceCommit func()
 	// handleInbound routes inbound JF WS messages by MessageType.
 	// Set by New() to a.dispatchInbound; tests swap freely before
 	// startWS is called.

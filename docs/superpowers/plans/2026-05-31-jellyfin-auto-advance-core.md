@@ -1821,6 +1821,6 @@ If no fixes were needed, do not create an empty commit.
 - EOF auto-advance only runs for `OnStop("eof")`.
 - EOF auto-advance uses `StartSessionIfIdle` and never pre-pops the queue.
 - Guard miss, PlaybackInfo failure, StartSessionIfIdle error, stale EOF, and pre-commit controller races leave queue and ownership state intact.
-- A successful auto-advance removes the started item by `QueueEntryID` from its current queue position.
+- A successful auto-advance removes the started item only when that `QueueEntryID` is still the queue head.
 - Reporter wakeup and artwork cleanup still run through the wrapped `OnStop`.
 - `go test ./internal/adapters/jellyfin/...`, `go test -race ./internal/adapters/jellyfin/...`, `go vet ./...`, and `go test ./...` pass.

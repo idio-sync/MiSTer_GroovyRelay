@@ -144,7 +144,7 @@ ffmpeg exits cleanly
   -> build next request for the peeked item
   -> re-check core idle, stopped ref still current, and queue head still matches
   -> StartSessionIfIdle(nextReq)
-      -> started: commit only if the stopped ref is still current, remove the started queued item by identity, spawn reporter
+      -> started: commit only if the stopped ref is still current, the started queued item is still the queue head, and core still owns the started session; then remove that head item and spawn reporter
       -> not idle: stand down without changing queue or adapter ownership
       -> error: log, cleanup, stop
 ```
@@ -161,11 +161,11 @@ It peeks the head, starts only if core is still idle, and mutates the queue only
 after a successful guarded start. Because building a next request performs
 network I/O, the auto path rechecks core idle, captured-ref identity, and
 queue-head identity immediately before calling `StartSessionIfIdle`. At commit
-time, it removes the started item by stable identity from wherever it currently
-appears in the queue, preserving any intervening `PlayNext` / `PlayLast`
-mutations that arrived after the guarded start. If a controller consumes or
-replaces the queue during the settle or build window, the background advance
-does not restore anything or reorder the queue.
+time, it removes the started item only if that exact queued entry is still the
+queue head. If a controller inserts ahead of the started item, consumes the
+queue, or replaces the queue during the settle/build/start/commit window, the
+background advance stands down, leaves the controller-mutated queue alone, and
+stops the exact stale core session if auto-advance already started one.
 
 ## Component 4 — Shared Start Helper
 
@@ -209,15 +209,19 @@ The auto-advance helper path is stricter because it is autonomous and guarded:
 8. Call `StartSessionIfIdle(nextReq)`.
 9. If `started=false`, return without touching queue or `currentRefKey`.
 10. If `started=true`, commit adapter ownership under `Adapter.mu` only when
-   `currentRefKey` still equals the captured stopped ref. On that same critical
-   section, set `currentRefKey` to the new request ref, clear pending rollback
-   state, and remove the started item by stable queued-item identity from its
-   current queue position.
+   `currentRefKey` still equals the captured stopped ref, no controller-owned
+   async start has appeared, and the started queued entry is still the queue
+   head. On that same critical section, set `currentRefKey` to the new request
+   ref, clear pending rollback state, and remove the started queue head.
 11. If the compare-commit fails, leave queue and adapter ownership untouched,
    cleanup any request-owned artwork, and do not spawn a reporter; a newer
    controller-owned session has taken over.
-12. If the compare-commit succeeds, spawn the reporter with a fresh
-   `NowPlayingQueue` snapshot.
+12. If the compare-commit succeeds, recheck that core still owns the started
+   session before emitting history or spawning a reporter. If core ownership was
+   preempted after adapter commit, roll the adapter queue/ref back and stop only
+   the exact stale auto-start generation.
+13. If the compare-commit succeeds and core ownership still matches, spawn the
+   reporter with a fresh `NowPlayingQueue` snapshot.
 
 This means the auto path does not call `beginSelfPreempt` before the guarded
 start. If implementation reuse makes pre-reservation unavoidable, rollback must
@@ -256,7 +260,8 @@ newer controller-owned session.
 | Metadata or `PlaybackInfo` fails for next item | Log, leave queue and `currentRefKey` unchanged, cleanup request-owned artwork, do not spawn a reporter, do not attempt the following item |
 | `StartSessionIfIdle` returns error | Log, cleanup, leave queue and `currentRefKey` unchanged, do not spawn a reporter, stop |
 | Controller preempts after guarded start but before adapter commit | Compare-commit fails; auto path leaves adapter ownership and queue untouched |
-| `PlayNext` inserts before the started item after guarded start | Commit preserves the inserted item and removes the started item by identity from its later queue position |
+| Controller preempts after adapter commit but before reporter/history finalization | Auto path rolls adapter ownership and queue back, stops only the stale auto-start generation, and emits no reporter/history |
+| `PlayNext` inserts before the started item after guarded start | Auto path stands down, preserves the inserted item and original queue order, and stops only the stale auto-start generation |
 
 ## Testing
 
@@ -283,9 +288,11 @@ Add focused tests under `internal/adapters/jellyfin/`:
 - Failed or guard-missed auto-start does not clobber `currentRefKey`.
 - Auto-start success followed by controller preemption before adapter commit does
   not clobber `currentRefKey`.
+- Auto-start success followed by core preemption after adapter commit rolls the
+  adapter queue/ref back before reporter/history finalization.
 - `PlayNext` landing after successful `StartSessionIfIdle` but before adapter
-  commit keeps the inserted item and removes the already-started item by
-  identity.
+  commit makes auto-advance stand down, preserving inserted and original queued
+  items.
 - Auto-advance metadata or `PlaybackInfo` failure leaves queue and
   `currentRefKey` unchanged, spawns no reporter, and does not skip ahead.
 - `StartSessionIfIdle` error leaves queue and `currentRefKey` unchanged, spawns

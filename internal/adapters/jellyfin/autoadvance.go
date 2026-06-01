@@ -99,6 +99,23 @@ func (a *Adapter) commitAutoAdvance(stoppedRef string, nextRef string, started Q
 	return true
 }
 
+func (a *Adapter) rollbackAutoAdvanceCommit(stoppedRef string, nextRef string, started QueuedItem) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentRefKey != nextRef {
+		return false
+	}
+	a.currentRefKey = stoppedRef
+	a.pendingRollback = ""
+	for _, qi := range a.queue {
+		if sameQueueEntry(qi, started) {
+			return true
+		}
+	}
+	a.queue = append([]QueuedItem{started}, a.queue...)
+	return true
+}
+
 func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string, controllerEpoch uint64) {
 	qi, ok := a.peekQueueHead()
 	if !ok {
@@ -196,6 +213,15 @@ func (a *Adapter) startQueuedItemAfterEOF(stoppedRef string, controllerEpoch uin
 	}
 	if !a.commitAutoAdvance(stoppedRef, req.AdapterRef, qi, controllerEpoch) {
 		cleanupSessionArtwork(req)
+		a.stopStaleAutoAdvanceSession(startedStatus)
+		return
+	}
+	if a.afterAutoAdvanceCommit != nil {
+		a.afterAutoAdvanceCommit()
+	}
+	if !sameCoreSession(a.core.Status(), startedStatus) {
+		cleanupSessionArtwork(req)
+		a.rollbackAutoAdvanceCommit(stoppedRef, req.AdapterRef, qi)
 		a.stopStaleAutoAdvanceSession(startedStatus)
 		return
 	}
