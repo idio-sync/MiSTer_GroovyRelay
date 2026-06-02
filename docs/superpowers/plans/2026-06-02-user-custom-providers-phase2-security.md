@@ -110,18 +110,20 @@ func TestValidateUserProviderHost(t *testing.T) {
 	}
 
 	reject := []string{
-		"",                                   // empty
-		"://nope",                            // unparseable
-		"file:///etc/shadow.m3u8",            // file scheme
-		"ftp://example.com/x",                // non-http scheme
-		"http://user:pass@example.com/x",     // userinfo
-		"http://127.0.0.1/x",                 // loopback v4
-		"http://[::1]/x",                     // loopback v6
-		"http://169.254.169.254/latest/meta", // link-local / cloud metadata
-		"http://[fe80::1]/x",                 // link-local v6
-		"http://0.0.0.0/x",                   // unspecified
-		"http://224.0.0.1/x",                 // multicast
-		"https:///x",                         // empty host
+		"",                                       // empty
+		"://nope",                                // empty scheme
+		"file:///etc/shadow.m3u8",                // file scheme
+		"ftp://example.com/x",                    // non-http scheme
+		"http://user:pass@example.com/x",         // userinfo
+		"http://127.0.0.1/x",                     // loopback v4
+		"http://[::1]/x",                         // loopback v6
+		"http://[::ffff:127.0.0.1]/x",            // IPv4-mapped loopback (must Unmap)
+		"http://169.254.169.254/latest/meta",     // link-local / cloud metadata
+		"http://[::ffff:169.254.169.254]/x",      // IPv4-mapped metadata (must Unmap)
+		"http://[fe80::1]/x",                     // link-local v6
+		"http://0.0.0.0/x",                       // unspecified
+		"http://224.0.0.1/x",                     // multicast
+		"https:///x",                             // empty host
 	}
 	for _, u := range reject {
 		if err := validateUserProviderHost(u); err == nil {
@@ -178,9 +180,12 @@ func validateUserProviderHost(raw string) error {
 		return fmt.Errorf("url host is required")
 	}
 	// Only IP-literal hosts can be classified here; hostnames are deferred to
-	// the play-time resolved-IP recheck (Phase 3).
+	// the play-time resolved-IP recheck (Phase 3). Unmap() canonicalizes
+	// IPv4-mapped IPv6 literals (e.g. ::ffff:127.0.0.1) so the IPv4-form checks
+	// fire — without it, IsLoopback()/IsLinkLocalUnicast() evaluate the raw
+	// IPv6 bits and an attacker bypasses the loopback/metadata blocks.
 	if addr, err := netip.ParseAddr(host); err == nil {
-		if err := validateUserProviderIP(addr); err != nil {
+		if err := validateUserProviderIP(addr.Unmap()); err != nil {
 			return err
 		}
 	}
@@ -422,6 +427,20 @@ attach to user `direct` items so FFmpeg never opens local files. All
 package-internal, build green, `go test ./internal/adapters/streams/...` passing.
 Nothing is wired into the running adapter or playback yet — Phase 3 does that,
 safely.
+
+**Known Phase-2 limitation (load-bearing Phase-3 dependency).** The validator is
+syntactic and classifies only *canonical* IP literals. Two input classes pass
+the Phase-2 gate as "hostnames" and rely on Phase 3 to close:
+1. **Real hostnames** that resolve to a blocked IP (e.g. a DNS name pointing at
+   `127.0.0.1`).
+2. **Non-canonical IP encodings** — decimal-integer (`http://2130706433/`),
+   hex (`http://0x7f000001/`), or octal forms — which `netip.ParseAddr` rejects,
+   so they fall through as hostnames, yet the OS resolver/FFmpeg may still route
+   them to loopback.
+Phase 3's play-time recheck MUST resolve the host to its actual IP(s) and run
+`validateUserProviderIP` on each before handing the URL to FFmpeg — this is a
+required safety step, not an enhancement. Until Phase 3 lands, user providers are
+not castable, so neither class is reachable.
 
 ---
 
