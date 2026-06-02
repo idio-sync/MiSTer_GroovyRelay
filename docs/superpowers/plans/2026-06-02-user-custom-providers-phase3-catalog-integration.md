@@ -632,6 +632,32 @@ func TestCatalog_EmitsBundledThenUser(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalog_OmitsBundledProviderAbsentFromDefinitions(t *testing.T) {
+	t.Parallel()
+	// mergeManifests filters disabled bundled providers out of the installed
+	// definitions (catalog.go doc comment), so a disabled bundled provider is
+	// simply absent from definitions. Simulate that by installing only two of
+	// the three bundled defs plus a user def: Catalog must skip the missing
+	// bundled entry and still emit the rest in order.
+	a := newTestAdapterWithCatalog(t)
+	a.replaceDefinitionsForTest([]ProviderDefinition{
+		bundledMTVDefinition(),
+		bundledCartoonDefinition(),
+		// toonami-aftermath intentionally omitted (stand-in for disabled→filtered)
+		userExposureTestDef(),
+	})
+	cat := a.Catalog()
+	wantIDs := []string{"mtv-rewind", "cartoon-rewind", "user:mix"}
+	if len(cat) != len(wantIDs) {
+		t.Fatalf("len(Catalog) = %d, want %d", len(cat), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if cat[i].ID != want {
+			t.Errorf("Catalog[%d].ID = %q, want %q", i, cat[i].ID, want)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -765,7 +791,7 @@ func userBadgeClass(token string) string {
 }
 ```
 
-(`chassisCatalogSnapshot` at lines 107-130 becomes unused by `Catalog()` but is left in place — it remains a valid local-only snapshot helper and removing it is out of scope for this task.)
+(`chassisCatalogSnapshot` at lines 107-130 becomes unused by `Catalog()` after this change — it has no other caller in the package. Leaving it compiles cleanly (Go does not flag unused methods), but it now duplicates `catalogProvidersInOrder`'s bootstrap logic; a follow-up commit in this phase (or Phase 5) should delete it to avoid drift. Removing it now is also acceptable — verify with `grep -rn chassisCatalogSnapshot internal/adapters/streams/` that nothing else references it first.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1202,7 +1228,7 @@ func TestUserDirect_BlockedRedirectFailsCast(t *testing.T) {
 }
 ```
 
-> `enableBridgeHLSBufferForTest` already exists in `playback_test.go` (used at line 410). `redirectResp`/`stubDoer`/`stubHostResolver` come from `url_security_test.go` (same package).
+> `enableBridgeHLSBufferForTest` is already defined in `playback_test.go` (used e.g. at line 410; locate it with `grep -n 'func enableBridgeHLSBufferForTest' internal/adapters/streams/playback_test.go`). `redirectResp`/`stubDoer`/`stubHostResolver` come from `url_security_test.go` (same package).
 
 - [ ] **Step 2: Run test to verify it fails**
 
