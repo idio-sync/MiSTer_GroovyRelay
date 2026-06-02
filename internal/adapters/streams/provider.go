@@ -27,6 +27,8 @@ type ProviderDefinition struct {
 	LogoURL             string              `json:"logo_url,omitempty"`
 	LogoAlt             string              `json:"logo_alt,omitempty"`
 	FallbackLabel       string              `json:"fallback_label,omitempty"`
+	BadgeColor          string              `json:"badge_color,omitempty"`
+	BadgeLabel          string              `json:"badge_label,omitempty"`
 	BaseURL             string              `json:"base_url"`
 	PlaylistURL         string              `json:"playlist_url"`
 	URLRules            []URLRule           `json:"url_rules"`
@@ -58,6 +60,7 @@ type ChannelDefinition struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
 	GroupID     string   `json:"group_id,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
 	Icon        string   `json:"icon,omitempty"`
 	URL         string   `json:"url,omitempty"`
 	PlayMode    PlayMode `json:"play_mode,omitempty"`
