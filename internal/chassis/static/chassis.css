@@ -248,12 +248,37 @@ body.receiver .receiver > .receiver-inner {
   z-index: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto auto auto auto;
+  /* The stack groups into three faceplate zones (monitor / control /
+     library); 14px is the *between-zone* seam, while each .zone packs its
+     own modules tighter. An implicit auto row per zone, no fixed count. */
   gap: 14px;
 }
 
 body.receiver .receiver > .receiver-inner > * {
   min-width: 0;
+}
+
+/* Faceplate zones — group the module stack so the eye reads "monitor",
+   "control", and "library" blocks instead of one undifferentiated comb of
+   equal gaps. Modules sit tighter within a zone (10px) than between zones
+   (the 14px inner gap + the engraved seam below), giving the stack a
+   tight/generous rhythm. The seam reuses the status-bar's groove vocabulary
+   (a dark line lipped with a 1px highlight) so it reads as machined trim. */
+body.receiver .zone {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+body.receiver .zone > * {
+  min-width: 0;
+}
+
+body.receiver .zone + .zone {
+  padding-top: 14px;
+  border-top: 1px solid #0a0a0b;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 /* ---- 5. Status bar -------------------------------------------------- */
@@ -578,6 +603,14 @@ body.receiver.idle .brand-plate .model em {
 
   body.receiver .receiver > .receiver-inner {
     gap: 10px;
+  }
+
+  body.receiver .zone {
+    gap: 8px;
+  }
+
+  body.receiver .zone + .zone {
+    padding-top: 10px;
   }
 
   body.receiver .status-bar {
