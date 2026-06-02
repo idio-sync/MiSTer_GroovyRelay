@@ -149,3 +149,32 @@ func TestNewUserProviderID(t *testing.T) {
 		t.Errorf("newUserProviderID = %q, want user:f1-tv-2", got)
 	}
 }
+
+func TestNewChannelID(t *testing.T) {
+	// Collision appends a numeric suffix.
+	taken := map[string]bool{"live": true}
+	got := newChannelID("Live", func(id string) bool { return taken[id] })
+	if got != "live-2" {
+		t.Errorf("newChannelID collision = %q, want live-2", got)
+	}
+	// Unsluggable name falls back to "channel".
+	got = newChannelID("???", func(string) bool { return false })
+	if got != "channel" {
+		t.Errorf("newChannelID unsluggable = %q, want channel", got)
+	}
+}
+
+func TestValidateGlyph_MultiByteRunes(t *testing.T) {
+	// Exactly 2 runes, each multi-byte: must be accepted (rune-counted, not byte-counted).
+	g := "日本" // 2 CJK runes, 6 bytes
+	if err := validateGlyph(g); err != nil {
+		t.Errorf("validateGlyph(%q) unexpected error: %v", g, err)
+	}
+}
+
+func TestValidateUserManifestID_RejectAdhocFalse(t *testing.T) {
+	// rejectAdhoc=false means the reserved word "adhoc" must be accepted.
+	if err := validateUserManifestID("channel id", "adhoc", false); err != nil {
+		t.Errorf("validateUserManifestID(adhoc, rejectAdhoc=false) unexpected error: %v", err)
+	}
+}

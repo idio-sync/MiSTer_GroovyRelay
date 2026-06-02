@@ -16,9 +16,6 @@ import (
 
 const userManifestVersion = 1
 
-// osWriteFile is a thin seam so tests can write fixtures without importing os.
-var osWriteFile = os.WriteFile
-
 type userManifestFile struct {
 	Version   int                  `json:"version"`
 	Providers []ProviderDefinition `json:"providers"`

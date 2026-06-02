@@ -223,6 +223,7 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 	if len(def.Channels) > maxChannelsPerProvider {
 		return ProviderDefinition{}, fmt.Errorf("provider %q: at most %d channels", def.ID, maxChannelsPerProvider)
 	}
+	def.Channels = append([]ChannelDefinition(nil), def.Channels...)
 
 	groupIDs := map[string]bool{}
 	for _, g := range def.Groups {

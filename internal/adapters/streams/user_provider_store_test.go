@@ -3,6 +3,7 @@ package streams
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -200,6 +201,26 @@ func TestUserStore_LoadEnforcesProviderLimit(t *testing.T) {
 	}
 }
 
+func TestUserStore_LoadDropsVersionMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user_providers.json")
+	def := sampleDef()
+	def.ID = "user:f1-tv"
+	body, err := json.Marshal(userManifestFile{Version: 999, Providers: []ProviderDefinition{def}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileString(path, string(body)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := newUserProviderStore(path)
+	if err != nil {
+		t.Fatalf("load version mismatch: %v", err)
+	}
+	if got := len(st.Snapshot()); got != 0 {
+		t.Errorf("expected empty store on version mismatch, got %d providers", got)
+	}
+}
+
 func writeFileString(path, s string) error {
-	return osWriteFile(path, []byte(s), 0o600)
+	return os.WriteFile(path, []byte(s), 0o600)
 }
