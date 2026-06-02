@@ -1,8 +1,10 @@
 package streams
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // userProviderType is the ProviderDefinition.Type value for user-authored
@@ -53,4 +55,79 @@ func detectChannelKind(raw string) string {
 func isYouTubeHost(host string) bool {
 	host = strings.TrimPrefix(host, "www.")
 	return host == "youtube.com" || host == "m.youtube.com" || host == "music.youtube.com"
+}
+
+// badgeColorTokens is the curated palette (spec §8). Each token maps to a
+// CRT-tuned .ic.u-<token> / .badge.u-<token> pair defined in chassis.css.
+// Stored as a token, never raw hex, so the chassis never emits inline styles.
+var badgeColorTokens = map[string]struct{}{
+	"amber": {}, "red": {}, "teal": {}, "blue": {},
+	"purple": {}, "green": {}, "cyan": {}, "slate": {},
+}
+
+const defaultBadgeColor = "slate"
+
+func isUserProviderID(id string) bool {
+	return len(id) > len(userProviderIDPrefix) && id[:len(userProviderIDPrefix)] == userProviderIDPrefix
+}
+
+// validateBadgeColor lowercases/trims a save-time token and rejects empty,
+// unknown, and raw hex values. Persisted user input must fail loudly instead of
+// being silently rewritten to a different color.
+func validateBadgeColor(in string) (string, error) {
+	t := strings.ToLower(strings.TrimSpace(in))
+	if _, ok := badgeColorTokens[t]; ok {
+		return t, nil
+	}
+	return "", fmt.Errorf("badge_color must be one of amber, red, teal, blue, purple, green, cyan, slate")
+}
+
+// normalizeBadgeColorForLoad is the load-time fallback for malformed persisted
+// data. Save-time validation stays strict, but a hand-edited file can never
+// brick rendering (spec §4.3).
+func normalizeBadgeColorForLoad(in string) string {
+	t, err := validateBadgeColor(in)
+	if err == nil {
+		return t
+	}
+	return defaultBadgeColor
+}
+
+// validateGlyph enforces a 2–4 character (rune-counted) non-empty glyph.
+func validateGlyph(g string) error {
+	g = strings.TrimSpace(g)
+	n := utf8.RuneCountInString(g)
+	if n < 2 || n > 4 {
+		return fmt.Errorf("glyph must be 2-4 characters, got %d", n)
+	}
+	return nil
+}
+
+// validateUserProviderID verifies the reserved user: namespace plus the normal
+// manifest ID rules for the suffix.
+func validateUserProviderID(id string) error {
+	if !isUserProviderID(id) {
+		return fmt.Errorf("provider id %q must start with %q", id, userProviderIDPrefix)
+	}
+	suffix := strings.TrimPrefix(id, userProviderIDPrefix)
+	if err := validateManifestID("provider id", suffix); err != nil {
+		return err
+	}
+	if suffix == reservedAdhocID {
+		return fmt.Errorf("provider id %q is reserved", id)
+	}
+	return nil
+}
+
+// validateUserManifestID applies the existing manifest ID rule to user group
+// and channel IDs. Channel IDs reject adhoc because that value is reserved for
+// quick-cast snapshots.
+func validateUserManifestID(label, id string, rejectAdhoc bool) error {
+	if err := validateManifestID(label, id); err != nil {
+		return err
+	}
+	if rejectAdhoc && id == reservedAdhocID {
+		return fmt.Errorf("%s %q is reserved", label, id)
+	}
+	return nil
 }

@@ -59,3 +59,59 @@ func TestDetectChannelKind(t *testing.T) {
 		}
 	}
 }
+
+func TestBadgeColorValidationAndLoadNormalization(t *testing.T) {
+	cases := map[string]string{
+		"amber":  "amber",
+		"AMBER":  "amber",
+		" teal ": "teal",
+	}
+	for in, want := range cases {
+		if got, err := validateBadgeColor(in); err != nil || got != want {
+			t.Errorf("validateBadgeColor(%q) = %q, %v; want %q, nil", in, got, err, want)
+		}
+	}
+	bad := []string{"", "fuchsia", "#ff0000"}
+	for _, in := range bad {
+		if _, err := validateBadgeColor(in); err == nil {
+			t.Errorf("validateBadgeColor(%q) expected error, got nil", in)
+		}
+		if got := normalizeBadgeColorForLoad(in); got != defaultBadgeColor {
+			t.Errorf("normalizeBadgeColorForLoad(%q) = %q, want %q", in, got, defaultBadgeColor)
+		}
+	}
+}
+
+func TestValidateGlyph(t *testing.T) {
+	ok := []string{"F1", "CN", "TOM", "ABCD"}
+	for _, g := range ok {
+		if err := validateGlyph(g); err != nil {
+			t.Errorf("validateGlyph(%q) unexpected error: %v", g, err)
+		}
+	}
+	bad := []string{"", "   ", "X", "TOOLONG"}
+	for _, g := range bad {
+		if err := validateGlyph(g); err == nil {
+			t.Errorf("validateGlyph(%q) expected error, got nil", g)
+		}
+	}
+}
+
+func TestValidateUserManifestIDs(t *testing.T) {
+	if err := validateUserProviderID("user:f1-tv"); err != nil {
+		t.Fatalf("valid provider ID rejected: %v", err)
+	}
+	for _, id := range []string{"f1-tv", "user:", "user:Bad", "user:bad/id", "user:adhoc"} {
+		if err := validateUserProviderID(id); err == nil {
+			t.Errorf("validateUserProviderID(%q) expected error, got nil", id)
+		}
+	}
+	if err := validateUserManifestID("channel id", "live", true); err != nil {
+		t.Fatalf("valid channel ID rejected: %v", err)
+	}
+	for _, id := range []string{"", "Bad", "bad/id", "adhoc"} {
+		if err := validateUserManifestID("channel id", id, true); err == nil {
+			t.Errorf("validateUserManifestID(%q) expected error, got nil", id)
+		}
+	}
+}
