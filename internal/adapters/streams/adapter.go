@@ -73,6 +73,7 @@ type Adapter struct {
 	definitionOrder     []string
 	catalogs            map[string]ProviderCatalog
 	presetStore         *presetStore
+	userStore           *userProviderStore
 	active              *ActiveQueue
 	badItems            map[string]badStreamItem
 
@@ -112,6 +113,12 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("streams: preset store: %w", err)
+	}
+	a.userStore, err = newUserProviderStore(
+		filepath.Join(cfg.Bridge.DataDir, "user_providers.json"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("streams: user provider store: %w", err)
 	}
 	return a, nil
 }

@@ -3,6 +3,8 @@ package streams
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -356,5 +358,25 @@ func TestAdapter_Catalog_PopulatesOriginAndKindForBundledProviders(t *testing.T)
 		if p.Kind != expect.kind {
 			t.Errorf("provider %q Kind = %q; want %q", id, p.Kind, expect.kind)
 		}
+	}
+}
+
+func TestNew_BuildsUserProviderStore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := []byte(`{"version":1,"providers":[{"id":"user:demo","type":"user","display_name":"Demo","badge_label":"DM","badge_color":"teal","channels":[{"name":"Live","url":"https://example.com/stream.m3u8","kind":"direct"}]}]}`)
+	if err := os.WriteFile(filepath.Join(dir, "user_providers.json"), body, 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.userStore == nil {
+		t.Fatal("a.userStore is nil; want a built store")
+	}
+	got := a.userStore.Snapshot()
+	if len(got) != 1 || got[0].ID != "user:demo" {
+		t.Fatalf("Snapshot = %+v, want one provider user:demo", got)
 	}
 }
