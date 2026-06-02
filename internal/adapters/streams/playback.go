@@ -479,6 +479,21 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		}
 		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
 	}
+	if isUserProviderID(q.ProviderID) {
+		if err := a.revalidateResolvedUserURLs(ctx, resolved.URL, resolved.AudioURL); err != nil {
+			slog.Warn("streams playback blocked unsafe resolved user url",
+				"provider", q.ProviderID,
+				"channel", q.ChannelID,
+				"item", capture.ItemID,
+				"err", err,
+			)
+			if next, ok := a.recordStartFailureAndAdvance(capture, "resolved stream url is not allowed"); ok {
+				a.runBeforeQueueContinuation()
+				return a.playCurrentWithStarter(ctx, next, starter)
+			}
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "resolved stream url is not allowed")
+		}
+	}
 	title := streamSessionTitle(item, resolved.Title)
 
 	req := core.SessionRequest{

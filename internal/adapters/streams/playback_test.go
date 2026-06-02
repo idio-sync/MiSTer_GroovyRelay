@@ -1480,3 +1480,61 @@ func TestUserDirect_BlockedRedirectFailsCast(t *testing.T) {
 		t.Fatalf("core start calls = %d, want 0 (URL never reaches FFmpeg)", c.startCalls)
 	}
 }
+
+func installUserSingleAdapter(t *testing.T, resolved *ytdlp.Resolution) (*Adapter, *fakeCore) {
+	t.Helper()
+	a, c := newTestAdapterWithFakeCore(t)
+	def := ProviderDefinition{
+		ID: "user:tw", Type: userProviderType, DisplayName: "TW", BadgeLabel: "TW", BadgeColor: "purple",
+		Channels: []ChannelDefinition{{ID: "vod", Name: "VOD", Kind: kindSingle, URL: "https://www.twitch.tv/foo"}},
+	}
+	cat, err := buildUserCatalog(def)
+	if err != nil {
+		t.Fatalf("buildUserCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	a.resolver = &fakeResolver{res: resolved}
+	return a, c
+}
+
+func TestUserSingle_BlockedResolvedHostFailsCast(t *testing.T) {
+	a, c := installUserSingleAdapter(t, &ytdlp.Resolution{URL: "https://media.evil.com/v.mp4"})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"media.evil.com": {"169.254.169.254"}}}
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:tw", ChannelID: "vod"})
+	if err == nil {
+		t.Fatal("StartResolvedStream succeeded, want failure on metadata resolved host")
+	}
+	if c.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0 (resolved URL never reaches FFmpeg)", c.startCalls)
+	}
+}
+
+func TestUserSingle_BlockedAudioURLFailsCast(t *testing.T) {
+	a, c := installUserSingleAdapter(t, &ytdlp.Resolution{
+		URL:      "https://media.ok.com/v.mp4",
+		AudioURL: "https://media.evil.com/a.mp4",
+	})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{
+		"media.ok.com":   {"93.184.216.34"},
+		"media.evil.com": {"127.0.0.1"},
+	}}
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:tw", ChannelID: "vod"})
+	if err == nil {
+		t.Fatal("StartResolvedStream succeeded, want failure on blocked AudioURL")
+	}
+	if c.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0", c.startCalls)
+	}
+}
+
+func TestUserSingle_SafeResolvedHostCasts(t *testing.T) {
+	a, c := installUserSingleAdapter(t, &ytdlp.Resolution{URL: "https://media.ok.com/v.mp4"})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"media.ok.com": {"93.184.216.34"}}}
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:tw", ChannelID: "vod"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.lastReq.StreamURL != "https://media.ok.com/v.mp4" {
+		t.Fatalf("StreamURL = %q, want resolved URL", c.lastReq.StreamURL)
+	}
+}
