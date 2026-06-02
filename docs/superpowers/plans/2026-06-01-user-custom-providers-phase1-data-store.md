@@ -15,8 +15,8 @@ wire them into the running adapter's catalogs (that is Phase 2). All work is
 package-internal to `internal/adapters/streams`, so the package builds and its
 unit tests pass on their own.
 
-**Tech Stack:** Go 1.26, `encoding/json`, `crypto/sha256`, `net/netip` (later
-phases), the in-repo `internal/config.WriteAtomic` atomic writer, and the
+**Tech Stack:** Go 1.26, `encoding/json`, `crypto/sha256`, the in-repo
+`internal/config.WriteAtomic` atomic writer, and the
 `adapters.FieldError`/`adapters.QuickCastError` error types. Tests are standard
 `testing` table tests run with `go test ./internal/adapters/streams/...`.
 
@@ -269,7 +269,7 @@ git commit -m "feat(streams): user-provider constants and channel-kind auto-dete
 
 ---
 
-### Task 3: Badge-color palette + glyph validation
+### Task 3: Palette, glyph, and manifest-ID validation helpers
 
 **Files:**
 - Modify: `internal/adapters/streams/provider_user.go`
@@ -278,33 +278,58 @@ git commit -m "feat(streams): user-provider constants and channel-kind auto-dete
 - [ ] **Step 1: Write the failing test (append)**
 
 ```go
-func TestNormalizeBadgeColor(t *testing.T) {
+func TestBadgeColorValidationAndLoadNormalization(t *testing.T) {
 	cases := map[string]string{
 		"amber":  "amber",
 		"AMBER":  "amber",
 		" teal ": "teal",
-		"":       defaultBadgeColor,
-		"fuchsia": defaultBadgeColor, // unknown token -> default
-		"#ff0000": defaultBadgeColor, // raw hex rejected
 	}
 	for in, want := range cases {
-		if got := normalizeBadgeColor(in); got != want {
-			t.Errorf("normalizeBadgeColor(%q) = %q, want %q", in, got, want)
+		if got, err := validateBadgeColor(in); err != nil || got != want {
+			t.Errorf("validateBadgeColor(%q) = %q, %v; want %q, nil", in, got, err, want)
+		}
+	}
+	bad := []string{"", "fuchsia", "#ff0000"}
+	for _, in := range bad {
+		if _, err := validateBadgeColor(in); err == nil {
+			t.Errorf("validateBadgeColor(%q) expected error, got nil", in)
+		}
+		if got := normalizeBadgeColorForLoad(in); got != defaultBadgeColor {
+			t.Errorf("normalizeBadgeColorForLoad(%q) = %q, want %q", in, got, defaultBadgeColor)
 		}
 	}
 }
 
 func TestValidateGlyph(t *testing.T) {
-	ok := []string{"F1", "CN", "TOM", "ABCD", "X"}
+	ok := []string{"F1", "CN", "TOM", "ABCD"}
 	for _, g := range ok {
 		if err := validateGlyph(g); err != nil {
 			t.Errorf("validateGlyph(%q) unexpected error: %v", g, err)
 		}
 	}
-	bad := []string{"", "   ", "TOOLONG"}
+	bad := []string{"", "   ", "X", "TOOLONG"}
 	for _, g := range bad {
 		if err := validateGlyph(g); err == nil {
 			t.Errorf("validateGlyph(%q) expected error, got nil", g)
+		}
+	}
+}
+
+func TestValidateUserManifestIDs(t *testing.T) {
+	if err := validateUserProviderID("user:f1-tv"); err != nil {
+		t.Fatalf("valid provider ID rejected: %v", err)
+	}
+	for _, id := range []string{"f1-tv", "user:", "user:Bad", "user:bad/id", "user:adhoc"} {
+		if err := validateUserProviderID(id); err == nil {
+			t.Errorf("validateUserProviderID(%q) expected error, got nil", id)
+		}
+	}
+	if err := validateUserManifestID("channel id", "live", true); err != nil {
+		t.Fatalf("valid channel ID rejected: %v", err)
+	}
+	for _, id := range []string{"", "Bad", "bad/id", "adhoc"} {
+		if err := validateUserManifestID("channel id", id, true); err == nil {
+			t.Errorf("validateUserManifestID(%q) expected error, got nil", id)
 		}
 	}
 }
@@ -312,10 +337,11 @@ func TestValidateGlyph(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/adapters/streams/ -run 'TestNormalizeBadgeColor|TestValidateGlyph' -v`
-Expected: FAIL — `undefined: normalizeBadgeColor` / `validateGlyph` / `defaultBadgeColor`.
+Run: `go test ./internal/adapters/streams/ -run 'TestBadgeColorValidationAndLoadNormalization|TestValidateGlyph|TestValidateUserManifestIDs' -v`
+Expected: FAIL — `undefined: validateBadgeColor` / `validateGlyph` /
+`validateUserProviderID` / `defaultBadgeColor`.
 
-- [ ] **Step 3: Add palette + glyph helpers to `provider_user.go`**
+- [ ] **Step 3: Add palette, glyph, and ID helpers to `provider_user.go`**
 
 Append to `internal/adapters/streams/provider_user.go` (add `"fmt"` and
 `"unicode/utf8"` to the import block):
@@ -331,23 +357,67 @@ var badgeColorTokens = map[string]struct{}{
 
 const defaultBadgeColor = "slate"
 
-// normalizeBadgeColor lowercases/trims a token and returns it if it is in the
-// palette, else the default. Total (never errors) so malformed persisted data
-// can never brick rendering (spec §4.3).
-func normalizeBadgeColor(in string) string {
+func isUserProviderID(id string) bool {
+	return len(id) > len(userProviderIDPrefix) && id[:len(userProviderIDPrefix)] == userProviderIDPrefix
+}
+
+// validateBadgeColor lowercases/trims a save-time token and rejects empty,
+// unknown, and raw hex values. Persisted user input must fail loudly instead of
+// being silently rewritten to a different color.
+func validateBadgeColor(in string) (string, error) {
 	t := strings.ToLower(strings.TrimSpace(in))
 	if _, ok := badgeColorTokens[t]; ok {
+		return t, nil
+	}
+	return "", fmt.Errorf("badge_color must be one of amber, red, teal, blue, purple, green, cyan, slate")
+}
+
+// normalizeBadgeColorForLoad is the load-time fallback for malformed persisted
+// data. Save-time validation stays strict, but a hand-edited file can never
+// brick rendering (spec §4.3).
+func normalizeBadgeColorForLoad(in string) string {
+	t, err := validateBadgeColor(in)
+	if err == nil {
 		return t
 	}
 	return defaultBadgeColor
 }
 
-// validateGlyph enforces a 1–4 character (rune-counted) non-empty glyph.
+// validateGlyph enforces a 2–4 character (rune-counted) non-empty glyph.
 func validateGlyph(g string) error {
 	g = strings.TrimSpace(g)
 	n := utf8.RuneCountInString(g)
-	if n < 1 || n > 4 {
-		return fmt.Errorf("glyph must be 1-4 characters, got %d", n)
+	if n < 2 || n > 4 {
+		return fmt.Errorf("glyph must be 2-4 characters, got %d", n)
+	}
+	return nil
+}
+
+// validateUserProviderID verifies the reserved user: namespace plus the normal
+// manifest ID rules for the suffix.
+func validateUserProviderID(id string) error {
+	if !isUserProviderID(id) {
+		return fmt.Errorf("provider id %q must start with %q", id, userProviderIDPrefix)
+	}
+	suffix := strings.TrimPrefix(id, userProviderIDPrefix)
+	if err := validateManifestID("provider id", suffix); err != nil {
+		return err
+	}
+	if suffix == reservedAdhocID {
+		return fmt.Errorf("provider id %q is reserved", id)
+	}
+	return nil
+}
+
+// validateUserManifestID applies the existing manifest ID rule to user group
+// and channel IDs. Channel IDs reject adhoc because that value is reserved for
+// quick-cast snapshots.
+func validateUserManifestID(label, id string, rejectAdhoc bool) error {
+	if err := validateManifestID(label, id); err != nil {
+		return err
+	}
+	if rejectAdhoc && id == reservedAdhocID {
+		return fmt.Errorf("%s %q is reserved", label, id)
 	}
 	return nil
 }
@@ -355,14 +425,14 @@ func validateGlyph(g string) error {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./internal/adapters/streams/ -run 'TestNormalizeBadgeColor|TestValidateGlyph' -v`
+Run: `go test ./internal/adapters/streams/ -run 'TestBadgeColorValidationAndLoadNormalization|TestValidateGlyph|TestValidateUserManifestIDs' -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add internal/adapters/streams/provider_user.go internal/adapters/streams/provider_user_test.go
-git commit -m "feat(streams): badge-color palette and glyph validation"
+git commit -m "feat(streams): user-provider validation helpers"
 ```
 
 ---
@@ -578,7 +648,8 @@ git commit -m "feat(streams): sanitized cache keys for user provider IDs"
 This mirrors `preset_store.go`: in-memory slice, atomic persistence via
 `config.WriteAtomic`, self-healing load (malformed file → empty store, never
 fatal). It does NOT resolve against a catalog — user providers ARE the source
-of truth. Validation enforces the `user:` prefix, the palette/glyph/kind rules,
+of truth. Validation enforces the `user:` prefix, existing manifest ID rules,
+duplicate group/channel checks, group references, the palette/glyph/kind rules,
 and the §10 limits.
 
 - [ ] **Step 1: Write the failing tests**
@@ -589,6 +660,8 @@ Create `internal/adapters/streams/user_provider_store_test.go`:
 package streams
 
 import (
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -645,6 +718,40 @@ func TestUserStore_PutRejectsBadColorAndKind(t *testing.T) {
 	if _, err := st.Put(def); err == nil {
 		t.Error("expected error for invalid channel kind")
 	}
+
+	def = sampleDef()
+	def.BadgeColor = "#ff0000"
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for invalid badge color")
+	}
+}
+
+func TestUserStore_PutRejectsMalformedIDsAndGroups(t *testing.T) {
+	st, _ := newTestStore(t)
+
+	def := sampleDef()
+	def.ID = "user:Bad"
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for malformed provider ID")
+	}
+
+	def = sampleDef()
+	def.Channels[0].ID = "adhoc"
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for reserved channel ID")
+	}
+
+	def = sampleDef()
+	def.Groups = []GroupDefinition{{ID: "sports", Name: "Sports"}, {ID: "sports", Name: "Dupe"}}
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for duplicate group ID")
+	}
+
+	def = sampleDef()
+	def.Channels[0].GroupID = "missing"
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for unknown group reference")
+	}
 }
 
 func TestUserStore_PutEnforcesLimits(t *testing.T) {
@@ -665,6 +772,7 @@ func TestUserStore_UpdatePreservesProviderID(t *testing.T) {
 
 	upd := saved
 	upd.DisplayName = "Formula 1" // rename must NOT change the locked ID
+	upd.Channels[0].Name = "Race Live" // channel rename also preserves ID
 	again, err := st.Put(upd)
 	if err != nil {
 		t.Fatalf("update Put: %v", err)
@@ -675,8 +783,24 @@ func TestUserStore_UpdatePreservesProviderID(t *testing.T) {
 	if again.DisplayName != "Formula 1" {
 		t.Errorf("rename not applied: DisplayName = %q, want Formula 1", again.DisplayName)
 	}
+	if again.Channels[0].ID != saved.Channels[0].ID {
+		t.Errorf("channel rename changed ID: %q -> %q", saved.Channels[0].ID, again.Channels[0].ID)
+	}
 	if len(st.Snapshot()) != 1 {
 		t.Errorf("update created a duplicate: %d providers", len(st.Snapshot()))
+	}
+}
+
+func TestUserStore_SnapshotDoesNotShareSlices(t *testing.T) {
+	st, _ := newTestStore(t)
+	saved, _ := st.Put(sampleDef())
+	snap := st.Snapshot()
+	snap[0].DisplayName = "Mutated"
+	snap[0].Channels[0].Name = "Mutated"
+
+	again := st.Snapshot()[0]
+	if again.DisplayName != saved.DisplayName || again.Channels[0].Name != saved.Channels[0].Name {
+		t.Errorf("snapshot mutation leaked into store: %+v", again)
 	}
 }
 
@@ -707,6 +831,31 @@ func TestUserStore_LoadDropsMalformed(t *testing.T) {
 	}
 	if len(st.Snapshot()) != 0 {
 		t.Error("expected empty store after malformed file")
+	}
+}
+
+func TestUserStore_LoadEnforcesProviderLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user_providers.json")
+	providers := make([]ProviderDefinition, 0, maxUserProviders+1)
+	for i := 0; i < maxUserProviders+1; i++ {
+		def := sampleDef()
+		def.ID = fmt.Sprintf("user:p-%d", i)
+		def.DisplayName = fmt.Sprintf("Provider %d", i)
+		providers = append(providers, def)
+	}
+	body, err := json.Marshal(userManifestFile{Version: userManifestVersion, Providers: providers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileString(path, string(body)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := newUserProviderStore(path)
+	if err != nil {
+		t.Fatalf("load over limit: %v", err)
+	}
+	if got := len(st.Snapshot()); got != maxUserProviders {
+		t.Errorf("loaded providers = %d, want %d", got, maxUserProviders)
 	}
 }
 ```
@@ -792,6 +941,10 @@ func newUserProviderStore(path string) (*userProviderStore, error) {
 
 	seen := map[string]bool{}
 	for _, def := range doc.Providers {
+		if len(st.providers) >= maxUserProviders {
+			slog.Info("user_providers: dropped providers over limit", "max", maxUserProviders)
+			break
+		}
 		norm, err := normalizeUserProvider(def, seen)
 		if err != nil {
 			slog.Info("user_providers: dropped invalid provider on load", "id", def.ID, "err", err)
@@ -803,21 +956,22 @@ func newUserProviderStore(path string) (*userProviderStore, error) {
 	return st, nil
 }
 
-// Snapshot returns a deep-ish copy safe for the caller to read. The slice is
-// fresh; ProviderDefinition values are copied (their inner slices are shared,
-// which is acceptable because callers only read).
+// Snapshot returns a deep copy safe for the caller to read without sharing
+// nested slices with store state.
 func (s *userProviderStore) Snapshot() []ProviderDefinition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]ProviderDefinition, len(s.providers))
-	copy(out, s.providers)
+	for i := range s.providers {
+		out[i] = cloneUserProvider(s.providers[i])
+	}
 	return out
 }
 
-// Put creates or replaces a user provider. A definition whose ID is empty (or
-// not "user:"-prefixed) is treated as a create: a locked ID is assigned from
-// the display name. A definition whose ID matches an existing user provider is
-// an in-place update that preserves the locked provider ID. Channel IDs are
+// Put creates or replaces a user provider. A definition whose ID is empty is a
+// create: a locked ID is assigned from the display name. A non-empty malformed
+// ID is rejected. A definition whose ID matches an existing user provider is an
+// in-place update that preserves the locked provider ID. Channel IDs are
 // assigned/preserved the same way within the provider. Returns the saved,
 // normalized definition.
 func (s *userProviderStore) Put(def ProviderDefinition) (ProviderDefinition, error) {
@@ -849,7 +1003,7 @@ func (s *userProviderStore) Put(def ProviderDefinition) (ProviderDefinition, err
 		}
 		return false
 	}
-	if idx < 0 || def.ID == "" {
+	if def.ID == "" {
 		def.ID = newUserProviderID(def.DisplayName, taken)
 	}
 
@@ -869,6 +1023,13 @@ func (s *userProviderStore) Put(def ProviderDefinition) (ProviderDefinition, err
 	}
 	s.providers = next
 	return norm, nil
+}
+
+func cloneUserProvider(def ProviderDefinition) ProviderDefinition {
+	def.URLRules = append([]URLRule(nil), def.URLRules...)
+	def.Groups = append([]GroupDefinition(nil), def.Groups...)
+	def.Channels = append([]ChannelDefinition(nil), def.Channels...)
+	return def
 }
 
 // Delete removes the provider with the given ID. Returns ok=false (no error)
@@ -915,10 +1076,6 @@ func (s *userProviderStore) persistLocked(providers []ProviderDefinition) error 
 	return nil
 }
 
-func isUserProviderID(id string) bool {
-	return len(id) > len(userProviderIDPrefix) && id[:len(userProviderIDPrefix)] == userProviderIDPrefix
-}
-
 func badRequest(chip, msg string) error {
 	return &adapters.QuickCastError{Status: http.StatusBadRequest, Chip: chip, Message: msg}
 }
@@ -931,15 +1088,17 @@ Append to `internal/adapters/streams/provider_user.go`:
 ```go
 // normalizeUserProvider validates and canonicalizes a user provider for
 // storage. When seen != nil (load path) it also de-dupes the provider ID
-// against earlier-loaded IDs. It enforces: the "user:" prefix, the glyph and
-// palette rules, the per-provider channel limit, valid/auto-detected channel
-// kinds, and stable channel IDs (assign on create, preserve on update,
-// de-dupe within the provider). Returns a normalized copy or an error.
+// against earlier-loaded IDs. It enforces: the "user:" prefix + manifest ID
+// shape, the glyph and palette rules, duplicate/valid group IDs and references,
+// the per-provider channel limit, valid/auto-detected channel kinds, and stable
+// channel IDs (assign on create, preserve on update, de-dupe within the
+// provider). Returns a normalized copy or an error.
 func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (ProviderDefinition, error) {
 	def.Type = userProviderType
+	loadPath := seen != nil
 
-	if !isUserProviderID(def.ID) {
-		return ProviderDefinition{}, fmt.Errorf("provider id %q must start with %q", def.ID, userProviderIDPrefix)
+	if err := validateUserProviderID(def.ID); err != nil {
+		return ProviderDefinition{}, err
 	}
 	if seen != nil {
 		if seen[def.ID] {
@@ -952,10 +1111,32 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 	if err := validateGlyph(def.BadgeLabel); err != nil {
 		return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
 	}
-	def.BadgeColor = normalizeBadgeColor(def.BadgeColor)
+	if loadPath {
+		def.BadgeColor = normalizeBadgeColorForLoad(def.BadgeColor)
+	} else {
+		color, err := validateBadgeColor(def.BadgeColor)
+		if err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+		}
+		def.BadgeColor = color
+	}
 
 	if len(def.Channels) > maxChannelsPerProvider {
 		return ProviderDefinition{}, fmt.Errorf("provider %q: at most %d channels", def.ID, maxChannelsPerProvider)
+	}
+
+	groupIDs := map[string]bool{}
+	for _, g := range def.Groups {
+		if err := validateUserManifestID("group id", g.ID, false); err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+		}
+		if strings.TrimSpace(g.Name) == "" {
+			return ProviderDefinition{}, fmt.Errorf("provider %q group %q: name required", def.ID, g.ID)
+		}
+		if groupIDs[g.ID] {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: duplicate group id %q", def.ID, g.ID)
+		}
+		groupIDs[g.ID] = true
 	}
 
 	channelIDs := map[string]bool{}
@@ -977,20 +1158,31 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 		}
 		if ch.ID == "" {
 			ch.ID = newChannelID(ch.Name, func(id string) bool { return channelIDs[id] })
-		} else if channelIDs[ch.ID] {
+		} else if err := validateUserManifestID("channel id", ch.ID, true); err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+		}
+		if channelIDs[ch.ID] {
 			return ProviderDefinition{}, fmt.Errorf("provider %q: duplicate channel id %q", def.ID, ch.ID)
+		}
+		if ch.GroupID != "" {
+			if err := validateUserManifestID("group id", ch.GroupID, false); err != nil {
+				return ProviderDefinition{}, fmt.Errorf("provider %q channel %q: %w", def.ID, ch.ID, err)
+			}
+			if !groupIDs[ch.GroupID] {
+				return ProviderDefinition{}, fmt.Errorf("provider %q channel %q references unknown group %q", def.ID, ch.ID, ch.GroupID)
+			}
 		}
 		channelIDs[ch.ID] = true
 		def.Channels[i] = ch
 	}
-	return def, nil
+	return cloneUserProvider(def), nil
 }
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./internal/adapters/streams/ -run TestUserStore -v`
-Expected: PASS (all six store tests)
+Expected: PASS (all store tests)
 
 - [ ] **Step 6: Run the full package + vet**
 
@@ -1009,11 +1201,12 @@ git commit -m "feat(streams): persistent user-provider store with validation and
 ## Phase 1 done — what exists now
 
 A package-internal, fully unit-tested data layer: new definition fields, the
-`userProviderStore` (load/validate/snapshot/Put/Delete with atomic writes,
-ID/glyph/palette/kind validation and limits), stable ID generation, syntactic
-kind auto-detection, and sanitized cache keys. Nothing is wired into the running
-adapter yet, the build is green, and `go test ./internal/adapters/streams/...`
-passes — a clean, shippable increment.
+`userProviderStore` (load/validate/deep-copy snapshot/Put/Delete with atomic
+writes, strict save-time ID/glyph/palette/kind validation, load-time color
+normalization, and limits), stable ID generation, syntactic kind auto-detection,
+and sanitized cache keys. Nothing is wired into the running adapter yet, the
+build is green, and `go test ./internal/adapters/streams/...` passes — a clean,
+shippable increment.
 
 ---
 
@@ -1050,8 +1243,10 @@ document when Phase 1 is merged.
   Catalog merge, security, routes, UI are explicitly deferred to Phases 2–5.
 - **No placeholders:** every step contains runnable code/commands.
 - **Type consistency:** `userProviderType`, `kind*`, `defaultBadgeColor`,
-  `newUserProviderID`/`newChannelID`, `userProviderCacheKey`/
-  `userPlaylistCacheKey`, `normalizeUserProvider`, `userProviderStore.Put`/
-  `Delete`/`Snapshot` are defined once and referenced consistently across
-  tasks. `Put` deliberately handles both create and update (preserving the
-  locked ID) so Phase 4’s route layer has a single entry point.
+  `validateBadgeColor`/`normalizeBadgeColorForLoad`, `validateUserProviderID`/
+  `validateUserManifestID`, `newUserProviderID`/`newChannelID`,
+  `userProviderCacheKey`/`userPlaylistCacheKey`, `cloneUserProvider`,
+  `normalizeUserProvider`, and `userProviderStore.Put`/`Delete`/`Snapshot` are
+  defined once and referenced consistently across tasks. `Put` deliberately
+  handles both create and update (preserving the locked ID) so Phase 4’s route
+  layer has a single entry point.
