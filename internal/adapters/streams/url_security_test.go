@@ -12,6 +12,7 @@ func TestValidateUserProviderHost(t *testing.T) {
 		"http://172.16.0.1/s.m3u8",          // RFC1918 LAN
 		"http://[fc00::1]/s.m3u8",           // IPv6 ULA (private)
 		"http://8.8.8.8/s.m3u8",             // public IPv4 literal
+		"http://[2001:4860:4860::8888]/s.m3u8", // public global-unicast IPv6
 	}
 	for _, u := range accept {
 		if err := validateUserProviderHost(u); err != nil {
@@ -28,8 +29,10 @@ func TestValidateUserProviderHost(t *testing.T) {
 		"http://127.0.0.1/x",                     // loopback v4
 		"http://[::1]/x",                         // loopback v6
 		"http://[::ffff:127.0.0.1]/x",            // IPv4-mapped loopback (must Unmap)
+		"http://[::127.0.0.1]/x",                 // IPv4-compatible loopback (deprecated form)
 		"http://169.254.169.254/latest/meta",     // link-local / cloud metadata
 		"http://[::ffff:169.254.169.254]/x",      // IPv4-mapped metadata (must Unmap)
+		"http://[::169.254.169.254]/x",           // IPv4-compatible metadata (deprecated form)
 		"http://[fe80::1]/x",                     // link-local v6
 		"http://0.0.0.0/x",                       // unspecified
 		"http://224.0.0.1/x",                     // multicast

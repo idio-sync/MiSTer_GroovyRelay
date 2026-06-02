@@ -81,5 +81,26 @@ func validateUserProviderIP(addr netip.Addr) error {
 	case addr.IsMulticast():
 		return fmt.Errorf("multicast addresses are not allowed")
 	}
+	// IPv4-compatible IPv6 (::a.b.c.d, deprecated per RFC 4291 §2.5.5.1) is NOT
+	// an IPv4-mapped address, so Unmap() leaves it as-is and the IPv6 loopback
+	// check above (which matches ::1) misses the embedded IPv4 — e.g.
+	// ::127.0.0.1 would otherwise slip past. Re-classify the embedded IPv4 so it
+	// is judged as 127.0.0.1. The canonical ::1 (loopback) and :: (unspecified)
+	// are already handled by the switch above, so only genuine IPv4-compatible
+	// forms reach here; the recursion terminates because the embedded address is
+	// IPv4 (Is6() == false).
+	if addr.Is6() {
+		b := addr.As16()
+		ipv4Compatible := true
+		for _, x := range b[:12] {
+			if x != 0 {
+				ipv4Compatible = false
+				break
+			}
+		}
+		if ipv4Compatible {
+			return validateUserProviderIP(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+		}
+	}
 	return nil
 }
