@@ -197,6 +197,11 @@ func validateUserProviderResolvedHost(ctx context.Context, resolver hostResolver
 	if u.User != nil {
 		return fmt.Errorf("userinfo is not allowed in url")
 	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("scheme %q is not allowed (only http and https)", u.Scheme)
+	}
 	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("url host is required")

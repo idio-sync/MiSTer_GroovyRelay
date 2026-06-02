@@ -95,6 +95,7 @@ func TestValidateUserProviderResolvedHost(t *testing.T) {
 		{"ipv4-mapped loopback literal", "http://[::ffff:127.0.0.1]/v", true},
 		{"ipv4-compatible loopback literal", "http://[::127.0.0.1]/v", true},
 		{"unresolvable host", "https://nope.example.com/v", true},
+		{"non-http scheme rejected", "ftp://public.example.com/v", true},
 		{"userinfo rejected", "https://user:pass@public.example.com/v", true},
 		{"empty host", "https:///v", true},
 	}

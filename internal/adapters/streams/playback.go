@@ -339,6 +339,9 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 				a.clearResolveIfCurrent(capture)
 				slog.Warn("streams playback blocked unsafe user direct url",
 					"provider", q.ProviderID, "channel", q.ChannelID, "item", capture.ItemID, "err", err)
+				// Direct blocked URLs fail the cast (no queue advance), matching the
+				// surrounding bundled-direct error handling; the single/resolve path
+				// below advances instead. Both are safe (no FFmpeg start).
 				return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream url is not allowed")
 			}
 			playbackURL = finalURL
