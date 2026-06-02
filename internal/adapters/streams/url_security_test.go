@@ -73,6 +73,7 @@ func TestValidateUserProviderResolvedHost(t *testing.T) {
 	resolver := stubHostResolver{hosts: map[string][]string{
 		"public.example.com":   {"93.184.216.34"},
 		"lan.example.com":      {"192.168.1.50"},
+		"ula.example.com":      {"fc00::1:2:3:4"},
 		"rebind.example.com":   {"127.0.0.1"},
 		"metadata.example.com": {"169.254.169.254"},
 		"mixed.example.com":    {"93.184.216.34", "127.0.0.1"},
@@ -84,6 +85,7 @@ func TestValidateUserProviderResolvedHost(t *testing.T) {
 	}{
 		{"public hostname", "https://public.example.com/v.m3u8", false},
 		{"lan hostname allowed", "https://lan.example.com/v.m3u8", false},
+		{"ipv6 ula hostname allowed", "https://ula.example.com/v.m3u8", false},
 		{"ip literal public", "https://93.184.216.34/v.m3u8", false},
 		{"ip literal lan", "http://10.0.0.5/v.m3u8", false},
 		{"decimal loopback literal", "http://2130706433/v.m3u8", true},
