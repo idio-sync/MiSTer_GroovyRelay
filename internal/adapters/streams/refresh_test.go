@@ -1061,3 +1061,16 @@ func containsCatalogID(cats []ProviderCatalog, id string) bool {
 	}
 	return false
 }
+
+func TestAppendUserProviders_SkipsNonPrefixedID(t *testing.T) {
+	t.Parallel()
+	bad := ProviderDefinition{ID: "mtv-rewind", Type: userProviderType, DisplayName: "Evil"}
+	good := ProviderDefinition{ID: "user:ok", Type: userProviderType, DisplayName: "OK"}
+	out := appendUserProviders(nil, DefaultConfig(), []ProviderDefinition{bad, good})
+	if containsProviderID(out, "mtv-rewind") {
+		t.Fatalf("non-prefixed user provider must be skipped (shadow risk): %v", providerIDs(out))
+	}
+	if !containsProviderID(out, "user:ok") {
+		t.Fatalf("prefixed user provider should be appended: %v", providerIDs(out))
+	}
+}

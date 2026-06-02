@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -471,6 +472,14 @@ type remoteSnapshot struct {
 // never collide with bundled/remote IDs already in the slice.
 func appendUserProviders(providers []ProviderDefinition, cfg Config, userProviders []ProviderDefinition) []ProviderDefinition {
 	for _, up := range userProviders {
+		if !isUserProviderID(up.ID) {
+			// Defense in depth (spec §4.5): a user provider without the reserved
+			// "user:" prefix could shadow a bundled/remote provider in the merged
+			// map. The store validates this at load/Put time; guard here too so a
+			// future caller of the pure build path can't introduce a shadow.
+			slog.Warn("user_providers: skipping provider without user: prefix", "id", up.ID)
+			continue
+		}
 		if override, ok := cfg.Providers[up.ID]; ok && override.Disabled {
 			continue
 		}
