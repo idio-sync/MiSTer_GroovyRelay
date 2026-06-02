@@ -184,3 +184,95 @@ func newChannelID(channelName string, taken func(id string) bool) string {
 	base := slugify(channelName, "channel")
 	return uniqueSlug(base, taken)
 }
+
+// normalizeUserProvider validates and canonicalizes a user provider for
+// storage. When seen != nil (load path) it also de-dupes the provider ID
+// against earlier-loaded IDs. It enforces: the "user:" prefix + manifest ID
+// shape, the glyph and palette rules, duplicate/valid group IDs and references,
+// the per-provider channel limit, valid/auto-detected channel kinds, and stable
+// channel IDs (assign on create, preserve on update, de-dupe within the
+// provider). Returns a normalized copy or an error.
+func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (ProviderDefinition, error) {
+	def.Type = userProviderType
+	loadPath := seen != nil
+
+	if err := validateUserProviderID(def.ID); err != nil {
+		return ProviderDefinition{}, err
+	}
+	if seen != nil {
+		if seen[def.ID] {
+			return ProviderDefinition{}, fmt.Errorf("duplicate provider id %q", def.ID)
+		}
+	}
+	if strings.TrimSpace(def.DisplayName) == "" {
+		return ProviderDefinition{}, fmt.Errorf("provider %q: display_name required", def.ID)
+	}
+	if err := validateGlyph(def.BadgeLabel); err != nil {
+		return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+	}
+	if loadPath {
+		def.BadgeColor = normalizeBadgeColorForLoad(def.BadgeColor)
+	} else {
+		color, err := validateBadgeColor(def.BadgeColor)
+		if err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+		}
+		def.BadgeColor = color
+	}
+
+	if len(def.Channels) > maxChannelsPerProvider {
+		return ProviderDefinition{}, fmt.Errorf("provider %q: at most %d channels", def.ID, maxChannelsPerProvider)
+	}
+
+	groupIDs := map[string]bool{}
+	for _, g := range def.Groups {
+		if err := validateUserManifestID("group id", g.ID, false); err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+		}
+		if strings.TrimSpace(g.Name) == "" {
+			return ProviderDefinition{}, fmt.Errorf("provider %q group %q: name required", def.ID, g.ID)
+		}
+		if groupIDs[g.ID] {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: duplicate group id %q", def.ID, g.ID)
+		}
+		groupIDs[g.ID] = true
+	}
+
+	channelIDs := map[string]bool{}
+	for i := range def.Channels {
+		ch := def.Channels[i]
+		if strings.TrimSpace(ch.Name) == "" {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: channel name required", def.ID)
+		}
+		if strings.TrimSpace(ch.URL) == "" {
+			return ProviderDefinition{}, fmt.Errorf("provider %q channel %q: url required", def.ID, ch.Name)
+		}
+		if ch.Kind == "" {
+			ch.Kind = detectChannelKind(ch.URL)
+		}
+		switch ch.Kind {
+		case kindPlaylist, kindSingle, kindDirect:
+		default:
+			return ProviderDefinition{}, fmt.Errorf("provider %q channel %q: invalid kind %q", def.ID, ch.Name, ch.Kind)
+		}
+		if ch.ID == "" {
+			ch.ID = newChannelID(ch.Name, func(id string) bool { return channelIDs[id] })
+		} else if err := validateUserManifestID("channel id", ch.ID, true); err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
+		}
+		if channelIDs[ch.ID] {
+			return ProviderDefinition{}, fmt.Errorf("provider %q: duplicate channel id %q", def.ID, ch.ID)
+		}
+		if ch.GroupID != "" {
+			if err := validateUserManifestID("group id", ch.GroupID, false); err != nil {
+				return ProviderDefinition{}, fmt.Errorf("provider %q channel %q: %w", def.ID, ch.ID, err)
+			}
+			if !groupIDs[ch.GroupID] {
+				return ProviderDefinition{}, fmt.Errorf("provider %q channel %q references unknown group %q", def.ID, ch.ID, ch.GroupID)
+			}
+		}
+		channelIDs[ch.ID] = true
+		def.Channels[i] = ch
+	}
+	return cloneUserProvider(def), nil
+}

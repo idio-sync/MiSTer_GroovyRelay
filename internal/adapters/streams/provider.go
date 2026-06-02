@@ -28,6 +28,7 @@ type ProviderDefinition struct {
 	LogoAlt             string              `json:"logo_alt,omitempty"`
 	FallbackLabel       string              `json:"fallback_label,omitempty"`
 	BadgeColor          string              `json:"badge_color,omitempty"`
+	BadgeLabel          string              `json:"badge_label,omitempty"`
 	BaseURL             string              `json:"base_url"`
 	PlaylistURL         string              `json:"playlist_url"`
 	URLRules            []URLRule           `json:"url_rules"`
