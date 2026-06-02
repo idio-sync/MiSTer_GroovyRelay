@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -292,7 +293,7 @@ func (a *Adapter) refreshOnceDefault(ctx context.Context, reason string) Refresh
 		status.Err = err
 		return status
 	}
-	snapshot, err := buildRemoteSnapshot(ctx, cfg, manifest, a.cacheDir)
+	snapshot, err := buildRemoteSnapshot(ctx, cfg, manifest, a.cacheDir, a.userStore.Snapshot())
 	if err != nil {
 		a.recordRefreshFailure(err)
 		status.Err = err
@@ -342,7 +343,7 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 	var errs []error
 	remoteRefreshed := false
 	for _, def := range defs {
-		if def.Type == directStreamsProviderType {
+		if def.Type == directStreamsProviderType || def.Type == userProviderType {
 			cat, err := buildProviderCatalog(def, nil, cfg)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("provider %q build catalog: %w", def.ID, err))
@@ -464,17 +465,41 @@ type remoteSnapshot struct {
 	CatalogMetas  map[string]CacheMetadata
 }
 
-func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
+// appendUserProviders appends user-authored providers to a merged provider
+// list, skipping any whose per-provider override is Disabled — the same
+// disable check mergeManifests applies to bundled/remote providers. User IDs
+// carry the reserved "user:" prefix (validateUserProviderID), so they can
+// never collide with bundled/remote IDs already in the slice.
+func appendUserProviders(providers []ProviderDefinition, cfg Config, userProviders []ProviderDefinition) []ProviderDefinition {
+	for _, up := range userProviders {
+		if !isUserProviderID(up.ID) {
+			// Defense in depth (spec §4.5): a user provider without the reserved
+			// "user:" prefix could shadow a bundled/remote provider in the merged
+			// map. The store validates this at load/Put time; guard here too so a
+			// future caller of the pure build path can't introduce a shadow.
+			slog.Warn("user_providers: skipping provider without user: prefix", "id", up.ID)
+			continue
+		}
+		if override, ok := cfg.Providers[up.ID]; ok && override.Disabled {
+			continue
+		}
+		providers = append(providers, up)
+	}
+	return providers
+}
+
+func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string, userProviders []ProviderDefinition) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cached := loadCachedManifest(ctx, cfg, cacheDir)
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 	manifest := mergeManifests(cfg, bundled, cached, nil, remoteProviderFactories())
+	manifest.Providers = appendUserProviders(manifest.Providers, cfg, userProviders)
 	return buildCachedOrSeedSnapshot(manifest.Providers, cfg, cacheDir)
 }
 
 func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
 	catalogs := make([]ProviderCatalog, 0, len(defs))
 	for _, def := range defs {
-		if def.Type == directStreamsProviderType {
+		if def.Type == directStreamsProviderType || def.Type == userProviderType {
 			cat, err := buildProviderCatalog(def, nil, cfg)
 			if err != nil {
 				return nil, nil, err
@@ -539,10 +564,11 @@ func (a *Adapter) definitionsForRefresh(providerIDs []string) ([]ProviderDefinit
 	return out, nil
 }
 
-func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string) (remoteSnapshot, error) {
+func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string, userProviders []ProviderDefinition) (remoteSnapshot, error) {
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 	remote = sanitizeManifestArtwork(ctx, remote, cfg, validateProviderArtworkURL)
 	manifest := mergeManifests(cfg, bundled, nil, &remote, remoteProviderFactories())
+	manifest.Providers = appendUserProviders(manifest.Providers, cfg, userProviders)
 	out := remoteSnapshot{
 		Definitions:   manifest.Providers,
 		Catalogs:      make([]ProviderCatalog, 0, len(manifest.Providers)),
@@ -550,7 +576,7 @@ func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cache
 		CatalogMetas:  map[string]CacheMetadata{},
 	}
 	for _, def := range manifest.Providers {
-		if def.Type == directStreamsProviderType {
+		if def.Type == directStreamsProviderType || def.Type == userProviderType {
 			cat, err := buildProviderCatalog(def, nil, cfg)
 			if err != nil {
 				return remoteSnapshot{}, fmt.Errorf("provider %q build catalog: %w", def.ID, err)
@@ -599,6 +625,8 @@ func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (Provi
 		return buildYouTubeChannelCatalog(def, raw, cfg)
 	case directStreamsProviderType:
 		return buildDirectStreamsCatalog(def)
+	case userProviderType:
+		return buildUserCatalog(def)
 	default:
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
 	}

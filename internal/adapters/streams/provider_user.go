@@ -2,9 +2,11 @@ package streams
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -289,4 +291,62 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 		def.Channels[i] = ch
 	}
 	return cloneUserProvider(def), nil
+}
+
+// buildUserCatalog turns a normalized user ProviderDefinition into a
+// ProviderCatalog. It mirrors buildDirectStreamsCatalog (provider_direct_streams.go)
+// but branches per ChannelDefinition.Kind:
+//   - direct → one StreamItem{URL, Direct:true} (straight to FFmpeg + the
+//     user direct policy at play time).
+//   - single → one StreamItem{URL, Direct:false} (resolved by yt-dlp at play time).
+//   - playlist → SKIPPED in Phase 3 (Phase 4 adds yt-dlp --flat-playlist
+//     enumeration); skipping logs and leaves the rest of the provider usable.
+//
+// It is pure (no network), so it is safe inside the snapshot build path.
+func buildUserCatalog(def ProviderDefinition) (ProviderCatalog, error) {
+	if def.Type != userProviderType {
+		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
+	}
+	groupByID := make(map[string]ChannelGroup, len(def.Groups))
+	groups := make([]ChannelGroup, 0, len(def.Groups))
+	for _, group := range def.Groups {
+		g := ChannelGroup{ID: group.ID, Name: group.Name, Order: group.Order}
+		groupByID[group.ID] = g
+		groups = append(groups, g)
+	}
+	channels := make([]Channel, 0, len(def.Channels))
+	for _, chDef := range def.Channels {
+		switch chDef.Kind {
+		case kindPlaylist:
+			slog.Info("streams user provider: skipping playlist channel (enumeration is Phase 4)",
+				"provider", def.ID, "channel", chDef.ID)
+			continue
+		case kindDirect, kindSingle:
+		default:
+			return ProviderCatalog{}, fmt.Errorf("provider %q channel %q: invalid kind %q", def.ID, chDef.ID, chDef.Kind)
+		}
+		ch := channelFromDefinition(chDef.ID, chDef, true, def)
+		ch.Items = []StreamItem{{
+			ID:       ch.ID,
+			Title:    ch.Name,
+			URL:      chDef.URL,
+			SourceID: ch.ID,
+			Direct:   chDef.Kind == kindDirect,
+		}}
+		if ch.GroupID != "" {
+			if _, ok := groupByID[ch.GroupID]; !ok {
+				return ProviderCatalog{}, fmt.Errorf("provider %q channel %q references unknown group %q", def.ID, ch.ID, ch.GroupID)
+			}
+		}
+		channels = append(channels, ch)
+	}
+	sortChannelGroups(groups)
+	sortChannels(channels)
+	return ProviderCatalog{
+		ProviderID: def.ID,
+		Name:       def.DisplayName,
+		Groups:     groups,
+		Channels:   channels,
+		UpdatedAt:  time.Now(),
+	}, nil
 }

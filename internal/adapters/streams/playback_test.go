@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"net/http"
+
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
@@ -1415,5 +1417,124 @@ func TestStreamsDisplayMetadata(t *testing.T) {
 	fb := streamsDisplayMetadata("YouTube", "", "Some Video")
 	if fb.Primary != "Some Video" {
 		t.Fatalf("fallback primary = %+v", fb)
+	}
+}
+
+func installUserDirectAdapter(t *testing.T) (*Adapter, *fakeCore) {
+	t.Helper()
+	a, c := newTestAdapterWithFakeCore(t)
+	def := ProviderDefinition{
+		ID: "user:cdn", Type: userProviderType, DisplayName: "CDN", BadgeLabel: "CD", BadgeColor: "teal",
+		Channels: []ChannelDefinition{{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"}},
+	}
+	cat, err := buildUserCatalog(def)
+	if err != nil {
+		t.Fatalf("buildUserCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"cdn.example.com": {"93.184.216.34"}}}
+	a.userRedirectDoer = stubDoer{} // no redirect → 200
+	return a, c
+}
+
+func TestUserDirect_UsesUserPolicyAndPrevalidatedURL(t *testing.T) {
+	a, c := installUserDirectAdapter(t)
+	enableBridgeHLSBufferForTest(a) // even with the buffer enabled, user direct must skip it
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		t.Fatal("hlsBufferOpen must not be called for user providers")
+		return nil, nil
+	}
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:cdn", ChannelID: "live"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.lastReq.StreamURL != "https://cdn.example.com/live.m3u8" {
+		t.Fatalf("StreamURL = %q, want prevalidated direct URL", c.lastReq.StreamURL)
+	}
+	want := userDirectInputPolicy()
+	got := c.lastReq.MediaInputPolicy
+	for _, p := range got.ProtocolWhitelist {
+		if p == "file" {
+			t.Fatalf("user direct policy must not whitelist 'file': %v", got.ProtocolWhitelist)
+		}
+	}
+	if len(got.ProtocolWhitelist) != len(want.ProtocolWhitelist) {
+		t.Fatalf("ProtocolWhitelist = %v, want %v", got.ProtocolWhitelist, want.ProtocolWhitelist)
+	}
+}
+
+func TestUserDirect_BlockedRedirectFailsCast(t *testing.T) {
+	a, c := installUserDirectAdapter(t)
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{
+		"cdn.example.com":  {"93.184.216.34"},
+		"evil.example.com": {"169.254.169.254"},
+	}}
+	a.userRedirectDoer = stubDoer{resp: map[string]*http.Response{
+		"https://cdn.example.com/live.m3u8": redirectResp("https://evil.example.com/meta"),
+	}}
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:cdn", ChannelID: "live"})
+	if err == nil {
+		t.Fatal("StartResolvedStream succeeded, want failure on metadata-host redirect")
+	}
+	if c.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0 (URL never reaches FFmpeg)", c.startCalls)
+	}
+}
+
+func installUserSingleAdapter(t *testing.T, resolved *ytdlp.Resolution) (*Adapter, *fakeCore) {
+	t.Helper()
+	a, c := newTestAdapterWithFakeCore(t)
+	def := ProviderDefinition{
+		ID: "user:tw", Type: userProviderType, DisplayName: "TW", BadgeLabel: "TW", BadgeColor: "purple",
+		Channels: []ChannelDefinition{{ID: "vod", Name: "VOD", Kind: kindSingle, URL: "https://www.twitch.tv/foo"}},
+	}
+	cat, err := buildUserCatalog(def)
+	if err != nil {
+		t.Fatalf("buildUserCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	a.resolver = &fakeResolver{res: resolved}
+	return a, c
+}
+
+func TestUserSingle_BlockedResolvedHostFailsCast(t *testing.T) {
+	a, c := installUserSingleAdapter(t, &ytdlp.Resolution{URL: "https://media.evil.com/v.mp4"})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"media.evil.com": {"169.254.169.254"}}}
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:tw", ChannelID: "vod"})
+	if err == nil {
+		t.Fatal("StartResolvedStream succeeded, want failure on metadata resolved host")
+	}
+	if c.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0 (resolved URL never reaches FFmpeg)", c.startCalls)
+	}
+}
+
+func TestUserSingle_BlockedAudioURLFailsCast(t *testing.T) {
+	a, c := installUserSingleAdapter(t, &ytdlp.Resolution{
+		URL:      "https://media.ok.com/v.mp4",
+		AudioURL: "https://media.evil.com/a.mp4",
+	})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{
+		"media.ok.com":   {"93.184.216.34"},
+		"media.evil.com": {"127.0.0.1"},
+	}}
+	_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:tw", ChannelID: "vod"})
+	if err == nil {
+		t.Fatal("StartResolvedStream succeeded, want failure on blocked AudioURL")
+	}
+	if c.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0", c.startCalls)
+	}
+}
+
+func TestUserSingle_SafeResolvedHostCasts(t *testing.T) {
+	a, c := installUserSingleAdapter(t, &ytdlp.Resolution{URL: "https://media.ok.com/v.mp4"})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"media.ok.com": {"93.184.216.34"}}}
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:tw", ChannelID: "vod"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.lastReq.StreamURL != "https://media.ok.com/v.mp4" {
+		t.Fatalf("StreamURL = %q, want resolved URL", c.lastReq.StreamURL)
 	}
 }

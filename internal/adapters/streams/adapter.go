@@ -52,6 +52,10 @@ type Adapter struct {
 	resolver      streamResolver
 	hlsBufferOpen hlsBufferOpener
 
+	// User-provider play-time SSRF seams (lazily defaulted in playback.go).
+	userURLResolver  hostResolver
+	userRedirectDoer httpDoer
+
 	fetchManifest func(context.Context) (Manifest, CacheMetadata, error)
 	refreshOnce   func(ctx context.Context, reason string) RefreshStatus
 
@@ -73,6 +77,7 @@ type Adapter struct {
 	definitionOrder     []string
 	catalogs            map[string]ProviderCatalog
 	presetStore         *presetStore
+	userStore           *userProviderStore
 	active              *ActiveQueue
 	badItems            map[string]badStreamItem
 
@@ -112,6 +117,12 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("streams: preset store: %w", err)
+	}
+	a.userStore, err = newUserProviderStore(
+		filepath.Join(cfg.Bridge.DataDir, "user_providers.json"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("streams: user provider store: %w", err)
 	}
 	return a, nil
 }
@@ -336,7 +347,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		return 0, err
 	}
 
-	defs, catalogs, err := buildStartupSnapshot(context.Background(), newCfg, a.cacheDir)
+	defs, catalogs, err := buildStartupSnapshot(context.Background(), newCfg, a.cacheDir, a.userStore.Snapshot())
 	if err != nil {
 		return 0, err
 	}
@@ -478,7 +489,7 @@ func (a *Adapter) ensureStartupSnapshot(ctx context.Context) error {
 
 func (a *Adapter) buildStartupSnapshot(ctx context.Context) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cfg := a.configSnapshot()
-	return buildStartupSnapshot(ctx, cfg, a.cacheDir)
+	return buildStartupSnapshot(ctx, cfg, a.cacheDir, a.userStore.Snapshot())
 }
 
 func (a *Adapter) reconcileRefreshLoop() {
@@ -534,7 +545,7 @@ func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []b
 	if err := newCfg.Validate(); err != nil {
 		return 0, err
 	}
-	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir)
+	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir, a.userStore.Snapshot())
 	if err != nil {
 		return 0, err
 	}

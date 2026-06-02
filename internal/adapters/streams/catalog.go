@@ -10,26 +10,59 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 )
 
-// Catalog returns the chassis-shaped view of the bundled streams
-// providers. Called per chassis snapshot (4 Hz) — keep it allocation-
-// light. The filter to bundledChassisCatalogProviderIDs means remote
-// or cached manifest providers do NOT appear in /receiver in 3B.
+// Catalog returns the chassis-shaped view of installed providers: enabled
+// bundled providers in their fixed mockup order, followed by user providers
+// in definition (install/file) order. Called per chassis snapshot (4 Hz) —
+// keep it allocation-light.
 //
 // Safe to call before Adapter.Start: definitions/catalogs are seeded
-// from bundledManifest() if a.definitions is empty. Disabled providers
-// are absent because mergeManifests filters them from the installed
-// definitions; use BundledCatalog() when disabled providers must remain
-// visible.
+// from bundledManifest() if a.definitions is empty. Disabled bundled
+// providers are absent because mergeManifests filters them from the
+// installed definitions; use BundledCatalog() when disabled providers must
+// remain visible.
 func (a *Adapter) Catalog() []adapters.CatalogProvider {
-	defs, _ := a.chassisCatalogSnapshot()
-	out := make([]adapters.CatalogProvider, 0, len(bundledChassisCatalogProviderIDs))
-	for _, id := range bundledChassisCatalogProviderIDs {
-		def, ok := defs[id]
-		if !ok {
-			continue
-		}
-		out = append(out, buildChassisCatalogProvider(def))
+	ordered := a.catalogProvidersInOrder()
+	byID := make(map[string]ProviderDefinition, len(ordered))
+	for _, d := range ordered {
+		byID[d.ID] = d
 	}
+	out := make([]adapters.CatalogProvider, 0, len(ordered))
+	// Bundled chassis providers first, in their fixed mockup order. Absent
+	// entries (e.g. disabled → filtered from definitions) are skipped.
+	for _, id := range bundledChassisCatalogProviderIDs {
+		if d, ok := byID[id]; ok {
+			out = append(out, buildChassisCatalogProvider(d))
+		}
+	}
+	// User providers next, in definition (install/file) order.
+	for _, d := range ordered {
+		if isUserProviderID(d.ID) {
+			out = append(out, buildChassisCatalogProvider(d))
+		}
+	}
+	return out
+}
+
+// catalogProvidersInOrder returns the installed definitions in definitionOrder,
+// seeding from bundledManifest() if Start-time installation has not run yet
+// (local-only bootstrap; no remote fetch on a chassis render path).
+func (a *Adapter) catalogProvidersInOrder() []ProviderDefinition {
+	a.mu.Lock()
+	if len(a.definitions) > 0 {
+		out := make([]ProviderDefinition, 0, len(a.definitionOrder))
+		for _, id := range a.definitionOrder {
+			if d, ok := a.definitions[id]; ok {
+				out = append(out, d)
+			}
+		}
+		a.mu.Unlock()
+		return out
+	}
+	a.mu.Unlock()
+
+	m := bundledManifest()
+	out := make([]ProviderDefinition, 0, len(m.Providers))
+	out = append(out, m.Providers...)
 	return out
 }
 
@@ -65,7 +98,19 @@ func (a *Adapter) BundledCatalog() []adapters.CatalogProvider {
 // Catalog() and BundledCatalog() so the conversion lives in one place.
 func buildChassisCatalogProvider(def ProviderDefinition) adapters.CatalogProvider {
 	badge := providerBadges[def.ID]
-	live := def.Type == directStreamsProviderType
+	badgeLabel, badgeClass := badge.Label, badge.Class
+	if isUserProviderID(def.ID) {
+		// providerBadges has no user entries: fall back to the authored
+		// glyph + a CSS class derived from the BadgeColor token. The
+		// "u-<token>" classes (.ic.u-amber / .badge.u-amber, spec §8) are
+		// added to chassis.css in Phase 6.
+		badgeLabel = def.BadgeLabel
+		badgeClass = userBadgeClass(def.BadgeColor)
+	}
+	// Only direct-streams providers are provider-level "always live". User
+	// providers are mixed, so provider.Live stays false and liveness is
+	// computed per channel from its Kind below.
+	providerLive := def.Type == directStreamsProviderType
 	origin := ""
 	if u, err := url.Parse(def.BaseURL); err == nil {
 		origin = u.Host
@@ -78,55 +123,47 @@ func buildChassisCatalogProvider(def ProviderDefinition) adapters.CatalogProvide
 	p := adapters.CatalogProvider{
 		ID:             def.ID,
 		DisplayName:    def.DisplayName,
-		BadgeLabel:     badge.Label,
-		BadgeClass:     badge.Class,
+		BadgeLabel:     badgeLabel,
+		BadgeClass:     badgeClass,
 		Origin:         origin,
 		Kind:           def.Type,
-		Live:           live,
+		Live:           providerLive,
 		DefaultChannel: def.DefaultChannel,
 	}
 	channelByGroup := groupChannels(def)
+	appendChannel := func(cg *adapters.CatalogGroup, ch ChannelDefinition) {
+		cg.Channels = append(cg.Channels, adapters.CatalogChannel{
+			ID:       ch.ID,
+			Name:     ch.Name,
+			PlayMode: strings.ToUpper(string(ch.PlayMode)),
+			Live:     providerLive || ch.Kind == kindDirect,
+		})
+	}
 	for _, g := range def.Groups {
 		cg := adapters.CatalogGroup{ID: g.ID, Name: g.Name}
 		for _, ch := range channelByGroup[g.ID] {
-			cg.Channels = append(cg.Channels, adapters.CatalogChannel{
-				ID:       ch.ID,
-				Name:     ch.Name,
-				PlayMode: strings.ToUpper(string(ch.PlayMode)),
-				Live:     live, // inherit provider.Live
-			})
+			appendChannel(&cg, ch)
+		}
+		p.Groups = append(p.Groups, cg)
+	}
+	// Ungrouped channels (GroupID == "") — bundled providers have none, but
+	// user providers may omit groups entirely (spec §8: "channels list flat").
+	if ungrouped := channelByGroup[""]; len(ungrouped) > 0 {
+		cg := adapters.CatalogGroup{ID: "", Name: ""}
+		for _, ch := range ungrouped {
+			appendChannel(&cg, ch)
 		}
 		p.Groups = append(p.Groups, cg)
 	}
 	return p
 }
 
-// chassisCatalogSnapshot returns the definitions and catalogs maps,
-// seeding from bundledManifest if the adapter has not yet completed
-// Start-time installation. Always returns non-empty maps.
-func (a *Adapter) chassisCatalogSnapshot() (map[string]ProviderDefinition, map[string]ProviderCatalog) {
-	a.mu.Lock()
-	if len(a.definitions) > 0 {
-		defs := make(map[string]ProviderDefinition, len(a.definitions))
-		cats := make(map[string]ProviderCatalog, len(a.catalogs))
-		for id, d := range a.definitions {
-			defs[id] = d
-		}
-		for id, c := range a.catalogs {
-			cats[id] = c
-		}
-		a.mu.Unlock()
-		return defs, cats
-	}
-	a.mu.Unlock()
-
-	// Local-only bootstrap: no remote fetch on a chassis render path.
-	m := bundledManifest()
-	defs := make(map[string]ProviderDefinition, len(m.Providers))
-	for _, p := range m.Providers {
-		defs[p.ID] = p
-	}
-	return defs, nil
+// userBadgeClass maps a user provider's BadgeColor token to the CSS class the
+// chassis renders (spec §8: ".ic.u-<token>" / ".badge.u-<token>"). It runs the
+// load-time normalizer so a malformed/empty token falls back to the default
+// palette class instead of emitting "u-".
+func userBadgeClass(token string) string {
+	return "u-" + normalizeBadgeColorForLoad(token)
 }
 
 // groupChannels indexes a provider's static ChannelDefinition slice by

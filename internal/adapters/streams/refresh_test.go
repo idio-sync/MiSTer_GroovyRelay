@@ -171,7 +171,7 @@ func TestRefreshOnceWithRemoteManifestBuildsDirectStreamsLocally(t *testing.T) {
 		}},
 	}}}
 
-	snapshot, err := buildRemoteSnapshot(t.Context(), cfg, remote, t.TempDir())
+	snapshot, err := buildRemoteSnapshot(t.Context(), cfg, remote, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("buildRemoteSnapshot: %v", err)
 	}
@@ -974,5 +974,103 @@ func cachedProviderDefinitionForTest() ProviderDefinition {
 			QueryParam: "channel",
 		}},
 		Channels: []ChannelDefinition{{ID: "metal", Name: "Metal", PlayMode: PlayShuffle}},
+	}
+}
+
+func TestBuildStartupSnapshot_MergesUserProviders(t *testing.T) {
+	t.Parallel()
+	user := ProviderDefinition{
+		ID:          "user:demo",
+		Type:        userProviderType,
+		DisplayName: "Demo",
+		BadgeLabel:  "DM",
+		BadgeColor:  "teal",
+		Channels: []ChannelDefinition{
+			{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"},
+		},
+	}
+	defs, cats, err := buildStartupSnapshot(t.Context(), DefaultConfig(), t.TempDir(), []ProviderDefinition{user})
+	if err != nil {
+		t.Fatalf("buildStartupSnapshot: %v", err)
+	}
+	if !containsProviderID(defs, "user:demo") {
+		t.Fatalf("definitions missing user:demo: %v", providerIDs(defs))
+	}
+	if !containsCatalogID(cats, "user:demo") {
+		t.Fatalf("catalogs missing user:demo")
+	}
+}
+
+func TestBuildStartupSnapshot_RespectsUserProviderDisabled(t *testing.T) {
+	t.Parallel()
+	user := ProviderDefinition{
+		ID: "user:demo", Type: userProviderType, DisplayName: "Demo", BadgeLabel: "DM", BadgeColor: "teal",
+		Channels: []ChannelDefinition{{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"}},
+	}
+	cfg := DefaultConfig()
+	cfg.Providers = map[string]ProviderConfig{"user:demo": {Disabled: true}}
+	defs, _, err := buildStartupSnapshot(t.Context(), cfg, t.TempDir(), []ProviderDefinition{user})
+	if err != nil {
+		t.Fatalf("buildStartupSnapshot: %v", err)
+	}
+	if containsProviderID(defs, "user:demo") {
+		t.Fatalf("disabled user provider should be excluded: %v", providerIDs(defs))
+	}
+}
+
+func TestBuildRemoteSnapshot_KeepsUserProviders(t *testing.T) {
+	t.Parallel()
+	user := ProviderDefinition{
+		ID: "user:demo", Type: userProviderType, DisplayName: "Demo", BadgeLabel: "DM", BadgeColor: "teal",
+		Channels: []ChannelDefinition{{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"}},
+	}
+	snap, err := buildRemoteSnapshot(t.Context(), DefaultConfig(), Manifest{Version: 1}, t.TempDir(), []ProviderDefinition{user})
+	if err != nil {
+		t.Fatalf("buildRemoteSnapshot: %v", err)
+	}
+	if !containsProviderID(snap.Definitions, "user:demo") {
+		t.Fatalf("remote snapshot dropped user:demo: %v", providerIDs(snap.Definitions))
+	}
+	if !containsCatalogID(snap.Catalogs, "user:demo") {
+		t.Fatalf("remote snapshot missing user:demo catalog")
+	}
+}
+
+func containsProviderID(defs []ProviderDefinition, id string) bool {
+	for _, d := range defs {
+		if d.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func providerIDs(defs []ProviderDefinition) []string {
+	out := make([]string, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, d.ID)
+	}
+	return out
+}
+
+func containsCatalogID(cats []ProviderCatalog, id string) bool {
+	for _, c := range cats {
+		if c.ProviderID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAppendUserProviders_SkipsNonPrefixedID(t *testing.T) {
+	t.Parallel()
+	bad := ProviderDefinition{ID: "mtv-rewind", Type: userProviderType, DisplayName: "Evil"}
+	good := ProviderDefinition{ID: "user:ok", Type: userProviderType, DisplayName: "OK"}
+	out := appendUserProviders(nil, DefaultConfig(), []ProviderDefinition{bad, good})
+	if containsProviderID(out, "mtv-rewind") {
+		t.Fatalf("non-prefixed user provider must be skipped (shadow risk): %v", providerIDs(out))
+	}
+	if !containsProviderID(out, "user:ok") {
+		t.Fatalf("prefixed user provider should be appended: %v", providerIDs(out))
 	}
 }

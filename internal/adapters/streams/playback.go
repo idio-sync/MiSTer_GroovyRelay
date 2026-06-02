@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,6 +328,24 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		}
 		playbackURL := pageURL
 		mediaPolicy := directHLSInputPolicy()
+		if isUserProviderID(q.ProviderID) {
+			// SECURITY: paired with the user-provider early-return in
+			// shouldBufferDirectHLS — user direct items must skip the bundled
+			// HLS buffer so these policy/URL overrides reach FFmpeg unmodified.
+			mediaPolicy = userDirectInputPolicy()
+			finalURL, err := a.prevalidateUserDirectURL(resolveCtx, pageURL)
+			if err != nil {
+				cancel()
+				a.clearResolveIfCurrent(capture)
+				slog.Warn("streams playback blocked unsafe user direct url",
+					"provider", q.ProviderID, "channel", q.ChannelID, "item", capture.ItemID, "err", err)
+				// Direct blocked URLs fail the cast (no queue advance), matching the
+				// surrounding bundled-direct error handling; the single/resolve path
+				// below advances instead. Both are safe (no FFmpeg start).
+				return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream url is not allowed")
+			}
+			playbackURL = finalURL
+		}
 		baseOnStop := a.makeOnStop(capture)
 		onStop := baseOnStop
 		var hlsSession *hlsbuffer.Session
@@ -463,6 +482,21 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		}
 		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
 	}
+	if isUserProviderID(q.ProviderID) {
+		if err := a.revalidateResolvedUserURLs(ctx, resolved.URL, resolved.AudioURL); err != nil {
+			slog.Warn("streams playback blocked unsafe resolved user url",
+				"provider", q.ProviderID,
+				"channel", q.ChannelID,
+				"item", capture.ItemID,
+				"err", err,
+			)
+			if next, ok := a.recordStartFailureAndAdvance(capture, "resolved stream url is not allowed"); ok {
+				a.runBeforeQueueContinuation()
+				return a.playCurrentWithStarter(ctx, next, starter)
+			}
+			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "resolved stream url is not allowed")
+		}
+	}
 	title := streamSessionTitle(item, resolved.Title)
 
 	req := core.SessionRequest{
@@ -547,6 +581,15 @@ func directHLSInputPolicy() core.MediaInputPolicy {
 }
 
 func (a *Adapter) shouldBufferDirectHLS(q *ActiveQueue, item StreamItem) bool {
+	if isUserProviderID(q.ProviderID) {
+		// SECURITY: paired with the user-provider policy/URL override in the
+		// direct branch of playCurrentWithStarter — keep both or neither.
+		// User direct streams are not host-locked and the bundled buffer's
+		// TrustModeBundledToonami validator only accepts the Toonami host, so
+		// user .m3u8 must bypass the buffer and go straight to FFmpeg with the
+		// user direct policy. HLS buffering for user providers is future work.
+		return false
+	}
 	if !item.Direct || !a.bridge.HLSBuffer.Enabled {
 		return false
 	}
@@ -1498,4 +1541,43 @@ func newQueueSessionID() string {
 		return fmt.Sprintf("streams-session-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+func (a *Adapter) userHostResolver() hostResolver {
+	if a.userURLResolver != nil {
+		return a.userURLResolver
+	}
+	return net.DefaultResolver
+}
+
+func (a *Adapter) userRedirectHTTPDoer() httpDoer {
+	if a.userRedirectDoer != nil {
+		return a.userRedirectDoer
+	}
+	return newUserRedirectClient()
+}
+
+// prevalidateUserDirectURL revalidates and follows the redirect chain for a
+// user direct URL, returning the final URL safe to hand to FFmpeg. The raw URL
+// is assumed to have passed validateUserProviderHost at catalog authoring time
+// (scheme/userinfo); this re-checks the resolved host of every redirect hop.
+func (a *Adapter) prevalidateUserDirectURL(ctx context.Context, rawURL string) (string, error) {
+	return resolveUserDirectURL(ctx, a.userRedirectHTTPDoer(), a.userHostResolver(), rawURL, maxUserRedirectHops)
+}
+
+// revalidateResolvedUserURLs runs the play-time resolved-host SSRF recheck on
+// each non-empty URL (video + audio for DASH dual-stream resolves).
+func (a *Adapter) revalidateResolvedUserURLs(ctx context.Context, urls ...string) error {
+	lookupCtx, cancel := context.WithTimeout(ctx, userResolvedHostLookupTimeout)
+	defer cancel()
+	resolver := a.userHostResolver()
+	for _, u := range urls {
+		if strings.TrimSpace(u) == "" {
+			continue
+		}
+		if err := validateUserProviderResolvedHost(lookupCtx, resolver, u); err != nil {
+			return err
+		}
+	}
+	return nil
 }

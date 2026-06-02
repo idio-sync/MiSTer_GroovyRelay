@@ -172,3 +172,102 @@ func TestCastChannel_ValidForwardsToFakeCore(t *testing.T) {
 		t.Errorf("lastReq.AdapterRef = %q, want prefix streams:cartoon-rewind:heman:", core.lastReq.AdapterRef)
 	}
 }
+
+func userExposureTestDef() ProviderDefinition {
+	return ProviderDefinition{
+		ID:          "user:mix",
+		Type:        userProviderType,
+		DisplayName: "Mix",
+		BadgeLabel:  "MX",
+		BadgeColor:  "teal",
+		// no groups → channels are ungrouped (flat)
+		Channels: []ChannelDefinition{
+			{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"},
+			{ID: "vid", Name: "Single", Kind: kindSingle, URL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+		},
+	}
+}
+
+func TestBuildChassisCatalogProvider_UserBadgeLiveAndUngrouped(t *testing.T) {
+	t.Parallel()
+	p := buildChassisCatalogProvider(userExposureTestDef())
+	if p.BadgeLabel != "MX" {
+		t.Errorf("BadgeLabel = %q, want MX", p.BadgeLabel)
+	}
+	if p.BadgeClass != "u-teal" {
+		t.Errorf("BadgeClass = %q, want u-teal", p.BadgeClass)
+	}
+	if p.Live {
+		t.Errorf("user provider.Live = true, want false (only direct-streams providers are provider-level live)")
+	}
+	// ungrouped channels must still appear (synthetic group with empty ID).
+	var live, vid *adapters.CatalogChannel
+	for gi := range p.Groups {
+		for ci := range p.Groups[gi].Channels {
+			c := &p.Groups[gi].Channels[ci]
+			switch c.ID {
+			case "live":
+				live = c
+			case "vid":
+				vid = c
+			}
+		}
+	}
+	if live == nil || vid == nil {
+		t.Fatalf("ungrouped channels missing: live=%v vid=%v", live, vid)
+	}
+	if !live.Live {
+		t.Errorf("direct channel Live = false, want true")
+	}
+	if vid.Live {
+		t.Errorf("single channel Live = true, want false")
+	}
+}
+
+func TestCatalog_EmitsBundledThenUser(t *testing.T) {
+	t.Parallel()
+	a := newTestAdapterWithCatalog(t)
+	// Install bundled defs + a user def (replaceDefinitionsForTest preserves order).
+	a.replaceDefinitionsForTest([]ProviderDefinition{
+		bundledMTVDefinition(),
+		bundledCartoonDefinition(),
+		bundledToonamiAftermathDefinition(),
+		userExposureTestDef(),
+	})
+	cat := a.Catalog()
+	if len(cat) != 4 {
+		t.Fatalf("len(Catalog) = %d, want 4 (3 bundled + 1 user)", len(cat))
+	}
+	wantIDs := []string{"mtv-rewind", "cartoon-rewind", "toonami-aftermath", "user:mix"}
+	for i, want := range wantIDs {
+		if cat[i].ID != want {
+			t.Errorf("Catalog[%d].ID = %q, want %q", i, cat[i].ID, want)
+		}
+	}
+}
+
+func TestCatalog_OmitsBundledProviderAbsentFromDefinitions(t *testing.T) {
+	t.Parallel()
+	// mergeManifests filters disabled bundled providers out of the installed
+	// definitions (catalog.go doc comment), so a disabled bundled provider is
+	// simply absent from definitions. Simulate that by installing only two of
+	// the three bundled defs plus a user def: Catalog must skip the missing
+	// bundled entry and still emit the rest in order.
+	a := newTestAdapterWithCatalog(t)
+	a.replaceDefinitionsForTest([]ProviderDefinition{
+		bundledMTVDefinition(),
+		bundledCartoonDefinition(),
+		// toonami-aftermath intentionally omitted (stand-in for disabled→filtered)
+		userExposureTestDef(),
+	})
+	cat := a.Catalog()
+	wantIDs := []string{"mtv-rewind", "cartoon-rewind", "user:mix"}
+	if len(cat) != len(wantIDs) {
+		t.Fatalf("len(Catalog) = %d, want %d", len(cat), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if cat[i].ID != want {
+			t.Errorf("Catalog[%d].ID = %q, want %q", i, cat[i].ID, want)
+		}
+	}
+}
