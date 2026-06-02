@@ -3700,6 +3700,30 @@ body.receiver .history-empty {
   text-transform: uppercase;
 }
 
+/* The aggregated strip can exceed the visible faceplate, so the list is a
+   bounded scroll region (~5 rows) instead of pushing the rest of the chassis
+   off-screen. The frame keeps overflow:hidden for its scanline/radius, so the
+   scroll lives on the list. */
+body.receiver .history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.34 0.02 175) transparent;
+}
+
+body.receiver .history-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+body.receiver .history-list::-webkit-scrollbar-thumb {
+  background: oklch(0.32 0.02 175);
+  border-radius: 4px;
+}
+
 body.receiver .history-row {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) minmax(72px, 120px) 76px 28px;
@@ -3729,36 +3753,102 @@ body.receiver .history-row[role="button"]:hover {
   color: #d4d4d8;
 }
 
+body.receiver .history-row[role="button"]:focus-visible {
+  outline: 2px solid var(--vfd);
+  outline-offset: -2px;
+  background: oklch(0.16 0.05 175 / 0.45);
+  color: #e2e2e6;
+}
+
+/* Recast confirmation: the just-recast row flashes a VFD-cyan wash that
+   decays back to the resting state, so the action lands visibly in the
+   section itself instead of only elsewhere on the page. */
+body.receiver .history-row.recasting {
+  animation: history-recast-pulse 900ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes history-recast-pulse {
+  0% {
+    background: oklch(0.34 0.11 175 / 0.6);
+  }
+  100% {
+    background: oklch(0.14 0.04 175 / 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .history-row.recasting {
+    animation: none;
+  }
+}
+
+/* The artwork cell is a per-source identity chip: a single --src-hue drives
+   its fill, border, text, and a soft halo so each provider reads as a
+   distinct color at a glance, instead of repeating the text already in the
+   source column. data-source comes from HistoryRow.SourceID. */
 body.receiver .history-row .artwork {
+  --src-hue: 80;
   width: 32px;
   height: 32px;
-  border-radius: 2px;
+  border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, oklch(0.18 0.04 175 / 0.55) 0%, oklch(0.08 0.012 80) 70%),
-    #0a0a0b;
-  border: 1px solid oklch(0.22 0.012 80);
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.65);
-  color: var(--vfd-faded);
-  font: 700 11px 'DSEG14-Classic', monospace;
+  background: linear-gradient(135deg, oklch(0.32 0.085 var(--src-hue) / 0.6) 0%, oklch(0.10 0.02 var(--src-hue)) 78%);
+  border: 1px solid oklch(0.44 0.07 var(--src-hue) / 0.55);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.6),
+    0 0 6px oklch(0.55 0.10 var(--src-hue) / 0.18);
+  color: oklch(0.90 0.11 var(--src-hue));
+  font: 800 10px 'Inter', sans-serif;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+body.receiver .history-row .artwork[data-source="plex"] {
+  --src-hue: 74;
+}
+
+body.receiver .history-row .artwork[data-source="jellyfin"] {
+  --src-hue: 285;
+}
+
+body.receiver .history-row .artwork[data-source="dlna"] {
+  --src-hue: 155;
+}
+
+body.receiver .history-row .artwork[data-source="url"] {
+  --src-hue: 200;
+}
+
+body.receiver .history-row .artwork[data-source="streams"] {
+  --src-hue: 25;
+}
+
+body.receiver .history-row .artwork[data-source="localfiles"] {
+  --src-hue: 235;
+}
+
+body.receiver .history-row .artwork[data-source="torrent"] {
+  --src-hue: 130;
 }
 
 body.receiver .history-row .title {
   min-width: 0;
-  font-family: 'DSEG14-Modern', monospace;
-  font-weight: 400;
+  /* The title is the primary scan target of the list, so it drops the
+     seven-segment face for a clean condensed sans while keeping the VFD
+     cyan + glow that ties it back to the faceplate. */
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
   font-size: 13px;
-  letter-spacing: 0.02em;
-  color: oklch(0.82 0.18 175);
-  text-shadow: 0 0 2px oklch(0.78 0.18 175 / 0.45);
+  letter-spacing: 0.005em;
+  color: oklch(0.87 0.15 175);
+  text-shadow: 0 0 6px oklch(0.80 0.18 175 / 0.28);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.1;
+  line-height: 1.15;
 }
 
 body.receiver .history-row .source,
@@ -3776,13 +3866,16 @@ body.receiver .history-row .when {
   text-align: right;
 }
 
-body.receiver .history-replay-btn,
+/* The whole row is the recast control now (li[role="button"]); the cue is a
+   non-interactive glyph that signals "this row recasts" and lights up when the
+   row is hovered or keyboard-focused. No nested interactive element. */
+body.receiver .history-replay-cue,
 body.receiver .history-replay-placeholder {
   width: 26px;
   height: 26px;
 }
 
-body.receiver .history-replay-btn {
+body.receiver .history-replay-cue {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3794,23 +3887,25 @@ body.receiver .history-replay-btn {
   color: var(--vfd-faded);
   font: 700 11px 'Inter', sans-serif;
   line-height: 1;
-  cursor: pointer;
   transition:
     color 220ms cubic-bezier(0.22, 1, 0.36, 1),
     background 220ms cubic-bezier(0.22, 1, 0.36, 1),
     box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-body.receiver .history-replay-btn:hover {
+body.receiver .history-row[role="button"]:hover .history-replay-cue,
+body.receiver .history-row[role="button"]:focus-visible .history-replay-cue {
   color: var(--vfd);
   background: radial-gradient(circle at 30% 30%, oklch(0.32 0.06 175) 0%, oklch(0.12 0.05 175) 70%);
   box-shadow: 0 0 4px var(--vfd-glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transform: scale(1.08);
 }
 
-body.receiver .history-replay-btn:disabled {
-  cursor: progress;
-  opacity: 0.58;
+/* aria-busy is set on the row for the moment between click and server ack. */
+body.receiver .history-row[aria-busy="true"] .history-replay-cue {
+  color: var(--vfd);
+  opacity: 0.7;
 }
 
 body.receiver .history-replay-placeholder {
@@ -5827,4 +5922,223 @@ body.receiver .widget-err {
   color: oklch(0.72 0.18 25);
   font-size: 11px;
   margin-top: 4px;
+}
+
+/* ============================================================
+   16. Delight — period-correct "the hardware comes alive" pass
+   ------------------------------------------------------------
+   Additive, reduced-motion-safe, and leaning on geometry/segment
+   layers already in the DOM rather than inventing new ones:
+     A) Power-on ritual — a transient `warming` body class (added by
+        power-on.js only on the idle->live transition) blooms the VFD
+        filament, fires an all-segments self-test on the existing
+        .seg-ghost layer (the clock's "88:88" ghost rides along for
+        free), then resolves the real .seg-text in.
+     B) Lamp ignite — faceplate lamps over-shoot then settle when they
+        light, the way a driven incandescent/VFD lamp warms, instead of
+        the instant snap of an LED.
+     C) Source-button travel — the source-cluster buttons depress 1px on
+        press, matching the load-core button that already did.
+     D) Self-test overlay — styling for the .self-test-screen slot the
+        VFD layout reserved back in section 6; self-test.js drives it.
+   ============================================================ */
+
+/* --- A. Power-on ritual -------------------------------------- */
+body.receiver.warming .screen.vfd {
+  animation: vfd-ignite 760ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes vfd-ignite {
+  0%   { filter: brightness(0.18) saturate(0.6); }
+  16%  { filter: brightness(1.42) saturate(1.1); }
+  60%  { filter: brightness(0.96); }
+  100% { filter: brightness(1); }
+}
+
+/* All segments fire, then settle back to the resting ghost — the classic
+   VFD/7-seg lamp test. */
+body.receiver.warming .vfd .seg-ghost {
+  animation: seg-selftest 760ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes seg-selftest {
+  0%   { color: var(--vfd-bright); text-shadow: 0 0 6px var(--vfd-glow), 0 0 2px var(--vfd-bright); }
+  34%  { color: var(--vfd-bright); text-shadow: 0 0 6px var(--vfd-glow), 0 0 2px var(--vfd-bright); }
+  100% { color: var(--vfd-ghost); text-shadow: none; }
+}
+
+/* Real content resolves in only after the segment test, so the bright ghost
+   reads as a lamp test and not a double-exposure with the live text. */
+body.receiver.warming .vfd .seg-text {
+  animation: seg-resolve 760ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes seg-resolve {
+  0%, 38% { opacity: 0; }
+  62%     { opacity: 1; }
+  100%    { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver.warming .screen.vfd,
+  body.receiver.warming .vfd .seg-ghost,
+  body.receiver.warming .vfd .seg-text {
+    animation: none;
+  }
+}
+
+/* --- B. Lamp ignite ----------------------------------------- */
+/* The lit *background* stays owned by the existing .on/.lit rules; this
+   only animates the lens coming up to heat. Red REC keeps its rec-pulse
+   (higher specificity wins), so this lands on the green/aqua pilots. */
+body.receiver .led.on .light::before,
+body.receiver .source-cluster .hw-btn.lit::before {
+  animation: lamp-ignite 460ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes lamp-ignite {
+  0%   { filter: brightness(0.35); }
+  30%  { filter: brightness(1.7); }
+  100% { filter: brightness(1); }
+}
+
+/* The idle faceplate stays dark and still — never replay ignition on lamps
+   the idle rules just dimmed. */
+body.receiver.idle .led.on .light::before,
+body.receiver.idle .source-cluster .hw-btn.lit::before {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .led.on .light::before,
+  body.receiver .source-cluster .hw-btn.lit::before {
+    animation: none;
+  }
+}
+
+/* --- C. Source-button travel -------------------------------- */
+body.receiver .source-cluster .hw-btn {
+  transition: background 220ms, transform 80ms, box-shadow 120ms;
+}
+
+body.receiver .source-cluster .hw-btn:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 2px 5px rgba(0, 0, 0, 0.55),
+    0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+/* --- D. Self-test diagnostic overlay (.self-test-screen) ----- */
+/* Hidden service-menu readout. self-test.js builds the element inside .vfd
+   and drives the staged check sweep; this owns the look. The descendant
+   selector outranks `.screen > *` so the overlay can position: absolute. */
+body.receiver .vfd .self-test-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 8px;
+  padding: 14px 20px;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 2px, rgba(0, 0, 0, 0.28) 2px 3px),
+    radial-gradient(ellipse at center, oklch(0.13 0.04 175) 0%, oklch(0.07 0.03 175) 90%);
+  color: var(--vfd);
+  font-family: 'DSEG14-Classic', monospace;
+  text-shadow: 0 0 3px var(--vfd-glow);
+  animation: selftest-in 320ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+body.receiver .vfd .self-test-screen.closing {
+  animation: selftest-out 320ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes selftest-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes selftest-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+body.receiver .self-test-screen .st-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--vfd-bright);
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+body.receiver .self-test-screen .st-head .st-rev {
+  color: var(--vfd-dim);
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: 0.2em;
+}
+
+body.receiver .self-test-screen .st-list {
+  display: grid;
+  align-content: center;
+  gap: 7px;
+}
+
+body.receiver .self-test-screen .st-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  color: var(--vfd-dim);
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  opacity: 0.4;
+  transition: opacity 200ms cubic-bezier(0.22, 1, 0.36, 1), color 200ms;
+}
+
+body.receiver .self-test-screen .st-line .st-result {
+  color: var(--vfd-faded);
+  font: 700 11px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+}
+
+body.receiver .self-test-screen .st-line.ok {
+  color: var(--vfd);
+  opacity: 1;
+}
+
+body.receiver .self-test-screen .st-line.ok .st-result {
+  color: oklch(0.80 0.17 150);
+  text-shadow: 0 0 3px oklch(0.62 0.14 150 / 0.5);
+}
+
+body.receiver .self-test-screen .st-foot {
+  color: var(--vfd-faded);
+  font: 700 12px 'DSEG14-Classic', monospace;
+  letter-spacing: 0.26em;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 240ms, color 240ms, text-shadow 240ms;
+}
+
+body.receiver .self-test-screen.done .st-foot {
+  color: var(--vfd-bright);
+  text-shadow: 0 0 6px var(--vfd-glow), 0 0 2px var(--vfd-bright);
+  opacity: 1;
+}
+
+/* Non-destructive sweep glow for hardware under test. */
+body.receiver .source-cluster .hw-btn.selftest-lit::before,
+body.receiver .led.selftest-lit .light::before {
+  background: var(--vfd-bright);
+  box-shadow: 0 0 8px var(--vfd-glow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .vfd .self-test-screen,
+  body.receiver .vfd .self-test-screen.closing {
+    animation: none;
+    opacity: 1;
+  }
 }
