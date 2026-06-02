@@ -158,7 +158,7 @@ func resolveUserDirectURL(ctx context.Context, doer httpDoer, resolver hostResol
 		}
 		base, err := url.Parse(current)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("parse current url: %w", err)
 		}
 		ref, err := url.Parse(location)
 		if err != nil {

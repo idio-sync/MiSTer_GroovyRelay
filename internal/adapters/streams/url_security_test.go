@@ -229,4 +229,18 @@ func TestResolveUserDirectURL(t *testing.T) {
 			t.Fatal("got nil error, want rejection of metadata host")
 		}
 	})
+
+	t.Run("redirect without Location header rejected", func(t *testing.T) {
+		doer := stubDoer{resp: map[string]*http.Response{
+			"https://a.example.com/s.m3u8": &http.Response{
+				StatusCode: 302,
+				Header:     http.Header{}, // no Location
+				Body:       io.NopCloser(strings.NewReader("")),
+			},
+		}}
+		_, err := resolveUserDirectURL(context.Background(), doer, resolver, "https://a.example.com/s.m3u8", maxUserRedirectHops)
+		if err == nil {
+			t.Fatal("got nil error, want rejection of 3xx with missing Location header")
+		}
+	})
 }
