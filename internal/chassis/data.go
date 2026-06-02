@@ -351,14 +351,28 @@ type HistoryData struct {
 	EmptyMessage string
 }
 
-// HistoryRow represents one entry in the recent-casts row.
+// HistoryRow represents one entry in the recent-casts row. Source is the
+// human label (e.g. "PLEX"); SourceID is the lowercase adapter id that
+// data-source CSS color-keys the artwork badge from. When is the relative
+// age ("5M AGO"); WhenISO/WhenExact back the <time datetime> element and
+// its absolute-time tooltip so the relative label keeps a precise anchor.
 type HistoryRow struct {
-	Title    string
-	Source   string
-	When     string
-	Artwork  string
-	ReplayID string
+	Title     string
+	Source    string
+	SourceID  string
+	When      string
+	WhenISO   string
+	WhenExact string
+	Artwork   string
+	ReplayID  string
 }
+
+// chassisHistoryMaxRows caps the recent-casts strip. Each adapter already
+// bounds its own history (companionHistoryMaxEntries = 10), but the strip
+// aggregates across adapters, so the chassis enforces its own ceiling to
+// keep the faceplate from growing unbounded. Overflow lives in the scroll
+// region the history frame provides.
+const chassisHistoryMaxRows = 12
 
 type companionHistoryProvider interface {
 	CompanionHistory() []companion.CompanionHistoryEntry
@@ -369,7 +383,7 @@ type companionHistoryPlayProvider interface {
 }
 
 func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData {
-	out := HistoryData{EmptyMessage: "No recent casts"}
+	out := HistoryData{EmptyMessage: "No recent casts — paste a URL or pick a preset"}
 	if reg == nil {
 		return out
 	}
@@ -386,6 +400,7 @@ func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData 
 		}
 		_, canReplay := adapter.(companionHistoryPlayProvider)
 		source := historySourceLabel(adapter)
+		sourceID := historySourceID(adapter)
 		artwork := historyArtworkLabel(adapter)
 		for _, entry := range provider.CompanionHistory() {
 			title := strings.TrimSpace(entry.Title)
@@ -399,13 +414,17 @@ func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData 
 			if canReplay {
 				replayID = strings.TrimSpace(entry.ID)
 			}
+			iso, exact := historyTimestamps(entry.LastPlayed)
 			rows = append(rows, datedRow{
 				row: HistoryRow{
-					Title:    title,
-					Source:   source,
-					When:     formatHistoryAge(now, entry.LastPlayed),
-					Artwork:  artwork,
-					ReplayID: replayID,
+					Title:     title,
+					Source:    source,
+					SourceID:  sourceID,
+					When:      formatHistoryAge(now, entry.LastPlayed),
+					WhenISO:   iso,
+					WhenExact: exact,
+					Artwork:   artwork,
+					ReplayID:  replayID,
 				},
 				lastPlayed: entry.LastPlayed,
 			})
@@ -416,6 +435,9 @@ func historyDataFromRegistry(reg *adapters.Registry, now time.Time) HistoryData 
 	})
 	if len(rows) == 0 {
 		return out
+	}
+	if len(rows) > chassisHistoryMaxRows {
+		rows = rows[:chassisHistoryMaxRows]
 	}
 	out.Rows = make([]HistoryRow, 0, len(rows))
 	for _, r := range rows {
@@ -430,6 +452,28 @@ func historySourceLabel(adapter adapters.Adapter) string {
 		label = adapter.Name()
 	}
 	return strings.ToUpper(label)
+}
+
+// historySourceID is the lowercase adapter identity the artwork badge
+// color-keys from via a data-source attribute (e.g. "plex", "jellyfin",
+// "url"). Falls back to the display name when Name() is empty.
+func historySourceID(adapter adapters.Adapter) string {
+	id := strings.ToLower(strings.TrimSpace(adapter.Name()))
+	if id == "" {
+		id = strings.ToLower(strings.TrimSpace(adapter.DisplayName()))
+	}
+	return id
+}
+
+// historyTimestamps renders the machine-readable (RFC3339) and human
+// absolute forms of a play time for the row's <time> element and its
+// tooltip. Zero times yield empty strings so the template can omit the
+// datetime attribute and tooltip rather than print a 0001 placeholder.
+func historyTimestamps(lastPlayed time.Time) (iso, exact string) {
+	if lastPlayed.IsZero() {
+		return "", ""
+	}
+	return lastPlayed.Format(time.RFC3339), lastPlayed.Format("2 Jan 2006 · 15:04")
 }
 
 func historyArtworkLabel(adapter adapters.Adapter) string {

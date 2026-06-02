@@ -46,11 +46,14 @@ type historyEnvelope struct {
 }
 
 type historyRowEnvelope struct {
-	Title    string `json:"title"`
-	Source   string `json:"source"`
-	When     string `json:"when"`
-	Artwork  string `json:"artwork"`
-	ReplayID string `json:"replayId,omitempty"`
+	Title     string `json:"title"`
+	Source    string `json:"source"`
+	SourceID  string `json:"sourceId"`
+	When      string `json:"when"`
+	WhenISO   string `json:"whenIso,omitempty"`
+	WhenExact string `json:"whenExact,omitempty"`
+	Artwork   string `json:"artwork"`
+	ReplayID  string `json:"replayId,omitempty"`
 }
 
 // vfdEnvelope is the payload for the `vfd` SSE event. Carries the
@@ -164,11 +167,14 @@ func historyEnvelopeFrom(h HistoryData) historyEnvelope {
 	}
 	for _, row := range h.Rows {
 		out.Rows = append(out.Rows, historyRowEnvelope{
-			Title:    row.Title,
-			Source:   row.Source,
-			When:     row.When,
-			Artwork:  row.Artwork,
-			ReplayID: row.ReplayID,
+			Title:     row.Title,
+			Source:    row.Source,
+			SourceID:  row.SourceID,
+			When:      row.When,
+			WhenISO:   row.WhenISO,
+			WhenExact: row.WhenExact,
+			Artwork:   row.Artwork,
+			ReplayID:  row.ReplayID,
 		})
 	}
 	return out

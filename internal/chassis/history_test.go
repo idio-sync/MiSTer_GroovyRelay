@@ -42,8 +42,16 @@ func TestSnapshotFromStatusView_PopulatesHistoryFromRegisteredProvider(t *testin
 	got := snapshotFromStatusView(cfg, core.StatusHomeView{State: core.StateIdle}, nil, nil, nil, nil, now)
 
 	want := []HistoryRow{
-		{Title: "Big Buck Bunny", Source: "URL", When: "2H AGO", Artwork: "URL"},
-		{Title: "archive.org/details/clip.mp4", Source: "URL", When: "1D AGO", Artwork: "URL"},
+		{
+			Title: "Big Buck Bunny", Source: "URL", SourceID: "url",
+			When: "2H AGO", WhenISO: "2026-05-30T10:00:00Z", WhenExact: "30 May 2026 · 10:00",
+			Artwork: "URL",
+		},
+		{
+			Title: "archive.org/details/clip.mp4", Source: "URL", SourceID: "url",
+			When: "1D AGO", WhenISO: "2026-05-29T11:00:00Z", WhenExact: "29 May 2026 · 11:00",
+			Artwork: "URL",
+		},
 	}
 	if len(got.History.Rows) != len(want) {
 		t.Fatalf("history rows = %+v, want %+v", got.History.Rows, want)
@@ -88,17 +96,21 @@ func TestHistoryTemplate_RendersReplayButtonOnlyForReplayableRows(t *testing.T) 
 	tmpl := parseTemplatesForTest(t)
 	data := HistoryData{Rows: []HistoryRow{
 		{
-			Title:    "Replay Me",
-			Source:   "URL",
-			When:     "10M AGO",
-			Artwork:  "URL",
-			ReplayID: "h_11111111111111111111111111111111",
+			Title:     "Replay Me",
+			Source:    "URL",
+			SourceID:  "url",
+			When:      "10M AGO",
+			WhenISO:   "2026-05-30T11:50:00Z",
+			WhenExact: "30 May 2026 · 11:50",
+			Artwork:   "URL",
+			ReplayID:  "h_11111111111111111111111111111111",
 		},
 		{
-			Title:   "Read Only",
-			Source:  "DLNA",
-			When:    "1H AGO",
-			Artwork: "DLNA",
+			Title:    "Read Only",
+			Source:   "DLNA",
+			SourceID: "dlna",
+			When:     "1H AGO",
+			Artwork:  "DLNA",
 		},
 	}}
 	var buf bytes.Buffer
@@ -106,19 +118,35 @@ func TestHistoryTemplate_RendersReplayButtonOnlyForReplayableRows(t *testing.T) 
 		t.Fatalf("ExecuteTemplate(history): %v", err)
 	}
 	body := buf.String()
+	// Replayable rows become the recast affordance themselves: a role="button"
+	// list item carrying the replay id + aria-label, with the play glyph as a
+	// non-interactive visual cue (no nested interactive element).
 	for _, want := range []string{
-		`class="history-replay-btn"`,
-		`data-history-replay-id="h_11111111111111111111111111111111"`,
-		`aria-label="Recast Replay Me from history"`,
-		`title="Recast"`,
+		`role="list"`,
+		`<li class="history-row" role="button" tabindex="0" data-history-replay-id="h_11111111111111111111111111111111" aria-label="Recast Replay Me from history">`,
+		`class="history-replay-cue"`,
+		`data-source="url"`,
+		`<time class="when" datetime="2026-05-30T11:50:00Z" title="30 May 2026 · 11:50">10M AGO</time>`,
 		`&#9656;`,
+		`class="history-replay-placeholder"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("history template missing %q; body:\n%s", want, body)
 		}
 	}
-	if strings.Count(body, `class="history-replay-btn"`) != 1 {
-		t.Fatalf("replay button count = %d, want 1; body:\n%s", strings.Count(body, `class="history-replay-btn"`), body)
+	// Exactly one replayable row, so exactly one actionable list item, one cue,
+	// and one replay id. The read-only DLNA row stays a plain, non-actionable li.
+	if got := strings.Count(body, `data-history-replay-id=`); got != 1 {
+		t.Fatalf("replay id count = %d, want 1; body:\n%s", got, body)
+	}
+	if got := strings.Count(body, `class="history-replay-cue"`); got != 1 {
+		t.Fatalf("recast cue count = %d, want 1; body:\n%s", got, body)
+	}
+	if got := strings.Count(body, `role="button"`); got != 1 {
+		t.Fatalf("actionable row count = %d, want 1; body:\n%s", got, body)
+	}
+	if strings.Contains(body, `class="history-replay-btn"`) {
+		t.Fatalf("legacy nested replay button must be gone; body:\n%s", body)
 	}
 }
 

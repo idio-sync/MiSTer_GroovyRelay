@@ -288,7 +288,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 		},
 		History: HistoryData{
 			Rows:         nil,
-			EmptyMessage: "No recent casts",
+			EmptyMessage: "No recent casts — paste a URL or pick a preset",
 		},
 		Settings: SettingsData{
 			Open: false,

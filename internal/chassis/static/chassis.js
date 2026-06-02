@@ -151,29 +151,68 @@
   }
 
   function historyCell(className, text) {
-    const cell = document.createElement('div');
+    const cell = document.createElement('span');
     cell.className = className;
     cell.textContent = text || '';
     return cell;
   }
 
-  function historyReplayControl(row) {
-    const replayID = row.replayId || row.replayID || '';
-    if (!replayID) {
-      const placeholder = document.createElement('span');
-      placeholder.className = 'history-replay-placeholder';
-      placeholder.setAttribute('aria-hidden', 'true');
-      return placeholder;
-    }
+  function historyArtwork(row) {
+    const cell = document.createElement('span');
+    cell.className = 'artwork';
+    cell.setAttribute('data-source', (row && row.sourceId) || '');
+    cell.setAttribute('aria-hidden', 'true');
+    cell.textContent = (row && row.artwork) || '';
+    return cell;
+  }
 
-    const button = document.createElement('button');
-    button.className = 'history-replay-btn';
-    button.type = 'button';
-    button.dataset.historyReplayId = replayID;
-    button.setAttribute('aria-label', `Recast ${row.title || 'history item'} from history`);
-    button.title = 'Recast';
-    button.textContent = '\u25b6';
-    return button;
+  function historyWhen(row) {
+    if (row && row.whenIso) {
+      const time = document.createElement('time');
+      time.className = 'when';
+      time.setAttribute('datetime', row.whenIso);
+      if (row.whenExact) {
+        time.title = row.whenExact;
+      }
+      time.textContent = row.when || '';
+      return time;
+    }
+    return historyCell('when', row && row.when);
+  }
+
+  function historyCue(replayID) {
+    const cue = document.createElement('span');
+    cue.setAttribute('aria-hidden', 'true');
+    if (replayID) {
+      cue.className = 'history-replay-cue';
+      cue.textContent = '\u25b8';
+    } else {
+      cue.className = 'history-replay-placeholder';
+    }
+    return cue;
+  }
+
+  // A replayable row is the recast control itself: a role="button" list item
+  // carrying the replay id + aria-label, with the glyph as a visual cue only.
+  // Read-only rows render as plain, non-actionable list items.
+  function buildHistoryRow(row) {
+    const item = document.createElement('li');
+    item.className = 'history-row';
+    const replayID = (row && (row.replayId || row.replayID)) || '';
+    if (replayID) {
+      item.setAttribute('role', 'button');
+      item.setAttribute('tabindex', '0');
+      item.dataset.historyReplayId = replayID;
+      item.setAttribute('aria-label', `Recast ${(row && row.title) || 'history item'} from history`);
+    }
+    item.append(
+      historyArtwork(row),
+      historyCell('title', row && row.title),
+      historyCell('source', row && row.source),
+      historyWhen(row),
+      historyCue(replayID),
+    );
+    return item;
   }
 
   function renderHistory(payload) {
@@ -190,18 +229,11 @@
       return;
     }
 
-    body.replaceChildren(...rows.map((row) => {
-      const item = document.createElement('div');
-      item.className = 'history-row';
-      item.append(
-        historyCell('artwork', row.artwork),
-        historyCell('title', row.title),
-        historyCell('source', row.source),
-        historyCell('when', row.when),
-        historyReplayControl(row),
-      );
-      return item;
-    }));
+    const list = document.createElement('ul');
+    list.className = 'history-list';
+    list.setAttribute('role', 'list');
+    list.append(...rows.map(buildHistoryRow));
+    body.replaceChildren(list);
   }
 
   function installHistoryLiveUpdates() {
@@ -217,38 +249,74 @@
     });
   }
 
+  function flashHistoryRecast(row) {
+    if (!row || !row.classList) {
+      return;
+    }
+    row.classList.remove('recasting');
+    // Force a reflow so re-adding the class restarts the animation when the
+    // same row is recast twice in succession.
+    void row.offsetWidth;
+    row.classList.add('recasting');
+    setTimeout(() => row.classList.remove('recasting'), 950);
+  }
+
+  async function triggerHistoryRecast(row) {
+    if (!row) {
+      return;
+    }
+    const id = row.getAttribute('data-history-replay-id') || '';
+    if (!id || row.getAttribute('aria-busy') === 'true') {
+      return;
+    }
+    row.setAttribute('aria-busy', 'true');
+    try {
+      const body = new URLSearchParams();
+      body.set('id', id);
+      const res = await fetch('/receiver/history/play', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        showInputError(payload.chip || 'CAST FAILED');
+        return;
+      }
+      flashHistoryRecast(row);
+    } catch (_) {
+      showInputError('CAST FAILED');
+    } finally {
+      row.removeAttribute('aria-busy');
+    }
+  }
+
+  function historyRowFromEvent(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    return target ? target.closest('[data-history-replay-id]') : null;
+  }
+
   function installHistoryReplayActions() {
-    document.addEventListener('click', async (event) => {
-      const target = event.target instanceof Element ? event.target : null;
-      const btn = target ? target.closest('[data-history-replay-id]') : null;
-      if (!btn || btn.disabled) {
+    document.addEventListener('click', (event) => {
+      const row = historyRowFromEvent(event);
+      if (row) {
+        triggerHistoryRecast(row);
+      }
+    });
+    // The row is role="button" + tabindex=0, so Enter/Space must recast it.
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') {
         return;
       }
-      const id = btn.getAttribute('data-history-replay-id') || '';
-      if (!id) {
+      const row = historyRowFromEvent(event);
+      if (!row) {
         return;
       }
-      btn.disabled = true;
-      try {
-        const body = new URLSearchParams();
-        body.set('id', id);
-        const res = await fetch('/receiver/history/play', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body,
-        });
-        if (!res.ok) {
-          const payload = await res.json().catch(() => ({}));
-          showInputError(payload.chip || 'CAST FAILED');
-        }
-      } catch (_) {
-        showInputError('CAST FAILED');
-      } finally {
-        btn.disabled = false;
-      }
+      event.preventDefault();
+      triggerHistoryRecast(row);
     });
   }
 

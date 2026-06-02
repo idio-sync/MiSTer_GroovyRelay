@@ -2,21 +2,31 @@
 {{htmlComment "chassis:history"}}
 <div class="history-section section-strip">
   <span class="strip-label">History</span>
-  <div>
+  <div class="history-frame">
     {{if .Rows}}
+    <ul class="history-list" role="list">
       {{range .Rows}}
-      <div class="history-row">
-        <div class="artwork">{{.Artwork}}</div>
-        <div class="title">{{.Title}}</div>
-        <div class="source">{{.Source}}</div>
-        <div class="when">{{.When}}</div>
+      {{if .ReplayID}}
+      <li class="history-row" role="button" tabindex="0" data-history-replay-id="{{.ReplayID}}" aria-label="Recast {{.Title}} from history">
+      {{else}}
+      <li class="history-row">
+      {{end}}
+        <span class="artwork" data-source="{{.SourceID}}" aria-hidden="true">{{.Artwork}}</span>
+        <span class="title">{{.Title}}</span>
+        <span class="source">{{.Source}}</span>
+        {{if .WhenISO}}
+        <time class="when" datetime="{{.WhenISO}}" title="{{.WhenExact}}">{{.When}}</time>
+        {{else}}
+        <span class="when">{{.When}}</span>
+        {{end}}
         {{if .ReplayID}}
-        <button class="history-replay-btn" type="button" data-history-replay-id="{{.ReplayID}}" aria-label="Recast {{.Title}} from history" title="Recast">&#9656;</button>
+        <span class="history-replay-cue" aria-hidden="true">&#9656;</span>
         {{else}}
         <span class="history-replay-placeholder" aria-hidden="true"></span>
         {{end}}
-      </div>
+      </li>
       {{end}}
+    </ul>
     {{else}}
       <div class="history-empty">{{.EmptyMessage}}</div>
     {{end}}
