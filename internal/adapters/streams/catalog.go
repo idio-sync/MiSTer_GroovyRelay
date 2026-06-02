@@ -166,34 +166,6 @@ func userBadgeClass(token string) string {
 	return "u-" + normalizeBadgeColorForLoad(token)
 }
 
-// chassisCatalogSnapshot returns the definitions and catalogs maps,
-// seeding from bundledManifest if the adapter has not yet completed
-// Start-time installation. Always returns non-empty maps.
-func (a *Adapter) chassisCatalogSnapshot() (map[string]ProviderDefinition, map[string]ProviderCatalog) {
-	a.mu.Lock()
-	if len(a.definitions) > 0 {
-		defs := make(map[string]ProviderDefinition, len(a.definitions))
-		cats := make(map[string]ProviderCatalog, len(a.catalogs))
-		for id, d := range a.definitions {
-			defs[id] = d
-		}
-		for id, c := range a.catalogs {
-			cats[id] = c
-		}
-		a.mu.Unlock()
-		return defs, cats
-	}
-	a.mu.Unlock()
-
-	// Local-only bootstrap: no remote fetch on a chassis render path.
-	m := bundledManifest()
-	defs := make(map[string]ProviderDefinition, len(m.Providers))
-	for _, p := range m.Providers {
-		defs[p.ID] = p
-	}
-	return defs, nil
-}
-
 // groupChannels indexes a provider's static ChannelDefinition slice by
 // GroupID. The chassis catalog drawer in 3B exposes only the bundled
 // definitions, so catalog-additions-merge semantics are intentionally
