@@ -6283,3 +6283,40 @@ body.receiver .led.selftest-lit .light::before {
     opacity: 1;
   }
 }
+
+/* ============================================================
+   17. Polish — keyboard focus + reduced-motion completeness
+   ------------------------------------------------------------
+   A) The faceplate's hardware controls had no focus style and fell back to
+      the UA ring (low-contrast / off-theme on dark metal). Give them the
+      same recessed VFD-cyan halo the history rows and catalog cards already
+      use (WCAG 2.4.7), keyboard-only via :focus-visible so a mouse press
+      stays clean.
+   B) Five continuous lamp pulses ignored prefers-reduced-motion. Stop them
+      for motion-sensitive users — a steady-lit lamp is also the more
+      period-correct fallback (real lamps glow, they do not breathe).
+   ============================================================ */
+
+/* --- A. Unified keyboard focus ring ------------------------- */
+body.receiver .source-cluster .hw-btn:focus-visible,
+body.receiver .trn:focus-visible,
+body.receiver .preset:focus-visible,
+body.receiver .load-core-btn:focus-visible,
+body.receiver .gear-btn:focus-visible,
+body.receiver .power-btn:focus-visible,
+body.receiver .cast-btn:focus-visible,
+body.receiver .browse-btn:focus-visible {
+  outline: 2px solid var(--vfd);
+  outline-offset: 2px;
+}
+
+/* --- B. Reduced-motion completeness for the lamp pulses ------ */
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .led.on.red .light::before,
+  body.receiver .load-core-btn.loading::before,
+  body.receiver .source-cluster .hw-btn.lit.live::before,
+  body.receiver .meter-screen--compact .meter-readout-line .grp.link-grp .val::before,
+  body.receiver .ch-card.live::after {
+    animation: none;
+  }
+}
