@@ -5,6 +5,9 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
 // validateUserProviderHost enforces the "allow LAN, block internals" posture
@@ -45,6 +48,22 @@ func validateUserProviderHost(raw string) error {
 		}
 	}
 	return nil
+}
+
+// userDirectInputPolicy is the MediaInputPolicy for user-authored `direct`
+// (m3u8/HLS) channels (spec §7.2). It mirrors the bundled directHLSInputPolicy()
+// in playback.go but OMITS the `file` protocol — user direct streams are not
+// bundled or host-locked, so FFmpeg must never be allowed to open local files.
+// Phase 3 wires this onto the user direct-item SessionRequest; defining it here
+// keeps the security primitives together and independently testable.
+func userDirectInputPolicy() core.MediaInputPolicy {
+	return core.MediaInputPolicy{
+		ProtocolWhitelist: []string{"http", "https", "tcp", "tls", "crypto"},
+		DisableRedirects:  true,
+		DisableReconnect:  true,
+		RWTimeout:         5 * time.Second,
+		BlockedHeaders:    []string{"Cookie", "Authorization", "Proxy-Authorization", "Referer"},
+	}
 }
 
 // validateUserProviderIP rejects IP ranges that must never be dereferenced from

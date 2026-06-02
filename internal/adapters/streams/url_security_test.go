@@ -41,3 +41,41 @@ func TestValidateUserProviderHost(t *testing.T) {
 		}
 	}
 }
+
+func TestUserDirectInputPolicy(t *testing.T) {
+	p := userDirectInputPolicy()
+
+	for _, proto := range p.ProtocolWhitelist {
+		if proto == "file" {
+			t.Fatalf("userDirectInputPolicy must not whitelist the file protocol; got %v", p.ProtocolWhitelist)
+		}
+	}
+	wantProtocols := map[string]bool{"http": true, "https": true, "tcp": true, "tls": true, "crypto": true}
+	if len(p.ProtocolWhitelist) != len(wantProtocols) {
+		t.Errorf("ProtocolWhitelist = %v, want exactly %v", p.ProtocolWhitelist, wantProtocols)
+	}
+	for _, proto := range p.ProtocolWhitelist {
+		if !wantProtocols[proto] {
+			t.Errorf("unexpected protocol %q in whitelist", proto)
+		}
+	}
+
+	if !p.DisableRedirects {
+		t.Error("DisableRedirects must be true")
+	}
+	if !p.DisableReconnect {
+		t.Error("DisableReconnect must be true")
+	}
+	if p.RWTimeout <= 0 {
+		t.Error("RWTimeout must be set")
+	}
+	blocked := map[string]bool{}
+	for _, h := range p.BlockedHeaders {
+		blocked[h] = true
+	}
+	for _, h := range []string{"Cookie", "Authorization", "Proxy-Authorization", "Referer"} {
+		if !blocked[h] {
+			t.Errorf("BlockedHeaders must include %q; got %v", h, p.BlockedHeaders)
+		}
+	}
+}
