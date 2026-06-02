@@ -1,0 +1,66 @@
+package streams
+
+import (
+	"fmt"
+	"net/netip"
+	"net/url"
+	"strings"
+)
+
+// validateUserProviderHost enforces the "allow LAN, block internals" posture
+// (spec §7.1) on a user-supplied stream/page URL. It is purely syntactic and
+// does NO DNS resolution: an IP-literal host is classified and accepted only if
+// public or RFC1918/ULA-private; a hostname passes this gate and is re-checked
+// against the resolved IP at play time (Phase 3). Rejects any non-http(s)
+// scheme (including file://), URL userinfo, and empty hosts.
+func validateUserProviderHost(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("url is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("scheme %q is not allowed (only http and https)", u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo is not allowed in url")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("url host is required")
+	}
+	// Only IP-literal hosts can be classified here; hostnames are deferred to
+	// the play-time resolved-IP recheck (Phase 3). Unmap() canonicalizes
+	// IPv4-mapped IPv6 literals (e.g. ::ffff:127.0.0.1) so the IPv4-form checks
+	// fire — without it, IsLoopback()/IsLinkLocalUnicast() evaluate the raw
+	// IPv6 bits and an attacker bypasses the loopback/metadata blocks.
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if err := validateUserProviderIP(addr.Unmap()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateUserProviderIP rejects IP ranges that must never be dereferenced from
+// a LAN appliance (spec §7.1): loopback, link-local (incl. 169.254.169.254
+// cloud metadata and fe80::/10), unspecified, and multicast. Private/LAN
+// (10/8, 172.16/12, 192.168/16, fc00::/7) and public global-unicast are allowed.
+func validateUserProviderIP(addr netip.Addr) error {
+	switch {
+	case addr.IsLoopback():
+		return fmt.Errorf("loopback addresses are not allowed")
+	case addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
+		return fmt.Errorf("link-local addresses are not allowed")
+	case addr.IsUnspecified():
+		return fmt.Errorf("unspecified address is not allowed")
+	case addr.IsMulticast():
+		return fmt.Errorf("multicast addresses are not allowed")
+	}
+	return nil
+}
