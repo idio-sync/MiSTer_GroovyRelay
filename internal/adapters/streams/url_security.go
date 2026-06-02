@@ -125,6 +125,63 @@ const (
 	userResolvedHostLookupTimeout = 10 * time.Second
 )
 
+// resolveUserDirectURL walks up to maxHops HTTP redirects for a user direct
+// (m3u8/HLS) URL, re-running validateUserProviderResolvedHost on EVERY hop
+// before any request is issued, and returns the final non-redirect URL to hand
+// to FFmpeg. This is the adapter-side prevalidation the DisableRedirects policy
+// contract requires (internal/ffmpeg/policy.go:34-60): FFmpeg emits no
+// redirect-disabling flag, so the adapter must resolve Location chains itself.
+func resolveUserDirectURL(ctx context.Context, doer httpDoer, resolver hostResolver, rawURL string, maxHops int) (string, error) {
+	current := strings.TrimSpace(rawURL)
+	for hop := 0; hop <= maxHops; hop++ {
+		if err := validateUserProviderResolvedHost(ctx, resolver, current); err != nil {
+			return "", err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, current, nil)
+		if err != nil {
+			return "", fmt.Errorf("build HEAD request: %w", err)
+		}
+		resp, err := doer.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("probe redirect chain: %w", err)
+		}
+		status := resp.StatusCode
+		location := resp.Header.Get("Location")
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if status < 300 || status > 399 {
+			return current, nil
+		}
+		if location == "" {
+			return "", fmt.Errorf("redirect missing Location header")
+		}
+		base, err := url.Parse(current)
+		if err != nil {
+			return "", err
+		}
+		ref, err := url.Parse(location)
+		if err != nil {
+			return "", fmt.Errorf("invalid redirect location: %w", err)
+		}
+		current = base.ResolveReference(ref).String()
+	}
+	return "", fmt.Errorf("redirect chain exceeded %d hops", maxHops)
+}
+
+// newUserRedirectClient is the production httpDoer: a client that surfaces each
+// redirect response (CheckRedirect returns ErrUseLastResponse) so the adapter
+// validates and follows Location headers itself, bounded by a per-request
+// timeout.
+func newUserRedirectClient() *http.Client {
+	return &http.Client{
+		Timeout: userDirectProbeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // validateUserProviderResolvedHost enforces the §7.1 "allow LAN, block
 // internals" posture against a URL at DEREFERENCE time. Unlike the syntactic
 // validateUserProviderHost (authoring time), this RESOLVES hostnames and

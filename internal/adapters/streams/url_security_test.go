@@ -3,6 +3,9 @@ package streams
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -142,4 +145,88 @@ func TestUserDirectInputPolicy(t *testing.T) {
 			t.Errorf("BlockedHeaders must include %q; got %v", h, p.BlockedHeaders)
 		}
 	}
+}
+
+// stubDoer maps absolute request URLs to canned responses for the redirect walk.
+type stubDoer struct {
+	resp map[string]*http.Response
+	err  error
+}
+
+func (s stubDoer) Do(req *http.Request) (*http.Response, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if r, ok := s.resp[req.URL.String()]; ok {
+		return r, nil
+	}
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
+}
+
+func redirectResp(location string) *http.Response {
+	h := http.Header{}
+	h.Set("Location", location)
+	return &http.Response{StatusCode: 302, Header: h, Body: io.NopCloser(strings.NewReader(""))}
+}
+
+func TestResolveUserDirectURL(t *testing.T) {
+	t.Parallel()
+	resolver := stubHostResolver{hosts: map[string][]string{
+		"a.example.com":    {"93.184.216.34"},
+		"b.example.com":    {"93.184.216.35"},
+		"evil.example.com": {"169.254.169.254"},
+	}}
+
+	t.Run("no redirect returns original", func(t *testing.T) {
+		final, err := resolveUserDirectURL(context.Background(), stubDoer{}, resolver, "https://a.example.com/s.m3u8", maxUserRedirectHops)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if final != "https://a.example.com/s.m3u8" {
+			t.Fatalf("final = %q, want original", final)
+		}
+	})
+
+	t.Run("one safe redirect followed and revalidated", func(t *testing.T) {
+		doer := stubDoer{resp: map[string]*http.Response{
+			"https://a.example.com/s.m3u8": redirectResp("https://b.example.com/real.m3u8"),
+		}}
+		final, err := resolveUserDirectURL(context.Background(), doer, resolver, "https://a.example.com/s.m3u8", maxUserRedirectHops)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if final != "https://b.example.com/real.m3u8" {
+			t.Fatalf("final = %q, want redirect target", final)
+		}
+	})
+
+	t.Run("redirect to blocked host rejected", func(t *testing.T) {
+		doer := stubDoer{resp: map[string]*http.Response{
+			"https://a.example.com/s.m3u8": redirectResp("https://evil.example.com/meta"),
+		}}
+		_, err := resolveUserDirectURL(context.Background(), doer, resolver, "https://a.example.com/s.m3u8", maxUserRedirectHops)
+		if err == nil {
+			t.Fatal("got nil error, want rejection of metadata-host redirect")
+		}
+	})
+
+	t.Run("too many hops rejected", func(t *testing.T) {
+		doer := stubDoer{resp: map[string]*http.Response{
+			"https://a.example.com/0": redirectResp("https://a.example.com/1"),
+			"https://a.example.com/1": redirectResp("https://a.example.com/2"),
+			"https://a.example.com/2": redirectResp("https://a.example.com/3"),
+			"https://a.example.com/3": redirectResp("https://a.example.com/4"),
+		}}
+		_, err := resolveUserDirectURL(context.Background(), doer, resolver, "https://a.example.com/0", maxUserRedirectHops)
+		if err == nil {
+			t.Fatal("got nil error, want redirect-chain-exceeded")
+		}
+	})
+
+	t.Run("first-hop blocked host rejected before any request", func(t *testing.T) {
+		_, err := resolveUserDirectURL(context.Background(), stubDoer{}, resolver, "https://evil.example.com/s.m3u8", maxUserRedirectHops)
+		if err == nil {
+			t.Fatal("got nil error, want rejection of metadata host")
+		}
+	})
 }
