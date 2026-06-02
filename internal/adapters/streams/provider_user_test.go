@@ -2,6 +2,7 @@ package streams
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -176,5 +177,45 @@ func TestValidateUserManifestID_RejectAdhocFalse(t *testing.T) {
 	// rejectAdhoc=false means the reserved word "adhoc" must be accepted.
 	if err := validateUserManifestID("channel id", "adhoc", false); err != nil {
 		t.Errorf("validateUserManifestID(adhoc, rejectAdhoc=false) unexpected error: %v", err)
+	}
+}
+
+// TestSlugify_Cap verifies that slugify caps its output at 60 bytes and that
+// the resulting ID satisfies manifestIDPattern (no trailing hyphen, ≤64
+// total chars as required by the manifest ID format).
+func TestSlugify_Cap(t *testing.T) {
+	// 70 alphanumeric characters — no separators so no mid-cap hyphen risk.
+	longName := "abcdefghijklmnopqrstuvwxyz01234567890abcdefghijklmnopqrstuvwxyz01234"
+	got := slugify(longName, "provider")
+	if len(got) > 60 {
+		t.Errorf("slugify capped length = %d, want ≤60; got %q", len(got), got)
+	}
+	if got == "" {
+		t.Fatal("slugify returned empty string for valid input")
+	}
+	if got[len(got)-1] == '-' {
+		t.Errorf("slugify result has trailing hyphen: %q", got)
+	}
+
+	// The generated provider ID (user:<slug>) must pass manifest validation.
+	fullID := newUserProviderID(longName, func(string) bool { return false })
+	if err := validateUserProviderID(fullID); err != nil {
+		t.Errorf("newUserProviderID for long name failed validation: %v (id=%q)", err, fullID)
+	}
+}
+
+// TestSlugify_Cap_HyphenBoundary verifies that a 60-char slug that would end
+// in a hyphen at the cap boundary has the trailing hyphen stripped.
+func TestSlugify_Cap_HyphenBoundary(t *testing.T) {
+	// Build a 61-char name where character 60 (0-indexed) is a space (→hyphen).
+	// "aaaa...aaa aaa...aaa": 59 'a's + space + more 'a's = slug "aaa...aaa-aaa..."
+	// Simpler: repeat "ab " so position 60 falls on a hyphen after truncation.
+	name := strings.Repeat("a", 59) + " extra"
+	got := slugify(name, "provider")
+	if len(got) > 60 {
+		t.Errorf("length after cap = %d, want ≤60", len(got))
+	}
+	if got[len(got)-1] == '-' {
+		t.Errorf("trailing hyphen not stripped: %q", got)
 	}
 }

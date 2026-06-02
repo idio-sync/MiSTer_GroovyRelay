@@ -136,6 +136,8 @@ func validateUserManifestID(label, id string, rejectAdhoc bool) error {
 // slugify lowercases and reduces a display name to [a-z0-9-], collapsing
 // runs of other characters to single hyphens and trimming edges. Returns
 // fallback when nothing usable remains (so an ID is always derivable).
+// The result is capped at maxSlugLen characters (leaving headroom for the
+// -NN collision suffixes appended by uniqueSlug).
 func slugify(name, fallback string) string {
 	var b strings.Builder
 	prevHyphen := false
@@ -154,6 +156,10 @@ func slugify(name, fallback string) string {
 	s := strings.Trim(b.String(), "-")
 	if s == "" {
 		return fallback
+	}
+	const maxSlugLen = 60
+	if len(s) > maxSlugLen {
+		s = strings.TrimRight(s[:maxSlugLen], "-")
 	}
 	return s
 }
@@ -199,6 +205,9 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 	if err := validateUserProviderID(def.ID); err != nil {
 		return ProviderDefinition{}, err
 	}
+	if len(def.URLRules) > 0 {
+		return ProviderDefinition{}, fmt.Errorf("provider %q: url_rules are not allowed on user providers", def.ID)
+	}
 	if seen != nil {
 		if seen[def.ID] {
 			return ProviderDefinition{}, fmt.Errorf("duplicate provider id %q", def.ID)
@@ -210,6 +219,7 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 	if err := validateGlyph(def.BadgeLabel); err != nil {
 		return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
 	}
+	def.BadgeLabel = strings.TrimSpace(def.BadgeLabel)
 	if loadPath {
 		def.BadgeColor = normalizeBadgeColorForLoad(def.BadgeColor)
 	} else {
@@ -257,7 +267,7 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 			return ProviderDefinition{}, fmt.Errorf("provider %q channel %q: invalid kind %q", def.ID, ch.Name, ch.Kind)
 		}
 		if ch.ID == "" {
-			ch.ID = newChannelID(ch.Name, func(id string) bool { return channelIDs[id] })
+			ch.ID = newChannelID(ch.Name, func(id string) bool { return id == reservedAdhocID || channelIDs[id] })
 		} else if err := validateUserManifestID("channel id", ch.ID, true); err != nil {
 			return ProviderDefinition{}, fmt.Errorf("provider %q: %w", def.ID, err)
 		}

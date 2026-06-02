@@ -224,3 +224,51 @@ func TestUserStore_LoadDropsVersionMismatch(t *testing.T) {
 func writeFileString(path, s string) error {
 	return os.WriteFile(path, []byte(s), 0o600)
 }
+
+// TestUserStore_AdhocChannelAutoAssign verifies that a channel named "Adhoc"
+// (which slugifies to the reserved sentinel "adhoc") is never assigned that
+// ID — it must receive "adhoc-2" or any non-reserved value instead.
+func TestUserStore_AdhocChannelAutoAssign(t *testing.T) {
+	st, _ := newTestStore(t)
+	def := sampleDef()
+	def.Channels = []ChannelDefinition{
+		{Name: "Adhoc", Kind: kindSingle, URL: "https://twitch.tv/formula1"},
+	}
+	saved, err := st.Put(def)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got := saved.Channels[0].ID
+	if got == reservedAdhocID {
+		t.Errorf("channel ID = %q; must not be the reserved sentinel %q", got, reservedAdhocID)
+	}
+	if got != "adhoc-2" {
+		t.Errorf("channel ID = %q, want adhoc-2", got)
+	}
+}
+
+// TestUserStore_BadgeLabelTrimmed verifies that leading/trailing whitespace in
+// BadgeLabel is stripped before storage.
+func TestUserStore_BadgeLabelTrimmed(t *testing.T) {
+	st, _ := newTestStore(t)
+	def := sampleDef()
+	def.BadgeLabel = "  F1  "
+	saved, err := st.Put(def)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if saved.BadgeLabel != "F1" {
+		t.Errorf("BadgeLabel = %q, want %q", saved.BadgeLabel, "F1")
+	}
+}
+
+// TestUserStore_URLRulesRejected verifies that a user provider carrying
+// non-empty URLRules is rejected at Put time.
+func TestUserStore_URLRulesRejected(t *testing.T) {
+	st, _ := newTestStore(t)
+	def := sampleDef()
+	def.URLRules = []URLRule{{ID: "r1"}}
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for non-empty url_rules on user provider, got nil")
+	}
+}
