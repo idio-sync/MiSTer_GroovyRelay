@@ -52,6 +52,10 @@ type Adapter struct {
 	resolver      streamResolver
 	hlsBufferOpen hlsBufferOpener
 
+	// User-provider play-time SSRF seams (lazily defaulted in playback.go).
+	userURLResolver  hostResolver
+	userRedirectDoer httpDoer
+
 	fetchManifest func(context.Context) (Manifest, CacheMetadata, error)
 	refreshOnce   func(ctx context.Context, reason string) RefreshStatus
 
