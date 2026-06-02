@@ -1,6 +1,26 @@
 package streams
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"testing"
+)
+
+// stubHostResolver implements hostResolver (sourcefetch.Resolver) for tests.
+type stubHostResolver struct {
+	hosts map[string][]string
+	err   error
+}
+
+func (s stubHostResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if ips, ok := s.hosts[host]; ok {
+		return ips, nil
+	}
+	return nil, fmt.Errorf("no such host %q", host)
+}
 
 func TestValidateUserProviderHost(t *testing.T) {
 	accept := []string{
@@ -42,6 +62,47 @@ func TestValidateUserProviderHost(t *testing.T) {
 		if err := validateUserProviderHost(u); err == nil {
 			t.Errorf("validateUserProviderHost(%q) expected error, got nil", u)
 		}
+	}
+}
+
+func TestValidateUserProviderResolvedHost(t *testing.T) {
+	t.Parallel()
+	resolver := stubHostResolver{hosts: map[string][]string{
+		"public.example.com":   {"93.184.216.34"},
+		"lan.example.com":      {"192.168.1.50"},
+		"rebind.example.com":   {"127.0.0.1"},
+		"metadata.example.com": {"169.254.169.254"},
+		"mixed.example.com":    {"93.184.216.34", "127.0.0.1"},
+	}}
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"public hostname", "https://public.example.com/v.m3u8", false},
+		{"lan hostname allowed", "https://lan.example.com/v.m3u8", false},
+		{"ip literal public", "https://93.184.216.34/v.m3u8", false},
+		{"ip literal lan", "http://10.0.0.5/v.m3u8", false},
+		{"decimal loopback literal", "http://2130706433/v.m3u8", true},
+		{"dns rebind to loopback", "https://rebind.example.com/v.m3u8", true},
+		{"dns to cloud metadata", "https://metadata.example.com/v", true},
+		{"any resolved ip blocked fails", "https://mixed.example.com/v.m3u8", true},
+		{"ipv4-mapped loopback literal", "http://[::ffff:127.0.0.1]/v", true},
+		{"ipv4-compatible loopback literal", "http://[::127.0.0.1]/v", true},
+		{"unresolvable host", "https://nope.example.com/v", true},
+		{"userinfo rejected", "https://user:pass@public.example.com/v", true},
+		{"empty host", "https:///v", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateUserProviderResolvedHost(context.Background(), resolver, tc.url)
+			if tc.wantErr && err == nil {
+				t.Fatalf("url %q: got nil error, want error", tc.url)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("url %q: got error %v, want nil", tc.url, err)
+			}
+		})
 	}
 }
 

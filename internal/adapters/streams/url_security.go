@@ -1,7 +1,9 @@
 package streams
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -100,6 +102,65 @@ func validateUserProviderIP(addr netip.Addr) error {
 		}
 		if ipv4Compatible {
 			return validateUserProviderIP(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+		}
+	}
+	return nil
+}
+
+// httpDoer is the testable boundary around *http.Client for the user-direct
+// redirect prevalidation walk (resolveUserDirectURL). Production wiring uses a
+// no-redirect client (newUserRedirectClient); tests inject a stub.
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+const (
+	// maxUserRedirectHops bounds the adapter-side Location walk for user direct
+	// streams (spec §7.2: "max 3 hops").
+	maxUserRedirectHops = 3
+	// userDirectProbeTimeout bounds each HEAD request in the redirect walk.
+	userDirectProbeTimeout = 10 * time.Second
+	// userResolvedHostLookupTimeout bounds DNS resolution during the play-time
+	// resolved-URL recheck.
+	userResolvedHostLookupTimeout = 10 * time.Second
+)
+
+// validateUserProviderResolvedHost enforces the §7.1 "allow LAN, block
+// internals" posture against a URL at DEREFERENCE time. Unlike the syntactic
+// validateUserProviderHost (authoring time), this RESOLVES hostnames and
+// classifies every returned address — closing DNS-rebind, decimal/hex IP
+// encodings, and hostnames that resolve to blocked ranges. An IP-literal host
+// is classified directly; a hostname is resolved via resolver.LookupHost and
+// EVERY resolved address must pass validateUserProviderIP(addr.Unmap()).
+func validateUserProviderResolvedHost(ctx context.Context, resolver hostResolver, rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo is not allowed in url")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("url host is required")
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return validateUserProviderIP(addr.Unmap())
+	}
+	ips, err := resolver.LookupHost(ctx, host)
+	if err != nil {
+		return fmt.Errorf("resolve host %q: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("host %q resolved to no addresses", host)
+	}
+	for _, ipStr := range ips {
+		addr, err := netip.ParseAddr(ipStr)
+		if err != nil {
+			return fmt.Errorf("resolved address %q: %w", ipStr, err)
+		}
+		if err := validateUserProviderIP(addr.Unmap()); err != nil {
+			return fmt.Errorf("resolved address %q: %w", ipStr, err)
 		}
 	}
 	return nil
