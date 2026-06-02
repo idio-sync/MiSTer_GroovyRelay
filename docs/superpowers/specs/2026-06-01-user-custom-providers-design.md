@@ -80,7 +80,7 @@ Mirrors `internal/adapters/streams/preset_store.go`:
 - Atomic writes: temp file + `os.Rename`.
 - Load-time validation: malformed/invalid providers are **dropped with a debug
   log**, never fatal (self-healing).
-- Enforces the ID prefix and limits (§4.5, §8).
+- Enforces the ID prefix and limits (§4.5, §10).
 
 ### 4.3 `ProviderDefinition` extensions
 
@@ -144,6 +144,12 @@ Updates are treated as edits to existing IDs plus explicit additions/removals:
   channel and clear any preset slots that reference `(providerID, channelID)`.
 - Unknown, malformed, or duplicate channel IDs in a submitted update are rejected
   rather than trusted from the browser.
+
+Channel IDs are **scoped to their parent provider** — uniqueness is on
+`(providerID, channelID)`, and preset slots store that full pair. So deleting a
+user provider clears only the slots referencing *that* provider's channels;
+a same-named channel under a different provider (built-in or user) is never
+affected.
 
 ### 4.6 Cache keys for `user:` IDs
 
@@ -310,8 +316,8 @@ paths, no more.
 
 ## 8. Authoring UX (catalog drawer)
 
-A guided form rendered inside the catalog drawer (see mockup
-`authoring-flow.html`).
+A guided form rendered inside the catalog drawer (illustrated by the design
+artifact `authoring-flow.html` — a mockup, not a deliverable).
 
 - **Provider tab strip:** built-ins, then user providers (each marked with a ✎
   edit pencil), then a dashed **＋ New** tab to create one.
@@ -370,7 +376,10 @@ and the "N videos"/error chip resolves via a new `catalog`/`providerStatus`
 envelope on the existing `GET /receiver/events` SSE stream (no dedicated
 polling endpoint). The event fires after user-provider edits and after async
 playlist enumeration status changes so an open drawer can update without a page
-reload.
+reload. The same envelope carries an optional `autoEnabledStreams` field
+(`"on"` when the adapter was hot-started live, `"restart-required"` when live
+start failed and a bridge restart is needed, §10); the chassis renders the
+auto-enable toast from this signal.
 
 ## 9. Enhancements (v1 scope)
 
@@ -410,13 +419,37 @@ reload.
   `ApplyScope` tiers entirely** (`ScopeHotSwap`/`ScopeRestartCast`/
   `ScopeRestartBridge` do not apply) — exactly like the existing preset
   star/move actions.
-- **Enable gating:** saving the *first* user provider while the Streams adapter
-  is disabled **auto-enables Streams** with a toast ("Streams source turned on
-  so your provider can play"). This is the one path in this feature that must
-  touch persistent TOML config: update `[adapters.streams].enabled`, persist it
-  through the existing config/apply machinery, and start/initialize the Streams
-  adapter runtime in the same process if it was skipped at startup. Ordinary
-  user-provider edits still bypass `ApplyScope`; the auto-enable step does not.
+- **Enable gating (auto-enable + hot-start).** Saving the *first* user provider
+  while the Streams adapter is disabled must turn Streams on. Because `streams`
+  defaults to `Enabled:false` (`config.go` `DefaultConfig`), this is the
+  **common first-run path, not an edge case** — and `main.go` starts adapters
+  **once at boot** (lines 520-525, `continue`-ing past disabled ones), while
+  `ApplyConfig` only reconciles the refresh loop (`adapter.go:350`) and never
+  calls `Start`. A mid-process start therefore needs explicit, bounded plumbing:
+  - `main.go` (which owns the process-lifetime `ctx` and the registry)
+    constructs a small **adapter-start capability** — `EnsureStarted(name
+    string) error` — and injects it into the chassis wiring. The chassis stays
+    interface-only: it calls this injected function, never the concrete
+    `streams` package.
+  - On first-provider save with Streams disabled, the chassis invokes
+    `EnsureStarted("streams")`, which (1) `SetEnabled(true)`, (2) persists
+    `[adapters.streams].enabled=true` to TOML via the existing config-save
+    machinery, and (3) if the adapter is not already `StateRunning`, calls
+    `Start(ctx)` with the lifetime ctx — creating the resolver, building the
+    catalog snapshot, setting `loopCtx`, and (per `AllowRemoteManifest`)
+    spawning the refresh loop (`adapter.go:242-279`). Idempotent: an
+    already-running adapter just persists `enabled`.
+  - The hook runs **off any chassis lock** (Start builds a snapshot), and the
+    user-provider routes live on the always-mounted chassis mux — hot-start
+    brings up background work only, with no route remounting.
+  - **Failure path = the existing restart toast.** If `Start` errors (e.g.
+    yt-dlp missing), the provider is still saved and persisted; the chassis
+    surfaces a "Streams enabled — restart the bridge to activate" toast (the
+    existing `ScopeRestartBridge` UX tier). Success surfaces "Streams source
+    turned on so your provider can play."
+  - This is the **only** path in the feature that touches persistent TOML config
+    and adapter lifecycle; ordinary user-provider edits still bypass `ApplyScope`
+    entirely.
 - **Persistence:** load + merge at startup; atomic temp+rename on each edit;
   malformed entries dropped with a log.
 - **Limits:** ≤ ~32 user providers; ≤ ~100 channels per provider; playlist
@@ -450,7 +483,8 @@ reload.
 - `internal/chassis/data.go`, `catalog-drawer.html`, badge CSS — render
   `BadgeColor`; ✎ edit affordance; ＋ New tab.
 - Remote manifest load — reject `user:`-prefixed provider IDs.
-- `cmd/mister-groovy-relay/main.go` — wire the store/`data_dir`; auto-enable hook.
+- `cmd/mister-groovy-relay/main.go` — wire the store/`data_dir`; construct and
+  inject the `EnsureStarted(name)` adapter-start capability for auto-enable (§10).
 
 ## 12. Testing
 
@@ -466,8 +500,11 @@ reload.
   preset-slot cleanup.
 - **Chassis JS:** `*.behavior.test.js` (`node --test`) for auto-detect / verify /
   reorder; Go handler tests for the new routes and catalog/status SSE envelope.
-- **Lifecycle/security:** tests for disabled-Streams auto-enable/start,
-  redirect prevalidation for user direct URLs, and yt-dlp `URL` + `AudioURL`
+- **Lifecycle/security:** disabled-Streams auto-enable/hot-start — success path
+  brings up resolver + snapshot + refresh loop and persists `enabled=true`;
+  `Start`-failure path falls back to the restart toast yet still saves/persists
+  the provider; `EnsureStarted` is idempotent on an already-running adapter.
+  Plus redirect prevalidation for user direct URLs and yt-dlp `URL` + `AudioURL`
   revalidation before FFmpeg handoff.
 - All four CI gates stay green: `go vet`, `go test`, `go test -race`,
   `go test -tags=integration ./...`.
