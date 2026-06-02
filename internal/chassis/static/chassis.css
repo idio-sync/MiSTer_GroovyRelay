@@ -281,6 +281,44 @@ body.receiver .zone + .zone {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* Wide faceplate: pair the library zone's preset bank and recent-cast history
+   side by side, echoing the VFD/source-cluster split and trimming two stacked
+   rows off the tall stack. Only the library pairs — the control zone's audio
+   deck needs the full width (its EQ + tone knobs + level overflow into a
+   scrollbar below ~1280px) and transport is too short to pair without leaving
+   a dead column. Explicit row/column placement keeps the input bar and the
+   (full-width, collapsible) catalog drawer spanning both tracks while preset
+   and history share the middle row; the inert <template> catalog trees carry
+   display:none and never occupy a cell. Below 1240px the zone falls back to
+   the single-column stack. */
+@container chassis (min-width: 1240px) {
+  body.receiver .zone--library {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 14px;
+    align-items: start;
+  }
+
+  body.receiver .zone--library > .section-strip {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  body.receiver .zone--library > .preset-strip {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  body.receiver .zone--library > .history-section {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  body.receiver .zone--library > .catalog-drawer {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+}
+
 /* ---- 5. Status bar -------------------------------------------------- */
 /* Mockup source: receiver-v24.html .status-bar, .brand-plate, .led,
    .led-row, .power-cluster, and .load-core-btn rules, adapted to current
