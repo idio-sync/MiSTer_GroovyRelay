@@ -672,6 +672,9 @@ func TestUserStore_UpdatePreservesProviderID(t *testing.T) {
 	if again.ID != saved.ID {
 		t.Errorf("rename changed ID: %q -> %q", saved.ID, again.ID)
 	}
+	if again.DisplayName != "Formula 1" {
+		t.Errorf("rename not applied: DisplayName = %q, want Formula 1", again.DisplayName)
+	}
 	if len(st.Snapshot()) != 1 {
 		t.Errorf("update created a duplicate: %d providers", len(st.Snapshot()))
 	}
@@ -733,6 +736,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -896,6 +900,13 @@ func (s *userProviderStore) persistLocked(providers []ProviderDefinition) error 
 	if err != nil {
 		s.saveErrs.Warn("user_providers: marshal failed", "err", err)
 		return fmt.Errorf("user_providers: marshal: %w", err)
+	}
+	// Defense-in-depth: data_dir is expected to exist (the adapter requires it
+	// at init), but MkdirAll keeps the store robust and mirrors writeCacheFile
+	// (cache.go). config.WriteAtomic assumes the parent dir already exists.
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		s.saveErrs.Warn("user_providers: mkdir failed", "err", err, "path", s.path)
+		return fmt.Errorf("user_providers: mkdir: %w", err)
 	}
 	if err := config.WriteAtomic(s.path, bodyBytes); err != nil {
 		s.saveErrs.Warn("user_providers: write failed", "err", err, "path", s.path)
