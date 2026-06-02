@@ -6,7 +6,7 @@
 
 **Architecture:** Build a `userProviderStore` in `New()` from `{data_dir}/user_providers.json`; merge its `Snapshot()` into the provider snapshot in BOTH the startup path (`buildStartupSnapshot`) and the remote-refresh path (`buildRemoteSnapshot`) so a background manifest refresh never wipes user providers; add a `user`-type catalog builder; expose user providers through `Catalog()`; and make user channels safe to cast by branching playback onto `userDirectInputPolicy()` (no `file` protocol) plus a play-time DNS-resolved-IP recheck (`validateUserProviderIP` on every resolved address) and adapter-side redirect prevalidation for `direct` items.
 
-**Tech Stack:** Go 1.26, `net/netip` (IP classification), `net/http` (redirect HEAD walk), `net` (`net.DefaultResolver`), package `internal/adapters/streams`. Tests use the existing `fakeCore`/`fakeResolver` harness in `test_helpers_test.go` and new stub `hostResolver`/`httpDoer` seams.
+**Tech Stack:** Go 1.26, `net/netip` (IP classification), `net/http` (bounded playback-style redirect probe), `net` (`net.DefaultResolver`), package `internal/adapters/streams`. Tests use the existing `fakeCore`/`fakeResolver` harness in `test_helpers_test.go` and new stub `hostResolver`/`httpDoer` seams.
 
 ---
 
@@ -21,13 +21,13 @@
 - `validateUserProviderHost` is **syntactic only**: it does NOT resolve hostnames and does NOT cover non-canonical IP text (`http://2130706433/`, hex). The **play-time resolved-IP recheck is REQUIRED, not optional** — until it is wired, user channels must not be castable.
 - Always call `validateUserProviderIP(resolvedAddr.Unmap())` on **every** resolved IP (`.Unmap()` for the IPv4-mapped case; `validateUserProviderIP` re-classifies IPv4-compatible `::/96` internally).
 - Never let a user URL reach FFmpeg with `directHLSInputPolicy()` — it whitelists `file`. User `direct` items MUST use `userDirectInputPolicy()`.
-- `DisableRedirects` emits **no FFmpeg flag** (`internal/ffmpeg/policy.go:34-60`). The adapter — not FFmpeg — must resolve and revalidate each `Location` hop (max 3) before the final URL reaches FFmpeg.
+- `DisableRedirects` emits **no FFmpeg flag** (`internal/ffmpeg/policy.go:34-60`). The adapter — not FFmpeg — must resolve and revalidate each `Location` hop (max 3) with a playback-style request before the final URL reaches FFmpeg.
 
 ## Workflow conventions
 
 - Go 1.26. `go test -race` CANNOT run locally (no cgo/gcc) — CI-only gate. Use plain `go test`. Run `go vet ./...`, `go test ./internal/adapters/streams/...`, and (where ffmpeg is on PATH) `go test -tags=integration ./...` locally; keep all four CI gates green.
 - `docs/superpowers/` is gitignored — commit the plan and any new docs with `git add -f`. Stage ONLY the intended paths; verify with `git diff --cached --name-only` before each commit.
-- `a.mu` is never held across network I/O. The snapshot is built BEFORE acquiring the lock and installed atomically via `installSnapshotLocked`. `buildUserCatalog` for `direct`/`single` is pure (no network), so it is safe in the build path. The play-time DNS recheck and redirect HEAD walk happen OUTSIDE `a.mu` (in the resolve phase of `playCurrentWithStarter`, after the lock is released at `playback.go:311`).
+- `a.mu` is never held across network I/O. The snapshot is built BEFORE acquiring the lock and installed atomically via `installSnapshotLocked`. `buildUserCatalog` for `direct`/`single` is pure (no network), so it is safe in the build path. The play-time DNS recheck and redirect probe happen OUTSIDE `a.mu` (in the resolve phase of `playCurrentWithStarter`, after the lock is released at `playback.go:311`).
 
 ---
 
@@ -662,7 +662,7 @@ func TestCatalog_OmitsBundledProviderAbsentFromDefinitions(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/adapters/streams/ -run 'TestBuildChassisCatalogProvider_UserBadge|TestCatalog_EmitsBundledThenUser'`
+Run: `go test ./internal/adapters/streams/ -run 'TestBuildChassisCatalogProvider_UserBadge|TestCatalog_EmitsBundledThenUser|TestCatalog_OmitsBundledProviderAbsentFromDefinitions'`
 Expected: FAIL — `TestCatalog_EmitsBundledThenUser` returns 3 (user provider not emitted); `TestBuildChassisCatalogProvider_UserBadge...` fails on `BadgeClass`/ungrouped channels.
 
 - [ ] **Step 3: Implement the ordered exposure and user-aware conversion**
@@ -791,7 +791,7 @@ func userBadgeClass(token string) string {
 }
 ```
 
-(`chassisCatalogSnapshot` at lines 107-130 becomes unused by `Catalog()` after this change — it has no other caller in the package. Leaving it compiles cleanly (Go does not flag unused methods), but it now duplicates `catalogProvidersInOrder`'s bootstrap logic; a follow-up commit in this phase (or Phase 5) should delete it to avoid drift. Removing it now is also acceptable — verify with `grep -rn chassisCatalogSnapshot internal/adapters/streams/` that nothing else references it first.)
+(`chassisCatalogSnapshot` at lines 107-130 becomes unused by `Catalog()` after this change — it has no other caller in the package. Leaving it compiles cleanly (Go does not flag unused methods), but it now duplicates `catalogProvidersInOrder`'s bootstrap logic; a follow-up commit in this phase (or Phase 5) should delete it to avoid drift. Removing it now is also acceptable — verify with `rg -n 'chassisCatalogSnapshot' internal/adapters/streams --glob '*.go'` that the only hit is the helper definition first.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -817,16 +817,19 @@ Add `validateUserProviderResolvedHost` — the DNS-resolved-IP recheck that clos
 
 - [ ] **Step 1: Write the failing test**
 
-Create `internal/adapters/streams/url_security_test.go`:
+Modify the existing `internal/adapters/streams/url_security_test.go` (do NOT replace it; preserve the Phase 2 `TestValidateUserProviderHost` and `TestUserDirectInputPolicy` tests). Change its import block from `import "testing"` to:
 
 ```go
-package streams
-
 import (
 	"context"
 	"fmt"
 	"testing"
 )
+```
+
+Then append:
+
+```go
 
 // stubHostResolver implements hostResolver (sourcefetch.Resolver) for tests.
 type stubHostResolver struct {
@@ -870,6 +873,8 @@ func TestValidateUserProviderResolvedHost(t *testing.T) {
 		{"ipv4-compatible loopback literal", "http://[::127.0.0.1]/v", true},
 		{"unresolvable host", "https://nope.example.com/v", true},
 		{"userinfo rejected", "https://user:pass@public.example.com/v", true},
+		{"non-http scheme rejected", "ftp://public.example.com/v", true},
+		{"protocol-relative url rejected", "//public.example.com/v", true},
 		{"empty host", "https:///v", true},
 	}
 	for _, tc := range cases {
@@ -909,7 +914,7 @@ const (
 	// maxUserRedirectHops bounds the adapter-side Location walk for user direct
 	// streams (spec §7.2: "max 3 hops").
 	maxUserRedirectHops = 3
-	// userDirectProbeTimeout bounds each HEAD request in the redirect walk.
+	// userDirectProbeTimeout bounds each playback-style redirect probe.
 	userDirectProbeTimeout = 10 * time.Second
 	// userResolvedHostLookupTimeout bounds DNS resolution during the play-time
 	// resolved-URL recheck.
@@ -917,14 +922,19 @@ const (
 )
 
 // validateUserProviderResolvedHost enforces the §7.1 "allow LAN, block
-// internals" posture against a URL at DEREFERENCE time. Unlike the syntactic
-// validateUserProviderHost (authoring time), this RESOLVES hostnames and
-// classifies every returned address — closing DNS-rebind, decimal/hex IP
-// encodings, and hostnames that resolve to blocked ranges. An IP-literal host
-// is classified directly; a hostname is resolved via resolver.LookupHost and
-// EVERY resolved address must pass validateUserProviderIP(addr.Unmap()).
+// internals" posture against a URL at DEREFERENCE time. It first reuses the
+// authoring-time URL-shape validator (http/https only, no userinfo, non-empty
+// host, IP-literal classification), then RESOLVES hostnames and classifies every
+// returned address — closing DNS-rebind, decimal/hex IP encodings, and hostnames
+// that resolve to blocked ranges. An IP-literal host is classified directly; a
+// hostname is resolved via resolver.LookupHost and EVERY resolved address must
+// pass validateUserProviderIP(addr.Unmap()).
 func validateUserProviderResolvedHost(ctx context.Context, resolver hostResolver, rawURL string) error {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
+	rawURL = strings.TrimSpace(rawURL)
+	if err := validateUserProviderHost(rawURL); err != nil {
+		return err
+	}
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid url: %w", err)
 	}
@@ -974,7 +984,7 @@ git commit -m "feat(streams): play-time resolved-host SSRF validator for user UR
 
 ## Task 6: Adapter-side redirect prevalidation for user `direct` URLs
 
-Add `resolveUserDirectURL` — the bounded Location walk that revalidates every hop's resolved host before the final URL reaches FFmpeg (the `DisableRedirects` contract in `policy.go`). It reuses `validateUserProviderResolvedHost` per hop.
+Add `resolveUserDirectURL` — the bounded Location walk that revalidates every hop's resolved host before the final URL reaches FFmpeg (the `DisableRedirects` contract in `policy.go`). It reuses `validateUserProviderResolvedHost` per hop and probes redirects with a playback-style `GET` carrying `Range: bytes=0-0` (not `HEAD`) so method-dependent redirect behavior cannot bypass the prevalidation pass.
 
 **Files:**
 - Modify: `internal/adapters/streams/url_security.go` (add helper + default client)
@@ -985,20 +995,34 @@ Add `resolveUserDirectURL` — the bounded Location walk that revalidates every 
 Append to `internal/adapters/streams/url_security_test.go` (add `"io"`, `"net/http"`, `"strings"` to its import block):
 
 ```go
-// stubDoer maps absolute request URLs to canned responses for the redirect walk.
+// stubDoer maps request method + absolute URL (or URL alone) to canned responses
+// for the redirect walk.
 type stubDoer struct {
-	resp map[string]*http.Response
-	err  error
+	methodResp map[string]*http.Response
+	resp       map[string]*http.Response
+	requests   *[]string
+	err        error
 }
 
 func (s stubDoer) Do(req *http.Request) (*http.Response, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
+	requestKey := req.Method + " " + req.URL.String()
+	if s.requests != nil {
+		*s.requests = append(*s.requests, requestKey)
+	}
+	if r, ok := s.methodResp[requestKey]; ok {
+		return r, nil
+	}
 	if r, ok := s.resp[req.URL.String()]; ok {
 		return r, nil
 	}
-	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
+	return okResp(), nil
+}
+
+func okResp() *http.Response {
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}
 }
 
 func redirectResp(location string) *http.Response {
@@ -1038,6 +1062,17 @@ func TestResolveUserDirectURL(t *testing.T) {
 		}
 	})
 
+	t.Run("playback-style redirect is validated", func(t *testing.T) {
+		doer := stubDoer{methodResp: map[string]*http.Response{
+			http.MethodHead + " https://a.example.com/s.m3u8": okResp(),
+			http.MethodGet + " https://a.example.com/s.m3u8":  redirectResp("https://evil.example.com/meta"),
+		}}
+		_, err := resolveUserDirectURL(context.Background(), doer, resolver, "https://a.example.com/s.m3u8", maxUserRedirectHops)
+		if err == nil {
+			t.Fatal("got nil error, want rejection of GET-only metadata-host redirect")
+		}
+	})
+
 	t.Run("redirect to blocked host rejected", func(t *testing.T) {
 		doer := stubDoer{resp: map[string]*http.Response{
 			"https://a.example.com/s.m3u8": redirectResp("https://evil.example.com/meta"),
@@ -1049,15 +1084,27 @@ func TestResolveUserDirectURL(t *testing.T) {
 	})
 
 	t.Run("too many hops rejected", func(t *testing.T) {
+		var requests []string
 		doer := stubDoer{resp: map[string]*http.Response{
 			"https://a.example.com/0": redirectResp("https://a.example.com/1"),
 			"https://a.example.com/1": redirectResp("https://a.example.com/2"),
 			"https://a.example.com/2": redirectResp("https://a.example.com/3"),
 			"https://a.example.com/3": redirectResp("https://a.example.com/4"),
-		}}
+		}, requests: &requests}
 		_, err := resolveUserDirectURL(context.Background(), doer, resolver, "https://a.example.com/0", maxUserRedirectHops)
 		if err == nil {
 			t.Fatal("got nil error, want redirect-chain-exceeded")
+		}
+		if len(requests) != maxUserRedirectHops+1 {
+			t.Fatalf("requests = %v, want %d probes (initial + max redirects)", requests, maxUserRedirectHops+1)
+		}
+		for _, req := range requests {
+			if strings.Contains(req, "/4") {
+				t.Fatalf("requests = %v; resolver followed one redirect too many", requests)
+			}
+			if !strings.HasPrefix(req, http.MethodGet+" ") {
+				t.Fatalf("request %q used wrong method, want GET", req)
+			}
 		}
 	})
 
@@ -1086,16 +1133,20 @@ Append to `internal/adapters/streams/url_security.go`:
 // to FFmpeg. This is the adapter-side prevalidation the DisableRedirects policy
 // contract requires (internal/ffmpeg/policy.go:34-60): FFmpeg emits no
 // redirect-disabling flag, so the adapter must resolve Location chains itself.
+// The probe is a GET with Range: bytes=0-0 rather than HEAD so servers cannot
+// present a safe HEAD chain and a different playback-method redirect chain.
 func resolveUserDirectURL(ctx context.Context, doer httpDoer, resolver hostResolver, rawURL string, maxHops int) (string, error) {
 	current := strings.TrimSpace(rawURL)
-	for hop := 0; hop <= maxHops; hop++ {
+	redirects := 0
+	for {
 		if err := validateUserProviderResolvedHost(ctx, resolver, current); err != nil {
 			return "", err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, current, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, current, nil)
 		if err != nil {
-			return "", fmt.Errorf("build HEAD request: %w", err)
+			return "", fmt.Errorf("build GET request: %w", err)
 		}
+		req.Header.Set("Range", "bytes=0-0")
 		resp, err := doer.Do(req)
 		if err != nil {
 			return "", fmt.Errorf("probe redirect chain: %w", err)
@@ -1107,6 +1158,9 @@ func resolveUserDirectURL(ctx context.Context, doer httpDoer, resolver hostResol
 		}
 		if status < 300 || status > 399 {
 			return current, nil
+		}
+		if redirects >= maxHops {
+			return "", fmt.Errorf("redirect chain exceeded %d hops", maxHops)
 		}
 		if location == "" {
 			return "", fmt.Errorf("redirect missing Location header")
@@ -1120,8 +1174,8 @@ func resolveUserDirectURL(ctx context.Context, doer httpDoer, resolver hostResol
 			return "", fmt.Errorf("invalid redirect location: %w", err)
 		}
 		current = base.ResolveReference(ref).String()
+		redirects++
 	}
-	return "", fmt.Errorf("redirect chain exceeded %d hops", maxHops)
 }
 
 // newUserRedirectClient is the production httpDoer: a client that surfaces each
@@ -1163,7 +1217,7 @@ Branch the `direct` playback path so user direct items use `userDirectInputPolic
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `internal/adapters/streams/playback_test.go` (ensure its import block has `"context"`, `"io"`, `"net/http"`, `"strings"`, `"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"`, `"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"` — add only the missing ones):
+Append to `internal/adapters/streams/playback_test.go` (ensure its import block has `"context"`, `"net/http"`, `"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"`, `"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"` — add only the missing ones):
 
 ```go
 func installUserDirectAdapter(t *testing.T) (*Adapter, *fakeCore) {
