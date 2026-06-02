@@ -225,6 +225,31 @@ func writeFileString(path, s string) error {
 	return os.WriteFile(path, []byte(s), 0o600)
 }
 
+func TestUserStore_PutRejectsUnsafeURL(t *testing.T) {
+	st, _ := newTestStore(t)
+	def := sampleDef()
+	def.Channels[0].URL = "file:///etc/shadow.m3u8"
+	def.Channels[0].Kind = "" // let kind auto-detect; URL must still be rejected
+	if _, err := st.Put(def); err == nil {
+		t.Error("expected error for file:// channel url")
+	}
+
+	def2 := sampleDef()
+	def2.Channels[0].URL = "http://127.0.0.1:8080/stream.m3u8"
+	if _, err := st.Put(def2); err == nil {
+		t.Error("expected error for loopback channel url")
+	}
+}
+
+func TestUserStore_PutAcceptsLANURL(t *testing.T) {
+	st, _ := newTestStore(t)
+	def := sampleDef()
+	def.Channels[0].URL = "http://192.168.1.40:8080/stream.m3u8"
+	if _, err := st.Put(def); err != nil {
+		t.Errorf("LAN url should be accepted, got: %v", err)
+	}
+}
+
 // TestUserStore_AdhocChannelAutoAssign verifies that a channel named "Adhoc"
 // (which slugifies to the reserved sentinel "adhoc") is never assigned that
 // ID — it must receive "adhoc-2" or any non-reserved value instead.

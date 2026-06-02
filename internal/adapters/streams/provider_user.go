@@ -258,6 +258,9 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 		if strings.TrimSpace(ch.URL) == "" {
 			return ProviderDefinition{}, fmt.Errorf("provider %q channel %q: url required", def.ID, ch.Name)
 		}
+		if err := validateUserProviderHost(ch.URL); err != nil {
+			return ProviderDefinition{}, fmt.Errorf("provider %q channel %q url: %w", def.ID, ch.Name, err)
+		}
 		if ch.Kind == "" {
 			ch.Kind = detectChannelKind(ch.URL)
 		}
