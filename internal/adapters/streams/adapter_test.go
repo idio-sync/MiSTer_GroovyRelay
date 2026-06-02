@@ -243,7 +243,7 @@ func TestAdapter_ApplyConfigValue_SnapshotRebuildFailureNoSaveNoInMemoryChange(t
 
 	rebuildErr := errors.New("snapshot rebuild failed")
 	oldBuild := buildStartupSnapshotForApplyConfigValue
-	buildStartupSnapshotForApplyConfigValue = func(ctx context.Context, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
+	buildStartupSnapshotForApplyConfigValue = func(ctx context.Context, cfg Config, cacheDir string, userProviders []ProviderDefinition) ([]ProviderDefinition, []ProviderCatalog, error) {
 		return nil, nil, rebuildErr
 	}
 	t.Cleanup(func() { buildStartupSnapshotForApplyConfigValue = oldBuild })

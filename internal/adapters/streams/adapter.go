@@ -343,7 +343,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 		return 0, err
 	}
 
-	defs, catalogs, err := buildStartupSnapshot(context.Background(), newCfg, a.cacheDir)
+	defs, catalogs, err := buildStartupSnapshot(context.Background(), newCfg, a.cacheDir, a.userStore.Snapshot())
 	if err != nil {
 		return 0, err
 	}
@@ -485,7 +485,7 @@ func (a *Adapter) ensureStartupSnapshot(ctx context.Context) error {
 
 func (a *Adapter) buildStartupSnapshot(ctx context.Context) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cfg := a.configSnapshot()
-	return buildStartupSnapshot(ctx, cfg, a.cacheDir)
+	return buildStartupSnapshot(ctx, cfg, a.cacheDir, a.userStore.Snapshot())
 }
 
 func (a *Adapter) reconcileRefreshLoop() {
@@ -541,7 +541,7 @@ func (a *Adapter) ApplyConfigValue(newCfg Config, save func(name string, raw []b
 	if err := newCfg.Validate(); err != nil {
 		return 0, err
 	}
-	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir)
+	defs, catalogs, err := buildStartupSnapshotForApplyConfigValue(context.Background(), newCfg, a.cacheDir, a.userStore.Snapshot())
 	if err != nil {
 		return 0, err
 	}
