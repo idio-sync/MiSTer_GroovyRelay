@@ -219,3 +219,60 @@ func TestSlugify_Cap_HyphenBoundary(t *testing.T) {
 		t.Errorf("trailing hyphen not stripped: %q", got)
 	}
 }
+
+func userCatalogTestDef() ProviderDefinition {
+	return ProviderDefinition{
+		ID:          "user:mix",
+		Type:        userProviderType,
+		DisplayName: "Mix",
+		BadgeLabel:  "MX",
+		BadgeColor:  "teal",
+		Groups:      []GroupDefinition{{ID: "g1", Name: "Group One"}},
+		Channels: []ChannelDefinition{
+			{ID: "live", Name: "Live", GroupID: "g1", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"},
+			{ID: "vid", Name: "Single", GroupID: "g1", Kind: kindSingle, URL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+			{ID: "list", Name: "Playlist", GroupID: "g1", Kind: kindPlaylist, URL: "https://www.youtube.com/playlist?list=PL123"},
+		},
+	}
+}
+
+func TestBuildUserCatalog_KindsProduceCorrectItems(t *testing.T) {
+	t.Parallel()
+	cat, err := buildUserCatalog(userCatalogTestDef())
+	if err != nil {
+		t.Fatalf("buildUserCatalog: %v", err)
+	}
+	if cat.ProviderID != "user:mix" || cat.Name != "Mix" {
+		t.Fatalf("catalog identity = (%q,%q), want (user:mix, Mix)", cat.ProviderID, cat.Name)
+	}
+	// playlist channel is skipped in Phase 3; direct + single remain.
+	if len(cat.Channels) != 2 {
+		t.Fatalf("len(Channels) = %d, want 2 (playlist skipped)", len(cat.Channels))
+	}
+	byID := map[string]Channel{}
+	for _, ch := range cat.Channels {
+		byID[ch.ID] = ch
+	}
+	live, ok := byID["live"]
+	if !ok || len(live.Items) != 1 || !live.Items[0].Direct || live.Items[0].URL != "https://cdn.example.com/live.m3u8" {
+		t.Fatalf("direct channel item = %+v, want one Direct:true item with the m3u8 URL", live.Items)
+	}
+	vid, ok := byID["vid"]
+	if !ok || len(vid.Items) != 1 || vid.Items[0].Direct || vid.Items[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("single channel item = %+v, want one Direct:false item with the watch URL", vid.Items)
+	}
+	if _, ok := byID["list"]; ok {
+		t.Fatalf("playlist channel should be skipped in Phase 3")
+	}
+}
+
+func TestBuildProviderCatalog_DispatchesUserType(t *testing.T) {
+	t.Parallel()
+	cat, err := buildProviderCatalog(userCatalogTestDef(), nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("buildProviderCatalog(user): %v", err)
+	}
+	if cat.ProviderID != "user:mix" {
+		t.Fatalf("ProviderID = %q, want user:mix", cat.ProviderID)
+	}
+}

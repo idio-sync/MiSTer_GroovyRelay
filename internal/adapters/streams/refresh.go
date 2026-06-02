@@ -599,6 +599,8 @@ func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (Provi
 		return buildYouTubeChannelCatalog(def, raw, cfg)
 	case directStreamsProviderType:
 		return buildDirectStreamsCatalog(def)
+	case userProviderType:
+		return buildUserCatalog(def)
 	default:
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
 	}
