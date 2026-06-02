@@ -191,9 +191,43 @@
     }
   }
 
+  // Retune flicker: when the primary title genuinely changes (a new cast or a
+  // source switch — not a telemetry tick), pulse the VFD glass so the swap
+  // reads like a tuner re-locking. Suppressed while the power-on/off rituals
+  // own the glass, and never on the first render (lastPrimary seeds from the
+  // server-rendered title).
+  let lastPrimary = null;
+  let retuneTimer = null;
+
+  function triggerRetune() {
+    const vfd = document.querySelector('.vfd');
+    if (!vfd) return;
+    const body = document.body;
+    if (body && (body.classList.contains('warming') || body.classList.contains('cooling'))) {
+      return;
+    }
+    vfd.classList.remove('retune');
+    void vfd.offsetWidth; // restart the keyframe on back-to-back changes
+    vfd.classList.add('retune');
+    if (retuneTimer) clearTimeout(retuneTimer);
+    retuneTimer = setTimeout(() => {
+      vfd.classList.remove('retune');
+      retuneTimer = null;
+    }, 400);
+  }
+
+  function notePrimary(primary) {
+    const next = primary || '';
+    if (lastPrimary !== null && next && next !== lastPrimary) {
+      triggerRetune();
+    }
+    lastPrimary = next;
+  }
+
   function handleVfdEvent(ev) {
     try {
       const data = JSON.parse(ev.data);
+      notePrimary(data.primary);
       applyTier('data-vfd-primary', data.primary);
       applyTier('data-vfd-secondary', data.secondary);
       applyTier('data-vfd-tertiary', data.tertiary);
@@ -215,6 +249,7 @@
     const primary = document.querySelector('[data-vfd-primary]');
     const secondary = document.querySelector('[data-vfd-secondary]');
     const tertiary = document.querySelector('[data-vfd-tertiary]');
+    lastPrimary = primary ? primary.textContent : '';
     applyDensity(
       primary ? primary.textContent : '',
       secondary ? secondary.textContent : '',

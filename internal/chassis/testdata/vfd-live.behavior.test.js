@@ -222,6 +222,10 @@ function createHarness(initialState = 'idle', options = {}) {
     console: { warn() {}, info() {} },
     document,
     window,
+    // The retune flicker schedules a class-clear timer; record-only stubs keep
+    // the synchronous tier updates under test unaffected.
+    setTimeout: () => 0,
+    clearTimeout() {},
     EventSource: FakeEventSource,
     CustomEvent: class {
       constructor(name, init) {

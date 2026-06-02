@@ -9,8 +9,8 @@ class FakeClassList {
     this.classes = new Set();
   }
 
-  add(name) { this.classes.add(name); }
-  remove(name) { this.classes.delete(name); }
+  add(...names) { names.forEach((n) => this.classes.add(n)); }
+  remove(...names) { names.forEach((n) => this.classes.delete(n)); }
   contains(name) { return this.classes.has(name); }
 }
 
@@ -66,6 +66,15 @@ test('idle->live transition adds the warming class', () => {
 test('transition to idle never warms', () => {
   const h = createHarness('idle');
   h.registered[0].handleState('idle');
+  assert.equal(h.body.classList.contains('warming'), false);
+});
+
+test('live->idle transition adds the cooling class and clears warming (power-down)', () => {
+  const h = createHarness('idle');
+  h.registered[0].handleState('live');
+  assert.equal(h.body.classList.contains('warming'), true);
+  h.registered[0].handleState('idle');
+  assert.equal(h.body.classList.contains('cooling'), true);
   assert.equal(h.body.classList.contains('warming'), false);
 });
 

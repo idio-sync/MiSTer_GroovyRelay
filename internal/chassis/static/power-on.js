@@ -20,36 +20,41 @@
   }
 
   const WARM_CLASS = 'warming';
-  // Must outlast the longest keyframe in chassis.css (760ms) so the class
-  // is not yanked mid-bloom.
+  const COOL_CLASS = 'cooling';
+  // Each must outlast its longest keyframe in chassis.css (warm bloom 760ms,
+  // power-down 580ms) so the class is not yanked mid-animation. Standby is the
+  // faster of the pair, per the "exit ~75% of entrance" rule.
   const WARM_MS = 950;
+  const COOL_MS = 640;
 
-  let warmTimer = null;
+  let ritualTimer = null;
   // The animator registry calls handleState once at registration with the
-  // current state. That first call is the initial page render, not a wake —
-  // skip it so a page that loads already-live (SSE reconnect, a dev refresh
-  // mid-cast) does not replay the ritual. Only a genuine idle->live
-  // transition ignites.
+  // current state. That first call is the initial page render, not a
+  // transition — skip it so a page that loads already-live (SSE reconnect, a
+  // dev refresh mid-cast) does not replay a ritual. Only a genuine state
+  // change wakes or powers down the faceplate.
   let primed = false;
 
-  function ignite() {
+  // runRitual flips on a transient body class (warming / cooling) that drives
+  // the VFD power-on / power-down keyframes, then clears it. The opposite
+  // class is removed first and a reflow is forced so the animation restarts
+  // even on a rapid live<->idle bounce (re-adding a class without a reflow
+  // would not retrigger it).
+  function runRitual(addClass, otherClass, ms) {
     const body = document.body;
     if (!body) {
       return;
     }
-    body.classList.remove(WARM_CLASS);
-    // Force reflow so re-adding the class restarts the CSS animations even on
-    // a rapid idle->live->idle->live bounce (toggling the same class without a
-    // reflow would not retrigger the animation).
+    body.classList.remove(addClass, otherClass);
     void body.offsetWidth;
-    body.classList.add(WARM_CLASS);
-    if (warmTimer) {
-      clearTimeout(warmTimer);
+    body.classList.add(addClass);
+    if (ritualTimer) {
+      clearTimeout(ritualTimer);
     }
-    warmTimer = setTimeout(() => {
-      body.classList.remove(WARM_CLASS);
-      warmTimer = null;
-    }, WARM_MS);
+    ritualTimer = setTimeout(() => {
+      body.classList.remove(addClass);
+      ritualTimer = null;
+    }, ms);
   }
 
   window.Chassis.animators.register({
@@ -59,7 +64,9 @@
         return;
       }
       if (state === window.Chassis.State.LIVE) {
-        ignite();
+        runRitual(WARM_CLASS, COOL_CLASS, WARM_MS); // wake: filament bloom
+      } else if (state === window.Chassis.State.IDLE) {
+        runRitual(COOL_CLASS, WARM_CLASS, COOL_MS); // standby: fade to dark
       }
     },
   });
