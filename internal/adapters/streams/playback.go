@@ -329,6 +329,9 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		playbackURL := pageURL
 		mediaPolicy := directHLSInputPolicy()
 		if isUserProviderID(q.ProviderID) {
+			// SECURITY: paired with the user-provider early-return in
+			// shouldBufferDirectHLS — user direct items must skip the bundled
+			// HLS buffer so these policy/URL overrides reach FFmpeg unmodified.
 			mediaPolicy = userDirectInputPolicy()
 			finalURL, err := a.prevalidateUserDirectURL(resolveCtx, pageURL)
 			if err != nil {
@@ -561,6 +564,8 @@ func directHLSInputPolicy() core.MediaInputPolicy {
 
 func (a *Adapter) shouldBufferDirectHLS(q *ActiveQueue, item StreamItem) bool {
 	if isUserProviderID(q.ProviderID) {
+		// SECURITY: paired with the user-provider policy/URL override in the
+		// direct branch of playCurrentWithStarter — keep both or neither.
 		// User direct streams are not host-locked and the bundled buffer's
 		// TrustModeBundledToonami validator only accepts the Toonami host, so
 		// user .m3u8 must bypass the buffer and go straight to FFmpeg with the
@@ -1535,7 +1540,9 @@ func (a *Adapter) userRedirectHTTPDoer() httpDoer {
 }
 
 // prevalidateUserDirectURL revalidates and follows the redirect chain for a
-// user direct URL, returning the final URL safe to hand to FFmpeg.
+// user direct URL, returning the final URL safe to hand to FFmpeg. The raw URL
+// is assumed to have passed validateUserProviderHost at catalog authoring time
+// (scheme/userinfo); this re-checks the resolved host of every redirect hop.
 func (a *Adapter) prevalidateUserDirectURL(ctx context.Context, rawURL string) (string, error) {
 	return resolveUserDirectURL(ctx, a.userRedirectHTTPDoer(), a.userHostResolver(), rawURL, maxUserRedirectHops)
 }
