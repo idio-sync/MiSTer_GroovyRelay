@@ -115,3 +115,37 @@ func TestValidateUserManifestIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestSlugify(t *testing.T) {
+	cases := map[string]string{
+		"F1 TV":            "f1-tv",
+		"Cartoon Network!": "cartoon-network",
+		"  Lo-Fi  24/7  ":  "lo-fi-24-7",
+		"???":              "provider",
+	}
+	for in, want := range cases {
+		if got := slugify(in, "provider"); got != want {
+			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestUniqueSlug(t *testing.T) {
+	taken := map[string]bool{"f1-tv": true, "f1-tv-2": true}
+	got := uniqueSlug("f1-tv", func(s string) bool { return taken[s] })
+	if got != "f1-tv-3" {
+		t.Errorf("uniqueSlug = %q, want f1-tv-3", got)
+	}
+	got = uniqueSlug("new", func(s string) bool { return taken[s] })
+	if got != "new" {
+		t.Errorf("uniqueSlug = %q, want new", got)
+	}
+}
+
+func TestNewUserProviderID(t *testing.T) {
+	taken := map[string]bool{"user:f1-tv": true}
+	got := newUserProviderID("F1 TV", func(id string) bool { return taken[id] })
+	if got != "user:f1-tv-2" {
+		t.Errorf("newUserProviderID = %q, want user:f1-tv-2", got)
+	}
+}

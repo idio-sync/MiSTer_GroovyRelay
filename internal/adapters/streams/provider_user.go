@@ -3,6 +3,7 @@ package streams
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -130,4 +131,56 @@ func validateUserManifestID(label, id string, rejectAdhoc bool) error {
 		return fmt.Errorf("%s %q is reserved", label, id)
 	}
 	return nil
+}
+
+// slugify lowercases and reduces a display name to [a-z0-9-], collapsing
+// runs of other characters to single hyphens and trimming edges. Returns
+// fallback when nothing usable remains (so an ID is always derivable).
+func slugify(name, fallback string) string {
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevHyphen = false
+		default:
+			if !prevHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				prevHyphen = true
+			}
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+// uniqueSlug returns base, or base-2, base-3, ... until taken() is false.
+func uniqueSlug(base string, taken func(string) bool) string {
+	if !taken(base) {
+		return base
+	}
+	for n := 2; ; n++ {
+		candidate := base + "-" + strconv.Itoa(n)
+		if !taken(candidate) {
+			return candidate
+		}
+	}
+}
+
+// newUserProviderID derives a locked "user:"-prefixed provider ID from a
+// display name, de-duped against existing IDs via taken().
+func newUserProviderID(displayName string, taken func(id string) bool) string {
+	base := slugify(displayName, "provider")
+	return uniqueSlug(userProviderIDPrefix+base, taken)
+}
+
+// newChannelID derives a locked channel ID (no "user:" prefix; scoped to its
+// provider) from a channel name, de-duped against sibling channel IDs.
+func newChannelID(channelName string, taken func(id string) bool) string {
+	base := slugify(channelName, "channel")
+	return uniqueSlug(base, taken)
 }
