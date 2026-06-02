@@ -644,7 +644,16 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		Policy:  req.MediaInputPolicy,
 		Capture: ffmpegCaptureSpec(req.AudioCapture),
 	}
+	// TEMP DEBUG (jellyfin probe-killed investigation): log the exact probe
+	// URL and ffprobe wall-time so we can correlate against JF transcode
+	// timing and decide whether a probesize cap is warranted. Remove once the
+	// signal:killed root cause is confirmed.
+	probeStart := time.Now()
 	probe, err := probeInputFn(ctx, ffprobePath, probeInput)
+	slog.Warn("core: probe timing",
+		"url", artworkcache.RedactURL(probeURL),
+		"elapsed", time.Since(probeStart).Round(time.Millisecond).String(),
+		"err", err)
 	if err != nil {
 		wrapped := fmt.Errorf("probe source: %w", err)
 		if probeErrorIsLikelyUnreachable(err) {
