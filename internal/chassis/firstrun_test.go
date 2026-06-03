@@ -112,3 +112,32 @@ func TestRequireSetupComplete_Gate(t *testing.T) {
 		t.Fatalf("after dismiss: got %d reached=%v", rec.Code, reached)
 	}
 }
+
+func TestMount_GatesCastRoutes(t *testing.T) {
+	gated := []struct {
+		method, path string
+	}{
+		{"POST", "/receiver/cast"},
+		{"POST", "/receiver/preset/1/cast"},
+		{"POST", "/receiver/streams/cast"},
+		{"POST", "/receiver/localfiles/cast"},
+		{"POST", "/receiver/settings/adapter/localfiles/cast"},
+		{"POST", "/receiver/history/play"},
+		{"POST", "/receiver/aux/start"},
+	}
+	saver := hostSaver("", true)
+	s := newSetupServer(t, saver, nil) // built via New → firstRun resolves, Mount safe
+
+	mux := http.NewServeMux()
+	s.Mount(mux)
+
+	for _, g := range gated {
+		req := httptest.NewRequest(g.method, g.path, nil)
+		req.Header.Set("Sec-Fetch-Site", "same-origin") // pass requireSameOrigin
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Errorf("%s %s: got %d want 409 (gated)", g.method, g.path, rec.Code)
+		}
+	}
+}

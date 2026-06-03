@@ -326,16 +326,16 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
 	mux.Handle("POST /receiver/audio/dsp", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleAudioDSPPost))))
 	mux.Handle("POST /receiver/audio/dsp/memory", requireSameOrigin(http.HandlerFunc(s.handleAudioDSPMemoryPost)))
-	mux.Handle("POST /receiver/aux/start", requireSameOrigin(http.HandlerFunc(s.handleAUXStartPost)))
+	mux.Handle("POST /receiver/aux/start", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleAUXStartPost))))
 	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
-	mux.Handle("POST /receiver/cast", requireSameOrigin(http.HandlerFunc(s.handleCastPost)))
-	mux.Handle("POST /receiver/history/play", requireSameOrigin(http.HandlerFunc(s.handleHistoryPlayPost)))
+	mux.Handle("POST /receiver/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleCastPost))))
+	mux.Handle("POST /receiver/history/play", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleHistoryPlayPost))))
 	mux.Handle("POST /receiver/localfiles/browse",
 		requireSameOrigin(http.HandlerFunc(s.handleReceiverLocalfilesBrowse)))
 	mux.Handle("POST /receiver/localfiles/cast",
-		requireSameOrigin(http.HandlerFunc(s.handleReceiverLocalfilesCast)))
-	mux.Handle("POST /receiver/preset/{slot}/cast", requireSameOrigin(http.HandlerFunc(s.handlePresetCast)))
-	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(http.HandlerFunc(s.handleStreamsCast)))
+		requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleReceiverLocalfilesCast))))
+	mux.Handle("POST /receiver/preset/{slot}/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handlePresetCast))))
+	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleStreamsCast))))
 	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
 	mux.Handle("POST /receiver/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
 	mux.Handle("POST /receiver/settings/bridge",
@@ -369,7 +369,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/settings/adapter/localfiles/browse",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesBrowse)))
 	mux.Handle("POST /receiver/settings/adapter/localfiles/cast",
-		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesCast)))
+		requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleSettingsAdapterLocalfilesCast))))
 	mux.Handle("POST /receiver/settings/adapter/localfiles/libraries",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesLibraries)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
