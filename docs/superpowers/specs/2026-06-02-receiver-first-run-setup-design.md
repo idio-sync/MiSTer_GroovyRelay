@@ -97,7 +97,9 @@ cross-package import (preserving `import_check_test.go`).
 
 ### First-run controller interface (chassis-owned, type-asserted)
 
-Add a narrow optional interface in `internal/chassis`, matching the package's existing
+Add a narrow optional interface in a new file `internal/chassis/firstrun.go` (which also
+houses `firstRunActive()` and the configured-enough sub-checks), mirroring the
+single-purpose file pattern of `sameorigin.go`. It matches the package's existing
 pattern of small structurally-satisfied interfaces:
 
 ```go
@@ -113,6 +115,9 @@ type FirstRunController interface {
 
 The `Server` resolves it once (e.g. in `New`) by type-asserting `cfg.BridgeSaver`
 against `FirstRunController`, storing a possibly-nil `firstRun FirstRunController`.
+Test fixtures that pass `BridgeSaver == nil` (or a saver that does not implement the
+interface) leave `firstRun == nil`, so `firstRunActive()` is always false and setup mode
+never engages — this is the off-by-default behavior the testing section relies on.
 
 A single helper governs all setup-mode behavior:
 
@@ -148,6 +153,11 @@ the configured-enough sub-checks. Setup mode is a **page-load** concern only; th
 diff stream (`/receiver/events`) is untouched. Completion reloads the page, so live
 SSE setup state is unnecessary.
 
+`handleIndex` is the only place that reads setup-mode state. Other rendered surfaces
+(now-playing/VFD content, footer, meter rows, etc.) render normally regardless of setup
+mode — setup mode is purely additive (banner + open drawer + cast gate) and changes none
+of their data.
+
 ### Routes
 
 Mounted in `Server.Mount`, same-origin guarded like the existing chassis POST routes:
@@ -161,6 +171,9 @@ Mounted in `Server.Mount`, same-origin guarded like the existing chassis POST ro
   If complete, calls `DismissFirstRun()` and returns `200`. If not, returns `409` with a
   short body naming the unmet item ("set a MiSTer host" / "enable a source"). The
   server is the source of truth; the disabled-button state is only an affordance.
+  Idempotent under concurrency: `DismissFirstRun()` is an idempotent `os.Create` of the
+  sentinel and `IsFirstRun()` re-`Stat`s on each call, so a duplicate finish (or a finish
+  racing a `/ui` completion) simply observes the dismissed state and returns `200`.
 
 ### Cast-initiation gate
 
@@ -188,17 +201,28 @@ harmless cosmetic controls with no output until a MiSTer host exists.
 
 ### Client surface
 
-- **Welcome banner partial** rendered server-side when `.SetupMode`, plus a
-  `body.receiver.setup` state class so first paint is correct (no flash of
-  ungated UI). The banner carries the two-item checklist (ticking `HostSet` /
-  `SourceEnabled`) and the "Finish setup" button (disabled until both tick).
-- **Drawer auto-open:** under setup mode the shell renders the settings drawer in its
-  existing open state (reuse the existing open class; no new drawer logic), focused on
-  the network/MiSTer pane.
-- **`setup.js`** (~40 lines, embedded under `internal/chassis/static/`, loaded only when
-  needed): wires the Finish button (`POST /receiver/setup/finish` → on `200`, navigate
-  to `/receiver`), and after any successful drawer save re-fetches
-  `GET /receiver/setup/status` to update the checklist ticks and Finish enabled-state.
+- **Body class.** `shell.html` renders `<body class="receiver {{.State}}{{if .SetupMode}} setup{{end}}">`
+  so first paint is correct (no flash of ungated UI). All new selectors are
+  `body.receiver.setup …`, satisfying the existing `css_scope_test.go` `body.receiver`
+  scope rule.
+- **Welcome banner partial** rendered server-side inside the shell when `.SetupMode`.
+  The banner carries the two-item checklist (ticking `HostSet` / `SourceEnabled`) and the
+  "Finish setup" button (disabled until both tick).
+- **Drawer auto-open.** The settings drawer's open state is the `settings-open` class on
+  `body` (toggled today by `settings-drawer.js`). Under setup mode, `setup.js` adds
+  `settings-open` on `DOMContentLoaded`. No new drawer markup or tab logic is needed: the
+  Network tab/pane already carry the default `active` class
+  (`settings-drawer.html` — `data-tab="network"` / `data-pane="network"`), so the drawer
+  opens on the MiSTer/network pane.
+- **`setup.js`** (~40 lines, embedded under `internal/chassis/static/` via the existing
+  `go:embed` of `static/`). It is **conditionally included** in the shell `<head>` via a
+  `{{if .SetupMode}}<script defer src="/receiver/static/setup.js?v={{.Version}}"></script>{{end}}`
+  block — note this is the *first* conditionally-loaded chassis script (all existing
+  scripts load unconditionally), so the implementer adds the `{{if}}` guard rather than
+  following a precedent. `setup.js` wires the Finish button (`POST /receiver/setup/finish`
+  → on `200`, navigate to `/receiver`), opens the drawer (above), and after any successful
+  drawer save re-fetches `GET /receiver/setup/status` to update the checklist ticks and
+  Finish enabled-state.
 
 ### Interaction with the legacy `/ui` guard
 
