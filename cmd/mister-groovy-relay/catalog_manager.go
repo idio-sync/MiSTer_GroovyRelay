@@ -92,6 +92,20 @@ func (m *catalogManager) SetDirectStreamHLSBuffer(disabled bool) (adapters.Apply
 	return m.reportAndDispatch(scope, adapters.ScopeRestartCast)
 }
 
+// EnsureStreamsEnabled persists [adapters.streams].enabled=true and applies it
+// in memory via the existing ApplyConfigValue path (atomic section rewrite
+// under the bridge mutex). Idempotent in effect: safe to call when already
+// enabled — the section is re-persisted but the in-memory enabled state is
+// unchanged.
+// This is the ONLY persistent-TOML touch in the user-providers feature (spec
+// §10); it does NOT start the adapter — the caller hot-starts separately.
+func (m *catalogManager) EnsureStreamsEnabled() error {
+	_, err := m.patch(func(cfg *streams.Config) {
+		cfg.Enabled = true
+	})
+	return err
+}
+
 func (m *catalogManager) patch(apply func(*streams.Config)) (adapters.ApplyScope, error) {
 	cfg := m.adapter.ConfigSnapshot()
 	apply(&cfg)

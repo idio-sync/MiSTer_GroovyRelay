@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -390,6 +391,7 @@ func main() {
 	var streamsCatalogViewer adapters.StreamsCatalogViewer
 	var streamsCaster adapters.StreamsCaster
 	var presetEditor adapters.PresetEditor
+	var userProviderEditor adapters.UserProviderEditor
 	if streamsA, ok := reg.Get("streams"); ok {
 		if v, ok := streamsA.(adapters.PresetViewer); ok {
 			presetViewer = v
@@ -406,6 +408,9 @@ func main() {
 		if ed, ok := streamsA.(adapters.PresetEditor); ok {
 			presetEditor = ed
 		}
+		if ed, ok := streamsA.(adapters.UserProviderEditor); ok {
+			userProviderEditor = ed
+		}
 	}
 
 	var sourceViewers []adapters.SourceAvailabilityViewer
@@ -417,6 +422,38 @@ func main() {
 
 	cm := &catalogManager{adapter: streamsAdapter, adapterSaver: adapterSaver}
 	cr := &configReset{path: *cfgPath, mu: saver.Mu(), sectioned: sec}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var startMu sync.Mutex
+	// startAdapter is the single path for normal startup and mid-process
+	// auto-enable hot-start. It serializes Status/Start so non-idempotent adapter
+	// Start methods (notably streams refresh-loop setup) cannot race.
+	startAdapter := func(name string) error {
+		startMu.Lock()
+		defer startMu.Unlock()
+		a, ok := reg.Get(name)
+		if !ok {
+			return fmt.Errorf("startAdapter: adapter %q not registered", name)
+		}
+		if a.Status().State == adapters.StateRunning {
+			return nil
+		}
+		return a.Start(ctx)
+	}
+	// ensureStarted enables + hot-starts a disabled adapter mid-process (spec
+	// §10). Only "streams" is supported today. It (1) persists enabled=true via
+	// the catalog manager, then (2) starts through startAdapter.
+	ensureStarted := func(name string) error {
+		if name != "streams" {
+			return fmt.Errorf("ensureStarted: unsupported adapter %q", name)
+		}
+		if err := cm.EnsureStreamsEnabled(); err != nil {
+			return err
+		}
+		return startAdapter("streams")
+	}
 
 	adapterSaverWrapper := newBridgeAdapterSettingsSaver(adapterSaver, reg)
 	adapterHostEditor := newBridgeAdapterHostEditor(adapterSaver, reg)
@@ -450,6 +487,8 @@ func main() {
 		StreamsCatalogViewer:      streamsCatalogViewer,
 		StreamsCaster:             streamsCaster,
 		PresetEditor:              presetEditor,
+		UserProviderEditor:        userProviderEditor,
+		EnsureAdapterStarted:      ensureStarted,
 		SourceAvailabilityViewers: sourceViewers,
 		BridgeSaver:               saver,                          // existing *uiserver.BridgeSaver
 		Prober:                    newChassisProber(misterProber), // wraps existing bridgeMisterProber
@@ -499,9 +538,6 @@ func main() {
 		Message:  fmt.Sprintf("bridge-boot v%s on %s:%d", version, hostIP, sec.Bridge.UI.HTTPPort),
 	})
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	go func() {
 		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http listener", "err", err)
@@ -522,7 +558,7 @@ func main() {
 			slog.Info("adapter disabled", "name", a.Name())
 			continue
 		}
-		if err := a.Start(ctx); err != nil {
+		if err := startAdapter(a.Name()); err != nil {
 			slog.Error("adapter start", "name", a.Name(), "err", err)
 		}
 	}
