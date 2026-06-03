@@ -347,3 +347,118 @@ func TestPresetStore_NoOpRemoveDoesNotWriteFile(t *testing.T) {
 	_ = sort.Search // import sentinel; can be removed once tests grow
 	_ = context.Background
 }
+
+func newPresetStoreForCleanup(t *testing.T) *presetStore {
+	t.Helper()
+	resolve := func(providerID, channelID string) (adapters.PresetEntry, bool) {
+		// Resolve any user:* channel to a populated entry; unknown → stale.
+		if isUserProviderID(providerID) {
+			return adapters.PresetEntry{ProviderID: providerID, ChannelID: channelID, Title: channelID + " title", BadgeLabel: "UX", BadgeClass: "u-teal"}, true
+		}
+		return adapters.PresetEntry{}, false
+	}
+	// Pre-create an empty-slots file so seedFromBundled is skipped (the
+	// bundled defaults use non-user providers unknown to our resolver, which
+	// would otherwise fill all 12 slots via the stale-entry fallback path).
+	path := filepath.Join(t.TempDir(), "chassis_presets.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"slots":[]}`), 0o600); err != nil {
+		t.Fatalf("pre-create empty presets file: %v", err)
+	}
+	st, err := newPresetStore(path, resolve)
+	if err != nil {
+		t.Fatalf("newPresetStore: %v", err)
+	}
+	return st
+}
+
+func TestPresetStore_ClearProviderSlots(t *testing.T) {
+	t.Parallel()
+	st := newPresetStoreForCleanup(t)
+	if _, err := st.SetStarred("user:mix", "a", true); err != nil {
+		t.Fatalf("star a: %v", err)
+	}
+	if _, err := st.SetStarred("user:mix", "b", true); err != nil {
+		t.Fatalf("star b: %v", err)
+	}
+	if _, err := st.SetStarred("user:other", "c", true); err != nil {
+		t.Fatalf("star c: %v", err)
+	}
+	cleared, err := st.ClearProviderSlots("user:mix")
+	if err != nil {
+		t.Fatalf("ClearProviderSlots: %v", err)
+	}
+	if len(cleared) != 2 {
+		t.Fatalf("cleared = %v, want 2 slots", cleared)
+	}
+	// user:other survives.
+	snap := st.Snapshot()
+	count := 0
+	for _, e := range snap {
+		if e.ProviderID != "" {
+			count++
+			if e.ProviderID == "user:mix" {
+				t.Fatalf("user:mix slot survived: %+v", e)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("surviving slots = %d, want 1 (user:other)", count)
+	}
+}
+
+func TestPresetStore_ClearChannelSlots(t *testing.T) {
+	t.Parallel()
+	st := newPresetStoreForCleanup(t)
+	if _, err := st.SetStarred("user:mix", "keep", true); err != nil {
+		t.Fatalf("star keep: %v", err)
+	}
+	if _, err := st.SetStarred("user:mix", "drop", true); err != nil {
+		t.Fatalf("star drop: %v", err)
+	}
+	cleared, err := st.ClearChannelSlots("user:mix", "drop")
+	if err != nil {
+		t.Fatalf("ClearChannelSlots: %v", err)
+	}
+	if len(cleared) != 1 {
+		t.Fatalf("cleared = %v, want 1", cleared)
+	}
+	for _, e := range st.Snapshot() {
+		if e.ProviderID == "user:mix" && e.ChannelID == "drop" {
+			t.Fatal("dropped channel slot survived")
+		}
+	}
+}
+
+func TestPresetStore_RehydrateRefreshesDisplayFields(t *testing.T) {
+	t.Parallel()
+	title := "old"
+	resolve := func(providerID, channelID string) (adapters.PresetEntry, bool) {
+		if providerID != "user:mix" {
+			return adapters.PresetEntry{}, false
+		}
+		return adapters.PresetEntry{ProviderID: providerID, ChannelID: channelID, Title: title, BadgeLabel: "MX", BadgeClass: "u-teal"}, true
+	}
+	// Pre-create an empty-slots file so seedFromBundled is skipped.
+	path := filepath.Join(t.TempDir(), "chassis_presets.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"slots":[]}`), 0o600); err != nil {
+		t.Fatalf("pre-create empty presets file: %v", err)
+	}
+	st, err := newPresetStore(path, resolve)
+	if err != nil {
+		t.Fatalf("newPresetStore: %v", err)
+	}
+	if _, err := st.SetStarred("user:mix", "a", true); err != nil {
+		t.Fatalf("star: %v", err)
+	}
+	title = "new" // simulate a rename reflected by the rebuilt catalog
+	st.Rehydrate()
+	got := ""
+	for _, e := range st.Snapshot() {
+		if e.ProviderID == "user:mix" && e.ChannelID == "a" {
+			got = e.Title
+		}
+	}
+	if got != "new" {
+		t.Fatalf("rehydrated title = %q, want new", got)
+	}
+}
