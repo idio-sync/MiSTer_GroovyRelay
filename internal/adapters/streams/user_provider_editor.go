@@ -211,6 +211,42 @@ func (a *Adapter) UpdateUserProvider(ctx context.Context, id string, form adapte
 	}, nil
 }
 
+// DeleteUserProvider removes a user provider, rebuilds the catalog (the
+// provider disappears), and clears every preset slot referencing the
+// provider's channels (spec §4.5/§9 item 8).
+func (a *Adapter) DeleteUserProvider(ctx context.Context, id string) (adapters.UserProviderResult, error) {
+	if a.userStore == nil {
+		return adapters.UserProviderResult{}, fmt.Errorf("streams: user provider store not initialized")
+	}
+	if !isUserProviderID(id) {
+		return adapters.UserProviderResult{}, userInputError(fmt.Errorf("provider id %q is not a user provider", id))
+	}
+	a.userEditMu.Lock()
+	defer a.userEditMu.Unlock()
+	candidate, ok := a.userStore.PlanDelete(id)
+	if !ok {
+		return adapters.UserProviderResult{}, notFoundUserProvider(id)
+	}
+	// Rebuild WITHOUT the deleted provider, then clear its preset slots by
+	// provider ID (the channels are gone from the catalog, so the resolver-gated
+	// SetStarred path cannot do this — that is why ClearProviderSlots exists).
+	snapshot, err := a.buildUserCatalogSnapshotLive(ctx, candidate)
+	if err != nil {
+		return adapters.UserProviderResult{}, err
+	}
+	if err := a.userStore.CommitProviders(candidate); err != nil {
+		return adapters.UserProviderResult{}, err
+	}
+	a.installUserCatalogSnapshot(snapshot)
+	cleared, err := a.presetStore.ClearProviderSlots(id)
+	if err != nil {
+		a.presetStore.Rehydrate() // catalog already installed; refresh surviving slots before bailing
+		return adapters.UserProviderResult{}, err
+	}
+	a.presetStore.Rehydrate()
+	return adapters.UserProviderResult{ClearedSlots: cleared}, nil
+}
+
 // userChannelIDs returns the set of channel IDs for a stored user provider
 // (empty set if absent). Read off the store snapshot — no lock on a.mu.
 func (a *Adapter) userChannelIDs(id string) map[string]struct{} {

@@ -234,6 +234,54 @@ func TestUpdateUserProvider_UnknownIDIsNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteUserProvider_ClearsAllItsPresetSlots(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	created, err := a.CreateUserProvider(context.Background(), adapters.UserProviderForm{
+		DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []adapters.UserChannelForm{
+			{Name: "A", URL: "https://cdn.example.com/a.m3u8"},
+			{Name: "B", URL: "https://cdn.example.com/b.m3u8"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for _, g := range created.Provider.Groups {
+		for _, ch := range g.Channels {
+			if _, err := a.SetPresetStarred(context.Background(), created.Provider.ID, ch.ID, true); err != nil {
+				t.Fatalf("star: %v", err)
+			}
+		}
+	}
+	res, err := a.DeleteUserProvider(context.Background(), created.Provider.ID)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(res.ClearedSlots) != 2 {
+		t.Fatalf("ClearedSlots = %v, want 2", res.ClearedSlots)
+	}
+	if got := a.userStore.Snapshot(); len(got) != 0 {
+		t.Fatalf("store snapshot = %+v, want empty", got)
+	}
+	a.mu.Lock()
+	_, ok := a.catalogs[created.Provider.ID]
+	a.mu.Unlock()
+	if ok {
+		t.Fatal("catalog still present after delete")
+	}
+}
+
+func TestDeleteUserProvider_UnknownIDIsNotFound(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	_, err := a.DeleteUserProvider(context.Background(), "user:ghost")
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) || qerr.Status != http.StatusNotFound {
+		t.Fatalf("err = %v, want *QuickCastError{404}", err)
+	}
+}
+
 // channelIDsByName returns the (keep, drop) channel IDs from a chassis-shaped
 // provider whose channels are named "Keep"/"Drop".
 func channelIDsByName(t *testing.T, p adapters.CatalogProvider) (keep, drop string) {
