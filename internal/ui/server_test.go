@@ -49,7 +49,7 @@ func TestServer_RootRedirectsToUI(t *testing.T) {
 
 func TestServer_ShellPageRenders(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest("GET", "/ui/", nil)
+	req := httptest.NewRequest("GET", "/old_ui/", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
@@ -66,7 +66,7 @@ func TestServer_ShellPageRenders(t *testing.T) {
 
 func TestServer_StaticCSS(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	req := httptest.NewRequest("GET", "/old_ui/static/app.css", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
@@ -79,7 +79,7 @@ func TestServer_StaticCSS(t *testing.T) {
 
 func TestServer_StaticHtmx(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest("GET", "/ui/static/htmx.min.js", nil)
+	req := httptest.NewRequest("GET", "/old_ui/static/htmx.min.js", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
@@ -89,7 +89,7 @@ func TestServer_StaticHtmx(t *testing.T) {
 
 func TestServer_StaticFont(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest("GET", "/ui/static/fonts/InterTight-400.woff2", nil)
+	req := httptest.NewRequest("GET", "/old_ui/static/fonts/InterTight-400.woff2", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
@@ -102,21 +102,21 @@ func TestServer_StaticFont(t *testing.T) {
 
 func TestShellLoadsStreamsArtworkScript(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest("GET", "/ui/", nil)
+	req := httptest.NewRequest("GET", "/old_ui/", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
 		t.Fatalf("status = %d", rw.Code)
 	}
 	body := rw.Body.String()
-	if !strings.Contains(body, `<script src="/ui/static/streams-artwork.js" defer></script>`) {
+	if !strings.Contains(body, `<script src="/old_ui/static/streams-artwork.js" defer></script>`) {
 		t.Fatalf("shell missing streams artwork script: %s", body)
 	}
 }
 
 func TestStaticStreamsArtworkScriptServed(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/static/streams-artwork.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/static/streams-artwork.js", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -130,28 +130,28 @@ func TestStaticStreamsArtworkScriptServed(t *testing.T) {
 
 func TestShellLoadsNowPlayingScript(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest("GET", "/ui/", nil)
+	req := httptest.NewRequest("GET", "/old_ui/", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
 		t.Fatalf("status = %d", rw.Code)
 	}
 	body := rw.Body.String()
-	if !strings.Contains(body, `<script src="/ui/static/now-playing.js" defer></script>`) {
+	if !strings.Contains(body, `<script src="/old_ui/static/now-playing.js" defer></script>`) {
 		t.Fatalf("shell missing now-playing script: %s", body)
 	}
 }
 
 func TestStaticNowPlayingScriptSuppressesSeekPollSwaps(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/static/now-playing.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/static/now-playing.js", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"htmx:beforeSwap", "data-seek-interacting", "/ui/playback/banner", "preventDefault"} {
+	for _, want := range []string{"htmx:beforeSwap", "data-seek-interacting", "/old_ui/playback/banner", "preventDefault"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("now-playing script missing %q: %s", want, body)
 		}
@@ -160,7 +160,7 @@ func TestStaticNowPlayingScriptSuppressesSeekPollSwaps(t *testing.T) {
 
 func TestStaticAppCSSHidesArtworkFallbackUntilImageFails(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/static/app.css", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -179,7 +179,7 @@ func TestStaticAppCSSHidesArtworkFallbackUntilImageFails(t *testing.T) {
 
 func TestStaticAppCSSScopesStreamsWidePanelToRegularAdapterPanel(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/static/app.css", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -196,7 +196,7 @@ func TestStaticAppCSSScopesStreamsWidePanelToRegularAdapterPanel(t *testing.T) {
 
 func TestStaticAppCSSKeepsStreamsMobileCategoryTabsReadable(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/static/app.css", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -211,7 +211,7 @@ func TestStaticAppCSSKeepsStreamsMobileCategoryTabsReadable(t *testing.T) {
 
 func TestStaticAppCSSIncludesNowPlayingBannerRules(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/static/app.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/static/app.css", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -284,7 +284,7 @@ func TestServer_Mount_HonorsAllRouteMethods(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	for _, method := range []string{"GET", "POST", "DELETE", "PUT", "PATCH"} {
-		req, err := http.NewRequest(method, ts.URL+"/ui/adapter/fake/thing", nil)
+		req, err := http.NewRequest(method, ts.URL+"/old_ui/adapter/fake/thing", nil)
 		if err != nil {
 			t.Fatalf("build %s: %v", method, err)
 		}
@@ -307,7 +307,7 @@ func TestServer_Mount_HonorsAllRouteMethods(t *testing.T) {
 	}
 
 	for _, method := range []string{"GET", "POST", "DELETE", "PUT", "PATCH"} {
-		key := method + " /ui/adapter/fake/thing"
+		key := method + " /old_ui/adapter/fake/thing"
 		if fa.hits[key] != 1 {
 			t.Errorf("hits[%q] = %d, want 1", key, fa.hits[key])
 		}
@@ -331,7 +331,7 @@ func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	origin := "moz-extension://abcd-1234"
-	preflight, err := http.NewRequest(http.MethodOptions, ts.URL+"/ui/adapter/fake/thing", nil)
+	preflight, err := http.NewRequest(http.MethodOptions, ts.URL+"/old_ui/adapter/fake/thing", nil)
 	if err != nil {
 		t.Fatalf("build preflight: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
 		t.Fatalf("preflight Access-Control-Allow-Headers = %q, want x-bridge-extension", got)
 	}
 
-	getReq, err := http.NewRequest(http.MethodGet, ts.URL+"/ui/adapter/fake/thing", nil)
+	getReq, err := http.NewRequest(http.MethodGet, ts.URL+"/old_ui/adapter/fake/thing", nil)
 	if err != nil {
 		t.Fatalf("build GET: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
 		t.Fatalf("GET Access-Control-Allow-Origin = %q, want %q", got, origin)
 	}
 
-	postReq, err := http.NewRequest(http.MethodPost, ts.URL+"/ui/adapter/fake/thing", nil)
+	postReq, err := http.NewRequest(http.MethodPost, ts.URL+"/old_ui/adapter/fake/thing", nil)
 	if err != nil {
 		t.Fatalf("build POST: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestServer_Mount_AllowsExtensionCORSForUIRoutes(t *testing.T) {
 
 func TestShell_IncludesConsoleEasterEgg(t *testing.T) {
 	_, mux := newTestServer(t)
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -404,7 +404,7 @@ func TestShell_IncludesConsoleEasterEgg(t *testing.T) {
 
 func TestStaticAssets_AppCSSIncludesPR2bClasses(t *testing.T) {
 	_, mux := newTestServer(t)
-	r := httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	r := httptest.NewRequest("GET", "/old_ui/static/app.css", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	if w.Code != 200 {
@@ -420,7 +420,7 @@ func TestStaticAssets_AppCSSIncludesPR2bClasses(t *testing.T) {
 
 func TestStaticAssets_AppCSSIncludesPR2cClasses(t *testing.T) {
 	_, mux := newTestServer(t)
-	r := httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	r := httptest.NewRequest("GET", "/old_ui/static/app.css", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	if w.Code != 200 {
@@ -446,14 +446,14 @@ func TestMount_RegistersSidebarDotsRoute(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/ui/sidebar/dots", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/sidebar/dots", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	if w.Code == http.StatusNotFound {
-		t.Fatalf("/ui/sidebar/dots not registered: got 404")
+		t.Fatalf("/old_ui/sidebar/dots not registered: got 404")
 	}
-	// Distinguish the dots handler from the /ui/ catch-all that
+	// Distinguish the dots handler from the /old_ui/ catch-all that
 	// renders the shell template — only handleSidebarDots emits
 	// hx-swap-oob spans for registered adapters.
 	body := w.Body.String()
@@ -493,14 +493,14 @@ func TestShellData_IncludesDisabledAdapters(t *testing.T) {
 
 func TestShell_RendersAddSourceLink(t *testing.T) {
 	_, mux := newTestServer(t)
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
 	if !strings.Contains(body, "+ Add source") {
 		t.Errorf("missing + Add source link")
 	}
-	if !strings.Contains(body, `href="/ui/setup?step=adapters"`) {
+	if !strings.Contains(body, `href="/old_ui/setup?step=adapters"`) {
 		t.Errorf("missing wizard link target")
 	}
 }
@@ -511,7 +511,7 @@ func TestShell_ReadPagesUsePreviewMainLayout(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	for _, path := range []string{"/ui/", "/ui/diagnostics"} {
+	for _, path := range []string{"/old_ui/", "/old_ui/diagnostics"} {
 		r := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
@@ -534,8 +534,8 @@ func TestShell_ConfigPagesUsePreviewConfigLayout(t *testing.T) {
 		path  string
 		title string
 	}{
-		{path: "/ui/bridge", title: "Bridge"},
-		{path: "/ui/adapter/jellyfin", title: "Jellyfin"},
+		{path: "/old_ui/bridge", title: "Bridge"},
+		{path: "/old_ui/adapter/jellyfin", title: "Jellyfin"},
 	} {
 		r := httptest.NewRequest("GET", tc.path, nil)
 		w := httptest.NewRecorder()
@@ -561,7 +561,7 @@ func TestShellRendersNowPlayingBannerOnNonSetupPages(t *testing.T) {
 		c.BridgeSaver = &fakeBridgeSaver{}
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
-	for _, path := range []string{"/ui/", "/ui/bridge", "/ui/diagnostics"} {
+	for _, path := range []string{"/old_ui/", "/old_ui/bridge", "/old_ui/diagnostics"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rr := httptest.NewRecorder()
@@ -580,7 +580,7 @@ func TestShellNavigationTargetsPanelContentSoBannerPersists(t *testing.T) {
 	_, mux := newTestServer(t, func(c *Config) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
-	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	body := rr.Body.String()
@@ -596,7 +596,7 @@ func TestShellNavigationTargetsPanelContentSoBannerPersists(t *testing.T) {
 
 func TestSetupShellDoesNotRenderNowPlayingBanner(t *testing.T) {
 	_, mux := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/setup", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/setup", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if strings.Contains(rr.Body.String(), `id="gr-now-playing"`) {

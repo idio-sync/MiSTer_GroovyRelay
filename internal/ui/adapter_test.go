@@ -64,7 +64,7 @@ func newAdapterTestServer(t *testing.T, stub *richStub) *http.ServeMux {
 
 func TestHandleAdapter_GET_RendersFields(t *testing.T) {
 	mux := newAdapterTestServer(t, &richStub{name: "stub", enabled: true, state: adapters.StateRunning})
-	req := httptest.NewRequest("GET", "/ui/adapter/stub", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/stub", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != 200 {
@@ -87,7 +87,7 @@ func TestHandleAdapter_GET_RendersFields(t *testing.T) {
 
 func TestHandleAdapter_GET_UnknownAdapter(t *testing.T) {
 	mux := newAdapterTestServer(t, &richStub{name: "stub"})
-	req := httptest.NewRequest("GET", "/ui/adapter/nonesuch", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/nonesuch", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusNotFound {
@@ -123,7 +123,7 @@ func TestHandleAdapter_GET_ExtraHTMLRenderedUnescaped(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("GET", "/ui/adapter/stub", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/stub", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -143,7 +143,7 @@ func TestHandleAdapter_GET_ExtraHTMLRenderedUnescaped(t *testing.T) {
 
 func TestHandleAdapter_GET_HTMXReturnsFragment(t *testing.T) {
 	mux := newAdapterTestServer(t, &richStub{name: "stub", enabled: true, state: adapters.StateRunning})
-	req := httptest.NewRequest("GET", "/ui/adapter/stub", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/stub", nil)
 	req.Header.Set("HX-Request", "true")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -179,7 +179,7 @@ func TestHandleAdapter_Toggle_StartsWhenEnabling(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/toggle", strings.NewReader("enabled=true"))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/toggle", strings.NewReader("enabled=true"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -204,7 +204,7 @@ func TestHandleAdapter_Toggle_StopsWhenDisabling(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/toggle", strings.NewReader("enabled=false"))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/toggle", strings.NewReader("enabled=false"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -229,7 +229,7 @@ func TestHandleAdapter_StatusFragment(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("GET", "/ui/adapter/stub/status", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/stub/status", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != 200 {
@@ -268,7 +268,7 @@ func TestHandleAdapter_Save_Success(t *testing.T) {
 	s.Mount(mux)
 
 	body := strings.NewReader("device_name=NewName&enabled=true")
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -298,7 +298,7 @@ func TestHandleAdapter_Save_StartsWhenEnableTransitions(t *testing.T) {
 	s.Mount(mux)
 
 	body := strings.NewReader("device_name=NewName&enabled=true")
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -325,7 +325,7 @@ func TestHandleAdapter_Save_StopsWhenDisableTransitions(t *testing.T) {
 	s.Mount(mux)
 
 	body := strings.NewReader("device_name=NewName&enabled=false")
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -352,7 +352,7 @@ func TestHandleAdapter_Save_NoLifecycleWhenEnableUnchanged(t *testing.T) {
 	s.Mount(mux)
 
 	body := strings.NewReader("device_name=NewName&enabled=true")
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -374,7 +374,7 @@ func TestHandleAdapter_Save_CSRFRejected(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", strings.NewReader(""))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/save", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -452,7 +452,7 @@ func TestHandleAdapter_GET_KindActionRendered(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("GET", "/ui/adapter/myplex", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/myplex", nil)
 	req.Header.Set("HX-Request", "true") // fragment only — simpler to inspect
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -463,7 +463,7 @@ func TestHandleAdapter_GET_KindActionRendered(t *testing.T) {
 	body := rw.Body.String()
 
 	// Must render an hx-post button pointing at the correct adapter route.
-	wantPost := `hx-post="/ui/adapter/myplex/pair/start"`
+	wantPost := `hx-post="/old_ui/adapter/myplex/pair/start"`
 	if !strings.Contains(body, wantPost) {
 		t.Errorf("action button hx-post missing or wrong; want %q in:\n%s", wantPost, body)
 	}
@@ -497,7 +497,7 @@ func TestHandleAdapter_Save_RequiredFieldMissing(t *testing.T) {
 	// Leave this test as a placeholder for the KindInt/KindEnum required
 	// branch, tested implicitly by parseIntField's empty-string handling.
 	body := strings.NewReader("device_name=Valid&enabled=false")
-	req := httptest.NewRequest("POST", "/ui/adapter/stub/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/stub/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -515,7 +515,7 @@ func TestAdapterPanel_LinkAwareNotLinked_GatesForm(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(newMockLinkAwareAdapter("plex"))
 	})
 
-	r := httptest.NewRequest("GET", "/ui/adapter/plex", nil)
+	r := httptest.NewRequest("GET", "/old_ui/adapter/plex", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -535,7 +535,7 @@ func TestAdapterPanel_LinkAwareLinked_FormEnabled(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(a)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/adapter/plex", nil)
+	r := httptest.NewRequest("GET", "/old_ui/adapter/plex", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -569,7 +569,7 @@ func TestAdapterPanel_NoLinkAware_NoGating(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(&plainAdapter{name: "url"})
 	})
 
-	r := httptest.NewRequest("GET", "/ui/adapter/url", nil)
+	r := httptest.NewRequest("GET", "/old_ui/adapter/url", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()

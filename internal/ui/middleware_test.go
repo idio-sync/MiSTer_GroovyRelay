@@ -22,7 +22,7 @@ func newGuardedHandler(saver FirstRunAware) http.Handler {
 
 func TestFirstRunGuard_NilSaver_PassesThrough(t *testing.T) {
 	h := newGuardedHandler(nil)
-	r := httptest.NewRequest("GET", "/ui/bridge", nil)
+	r := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != 200 {
@@ -32,7 +32,7 @@ func TestFirstRunGuard_NilSaver_PassesThrough(t *testing.T) {
 
 func TestFirstRunGuard_FlagCleared_PassesThrough(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: false})
-	r := httptest.NewRequest("GET", "/ui/bridge", nil)
+	r := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != 200 {
@@ -42,20 +42,20 @@ func TestFirstRunGuard_FlagCleared_PassesThrough(t *testing.T) {
 
 func TestFirstRunGuard_FlagSet_GET_RedirectsToSetup(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: true})
-	r := httptest.NewRequest("GET", "/ui/bridge", nil)
+	r := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != 302 {
 		t.Errorf("got %d", w.Code)
 	}
-	if loc := w.Header().Get("Location"); loc != "/ui/setup" {
+	if loc := w.Header().Get("Location"); loc != "/old_ui/setup" {
 		t.Errorf("Location: %q", loc)
 	}
 }
 
 func TestFirstRunGuard_FlagSet_POST_Returns409(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: true})
-	r := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	r := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != 409 {
@@ -68,7 +68,7 @@ func TestFirstRunGuard_FlagSet_POST_Returns409(t *testing.T) {
 
 func TestFirstRunGuard_FlagSet_SetupBypass(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: true})
-	for _, p := range []string{"/ui/setup", "/ui/setup/step/bridge", "/ui/setup/done"} {
+	for _, p := range []string{"/old_ui/setup", "/old_ui/setup/step/bridge", "/old_ui/setup/done"} {
 		r := httptest.NewRequest("GET", p, nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -80,7 +80,7 @@ func TestFirstRunGuard_FlagSet_SetupBypass(t *testing.T) {
 
 func TestFirstRunGuard_FlagSet_StaticBypass(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: true})
-	for _, p := range []string{"/ui/static/app.css", "/ui/static/fonts/inter.woff2"} {
+	for _, p := range []string{"/old_ui/static/app.css", "/old_ui/static/fonts/inter.woff2"} {
 		r := httptest.NewRequest("GET", p, nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -93,11 +93,11 @@ func TestFirstRunGuard_FlagSet_StaticBypass(t *testing.T) {
 func TestFirstRunGuard_FlagSet_WizardAdapterRoutesBypass(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: true})
 	cases := []struct{ method, path string }{
-		{"POST", "/ui/adapter/plex/link/start"},
-		{"POST", "/ui/adapter/plex/link/cancel"},
-		{"GET", "/ui/adapter/plex/link/status"},
-		{"POST", "/ui/adapter/jellyfin/link/start"},
-		{"POST", "/ui/adapter/plex/save"},
+		{"POST", "/old_ui/adapter/plex/link/start"},
+		{"POST", "/old_ui/adapter/plex/link/cancel"},
+		{"GET", "/old_ui/adapter/plex/link/status"},
+		{"POST", "/old_ui/adapter/jellyfin/link/start"},
+		{"POST", "/old_ui/adapter/plex/save"},
 	}
 	for _, tc := range cases {
 		r := httptest.NewRequest(tc.method, tc.path, nil)
@@ -111,7 +111,7 @@ func TestFirstRunGuard_FlagSet_WizardAdapterRoutesBypass(t *testing.T) {
 
 func TestFirstRunGuard_FlagSet_NonWizardAdapterRoutesBlocked(t *testing.T) {
 	h := newGuardedHandler(&fakeFirstRun{first: true})
-	r := httptest.NewRequest("POST", "/ui/adapter/plex/toggle", nil)
+	r := httptest.NewRequest("POST", "/old_ui/adapter/plex/toggle", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != 409 {

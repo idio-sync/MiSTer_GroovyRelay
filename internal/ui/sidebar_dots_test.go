@@ -25,7 +25,7 @@ func TestSidebarDots_RendersOOBSpansForEachAdapter(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/ui/sidebar/dots", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/sidebar/dots", nil)
 	w := httptest.NewRecorder()
 	srv.handleSidebarDots(w, req)
 

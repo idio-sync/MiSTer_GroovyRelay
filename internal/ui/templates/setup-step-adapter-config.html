@@ -15,7 +15,7 @@
 	<div class="adapter-extras">{{.ExtraHTML}}</div>
 	{{end}}
 
-	<form method="POST" action="/ui/setup/step/{{.AdapterName}}" class="gr-wizard-form">
+	<form method="POST" action="/old_ui/setup/step/{{.AdapterName}}" class="gr-wizard-form">
 		{{/* enabled=true is injected server-side in handleSetupAdapterConfigPOST
 		     (see internal/ui/setup.go) — no hidden input needed here. */}}
 

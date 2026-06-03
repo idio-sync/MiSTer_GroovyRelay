@@ -11,7 +11,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 )
 
-// diagnosticsPanelData is the template context for /ui/diagnostics.
+// diagnosticsPanelData is the template context for /old_ui/diagnostics.
 type diagnosticsPanelData struct {
 	RingCapacity   int
 	Uptime         string

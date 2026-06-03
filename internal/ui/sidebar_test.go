@@ -47,19 +47,19 @@ func (a *uiStubAdapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (ada
 
 func TestShell_DoesNotPollOuterAside(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
 
-	// Old behavior: <aside hx-get="/ui/sidebar/status" hx-swap="outerHTML">.
+	// Old behavior: <aside hx-get="/old_ui/sidebar/status" hx-swap="outerHTML">.
 	// New behavior: aside has no hx-get directly; a child element polls
 	// /ui/sidebar/dots with hx-swap="none" (OOB swaps target individual
 	// dot spans).
-	if strings.Contains(body, `<aside`) && strings.Contains(body, `hx-get="/ui/sidebar/status"`) {
+	if strings.Contains(body, `<aside`) && strings.Contains(body, `hx-get="/old_ui/sidebar/status"`) {
 		t.Error("aside still polls /ui/sidebar/status with outerHTML — must be /ui/sidebar/dots with hx-swap=none")
 	}
-	if !strings.Contains(body, `hx-get="/ui/sidebar/dots"`) {
+	if !strings.Contains(body, `hx-get="/old_ui/sidebar/dots"`) {
 		t.Error("expected sidebar to poll /ui/sidebar/dots")
 	}
 	if !strings.Contains(body, `hx-swap="none"`) {
@@ -69,18 +69,18 @@ func TestShell_DoesNotPollOuterAside(t *testing.T) {
 
 func TestShell_RendersActiveLinkServerSide(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
 
-	if !strings.Contains(body, `href="/ui/bridge"`) {
+	if !strings.Contains(body, `href="/old_ui/bridge"`) {
 		t.Fatal("bridge link not rendered")
 	}
 	// Look for "active" class within ~200 chars on either side of the
 	// bridge href — the class attribute now precedes href in the
 	// preview-aligned template.
-	idx := strings.Index(body, `href="/ui/bridge"`)
+	idx := strings.Index(body, `href="/old_ui/bridge"`)
 	start := idx - 200
 	if start < 0 {
 		start = 0
@@ -98,14 +98,14 @@ func TestShell_RendersActiveLinkServerSide(t *testing.T) {
 func TestHTMXNavigationResponseCarriesActiveSidebarOOB(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
 
-	fullReq := httptest.NewRequest("GET", "/ui/bridge", nil)
+	fullReq := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	fullRW := httptest.NewRecorder()
 	mux.ServeHTTP(fullRW, fullReq)
 	if !strings.Contains(fullRW.Body.String(), `<aside id="gr-sidebar" class="gr-sidebar">`) {
 		t.Fatalf("full shell should expose #gr-sidebar as the OOB target; body=%s", fullRW.Body.String())
 	}
 
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	req.Header.Set("HX-Request", "true")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -121,11 +121,11 @@ func TestHTMXNavigationResponseCarriesActiveSidebarOOB(t *testing.T) {
 		t.Fatalf("htmx navigation response should carry an OOB sidebar refresh; body=%s", body)
 	}
 
-	bridgeLink := navLinkMarkup(t, body, `href="/ui/bridge"`)
+	bridgeLink := navLinkMarkup(t, body, `href="/old_ui/bridge"`)
 	if !strings.Contains(bridgeLink, "active") {
 		t.Fatalf("OOB sidebar bridge link should be active; link=%q", bridgeLink)
 	}
-	statusLink := navLinkMarkup(t, body, `href="/ui/"`)
+	statusLink := navLinkMarkup(t, body, `href="/old_ui/"`)
 	if strings.Contains(statusLink, "active") {
 		t.Fatalf("OOB sidebar status link should not remain active; link=%q", statusLink)
 	}
@@ -155,21 +155,21 @@ func navLinkMarkup(t *testing.T, body, href string) string {
 // secure context) get a working execCommand fallback.
 func TestShell_LoadsClipboardScript(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
 
-	if !strings.Contains(body, `src="/ui/static/clipboard.js"`) {
+	if !strings.Contains(body, `src="/old_ui/static/clipboard.js"`) {
 		t.Error("shell must load /ui/static/clipboard.js (toast copy fallback)")
 	}
 
 	// Confirm the asset itself is served.
-	req2 := httptest.NewRequest("GET", "/ui/static/clipboard.js", nil)
+	req2 := httptest.NewRequest("GET", "/old_ui/static/clipboard.js", nil)
 	rw2 := httptest.NewRecorder()
 	mux.ServeHTTP(rw2, req2)
 	if rw2.Code != 200 {
-		t.Errorf("/ui/static/clipboard.js: got %d, want 200", rw2.Code)
+		t.Errorf("/old_ui/static/clipboard.js: got %d, want 200", rw2.Code)
 	}
 	if !strings.Contains(rw2.Body.String(), "data-copy-target") {
 		t.Error("clipboard.js doesn't reference data-copy-target attribute")

@@ -11,7 +11,7 @@ func TestCSRF_GetAlwaysAllowed(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
@@ -23,7 +23,7 @@ func TestCSRF_PostSameOriginAllowed(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
@@ -38,7 +38,7 @@ func TestCSRF_PostSecFetchSiteNoneAllowed(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	req.Header.Set("Sec-Fetch-Site", "none")
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
@@ -51,7 +51,7 @@ func TestCSRF_PostCrossSiteRejected(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
@@ -65,7 +65,7 @@ func TestCSRF_PostOriginMatchesHost(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "http://bridge.lan:32500")
 	rw := httptest.NewRecorder()
@@ -79,7 +79,7 @@ func TestCSRF_PostOriginDiffersRejected(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "http://evil.example.com")
 	rw := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestCSRF_PostNoHeadersRejected(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/bridge/save", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", nil)
 	req.Host = "bridge.lan:32500"
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
@@ -113,7 +113,7 @@ func TestCSRF_ExtensionOrigin_MozWithHeader_Accepts(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "moz-extension://abcd-1234-5678-9abc")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -131,7 +131,7 @@ func TestCSRF_ExtensionOrigin_ChromeWithHeader_Accepts(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -151,7 +151,7 @@ func TestCSRF_ExtensionOrigin_SafariWithHeader_Accepts(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "safari-web-extension://AAAAAAAA-1234-5678-9abc-def012345678")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -172,7 +172,7 @@ func TestCSRF_ExtensionOrigin_NoHeader_Rejects(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "moz-extension://abcd-1234")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -193,7 +193,7 @@ func TestCSRF_HeaderWithoutExtensionOrigin_Rejects(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "https://attacker.example.com")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -217,7 +217,7 @@ func TestCSRF_HeaderWithEmptyOrigin_Rejects(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", nil)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("X-Bridge-Extension", "1")
 	// no Origin, no Sec-Fetch-Site
@@ -245,7 +245,7 @@ func TestCSRF_ExtensionOrigin_GetSkipsCheck(t *testing.T) {
 	h := csrfMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("GET", "/ui/adapter/url/panel", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/url/panel", nil)
 	req.Host = "bridge.lan:32500"
 	req.Header.Set("Origin", "moz-extension://abcd-1234")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")

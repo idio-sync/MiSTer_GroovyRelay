@@ -1,27 +1,27 @@
 @font-face {
 	font-family: 'Space Grotesk';
-	src: url('/ui/static/fonts/SpaceGrotesk-600.woff2') format('woff2');
+	src: url('/old_ui/static/fonts/SpaceGrotesk-600.woff2') format('woff2');
 	font-weight: 600;
 	font-style: normal;
 	font-display: swap;
 }
 @font-face {
 	font-family: 'Inter Tight';
-	src: url('/ui/static/fonts/InterTight-400.woff2') format('woff2');
+	src: url('/old_ui/static/fonts/InterTight-400.woff2') format('woff2');
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
 }
 @font-face {
 	font-family: 'Inter Tight';
-	src: url('/ui/static/fonts/InterTight-500.woff2') format('woff2');
+	src: url('/old_ui/static/fonts/InterTight-500.woff2') format('woff2');
 	font-weight: 500;
 	font-style: normal;
 	font-display: swap;
 }
 @font-face {
 	font-family: 'JetBrains Mono';
-	src: url('/ui/static/fonts/JetBrainsMono-400.woff2') format('woff2');
+	src: url('/old_ui/static/fonts/JetBrainsMono-400.woff2') format('woff2');
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;

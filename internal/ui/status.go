@@ -11,7 +11,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
-// statusPanelData is the template context for /ui/ and /ui/status/content.
+// statusPanelData is the template context for /old_ui/ and /old_ui/status/content.
 type statusPanelData struct {
 	State                   string
 	Title                   string

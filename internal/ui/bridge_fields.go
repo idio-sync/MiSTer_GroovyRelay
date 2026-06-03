@@ -354,7 +354,7 @@ func bridgeFields() []adapters.FieldDef {
 		// single KindAction field. SectionOrder=60 places it after the
 		// implicit-order sections (Network, Video, Audio, Server,
 		// MiSTer Control, all SectionOrder=0). The button POSTs to
-		// /ui/bridge/mister/launch — that handler is unchanged and
+		// /old_ui/bridge/mister/launch — that handler is unchanged and
 		// already registered in server.go.
 		//
 		// ApplyScope is intentionally omitted: per spec §8.1 it is

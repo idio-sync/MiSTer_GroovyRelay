@@ -332,7 +332,7 @@ func rowFor(fd adapters.FieldDef, cur config.BridgeConfig, errs FormErrors) brid
 	case adapters.KindAction:
 		// Spec §8.1: rendered as a button. Key is the relative POST
 		// endpoint (e.g. "mister/launch" mounts at
-		// /ui/bridge/mister/launch). No input value.
+		// /old_ui/bridge/mister/launch). No input value.
 		r.Kind = "action"
 	}
 	return r

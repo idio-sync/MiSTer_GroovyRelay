@@ -103,7 +103,7 @@ func hlsBufferFormDefaults() string {
 
 func TestHandleBridge_GET_RendersAllFields(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	if rw.Code != 200 {
@@ -133,7 +133,7 @@ func TestHandleBridge_GET_RendersAllFields(t *testing.T) {
 
 func TestHandleBridge_GET_CurrentValuesPrefill(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
@@ -149,7 +149,7 @@ func TestHandleBridge_GET_CurrentValuesPrefill(t *testing.T) {
 
 func TestHandleBridge_GET_HTMXReturnsFragment(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	req.Header.Set("HX-Request", "true")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -185,7 +185,7 @@ func TestHandleBridge_POST_Success(t *testing.T) {
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -235,7 +235,7 @@ func TestHandleBridge_POST_PreservesVisualizerModeOnUnrelatedSave(t *testing.T) 
 			"&ui.http_port=32500" +
 			"&data_dir=/config")
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -275,7 +275,7 @@ func TestHandleBridge_POST_PreservesVisualizerModeWhenFormKeyAbsent(t *testing.T
 			"&ui.http_port=32500" +
 			"&data_dir=/config")
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -312,7 +312,7 @@ func TestHandleBridge_POST_ValidationError(t *testing.T) {
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -331,7 +331,7 @@ func TestHandleBridge_POST_ValidationError(t *testing.T) {
 
 func TestHandleBridge_POST_CSRFRejected(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("POST", "/ui/bridge/save", strings.NewReader(""))
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -357,7 +357,7 @@ func TestHandleBridge_GET_FirstRunBannerShown(t *testing.T) {
 	// Call the handler directly — the guard redirects firstRun=true GETs
 	// to /ui/setup before they reach the bridge handler, so we bypass the
 	// mux to test the handler's own banner-rendering logic.
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	s.handleBridgeGET(rw, req)
 
@@ -373,7 +373,7 @@ func TestHandleBridge_GET_FirstRunBannerHidden(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -390,7 +390,7 @@ func TestHandleBridge_DismissFirstRun(t *testing.T) {
 	// Call the handler directly — the guard returns 409 for POSTs during
 	// first-run (the dismiss endpoint is not a wizard-bypass route), so
 	// we test the handler logic itself without the mux/guard chain.
-	req := httptest.NewRequest("POST", "/ui/bridge/dismiss-first-run", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/dismiss-first-run", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	s.handleBridgeDismissFirstRun(rw, req)
@@ -407,7 +407,7 @@ func TestHandleBridge_DismissFirstRun(t *testing.T) {
 // renders as a normal text input prefilled from the saver.
 func TestHandleBridge_GET_RendersSSHUserPrefilled(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
@@ -425,7 +425,7 @@ func TestHandleBridge_GET_RendersSSHUserPrefilled(t *testing.T) {
 // as type=password with no value attribute.
 func TestHandleBridge_GET_DoesNotEchoSSHPassword(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
@@ -470,7 +470,7 @@ func TestHandleBridge_POST_PreservesSSHPasswordOnEmpty(t *testing.T) {
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -511,7 +511,7 @@ func TestHandleBridgeMisterLaunch_Success(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/mister/launch", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -542,7 +542,7 @@ func TestHandleBridgeMisterLaunch_Error(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/mister/launch", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -571,7 +571,7 @@ func TestHandleBridgeMisterLaunch_NoLauncher(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest("POST", "/ui/bridge/mister/launch", nil)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/mister/launch", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -587,12 +587,12 @@ func TestHandleBridgeMisterLaunch_NoLauncher(t *testing.T) {
 // it.
 func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
 	wantSnippets := []string{
-		`hx-post="/ui/bridge/mister/launch"`,
+		`hx-post="/old_ui/bridge/mister/launch"`,
 		`id="action-result-mister-launch"`,
 		"Launch GroovyMiSTer",
 		`type="button"`,
@@ -606,7 +606,7 @@ func TestHandleBridge_GET_RendersLaunchSection(t *testing.T) {
 
 func TestBridgePanel_RendersLaunchOnceAsKindAction(t *testing.T) {
 	mux := newBridgeTestServer(t, &fakeBridgeSaver{})
-	req := httptest.NewRequest("GET", "/ui/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	body := rw.Body.String()
@@ -621,7 +621,7 @@ func TestBridgePanel_RendersLaunchOnceAsKindAction(t *testing.T) {
 	if !strings.Contains(body, "Launch GroovyMiSTer") {
 		t.Error("Launch button label not found in rendered HTML")
 	}
-	if !strings.Contains(body, `hx-post="/ui/bridge/mister/launch"`) {
+	if !strings.Contains(body, `hx-post="/old_ui/bridge/mister/launch"`) {
 		t.Error("Launch endpoint not wired to the rendered button")
 	}
 }
@@ -649,7 +649,7 @@ func TestBridgeSave_HotSwapRendersPipNoToast(t *testing.T) {
 			"&ui.http_port=32500" +
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -703,7 +703,7 @@ func TestBridgeSave_RestartCastStillRendersToast(t *testing.T) {
 			"&ui.http_port=32500" +
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -764,7 +764,7 @@ func TestBridgeSave_NextCastToastKeepsHotSwapPip(t *testing.T) {
 			"&ui.http_port=32500" +
 			"&data_dir=/config")
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -820,7 +820,7 @@ func TestToast_RestartBridge_HasCopyButton(t *testing.T) {
 			"&ui.http_port=32600" +
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -870,7 +870,7 @@ func TestHandleBridge_POST_OverwritesSSHPasswordWhenProvided(t *testing.T) {
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -928,7 +928,7 @@ func TestHandleBridge_POST_PreservesAudioDSP(t *testing.T) {
 			"&data_dir=/config" +
 			hlsBufferFormDefaults())
 
-	req := httptest.NewRequest("POST", "/ui/bridge/save", body)
+	req := httptest.NewRequest("POST", "/old_ui/bridge/save", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()

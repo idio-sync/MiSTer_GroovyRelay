@@ -53,11 +53,11 @@ type setupAdapterCard struct {
 // Re-entry: if ?step=<name> is in the URL, honour it directly.
 func (s *Server) handleSetupRoot(w http.ResponseWriter, r *http.Request) {
 	if step := r.URL.Query().Get("step"); step != "" {
-		http.Redirect(w, r, "/ui/setup/step/"+step, http.StatusFound)
+		http.Redirect(w, r, "/old_ui/setup/step/"+step, http.StatusFound)
 		return
 	}
 	target := s.firstIncompleteStep()
-	http.Redirect(w, r, "/ui/setup/step/"+target, http.StatusFound)
+	http.Redirect(w, r, "/old_ui/setup/step/"+target, http.StatusFound)
 }
 
 // firstIncompleteStep walks bridge → adapters → done and returns the name
@@ -72,7 +72,7 @@ func (s *Server) handleSetupRoot(w http.ResponseWriter, r *http.Request) {
 // adapter is enabled — the unconfigured-but-picked adapters are invisible
 // to the walk because the picker step deliberately does NOT write
 // enabled=true to disk before configure (see round-3 review fix C3).
-// Multi-adapter setup currently requires re-entering /ui/setup?step=adapters
+// Multi-adapter setup currently requires re-entering /old_ui/setup?step=adapters
 // after each configure; tracked as a follow-up.
 func (s *Server) firstIncompleteStep() string {
 	if s.cfg.BridgeSaver != nil {
@@ -181,7 +181,7 @@ func (s *Server) handleSetupBridgePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Bridge saved — go to adapters step.
-	http.Redirect(w, r, "/ui/setup/step/adapters", http.StatusFound)
+	http.Redirect(w, r, "/old_ui/setup/step/adapters", http.StatusFound)
 }
 
 // handleSetupAdaptersPOST validates the adapter selection and redirects
@@ -200,16 +200,16 @@ func (s *Server) handleSetupAdaptersPOST(w http.ResponseWriter, r *http.Request)
 
 	// Skip: if nothing was picked, redirect to done.
 	if len(valid) == 0 {
-		http.Redirect(w, r, "/ui/setup/step/done", http.StatusFound)
+		http.Redirect(w, r, "/old_ui/setup/step/done", http.StatusFound)
 		return
 	}
 
 	// Redirect to the first picked adapter's configure step.
-	http.Redirect(w, r, "/ui/setup/step/"+valid[0], http.StatusFound)
+	http.Redirect(w, r, "/old_ui/setup/step/"+valid[0], http.StatusFound)
 }
 
 // handleSetupAdapterConfigPOST saves an adapter's config (with enabled=true)
-// and redirects back to /ui/setup (which routes to next incomplete step).
+// and redirects back to /old_ui/setup (which routes to next incomplete step).
 func (s *Server) handleSetupAdapterConfigPOST(w http.ResponseWriter, r *http.Request, adapterName string) {
 	a, ok := s.cfg.Registry.Get(adapterName)
 	if !ok {
@@ -281,20 +281,20 @@ func (s *Server) handleSetupAdapterConfigPOST(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Redirect back to /ui/setup — it will route to the next incomplete step.
-	http.Redirect(w, r, "/ui/setup", http.StatusFound)
+	// Redirect back to /old_ui/setup — it will route to the next incomplete step.
+	http.Redirect(w, r, "/old_ui/setup", http.StatusFound)
 }
 
 // handleSetupDone dismisses the first-run flag and redirects to the main UI.
 func (s *Server) handleSetupDone(w http.ResponseWriter, r *http.Request) {
 	if target := s.firstIncompleteStep(); target != "done" {
-		http.Redirect(w, r, "/ui/setup/step/"+target, http.StatusFound)
+		http.Redirect(w, r, "/old_ui/setup/step/"+target, http.StatusFound)
 		return
 	}
 	if fra, ok := s.cfg.BridgeSaver.(FirstRunAware); ok {
 		_ = fra.DismissFirstRun()
 	}
-	http.Redirect(w, r, "/ui/", http.StatusFound)
+	http.Redirect(w, r, "/old_ui/", http.StatusFound)
 }
 
 // renderSetupStep builds the setup shell and renders the named step template.

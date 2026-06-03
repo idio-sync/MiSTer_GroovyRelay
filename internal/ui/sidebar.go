@@ -24,7 +24,7 @@ func (s *Server) handleSidebarDots(w http.ResponseWriter, r *http.Request) {
 		// to preserve existing behavior; the IsEnabled() filter
 		// lands with the sidebar reflow in PR 2.
 		// dotClass is the existing helper at server.go:280 — reused
-		// here so the sidebar partial and the legacy /ui/sidebar/status
+		// here so the sidebar partial and the legacy /old_ui/sidebar/status
 		// handler agree on State→class mapping.
 		fmt.Fprintf(w, `<span id="dot-%s" class="dot %s" hx-swap-oob="outerHTML"></span>`+"\n",
 			a.Name(), dotClass(a.Status().State))

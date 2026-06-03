@@ -19,7 +19,7 @@ func TestDiagnostics_RendersAllSections(t *testing.T) {
 	srv, mux := newTestServer(t, func(c *Config) { c.EventLog = log; c.Version = "test" })
 	_ = srv
 
-	r := httptest.NewRequest("GET", "/ui/diagnostics", nil)
+	r := httptest.NewRequest("GET", "/old_ui/diagnostics", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -47,7 +47,7 @@ func TestDiagnostics_FiltersEventsBySeverity(t *testing.T) {
 	srv, mux := newTestServer(t, func(c *Config) { c.EventLog = log })
 	_ = srv
 
-	r := httptest.NewRequest("GET", "/ui/diagnostics?severity=warn", nil)
+	r := httptest.NewRequest("GET", "/old_ui/diagnostics?severity=warn", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -63,10 +63,10 @@ func TestDiagnostics_FiltersEventsBySeverity(t *testing.T) {
 			t.Fatalf("filtered diagnostics should not include %q: %s", sub, body)
 		}
 	}
-	if !strings.Contains(body, `href="/ui/diagnostics?severity=warn" class="gr-chip active" aria-current="page"`) {
+	if !strings.Contains(body, `href="/old_ui/diagnostics?severity=warn" class="gr-chip active" aria-current="page"`) {
 		t.Fatalf("warn chip should be active: %s", body)
 	}
-	if strings.Contains(body, `href="/ui/diagnostics" class="gr-chip active" aria-current="page"`) {
+	if strings.Contains(body, `href="/old_ui/diagnostics" class="gr-chip active" aria-current="page"`) {
 		t.Fatalf("all chip should not be active when warn is selected: %s", body)
 	}
 }
@@ -105,7 +105,7 @@ func TestDiagnosticsProbe_PostReturnsCallout(t *testing.T) {
 	_ = srv
 
 	body := strings.NewReader("")
-	r := httptest.NewRequest("POST", "/ui/diagnostics/probe", body)
+	r := httptest.NewRequest("POST", "/old_ui/diagnostics/probe", body)
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
@@ -126,7 +126,7 @@ func TestDiagnosticsProbe_PostReturnsErrCallout(t *testing.T) {
 	_ = srv
 
 	body := strings.NewReader("")
-	r := httptest.NewRequest("POST", "/ui/diagnostics/probe", body)
+	r := httptest.NewRequest("POST", "/old_ui/diagnostics/probe", body)
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
@@ -148,7 +148,7 @@ func TestDiagnosticsProbe_XSSEscaped(t *testing.T) {
 	_ = srv
 
 	body := strings.NewReader("")
-	r := httptest.NewRequest("POST", "/ui/diagnostics/probe", body)
+	r := httptest.NewRequest("POST", "/old_ui/diagnostics/probe", body)
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
@@ -167,7 +167,7 @@ func TestDiagnostics_BuildInfoContainsVersion(t *testing.T) {
 	srv, mux := newTestServer(t, func(c *Config) { c.Version = "v1.2.3-test" })
 	_ = srv
 
-	r := httptest.NewRequest("GET", "/ui/diagnostics", nil)
+	r := httptest.NewRequest("GET", "/old_ui/diagnostics", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 

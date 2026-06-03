@@ -81,7 +81,7 @@ func (a *mockLinkAwareAdapter) IsLinked() bool { return a.linked }
 // that the test asserts is present in the adapter setup page body.
 func (a *mockLinkAwareAdapter) ExtraPanelHTML() template.HTML {
 	return template.HTML(fmt.Sprintf(
-		`<button hx-post="/ui/adapter/%s/link/start" hx-target="#link">Link</button>`,
+		`<button hx-post="/old_ui/adapter/%s/link/start" hx-target="#link">Link</button>`,
 		a.name,
 	))
 }
@@ -128,12 +128,12 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 	})
 	_ = srv
 
-	// Step 1: GET /ui/ → first-run guard redirects to /ui/setup
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	// Step 1: GET /old_ui/ → first-run guard redirects to /old_ui/setup
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
-	if w.Code != http.StatusFound || w.Header().Get("Location") != "/ui/setup" {
-		t.Fatalf("step1 GET /ui/: %d → %q, want 302 → /ui/setup",
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/old_ui/setup" {
+		t.Fatalf("step1 GET /old_ui/: %d → %q, want 302 → /old_ui/setup",
 			w.Code, w.Header().Get("Location"))
 	}
 
@@ -143,7 +143,7 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 		"mister.port":        {"32100"},
 		"mister.source_port": {"32101"},
 	}
-	r = httptest.NewRequest("POST", "/ui/setup/step/bridge", strings.NewReader(form.Encode()))
+	r = httptest.NewRequest("POST", "/old_ui/setup/step/bridge", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w = httptest.NewRecorder()
@@ -151,7 +151,7 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Fatalf("step2 POST step/bridge: %d, body: %s", w.Code, w.Body.String())
 	}
-	if loc := w.Header().Get("Location"); loc != "/ui/setup/step/adapters" {
+	if loc := w.Header().Get("Location"); loc != "/old_ui/setup/step/adapters" {
 		t.Fatalf("step2 POST step/bridge: want redirect to /ui/setup/step/adapters, got %q", loc)
 	}
 	if saver.saved == nil || saver.saved.MiSTer.Host != "192.168.1.50" {
@@ -160,7 +160,7 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 
 	// Step 3: POST /ui/setup/step/adapters selecting plex → 303 to plex
 	form = url.Values{"adapters": {"plex"}}
-	r = httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
+	r = httptest.NewRequest("POST", "/old_ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w = httptest.NewRecorder()
@@ -168,7 +168,7 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Fatalf("step3 POST step/adapters: %d, body: %s", w.Code, w.Body.String())
 	}
-	if loc := w.Header().Get("Location"); loc != "/ui/setup/step/plex" {
+	if loc := w.Header().Get("Location"); loc != "/old_ui/setup/step/plex" {
 		t.Fatalf("step3 POST step/adapters: want redirect to /ui/setup/step/plex, got %q", loc)
 	}
 
@@ -176,28 +176,28 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 	// firstIncompleteStep returns "adapters" (picker step, not plex configure).
 	// The explicit redirect to /ui/setup/step/plex came from the picker POST in
 	// step 3; the wizard's automatic routing only knows "adapters" vs "done".
-	r = httptest.NewRequest("GET", "/ui/setup", nil)
+	r = httptest.NewRequest("GET", "/old_ui/setup", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	loc := w.Header().Get("Location")
-	if loc != "/ui/setup/step/adapters" {
+	if loc != "/old_ui/setup/step/adapters" {
 		t.Fatalf("step4 GET /ui/setup: expected /ui/setup/step/adapters (no adapter enabled), got %q (code %d)",
 			loc, w.Code)
 	}
 
 	// Step 5: GET /ui/setup/step/plex → renders adapter configure page with link UI
-	r = httptest.NewRequest("GET", "/ui/setup/step/plex", nil)
+	r = httptest.NewRequest("GET", "/old_ui/setup/step/plex", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("step5 GET step/plex: %d, body: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `hx-post="/ui/adapter/plex/link/start"`) {
+	if !strings.Contains(w.Body.String(), `hx-post="/old_ui/adapter/plex/link/start"`) {
 		t.Fatalf("step5: adapter setup page did not render link htmx UI; body: %s", w.Body.String())
 	}
 
 	// Step 6: POST /ui/adapter/plex/link/start → mock marks linked+enabled
-	r = httptest.NewRequest("POST", "/ui/adapter/plex/link/start", nil)
+	r = httptest.NewRequest("POST", "/old_ui/adapter/plex/link/start", nil)
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
@@ -212,7 +212,7 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 	}
 
 	// Step 7: GET /ui/setup → adapter now enabled → redirects to done
-	r = httptest.NewRequest("GET", "/ui/setup", nil)
+	r = httptest.NewRequest("GET", "/old_ui/setup", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	if !strings.HasSuffix(w.Header().Get("Location"), "/done") {
@@ -220,14 +220,14 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 			w.Header().Get("Location"), w.Code)
 	}
 
-	// Step 8: POST /ui/setup/done → flag cleared, 303 to /ui/
-	r = httptest.NewRequest("POST", "/ui/setup/done", strings.NewReader(""))
+	// Step 8: POST /old_ui/setup/done → flag cleared, 303 to /old_ui/
+	r = httptest.NewRequest("POST", "/old_ui/setup/done", strings.NewReader(""))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
-	if w.Code != http.StatusFound || w.Header().Get("Location") != "/ui/" {
-		t.Fatalf("step8 POST /ui/setup/done: %d → %q, want 302 → /ui/",
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/old_ui/" {
+		t.Fatalf("step8 POST /old_ui/setup/done: %d → %q, want 302 → /old_ui/",
 			w.Code, w.Header().Get("Location"))
 	}
 	if saver.IsFirstRun() {
@@ -236,10 +236,10 @@ func TestSetupE2E_HappyPath(t *testing.T) {
 
 	// Step 9: GET /ui/setup?step=adapters → re-entry honours explicit ?step
 	// (wizard is complete at this point, but ?step overrides firstIncompleteStep)
-	r = httptest.NewRequest("GET", "/ui/setup?step=adapters", nil)
+	r = httptest.NewRequest("GET", "/old_ui/setup?step=adapters", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
-	if w.Code != http.StatusFound || w.Header().Get("Location") != "/ui/setup/step/adapters" {
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/old_ui/setup/step/adapters" {
 		t.Fatalf("step9 re-entry: %d → %q, want 302 → /ui/setup/step/adapters",
 			w.Code, w.Header().Get("Location"))
 	}

@@ -154,7 +154,7 @@ func newTestServerWithFirstRun(t *testing.T, firstRun bool, opts ...func(*Config
 // first-run flag set redirects to the first incomplete step (bridge).
 func TestSetup_Root_RedirectsToFirstIncomplete(t *testing.T) {
 	_, mux, _ := newTestServerWithFirstRun(t, true)
-	req := httptest.NewRequest("GET", "/ui/setup", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -162,11 +162,11 @@ func TestSetup_Root_RedirectsToFirstIncomplete(t *testing.T) {
 		t.Fatalf("status = %d, want 302", rw.Code)
 	}
 	loc := rw.Header().Get("Location")
-	if !strings.HasPrefix(loc, "/ui/setup/step/") {
+	if !strings.HasPrefix(loc, "/old_ui/setup/step/") {
 		t.Errorf("Location = %q, want /ui/setup/step/<something>", loc)
 	}
 	// firstIncompleteStep should pick "bridge" because mister.host is empty.
-	if loc != "/ui/setup/step/bridge" {
+	if loc != "/old_ui/setup/step/bridge" {
 		t.Errorf("Location = %q, want /ui/setup/step/bridge", loc)
 	}
 }
@@ -175,7 +175,7 @@ func TestSetup_Root_RedirectsToFirstIncomplete(t *testing.T) {
 // precedence over the firstIncompleteStep walk.
 func TestSetup_Root_HonorsExplicitStepQuery(t *testing.T) {
 	_, mux, _ := newTestServerWithFirstRun(t, true)
-	req := httptest.NewRequest("GET", "/ui/setup?step=adapters", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup?step=adapters", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -183,7 +183,7 @@ func TestSetup_Root_HonorsExplicitStepQuery(t *testing.T) {
 		t.Fatalf("status = %d, want 302", rw.Code)
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/setup/step/adapters" {
+	if loc != "/old_ui/setup/step/adapters" {
 		t.Errorf("Location = %q, want /ui/setup/step/adapters", loc)
 	}
 }
@@ -192,7 +192,7 @@ func TestSetup_Root_HonorsExplicitStepQuery(t *testing.T) {
 // expected form fields.
 func TestSetup_StepBridge_Renders(t *testing.T) {
 	_, mux, _ := newTestServerWithFirstRun(t, true)
-	req := httptest.NewRequest("GET", "/ui/setup/step/bridge", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup/step/bridge", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -234,7 +234,7 @@ func TestSetup_StepAdapters_Renders(t *testing.T) {
 		c.Registry = reg
 	})
 
-	req := httptest.NewRequest("GET", "/ui/setup/step/adapters", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup/step/adapters", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -272,7 +272,7 @@ func TestSetup_StepAdapters_UsesStackedPickerLayout(t *testing.T) {
 		c.Registry = reg
 	})
 
-	req := httptest.NewRequest("GET", "/ui/setup/step/adapters", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup/step/adapters", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -312,7 +312,7 @@ func TestSetup_Done_DismissesFlagAndRedirects(t *testing.T) {
 		t.Fatal("precondition: saver.IsFirstRun() should be true")
 	}
 
-	req := httptest.NewRequest("POST", "/ui/setup/done", nil)
+	req := httptest.NewRequest("POST", "/old_ui/setup/done", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -321,8 +321,8 @@ func TestSetup_Done_DismissesFlagAndRedirects(t *testing.T) {
 		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/" {
-		t.Errorf("Location = %q, want /ui/", loc)
+	if loc != "/old_ui/" {
+		t.Errorf("Location = %q, want /old_ui/", loc)
 	}
 	if saver.IsFirstRun() {
 		t.Error("first-run flag was not dismissed")
@@ -334,7 +334,7 @@ func TestSetup_Done_DismissesFlagAndRedirects(t *testing.T) {
 func TestSetup_Done_BlocksIncompleteWizard(t *testing.T) {
 	_, mux, saver := newTestServerWithFirstRun(t, true)
 
-	req := httptest.NewRequest("POST", "/ui/setup/done", nil)
+	req := httptest.NewRequest("POST", "/old_ui/setup/done", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -343,7 +343,7 @@ func TestSetup_Done_BlocksIncompleteWizard(t *testing.T) {
 		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/setup/step/bridge" {
+	if loc != "/old_ui/setup/step/bridge" {
 		t.Errorf("Location = %q, want /ui/setup/step/bridge", loc)
 	}
 	if !saver.IsFirstRun() {
@@ -379,7 +379,7 @@ func TestSetup_BridgePOST_PersistsAndRedirects(t *testing.T) {
 	form.Set("mister.port", "32100")
 	form.Set("mister.source_port", "32101")
 
-	req := httptest.NewRequest("POST", "/ui/setup/step/bridge", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/old_ui/setup/step/bridge", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -389,7 +389,7 @@ func TestSetup_BridgePOST_PersistsAndRedirects(t *testing.T) {
 		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/setup/step/adapters" {
+	if loc != "/old_ui/setup/step/adapters" {
 		t.Errorf("Location = %q, want /ui/setup/step/adapters", loc)
 	}
 	if saver.saved == nil {
@@ -414,7 +414,7 @@ func TestSetup_AdaptersPOST_RedirectsToFirstPicked(t *testing.T) {
 	form := url.Values{}
 	form.Add("adapters", "plex")
 
-	req := httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/old_ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -424,7 +424,7 @@ func TestSetup_AdaptersPOST_RedirectsToFirstPicked(t *testing.T) {
 		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/setup/step/plex" {
+	if loc != "/old_ui/setup/step/plex" {
 		t.Errorf("Location = %q, want /ui/setup/step/plex", loc)
 	}
 }
@@ -442,7 +442,7 @@ func TestSetup_AdaptersPOST_SkipRedirectsToDone(t *testing.T) {
 
 	form := url.Values{}
 
-	req := httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/old_ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -452,7 +452,7 @@ func TestSetup_AdaptersPOST_SkipRedirectsToDone(t *testing.T) {
 		t.Fatalf("status = %d, body=%q", rw.Code, rw.Body.String())
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/setup/step/done" {
+	if loc != "/old_ui/setup/step/done" {
 		t.Errorf("Location = %q, want /ui/setup/step/done", loc)
 	}
 }
@@ -470,7 +470,7 @@ func TestSetup_AdapterConfigPOST_StartsAdapterAfterSave(t *testing.T) {
 	})
 
 	form := url.Values{"host": {"127.0.0.1"}}
-	req := httptest.NewRequest("POST", "/ui/setup/step/plex", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/old_ui/setup/step/plex", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -479,7 +479,7 @@ func TestSetup_AdapterConfigPOST_StartsAdapterAfterSave(t *testing.T) {
 	if rw.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302, body=%q", rw.Code, rw.Body.String())
 	}
-	if loc := rw.Header().Get("Location"); loc != "/ui/setup" {
+	if loc := rw.Header().Get("Location"); loc != "/old_ui/setup" {
 		t.Errorf("Location = %q, want /ui/setup", loc)
 	}
 	if saver.lastName != "plex" {
@@ -517,7 +517,7 @@ func TestSetup_AdapterConfigPOST_RendersApplyError(t *testing.T) {
 	})
 
 	form := url.Values{"host": {"127.0.0.1"}}
-	req := httptest.NewRequest("POST", "/ui/setup/step/plex", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/old_ui/setup/step/plex", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -544,7 +544,7 @@ func TestSetup_LinkAwareConfigFormEnabledBeforeLinking(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(mock)
 	})
 
-	req := httptest.NewRequest("GET", "/ui/setup/step/plex", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup/step/plex", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -564,7 +564,7 @@ func TestSetup_LinkAwareConfigFormEnabledBeforeLinking(t *testing.T) {
 // completion message and "Take me to Status" button.
 func TestSetup_StepDone_Renders(t *testing.T) {
 	_, mux, _ := newTestServerWithFirstRun(t, true)
-	req := httptest.NewRequest("GET", "/ui/setup/step/done", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup/step/done", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -575,7 +575,7 @@ func TestSetup_StepDone_Renders(t *testing.T) {
 	wants := []string{
 		"all set",
 		"Take me to Status",
-		`action="/ui/setup/done"`,
+		`action="/old_ui/setup/done"`,
 	}
 	for _, w := range wants {
 		if !strings.Contains(body, w) {
@@ -598,7 +598,7 @@ func TestSetup_FirstIncompleteStep_DoneWhenAdapterEnabled(t *testing.T) {
 		c.Registry = reg
 	})
 
-	req := httptest.NewRequest("GET", "/ui/setup", nil)
+	req := httptest.NewRequest("GET", "/old_ui/setup", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -606,7 +606,7 @@ func TestSetup_FirstIncompleteStep_DoneWhenAdapterEnabled(t *testing.T) {
 		t.Fatalf("status = %d", rw.Code)
 	}
 	loc := rw.Header().Get("Location")
-	if loc != "/ui/setup/step/done" {
+	if loc != "/old_ui/setup/step/done" {
 		t.Errorf("Location = %q, want /ui/setup/step/done", loc)
 	}
 }
@@ -668,7 +668,7 @@ func TestSetup_AdaptersStep_RejectsInvalidName(t *testing.T) {
 	form.Add("adapters", "ghost") // not registered
 	form.Add("adapters", "plex")
 
-	req := httptest.NewRequest("POST", "/ui/setup/step/adapters", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/old_ui/setup/step/adapters", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rw := httptest.NewRecorder()
@@ -679,7 +679,7 @@ func TestSetup_AdaptersStep_RejectsInvalidName(t *testing.T) {
 	}
 	loc := rw.Header().Get("Location")
 	// "ghost" filtered, "plex" remains.
-	if loc != "/ui/setup/step/plex" {
+	if loc != "/old_ui/setup/step/plex" {
 		t.Errorf("Location = %q, want /ui/setup/step/plex", loc)
 	}
 }

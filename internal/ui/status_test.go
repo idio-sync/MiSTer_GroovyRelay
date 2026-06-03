@@ -21,7 +21,7 @@ func TestStatusHome_Idle(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -43,7 +43,7 @@ func TestStatusHome_RendersProcessUptime(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -71,7 +71,7 @@ func TestStatusHome_Casting(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -100,7 +100,7 @@ func TestStatusHome_Paused(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -125,7 +125,7 @@ func TestStatusContent_Partial(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/status/content", nil)
+	r := httptest.NewRequest("GET", "/old_ui/status/content", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 
@@ -144,18 +144,18 @@ func TestStatusDashboard_PollingKeepsPreviewSpacingAndStopsReplayAnimations(t *t
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
 
 	if !strings.Contains(body, `id="status-content"`) ||
-		!strings.Contains(body, `hx-get="/ui/status/content"`) ||
+		!strings.Contains(body, `hx-get="/old_ui/status/content"`) ||
 		!strings.Contains(body, `hx-trigger="every 3s"`) {
 		t.Fatalf("status dashboard missing polling content wrapper: %s", body)
 	}
 
-	r = httptest.NewRequest("GET", "/ui/static/app.css", nil)
+	r = httptest.NewRequest("GET", "/old_ui/static/app.css", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	css := w.Body.String()
@@ -172,7 +172,7 @@ func TestStatusDashboard_PollingKeepsPreviewSpacingAndStopsReplayAnimations(t *t
 		}
 	}
 
-	r = httptest.NewRequest("GET", "/ui/static/clipboard.js", nil)
+	r = httptest.NewRequest("GET", "/old_ui/static/clipboard.js", nil)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	js := w.Body.String()
@@ -197,7 +197,7 @@ func TestStatusHome_IdleMatchesPreviewSummaryAndTileDensity(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -241,7 +241,7 @@ func TestStatusHome_CastingMatchesPreviewTileModel(t *testing.T) {
 		c.EventLog = eventlog.New(8)
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -274,12 +274,12 @@ func TestStatusHome_LiveSidebarMatchesPreview(t *testing.T) {
 		}}
 	})
 
-	r := httptest.NewRequest("GET", "/ui/", nil)
+	r := httptest.NewRequest("GET", "/old_ui/", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
 
-	statusLink := navLinkMarkup(t, body, `href="/ui/"`)
+	statusLink := navLinkMarkup(t, body, `href="/old_ui/"`)
 	if !strings.Contains(statusLink, `class="dot run"`) {
 		t.Fatalf("live status sidebar link should use run dot; link=%q", statusLink)
 	}

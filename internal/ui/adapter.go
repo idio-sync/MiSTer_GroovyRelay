@@ -59,7 +59,7 @@ type adapterPanelData struct {
 
 // handleAdapterGET renders the named adapter's panel. Unknown names
 // return 404 — the sidebar only links to registered adapters, but a
-// hand-typed /ui/adapter/xxx from a bookmarked URL should fail fast.
+// hand-typed /old_ui/adapter/xxx from a bookmarked URL should fail fast.
 func (s *Server) handleAdapterGET(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	a, ok := s.cfg.Registry.Get(name)
@@ -185,7 +185,7 @@ func adapterRowFor(fd adapters.FieldDef, vals map[string]any, errs FormErrors) b
 	case adapters.KindAction:
 		// Spec §8.1: rendered as a button. Key is the relative POST
 		// endpoint suffix (e.g. "pair/start" mounts at
-		// /ui/adapter/<name>/pair/start). No input value.
+		// /old_ui/adapter/<name>/pair/start). No input value.
 		r.Kind = "action"
 	}
 	return r
@@ -253,7 +253,7 @@ func (s *Server) handleAdapterToggle(w http.ResponseWriter, r *http.Request) {
 
 // handleAdapterStatus returns just the status-line fragment used by
 // the panel header's own hx-poll when the adapter's panel is open.
-// The sidebar polls /ui/sidebar/status instead.
+// The sidebar polls /old_ui/sidebar/status instead.
 func (s *Server) handleAdapterStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	a, ok := s.cfg.Registry.Get(name)

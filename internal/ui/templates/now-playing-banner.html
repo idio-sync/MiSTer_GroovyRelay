@@ -1,5 +1,5 @@
 {{define "now-playing-banner.html"}}
-<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top"{{if .PollTrigger}} hx-get="/ui/playback/banner" hx-trigger="{{.PollTrigger}}" hx-swap="outerHTML"{{end}}>
+<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top"{{if .PollTrigger}} hx-get="/old_ui/playback/banner" hx-trigger="{{.PollTrigger}}" hx-swap="outerHTML"{{end}}>
 	<div class="gr-now-playing-main">
 		<div class="gr-now-playing-copy">
 			<div class="gr-now-playing-kicker">{{.StateLabel}}{{if .SourceDisplay}} · {{.SourceDisplay}}{{end}}</div>
@@ -14,7 +14,7 @@
 			</div>
 			{{if .Seek}}
 			{{if .Seek.Enabled}}
-			<form class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
+			<form class="gr-now-playing-seek" hx-post="/old_ui/playback/seek" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
 				<input type="hidden" name="adapter_ref" value="{{.AdapterRef}}">
 				<input type="hidden" name="generation" value="{{.Generation}}">
 				<input type="range" name="offset_ms" min="0" max="{{.Seek.DurationMS}}" value="{{.Seek.OffsetMS}}" aria-label="Playback position">
@@ -28,7 +28,7 @@
 		</div>
 		{{end}}
 		{{if .HasOutputVolume}}
-		<form class="gr-output-volume" hx-post="/ui/playback/volume" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
+		<form class="gr-output-volume" hx-post="/old_ui/playback/volume" hx-trigger="change" hx-target="#gr-now-playing" hx-swap="outerHTML">
 			<label for="gr-output-volume-range">Vol</label>
 			<input id="gr-output-volume-range" type="range" name="output_volume" min="0" max="100" value="{{.OutputVolume}}" aria-label="Output volume">
 			<output for="gr-output-volume-range">{{.OutputVolume}}%</output>
@@ -36,7 +36,7 @@
 		{{end}}
 		<div class="gr-playback-actions">
 			{{range .Actions}}
-			<form class="gr-playback-action-form" hx-post="/ui/playback/action" hx-target="#gr-now-playing" hx-swap="outerHTML">
+			<form class="gr-playback-action-form" hx-post="/old_ui/playback/action" hx-target="#gr-now-playing" hx-swap="outerHTML">
 				<input type="hidden" name="action" value="{{.ID}}">
 				<input type="hidden" name="adapter_ref" value="{{$.AdapterRef}}">
 				<input type="hidden" name="generation" value="{{$.Generation}}">
@@ -46,25 +46,25 @@
 				</button>
 			</form>
 			{{end}}
-			{{if .QuickCastTabs}}<button class="gr-playback-action gr-playback-action--primary" type="button" hx-get="{{if .CastDrawerOpen}}/ui/playback/banner{{else}}/ui/playback/banner?drawer=cast{{end}}" hx-target="#gr-now-playing" hx-swap="outerHTML" aria-expanded="{{if .CastDrawerOpen}}true{{else}}false{{end}}">Cast</button>{{end}}
+			{{if .QuickCastTabs}}<button class="gr-playback-action gr-playback-action--primary" type="button" hx-get="{{if .CastDrawerOpen}}/old_ui/playback/banner{{else}}/old_ui/playback/banner?drawer=cast{{end}}" hx-target="#gr-now-playing" hx-swap="outerHTML" aria-expanded="{{if .CastDrawerOpen}}true{{else}}false{{end}}">Cast</button>{{end}}
 		</div>
 	</div>
 	{{if .Message}}
 	<div class="gr-now-playing-message {{.MessageKind}}">
 		<span>{{.Message}}</span>
-		<button class="gr-playback-action" type="button" hx-get="/ui/playback/banner{{if .CastDrawerOpen}}?drawer=cast{{if .ActiveQuickCast}}&tab={{.ActiveQuickCast}}{{end}}{{end}}" hx-target="#gr-now-playing" hx-swap="outerHTML">Dismiss</button>
+		<button class="gr-playback-action" type="button" hx-get="/old_ui/playback/banner{{if .CastDrawerOpen}}?drawer=cast{{if .ActiveQuickCast}}&tab={{.ActiveQuickCast}}{{end}}{{end}}" hx-target="#gr-now-playing" hx-swap="outerHTML">Dismiss</button>
 	</div>
 	{{end}}
 	{{if .CastDrawerOpen}}
 	<div class="gr-now-playing-drawer">
 		<div class="gr-quick-cast-tabs">
 			{{range $i, $tab := .QuickCastTabs}}
-			<button class="gr-quick-cast-tab" type="button" hx-get="/ui/playback/banner?drawer=cast&tab={{$tab.ID}}" hx-target="#gr-now-playing" hx-swap="outerHTML" title="{{$tab.DisabledReason}}" {{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}aria-current="true"{{end}} {{if not $tab.Enabled}}disabled{{end}}>{{$tab.Label}}</button>
+			<button class="gr-quick-cast-tab" type="button" hx-get="/old_ui/playback/banner?drawer=cast&tab={{$tab.ID}}" hx-target="#gr-now-playing" hx-swap="outerHTML" title="{{$tab.DisabledReason}}" {{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}aria-current="true"{{end}} {{if not $tab.Enabled}}disabled{{end}}>{{$tab.Label}}</button>
 			{{end}}
 		</div>
 		{{range $i, $tab := .QuickCastTabs}}
 		{{if quickCastTabActive $tab $.ActiveQuickCast (eq $i 0)}}
-		<form class="gr-quick-cast gr-quick-cast-panel" hx-post="/ui/playback/quick-cast" hx-target="#gr-now-playing" hx-swap="outerHTML" {{if eq $tab.Encoding "multipart"}}enctype="multipart/form-data"{{end}}>
+		<form class="gr-quick-cast gr-quick-cast-panel" hx-post="/old_ui/playback/quick-cast" hx-target="#gr-now-playing" hx-swap="outerHTML" {{if eq $tab.Encoding "multipart"}}enctype="multipart/form-data"{{end}}>
 			<input type="hidden" name="tab_id" value="{{$tab.ID}}">
 			{{if $tab.DisabledReason}}<p class="gr-quick-cast-disabled">{{$tab.DisabledReason}}</p>{{end}}
 			{{range $field := $tab.Fields}}

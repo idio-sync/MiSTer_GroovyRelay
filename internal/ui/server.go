@@ -214,10 +214,17 @@ func New(cfg Config) (*Server, error) {
 
 // Mount registers the UI routes on mux. The mux is expected to be the
 // bridge's shared HTTP mux — same listener Plex Companion routes sit
-// on. The /ui/ prefix keeps the two sets disjoint.
+// on. The /old_ui/ prefix keeps the legacy UI routes disjoint from the
+// chassis (/ui/) and the Companion API (/ui/companion/*) which stay at /ui.
 func (s *Server) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("OPTIONS /ui", handleExtensionCORSPreflight)
-	mux.HandleFunc("OPTIONS /ui/", handleExtensionCORSPreflight)
+	// Broad extension-CORS preflights for the legacy visual surface.
+	// These are moved to /old_ui so they do NOT swallow the chassis's
+	// /ui/* preflights (design Task 2, Step 1).
+	mux.HandleFunc("OPTIONS /old_ui", handleExtensionCORSPreflight)
+	mux.HandleFunc("OPTIONS /old_ui/", handleExtensionCORSPreflight)
+
+	// Companion carve-out: these stay at /ui (not /old_ui).
+	// The seven /ui/companion/* routes + OPTIONS /ui/companion/ preflight.
 	mux.Handle("OPTIONS /ui/companion/", companionExtensionGate(http.NotFoundHandler()))
 	s.mountCompanion(mux, http.MethodGet, "/ui/companion/status", s.handleCompanionStatus)
 	s.mountCompanion(mux, http.MethodPost, "/ui/companion/play", s.handleCompanionPlay)
@@ -227,63 +234,64 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	s.mountCompanion(mux, http.MethodPost, "/ui/companion/launch", s.handleCompanionLaunch)
 	s.mountCompanion(mux, http.MethodPost, "/ui/companion/volume", s.handleCompanionVolume)
 
-	// Static assets served out of embedded FS under /ui/static/.
+	// Static assets served out of embedded FS under /old_ui/static/.
 	// GETs don't pass through csrfMiddleware — reads have no side
 	// effects, and the middleware short-circuits on GET anyway.
-	// The guard passes /ui/static/* through unconditionally (rule 3),
+	// The guard passes /old_ui/static/* through unconditionally (rule 3),
 	// but we still wrap so the middleware chain is consistent.
 	staticSub, _ := fs.Sub(staticFS, "static")
-	staticSrv := http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub)))
-	mux.Handle("GET /ui/static/", extensionCORSMiddleware(s.guard(staticSrv)))
+	staticSrv := http.StripPrefix("/old_ui/static/", http.FileServer(http.FS(staticSub)))
+	mux.Handle("GET /old_ui/static/", extensionCORSMiddleware(s.guard(staticSrv)))
 
 	// Root + shell. Use {$} to match "/" exactly — a bare "GET /"
 	// would be a catch-all that conflicts with adapter-owned prefix
 	// routes (e.g., Plex Companion's "/player/") under Go 1.22's
 	// method-aware mux.
 	// Root redirect is unguarded: GET / → /ui/ must always work so the
-	// operator can reach /ui/setup even before first-run is complete.
+	// operator can reach the chassis. The handleRoot body still redirects
+	// to /ui/ (chassis), so this carve-out stays at /{$} unchanged.
 	s.mountGETUnguarded(mux, "/{$}", s.handleRoot)
-	s.mountGET(mux, "/ui/{$}", s.handleStatusHome)
-	s.mountGET(mux, "/ui/status/content", s.handleStatusContent)
-	s.mountGET(mux, "/ui/playback/banner", s.handlePlaybackBanner)
-	s.mountPOST(mux, "/ui/playback/action", s.handlePlaybackAction)
-	s.mountPOST(mux, "/ui/playback/seek", s.handlePlaybackSeek)
-	s.mountPOST(mux, "/ui/playback/volume", s.handlePlaybackVolume)
-	s.mountPOST(mux, "/ui/playback/quick-cast", s.handlePlaybackQuickCast)
-	s.mountGET(mux, "/ui/", s.handleShell) // subpaths fall through to shell
-	s.mountGET(mux, "/ui", s.handleShell)  // no trailing slash
+	s.mountGET(mux, "/old_ui/{$}", s.handleStatusHome)
+	s.mountGET(mux, "/old_ui/status/content", s.handleStatusContent)
+	s.mountGET(mux, "/old_ui/playback/banner", s.handlePlaybackBanner)
+	s.mountPOST(mux, "/old_ui/playback/action", s.handlePlaybackAction)
+	s.mountPOST(mux, "/old_ui/playback/seek", s.handlePlaybackSeek)
+	s.mountPOST(mux, "/old_ui/playback/volume", s.handlePlaybackVolume)
+	s.mountPOST(mux, "/old_ui/playback/quick-cast", s.handlePlaybackQuickCast)
+	s.mountGET(mux, "/old_ui/", s.handleShell) // subpaths fall through to shell
+	s.mountGET(mux, "/old_ui", s.handleShell)  // no trailing slash
 
 	// Bridge panel.
-	s.mountGET(mux, "/ui/bridge", s.handleBridgeGET)
-	s.mountPOST(mux, "/ui/bridge/save", s.handleBridgePOST)
-	s.mountPOST(mux, "/ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
-	s.mountPOST(mux, "/ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
+	s.mountGET(mux, "/old_ui/bridge", s.handleBridgeGET)
+	s.mountPOST(mux, "/old_ui/bridge/save", s.handleBridgePOST)
+	s.mountPOST(mux, "/old_ui/bridge/dismiss-first-run", s.handleBridgeDismissFirstRun)
+	s.mountPOST(mux, "/old_ui/bridge/mister/launch", s.handleBridgeMisterLaunch)
 
 	// Sidebar dots fragment (per-adapter status indicators).
-	s.mountGET(mux, "/ui/sidebar/dots", s.handleSidebarDots)
+	s.mountGET(mux, "/old_ui/sidebar/dots", s.handleSidebarDots)
 
 	// Diagnostics page.
-	s.mountGET(mux, "/ui/diagnostics", s.handleDiagnosticsGET)
-	s.mountPOST(mux, "/ui/diagnostics/probe", s.handleDiagnosticsProbe)
+	s.mountGET(mux, "/old_ui/diagnostics", s.handleDiagnosticsGET)
+	s.mountPOST(mux, "/old_ui/diagnostics/probe", s.handleDiagnosticsProbe)
 
 	// Adapter panel.
-	s.mountGET(mux, "/ui/adapter/{name}", s.handleAdapterGET)
-	s.mountGET(mux, "/ui/adapter/{name}/status", s.handleAdapterStatus)
-	s.mountPOST(mux, "/ui/adapter/{name}/toggle", s.handleAdapterToggle)
-	s.mountPOST(mux, "/ui/adapter/{name}/save", s.handleAdapterSave)
+	s.mountGET(mux, "/old_ui/adapter/{name}", s.handleAdapterGET)
+	s.mountGET(mux, "/old_ui/adapter/{name}/status", s.handleAdapterStatus)
+	s.mountPOST(mux, "/old_ui/adapter/{name}/toggle", s.handleAdapterToggle)
+	s.mountPOST(mux, "/old_ui/adapter/{name}/save", s.handleAdapterSave)
 
 	// First-run wizard routes. These are wrapped in mountGET/mountPOST
-	// which apply firstRunGuard — the guard passes /ui/setup/* through
+	// which apply firstRunGuard — the guard passes /old_ui/setup/* through
 	// unconditionally (rule 2) so the wizard can render during first-run.
-	s.mountGET(mux, "/ui/setup/{$}", s.handleSetupRoot)
-	s.mountGET(mux, "/ui/setup", s.handleSetupRoot)
-	s.mountGET(mux, "/ui/setup/step/{name}", s.handleSetupStepGET)
-	s.mountPOST(mux, "/ui/setup/step/{name}", s.handleSetupStepPOST)
-	s.mountPOST(mux, "/ui/setup/done", s.handleSetupDone)
+	s.mountGET(mux, "/old_ui/setup/{$}", s.handleSetupRoot)
+	s.mountGET(mux, "/old_ui/setup", s.handleSetupRoot)
+	s.mountGET(mux, "/old_ui/setup/step/{name}", s.handleSetupStepGET)
+	s.mountPOST(mux, "/old_ui/setup/step/{name}", s.handleSetupStepPOST)
+	s.mountPOST(mux, "/old_ui/setup/done", s.handleSetupDone)
 
 	// Per-adapter routes contributed via RouteProvider (e.g., Plex's
 	// link/start, link/status, unlink). Mounted under
-	// /ui/adapter/<name>/<route.Path>; POSTs are wrapped in
+	// /old_ui/adapter/<name>/<route.Path>; POSTs are wrapped in
 	// csrfMiddleware uniformly.
 	for _, a := range s.cfg.Registry.List() {
 		rp, ok := a.(adapters.RouteProvider)
@@ -291,7 +299,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 			continue
 		}
 		for _, route := range rp.UIRoutes() {
-			pattern := fmt.Sprintf("/ui/adapter/%s/%s", a.Name(), route.Path)
+			pattern := fmt.Sprintf("/old_ui/adapter/%s/%s", a.Name(), route.Path)
 			handler := http.HandlerFunc(route.Handler)
 			switch route.Method {
 			case "GET":
@@ -320,7 +328,7 @@ func (s *Server) mountPOST(mux *http.ServeMux, pattern string, handler http.Hand
 
 // mountGET registers a guarded GET handler. All UI GET routes pass
 // through firstRunGuard so unauthenticated first-run state redirects
-// to /ui/setup.
+// to /old_ui/setup.
 func (s *Server) mountGET(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
 	mux.Handle("GET "+pattern, extensionCORSMiddleware(s.guard(handler)))
 }
@@ -328,7 +336,8 @@ func (s *Server) mountGET(mux *http.ServeMux, pattern string, handler http.Handl
 // mountGETUnguarded registers a GET handler that bypasses firstRunGuard.
 // Use ONLY for the root redirect (GET /{$}) so that GET / always
 // redirects to /ui/ regardless of first-run state — the operator must
-// be able to reach /ui/setup from a bare host URL.
+// be able to reach the chassis (and from there /old_ui/setup) from a
+// bare host URL.
 func (s *Server) mountGETUnguarded(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
 	mux.Handle("GET "+pattern, extensionCORSMiddleware(handler))
 }
@@ -356,7 +365,7 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderShellWithPanel renders the full shell page around a panel
-// fragment so pushed URLs like /ui/bridge survive refresh/bookmark as
+// fragment so pushed URLs like /old_ui/bridge survive refresh/bookmark as
 // proper document loads instead of returning a bare fragment.
 func (s *Server) renderShellWithPanel(w http.ResponseWriter, r *http.Request, panelName string, panelData any) {
 	panelHTML, err := s.renderTemplateHTML(panelName, panelData)
@@ -470,9 +479,9 @@ func dotClass(s adapters.State) string {
 
 func panelClassForPath(path string) string {
 	switch {
-	case path == "/ui/" || path == "/ui/diagnostics":
+	case path == "/old_ui/" || path == "/old_ui/diagnostics":
 		return "gr-main"
-	case path == "/ui/bridge" || strings.HasPrefix(path, "/ui/adapter/"):
+	case path == "/old_ui/bridge" || strings.HasPrefix(path, "/old_ui/adapter/"):
 		return "gr-config"
 	default:
 		return "panel"

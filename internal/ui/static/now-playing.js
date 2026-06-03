@@ -67,7 +67,7 @@
 		var verb = (cfg.verb || '').toLowerCase();
 		if (!target || target.id !== 'gr-now-playing') { return; }
 		if (!target.hasAttribute('data-seek-interacting')) { return; }
-		if (verb === 'get' && path === '/ui/playback/banner') {
+		if (verb === 'get' && path === '/old_ui/playback/banner') {
 			ev.preventDefault();
 		}
 	});

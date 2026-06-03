@@ -11,10 +11,10 @@
   </header>
   <div class="gr-activity">
     <div class="gr-filter-row">
-      <a href="/ui/diagnostics" class="gr-chip{{if eq .SeverityFilter "all"}} active{{end}}"{{if eq .SeverityFilter "all"}} aria-current="page"{{end}} hx-get="/ui/diagnostics" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">all <span class="count">{{.Counts.All}}</span></a>
-      <a href="/ui/diagnostics?severity=info" class="gr-chip{{if eq .SeverityFilter "info"}} active{{end}}"{{if eq .SeverityFilter "info"}} aria-current="page"{{end}} hx-get="/ui/diagnostics?severity=info" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">info <span class="count">{{.Counts.Info}}</span></a>
-      <a href="/ui/diagnostics?severity=warn" class="gr-chip{{if eq .SeverityFilter "warn"}} active{{end}}"{{if eq .SeverityFilter "warn"}} aria-current="page"{{end}} hx-get="/ui/diagnostics?severity=warn" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">warn <span class="count">{{.Counts.Warn}}</span></a>
-      <a href="/ui/diagnostics?severity=err" class="gr-chip{{if eq .SeverityFilter "err"}} active{{end}}"{{if eq .SeverityFilter "err"}} aria-current="page"{{end}} hx-get="/ui/diagnostics?severity=err" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">err <span class="count">{{.Counts.Err}}</span></a>
+      <a href="/old_ui/diagnostics" class="gr-chip{{if eq .SeverityFilter "all"}} active{{end}}"{{if eq .SeverityFilter "all"}} aria-current="page"{{end}} hx-get="/old_ui/diagnostics" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">all <span class="count">{{.Counts.All}}</span></a>
+      <a href="/old_ui/diagnostics?severity=info" class="gr-chip{{if eq .SeverityFilter "info"}} active{{end}}"{{if eq .SeverityFilter "info"}} aria-current="page"{{end}} hx-get="/old_ui/diagnostics?severity=info" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">info <span class="count">{{.Counts.Info}}</span></a>
+      <a href="/old_ui/diagnostics?severity=warn" class="gr-chip{{if eq .SeverityFilter "warn"}} active{{end}}"{{if eq .SeverityFilter "warn"}} aria-current="page"{{end}} hx-get="/old_ui/diagnostics?severity=warn" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">warn <span class="count">{{.Counts.Warn}}</span></a>
+      <a href="/old_ui/diagnostics?severity=err" class="gr-chip{{if eq .SeverityFilter "err"}} active{{end}}"{{if eq .SeverityFilter "err"}} aria-current="page"{{end}} hx-get="/old_ui/diagnostics?severity=err" hx-target="#panel-content" hx-swap="innerHTML" hx-push-url="true">err <span class="count">{{.Counts.Err}}</span></a>
       <span style="margin-left:auto;color:var(--gr-dim);font:400 12px var(--font-mono);">since boot · {{.Uptime}}</span>
     </div>
     {{if .EvictedMarker}}<p class="gr-eviction-marker">older entries evicted ({{.RingCapacity}}-entry ring)</p>{{end}}

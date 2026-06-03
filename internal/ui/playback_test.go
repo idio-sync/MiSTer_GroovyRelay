@@ -117,7 +117,7 @@ func TestPlaybackBannerIdleRendersReadyAndQuickCast(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -140,14 +140,14 @@ func TestPlaybackBannerRendersGlobalOutputVolume(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
 
 	for _, want := range []string{
 		`class="gr-output-volume"`,
-		`hx-post="/ui/playback/volume"`,
+		`hx-post="/old_ui/playback/volume"`,
 		`name="output_volume"`,
 		`value="73"`,
 		`73%`,
@@ -168,7 +168,7 @@ func TestPlaybackVolumePostPersistsGlobalOutputVolume(t *testing.T) {
 	})
 
 	form := url.Values{"output_volume": {"42"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/volume", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/volume", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
@@ -212,7 +212,7 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 		}}
 	})
 
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -229,7 +229,7 @@ func TestPlaybackBannerPlayingRendersProviderActionsAndTimeline(t *testing.T) {
 		`name="generation" value="11"`,
 		"Pause",
 		`hx-trigger="every 1s"`,
-		`class="gr-now-playing-seek" hx-post="/ui/playback/seek" hx-trigger="change"`,
+		`class="gr-now-playing-seek" hx-post="/old_ui/playback/seek" hx-trigger="change"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("banner missing %q: %s", want, body)
@@ -243,7 +243,7 @@ func TestPlaybackBannerWithoutQuickCastProviderDoesNotOpenCastDrawer(t *testing.
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner?drawer=cast", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -274,7 +274,7 @@ func TestPlaybackBannerRendersQuickCastRadioOptionsAndDisabledReason(t *testing.
 		c.Registry = adapters.NewRegistryWith(fake)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner?drawer=cast", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -303,7 +303,7 @@ func TestPlaybackBannerOpenDrawerDoesNotPollAwayForm(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(fake)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner?drawer=cast", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -321,10 +321,10 @@ func TestPlaybackBannerOpenDrawerDoesNotPollAwayForm(t *testing.T) {
 	if strings.Contains(body, `<section id="gr-now-playing" class="gr-now-playing gr-now-playing--top" hx-get=`) {
 		t.Fatalf("open drawer should not have section-level htmx trigger defaults: %s", body)
 	}
-	if !strings.Contains(body, `aria-expanded="true"`) || !strings.Contains(body, `hx-get="/ui/playback/banner"`) {
+	if !strings.Contains(body, `aria-expanded="true"`) || !strings.Contains(body, `hx-get="/old_ui/playback/banner"`) {
 		t.Fatalf("open drawer Cast button should close the drawer: %s", body)
 	}
-	if strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>`) {
+	if strings.Contains(body, `hx-get="/old_ui/playback/banner?drawer=cast" hx-target="#gr-now-playing" hx-swap="outerHTML">Cast</button>`) {
 		t.Fatalf("open drawer Cast button still points at open drawer route: %s", body)
 	}
 }
@@ -351,7 +351,7 @@ func TestPlaybackBannerQuickCastDefaultsFirstRadioOption(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(fake)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner?drawer=cast", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -389,7 +389,7 @@ func TestPlaybackBannerUsesAdapterRefFallbackWhenSourceMissing(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(fake)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, AdapterRef: "url:abc", Generation: 11, Title: "Legacy URL"}}
 	})
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -406,7 +406,7 @@ func TestPlaybackBannerActiveNonProviderIsReadOnly(t *testing.T) {
 		c.Registry = adapters.NewRegistryWith(bare)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "plex", AdapterRef: "plex:/library/metadata/1", Generation: 12, Title: "Plex Movie"}}
 	})
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body := w.Body.String()
@@ -437,7 +437,7 @@ func TestPlaybackActionDispatchesToOwningProvider(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 9}}
 	})
 	form := url.Values{"action": {"pause"}, "adapter_ref": {"url:abc"}, "generation": {"9"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/action", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -460,7 +460,7 @@ func TestPlaybackActionRejectsSameAdapterStaleGenerationBeforeDispatch(t *testin
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10}}
 	})
 	form := url.Values{"action": {"stop"}, "adapter_ref": {"url:abc"}, "generation": {"9"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/action", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -483,7 +483,7 @@ func TestPlaybackActionRejectsActiveAdapterWithoutPlaybackProvider(t *testing.T)
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "plex", AdapterRef: "plex:/library/metadata/1", Generation: 10}}
 	})
 	form := url.Values{"action": {"stop"}, "adapter_ref": {"plex:/library/metadata/1"}, "generation": {"10"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/action", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -516,7 +516,7 @@ func TestPlaybackActionDispatchesToProviderForSelfValidation(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10}}
 	})
 	form := url.Values{"action": {"stop"}, "adapter_ref": {"url:abc"}, "generation": {"10"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/action", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -547,7 +547,7 @@ func TestPlaybackActionRejectsSeekOnActionRoute(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10, Duration: time.Minute}}
 	})
 	form := url.Values{"action": {adapters.PlaybackActionSeek}, "adapter_ref": {"url:abc"}, "generation": {"10"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/action", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -577,7 +577,7 @@ func TestPlaybackSeekDispatchesOffset(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 12, Duration: time.Minute}}
 	})
 	form := url.Values{"adapter_ref": {"url:abc"}, "generation": {"12"}, "offset_ms": {"42000"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/seek", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/seek", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -608,7 +608,7 @@ func TestQuickCastDispatchesToSelectedProvider(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 	form := url.Values{"tab_id": {"url"}, "url": {"https://example.test/video.mp4"}, "mode": {"direct"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/quick-cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -636,7 +636,7 @@ func TestQuickCastErrorKeepsDrawerOpen(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 	form := url.Values{"tab_id": {"url"}, "url": {"not-a-url"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/quick-cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -673,7 +673,7 @@ func TestBannerDismissButtonPreservesDrawerState(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 	form := url.Values{"tab_id": {"torrent-magnet"}, "magnet": {"x"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/quick-cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -683,15 +683,15 @@ func TestBannerDismissButtonPreservesDrawerState(t *testing.T) {
 	}
 	body := rr.Body.String()
 	// Dismiss button URL should preserve drawer=cast and the active tab.
-	if !strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast&tab=torrent-magnet"`) {
+	if !strings.Contains(body, `hx-get="/old_ui/playback/banner?drawer=cast&tab=torrent-magnet"`) {
 		t.Fatalf("Dismiss button should preserve drawer+tab in hx-get: %s", body)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/ui/playback/banner?drawer=cast&tab=torrent-url", nil)
+	r := httptest.NewRequest(http.MethodGet, "/old_ui/playback/banner?drawer=cast&tab=torrent-url", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
 	body = w.Body.String()
-	if !strings.Contains(body, `hx-get="/ui/playback/banner?drawer=cast&tab=torrent-url"`) {
+	if !strings.Contains(body, `hx-get="/old_ui/playback/banner?drawer=cast&tab=torrent-url"`) {
 		t.Fatalf("torrent-url tab missing from quick-cast drawer:\n%s", body)
 	}
 	if !strings.Contains(body, `name="torrent_url"`) {
@@ -717,7 +717,7 @@ func TestBannerDismissCollapsesDrawerWhenNotOpen(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StatePlaying, Source: "url", AdapterRef: "url:abc", Generation: 10}}
 	})
 	form := url.Values{"action": {"stop"}, "adapter_ref": {"url:abc"}, "generation": {"10"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/action", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/action", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -726,7 +726,7 @@ func TestBannerDismissCollapsesDrawerWhenNotOpen(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, `hx-get="/ui/playback/banner"`) {
+	if !strings.Contains(body, `hx-get="/old_ui/playback/banner"`) {
 		t.Fatalf("Dismiss button should not carry drawer params when drawer is closed: %s", body)
 	}
 	if strings.Contains(body, "drawer=cast") {
@@ -751,7 +751,7 @@ func TestQuickCastRejectsDisabledTabBeforeProviderDispatch(t *testing.T) {
 		c.StatusViewer = fakeStatusViewer{v: core.StatusHomeView{State: core.StateIdle}}
 	})
 	form := url.Values{"tab_id": {"url"}, "url": {"https://example.test/video.mp4"}}
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/quick-cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -792,7 +792,7 @@ func TestQuickCastMultipartTempFileRemovedAfterProviderReturns(t *testing.T) {
 	}
 	_, _ = part.Write(bytes.Repeat([]byte("x"), (4<<20)+1))
 	_ = mw.Close()
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", &body)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/quick-cast", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
@@ -835,7 +835,7 @@ func TestQuickCastMultipartBodyIsCappedBeforeParsing(t *testing.T) {
 	}
 	_, _ = part.Write(bytes.Repeat([]byte("x"), oversizeQuickCastMultipartBytes))
 	_ = mw.Close()
-	req := httptest.NewRequest(http.MethodPost, "/ui/playback/quick-cast", &body)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/playback/quick-cast", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rr := httptest.NewRecorder()
