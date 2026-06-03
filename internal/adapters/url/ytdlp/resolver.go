@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -59,6 +60,16 @@ type Resolution struct {
 	Title        string            // surfaced in the URL adapter's history panel + slog
 	Channel      string            // yt-dlp channel/uploader — VFD secondary
 	UploadDate   string            // yt-dlp upload_date, raw "YYYYMMDD" — formatted by the caller
+}
+
+// PlaylistEntry is one entry from a flat-playlist enumeration: the item's
+// stable ID and (where the extractor provides it) a page URL and title.
+// Media is NOT resolved here — EnumeratePlaylist lists entries; Resolve
+// dereferences each at play time.
+type PlaylistEntry struct {
+	ID    string // yt-dlp "id" (e.g. an 11-char YouTube video ID)
+	URL   string // yt-dlp "url" (page URL or bare ID, extractor-dependent)
+	Title string // yt-dlp "title"
 }
 
 // Resolver runs yt-dlp and parses its JSON output. Construct one per
@@ -220,6 +231,89 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		Channel:    firstNonEmptyStr(raw.Channel, raw.Uploader),
 		UploadDate: raw.UploadDate,
 	}, nil
+}
+
+// EnumeratePlaylist lists a playlist's entries WITHOUT resolving media, using
+// yt-dlp --flat-playlist. It is bounded by maxItems (--playlist-end). If ctx
+// already has a deadline, that caller deadline is authoritative; otherwise the
+// resolver's Timeout is used as a fallback.
+//
+// argv: --flat-playlist --dump-json --playlist-end <maxItems>
+//
+//	[--cookies <cookiesPath> if non-empty] <pageURL>
+//
+// Unlike Resolve, this MUST NOT pass --no-playlist (that would collapse the
+// playlist to a single entry) and does not pass -f/--js-runtimes (flat
+// enumeration runs no signature/format extraction). Output is yt-dlp's
+// --dump-json stream: one JSON object per playlist entry, decoded in order.
+func (r *Resolver) EnumeratePlaylist(ctx context.Context, pageURL, cookiesPath string, maxItems int) ([]PlaylistEntry, error) {
+	binary := r.Binary
+	if r.BinaryResolver != nil {
+		resolved, err := r.BinaryResolver.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("ytdlp: resolve binary: %w", err)
+		}
+		binary = resolved
+	}
+	if binary == "" {
+		return nil, fmt.Errorf("ytdlp: binary not configured")
+	}
+	if maxItems < 1 {
+		maxItems = 1
+	}
+
+	args := []string{
+		"--flat-playlist",
+		"--dump-json",
+		"--playlist-end", strconv.Itoa(maxItems),
+	}
+	if cookiesPath != "" {
+		args = append(args, "--cookies", cookiesPath)
+	}
+	args = append(args, pageURL)
+
+	runCtx := ctx
+	cancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && r.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, r.Timeout)
+	}
+	defer cancel()
+
+	stdout, stderr, err := r.Runner.Run(runCtx, binary, args...)
+	if err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			if _, inheritedDeadline := ctx.Deadline(); inheritedDeadline {
+				return nil, fmt.Errorf("ytdlp: enumerate timed out")
+			}
+			return nil, fmt.Errorf("ytdlp: enumerate timed out after %s", r.Timeout)
+		}
+		// stderr may echo the input URL; callers redact before logging
+		// (same contract as Resolve).
+		return nil, fmt.Errorf("ytdlp: %s", summarizeStderr(stderr))
+	}
+
+	// --dump-json emits one JSON object per entry (NDJSON). json.Decoder
+	// reads consecutive values across whitespace/newlines.
+	entries := make([]PlaylistEntry, 0, maxItems)
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	for dec.More() {
+		var raw struct {
+			ID    string `json:"id"`
+			URL   string `json:"url"`
+			Title string `json:"title"`
+		}
+		if err := dec.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("ytdlp: unparseable flat-playlist json: %w", err)
+		}
+		if raw.ID == "" && raw.URL == "" {
+			continue
+		}
+		entries = append(entries, PlaylistEntry{ID: raw.ID, URL: raw.URL, Title: raw.Title})
+		if len(entries) >= maxItems {
+			break
+		}
+	}
+	return entries, nil
 }
 
 // firstNonEmptyStr returns a if non-empty, else b.

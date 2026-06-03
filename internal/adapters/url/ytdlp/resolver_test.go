@@ -536,6 +536,100 @@ func TestResolve_DualStreamParsesChannelAndUploadDate(t *testing.T) {
 	}
 }
 
+// flatPlaylistNDJSON is two yt-dlp --flat-playlist --dump-json entries
+// (one JSON object per line, no enclosing array).
+const flatPlaylistNDJSON = `{"id":"dQw4w9WgXcQ","url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","title":"First"}
+{"id":"abcdefghijk","url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Second"}`
+
+func TestEnumeratePlaylist_BuildsArgvAndParses(t *testing.T) {
+	r := &stubRunner{stdouts: [][]byte{[]byte(flatPlaylistNDJSON)}}
+	res := Resolver{Binary: "/usr/local/bin/yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	entries, err := res.EnumeratePlaylist(context.Background(), "https://youtube.com/playlist?list=PL1", "", 50)
+	if err != nil {
+		t.Fatalf("EnumeratePlaylist: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(r.calls))
+	}
+	got := r.calls[0]
+	mustContain(t, got, "--flat-playlist")
+	mustContain(t, got, "--dump-json")
+	mustContain(t, got, "--playlist-end")
+	mustContain(t, got, "50")
+	mustContain(t, got, "https://youtube.com/playlist?list=PL1")
+	// --no-playlist would defeat enumeration; it must NOT be present.
+	for _, a := range got {
+		if a == "--no-playlist" {
+			t.Fatal("argv contains --no-playlist; flat-playlist enumeration needs the playlist")
+		}
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	if entries[0].ID != "dQw4w9WgXcQ" || entries[0].Title != "First" ||
+		entries[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("entries[0] = %+v", entries[0])
+	}
+	if entries[1].ID != "abcdefghijk" {
+		t.Fatalf("entries[1].ID = %q, want abcdefghijk", entries[1].ID)
+	}
+}
+
+func TestEnumeratePlaylist_CookiesAndCap(t *testing.T) {
+	r := &stubRunner{stdouts: [][]byte{[]byte(flatPlaylistNDJSON)}}
+	res := Resolver{Binary: "/usr/local/bin/yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	entries, err := res.EnumeratePlaylist(context.Background(), "https://youtube.com/playlist?list=PL1", "/data/cookies.txt", 1)
+	if err != nil {
+		t.Fatalf("EnumeratePlaylist: %v", err)
+	}
+	mustContain(t, r.calls[0], "--cookies")
+	mustContain(t, r.calls[0], "/data/cookies.txt")
+	mustContain(t, r.calls[0], "1") // --playlist-end 1
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1 (capped by maxItems)", len(entries))
+	}
+}
+
+func TestEnumeratePlaylist_ErrorSummarizesStderr(t *testing.T) {
+	r := &stubRunner{
+		stderrs: [][]byte{[]byte("ERROR: [youtube:tab] PL1: The playlist does not exist")},
+		errs:    []error{errors.New("exit status 1")},
+	}
+	res := Resolver{Binary: "/usr/local/bin/yt-dlp", Timeout: 5 * time.Second, Runner: r}
+	if _, err := res.EnumeratePlaylist(context.Background(), "https://youtube.com/playlist?list=PL1", "", 50); err == nil {
+		t.Fatal("EnumeratePlaylist err = nil, want playlist-does-not-exist error")
+	} else if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("err = %q, want it to summarize stderr", err.Error())
+	}
+}
+
+func TestEnumeratePlaylist_BinaryNotConfigured(t *testing.T) {
+	res := Resolver{Timeout: 5 * time.Second, Runner: &stubRunner{}}
+	if _, err := res.EnumeratePlaylist(context.Background(), "https://youtube.com/playlist?list=PL1", "", 50); err == nil {
+		t.Fatal("err = nil, want binary-not-configured error")
+	}
+}
+
+func TestEnumeratePlaylist_RespectsCallerDeadlineOverResolverTimeout(t *testing.T) {
+	r := &stubRunner{
+		stdouts: [][]byte{[]byte(flatPlaylistNDJSON)},
+		delays:  []time.Duration{40 * time.Millisecond},
+	}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Millisecond, Runner: r}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	entries, err := res.EnumeratePlaylist(ctx, "https://youtube.com/playlist?list=PL1", "", 50)
+	if err != nil {
+		t.Fatalf("EnumeratePlaylist with caller deadline: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+}
+
 // helpers
 
 func mustContain(t *testing.T, argv []string, want string) {
