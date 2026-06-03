@@ -113,7 +113,7 @@ func TestE2E_LinkStatusContract(t *testing.T) {
 	s.Mount(mux)
 
 	// Jellyfin link/status — fresh data_dir, no server_url → unlinked credential view.
-	req := httptest.NewRequest("GET", "/receiver/settings/adapter/jellyfin/link/status", nil)
+	req := httptest.NewRequest("GET", "/ui/settings/adapter/jellyfin/link/status", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -127,7 +127,7 @@ func TestE2E_LinkStatusContract(t *testing.T) {
 	}
 
 	// Plex link/status — no auth token on disk → unlinked PIN view.
-	req2 := httptest.NewRequest("GET", "/receiver/settings/adapter/plex/link/status", nil)
+	req2 := httptest.NewRequest("GET", "/ui/settings/adapter/plex/link/status", nil)
 	req2.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec2 := httptest.NewRecorder()
 	mux.ServeHTTP(rec2, req2)

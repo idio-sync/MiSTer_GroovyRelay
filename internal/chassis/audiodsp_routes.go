@@ -30,7 +30,7 @@ type AudioDSPSaver interface {
 	CurrentAudioDSP() config.AudioDSP
 }
 
-// audioDSPRequest is the POST /receiver/audio/dsp body. Params is a partial
+// audioDSPRequest is the POST /ui/audio/dsp body. Params is a partial
 // patch merged onto the current runtime params; pointer fields distinguish
 // "set to zero" from "omitted".
 type audioDSPRequest struct {
@@ -131,7 +131,7 @@ func audioDSPWriteError(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusInternalServerError, "save failed")
 }
 
-// audioDSPMemoryRequest is the POST /receiver/audio/dsp/memory body.
+// audioDSPMemoryRequest is the POST /ui/audio/dsp/memory body.
 type audioDSPMemoryRequest struct {
 	Op   string `json:"op"`   // "store" | "recall"
 	Slot int    `json:"slot"` // 1..3

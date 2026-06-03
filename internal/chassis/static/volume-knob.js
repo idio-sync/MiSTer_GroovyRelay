@@ -1,7 +1,7 @@
 // Receiver chassis physical volume knob.
 //
-// Uses the shared /receiver/events EventSource exposed by vfd-live.js and
-// posts global output-volume changes back to /receiver/volume.
+// Uses the shared /ui/events EventSource exposed by vfd-live.js and
+// posts global output-volume changes back to /ui/volume.
 (() => {
   'use strict';
 
@@ -75,7 +75,7 @@
   function postVolume(value) {
     const body = new URLSearchParams();
     body.set('output_volume', String(clamp(value)));
-    return fetch('/receiver/volume', {
+    return fetch('/ui/volume', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {

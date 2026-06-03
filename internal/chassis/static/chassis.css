@@ -1,7 +1,7 @@
 /* Fonts */
 @font-face {
   font-family: 'DSEG7-Classic';
-  src: url('/receiver/static/fonts/DSEG7Classic-Regular.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG7Classic-Regular.woff2?v={{.Version}}') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: block;
@@ -9,7 +9,7 @@
 
 @font-face {
   font-family: 'DSEG7-Classic';
-  src: url('/receiver/static/fonts/DSEG7Classic-Bold.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG7Classic-Bold.woff2?v={{.Version}}') format('woff2');
   font-weight: 700;
   font-style: normal;
   font-display: block;
@@ -17,7 +17,7 @@
 
 @font-face {
   font-family: 'DSEG14-Classic';
-  src: url('/receiver/static/fonts/DSEG14Classic-Regular.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG14Classic-Regular.woff2?v={{.Version}}') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: block;
@@ -25,7 +25,7 @@
 
 @font-face {
   font-family: 'DSEG14-Classic';
-  src: url('/receiver/static/fonts/DSEG14Classic-Bold.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG14Classic-Bold.woff2?v={{.Version}}') format('woff2');
   font-weight: 700;
   font-style: normal;
   font-display: block;
@@ -33,7 +33,7 @@
 
 @font-face {
   font-family: 'DSEG7-Modern';
-  src: url('/receiver/static/fonts/DSEG7Modern-Regular.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG7Modern-Regular.woff2?v={{.Version}}') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: block;
@@ -41,7 +41,7 @@
 
 @font-face {
   font-family: 'DSEG7-Modern';
-  src: url('/receiver/static/fonts/DSEG7Modern-Bold.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG7Modern-Bold.woff2?v={{.Version}}') format('woff2');
   font-weight: 700;
   font-style: normal;
   font-display: block;
@@ -49,7 +49,7 @@
 
 @font-face {
   font-family: 'DSEG14-Modern';
-  src: url('/receiver/static/fonts/DSEG14Modern-Regular.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG14Modern-Regular.woff2?v={{.Version}}') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: block;
@@ -57,7 +57,7 @@
 
 @font-face {
   font-family: 'DSEG14-Modern';
-  src: url('/receiver/static/fonts/DSEG14Modern-Bold.woff2?v={{.Version}}') format('woff2');
+  src: url('/ui/static/fonts/DSEG14Modern-Bold.woff2?v={{.Version}}') format('woff2');
   font-weight: 700;
   font-style: normal;
   font-display: block;
@@ -65,7 +65,7 @@
 
 @font-face {
   font-family: 'Inter';
-  src: url('/receiver/static/fonts/Inter-Variable.woff2?v={{.Version}}') format('woff2-variations');
+  src: url('/ui/static/fonts/Inter-Variable.woff2?v={{.Version}}') format('woff2-variations');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;

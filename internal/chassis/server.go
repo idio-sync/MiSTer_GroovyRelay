@@ -27,7 +27,7 @@ type Config struct {
 
 	// Session is the read-only session-state source for live VFD
 	// rendering and SSE events. Optional: when nil, the chassis renders
-	// idle-only and the /receiver/events stream emits the initial idle
+	// idle-only and the /ui/events stream emits the initial idle
 	// snapshot then sits silent. *core.Manager satisfies the interface
 	// structurally; main.go wires that.
 	Session SessionViewer
@@ -73,7 +73,7 @@ type Config struct {
 	PresetViewer adapters.PresetViewer
 
 	// PresetCaster is the optional handler for preset slot clicks.
-	// When nil, POST /receiver/preset/{slot}/cast returns 404.
+	// When nil, POST /ui/preset/{slot}/cast returns 404.
 	PresetCaster adapters.PresetCaster
 
 	// StreamsCatalogViewer / StreamsCaster: the streams adapter wired
@@ -329,68 +329,68 @@ func audioScopeViewerIsLive(v AudioScopeViewer) bool {
 // refresher exactly once. Safe to call multiple times (sync.Once
 // guards the goroutine start) but only the first call wins.
 func (s *Server) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /receiver", s.handleIndex)
-	mux.HandleFunc("GET /receiver/{$}", s.handleIndex)
-	mux.HandleFunc("GET /receiver/static/", s.handleStatic)
-	mux.HandleFunc("GET /receiver/events", s.handleEvents)
-	mux.Handle("POST /receiver/transport/action", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportAction))))
-	mux.Handle("POST /receiver/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
-	mux.Handle("POST /receiver/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
-	mux.Handle("POST /receiver/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
-	mux.Handle("POST /receiver/audio/dsp", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleAudioDSPPost))))
-	mux.Handle("POST /receiver/audio/dsp/memory", requireSameOrigin(http.HandlerFunc(s.handleAudioDSPMemoryPost)))
-	mux.Handle("POST /receiver/aux/start", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleAUXStartPost))))
-	mux.Handle("POST /receiver/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
-	mux.Handle("POST /receiver/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleCastPost))))
-	mux.Handle("POST /receiver/history/play", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleHistoryPlayPost))))
-	mux.Handle("POST /receiver/localfiles/browse",
+	mux.HandleFunc("GET /ui", s.handleIndex)
+	mux.HandleFunc("GET /ui/{$}", s.handleIndex)
+	mux.HandleFunc("GET /ui/static/", s.handleStatic)
+	mux.HandleFunc("GET /ui/events", s.handleEvents)
+	mux.Handle("POST /ui/transport/action", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportAction))))
+	mux.Handle("POST /ui/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
+	mux.Handle("POST /ui/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
+	mux.Handle("POST /ui/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
+	mux.Handle("POST /ui/audio/dsp", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleAudioDSPPost))))
+	mux.Handle("POST /ui/audio/dsp/memory", requireSameOrigin(http.HandlerFunc(s.handleAudioDSPMemoryPost)))
+	mux.Handle("POST /ui/aux/start", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleAUXStartPost))))
+	mux.Handle("POST /ui/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
+	mux.Handle("POST /ui/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleCastPost))))
+	mux.Handle("POST /ui/history/play", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleHistoryPlayPost))))
+	mux.Handle("POST /ui/localfiles/browse",
 		requireSameOrigin(http.HandlerFunc(s.handleReceiverLocalfilesBrowse)))
-	mux.Handle("POST /receiver/localfiles/cast",
+	mux.Handle("POST /ui/localfiles/cast",
 		requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleReceiverLocalfilesCast))))
-	mux.Handle("POST /receiver/preset/{slot}/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handlePresetCast))))
-	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleStreamsCast))))
-	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
-	mux.Handle("POST /receiver/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
-	mux.Handle("POST /receiver/catalog/provider", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderCreate)))
-	mux.Handle("PUT /receiver/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderUpdate)))
-	mux.Handle("DELETE /receiver/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderDelete)))
-	mux.Handle("POST /receiver/catalog/provider/{id}/reorder", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderReorder)))
-	mux.Handle("POST /receiver/catalog/channel/verify", requireSameOrigin(http.HandlerFunc(s.handleCatalogChannelVerify)))
-	mux.HandleFunc("GET /receiver/setup/status", s.handleSetupStatus)
-	mux.Handle("POST /receiver/setup/finish", requireSameOrigin(http.HandlerFunc(s.handleSetupFinish)))
-	mux.Handle("POST /receiver/settings/bridge",
+	mux.Handle("POST /ui/preset/{slot}/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handlePresetCast))))
+	mux.Handle("POST /ui/streams/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleStreamsCast))))
+	mux.Handle("POST /ui/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
+	mux.Handle("POST /ui/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
+	mux.Handle("POST /ui/catalog/provider", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderCreate)))
+	mux.Handle("PUT /ui/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderUpdate)))
+	mux.Handle("DELETE /ui/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderDelete)))
+	mux.Handle("POST /ui/catalog/provider/{id}/reorder", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderReorder)))
+	mux.Handle("POST /ui/catalog/channel/verify", requireSameOrigin(http.HandlerFunc(s.handleCatalogChannelVerify)))
+	mux.HandleFunc("GET /ui/setup/status", s.handleSetupStatus)
+	mux.Handle("POST /ui/setup/finish", requireSameOrigin(http.HandlerFunc(s.handleSetupFinish)))
+	mux.Handle("POST /ui/settings/bridge",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsBridgePost)))
-	mux.Handle("POST /receiver/settings/action/probe-mister",
+	mux.Handle("POST /ui/settings/action/probe-mister",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionProbeMister)))
-	mux.Handle("POST /receiver/settings/action/launch-core",
+	mux.Handle("POST /ui/settings/action/launch-core",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionLaunchCore)))
-	mux.Handle("POST /receiver/settings/catalog/provider/{id}",
+	mux.Handle("POST /ui/settings/catalog/provider/{id}",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsCatalogProviderPost)))
-	mux.Handle("POST /receiver/settings/catalog/direct-stream-hls-buffer",
+	mux.Handle("POST /ui/settings/catalog/direct-stream-hls-buffer",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsCatalogDirectStreamHLSBufferPost)))
-	mux.Handle("POST /receiver/settings/action/restore-defaults",
+	mux.Handle("POST /ui/settings/action/restore-defaults",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionRestoreDefaults)))
-	mux.Handle("POST /receiver/settings/adapter/{name}",
+	mux.Handle("POST /ui/settings/adapter/{name}",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterPost)))
-	mux.Handle("POST /receiver/settings/action/streams-refresh",
+	mux.Handle("POST /ui/settings/action/streams-refresh",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsActionStreamsRefresh)))
-	mux.Handle("POST /receiver/settings/adapter/{name}/link/start",
+	mux.Handle("POST /ui/settings/adapter/{name}/link/start",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStart)))
-	mux.Handle("GET /receiver/settings/adapter/{name}/link/status",
+	mux.Handle("GET /ui/settings/adapter/{name}/link/status",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkStatus)))
-	mux.Handle("POST /receiver/settings/adapter/{name}/link/unlink",
+	mux.Handle("POST /ui/settings/adapter/{name}/link/unlink",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLinkUnlink)))
-	mux.Handle("POST /receiver/settings/adapter/{name}/hosts",
+	mux.Handle("POST /ui/settings/adapter/{name}/hosts",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterHostsPost)))
-	mux.Handle("POST /receiver/settings/adapter/{name}/cookies",
+	mux.Handle("POST /ui/settings/adapter/{name}/cookies",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterCookiesPost)))
-	mux.Handle("POST /receiver/settings/adapter/{name}/cookies/clear",
+	mux.Handle("POST /ui/settings/adapter/{name}/cookies/clear",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterCookiesClear)))
-	mux.Handle("POST /receiver/settings/adapter/localfiles/browse",
+	mux.Handle("POST /ui/settings/adapter/localfiles/browse",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesBrowse)))
-	mux.Handle("POST /receiver/settings/adapter/localfiles/cast",
+	mux.Handle("POST /ui/settings/adapter/localfiles/cast",
 		requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleSettingsAdapterLocalfilesCast))))
-	mux.Handle("POST /receiver/settings/adapter/localfiles/libraries",
+	mux.Handle("POST /ui/settings/adapter/localfiles/libraries",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsAdapterLocalfilesLibraries)))
 	s.cacheOnce.Do(s.startSnapshotRefresher)
 }

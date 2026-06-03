@@ -140,7 +140,7 @@ function createHarness() {
 
   function fetchFake(url, options) {
     requests.push({ url, options, body: String(options.body) });
-    if (url === '/receiver/localfiles/browse') {
+    if (url === '/ui/localfiles/browse') {
       return Promise.resolve({ json: async () => ({ ok: true, entries: [] }) });
     }
     return Promise.resolve({ json: async () => ({ ok: false, chip: 'BAD URL' }) });
@@ -214,7 +214,7 @@ test('settings library save enables receiver local files without reload', async 
 
   await h.localFilesBtn.click();
   await settle();
-  assert.equal(h.requests.at(-1).url, '/receiver/localfiles/browse');
+  assert.equal(h.requests.at(-1).url, '/ui/localfiles/browse');
   assert.equal(h.requests.at(-1).body, 'lib=Array&path=');
   assert.equal(h.localFilesDrawer.hidden, false);
   assert.equal(h.localFilesDrawer.classList.contains('localfiles-open'), true);

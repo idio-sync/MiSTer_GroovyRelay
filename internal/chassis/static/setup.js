@@ -51,17 +51,17 @@
   }
 
   function refreshStatus() {
-    fetch('/receiver/setup/status', { credentials: 'same-origin' })
+    fetch('/ui/setup/status', { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (st) { if (st) applyStatus(st); })
       .catch(function () {});
   }
 
   function finish() {
-    fetch('/receiver/setup/finish', { method: 'POST', credentials: 'same-origin' })
+    fetch('/ui/setup/finish', { method: 'POST', credentials: 'same-origin' })
       .then(function (r) {
         if (r.status === 200) {
-          window.location.assign('/receiver');
+          window.location.assign('/ui');
         } else {
           // Criteria not yet met server-side; refresh the checklist.
           refreshStatus();

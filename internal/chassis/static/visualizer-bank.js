@@ -1,7 +1,7 @@
 // Receiver chassis visualizer bank. Phase 1 / Spec 4.
 //
-// Uses the shared /receiver/events EventSource exposed by vfd-live.js and
-// posts visualizer mode changes back to /receiver/visualizer.
+// Uses the shared /ui/events EventSource exposed by vfd-live.js and
+// posts visualizer mode changes back to /ui/visualizer.
 (() => {
   'use strict';
 
@@ -49,7 +49,7 @@
   function postMode(mode) {
     const body = new URLSearchParams();
     body.set('mode', mode);
-    return fetch('/receiver/visualizer', {
+    return fetch('/ui/visualizer', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {

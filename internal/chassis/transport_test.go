@@ -28,7 +28,7 @@ func TestMount_RegistersTransportRoutesThroughRequireSameOrigin(t *testing.T) {
 	s.Mount(mux)
 
 	body := "adapter_ref=plex:abc&generation=42&action=pause"
-	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/transport/action", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -40,7 +40,7 @@ func TestMount_RegistersTransportRoutesThroughRequireSameOrigin(t *testing.T) {
 		t.Fatalf("Cache-Control without same-origin = %q, want %q", got, "no-store")
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/ui/transport/action", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	w = httptest.NewRecorder()
@@ -153,7 +153,7 @@ func TestHandleTransportAction_RejectsSeekRoute(t *testing.T) {
 
 	w := postTransportAction(t, s, validTransportForm(adapters.PlaybackActionSeek))
 
-	assertTransportJSONError(t, w, http.StatusBadRequest, "seek must use the /receiver/transport/seek route")
+	assertTransportJSONError(t, w, http.StatusBadRequest, "seek must use the /ui/transport/seek route")
 	if len(controller.calls) != 0 {
 		t.Fatalf("controller calls = %#v, want none", controller.calls)
 	}
@@ -348,7 +348,7 @@ func TestHandleTransportSeek_MalformedAndMissingFieldsReturnBadRequest(t *testin
 
 func postTransportAction(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/action", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/transport/action", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	s.handleTransportAction(w, req)
@@ -378,7 +378,7 @@ func assertNoStore(t *testing.T, w *httptest.ResponseRecorder) {
 
 func postTransportSeek(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/transport/seek", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/transport/seek", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	s.handleTransportSeek(w, req)

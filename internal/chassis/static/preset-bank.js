@@ -136,7 +136,7 @@
     if (!slot) return;
     if (window.Chassis && Chassis.setupBlocked()) return;
     try {
-      const resp = await fetch('/receiver/preset/' + encodeURIComponent(slot) + '/cast', {
+      const resp = await fetch('/ui/preset/' + encodeURIComponent(slot) + '/cast', {
         method: 'POST',
         credentials: 'same-origin',
       });

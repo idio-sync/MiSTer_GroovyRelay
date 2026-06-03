@@ -114,7 +114,7 @@ func TestHandleVisualizerPost_RejectsMissingEmptyAndWhitespaceMode(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			saver := &fakeVisualizerSaver{}
 			s := &Server{visualizerSaver: saver}
-			req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(tc.body))
+			req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
 
@@ -131,7 +131,7 @@ func TestHandleVisualizerPost_RejectsMissingEmptyAndWhitespaceMode(t *testing.T)
 func TestHandleVisualizerPost_RejectsMalformedFormBody(t *testing.T) {
 	saver := &fakeVisualizerSaver{}
 	s := &Server{visualizerSaver: saver}
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader("%zz"))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader("%zz"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 
@@ -231,7 +231,7 @@ func TestMount_VisualizerPostBlocksCrossSiteAndDoesNotSave(t *testing.T) {
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
 
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(url.Values{
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(url.Values{
 		"mode": {config.VisualizerModeStereoScope},
 	}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -259,7 +259,7 @@ func TestMount_VisualizerPostSameOriginSavesMode(t *testing.T) {
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
 
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(url.Values{
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(url.Values{
 		"mode": {config.VisualizerModeStereoScope},
 	}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -289,7 +289,7 @@ func TestMount_VisualizerGetReturnsMethodNotAllowed(t *testing.T) {
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
 
-	req := httptest.NewRequest(http.MethodGet, "/receiver/visualizer", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/visualizer", nil)
 	w := httptest.NewRecorder()
 
 	mux.ServeHTTP(w, req)
@@ -305,7 +305,7 @@ func TestMount_VisualizerGetReturnsMethodNotAllowed(t *testing.T) {
 func postVisualizerMode(t *testing.T, s *Server, mode string) *httptest.ResponseRecorder {
 	t.Helper()
 	body := url.Values{"mode": {mode}}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	s.handleVisualizerPost(w, req)

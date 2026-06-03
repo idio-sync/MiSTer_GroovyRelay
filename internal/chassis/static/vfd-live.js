@@ -1,6 +1,6 @@
 // Receiver chassis VFD live wire. Phase 1 / Spec 2.
 //
-// Subscribes to /receiver/events (SSE), routes named events:
+// Subscribes to /ui/events (SSE), routes named events:
 //   state -> window.Chassis.State.set(idle|live)
 //   vfd   -> textContent updates on data-vfd-{primary,secondary,tertiary,uptime}
 //            plus queue-memory slots
@@ -292,7 +292,7 @@
   }
 
   function connect() {
-    source = new EventSource('/receiver/events');
+    source = new EventSource('/ui/events');
     source.addEventListener('state', handleStateEvent);
     source.addEventListener('vfd', handleVfdEvent);
     source.addEventListener('source', handleSourceEvent);

@@ -115,7 +115,7 @@ type AdapterSettingsSaver interface {
 }
 
 // StreamsRefresher is the chassis-side interface backing the
-// /receiver/settings/action/streams-refresh action. Production binding
+// /ui/settings/action/streams-refresh action. Production binding
 // wraps *streams.Adapter.RefreshNow(ctx, "") — the canonical manifest-
 // refresh entry point. The chassis does not import internal/adapters/streams.
 type StreamsRefresher interface {
@@ -135,7 +135,7 @@ type StreamsRefreshResult struct {
 }
 
 // AdapterLinker is the chassis-side interface backing the per-adapter
-// /receiver/settings/adapter/{name}/link/* routes. The production binding
+// /ui/settings/adapter/{name}/link/* routes. The production binding
 // (cmd/mister-groovy-relay) wraps each adapter's adapters.LinkController
 // and maps its LinkSnapshot onto LinkView. The chassis imports no adapter
 // package.
@@ -727,7 +727,7 @@ func decodeInt64InRange(raw string, lo, hi int64) (int64, error) {
 	return n, nil
 }
 
-// handleSettingsBridgePost is the POST handler for /receiver/settings/bridge.
+// handleSettingsBridgePost is the POST handler for /ui/settings/bridge.
 // Accepts any subset of the supported form fields; missing keys mean "do
 // not change that field." See the spec's Wire Contract for the response
 // envelope.
@@ -818,7 +818,7 @@ func writeSettingsFieldErrors(w http.ResponseWriter, status int, errs map[string
 }
 
 // handleSettingsActionProbeMister is the POST handler for
-// /receiver/settings/action/probe-mister. Hard 1s server-side timeout;
+// /ui/settings/action/probe-mister. Hard 1s server-side timeout;
 // uses the currently-saved BridgeConfig (NOT form values). Returns 200
 // for both success and timeout (the probe ran cleanly in both cases);
 // 500 for socket/transport failures; 503 if dependencies aren't wired.
@@ -863,7 +863,7 @@ func (s *Server) handleSettingsActionProbeMister(w http.ResponseWriter, r *http.
 }
 
 // handleSettingsActionLaunchCore is the POST handler for
-// /receiver/settings/action/launch-core. It SSH-sends the canonical
+// /ui/settings/action/launch-core. It SSH-sends the canonical
 // load_core command to the MiSTer using the saved credentials.
 //
 // Response policy:
@@ -922,7 +922,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // handleSettingsCatalogProviderPost is the POST handler for
-// /receiver/settings/catalog/provider/{id}. Accepts any subset of the
+// /ui/settings/catalog/provider/{id}. Accepts any subset of the
 // supported form keys (enabled, hls_buffer_disabled); missing keys mean
 // "do not change that field." Returns 404 for an unknown id, 400 for bad
 // bools or an empty body, 503 if the manager is unwired.
@@ -1009,7 +1009,7 @@ func catalogContainsProvider(providers []CatalogProviderState, id string) bool {
 // what they typed). Pre-compiled at package init to avoid re-parsing per
 // probe.
 // handleSettingsCatalogDirectStreamHLSBufferPost handles
-// POST /receiver/settings/catalog/direct-stream-hls-buffer.
+// POST /ui/settings/catalog/direct-stream-hls-buffer.
 // It reads a single form field "disabled" (strict "true"/"false") and
 // calls CatalogSettingsManager.SetDirectStreamHLSBuffer, which flips
 // hls_buffer_disabled on every Live provider in one atomic save.
@@ -1053,7 +1053,7 @@ func (s *Server) handleSettingsCatalogDirectStreamHLSBufferPost(w http.ResponseW
 }
 
 // handleSettingsActionRestoreDefaults is the POST handler for
-// /receiver/settings/action/restore-defaults. Empty body. Returns
+// /ui/settings/action/restore-defaults. Empty body. Returns
 // success with scope:"reboot" so the client toasts the dedicated
 // "Defaults restored — restart container to apply" message via the
 // 4A REBOOT toast helper.
@@ -1075,7 +1075,7 @@ func (s *Server) handleSettingsActionRestoreDefaults(w http.ResponseWriter, r *h
 }
 
 // handleSettingsAdapterPost is the POST handler for
-// /receiver/settings/adapter/{name}. Validates the adapter name against the
+// /ui/settings/adapter/{name}. Validates the adapter name against the
 // saver's Fields table, rejects unknown form keys (BAD INPUT chip), then
 // delegates to AdapterSettingsSaver.SaveTouched. Error shapes are unwrapped
 // via emitSaveError.
@@ -1219,7 +1219,7 @@ func emitSaveError(w http.ResponseWriter, err error) {
 const streamsRefreshTimeout = 30 * time.Second
 
 // handleSettingsActionStreamsRefresh is the POST handler for
-// /receiver/settings/action/streams-refresh. Single-flight via
+// /ui/settings/action/streams-refresh. Single-flight via
 // s.streamsRefreshGate.TryLock (second concurrent click → 409 BUSY).
 // The 30s timeout chains off r.Context(). Refresh failures return
 // HTTP 200 with {ok:false, error} — the action ran cleanly; the
@@ -1336,7 +1336,7 @@ func writeLinkView(w http.ResponseWriter, view LinkView) {
 }
 
 // handleSettingsAdapterLinkStart is the POST handler for
-// /receiver/settings/adapter/{name}/link/start. Single-flight via
+// /ui/settings/adapter/{name}/link/start. Single-flight via
 // linkStartGate(name).TryLock — a second concurrent click returns 409
 // BUSY. Chains the 15s timeout off r.Context(). On success emits
 // {ok:true, view:<LinkView>}.
@@ -1373,7 +1373,7 @@ func (s *Server) handleSettingsAdapterLinkStart(w http.ResponseWriter, r *http.R
 }
 
 // handleSettingsAdapterLinkStatus is the GET handler for
-// /receiver/settings/adapter/{name}/link/status. Chains the 5s timeout
+// /ui/settings/adapter/{name}/link/status. Chains the 5s timeout
 // off r.Context(). PIN adapters report current pending/linked state;
 // credential adapters return the persisted snapshot.
 func (s *Server) handleSettingsAdapterLinkStatus(w http.ResponseWriter, r *http.Request) {
@@ -1392,7 +1392,7 @@ func (s *Server) handleSettingsAdapterLinkStatus(w http.ResponseWriter, r *http.
 }
 
 // handleSettingsAdapterLinkUnlink is the POST handler for
-// /receiver/settings/adapter/{name}/link/unlink. Best-effort revoke/
+// /ui/settings/adapter/{name}/link/unlink. Best-effort revoke/
 // logout under a 5s timeout. Idempotent — always returns the unlinked
 // LinkView on success.
 func (s *Server) handleSettingsAdapterLinkUnlink(w http.ResponseWriter, r *http.Request) {
@@ -1466,7 +1466,7 @@ type LocalFileLibraryRow struct {
 	Root string `json:"root"`
 }
 
-// handleSettingsAdapterHostsPost handles POST /receiver/settings/adapter/{name}/hosts.
+// handleSettingsAdapterHostsPost handles POST /ui/settings/adapter/{name}/hosts.
 // Body: {"hosts":[...]}. Mirrors handleSettingsAdapterPost's error envelope.
 func (s *Server) handleSettingsAdapterHostsPost(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.AdapterHostEditor == nil {
@@ -1539,7 +1539,7 @@ func readCookiesField(r *http.Request) (string, error) {
 	return r.PostForm.Get("cookies"), nil
 }
 
-// handleSettingsAdapterCookiesPost handles POST /receiver/settings/adapter/{name}/cookies.
+// handleSettingsAdapterCookiesPost handles POST /ui/settings/adapter/{name}/cookies.
 func (s *Server) handleSettingsAdapterCookiesPost(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.AdapterCookieStore == nil {
 		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")
@@ -1563,7 +1563,7 @@ func (s *Server) handleSettingsAdapterCookiesPost(w http.ResponseWriter, r *http
 	writeSettingsCookie(w, view)
 }
 
-// handleSettingsAdapterCookiesClear handles POST /receiver/settings/adapter/{name}/cookies/clear.
+// handleSettingsAdapterCookiesClear handles POST /ui/settings/adapter/{name}/cookies/clear.
 func (s *Server) handleSettingsAdapterCookiesClear(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.AdapterCookieStore == nil {
 		writeSettingsChip(w, http.StatusServiceUnavailable, "NOT READY")

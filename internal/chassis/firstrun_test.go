@@ -96,7 +96,7 @@ func TestRequireSetupComplete_Gate(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/receiver/cast", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ui/cast", nil))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("gated POST: got %d want 409", rec.Code)
 	}
@@ -107,7 +107,7 @@ func TestRequireSetupComplete_Gate(t *testing.T) {
 	// Dismiss → passes through.
 	saver.firstRun = false
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/receiver/cast", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ui/cast", nil))
 	if rec.Code != http.StatusOK || !reached {
 		t.Fatalf("after dismiss: got %d reached=%v", rec.Code, reached)
 	}
@@ -117,13 +117,13 @@ func TestMount_GatesCastRoutes(t *testing.T) {
 	gated := []struct {
 		method, path string
 	}{
-		{"POST", "/receiver/cast"},
-		{"POST", "/receiver/preset/1/cast"},
-		{"POST", "/receiver/streams/cast"},
-		{"POST", "/receiver/localfiles/cast"},
-		{"POST", "/receiver/settings/adapter/localfiles/cast"},
-		{"POST", "/receiver/history/play"},
-		{"POST", "/receiver/aux/start"},
+		{"POST", "/ui/cast"},
+		{"POST", "/ui/preset/1/cast"},
+		{"POST", "/ui/streams/cast"},
+		{"POST", "/ui/localfiles/cast"},
+		{"POST", "/ui/settings/adapter/localfiles/cast"},
+		{"POST", "/ui/history/play"},
+		{"POST", "/ui/aux/start"},
 	}
 	saver := hostSaver("", true)
 	s := newSetupServer(t, saver, nil) // built via New → firstRun resolves, Mount safe

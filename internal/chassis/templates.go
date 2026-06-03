@@ -22,7 +22,7 @@ import (
 var chassisTemplatesFS embed.FS
 
 // chassisStaticFS holds chassis.css, chassis.js, and woff2 fonts.
-// Embedded wholesale; served under /receiver/static/ via Mount.
+// Embedded wholesale; served under /ui/static/ via Mount.
 //
 //go:embed static
 var chassisStaticFS embed.FS

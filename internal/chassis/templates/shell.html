@@ -6,25 +6,25 @@
   <meta name="chassis-adapter-ref" content="{{.Transport.AdapterRef}}">
   <meta name="chassis-generation" content="{{.Transport.Generation}}">
   <title>{{.BrandName}}</title>
-  <link rel="stylesheet" href="/receiver/static/chassis.css?v={{.Version}}">
-  <script defer src="/receiver/static/chassis.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/vfd-live.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/source-cluster.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/transport.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/volume-knob.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/audio-strip.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/visualizer-bank.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/meter.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/input-cast.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/preset-bank.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/catalog-browser.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/preset-reorder.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/search-filter.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/settings-drawer.js?v={{.Version}}"></script>
-  {{if .SetupMode}}<script defer src="/receiver/static/setup.js?v={{.Version}}"></script>{{end}}
-  <script defer src="/receiver/static/load-core.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/power-on.js?v={{.Version}}"></script>
-  <script defer src="/receiver/static/self-test.js?v={{.Version}}"></script>
+  <link rel="stylesheet" href="/ui/static/chassis.css?v={{.Version}}">
+  <script defer src="/ui/static/chassis.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/vfd-live.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/source-cluster.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/transport.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/volume-knob.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/audio-strip.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/visualizer-bank.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/meter.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/input-cast.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/preset-bank.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/catalog-browser.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/preset-reorder.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/search-filter.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/settings-drawer.js?v={{.Version}}"></script>
+  {{if .SetupMode}}<script defer src="/ui/static/setup.js?v={{.Version}}"></script>{{end}}
+  <script defer src="/ui/static/load-core.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/power-on.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/self-test.js?v={{.Version}}"></script>
 </head>
 <body class="receiver {{.State}}{{if .SetupMode}} setup settings-open{{end}}">
   {{htmlComment "chassis:shell"}}

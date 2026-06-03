@@ -448,7 +448,7 @@ func TestHandleEvents_RejectsNonFlushableResponseWriter(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	w := &nonFlushableWriter{headers: http.Header{}}
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil)
 	s.handleEvents(w, req)
 	if w.status != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.status)
@@ -464,7 +464,7 @@ func TestHandleEvents_SetsCorrectHeaders(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -494,7 +494,7 @@ func TestHandleEvents_EmitsRetryDirectiveOnConnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -516,7 +516,7 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -554,7 +554,7 @@ func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -604,7 +604,7 @@ func TestHandleEvents_EmitsTransportEventOnInitialConnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -651,7 +651,7 @@ func TestHandleEvents_InitialBurstReadsFromCache(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -679,7 +679,7 @@ func TestHandleEvents_NilSessionStreamsIdleOnly(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -700,7 +700,7 @@ func TestHandleEvents_TerminatesOnClientDisconnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	done := make(chan struct{})
 	go func() {
@@ -774,7 +774,7 @@ func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	// Trigger a state transition shortly after the handler boots.
 	go func() {
@@ -818,7 +818,7 @@ func TestHandleEvents_EmitsVfdEventOnTitleChange(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
@@ -854,7 +854,7 @@ func TestHandleEvents_EmitsVisualizerEventOnModeChange(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
@@ -895,7 +895,7 @@ func TestEventsEmitSourceWhenAUXStateChanges(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
@@ -953,7 +953,7 @@ func TestHandleEvents_EmitsHistoryWhenRegistryHistoryChanges(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
@@ -1000,7 +1000,7 @@ func TestHandleEvents_EmitsTransportEventOnStateTransition(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
@@ -1050,7 +1050,7 @@ func TestHandleEvents_VisualizerEventOmittedWhenModeUnchanged(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(350 * time.Millisecond)
 		cancel()
@@ -1074,7 +1074,7 @@ func TestHandleEvents_InitialSnapshotIncludesVolume(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -1104,7 +1104,7 @@ func TestHandleEvents_EmitsVolumeWhenChanged(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		vv.set(41)
@@ -1136,7 +1136,7 @@ func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(400 * time.Millisecond)
 		cancel()
@@ -1174,7 +1174,7 @@ func TestHandleEvents_EmitsHeartbeatComments(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(180 * time.Millisecond) // > 3x heartbeat
 		cancel()
@@ -1219,7 +1219,7 @@ func TestHandleEvents_BailsOnMidWriteDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w := &failingWriter{headers: http.Header{}, cutoff: 20} // fail after a few bytes
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 
 	done := make(chan struct{})
 	go func() {
@@ -1255,7 +1255,7 @@ func TestHandleEvents_MultipleConcurrentConnections(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		ctxs[i] = cancel
 		bodies[i] = newFlushRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+		req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1292,7 +1292,7 @@ func TestMount_RegistersEventsRoute(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -1300,7 +1300,7 @@ func TestMount_RegistersEventsRoute(t *testing.T) {
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /receiver/events status = %d, want 200", w.Code)
+		t.Fatalf("GET /ui/events status = %d, want 200", w.Code)
 	}
 	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", got)
@@ -1361,7 +1361,7 @@ func TestHandleEvents_InitialBurstIncludesMeterAfterTransportFromCache(t *testin
 func readInitialSSE(t *testing.T, s *Server) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	w := newFlushRecorder()
 	done := make(chan struct{})
 	go func() {
@@ -1393,7 +1393,7 @@ func readInitialSSE(t *testing.T, s *Server) string {
 func readSSEUntilMeterACK(t *testing.T, s *Server, timeout time.Duration) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	w := newFlushRecorder()
 	done := make(chan struct{})
 	go func() {
@@ -1596,7 +1596,7 @@ func TestSnapshotCache_SingleStatusHomeViewCallPerTickRegardlessOfTabs(t *testin
 		i := i
 		ctx, cancel := context.WithCancel(context.Background())
 		ctxs[i] = cancel
-		req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+		req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 		w := newFlushRecorder()
 		wg.Add(1)
 		go func() {
@@ -1634,7 +1634,7 @@ func TestHandleEvents_InitialBurstIncludesAudio(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	body := w.Body.String()
@@ -1656,7 +1656,7 @@ func TestHandleEvents_LiveAudioEmitsAtCadence(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(1 * time.Second)
 		cancel()
@@ -1679,7 +1679,7 @@ func TestHandleEvents_PendingSuppressedAtCadence(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	count := strings.Count(w.Body.String(), "event: audio\n")
@@ -1699,7 +1699,7 @@ func TestHandleEvents_GenerationFlipDirectLiveToLive(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		viewer.setSnap(&core.AudioScopeSnapshot{Generation: 2, SampleRate: 48000, Channels: 2})
@@ -1727,7 +1727,7 @@ func TestHandleEvents_GenerationFlipViaPending(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(40 * time.Millisecond)
 		viewer.setSnap(nil)
@@ -1762,7 +1762,7 @@ func TestHandleEvents_PendingShapeExact(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	body := w.Body.String()
@@ -1784,7 +1784,7 @@ func TestHandleEvents_LiveLegitimateZerosOnWire(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	body := w.Body.String()
@@ -1805,7 +1805,7 @@ func TestHandleEvents_InitialBurstAudioIsLast(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() { time.Sleep(40 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	body := w.Body.String()
@@ -1838,7 +1838,7 @@ func TestHandleEvents_PanicInViewerSkipsFrame(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() { time.Sleep(150 * time.Millisecond); cancel() }()
 	s.handleEvents(w, req)
 	body := w.Body.String()
@@ -1959,11 +1959,11 @@ func TestHandleEvents_InitialBurstIncludesPresetsBetweenMeterAndAudio(t *testing
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/receiver/events", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/ui/events", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	resp, err := ts.Client().Do(req)
 	if err != nil {
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	defer resp.Body.Close()
 

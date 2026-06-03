@@ -59,7 +59,7 @@ func detectCastKind(payload string, hasFile bool) string {
 }
 
 // writeCastJSON emits the {"ok": bool, "chip": string?} shape used by
-// both /receiver/cast and /receiver/preset/{slot}/cast. Sets
+// both /ui/cast and /ui/preset/{slot}/cast. Sets
 // Content-Type: application/json. When ok is true, chip is omitted
 // from the body; when ok is false, chip is required.
 func writeCastJSON(w http.ResponseWriter, status int, ok bool, chip string) {
@@ -110,7 +110,7 @@ func writePresetStarSuccess(w http.ResponseWriter, starred bool, slot int, clear
 }
 
 // writePresetMoveSuccess emits the minimal {"ok":true} success envelope
-// for a successful POST /receiver/preset/move (including the from==to
+// for a successful POST /ui/preset/move (including the from==to
 // no-op).
 func writePresetMoveSuccess(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")

@@ -22,7 +22,7 @@ func TestHandleSetupStatus(t *testing.T) {
 	// No controller wired → complete:true.
 	s := &Server{cfg: Config{}}
 	rec := httptest.NewRecorder()
-	s.handleSetupStatus(rec, httptest.NewRequest(http.MethodGet, "/receiver/setup/status", nil))
+	s.handleSetupStatus(rec, httptest.NewRequest(http.MethodGet, "/ui/setup/status", nil))
 	if got := decodeStatus(t, rec.Body.Bytes()); !got["complete"] {
 		t.Fatalf("no controller: want complete:true, got %+v", got)
 	}
@@ -32,7 +32,7 @@ func TestHandleSetupStatus(t *testing.T) {
 	s2 := &Server{cfg: Config{BridgeSaver: saver}} // empty Registry → no source
 	s2.firstRun = resolveFirstRun(saver)
 	rec = httptest.NewRecorder()
-	s2.handleSetupStatus(rec, httptest.NewRequest(http.MethodGet, "/receiver/setup/status", nil))
+	s2.handleSetupStatus(rec, httptest.NewRequest(http.MethodGet, "/ui/setup/status", nil))
 	got := decodeStatus(t, rec.Body.Bytes())
 	if !got["hostSet"] || got["sourceEnabled"] || got["complete"] {
 		t.Fatalf("host-only: got %+v", got)
@@ -43,7 +43,7 @@ func TestHandleSetupFinish(t *testing.T) {
 	// No controller → 200 no-op.
 	s := &Server{cfg: Config{}}
 	rec := httptest.NewRecorder()
-	s.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/receiver/setup/finish", nil))
+	s.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/ui/setup/finish", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("no controller: got %d want 200", rec.Code)
 	}
@@ -53,7 +53,7 @@ func TestHandleSetupFinish(t *testing.T) {
 	s2 := &Server{cfg: Config{BridgeSaver: saver}}
 	s2.firstRun = resolveFirstRun(saver)
 	rec = httptest.NewRecorder()
-	s2.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/receiver/setup/finish", nil))
+	s2.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/ui/setup/finish", nil))
 	if rec.Code != http.StatusConflict || saver.dismissed != 0 {
 		t.Fatalf("incomplete: got %d dismissed=%d", rec.Code, saver.dismissed)
 	}
@@ -64,7 +64,7 @@ func TestHandleSetupFinish(t *testing.T) {
 	badSrv := &Server{cfg: Config{BridgeSaver: bad, Registry: enabledRegistry()}}
 	badSrv.firstRun = resolveFirstRun(bad)
 	rec = httptest.NewRecorder()
-	badSrv.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/receiver/setup/finish", nil))
+	badSrv.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/ui/setup/finish", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("dismiss-fail: got %d want 500", rec.Code)
 	}
@@ -74,7 +74,7 @@ func TestHandleSetupFinish(t *testing.T) {
 	okSrv := &Server{cfg: Config{BridgeSaver: ok, Registry: enabledRegistry()}}
 	okSrv.firstRun = resolveFirstRun(ok)
 	rec = httptest.NewRecorder()
-	okSrv.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/receiver/setup/finish", nil))
+	okSrv.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/ui/setup/finish", nil))
 	if rec.Code != http.StatusOK || ok.dismissed != 1 {
 		t.Fatalf("complete: got %d dismissed=%d", rec.Code, ok.dismissed)
 	}
@@ -85,13 +85,13 @@ func TestHandleIndex_SetupMode(t *testing.T) {
 	s := newSetupServer(t, saver, nil) // via New → templates parsed, firstRun resolved
 
 	rec := httptest.NewRecorder()
-	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/receiver", nil))
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/ui", nil))
 	html := rec.Body.String()
 
 	if !strings.Contains(html, "setup settings-open") {
 		t.Error("setup mode: body should carry 'setup settings-open' classes")
 	}
-	if !strings.Contains(html, "/receiver/static/setup.js") {
+	if !strings.Contains(html, "/ui/static/setup.js") {
 		t.Error("setup mode: setup.js script tag should be present")
 	}
 	if !strings.Contains(html, "setup-banner") {
@@ -101,9 +101,9 @@ func TestHandleIndex_SetupMode(t *testing.T) {
 	// Dismissed → none of the above.
 	saver.firstRun = false
 	rec = httptest.NewRecorder()
-	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/receiver", nil))
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/ui", nil))
 	html = rec.Body.String()
-	if strings.Contains(html, "setup-banner") || strings.Contains(html, "/receiver/static/setup.js") {
+	if strings.Contains(html, "setup-banner") || strings.Contains(html, "/ui/static/setup.js") {
 		t.Error("dismissed: setup banner/script must not render")
 	}
 }

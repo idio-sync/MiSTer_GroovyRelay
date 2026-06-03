@@ -3,9 +3,9 @@
 //   - gear button + close button toggle body.settings-open
 //   - tab clicks switch active .settings-pane purely client-side
 //   - blur on text/number/password/path/select fields POSTs to
-//     /receiver/settings/bridge (added in Task 24)
+//     /ui/settings/bridge (added in Task 24)
 //   - switch click optimistically toggles and reverts on 4xx (Task 25)
-//   - probe button single-flights against /receiver/settings/action/probe-mister (Task 26)
+//   - probe button single-flights against /ui/settings/action/probe-mister (Task 26)
 //   - field-error JSON paints inline; chip JSON renders into the
 //     drawer-local #settings-notice slot (Task 27)
 //
@@ -65,7 +65,7 @@
     form.set(name, value);
     let res;
     try {
-      res = await fetch('/receiver/settings/bridge', {
+      res = await fetch('/ui/settings/bridge', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -244,7 +244,7 @@
   // data-catalog-field instead of data-field so the existing 4A bridge
   // switch handler at this same file's button.switch[data-field] selector
   // does NOT match — otherwise both handlers would fire on click and
-  // the 4A path would POST a stray enabled=true to /receiver/settings/bridge.
+  // the 4A path would POST a stray enabled=true to /ui/settings/bridge.
   drawer.querySelectorAll('button.switch[data-catalog-provider]').forEach(el => {
     el.addEventListener('click', async () => {
       if (el.disabled) return;
@@ -257,7 +257,7 @@
       form.set(field, next ? 'true' : 'false');
       let body = {};
       try {
-        const res = await fetch(`/receiver/settings/catalog/provider/${encodeURIComponent(id)}`, {
+        const res = await fetch(`/ui/settings/catalog/provider/${encodeURIComponent(id)}`, {
           method: 'POST', body: form, credentials: 'same-origin'
         });
         body = await res.json().catch(() => ({}));
@@ -294,7 +294,7 @@
     form.set('disabled', next ? 'true' : 'false');
     let body = {};
     try {
-      const res = await fetch('/receiver/settings/catalog/direct-stream-hls-buffer', {
+      const res = await fetch('/ui/settings/catalog/direct-stream-hls-buffer', {
         method: 'POST', body: form, credentials: 'same-origin'
       });
       body = await res.json().catch(() => ({}));
@@ -354,7 +354,7 @@
       }
       let res, body = {};
       try {
-        res = await fetch('/receiver/settings/action/probe-mister', {
+        res = await fetch('/ui/settings/action/probe-mister', {
           method: 'POST',
           credentials: 'same-origin',
         });
@@ -409,7 +409,7 @@
       }
       let body = {};
       try {
-        const res = await fetch('/receiver/settings/action/launch-core', {
+        const res = await fetch('/ui/settings/action/launch-core', {
           method: 'POST',
           credentials: 'same-origin',
         });
@@ -476,7 +476,7 @@
       result.textContent = '';
       let body = {};
       try {
-        const res = await fetch('/receiver/settings/action/restore-defaults', {
+        const res = await fetch('/ui/settings/action/restore-defaults', {
           method: 'POST', credentials: 'same-origin'
         });
         body = await res.json().catch(() => ({}));
@@ -506,7 +506,7 @@
   })();
 
   // Adapter save handlers — mirror the 4A bridge handlers but POST to
-  // /receiver/settings/adapter/{adapter} with the adapter name pulled
+  // /ui/settings/adapter/{adapter} with the adapter name pulled
   // from the data-adapter attribute. [data-field] and [data-adapter]
   // never coexist on one element, so bridge + adapter paths never both fire.
 
@@ -531,7 +531,7 @@
     const body = new URLSearchParams();
     body.set(key, wasOn ? 'false' : 'true');
     try {
-      const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}`, {
+      const res = await fetch(`/ui/settings/adapter/${encodeURIComponent(adapter)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -554,7 +554,7 @@
     const body = new URLSearchParams();
     body.set(key, inp.value);
     try {
-      const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}`, {
+      const res = await fetch(`/ui/settings/adapter/${encodeURIComponent(adapter)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -604,7 +604,7 @@
       slot.classList.add('shown');
     }
     try {
-      const res = await fetch('/receiver/settings/action/streams-refresh', { method: 'POST' });
+      const res = await fetch('/ui/settings/action/streams-refresh', { method: 'POST' });
       const payload = await res.json();
       if (slot) {
         if (payload.ok) {
@@ -724,7 +724,7 @@
   }
 
   async function postLink(adapter, action, body) {
-    const res = await fetch(`/receiver/settings/adapter/${encodeURIComponent(adapter)}/link/${action}`, {
+    const res = await fetch(`/ui/settings/adapter/${encodeURIComponent(adapter)}/link/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body ? body.toString() : '',
@@ -818,7 +818,7 @@
     let payload;
     try {
       const res = await fetch(
-        `/receiver/settings/adapter/${encodeURIComponent(adapter)}/link/status`,
+        `/ui/settings/adapter/${encodeURIComponent(adapter)}/link/status`,
         { method: 'GET' }
       );
       payload = await res.json();
@@ -900,7 +900,7 @@ async function putHosts(hosts) {
   const errEl = ed ? ed.querySelector('[data-host-err]') : null;
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   try {
-    const res = await fetch('/receiver/settings/adapter/url/hosts', {
+    const res = await fetch('/ui/settings/adapter/url/hosts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hosts }),
@@ -1056,7 +1056,7 @@ async function saveLocalFilesLibraries() {
   localFilesSavePromise = (async () => {
     clearLocalFilesErr('library');
     try {
-      const res = await fetch('/receiver/settings/adapter/localfiles/libraries', {
+      const res = await fetch('/ui/settings/adapter/localfiles/libraries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ libraries: localFilesLibraries() }),
@@ -1106,7 +1106,7 @@ async function browseLocalFiles(path) {
   body.set('lib', lib);
   body.set('path', path || '');
   try {
-    const res = await fetch('/receiver/settings/adapter/localfiles/browse', {
+    const res = await fetch('/ui/settings/adapter/localfiles/browse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -1165,7 +1165,7 @@ async function castLocalFile(path) {
   body.set('lib', lib);
   body.set('path', path);
   try {
-    const res = await fetch('/receiver/settings/adapter/localfiles/cast', {
+    const res = await fetch('/ui/settings/adapter/localfiles/cast', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -1286,14 +1286,14 @@ document.addEventListener('click', (ev) => {
     const text = urlCookies().querySelector('[data-cookies-text]');
     const body = new URLSearchParams();
     body.set('cookies', text ? text.value : '');
-    postCookies('/receiver/settings/adapter/url/cookies', body.toString(),
+    postCookies('/ui/settings/adapter/url/cookies', body.toString(),
       'application/x-www-form-urlencoded');
     return;
   }
   const clear = ev.target.closest('[data-cookies-clear]');
   if (clear && urlCookies() && urlCookies().contains(clear)) {
     ev.preventDefault();
-    postCookies('/receiver/settings/adapter/url/cookies/clear', null, null);
+    postCookies('/ui/settings/adapter/url/cookies/clear', null, null);
     const text = urlCookies().querySelector('[data-cookies-text]');
     if (text) text.value = '';
   }

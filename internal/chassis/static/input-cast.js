@@ -122,13 +122,13 @@
       const fd = new FormData();
       fd.append('kind', 'file');
       fd.append('torrent_file', queuedFile, queuedFile.name);
-      return parse(await fetch('/receiver/cast', { method: 'POST', body: fd, credentials: 'same-origin' }));
+      return parse(await fetch('/ui/cast', { method: 'POST', body: fd, credentials: 'same-origin' }));
     }
     const body = new URLSearchParams();
     const kind = detectKind(input.value);
     body.set('kind', kind);
     body.set('payload', input.value.trim());
-    return parse(await fetch('/receiver/cast', {
+    return parse(await fetch('/ui/cast', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -236,7 +236,7 @@
     body.set('lib', lib);
     body.set('path', path || '');
     try {
-      const res = await fetch('/receiver/localfiles/browse', {
+      const res = await fetch('/ui/localfiles/browse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -287,7 +287,7 @@
     body.set('lib', localFilesSelect.value || '');
     body.set('path', path);
     try {
-      const res = await fetch('/receiver/localfiles/cast', {
+      const res = await fetch('/ui/localfiles/cast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),

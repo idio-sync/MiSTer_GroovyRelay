@@ -79,7 +79,7 @@ func TestE2E_StreamsRefreshThroughChassis(t *testing.T) {
 	defer ts.Close()
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/receiver/settings/action/streams-refresh", nil)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/ui/settings/action/streams-refresh", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}

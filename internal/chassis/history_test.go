@@ -173,7 +173,7 @@ func TestHandleHistoryPlayPost_CallsMatchingReplayProvider(t *testing.T) {
 	}
 	form := url.Values{}
 	form.Set("id", historyID)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/history/play", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/history/play", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 
@@ -210,7 +210,7 @@ func TestHandleHistoryPlayPost_UnknownIDReturns404(t *testing.T) {
 	}
 	form := url.Values{}
 	form.Set("id", "h_44444444444444444444444444444444")
-	req := httptest.NewRequest(http.MethodPost, "/receiver/history/play", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/history/play", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 

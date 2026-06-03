@@ -42,7 +42,7 @@ func newServerWithStreamsCasterForTest(t *testing.T, caster adapters.StreamsCast
 
 func postStreamsCast(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/streams/cast", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/streams/cast", strings.NewReader(body))
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestStreamsCast_RouteRequiresSameOrigin(t *testing.T) {
 	srv := newServerWithStreamsCasterForTest(t, &fakeStreamsCaster{})
 	mux := http.NewServeMux()
 	srv.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/streams/cast",
+	req := httptest.NewRequest(http.MethodPost, "/ui/streams/cast",
 		strings.NewReader("provider=mtv-rewind&channel=80s"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// No Sec-Fetch-Site header.

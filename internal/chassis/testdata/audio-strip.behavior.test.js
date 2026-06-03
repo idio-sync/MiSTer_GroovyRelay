@@ -330,7 +330,7 @@ test('EQ slider input (pointerdown+input) then advance PREVIEW_MS posts preview'
   assert.equal(b.commit, false);
   assert.ok(Array.isArray(b.params.eq));
   assert.equal(b.params.eq[0], 3);
-  assert.equal(h.requests[0].url, '/receiver/audio/dsp');
+  assert.equal(h.requests[0].url, '/ui/audio/dsp');
 });
 
 test('preview throttle is trailing-edge: a window posts the latest value, not the first', () => {
@@ -367,7 +367,7 @@ test('Loud switch click posts commit:true params:{loudness:true}', () => {
   const b = body(h.requests[0]);
   assert.equal(b.commit, true);
   assert.equal(b.params.loudness, true);
-  assert.equal(h.requests[0].url, '/receiver/audio/dsp');
+  assert.equal(h.requests[0].url, '/ui/audio/dsp');
 });
 
 test('Loud switch second click toggles off, posts loudness:false', () => {
@@ -439,7 +439,7 @@ test('memory pointerdown + pointerup before HOLD_MS posts recall', () => {
   const b = body(h.requests[0]);
   assert.equal(b.op, 'recall');
   assert.equal(b.slot, 1);
-  assert.equal(h.requests[0].url, '/receiver/audio/dsp/memory');
+  assert.equal(h.requests[0].url, '/ui/audio/dsp/memory');
 });
 
 test('memory pointerdown then advance HOLD_MS posts store', () => {
@@ -451,7 +451,7 @@ test('memory pointerdown then advance HOLD_MS posts store', () => {
   const b = body(h.requests[0]);
   assert.equal(b.op, 'store');
   assert.equal(b.slot, 2);
-  assert.equal(h.requests[0].url, '/receiver/audio/dsp/memory');
+  assert.equal(h.requests[0].url, '/ui/audio/dsp/memory');
 });
 
 test('memory pointerdown then pointerleave before HOLD_MS cancels store and no recall', () => {

@@ -1,8 +1,8 @@
-// Package chassis serves the receiver-chassis-styled UI under /receiver/.
+// Package chassis serves the receiver-chassis-styled UI under /ui/.
 //
-// Phase 0 of a 9-spec rollout replaces the existing /ui/* surface later,
-// while the chassis ships in parallel under /receiver/* until cutover.
-// Until then, /ui/* is unaffected.
+// Phase 0 of a 9-spec rollout replaces the existing legacy UI surface, which
+// moved to /old_ui/* at cutover. The chassis now serves as the canonical UI
+// at /ui/*.
 //
 // Design isolation: this package has zero imports of internal/ui or
 // internal/uiserver, and those packages have zero imports of this one. The
@@ -10,7 +10,7 @@
 // servers onto the same http.ServeMux.
 //
 // Phase 0 shipped the idle-only chassis preview. Phase 1 / Spec 2 wires the
-// chassis VFD to live bridge session state: GET /receiver/events serves a
+// chassis VFD to live bridge session state: GET /ui/events serves a
 // long-lived Server-Sent Events stream emitting state and vfd events. The
 // narrow SessionViewer interface (satisfied structurally by *core.Manager via
 // its StatusHomeView method) is the read-only seam between the chassis and the
@@ -18,9 +18,9 @@
 // from core.Manager lock pressure.
 //
 // Phase 1 / Spec 4 adds receiver visualizer mode control. POST
-// /receiver/visualizer accepts an application/x-www-form-urlencoded body with
+// /ui/visualizer accepts an application/x-www-form-urlencoded body with
 // mode=<value> and returns 204 after the mode is persisted. Connected receiver
-// tabs stay synchronized over GET /receiver/events through a visualizer SSE
+// tabs stay synchronized over GET /ui/events through a visualizer SSE
 // event whenever the active mode changes. The POST route is wrapped by
 // requireSameOrigin, which accepts Sec-Fetch-Site values from the same browsing
 // context and rejects missing or cross-site state-changing requests with 403.

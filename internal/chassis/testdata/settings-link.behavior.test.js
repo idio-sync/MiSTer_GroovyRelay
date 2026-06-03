@@ -350,10 +350,10 @@ function createLocalFilesHarness() {
     window: { Chassis: { settings: {} } },
     fetch: async (url, options) => {
       requests.push({ url, body: String(options.body) });
-      if (url === '/receiver/settings/adapter/localfiles/libraries') {
+      if (url === '/ui/settings/adapter/localfiles/libraries') {
         return { json: async () => ({ ok: true, libraries: [{ name: 'Array', root: '/array' }] }) };
       }
-      if (url === '/receiver/settings/adapter/localfiles/browse') {
+      if (url === '/ui/settings/adapter/localfiles/browse') {
         return { json: async () => ({ ok: true, entries: [] }) };
       }
       return { json: async () => ({ ok: true }) };
@@ -662,8 +662,8 @@ test('local files Open saves current libraries before browsing', async () => {
   assert.deepEqual(
     h.requests.map((req) => req.url),
     [
-      '/receiver/settings/adapter/localfiles/libraries',
-      '/receiver/settings/adapter/localfiles/browse',
+      '/ui/settings/adapter/localfiles/libraries',
+      '/ui/settings/adapter/localfiles/browse',
     ],
     'Open should persist the edited library rows before browse uses them'
   );

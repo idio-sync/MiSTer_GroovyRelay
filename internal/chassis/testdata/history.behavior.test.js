@@ -294,7 +294,7 @@ test('clicking a replayable row recasts it and flashes confirmation', async () =
   await settle();
 
   assert.equal(h.requests.length, 1);
-  assert.equal(h.requests[0].url, '/receiver/history/play');
+  assert.equal(h.requests[0].url, '/ui/history/play');
   assert.equal(h.requests[0].body, 'id=' + REPLAYABLE.replayId);
   assert.equal(h.errors.length, 0);
   assert.equal(row.classes.has('recasting'), true, 'row should flash on success');

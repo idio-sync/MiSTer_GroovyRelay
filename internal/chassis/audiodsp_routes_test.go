@@ -84,7 +84,7 @@ func TestHandleAudioDSP_PreviewMergesPatch(t *testing.T) {
 	saver := &fakeDSPSaver{}
 	mux := newDSPTestServer(t, ctl, saver)
 	body := `{"commit":false,"params":{"bass":4}}`
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp", strings.NewReader(body))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -105,7 +105,7 @@ func TestHandleAudioDSP_CommitPersists(t *testing.T) {
 	saver := &fakeDSPSaver{}
 	mux := newDSPTestServer(t, ctl, saver)
 	body := `{"commit":true,"params":{"treble":3}}`
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp", strings.NewReader(body))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -122,7 +122,7 @@ func TestHandleAudioDSP_RejectsOutOfRange(t *testing.T) {
 	ctl := &fakeDSPController{cur: config.DefaultAudioDSP()}
 	mux := newDSPTestServer(t, ctl, &fakeDSPSaver{})
 	body := `{"commit":true,"params":{"bass":99}}`
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp", strings.NewReader(body))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -146,7 +146,7 @@ func TestHandleAudioDSP_FailedCommitMapsStatusAndReconciles(t *testing.T) {
 	}
 	mux := newDSPTestServer(t, ctl, saver)
 	body := `{"commit":true,"params":{"bass":4}}`
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp", strings.NewReader(body))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -165,7 +165,7 @@ func TestHandleAudioDSPMemory_Store(t *testing.T) {
 	ctl := &fakeDSPController{cur: cur}
 	saver := &fakeDSPSaver{}
 	mux := newDSPTestServer(t, ctl, saver)
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp/memory", strings.NewReader(`{"op":"store","slot":2,"name":"Rock"}`))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp/memory", strings.NewReader(`{"op":"store","slot":2,"name":"Rock"}`))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -184,7 +184,7 @@ func TestHandleAudioDSPMemory_RecallCommits(t *testing.T) {
 		1: {Slot: 1, Stored: true, Treble: 5, EQ: make([]float64, 10)},
 	}}
 	mux := newDSPTestServer(t, ctl, saver)
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp/memory", strings.NewReader(`{"op":"recall","slot":1}`))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp/memory", strings.NewReader(`{"op":"recall","slot":1}`))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -199,7 +199,7 @@ func TestHandleAudioDSPMemory_RecallCommits(t *testing.T) {
 func TestHandleAudioDSPMemory_RecallEmptyIs404(t *testing.T) {
 	t.Parallel()
 	mux := newDSPTestServer(t, &fakeDSPController{cur: config.DefaultAudioDSP()}, &fakeDSPSaver{})
-	req := httptest.NewRequest("POST", "/receiver/audio/dsp/memory", strings.NewReader(`{"op":"recall","slot":3}`))
+	req := httptest.NewRequest("POST", "/ui/audio/dsp/memory", strings.NewReader(`{"op":"recall","slot":3}`))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

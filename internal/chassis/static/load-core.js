@@ -1,7 +1,7 @@
 // Receiver chassis status-bar "Load core" button.
 //
 // Wires the status-bar Load-core button to the same backend action the
-// settings drawer uses (POST /receiver/settings/action/launch-core), which
+// settings drawer uses (POST /ui/settings/action/launch-core), which
 // SSH-sends the canonical load_core command to the MiSTer using the saved
 // credentials. Single-flight: clicks are ignored while a launch is in
 // flight. Visual states mirror the existing CSS:
@@ -13,7 +13,7 @@
 (() => {
   'use strict';
 
-  const ENDPOINT = '/receiver/settings/action/launch-core';
+  const ENDPOINT = '/ui/settings/action/launch-core';
 
   function button() {
     return document.getElementById('status-load-core-btn');

@@ -24,7 +24,7 @@ func (f *fakeVolumeSaver) SaveOutputVolume(volume int) error {
 
 func postVolume(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/volume", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/volume", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	s.handleVolumePost(w, req)
@@ -118,7 +118,7 @@ func TestMount_RegistersVolumeRouteThroughRequireSameOrigin(t *testing.T) {
 	s.Mount(mux)
 
 	body := url.Values{"output_volume": {"50"}}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/volume", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/volume", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -129,7 +129,7 @@ func TestMount_RegistersVolumeRouteThroughRequireSameOrigin(t *testing.T) {
 		t.Fatalf("Cache-Control without same-origin = %q, want %q", got, "no-store")
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/receiver/volume", strings.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/ui/volume", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	w = httptest.NewRecorder()

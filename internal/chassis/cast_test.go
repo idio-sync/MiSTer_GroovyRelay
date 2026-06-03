@@ -203,7 +203,7 @@ func TestHandleCastPost_URLSuccess(t *testing.T) {
 	form := url.Values{}
 	form.Set("kind", "url")
 	form.Set("payload", "https://example.com/video.mp4")
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -223,7 +223,7 @@ func TestHandleCastPost_MagnetRoutesToTorrent(t *testing.T) {
 	form := url.Values{}
 	form.Set("kind", "magnet")
 	form.Set("payload", "magnet:?xt=urn:btih:abc")
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -244,7 +244,7 @@ func TestHandleCastPost_FileUploadPopulatesFile(t *testing.T) {
 	calls := &recordedQuickCasts{}
 	srv := newServerWithAdaptersForTest(t, calls)
 	body, contentType := makeMultipart(t, "torrent_file", "example.torrent", []byte("d8:announce..."))
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestHandleCastPost_FileUploadWrongFieldReturns400(t *testing.T) {
 	t.Parallel()
 	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
 	body, contentType := makeMultipart(t, "file", "example.torrent", []byte("d8:announce..."))
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -278,7 +278,7 @@ func TestHandleCastPost_FileUploadTooLargeReturns413(t *testing.T) {
 	t.Parallel()
 	srv := newServerWithAdaptersForTest(t, &recordedQuickCasts{})
 	body, contentType := makeMultipart(t, "torrent_file", "huge.torrent", bytes.Repeat([]byte("x"), adapters.MaxQuickCastBytes+1))
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func TestHandleCastPost_FileUploadMultipleFilesReturns400(t *testing.T) {
 		{fieldName: "torrent_file", filename: "one.torrent", data: []byte("one")},
 		{fieldName: "torrent_file", filename: "two.torrent", data: []byte("two")},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -316,7 +316,7 @@ func TestHandleCastPost_BadInputReturns400(t *testing.T) {
 	form := url.Values{}
 	form.Set("kind", "url")
 	form.Set("payload", "not-a-url")
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -340,7 +340,7 @@ func TestHandleCastPost_AdapterQuickCastErrorPropagates(t *testing.T) {
 	}
 	srv := newServerWithAdaptersForTest(t, calls)
 	body, contentType := makeMultipart(t, "torrent_file", "huge.torrent", []byte("..."))
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", body)
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -366,7 +366,7 @@ func TestHandleCastPost_UntypedErrorCollapsesToCastFailed(t *testing.T) {
 	form := url.Values{}
 	form.Set("kind", "url")
 	form.Set("payload", "https://example.com/x.mp4")
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -392,7 +392,7 @@ func TestHandleCastPost_MultipartWithNoFileReturns400(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", &buf)
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -415,7 +415,7 @@ func TestReceiverCastPostRouteRejectsMissingFetchSite(t *testing.T) {
 	form := url.Values{}
 	form.Set("kind", "url")
 	form.Set("payload", "https://example.com/x.mp4")
-	req := httptest.NewRequest(http.MethodPost, "/receiver/cast", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/ui/cast", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

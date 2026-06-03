@@ -163,7 +163,7 @@
   async function postMove(from, to) {
     try {
       const body = new URLSearchParams({ from: String(from), to: String(to) });
-      const resp = await fetch('/receiver/preset/move', {
+      const resp = await fetch('/ui/preset/move', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

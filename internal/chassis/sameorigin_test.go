@@ -13,7 +13,7 @@ func TestRequireSameOrigin_AllowsSameOrigin(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
 
@@ -33,7 +33,7 @@ func TestRequireSameOrigin_AllowsSameSite(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	w := httptest.NewRecorder()
 
@@ -53,7 +53,7 @@ func TestRequireSameOrigin_BlocksNone(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "none")
 	w := httptest.NewRecorder()
 
@@ -73,7 +73,7 @@ func TestRequireSameOrigin_BlocksCrossSite(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	w := httptest.NewRecorder()
 
@@ -93,7 +93,7 @@ func TestRequireSameOrigin_BlocksMissingHeader(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(""))
 	w := httptest.NewRecorder()
 
 	requireSameOrigin(next).ServeHTTP(w, req)
@@ -112,7 +112,7 @@ func TestRequireSameOrigin_AllowsMissingFetchMetadataWithSameOriginOrigin(t *tes
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/receiver/cast", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/ui/cast", strings.NewReader(""))
 	req.Header.Set("Origin", "http://example.com")
 	w := httptest.NewRecorder()
 
@@ -132,8 +132,8 @@ func TestRequireSameOrigin_AllowsMissingFetchMetadataWithSameOriginReferer(t *te
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/receiver/volume", strings.NewReader(""))
-	req.Header.Set("Referer", "http://example.com/receiver")
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/ui/volume", strings.NewReader(""))
+	req.Header.Set("Referer", "http://example.com/ui")
 	w := httptest.NewRecorder()
 
 	requireSameOrigin(next).ServeHTTP(w, req)
@@ -152,9 +152,9 @@ func TestRequireSameOrigin_BlocksMissingFetchMetadataWithCrossOriginFallback(t *
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/receiver/cast", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/ui/cast", strings.NewReader(""))
 	req.Header.Set("Origin", "http://evil.example")
-	req.Header.Set("Referer", "http://evil.example/receiver")
+	req.Header.Set("Referer", "http://evil.example/ui")
 	w := httptest.NewRecorder()
 
 	requireSameOrigin(next).ServeHTTP(w, req)
@@ -171,7 +171,7 @@ func TestRequireSameOrigin_Returns403JSON(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/receiver/visualizer", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/visualizer", strings.NewReader(""))
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	w := httptest.NewRecorder()
 
@@ -192,7 +192,7 @@ func TestRequireSameOriginBlocksCrossSiteUnsafeMethods(t *testing.T) {
 			t.Parallel()
 			called := false
 			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
-			req := httptest.NewRequest(method, "/receiver/catalog/provider/user:mix", nil)
+			req := httptest.NewRequest(method, "/ui/catalog/provider/user:mix", nil)
 			req.Header.Set("Sec-Fetch-Site", "cross-site")
 			w := httptest.NewRecorder()
 			requireSameOrigin(next).ServeHTTP(w, req)
@@ -216,7 +216,7 @@ func TestRequireSameOriginAllowsSameOriginUnsafeMethods(t *testing.T) {
 				called = true
 				w.WriteHeader(http.StatusNoContent)
 			})
-			req := httptest.NewRequest(method, "/receiver/catalog/provider/user:mix", nil)
+			req := httptest.NewRequest(method, "/ui/catalog/provider/user:mix", nil)
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			w := httptest.NewRecorder()
 			requireSameOrigin(next).ServeHTTP(w, req)

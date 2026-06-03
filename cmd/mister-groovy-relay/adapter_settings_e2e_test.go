@@ -134,7 +134,7 @@ allow_public_source_urls = false
 	// requireSameOrigin checks Sec-Fetch-Site: same-origin (confirmed in
 	// Task 38). Use http.NewRequest so we can set that header; the plain
 	// http.Post helper cannot.
-	req, err := http.NewRequest("POST", ts.URL+"/receiver/settings/adapter/dlna",
+	req, err := http.NewRequest("POST", ts.URL+"/ui/settings/adapter/dlna",
 		strings.NewReader("enabled=true"))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)

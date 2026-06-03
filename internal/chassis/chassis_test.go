@@ -408,7 +408,7 @@ func TestHandleIndex_RendersVolumeKnobHooks(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 
 	s.handleIndex(rec, req)
 
@@ -422,7 +422,7 @@ func TestHandleIndex_RendersVolumeKnobHooks(t *testing.T) {
 		`max="100"`,
 		`value="73"`,
 		`--volume-angle: 62deg`,
-		`/receiver/static/volume-knob.js?v=test-1.0.0`,
+		`/ui/static/volume-knob.js?v=test-1.0.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("receiver HTML missing %q\n%s", want, body)
@@ -543,7 +543,7 @@ func TestTemplatesExpectedHelpersAvailable(t *testing.T) {
 
 func TestPreprocessCSS_SubstitutesVersionPlaceholder(t *testing.T) {
 	t.Parallel()
-	src := []byte(`@font-face { src: url('/receiver/static/fonts/Inter-Variable.woff2?v={{.Version}}'); }`)
+	src := []byte(`@font-face { src: url('/ui/static/fonts/Inter-Variable.woff2?v={{.Version}}'); }`)
 	got, err := preprocessCSS(src, "test-1.2.3")
 	if err != nil {
 		t.Fatalf("preprocessCSS: %v", err)
@@ -691,7 +691,7 @@ func TestChassisJS_RuntimeContracts(t *testing.T) {
 		"document.addEventListener('DOMContentLoaded'",
 		"installSourceActions()",
 		`[data-source-action="aux-start"]`,
-		"/receiver/aux/start",
+		"/ui/aux/start",
 		"application/x-www-form-urlencoded",
 		"data-input-id",
 	} {
@@ -718,7 +718,7 @@ func TestChassisJSInstallsAUXSourceAction(t *testing.T) {
 	for _, want := range []string{
 		"function installSourceActions()",
 		`document.querySelectorAll('[data-source-action="aux-start"]')`,
-		`fetch('/receiver/aux/start'`,
+		`fetch('/ui/aux/start'`,
 		"URLSearchParams",
 		"input_id",
 		".source-cluster .hw-btn",
@@ -740,7 +740,7 @@ func TestVisualizerBankJS_RuntimeContracts(t *testing.T) {
 	for _, want := range []string{
 		"window.Chassis",
 		"window.Chassis.events.subscribe('visualizer'",
-		"/receiver/visualizer",
+		"/ui/visualizer",
 		"data-viz",
 		"queuedMode",
 		"res.status !== 204",
@@ -758,7 +758,7 @@ func TestHandleStatic_JS_Served(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/chassis.js", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -791,7 +791,7 @@ func TestHandleStatic_TransportJSServed(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/transport.js", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -816,7 +816,7 @@ func TestTransportJS_SeekUsesRawDurationMsNotClockText(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/transport.js", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -845,7 +845,7 @@ func TestTransportJS_RefusesPauseResumeClickWhenStopped(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/transport.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/transport.js", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -903,7 +903,7 @@ func TestTransportJS_SeekCancelRestoresServerBackedVisual(t *testing.T) {
 func TestHandleIndex_RendersShell200(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -929,7 +929,7 @@ func TestHandleIndex_RendersShell200(t *testing.T) {
 func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -964,7 +964,7 @@ func TestHandleIndex_IncludesEveryPartialMarker(t *testing.T) {
 func TestHandleIndex_SettingsDrawerSitsBelowTransport(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -987,7 +987,7 @@ func TestHandleIndex_SettingsDrawerSitsBelowTransport(t *testing.T) {
 func TestHandleIndex_RendersStableTemplateHooks(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1068,7 +1068,7 @@ func TestReceiverInputRendersLocalFilesButtonBesideTorrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
@@ -1100,7 +1100,7 @@ func TestReceiverInputRendersLocalFilesButtonBesideTorrent(t *testing.T) {
 func TestReceiverInputDisablesLocalFilesButtonWithoutLibraries(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
@@ -1147,7 +1147,7 @@ func TestSourceClusterAUXDisabledWhenUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1167,7 +1167,7 @@ func TestSourceClusterAUXDisabledWhenUnavailable(t *testing.T) {
 func TestHandleIndex_RendersMeterGhostSegmentsAccessibly(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1208,7 +1208,7 @@ func TestHandleIndex_RendersMeterGhostSegmentsAccessibly(t *testing.T) {
 func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1239,7 +1239,7 @@ func TestHandleIndex_RendersTransportGhostSegmentsAccessibly(t *testing.T) {
 func TestHandleIndex_RendersTransportAndVisualizerAccessibilityHooks(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1407,7 +1407,7 @@ func TestTransportTemplate_SeekDisabledReflectsActionsEnabled(t *testing.T) {
 func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1417,8 +1417,8 @@ func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		`/receiver/static/chassis.css?v=test-1.0.0`,
-		`/receiver/static/chassis.js?v=test-1.0.0`,
+		`/ui/static/chassis.css?v=test-1.0.0`,
+		`/ui/static/chassis.js?v=test-1.0.0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
@@ -1429,7 +1429,7 @@ func TestHandleIndex_AssetURLsCarryVersionQueryParam(t *testing.T) {
 func TestHandleIndex_AssetURLsIncludeStaticFingerprint(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1438,11 +1438,11 @@ func TestHandleIndex_AssetURLsIncludeStaticFingerprint(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
 	}
 	body := rr.Body.String()
-	rawVersionURL := `/receiver/static/chassis.css?v=test-1.0.0"`
+	rawVersionURL := `/ui/static/chassis.css?v=test-1.0.0"`
 	if strings.Contains(body, rawVersionURL) {
 		t.Fatalf("asset URL uses only the app version and can stay stale across local Docker rebuilds: %s", rawVersionURL)
 	}
-	fingerprinted := regexp.MustCompile(`/receiver/static/chassis\.css\?v=test-1\.0\.0-[0-9a-f]{12}"`)
+	fingerprinted := regexp.MustCompile(`/ui/static/chassis\.css\?v=test-1\.0\.0-[0-9a-f]{12}"`)
 	if !fingerprinted.MatchString(body) {
 		t.Fatalf("asset URL missing static fingerprint; body:\n%s", body)
 	}
@@ -1452,7 +1452,7 @@ func TestHandleIndex_TemplateErrorReturns500WithoutPartialBody(t *testing.T) {
 	t.Parallel()
 	tmpl := template.Must(template.New("chassis").Parse(`{{define "shell.html"}}partial body {{.MissingField}}{{end}}`))
 	s := &Server{cfg: nonZeroConfig(), tmpl: tmpl}
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 
 	s.handleIndex(rr, req)
@@ -1471,7 +1471,7 @@ func TestHandleStatic_CSS_Served(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -1493,7 +1493,7 @@ func TestHandleStatic_CSS_VersionedFontURLs(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -1531,7 +1531,7 @@ func TestHandleStatic_Fonts_Served(t *testing.T) {
 		font := font
 		t.Run(font, func(t *testing.T) {
 			t.Parallel()
-			req := httptest.NewRequest(http.MethodGet, "/receiver/static/fonts/"+font, nil)
+			req := httptest.NewRequest(http.MethodGet, "/ui/static/fonts/"+font, nil)
 			rr := httptest.NewRecorder()
 
 			mux.ServeHTTP(rr, req)
@@ -1555,7 +1555,7 @@ func TestHandleStatic_LICENSE_Served(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/fonts/LICENSE", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/fonts/LICENSE", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -1583,7 +1583,7 @@ func TestHandleStatic_UnknownAsset404(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/nonexistent.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/nonexistent.css", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -1599,7 +1599,7 @@ func TestHandleStatic_PathTraversalBlocked(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/../config.toml", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/../config.toml", nil)
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -1616,7 +1616,7 @@ func TestMount_TrailingSlashIndex(t *testing.T) {
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
 
-	for _, path := range []string{"/receiver", "/receiver/"} {
+	for _, path := range []string{"/ui", "/ui/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 
@@ -2079,7 +2079,7 @@ func TestHandleIndex_RendersLiveStateFromSession(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -2184,11 +2184,11 @@ func TestShellTemplate_LoadsVfdLiveScript(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `/receiver/static/vfd-live.js?v=test-1.0.0`) {
+	if !strings.Contains(body, `/ui/static/vfd-live.js?v=test-1.0.0`) {
 		t.Errorf("shell.html should include versioned vfd-live.js script tag")
 	}
 	chassisIdx := strings.Index(body, "chassis.js?v=")
@@ -2208,11 +2208,11 @@ func TestShellTemplate_LoadsVisualizerBankScriptAfterVfdLive(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `/receiver/static/visualizer-bank.js?v=test-1.0.0`) {
+	if !strings.Contains(body, `/ui/static/visualizer-bank.js?v=test-1.0.0`) {
 		t.Errorf("shell.html should include versioned visualizer-bank.js script tag")
 	}
 	vfdIdx := strings.Index(body, "vfd-live.js?v=")
@@ -2232,11 +2232,11 @@ func TestShellTemplate_LoadsTransportScript(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `/receiver/static/transport.js?v=test-1.0.0`) {
+	if !strings.Contains(body, `/ui/static/transport.js?v=test-1.0.0`) {
 		t.Errorf("shell.html should include versioned transport.js script tag")
 	}
 	vfdIdx := strings.Index(body, "vfd-live.js?v=")
@@ -2262,7 +2262,7 @@ func TestShellTemplate_EmitsChassisMetaTags(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
 
@@ -2336,7 +2336,7 @@ func TestHandleStatic_VfdLiveJSServed(t *testing.T) {
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
 
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/vfd-live.js", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -2565,7 +2565,7 @@ func TestMeterHTML_HasAudioScopeHooks(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	body := rec.Body.String()
 	for _, hook := range []string{
@@ -2882,13 +2882,13 @@ func TestPresetBankJS_Exists(t *testing.T) {
 func TestShellTemplate_LoadsNewScripts(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
 	for _, want := range []string{
-		`/receiver/static/input-cast.js?v=`,
-		`/receiver/static/preset-bank.js?v=`,
+		`/ui/static/input-cast.js?v=`,
+		`/ui/static/preset-bank.js?v=`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("shell.html missing %q script tag", want)
@@ -2934,7 +2934,7 @@ func TestConfig_AcceptsNew3BInterfaces(t *testing.T) {
 func TestSourceClusterTemplate_LampSlotsForEmptyAction(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -2962,7 +2962,7 @@ func TestSourceClusterTemplate_LampClassReflectsState(t *testing.T) {
 		map[string]bool{"streams": true, "plex": true},
 		"streams:mtv-rewind:80s:abc:def",
 	)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -2984,7 +2984,7 @@ func TestSourceClusterTemplate_IssueStateUsesSingleLargeLED(t *testing.T) {
 		},
 		"",
 	)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -3076,7 +3076,7 @@ func excerpt(html, kw string) string {
 func TestCatalogDrawerTemplate_RendersProviderTabs(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -3099,7 +3099,7 @@ func TestCatalogDrawerTemplate_RendersProviderTabs(t *testing.T) {
 func TestCatalogRailTemplate_RendersGroupsForActiveProvider(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -3112,7 +3112,7 @@ func TestCatalogRailTemplate_RendersGroupsForActiveProvider(t *testing.T) {
 func TestCatalogGridTemplate_RendersChannelCards(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -3139,7 +3139,7 @@ func TestCatalogDrawerTemplate_RendersWithNilCatalogViewer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	if rec.Code != http.StatusOK {
@@ -3186,7 +3186,7 @@ func newTestServerWithCatalog(t *testing.T) *Server {
 func TestPresetBankTemplate_BrowseAndSearchEnabled(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -3217,7 +3217,7 @@ func TestPresetBankTemplate_BrowseAndSearchEnabled(t *testing.T) {
 func TestPresetBankTemplate_EmitsCatalogTreeTemplatesPerProvider(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
@@ -3235,15 +3235,15 @@ func TestPresetBankTemplate_EmitsCatalogTreeTemplatesPerProvider(t *testing.T) {
 func TestShellTemplate_LoadsNew3BScripts(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
 	for _, want := range []string{
-		`/receiver/static/source-cluster.js?v=`,
-		`/receiver/static/catalog-browser.js?v=`,
-		`/receiver/static/preset-reorder.js?v=`,
-		`/receiver/static/search-filter.js?v=`,
+		`/ui/static/source-cluster.js?v=`,
+		`/ui/static/catalog-browser.js?v=`,
+		`/ui/static/preset-reorder.js?v=`,
+		`/ui/static/search-filter.js?v=`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("shell.html missing %q script tag", want)
@@ -3317,8 +3317,8 @@ func TestInputCastJSWiresReceiverLocalFilesBrowser(t *testing.T) {
 	for _, want := range []string{
 		`document.getElementById('localfiles-btn')`,
 		`document.getElementById('localfiles-drawer')`,
-		`/receiver/localfiles/browse`,
-		`/receiver/localfiles/cast`,
+		`/ui/localfiles/browse`,
+		`/ui/localfiles/cast`,
 		`data-localfiles-dir`,
 		`data-localfiles-file`,
 	} {
@@ -3360,8 +3360,8 @@ func TestCatalogBrowserJS_ExistsAndIntegrationPoints(t *testing.T) {
 		"browse-open",
 		"catalog-scanning",
 		"catalog-tab-indicator",
-		"/receiver/streams/cast",
-		"/receiver/preset/star",
+		"/ui/streams/cast",
+		"/ui/preset/star",
 		`subscribe('transport'`,
 		`subscribe('presets'`,
 		"chassis:catalog-grid-changed",
@@ -3390,7 +3390,7 @@ func TestPresetReorderJS_PointerEventsAndMoveRoute(t *testing.T) {
 		"pointerdown",
 		"pointermove",
 		"pointerup",
-		"/receiver/preset/move",
+		"/ui/preset/move",
 		"Ctrl",
 		"ArrowLeft",
 		"ArrowRight",
@@ -3616,9 +3616,9 @@ func TestMount_MountsBridgeAndProbeRoutes(t *testing.T) {
 	defer srv.Close()
 	srv.Mount(mux)
 	for _, path := range []string{
-		"/receiver/settings/bridge",
-		"/receiver/settings/action/probe-mister",
-		"/receiver/settings/action/launch-core",
+		"/ui/settings/bridge",
+		"/ui/settings/action/probe-mister",
+		"/ui/settings/action/launch-core",
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -3648,9 +3648,9 @@ func TestMount_WrongOriginRejectsBothNewRoutes(t *testing.T) {
 	defer srv.Close()
 	srv.Mount(mux)
 	for _, path := range []string{
-		"/receiver/settings/bridge",
-		"/receiver/settings/action/probe-mister",
-		"/receiver/settings/action/launch-core",
+		"/ui/settings/bridge",
+		"/ui/settings/action/probe-mister",
+		"/ui/settings/action/launch-core",
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		// No Sec-Fetch-Site header — requireSameOrigin rejects.
@@ -4020,7 +4020,7 @@ func TestTransportTemplate_GearButtonHasSettingsToggle(t *testing.T) {
 func TestShellTemplate_IncludesSettingsDrawerScript(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, req)
 	if rec.Code != http.StatusOK {
@@ -4980,7 +4980,7 @@ func TestSettingsDrawerJS_HandlesAdapterAttribute(t *testing.T) {
 	for _, want := range []string{
 		`button.switch[data-adapter]`,
 		`input.field-input[data-adapter]`,
-		`/receiver/settings/adapter/`,
+		`/ui/settings/adapter/`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("settings-drawer.js missing %q", want)
@@ -4997,7 +4997,7 @@ func TestSettingsDrawerJS_StreamsRefreshHandler(t *testing.T) {
 	js := string(jsBytes)
 	for _, want := range []string{
 		`data-settings-action="streams-refresh"`,
-		`/receiver/settings/action/streams-refresh`,
+		`/ui/settings/action/streams-refresh`,
 		`disabled`,
 	} {
 		if !strings.Contains(js, want) {
@@ -5190,7 +5190,7 @@ func TestHandleIndex_RendersThreeVfdTierHooks(t *testing.T) {
 	s := newTestServer(t) // existing helper at chassis_test.go:83
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	body := rr.Body.String()
@@ -5208,7 +5208,7 @@ func TestStaticCSS_HasVfdTierAndScrollRules(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/chassis.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/chassis.css", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	css := rr.Body.String()
@@ -5228,7 +5228,7 @@ func TestRender_AudioStripPresent(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -5259,7 +5259,7 @@ func TestRender_VolumeNotInTransport(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -5300,7 +5300,7 @@ func TestRender_EQLedOnWhenEngaged(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -5327,7 +5327,7 @@ func TestRender_StatusBarShowsLocalFilesAdapterLED(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/receiver", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	s.handleIndex(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -5346,7 +5346,7 @@ func TestStaticJS_VfdLiveUsesTierHooks(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodGet, "/receiver/static/vfd-live.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/static/vfd-live.js", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	js := rr.Body.String()

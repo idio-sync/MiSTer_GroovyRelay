@@ -125,7 +125,7 @@ func TestHandleCatalogProviderCreate_AutoEnableInvokesEnsure(t *testing.T) {
 	ensure := func(name string) error { called = (name == "streams"); return nil }
 	s := newCatalogTestServer(t, ed, ensure)
 
-	rr := postJSON(t, s.handleCatalogProviderCreate, http.MethodPost, "/receiver/catalog/provider",
+	rr := postJSON(t, s.handleCatalogProviderCreate, http.MethodPost, "/ui/catalog/provider",
 		map[string]any{"displayName": "Mix", "badgeLabel": "MX", "badgeColor": "teal",
 			"channels": []map[string]any{{"name": "Live", "url": "https://cdn.example.com/live.m3u8"}}})
 
@@ -155,7 +155,7 @@ func TestHandleCatalogProviderCreate_AutoEnableFailureReportsRestart(t *testing.
 	}}
 	ensure := func(string) error { return errors.New("yt-dlp missing") }
 	s := newCatalogTestServer(t, ed, ensure)
-	rr := postJSON(t, s.handleCatalogProviderCreate, http.MethodPost, "/receiver/catalog/provider",
+	rr := postJSON(t, s.handleCatalogProviderCreate, http.MethodPost, "/ui/catalog/provider",
 		map[string]any{"displayName": "Mix", "badgeLabel": "MX", "badgeColor": "teal"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d (provider still saved), body = %s", rr.Code, rr.Body.String())
@@ -173,7 +173,7 @@ func TestHandleCatalogChannelVerify_ReturnsResult(t *testing.T) {
 	t.Parallel()
 	ed := &fakeUserProviderEditor{verifyRes: adapters.VerifyChannelResult{OK: true, Kind: "playlist", ItemCount: 47}}
 	s := newCatalogTestServer(t, ed, nil)
-	rr := postJSON(t, s.handleCatalogChannelVerify, http.MethodPost, "/receiver/catalog/channel/verify",
+	rr := postJSON(t, s.handleCatalogChannelVerify, http.MethodPost, "/ui/catalog/channel/verify",
 		map[string]any{"url": "https://www.youtube.com/playlist?list=PL1"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
@@ -199,19 +199,19 @@ func TestCatalogProviderRoutes_MountedMethodsCallEditor(t *testing.T) {
 	s := newCatalogTestServer(t, ed, nil)
 	mux := catalogRoute(t, s)
 
-	if rr := routeJSON(t, mux, http.MethodPut, "/receiver/catalog/provider/user:mix", map[string]any{"displayName": "Mix"}, true); rr.Code != http.StatusOK {
+	if rr := routeJSON(t, mux, http.MethodPut, "/ui/catalog/provider/user:mix", map[string]any{"displayName": "Mix"}, true); rr.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	if ed.lastUpdateID != "user:mix" {
 		t.Fatalf("lastUpdateID = %q", ed.lastUpdateID)
 	}
-	if rr := routeJSON(t, mux, http.MethodPost, "/receiver/catalog/provider/user:mix/reorder", map[string]any{"channels": []map[string]any{{"id": "a", "order": 1}}}, true); rr.Code != http.StatusOK {
+	if rr := routeJSON(t, mux, http.MethodPost, "/ui/catalog/provider/user:mix/reorder", map[string]any{"channels": []map[string]any{{"id": "a", "order": 1}}}, true); rr.Code != http.StatusOK {
 		t.Fatalf("reorder status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	if ed.lastReorderID != "user:mix" {
 		t.Fatalf("lastReorderID = %q", ed.lastReorderID)
 	}
-	if rr := routeJSON(t, mux, http.MethodDelete, "/receiver/catalog/provider/user:mix", map[string]any{}, true); rr.Code != http.StatusOK {
+	if rr := routeJSON(t, mux, http.MethodDelete, "/ui/catalog/provider/user:mix", map[string]any{}, true); rr.Code != http.StatusOK {
 		t.Fatalf("DELETE status = %d body=%s", rr.Code, rr.Body.String())
 	} else {
 		var body map[string]any
@@ -225,7 +225,7 @@ func TestCatalogProviderRoutes_MountedMethodsCallEditor(t *testing.T) {
 	if ed.lastDeleteID != "user:mix" {
 		t.Fatalf("lastDeleteID = %q", ed.lastDeleteID)
 	}
-	if rr := routeJSON(t, mux, http.MethodPost, "/receiver/catalog/channel/verify", map[string]any{"url": "https://cdn.example.com/live.m3u8"}, true); rr.Code != http.StatusOK {
+	if rr := routeJSON(t, mux, http.MethodPost, "/ui/catalog/channel/verify", map[string]any{"url": "https://cdn.example.com/live.m3u8"}, true); rr.Code != http.StatusOK {
 		t.Fatalf("verify status = %d body=%s", rr.Code, rr.Body.String())
 	}
 }
@@ -238,8 +238,8 @@ func TestCatalogProviderRoutes_BlockCrossSiteUnsafeMethods(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPut, "/receiver/catalog/provider/user:mix"},
-		{http.MethodDelete, "/receiver/catalog/provider/user:mix"},
+		{http.MethodPut, "/ui/catalog/provider/user:mix"},
+		{http.MethodDelete, "/ui/catalog/provider/user:mix"},
 	}
 	for _, tc := range cases {
 		rr := routeJSON(t, mux, tc.method, tc.path, map[string]any{}, false)
@@ -253,7 +253,7 @@ func TestHandleCatalogProviderCreate_ValidationErrorRendersChip(t *testing.T) {
 	t.Parallel()
 	ed := &fakeUserProviderEditor{createErr: &adapters.QuickCastError{Status: http.StatusBadRequest, Chip: "BAD INPUT", Message: "bad color"}}
 	s := newCatalogTestServer(t, ed, nil)
-	rr := postJSON(t, s.handleCatalogProviderCreate, http.MethodPost, "/receiver/catalog/provider",
+	rr := postJSON(t, s.handleCatalogProviderCreate, http.MethodPost, "/ui/catalog/provider",
 		map[string]any{"displayName": "Mix"})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())

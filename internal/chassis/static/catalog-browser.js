@@ -182,7 +182,7 @@
     if (!provider || !channel) return;
     try {
       const body = new URLSearchParams({ provider, channel });
-      const resp = await fetch('/receiver/streams/cast', {
+      const resp = await fetch('/ui/streams/cast', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -206,7 +206,7 @@
     star.classList.add('pending');
     try {
       const body = new URLSearchParams({ provider, channel, starred: desired ? 'true' : 'false' });
-      const resp = await fetch('/receiver/preset/star', {
+      const resp = await fetch('/ui/preset/star', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

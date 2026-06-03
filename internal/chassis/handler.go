@@ -37,7 +37,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	if r.URL.Path == "/receiver/static/chassis.css" {
+	if r.URL.Path == "/ui/static/chassis.css" {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = w.Write(s.cssBytes)
 		return
@@ -48,5 +48,5 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	http.StripPrefix("/receiver/static/", http.FileServer(http.FS(staticSub))).ServeHTTP(w, r)
+	http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticSub))).ServeHTTP(w, r)
 }

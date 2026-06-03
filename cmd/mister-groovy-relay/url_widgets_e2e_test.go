@@ -92,7 +92,7 @@ func e2ePost(t *testing.T, ts *httptest.Server, path, ct, body string) map[strin
 
 func TestE2E_URLHosts_Persist(t *testing.T) {
 	ts, cfgPath, a := newURLE2EServer(t)
-	payload := e2ePost(t, ts, "/receiver/settings/adapter/url/hosts",
+	payload := e2ePost(t, ts, "/ui/settings/adapter/url/hosts",
 		"application/json", `{"hosts":["YouTube.com","vimeo.com"]}`)
 	if payload["scope"] != "hot" {
 		t.Errorf("scope = %v, want hot", payload["scope"])
@@ -111,7 +111,7 @@ func TestE2E_URLHosts_Persist(t *testing.T) {
 func TestE2E_URLCookies_SaveAndClear(t *testing.T) {
 	ts, _, a := newURLE2EServer(t)
 	netscape := "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tx\n"
-	save := e2ePost(t, ts, "/receiver/settings/adapter/url/cookies",
+	save := e2ePost(t, ts, "/ui/settings/adapter/url/cookies",
 		"application/json", `{"cookies":`+jsonString(netscape)+`}`)
 	cookie, _ := save["cookie"].(map[string]any)
 	if cookie["loaded"] != true {
@@ -120,7 +120,7 @@ func TestE2E_URLCookies_SaveAndClear(t *testing.T) {
 	if _, err := os.Stat(a.CookiesPath()); err != nil {
 		t.Errorf("cookies file not written: %v", err)
 	}
-	clr := e2ePost(t, ts, "/receiver/settings/adapter/url/cookies/clear",
+	clr := e2ePost(t, ts, "/ui/settings/adapter/url/cookies/clear",
 		"application/x-www-form-urlencoded", "")
 	cookie, _ = clr["cookie"].(map[string]any)
 	if cookie["loaded"] != false {

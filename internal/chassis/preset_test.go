@@ -44,7 +44,7 @@ func TestHandlePresetCast_Success(t *testing.T) {
 	t.Parallel()
 	caster := &fakePresetCaster{}
 	srv := newServerWithPresetCasterForTest(t, caster)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/7/cast", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/7/cast", strings.NewReader(""))
 	req.SetPathValue("slot", "7")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -60,7 +60,7 @@ func TestHandlePresetCast_Success(t *testing.T) {
 func TestHandlePresetCast_NilCasterReturns404(t *testing.T) {
 	t.Parallel()
 	srv := newServerWithPresetCasterForTest(t, nil)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/1/cast", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/1/cast", strings.NewReader(""))
 	req.SetPathValue("slot", "1")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -75,7 +75,7 @@ func TestHandlePresetCast_OutOfRangeSlots(t *testing.T) {
 	srv := newServerWithPresetCasterForTest(t, &fakePresetCaster{})
 	for _, slot := range []string{"0", "13", "-1", "abc"} {
 		t.Run("slot="+slot, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/receiver/preset/"+slot+"/cast", strings.NewReader(""))
+			req := httptest.NewRequest(http.MethodPost, "/ui/preset/"+slot+"/cast", strings.NewReader(""))
 			req.SetPathValue("slot", slot)
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			rec := httptest.NewRecorder()
@@ -100,7 +100,7 @@ func TestHandlePresetCast_QuickCastErrorPropagates(t *testing.T) {
 		},
 	}
 	srv := newServerWithPresetCasterForTest(t, caster)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/3/cast", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/3/cast", strings.NewReader(""))
 	req.SetPathValue("slot", "3")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestHandlePresetCast_UntypedErrorCollapsesToCastFailed(t *testing.T) {
 	t.Parallel()
 	caster := &fakePresetCaster{respond: func(slot int) error { return errors.New("synthetic") }}
 	srv := newServerWithPresetCasterForTest(t, caster)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/3/cast", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/3/cast", strings.NewReader(""))
 	req.SetPathValue("slot", "3")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
@@ -139,7 +139,7 @@ func TestReceiverPresetCastRouteRejectsMissingFetchSite(t *testing.T) {
 	srv := newServerWithPresetCasterForTest(t, &fakePresetCaster{})
 	mux := http.NewServeMux()
 	srv.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/1/cast", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/1/cast", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -197,7 +197,7 @@ func newServerWithPresetEditorForTest(t *testing.T, editor adapters.PresetEditor
 
 func postStar(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/star", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/star", strings.NewReader(body))
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -207,7 +207,7 @@ func postStar(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder
 
 func postMove(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/move", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/move", strings.NewReader(body))
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -362,7 +362,7 @@ func TestPresetStarRouteRequiresSameOrigin(t *testing.T) {
 	srv := newServerWithPresetEditorForTest(t, &fakePresetEditor{})
 	mux := http.NewServeMux()
 	srv.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/star",
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/star",
 		strings.NewReader("provider=mtv-rewind&channel=80s&starred=true"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -377,7 +377,7 @@ func TestPresetMoveRouteRequiresSameOrigin(t *testing.T) {
 	srv := newServerWithPresetEditorForTest(t, &fakePresetEditor{})
 	mux := http.NewServeMux()
 	srv.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/preset/move",
+	req := httptest.NewRequest(http.MethodPost, "/ui/preset/move",
 		strings.NewReader("from=1&to=2"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()

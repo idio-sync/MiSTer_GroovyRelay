@@ -385,7 +385,7 @@ func sourceChanged(prev, next sourceEnvelope) bool {
 	return false
 }
 
-// handleEvents serves a long-lived SSE stream at GET /receiver/events.
+// handleEvents serves a long-lived SSE stream at GET /ui/events.
 // Scaffolding only — the diff ticker that emits change events lands
 // in the next task. This implementation handles:
 //   - 500 when the ResponseWriter cannot flush

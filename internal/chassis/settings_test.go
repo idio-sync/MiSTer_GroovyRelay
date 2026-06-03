@@ -343,7 +343,7 @@ func newTestServerWithSaver(t *testing.T, saver BridgeSettingsSaver) *Server {
 
 func postBridge(t *testing.T, srv *Server, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/bridge",
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/bridge",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -500,7 +500,7 @@ func TestHandleSettingsBridgePost_UnknownScopeReturns500(t *testing.T) {
 
 func postProbe(t *testing.T, srv *Server) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/probe-mister", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/action/probe-mister", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
 	srv.handleSettingsActionProbeMister(rec, req)
@@ -1091,7 +1091,7 @@ func TestHLSDecoders_BoundsSubsetOfValidator(t *testing.T) {
 func TestAdapterSettingsSaver_NotReadyWhenNil(t *testing.T) {
 	t.Parallel()
 	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/dlna", nil)
 	rec := httptest.NewRecorder()
 	s.handleSettingsAdapterPost(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1107,7 +1107,7 @@ func TestAdapterSettingsSaver_NotReadyWhenNil(t *testing.T) {
 func TestStreamsRefresher_NotReadyWhenNil(t *testing.T) {
 	t.Parallel()
 	s := &Server{cfg: Config{Version: "test", StartedAt: time.Unix(0, 0)}}
-	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/action/streams-refresh", nil)
 	rec := httptest.NewRecorder()
 	s.handleSettingsActionStreamsRefresh(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1133,7 +1133,7 @@ func newTestServerForLaunchCore(saver fakeBridgeSettingsSaver, launcher CoreLaun
 
 func postLaunchCore(t *testing.T, s *Server) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest("POST", "/receiver/settings/action/launch-core", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/action/launch-core", nil)
 	rec := httptest.NewRecorder()
 	s.handleSettingsActionLaunchCore(rec, req)
 	return rec
@@ -1338,7 +1338,7 @@ func TestHandleSettingsCatalogProviderPost_EnabledOnly_HotScope(t *testing.T) {
 	}
 	srv := newTestServerForCatalog(t, mgr)
 
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/mtv-rewind", "enabled=false")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/mtv-rewind", "enabled=false")
 	req.SetPathValue("id", "mtv-rewind")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1364,7 +1364,7 @@ func TestHandleSettingsCatalogProviderPost_HLSOnly_RecastScope(t *testing.T) {
 		scope:     adapters.ScopeRestartCast,
 	}
 	srv := newTestServerForCatalog(t, mgr)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/toonami-aftermath", "hls_buffer_disabled=true")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/toonami-aftermath", "hls_buffer_disabled=true")
 	req.SetPathValue("id", "toonami-aftermath")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1380,7 +1380,7 @@ func TestHandleSettingsCatalogProviderPost_BothFields_RecastMaxWins(t *testing.T
 		scope:     adapters.ScopeRestartCast,
 	}
 	srv := newTestServerForCatalog(t, mgr)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/toonami-aftermath", "enabled=true&hls_buffer_disabled=true")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/toonami-aftermath", "enabled=true&hls_buffer_disabled=true")
 	req.SetPathValue("id", "toonami-aftermath")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1393,7 +1393,7 @@ func TestHandleSettingsCatalogProviderPost_BothFields_RecastMaxWins(t *testing.T
 func TestHandleSettingsCatalogProviderPost_UnknownProvider_404(t *testing.T) {
 	mgr := &fakeCatalogManagerMutating{providers: []CatalogProviderState{{ID: "mtv-rewind"}}}
 	srv := newTestServerForCatalog(t, mgr)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/does-not-exist", "enabled=true")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/does-not-exist", "enabled=true")
 	req.SetPathValue("id", "does-not-exist")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1408,7 +1408,7 @@ func TestHandleSettingsCatalogProviderPost_UnknownProvider_404(t *testing.T) {
 func TestHandleSettingsCatalogProviderPost_BadBool_400FieldError(t *testing.T) {
 	mgr := &fakeCatalogManagerMutating{providers: []CatalogProviderState{{ID: "mtv-rewind"}}}
 	srv := newTestServerForCatalog(t, mgr)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/mtv-rewind", "enabled=maybe")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/mtv-rewind", "enabled=maybe")
 	req.SetPathValue("id", "mtv-rewind")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1423,7 +1423,7 @@ func TestHandleSettingsCatalogProviderPost_BadBool_400FieldError(t *testing.T) {
 func TestHandleSettingsCatalogProviderPost_EmptyBody_BadInputChip(t *testing.T) {
 	mgr := &fakeCatalogManagerMutating{providers: []CatalogProviderState{{ID: "mtv-rewind"}}}
 	srv := newTestServerForCatalog(t, mgr)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/mtv-rewind", "")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/mtv-rewind", "")
 	req.SetPathValue("id", "mtv-rewind")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1435,7 +1435,7 @@ func TestHandleSettingsCatalogProviderPost_EmptyBody_BadInputChip(t *testing.T) 
 
 func TestHandleSettingsCatalogProviderPost_NilManager_NotReady503(t *testing.T) {
 	srv := newTestServerForCatalog(t, nil)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/provider/x", "enabled=true")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/provider/x", "enabled=true")
 	req.SetPathValue("id", "x")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogProviderPost(rr, req)
@@ -1449,7 +1449,7 @@ func TestHandleSettingsCatalogDirectStreamHLSBufferPost_Success(t *testing.T) {
 	mgr := &fakeCatalogManagerMutating{scope: adapters.ScopeRestartCast}
 	srv := newTestServerForCatalog(t, mgr)
 
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "disabled=true")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/direct-stream-hls-buffer", "disabled=true")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
 
@@ -1466,7 +1466,7 @@ func TestHandleSettingsCatalogDirectStreamHLSBufferPost_BadBool_400(t *testing.T
 	mgr := &fakeCatalogManagerMutating{}
 	srv := newTestServerForCatalog(t, mgr)
 
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "disabled=maybe")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/direct-stream-hls-buffer", "disabled=maybe")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
 
@@ -1482,7 +1482,7 @@ func TestHandleSettingsCatalogDirectStreamHLSBufferPost_EmptyBody_BadInput(t *te
 	mgr := &fakeCatalogManagerMutating{}
 	srv := newTestServerForCatalog(t, mgr)
 
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/direct-stream-hls-buffer", "")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
 
@@ -1494,7 +1494,7 @@ func TestHandleSettingsCatalogDirectStreamHLSBufferPost_EmptyBody_BadInput(t *te
 
 func TestHandleSettingsCatalogDirectStreamHLSBufferPost_NilManager_503(t *testing.T) {
 	srv := newTestServerForCatalog(t, nil)
-	req := newCatalogFormReq(t, "/receiver/settings/catalog/direct-stream-hls-buffer", "disabled=false")
+	req := newCatalogFormReq(t, "/ui/settings/catalog/direct-stream-hls-buffer", "disabled=false")
 	rr := httptest.NewRecorder()
 	srv.handleSettingsCatalogDirectStreamHLSBufferPost(rr, req)
 
@@ -1508,7 +1508,7 @@ func TestHandleSettingsActionRestoreDefaults_Success(t *testing.T) {
 	cr := &fakeConfigReset{}
 	srv := newTestServerForReset(t, cr)
 
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/restore-defaults", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/action/restore-defaults", nil)
 	rr := httptest.NewRecorder()
 	srv.handleSettingsActionRestoreDefaults(rr, req)
 
@@ -1523,7 +1523,7 @@ func TestHandleSettingsActionRestoreDefaults_Success(t *testing.T) {
 
 func TestHandleSettingsActionRestoreDefaults_NilReset_503(t *testing.T) {
 	srv := newTestServerForReset(t, nil)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/restore-defaults", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/action/restore-defaults", nil)
 	rr := httptest.NewRecorder()
 	srv.handleSettingsActionRestoreDefaults(rr, req)
 
@@ -1537,7 +1537,7 @@ func TestHandleSettingsActionRestoreDefaults_ChipError(t *testing.T) {
 	cr := &fakeConfigReset{err: &fakeChipErr{status: 500, chip: "WRITE FAILED"}}
 	srv := newTestServerForReset(t, cr)
 
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/action/restore-defaults", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/action/restore-defaults", nil)
 	rr := httptest.NewRecorder()
 	srv.handleSettingsActionRestoreDefaults(rr, req)
 
@@ -1649,7 +1649,7 @@ func TestAdapterSettingsPost_RequiresSameOrigin(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", strings.NewReader("enabled=true"))
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/dlna", strings.NewReader("enabled=true"))
 	req.Header.Set("Origin", "https://evil.example")
 	req.Header.Set("Host", "127.0.0.1:32102")
 	rec := httptest.NewRecorder()
@@ -1664,7 +1664,7 @@ func TestStreamsRefresh_RequiresSameOrigin(t *testing.T) {
 	s := newTestServer(t)
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/action/streams-refresh", nil)
 	req.Header.Set("Origin", "https://evil.example")
 	req.Header.Set("Host", "127.0.0.1:32102")
 	rec := httptest.NewRecorder()
@@ -1690,7 +1690,7 @@ func newTestServerForAdapterSave(saver AdapterSettingsSaver) *Server {
 
 func postAdapterSave(t *testing.T, s *Server, name, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/"+name, strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/"+name, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("name", name)
 	rec := httptest.NewRecorder()
@@ -1746,7 +1746,7 @@ func TestAdapterSave_MalformedBody(t *testing.T) {
 		},
 	}
 	s := newTestServerForAdapterSave(saver)
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/dlna", strings.NewReader("%ZZ"))
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/dlna", strings.NewReader("%ZZ"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("name", "dlna")
 	rec := httptest.NewRecorder()
@@ -1960,7 +1960,7 @@ func newTestServerForStreamsRefresh(r StreamsRefresher) *Server {
 
 func postStreamsRefresh(t *testing.T, s *Server) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest("POST", "/receiver/settings/action/streams-refresh", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/action/streams-refresh", nil)
 	rec := httptest.NewRecorder()
 	s.handleSettingsActionStreamsRefresh(rec, req)
 	return rec
@@ -2071,7 +2071,7 @@ func TestStreamsRefresh_ContextTimeout(t *testing.T) {
 	// deadline via its WithTimeout wrap.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	req := httptest.NewRequestWithContext(ctx, "POST", "/receiver/settings/action/streams-refresh", nil)
+	req := httptest.NewRequestWithContext(ctx, "POST", "/ui/settings/action/streams-refresh", nil)
 	rec := httptest.NewRecorder()
 	s.handleSettingsActionStreamsRefresh(rec, req)
 
@@ -2161,7 +2161,7 @@ func newServerWithLinker(linker AdapterLinker) *Server {
 func TestLinkStart_NilLinker(t *testing.T) {
 	s := newServerWithLinker(nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/plex/link/start", nil)
 	req.SetPathValue("name", "plex")
 	s.handleSettingsAdapterLinkStart(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -2172,7 +2172,7 @@ func TestLinkStart_NilLinker(t *testing.T) {
 func TestLinkStart_UnknownAdapter(t *testing.T) {
 	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{}})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/nope/link/start", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/nope/link/start", nil)
 	req.SetPathValue("name", "nope")
 	s.handleSettingsAdapterLinkStart(rec, req)
 	if rec.Code != http.StatusNotFound {
@@ -2183,7 +2183,7 @@ func TestLinkStart_UnknownAdapter(t *testing.T) {
 func TestLinkStart_Success(t *testing.T) {
 	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "unlinked"}}})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/plex/link/start", nil)
 	req.SetPathValue("name", "plex")
 	s.handleSettingsAdapterLinkStart(rec, req)
 	if rec.Code != http.StatusOK {
@@ -2198,7 +2198,7 @@ func TestLinkStart_Success(t *testing.T) {
 func TestLinkUnlink_Success(t *testing.T) {
 	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "linked"}}})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/unlink", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/plex/link/unlink", nil)
 	req.SetPathValue("name", "plex")
 	s.handleSettingsAdapterLinkUnlink(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"phase":"unlinked"`) {
@@ -2214,7 +2214,7 @@ func TestLinkRoutesMounted(t *testing.T) {
 	s := newServerWithLinker(&fakeAdapterLinker{views: map[string]LinkView{"plex": {Kind: "pin", Phase: "unlinked"}}})
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest("POST", "/receiver/settings/adapter/plex/link/start", nil)
+	req := httptest.NewRequest("POST", "/ui/settings/adapter/plex/link/start", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -2244,7 +2244,7 @@ func TestHandleSettingsAdapterHostsPost_NotReadyWhenNil(t *testing.T) {
 	s := newURLWidgetTestServer(t, Config{})
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/hosts",
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/adapter/url/hosts",
 		strings.NewReader(`{"hosts":["youtube.com"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -2294,7 +2294,7 @@ func postHosts(t *testing.T, s *Server, name, jsonBody string) *httptest.Respons
 	t.Helper()
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/"+name+"/hosts",
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/adapter/"+name+"/hosts",
 		strings.NewReader(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -2357,7 +2357,7 @@ func TestHandleSettingsAdapterHostsPost_CrossOriginBlocked(t *testing.T) {
 	s := newURLWidgetTestServer(t, Config{AdapterHostEditor: fe})
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/hosts",
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/adapter/url/hosts",
 		strings.NewReader(`{"hosts":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -2437,7 +2437,7 @@ func TestHandleSettingsAdapterLocalfilesBrowseSuccess(t *testing.T) {
 		{Name: "clip.mp4", Rel: "clip.mp4", Playable: true, DurationS: 12.5},
 	}}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/browse", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/settings/adapter/localfiles/browse", url.Values{
 		"lib":  {"Media"},
 		"path": {""},
 	})
@@ -2463,7 +2463,7 @@ func TestHandleSettingsAdapterLocalfilesBrowseJSONSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{entries: []LocalFileEntry{{Name: "clip.mp4", Rel: "clip.mp4", Playable: true}}}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesJSON(t, s, "/receiver/settings/adapter/localfiles/browse", `{"lib":"Media","path":"Movies"}`)
+	rec := postLocalFilesJSON(t, s, "/ui/settings/adapter/localfiles/browse", `{"lib":"Media","path":"Movies"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -2477,7 +2477,7 @@ func TestHandleSettingsAdapterLocalfilesBrowseCrossOriginBlocked(t *testing.T) {
 	s := newURLWidgetTestServer(t, Config{LocalFiles: &fakeLocalFilesService{}})
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/localfiles/browse", strings.NewReader("lib=Media"))
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/adapter/localfiles/browse", strings.NewReader("lib=Media"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	rec := httptest.NewRecorder()
@@ -2490,7 +2490,7 @@ func TestHandleSettingsAdapterLocalfilesBrowseCrossOriginBlocked(t *testing.T) {
 func TestHandleSettingsAdapterLocalfilesBrowseNotReady(t *testing.T) {
 	t.Parallel()
 	s := newURLWidgetTestServer(t, Config{})
-	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/browse", url.Values{"lib": {"Media"}})
+	rec := postLocalFilesForm(t, s, "/ui/settings/adapter/localfiles/browse", url.Values{"lib": {"Media"}})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("Code = %d, want 503", rec.Code)
 	}
@@ -2500,7 +2500,7 @@ func TestHandleSettingsAdapterLocalfilesCastSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/cast", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/settings/adapter/localfiles/cast", url.Values{
 		"lib":  {"Media"},
 		"path": {"clip.mp4"},
 	})
@@ -2521,7 +2521,7 @@ func TestHandleSettingsAdapterLocalfilesCastJSONSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesJSON(t, s, "/receiver/settings/adapter/localfiles/cast", `{"lib":"Media","path":"clip.mp4"}`)
+	rec := postLocalFilesJSON(t, s, "/ui/settings/adapter/localfiles/cast", `{"lib":"Media","path":"clip.mp4"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -2534,7 +2534,7 @@ func TestHandleSettingsAdapterLocalfilesCastError(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{castErr: errors.New("path escapes library root")}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/cast", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/settings/adapter/localfiles/cast", url.Values{
 		"lib":  {"Media"},
 		"path": {"../secret.mp4"},
 	})
@@ -2547,7 +2547,7 @@ func TestHandleReceiverLocalfilesBrowseSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{entries: []LocalFileEntry{{Name: "clip.mp4", Rel: "clip.mp4", Playable: true}}}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/localfiles/browse", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/localfiles/browse", url.Values{
 		"lib":  {"Media"},
 		"path": {"Movies"},
 	})
@@ -2563,7 +2563,7 @@ func TestHandleReceiverLocalfilesCastSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/localfiles/cast", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/localfiles/cast", url.Values{
 		"lib":  {"Media"},
 		"path": {"clip.mp4"},
 	})
@@ -2579,7 +2579,7 @@ func TestHandleReceiverLocalfilesCastErrorIsCompact(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{castErr: errors.New("open /media/private/clip.mp4: permission denied")}
 	s := newURLWidgetTestServer(t, Config{LocalFiles: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/localfiles/cast", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/localfiles/cast", url.Values{
 		"lib":  {"Media"},
 		"path": {"private/clip.mp4"},
 	})
@@ -2598,7 +2598,7 @@ func TestHandleSettingsAdapterLocalfilesLibrariesSuccess(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{setScope: "hot"}
 	s := newURLWidgetTestServer(t, Config{LocalFilesLibraryEditor: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/libraries", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/settings/adapter/localfiles/libraries", url.Values{
 		"name": {"Movies", "Music"},
 		"root": {"/media/movies", "/media/music"},
 	})
@@ -2625,7 +2625,7 @@ func TestHandleSettingsAdapterLocalfilesLibrariesFieldError(t *testing.T) {
 	t.Parallel()
 	lf := &fakeLocalFilesService{setErr: &fakeFieldErr{key: "library.0.root", msg: "path not found"}}
 	s := newURLWidgetTestServer(t, Config{LocalFilesLibraryEditor: lf})
-	rec := postLocalFilesForm(t, s, "/receiver/settings/adapter/localfiles/libraries", url.Values{
+	rec := postLocalFilesForm(t, s, "/ui/settings/adapter/localfiles/libraries", url.Values{
 		"name": {"Movies"},
 		"root": {"/missing"},
 	})
@@ -2681,7 +2681,7 @@ func TestHandleSettingsAdapterCookiesPost_SuccessForm(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true, Bytes: 128, SetAt: "2026-05-29 00:00:00Z"}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies="+url.QueryEscape("data"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -2701,7 +2701,7 @@ func TestHandleSettingsAdapterCookiesPost_SuccessJSON(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true, Bytes: 5}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies",
 		"application/json", `{"cookies":"abcde"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -2715,7 +2715,7 @@ func TestHandleSettingsAdapterCookiesPost_FieldError(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveErr: &fakeFieldErr{key: "cookies", msg: "no Netscape-format lines"}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies=junk")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
@@ -2732,7 +2732,7 @@ func TestHandleSettingsAdapterCookiesClear_Success(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies/clear",
 		"application/x-www-form-urlencoded", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Code = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -2748,7 +2748,7 @@ func TestHandleSettingsAdapterCookiesClear_Success(t *testing.T) {
 func TestHandleSettingsAdapterCookiesPost_NotReadyWhenNil(t *testing.T) {
 	t.Parallel()
 	s := newURLWidgetTestServer(t, Config{})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies=x")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("Code = %d, want 503", rec.Code)
@@ -2761,7 +2761,7 @@ func TestHandleSettingsAdapterCookiesPost_CrossOriginBlocked(t *testing.T) {
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
 	mux := http.NewServeMux()
 	s.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "/receiver/settings/adapter/url/cookies",
+	req := httptest.NewRequest(http.MethodPost, "/ui/settings/adapter/url/cookies",
 		strings.NewReader("cookies=x"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -2779,7 +2779,7 @@ func TestHandleSettingsAdapterCookiesPost_UnknownAdapter(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/streams/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/streams/cookies",
 		"application/x-www-form-urlencoded", "cookies=x")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("Code = %d, want 404; body=%s", rec.Code, rec.Body.String())
@@ -2793,7 +2793,7 @@ func TestHandleSettingsAdapterCookiesPost_OversizeIsFieldError(t *testing.T) {
 	t.Parallel()
 	cs := &fakeCookieStore{saveView: CookieStatusView{Loaded: true}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies="+strings.Repeat("x", (1<<20)+2))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("Code = %d, want 400; body=%s", rec.Code, rec.Body.String())
@@ -2813,7 +2813,7 @@ func TestHandleSettingsAdapterCookiesPost_WriteFailureIsGenericChip(t *testing.T
 	t.Parallel()
 	cs := &fakeCookieStore{saveErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies",
 		"application/x-www-form-urlencoded", "cookies=x")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("Code = %d, want 500; body=%s", rec.Code, rec.Body.String())
@@ -2827,7 +2827,7 @@ func TestHandleSettingsAdapterCookiesClear_WriteFailureIsGenericChip(t *testing.
 	t.Parallel()
 	cs := &fakeCookieStore{clearErr: &fakeChipErr{status: http.StatusInternalServerError, chip: "WRITE FAILED"}}
 	s := newURLWidgetTestServer(t, Config{AdapterCookieStore: cs})
-	rec := postCookies(t, s, "/receiver/settings/adapter/url/cookies/clear",
+	rec := postCookies(t, s, "/ui/settings/adapter/url/cookies/clear",
 		"application/x-www-form-urlencoded", "")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("Code = %d, want 500; body=%s", rec.Code, rec.Body.String())

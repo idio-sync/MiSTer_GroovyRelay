@@ -65,7 +65,7 @@ func (s *Server) handleTransportAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if action == adapters.PlaybackActionSeek {
-		writeJSONError(w, http.StatusBadRequest, "seek must use the /receiver/transport/seek route")
+		writeJSONError(w, http.StatusBadRequest, "seek must use the /ui/transport/seek route")
 		return
 	}
 	if _, ok := allowedTransportActions[action]; !ok {

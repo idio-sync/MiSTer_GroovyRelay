@@ -1,6 +1,6 @@
 // Receiver chassis transport controls.
 //
-// Uses the shared /receiver/events EventSource exposed by vfd-live.js and
+// Uses the shared /ui/events EventSource exposed by vfd-live.js and
 // posts playback actions back to the transport endpoints.
 (() => {
   'use strict';
@@ -202,7 +202,7 @@
       return;
     }
     try {
-      const res = await postForm('/receiver/transport/action', {
+      const res = await postForm('/ui/transport/action', {
         adapter_ref: adapterRef,
         generation: String(generation),
         action,
@@ -221,7 +221,7 @@
       return;
     }
     try {
-      const res = await postForm('/receiver/transport/seek', {
+      const res = await postForm('/ui/transport/seek', {
         adapter_ref: adapterRef,
         generation: String(generation),
         offset_ms: String(offsetMs),

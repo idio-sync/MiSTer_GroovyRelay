@@ -113,7 +113,7 @@
         if (inputID) {
           form.set('input_id', inputID);
         }
-        fetch('/receiver/aux/start', {
+        fetch('/ui/aux/start', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -275,7 +275,7 @@
     try {
       const body = new URLSearchParams();
       body.set('id', id);
-      const res = await fetch('/receiver/history/play', {
+      const res = await fetch('/ui/history/play', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {

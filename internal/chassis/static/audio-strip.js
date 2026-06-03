@@ -1,6 +1,6 @@
 // Receiver audio/EQ strip: tone/balance knobs, 10-band EQ, switches,
 // presets, and EQ memories. Posts previews while dragging and a commit on
-// release to /receiver/audio/dsp; memories to /receiver/audio/dsp/memory.
+// release to /ui/audio/dsp; memories to /ui/audio/dsp/memory.
 // Syncs from the shared `audioDsp` SSE event (vfd-live.js owns EventSource).
 (() => {
   'use strict';
@@ -25,14 +25,14 @@
   let pendingPreview = null;
 
   function post(body) {
-    return fetch('/receiver/audio/dsp', {
+    return fetch('/ui/audio/dsp', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   }
   function postMemory(body) {
-    return fetch('/receiver/audio/dsp/memory', {
+    return fetch('/ui/audio/dsp/memory', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

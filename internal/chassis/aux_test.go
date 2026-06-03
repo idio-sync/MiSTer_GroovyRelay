@@ -69,7 +69,7 @@ func TestAUXStartRouteStartsConfiguredInput(t *testing.T) {
 	fake := &fakeAUXStarter{}
 	s := &Server{aux: fake}
 
-	w := postAUX(t, s.handleAUXStartPost, "/receiver/aux/start", url.Values{
+	w := postAUX(t, s.handleAUXStartPost, "/ui/aux/start", url.Values{
 		"input_id": {" aux-line-in "},
 	}.Encode())
 
@@ -88,7 +88,7 @@ func TestAUXStartRouteRejectsWrongInputID(t *testing.T) {
 	fake := &fakeAUXStarter{startErr: fmt.Errorf("%w: AUX input unavailable", adapters.ErrSourceUnavailable)}
 	s := &Server{aux: fake}
 
-	w := postAUX(t, s.handleAUXStartPost, "/receiver/aux/start", url.Values{
+	w := postAUX(t, s.handleAUXStartPost, "/ui/aux/start", url.Values{
 		"input_id": {"wrong"},
 	}.Encode())
 
@@ -118,7 +118,7 @@ func TestAUXStartRouteUsesSameOriginProtection(t *testing.T) {
 	s.Mount(mux)
 	t.Cleanup(func() { _ = s.Close() })
 
-	req := httptest.NewRequest(http.MethodPost, "/receiver/aux/start", strings.NewReader(url.Values{
+	req := httptest.NewRequest(http.MethodPost, "/ui/aux/start", strings.NewReader(url.Values{
 		"input_id": {"aux"},
 	}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -136,7 +136,7 @@ func TestAUXStartRouteUsesSameOriginProtection(t *testing.T) {
 func TestAUXStopRouteNoopsWithoutAUX(t *testing.T) {
 	s := &Server{}
 
-	w := postAUX(t, s.handleAUXStopPost, "/receiver/aux/stop", url.Values{
+	w := postAUX(t, s.handleAUXStopPost, "/ui/aux/stop", url.Values{
 		"input_id": {"aux"},
 	}.Encode())
 
@@ -152,7 +152,7 @@ func TestAUXStopRouteDoesNotRequireForeignStopMatch(t *testing.T) {
 	fake := &fakeAUXStarter{stopMatched: false}
 	s := &Server{aux: fake}
 
-	w := postAUX(t, s.handleAUXStopPost, "/receiver/aux/stop", url.Values{
+	w := postAUX(t, s.handleAUXStopPost, "/ui/aux/stop", url.Values{
 		"input_id": {" foreign "},
 	}.Encode())
 
