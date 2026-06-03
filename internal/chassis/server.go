@@ -85,6 +85,15 @@ type Config struct {
 	// PresetEditor: streams adapter for star-toggle and move operations.
 	PresetEditor adapters.PresetEditor
 
+	// UserProviderEditor backs the catalog authoring routes (create/update/
+	// delete/reorder/verify). Interface-only, like PresetEditor — the streams
+	// adapter implements it and main.go injects it by type assertion.
+	UserProviderEditor adapters.UserProviderEditor
+	// EnsureAdapterStarted enables + hot-starts a disabled adapter mid-process
+	// (spec §10). Injected from main.go (it owns the process ctx + registry).
+	// Nil in tests that don't exercise auto-enable.
+	EnsureAdapterStarted func(name string) error
+
 	// SourceAvailabilityViewers: every adapter that implements the
 	// interface, in registration order. main.go assembles the slice
 	// from the registry. The chassis does NOT inspect the registry
@@ -164,6 +173,8 @@ type Server struct {
 	streamsCatalogViewer adapters.StreamsCatalogViewer
 	streamsCaster        adapters.StreamsCaster
 	presetEditor         adapters.PresetEditor
+	userProviderEditor   adapters.UserProviderEditor
+	ensureAdapterStarted func(name string) error
 	sourceViewers        []adapters.SourceAvailabilityViewer
 
 	cache       *snapshotCache
@@ -230,6 +241,8 @@ func New(cfg Config) (*Server, error) {
 		streamsCatalogViewer: cfg.StreamsCatalogViewer,
 		streamsCaster:        cfg.StreamsCaster,
 		presetEditor:         cfg.PresetEditor,
+		userProviderEditor:   cfg.UserProviderEditor,
+		ensureAdapterStarted: cfg.EnsureAdapterStarted,
 		sourceViewers:        cfg.SourceAvailabilityViewers,
 		cache:                &snapshotCache{},
 		cacheDone:            make(chan struct{}),
