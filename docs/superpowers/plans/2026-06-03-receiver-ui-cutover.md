@@ -49,8 +49,15 @@ Update every `/receiver` path string in `internal/chassis/*_test.go`, the behavi
 
 - [ ] **Step 3: Verify no `/receiver` remains in `internal/chassis` or the cmd tests**
 
-Run: `rg -n "/receiver" internal/chassis cmd/mister-groovy-relay`
-Expected: no matches (every chassis route is now `/ui`). If any remain, fix them.
+Run:
+```bash
+rg -n "/receiver" internal/chassis \
+  cmd/mister-groovy-relay/adapter_linker_e2e_test.go \
+  cmd/mister-groovy-relay/adapter_settings_e2e_test.go \
+  cmd/mister-groovy-relay/streams_refresher_test.go \
+  cmd/mister-groovy-relay/url_widgets_e2e_test.go
+```
+Expected: no matches (every chassis route and chassis-route cmd test is now `/ui`). If any remain, fix them. `cmd/mister-groovy-relay/main.go`'s stale wiring comment is intentionally left to the Task 4 docs/comment sweep.
 
 - [ ] **Step 4: Run chassis + cmd tests and JS syntax check**
 
@@ -120,8 +127,8 @@ Update every `/ui/...` path assertion in `internal/ui/*_test.go` to `/old_ui/...
 
 - [ ] **Step 4: Verify the carve-out and run the legacy suite**
 
-Run: `rg -n '"/ui/' internal/ui --glob '!*_test.go'`
-Expected: only companion routes (`/ui/companion/...`) and the `handleRoot` redirect target `/ui/` remain. Anything else is a missed rename — fix it.
+Run: `rg -n '(/ui/(status|playback|static|bridge|diagnostics|sidebar|adapter|setup)|OPTIONS /ui/?")' internal/ui --glob '!*_test.go'`
+Expected: no matches. This intentionally ignores the Companion carve-out (`/ui/companion/...`) and the root redirect target (`/ui/`), but catches stale legacy visual routes, static paths, setup paths, adapter paths, and broad `OPTIONS /ui` preflights.
 
 Run: `go test ./internal/ui/`
 Expected: PASS.
@@ -138,18 +145,18 @@ git commit -m "refactor(ui): re-prefix legacy UI /ui -> /old_ui, keep /ui/compan
 ## Task 3: Adapter-owned legacy-UI fragments `/ui/adapter` → `/old_ui/adapter`
 
 **Files:**
-- Modify: `internal/adapters/url/ui.go` (and `routes.go` if it hardcodes the full `/ui/adapter` path), `internal/adapters/plex/link_ui.go`, `internal/adapters/jellyfin/ui.go`, `internal/adapters/torrent/ui.go`, `internal/adapters/streams/ui.go`.
-- Modify (tests): the corresponding `*_test.go` in each adapter package that assert the fragment strings.
+- Modify: `internal/adapters/url/ui.go` (and `routes.go` if it hardcodes the full `/ui/adapter` path), `internal/adapters/plex/link_ui.go`, `internal/adapters/jellyfin/link_ui.go` (plus `ui.go` only if its wrapper grows direct `/ui/adapter` strings), `internal/adapters/torrent/ui.go`, `internal/adapters/streams/ui.go`.
+- Modify (tests): every corresponding `*_test.go` in those adapter packages containing `/ui/adapter` strings (fragment assertions, handler request paths, and comments).
 
 > Context: these adapters implement `ExtraPanelHTML`/`RouteProvider` and emit absolute `/ui/adapter/<name>/...` URLs (htmx attributes, form actions, polling URLs) that render inside the legacy adapter panel. The route *patterns* are mounted by `internal/ui` (renamed in Task 2 to `/old_ui/adapter/...`), so these fragments must match or the `/old_ui` adapter panels break. The chassis settings drawer uses separate `/ui/settings/adapter/...` routes (renamed in Task 1) — do **not** touch those.
 
 - [ ] **Step 1: Rename the fragment URLs**
 
-In each `ui.go`/`link_ui.go`, replace every `/ui/adapter/<name>/...` string with `/old_ui/adapter/<name>/...`. Concrete known spots: `url/ui.go` (`hx-get="/ui/adapter/url/panel"`, `hx-post="/ui/adapter/url/history/delete"`, `hx-post="/ui/adapter/url/cookies"`), `plex/link_ui.go` (`/ui/adapter/plex/link/start`, `/link/status`, `/unlink`), `torrent/ui.go` (`/ui/adapter/torrent/live`), and the `ExtraPanelHTML` output in `jellyfin/ui.go` and `streams/ui.go`.
+In each `ui.go`/`link_ui.go`, replace every `/ui/adapter/<name>/...` string with `/old_ui/adapter/<name>/...`. Concrete known spots: `url/ui.go` (`hx-get="/ui/adapter/url/panel"`, `hx-post="/ui/adapter/url/history/delete"`, `hx-post="/ui/adapter/url/cookies"`), `plex/link_ui.go` (`/ui/adapter/plex/link/start`, `/link/status`, `/unlink`), `jellyfin/link_ui.go` (`/ui/adapter/jellyfin/link/start`, `/unlink`), `torrent/ui.go` (`/ui/adapter/torrent/live`), and the `ExtraPanelHTML` output in `streams/ui.go`.
 
 - [ ] **Step 2: Update the adapter package tests**
 
-Update each adapter `*_test.go` that asserts a `/ui/adapter/...` fragment string to `/old_ui/adapter/...`.
+Update every adapter `*_test.go` request path, assertion, expected fragment, and comment that contains `/ui/adapter/...` to `/old_ui/adapter/...`. The Task 3 audit below should leave no `/ui/adapter` matches anywhere in `internal/adapters`.
 
 - [ ] **Step 3: Verify no legacy `/ui/adapter` fragments remain**
 
@@ -174,7 +181,7 @@ git commit -m "refactor(adapters): move legacy UI fragments /ui/adapter -> /old_
 
 **Files:**
 - Create: `cmd/mister-groovy-relay/cutover_mount_test.go`
-- Modify: `internal/ui/bridge.go` (stale comment), `README.md`.
+- Modify: `cmd/mister-groovy-relay/main.go` (stale comment), `internal/ui/bridge.go` (stale comment), `README.md`.
 
 - [ ] **Step 1: Write the dual-mount smoke test (fails first if any rename is incomplete)**
 
@@ -186,6 +193,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,23 +223,71 @@ func TestCutover_DualMount(t *testing.T) {
 	ui.Mount(mux)
 	ch.Mount(mux)
 
-	check := func(method, path string, wantNotFound bool) {
+	check := func(method, path, body string, want int) *httptest.ResponseRecorder {
 		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
-		got404 := rec.Code == http.StatusNotFound
-		if got404 != wantNotFound {
-			t.Errorf("%s %s: code=%d wantNotFound=%v", method, path, rec.Code, wantNotFound)
+		mux.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("%s %s: code=%d want %d; body=%q", method, path, rec.Code, want, rec.Body.String())
+		}
+		return rec
+	}
+
+	checkBodyContains := func(rec *httptest.ResponseRecorder, needle string) {
+		t.Helper()
+		if !strings.Contains(rec.Body.String(), needle) {
+			t.Fatalf("body missing %q; body=%q", needle, rec.Body.String())
 		}
 	}
 
-	check("GET", "/ui", false)                     // chassis index
-	check("GET", "/ui/", false)                    // chassis index
-	check("GET", "/old_ui/", false)                // legacy shell
-	check("GET", "/old_ui/setup", false)           // legacy wizard
-	check("GET", "/ui/companion/status", false)    // companion API stays at /ui
-	check("GET", "/receiver", true)                // retired
-	check("GET", "/receiver/static/chassis.css", true) // retired
+	checkLocation := func(rec *httptest.ResponseRecorder, want string) {
+		t.Helper()
+		if got := rec.Header().Get("Location"); got != want {
+			t.Fatalf("Location=%q want %q", got, want)
+		}
+	}
+
+	checkCompanionPreflight := func(path string) {
+		t.Helper()
+		const origin = "moz-extension://groovy-relay"
+		req := httptest.NewRequest(http.MethodOptions, path, nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		req.Header.Set("Access-Control-Request-Headers", "content-type, x-bridge-extension")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("OPTIONS %s: code=%d want %d", path, rec.Code, http.StatusNoContent)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+			t.Fatalf("OPTIONS %s: Access-Control-Allow-Origin=%q want %q", path, got, origin)
+		}
+	}
+
+	checkLocation(check("GET", "/", "", http.StatusFound), "/ui/")
+	checkBodyContains(check("GET", "/ui", "", http.StatusOK), "/ui/static/chassis.css")
+	checkBodyContains(check("GET", "/ui/", "", http.StatusOK), "/ui/static/chassis.css")
+	checkBodyContains(check("GET", "/old_ui/", "", http.StatusOK), "/old_ui/static/app.css")
+	checkLocation(check("GET", "/old_ui/setup", "", http.StatusFound), "/old_ui/setup/step/adapters")
+	check("POST", "/old_ui/setup/step/bridge", "mister.host=192.0.2.10", http.StatusInternalServerError)
+
+	checkBodyContains(check("GET", "/ui/companion/status", "", http.StatusOK), `"ok":true`)
+	checkCompanionPreflight("/ui/companion/status")
+	checkCompanionPreflight("/ui/companion/history/delete")
+
+	// Chassis action route is registered at /ui and reaches the handler. With
+	// an empty registry this returns the handler's JSON 404, not mux NotFound.
+	checkBodyContains(check("POST", "/ui/cast", "kind=url&payload=https%3A%2F%2Fexample.com%2Fvideo.mp4", http.StatusNotFound), "NOT FOUND")
+	// The legacy broad OPTIONS /ui/ preflight must not survive and catch chassis routes.
+	check("OPTIONS", "/ui/cast", "", http.StatusMethodNotAllowed)
+
+	check("GET", "/receiver", "", http.StatusNotFound)
+	check("GET", "/receiver/static/chassis.css", "", http.StatusNotFound)
 }
 ```
 
@@ -246,7 +302,7 @@ Expected: PASS. A panic here means a stray un-renamed pattern collides (e.g. leg
 
 Run:
 ```bash
-rg -n '/receiver|/ui/adapter|/ui/setup|/ui/playback|/ui/static|/ui/bridge|/ui/diagnostics|/ui/sidebar' internal cmd README.md
+rg -n '/receiver|/ui/adapter|/ui/setup|/ui/playback|/ui/static|/ui/bridge|/ui/diagnostics|/ui/sidebar|/ui/status|OPTIONS /ui|"/ui"|"/ui/"' internal cmd README.md
 ```
 Review each hit. **Expected survivors only:** canonical chassis `/ui/...` references; the Companion carve-out `/ui/companion/...`; `internal/ui`'s `handleRoot` redirect to `/ui/`; and the cutover smoke test's intentional `/receiver` 404 assertions in `cmd/mister-groovy-relay/cutover_mount_test.go`. Any *other* live `/receiver` or legacy `/ui/<visual>` route string is a miss — fix it. (Do not sweep `docs/superpowers/**` — those design/plan files are history.)
 
@@ -264,7 +320,7 @@ Expected: all packages `ok`. (`go test -race` is CI-only here — no local cgo. 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/mister-groovy-relay/cutover_mount_test.go internal/ui/bridge.go README.md
+git add cmd/mister-groovy-relay/cutover_mount_test.go cmd/mister-groovy-relay/main.go internal/ui/bridge.go README.md
 git commit -m "test(cutover): dual-mount smoke test; docs: fix stale /receiver references"
 ```
 
