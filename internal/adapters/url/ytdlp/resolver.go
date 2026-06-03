@@ -270,7 +270,10 @@ func (r *Resolver) EnumeratePlaylist(ctx context.Context, pageURL, cookiesPath s
 	if cookiesPath != "" {
 		args = append(args, "--cookies", cookiesPath)
 	}
-	args = append(args, pageURL)
+	// "--" stops yt-dlp option parsing so a pageURL beginning with "-" can never
+	// be smuggled in as a flag (defense in depth; user playlist URLs are also
+	// validated by validateUserProviderHost upstream).
+	args = append(args, "--", pageURL)
 
 	runCtx := ctx
 	cancel := func() {}

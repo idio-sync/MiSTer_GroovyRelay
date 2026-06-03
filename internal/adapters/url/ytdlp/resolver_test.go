@@ -632,6 +632,19 @@ func TestEnumeratePlaylist_RespectsCallerDeadlineOverResolverTimeout(t *testing.
 	}
 }
 
+func TestEnumeratePlaylist_EndOfOptionsMarkerBeforeURL(t *testing.T) {
+	r := &stubRunner{stdouts: [][]byte{[]byte("{}")}}
+	res := Resolver{Binary: "/usr/local/bin/yt-dlp", Timeout: 5 * time.Second, Runner: r}
+	if _, err := res.EnumeratePlaylist(context.Background(), "-malicious-flag", "", 10); err != nil {
+		t.Fatalf("EnumeratePlaylist: %v", err)
+	}
+	got := r.calls[0]
+	i := indexOf(got, "--")
+	if i < 0 || i+1 >= len(got) || got[i+1] != "-malicious-flag" {
+		t.Fatalf("expected `--` immediately before the URL; argv = %v", got)
+	}
+}
+
 // helpers
 
 func mustContain(t *testing.T, argv []string, want string) {
