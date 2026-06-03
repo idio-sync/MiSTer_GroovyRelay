@@ -138,6 +138,7 @@ type Config struct {
 // Server owns the chassis runtime state.
 type Server struct {
 	cfg      Config
+	firstRun FirstRunController
 	session  SessionViewer
 	tmpl     *template.Template
 	cssBytes []byte
@@ -234,6 +235,7 @@ func New(cfg Config) (*Server, error) {
 		cacheDone:            make(chan struct{}),
 		meterRefusalLog:      &onePerSecondLimiter{},
 	}
+	s.firstRun = resolveFirstRun(cfg.BridgeSaver)
 	// Seed the cache synchronously so the first SSE connection always
 	// sees a coherent snapshot — no zero-value VFD or stale state.
 	// New deliberately does NOT start a goroutine: unmounted servers
