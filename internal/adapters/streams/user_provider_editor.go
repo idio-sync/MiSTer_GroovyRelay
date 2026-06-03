@@ -247,6 +247,65 @@ func (a *Adapter) DeleteUserProvider(ctx context.Context, id string) (adapters.U
 	return adapters.UserProviderResult{ClearedSlots: cleared}, nil
 }
 
+// ReorderUserProvider applies new Order values to a stored provider's channels
+// and groups, then rebuilds CACHE-ONLY so playlist items are reused (no
+// yt-dlp). Unknown IDs in the request are ignored (defensive: the browser may
+// be stale). Order-only edits never affect preset references.
+func (a *Adapter) ReorderUserProvider(ctx context.Context, id string, req adapters.ReorderRequest) error {
+	if a.userStore == nil {
+		return fmt.Errorf("streams: user provider store not initialized")
+	}
+	if !isUserProviderID(id) {
+		return userInputError(fmt.Errorf("provider id %q is not a user provider", id))
+	}
+	a.userEditMu.Lock()
+	defer a.userEditMu.Unlock()
+	var target ProviderDefinition
+	found := false
+	for _, def := range a.userStore.Snapshot() {
+		if def.ID == id {
+			target = def
+			found = true
+			break
+		}
+	}
+	if !found {
+		return notFoundUserProvider(id)
+	}
+	chOrder := map[string]int{}
+	for _, e := range req.Channels {
+		chOrder[e.ID] = e.Order
+	}
+	grOrder := map[string]int{}
+	for _, e := range req.Groups {
+		grOrder[e.ID] = e.Order
+	}
+	for i := range target.Channels {
+		if o, ok := chOrder[target.Channels[i].ID]; ok {
+			target.Channels[i].Order = o
+		}
+	}
+	for i := range target.Groups {
+		if o, ok := grOrder[target.Groups[i].ID]; ok {
+			target.Groups[i].Order = o
+		}
+	}
+	_, candidate, err := a.userStore.PlanPut(target)
+	if err != nil {
+		return userInputError(err)
+	}
+	snapshot, err := a.buildUserCatalogSnapshotCacheOnly(ctx, candidate)
+	if err != nil {
+		return err
+	}
+	if err := a.userStore.CommitProviders(candidate); err != nil {
+		return err
+	}
+	a.installUserCatalogSnapshot(snapshot)
+	a.presetStore.Rehydrate()
+	return nil
+}
+
 // userChannelIDs returns the set of channel IDs for a stored user provider
 // (empty set if absent). Read off the store snapshot — no lock on a.mu.
 func (a *Adapter) userChannelIDs(id string) map[string]struct{} {

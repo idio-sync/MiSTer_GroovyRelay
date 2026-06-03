@@ -282,6 +282,61 @@ func TestDeleteUserProvider_UnknownIDIsNotFound(t *testing.T) {
 	}
 }
 
+func TestReorderUserProvider_PersistsOrderWithoutEnumerating(t *testing.T) {
+	t.Parallel()
+	playlistURL := "https://www.youtube.com/playlist?list=PL1"
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		playlistURL: ytEntries("dQw4w9WgXcQ"),
+	}}
+	a := newEditAdapter(t, fr)
+	created, err := a.CreateUserProvider(context.Background(), adapters.UserProviderForm{
+		DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []adapters.UserChannelForm{
+			{Name: "First", URL: "https://cdn.example.com/a.m3u8", Order: 0},
+			{Name: "Listy", URL: playlistURL, Order: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	enumAfterCreate := fr.enumCalls
+	keep, _ := firstTwoChannelIDs(t, created.Provider)
+
+	if err := a.ReorderUserProvider(context.Background(), created.Provider.ID, adapters.ReorderRequest{
+		Channels: []adapters.UserOrderEntry{{ID: keep, Order: 5}},
+	}); err != nil {
+		t.Fatalf("reorder: %v", err)
+	}
+	if fr.enumCalls != enumAfterCreate {
+		t.Fatalf("reorder triggered enumeration (calls %d → %d); it must reuse cache", enumAfterCreate, fr.enumCalls)
+	}
+	// Persisted Order survived.
+	for _, def := range a.userStore.Snapshot() {
+		if def.ID != created.Provider.ID {
+			continue
+		}
+		for _, ch := range def.Channels {
+			if ch.ID == keep && ch.Order != 5 {
+				t.Fatalf("channel %q Order = %d, want 5", keep, ch.Order)
+			}
+		}
+	}
+}
+
+func firstTwoChannelIDs(t *testing.T, p adapters.CatalogProvider) (string, string) {
+	t.Helper()
+	var ids []string
+	for _, g := range p.Groups {
+		for _, ch := range g.Channels {
+			ids = append(ids, ch.ID)
+		}
+	}
+	if len(ids) < 2 {
+		t.Fatalf("want >=2 channels, got %v", ids)
+	}
+	return ids[0], ids[1]
+}
+
 // channelIDsByName returns the (keep, drop) channel IDs from a chassis-shaped
 // provider whose channels are named "Keep"/"Drop".
 func channelIDsByName(t *testing.T, p adapters.CatalogProvider) (keep, drop string) {
