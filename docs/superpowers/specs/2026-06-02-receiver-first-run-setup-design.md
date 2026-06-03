@@ -69,7 +69,8 @@ normally but in a guided "setup mode" until the install is configured.
 ## Done When
 
 - On a fresh install (`IsFirstRun() == true`), `GET /receiver` renders the chassis with
-  a welcome banner, the settings drawer auto-opened, and cast actions disabled.
+  a welcome banner, the settings drawer open from first paint, and cast-initiation UI
+  disabled.
 - The welcome banner shows a two-item checklist: MiSTer host set, and ≥1 source enabled.
 - Cast-initiation POSTs return `409` while setup mode is active (first-run sentinel
   still set), including after criteria are met but before Finish is clicked.
@@ -91,7 +92,9 @@ Setup is complete when **both** hold, mirroring the legacy
 
 `Config.Registry` (`*adapters.Registry`) is already passed to the chassis and already
 used by `idleSnapshot`, so this check needs no new dependency and introduces no new
-cross-package import (preserving `import_check_test.go`).
+cross-package import (preserving `import_check_test.go`). The helper is nil-safe:
+`cfg.Registry == nil` means `sourceEnabled=false`, which preserves the default-off test
+fixtures rather than panicking.
 
 ## Architecture
 
@@ -149,31 +152,35 @@ SetupStatus SetupStatus // {HostSet, SourceEnabled bool}
 ```
 
 `handleIndex` sets `SetupMode = s.firstRunActive()` and populates `SetupStatus` from
-the configured-enough sub-checks. Setup mode is a **page-load** concern only; the SSE
-diff stream (`/receiver/events`) is untouched. Completion reloads the page, so live
-SSE setup state is unnecessary.
+the nil-safe configured-enough sub-checks. Setup mode is a **page-load** concern only;
+the SSE diff stream (`/receiver/events`) is untouched. Completion reloads the page, so
+live SSE setup state is unnecessary.
 
-`handleIndex` is the only place that reads setup-mode state. Other rendered surfaces
-(now-playing/VFD content, footer, meter rows, etc.) render normally regardless of setup
-mode — setup mode is purely additive (banner + open drawer + cast gate) and changes none
-of their data.
+`handleIndex` is the only rendered page path that reads setup-mode state. Other rendered
+surfaces (now-playing/VFD content, footer, meter rows, etc.) render normally regardless
+of setup mode — setup mode is purely additive (banner + open drawer + cast gate) and
+changes none of their data.
 
 ### Routes
 
-Mounted in `Server.Mount`, same-origin guarded like the existing chassis POST routes:
+Mounted in `Server.Mount`:
 
 - `GET /receiver/setup/status` → JSON `{"hostSet":bool,"sourceEnabled":bool,"complete":bool}`.
   Returns the current configured-enough sub-checks. Used by `setup.js` to refresh the
   banner checklist and enable/disable the Finish button after drawer saves. When no
   first-run controller is wired or first-run is already dismissed, returns
-  `complete:true` (nothing to do).
+  `complete:true` (nothing to do). This route is intentionally non-mutating; wrapping it
+  in `requireSameOrigin` is harmless but does not add protection today because that
+  wrapper only enforces POSTs.
 - `POST /receiver/setup/finish` → re-validates the configured-enough rule server-side.
-  If complete, calls `DismissFirstRun()` and returns `200`. If not, returns `409` with a
-  short body naming the unmet item ("set a MiSTer host" / "enable a source"). The
-  server is the source of truth; the disabled-button state is only an affordance.
-  Idempotent under concurrency: `DismissFirstRun()` is an idempotent `os.Create` of the
-  sentinel and `IsFirstRun()` re-`Stat`s on each call, so a duplicate finish (or a finish
-  racing a `/ui` completion) simply observes the dismissed state and returns `200`.
+  Same-origin guarded like the existing chassis POST routes. The handler order is:
+  if no controller is wired or `!IsFirstRun()`, return `200`; otherwise validate the
+  criteria; return `409` with a short body naming the unmet item ("set a MiSTer host" /
+  "enable a source") when incomplete; call `DismissFirstRun()` when complete; return
+  `500` on dismiss failure; otherwise return `200`. The server is the source of truth;
+  the disabled-button state is only an affordance. This order makes duplicate finishes
+  and races with `/ui/setup` idempotent because the second request observes the dismissed
+  sentinel and returns `200`.
 
 ### Cast-initiation gate
 
@@ -192,26 +199,46 @@ Wrap the cast-initiation handlers in `Mount` (composing with `requireSameOrigin`
 - `POST /receiver/preset/{slot}/cast` (`handlePresetCast`)
 - `POST /receiver/streams/cast` (`handleStreamsCast`)
 - `POST /receiver/localfiles/cast` (`handleReceiverLocalfilesCast`)
+- `POST /receiver/settings/adapter/localfiles/cast` (`handleSettingsAdapterLocalfilesCast`)
 - `POST /receiver/history/play` (`handleHistoryPlayPost`)
 - `POST /receiver/aux/start` (`handleAUXStartPost`)
 
-Transport/seek and volume/visualizer/audio-DSP actions are **not** gated: transport and
-seek require a live session that cannot exist before configuration, and the others are
-harmless cosmetic controls with no output until a MiSTer host exists.
+The wrapper returns a consistent `409` JSON error/chip (`FINISH SETUP`) before the
+underlying cast handler runs, so every cast-start surface gets the same message. Browse,
+library-management, preset-star/move, settings-save, link/pairing, probe, launch-core,
+transport/seek, and volume/visualizer/audio-DSP actions are not gated.
+
+| Route / group | Initiates cast? | Same-origin | Setup gated | Setup response |
+| --- | --- | --- | --- | --- |
+| `POST /receiver/cast` | yes | yes | yes | `409` `FINISH SETUP` |
+| `POST /receiver/preset/{slot}/cast` | yes | yes | yes | `409` `FINISH SETUP` |
+| `POST /receiver/streams/cast` | yes | yes | yes | `409` `FINISH SETUP` |
+| `POST /receiver/localfiles/cast` | yes | yes | yes | `409` `FINISH SETUP` |
+| `POST /receiver/settings/adapter/localfiles/cast` | yes | yes | yes | `409` `FINISH SETUP` |
+| `POST /receiver/history/play` | yes | yes | yes | `409` `FINISH SETUP` |
+| `POST /receiver/aux/start` | yes | yes | yes | `409` `FINISH SETUP` |
+| Settings saves, link/pairing, probe, launch-core, local-files browse/libraries | no | yes | no | normal handler |
+| Transport/seek, preset star/move, volume, visualizer, audio-DSP | no | yes | no | normal handler |
 
 ### Client surface
 
-- **Body class.** `shell.html` renders `<body class="receiver {{.State}}{{if .SetupMode}} setup{{end}}">`
-  so first paint is correct (no flash of ungated UI). All new selectors are
+- **Body class.** `shell.html` renders `<body class="receiver {{.State}}{{if .SetupMode}} setup settings-open{{end}}">`
+  so first paint is correct (no flash of ungated UI or closed drawer). All new selectors are
   `body.receiver.setup …`, satisfying the existing `css_scope_test.go` `body.receiver`
   scope rule.
 - **Welcome banner partial** rendered server-side inside the shell when `.SetupMode`.
   The banner carries the two-item checklist (ticking `HostSet` / `SourceEnabled`) and the
   "Finish setup" button (disabled until both tick).
+- **Cast controls disabled.** Setup mode adds a common client contract: every
+  cast-initiation control renders or becomes disabled/`aria-disabled` while
+  `body.receiver.setup` is present, and each cast script checks that class before posting.
+  This covers input cast, preset cast, catalog channel cast, history replay, AUX start,
+  receiver local-files cast, and settings-drawer local-files cast. The server-side `409`
+  gate remains the source of truth.
 - **Drawer auto-open.** The settings drawer's open state is the `settings-open` class on
-  `body` (toggled today by `settings-drawer.js`). Under setup mode, `setup.js` adds
-  `settings-open` on `DOMContentLoaded`. No new drawer markup or tab logic is needed: the
-  Network tab/pane already carry the default `active` class
+  `body` (toggled today by `settings-drawer.js`). Under setup mode, the shell renders
+  `settings-open` server-side. No new drawer markup or tab logic is needed: the Network
+  tab/pane already carry the default `active` class
   (`settings-drawer.html` — `data-tab="network"` / `data-pane="network"`), so the drawer
   opens on the MiSTer/network pane.
 - **`setup.js`** (~40 lines, embedded under `internal/chassis/static/` via the existing
@@ -220,9 +247,13 @@ harmless cosmetic controls with no output until a MiSTer host exists.
   block — note this is the *first* conditionally-loaded chassis script (all existing
   scripts load unconditionally), so the implementer adds the `{{if}}` guard rather than
   following a precedent. `setup.js` wires the Finish button (`POST /receiver/setup/finish`
-  → on `200`, navigate to `/receiver`), opens the drawer (above), and after any successful
-  drawer save re-fetches `GET /receiver/setup/status` to update the checklist ticks and
-  Finish enabled-state.
+  → on `200`, navigate to `/receiver`) and refreshes `GET /receiver/setup/status` to
+  update the checklist ticks and Finish enabled-state.
+- **Settings-save event.** `settings-drawer.js` dispatches a small
+  `chassis:settings-saved` event after successful bridge and adapter saves that can
+  affect setup status. `setup.js` listens for that event and re-fetches
+  `/receiver/setup/status`. This avoids coupling `setup.js` to every private fetch path
+  in the drawer.
 
 ### Interaction with the legacy `/ui` guard
 
@@ -239,14 +270,17 @@ this design.
 
 Go handler tests (`internal/chassis`):
 
-- `firstRunActive`: true when controller wired + `IsFirstRun()` + not configured; false
-  when controller nil, when `IsFirstRun()` false, and when already configured.
+- `firstRunActive`: true whenever a controller is wired and `IsFirstRun()` is true,
+  including when the config is already complete; false when the controller is nil or
+  `IsFirstRun()` is false.
 - `GET /receiver/setup/status`: correct JSON for each of the four
-  (hostSet × sourceEnabled) states, and `complete:true` when no controller is wired.
+  (hostSet × sourceEnabled) states; `sourceEnabled=false` with a nil registry; and
+  `complete:true` when no controller is wired or first-run is already dismissed.
 - `POST /receiver/setup/finish`: `409` (with unmet-item body) when incomplete; `200` +
-  `DismissFirstRun()` called when complete; idempotent/`200` when already dismissed.
-- Cast-initiation handlers: `409` under active setup mode; pass through once configured
-  and once dismissed.
+  `DismissFirstRun()` called when complete; `500` on dismiss failure; idempotent/`200`
+  when already dismissed.
+- Cast-initiation handlers: every route in the matrix returns `409` under active setup
+  mode, including configured-but-not-dismissed installs; they pass through once dismissed.
 - `handleIndex`: `SetupMode`/`SetupStatus` reflect controller + config state; a
   nil-controller fixture renders no setup mode (default off).
 
@@ -254,6 +288,12 @@ Static/JS:
 
 - CSS scope assertion covers the new `body.receiver.setup` selectors
   (`css_scope_test.go` already enforces `body.receiver`-scoping).
+- Template tests cover conditional `setup.js` inclusion, setup banner rendering, and
+  server-rendered `settings-open` under setup mode.
+- Cast scripts and controls observe the `body.receiver.setup` client contract and avoid
+  posting while setup is active.
+- `settings-drawer.js` dispatches `chassis:settings-saved` after successful bridge and
+  adapter saves; `setup.js` refreshes status on that event.
 - `setup.js` behavior test under the existing `node --test` testdata convention
   (manual; not in CI), covering Finish POST and status-refresh wiring.
 
