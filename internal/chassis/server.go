@@ -338,6 +338,8 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleStreamsCast))))
 	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
 	mux.Handle("POST /receiver/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
+	mux.HandleFunc("GET /receiver/setup/status", s.handleSetupStatus)
+	mux.Handle("POST /receiver/setup/finish", requireSameOrigin(http.HandlerFunc(s.handleSetupFinish)))
 	mux.Handle("POST /receiver/settings/bridge",
 		requireSameOrigin(http.HandlerFunc(s.handleSettingsBridgePost)))
 	mux.Handle("POST /receiver/settings/action/probe-mister",
