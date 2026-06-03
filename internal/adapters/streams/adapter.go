@@ -37,6 +37,7 @@ type SessionManager interface {
 
 type streamResolver interface {
 	Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error)
+	EnumeratePlaylist(ctx context.Context, pageURL, cookiesPath string, maxItems int) ([]ytdlp.PlaylistEntry, error)
 }
 
 type hlsBufferOpener func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error)

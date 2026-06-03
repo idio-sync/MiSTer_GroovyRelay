@@ -1274,6 +1274,10 @@ func (r *blockedFirstResolver) releaseInitial() {
 	close(r.release)
 }
 
+func (r *blockedFirstResolver) EnumeratePlaylist(_ context.Context, _ string, _ string, _ int) ([]ytdlp.PlaylistEntry, error) {
+	return nil, nil
+}
+
 type blockingSuccessResolver struct {
 	entered     chan struct{}
 	releaseCh   chan struct{}
@@ -1302,6 +1306,10 @@ func (r *blockingSuccessResolver) Resolve(ctx context.Context, pageURL, format, 
 
 func (r *blockingSuccessResolver) release() {
 	r.releaseOnce.Do(func() { close(r.releaseCh) })
+}
+
+func (r *blockingSuccessResolver) EnumeratePlaylist(_ context.Context, _ string, _ string, _ int) ([]ytdlp.PlaylistEntry, error) {
+	return nil, nil
 }
 
 func TestStreamsMeterOverlayUsesCoreGeneration(t *testing.T) {
