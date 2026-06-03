@@ -2,7 +2,9 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
@@ -72,4 +74,82 @@ func (a *Adapter) rebuildUserCatalogsCacheOnly(ctx context.Context) error {
 	}
 	a.installUserCatalogSnapshot(snapshot)
 	return nil
+}
+
+// formToDefinition maps the chassis authoring form to a ProviderDefinition.
+// The locked ID (provider + channel) is preserved verbatim; normalization,
+// kind auto-detection, slug assignment, and validation all happen inside
+// userStore.PlanPut → normalizeUserProvider (spec §4.5/§4.7).
+func formToDefinition(id string, form adapters.UserProviderForm) ProviderDefinition {
+	groups := make([]GroupDefinition, 0, len(form.Groups))
+	for _, g := range form.Groups {
+		groups = append(groups, GroupDefinition{ID: g.ID, Name: g.Name, Order: g.Order})
+	}
+	channels := make([]ChannelDefinition, 0, len(form.Channels))
+	for _, c := range form.Channels {
+		channels = append(channels, ChannelDefinition{
+			ID:       c.ID,
+			Name:     c.Name,
+			GroupID:  c.GroupID,
+			Kind:     c.Kind, // "" → detectChannelKind in normalize
+			URL:      c.URL,
+			PlayMode: PlayMode(c.PlayMode),
+			Order:    c.Order,
+		})
+	}
+	return ProviderDefinition{
+		ID:          id,
+		Type:        userProviderType,
+		DisplayName: form.DisplayName,
+		BadgeLabel:  form.BadgeLabel,
+		BadgeColor:  form.BadgeColor,
+		Groups:      groups,
+		Channels:    channels,
+	}
+}
+
+// userInputError wraps validation/normalization failures as client-facing
+// 400s so the chassis renders them inline. Store persistence failures are
+// internal errors and MUST bubble as 500s.
+func userInputError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var qerr *adapters.QuickCastError
+	if errors.As(err, &qerr) {
+		return err
+	}
+	return &adapters.QuickCastError{Status: http.StatusBadRequest, Chip: "BAD INPUT", Message: err.Error()}
+}
+
+// CreateUserProvider persists a new user provider and rebuilds the live
+// catalog. AutoEnableNeeded is true when this is the FIRST user provider and
+// Streams is currently disabled — the chassis then invokes the injected
+// EnsureStarted capability (spec §10).
+func (a *Adapter) CreateUserProvider(ctx context.Context, form adapters.UserProviderForm) (adapters.UserProviderResult, error) {
+	if a.userStore == nil {
+		return adapters.UserProviderResult{}, fmt.Errorf("streams: user provider store not initialized")
+	}
+	a.userEditMu.Lock()
+	defer a.userEditMu.Unlock()
+	wasDisabled := !a.IsEnabled()
+
+	saved, candidate, err := a.userStore.PlanPut(formToDefinition("", form))
+	if err != nil {
+		return adapters.UserProviderResult{}, userInputError(err)
+	}
+	firstProvider := len(candidate) == 1
+	snapshot, err := a.buildUserCatalogSnapshotLive(ctx, candidate)
+	if err != nil {
+		return adapters.UserProviderResult{}, err
+	}
+	if err := a.userStore.CommitProviders(candidate); err != nil {
+		return adapters.UserProviderResult{}, err
+	}
+	a.installUserCatalogSnapshot(snapshot)
+	a.presetStore.Rehydrate()
+	return adapters.UserProviderResult{
+		Provider:         buildChassisCatalogProvider(saved),
+		AutoEnableNeeded: firstProvider && wasDisabled,
+	}, nil
 }
