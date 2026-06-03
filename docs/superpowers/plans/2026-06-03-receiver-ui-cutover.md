@@ -250,9 +250,10 @@ rg -n '/receiver|/ui/adapter|/ui/setup|/ui/playback|/ui/static|/ui/bridge|/ui/di
 ```
 Review each hit. **Expected survivors only:** canonical chassis `/ui/...` references; the Companion carve-out `/ui/companion/...`; `internal/ui`'s `handleRoot` redirect to `/ui/`; and the cutover smoke test's intentional `/receiver` 404 assertions in `cmd/mister-groovy-relay/cutover_mount_test.go`. Any *other* live `/receiver` or legacy `/ui/<visual>` route string is a miss — fix it. (Do not sweep `docs/superpowers/**` — those design/plan files are history.)
 
-- [ ] **Step 4: Fix the stale comment + README**
+- [ ] **Step 4: Fix the stale comments + README**
 
 - `internal/ui/bridge.go`: the comment referencing the chassis `/receiver/audio/dsp` route → `/ui/audio/dsp`.
+- `cmd/mister-groovy-relay/main.go`: the mount-wiring comment that says `chassis.Server mounts /receiver/*` (around the `chassisSrv.Mount(mux)` call / the shared-mux comment block near line 330) → `/ui/*`. (Flagged by the Step 3 audit; rename the comment, don't leave it as a survivor.)
 - `README.md`: replace the "Preview UI at `/receiver` … work in progress" note (around the preview callout) with the factual state — the chassis is the UI at `/ui`, the legacy UI is at `/old_ui`; update the font-license path `/receiver/static/fonts/LICENSE` → `/ui/static/fonts/LICENSE`, and any `/receiver` example URLs (e.g. the `curl` visualizer example) → `/ui`.
 
 - [ ] **Step 5: Full verification**
