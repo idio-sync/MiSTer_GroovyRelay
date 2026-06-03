@@ -6282,3 +6282,32 @@ body.receiver .browse-btn:focus-visible {
     animation: none;
   }
 }
+
+/* ---- First-run setup mode ---- */
+body.receiver.setup .setup-banner {
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border: 1px solid oklch(0.25 0.04 175);
+  border-radius: 8px;
+  background: oklch(0.10 0.03 175 / 0.85);
+  color: var(--vfd-bright);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+body.receiver.setup .setup-banner-title { font-weight: 600; margin: 0; flex: 1 1 100%; }
+body.receiver.setup .setup-checklist { list-style: none; margin: 0; padding: 0; display: flex; gap: 16px; }
+body.receiver.setup .setup-step::before { content: "○ "; opacity: .7; }
+body.receiver.setup .setup-step.done { opacity: .85; }
+body.receiver.setup .setup-step.done::before { content: "● "; opacity: 1; }
+body.receiver.setup .setup-finish[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* Cast-initiation controls are visually disabled while setup is active.
+   The .setup-disabled class is applied by setup.js to the cast trigger
+   buttons; the server-side 409 gate remains the source of truth. */
+body.receiver.setup .setup-disabled {
+  pointer-events: none;
+  opacity: .45;
+  filter: grayscale(0.3);
+}
