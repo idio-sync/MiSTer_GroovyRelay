@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
@@ -319,4 +321,89 @@ func (a *Adapter) userChannelIDs(id string) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+// VerifyChannel performs a non-persisting dry-run of one channel URL (spec §8).
+// A blocked/invalid host returns OK=false with a message (a soft result, not a
+// Go error) so the form renders a red chip; only an internal failure returns an
+// error. Kind is auto-detected when unset and echoed back. is_live is derived
+// here for the chip and never persisted (spec §9 item 5).
+func (a *Adapter) VerifyChannel(ctx context.Context, req adapters.VerifyChannelRequest) (adapters.VerifyChannelResult, error) {
+	url := strings.TrimSpace(req.URL)
+	kind := req.Kind
+	if kind == "" {
+		kind = detectChannelKind(url)
+	}
+	out := adapters.VerifyChannelResult{Kind: kind}
+	switch kind {
+	case kindDirect, kindPlaylist, kindSingle:
+	default:
+		out.Message = fmt.Sprintf("kind %q is not allowed", kind)
+		return out, nil
+	}
+
+	// Syntactic SSRF gate first — never call the network for a blocked host.
+	if err := validateUserProviderHost(url); err != nil {
+		out.Message = playlistErrorForLog(err, url)
+		return out, nil
+	}
+
+	cfg := a.configSnapshot()
+	timeout := time.Duration(cfg.CatalogRequestTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	vctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	switch kind {
+	case kindDirect:
+		// Reuse the merged play-time seams (playback.go:1546-1565): userHostResolver()
+		// returns a.userURLResolver or net.DefaultResolver; userRedirectHTTPDoer()
+		// returns a.userRedirectDoer or a no-redirect client. This keeps Verify and
+		// play-time SSRF behavior identical and lets tests inject stubs.
+		final, err := resolveUserDirectURL(vctx, a.userRedirectHTTPDoer(), a.userHostResolver(), url, maxUserRedirectHops)
+		if err != nil {
+			out.Message = playlistErrorForLog(err, url)
+			return out, nil
+		}
+		_ = final
+		out.OK = true
+		out.IsLive = true // a direct m3u8/HLS stream is treated as live (no pause)
+		return out, nil
+	case kindPlaylist:
+		if err := validateUserProviderResolvedHost(vctx, a.userHostResolver(), url); err != nil {
+			out.Message = playlistErrorForLog(err, url)
+			return out, nil
+		}
+		if a.resolver == nil {
+			out.Message = "streams source is not running; enable it to verify playlists"
+			return out, nil
+		}
+		entries, err := a.resolver.EnumeratePlaylist(vctx, url, a.cookiesPath, cfg.MaxItemsPerChannel)
+		if err != nil {
+			out.Message = playlistErrorForLog(err, url)
+			return out, nil
+		}
+		out.OK = true
+		out.ItemCount = len(entries)
+		return out, nil
+	default: // kindSingle
+		if err := validateUserProviderResolvedHost(vctx, a.userHostResolver(), url); err != nil {
+			out.Message = playlistErrorForLog(err, url)
+			return out, nil
+		}
+		if a.resolver == nil {
+			out.Message = "streams source is not running; enable it to verify channels"
+			return out, nil
+		}
+		resolved, err := a.resolver.Resolve(vctx, url, cfg.YoutubeFormat, a.cookiesPath)
+		if err != nil {
+			out.Message = playlistErrorForLog(err, url)
+			return out, nil
+		}
+		out.OK = true
+		out.IsLive = resolved.IsLive
+		return out, nil
+	}
 }

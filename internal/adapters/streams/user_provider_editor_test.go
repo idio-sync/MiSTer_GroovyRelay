@@ -356,3 +356,100 @@ func channelIDsByName(t *testing.T, p adapters.CatalogProvider) (keep, drop stri
 	}
 	return keep, drop
 }
+
+func TestVerifyChannel_PlaylistReturnsCount(t *testing.T) {
+	t.Parallel()
+	playlistURL := "https://www.youtube.com/playlist?list=PL1"
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		playlistURL: ytEntries("a", "b", "c"),
+	}}
+	a := newEditAdapter(t, fr)
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"www.youtube.com": {"93.184.216.34"}}}
+	res, err := a.VerifyChannel(context.Background(), adapters.VerifyChannelRequest{URL: playlistURL})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !res.OK || res.Kind != kindPlaylist || res.ItemCount != 3 {
+		t.Fatalf("verify result = %+v, want ok playlist count=3", res)
+	}
+}
+
+func TestVerifyChannel_SingleSurfacesIsLive(t *testing.T) {
+	t.Parallel()
+	fr := &fakeResolver{res: &ytdlp.Resolution{URL: "https://edge/live.m3u8", IsLive: true, Title: "Stream"}}
+	a := newEditAdapter(t, fr)
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"twitch.tv": {"93.184.216.34"}}}
+	res, err := a.VerifyChannel(context.Background(), adapters.VerifyChannelRequest{URL: "https://twitch.tv/foo"})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !res.OK || res.Kind != kindSingle || !res.IsLive {
+		t.Fatalf("verify result = %+v, want ok single isLive=true", res)
+	}
+}
+
+func TestVerifyChannel_RejectsBlockedHost(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	// Syntactic gate rejects loopback before any network call.
+	res, err := a.VerifyChannel(context.Background(), adapters.VerifyChannelRequest{URL: "http://127.0.0.1/stream.m3u8"})
+	if err != nil {
+		t.Fatalf("verify returned error (should be a soft not-OK result): %v", err)
+	}
+	if res.OK {
+		t.Fatalf("verify OK for loopback host, want OK=false: %+v", res)
+	}
+}
+
+func TestVerifyChannel_PlaylistRejectsResolvedBlockedHostBeforeYTDLP(t *testing.T) {
+	t.Parallel()
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		"https://evil.example/playlist": ytEntries("a"),
+	}}
+	a := newEditAdapter(t, fr)
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"evil.example": {"127.0.0.1"}}}
+	res, err := a.VerifyChannel(context.Background(), adapters.VerifyChannelRequest{
+		URL:  "https://evil.example/playlist",
+		Kind: kindPlaylist,
+	})
+	if err != nil {
+		t.Fatalf("verify returned error (should be a soft not-OK result): %v", err)
+	}
+	if res.OK {
+		t.Fatalf("verify OK for DNS-to-loopback host, want OK=false: %+v", res)
+	}
+	if fr.enumCalls != 0 {
+		t.Fatalf("enumCalls = %d, want 0 (blocked before yt-dlp)", fr.enumCalls)
+	}
+}
+
+func TestVerifyChannel_InvalidKindIsSoftFailure(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	res, err := a.VerifyChannel(context.Background(), adapters.VerifyChannelRequest{
+		URL:  "https://cdn.example.com/live.m3u8",
+		Kind: "weird",
+	})
+	if err != nil {
+		t.Fatalf("verify returned error (should be a soft not-OK result): %v", err)
+	}
+	if res.OK {
+		t.Fatalf("verify OK for invalid kind, want OK=false: %+v", res)
+	}
+}
+
+func TestVerifyChannel_DirectOK(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"cdn.example.com": {"93.184.216.34"}}}
+	a.userRedirectDoer = stubDoer{} // no redirect → 200, walk terminates at the original URL
+	res, err := a.VerifyChannel(context.Background(), adapters.VerifyChannelRequest{URL: "https://cdn.example.com/live.m3u8"})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !res.OK || res.Kind != kindDirect || !res.IsLive {
+		t.Fatalf("verify result = %+v, want ok direct isLive=true", res)
+	}
+}
+
+var _ adapters.UserProviderEditor = (*Adapter)(nil)
