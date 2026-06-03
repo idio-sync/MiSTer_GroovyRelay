@@ -184,3 +184,48 @@ func TestRequireSameOrigin_Returns403JSON(t *testing.T) {
 		t.Fatalf("body = %q, want JSON error", w.Body.String())
 	}
 }
+
+func TestRequireSameOriginBlocksCrossSiteUnsafeMethods(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			called := false
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
+			req := httptest.NewRequest(method, "/receiver/catalog/provider/user:mix", nil)
+			req.Header.Set("Sec-Fetch-Site", "cross-site")
+			w := httptest.NewRecorder()
+			requireSameOrigin(next).ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", w.Code)
+			}
+			if called {
+				t.Fatal("next handler called for cross-site unsafe method")
+			}
+		})
+	}
+}
+
+func TestRequireSameOriginAllowsSameOriginUnsafeMethods(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(method, "/receiver/catalog/provider/user:mix", nil)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			w := httptest.NewRecorder()
+			requireSameOrigin(next).ServeHTTP(w, req)
+			if w.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", w.Code)
+			}
+			if !called {
+				t.Fatal("next handler not called for same-origin unsafe method")
+			}
+		})
+	}
+}

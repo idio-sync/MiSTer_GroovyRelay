@@ -351,6 +351,11 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleStreamsCast))))
 	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
 	mux.Handle("POST /receiver/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
+	mux.Handle("POST /receiver/catalog/provider", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderCreate)))
+	mux.Handle("PUT /receiver/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderUpdate)))
+	mux.Handle("DELETE /receiver/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderDelete)))
+	mux.Handle("POST /receiver/catalog/provider/{id}/reorder", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderReorder)))
+	mux.Handle("POST /receiver/catalog/channel/verify", requireSameOrigin(http.HandlerFunc(s.handleCatalogChannelVerify)))
 	mux.HandleFunc("GET /receiver/setup/status", s.handleSetupStatus)
 	mux.Handle("POST /receiver/setup/finish", requireSameOrigin(http.HandlerFunc(s.handleSetupFinish)))
 	mux.Handle("POST /receiver/settings/bridge",

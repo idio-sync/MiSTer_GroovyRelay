@@ -6,12 +6,12 @@ import (
 	"strings"
 )
 
-// requireSameOrigin rejects POST requests whose Sec-Fetch-Site is not
-// same-origin or same-site. Chassis POST endpoints are driven by bundled
+// requireSameOrigin rejects unsafe-method requests whose Sec-Fetch-Site is not
+// same-origin or same-site. Chassis mutation endpoints are driven by bundled
 // first-party JS; non-browser clients must opt in by setting the header.
 func requireSameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		if isUnsafeMethod(r.Method) {
 			switch r.Header.Get("Sec-Fetch-Site") {
 			case "same-origin", "same-site":
 				// allowed
@@ -27,6 +27,15 @@ func requireSameOrigin(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return false
+	default:
+		return true
+	}
 }
 
 func sameOriginByOriginOrReferer(r *http.Request) bool {
