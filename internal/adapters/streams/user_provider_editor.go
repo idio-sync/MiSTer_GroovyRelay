@@ -55,30 +55,6 @@ func (a *Adapter) installUserCatalogSnapshot(snapshot userCatalogSnapshot) {
 	a.mu.Unlock()
 }
 
-// rebuildUserCatalogsLive preserves the existing refresh-like convenience path
-// for non-mutating callers. Mutating editor methods use the explicit
-// build→commit→install sequence above so failed rebuilds never persist an edit.
-func (a *Adapter) rebuildUserCatalogsLive(ctx context.Context) error {
-	snapshot, err := a.buildUserCatalogSnapshotLive(ctx, a.userStore.Snapshot())
-	if err != nil {
-		return err
-	}
-	a.installUserCatalogSnapshot(snapshot)
-	return nil
-}
-
-// rebuildUserCatalogsCacheOnly rebuilds + installs WITHOUT re-enumerating
-// playlists (reuses cached items). Used by Reorder, which only re-sorts by
-// Order (spec §8 "Reorder ... does not re-enumerate").
-func (a *Adapter) rebuildUserCatalogsCacheOnly(ctx context.Context) error {
-	snapshot, err := a.buildUserCatalogSnapshotCacheOnly(ctx, a.userStore.Snapshot())
-	if err != nil {
-		return err
-	}
-	a.installUserCatalogSnapshot(snapshot)
-	return nil
-}
-
 // formToDefinition maps the chassis authoring form to a ProviderDefinition.
 // The locked ID (provider + channel) is preserved verbatim; normalization,
 // kind auto-detection, slug assignment, and validation all happen inside

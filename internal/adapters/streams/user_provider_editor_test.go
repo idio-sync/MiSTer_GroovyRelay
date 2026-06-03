@@ -34,7 +34,7 @@ func newEditAdapter(t *testing.T, fr *fakeResolver) *Adapter {
 	return a
 }
 
-func TestRebuildUserCatalogsLive_EnumeratesAndInstalls(t *testing.T) {
+func TestBuildUserCatalogSnapshotLive_EnumeratesAndInstalls(t *testing.T) {
 	t.Parallel()
 	playlistURL := "https://www.youtube.com/playlist?list=PL1"
 	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
@@ -49,9 +49,11 @@ func TestRebuildUserCatalogsLive_EnumeratesAndInstalls(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := a.rebuildUserCatalogsLive(context.Background()); err != nil {
-		t.Fatalf("rebuildUserCatalogsLive: %v", err)
+	snapshot, err := a.buildUserCatalogSnapshotLive(context.Background(), a.userStore.Snapshot())
+	if err != nil {
+		t.Fatalf("buildUserCatalogSnapshotLive: %v", err)
 	}
+	a.installUserCatalogSnapshot(snapshot)
 	a.mu.Lock()
 	cat, ok := a.catalogs["user:mix"]
 	a.mu.Unlock()
