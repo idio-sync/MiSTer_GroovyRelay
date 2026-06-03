@@ -275,13 +275,16 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 
 	a.mu.Lock()
-	a.resolver = resolver
+	if resolver != nil {
+		a.resolver = resolver // keep a pre-set resolver when ytdlpBinary is nil
+	}
 	a.installSnapshotLocked(defs, catalogs)
 	a.loopCtx = ctx
 	a.state = adapters.StateRunning
 	a.lastErr = ""
 	a.stateSince = time.Now()
 	startLoop := a.cfg.Enabled && a.cfg.AllowRemoteManifest
+	startLocalOnlyRefresh := a.cfg.Enabled && !a.cfg.AllowRemoteManifest
 	if startLoop {
 		a.loopCtx, a.loopCancel = context.WithCancel(ctx)
 		a.loopDone = make(chan struct{})
@@ -292,6 +295,14 @@ func (a *Adapter) Start(ctx context.Context) error {
 
 	if startLoop {
 		go a.refreshLoop(loopCtx, loopDone)
+	} else if startLocalOnlyRefresh {
+		// Local-only (AllowRemoteManifest=false): the periodic loop won't run, so
+		// user playlist channels would never enumerate beyond the cache-only
+		// startup snapshot. Kick ONE background catalog refresh — it rebuilds the
+		// direct + user inline catalogs (live yt-dlp enumeration) and skips the
+		// remote-fetch branch (refresh.go). Serve-stale/cache keeps it cheap.
+		// Resolves the Phase 4 documented residual.
+		go func() { _ = a.refreshCatalogsDefault(ctx, nil, "startup-local") }()
 	}
 	return nil
 }

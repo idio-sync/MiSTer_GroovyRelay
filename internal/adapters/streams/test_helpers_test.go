@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -356,6 +357,32 @@ func (a *Adapter) catalogSnapshotForTest(providerID string) ProviderCatalog {
 		cat.Channels[i].Items = append([]StreamItem(nil), cat.Channels[i].Items...)
 	}
 	return cat
+}
+
+// newTestAdapterWithConfig builds an adapter in dir with cfg already applied,
+// and no ytdlp binary (so Start uses an injected resolver, not a real one).
+func newTestAdapterWithConfig(t *testing.T, dir string, cfg Config) *Adapter {
+	t.Helper()
+	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.cfg = cfg
+	a.cacheDir = dir
+	return a
+}
+
+// waitFor polls pred until true or the deadline, failing the test on timeout.
+func waitFor(t *testing.T, timeout time.Duration, pred func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if pred() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("waitFor: condition not met before timeout")
 }
 
 // Compile-time proof the production resolver satisfies the streams interface

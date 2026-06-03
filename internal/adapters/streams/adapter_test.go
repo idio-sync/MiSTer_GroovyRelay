@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
@@ -379,4 +381,34 @@ func TestNew_BuildsUserProviderStore(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "user:demo" {
 		t.Fatalf("Snapshot = %+v, want one provider user:demo", got)
 	}
+}
+
+func TestStart_LocalOnlyEnumeratesUserPlaylists(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	playlistURL := "https://www.youtube.com/playlist?list=PL1"
+	// Seed a user provider with a playlist channel.
+	body := []byte(`{"version":1,"providers":[{"id":"user:mix","type":"user","display_name":"Mix","badge_label":"MX","badge_color":"teal","channels":[{"id":"list","name":"Listy","url":"` + playlistURL + `","kind":"playlist"}]}]}`)
+	if err := os.WriteFile(filepath.Join(dir, "user_providers.json"), body, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.AllowRemoteManifest = false // local-only: periodic loop is gated OFF
+	a := newTestAdapterWithConfig(t, dir, cfg)
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{playlistURL: ytEntries("dQw4w9WgXcQ", "abcdefghijk")}}
+	a.resolver = fr
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The one-shot refresh runs in a goroutine; wait for the playlist to fill.
+	waitFor(t, 2*time.Second, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		cat, ok := a.catalogs["user:mix"]
+		return ok && len(cat.Channels) == 1 && len(cat.Channels[0].Items) == 2
+	})
 }
