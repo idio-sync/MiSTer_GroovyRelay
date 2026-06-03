@@ -21,13 +21,15 @@
   <script defer src="/receiver/static/preset-reorder.js?v={{.Version}}"></script>
   <script defer src="/receiver/static/search-filter.js?v={{.Version}}"></script>
   <script defer src="/receiver/static/settings-drawer.js?v={{.Version}}"></script>
+  {{if .SetupMode}}<script defer src="/receiver/static/setup.js?v={{.Version}}"></script>{{end}}
   <script defer src="/receiver/static/load-core.js?v={{.Version}}"></script>
   <script defer src="/receiver/static/power-on.js?v={{.Version}}"></script>
   <script defer src="/receiver/static/self-test.js?v={{.Version}}"></script>
 </head>
-<body class="receiver {{.State}}">
+<body class="receiver {{.State}}{{if .SetupMode}} setup settings-open{{end}}">
   {{htmlComment "chassis:shell"}}
   <div class="receiver">
+    {{if .SetupMode}}{{template "setup-banner.html" .}}{{end}}
     <span class="screw tl" aria-hidden="true"></span>
     <span class="screw tr" aria-hidden="true"></span>
     <span class="screw bl" aria-hidden="true"></span>

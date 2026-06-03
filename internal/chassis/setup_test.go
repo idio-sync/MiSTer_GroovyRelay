@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +77,33 @@ func TestHandleSetupFinish(t *testing.T) {
 	okSrv.handleSetupFinish(rec, httptest.NewRequest(http.MethodPost, "/receiver/setup/finish", nil))
 	if rec.Code != http.StatusOK || ok.dismissed != 1 {
 		t.Fatalf("complete: got %d dismissed=%d", rec.Code, ok.dismissed)
+	}
+}
+
+func TestHandleIndex_SetupMode(t *testing.T) {
+	saver := hostSaver("", true)
+	s := newSetupServer(t, saver, nil) // via New → templates parsed, firstRun resolved
+
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/receiver", nil))
+	html := rec.Body.String()
+
+	if !strings.Contains(html, "setup settings-open") {
+		t.Error("setup mode: body should carry 'setup settings-open' classes")
+	}
+	if !strings.Contains(html, "/receiver/static/setup.js") {
+		t.Error("setup mode: setup.js script tag should be present")
+	}
+	if !strings.Contains(html, "setup-banner") {
+		t.Error("setup mode: welcome banner should render")
+	}
+
+	// Dismissed → none of the above.
+	saver.firstRun = false
+	rec = httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/receiver", nil))
+	html = rec.Body.String()
+	if strings.Contains(html, "setup-banner") || strings.Contains(html, "/receiver/static/setup.js") {
+		t.Error("dismissed: setup banner/script must not render")
 	}
 }

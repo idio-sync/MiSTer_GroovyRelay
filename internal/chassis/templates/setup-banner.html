@@ -1,0 +1,12 @@
+{{define "setup-banner.html"}}
+{{htmlComment "chassis:setup-banner"}}
+<section class="setup-banner" role="region" aria-label="First-run setup">
+  <p class="setup-banner-title">Welcome — let's set up your receiver</p>
+  <ol class="setup-checklist">
+    <li class="setup-step{{if .SetupStatus.HostSet}} done{{end}}">Point me at your MiSTer</li>
+    <li class="setup-step{{if .SetupStatus.SourceEnabled}} done{{end}}">Turn on a source</li>
+  </ol>
+  <button type="button" id="setup-finish" class="setup-finish"
+    {{if not .SetupStatus.Complete}}disabled aria-disabled="true"{{end}}>Finish setup</button>
+</section>
+{{end}}

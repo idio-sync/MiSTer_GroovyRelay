@@ -22,6 +22,10 @@ func init() {
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, time.Now())
 	data.Version = s.assetVer
+	data.SetupMode = s.firstRunActive()
+	if data.SetupMode {
+		data.SetupStatus = s.setupStatus()
+	}
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, "shell.html", data); err != nil {
 		http.Error(w, "template execute failed", http.StatusInternalServerError)

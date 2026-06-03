@@ -21,6 +21,10 @@ type ReceiverPageData struct {
 	BrandName           string
 	State               ReceiverState
 	LocalFilesStatusLED StatusLEDData
+	// SetupMode is true while first-run setup mode is active (sentinel set).
+	// Only handleIndex populates it; see firstrun.go / setup.go.
+	SetupMode   bool
+	SetupStatus SetupStatus
 	VFD                 VFDData
 	Source              SourceData
 	Meter               MeterData
