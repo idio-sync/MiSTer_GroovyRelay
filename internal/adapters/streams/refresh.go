@@ -626,6 +626,11 @@ func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (Provi
 	case directStreamsProviderType:
 		return buildDirectStreamsCatalog(def)
 	case userProviderType:
+		// Cache-only path: the nil-resolver enumerator never runs yt-dlp, so
+		// context.Background() is fine (no network, no deadline to honor). Live
+		// playlist enumeration uses the caller's ctx via the startup/remote/
+		// catalog-refresh snapshot paths (Task 6). Do NOT wire a non-nil resolver
+		// into this dispatch — it would enumerate under a deadline-less ctx.
 		return buildUserCatalog(context.Background(), def, userPlaylistEnumerator{cfg: cfg})
 	default:
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)

@@ -264,10 +264,10 @@ func TestBuildUserCatalog_PlaylistEnumeratesDirectAndSingleUnchanged(t *testing.
 	for _, ch := range cat.Channels {
 		byID[ch.ID] = ch
 	}
-	if live := byID["live"]; len(live.Items) != 1 || !live.Items[0].Direct {
+	if live := byID["live"]; len(live.Items) != 1 || !live.Items[0].Direct || live.Items[0].URL != "https://cdn.example.com/live.m3u8" {
 		t.Fatalf("direct channel = %+v", live.Items)
 	}
-	if vid := byID["vid"]; len(vid.Items) != 1 || vid.Items[0].Direct {
+	if vid := byID["vid"]; len(vid.Items) != 1 || vid.Items[0].Direct || vid.Items[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
 		t.Fatalf("single channel = %+v", vid.Items)
 	}
 	list, ok := byID["list"]
@@ -295,10 +295,15 @@ func TestBuildUserCatalog_PlaylistEnumerationFailureKeepsProvider(t *testing.T) 
 	if len(cat.Channels) != 3 {
 		t.Fatalf("len(Channels) = %d, want 3 (provider stays usable)", len(cat.Channels))
 	}
+	byID := map[string]Channel{}
 	for _, ch := range cat.Channels {
-		if ch.ID == "list" && len(ch.Items) != 0 {
-			t.Fatalf("failed playlist should have 0 items, got %d", len(ch.Items))
-		}
+		byID[ch.ID] = ch
+	}
+	if len(byID["list"].Items) != 0 {
+		t.Fatalf("failed playlist should have 0 items, got %d", len(byID["list"].Items))
+	}
+	if len(byID["live"].Items) != 1 || len(byID["vid"].Items) != 1 {
+		t.Fatalf("non-playlist channels must keep their items on playlist failure: live=%d vid=%d", len(byID["live"].Items), len(byID["vid"].Items))
 	}
 }
 
