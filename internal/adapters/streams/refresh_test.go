@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
 
@@ -171,7 +172,7 @@ func TestRefreshOnceWithRemoteManifestBuildsDirectStreamsLocally(t *testing.T) {
 		}},
 	}}}
 
-	snapshot, err := buildRemoteSnapshot(t.Context(), cfg, remote, t.TempDir(), nil)
+	snapshot, err := buildRemoteSnapshot(t.Context(), cfg, remote, t.TempDir(), nil, userPlaylistEnumerator{})
 	if err != nil {
 		t.Fatalf("buildRemoteSnapshot: %v", err)
 	}
@@ -1024,7 +1025,7 @@ func TestBuildRemoteSnapshot_KeepsUserProviders(t *testing.T) {
 		ID: "user:demo", Type: userProviderType, DisplayName: "Demo", BadgeLabel: "DM", BadgeColor: "teal",
 		Channels: []ChannelDefinition{{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"}},
 	}
-	snap, err := buildRemoteSnapshot(t.Context(), DefaultConfig(), Manifest{Version: 1}, t.TempDir(), []ProviderDefinition{user})
+	snap, err := buildRemoteSnapshot(t.Context(), userPlaylistSnapshotTestConfig(), Manifest{Version: 1}, t.TempDir(), []ProviderDefinition{user}, userPlaylistEnumerator{})
 	if err != nil {
 		t.Fatalf("buildRemoteSnapshot: %v", err)
 	}
@@ -1072,5 +1073,129 @@ func TestAppendUserProviders_SkipsNonPrefixedID(t *testing.T) {
 	}
 	if !containsProviderID(out, "user:ok") {
 		t.Fatalf("prefixed user provider should be appended: %v", providerIDs(out))
+	}
+}
+
+func userPlaylistDef() ProviderDefinition {
+	return ProviderDefinition{
+		ID: "user:mix", Type: userProviderType, DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []ChannelDefinition{
+			{ID: "list", Name: "List", Kind: kindPlaylist, URL: "https://www.youtube.com/playlist?list=PL123"},
+		},
+	}
+}
+
+func userPlaylistSnapshotTestConfig() Config {
+	cfg := DefaultConfig()
+	// buildRemoteSnapshot merges bundled providers first. Disable the bundled
+	// fetch-backed providers so these unit tests stay offline/no-network while
+	// still exercising the user playlist path. Toonami is direct/inline.
+	cfg.Providers["mtv-rewind"] = ProviderConfig{Disabled: true}
+	cfg.Providers["cartoon-rewind"] = ProviderConfig{Disabled: true}
+	return cfg
+}
+
+func playlistChannelItems(t *testing.T, cats []ProviderCatalog, providerID, channelID string) []StreamItem {
+	t.Helper()
+	for _, c := range cats {
+		if c.ProviderID != providerID {
+			continue
+		}
+		if ch := c.Channel(channelID); ch != nil {
+			return ch.Items
+		}
+	}
+	t.Fatalf("channel %q/%q not found in catalogs", providerID, channelID)
+	return nil
+}
+
+func TestBuildRemoteSnapshot_EnumeratesUserPlaylistLive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		"https://www.youtube.com/playlist?list=PL123": ytEntries("dQw4w9WgXcQ", "abcdefghijk"),
+	}}
+	cfg := userPlaylistSnapshotTestConfig()
+	enum := userPlaylistEnumerator{resolver: fr, cacheDir: dir, cfg: cfg}
+	snap, err := buildRemoteSnapshot(t.Context(), cfg, Manifest{Version: 1}, dir, []ProviderDefinition{userPlaylistDef()}, enum)
+	if err != nil {
+		t.Fatalf("buildRemoteSnapshot: %v", err)
+	}
+	items := playlistChannelItems(t, snap.Catalogs, "user:mix", "list")
+	if len(items) != 2 {
+		t.Fatalf("live remote snapshot playlist items = %d, want 2", len(items))
+	}
+	if fr.enumCalls != 1 {
+		t.Fatalf("enumCalls = %d, want 1", fr.enumCalls)
+	}
+}
+
+func TestBuildStartupSnapshot_PlaylistUsesCacheOnly(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pageURL := "https://www.youtube.com/playlist?list=PL123"
+
+	// No cache yet → cache-only startup yields an empty (but present) channel.
+	_, cats, err := buildStartupSnapshot(t.Context(), DefaultConfig(), dir, []ProviderDefinition{userPlaylistDef()})
+	if err != nil {
+		t.Fatalf("buildStartupSnapshot: %v", err)
+	}
+	if items := playlistChannelItems(t, cats, "user:mix", "list"); len(items) != 0 {
+		t.Fatalf("uncached startup items = %d, want 0", len(items))
+	}
+
+	// Seed the cache (as a live refresh would), then startup serves it.
+	seed := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{pageURL: ytEntries("dQw4w9WgXcQ")}},
+		cacheDir: dir, cfg: DefaultConfig(),
+	}
+	if _, err := seed.channelItems(t.Context(), "user:mix", "list", pageURL); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, cats2, err := buildStartupSnapshot(t.Context(), DefaultConfig(), dir, []ProviderDefinition{userPlaylistDef()})
+	if err != nil {
+		t.Fatalf("buildStartupSnapshot (cached): %v", err)
+	}
+	if items := playlistChannelItems(t, cats2, "user:mix", "list"); len(items) != 1 {
+		t.Fatalf("cached startup items = %d, want 1", len(items))
+	}
+}
+
+func TestRefreshCatalogsDefault_EnumeratesUserPlaylist(t *testing.T) {
+	t.Parallel()
+	a := newTestAdapterWithCatalog(t)
+	a.resolver = &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		"https://www.youtube.com/playlist?list=PL123": ytEntries("dQw4w9WgXcQ", "abcdefghijk"),
+	}}
+	a.replaceDefinitionsForTest([]ProviderDefinition{userPlaylistDef()})
+
+	status := a.refreshCatalogsDefault(t.Context(), []string{"user:mix"}, "manual")
+	if status.Err != nil {
+		t.Fatalf("refreshCatalogsDefault: %v", status.Err)
+	}
+	cat := a.Catalog()
+	var found bool
+	for _, p := range cat {
+		if p.ID != "user:mix" {
+			continue
+		}
+		for _, g := range p.Groups {
+			for _, ch := range g.Channels {
+				if ch.ID == "list" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("playlist channel 'list' not exposed after refresh")
+	}
+	// Items live on the internal catalog (Catalog() is the chassis view; assert
+	// items via the stored ProviderCatalog).
+	a.mu.Lock()
+	items := a.catalogs["user:mix"].Channel("list").Items
+	a.mu.Unlock()
+	if len(items) != 2 {
+		t.Fatalf("refreshed playlist items = %d, want 2", len(items))
 	}
 }

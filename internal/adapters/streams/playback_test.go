@@ -1274,6 +1274,10 @@ func (r *blockedFirstResolver) releaseInitial() {
 	close(r.release)
 }
 
+func (r *blockedFirstResolver) EnumeratePlaylist(_ context.Context, _ string, _ string, _ int) ([]ytdlp.PlaylistEntry, error) {
+	return nil, nil
+}
+
 type blockingSuccessResolver struct {
 	entered     chan struct{}
 	releaseCh   chan struct{}
@@ -1302,6 +1306,10 @@ func (r *blockingSuccessResolver) Resolve(ctx context.Context, pageURL, format, 
 
 func (r *blockingSuccessResolver) release() {
 	r.releaseOnce.Do(func() { close(r.releaseCh) })
+}
+
+func (r *blockingSuccessResolver) EnumeratePlaylist(_ context.Context, _ string, _ string, _ int) ([]ytdlp.PlaylistEntry, error) {
+	return nil, nil
 }
 
 func TestStreamsMeterOverlayUsesCoreGeneration(t *testing.T) {
@@ -1427,7 +1435,7 @@ func installUserDirectAdapter(t *testing.T) (*Adapter, *fakeCore) {
 		ID: "user:cdn", Type: userProviderType, DisplayName: "CDN", BadgeLabel: "CD", BadgeColor: "teal",
 		Channels: []ChannelDefinition{{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"}},
 	}
-	cat, err := buildUserCatalog(def)
+	cat, err := buildUserCatalog(context.Background(), def, userPlaylistEnumerator{})
 	if err != nil {
 		t.Fatalf("buildUserCatalog: %v", err)
 	}
@@ -1488,7 +1496,7 @@ func installUserSingleAdapter(t *testing.T, resolved *ytdlp.Resolution) (*Adapte
 		ID: "user:tw", Type: userProviderType, DisplayName: "TW", BadgeLabel: "TW", BadgeColor: "purple",
 		Channels: []ChannelDefinition{{ID: "vod", Name: "VOD", Kind: kindSingle, URL: "https://www.twitch.tv/foo"}},
 	}
-	cat, err := buildUserCatalog(def)
+	cat, err := buildUserCatalog(context.Background(), def, userPlaylistEnumerator{})
 	if err != nil {
 		t.Fatalf("buildUserCatalog: %v", err)
 	}

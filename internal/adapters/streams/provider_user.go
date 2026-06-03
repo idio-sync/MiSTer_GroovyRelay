@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -294,16 +295,18 @@ func normalizeUserProvider(def ProviderDefinition, seen map[string]bool) (Provid
 }
 
 // buildUserCatalog turns a normalized user ProviderDefinition into a
-// ProviderCatalog. It mirrors buildDirectStreamsCatalog (provider_direct_streams.go)
-// but branches per ChannelDefinition.Kind:
-//   - direct → one StreamItem{URL, Direct:true} (straight to FFmpeg + the
-//     user direct policy at play time).
+// ProviderCatalog, branching per ChannelDefinition.Kind:
+//   - direct → one StreamItem{URL, Direct:true} (straight to FFmpeg + the user
+//     direct policy at play time).
 //   - single → one StreamItem{URL, Direct:false} (resolved by yt-dlp at play time).
-//   - playlist → SKIPPED in Phase 3 (Phase 4 adds yt-dlp --flat-playlist
-//     enumeration); skipping logs and leaves the rest of the provider usable.
+//   - playlist → enum.channelItems enumerates the playlist (live or cached). A
+//     per-channel enumeration error is logged with the page URL redacted, and
+//     the channel renders with 0 items or stale items; the rest of the provider
+//     stays usable (spec §6).
 //
-// It is pure (no network), so it is safe inside the snapshot build path.
-func buildUserCatalog(def ProviderDefinition) (ProviderCatalog, error) {
+// Network work (if any) is confined to enum.channelItems; the builder itself is
+// otherwise pure and must run BEFORE a.mu is taken (no lock across I/O).
+func buildUserCatalog(ctx context.Context, def ProviderDefinition, enum userPlaylistEnumerator) (ProviderCatalog, error) {
 	if def.Type != userProviderType {
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
 	}
@@ -316,23 +319,22 @@ func buildUserCatalog(def ProviderDefinition) (ProviderCatalog, error) {
 	}
 	channels := make([]Channel, 0, len(def.Channels))
 	for _, chDef := range def.Channels {
-		switch chDef.Kind {
-		case kindPlaylist:
-			slog.Info("streams user provider: skipping playlist channel (enumeration is Phase 4)",
-				"provider", def.ID, "channel", chDef.ID)
-			continue
-		case kindDirect, kindSingle:
-		default:
-			return ProviderCatalog{}, fmt.Errorf("provider %q channel %q: invalid kind %q", def.ID, chDef.ID, chDef.Kind)
-		}
 		ch := channelFromDefinition(chDef.ID, chDef, true, def)
-		ch.Items = []StreamItem{{
-			ID:       ch.ID,
-			Title:    ch.Name,
-			URL:      chDef.URL,
-			SourceID: ch.ID,
-			Direct:   chDef.Kind == kindDirect,
-		}}
+		switch chDef.Kind {
+		case kindDirect:
+			ch.Items = []StreamItem{{ID: ch.ID, Title: ch.Name, URL: chDef.URL, SourceID: ch.ID, Direct: true}}
+		case kindSingle:
+			ch.Items = []StreamItem{{ID: ch.ID, Title: ch.Name, URL: chDef.URL, SourceID: ch.ID, Direct: false}}
+		case kindPlaylist:
+			items, err := enum.channelItems(ctx, def.ID, ch.ID, chDef.URL)
+			if err != nil {
+				slog.Warn("streams user provider: playlist enumeration error (channel kept, may be empty or stale)",
+					"provider", def.ID, "channel", ch.ID, "err", playlistErrorForLog(err, chDef.URL))
+			}
+			ch.Items = items
+		default:
+			return ProviderCatalog{}, fmt.Errorf("provider %q channel %q: invalid kind %q", def.ID, ch.ID, chDef.Kind)
+		}
 		if ch.GroupID != "" {
 			if _, ok := groupByID[ch.GroupID]; !ok {
 				return ProviderCatalog{}, fmt.Errorf("provider %q channel %q references unknown group %q", def.ID, ch.ID, ch.GroupID)

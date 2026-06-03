@@ -293,7 +293,8 @@ func (a *Adapter) refreshOnceDefault(ctx context.Context, reason string) Refresh
 		status.Err = err
 		return status
 	}
-	snapshot, err := buildRemoteSnapshot(ctx, cfg, manifest, a.cacheDir, a.userStore.Snapshot())
+	enum := userPlaylistEnumerator{resolver: a.resolver, cookiesPath: a.cookiesPath, cacheDir: a.cacheDir, cfg: cfg}
+	snapshot, err := buildRemoteSnapshot(ctx, cfg, manifest, a.cacheDir, a.userStore.Snapshot(), enum)
 	if err != nil {
 		a.recordRefreshFailure(err)
 		status.Err = err
@@ -342,9 +343,16 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 	remoteAllowed := cfg.AllowRemoteManifest
 	var errs []error
 	remoteRefreshed := false
+	// Build the live enumerator once — its fields are identical for every
+	// provider iteration. a.resolver and a.cookiesPath are set once at
+	// Start/New time and never mutated, so reading them outside a.mu here
+	// matches the existing off-lock read pattern in playback.go.
+	enum := userPlaylistEnumerator{resolver: a.resolver, cookiesPath: a.cookiesPath, cacheDir: a.cacheDir, cfg: cfg}
 	for _, def := range defs {
 		if def.Type == directStreamsProviderType || def.Type == userProviderType {
-			cat, err := buildProviderCatalog(def, nil, cfg)
+			// buildInlineCatalog runs enumeration BEFORE a.mu is taken —
+			// preserving "no lock across network I/O."
+			cat, err := buildInlineCatalog(ctx, def, enum)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("provider %q build catalog: %w", def.ID, err))
 				continue
@@ -493,14 +501,18 @@ func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string, user
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 	manifest := mergeManifests(cfg, bundled, cached, nil, remoteProviderFactories())
 	manifest.Providers = appendUserProviders(manifest.Providers, cfg, userProviders)
-	return buildCachedOrSeedSnapshot(manifest.Providers, cfg, cacheDir)
+	// resolver nil → cache-only, non-blocking. Start() calls this before
+	// a.resolver is assigned (adapter.go:266 vs 272); we must never block on a
+	// yt-dlp subprocess at startup. Live enumeration is the refresh loop's job.
+	enum := userPlaylistEnumerator{cacheDir: cacheDir, cfg: cfg}
+	return buildCachedOrSeedSnapshot(ctx, manifest.Providers, cfg, cacheDir, enum)
 }
 
-func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir string) ([]ProviderDefinition, []ProviderCatalog, error) {
+func buildCachedOrSeedSnapshot(ctx context.Context, defs []ProviderDefinition, cfg Config, cacheDir string, enum userPlaylistEnumerator) ([]ProviderDefinition, []ProviderCatalog, error) {
 	catalogs := make([]ProviderCatalog, 0, len(defs))
 	for _, def := range defs {
 		if def.Type == directStreamsProviderType || def.Type == userProviderType {
-			cat, err := buildProviderCatalog(def, nil, cfg)
+			cat, err := buildInlineCatalog(ctx, def, enum)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -527,6 +539,17 @@ func buildCachedOrSeedSnapshot(defs []ProviderDefinition, cfg Config, cacheDir s
 		}
 	}
 	return defs, catalogs, nil
+}
+
+// buildInlineCatalog builds the locally-derived (no remote fetch) catalogs:
+// direct-streams (pure) and user providers (playlist channels use enum). It
+// centralizes the direct-vs-user branch shared by the startup, remote, and
+// catalog-refresh paths.
+func buildInlineCatalog(ctx context.Context, def ProviderDefinition, enum userPlaylistEnumerator) (ProviderCatalog, error) {
+	if def.Type == userProviderType {
+		return buildUserCatalog(ctx, def, enum)
+	}
+	return buildDirectStreamsCatalog(def)
 }
 
 func (a *Adapter) definitionSnapshot() []ProviderDefinition {
@@ -564,7 +587,7 @@ func (a *Adapter) definitionsForRefresh(providerIDs []string) ([]ProviderDefinit
 	return out, nil
 }
 
-func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string, userProviders []ProviderDefinition) (remoteSnapshot, error) {
+func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cacheDir string, userProviders []ProviderDefinition, enum userPlaylistEnumerator) (remoteSnapshot, error) {
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 	remote = sanitizeManifestArtwork(ctx, remote, cfg, validateProviderArtworkURL)
 	manifest := mergeManifests(cfg, bundled, nil, &remote, remoteProviderFactories())
@@ -577,7 +600,7 @@ func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cache
 	}
 	for _, def := range manifest.Providers {
 		if def.Type == directStreamsProviderType || def.Type == userProviderType {
-			cat, err := buildProviderCatalog(def, nil, cfg)
+			cat, err := buildInlineCatalog(ctx, def, enum)
 			if err != nil {
 				return remoteSnapshot{}, fmt.Errorf("provider %q build catalog: %w", def.ID, err)
 			}
@@ -626,7 +649,12 @@ func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (Provi
 	case directStreamsProviderType:
 		return buildDirectStreamsCatalog(def)
 	case userProviderType:
-		return buildUserCatalog(def)
+		// Cache-only path: the nil-resolver enumerator never runs yt-dlp, so
+		// context.Background() is fine (no network, no deadline to honor). Live
+		// playlist enumeration uses the caller's ctx via the startup/remote/
+		// catalog-refresh snapshot paths (Task 6). Do NOT wire a non-nil resolver
+		// into this dispatch — it would enumerate under a deadline-less ctx.
+		return buildUserCatalog(context.Background(), def, userPlaylistEnumerator{cfg: cfg})
 	default:
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
 	}

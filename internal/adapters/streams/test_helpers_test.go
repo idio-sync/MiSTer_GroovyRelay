@@ -276,6 +276,13 @@ type fakeResolver struct {
 	calls     int
 	pageURLs  []string
 	format    string
+
+	// EnumeratePlaylist stubbing.
+	enumEntries  map[string][]ytdlp.PlaylistEntry // keyed by pageURL
+	enumErr      error
+	enumCalls    int
+	enumPageURLs []string
+	enumMaxItems []int
 }
 
 type fakeResolveResponse struct {
@@ -293,6 +300,20 @@ func (f *fakeResolver) Resolve(ctx context.Context, pageURL, format, cookiesPath
 		return next.res, next.err
 	}
 	return f.res, f.err
+}
+
+func (f *fakeResolver) EnumeratePlaylist(_ context.Context, pageURL, _ string, maxItems int) ([]ytdlp.PlaylistEntry, error) {
+	f.enumCalls++
+	f.enumPageURLs = append(f.enumPageURLs, pageURL)
+	f.enumMaxItems = append(f.enumMaxItems, maxItems)
+	if f.enumErr != nil {
+		return nil, f.enumErr
+	}
+	entries := f.enumEntries[pageURL]
+	if maxItems > 0 && len(entries) > maxItems {
+		entries = entries[:maxItems]
+	}
+	return entries, nil
 }
 
 func newTestAdapterWithFakeCore(t *testing.T) (*Adapter, *fakeCore) {
@@ -336,3 +357,7 @@ func (a *Adapter) catalogSnapshotForTest(providerID string) ProviderCatalog {
 	}
 	return cat
 }
+
+// Compile-time proof the production resolver satisfies the streams interface
+// after EnumeratePlaylist is added to both.
+var _ streamResolver = (*ytdlp.Resolver)(nil)
