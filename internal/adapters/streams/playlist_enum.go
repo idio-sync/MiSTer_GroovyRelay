@@ -66,6 +66,8 @@ func playlistEntriesToItems(entries []ytdlp.PlaylistEntry, maxItems int) []Strea
 				continue
 			}
 		}
+		// Non-YouTube entries with no id reuse the (validated) URL as the item ID;
+		// yt-dlp resolves this URL at play time and bad-item tracking keys on it.
 		if id == "" {
 			id = pageURL
 		}

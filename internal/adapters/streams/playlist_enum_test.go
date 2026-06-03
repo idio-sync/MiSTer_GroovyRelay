@@ -65,3 +65,53 @@ func TestPlaylistEntriesToItems_YouTubeURLCapAndSafety(t *testing.T) {
 		t.Fatalf("capped = %d, want 1", len(capped))
 	}
 }
+
+func TestPlaylistEntriesToItems_YouTubeIDIgnoresHostileURL(t *testing.T) {
+	t.Parallel()
+	items := playlistEntriesToItems([]ytdlp.PlaylistEntry{
+		{ID: "dQw4w9WgXcQ", URL: "http://169.254.169.254/latest", Title: "YT id + hostile url"},
+	}, 0)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("hostile url not ignored; got %q", items[0].URL)
+	}
+}
+
+func TestPlaylistItems_CodecEdgeCases(t *testing.T) {
+	t.Parallel()
+	for _, in := range [][]StreamItem{nil, {}} {
+		raw, err := encodePlaylistItems(in)
+		if err != nil {
+			t.Fatalf("encode(%v): %v", in, err)
+		}
+		out, err := decodePlaylistItems(raw)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("round-trip len = %d, want 0", len(out))
+		}
+	}
+	for _, body := range []string{"[]", "null"} {
+		out, err := decodePlaylistItems([]byte(body))
+		if err != nil {
+			t.Fatalf("decode(%q): %v", body, err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("decode(%q) len = %d, want 0", body, len(out))
+		}
+	}
+	raw, err := encodePlaylistItems([]StreamItem{{ID: "x", URL: "https://e/x", SourceID: "x", Direct: true}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out, err := decodePlaylistItems(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 1 || out[0].Direct {
+		t.Fatalf("decoded item must be Direct:false, got %+v", out)
+	}
+}
