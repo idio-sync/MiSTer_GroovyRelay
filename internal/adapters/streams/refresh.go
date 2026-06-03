@@ -497,14 +497,22 @@ func appendUserProviders(providers []ProviderDefinition, cfg Config, userProvide
 }
 
 func buildStartupSnapshot(ctx context.Context, cfg Config, cacheDir string, userProviders []ProviderDefinition) ([]ProviderDefinition, []ProviderCatalog, error) {
+	// resolver nil → cache-only, non-blocking. Start() calls this before
+	// a.resolver is assigned, so we must never block on a yt-dlp subprocess at
+	// startup; live enumeration is the refresh loop's (and the edit path's) job.
+	return buildSnapshotWithEnumerator(ctx, cfg, cacheDir, userProviders, userPlaylistEnumerator{cacheDir: cacheDir, cfg: cfg})
+}
+
+// buildSnapshotWithEnumerator merges bundled+cached+user providers and builds
+// their catalogs using the supplied enumerator. A cache-only enumerator
+// (resolver nil) serves cached playlist items without yt-dlp; a live
+// enumerator (resolver set) enumerates fresh. Pure/off-lock: callers install
+// the result under a.mu.
+func buildSnapshotWithEnumerator(ctx context.Context, cfg Config, cacheDir string, userProviders []ProviderDefinition, enum userPlaylistEnumerator) ([]ProviderDefinition, []ProviderCatalog, error) {
 	cached := loadCachedManifest(ctx, cfg, cacheDir)
 	bundled := sanitizeManifestArtwork(ctx, bundledManifest(), cfg, validateProviderArtworkURLSyntax)
 	manifest := mergeManifests(cfg, bundled, cached, nil, remoteProviderFactories())
 	manifest.Providers = appendUserProviders(manifest.Providers, cfg, userProviders)
-	// resolver nil → cache-only, non-blocking. Start() calls this before
-	// a.resolver is assigned (adapter.go:266 vs 272); we must never block on a
-	// yt-dlp subprocess at startup. Live enumeration is the refresh loop's job.
-	enum := userPlaylistEnumerator{cacheDir: cacheDir, cfg: cfg}
 	return buildCachedOrSeedSnapshot(ctx, manifest.Providers, cfg, cacheDir, enum)
 }
 

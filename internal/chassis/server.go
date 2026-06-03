@@ -85,6 +85,15 @@ type Config struct {
 	// PresetEditor: streams adapter for star-toggle and move operations.
 	PresetEditor adapters.PresetEditor
 
+	// UserProviderEditor backs the catalog authoring routes (create/update/
+	// delete/reorder/verify). Interface-only, like PresetEditor — the streams
+	// adapter implements it and main.go injects it by type assertion.
+	UserProviderEditor adapters.UserProviderEditor
+	// EnsureAdapterStarted enables + hot-starts a disabled adapter mid-process
+	// (spec §10). Injected from main.go (it owns the process ctx + registry).
+	// Nil in tests that don't exercise auto-enable.
+	EnsureAdapterStarted func(name string) error
+
 	// SourceAvailabilityViewers: every adapter that implements the
 	// interface, in registration order. main.go assembles the slice
 	// from the registry. The chassis does NOT inspect the registry
@@ -164,6 +173,8 @@ type Server struct {
 	streamsCatalogViewer adapters.StreamsCatalogViewer
 	streamsCaster        adapters.StreamsCaster
 	presetEditor         adapters.PresetEditor
+	userProviderEditor   adapters.UserProviderEditor
+	ensureAdapterStarted func(name string) error
 	sourceViewers        []adapters.SourceAvailabilityViewer
 
 	cache       *snapshotCache
@@ -230,6 +241,8 @@ func New(cfg Config) (*Server, error) {
 		streamsCatalogViewer: cfg.StreamsCatalogViewer,
 		streamsCaster:        cfg.StreamsCaster,
 		presetEditor:         cfg.PresetEditor,
+		userProviderEditor:   cfg.UserProviderEditor,
+		ensureAdapterStarted: cfg.EnsureAdapterStarted,
 		sourceViewers:        cfg.SourceAvailabilityViewers,
 		cache:                &snapshotCache{},
 		cacheDone:            make(chan struct{}),
@@ -338,6 +351,11 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /receiver/streams/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleStreamsCast))))
 	mux.Handle("POST /receiver/preset/star", requireSameOrigin(http.HandlerFunc(s.handlePresetStar)))
 	mux.Handle("POST /receiver/preset/move", requireSameOrigin(http.HandlerFunc(s.handlePresetMove)))
+	mux.Handle("POST /receiver/catalog/provider", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderCreate)))
+	mux.Handle("PUT /receiver/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderUpdate)))
+	mux.Handle("DELETE /receiver/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderDelete)))
+	mux.Handle("POST /receiver/catalog/provider/{id}/reorder", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderReorder)))
+	mux.Handle("POST /receiver/catalog/channel/verify", requireSameOrigin(http.HandlerFunc(s.handleCatalogChannelVerify)))
 	mux.HandleFunc("GET /receiver/setup/status", s.handleSetupStatus)
 	mux.Handle("POST /receiver/setup/finish", requireSameOrigin(http.HandlerFunc(s.handleSetupFinish)))
 	mux.Handle("POST /receiver/settings/bridge",

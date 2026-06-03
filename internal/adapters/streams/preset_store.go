@@ -240,6 +240,72 @@ func (s *presetStore) Move(from, to int) error {
 	return nil
 }
 
+// ClearProviderSlots clears every slot whose ProviderID == providerID,
+// persists, and returns the cleared slot numbers (1-indexed, ascending).
+// Unlike SetStarred it does NOT consult the resolver, so it works after the
+// provider/channel has already left the catalog (delete-with-cleanup, spec
+// §9 item 8). A no-match is a no-op success (nil, nil) with no file write.
+func (s *presetStore) ClearProviderSlots(providerID string) ([]int, error) {
+	return s.clearMatching(func(e adapters.PresetEntry) bool {
+		return e.ProviderID == providerID
+	})
+}
+
+// ClearChannelSlots clears slots matching the full (providerID, channelID)
+// pair — channel IDs are provider-scoped (spec §4.5), so a same-named channel
+// under a different provider is never touched.
+func (s *presetStore) ClearChannelSlots(providerID, channelID string) ([]int, error) {
+	return s.clearMatching(func(e adapters.PresetEntry) bool {
+		return e.ProviderID == providerID && e.ChannelID == channelID
+	})
+}
+
+func (s *presetStore) clearMatching(match func(adapters.PresetEntry) bool) ([]int, error) {
+	s.mu.Lock()
+	next := s.slots
+	cleared := []int{}
+	for i, e := range next {
+		if e.ProviderID != "" && match(e) {
+			cleared = append(cleared, i+1)
+			next[i] = adapters.PresetEntry{Slot: i + 1}
+		}
+	}
+	if len(cleared) == 0 {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	if err := s.persistSlotsLocked(next); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.slots = next
+	s.mu.Unlock()
+	sort.Ints(cleared)
+	return cleared, nil
+}
+
+// Rehydrate re-resolves the display fields (Title/BadgeLabel/BadgeClass/Live)
+// of every populated slot against the current catalog, so an in-app rename
+// reflects in the preset bank without a restart (spec §10 "re-derive
+// presets"). It is NON-destructive: a slot whose reference no longer resolves
+// (e.g. a playlist channel mid-enumeration) keeps its persistent triple and
+// last-known display fields rather than being dropped — explicit removals go
+// through ClearProviderSlots/ClearChannelSlots. The persistent triple is
+// unchanged, so no file write is needed.
+func (s *presetStore) Rehydrate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, e := range s.slots {
+		if e.ProviderID == "" {
+			continue
+		}
+		if fresh, ok := s.resolve(e.ProviderID, e.ChannelID); ok {
+			fresh.Slot = e.Slot
+			s.slots[i] = fresh
+		}
+	}
+}
+
 // persistSlotsLocked writes the candidate state to s.path atomically
 // (temp file in the same directory + os.Rename). Called with s.mu held.
 // Callers commit s.slots only after this returns nil, so HTTP success

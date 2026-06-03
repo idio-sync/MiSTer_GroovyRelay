@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -281,4 +282,40 @@ func tmpConfigPath(t *testing.T) string {
 		t.Fatalf("write seed config: %v", err)
 	}
 	return path
+}
+
+func TestCatalogManager_EnsureStreamsEnabledPersists(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := config.WriteAtomic(cfgPath, []byte("[adapters.streams]\nenabled = false\n")); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	a, err := streams.New(streams.AdapterConfig{Bridge: config.BridgeConfig{DataDir: dir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	saver := uiserver.NewAdapterSaver(cfgPath, &sync.Mutex{})
+	cm := &catalogManager{adapter: a, adapterSaver: saver}
+
+	if a.IsEnabled() {
+		t.Fatal("precondition: streams should be disabled")
+	}
+	if err := cm.EnsureStreamsEnabled(); err != nil {
+		t.Fatalf("EnsureStreamsEnabled: %v", err)
+	}
+	if !a.IsEnabled() {
+		t.Fatal("streams not enabled in-memory after EnsureStreamsEnabled")
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), "enabled = true") {
+		t.Fatalf("config file was not updated:\n%s", raw)
+	}
+	// Idempotent second call.
+	if err := cm.EnsureStreamsEnabled(); err != nil {
+		t.Fatalf("EnsureStreamsEnabled (idempotent): %v", err)
+	}
 }
