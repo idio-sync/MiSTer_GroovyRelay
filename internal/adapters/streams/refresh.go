@@ -352,7 +352,7 @@ func (a *Adapter) refreshCatalogsDefault(ctx context.Context, providerIDs []stri
 		if def.Type == directStreamsProviderType || def.Type == userProviderType {
 			// buildInlineCatalog runs enumeration BEFORE a.mu is taken —
 			// preserving "no lock across network I/O."
-			cat, err := buildInlineCatalog(ctx, def, cfg, enum)
+			cat, err := buildInlineCatalog(ctx, def, enum)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("provider %q build catalog: %w", def.ID, err))
 				continue
@@ -512,7 +512,7 @@ func buildCachedOrSeedSnapshot(ctx context.Context, defs []ProviderDefinition, c
 	catalogs := make([]ProviderCatalog, 0, len(defs))
 	for _, def := range defs {
 		if def.Type == directStreamsProviderType || def.Type == userProviderType {
-			cat, err := buildInlineCatalog(ctx, def, cfg, enum)
+			cat, err := buildInlineCatalog(ctx, def, enum)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -545,7 +545,7 @@ func buildCachedOrSeedSnapshot(ctx context.Context, defs []ProviderDefinition, c
 // direct-streams (pure) and user providers (playlist channels use enum). It
 // centralizes the direct-vs-user branch shared by the startup, remote, and
 // catalog-refresh paths.
-func buildInlineCatalog(ctx context.Context, def ProviderDefinition, cfg Config, enum userPlaylistEnumerator) (ProviderCatalog, error) {
+func buildInlineCatalog(ctx context.Context, def ProviderDefinition, enum userPlaylistEnumerator) (ProviderCatalog, error) {
 	if def.Type == userProviderType {
 		return buildUserCatalog(ctx, def, enum)
 	}
@@ -600,7 +600,7 @@ func buildRemoteSnapshot(ctx context.Context, cfg Config, remote Manifest, cache
 	}
 	for _, def := range manifest.Providers {
 		if def.Type == directStreamsProviderType || def.Type == userProviderType {
-			cat, err := buildInlineCatalog(ctx, def, cfg, enum)
+			cat, err := buildInlineCatalog(ctx, def, enum)
 			if err != nil {
 				return remoteSnapshot{}, fmt.Errorf("provider %q build catalog: %w", def.ID, err)
 			}
