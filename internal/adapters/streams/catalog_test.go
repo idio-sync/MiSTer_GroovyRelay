@@ -323,8 +323,18 @@ func TestCatalog_ExposesAndCastsEnumeratedPlaylistChannel(t *testing.T) {
 	if resolver.enumCalls != 1 {
 		t.Fatalf("enumCalls = %d, want 1", resolver.enumCalls)
 	}
-	if resolver.calls != 1 || resolver.pageURLs[0] != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
-		t.Fatalf("resolver Resolve calls=%d urls=%v, want first enumerated watch URL", resolver.calls, resolver.pageURLs)
+	// buildQueue shuffles enumerated items with a time-seeded RNG, so which
+	// enumerated entry resolves first is non-deterministic. Assert exactly one
+	// Resolve call against one of the two enumerated watch URLs (shuffle-agnostic).
+	if resolver.calls != 1 {
+		t.Fatalf("resolver Resolve calls=%d, want 1", resolver.calls)
+	}
+	wantURLs := map[string]bool{
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ": true,
+		"https://www.youtube.com/watch?v=abcdefghijk": true,
+	}
+	if !wantURLs[resolver.pageURLs[0]] {
+		t.Fatalf("resolver Resolve url=%q, want one of the enumerated watch URLs", resolver.pageURLs[0])
 	}
 	if core.lastReq.StreamURL != "https://media.example/video.mp4" {
 		t.Fatalf("StreamURL = %q, want resolved media URL", core.lastReq.StreamURL)
