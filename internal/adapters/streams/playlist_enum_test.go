@@ -1,6 +1,8 @@
 package streams
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -113,5 +115,113 @@ func TestPlaylistItems_CodecEdgeCases(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].Direct {
 		t.Fatalf("decoded item must be Direct:false, got %+v", out)
+	}
+}
+
+func ytEntries(ids ...string) []ytdlp.PlaylistEntry {
+	out := make([]ytdlp.PlaylistEntry, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, ytdlp.PlaylistEntry{ID: id, URL: id, Title: id})
+	}
+	return out
+}
+
+func TestEnumerator_LiveEnumeratesCachesAndIsServedFromCache(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pageURL := "https://youtube.com/playlist?list=PL1"
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		pageURL: ytEntries("dQw4w9WgXcQ", "abcdefghijk"),
+	}}
+	cfg := DefaultConfig()
+	live := userPlaylistEnumerator{resolver: fr, cacheDir: dir, cfg: cfg}
+
+	items, err := live.channelItems(context.Background(), "user:mix", "list", pageURL)
+	if err != nil {
+		t.Fatalf("live channelItems: %v", err)
+	}
+	if len(items) != 2 || items[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("live items = %+v", items)
+	}
+	if fr.enumCalls != 1 {
+		t.Fatalf("enumCalls = %d, want 1", fr.enumCalls)
+	}
+
+	// A cache-only enumerator (resolver nil) now serves the written cache.
+	cacheOnly := userPlaylistEnumerator{cacheDir: dir, cfg: cfg}
+	cached, err := cacheOnly.channelItems(context.Background(), "user:mix", "list", pageURL)
+	if err != nil {
+		t.Fatalf("cache-only channelItems: %v", err)
+	}
+	if len(cached) != 2 {
+		t.Fatalf("cache-only items = %d, want 2 (served from cache)", len(cached))
+	}
+}
+
+func TestEnumerator_CacheOnlyEmptyWhenUncached(t *testing.T) {
+	t.Parallel()
+	cacheOnly := userPlaylistEnumerator{cacheDir: t.TempDir(), cfg: DefaultConfig()}
+	items, err := cacheOnly.channelItems(context.Background(), "user:mix", "list", "https://youtube.com/playlist?list=PL1")
+	if err != nil {
+		t.Fatalf("channelItems: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("uncached cache-only items = %d, want 0", len(items))
+	}
+}
+
+func TestEnumerator_ServeStaleOnLiveFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pageURL := "https://youtube.com/playlist?list=PL1"
+
+	// Seed the cache via a successful live run.
+	ok := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{pageURL: ytEntries("dQw4w9WgXcQ")}},
+		cacheDir: dir, cfg: DefaultConfig(),
+	}
+	if _, err := ok.channelItems(context.Background(), "user:mix", "list", pageURL); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// A subsequent live run that fails must serve the stale cache AND report
+	// the error (for logging), not empty the channel.
+	failing := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumErr: fmt.Errorf("yt-dlp: playlist temporarily unavailable")},
+		cacheDir: dir, cfg: DefaultConfig(),
+	}
+	items, err := failing.channelItems(context.Background(), "user:mix", "list", pageURL)
+	if err == nil {
+		t.Fatal("err = nil, want the transient enumerate error surfaced for logging")
+	}
+	if len(items) != 1 {
+		t.Fatalf("serve-stale items = %d, want 1 (prior cache retained)", len(items))
+	}
+}
+
+func TestEnumerator_LiveFailureNoCacheReturnsError(t *testing.T) {
+	t.Parallel()
+	failing := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumErr: fmt.Errorf("yt-dlp: private playlist")},
+		cacheDir: t.TempDir(), cfg: DefaultConfig(),
+	}
+	items, err := failing.channelItems(context.Background(), "user:mix", "list", "https://youtube.com/playlist?list=PL1")
+	if err == nil {
+		t.Fatal("err = nil, want error when enumeration fails with no cache")
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %d, want 0", len(items))
+	}
+}
+
+func TestPlaylistErrorForLog_RedactsPageURL(t *testing.T) {
+	t.Parallel()
+	pageURL := "https://example.com/playlist?token=secret"
+	got := playlistErrorForLog(fmt.Errorf("yt-dlp failed for %s", pageURL), pageURL)
+	if strings.Contains(got, "token=secret") || strings.Contains(got, pageURL) {
+		t.Fatalf("playlist error log leaked page URL/query: %q", got)
+	}
+	if !strings.Contains(got, "https://example.com/playlist") {
+		t.Fatalf("playlist error log lost useful URL context: %q", got)
 	}
 }

@@ -1,9 +1,13 @@
 package streams
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 )
@@ -76,4 +80,90 @@ func playlistEntriesToItems(entries []ytdlp.PlaylistEntry, maxItems int) []Strea
 	return items
 }
 
-// (userPlaylistEnumerator follows in Task 4.)
+// userPlaylistEnumerator resolves a user playlist channel's items. It is the
+// single seam through which buildUserCatalog gets playlist items, so the catalog
+// builder stays free of network/cache concerns.
+//
+//   - resolver == nil (startup, "cache-only"): returns cached items if present,
+//     else nil. Startup never blocks on yt-dlp; the background refresh fills
+//     uncached playlist channels (see Task 6 + the AllowRemoteManifest residual).
+//   - resolver != nil (refresh, "live"): enumerates via yt-dlp, caches on
+//     success, and SERVES STALE (returns the prior cache) on failure so a
+//     transient yt-dlp error never empties a working channel. The returned
+//     error is advisory (for logging); callers keep the provider usable.
+type userPlaylistEnumerator struct {
+	resolver    streamResolver // nil → cache-only
+	cookiesPath string
+	cacheDir    string
+	cfg         Config
+}
+
+func (e userPlaylistEnumerator) cached(providerID, channelID, pageURL string) ([]StreamItem, bool) {
+	raw, _, ok := readConditionalCache(e.cacheDir, userPlaylistCacheKey(providerID, channelID), pageURL)
+	if !ok {
+		return nil, false
+	}
+	items, err := decodePlaylistItems(raw)
+	if err != nil {
+		return nil, false
+	}
+	return items, true
+}
+
+func (e userPlaylistEnumerator) channelItems(ctx context.Context, providerID, channelID, pageURL string) ([]StreamItem, error) {
+	cachedItems, cachedOK := e.cached(providerID, channelID, pageURL)
+
+	if e.resolver == nil {
+		if cachedOK {
+			return cachedItems, nil
+		}
+		return nil, nil
+	}
+
+	maxItems := e.cfg.MaxItemsPerChannel
+	timeout := time.Duration(e.cfg.CatalogRequestTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	enumCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	entries, err := e.resolver.EnumeratePlaylist(enumCtx, pageURL, e.cookiesPath, maxItems)
+	if err != nil {
+		if cachedOK {
+			return cachedItems, fmt.Errorf("enumerate playlist %q/%q (serving %d cached): %w",
+				providerID, channelID, len(cachedItems), err)
+		}
+		return nil, fmt.Errorf("enumerate playlist %q/%q: %w", providerID, channelID, err)
+	}
+
+	items := playlistEntriesToItems(entries, maxItems)
+	// Cache write failure is non-fatal: return the freshly enumerated items now
+	// and let the next refresh cycle re-attempt the write.
+	if raw, encErr := encodePlaylistItems(items); encErr == nil {
+		meta := CacheMetadata{SourceURL: pageURL, FetchedAt: time.Now().UTC()}
+		if wErr := writeCacheFile(e.cacheDir, userPlaylistCacheKey(providerID, channelID), raw, meta); wErr != nil {
+			slog.Warn("user_providers: playlist cache write failed",
+				"provider", providerID, "channel", channelID, "err", wErr)
+		}
+	}
+	return items, nil
+}
+
+func playlistErrorForLog(err error, pageURL string) string {
+	if err == nil {
+		return ""
+	}
+	return strings.ReplaceAll(err.Error(), pageURL, redactPlaylistPageURL(pageURL))
+}
+
+func redactPlaylistPageURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<redacted-url>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
