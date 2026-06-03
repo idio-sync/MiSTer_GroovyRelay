@@ -89,53 +89,19 @@ func (s *userProviderStore) Snapshot() []ProviderDefinition {
 
 // Put creates or replaces a user provider. A definition whose ID is empty is a
 // create: a locked ID is assigned from the display name. A non-empty malformed
-// ID is rejected. A definition whose ID matches an existing user provider is an
-// in-place update that preserves the locked provider ID. Channel IDs are
+// ID is rejected, and a well-formed "user:" ID that matches no existing
+// provider returns a NOT FOUND error (Put never creates from a caller-supplied
+// ID). A definition whose ID matches an existing user provider is an in-place
+// update that preserves the locked provider ID. Channel IDs are
 // assigned/preserved the same way within the provider. Returns the saved,
 // normalized definition.
 func (s *userProviderStore) Put(def ProviderDefinition) (ProviderDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	idx := -1
-	if isUserProviderID(def.ID) {
-		for i, p := range s.providers {
-			if p.ID == def.ID {
-				idx = i
-				break
-			}
-		}
-	}
-	if idx < 0 && len(s.providers) >= maxUserProviders {
-		return ProviderDefinition{}, badRequest("BANK FULL",
-			fmt.Sprintf("streams: at most %d user providers", maxUserProviders))
-	}
-
-	taken := func(id string) bool {
-		for i, p := range s.providers {
-			if i == idx {
-				continue // allow the provider being updated to keep its ID
-			}
-			if p.ID == id {
-				return true
-			}
-		}
-		return false
-	}
-	if def.ID == "" {
-		def.ID = newUserProviderID(def.DisplayName, taken)
-	}
-
-	norm, err := normalizeUserProvider(def, nil)
+	norm, next, err := s.planPutLocked(def)
 	if err != nil {
 		return ProviderDefinition{}, err
-	}
-
-	next := append([]ProviderDefinition(nil), s.providers...)
-	if idx >= 0 {
-		next[idx] = norm
-	} else {
-		next = append(next, norm)
 	}
 	if err := s.persistLocked(next); err != nil {
 		return ProviderDefinition{}, err
@@ -172,6 +138,123 @@ func (s *userProviderStore) Delete(id string) (bool, error) {
 	}
 	s.providers = next
 	return true, nil
+}
+
+func (s *userProviderStore) PlanPut(def ProviderDefinition) (ProviderDefinition, []ProviderDefinition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	saved, next, err := s.planPutLocked(def)
+	if err != nil {
+		return ProviderDefinition{}, nil, err
+	}
+	// planPutLocked already returns a next slice independent of s.providers
+	// (built via cloneUserProviders), so no second deep copy is needed.
+	return saved, next, nil
+}
+
+func (s *userProviderStore) PlanDelete(id string) ([]ProviderDefinition, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := -1
+	for i, p := range s.providers {
+		if p.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, false
+	}
+	next := append([]ProviderDefinition(nil), s.providers[:idx]...)
+	next = append(next, s.providers[idx+1:]...)
+	return cloneUserProviders(next), true
+}
+
+func (s *userProviderStore) CommitProviders(providers []ProviderDefinition) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneUserProviders(providers)
+	if err := s.persistLocked(next); err != nil {
+		return err
+	}
+	s.providers = next
+	return nil
+}
+
+func (s *userProviderStore) Exists(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.providers {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *userProviderStore) planPutLocked(def ProviderDefinition) (ProviderDefinition, []ProviderDefinition, error) {
+	idx := -1
+	if isUserProviderID(def.ID) {
+		for i, p := range s.providers {
+			if p.ID == def.ID {
+				idx = i
+				break
+			}
+		}
+	}
+	if def.ID != "" {
+		if err := validateUserProviderID(def.ID); err != nil {
+			return ProviderDefinition{}, nil, err
+		}
+		if idx < 0 {
+			return ProviderDefinition{}, nil, notFoundUserProvider(def.ID)
+		}
+	}
+	if idx < 0 && len(s.providers) >= maxUserProviders {
+		return ProviderDefinition{}, nil, badRequest("BANK FULL",
+			fmt.Sprintf("streams: at most %d user providers", maxUserProviders))
+	}
+	taken := func(id string) bool {
+		for i, p := range s.providers {
+			if i == idx {
+				continue
+			}
+			if p.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	if def.ID == "" {
+		def.ID = newUserProviderID(def.DisplayName, taken)
+	}
+	norm, err := normalizeUserProvider(def, nil)
+	if err != nil {
+		return ProviderDefinition{}, nil, err
+	}
+	next := cloneUserProviders(s.providers)
+	if idx >= 0 {
+		next[idx] = norm
+	} else {
+		next = append(next, norm)
+	}
+	return norm, next, nil
+}
+
+func cloneUserProviders(in []ProviderDefinition) []ProviderDefinition {
+	out := make([]ProviderDefinition, len(in))
+	for i := range in {
+		out[i] = cloneUserProvider(in[i])
+	}
+	return out
+}
+
+func notFoundUserProvider(id string) error {
+	return &adapters.QuickCastError{
+		Status:  http.StatusNotFound,
+		Chip:    "NOT FOUND",
+		Message: fmt.Sprintf("streams: user provider %q not found", id),
+	}
 }
 
 func (s *userProviderStore) persistLocked(providers []ProviderDefinition) error {

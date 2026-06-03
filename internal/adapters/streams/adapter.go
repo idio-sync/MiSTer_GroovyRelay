@@ -67,7 +67,12 @@ type Adapter struct {
 	// Test seam for deterministic Replay replacement interleaving coverage.
 	beforeReplayReplace func()
 	playbackMu          sync.Mutex
-	mu                  sync.Mutex
+	// userEditMu serializes user-provider create/update/delete/reorder across
+	// candidate planning, off-lock rebuild, atomic JSON commit, catalog install,
+	// and preset cleanup. It is intentionally separate from a.mu so catalog
+	// enumeration never happens while the adapter state lock is held.
+	userEditMu sync.Mutex
+	mu         sync.Mutex
 	cfg                 Config
 	state               adapters.State
 	lastErr             string
