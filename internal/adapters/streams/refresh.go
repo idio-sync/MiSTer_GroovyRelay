@@ -626,7 +626,7 @@ func buildProviderCatalog(def ProviderDefinition, raw []byte, cfg Config) (Provi
 	case directStreamsProviderType:
 		return buildDirectStreamsCatalog(def)
 	case userProviderType:
-		return buildUserCatalog(def)
+		return buildUserCatalog(context.Background(), def, userPlaylistEnumerator{cfg: cfg})
 	default:
 		return ProviderCatalog{}, fmt.Errorf("provider %q type %q is unsupported", def.ID, def.Type)
 	}

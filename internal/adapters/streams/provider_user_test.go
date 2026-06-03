@@ -1,9 +1,13 @@
 package streams
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 )
 
 func TestProviderDefinition_NewFieldsRoundTrip(t *testing.T) {
@@ -236,33 +240,65 @@ func userCatalogTestDef() ProviderDefinition {
 	}
 }
 
-func TestBuildUserCatalog_KindsProduceCorrectItems(t *testing.T) {
+func TestBuildUserCatalog_PlaylistEnumeratesDirectAndSingleUnchanged(t *testing.T) {
 	t.Parallel()
-	cat, err := buildUserCatalog(userCatalogTestDef())
+	dir := t.TempDir()
+	playlistURL := "https://www.youtube.com/playlist?list=PL123"
+	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+		playlistURL: ytEntries("dQw4w9WgXcQ", "abcdefghijk"),
+	}}
+	enum := userPlaylistEnumerator{resolver: fr, cacheDir: dir, cfg: DefaultConfig()}
+
+	cat, err := buildUserCatalog(context.Background(), userCatalogTestDef(), enum)
 	if err != nil {
 		t.Fatalf("buildUserCatalog: %v", err)
 	}
 	if cat.ProviderID != "user:mix" || cat.Name != "Mix" {
-		t.Fatalf("catalog identity = (%q,%q), want (user:mix, Mix)", cat.ProviderID, cat.Name)
+		t.Fatalf("identity = (%q,%q)", cat.ProviderID, cat.Name)
 	}
-	// playlist channel is skipped in Phase 3; direct + single remain.
-	if len(cat.Channels) != 2 {
-		t.Fatalf("len(Channels) = %d, want 2 (playlist skipped)", len(cat.Channels))
+	// All three channels now appear (playlist no longer skipped).
+	if len(cat.Channels) != 3 {
+		t.Fatalf("len(Channels) = %d, want 3", len(cat.Channels))
 	}
 	byID := map[string]Channel{}
 	for _, ch := range cat.Channels {
 		byID[ch.ID] = ch
 	}
-	live, ok := byID["live"]
-	if !ok || len(live.Items) != 1 || !live.Items[0].Direct || live.Items[0].URL != "https://cdn.example.com/live.m3u8" {
-		t.Fatalf("direct channel item = %+v, want one Direct:true item with the m3u8 URL", live.Items)
+	if live := byID["live"]; len(live.Items) != 1 || !live.Items[0].Direct {
+		t.Fatalf("direct channel = %+v", live.Items)
 	}
-	vid, ok := byID["vid"]
-	if !ok || len(vid.Items) != 1 || vid.Items[0].Direct || vid.Items[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
-		t.Fatalf("single channel item = %+v, want one Direct:false item with the watch URL", vid.Items)
+	if vid := byID["vid"]; len(vid.Items) != 1 || vid.Items[0].Direct {
+		t.Fatalf("single channel = %+v", vid.Items)
 	}
-	if _, ok := byID["list"]; ok {
-		t.Fatalf("playlist channel should be skipped in Phase 3")
+	list, ok := byID["list"]
+	if !ok {
+		t.Fatal("playlist channel 'list' missing — it must be enumerated, not skipped")
+	}
+	if len(list.Items) != 2 || list.Items[0].URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" || list.Items[0].Direct {
+		t.Fatalf("playlist items = %+v, want 2 non-direct enumerated items", list.Items)
+	}
+	if fr.enumCalls != 1 {
+		t.Fatalf("enumCalls = %d, want 1 (only the playlist channel enumerates)", fr.enumCalls)
+	}
+}
+
+func TestBuildUserCatalog_PlaylistEnumerationFailureKeepsProvider(t *testing.T) {
+	t.Parallel()
+	enum := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumErr: fmt.Errorf("private playlist")},
+		cacheDir: t.TempDir(), cfg: DefaultConfig(),
+	}
+	cat, err := buildUserCatalog(context.Background(), userCatalogTestDef(), enum)
+	if err != nil {
+		t.Fatalf("buildUserCatalog must not fail on a single playlist error: %v", err)
+	}
+	if len(cat.Channels) != 3 {
+		t.Fatalf("len(Channels) = %d, want 3 (provider stays usable)", len(cat.Channels))
+	}
+	for _, ch := range cat.Channels {
+		if ch.ID == "list" && len(ch.Items) != 0 {
+			t.Fatalf("failed playlist should have 0 items, got %d", len(ch.Items))
+		}
 	}
 }
 

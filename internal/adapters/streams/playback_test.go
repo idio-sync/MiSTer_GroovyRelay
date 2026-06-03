@@ -1435,7 +1435,7 @@ func installUserDirectAdapter(t *testing.T) (*Adapter, *fakeCore) {
 		ID: "user:cdn", Type: userProviderType, DisplayName: "CDN", BadgeLabel: "CD", BadgeColor: "teal",
 		Channels: []ChannelDefinition{{ID: "live", Name: "Live", Kind: kindDirect, URL: "https://cdn.example.com/live.m3u8"}},
 	}
-	cat, err := buildUserCatalog(def)
+	cat, err := buildUserCatalog(context.Background(), def, userPlaylistEnumerator{})
 	if err != nil {
 		t.Fatalf("buildUserCatalog: %v", err)
 	}
@@ -1496,7 +1496,7 @@ func installUserSingleAdapter(t *testing.T, resolved *ytdlp.Resolution) (*Adapte
 		ID: "user:tw", Type: userProviderType, DisplayName: "TW", BadgeLabel: "TW", BadgeColor: "purple",
 		Channels: []ChannelDefinition{{ID: "vod", Name: "VOD", Kind: kindSingle, URL: "https://www.twitch.tv/foo"}},
 	}
-	cat, err := buildUserCatalog(def)
+	cat, err := buildUserCatalog(context.Background(), def, userPlaylistEnumerator{})
 	if err != nil {
 		t.Fatalf("buildUserCatalog: %v", err)
 	}
