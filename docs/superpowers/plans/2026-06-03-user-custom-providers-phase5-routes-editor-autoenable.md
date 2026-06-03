@@ -1792,7 +1792,39 @@ func TestStart_LocalOnlyEnumeratesUserPlaylists(t *testing.T) {
 }
 ```
 
-> Implementation note for the test harness: this test needs an adapter whose `Start` will use the `fakeResolver` rather than constructing a real `ytdlp.Resolver` from a binary. Inspect `Start` (`adapter.go:259-265`): it builds a local `resolver` only when `a.ytdlpBinary != nil`. Construct the adapter with `ytdlpBinary == nil` and pre-set `a.resolver = fr` BEFORE `Start`; update `Start` so it only assigns `a.resolver = resolver` when `resolver != nil`, otherwise it keeps the pre-set resolver. Add `newTestAdapterWithConfig`/`waitFor` as thin helpers in `test_helpers_test.go` if they don't already exist (poll-with-timeout is the standard pattern for the async refresh). Keep these helpers minimal and assert behavior, not timing.
+> Implementation note for the test harness: this test needs an adapter whose `Start` will use the injected `fakeResolver` rather than constructing a real `ytdlp.Resolver`. `Start` (`adapter.go:258-265`) builds a local `resolver` only when `a.ytdlpBinary != nil`, then assigns `a.resolver = resolver` at line 273 (currently unconditional — Step 3 guards it). The adapter built by `New(AdapterConfig{Bridge: ...})` has `ytdlpBinary == nil`, so the local `resolver` stays nil; pre-setting `a.resolver = fr` plus the Step-3 guard makes `Start` keep `fr`.
+>
+> Add these two thin helpers to `test_helpers_test.go` if absent (verify first with `rg -n 'func newTestAdapterWithConfig|func waitFor' internal/adapters/streams`):
+>
+> ```go
+> // newTestAdapterWithConfig builds an adapter in dir with cfg already applied,
+> // and no ytdlp binary (so Start uses an injected resolver, not a real one).
+> func newTestAdapterWithConfig(t *testing.T, dir string, cfg Config) *Adapter {
+> 	t.Helper()
+> 	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dir}})
+> 	if err != nil {
+> 		t.Fatalf("New: %v", err)
+> 	}
+> 	a.cfg = cfg
+> 	a.cacheDir = dir
+> 	return a
+> }
+>
+> // waitFor polls pred until true or the deadline, failing the test on timeout.
+> func waitFor(t *testing.T, timeout time.Duration, pred func() bool) {
+> 	t.Helper()
+> 	deadline := time.Now().Add(timeout)
+> 	for time.Now().Before(deadline) {
+> 		if pred() {
+> 			return
+> 		}
+> 		time.Sleep(10 * time.Millisecond)
+> 	}
+> 	t.Fatal("waitFor: condition not met before timeout")
+> }
+> ```
+>
+> `time.Now()`/`time.Sleep` are acceptable in a test helper (this is not production resume-sensitive code). `adapter_test.go` already imports `os`/`path/filepath`/`config`; add `time` if missing.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1801,23 +1833,53 @@ Expected: FAIL — the playlist never fills (no one-shot refresh; loop gated off
 
 - [ ] **Step 3: Implement the one-shot in `Start`**
 
-In `internal/adapters/streams/adapter.go`, locate the loop-spawn block in `Start` (around lines 279-290):
+In `internal/adapters/streams/adapter.go`, the **current** `Start` body (lines 272-290, verified) is:
 
 ```go
-		if resolver != nil {
-			a.resolver = resolver
-		}
-		startLoop := a.cfg.Enabled && a.cfg.AllowRemoteManifest
-		startLocalOnlyRefresh := a.cfg.Enabled && !a.cfg.AllowRemoteManifest
-		...
-		if startLoop {
-			go a.refreshLoop(loopCtx, loopDone)
+	a.mu.Lock()
+	a.resolver = resolver
+	a.installSnapshotLocked(defs, catalogs)
+	a.loopCtx = ctx
+	a.state = adapters.StateRunning
+	a.lastErr = ""
+	a.stateSince = time.Now()
+	startLoop := a.cfg.Enabled && a.cfg.AllowRemoteManifest
+	if startLoop {
+		a.loopCtx, a.loopCancel = context.WithCancel(ctx)
+		a.loopDone = make(chan struct{})
 	}
+	loopCtx := a.loopCtx
+	loopDone := a.loopDone
+	a.mu.Unlock()
+
+	if startLoop {
+		go a.refreshLoop(loopCtx, loopDone)
+	}
+	return nil
 ```
 
-Replace the trailing `if startLoop { ... }` with a branch that also handles the local-only case using the copied `startLocalOnlyRefresh` bool:
+Make **two** edits. (a) Guard the resolver assignment at line 273 so a pre-set resolver (the test injects a `fakeResolver` with `a.ytdlpBinary == nil`) is not clobbered to nil. (b) Add the `startLocalOnlyRefresh` bool and the `else if` branch. After both edits the relevant lines read:
 
 ```go
+	a.mu.Lock()
+	if resolver != nil {
+		a.resolver = resolver // keep a pre-set resolver when ytdlpBinary is nil
+	}
+	a.installSnapshotLocked(defs, catalogs)
+	a.loopCtx = ctx
+	a.state = adapters.StateRunning
+	a.lastErr = ""
+	a.stateSince = time.Now()
+	startLoop := a.cfg.Enabled && a.cfg.AllowRemoteManifest
+	startLocalOnlyRefresh := a.cfg.Enabled && !a.cfg.AllowRemoteManifest
+	if startLoop {
+		a.loopCtx, a.loopCancel = context.WithCancel(ctx)
+		a.loopDone = make(chan struct{})
+	}
+	loopCtx := a.loopCtx
+	loopDone := a.loopDone
+	a.mu.Unlock()
+
 	if startLoop {
 		go a.refreshLoop(loopCtx, loopDone)
 	} else if startLocalOnlyRefresh {
@@ -1829,9 +1891,10 @@ Replace the trailing `if startLoop { ... }` with a branch that also handles the 
 		// Resolves the Phase 4 documented residual.
 		go func() { _ = a.refreshCatalogsDefault(ctx, nil, "startup-local") }()
 	}
+	return nil
 ```
 
-> Use the captured `ctx` (the process-lifetime context passed to `Start`), not `loopCtx` — `loopCtx` is only created in the `startLoop` branch. Confirm `ctx` is in scope at that point in `Start`; if `Start` reassigns `ctx` for the loop, capture the original into a local before the branch.
+> The one-shot uses `ctx` (the `Start` parameter), which is NOT shadowed before the branch — verified: `Start` only assigns the package-level field `a.loopCtx` (lines 275,281), never the `ctx` local. `loopCtx`/`loopDone` are nil in the local-only branch (the `startLoop` block that creates them did not run), which is fine since the one-shot does not use them.
 
 - [ ] **Step 4: Run test to verify it passes**
 
