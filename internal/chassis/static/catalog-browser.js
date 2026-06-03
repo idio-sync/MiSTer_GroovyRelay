@@ -176,6 +176,7 @@
   }
 
   async function handleChannelCast(card) {
+    if (window.Chassis && Chassis.setupBlocked()) return;
     const provider = card.dataset.provider;
     const channel = card.dataset.channel;
     if (!provider || !channel) return;

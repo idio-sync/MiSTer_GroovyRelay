@@ -52,6 +52,12 @@
   window.Chassis = window.Chassis || {};
   window.Chassis.settings = {}; // shared namespace for sub-modules
 
+  // Notify setup.js that a setting was saved; setup.js uses this to refresh
+  // the first-run checklist status after bridge/adapter field saves.
+  function notifySettingsSaved() {
+    document.dispatchEvent(new CustomEvent('chassis:settings-saved'));
+  }
+
   // Save helper: POSTs one field-value pair, returns parsed JSON or null
   // on network error.
   async function saveField(name, value) {
@@ -175,6 +181,7 @@
       if (status >= 200 && status < 300 && body.ok) {
         markHasValue(name, el.value);
         clearNotice();
+        notifySettingsSaved();
         if (body.scope === 'reboot') {
           // Extract only the label's first text node, excluding the help <span>.
           // fieldHelper renders <label>Host <span class="help">...</span></label>;
@@ -563,6 +570,7 @@
   function handleAdapterSaveResponse(target, payload) {
     const key = target.getAttribute('name');
     if (payload.ok) {
+      notifySettingsSaved();
       if (payload.scope === 'reboot') {
         const labelEl = target.closest('.field-row')?.querySelector('label');
         const labelText = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() || key;
@@ -1149,6 +1157,7 @@ function renderLocalFilesEntries(entries) {
 }
 
 async function castLocalFile(path) {
+  if (window.Chassis && Chassis.setupBlocked()) return;
   const sec = localFilesSection();
   if (!sec) return;
   const lib = sec.querySelector('[data-localfiles-browse-lib]')?.value || '';

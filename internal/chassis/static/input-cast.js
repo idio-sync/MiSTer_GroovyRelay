@@ -97,6 +97,7 @@
 
   castBtn.addEventListener('click', async () => {
     if (castBtn.disabled) return;
+    if (window.Chassis && Chassis.setupBlocked()) return;
     panel.dataset.castState = 'submitting';
     castBtn.disabled = true;
     try {
@@ -281,6 +282,7 @@
 
   async function castLocalFile(path) {
     if (!localFilesSelect) return;
+    if (window.Chassis && Chassis.setupBlocked()) return;
     const body = new URLSearchParams();
     body.set('lib', localFilesSelect.value || '');
     body.set('path', path);
