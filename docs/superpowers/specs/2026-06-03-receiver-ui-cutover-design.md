@@ -6,8 +6,8 @@
 keeping the Companion JSON API at `/ui/companion/*`. This is the foundation design's
 "Final cutover," restricted to the route swap only.
 **Repo location:** Committed under `docs/superpowers/specs/`, normally gitignored
-(`.gitignore` line 35); force-added (`git add -f`) per the receiver-chassis rollout
-convention.
+(`.gitignore` ignores `/docs/superpowers/`); force-added (`git add -f`) per the
+receiver-chassis rollout convention.
 
 ## Background
 
@@ -83,6 +83,24 @@ on the chassis, so `handleRoot` needs no change.
 
 ## Architecture
 
+### Rename inventory
+
+The route swap touches every package that emits or serves one of the affected absolute
+paths:
+
+- `internal/chassis`: route registrations, static serving, templates, CSS, browser JS,
+  handler strings, and chassis tests.
+- `internal/ui`: route registrations, static serving, templates, setup wizard redirects,
+  `firstRunGuard`, shell active-path logic, CORS/preflight registration, and UI tests.
+- Adapter-owned legacy UI fragments under `internal/adapters/*`: any `ExtraPanelHTML`,
+  `RouteProvider`, htmx attribute, form action, polling URL, or generated HTML that points
+  at `/ui/adapter/...` must move to `/old_ui/adapter/...`. Known surfaces include
+  `internal/adapters/url`, `internal/adapters/plex`, `internal/adapters/jellyfin`,
+  `internal/adapters/torrent`, and `internal/adapters/streams`.
+- `cmd/mister-groovy-relay`: wiring comments and e2e/smoke tests that assert concrete
+  paths.
+- README and nearby docs that describe `/ui`, `/receiver`, or the preview/canonical split.
+
 ### Part A — Chassis re-prefix (`/receiver` → `/ui`)
 
 A literal rename across `internal/chassis`, no behavior change:
@@ -100,32 +118,39 @@ A literal rename across `internal/chassis`, no behavior change:
   `visualizer-bank.js`, `audio-strip.js`, `volume-knob.js`, `load-core.js`, `setup.js`.
 - **CSS:** the `/receiver/static/fonts/…` URL(s) in `chassis.css`.
 - **Tests:** every `/receiver` path string across the `_test.go` files (chassis_test.go
-  ~82, settings_test.go ~55, etc.) and the JS behavior testdata. The tests assert concrete
-  paths, so they are the completeness proof: a missed reference fails.
+  ~82, settings_test.go ~55, etc.) and the JS behavior testdata. These concrete path
+  assertions are the primary backstop, alongside the post-change string audit in Testing.
 
 The asset-version hash, same-origin wrapper, SSE stream, setup-mode gate, and CSS-scope
 discipline all keep working unchanged — only the literal prefix differs.
 
 ### Part B — Legacy UI re-prefix (`/ui` → `/old_ui`) with Companion carve-out
 
-A literal rename across `internal/ui` for everything **except** the Companion API:
+A literal rename across the legacy visual/config surface for everything **except** the
+Companion API:
 
 - **Moved to `/old_ui`:** `Mount` patterns for the shell, static (`/ui/static/` →
   `/old_ui/static/`), setup wizard (`/ui/setup`, `/ui/setup/step/*`, `/ui/setup/done` →
   `/old_ui/setup*`), adapter routes (`/ui/adapter/*`), bridge (`/ui/bridge/*`), playback
   (`/ui/playback/*`), diagnostics (`/ui/diagnostics/*`), sidebar, status; the matching
   htmx `hx-get`/`hx-post` attributes in templates; `shell.html` asset `src`s; the
-  now-playing banner; and `firstRunGuard`'s pass-through prefixes and redirect target
+  now-playing banner; generated adapter-owned UI fragments that currently emit
+  `/ui/adapter/...`; setup wizard redirects in `internal/ui/setup.go` (all internal wizard
+  navigation moves to `/old_ui/setup/...`, and `handleSetupDone` redirects to `/old_ui/`);
+  and `firstRunGuard`'s pass-through prefixes and redirect target
   (`internal/ui/middleware.go`: `/ui/setup` → `/old_ui/setup`, `/ui/static/` →
   `/old_ui/static/`, the `isWizardAdapterRoute` prefix `/ui/adapter/` → `/old_ui/adapter/`).
 - **Stays at `/ui` (carve-out):**
   - The seven `/ui/companion/*` route registrations and their handlers.
-  - The Companion CORS/preflight/gate that currently guards them (`OPTIONS /ui`,
-    `OPTIONS /ui/`, `OPTIONS /ui/companion/`, `companionExtensionGate`,
-    `extensionCORSMiddleware`/`handleExtensionCORSPreflight`). **Planning task:** determine
-    precisely which of these preflight/middleware registrations exist to serve the
-    companion endpoints and keep exactly those at `/ui`; the legacy visual pages at
-    `/old_ui` no longer need extension-CORS since the extension never calls them.
+  - The Companion CORS/preflight/gate: `companionExtensionGate`,
+    `handleExtensionCORSPreflight`, the seven method routes, and an `OPTIONS
+    /ui/companion/` subtree preflight stay at `/ui`. The current broad `OPTIONS /ui/`
+    subtree must not remain broad after the chassis moves to `/ui`, because it would catch
+    preflights for canonical chassis routes; replace it with exact `/ui` and `/ui/{$}`
+    compatibility preflights if those base paths still need extension compatibility, or
+    remove them if companion tests prove they are unnecessary. If the legacy visual routes
+    keep `extensionCORSMiddleware` for a mechanical rename, any broad preflight moves to
+    `/old_ui/`, not `/ui/`.
   - The root redirect `GET /{$}` → `/ui/` (unchanged; now lands on the chassis).
 
 Go's `ServeMux` allows the carve-out: `/ui/companion/*` paths are disjoint from every
@@ -168,11 +193,21 @@ handlers.
 - **Chassis suite:** re-prefixed path assertions pass; add/confirm a test that
   `/receiver/*` is unrouted (404) and that `/ui/cast` (etc.) is gated/served as before.
 - **Legacy UI suite:** re-prefixed path assertions pass under `/old_ui`; the `firstRunGuard`
-  tests assert redirects to `/old_ui/setup`; a test confirms `/ui/companion/*` still
-  resolves while the visual routes do not exist at `/ui`.
+  tests assert redirects to `/old_ui/setup`; the setup e2e asserts every wizard redirect is
+  under `/old_ui/setup` and `POST /old_ui/setup/done` lands on `/old_ui/`; adapter package
+  tests assert generated fragments use `/old_ui/adapter/...`; a test confirms
+  `/ui/companion/*` still resolves while the visual routes do not exist at `/ui`.
 - **Cross-cutting:** a wiring test (or `main`-level smoke) that all three surfaces mount
   without a duplicate-pattern panic and that `/ui/companion/play` + `/ui/cast` +
-  `/old_ui/setup` all route to the right handlers.
+  `/old_ui/setup` all route to the right handlers. Include concrete smoke cases for
+  `GET /ui`, `GET /old_ui`, `POST /old_ui/setup/step/bridge`, `OPTIONS
+  /ui/companion/status`, `OPTIONS /ui/companion/history/delete`, `GET
+  /ui/companion/status`, and `GET /receiver`.
+- **String audit:** after the mechanical rename, run an explicit audit such as
+  `rg -n '"/receiver|/receiver|"/ui/adapter|/ui/setup|/ui/playback|/ui/static' internal cmd README.md docs`
+  and review each remaining hit. Expected survivors are historical docs/tests that
+  intentionally assert retired `/receiver` behavior, canonical chassis `/ui` references,
+  and the Companion carve-out.
 - **Manual smoke:** load `/`, `/ui`, `/old_ui`; exercise a chassis cast and a settings
   save at `/ui`; confirm an extension call to `/ui/companion/status` succeeds; confirm
   `/receiver` 404s.
@@ -194,9 +229,10 @@ One spec, one plan, internally staged and landing atomically:
 
 1. **Chassis re-prefix** `/receiver` → `/ui` (Go + templates + JS + CSS + chassis tests).
 2. **Legacy UI re-prefix** `/ui` → `/old_ui` with the Companion + root-redirect carve-out
-   (Go + templates + htmx attrs + ui tests + `firstRunGuard`).
+   (Go + templates + htmx attrs + adapter-owned UI fragments + setup redirects + ui tests
+   + adapter tests + `firstRunGuard`).
 3. **Wiring + verification + docs:** confirm disjoint mounts, mount/route smoke test,
-   README/factual-doc fix, full `go vet`/`go test`.
+   post-change string audit, README/factual-doc fix, full `go vet`/`go test`.
 
 ## Design decisions worth revisiting
 
