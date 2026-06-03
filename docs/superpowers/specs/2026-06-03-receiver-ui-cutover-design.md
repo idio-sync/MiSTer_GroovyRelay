@@ -99,7 +99,10 @@ paths:
   `internal/adapters/torrent`, and `internal/adapters/streams`.
 - `cmd/mister-groovy-relay`: wiring comments and e2e/smoke tests that assert concrete
   paths.
-- README and nearby docs that describe `/ui`, `/receiver`, or the preview/canonical split.
+- Code comments that name the old paths (e.g. `internal/ui/bridge.go` references the
+  chassis `/receiver/audio/dsp` route) — swept by the post-change string audit.
+- README and nearby docs that describe `/ui`, `/receiver`, or the preview/canonical split,
+  **including asset paths** such as `/receiver/static/fonts/LICENSE` → `/ui/static/fonts/LICENSE`.
 
 ### Part A — Chassis re-prefix (`/receiver` → `/ui`)
 
@@ -135,8 +138,10 @@ Companion API:
   (`/ui/playback/*`), diagnostics (`/ui/diagnostics/*`), sidebar, status; the matching
   htmx `hx-get`/`hx-post` attributes in templates; `shell.html` asset `src`s; the
   now-playing banner; generated adapter-owned UI fragments that currently emit
-  `/ui/adapter/...`; setup wizard redirects in `internal/ui/setup.go` (all internal wizard
-  navigation moves to `/old_ui/setup/...`, and `handleSetupDone` redirects to `/old_ui/`);
+  `/ui/adapter/...`; setup wizard redirects in `internal/ui/setup.go` — **rename the whole
+  redirect set as one atomic block** (all internal wizard navigation moves to
+  `/old_ui/setup/...`, and `handleSetupDone` redirects to `/old_ui/`); a partial rename
+  silently breaks wizard navigation (a step redirects to a path the shell no longer serves);
   and `firstRunGuard`'s pass-through prefixes and redirect target
   (`internal/ui/middleware.go`: `/ui/setup` → `/old_ui/setup`, `/ui/static/` →
   `/old_ui/static/`, the `isWizardAdapterRoute` prefix `/ui/adapter/` → `/old_ui/adapter/`).
