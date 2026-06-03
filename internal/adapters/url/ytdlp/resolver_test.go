@@ -586,7 +586,9 @@ func TestEnumeratePlaylist_CookiesAndCap(t *testing.T) {
 	}
 	mustContain(t, r.calls[0], "--cookies")
 	mustContain(t, r.calls[0], "/data/cookies.txt")
-	mustContain(t, r.calls[0], "1") // --playlist-end 1
+	if i := indexOf(r.calls[0], "--playlist-end"); i < 0 || i+1 >= len(r.calls[0]) || r.calls[0][i+1] != "1" {
+		t.Errorf("--playlist-end not followed by 1; argv = %v", r.calls[0])
+	}
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1 (capped by maxItems)", len(entries))
 	}
