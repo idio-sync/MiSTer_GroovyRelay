@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 )
 
 func TestCatalog_ReturnsThreeBundledProviders(t *testing.T) {
@@ -269,5 +270,63 @@ func TestCatalog_OmitsBundledProviderAbsentFromDefinitions(t *testing.T) {
 		if cat[i].ID != want {
 			t.Errorf("Catalog[%d].ID = %q, want %q", i, cat[i].ID, want)
 		}
+	}
+}
+
+func TestCatalog_ExposesAndCastsEnumeratedPlaylistChannel(t *testing.T) {
+	t.Parallel()
+	a, core := newTestAdapterWithFakeCore(t)
+	playlistURL := "https://www.youtube.com/playlist?list=PL123"
+	resolver := &fakeResolver{
+		res: &ytdlp.Resolution{URL: "https://media.example/video.mp4", Title: "First"},
+		enumEntries: map[string][]ytdlp.PlaylistEntry{
+			playlistURL: ytEntries("dQw4w9WgXcQ", "abcdefghijk"),
+		},
+	}
+	a.resolver = resolver
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{"media.example": {"93.184.216.34"}}}
+	a.replaceDefinitionsForTest([]ProviderDefinition{
+		{
+			ID: "user:mix", Type: userProviderType, DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+			Channels: []ChannelDefinition{
+				{ID: "list", Name: "List", Kind: kindPlaylist, URL: playlistURL},
+			},
+		},
+	})
+	if status := a.refreshCatalogsDefault(t.Context(), []string{"user:mix"}, "manual"); status.Err != nil {
+		t.Fatalf("refresh: %v", status.Err)
+	}
+
+	cat := a.Catalog()
+	if len(cat) != 1 || cat[0].ID != "user:mix" {
+		t.Fatalf("Catalog = %+v, want one user:mix provider", cat)
+	}
+	var listCh *adapters.CatalogChannel
+	for gi := range cat[0].Groups {
+		for ci := range cat[0].Groups[gi].Channels {
+			if cat[0].Groups[gi].Channels[ci].ID == "list" {
+				listCh = &cat[0].Groups[gi].Channels[ci]
+			}
+		}
+	}
+	if listCh == nil {
+		t.Fatal("playlist channel 'list' not exposed via Catalog()")
+	}
+	// Playlist channels are mixed VOD, not provider-level live → Live=false.
+	if listCh.Live {
+		t.Errorf("playlist channel Live = true, want false")
+	}
+
+	if err := a.CastChannel(t.Context(), "user:mix", "list"); err != nil {
+		t.Fatalf("CastChannel: %v", err)
+	}
+	if resolver.enumCalls != 1 {
+		t.Fatalf("enumCalls = %d, want 1", resolver.enumCalls)
+	}
+	if resolver.calls != 1 || resolver.pageURLs[0] != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("resolver Resolve calls=%d urls=%v, want first enumerated watch URL", resolver.calls, resolver.pageURLs)
+	}
+	if core.lastReq.StreamURL != "https://media.example/video.mp4" {
+		t.Fatalf("StreamURL = %q, want resolved media URL", core.lastReq.StreamURL)
 	}
 }
