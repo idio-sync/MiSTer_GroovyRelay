@@ -225,3 +225,31 @@ func TestPlaylistErrorForLog_RedactsPageURL(t *testing.T) {
 		t.Fatalf("playlist error log lost useful URL context: %q", got)
 	}
 }
+
+func TestEnumerator_ChangedURLInvalidatesCache(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Seed the cache for URL-A via a successful live run.
+	seed := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{
+			"https://youtube.com/playlist?list=A": ytEntries("dQw4w9WgXcQ"),
+		}},
+		cacheDir: dir, cfg: DefaultConfig(),
+	}
+	if _, err := seed.channelItems(context.Background(), "user:mix", "list", "https://youtube.com/playlist?list=A"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Same provider/channel, but the channel URL changed to B and live enumeration fails.
+	// Must NOT serve the URL-A cache (cache key matches on SourceURL); expect no items + error.
+	failing := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumErr: fmt.Errorf("yt-dlp: down")},
+		cacheDir: dir, cfg: DefaultConfig(),
+	}
+	items, err := failing.channelItems(context.Background(), "user:mix", "list", "https://youtube.com/playlist?list=B")
+	if err == nil {
+		t.Fatal("err = nil, want error (no valid cache for the new URL)")
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %d, want 0 (URL-A cache must NOT be served for URL-B)", len(items))
+	}
+}

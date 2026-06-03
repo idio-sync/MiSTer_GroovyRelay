@@ -146,6 +146,9 @@ func (e userPlaylistEnumerator) channelItems(ctx context.Context, providerID, ch
 			slog.Warn("user_providers: playlist cache write failed",
 				"provider", providerID, "channel", channelID, "err", wErr)
 		}
+	} else {
+		slog.Warn("user_providers: playlist cache encode failed",
+			"provider", providerID, "channel", channelID, "err", encErr)
 	}
 	return items, nil
 }
