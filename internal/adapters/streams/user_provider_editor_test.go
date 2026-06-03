@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -15,6 +17,14 @@ import (
 func newEditAdapter(t *testing.T, fr *fakeResolver) *Adapter {
 	t.Helper()
 	dir := t.TempDir()
+	// Pre-create an empty preset file so the store starts with all 12 slots
+	// vacant (bundled defaults reference built-in channels not present in the
+	// test catalog, which would otherwise fill the bank via the stale-entry
+	// fallback path and prevent test stars from being inserted).
+	presetsPath := filepath.Join(dir, "chassis_presets.json")
+	if err := os.WriteFile(presetsPath, []byte(`{"version":1,"slots":[]}`), 0o600); err != nil {
+		t.Fatalf("pre-create empty presets file: %v", err)
+	}
 	a, err := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: dir}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -166,4 +176,80 @@ func TestCreateUserProvider_InvalidBadgeColorIsClientError(t *testing.T) {
 	if !errors.As(err, &qerr) || qerr.Status != http.StatusBadRequest {
 		t.Fatalf("err = %v, want *QuickCastError{400}", err)
 	}
+}
+
+func TestUpdateUserProvider_RemovedChannelClearsPresetSlots(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	// Create a provider with two direct channels.
+	form := adapters.UserProviderForm{
+		DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []adapters.UserChannelForm{
+			{ID: "", Name: "Keep", URL: "https://cdn.example.com/keep.m3u8"},
+			{ID: "", Name: "Drop", URL: "https://cdn.example.com/drop.m3u8"},
+		},
+	}
+	created, err := a.CreateUserProvider(context.Background(), form)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Star both channels into the preset bank.
+	for _, g := range created.Provider.Groups {
+		for _, ch := range g.Channels {
+			if _, err := a.SetPresetStarred(context.Background(), created.Provider.ID, ch.ID, true); err != nil {
+				t.Fatalf("star %s: %v", ch.ID, err)
+			}
+		}
+	}
+	// Update: drop the "drop" channel (re-send only "keep", with its locked ID).
+	keepID, dropID := channelIDsByName(t, created.Provider)
+	upd := adapters.UserProviderForm{
+		ID: created.Provider.ID, DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []adapters.UserChannelForm{
+			{ID: keepID, Name: "Keep", URL: "https://cdn.example.com/keep.m3u8"},
+		},
+	}
+	res, err := a.UpdateUserProvider(context.Background(), created.Provider.ID, upd)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(res.ClearedSlots) != 1 {
+		t.Fatalf("ClearedSlots = %v, want 1 (the dropped channel)", res.ClearedSlots)
+	}
+	// The dropped channel's slot is gone; the kept channel's slot remains.
+	for _, e := range a.presetStore.Snapshot() {
+		if e.ChannelID == dropID {
+			t.Fatal("dropped channel still starred")
+		}
+	}
+}
+
+func TestUpdateUserProvider_UnknownIDIsNotFound(t *testing.T) {
+	t.Parallel()
+	a := newEditAdapter(t, &fakeResolver{})
+	_, err := a.UpdateUserProvider(context.Background(), "user:ghost", sampleForm())
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) || qerr.Status != http.StatusNotFound {
+		t.Fatalf("err = %v, want *QuickCastError{404}", err)
+	}
+}
+
+// channelIDsByName returns the (keep, drop) channel IDs from a chassis-shaped
+// provider whose channels are named "Keep"/"Drop".
+func channelIDsByName(t *testing.T, p adapters.CatalogProvider) (keep, drop string) {
+	t.Helper()
+	for _, g := range p.Groups {
+		for _, ch := range g.Channels {
+			switch ch.Name {
+			case "Keep":
+				keep = ch.ID
+			case "Drop":
+				drop = ch.ID
+			}
+		}
+	}
+	if keep == "" || drop == "" {
+		t.Fatalf("could not find keep/drop channel IDs in %+v", p.Groups)
+	}
+	return keep, drop
 }

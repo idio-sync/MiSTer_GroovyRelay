@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
@@ -152,4 +153,75 @@ func (a *Adapter) CreateUserProvider(ctx context.Context, form adapters.UserProv
 		Provider:         buildChassisCatalogProvider(saved),
 		AutoEnableNeeded: firstProvider && wasDisabled,
 	}, nil
+}
+
+// UpdateUserProvider replaces a user provider's definition (preserving locked
+// provider/channel IDs via userStore.PlanPut) and clears preset slots for any
+// channel that was removed in the update (spec §4.5: "Previously-known channel
+// ID absent from the submitted provider → delete that channel and clear any
+// preset slots that reference (providerID, channelID)").
+func (a *Adapter) UpdateUserProvider(ctx context.Context, id string, form adapters.UserProviderForm) (adapters.UserProviderResult, error) {
+	if a.userStore == nil {
+		return adapters.UserProviderResult{}, fmt.Errorf("streams: user provider store not initialized")
+	}
+	if !isUserProviderID(id) {
+		return adapters.UserProviderResult{}, userInputError(fmt.Errorf("provider id %q is not a user provider", id))
+	}
+	a.userEditMu.Lock()
+	defer a.userEditMu.Unlock()
+	if !a.userStore.Exists(id) {
+		return adapters.UserProviderResult{}, notFoundUserProvider(id)
+	}
+	prevChannelIDs := a.userChannelIDs(id)
+
+	saved, candidate, err := a.userStore.PlanPut(formToDefinition(id, form))
+	if err != nil {
+		return adapters.UserProviderResult{}, userInputError(err)
+	}
+	snapshot, err := a.buildUserCatalogSnapshotLive(ctx, candidate)
+	if err != nil {
+		return adapters.UserProviderResult{}, err
+	}
+	if err := a.userStore.CommitProviders(candidate); err != nil {
+		return adapters.UserProviderResult{}, err
+	}
+	a.installUserCatalogSnapshot(snapshot)
+
+	// Clear presets for channels that existed before but are gone now.
+	savedChannelIDs := map[string]struct{}{}
+	for _, ch := range saved.Channels {
+		savedChannelIDs[ch.ID] = struct{}{}
+	}
+	var cleared []int
+	for chID := range prevChannelIDs {
+		if _, ok := savedChannelIDs[chID]; !ok {
+			slots, err := a.presetStore.ClearChannelSlots(id, chID)
+			if err != nil {
+				a.presetStore.Rehydrate() // catalog already installed; refresh surviving slots before bailing
+				return adapters.UserProviderResult{}, err
+			}
+			cleared = append(cleared, slots...)
+		}
+	}
+	a.presetStore.Rehydrate()
+	sort.Ints(cleared)
+	return adapters.UserProviderResult{
+		Provider:     buildChassisCatalogProvider(saved),
+		ClearedSlots: cleared,
+	}, nil
+}
+
+// userChannelIDs returns the set of channel IDs for a stored user provider
+// (empty set if absent). Read off the store snapshot — no lock on a.mu.
+func (a *Adapter) userChannelIDs(id string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, def := range a.userStore.Snapshot() {
+		if def.ID != id {
+			continue
+		}
+		for _, ch := range def.Channels {
+			out[ch.ID] = struct{}{}
+		}
+	}
+	return out
 }
