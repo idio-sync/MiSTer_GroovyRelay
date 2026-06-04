@@ -107,6 +107,31 @@ func TestCatalogProviderFormRoute_MountedAndReadGuarded(t *testing.T) {
 	}
 }
 
+func TestCatalogEnvelopeFromData_And_Changed(t *testing.T) {
+	t.Parallel()
+	data := CatalogData{Providers: []CatalogProviderTab{
+		{ID: "user:mix", DisplayName: "Mix", BadgeLabel: "MX", BadgeClass: "u-teal", Live: false,
+			Groups: []CatalogGroupTab{{ID: "", Name: "", Channels: []CatalogChannelCard{
+				{ID: "live", Name: "Live", PlayMode: "", Live: true},
+			}}}},
+	}}
+	env := catalogEnvelopeFromData(data)
+	if len(env.Providers) != 1 || env.Providers[0].ID != "user:mix" || env.Providers[0].BadgeClass != "u-teal" {
+		t.Fatalf("provider envelope wrong: %+v", env.Providers)
+	}
+	if len(env.Providers[0].Groups[0].Channels) != 1 || !env.Providers[0].Groups[0].Channels[0].Live {
+		t.Fatalf("channel envelope wrong: %+v", env.Providers[0].Groups)
+	}
+	if catalogChanged(env, env) {
+		t.Fatal("identical envelopes reported changed")
+	}
+	next := catalogEnvelopeFromData(data)
+	next.Providers[0].DisplayName = "Mixed"
+	if !catalogChanged(env, next) {
+		t.Fatal("display-name change not detected")
+	}
+}
+
 type catalogProviderFormViewer struct {
 	form adapters.UserProviderForm
 }

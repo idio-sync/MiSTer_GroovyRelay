@@ -449,6 +449,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lastHistory := last.History
+	lastCatalog := catalogEnvelopeFromData(last.Catalog)
+	if err := emit(w, "catalog", lastCatalog); err != nil {
+		return
+	}
 
 	// Audio scope initial burst — emit last in the canonical order.
 	// safeAudioEnvelope recovers from panics in the viewer or marshaler
@@ -568,6 +572,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				lastHistory = curr.History
+			}
+			currCatalog := catalogEnvelopeFromData(curr.Catalog)
+			if catalogChanged(lastCatalog, currCatalog) {
+				if err := emit(w, "catalog", currCatalog); err != nil {
+					return
+				}
+				lastCatalog = currCatalog
 			}
 			if audioDSPChanged(curr.AudioStrip, last.AudioStrip) {
 				if err := emit(w, "audioDsp", audioDspEnvelopeFrom(curr.AudioStrip)); err != nil {

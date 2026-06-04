@@ -542,6 +542,9 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	if !strings.Contains(body, `"state":"stopped"`) {
 		t.Errorf("body missing stopped transport payload")
 	}
+	if !strings.Contains(body, "event: catalog\n") {
+		t.Errorf("body missing initial catalog event")
+	}
 }
 
 func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
@@ -1984,8 +1987,8 @@ func TestHandleEvents_InitialBurstIncludesPresetsBetweenMeterAndAudio(t *testing
 			}
 		}
 	}
-	// Expected: [state, vfd, source, visualizer, transport, volume, audioDsp, meter, presets, history, audio]
-	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "history", "audio"}
+	// Expected: [state, vfd, source, visualizer, transport, volume, audioDsp, meter, presets, history, catalog, audio]
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "history", "catalog", "audio"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("initial burst events = %v, want %v", names, want)
 	}
