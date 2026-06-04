@@ -82,7 +82,7 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	}
 
 	form := testBridgeFormBody("bff", dataDir)
-	req, _ := http.NewRequest("POST", ts.URL+"/ui/bridge/save", bytes.NewBufferString(form))
+	req, _ := http.NewRequest("POST", ts.URL+"/old_ui/bridge/save", bytes.NewBufferString(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	resp, err := http.DefaultClient.Do(req)

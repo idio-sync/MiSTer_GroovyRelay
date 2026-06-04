@@ -178,11 +178,9 @@ Native builds use real OS paths. Linux and macOS paths look like `/home/me/Video
 
 Open `http://<host>:32500/` after the bridge starts. The UI lets you:
 
-> **Preview UI:** A new receiver-chassis-styled UI is being built at
-> `/receiver` in parallel with `/ui`. It now carries live VFD updates and
-> visualizer-mode controls while later phases add transport controls,
-> telemetry, and settings polish. License attributions for the bundled fonts:
-> `/receiver/static/fonts/LICENSE`.
+> **Settings UI:** The chassis UI is the primary interface at `/ui`.
+> The legacy settings UI remains accessible at `/old_ui` during the transition.
+> License attributions for the bundled fonts: `/ui/static/fonts/LICENSE`.
 
 - Link Plex and Jellyfin accounts.
 - Enable or disable adapters.
@@ -219,7 +217,7 @@ Scripted POSTs to local UI endpoints need the same-origin fetch header that
 the browser sends. For example, to change the receiver visualizer mode:
 
 ```bash
-curl -i -X POST http://localhost:32500/receiver/visualizer \
+curl -i -X POST http://localhost:32500/ui/visualizer \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -H 'Sec-Fetch-Site: same-origin' \
   --data 'mode=stereo_scope'

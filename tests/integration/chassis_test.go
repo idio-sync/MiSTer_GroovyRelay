@@ -56,18 +56,18 @@ func TestReceiverEndToEnd(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/receiver")
+	resp, err := http.Get(ts.URL + "/ui")
 	if err != nil {
-		t.Fatalf("GET /receiver: %v", err)
+		t.Fatalf("GET /ui: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GET /receiver status = %d, body = %s", resp.StatusCode, body)
+		t.Fatalf("GET /ui status = %d, body = %s", resp.StatusCode, body)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("read /receiver body: %v", err)
+		t.Fatalf("read /ui body: %v", err)
 	}
 	for _, want := range []string{
 		`<!-- chassis:shell -->`,
@@ -81,12 +81,12 @@ func TestReceiverEndToEnd(t *testing.T) {
 		`<!-- chassis:history -->`,
 	} {
 		if !strings.Contains(string(body), want) {
-			t.Errorf("GET /receiver HTML missing marker %q", want)
+			t.Errorf("GET /ui HTML missing marker %q", want)
 		}
 	}
 	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("parse /receiver HTML: %v", err)
+		t.Fatalf("parse /ui HTML: %v", err)
 	}
 	classes := collectClasses(doc)
 
@@ -101,7 +101,7 @@ func TestReceiverEndToEnd(t *testing.T) {
 		"history-section",
 	} {
 		if !classes[want] {
-			t.Errorf("GET /receiver HTML missing class %q", want)
+			t.Errorf("GET /ui HTML missing class %q", want)
 		}
 	}
 }
@@ -142,21 +142,21 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 		notWant           []string
 	}{
 		{
-			path: "/ui",
+			path: "/old_ui",
 			want: []string{`class="gr-shell"`},
 		},
 		{
-			path:              "/ui/static/app.css",
+			path:              "/old_ui/static/app.css",
 			contentTypePrefix: "text/css",
 			want:              []string{".gr-shell {", ".gr-sidebar {"},
 			notWant:           []string{`class="gr-shell"`, `<!-- chassis:shell -->`},
 		},
 		{
-			path: "/receiver",
+			path: "/ui",
 			want: []string{`<!-- chassis:shell -->`},
 		},
 		{
-			path:              "/receiver/static/chassis.css",
+			path:              "/ui/static/chassis.css",
 			contentTypePrefix: "text/css",
 			want:              []string{"body.receiver .meter-screen", "body.receiver .transport-strip"},
 			notWant:           []string{`class="gr-shell"`, `<!-- chassis:shell -->`},
@@ -219,10 +219,10 @@ func TestReceiverEvents_EndToEnd(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/receiver/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/ui/events", nil)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -297,10 +297,10 @@ func TestReceiverEvents_LivePathReachesClient(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/receiver/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/ui/events", nil)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -458,7 +458,7 @@ func TestReceiverTransport_PostActionDispatchesViaController(t *testing.T) {
 	controller := &fakeIntegrationTransport{}
 	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
 
-	resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	resp := postReceiverTransport(t, ts, "/ui/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -478,7 +478,7 @@ func TestReceiverTransport_PostActionStaleGenerationReturns409(t *testing.T) {
 	controller := &fakeIntegrationTransport{err: adapters.ErrActiveSessionChanged}
 	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
 
-	resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	resp := postReceiverTransport(t, ts, "/ui/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
 	assertIntegrationTransportJSONError(t, resp, http.StatusConflict)
 }
 
@@ -486,7 +486,7 @@ func TestReceiverTransport_PostSeekDispatchesOffset(t *testing.T) {
 	controller := &fakeIntegrationTransport{}
 	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
 
-	resp := postReceiverTransport(t, ts, "/receiver/transport/seek", "adapter_ref=plex:abc&generation=42&offset_ms=12345", "same-origin")
+	resp := postReceiverTransport(t, ts, "/ui/transport/seek", "adapter_ref=plex:abc&generation=42&offset_ms=12345", "same-origin")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -581,10 +581,10 @@ func TestReceiverTransport_SSEReflectsAction(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/ui/events", nil)
 	sseResp, err := ts.Client().Do(req)
 	if err != nil {
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	defer sseResp.Body.Close()
 	if sseResp.StatusCode != http.StatusOK {
@@ -592,7 +592,7 @@ func TestReceiverTransport_SSEReflectsAction(t *testing.T) {
 	}
 	events := streamReceiverTransportEvents(sseResp.Body)
 
-	postResp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	postResp := postReceiverTransport(t, ts, "/ui/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
 	_ = postResp.Body.Close()
 	if postResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("POST pause status = %d, want 204", postResp.StatusCode)
@@ -629,7 +629,7 @@ func TestReceiverTransport_PostActionRejectsCrossSiteOrMissingFetchSite(t *testi
 			controller := &fakeIntegrationTransport{}
 			ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
 
-			resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", tc.fetchSite)
+			resp := postReceiverTransport(t, ts, "/ui/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", tc.fetchSite)
 			assertIntegrationTransportJSONError(t, resp, http.StatusForbidden)
 		})
 	}
@@ -639,7 +639,7 @@ func TestReceiverTransport_PostActionUnsupportedReturns422(t *testing.T) {
 	controller := &fakeIntegrationTransport{err: adapters.UnsupportedPlaybackActionError("pause unavailable")}
 	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
 
-	resp := postReceiverTransport(t, ts, "/receiver/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
+	resp := postReceiverTransport(t, ts, "/ui/transport/action", "adapter_ref=plex:abc&generation=42&action=pause", "same-origin")
 	assertIntegrationTransportJSONError(t, resp, http.StatusUnprocessableEntity)
 }
 
@@ -647,14 +647,14 @@ func TestReceiverTransport_PostSeekNonIntegerOffsetReturns400(t *testing.T) {
 	controller := &fakeIntegrationTransport{}
 	ts := newChassisTransportIntegrationServer(t, nil, nil, controller)
 
-	resp := postReceiverTransport(t, ts, "/receiver/transport/seek", "adapter_ref=plex:abc&generation=42&offset_ms=twelve", "same-origin")
+	resp := postReceiverTransport(t, ts, "/ui/transport/seek", "adapter_ref=plex:abc&generation=42&offset_ms=twelve", "same-origin")
 	assertIntegrationTransportJSONError(t, resp, http.StatusBadRequest)
 }
 
 func TestReceiverTransport_GetRoutesReturn405(t *testing.T) {
 	ts := newChassisTransportIntegrationServer(t, nil, nil, &fakeIntegrationTransport{})
 
-	for _, path := range []string{"/receiver/transport/action", "/receiver/transport/seek"} {
+	for _, path := range []string{"/ui/transport/action", "/ui/transport/seek"} {
 		resp, err := ts.Client().Get(ts.URL + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
@@ -785,7 +785,7 @@ func TestReceiverVisualizer_EndToEnd_PostAndSSEEvent(t *testing.T) {
 	ts, mgr, dir := newChassisVisualizerIntegrationServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/ui/events", nil)
 	sseResp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("open SSE: %v", err)
@@ -799,7 +799,7 @@ func TestReceiverVisualizer_EndToEnd_PostAndSSEEvent(t *testing.T) {
 		t.Fatalf("initial visualizer mode = %q, want %q", got, config.VisualizerModeRetroAnalyzer)
 	}
 
-	postReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/receiver/visualizer", strings.NewReader("mode=stereo_scope"))
+	postReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/ui/visualizer", strings.NewReader("mode=stereo_scope"))
 	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	postReq.Header.Set("Sec-Fetch-Site", "same-origin")
 	postResp, err := ts.Client().Do(postReq)
@@ -827,7 +827,7 @@ func TestReceiverVisualizer_EndToEnd_PostAndSSEEvent(t *testing.T) {
 
 func TestReceiverVisualizer_BlocksCrossSitePost(t *testing.T) {
 	ts, mgr, _ := newChassisVisualizerIntegrationServer(t)
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/receiver/visualizer", strings.NewReader("mode=stereo_scope"))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/ui/visualizer", strings.NewReader("mode=stereo_scope"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	resp, err := ts.Client().Do(req)
@@ -846,7 +846,7 @@ func TestReceiverVisualizer_BlocksCrossSitePost(t *testing.T) {
 
 func TestReceiverVisualizer_PreviewModeRejected(t *testing.T) {
 	ts, _, _ := newChassisVisualizerIntegrationServer(t)
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/receiver/visualizer", strings.NewReader("mode=radial_spectrum"))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/ui/visualizer", strings.NewReader("mode=radial_spectrum"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	resp, err := ts.Client().Do(req)
@@ -865,7 +865,7 @@ func TestReceiverVisualizer_PreviewModeRejected(t *testing.T) {
 
 func TestReceiverVisualizer_GetReturns405(t *testing.T) {
 	ts, _, _ := newChassisVisualizerIntegrationServer(t)
-	resp, err := ts.Client().Get(ts.URL + "/receiver/visualizer")
+	resp, err := ts.Client().Get(ts.URL + "/ui/visualizer")
 	if err != nil {
 		t.Fatalf("GET visualizer: %v", err)
 	}
@@ -933,31 +933,31 @@ func TestReceiverEvents_DoesNotShadowUIRoutes(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// /ui/playback/banner (the existing htmx-polled live banner) is
-	// independent of /receiver/events.
-	uiResp, err := srv.Client().Get(srv.URL + "/ui/playback/banner")
+	// /old_ui/playback/banner (the existing htmx-polled live banner) is
+	// independent of /ui/events.
+	uiResp, err := srv.Client().Get(srv.URL + "/old_ui/playback/banner")
 	if err != nil {
-		t.Fatalf("GET /ui/playback/banner: %v", err)
+		t.Fatalf("GET /old_ui/playback/banner: %v", err)
 	}
 	defer uiResp.Body.Close()
 	if uiResp.StatusCode != http.StatusOK {
-		t.Errorf("/ui/playback/banner status = %d, want 200", uiResp.StatusCode)
+		t.Errorf("/old_ui/playback/banner status = %d, want 200", uiResp.StatusCode)
 	}
 	if got := uiResp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
-		t.Errorf("/ui/playback/banner Content-Type = %q, want text/html prefix", got)
+		t.Errorf("/old_ui/playback/banner Content-Type = %q, want text/html prefix", got)
 	}
 
-	// /receiver/events is SSE.
+	// /ui/events is SSE.
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/receiver/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/ui/events", nil)
 	rxResp, err := srv.Client().Do(req)
 	if err != nil {
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	defer rxResp.Body.Close()
 	if got := rxResp.Header.Get("Content-Type"); got != "text/event-stream" {
-		t.Errorf("/receiver/events Content-Type = %q, want text/event-stream", got)
+		t.Errorf("/ui/events Content-Type = %q, want text/event-stream", got)
 	}
 }
 
@@ -997,7 +997,7 @@ func TestChassisIntegration_AudioEventEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/ui/events", nil)
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("SSE request: %v", err)
@@ -1308,7 +1308,7 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 
 	t.Run("url paste", func(t *testing.T) {
 		body := url.Values{"kind": {"url"}, "payload": {"https://example.test/x.mp4"}}.Encode()
-		resp := mustPOSTForm(t, ts.URL+"/receiver/cast", body)
+		resp := mustPOSTForm(t, ts.URL+"/ui/cast", body)
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
@@ -1321,7 +1321,7 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 
 	t.Run("magnet paste", func(t *testing.T) {
 		body := url.Values{"kind": {"magnet"}, "payload": {"magnet:?xt=urn:btih:abc"}}.Encode()
-		resp := mustPOSTForm(t, ts.URL+"/receiver/cast", body)
+		resp := mustPOSTForm(t, ts.URL+"/ui/cast", body)
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
@@ -1334,7 +1334,7 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 
 	t.Run("torrent upload", func(t *testing.T) {
 		body, contentType := makeMultipart(t, "torrent_file", "example.torrent", []byte("d8:announce..."))
-		resp := mustPOSTRaw(t, ts.URL+"/receiver/cast", contentType, body)
+		resp := mustPOSTRaw(t, ts.URL+"/ui/cast", contentType, body)
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
@@ -1346,7 +1346,7 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 	})
 
 	t.Run("preset click", func(t *testing.T) {
-		resp := mustPOSTForm(t, ts.URL+"/receiver/preset/3/cast", "")
+		resp := mustPOSTForm(t, ts.URL+"/ui/preset/3/cast", "")
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
@@ -1358,7 +1358,7 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 	})
 
 	t.Run("preset bad slot", func(t *testing.T) {
-		resp := mustPOSTForm(t, ts.URL+"/receiver/preset/0/cast", "")
+		resp := mustPOSTForm(t, ts.URL+"/ui/preset/0/cast", "")
 		defer resp.Body.Close()
 		if resp.StatusCode != 400 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
@@ -1396,10 +1396,10 @@ func TestChassisIntegration_CastAndPresetEndToEnd(t *testing.T) {
 		ts2 := httptest.NewServer(mux2)
 		defer ts2.Close()
 
-		req, _ := http.NewRequest(http.MethodGet, ts2.URL+"/receiver", nil)
+		req, _ := http.NewRequest(http.MethodGet, ts2.URL+"/ui", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("GET /receiver: %v", err)
+			t.Fatalf("GET /ui: %v", err)
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
@@ -1458,7 +1458,7 @@ func collectClasses(n *html.Node) map[string]bool {
 
 // recordingStreamsCaster satisfies adapters.StreamsCaster and records every
 // CastChannel call. It also flips the bound fakeIntegrationSession into the
-// matching "playing streams:<provider>:<channel>" state so subsequent /receiver
+// matching "playing streams:<provider>:<channel>" state so subsequent /ui
 // renders surface the .casting lamp and .lit preset without needing a live
 // core.Manager session.
 //
@@ -1601,26 +1601,26 @@ func (e *chassisEnv) PostForm(path string, form url.Values) *http.Response {
 	return mustPOSTForm(e.t, e.ts.URL+path, form.Encode())
 }
 
-// GetReceiverHTML fetches GET /receiver and returns the body as a string.
+// GetReceiverHTML fetches GET /ui and returns the body as a string.
 // Always fails the test on transport error or non-200 status.
 func (e *chassisEnv) GetReceiverHTML(t *testing.T) string {
 	t.Helper()
-	resp, err := http.Get(e.ts.URL + "/receiver")
+	resp, err := http.Get(e.ts.URL + "/ui")
 	if err != nil {
-		t.Fatalf("GET /receiver: %v", err)
+		t.Fatalf("GET /ui: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatalf("GET /receiver status = %d, want 200", resp.StatusCode)
+		t.Fatalf("GET /ui status = %d, want 200", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("read /receiver body: %v", err)
+		t.Fatalf("read /ui body: %v", err)
 	}
 	return string(body)
 }
 
-// sseStream wraps a long-lived /receiver/events connection with helpers for
+// sseStream wraps a long-lived /ui/events connection with helpers for
 // the canonical "drain initial burst, then watch for a specific event" pattern
 // the integration tests need.
 type sseStream struct {
@@ -1635,7 +1635,7 @@ type sseStream struct {
 func (e *chassisEnv) OpenEvents(t *testing.T) *sseStream {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.ts.URL+"/receiver/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.ts.URL+"/ui/events", nil)
 	if err != nil {
 		cancel()
 		t.Fatalf("new SSE request: %v", err)
@@ -1643,7 +1643,7 @@ func (e *chassisEnv) OpenEvents(t *testing.T) *sseStream {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		cancel()
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	return &sseStream{
 		t:      t,
@@ -1856,7 +1856,7 @@ func TestReceiverStreamsCast_EndToEnd(t *testing.T) {
 	defer env.Close()
 
 	form := url.Values{"provider": {"mtv-rewind"}, "channel": {"80s"}}
-	resp := env.PostForm("/receiver/streams/cast", form)
+	resp := env.PostForm("/ui/streams/cast", form)
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -1872,7 +1872,7 @@ func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
 	defer env.Close()
 
 	// Empty bank: add 80s → slot 1.
-	resp := env.PostForm("/receiver/preset/star", url.Values{
+	resp := env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
 	})
 	body := drainJSON(t, resp)
@@ -1881,7 +1881,7 @@ func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
 	}
 
 	// Repeated add: no-op, returns slot 1.
-	resp = env.PostForm("/receiver/preset/star", url.Values{
+	resp = env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
 	})
 	body = drainJSON(t, resp)
@@ -1898,7 +1898,7 @@ func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
 		if i >= 9 {
 			provider = "toonami-aftermath"
 		}
-		resp = env.PostForm("/receiver/preset/star", url.Values{
+		resp = env.PostForm("/ui/preset/star", url.Values{
 			"provider": {provider}, "channel": {ch}, "starred": {"true"},
 		})
 		if resp.StatusCode != 200 {
@@ -1910,7 +1910,7 @@ func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
 	}
 
 	// Add 13th channel → 409 BANK FULL.
-	resp = env.PostForm("/receiver/preset/star", url.Values{
+	resp = env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"fuse"}, "starred": {"true"},
 	})
 	if resp.StatusCode != 409 {
@@ -1922,7 +1922,7 @@ func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
 	}
 
 	// Remove 80s → cleared=[1].
-	resp = env.PostForm("/receiver/preset/star", url.Values{
+	resp = env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"false"},
 	})
 	body = drainJSON(t, resp)
@@ -1932,7 +1932,7 @@ func TestReceiverPresetStar_AddRemoveBankFull(t *testing.T) {
 	}
 
 	// Repeat remove is a no-op success.
-	resp = env.PostForm("/receiver/preset/star", url.Values{
+	resp = env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"false"},
 	})
 	if resp.StatusCode != 200 {
@@ -1946,16 +1946,16 @@ func TestReceiverPresetMove_Swap(t *testing.T) {
 	defer env.Close()
 
 	// Seed two distinct slots first.
-	resp := env.PostForm("/receiver/preset/star", url.Values{
+	resp := env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
 	})
 	resp.Body.Close()
-	resp = env.PostForm("/receiver/preset/star", url.Values{
+	resp = env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"cartoon-rewind"}, "channel": {"heman"}, "starred": {"true"},
 	})
 	resp.Body.Close()
 
-	resp = env.PostForm("/receiver/preset/move", url.Values{
+	resp = env.PostForm("/ui/preset/move", url.Values{
 		"from": {"1"}, "to": {"2"},
 	})
 	if resp.StatusCode != 200 {
@@ -1996,7 +1996,7 @@ func TestReceiverPresetMove_NoOpDoesNotEmitPresets(t *testing.T) {
 	defer stream.Close()
 	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
 
-	resp := env.PostForm("/receiver/preset/move", url.Values{
+	resp := env.PostForm("/ui/preset/move", url.Values{
 		"from": {"3"}, "to": {"3"},
 	})
 	if resp.StatusCode != 200 {
@@ -2024,7 +2024,7 @@ func TestReceiverPresetMove_BadSlotDoesNotEmitPresets(t *testing.T) {
 	defer stream.Close()
 	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
 
-	resp := env.PostForm("/receiver/preset/move", url.Values{
+	resp := env.PostForm("/ui/preset/move", url.Values{
 		"from": {"13"}, "to": {"1"},
 	})
 	if resp.StatusCode != 400 {
@@ -2041,7 +2041,7 @@ func TestReceiverPresetMove_BadSlotDoesNotEmitPresets(t *testing.T) {
 func TestReceiverPresetStar_PersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	env1 := newChassisIntegrationEnvIn(t, dir)
-	resp := env1.PostForm("/receiver/preset/star", url.Values{
+	resp := env1.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"false"},
 	})
 	resp.Body.Close()
@@ -2066,7 +2066,7 @@ func TestReceiverEvents_PresetsFollowUpChangedButNotNoop(t *testing.T) {
 	defer stream.Close()
 	stream.DrainInitialBurstThrough(t, "audio", 2*time.Second)
 
-	resp := env.PostForm("/receiver/preset/star", url.Values{
+	resp := env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
 	})
 	resp.Body.Close()
@@ -2074,7 +2074,7 @@ func TestReceiverEvents_PresetsFollowUpChangedButNotNoop(t *testing.T) {
 		t.Fatalf("changed star operation did not emit presets follow-up")
 	}
 
-	resp = env.PostForm("/receiver/preset/star", url.Values{
+	resp = env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
 	})
 	resp.Body.Close()
@@ -2086,11 +2086,11 @@ func TestReceiverEvents_PresetsFollowUpChangedButNotNoop(t *testing.T) {
 func TestReceiverReloadMidCast_TunedSurfacesHydrateFromSnapshot(t *testing.T) {
 	env := newChassisIntegrationEnv(t)
 	defer env.Close()
-	resp := env.PostForm("/receiver/preset/star", url.Values{
+	resp := env.PostForm("/ui/preset/star", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"}, "starred": {"true"},
 	})
 	resp.Body.Close()
-	resp = env.PostForm("/receiver/streams/cast", url.Values{
+	resp = env.PostForm("/ui/streams/cast", url.Values{
 		"provider": {"mtv-rewind"}, "channel": {"80s"},
 	})
 	resp.Body.Close()
@@ -2337,7 +2337,7 @@ func tempExecutable(t *testing.T, name string) string {
 func TestReceiverSettings_GetRendersAllNetworkFields(t *testing.T) {
 	env := newChassisIntegrationEnvWithProber(t, nil)
 	defer env.Close()
-	resp, err := http.Get(env.ts.URL + "/receiver")
+	resp, err := http.Get(env.ts.URL + "/ui")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2356,7 +2356,7 @@ func TestReceiverSettings_GetRendersAllNetworkFields(t *testing.T) {
 	}
 	for _, w := range wantInputs {
 		if !strings.Contains(s, w) {
-			t.Errorf("/receiver missing %q", w)
+			t.Errorf("/ui missing %q", w)
 		}
 	}
 }
@@ -2366,7 +2366,7 @@ func TestReceiverSettings_BridgePostHotSwapSucceeds(t *testing.T) {
 	defer env.Close()
 	// Touch a HOT-scope field (ffmpeg_path) with a real temp executable.
 	toolPath := tempExecutable(t, "ffmpeg")
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{
+	resp := env.PostForm("/ui/settings/bridge", url.Values{
 		"ffmpeg_path": {toolPath},
 	})
 	defer resp.Body.Close()
@@ -2384,7 +2384,7 @@ func TestReceiverSettings_BridgePostHotSwapSucceeds(t *testing.T) {
 func TestReceiverSettings_BridgePostInvalidHostReturns400(t *testing.T) {
 	env := newChassisIntegrationEnvWithProber(t, nil)
 	defer env.Close()
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{
+	resp := env.PostForm("/ui/settings/bridge", url.Values{
 		"mister_host": {""},
 	})
 	defer resp.Body.Close()
@@ -2405,7 +2405,7 @@ func TestReceiverSettings_BridgePostInvalidHostReturns400(t *testing.T) {
 func TestReceiverSettings_BridgePostEmptyBodyReturns400(t *testing.T) {
 	env := newChassisIntegrationEnvWithProber(t, nil)
 	defer env.Close()
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
@@ -2417,7 +2417,7 @@ func TestReceiverSettings_ProbePostSuccess(t *testing.T) {
 		res: chassis.ProbeResult{LatencyMs: 4.2, Host: "192.168.1.42", Port: 32100},
 	})
 	defer env.Close()
-	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	resp := env.PostForm("/ui/settings/action/probe-mister", url.Values{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2433,7 +2433,7 @@ func TestReceiverSettings_ProbePostSuccess(t *testing.T) {
 func TestReceiverSettings_ProbePostTimeout(t *testing.T) {
 	env := newChassisIntegrationEnvWithProber(t, fakeSettingsProber{err: context.DeadlineExceeded})
 	defer env.Close()
-	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	resp := env.PostForm("/ui/settings/action/probe-mister", url.Values{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2449,7 +2449,7 @@ func TestReceiverSettings_ProbePostTimeout(t *testing.T) {
 func TestReceiverSettings_ProbePostNilProberReturns503(t *testing.T) {
 	env := newChassisIntegrationEnvWithProber(t, nil)
 	defer env.Close()
-	resp := env.PostForm("/receiver/settings/action/probe-mister", url.Values{})
+	resp := env.PostForm("/ui/settings/action/probe-mister", url.Values{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 503 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2466,7 +2466,7 @@ func TestChassisSettings_PipelineInterlaceFieldOrder_Hot(t *testing.T) {
 		t.Fatalf("starting field = %q, want tff", got)
 	}
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"video_interlace_field_order": {"bff"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"video_interlace_field_order": {"bff"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2487,7 +2487,7 @@ func TestChassisSettings_PipelineLZ4Switch_Recast(t *testing.T) {
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"video_lz4_enabled": {"false"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"video_lz4_enabled": {"false"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2508,7 +2508,7 @@ func TestChassisSettings_PipelineSSHPassword_PreservesOnEmpty(t *testing.T) {
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"mister_ssh_password": {"newpass"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"mister_ssh_password": {"newpass"}})
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -2519,7 +2519,7 @@ func TestChassisSettings_PipelineSSHPassword_PreservesOnEmpty(t *testing.T) {
 		t.Fatalf("after first save: password = %q, want newpass", got)
 	}
 
-	resp = env.PostForm("/receiver/settings/bridge", url.Values{"mister_ssh_password": {""}})
+	resp = env.PostForm("/ui/settings/bridge", url.Values{"mister_ssh_password": {""}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2535,7 +2535,7 @@ func TestChassisSettings_PipelineAudioSampleRate_OutOfRangeReturns400(t *testing
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"audio_sample_rate": {"96000"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"audio_sample_rate": {"96000"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
@@ -2554,7 +2554,7 @@ func TestChassisSettings_AdvancedHLSLiveEdgeSegments_Recast(t *testing.T) {
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"5"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"hls_live_edge_segments": {"5"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2575,7 +2575,7 @@ func TestChassisSettings_AdvancedHLSLiveEdge_OutOfBoundsReturns400(t *testing.T)
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_live_edge_segments": {"15"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"hls_live_edge_segments": {"15"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("StatusCode = %d, want 400", resp.StatusCode)
@@ -2593,7 +2593,7 @@ func TestChassisSettings_AdvancedHLSMaxCacheBytes_Recast(t *testing.T) {
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"hls_max_cache_bytes": {"134217728"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"hls_max_cache_bytes": {"134217728"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2609,7 +2609,7 @@ func TestChassisSettings_AdvancedLoggingDebug_HotSetsLogLevel(t *testing.T) {
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/bridge", url.Values{"logging_debug": {"true"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"logging_debug": {"true"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2650,7 +2650,7 @@ func TestChassisSettings_LaunchCoreSuccess(t *testing.T) {
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{coreLauncher: launcher})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	resp := env.PostForm("/ui/settings/action/launch-core", url.Values{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2677,7 +2677,7 @@ func TestChassisSettings_LaunchCoreEmptyHost(t *testing.T) {
 	})
 	defer env.Close()
 
-	resp := env.PostForm("/receiver/settings/action/launch-core", url.Values{})
+	resp := env.PostForm("/ui/settings/action/launch-core", url.Values{})
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		body, _ := io.ReadAll(resp.Body)
@@ -2913,9 +2913,9 @@ func TestChassis_CatalogPane_RendersProviderRows(t *testing.T) {
 	env := newChassisIntegrationEnvForCatalog(t)
 	defer env.Close()
 
-	res, err := http.Get(env.ts.URL + "/receiver")
+	res, err := http.Get(env.ts.URL + "/ui")
 	if err != nil {
-		t.Fatalf("GET /receiver: %v", err)
+		t.Fatalf("GET /ui: %v", err)
 	}
 	body, _ := io.ReadAll(res.Body)
 	defer res.Body.Close()
@@ -2927,7 +2927,7 @@ func TestChassis_CatalogPane_RendersProviderRows(t *testing.T) {
 		`id="restore-defaults-btn"`,
 	} {
 		if !strings.Contains(string(body), want) {
-			t.Errorf("GET /receiver body missing %q", want)
+			t.Errorf("GET /ui body missing %q", want)
 		}
 	}
 }
@@ -2937,7 +2937,7 @@ func TestChassis_PostCatalogProvider_EnabledFalse_DiskAndMemoryUpdated(t *testin
 	defer env.Close()
 
 	// Catalog routes require Sec-Fetch-Site: same-origin (requireSameOrigin middleware).
-	res := env.PostForm("/receiver/settings/catalog/provider/mtv-rewind", url.Values{"enabled": {"false"}})
+	res := env.PostForm("/ui/settings/catalog/provider/mtv-rewind", url.Values{"enabled": {"false"}})
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
 		body, _ := io.ReadAll(res.Body)
@@ -2957,7 +2957,7 @@ func TestChassis_PostCatalogProvider_HLSBufferDisabled_RecastScope(t *testing.T)
 	env := newChassisIntegrationEnvForCatalog(t)
 	defer env.Close()
 
-	res := env.PostForm("/receiver/settings/catalog/provider/toonami-aftermath", url.Values{"hls_buffer_disabled": {"true"}})
+	res := env.PostForm("/ui/settings/catalog/provider/toonami-aftermath", url.Values{"hls_buffer_disabled": {"true"}})
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if !strings.Contains(string(body), `"scope":"recast"`) {
@@ -2969,7 +2969,7 @@ func TestChassis_PostCatalogProvider_BothKeys_RecastMaxWins(t *testing.T) {
 	env := newChassisIntegrationEnvForCatalog(t)
 	defer env.Close()
 
-	res := env.PostForm("/receiver/settings/catalog/provider/toonami-aftermath", url.Values{
+	res := env.PostForm("/ui/settings/catalog/provider/toonami-aftermath", url.Values{
 		"enabled":             {"true"},
 		"hls_buffer_disabled": {"true"},
 	})
@@ -2984,7 +2984,7 @@ func TestChassis_PostCatalogDirectStreamHLS_FlipsLiveOnly(t *testing.T) {
 	env := newChassisIntegrationEnvForCatalog(t)
 	defer env.Close()
 
-	res := env.PostForm("/receiver/settings/catalog/direct-stream-hls-buffer", url.Values{"disabled": {"true"}})
+	res := env.PostForm("/ui/settings/catalog/direct-stream-hls-buffer", url.Values{"disabled": {"true"}})
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if !strings.Contains(string(body), `"scope":"recast"`) {
@@ -3007,7 +3007,7 @@ func TestChassis_PostCatalogProvider_UnknownID_404(t *testing.T) {
 	env := newChassisIntegrationEnvForCatalog(t)
 	defer env.Close()
 
-	res := env.PostForm("/receiver/settings/catalog/provider/does-not-exist", url.Values{"enabled": {"true"}})
+	res := env.PostForm("/ui/settings/catalog/provider/does-not-exist", url.Values{"enabled": {"true"}})
 	defer res.Body.Close()
 	if res.StatusCode != 404 {
 		t.Errorf("status %d; want 404", res.StatusCode)
@@ -3019,7 +3019,7 @@ func TestChassis_PostActionRestoreDefaults_DiskMatchesDefaults(t *testing.T) {
 	defer env.Close()
 
 	// Dirty the config first.
-	preRes := env.PostForm("/receiver/settings/catalog/provider/mtv-rewind", url.Values{"enabled": {"false"}})
+	preRes := env.PostForm("/ui/settings/catalog/provider/mtv-rewind", url.Values{"enabled": {"false"}})
 	preRes.Body.Close()
 	if preRes.StatusCode != 200 {
 		t.Fatalf("pre-reset POST status = %d", preRes.StatusCode)
@@ -3031,7 +3031,7 @@ func TestChassis_PostActionRestoreDefaults_DiskMatchesDefaults(t *testing.T) {
 		t.Fatalf("seed sentinel: %v", err)
 	}
 
-	res := env.PostForm("/receiver/settings/action/restore-defaults", url.Values{})
+	res := env.PostForm("/ui/settings/action/restore-defaults", url.Values{})
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if !strings.Contains(string(body), `"scope":"reboot"`) {
@@ -3127,7 +3127,7 @@ func newChassisAudioDSPIntegrationServer(t *testing.T) (*httptest.Server, *core.
 
 // TestAudioDSP_E2E_SSEAndCommit verifies two things end-to-end:
 //  1. The chassis SSE initial burst includes an "audioDsp" event.
-//  2. POST /receiver/audio/dsp with commit:true and bass:6 returns 204 and
+//  2. POST /ui/audio/dsp with commit:true and bass:6 returns 204 and
 //     the committed value is reflected in mgr.AudioDSP().Bass.
 //
 // Transparency coverage (default DSP = unchanged audio vs volume-only) is
@@ -3141,10 +3141,10 @@ func TestAudioDSP_E2E_SSEAndCommit(t *testing.T) {
 	// (1) SSE initial burst includes the audioDsp event.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sseReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/receiver/events", nil)
+	sseReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/ui/events", nil)
 	sseResp, err := ts.Client().Do(sseReq)
 	if err != nil {
-		t.Fatalf("GET /receiver/events: %v", err)
+		t.Fatalf("GET /ui/events: %v", err)
 	}
 	defer sseResp.Body.Close()
 	if sseResp.StatusCode != http.StatusOK {
@@ -3159,7 +3159,7 @@ func TestAudioDSP_E2E_SSEAndCommit(t *testing.T) {
 
 	// (2) Commit bass=6 and verify the manager's in-memory state is updated.
 	commitBody := `{"commit":true,"params":{"bass":6}}`
-	commitReq, err := http.NewRequest(http.MethodPost, ts.URL+"/receiver/audio/dsp", strings.NewReader(commitBody))
+	commitReq, err := http.NewRequest(http.MethodPost, ts.URL+"/ui/audio/dsp", strings.NewReader(commitBody))
 	if err != nil {
 		t.Fatalf("new commit request: %v", err)
 	}
@@ -3167,7 +3167,7 @@ func TestAudioDSP_E2E_SSEAndCommit(t *testing.T) {
 	commitReq.Header.Set("Sec-Fetch-Site", "same-origin")
 	commitResp, err := ts.Client().Do(commitReq)
 	if err != nil {
-		t.Fatalf("POST /receiver/audio/dsp: %v", err)
+		t.Fatalf("POST /ui/audio/dsp: %v", err)
 	}
 	defer commitResp.Body.Close()
 	if commitResp.StatusCode != http.StatusNoContent {

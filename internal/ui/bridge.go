@@ -135,7 +135,7 @@ func (s *Server) handleBridgePOST(w http.ResponseWriter, r *http.Request) {
 		candidate.Visualizer.Mode = current.Visualizer.Mode
 	}
 	// The bridge settings form does not edit the audio tone/EQ chain — that
-	// is saved through the chassis /receiver/audio/dsp routes. Preserve the
+	// is saved through the chassis /ui/audio/dsp routes. Preserve the
 	// persisted DSP (including EQ memories) so a bridge save neither wipes the
 	// operator's voicing nor trips ValidateAudioDSP on the form's absent
 	// (zero-value, nil-EQ) DSP.

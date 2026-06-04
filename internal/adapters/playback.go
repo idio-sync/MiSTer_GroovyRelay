@@ -167,8 +167,8 @@ type QuickCastFile struct {
 }
 
 // MaxQuickCastBytes caps multipart payloads accepted by QuickCastProvider
-// implementations. Shared between /ui/playback/quick-cast and the chassis
-// /receiver/cast route so the limit moves in lockstep.
+// implementations. Shared between /old_ui/playback/quick-cast and the chassis
+// /ui/cast route so the limit moves in lockstep.
 const MaxQuickCastBytes = 4*1024*1024 + 64*1024
 
 // QuickCastError is the typed error returned by QuickCastProvider

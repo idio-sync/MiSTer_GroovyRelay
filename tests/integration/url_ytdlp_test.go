@@ -274,7 +274,7 @@ func TestURL_Cookies_RoundTrip(t *testing.T) {
 	// POST cookies.
 	form := "cookies=" + url.QueryEscape(cookies)
 	req, _ := http.NewRequest(http.MethodPost,
-		ts.URL+"/ui/adapter/url/cookies", strings.NewReader(form))
+		ts.URL+"/old_ui/adapter/url/cookies", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin") // satisfy csrfMiddleware
 	resp, err := ts.Client().Do(req)
@@ -294,7 +294,7 @@ func TestURL_Cookies_RoundTrip(t *testing.T) {
 
 	// DELETE cookies.
 	req, _ = http.NewRequest(http.MethodDelete,
-		ts.URL+"/ui/adapter/url/cookies", nil)
+		ts.URL+"/old_ui/adapter/url/cookies", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	resp, err = ts.Client().Do(req)
 	if err != nil {
