@@ -132,6 +132,50 @@ func TestCatalogEnvelopeFromData_And_Changed(t *testing.T) {
 	}
 }
 
+func TestProviderStatusEnvelopes_And_Fingerprint(t *testing.T) {
+	t.Parallel()
+	in := []adapters.UserProviderStatus{
+		{
+			ProviderID: "user:mix",
+			Channels: []adapters.UserChannelStatus{
+				{ChannelID: "lofi", State: "ready", ItemCount: 9},
+				{ChannelID: "news", State: "pending"},
+			},
+		},
+	}
+	envs := providerStatusEnvelopesFrom(in)
+	if len(envs) != 1 {
+		t.Fatalf("len(envs) = %d, want 1", len(envs))
+	}
+	got := envs[0]
+	if got.Provider != "user:mix" {
+		t.Fatalf("Provider = %q, want user:mix", got.Provider)
+	}
+	if got.AutoEnabledStreams != "" {
+		t.Fatalf("AutoEnabledStreams = %q, want empty", got.AutoEnabledStreams)
+	}
+	if len(got.Channels) != 2 {
+		t.Fatalf("len(Channels) = %d, want 2", len(got.Channels))
+	}
+	if got.Channels[0].Channel != "lofi" || got.Channels[0].State != "ready" || got.Channels[0].ItemCount != 9 {
+		t.Fatalf("Channels[0] = %+v, want lofi ready count 9", got.Channels[0])
+	}
+	if got.Channels[1].Channel != "news" || got.Channels[1].State != "pending" || got.Channels[1].ItemCount != 0 {
+		t.Fatalf("Channels[1] = %+v, want news pending count 0", got.Channels[1])
+	}
+
+	fp := providerStatusFingerprint(got)
+	again := providerStatusFingerprint(providerStatusEnvelopesFrom(in)[0])
+	if fp != again {
+		t.Fatalf("fingerprint unstable: %q then %q", fp, again)
+	}
+	next := providerStatusEnvelopesFrom(in)[0]
+	next.Channels[1].State = "ready"
+	if fp == providerStatusFingerprint(next) {
+		t.Fatalf("fingerprint did not change after channel state change: %q", fp)
+	}
+}
+
 type catalogProviderFormViewer struct {
 	form adapters.UserProviderForm
 }

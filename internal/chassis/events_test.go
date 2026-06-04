@@ -547,6 +547,113 @@ func TestHandleEvents_EmitsInitialSnapshotOnConnect(t *testing.T) {
 	}
 }
 
+func TestHandleEvents_NoUserProviderViewerOmitsProviderStatus(t *testing.T) {
+	t.Parallel()
+	s, err := New(nonZeroConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	if strings.Contains(w.Body.String(), "event: providerStatus\n") {
+		t.Fatalf("nil UserProviderViewer emitted providerStatus frame:\n%s", w.Body.String())
+	}
+}
+
+func TestHandleEvents_EmitsInitialProviderStatus(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	cfg.UserProviderViewer = &mutableUserProviderViewer{statuses: []adapters.UserProviderStatus{
+		{
+			ProviderID: "user:mix",
+			Channels: []adapters.UserChannelStatus{
+				{ChannelID: "lofi", State: "ready", ItemCount: 9},
+				{ChannelID: "news", State: "pending"},
+			},
+		},
+	}}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if got := strings.Count(body, "event: providerStatus\n"); got != 1 {
+		t.Fatalf("providerStatus event count = %d, want 1; body:\n%s", got, body)
+	}
+	for _, want := range []string{
+		`"provider":"user:mix"`,
+		`"channel":"lofi"`,
+		`"state":"ready"`,
+		`"itemCount":9`,
+		`"channel":"news"`,
+		`"state":"pending"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("providerStatus body missing %s:\n%s", want, body)
+		}
+	}
+}
+
+func TestHandleEvents_EmitsProviderStatusOnlyWhenChanged(t *testing.T) {
+	t.Parallel()
+	viewer := &mutableUserProviderViewer{statuses: []adapters.UserProviderStatus{
+		{
+			ProviderID: "user:mix",
+			Channels: []adapters.UserChannelStatus{
+				{ChannelID: "lofi", State: "pending"},
+			},
+		},
+	}}
+	cfg := nonZeroConfig()
+	cfg.UserProviderViewer = viewer
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := newFlushRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		viewer.setStatuses([]adapters.UserProviderStatus{
+			{
+				ProviderID: "user:mix",
+				Channels: []adapters.UserChannelStatus{
+					{ChannelID: "lofi", State: "ready", ItemCount: 12},
+				},
+			},
+		})
+		time.Sleep(350 * time.Millisecond)
+		cancel()
+	}()
+	s.handleEvents(w, req)
+
+	body := w.Body.String()
+	if got := strings.Count(body, "event: providerStatus\n"); got != 2 {
+		t.Fatalf("providerStatus event count = %d, want initial+changed only; body:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"state":"pending"`) || !strings.Contains(body, `"state":"ready"`) || !strings.Contains(body, `"itemCount":12`) {
+		t.Fatalf("providerStatus stream missing initial or changed data:\n%s", body)
+	}
+}
+
 func TestHandleEvents_EmitsInitialVisualizerEventOnConnect(t *testing.T) {
 	t.Parallel()
 	cfg := nonZeroConfig()
@@ -1896,6 +2003,40 @@ func (m *mutableAudioViewer) AudioScopes() *core.AudioScopeSnapshot {
 func (m *mutableAudioViewer) setSnap(s *core.AudioScopeSnapshot) {
 	m.mu.Lock()
 	m.snap = s
+	m.mu.Unlock()
+}
+
+type mutableUserProviderViewer struct {
+	mu       sync.Mutex
+	form     adapters.UserProviderForm
+	statuses []adapters.UserProviderStatus
+}
+
+func (m *mutableUserProviderViewer) UserProviderForm(id string) (adapters.UserProviderForm, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.form.ID == id {
+		return m.form, true
+	}
+	return adapters.UserProviderForm{}, false
+}
+
+func (m *mutableUserProviderViewer) UserProviderStatuses() []adapters.UserProviderStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]adapters.UserProviderStatus, len(m.statuses))
+	for i, p := range m.statuses {
+		out[i] = adapters.UserProviderStatus{
+			ProviderID: p.ProviderID,
+			Channels:   append([]adapters.UserChannelStatus(nil), p.Channels...),
+		}
+	}
+	return out
+}
+
+func (m *mutableUserProviderViewer) setStatuses(statuses []adapters.UserProviderStatus) {
+	m.mu.Lock()
+	m.statuses = statuses
 	m.mu.Unlock()
 }
 

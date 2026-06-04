@@ -469,6 +469,13 @@ func (s *Server) presetSnapshot() [12]adapters.PresetEntry {
 	return s.presetViewer.Presets()
 }
 
+func (s *Server) userProviderStatusSnapshot() []adapters.UserProviderStatus {
+	if s.userProviderViewer == nil {
+		return nil
+	}
+	return s.userProviderViewer.UserProviderStatuses()
+}
+
 // linkStartGate returns the per-adapter single-flight mutex for link/start.
 func (s *Server) linkStartGate(name string) *sync.Mutex {
 	v, _ := s.linkStartGates.LoadOrStore(name, &sync.Mutex{})

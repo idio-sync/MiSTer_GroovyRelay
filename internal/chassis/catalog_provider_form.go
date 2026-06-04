@@ -1,7 +1,9 @@
 package chassis
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
@@ -106,6 +108,34 @@ func catalogChanged(a, b catalogEnvelope) bool {
 		}
 	}
 	return false
+}
+
+func providerStatusEnvelopesFrom(in []adapters.UserProviderStatus) []providerStatusEnvelope {
+	out := make([]providerStatusEnvelope, 0, len(in))
+	for _, p := range in {
+		channels := make([]channelStatusEnvelope, 0, len(p.Channels))
+		for _, c := range p.Channels {
+			channels = append(channels, channelStatusEnvelope{
+				Channel:   c.ChannelID,
+				State:     c.State,
+				ItemCount: c.ItemCount,
+			})
+		}
+		out = append(out, providerStatusEnvelope{
+			Provider: p.ProviderID,
+			Channels: channels,
+		})
+	}
+	return out
+}
+
+func providerStatusFingerprint(p providerStatusEnvelope) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%d", p.Provider, len(p.Channels))
+	for _, c := range p.Channels {
+		fmt.Fprintf(&b, "|%s:%s:%d", c.Channel, c.State, c.ItemCount)
+	}
+	return b.String()
 }
 
 // requireSameOriginRead guards a read endpoint that returns authored URLs.
