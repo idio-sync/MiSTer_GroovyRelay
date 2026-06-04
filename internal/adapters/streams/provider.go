@@ -99,6 +99,10 @@ type Channel struct {
 	Items       []StreamItem
 	PlayMode    PlayMode
 	Order       int
+	// EnumState is an in-memory marker for user-provider playlist enumeration.
+	// It is empty for non-user channels and set by buildUserCatalog to
+	// ready|pending|error.
+	EnumState string
 }
 
 type StreamItem struct {

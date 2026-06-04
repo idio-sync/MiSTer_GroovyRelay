@@ -317,3 +317,61 @@ func TestBuildProviderCatalog_DispatchesUserType(t *testing.T) {
 		t.Fatalf("ProviderID = %q, want user:mix", cat.ProviderID)
 	}
 }
+
+func TestBuildUserCatalog_SetsEnumState(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	playlistURL := "https://www.youtube.com/playlist?list=PL1"
+
+	// Build A: direct + single + a playlist that enumerates -> all "ready".
+	defA := ProviderDefinition{
+		Type: userProviderType, ID: "user:mix", DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []ChannelDefinition{
+			{ID: "live", Name: "Live", URL: "https://cdn.example.com/s.m3u8", Kind: kindDirect},
+			{ID: "vod", Name: "VOD", URL: "https://twitch.tv/foo", Kind: kindSingle},
+			{ID: "list", Name: "List", URL: playlistURL, Kind: kindPlaylist},
+		},
+	}
+	enumReady := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{playlistURL: ytEntries("dQw4w9WgXcQ", "abcdefghijk")}},
+		cacheDir: dir, cfg: DefaultConfig(),
+	}
+	catA, err := buildUserCatalog(context.Background(), defA, enumReady)
+	if err != nil {
+		t.Fatalf("buildUserCatalog A: %v", err)
+	}
+	wantA := map[string]string{"live": "ready", "vod": "ready", "list": "ready"}
+	for _, ch := range catA.Channels {
+		if ch.EnumState != wantA[ch.ID] {
+			t.Fatalf("A channel %q EnumState = %q, want %q", ch.ID, ch.EnumState, wantA[ch.ID])
+		}
+	}
+
+	// Build B: a playlist whose enumeration errors with no cached items -> "error".
+	defB := ProviderDefinition{
+		Type: userProviderType, ID: "user:mix", DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
+		Channels: []ChannelDefinition{{ID: "dead", Name: "Dead", URL: "https://www.youtube.com/playlist?list=PLX", Kind: kindPlaylist}},
+	}
+	enumErr := userPlaylistEnumerator{
+		resolver: &fakeResolver{enumErr: fmt.Errorf("private playlist")},
+		cacheDir: t.TempDir(), cfg: DefaultConfig(),
+	}
+	catB, err := buildUserCatalog(context.Background(), defB, enumErr)
+	if err != nil {
+		t.Fatalf("buildUserCatalog B: %v", err)
+	}
+	if catB.Channels[0].EnumState != "error" {
+		t.Fatalf("B dead EnumState = %q, want error", catB.Channels[0].EnumState)
+	}
+
+	// Build C: a playlist with a CACHE-ONLY enumerator (resolver nil) and an
+	// empty cache -> no items, no error -> "pending".
+	enumPending := userPlaylistEnumerator{cacheDir: t.TempDir(), cfg: DefaultConfig()}
+	catC, err := buildUserCatalog(context.Background(), defB, enumPending)
+	if err != nil {
+		t.Fatalf("buildUserCatalog C: %v", err)
+	}
+	if catC.Channels[0].EnumState != "pending" {
+		t.Fatalf("C dead EnumState = %q, want pending", catC.Channels[0].EnumState)
+	}
+}
