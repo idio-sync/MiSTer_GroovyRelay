@@ -1,13 +1,13 @@
 package streams
 
 import (
-	"context"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 )
+
+var _ adapters.UserProviderViewer = (*Adapter)(nil)
 
 func newViewerAdapter(t *testing.T, fr *fakeResolver) *Adapter {
 	t.Helper()
@@ -26,9 +26,16 @@ func TestUserProviderForm_RoundTripsAuthoringFields(t *testing.T) {
 	a := newViewerAdapter(t, &fakeResolver{})
 	saved, err := a.userStore.Put(ProviderDefinition{
 		Type: userProviderType, DisplayName: "F1 TV", BadgeLabel: "F1", BadgeColor: "amber",
-		Groups: []GroupDefinition{{ID: "races", Name: "Races", Order: 0}},
+		Groups: []GroupDefinition{{ID: "races", Name: "Races", Order: 7}},
 		Channels: []ChannelDefinition{
-			{Name: "Live", URL: "https://cdn.example.com/live.m3u8", Kind: kindDirect, GroupID: "races", Order: 0},
+			{
+				Name:     "Archive",
+				URL:      "https://www.youtube.com/playlist?list=PL1",
+				Kind:     kindPlaylist,
+				PlayMode: PlayFirstThenShuffle,
+				GroupID:  "races",
+				Order:    9,
+			},
 		},
 	})
 	if err != nil {
@@ -38,17 +45,17 @@ func TestUserProviderForm_RoundTripsAuthoringFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("UserProviderForm(%q) not found", saved.ID)
 	}
-	if form.ID != saved.ID || form.DisplayName != "F1 TV" || form.BadgeColor != "amber" {
+	if form.ID != saved.ID || form.DisplayName != "F1 TV" || form.BadgeLabel != "F1" || form.BadgeColor != "amber" {
 		t.Fatalf("identity round-trip wrong: %+v", form)
 	}
-	if len(form.Groups) != 1 || form.Groups[0].ID != "races" {
+	if len(form.Groups) != 1 || form.Groups[0].ID != "races" || form.Groups[0].Name != "Races" || form.Groups[0].Order != 7 {
 		t.Fatalf("groups round-trip wrong: %+v", form.Groups)
 	}
 	if len(form.Channels) != 1 {
 		t.Fatalf("channels len = %d, want 1", len(form.Channels))
 	}
 	c := form.Channels[0]
-	if c.URL != "https://cdn.example.com/live.m3u8" || c.Kind != kindDirect || c.GroupID != "races" || c.ID == "" {
+	if c.URL != "https://www.youtube.com/playlist?list=PL1" || c.Kind != kindPlaylist || c.PlayMode != string(PlayFirstThenShuffle) || c.GroupID != "races" || c.Order != 9 || c.ID == "" {
 		t.Fatalf("channel round-trip wrong: %+v", c)
 	}
 	if _, ok := a.UserProviderForm("mtv-rewind"); ok {
@@ -58,35 +65,64 @@ func TestUserProviderForm_RoundTripsAuthoringFields(t *testing.T) {
 
 func TestUserProviderStatuses_ReportsPerChannelState(t *testing.T) {
 	t.Parallel()
-	playlistURL := "https://www.youtube.com/playlist?list=PL1"
-	fr := &fakeResolver{enumEntries: map[string][]ytdlp.PlaylistEntry{playlistURL: ytEntries("dQw4w9WgXcQ", "abcdefghijk", "lmnopqrstuv")}}
-	a := newViewerAdapter(t, fr)
-	if _, err := a.userStore.Put(ProviderDefinition{
-		Type: userProviderType, DisplayName: "Mix", BadgeLabel: "MX", BadgeColor: "teal",
-		Channels: []ChannelDefinition{
-			{Name: "Live", URL: "https://cdn.example.com/s.m3u8", Kind: kindDirect},
-			{Name: "List", URL: playlistURL, Kind: kindPlaylist},
+	a := newViewerAdapter(t, &fakeResolver{})
+	a.mu.Lock()
+	a.installSnapshotLocked(
+		[]ProviderDefinition{
+			{ID: "user:second", Type: userProviderType, DisplayName: "Second"},
+			{ID: "mtv-rewind", Type: "youtube_channel_json", DisplayName: "Bundled"},
+			{ID: "user:first", Type: userProviderType, DisplayName: "First"},
 		},
-	}); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	snapshot, err := a.buildUserCatalogSnapshotLive(context.Background(), a.userStore.Snapshot())
-	if err != nil {
-		t.Fatalf("buildUserCatalogSnapshotLive: %v", err)
-	}
-	a.installUserCatalogSnapshot(snapshot)
+		[]ProviderCatalog{
+			{
+				ProviderID: "mtv-rewind",
+				Channels:   []Channel{{ID: "bundled", EnumState: enumStateError, Items: []StreamItem{{ID: "b"}}}},
+			},
+			{
+				ProviderID: "user:first",
+				Channels: []Channel{
+					{ID: "zeta", EnumState: enumStateReady, Items: []StreamItem{{ID: "z1"}, {ID: "z2"}}},
+				},
+			},
+			{
+				ProviderID: "user:second",
+				Channels: []Channel{
+					{ID: "pending", EnumState: enumStatePending},
+					{ID: "error", EnumState: enumStateError},
+					{ID: "ready", EnumState: enumStateReady, Items: []StreamItem{{ID: "r1"}, {ID: "r2"}, {ID: "r3"}}},
+				},
+			},
+		},
+	)
+	a.mu.Unlock()
+
 	statuses := a.UserProviderStatuses()
-	if len(statuses) != 1 || statuses[0].ProviderID != "user:mix" {
-		t.Fatalf("statuses = %+v", statuses)
+	if len(statuses) != 2 {
+		t.Fatalf("statuses len = %d, want 2: %+v", len(statuses), statuses)
 	}
-	byID := map[string]adapters.UserChannelStatus{}
-	for _, c := range statuses[0].Channels {
-		byID[c.ChannelID] = c
+	if statuses[0].ProviderID != "user:second" || statuses[1].ProviderID != "user:first" {
+		t.Fatalf("provider order/filter wrong: %+v", statuses)
 	}
-	if byID["live"].State != "ready" || byID["live"].ItemCount != 1 {
-		t.Fatalf("live status = %+v", byID["live"])
+	wantSecond := []adapters.UserChannelStatus{
+		{ChannelID: "pending", State: enumStatePending, ItemCount: 0},
+		{ChannelID: "error", State: enumStateError, ItemCount: 0},
+		{ChannelID: "ready", State: enumStateReady, ItemCount: 3},
 	}
-	if byID["list"].State != "ready" || byID["list"].ItemCount != 3 {
-		t.Fatalf("list status = %+v", byID["list"])
+	if len(statuses[0].Channels) != len(wantSecond) {
+		t.Fatalf("second channels len = %d, want %d: %+v", len(statuses[0].Channels), len(wantSecond), statuses[0].Channels)
+	}
+	for i, want := range wantSecond {
+		if statuses[0].Channels[i] != want {
+			t.Fatalf("second channel %d = %+v, want %+v", i, statuses[0].Channels[i], want)
+		}
+	}
+	wantFirst := []adapters.UserChannelStatus{{ChannelID: "zeta", State: enumStateReady, ItemCount: 2}}
+	if len(statuses[1].Channels) != len(wantFirst) {
+		t.Fatalf("first channels len = %d, want %d: %+v", len(statuses[1].Channels), len(wantFirst), statuses[1].Channels)
+	}
+	for i, want := range wantFirst {
+		if statuses[1].Channels[i] != want {
+			t.Fatalf("first channel %d = %+v, want %+v", i, statuses[1].Channels[i], want)
+		}
 	}
 }
