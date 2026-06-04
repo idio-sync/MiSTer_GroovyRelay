@@ -51,6 +51,25 @@ func TestChassisCSS_LeakProneSelectorsAreScoped(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_HasUserProviderPalette(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	css := string(src)
+	// Every palette token (matching streams badgeColorTokens) needs an .ic and
+	// a .badge class so the template's u-<token> fallback always resolves.
+	for _, tok := range []string{"amber", "red", "teal", "blue", "purple", "green", "cyan", "slate"} {
+		if !strings.Contains(css, ".ic.u-"+tok) {
+			t.Errorf("missing .ic.u-%s palette class", tok)
+		}
+		if !strings.Contains(css, ".badge.u-"+tok) {
+			t.Errorf("missing .badge.u-%s palette class", tok)
+		}
+	}
+}
+
 func TestChassisCSS_RulesetCountSanity(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
