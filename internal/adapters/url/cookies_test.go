@@ -236,7 +236,7 @@ func TestHandleCookiesPOST_Form_WritesFile(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	body := strings.NewReader("cookies=" + neturl.QueryEscape(sampleCookies))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/cookies", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handleCookiesSet(w, req)
@@ -255,7 +255,7 @@ func TestHandleCookiesPOST_Form_WritesFile(t *testing.T) {
 func TestHandleCookiesPOST_JSON_WritesFile(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	body, _ := json.Marshal(map[string]string{"cookies": sampleCookies})
-	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/cookies", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	a.handleCookiesSet(w, req)
@@ -270,7 +270,7 @@ func TestHandleCookiesPOST_JSON_WritesFile(t *testing.T) {
 func TestHandleCookiesPOST_RejectsInvalid(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	body := strings.NewReader("cookies=" + neturl.QueryEscape("not-cookies-format"))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/cookies", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handleCookiesSet(w, req)
@@ -286,7 +286,7 @@ func TestHandleCookiesPOST_RejectsOversize(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	huge := strings.Repeat("a", (1<<20)+100)
 	body := strings.NewReader("cookies=" + neturl.QueryEscape(huge))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/cookies", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handleCookiesSet(w, req)
@@ -300,7 +300,7 @@ func TestHandleCookiesDELETE_RemovesFile(t *testing.T) {
 	if _, err := saveCookies(a.CookiesPath(), []byte(sampleCookies)); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	req := httptest.NewRequest("DELETE", "/ui/adapter/url/cookies", nil)
+	req := httptest.NewRequest("DELETE", "/old_ui/adapter/url/cookies", nil)
 	w := httptest.NewRecorder()
 	a.handleCookiesClear(w, req)
 	if w.Code != http.StatusOK {
@@ -313,7 +313,7 @@ func TestHandleCookiesDELETE_RemovesFile(t *testing.T) {
 
 func TestHandleCookiesDELETE_IdempotentOnMissing(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
-	req := httptest.NewRequest("DELETE", "/ui/adapter/url/cookies", nil)
+	req := httptest.NewRequest("DELETE", "/old_ui/adapter/url/cookies", nil)
 	w := httptest.NewRecorder()
 	a.handleCookiesClear(w, req)
 	if w.Code != http.StatusOK {
@@ -328,7 +328,7 @@ func TestHandleCookiesDELETE_IdempotentOnMissing(t *testing.T) {
 func TestHandleCookiesPOST_HTMX_RendersStatusFragment(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
 	body := strings.NewReader("cookies=" + neturl.QueryEscape(sampleCookies))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/cookies", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	w := httptest.NewRecorder()
@@ -349,7 +349,7 @@ func TestHandleCookiesPOST_HTMX_RendersStatusFragment(t *testing.T) {
 
 func TestHandleCookiesDELETE_HTMX_RendersStatusFragment(t *testing.T) {
 	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
-	req := httptest.NewRequest("DELETE", "/ui/adapter/url/cookies", nil)
+	req := httptest.NewRequest("DELETE", "/old_ui/adapter/url/cookies", nil)
 	req.Header.Set("HX-Request", "true")
 	w := httptest.NewRecorder()
 	a.handleCookiesClear(w, req)
@@ -425,7 +425,7 @@ func TestHandleCookiesPOST_HTMX_ErrorFragmentTargetsCookiesStatus(t *testing.T) 
 
 	// Invalid cookies body triggers validateCookies → 400.
 	body := strings.NewReader("cookies=" + neturl.QueryEscape("not-cookies-format"))
-	req := httptest.NewRequest("POST", "/ui/adapter/url/cookies", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/cookies", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	w := httptest.NewRecorder()

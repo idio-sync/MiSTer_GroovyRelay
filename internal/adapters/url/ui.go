@@ -49,7 +49,7 @@ func (a *Adapter) renderPanel() string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b,
-		`<section class="url-panel" id="url-panel" hx-get="/ui/adapter/url/panel" hx-trigger="%s" hx-swap="outerHTML">`,
+		`<section class="url-panel" id="url-panel" hx-get="/old_ui/adapter/url/panel" hx-trigger="%s" hx-swap="outerHTML">`,
 		"every 5s")
 	b.WriteString(`<h3>URL</h3>`)
 
@@ -93,7 +93,7 @@ func (a *Adapter) renderPanel() string {
 					template.HTMLEscapeString(redactURL(e.URL)))
 			}
 			fmt.Fprintf(&b,
-				`<button type="button" hx-post="/ui/adapter/url/history/delete" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">✕</button>`+
+				`<button type="button" hx-post="/old_ui/adapter/url/history/delete" hx-vals='{"idx":"%d"}' hx-target="#url-panel" hx-swap="outerHTML">✕</button>`+
 					`</li>`,
 				i)
 		}
@@ -179,10 +179,10 @@ func (a *Adapter) renderCookiesSection() string {
 	return fmt.Sprintf(`<details class="url-cookies">
   <summary>Cookies for yt-dlp</summary>
   <div class="cookies-status" id="url-cookies-status">%s</div>
-  <form hx-post="/ui/adapter/url/cookies" hx-target="#url-cookies-status" hx-swap="outerHTML" autocomplete="off">
+  <form hx-post="/old_ui/adapter/url/cookies" hx-target="#url-cookies-status" hx-swap="outerHTML" autocomplete="off">
     <textarea name="cookies" rows="6" placeholder="Paste Netscape cookies.txt content here..." autocomplete="off" spellcheck="false"></textarea>
     <button type="submit">Save Cookies</button>
-    <button type="button" hx-delete="/ui/adapter/url/cookies" hx-target="#url-cookies-status" hx-swap="outerHTML">Clear</button>
+    <button type="button" hx-delete="/old_ui/adapter/url/cookies" hx-target="#url-cookies-status" hx-swap="outerHTML">Clear</button>
   </form>
 </details>`, template.HTMLEscapeString(statusLine))
 }

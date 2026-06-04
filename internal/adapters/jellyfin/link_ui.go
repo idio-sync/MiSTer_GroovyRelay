@@ -109,7 +109,7 @@ func (a *Adapter) linkFragmentHTML(errMsg string) string {
 			disabledHint = ` <span class="help">Enable Jellyfin in Settings and save to appear in Jellyfin cast menus.</span>`
 		}
 		return sectionOpen + fmt.Sprintf(
-			`<div class="gr-callout ok">Linked as %s on %s.%s <button class="btn ghost" hx-post="/ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
+			`<div class="gr-callout ok">Linked as %s on %s.%s <button class="btn ghost" hx-post="/old_ui/adapter/jellyfin/unlink" hx-target="#jf-link">Unlink</button></div>`,
 			html.EscapeString(user), html.EscapeString(sid), disabledHint,
 		) + sectionClose
 	case LinkLinking:
@@ -128,7 +128,7 @@ func (a *Adapter) linkFragmentHTML(errMsg string) string {
 				html.EscapeString(errMsg),
 			)
 		}
-		return sectionOpen + `<form hx-post="/ui/adapter/jellyfin/link/start" hx-target="#jf-link">
+		return sectionOpen + `<form hx-post="/old_ui/adapter/jellyfin/link/start" hx-target="#jf-link">
 <div class="field"><label for="jf-username">Username</label><div><input type="text" name="username" id="jf-username" required></div></div>
 <div class="field"><label for="jf-password">Password</label><div><input type="password" name="password" id="jf-password" required></div></div>
 ` + errBlock + `<div style="margin-top: 16px; text-align: right;"><button type="submit" class="btn">Link ▸</button></div>

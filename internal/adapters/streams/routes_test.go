@@ -35,7 +35,7 @@ func TestUIRoutes(t *testing.T) {
 
 func TestStatusJSONIncludesCompanionFields(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/status", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStatus(rr, req)
@@ -66,7 +66,7 @@ func TestStatusJSONActiveQueueCapabilities(t *testing.T) {
 		loopMode: loopSequential,
 	}
 	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/status", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStatus(rr, req)
@@ -85,7 +85,7 @@ func TestStatusJSONActiveQueueCapabilities(t *testing.T) {
 func TestHandleProvidersJSONFiltersByProviderIDAndQuery(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?provider_id=mtv-rewind", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/providers?provider_id=mtv-rewind", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleProviders(rr, req)
@@ -100,7 +100,7 @@ func TestHandleProvidersJSONFiltersByProviderIDAndQuery(t *testing.T) {
 		t.Fatalf("provider_id filter = %+v, want only mtv-rewind", byProvider)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?q=he-man", nil)
+	req = httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/providers?q=he-man", nil)
 	req.Header.Set("Accept", "application/json")
 	rr = httptest.NewRecorder()
 	a.handleProviders(rr, req)
@@ -119,7 +119,7 @@ func TestHandleProvidersJSONFiltersByProviderIDAndQuery(t *testing.T) {
 func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?provider_id=mtv-rewind", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/providers?provider_id=mtv-rewind", nil)
 	rr := httptest.NewRecorder()
 	a.handleProviders(rr, req)
 	if rr.Code != http.StatusOK {
@@ -130,7 +130,7 @@ func TestHandleProvidersHTMLFiltersByProviderIDAndQuery(t *testing.T) {
 		t.Fatalf("provider_id HTML body = %q, want only MTV provider", body)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers?q=he-man", nil)
+	req = httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/providers?q=he-man", nil)
 	rr = httptest.NewRecorder()
 	a.handleProviders(rr, req)
 	if rr.Code != http.StatusOK {
@@ -158,7 +158,7 @@ func TestStatusJSONDisablesControlsForForeignOwner(t *testing.T) {
 		loopMode: loopSequential,
 	}
 	core.status.AdapterRef = "url:foreign"
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/status", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStatus(rr, req)
@@ -188,7 +188,7 @@ func TestStatusJSONDirectStreamDoesNotAdvertisePauseOrAdvance(t *testing.T) {
 	}
 	c.status.AdapterRef = activeAdapterRef(a.active)
 
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/status", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStatus(rr, req)
@@ -218,7 +218,7 @@ func TestStatusJSONDoesNotAdvertiseReplayForMissingCatalogChannel(t *testing.T) 
 		loopMode:   loopSequential,
 	}
 	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/status", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStatus(rr, req)
@@ -250,7 +250,7 @@ func TestStatusJSONDoesNotAdvertiseReplayForEmptyCatalogChannel(t *testing.T) {
 		Name:       "MTV Rewind",
 		Channels:   []Channel{{ID: "metal", Name: "Metal", PlayMode: PlaySequential}},
 	}})
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/status", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStatus(rr, req)
@@ -279,7 +279,7 @@ func TestHandlePlayRejectsMalformedRequests(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/play", strings.NewReader(tc.form))
+			req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/streams/play", strings.NewReader(tc.form))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			rr := httptest.NewRecorder()
 			a.handlePlay(rr, req)
@@ -300,7 +300,7 @@ func TestHandleRefreshRejectsUnknownProvider(t *testing.T) {
 		calls++
 		return RefreshStatus{}
 	}
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/refresh", strings.NewReader("provider_id=missing"))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/streams/refresh", strings.NewReader("provider_id=missing"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
@@ -325,7 +325,7 @@ func TestHandleRefreshRejectsUnknownProvider(t *testing.T) {
 func TestHandlePlayJSONReturnsStartResult(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	a.SetEnabled(true)
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/play", strings.NewReader("provider_id=mtv-rewind&channel_id=metal"))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/streams/play", strings.NewReader("provider_id=mtv-rewind&channel_id=metal"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
@@ -364,7 +364,7 @@ func TestHandleNextJSONReturnsStatus(t *testing.T) {
 		loopMode: loopSequential,
 	}
 	core.status.AdapterRef = queueAdapterRef(a.active, a.active.ItemToken)
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/next", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/streams/next", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleNext(rr, req)
@@ -385,7 +385,7 @@ func TestHandleNextJSONReturnsStatus(t *testing.T) {
 
 func TestHandleProvidersJSON(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/providers", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/providers", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleProviders(rr, req)
@@ -417,14 +417,14 @@ func assertProviderIDs(t *testing.T, got []ProviderStatusView, want ...string) {
 
 func TestHandlePanelReadsSelectionQuery(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
-	req := httptest.NewRequest(http.MethodGet, "/ui/adapter/streams/panel?provider_id=mtv-rewind&group_id=genres", nil)
+	req := httptest.NewRequest(http.MethodGet, "/old_ui/adapter/streams/panel?provider_id=mtv-rewind&group_id=genres", nil)
 	rr := httptest.NewRecorder()
 	a.handlePanel(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=`) {
+	if !strings.Contains(body, `hx-get="/old_ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=`) {
 		t.Fatalf("panel did not read provider selection: %s", body)
 	}
 }
@@ -433,7 +433,7 @@ func assertPanelSelectionPreserved(t *testing.T, body, providerID, groupID strin
 	t.Helper()
 	// panelURL emits provider_id before group_id; escAttr renders the
 	// query separator as &amp; in HTML attributes.
-	want := `hx-get="/ui/adapter/streams/panel?provider_id=` + providerID + `&amp;group_id=` + groupID + `"`
+	want := `hx-get="/old_ui/adapter/streams/panel?provider_id=` + providerID + `&amp;group_id=` + groupID + `"`
 	if !strings.Contains(body, want) {
 		t.Fatalf("selection polling URL missing %q: %s", want, body)
 	}
@@ -472,12 +472,12 @@ func TestHTMLRouteResponsesPreserveGuideSelection(t *testing.T) {
 		path    string
 		form    string
 	}{
-		{name: "refresh", handler: (*Adapter).handleRefresh, path: "/ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "play", handler: (*Adapter).handlePlay, path: "/ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
-		{name: "previous", handler: (*Adapter).handlePrevious, path: "/ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "next", handler: (*Adapter).handleNext, path: "/ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "replay", handler: (*Adapter).handleReplay, path: "/ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
-		{name: "stop", handler: (*Adapter).handleStop, path: "/ui/adapter/streams/stop", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "refresh", handler: (*Adapter).handleRefresh, path: "/old_ui/adapter/streams/refresh", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "play", handler: (*Adapter).handlePlay, path: "/old_ui/adapter/streams/play", form: "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres&channel_id=metal"},
+		{name: "previous", handler: (*Adapter).handlePrevious, path: "/old_ui/adapter/streams/previous", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "next", handler: (*Adapter).handleNext, path: "/old_ui/adapter/streams/next", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "replay", handler: (*Adapter).handleReplay, path: "/old_ui/adapter/streams/replay", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
+		{name: "stop", handler: (*Adapter).handleStop, path: "/old_ui/adapter/streams/stop", form: "guide_provider_id=mtv-rewind&guide_group_id=genres"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -506,14 +506,14 @@ func TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage(t *testing.T
 		{
 			name:    "bad play",
 			handler: a.handlePlay,
-			path:    "/ui/adapter/streams/play",
+			path:    "/old_ui/adapter/streams/play",
 			form:    "provider_id=mtv-rewind&guide_provider_id=mtv-rewind&guide_group_id=genres",
 			want:    "channel_id or item_id required",
 		},
 		{
 			name:    "unknown refresh target",
 			handler: a.handleRefresh,
-			path:    "/ui/adapter/streams/refresh",
+			path:    "/old_ui/adapter/streams/refresh",
 			form:    "provider_id=missing&guide_provider_id=mtv-rewind&guide_group_id=genres",
 			want:    "provider is not cataloged",
 		},
@@ -539,7 +539,7 @@ func TestHTMLRouteErrorsRenderSwappablePanelWithSelectionAndMessage(t *testing.T
 
 func TestHandlePlayWithoutGuideFieldsFallsBackToPlaybackProviderSelection(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/streams/play", strings.NewReader("provider_id=mtv-rewind&channel_id=metal"))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/streams/play", strings.NewReader("provider_id=mtv-rewind&channel_id=metal"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	a.handlePlay(rr, req)

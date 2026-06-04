@@ -3,7 +3,7 @@ package url
 import "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 
 // UIRoutes returns the adapter-owned HTTP routes. Mounted under
-// /ui/adapter/url/ by the UI server's RouteProvider scan
+// /old_ui/adapter/url/ by the UI server's RouteProvider scan
 // (internal/ui/server.go:138-153). POST and DELETE routes are
 // wrapped in csrfMiddleware by the mounter.
 //

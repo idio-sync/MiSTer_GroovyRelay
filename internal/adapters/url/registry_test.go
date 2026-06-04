@@ -49,7 +49,7 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 			continue
 		}
 		for _, r := range rp.UIRoutes() {
-			pattern := "/ui/adapter/" + listed.Name() + "/" + r.Path
+			pattern := "/old_ui/adapter/" + listed.Name() + "/" + r.Path
 			switch r.Method {
 			case "GET":
 				mux.HandleFunc("GET "+pattern, r.Handler)
@@ -68,7 +68,7 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 	// Sanity-check the GET /panel route is reachable via the mux.
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	resp, err := http.Get(srv.URL + "/ui/adapter/url/panel")
+	resp, err := http.Get(srv.URL + "/old_ui/adapter/url/panel")
 	if err != nil {
 		t.Fatalf("GET /panel: %v", err)
 	}

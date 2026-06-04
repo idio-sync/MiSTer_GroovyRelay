@@ -66,7 +66,7 @@ func TestPanel_RendersIdle(t *testing.T) {
 	if !strings.Contains(body, "Idle") {
 		t.Errorf("idle panel missing 'Idle' text: %s", body)
 	}
-	if strings.Contains(body, `hx-post="/ui/adapter/url/play"`) || strings.Contains(body, `name="url"`) {
+	if strings.Contains(body, `hx-post="/old_ui/adapter/url/play"`) || strings.Contains(body, `name="url"`) {
 		t.Errorf("URL panel should not render the page-local launch form: %s", body)
 	}
 }
@@ -362,7 +362,7 @@ func TestPanel_ScrubBarHiddenWhenDurationPositive(t *testing.T) {
 	a := newTestAdapter(t, fc)
 	a.markRunning("https://example.com/v.mp4")
 	body := renderForTest(t, a)
-	if strings.Contains(body, `type="range"`) || strings.Contains(body, `hx-post="/ui/adapter/url/seek"`) {
+	if strings.Contains(body, `type="range"`) || strings.Contains(body, `hx-post="/old_ui/adapter/url/seek"`) {
 		t.Errorf("URL panel should not render scrub controls: %s", body)
 	}
 }
@@ -402,7 +402,7 @@ func TestPanel_ForeignAdapterRef_StopButtonDisabled(t *testing.T) {
 	})
 	a := newTestAdapter(t, fc)
 	body := renderForTest(t, a)
-	if strings.Contains(body, `/ui/adapter/url/stop`) {
+	if strings.Contains(body, `/old_ui/adapter/url/stop`) {
 		t.Errorf("foreign AdapterRef should not render URL panel transport controls: %s", body)
 	}
 }
@@ -434,10 +434,10 @@ func TestPanel_HistoryListRendered(t *testing.T) {
 	if !strings.Contains(body, "a.example/1") || !strings.Contains(body, "b.example/2") {
 		t.Errorf("history list should render both URLs: %s", body)
 	}
-	if strings.Contains(body, `hx-post="/ui/adapter/url/history/play"`) || strings.Contains(body, ">Cast<") {
+	if strings.Contains(body, `hx-post="/old_ui/adapter/url/history/play"`) || strings.Contains(body, ">Cast<") {
 		t.Errorf("history list should not render page-local recast controls: %s", body)
 	}
-	if !strings.Contains(body, `hx-post="/ui/adapter/url/history/delete"`) {
+	if !strings.Contains(body, `hx-post="/old_ui/adapter/url/history/delete"`) {
 		t.Errorf("history delete button should hx-post to history/delete: %s", body)
 	}
 }
@@ -508,13 +508,13 @@ func TestURLPanelDoesNotRenderActiveTransportControls(t *testing.T) {
 	a := &Adapter{core: coreStub, history: LoadHistory("")}
 	html := a.renderPanel()
 	for _, forbidden := range []string{
-		"/ui/adapter/url/pause",
-		"/ui/adapter/url/resume",
-		"/ui/adapter/url/stop",
-		"/ui/adapter/url/replay",
-		"/ui/adapter/url/seek",
-		`hx-post="/ui/adapter/url/play"`,
-		`hx-post="/ui/adapter/url/history/play"`,
+		"/old_ui/adapter/url/pause",
+		"/old_ui/adapter/url/resume",
+		"/old_ui/adapter/url/stop",
+		"/old_ui/adapter/url/replay",
+		"/old_ui/adapter/url/seek",
+		`hx-post="/old_ui/adapter/url/play"`,
+		`hx-post="/old_ui/adapter/url/history/play"`,
 		`name="url"`,
 		">Play<",
 		">Cast<",

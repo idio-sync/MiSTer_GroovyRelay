@@ -12,7 +12,7 @@ import (
 func TestExtraPanelHTMLContainsStreamsPanel(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	html := string(a.ExtraPanelHTML())
-	for _, want := range []string{"streams-panel", "MTV Rewind", "Cartoon Rewind", "Toonami Aftermath", `hx-post="/ui/adapter/streams/play"`, `hx-post="/ui/adapter/streams/refresh"`} {
+	for _, want := range []string{"streams-panel", "MTV Rewind", "Cartoon Rewind", "Toonami Aftermath", `hx-post="/old_ui/adapter/streams/play"`, `hx-post="/old_ui/adapter/streams/refresh"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel missing %q: %s", want, html)
 		}
@@ -158,12 +158,12 @@ func TestStreamsPanelDoesNotRenderActiveTransportControls(t *testing.T) {
 	}
 	a.mu.Unlock()
 	html := a.renderPanel(panelSelectionRequest{})
-	for _, forbidden := range []string{"/ui/adapter/streams/previous", "/ui/adapter/streams/next", "/ui/adapter/streams/replay", "/ui/adapter/streams/stop"} {
+	for _, forbidden := range []string{"/old_ui/adapter/streams/previous", "/old_ui/adapter/streams/next", "/old_ui/adapter/streams/replay", "/old_ui/adapter/streams/stop"} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("streams panel still renders %q: %s", forbidden, html)
 		}
 	}
-	if !strings.Contains(html, "/ui/adapter/streams/refresh") {
+	if !strings.Contains(html, "/old_ui/adapter/streams/refresh") {
 		t.Fatalf("streams panel lost refresh control: %s", html)
 	}
 }
@@ -325,7 +325,7 @@ func TestRenderPanelPreservesSelectedProviderAndGroupInPollingURL(t *testing.T) 
 	}})
 
 	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", GroupID: "genres", ProviderExplicit: true, GroupExplicit: true})
-	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
+	if !strings.Contains(html, `hx-get="/old_ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
 		t.Fatalf("polling URL did not preserve selection: %s", html)
 	}
 	if !strings.Contains(html, `name="guide_group_id" value="genres"`) {
@@ -342,7 +342,7 @@ func TestRenderPanelErrorPreservesExplicitUnresolvedGroup(t *testing.T) {
 		GroupExplicit:    true,
 		ErrorMessage:     "provider is not cataloged",
 	})
-	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=submitted-missing-group"`) {
+	if !strings.Contains(html, `hx-get="/old_ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=submitted-missing-group"`) {
 		t.Fatalf("error panel should preserve explicit unresolved group: %s", html)
 	}
 }
@@ -350,7 +350,7 @@ func TestRenderPanelErrorPreservesExplicitUnresolvedGroup(t *testing.T) {
 func TestRenderPanelUnknownSelectionFallsBackDeterministically(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	html := a.renderPanel(panelSelectionRequest{ProviderID: "bogus", GroupID: "missing", ProviderExplicit: true, GroupExplicit: true})
-	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=cartoon-rewind`) {
+	if !strings.Contains(html, `hx-get="/old_ui/adapter/streams/panel?provider_id=cartoon-rewind`) {
 		t.Fatalf("bogus provider should fall back to first provider by status order: %s", html)
 	}
 }
@@ -372,7 +372,7 @@ func TestRenderPanelProviderOnlySelectionUsesActiveGroup(t *testing.T) {
 	a.active = &ActiveQueue{ProviderID: "mtv-rewind", ChannelID: "metal", Items: []StreamItem{{ID: "BBBBBBBBBBB"}}}
 
 	html := a.renderPanel(panelSelectionRequest{ProviderID: "mtv-rewind", ProviderExplicit: true})
-	if !strings.Contains(html, `hx-get="/ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
+	if !strings.Contains(html, `hx-get="/old_ui/adapter/streams/panel?provider_id=mtv-rewind&amp;group_id=genres"`) {
 		t.Fatalf("provider-only selection should resolve active group: %s", html)
 	}
 }

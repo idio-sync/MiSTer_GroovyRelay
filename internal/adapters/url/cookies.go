@@ -76,7 +76,7 @@ func saveCookies(path string, data []byte) (CookiesStat, error) {
 }
 
 // clearCookies removes the cookies file. Idempotent — missing file
-// returns nil. Used by DELETE /ui/adapter/url/cookies.
+// returns nil. Used by DELETE /old_ui/adapter/url/cookies.
 func clearCookies(path string) error {
 	err := os.Remove(path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
@@ -198,7 +198,7 @@ func (a *Adapter) respondCookiesError(w http.ResponseWriter, r *http.Request, co
 	})
 }
 
-// handleCookiesSet handles POST /ui/adapter/url/cookies. Reads the
+// handleCookiesSet handles POST /old_ui/adapter/url/cookies. Reads the
 // cookies field from a form-encoded or JSON body, validates lenient
 // Netscape format, atomic-writes to a.CookiesPath(). Mode 0600
 // best-effort. Returns 202 + JSON or HTML fragment depending on
@@ -239,7 +239,7 @@ func (a *Adapter) handleCookiesSet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCookiesClear handles DELETE /ui/adapter/url/cookies.
+// handleCookiesClear handles DELETE /old_ui/adapter/url/cookies.
 // Idempotent — missing file returns 200 just the same.
 func (a *Adapter) handleCookiesClear(w http.ResponseWriter, r *http.Request) {
 	if err := clearCookies(a.cookiesPath); err != nil {

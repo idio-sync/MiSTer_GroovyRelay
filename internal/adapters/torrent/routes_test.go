@@ -40,7 +40,7 @@ func TestUIRoutes(t *testing.T) {
 func TestHandlePlayMagnetUsesFormField(t *testing.T) {
 	core := &recordingCore{}
 	a := newStartedTestAdapter(t, startedTorrentConfig(), &fakeTorrentClient{}, core)
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/play", strings.NewReader("magnet=+magnet%3A%3Fxt%3Durn%3Abtih%3A0123456789abcdef0123456789abcdef01234567+"))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/torrent/play", strings.NewReader("magnet=+magnet%3A%3Fxt%3Durn%3Abtih%3A0123456789abcdef0123456789abcdef01234567+"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	a.handlePlay(rr, req)
@@ -57,7 +57,7 @@ func TestHandlePlayMagnetUsesFormField(t *testing.T) {
 
 func TestHandlePlayMagnetJSONReturnsTokenOnly(t *testing.T) {
 	a := newStartedTestAdapter(t, startedTorrentConfig(), &fakeTorrentClient{}, &recordingCore{})
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/play", strings.NewReader("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A0123456789abcdef0123456789abcdef01234567"))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/torrent/play", strings.NewReader("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A0123456789abcdef0123456789abcdef01234567"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestHandleUploadRejectsOversizedTorrent(t *testing.T) {
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/upload", &body)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/torrent/upload", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rr := httptest.NewRecorder()
 	a.handleUpload(rr, req)
@@ -110,7 +110,7 @@ func TestHandleUploadRejectsMissingTorrentFile(t *testing.T) {
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/upload", &body)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/torrent/upload", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
@@ -132,7 +132,7 @@ func TestHandleStopCallsCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/stop", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/torrent/stop", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStop(rr, req)
@@ -153,7 +153,7 @@ func TestHandleStopRejectsForeignActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/torrent/stop", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/torrent/stop", nil)
 	req.Header.Set("Accept", "application/json")
 	rr := httptest.NewRecorder()
 	a.handleStop(rr, req)

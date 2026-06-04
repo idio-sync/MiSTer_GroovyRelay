@@ -25,7 +25,7 @@ func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 	if !strings.HasSuffix(got, `</div>`) {
 		t.Errorf("ExtraPanelHTML missing closing tag; got: %s", got)
 	}
-	if !strings.Contains(got, `hx-post="/ui/adapter/jellyfin/link/start"`) {
+	if !strings.Contains(got, `hx-post="/old_ui/adapter/jellyfin/link/start"`) {
 		t.Errorf("idle ExtraPanelHTML should embed link form; got: %s", got)
 	}
 	if strings.Contains(got, `name="server_url"`) {
@@ -37,7 +37,7 @@ func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 	if !strings.Contains(got, "Linked as alice on sid-1") {
 		t.Errorf("linked ExtraPanelHTML missing identity; got: %s", got)
 	}
-	if !strings.Contains(got, `hx-post="/ui/adapter/jellyfin/unlink"`) {
+	if !strings.Contains(got, `hx-post="/old_ui/adapter/jellyfin/unlink"`) {
 		t.Errorf("linked ExtraPanelHTML missing unlink button; got: %s", got)
 	}
 
@@ -56,7 +56,7 @@ func TestExtraPanelHTML_WrapsLinkFragmentInTarget(t *testing.T) {
 func TestExtraPanelHTML_IdleWithoutServerURL_PromptsToSaveSettings(t *testing.T) {
 	a := New(nil, t.TempDir(), "dev-1", "", nil)
 	got := string(a.ExtraPanelHTML())
-	if strings.Contains(got, `hx-post="/ui/adapter/jellyfin/link/start"`) {
+	if strings.Contains(got, `hx-post="/old_ui/adapter/jellyfin/link/start"`) {
 		t.Errorf("link form should be suppressed without a saved Server URL; got: %s", got)
 	}
 	if !strings.Contains(got, "Server URL") {

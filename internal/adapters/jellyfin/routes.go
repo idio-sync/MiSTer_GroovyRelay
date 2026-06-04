@@ -8,7 +8,7 @@ import (
 )
 
 // UIRoutes returns the JF-specific HTTP routes mounted under
-// /ui/adapter/jellyfin/ by the UI server.
+// /old_ui/adapter/jellyfin/ by the UI server.
 func (a *Adapter) UIRoutes() []adapters.Route {
 	return []adapters.Route{
 		{Method: http.MethodPost, Path: "link/start", Handler: a.handleLinkStart},
@@ -19,7 +19,7 @@ func (a *Adapter) UIRoutes() []adapters.Route {
 }
 
 // handleStatusFragment renders the sidebar status badge fragment.
-// Mirrors plex's /ui/adapter/plex/status pattern. Used by htmx polls.
+// Mirrors plex's /old_ui/adapter/plex/status pattern. Used by htmx polls.
 func (a *Adapter) handleStatusFragment(w http.ResponseWriter, r *http.Request) {
 	st := a.Status()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

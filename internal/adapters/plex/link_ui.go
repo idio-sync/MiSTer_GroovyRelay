@@ -25,7 +25,7 @@ var linkTemplate = template.Must(template.New("link").Parse(`
 	<div>
 		<div class="status-line off">OFF · not linked</div>
 		<div class="help">To receive casts, link this bridge to your Plex account.</div>
-		<button class="btn ghost" hx-post="/ui/adapter/plex/link/start"
+		<button class="btn ghost" hx-post="/old_ui/adapter/plex/link/start"
 			hx-target="#plex-link-slot" hx-swap="outerHTML"
 			hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
 			Link Plex Account
@@ -36,7 +36,7 @@ var linkTemplate = template.Must(template.New("link").Parse(`
 
 {{define "pending"}}
 <div class="field" id="plex-link-slot"
-	hx-get="/ui/adapter/plex/link/status"
+	hx-get="/old_ui/adapter/plex/link/status"
 	hx-trigger="every 2s"
 	hx-target="#plex-link-slot"
 	hx-swap="outerHTML">
@@ -58,7 +58,7 @@ var linkTemplate = template.Must(template.New("link").Parse(`
 	<div>
 		<div class="status-line run">RUN · linked</div>
 		<div class="help">Token persists in {{.TokenPath}}.</div>
-		<button class="btn ghost" hx-post="/ui/adapter/plex/unlink"
+		<button class="btn ghost" hx-post="/old_ui/adapter/plex/unlink"
 			hx-target="#plex-link-slot" hx-swap="outerHTML"
 			hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
 			Unlink
@@ -73,7 +73,7 @@ var linkTemplate = template.Must(template.New("link").Parse(`
 	<div>
 		<div class="status-line err">ERR · link code expired</div>
 		<div class="help">The 4-character code was not entered at plex.tv within 15 minutes.</div>
-		<button class="btn ghost" hx-post="/ui/adapter/plex/link/start"
+		<button class="btn ghost" hx-post="/old_ui/adapter/plex/link/start"
 			hx-target="#plex-link-slot" hx-swap="outerHTML"
 			hx-headers='{"Sec-Fetch-Site":"same-origin"}'>
 			Try Again
@@ -131,7 +131,7 @@ func renderPending(p *pendingLink) string {
 }
 
 // UIRoutes implements adapters.RouteProvider so the UI server mounts
-// these under /ui/adapter/plex/<path>. Paths are relative; the UI
+// these under /old_ui/adapter/plex/<path>. Paths are relative; the UI
 // prepends the adapter prefix + wraps POST handlers in csrfMiddleware.
 func (a *Adapter) UIRoutes() []adapters.Route {
 	return []adapters.Route{

@@ -335,7 +335,7 @@ func renderNowStrip(b *strings.Builder, view StatusView, provider ProviderStatus
 		b.WriteString(`<div class="streams-kicker">Idle</div><div class="streams-now-line">Choose a channel to start playback.</div>`)
 	}
 	b.WriteString(`</div><div class="streams-now-controls">`)
-	button(b, "/ui/adapter/streams/refresh", "Refresh", false, selection)
+	button(b, "/old_ui/adapter/streams/refresh", "Refresh", false, selection)
 	b.WriteString(`</div></div>`)
 }
 
@@ -346,7 +346,7 @@ func renderChannelCard(b *strings.Builder, provider ProviderStatusView, ch Chann
 		tunedClass = " tuned"
 	}
 	fmt.Fprintf(b,
-		`<form class="streams-channel-card%s" hx-post="/ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`,
+		`<form class="streams-channel-card%s" hx-post="/old_ui/adapter/streams/play" hx-target="#streams-panel" hx-swap="outerHTML">`,
 		tunedClass)
 	selectionInputs(b, selection)
 	fmt.Fprintf(b,
@@ -489,9 +489,9 @@ func panelURL(selection resolvedPanelSelection) string {
 		parts = append(parts, "group_id="+url.QueryEscape(selection.GroupID))
 	}
 	if len(parts) != 0 {
-		return "/ui/adapter/streams/panel?" + strings.Join(parts, "&")
+		return "/old_ui/adapter/streams/panel?" + strings.Join(parts, "&")
 	}
-	return "/ui/adapter/streams/panel"
+	return "/old_ui/adapter/streams/panel"
 }
 
 func groupedChannels(provider ProviderStatusView) []groupedChannelView {

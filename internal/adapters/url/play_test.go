@@ -723,7 +723,7 @@ func TestPlay_ModeAuto_HostInAllowlist_RoutesToYtdlp(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=auto")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -749,7 +749,7 @@ func TestPlay_ModeAuto_HostNotInAllowlist_GoesDirect(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fvideo.mp4&mode=auto")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -824,7 +824,7 @@ func TestURLDirectM3U8OffBypassesBuffer(t *testing.T) {
 	}
 
 	body := strings.NewReader("url=https%3A%2F%2Fpublic.example%2Flive.m3u8&mode=direct&hls_buffer=off")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -871,7 +871,7 @@ func TestPlay_ModeYtdlp_AlwaysRoutesThroughResolver(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fpage&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -903,7 +903,7 @@ func TestPlay_ModeDirect_NeverRoutesThroughResolver(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=direct")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -922,7 +922,7 @@ func TestPlay_ModeYtdlp_WithYtdlpDisabled_Returns400(t *testing.T) {
 	a.cfg.YtdlpEnabled = false
 
 	body := strings.NewReader("url=https%3A%2F%2Fexample.com&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -937,7 +937,7 @@ func TestPlay_UnknownMode_Returns400(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fexample.com&mode=bogus")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -955,7 +955,7 @@ func TestPlay_ModeAbsent_DefaultsToAuto(t *testing.T) {
 
 	// Form has no mode field; should default to auto.
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fxyz")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -978,7 +978,7 @@ func TestPlay_SuccessfulResolve_WritesTitleToHistory(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=auto")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -1003,7 +1003,7 @@ func TestPlay_ResolverError_DoesNotWriteTitle(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fdead&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -1023,7 +1023,7 @@ func TestPlay_DirectMode_DoesNotWriteTitle(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fraw.mp4&mode=direct")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -1045,7 +1045,7 @@ func TestPlay_ResolverError_Returns500(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fdead&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// IMPORTANT: do NOT set HX-Request. The body assertion below
 	// relies on the JSON branch of respondError, which echoes the
@@ -1072,7 +1072,7 @@ func TestPlay_JSONResponse_IncludesResolvedVia(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	// JSON request, mode=auto, allowlisted host.
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play",
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play",
 		strings.NewReader(`{"url":"https://youtu.be/abc","mode":"auto"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1102,7 +1102,7 @@ func TestPlay_ModeAuto_StripsPortFromHost(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 
 	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%3A443%2Fabc&mode=auto")
-	req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	a.handlePlay(w, req)
@@ -1125,7 +1125,7 @@ func TestPlay_AcceptsUppercaseMode(t *testing.T) {
 			}
 			a := newAdapterWithResolver(t, fr)
 			body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=" + mode)
-			req := httptest.NewRequest("POST", "/ui/adapter/url/play", body)
+			req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
 			a.handlePlay(w, req)

@@ -212,7 +212,7 @@ type Validator interface {
 // without a link concept (URL-input, future DLNA) don't implement it.
 //
 // Adapters implementing LinkAware mount their own link routes under
-// /ui/adapter/<name>/link/* and render their own state-machine HTML —
+// /old_ui/adapter/<name>/link/* and render their own state-machine HTML —
 // different adapters have meaningfully different link semantics, so
 // the shared UI layer doesn't try to model them.
 //
@@ -260,7 +260,7 @@ type PublicRouteProvider interface {
 type Handler = func(http.ResponseWriter, *http.Request)
 
 // Route is a single HTTP route owned by an adapter. Path is relative
-// to the adapter's mount point under /ui/adapter/<name>/.
+// to the adapter's mount point under /old_ui/adapter/<name>/.
 type Route struct {
 	Method  string // "GET", "POST", "PUT", "PATCH", or "DELETE"
 	Path    string // relative, e.g., "link/start"

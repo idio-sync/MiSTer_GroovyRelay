@@ -16,7 +16,7 @@ func TestLinkStatus_PendingFragment(t *testing.T) {
 	a := &Adapter{}
 	a.pending = newPendingLink("ABCD", 12345, time.Now().Add(14*time.Minute+47*time.Second))
 
-	req := httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/plex/link/status", nil)
 	rw := httptest.NewRecorder()
 	a.handleLinkStatus(rw, req)
 
@@ -41,7 +41,7 @@ func TestLinkStatus_LinkedFragment(t *testing.T) {
 	}
 	a.plexCfg = DefaultConfig()
 
-	req := httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/plex/link/status", nil)
 	rw := httptest.NewRecorder()
 	a.handleLinkStatus(rw, req)
 
@@ -57,7 +57,7 @@ func TestLinkStatus_ExpiredFragment(t *testing.T) {
 	a := &Adapter{}
 	a.pending = newPendingLink("ABCD", 12345, time.Now().Add(-1*time.Second))
 
-	req := httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil)
+	req := httptest.NewRequest("GET", "/old_ui/adapter/plex/link/status", nil)
 	rw := httptest.NewRecorder()
 	a.handleLinkStatus(rw, req)
 
@@ -103,7 +103,7 @@ func TestLinkUnlink_CallsRevokeBeforeLocalCleanup(t *testing.T) {
 	}
 	a.plexCfg = DefaultConfig()
 
-	req := httptest.NewRequest("POST", "/ui/adapter/plex/unlink", strings.NewReader(""))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/plex/unlink", strings.NewReader(""))
 	rw := httptest.NewRecorder()
 	a.handleUnlink(rw, req)
 
@@ -155,7 +155,7 @@ func TestLinkUnlink_RevokeFailureStillCleansUpLocally(t *testing.T) {
 	}
 	a.plexCfg = DefaultConfig()
 
-	req := httptest.NewRequest("POST", "/ui/adapter/plex/unlink", strings.NewReader(""))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/plex/unlink", strings.NewReader(""))
 	rw := httptest.NewRecorder()
 	a.handleUnlink(rw, req)
 
@@ -178,7 +178,7 @@ func TestHandleLinkStatus_UnlinkedHTMLUnchanged(t *testing.T) {
 	a := &Adapter{}
 	a.cfg.TokenStore = &StoredData{}
 	rec := httptest.NewRecorder()
-	a.handleLinkStatus(rec, httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil))
+	a.handleLinkStatus(rec, httptest.NewRequest("GET", "/old_ui/adapter/plex/link/status", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -192,7 +192,7 @@ func TestHandleLinkStatus_LinkedHTMLUnchanged(t *testing.T) {
 	a := &Adapter{}
 	a.cfg.TokenStore = &StoredData{AuthToken: "tok"}
 	rec := httptest.NewRecorder()
-	a.handleLinkStatus(rec, httptest.NewRequest("GET", "/ui/adapter/plex/link/status", nil))
+	a.handleLinkStatus(rec, httptest.NewRequest("GET", "/old_ui/adapter/plex/link/status", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -226,7 +226,7 @@ func TestLinkUnlink_ClearsTokenAndRenames(t *testing.T) {
 	}
 	a.plexCfg = DefaultConfig()
 
-	req := httptest.NewRequest("POST", "/ui/adapter/plex/unlink", strings.NewReader(""))
+	req := httptest.NewRequest("POST", "/old_ui/adapter/plex/unlink", strings.NewReader(""))
 	rw := httptest.NewRecorder()
 	a.handleUnlink(rw, req)
 

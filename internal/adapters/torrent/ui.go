@@ -46,7 +46,7 @@ func renderLiveStatus(view statusView) string {
 	var b strings.Builder
 	pollAttrs := ""
 	if view.ActiveToken != "" {
-		pollAttrs = ` hx-get="/ui/adapter/torrent/live" hx-trigger="every 5s" hx-swap="outerHTML"`
+		pollAttrs = ` hx-get="/old_ui/adapter/torrent/live" hx-trigger="every 5s" hx-swap="outerHTML"`
 	}
 	fmt.Fprintf(&b, `<div id="torrent-live"%s>`, pollAttrs)
 	if view.ActiveTitle != "" {

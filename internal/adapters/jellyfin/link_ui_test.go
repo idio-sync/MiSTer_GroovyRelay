@@ -31,7 +31,7 @@ func TestLinkUI_StartSuccess_PersistsTokenAndReturnsLinkedFragment(t *testing.T)
 	form := url.Values{}
 	form.Set("username", "alice")
 	form.Set("password", "s3cret")
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 
@@ -84,7 +84,7 @@ func TestLinkUI_StartBadCredentials_NoDiskWrite(t *testing.T) {
 	form := url.Values{}
 	form.Set("username", "alice")
 	form.Set("password", "wrong")
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 
@@ -106,7 +106,7 @@ func TestLinkUI_StartRejectsMissingServerURL(t *testing.T) {
 	form := url.Values{}
 	form.Set("username", "alice")
 	form.Set("password", "s3cret")
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	a.handleLinkStart(rr, req)
@@ -125,7 +125,7 @@ func TestLinkUI_StartRejectsEmptyCredentials(t *testing.T) {
 	form := url.Values{}
 	form.Set("username", "")
 	form.Set("password", "")
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	a.handleLinkStart(rr, req)
@@ -145,7 +145,7 @@ func TestLinkUI_Unlink_DeletesToken(t *testing.T) {
 	}
 	a.link.SetLinked("alice", "sid-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/unlink", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/unlink", nil)
 	rr := httptest.NewRecorder()
 	a.handleUnlink(rr, req)
 
@@ -191,7 +191,7 @@ func TestLinkUI_Unlink_CallsServerLogout(t *testing.T) {
 	}
 	a.link.SetLinked("alice", "sid-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/unlink", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/unlink", nil)
 	rr := httptest.NewRecorder()
 	a.handleUnlink(rr, req)
 
@@ -232,7 +232,7 @@ func TestLinkUI_Unlink_LocalCleanupSurvivesServerError(t *testing.T) {
 	}
 	a.link.SetLinked("alice", "sid-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/unlink", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/unlink", nil)
 	rr := httptest.NewRecorder()
 	a.handleUnlink(rr, req)
 
@@ -255,7 +255,7 @@ func TestLinkUI_Unlink_StopsAdapter(t *testing.T) {
 	a := newLinkTestAdapter(t, "0.1.0")
 	a.setState(adapters.StateRunning, "")
 
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/unlink", nil)
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/unlink", nil)
 	rr := httptest.NewRecorder()
 	a.handleUnlink(rr, req)
 
@@ -273,7 +273,7 @@ func TestJFHandleUnlink_FragmentUnchanged(t *testing.T) {
 	a := newSnapshotTestAdapter(t, "http://jf.local:8096")
 	_ = SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserName: "jake", ServerID: "s", ServerURL: "http://jf.local:8096"})
 	rec := httptest.NewRecorder()
-	a.handleUnlink(rec, httptest.NewRequest("POST", "/ui/adapter/jellyfin/unlink", nil))
+	a.handleUnlink(rec, httptest.NewRequest("POST", "/old_ui/adapter/jellyfin/unlink", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, "Account") {
 		t.Errorf("unlink fragment changed:\n%s", body)
@@ -339,7 +339,7 @@ func TestLinkUI_StartSuccess_Enabled_StartsAdapter(t *testing.T) {
 	form := url.Values{}
 	form.Set("username", "alice")
 	form.Set("password", "s3cret")
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 
@@ -384,7 +384,7 @@ func TestLinkUI_StartSuccess_Disabled_DoesNotAutoStart(t *testing.T) {
 	form := url.Values{}
 	form.Set("username", "alice")
 	form.Set("password", "s3cret")
-	req := httptest.NewRequest(http.MethodPost, "/ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/old_ui/adapter/jellyfin/link/start", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 

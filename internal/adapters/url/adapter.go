@@ -340,8 +340,8 @@ func (a *Adapter) Status() adapters.Status {
 	}
 }
 
-// SetEnabled implements ui.EnableSetter. The toggle handler at
-// internal/ui/adapter.go:handleAdapterToggle calls this in sync with
+// SetEnabled implements ui.EnableSetter. The toggle handler
+// (ui.Server handleAdapterToggle) calls this in sync with
 // Start/Stop. Without it the toggle endpoint returns 500.
 func (a *Adapter) SetEnabled(v bool) {
 	a.mu.Lock()
