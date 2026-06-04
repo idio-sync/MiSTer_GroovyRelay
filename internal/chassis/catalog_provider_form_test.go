@@ -12,7 +12,7 @@ import (
 
 func TestHandleCatalogProviderForm_ReturnsAuthoringJSON(t *testing.T) {
 	t.Parallel()
-	v := formViewer{form: adapters.UserProviderForm{
+	v := catalogProviderFormViewer{form: adapters.UserProviderForm{
 		ID: "user:f1-tv", DisplayName: "F1 TV", BadgeLabel: "F1", BadgeColor: "amber",
 		Groups: []adapters.UserGroupForm{{ID: "races", Name: "Races", Order: 0}},
 		Channels: []adapters.UserChannelForm{
@@ -44,7 +44,7 @@ func TestHandleCatalogProviderForm_ReturnsAuthoringJSON(t *testing.T) {
 
 func TestHandleCatalogProviderForm_NotFound(t *testing.T) {
 	t.Parallel()
-	s, err := New(Config{Version: "t", StartedAt: time.Now(), UserProviderViewer: formViewer{}})
+	s, err := New(Config{Version: "t", StartedAt: time.Now(), UserProviderViewer: catalogProviderFormViewer{}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestHandleCatalogProviderForm_NotFound(t *testing.T) {
 
 func TestCatalogProviderFormRoute_MountedAndReadGuarded(t *testing.T) {
 	t.Parallel()
-	v := formViewer{form: adapters.UserProviderForm{ID: "user:f1-tv", DisplayName: "F1 TV", BadgeLabel: "F1", BadgeColor: "amber"}}
+	v := catalogProviderFormViewer{form: adapters.UserProviderForm{ID: "user:f1-tv", DisplayName: "F1 TV", BadgeLabel: "F1", BadgeColor: "amber"}}
 	s, err := New(Config{Version: "t", StartedAt: time.Now(), UserProviderViewer: v})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -67,7 +67,7 @@ func TestCatalogProviderFormRoute_MountedAndReadGuarded(t *testing.T) {
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/ui/catalog/provider/user:f1-tv", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/ui/catalog/provider/user:f1-tv", nil)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -75,23 +75,46 @@ func TestCatalogProviderFormRoute_MountedAndReadGuarded(t *testing.T) {
 		t.Fatalf("same-origin status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/ui/catalog/provider/user:f1-tv", nil)
+	req = httptest.NewRequest(http.MethodGet, "http://example.com/ui/catalog/provider/user:f1-tv", nil)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-site status = %d, want 403", rec.Code)
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com/ui/catalog/provider/user:f1-tv", nil)
+	req.Header.Set("Origin", "http://example.com")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fallback origin status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com/ui/catalog/provider/user:f1-tv", nil)
+	req.Header.Set("Referer", "http://example.com/ui/catalog")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fallback referer status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com/ui/catalog/provider/user:f1-tv", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("fallback missing headers status = %d, want 403", rec.Code)
+	}
 }
 
-type formViewer struct {
+type catalogProviderFormViewer struct {
 	form adapters.UserProviderForm
 }
 
-func (v formViewer) UserProviderForm(id string) (adapters.UserProviderForm, bool) {
+func (v catalogProviderFormViewer) UserProviderForm(id string) (adapters.UserProviderForm, bool) {
 	if v.form.ID == id {
 		return v.form, true
 	}
 	return adapters.UserProviderForm{}, false
 }
-func (formViewer) UserProviderStatuses() []adapters.UserProviderStatus { return nil }
+func (catalogProviderFormViewer) UserProviderStatuses() []adapters.UserProviderStatus { return nil }
