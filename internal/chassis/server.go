@@ -93,6 +93,11 @@ type Config struct {
 	// (spec §10). Injected from main.go (it owns the process ctx + registry).
 	// Nil in tests that don't exercise auto-enable.
 	EnsureAdapterStarted func(name string) error
+	// UserProviderViewer backs the ✎ edit form read (GET …/provider/{id}) and
+	// the providerStatus SSE chips. Read-only companion to UserProviderEditor;
+	// interface-only, injected by type assertion in main.go. Nil in tests that
+	// don't exercise the form read.
+	UserProviderViewer adapters.UserProviderViewer
 
 	// SourceAvailabilityViewers: every adapter that implements the
 	// interface, in registration order. main.go assembles the slice
@@ -174,6 +179,7 @@ type Server struct {
 	streamsCaster        adapters.StreamsCaster
 	presetEditor         adapters.PresetEditor
 	userProviderEditor   adapters.UserProviderEditor
+	userProviderViewer   adapters.UserProviderViewer
 	ensureAdapterStarted func(name string) error
 	sourceViewers        []adapters.SourceAvailabilityViewer
 
@@ -242,6 +248,7 @@ func New(cfg Config) (*Server, error) {
 		streamsCaster:        cfg.StreamsCaster,
 		presetEditor:         cfg.PresetEditor,
 		userProviderEditor:   cfg.UserProviderEditor,
+		userProviderViewer:   cfg.UserProviderViewer,
 		ensureAdapterStarted: cfg.EnsureAdapterStarted,
 		sourceViewers:        cfg.SourceAvailabilityViewers,
 		cache:                &snapshotCache{},

@@ -100,6 +100,25 @@ func TestNew_ReturnsServerWithValidConfig(t *testing.T) {
 	}
 }
 
+func TestNew_WiresUserProviderViewer(t *testing.T) {
+	t.Parallel()
+	v := stubUserProviderViewer{}
+	s, err := New(Config{Version: "t", StartedAt: time.Now(), UserProviderViewer: v})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.userProviderViewer == nil {
+		t.Fatal("userProviderViewer not wired")
+	}
+}
+
+type stubUserProviderViewer struct{}
+
+func (stubUserProviderViewer) UserProviderForm(string) (adapters.UserProviderForm, bool) {
+	return adapters.UserProviderForm{}, false
+}
+func (stubUserProviderViewer) UserProviderStatuses() []adapters.UserProviderStatus { return nil }
+
 func TestServer_StoresVisualizerViewerAndSaverFromConfig(t *testing.T) {
 	t.Parallel()
 	cfg := nonZeroConfig()
