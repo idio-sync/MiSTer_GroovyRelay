@@ -363,6 +363,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("DELETE /ui/catalog/provider/{id}", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderDelete)))
 	mux.Handle("POST /ui/catalog/provider/{id}/reorder", requireSameOrigin(http.HandlerFunc(s.handleCatalogProviderReorder)))
 	mux.Handle("POST /ui/catalog/channel/verify", requireSameOrigin(http.HandlerFunc(s.handleCatalogChannelVerify)))
+	mux.Handle("GET /ui/catalog/provider/{id}", requireSameOriginRead(http.HandlerFunc(s.handleCatalogProviderForm)))
 	mux.HandleFunc("GET /ui/setup/status", s.handleSetupStatus)
 	mux.Handle("POST /ui/setup/finish", requireSameOrigin(http.HandlerFunc(s.handleSetupFinish)))
 	mux.Handle("POST /ui/settings/bridge",
