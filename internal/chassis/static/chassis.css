@@ -4860,6 +4860,12 @@ body.receiver .catalog-provider-tabs {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
+body.receiver .catalog-provider-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 3px;
+}
+
 body.receiver .catalog-provider-tab {
   position: relative;
   display: inline-flex;
@@ -5078,13 +5084,26 @@ body.receiver .catalog-form .cf-footer {
 body.receiver .catalog-form .cf-channel[data-dragging="source"] { opacity: 0.4; }
 body.receiver .catalog-form .cf-channel.drop-target { outline: 1px dashed var(--vfd-dim); }
 
-body.receiver .catalog-provider-tab .cf-pencil {
-  margin-left: 4px;
-  opacity: 0.6;
+body.receiver .catalog-provider-wrap .cf-pencil {
+  width: 30px;
+  padding: 0;
+  background: linear-gradient(180deg, #2f3034 0%, #191a1d 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.42);
+  color: var(--vfd-dim);
   cursor: pointer;
+  font: 700 13px Inter, sans-serif;
+  line-height: 1;
+  opacity: 0.74;
 }
 
-body.receiver .catalog-provider-tab .cf-pencil:hover { opacity: 1; }
+body.receiver .catalog-provider-wrap .cf-pencil:hover {
+  color: var(--lock-amber, #d99340);
+  opacity: 1;
+}
 
 body.receiver .catalog-provider-tab.cf-new {
   border-style: dashed;

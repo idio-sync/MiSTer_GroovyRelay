@@ -5,16 +5,18 @@
     <div class="catalog-provider-tabs">
       <span class="catalog-tab-indicator" id="catalog-tab-indicator"></span>
       {{- range .Providers -}}
-      <button class="catalog-provider-tab{{if eq .ID $.ActiveProviderID}} active{{end}}"
-              type="button"
-              data-provider="{{.ID}}">
-        <span class="ic {{.BadgeClass}}">{{.BadgeLabel}}</span>
-        {{.DisplayName}}
-        <span class="ch-count">{{.ChCount}}</span>
+      <div class="catalog-provider-wrap">
+        <button class="catalog-provider-tab{{if eq .ID $.ActiveProviderID}} active{{end}}"
+                type="button"
+                data-provider="{{.ID}}">
+          <span class="ic {{.BadgeClass}}">{{.BadgeLabel}}</span>
+          {{.DisplayName}}
+          <span class="ch-count">{{.ChCount}}</span>
+        </button>
         {{- if hasPrefix .ID "user:" -}}
-        <span class="cf-pencil" data-edit-provider="{{.ID}}" role="button" tabindex="0" title="Edit provider">&#9998;</span>
+        <button class="cf-pencil" type="button" data-edit-provider="{{.ID}}" title="Edit provider" aria-label="Edit {{.DisplayName}}">&#9998;</button>
         {{- end -}}
-      </button>
+      </div>
       {{- end -}}
       <button class="catalog-provider-tab cf-new" type="button" id="catalog-provider-new" title="New provider">
         <span class="ic">&#43;</span> New

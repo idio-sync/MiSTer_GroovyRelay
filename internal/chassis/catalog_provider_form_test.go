@@ -37,6 +37,24 @@ func TestCatalogDrawer_RendersUserAffordances(t *testing.T) {
 	if strings.Contains(out, `data-edit-provider="mtv-rewind"`) {
 		t.Error("bundled provider tab must NOT have an edit affordance")
 	}
+	if !strings.Contains(out, `<button class="cf-pencil" type="button" data-edit-provider="user:mix"`) {
+		t.Error("edit affordance must render as a sibling button")
+	}
+	providerAt := strings.Index(out, `data-provider="user:mix"`)
+	if providerAt < 0 {
+		t.Fatal("user provider tab missing")
+	}
+	closeAt := strings.Index(out[providerAt:], `</button>`)
+	if closeAt < 0 {
+		t.Fatal("user provider tab closing button missing")
+	}
+	editAt := strings.Index(out[providerAt:], `data-edit-provider="user:mix"`)
+	if editAt < 0 {
+		t.Fatal("user provider edit affordance missing")
+	}
+	if editAt < closeAt {
+		t.Error("edit affordance must be outside the provider tab button")
+	}
 	if !strings.Contains(out, "catalog-provider-new") {
 		t.Error("missing New provider tab")
 	}
