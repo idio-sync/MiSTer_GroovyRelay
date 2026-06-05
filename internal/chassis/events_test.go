@@ -1113,42 +1113,106 @@ func TestHandleEvents_InitialSnapshotIncludesVolume(t *testing.T) {
 }
 
 func TestHandleEvents_EmitsVolumeWhenLevelOrMuteChanged(t *testing.T) {
-	t.Parallel()
-	vv := &mutableVolumeViewer{volume: 40}
-	mv := &mutableMuteViewer{}
-	cfg := nonZeroConfig()
-	cfg.VolumeViewer = vv
-	cfg.MuteViewer = mv
-	s, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	tests := []struct {
+		name   string
+		mutate func(*mutableVolumeViewer, *mutableMuteViewer)
+		want   volumeEnvelope
+	}{
+		{
+			name: "level",
+			mutate: func(vv *mutableVolumeViewer, _ *mutableMuteViewer) {
+				vv.set(41)
+			},
+			want: volumeEnvelope{OutputVolume: 41, OutputMuted: false},
+		},
+		{
+			name: "mute",
+			mutate: func(_ *mutableVolumeViewer, mv *mutableMuteViewer) {
+				mv.set(true)
+			},
+			want: volumeEnvelope{OutputVolume: 40, OutputMuted: true},
+		},
 	}
-	t.Cleanup(func() { _ = s.Close() })
-	s.Mount(http.NewServeMux())
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vv := &mutableVolumeViewer{volume: 40}
+			mv := &mutableMuteViewer{}
+			cfg := nonZeroConfig()
+			cfg.VolumeViewer = vv
+			cfg.MuteViewer = mv
+			s, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			s.Mount(http.NewServeMux())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	w := newFlushRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		vv.set(41)
-		time.Sleep(150 * time.Millisecond)
-		mv.set(true)
-		time.Sleep(350 * time.Millisecond)
-		cancel()
-	}()
-	s.handleEvents(w, req)
-	body := w.Body.String()
+			ctx, cancel := context.WithCancel(context.Background())
+			w := newFlushRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
+			go func() {
+				waitForSSEFragment(w, "event: volume\n", 500*time.Millisecond)
+				tc.mutate(vv, mv)
+				time.Sleep(3*chassisTickInterval + 50*time.Millisecond)
+				cancel()
+			}()
+			s.handleEvents(w, req)
+			events := volumeEventsFromSSE(t, w.Body.String())
 
-	if got := strings.Count(body, "event: volume\n"); got < 3 {
-		t.Fatalf("volume event count = %d, want initial plus level and mute changes; body:\n%s", got, body)
+			if len(events) < 2 {
+				t.Fatalf("volume event count = %d, want initial plus changed event; body:\n%s", len(events), w.Body.String())
+			}
+			if events[0] != (volumeEnvelope{OutputVolume: 40, OutputMuted: false}) {
+				t.Fatalf("initial volume event = %+v, want outputVolume=40/outputMuted=false; body:\n%s", events[0], w.Body.String())
+			}
+			if !volumeEventsContain(events[1:], tc.want) {
+				t.Fatalf("changed volume events = %+v, want %+v; body:\n%s", events[1:], tc.want, w.Body.String())
+			}
+		})
 	}
-	if !strings.Contains(body, `"outputVolume":40`) || !strings.Contains(body, `"outputVolume":41`) {
-		t.Fatalf("SSE stream missing initial/changed volume payloads:\n%s", body)
+}
+
+func waitForSSEFragment(w *flushRecorder, fragment string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(w.BodyString(), fragment) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if !strings.Contains(body, `"outputMuted":true`) {
-		t.Fatalf("SSE stream missing changed mute payload:\n%s", body)
+}
+
+func volumeEventsFromSSE(t *testing.T, body string) []volumeEnvelope {
+	t.Helper()
+	var events []volumeEnvelope
+	for _, record := range strings.Split(body, "\n\n") {
+		if !strings.HasPrefix(record, "event: volume\n") {
+			continue
+		}
+		for _, line := range strings.Split(record, "\n") {
+			data, ok := strings.CutPrefix(line, "data: ")
+			if !ok {
+				continue
+			}
+			var event volumeEnvelope
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				t.Fatalf("unmarshal volume event %q: %v", data, err)
+			}
+			events = append(events, event)
+		}
 	}
+	return events
+}
+
+func volumeEventsContain(events []volumeEnvelope, want volumeEnvelope) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
