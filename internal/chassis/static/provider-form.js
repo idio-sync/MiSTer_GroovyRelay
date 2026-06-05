@@ -319,6 +319,48 @@
     if (row._verify) row._verify.disabled = false;
   }
 
+  function statusChipLabel(status) {
+    const stateName = status && status.state;
+    if (stateName === 'error') return 'X ERROR';
+    if (stateName === 'pending') return 'ENUMERATING...';
+    const count = Number(status && status.itemCount);
+    return (Number.isFinite(count) && count > 0 ? count : 0) + ' VIDEOS';
+  }
+
+  function setEnumChip(row, status) {
+    if (!row) return;
+    let chip = row._enumChip;
+    if (!chip) {
+      chip = mk('span', 'cf-chip cf-enum-chip');
+      row._enumChip = chip;
+      row.appendChild(chip);
+    }
+    chip.hidden = false;
+    chip.textContent = statusChipLabel(status);
+    chip.classList.toggle('pending', status && status.state === 'pending');
+    chip.classList.toggle('ok', status && status.state === 'ready');
+    chip.classList.toggle('err', status && status.state === 'error');
+  }
+
+  function applyProviderStatus(payload) {
+    if (!payload || !state.id || payload.provider !== state.id) return;
+    const form = byID('catalog-form');
+    if (form && form.getAttribute('aria-hidden') === 'true') return;
+    const host = byID('cf-channels');
+    if (!host || !Array.isArray(payload.channels)) return;
+
+    const byChannel = new Map();
+    payload.channels.forEach((status) => {
+      if (status && status.channel) byChannel.set(status.channel, status);
+    });
+    kids(host).forEach((row) => {
+      if (!row || !row.dataset || row.dataset.kind !== 'playlist') return;
+      const status = byChannel.get(row.dataset.channelId || '');
+      if (!status) return;
+      setEnumChip(row, status);
+    });
+  }
+
   async function responseJSON(resp) {
     try {
       return await resp.json();
@@ -835,6 +877,18 @@
     applyPresetPayload(payload);
   }
 
+  function onProviderStatus(ev) {
+    let payload = ev || {};
+    if (ev && typeof ev.data === 'string') {
+      try {
+        payload = JSON.parse(ev.data);
+      } catch (_) {
+        return;
+      }
+    }
+    applyProviderStatus(payload);
+  }
+
   function anyStarredChannel() {
     if (!state.id) return false;
     const prefix = state.id + ':';
@@ -886,6 +940,7 @@
     const events = window.Chassis && window.Chassis.events;
     if (events && typeof events.subscribe === 'function') {
       events.subscribe('presets', onPresets);
+      events.subscribe('providerStatus', onProviderStatus);
     }
   }
 
@@ -997,6 +1052,8 @@
     _buildChannelRow: buildChannelRow,
     _setRowURL: setRowURL,
     _verifyRow: verifyRow,
+    _statusChipLabel: statusChipLabel,
+    _applyProviderStatus: applyProviderStatus,
     _state: state,
     _palette: palette,
   };

@@ -667,6 +667,82 @@ test('_verifyRow renders DIRECT chip for direct result', async () => {
   assert.equal(row._verifyChip.textContent, '✓ DIRECT');
 });
 
+test('_statusChipLabel maps providerStatus state and count to enum chip text', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  assert.equal(api._statusChipLabel({ state: 'pending', itemCount: 0 }), 'ENUMERATING...');
+  assert.equal(api._statusChipLabel({ state: 'ready', itemCount: 12 }), '12 VIDEOS');
+  assert.equal(api._statusChipLabel({ state: 'error', itemCount: 0 }), 'X ERROR');
+});
+
+test('provider-form subscribes to providerStatus and paints enum chips on matching playlist rows', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    badgeLabel: 'MX',
+    badgeColor: 'teal',
+    groups: [],
+    channels: [
+      { id: 'list', name: 'List', url: 'https://www.youtube.com/watch?v=abc&list=PL1', kind: 'playlist', playMode: 'sequential', groupId: '', order: 0 },
+    ],
+  });
+
+  assert.equal((h.eventHandlers.get('providerStatus') || []).length, 1);
+  h.eventHandlers.get('providerStatus')[0]({ data: 'not json' });
+  h.emitEvent('providerStatus', { provider: 'user:mix', channels: [{ channel: 'list', state: 'ready', itemCount: 9 }] });
+
+  const row = h.channels.children[0];
+  assert.ok(row._enumChip);
+  assert.equal(row._enumChip.classList.contains('cf-enum-chip'), true);
+  assert.equal(row._enumChip.classList.contains('ok'), true);
+  assert.equal(row._enumChip.classList.contains('pending'), false);
+  assert.equal(row._enumChip.classList.contains('err'), false);
+  assert.equal(row._enumChip.textContent, '9 VIDEOS');
+
+  h.emitEvent('providerStatus', { provider: 'user:mix', channels: [{ channel: 'list', state: 'pending', itemCount: 0 }] });
+
+  assert.equal(row._enumChip.classList.contains('pending'), true);
+  assert.equal(row._enumChip.classList.contains('ok'), false);
+  assert.equal(row._enumChip.textContent, 'ENUMERATING...');
+});
+
+test('providerStatus for another provider or non-playlist rows does not paint enum chips', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    badgeLabel: 'MX',
+    badgeColor: 'teal',
+    groups: [],
+    channels: [
+      { id: 'direct', name: 'Direct', url: 'https://cdn.example.com/live.m3u8', kind: 'direct', groupId: '', order: 0 },
+      { id: 'list', name: 'List', url: 'https://www.youtube.com/watch?v=abc&list=PL1', kind: 'playlist', playMode: 'sequential', groupId: '', order: 1 },
+    ],
+  });
+
+  h.emitEvent('providerStatus', {
+    provider: 'user:other',
+    channels: [
+      { channel: 'direct', state: 'ready', itemCount: 1 },
+      { channel: 'list', state: 'error', itemCount: 0 },
+    ],
+  });
+
+  assert.equal(h.channels.children[0]._enumChip, undefined);
+  assert.equal(h.channels.children[1]._enumChip, undefined);
+
+  h.emitEvent('providerStatus', { provider: 'user:mix', channels: [{ channel: 'direct', state: 'ready', itemCount: 1 }] });
+
+  assert.equal(h.channels.children[0]._enumChip, undefined);
+  assert.equal(h.channels.children[1]._enumChip, undefined);
+});
+
 test('_verifyRow renders error chip with message on failed response', async () => {
   const h = createHarness(async () => jsonResponse({ ok: false, message: 'Local-only hosts are blocked here.' }, false));
   const api = h.context.window.Chassis.providerForm;
