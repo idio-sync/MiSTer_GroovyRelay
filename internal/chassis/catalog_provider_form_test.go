@@ -1,14 +1,49 @@
 package chassis
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
+
+func TestCatalogDrawer_RendersUserAffordances(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := CatalogData{
+		ActiveProviderID: "user:mix",
+		Providers: []CatalogProviderTab{
+			{ID: "mtv-rewind", DisplayName: "MTV Rewind", BadgeLabel: "MTV", BadgeClass: "mtv"},
+			{ID: "user:mix", DisplayName: "Mix", BadgeLabel: "MX", BadgeClass: "u-teal",
+				Groups: []CatalogGroupTab{{ID: "", Name: "", Channels: []CatalogChannelCard{{ID: "live", Name: "Live"}}}}},
+		},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "catalog-drawer", data); err != nil {
+		t.Fatalf("ExecuteTemplate: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `data-edit-provider="user:mix"`) {
+		t.Error("user provider tab missing edit affordance")
+	}
+	if strings.Contains(out, `data-edit-provider="mtv-rewind"`) {
+		t.Error("bundled provider tab must NOT have an edit affordance")
+	}
+	if !strings.Contains(out, "catalog-provider-new") {
+		t.Error("missing New provider tab")
+	}
+	if !strings.Contains(out, `id="catalog-form"`) {
+		t.Error("missing authoring form container")
+	}
+}
 
 func TestHandleCatalogProviderForm_ReturnsAuthoringJSON(t *testing.T) {
 	t.Parallel()

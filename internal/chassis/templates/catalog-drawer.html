@@ -11,8 +11,14 @@
         <span class="ic {{.BadgeClass}}">{{.BadgeLabel}}</span>
         {{.DisplayName}}
         <span class="ch-count">{{.ChCount}}</span>
+        {{- if hasPrefix .ID "user:" -}}
+        <span class="cf-pencil" data-edit-provider="{{.ID}}" role="button" tabindex="0" title="Edit provider">&#9998;</span>
+        {{- end -}}
       </button>
       {{- end -}}
+      <button class="catalog-provider-tab cf-new" type="button" id="catalog-provider-new" title="New provider">
+        <span class="ic">&#43;</span> New
+      </button>
     </div>
     <div class="catalog-body">
       <div class="catalog-rail" id="catalog-rail">
@@ -23,5 +29,6 @@
       </div>
     </div>
   </div>
+  {{template "catalog-provider-form" .}}
 </div>
 {{end}}

@@ -1,0 +1,39 @@
+{{define "catalog-provider-form"}}
+{{htmlComment "chassis:catalog-provider-form"}}
+<div class="catalog-form" id="catalog-form" aria-hidden="true">
+  <form id="cf-form" autocomplete="off">
+    <input type="hidden" id="cf-provider-id" value="">
+    <div class="cf-identity">
+      <label>Name
+        <input type="text" class="cf-input" id="cf-name" maxlength="64" placeholder="Provider name">
+      </label>
+      <label>Glyph
+        <input type="text" class="cf-input" id="cf-glyph" maxlength="4" placeholder="GL">
+      </label>
+      <div>
+        <span class="cf-label">Color</span>
+        <div class="cf-swatches" id="cf-swatches" role="radiogroup" aria-label="Badge color">
+          {{- range $tok := list "amber" "red" "teal" "blue" "purple" "green" "cyan" "slate" -}}
+          <button type="button" class="cf-swatch u-{{$tok}}" data-color="{{$tok}}" role="radio" aria-checked="false" aria-label="{{$tok}}"></button>
+          {{- end -}}
+        </div>
+      </div>
+    </div>
+
+    <div class="cf-groups" id="cf-groups">
+      <span class="cf-label">Groups</span>
+      <span class="cf-group-chips" id="cf-group-chips"></span>
+      <button type="button" class="cf-add-group" id="cf-add-group">&#43; Group</button>
+    </div>
+
+    <div class="cf-channels" id="cf-channels"></div>
+    <button type="button" class="cf-add-channel" id="cf-add-channel">&#43; Channel</button>
+
+    <div class="cf-footer">
+      <button type="button" class="cf-cancel" id="cf-cancel">Cancel</button>
+      <button type="button" class="cf-delete" id="cf-delete" hidden>Delete provider</button>
+      <button type="submit" class="cf-save" id="cf-save">Save provider</button>
+    </div>
+  </form>
+</div>
+{{end}}
