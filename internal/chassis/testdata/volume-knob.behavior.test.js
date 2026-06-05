@@ -82,6 +82,8 @@ function createHarness(initialValue = 40, initialMuted = false) {
   const mute = new FakeElement();
   mute.dataset.volumeMute = '';
   mute.setAttribute('aria-pressed', String(initialMuted));
+  const lamp = new FakeElement();
+  lamp.dataset.volumeMuteLamp = '';
   const source = new FakeTarget();
   const subscriptions = new Map();
   const requests = [];
@@ -145,6 +147,9 @@ function createHarness(initialValue = 40, initialMuted = false) {
     if (selector === '[data-volume-mute]') {
       return mute;
     }
+    if (selector === '[data-volume-mute-lamp]') {
+      return lamp;
+    }
     return null;
   };
   range.focus = () => {
@@ -180,7 +185,7 @@ function createHarness(initialValue = 40, initialMuted = false) {
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'volume-knob.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'volume-knob.js' });
 
-  return { root, range, mute, source, requests, advance };
+  return { root, range, mute, lamp, source, requests, advance };
 }
 
 async function settle() {
@@ -310,11 +315,13 @@ test('mute button posts separate muted state and follows SSE state', async () =>
   assert.equal(h.requests[0].url, '/ui/volume/mute');
   assert.equal(postedMuted(h.requests[0]), 'true');
   assert.equal(h.mute.classes.has('on'), true);
+  assert.equal(h.lamp.classes.has('on'), true);
   assert.equal(h.mute.getAttribute('aria-pressed'), 'true');
   assert.equal(h.root.classes.has('muted'), true);
 
   h.source.emitVolume(40, false);
   assert.equal(h.mute.classes.has('on'), false);
+  assert.equal(h.lamp.classes.has('on'), false);
   assert.equal(h.mute.getAttribute('aria-pressed'), 'false');
   assert.equal(h.root.classes.has('muted'), false);
 });

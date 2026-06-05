@@ -96,6 +96,6 @@
           aria-pressed="{{if .OutputMuted}}true{{else}}false{{end}}" aria-label="Mute output">
     <span class="mute-button-face" aria-hidden="true"></span>
   </button>
-  <span class="mute-lamp{{if .OutputMuted}} on{{end}}" aria-hidden="true"></span>
+  <span class="mute-lamp{{if .OutputMuted}} on{{end}}" data-volume-mute-lamp aria-hidden="true"></span>
 </div>
 {{end}}

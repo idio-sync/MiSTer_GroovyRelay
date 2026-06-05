@@ -2535,7 +2535,8 @@ body.receiver .mute-button.on .mute-button-face {
 body.receiver .mute-lamp {
   position: absolute;
   right: -2px;
-  top: 28px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 8px;
   height: 18px;
   border-radius: 5px;

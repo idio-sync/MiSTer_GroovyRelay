@@ -984,6 +984,15 @@ func TestChassisCSS_LevelSectionCentersMasterVolumeKnob(t *testing.T) {
 			t.Fatalf("level controls should center the mute button and master volume knob, missing %q: %s", want, controlsRule)
 		}
 	}
+	lampRule := cssRuleBlock(t, text, "body.receiver .mute-lamp")
+	for _, want := range []string{
+		"top: 50%;",
+		"transform: translateY(-50%);",
+	} {
+		if !strings.Contains(lampRule, want) {
+			t.Fatalf("mute lamp should be vertically centered, missing %q: %s", want, lampRule)
+		}
+	}
 }
 
 func TestChassisCSS_BrowseButtonHasBaseButtonChrome(t *testing.T) {

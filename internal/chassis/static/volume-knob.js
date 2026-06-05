@@ -19,6 +19,7 @@
   let root = null;
   let range = null;
   let muteButton = null;
+  let muteLamp = null;
   let authoritative = 100;
   let authoritativeMuted = false;
   let localValue = 100;
@@ -88,6 +89,9 @@
     if (muteButton) {
       muteButton.classList.toggle('on', localMuted);
       muteButton.setAttribute('aria-pressed', localMuted ? 'true' : 'false');
+    }
+    if (muteLamp) {
+      muteLamp.classList.toggle('on', localMuted);
     }
   }
 
@@ -331,6 +335,7 @@
     root = document.querySelector('[data-volume-knob]');
     range = document.querySelector('[data-volume-range]');
     muteButton = document.querySelector('[data-volume-mute]');
+    muteLamp = document.querySelector('[data-volume-mute-lamp]');
     bind();
     window.Chassis.events.subscribe('volume', handleVolumeEvent);
   }
