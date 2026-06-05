@@ -28,15 +28,18 @@
   function detectKind(rawURL) {
     let parsed;
     try {
-      parsed = new URL(String(rawURL || ''));
+      parsed = new URL(String(rawURL || '').trim());
     } catch (_) {
+      return 'single';
+    }
+    if (!parsed.host) {
       return 'single';
     }
     const path = parsed.pathname.toLowerCase();
     if (path.endsWith('.m3u8') || path.endsWith('.m3u') || path.endsWith('.mpd')) {
       return 'direct';
     }
-    if (isYouTubeHost(parsed.hostname) && parsed.searchParams.has('list')) {
+    if (isYouTubeHost(parsed.hostname) && parsed.searchParams.get('list')) {
       return 'playlist';
     }
     return 'single';
@@ -55,15 +58,16 @@
     try {
       parsed = new URL(String(rawURL || ''));
     } catch (_) {
-      return { ok: true, message: '' };
+      return { ok: false, message: 'Use an http or https URL.' };
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return { ok: false, message: 'Use an http or https URL.' };
     }
-    const host = parsed.hostname.toLowerCase();
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (
       host === 'localhost' ||
       host === '::1' ||
+      host.startsWith('fe80:') ||
       host.startsWith('127.') ||
       host.startsWith('169.254.') ||
       host === '0.0.0.0'

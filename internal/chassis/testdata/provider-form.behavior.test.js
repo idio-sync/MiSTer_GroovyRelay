@@ -222,8 +222,10 @@ test('detectKind mirrors Go channel kind detection cases', () => {
   assert.equal(detectKind('https://host/stream.mpd'), 'direct');
   assert.equal(detectKind('https://www.youtube.com/playlist?list=PL123'), 'playlist');
   assert.equal(detectKind('https://youtube.com/watch?v=abc&list=PL123'), 'playlist');
+  assert.equal(detectKind('https://youtube.com/watch?list='), 'single');
   assert.equal(detectKind('https://twitch.tv/foo'), 'single');
   assert.equal(detectKind('not a url'), 'single');
+  assert.equal(detectKind('file:///tmp/live.m3u8'), 'single');
 });
 
 test('suggestGlyph uses words first and caps output at four characters', () => {
@@ -242,8 +244,11 @@ test('hostHint allows routable hosts and rejects obvious local-only targets', ()
 
   assert.equal(hostHint('https://192.168.1.15/live.m3u8').ok, true);
   assert.equal(hostHint('https://cdn.example.com/live.m3u8').ok, true);
+  assert.equal(hostHint('not a url').ok, false);
   assert.equal(hostHint('http://localhost/live.m3u8').ok, false);
   assert.equal(hostHint('http://127.0.0.1/live.m3u8').ok, false);
+  assert.equal(hostHint('http://[::1]/x').ok, false);
+  assert.equal(hostHint('http://[fe80::1]/x').ok, false);
   assert.equal(hostHint('http://169.254.169.254/latest/meta-data').ok, false);
   assert.equal(hostHint('file:///tmp/video.m3u8').ok, false);
 });
