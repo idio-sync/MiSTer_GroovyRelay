@@ -5117,13 +5117,33 @@ body.receiver .ch-card .name {
 body.receiver .ch-card .meta {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
   color: #6a6a6e;
   font: 500 9px Inter, sans-serif;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-body.receiver .ch-card .meta .mode { color: #8a8a8e; }
+body.receiver .ch-card .meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.receiver .ch-card .meta span:first-child {
+  flex: 1 1 auto;
+}
+
+body.receiver .ch-card .meta .mode {
+  flex: 0 1 auto;
+  max-width: 50%;
+  color: #8a8a8e;
+}
 
 body.receiver .ch-card .star {
   position: absolute;

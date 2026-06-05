@@ -210,6 +210,55 @@ func TestChassisCSS_CatalogDrawerAlignsToSectionContentColumn(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_CatalogCardMetaTextStaysInsideTile(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	lastMetaIdx := strings.LastIndex(text, "body.receiver .ch-card .meta {")
+	if lastMetaIdx == -1 {
+		t.Fatalf("missing active catalog card meta rule")
+	}
+	metaRule := cssRuleBlock(t, text[lastMetaIdx:], "body.receiver .ch-card .meta")
+	for _, want := range []string{
+		"gap: 8px;",
+		"min-width: 0;",
+		"max-width: 100%;",
+		"overflow: hidden;",
+		"white-space: nowrap;",
+	} {
+		if !strings.Contains(metaRule, want) {
+			t.Fatalf("catalog card meta rule must constrain overflow, missing %q: %s", want, metaRule)
+		}
+	}
+	spanRule := cssRuleBlock(t, text, "body.receiver .ch-card .meta span")
+	for _, want := range []string{
+		"min-width: 0;",
+		"overflow: hidden;",
+		"text-overflow: ellipsis;",
+		"white-space: nowrap;",
+	} {
+		if !strings.Contains(spanRule, want) {
+			t.Fatalf("catalog card meta text must ellipsize inside the tile, missing %q: %s", want, spanRule)
+		}
+	}
+	lastModeIdx := strings.LastIndex(text, "body.receiver .ch-card .meta .mode {")
+	if lastModeIdx == -1 {
+		t.Fatalf("missing active catalog card meta mode rule")
+	}
+	modeRule := cssRuleBlock(t, text[lastModeIdx:], "body.receiver .ch-card .meta .mode")
+	for _, want := range []string{
+		"flex: 0 1 auto;",
+		"max-width: 50%;",
+	} {
+		if !strings.Contains(modeRule, want) {
+			t.Fatalf("catalog card mode text must shrink before escaping, missing %q: %s", want, modeRule)
+		}
+	}
+}
+
 func TestChassisCSS_Task23IdleLiveStateOverrideContracts(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
