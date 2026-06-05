@@ -15,6 +15,7 @@
   const starredPresetKeys = new Set();
   let loadSeq = 0;
   let reorderSeq = 0;
+  let pendingReorder = 0;
   let mutationSeq = 0;
   let pendingMutation = 0;
 
@@ -213,15 +214,22 @@
 
   function invalidateReorder() {
     reorderSeq += 1;
+    pendingReorder = 0;
   }
 
   function beginReorder() {
     reorderSeq += 1;
+    if (state.id) pendingReorder = reorderSeq;
     return reorderSeq;
   }
 
   function isCurrentReorder(token) {
     return token !== 0 && token === reorderSeq;
+  }
+
+  function finishReorder(token) {
+    if (pendingReorder !== token) return;
+    pendingReorder = 0;
   }
 
   function noticeText(result, fallback) {
@@ -754,12 +762,15 @@
         const from = sortableItem(fromEl, '.cf-channel');
         const to = sortableItem(toEl, '.cf-channel');
         const before = collectChannelModels();
+        if (state.id && pendingReorder) return false;
         if (!reorderListMove(host, from, to)) return;
         const token = beginReorder();
         state.channels = collectChannelModels();
         return postReorder(token).then((ok) => {
           if (ok || !isCurrentReorder(token)) return;
           renderChannels(before);
+        }).then(() => {
+          finishReorder(token);
         });
       },
     });
@@ -777,6 +788,7 @@
         const to = sortableItem(toEl, '.cf-group-chip');
         const beforeGroups = cloneList(currentGroups());
         const beforeChannels = collectChannelModels();
+        if (state.id && pendingReorder) return false;
         if (!reorderListMove(host, from, to)) return;
         const token = beginReorder();
         syncGroupsFromHost(host);
@@ -785,6 +797,8 @@
           if (ok || !isCurrentReorder(token)) return;
           renderGroups(beforeGroups);
           renderChannels(beforeChannels);
+        }).then(() => {
+          finishReorder(token);
         });
       },
     });

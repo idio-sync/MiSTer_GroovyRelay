@@ -1458,7 +1458,7 @@ test('failed reorder responses show a notice and roll back channel order', async
   assert.deepEqual(h.notices, [['REJECTED', 'err']]);
 });
 
-test('older reorder failure does not roll back a newer successful channel order', async () => {
+test('pending saved-provider channel reorder ignores newer drops until the request settles', async () => {
   const posts = [];
   const h = createHarness((url, init) => {
     const pending = deferred();
@@ -1486,15 +1486,60 @@ test('older reorder failure does not roll back a newer successful channel order'
 
   const [b, , movedA] = Array.prototype.slice.call(h.channels.children);
   const secondDrop = channelDrop(b, movedA);
-  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['c', 'a', 'b']);
-  assert.equal(posts.length, 2);
+  assert.equal(secondDrop, false);
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['b', 'c', 'a']);
+  assert.equal(posts.length, 1);
 
-  posts[1].pending.resolve(jsonResponse({ ok: true }));
-  await secondDrop;
-  posts[0].pending.resolve(jsonResponse({ ok: false, message: 'STALE' }, false));
+  posts[0].pending.resolve(jsonResponse({ ok: true }));
   await firstDrop;
 
+  const [currentB, , currentA] = Array.prototype.slice.call(h.channels.children);
+  const thirdDrop = channelDrop(currentB, currentA);
   assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['c', 'a', 'b']);
+  assert.equal(posts.length, 2);
+  posts[1].pending.resolve(jsonResponse({ ok: true }));
+  await thirdDrop;
+
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['c', 'a', 'b']);
+});
+
+test('pending failed channel reorder rejects overlapping drops and restores the last confirmed order', async () => {
+  const posts = [];
+  const h = createHarness((url, init) => {
+    const pending = deferred();
+    posts.push({ url, init, pending });
+    return pending.promise;
+  }, { fakeReorder: true });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    groups: [],
+    channels: [
+      { id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', order: 0 },
+      { id: 'b', name: 'B', url: 'https://cdn.example.com/b.m3u8', order: 1 },
+      { id: 'c', name: 'C', url: 'https://cdn.example.com/c.m3u8', order: 2 },
+    ],
+  });
+
+  const channelDrop = sortableCall(h, '.cf-channel').onDrop;
+  const [a, , c] = Array.prototype.slice.call(h.channels.children);
+  const firstDrop = channelDrop(a, c);
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['b', 'c', 'a']);
+  assert.equal(posts.length, 1);
+
+  const [b, , movedA] = Array.prototype.slice.call(h.channels.children);
+  const secondDrop = channelDrop(b, movedA);
+  assert.equal(secondDrop, false);
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['b', 'c', 'a']);
+  assert.equal(posts.length, 1);
+
+  posts[0].pending.resolve(jsonResponse({ ok: false, message: 'FIRST' }, false));
+  await firstDrop;
+
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['a', 'b', 'c']);
+  assert.deepEqual(h.notices, [['FIRST', 'err']]);
 });
 
 test('group drag reorder preserves unsaved channel values and selections while refreshing dropdown order', async () => {
