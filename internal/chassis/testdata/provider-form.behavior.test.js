@@ -84,7 +84,16 @@ class FakeElement {
   }
 
   dispatch(type, event = {}) {
-    const evt = { type, target: event.target || this, currentTarget: this, preventDefault() {}, ...event };
+    const evt = {
+      type,
+      target: event.target || this,
+      currentTarget: this,
+      preventDefault() {},
+      stopPropagation() {
+        this.bubbles = false;
+      },
+      ...event,
+    };
     let node = this;
     while (node) {
       evt.currentTarget = node;
@@ -833,6 +842,41 @@ test('provider form wires channel and group containers to Chassis reorder', () =
   assert.equal(typeof groupCall.onDrop, 'function');
 });
 
+test('sortable pointerdown ignores row form controls but allows row/chip drags', () => {
+  let starts = 0;
+  const h = createHarness(null, {
+    reorder: {
+      makeSortable(config) {
+        config.container.addEventListener('pointerdown', () => {
+          starts += 1;
+        });
+        return { cancel() {} };
+      },
+    },
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderGroups([{ id: 'news', name: 'News', order: 0 }]);
+  api.renderChannels([{ id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', groupId: 'news', order: 0 }]);
+
+  const row = h.channels.children[0];
+  row._name.dispatch('pointerdown');
+  row._url.dispatch('pointerdown');
+  row._override.dispatch('pointerdown');
+  row._play.dispatch('pointerdown');
+  row._group.dispatch('pointerdown');
+  row._verify.dispatch('pointerdown');
+  row.querySelector('.cf-channel-delete').dispatch('pointerdown');
+  h.groupChips.children[0].querySelector('.cf-group-delete').dispatch('pointerdown');
+
+  assert.equal(starts, 0);
+
+  row.dispatch('pointerdown');
+  h.groupChips.children[0].dispatch('pointerdown');
+
+  assert.equal(starts, 2);
+});
+
 test('dropping channel rows for existing providers posts reorder JSON and new providers skip POST', async () => {
   const requests = [];
   const h = createHarness(async (url, init) => {
@@ -896,6 +940,28 @@ test('dropping channel rows for existing providers posts reorder JSON and new pr
   assert.deepEqual(JSON.parse(JSON.stringify(nextAPI.collectChannelModels().map((channel) => channel.name))), ['Unsaved B', 'Unsaved A']);
 });
 
+test('failed reorder responses show a notice and roll back channel order', async () => {
+  const h = createHarness(async () => jsonResponse({ ok: false, message: 'REJECTED' }, false), { fakeReorder: true });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    groups: [],
+    channels: [
+      { id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', order: 0 },
+      { id: 'b', name: 'B', url: 'https://cdn.example.com/b.m3u8', order: 1 },
+      { id: 'c', name: 'C', url: 'https://cdn.example.com/c.m3u8', order: 2 },
+    ],
+  });
+
+  const [a, , c] = Array.prototype.slice.call(h.channels.children);
+  await sortableCall(h, '.cf-channel').onDrop(a, c);
+
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['a', 'b', 'c']);
+  assert.deepEqual(h.notices, [['REJECTED', 'err']]);
+});
+
 test('group drag reorder preserves unsaved channel values and selections while refreshing dropdown order', async () => {
   const requests = [];
   const h = createHarness(async (url, init) => {
@@ -930,12 +996,15 @@ test('group drag reorder preserves unsaved channel values and selections while r
   row._override.value = 'playlist';
   row._play.value = 'first_then_shuffle';
   row._group.value = 'news';
+  row._verifyChip.hidden = false;
+  row._verifyChip.classList.add('ok');
+  row._verifyChip.textContent = '✓ DIRECT';
 
   const [sports, news] = Array.prototype.slice.call(h.groupChips.children);
-  sortableCall(h, '.cf-group-chip').onDrop(news, sports);
-  await nextTick();
+  await sortableCall(h, '.cf-group-chip').onDrop(news, sports);
 
   const nextRow = h.channels.children[0];
+  assert.equal(nextRow, row);
   assert.deepEqual(JSON.parse(JSON.stringify(api._currentGroups().map((group) => ({ id: group.id, order: group.order })))), [
     { id: 'news', order: 0 },
     { id: 'sports', order: 1 },
@@ -946,6 +1015,9 @@ test('group drag reorder preserves unsaved channel values and selections while r
   assert.equal(nextRow._override.value, 'playlist');
   assert.equal(nextRow._play.value, 'first_then_shuffle');
   assert.equal(nextRow._group.value, 'news');
+  assert.equal(nextRow._verifyChip.hidden, false);
+  assert.equal(nextRow._verifyChip.classList.contains('ok'), true);
+  assert.equal(nextRow._verifyChip.textContent, '✓ DIRECT');
   assert.deepEqual(JSON.parse(requests[0][1].body), {
     channels: [{ id: 'live', order: 0 }],
     groups: [

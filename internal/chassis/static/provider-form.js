@@ -181,6 +181,27 @@
     return option;
   }
 
+  function fillGroupSelect(select, groups, selected) {
+    if (!select) return;
+    const groupList = normalizeGroups(groups);
+    select.replaceChildren();
+    addOption(select, '', 'No group');
+    groupList.forEach((item) => addOption(select, item.id, item.name || item.id || 'Group'));
+    select.value = groupList.some((item) => item.id === selected) ? selected : '';
+  }
+
+  function stopDragStart(event) {
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+  }
+
+  function keepDragOffControls(nodes) {
+    nodes.forEach((node) => {
+      if (node && typeof node.addEventListener === 'function') {
+        node.addEventListener('pointerdown', stopDragStart);
+      }
+    });
+  }
+
   function nextID(prefix, items) {
     const list = items || [];
     const used = new Set(list.map((item) => item.id));
@@ -341,6 +362,16 @@
     return state.groups;
   }
 
+  function refreshGroupOptionsOnRows() {
+    const host = byID('cf-channels');
+    if (!host) return;
+    kids(host).filter((row) => row.classList && row.classList.contains('cf-channel')).forEach((row) => {
+      const selected = row._group ? row._group.value : '';
+      fillGroupSelect(row._group, currentGroups(), selected);
+    });
+    state.channels = collectChannelModels();
+  }
+
   function buildChannelRow(ch, groups) {
     const model = normalizeChannel(ch, 0);
     const groupList = normalizeGroups(groups);
@@ -377,9 +408,7 @@
     playModeWrap.appendChild(play);
 
     const group = mk('select', 'cf-input');
-    addOption(group, '', 'No group');
-    groupList.forEach((item) => addOption(group, item.id, item.name || item.id || 'Group'));
-    group.value = groupList.some((item) => item.id === model.groupId) ? model.groupId : '';
+    fillGroupSelect(group, groupList, model.groupId);
 
     const verify = mk('button', 'cf-channel-verify');
     verify.type = 'button';
@@ -434,6 +463,7 @@
       removeElement(row);
       state.channels = collectChannelModels();
     });
+    keepDragOffControls([name, url, override, play, group, verify, del]);
 
     row._refresh();
     return row;
@@ -454,11 +484,11 @@
       del.type = 'button';
       del.dataset.groupDelete = group.id;
       del.textContent = 'x';
+      keepDragOffControls([del]);
       del.addEventListener('click', (event) => {
         event.preventDefault();
-        const channels = collectChannelModels();
         renderGroups(currentGroups().filter((item) => item.id !== group.id));
-        renderChannels(channels);
+        refreshGroupOptionsOnRows();
       });
       chip.appendChild(del);
       return chip;
@@ -523,23 +553,29 @@
   }
 
   function addGroup() {
-    const channels = collectChannelModels();
     const groups = cloneList(currentGroups());
     const id = nextID('group', groups);
     groups.push({ id, name: 'Group ' + (groups.length + 1), order: groups.length });
     renderGroups(groups);
-    renderChannels(channels);
+    refreshGroupOptionsOnRows();
   }
 
-  function postReorder() {
-    if (!state.id) return Promise.resolve(false);
+  async function postReorder() {
+    if (!state.id) return true;
     const body = {
       channels: collectChannelModels().filter((channel) => channel.id).map((channel) => ({ id: channel.id, order: channel.order })),
       groups: currentGroups().filter((group) => group.id).map((group, index) => ({ id: group.id, order: index })),
     };
-    return postJSON('POST', '/ui/catalog/provider/' + encodeURIComponent(state.id) + '/reorder', body).catch(() => {
+    try {
+      const resp = await postJSON('POST', '/ui/catalog/provider/' + encodeURIComponent(state.id) + '/reorder', body);
+      const result = await responseJSON(resp);
+      if (resp.ok && result.ok !== false) return true;
+      showNotice((result && (result.message || result.chip)) || 'Unable to reorder provider.', 'err');
+      return false;
+    } catch (_) {
       showNotice('Unable to reorder provider.', 'err');
-    });
+      return false;
+    }
   }
 
   function sortableItem(el, selector) {
@@ -556,9 +592,13 @@
       onDrop(fromEl, toEl) {
         const from = sortableItem(fromEl, '.cf-channel');
         const to = sortableItem(toEl, '.cf-channel');
+        const before = collectChannelModels();
         if (!reorderListMove(host, from, to)) return;
         state.channels = collectChannelModels();
-        postReorder();
+        return postReorder().then((ok) => {
+          if (ok) return;
+          renderChannels(before);
+        });
       },
     });
   }
@@ -573,10 +613,16 @@
       onDrop(fromEl, toEl) {
         const from = sortableItem(fromEl, '.cf-group-chip');
         const to = sortableItem(toEl, '.cf-group-chip');
+        const beforeGroups = cloneList(currentGroups());
+        const beforeChannels = collectChannelModels();
         if (!reorderListMove(host, from, to)) return;
         syncGroupsFromHost(host);
-        renderChannels(collectChannelModels());
-        postReorder();
+        refreshGroupOptionsOnRows();
+        return postReorder().then((ok) => {
+          if (ok) return;
+          renderGroups(beforeGroups);
+          renderChannels(beforeChannels);
+        });
       },
     });
   }
