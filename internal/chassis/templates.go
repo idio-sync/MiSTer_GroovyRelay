@@ -45,6 +45,7 @@ var chassisStaticFS embed.FS
 var templateFuncs = template.FuncMap{
 	"inc":        func(i int) int { return i + 1 },
 	"replaceAll": strings.ReplaceAll,
+	"hasPrefix":  strings.HasPrefix,
 	"hasString": func(haystack []string, needle string) bool {
 		for _, s := range haystack {
 			if s == needle {

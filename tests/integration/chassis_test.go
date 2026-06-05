@@ -1978,7 +1978,7 @@ func TestReceiverEvents_PresetsBetweenMeterAndAudio(t *testing.T) {
 	env := newChassisIntegrationEnv(t)
 	defer env.Close()
 	names := env.CollectInitialEventNames(t, 2*time.Second)
-	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "history", "audio"}
+	want := []string{"state", "vfd", "source", "visualizer", "transport", "volume", "audioDsp", "meter", "presets", "history", "catalog", "audio"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("initial burst events = %v, want %v", names, want)
 	}

@@ -392,6 +392,7 @@ func main() {
 	var streamsCaster adapters.StreamsCaster
 	var presetEditor adapters.PresetEditor
 	var userProviderEditor adapters.UserProviderEditor
+	var userProviderViewer adapters.UserProviderViewer
 	if streamsA, ok := reg.Get("streams"); ok {
 		if v, ok := streamsA.(adapters.PresetViewer); ok {
 			presetViewer = v
@@ -410,6 +411,9 @@ func main() {
 		}
 		if ed, ok := streamsA.(adapters.UserProviderEditor); ok {
 			userProviderEditor = ed
+		}
+		if v, ok := streamsA.(adapters.UserProviderViewer); ok {
+			userProviderViewer = v
 		}
 	}
 
@@ -490,6 +494,7 @@ func main() {
 		StreamsCaster:             streamsCaster,
 		PresetEditor:              presetEditor,
 		UserProviderEditor:        userProviderEditor,
+		UserProviderViewer:        userProviderViewer,
 		EnsureAdapterStarted:      ensureStarted,
 		SourceAvailabilityViewers: sourceViewers,
 		BridgeSaver:               saver,                          // existing *uiserver.BridgeSaver

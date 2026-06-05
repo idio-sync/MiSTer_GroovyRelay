@@ -100,6 +100,25 @@ func TestNew_ReturnsServerWithValidConfig(t *testing.T) {
 	}
 }
 
+func TestNew_WiresUserProviderViewer(t *testing.T) {
+	t.Parallel()
+	v := stubUserProviderViewer{}
+	s, err := New(Config{Version: "t", StartedAt: time.Now(), UserProviderViewer: v})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.userProviderViewer == nil {
+		t.Fatal("userProviderViewer not wired")
+	}
+}
+
+type stubUserProviderViewer struct{}
+
+func (stubUserProviderViewer) UserProviderForm(string) (adapters.UserProviderForm, bool) {
+	return adapters.UserProviderForm{}, false
+}
+func (stubUserProviderViewer) UserProviderStatuses() []adapters.UserProviderStatus { return nil }
+
 func TestServer_StoresVisualizerViewerAndSaverFromConfig(t *testing.T) {
 	t.Parallel()
 	cfg := nonZeroConfig()
@@ -3242,6 +3261,7 @@ func TestShellTemplate_LoadsNew3BScripts(t *testing.T) {
 	for _, want := range []string{
 		`/ui/static/source-cluster.js?v=`,
 		`/ui/static/catalog-browser.js?v=`,
+		`/ui/static/reorder.js?v=`,
 		`/ui/static/preset-reorder.js?v=`,
 		`/ui/static/search-filter.js?v=`,
 	} {
@@ -3250,13 +3270,14 @@ func TestShellTemplate_LoadsNew3BScripts(t *testing.T) {
 		}
 	}
 	// Required order: chassis.js → vfd-live.js → source-cluster.js →
-	// preset-bank.js → catalog-browser.js → preset-reorder.js → search-filter.js.
+	// preset-bank.js → catalog-browser.js → reorder.js → preset-reorder.js → search-filter.js.
 	order := []string{
 		"chassis.js",
 		"vfd-live.js",
 		"source-cluster.js",
 		"preset-bank.js",
 		"catalog-browser.js",
+		"reorder.js",
 		"preset-reorder.js",
 		"search-filter.js",
 	}
@@ -3271,6 +3292,10 @@ func TestShellTemplate_LoadsNew3BScripts(t *testing.T) {
 			t.Errorf("script %s appears before its predecessor in shell.html", name)
 		}
 		lastIdx = idx
+	}
+	reorderThenPreset := regexp.MustCompile(`<script defer src="/ui/static/reorder\.js\?v=[^"]+"></script>\s*<script defer src="/ui/static/preset-reorder\.js\?v=[^"]+"></script>`)
+	if !reorderThenPreset.MatchString(html) {
+		t.Errorf("shell.html must load reorder.js immediately before preset-reorder.js")
 	}
 }
 
@@ -3381,30 +3406,50 @@ func TestCatalogBrowserJS_ExistsAndIntegrationPoints(t *testing.T) {
 
 func TestPresetReorderJS_PointerEventsAndMoveRoute(t *testing.T) {
 	t.Parallel()
-	src, err := chassisStaticFS.ReadFile("static/preset-reorder.js")
+	reorderSrc, err := chassisStaticFS.ReadFile("static/reorder.js")
 	if err != nil {
-		t.Fatalf("ReadFile preset-reorder.js: %v", err)
+		t.Fatalf("ReadFile reorder.js: %v", err)
 	}
-	s := string(src)
+	reorder := string(reorderSrc)
 	for _, want := range []string{
 		"pointerdown",
 		"pointermove",
 		"pointerup",
+		"pointercancel",
+		"Escape",
+		"makeSortable",
+		"data-dragging",
+		"drop-target",
+		"elementFromPoint",
+	} {
+		if !strings.Contains(reorder, want) {
+			t.Errorf("reorder.js missing generic drag mechanic %q", want)
+		}
+	}
+
+	presetSrc, err := chassisStaticFS.ReadFile("static/preset-reorder.js")
+	if err != nil {
+		t.Fatalf("ReadFile preset-reorder.js: %v", err)
+	}
+	preset := string(presetSrc)
+	for _, want := range []string{
+		"window.Chassis.reorder.makeSortable",
+		"onDrop",
+		"cloneClass: 'preset-drag-clone'",
 		"/ui/preset/move",
 		"Ctrl",
 		"ArrowLeft",
 		"ArrowRight",
-		"Escape",
 		"swapVisual",
 		"revert",
 	} {
-		if !strings.Contains(s, want) {
+		if !strings.Contains(preset, want) {
 			t.Errorf("preset-reorder.js missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{"draggable=\"true\"", "dragstart"} {
-		if strings.Contains(s, forbidden) {
-			t.Errorf("preset-reorder.js uses HTML5 native DnD %q (must be pointer-based)", forbidden)
+		if strings.Contains(reorder, forbidden) || strings.Contains(preset, forbidden) {
+			t.Errorf("reorder scripts use HTML5 native DnD %q (must be pointer-based)", forbidden)
 		}
 	}
 }

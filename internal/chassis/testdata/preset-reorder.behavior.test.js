@@ -30,6 +30,8 @@ class FakeElement {
     this.listeners = new Map();
     this.style = {};
     this.children = [];
+    this.attributes = new Map();
+    this.parentNode = null;
   }
 
   addEventListener(name, fn) {
@@ -45,7 +47,14 @@ class FakeElement {
   }
 
   appendChild(child) {
+    child.parentNode = this;
     this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    this.children = this.children.filter((candidate) => candidate !== child);
+    child.parentNode = null;
     return child;
   }
 
@@ -72,9 +81,19 @@ class FakeElement {
     return { left: 0, top: 0, width: 120, height: 64 };
   }
 
-  remove() {}
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  }
 
-  removeAttribute() {}
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
 
   setPointerCapture() {}
 }
@@ -84,23 +103,24 @@ function createHarness() {
   const preset = new FakeElement('preset');
   preset.dataset.slot = '1';
   bank.appendChild(preset);
+  const body = new FakeElement('body');
   const document = {
-    body: {
-      style: {},
-      appendChild() {},
-    },
+    body,
     querySelector: (selector) => selector === '.preset-bank' ? bank : null,
     addEventListener() {},
     elementFromPoint: () => preset,
   };
   const context = {
     document,
+    window: { Chassis: {} },
     fetch: async () => ({ json: async () => ({ ok: true }) }),
     URLSearchParams,
   };
   vm.createContext(context);
-  const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'preset-reorder.js'), 'utf8');
-  vm.runInContext(code, context, { filename: 'preset-reorder.js' });
+  const reorderCode = fs.readFileSync(path.join(__dirname, '..', 'static', 'reorder.js'), 'utf8');
+  vm.runInContext(reorderCode, context, { filename: 'reorder.js' });
+  const presetCode = fs.readFileSync(path.join(__dirname, '..', 'static', 'preset-reorder.js'), 'utf8');
+  vm.runInContext(presetCode, context, { filename: 'preset-reorder.js' });
   return { bank, preset };
 }
 

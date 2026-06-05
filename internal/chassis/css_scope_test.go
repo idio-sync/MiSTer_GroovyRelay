@@ -51,6 +51,28 @@ func TestChassisCSS_LeakProneSelectorsAreScoped(t *testing.T) {
 	}
 }
 
+func TestChassisCSS_HasUserProviderPalette(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	selectors := selectorSet(src)
+	// Every palette token (matching streams badgeColorTokens) needs an .ic and
+	// a .badge class so the template's u-<token> fallback always resolves.
+	for _, tok := range []string{"amber", "red", "teal", "blue", "purple", "green", "cyan", "slate"} {
+		for _, want := range []string{
+			"body.receiver .catalog-provider-tab .ic.u-" + tok,
+			"body.receiver .catalog-form .ic.u-" + tok,
+			"body.receiver .preset .badge.u-" + tok,
+		} {
+			if !selectors[want] {
+				t.Errorf("missing exact palette selector %q", want)
+			}
+		}
+	}
+}
+
 func TestChassisCSS_RulesetCountSanity(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
@@ -1095,19 +1117,21 @@ func TestFindUnscopedSelectors_FixtureBad(t *testing.T) {
 body.idle .bar { opacity: 0.5; }
 .foo, body.receiver .baz { color: blue; }
 body.receiver .ok, .leak-after-scoped { color: red; }
+body.receiverish .looks-scoped { color: pink; }
 @container chassis (max-width: 900px) { .inside-container { display: none; } }
 @media (max-width: 900px) { .inside-media { display: none; } }
 `)
 	leaks := findUnscopedSelectors(src)
 	want := map[string]bool{
-		".foo":               true,
-		"body.idle .bar":     true,
-		".leak-after-scoped": true,
-		".inside-container":  true,
-		".inside-media":      true,
+		".foo":                           true,
+		"body.idle .bar":                 true,
+		".leak-after-scoped":             true,
+		"body.receiverish .looks-scoped": true,
+		".inside-container":              true,
+		".inside-media":                  true,
 	}
-	if len(leaks) != 6 {
-		t.Errorf("expected 6 leaks for fixture, got %d: %v", len(leaks), leaks)
+	if len(leaks) != 7 {
+		t.Errorf("expected 7 leaks for fixture, got %d: %v", len(leaks), leaks)
 	}
 	for _, leak := range leaks {
 		if !want[leak] {
@@ -1118,6 +1142,25 @@ body.receiver .ok, .leak-after-scoped { color: red; }
 
 func findUnscopedSelectors(src []byte) []string {
 	var leaks []string
+	for _, part := range cssSelectors(src) {
+		if part == "" || isAllowlistedSelector(part) || isReceiverScopedSelector(part) {
+			continue
+		}
+		leaks = append(leaks, part)
+	}
+	return leaks
+}
+
+func selectorSet(src []byte) map[string]bool {
+	selectors := make(map[string]bool)
+	for _, selector := range cssSelectors(src) {
+		selectors[selector] = true
+	}
+	return selectors
+}
+
+func cssSelectors(src []byte) []string {
+	var selectors []string
 	// tdewolff/parse v2.8.12 does not descend into @container blocks.
 	// Normalize them to a known grouping at-rule so nested selectors are
 	// still checked without changing the CSS under test.
@@ -1128,7 +1171,7 @@ func findUnscopedSelectors(src []byte) []string {
 		gt, _, data := p.Next()
 		switch gt {
 		case css.ErrorGrammar:
-			return leaks
+			return selectors
 		case css.BeginAtRuleGrammar:
 			at := strings.TrimSpace(cssGrammarText(p, data))
 			if isSelectorExemptAtRule(at) || skipAtRuleDepth > 0 {
@@ -1145,10 +1188,7 @@ func findUnscopedSelectors(src []byte) []string {
 			sel := strings.TrimSpace(cssGrammarText(p, data))
 			for _, part := range strings.Split(sel, ",") {
 				part = strings.TrimSpace(part)
-				if part == "" || isAllowlistedSelector(part) || strings.HasPrefix(part, "body.receiver") {
-					continue
-				}
-				leaks = append(leaks, part)
+				selectors = append(selectors, part)
 			}
 		}
 	}
@@ -1276,4 +1316,20 @@ func isAllowlistedSelector(sel string) bool {
 		return true
 	}
 	return len(sel) > 1 && sel[len(sel)-1] == '%'
+}
+
+func isReceiverScopedSelector(part string) bool {
+	const scope = "body.receiver"
+	if !strings.HasPrefix(part, scope) {
+		return false
+	}
+	if len(part) == len(scope) {
+		return true
+	}
+	switch part[len(scope)] {
+	case ' ', '\t', '\n', '\r', '\f', '.', ':', '[', '#', '>', '+', '~':
+		return true
+	default:
+		return false
+	}
 }

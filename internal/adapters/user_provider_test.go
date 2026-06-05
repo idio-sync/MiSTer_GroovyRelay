@@ -52,3 +52,17 @@ func (stubEditor) ReorderUserProvider(context.Context, string, ReorderRequest) e
 func (stubEditor) VerifyChannel(context.Context, VerifyChannelRequest) (VerifyChannelResult, error) {
 	return VerifyChannelResult{}, nil
 }
+
+func TestUserProviderViewer_TypeShape(t *testing.T) {
+	t.Parallel()
+	var _ UserProviderViewer = stubViewer{}
+	st := UserProviderStatus{ProviderID: "user:mix", Channels: []UserChannelStatus{{ChannelID: "a", State: "ready", ItemCount: 3}}}
+	if st.Channels[0].State != "ready" || st.Channels[0].ItemCount != 3 {
+		t.Fatal("status shape wrong")
+	}
+}
+
+type stubViewer struct{}
+
+func (stubViewer) UserProviderForm(string) (UserProviderForm, bool) { return UserProviderForm{}, false }
+func (stubViewer) UserProviderStatuses() []UserProviderStatus       { return nil }

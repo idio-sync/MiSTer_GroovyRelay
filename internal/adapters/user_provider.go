@@ -84,3 +84,30 @@ type VerifyChannelResult struct {
 	IsLive    bool   `json:"isLive,omitempty"`    // single: yt-dlp is_live (derived, never persisted)
 	Message   string `json:"message,omitempty"`   // error/redacted reason when OK=false
 }
+
+// UserProviderViewer is the read-only companion to UserProviderEditor (Phase 6,
+// additive - it does NOT change the editor contract). The chassis consumes it
+// interface-only; the streams adapter implements it and main.go injects it by
+// type assertion. It serves two reads the display catalog cannot:
+//   - UserProviderForm: the authoring-shape definition (URL/Kind/BadgeColor/
+//     Order per channel) for the edit form. The display CatalogProvider has
+//     none of these.
+//   - UserProviderStatuses: per-channel enumeration status for the
+//     providerStatus SSE chips ("ready"/"pending"/"error" + item count).
+type UserProviderViewer interface {
+	UserProviderForm(id string) (UserProviderForm, bool)
+	UserProviderStatuses() []UserProviderStatus
+}
+
+// UserProviderStatus is one user provider's per-channel enumeration status.
+type UserProviderStatus struct {
+	ProviderID string
+	Channels   []UserChannelStatus
+}
+
+// UserChannelStatus is one channel's enumeration status (spec §6/§8).
+type UserChannelStatus struct {
+	ChannelID string
+	State     string // "ready" | "pending" | "error"
+	ItemCount int
+}

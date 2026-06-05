@@ -27,6 +27,12 @@ const (
 	kindDirect   = "direct"
 )
 
+const (
+	enumStateReady   = "ready"
+	enumStatePending = "pending"
+	enumStateError   = "error"
+)
+
 // Limits (spec §10).
 const (
 	maxUserProviders       = 32
@@ -59,6 +65,16 @@ func detectChannelKind(raw string) string {
 func isYouTubeHost(host string) bool {
 	host = strings.TrimPrefix(host, "www.")
 	return host == "youtube.com" || host == "m.youtube.com" || host == "music.youtube.com"
+}
+
+func playlistEnumState(items []StreamItem, err error) string {
+	if len(items) > 0 {
+		return enumStateReady
+	}
+	if err != nil {
+		return enumStateError
+	}
+	return enumStatePending
 }
 
 // badgeColorTokens is the curated palette (spec §8). Each token maps to a
@@ -323,8 +339,10 @@ func buildUserCatalog(ctx context.Context, def ProviderDefinition, enum userPlay
 		switch chDef.Kind {
 		case kindDirect:
 			ch.Items = []StreamItem{{ID: ch.ID, Title: ch.Name, URL: chDef.URL, SourceID: ch.ID, Direct: true}}
+			ch.EnumState = enumStateReady
 		case kindSingle:
 			ch.Items = []StreamItem{{ID: ch.ID, Title: ch.Name, URL: chDef.URL, SourceID: ch.ID, Direct: false}}
+			ch.EnumState = enumStateReady
 		case kindPlaylist:
 			items, err := enum.channelItems(ctx, def.ID, ch.ID, chDef.URL)
 			if err != nil {
@@ -332,6 +350,7 @@ func buildUserCatalog(ctx context.Context, def ProviderDefinition, enum userPlay
 					"provider", def.ID, "channel", ch.ID, "err", playlistErrorForLog(err, chDef.URL))
 			}
 			ch.Items = items
+			ch.EnumState = playlistEnumState(items, err)
 		default:
 			return ProviderCatalog{}, fmt.Errorf("provider %q channel %q: invalid kind %q", def.ID, ch.ID, chDef.Kind)
 		}
