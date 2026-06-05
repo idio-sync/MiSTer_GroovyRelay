@@ -7,8 +7,6 @@
     return el && el.classList && el.classList.contains('preset') ? el : (el ? el.closest('.preset') : null);
   }
 
-  // Shared reorder.js owns pointerdown, pointermove, pointerup, and Escape drag cancellation.
-
   function syncSlotNumber(el) {
     const num = el.querySelector('.num');
     if (num) num.textContent = String(el.dataset.slot || '').padStart(2, '0');

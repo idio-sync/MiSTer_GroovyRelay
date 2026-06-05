@@ -84,6 +84,14 @@ class FakeElement {
     this.attributes.set(name, String(value));
   }
 
+  getAttribute(name) {
+    return this.attributes.get(name) || null;
+  }
+
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
   removeAttribute(name) {
     this.attributes.delete(name);
   }
@@ -110,9 +118,19 @@ function createHarness() {
 
   let pointAt = b;
   const body = new FakeElement('body');
+  const documentListeners = new Map();
   const document = {
     body,
-    addEventListener() {},
+    addEventListener(name, fn) {
+      const list = documentListeners.get(name) || [];
+      list.push(fn);
+      documentListeners.set(name, list);
+    },
+    dispatch(name, event = {}) {
+      for (const fn of documentListeners.get(name) || []) {
+        fn({ type: name, ...event });
+      }
+    },
     elementFromPoint: () => pointAt,
   };
   const drops = [];
@@ -138,19 +156,38 @@ function createHarness() {
   return { container, a, b, context };
 }
 
-test('makeSortable fires onDrop(from,to) after a threshold-exceeding drag', () => {
-  const h = createHarness();
+function startThresholdDrag(h, pointerId = 1) {
   h.context.setPointAt(h.b);
   h.container.dispatch('pointerdown', {
     target: h.a,
     button: 0,
     pointerType: 'mouse',
-    pointerId: 1,
+    pointerId,
     clientX: 0,
     clientY: 0,
     preventDefault() {},
   });
-  h.container.dispatch('pointermove', { pointerId: 1, clientX: 50, clientY: 0 });
+  h.container.dispatch('pointermove', { pointerId, clientX: 50, clientY: 0 });
+}
+
+function assertDragStarted(h) {
+  assert.equal(h.a.classes.has('pressed'), false);
+  assert.equal(h.a.getAttribute('data-dragging'), 'source');
+  assert.equal(h.b.classes.has('drop-target'), true);
+  assert.equal(h.context.document.body.style.cursor, 'grabbing');
+  assert.equal(h.context.document.body.children.length, 1);
+}
+
+function assertDragCleanedUp(h) {
+  assert.equal(h.context.document.body.children.length, 0);
+  assert.equal(h.a.hasAttribute('data-dragging'), false);
+  assert.equal(h.b.classes.has('drop-target'), false);
+  assert.equal(h.context.document.body.style.cursor, '');
+}
+
+test('makeSortable fires onDrop(from,to) after a threshold-exceeding drag', () => {
+  const h = createHarness();
+  startThresholdDrag(h, 1);
   h.container.dispatch('pointerup', { pointerId: 1, clientX: 50, clientY: 0 });
 
   assert.deepEqual(h.context.getDrops(), [['a', 'b']]);
@@ -171,4 +208,44 @@ test('sub-threshold press fires no drop', () => {
   h.container.dispatch('pointerup', { pointerId: 2, clientX: 2, clientY: 0 });
 
   assert.equal(h.context.getDrops().length, 0);
+});
+
+test('threshold drag marks source target body and clone until successful pointerup cleans up', () => {
+  const h = createHarness();
+  startThresholdDrag(h, 3);
+  assertDragStarted(h);
+
+  h.container.dispatch('pointerup', { pointerId: 3, clientX: 50, clientY: 0 });
+
+  assert.deepEqual(h.context.getDrops(), [['a', 'b']]);
+  assertDragCleanedUp(h);
+});
+
+test('pointercancel cleans up without firing onDrop', () => {
+  const h = createHarness();
+  startThresholdDrag(h, 4);
+  assertDragStarted(h);
+
+  h.container.dispatch('pointercancel', { pointerId: 4 });
+
+  assert.equal(h.context.getDrops().length, 0);
+  assertDragCleanedUp(h);
+});
+
+test('Escape cleans up without firing onDrop', () => {
+  const h = createHarness();
+  let prevented = false;
+  startThresholdDrag(h, 5);
+  assertDragStarted(h);
+
+  h.context.document.dispatch('keydown', {
+    key: 'Escape',
+    preventDefault() {
+      prevented = true;
+    },
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(h.context.getDrops().length, 0);
+  assertDragCleanedUp(h);
 });
