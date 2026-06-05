@@ -104,18 +104,55 @@ class FakeElement {
 }
 
 function matchesSelector(node, selector) {
-  if (!node) return false;
-  if (selector.startsWith('#')) return node.id === selector.slice(1);
-  if (selector.startsWith('.')) return node.classes.has(selector.slice(1));
-  const attrMatch = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
-  if (attrMatch) {
-    const attr = attrMatch[1];
-    const want = attrMatch[2];
-    const value = datasetValue(node, attr);
-    if (value == null) return false;
-    return want === undefined || value === want;
+  const parts = String(selector || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length > 1) return matchesSelectorPath(node, parts, parts.length - 1);
+  return matchesSimpleSelector(node, parts[0] || '');
+}
+
+function matchesSelectorPath(node, parts, index) {
+  if (!matchesSimpleSelector(node, parts[index])) return false;
+  if (index === 0) return true;
+  let parent = node.parentElement;
+  while (parent) {
+    if (matchesSelectorPath(parent, parts, index - 1)) return true;
+    parent = parent.parentElement;
   }
-  return node.tagName.toLowerCase() === selector.toLowerCase();
+  return false;
+}
+
+function matchesSimpleSelector(node, selector) {
+  if (!node) return false;
+  let rest = selector;
+  const tagMatch = rest.match(/^[a-z][a-z0-9-]*/i);
+  if (tagMatch) {
+    if (node.tagName.toLowerCase() !== tagMatch[0].toLowerCase()) return false;
+    rest = rest.slice(tagMatch[0].length);
+  }
+  while (rest.length > 0) {
+    if (rest.startsWith('#')) {
+      const match = rest.match(/^#([a-zA-Z0-9_-]+)/);
+      if (!match || node.id !== match[1]) return false;
+      rest = rest.slice(match[0].length);
+      continue;
+    }
+    if (rest.startsWith('.')) {
+      const match = rest.match(/^\.([a-zA-Z0-9_-]+)/);
+      if (!match || !node.classes.has(match[1])) return false;
+      rest = rest.slice(match[0].length);
+      continue;
+    }
+    if (rest.startsWith('[')) {
+      const match = rest.match(/^\[([^=\]]+)(?:="([^"]*)")?\]/);
+      if (!match) return false;
+      const value = datasetValue(node, match[1]);
+      if (value == null) return false;
+      if (match[2] !== undefined && value !== match[2]) return false;
+      rest = rest.slice(match[0].length);
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 function datasetValue(node, attr) {
@@ -144,16 +181,24 @@ function createHarness(fetchImpl) {
   const id = new FakeElement('input', { id: 'cf-provider-id' });
   const name = new FakeElement('input', { id: 'cf-name' });
   const glyph = new FakeElement('input', { id: 'cf-glyph' });
+  const swatches = new FakeElement('div', { id: 'cf-swatches' });
   const groups = new FakeElement('div', { id: 'cf-groups' });
   const channels = new FakeElement('div', { id: 'cf-channels' });
   const del = new FakeElement('button', { id: 'cf-delete', hidden: true });
   const cancel = new FakeElement('button', { id: 'cf-cancel' });
   const newButton = new FakeElement('button', { id: 'catalog-provider-new' });
   const pencil = new FakeElement('button', { dataset: { editProvider: 'user:abc' } });
+  const swatchButtons = ['amber', 'red', 'teal', 'blue', 'purple', 'green', 'cyan', 'slate'].map((color) => {
+    const button = new FakeElement('button', { className: 'cf-swatch', dataset: { color } });
+    button.setAttribute('aria-checked', 'false');
+    swatches.appendChild(button);
+    return button;
+  });
 
   formPanel.appendChild(id);
   formPanel.appendChild(name);
   formPanel.appendChild(glyph);
+  formPanel.appendChild(swatches);
   formPanel.appendChild(groups);
   formPanel.appendChild(channels);
   formPanel.appendChild(del);
@@ -169,6 +214,7 @@ function createHarness(fetchImpl) {
     ['cf-provider-id', id],
     ['cf-name', name],
     ['cf-glyph', glyph],
+    ['cf-swatches', swatches],
     ['cf-groups', groups],
     ['cf-channels', channels],
     ['cf-delete', del],
@@ -183,6 +229,9 @@ function createHarness(fetchImpl) {
     },
     querySelector(selector) {
       return body.querySelector(selector);
+    },
+    querySelectorAll(selector) {
+      return body.querySelectorAll(selector);
     },
     createElement(tag) {
       return new FakeElement(tag);
@@ -211,7 +260,7 @@ function createHarness(fetchImpl) {
 
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'provider-form.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'provider-form.js' });
-  return { context, drawer, formPanel, id, name, glyph, del, cancel, newButton, pencil, notices };
+  return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, del, cancel, newButton, pencil, notices };
 }
 
 test('detectKind mirrors Go channel kind detection cases', () => {
@@ -236,6 +285,30 @@ test('suggestGlyph uses words first and caps output at four characters', () => {
   assert.equal(suggestGlyph('Cartoon Network'), 'CN');
   assert.equal(suggestGlyph('Lofi'), 'LO');
   assert.equal(suggestGlyph('Very Long Provider'), 'VLP');
+});
+
+test('selectColor marks exactly one swatch selected and tracks color', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  assert.equal(typeof api.selectColor, 'function');
+
+  api.selectColor('teal');
+
+  assert.deepEqual(h.swatchButtons.filter((button) => button.classList.contains('selected')).map((button) => button.dataset.color), ['teal']);
+  assert.equal(h.swatchButtons.find((button) => button.dataset.color === 'teal').getAttribute('aria-checked'), 'true');
+  assert.equal(h.swatchButtons.find((button) => button.dataset.color === 'slate').getAttribute('aria-checked'), 'false');
+  assert.equal(api._state.color, 'teal');
+
+  api.selectColor('not-a-palette-token');
+
+  assert.deepEqual(h.swatchButtons.filter((button) => button.classList.contains('selected')).map((button) => button.dataset.color), ['slate']);
+  assert.equal(api._state.color, 'slate');
+
+  h.swatches.dispatch('click', { target: h.swatchButtons.find((button) => button.dataset.color === 'purple') });
+
+  assert.deepEqual(h.swatchButtons.filter((button) => button.classList.contains('selected')).map((button) => button.dataset.color), ['purple']);
+  assert.equal(api._state.color, 'purple');
 });
 
 test('hostHint allows routable hosts and rejects obvious local-only targets', () => {
@@ -265,8 +338,35 @@ test('newProvider resets blank state with slate color and opens the form', () =>
   assert.equal(h.del.hidden, true);
   assert.equal(api._state.mode, 'new');
   assert.equal(api._state.color, 'slate');
+  assert.equal(api._state.glyphTouched, false);
   assert.equal(h.context.document.body.classList.contains('catalog-form-open'), true);
   assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+});
+
+test('name input suggests glyph until glyph is touched by the operator', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+
+  h.name.value = 'Cartoon Network';
+  h.name.dispatch('input');
+
+  assert.equal(h.glyph.value, 'CN');
+  assert.equal(api._state.glyphTouched, false);
+
+  h.name.value = 'Lofi';
+  h.name.dispatch('input');
+
+  assert.equal(h.glyph.value, 'LO');
+
+  h.glyph.value = 'OP';
+  h.glyph.dispatch('input');
+  h.name.value = 'Very Long Provider';
+  h.name.dispatch('input');
+
+  assert.equal(h.glyph.value, 'OP');
+  assert.equal(api._state.glyphTouched, true);
 });
 
 test('populate fills identity, marks editing, shows delete, and opens the form', () => {
@@ -288,9 +388,29 @@ test('populate fills identity, marks editing, shows delete, and opens the form',
   assert.equal(h.del.hidden, false);
   assert.equal(api._state.mode, 'edit');
   assert.equal(api._state.color, 'teal');
+  assert.equal(api._state.glyphTouched, true);
   assert.deepEqual(JSON.parse(JSON.stringify(api._state.groups)), [{ id: 'g', name: 'Group', order: 0 }]);
   assert.deepEqual(JSON.parse(JSON.stringify(api._state.channels)), [{ id: 'c', name: 'Channel', url: 'https://cdn.example.com/live.m3u8', order: 0 }]);
   assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+});
+
+test('populate treats existing glyph as touched so name edits preserve badge label', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:abc',
+    displayName: 'Cartoon Network',
+    badgeLabel: 'CN',
+    badgeColor: 'teal',
+    groups: [],
+    channels: [],
+  });
+  h.name.value = 'Lofi Girl';
+  h.name.dispatch('input');
+
+  assert.equal(h.glyph.value, 'CN');
+  assert.equal(api._state.glyphTouched, true);
 });
 
 test('drawer delegation handles sibling pencil buttons and new provider button', async () => {

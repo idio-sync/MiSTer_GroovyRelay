@@ -8,6 +8,7 @@
     mode: 'new',
     id: '',
     color: 'slate',
+    glyphTouched: false,
     groups: [],
     channels: [],
   };
@@ -99,11 +100,11 @@
 
   function selectColor(token) {
     state.color = palette.includes(token) ? token : 'slate';
-    const form = byID('catalog-form');
-    if (!form) return;
-    form.querySelectorAll('[data-color]').forEach((button) => {
+    const swatches = byID('cf-swatches');
+    if (!swatches) return;
+    swatches.querySelectorAll('.cf-swatch[data-color]').forEach((button) => {
       const selected = button.dataset.color === state.color;
-      button.classList.toggle('active', selected);
+      button.classList.toggle('selected', selected);
       button.setAttribute('aria-checked', selected ? 'true' : 'false');
     });
   }
@@ -132,6 +133,7 @@
   function newProvider() {
     state.mode = 'new';
     state.id = '';
+    state.glyphTouched = false;
     state.groups = [];
     state.channels = [];
     setValue('cf-provider-id', '');
@@ -149,6 +151,7 @@
     const data = form || {};
     state.mode = data.id ? 'edit' : 'new';
     state.id = data.id || '';
+    state.glyphTouched = true;
     state.groups = cloneList(data.groups);
     state.channels = cloneList(data.channels);
     setValue('cf-provider-id', state.id);
@@ -198,12 +201,36 @@
     if (cancel) {
       cancel.addEventListener('click', closeForm);
     }
+    const swatches = byID('cf-swatches');
+    if (swatches) {
+      swatches.addEventListener('click', (event) => {
+        const swatch = event.target.closest && event.target.closest('.cf-swatch[data-color]');
+        if (!swatch) return;
+        event.preventDefault();
+        selectColor(swatch.dataset.color);
+      });
+    }
+    const name = byID('cf-name');
+    if (name) {
+      name.addEventListener('input', () => {
+        if (state.glyphTouched) return;
+        const glyph = byID('cf-glyph');
+        if (glyph) glyph.value = suggestGlyph(name.value);
+      });
+    }
+    const glyph = byID('cf-glyph');
+    if (glyph) {
+      glyph.addEventListener('input', () => {
+        state.glyphTouched = true;
+      });
+    }
   }
 
   window.Chassis.providerForm = {
     detectKind,
     suggestGlyph,
     hostHint,
+    selectColor,
     openForm,
     closeForm,
     newProvider,
