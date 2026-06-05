@@ -225,6 +225,17 @@
     row._verifyChip.textContent = text;
   }
 
+  function clearVerifyChip(row) {
+    if (!row || !row._verifyChip) return;
+    row._verifySeq = (row._verifySeq || 0) + 1;
+    row._verifyChip.hidden = true;
+    row._verifyChip.classList.remove('pending');
+    row._verifyChip.classList.remove('ok');
+    row._verifyChip.classList.remove('err');
+    row._verifyChip.textContent = '';
+    if (row._verify) row._verify.disabled = false;
+  }
+
   async function responseJSON(resp) {
     try {
       return await resp.json();
@@ -252,12 +263,15 @@
       url: String(row._url ? row._url.value : '').trim(),
       kind: override === 'auto' ? '' : override,
     };
+    const seq = (row._verifySeq || 0) + 1;
+    row._verifySeq = seq;
 
     setVerifyChip(row, 'pending', 'VERIFYING');
     if (verify) verify.disabled = true;
     try {
       const resp = await postJSON('POST', '/ui/catalog/channel/verify', body);
       const result = await responseJSON(resp);
+      if (row._verifySeq !== seq) return result;
       if (resp.ok && result && result.ok) {
         setVerifyChip(row, 'ok', verifySuccessText(result, row));
       } else {
@@ -265,10 +279,11 @@
       }
       return result;
     } catch (_) {
+      if (row._verifySeq !== seq) return {};
       setVerifyChip(row, 'err', '✗ Unable to verify channel.');
       return {};
     } finally {
-      if (verify) verify.disabled = false;
+      if (verify && row._verifySeq === seq) verify.disabled = false;
     }
   }
 
@@ -358,8 +373,14 @@
     row._hint = hint;
     row._refresh = () => refreshChannelRow(row);
 
-    url.addEventListener('input', row._refresh);
-    override.addEventListener('change', row._refresh);
+    url.addEventListener('input', () => {
+      clearVerifyChip(row);
+      row._refresh();
+    });
+    override.addEventListener('change', () => {
+      clearVerifyChip(row);
+      row._refresh();
+    });
     verify.addEventListener('click', (event) => {
       event.preventDefault();
       verifyRow(row);

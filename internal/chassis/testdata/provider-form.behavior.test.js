@@ -637,6 +637,39 @@ test('verify button posts channel URL with auto or manually overridden kind', as
   assert.deepEqual(JSON.parse(requests[1][1].body), { url: 'https://video.example.com/watch', kind: 'direct' });
 });
 
+test('_verifyRow ignores stale results after URL or kind edits', async () => {
+  let resolveFetch;
+  const h = createHarness(async () => new Promise((resolve) => {
+    resolveFetch = resolve;
+  }));
+  const api = h.context.window.Chassis.providerForm;
+  const row = api._buildChannelRow({ name: 'Playlist', url: 'https://www.youtube.com/watch?v=abc&list=PL123' }, []);
+
+  const pending = api._verifyRow(row);
+  assert.equal(row._verifyChip.hidden, false);
+  assert.equal(row._verifyChip.classList.contains('pending'), true);
+
+  api._setRowURL(row, 'https://www.youtube.com/watch?v=changed&list=PL456');
+
+  assert.equal(row._verifyChip.hidden, true);
+  assert.equal(row._verifyChip.classList.contains('pending'), false);
+
+  resolveFetch(jsonResponse({ ok: true, kind: 'playlist', itemCount: 47 }));
+  await pending;
+
+  assert.equal(row._verifyChip.hidden, true);
+  assert.equal(row._verifyChip.classList.contains('ok'), false);
+
+  const second = api._verifyRow(row);
+  row._override.value = 'single';
+  row._override.dispatch('change');
+  resolveFetch(jsonResponse({ ok: true, kind: 'playlist', itemCount: 3 }));
+  await second;
+
+  assert.equal(row._verifyChip.hidden, true);
+  assert.equal(row._verifyChip.classList.contains('ok'), false);
+});
+
 test('renderGroups builds chips and group delete updates channel dropdown options', () => {
   const h = createHarness();
   const api = h.context.window.Chassis.providerForm;
