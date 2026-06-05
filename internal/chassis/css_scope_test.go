@@ -182,6 +182,34 @@ func TestChassisCSS_HistoryRowsDoNotAdvertiseMissingInteractivity(t *testing.T) 
 	}
 }
 
+func TestChassisCSS_CatalogDrawerAlignsToSectionContentColumn(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	drawerRule := cssRuleBlock(t, text, "body.receiver #catalog-drawer")
+	for _, want := range []string{
+		"display: grid;",
+		"grid-template-columns: 80px minmax(0, 1fr);",
+		"gap: 14px;",
+	} {
+		if !strings.Contains(drawerRule, want) {
+			t.Fatalf("catalog drawer alignment rule missing %q: %s", want, drawerRule)
+		}
+	}
+	browserRule := cssRuleBlock(t, text, "body.receiver #catalog-drawer .catalog-browser")
+	for _, want := range []string{
+		"grid-column: 2;",
+		"min-width: 0;",
+	} {
+		if !strings.Contains(browserRule, want) {
+			t.Fatalf("catalog browser content-column rule missing %q: %s", want, browserRule)
+		}
+	}
+}
+
 func TestChassisCSS_Task23IdleLiveStateOverrideContracts(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")

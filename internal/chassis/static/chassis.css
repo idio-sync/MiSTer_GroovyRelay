@@ -4834,6 +4834,31 @@ body.receiver .catalog-drawer {
     visibility 0s linear 280ms;
 }
 
+body.receiver #catalog-drawer {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 14px;
+}
+
+body.receiver #catalog-drawer .catalog-browser {
+  grid-column: 2;
+  min-width: 0;
+}
+
+@container chassis (max-width: 600px) {
+  body.receiver #catalog-drawer {
+    grid-template-columns: 60px minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+@container chassis (max-width: 420px) {
+  body.receiver #catalog-drawer {
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+
 body.receiver .catalog-browser {
   min-height: 0;
   margin-top: 12px;
