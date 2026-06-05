@@ -991,6 +991,20 @@ test('delete confirmation warns about starred preset cleanup only for current pr
   await starredAPI._delete();
   assert.match(starred.confirmMessages[0], /starred|preset/i);
 
+  const removed = createHarness(async () => jsonResponse({ ok: true }));
+  const removedAPI = removed.context.window.Chassis.providerForm;
+  removed.emitEvent('presets', { slots: [{ slot: 1, provider: 'user:mix', channel: 'removed' }] });
+  removedAPI.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    groups: [],
+    channels: [{ id: 'live', name: 'Live', url: 'https://cdn.example.com/live.m3u8', order: 0 }],
+  });
+
+  assert.equal(removedAPI._anyStarredChannel(), true);
+  await removedAPI._delete();
+  assert.match(removed.confirmMessages[0], /starred|preset/i);
+
   const plain = createHarness(async () => jsonResponse({ ok: true }));
   const plainAPI = plain.context.window.Chassis.providerForm;
   plain.emitEvent('presets', { slots: [{ slot: 1, provider: 'user:other', channel: 'live' }] });

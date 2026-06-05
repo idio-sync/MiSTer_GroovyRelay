@@ -794,7 +794,11 @@
 
   function anyStarredChannel() {
     if (!state.id) return false;
-    return collectChannelModels().some((channel) => channel.id && starredPresetKeys.has(presetKey(state.id, channel.id)));
+    const prefix = state.id + ':';
+    for (const key of starredPresetKeys) {
+      if (key.indexOf(prefix) === 0) return true;
+    }
+    return false;
   }
 
   function deleteConfirmMessage() {
