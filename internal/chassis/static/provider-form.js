@@ -13,6 +13,8 @@
     channels: [],
   };
   const starredPresetKeys = new Set();
+  let loadSeq = 0;
+  let reorderSeq = 0;
   let mutationSeq = 0;
   let pendingMutation = 0;
 
@@ -194,6 +196,32 @@
     if (pendingMutation !== token) return;
     pendingMutation = 0;
     setMutationControlsDisabled(false);
+  }
+
+  function invalidateLoad() {
+    loadSeq += 1;
+  }
+
+  function beginLoad() {
+    loadSeq += 1;
+    return loadSeq;
+  }
+
+  function isCurrentLoad(token) {
+    return token !== 0 && token === loadSeq;
+  }
+
+  function invalidateReorder() {
+    reorderSeq += 1;
+  }
+
+  function beginReorder() {
+    reorderSeq += 1;
+    return reorderSeq;
+  }
+
+  function isCurrentReorder(token) {
+    return token !== 0 && token === reorderSeq;
   }
 
   function noticeText(result, fallback) {
@@ -693,7 +721,7 @@
     refreshGroupOptionsOnRows();
   }
 
-  async function postReorder() {
+  async function postReorder(token) {
     if (!state.id) return true;
     const body = {
       channels: collectChannelModels().filter((channel) => channel.id).map((channel) => ({ id: channel.id, order: channel.order })),
@@ -703,10 +731,10 @@
       const resp = await postJSON('POST', '/ui/catalog/provider/' + encodeURIComponent(state.id) + '/reorder', body);
       const result = await responseJSON(resp);
       if (resp.ok && result.ok !== false) return true;
-      showNotice((result && (result.message || result.chip)) || 'Unable to reorder provider.', 'err');
+      if (isCurrentReorder(token)) showNotice((result && (result.message || result.chip)) || 'Unable to reorder provider.', 'err');
       return false;
     } catch (_) {
-      showNotice('Unable to reorder provider.', 'err');
+      if (isCurrentReorder(token)) showNotice('Unable to reorder provider.', 'err');
       return false;
     }
   }
@@ -727,9 +755,10 @@
         const to = sortableItem(toEl, '.cf-channel');
         const before = collectChannelModels();
         if (!reorderListMove(host, from, to)) return;
+        const token = beginReorder();
         state.channels = collectChannelModels();
-        return postReorder().then((ok) => {
-          if (ok) return;
+        return postReorder(token).then((ok) => {
+          if (ok || !isCurrentReorder(token)) return;
           renderChannels(before);
         });
       },
@@ -749,10 +778,11 @@
         const beforeGroups = cloneList(currentGroups());
         const beforeChannels = collectChannelModels();
         if (!reorderListMove(host, from, to)) return;
+        const token = beginReorder();
         syncGroupsFromHost(host);
         refreshGroupOptionsOnRows();
-        return postReorder().then((ok) => {
-          if (ok) return;
+        return postReorder(token).then((ok) => {
+          if (ok || !isCurrentReorder(token)) return;
           renderGroups(beforeGroups);
           renderChannels(beforeChannels);
         });
@@ -767,6 +797,8 @@
   }
 
   function closeForm() {
+    invalidateLoad();
+    invalidateReorder();
     invalidateMutation();
     document.body.classList.remove('catalog-form-open');
     const form = byID('catalog-form');
@@ -779,6 +811,8 @@
   }
 
   function newProvider() {
+    invalidateLoad();
+    invalidateReorder();
     invalidateMutation();
     state.mode = 'new';
     state.id = '';
@@ -797,6 +831,8 @@
   }
 
   function populate(form) {
+    invalidateLoad();
+    invalidateReorder();
     invalidateMutation();
     const data = form || {};
     state.mode = data.id ? 'edit' : 'new';
@@ -817,16 +853,19 @@
 
   async function editProvider(id) {
     if (!id) return;
+    const token = beginLoad();
     try {
       const resp = await postJSON('GET', '/ui/catalog/provider/' + encodeURIComponent(id));
+      if (!isCurrentLoad(token)) return;
       if (!resp.ok) {
         showNotice('Unable to load provider.', 'err');
         return;
       }
       const body = await resp.json();
+      if (!isCurrentLoad(token)) return;
       populate(body);
     } catch (_) {
-      showNotice('Unable to load provider.', 'err');
+      if (isCurrentLoad(token)) showNotice('Unable to load provider.', 'err');
     }
   }
 

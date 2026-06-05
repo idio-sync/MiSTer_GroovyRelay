@@ -352,6 +352,14 @@ function nextTick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function requestBody(req) {
   return JSON.parse(req[1].body);
 }
@@ -535,6 +543,70 @@ test('drawer delegation handles sibling pencil buttons and new provider button',
   h.drawer.dispatch('click', { target: h.newButton });
   assert.equal(h.context.window.Chassis.providerForm._state.mode, 'new');
   assert.equal(h.name.value, '');
+});
+
+test('stale edit loads do not overwrite newer edit, new provider, or cancel state', async () => {
+  async function runScenario(action, assertCurrent) {
+    const loads = [];
+    const h = createHarness((url) => {
+      const pending = deferred();
+      loads.push({ url, pending });
+      return pending.promise;
+    });
+    const api = h.context.window.Chassis.providerForm;
+
+    const firstLoad = api.editProvider('user:first');
+    await nextTick();
+    await action(h, api, loads);
+    loads[0].pending.resolve(jsonResponse({
+      id: 'user:first',
+      displayName: 'First',
+      badgeLabel: 'FI',
+      badgeColor: 'red',
+      groups: [],
+      channels: [],
+    }));
+    await firstLoad;
+
+    assertCurrent(h, api, loads);
+  }
+
+  await runScenario(async (_h, api, loads) => {
+    const secondLoad = api.editProvider('user:second');
+    await nextTick();
+    assert.equal(loads.length, 2);
+    loads[1].pending.resolve(jsonResponse({
+      id: 'user:second',
+      displayName: 'Second',
+      badgeLabel: 'SE',
+      badgeColor: 'blue',
+      groups: [],
+      channels: [],
+    }));
+    await secondLoad;
+  }, (h, api) => {
+    assert.equal(api._state.id, 'user:second');
+    assert.equal(h.name.value, 'Second');
+    assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+  });
+
+  await runScenario(async (h, api) => {
+    api.newProvider();
+    h.name.value = 'Draft';
+  }, (h, api) => {
+    assert.equal(api._state.mode, 'new');
+    assert.equal(api._state.id, '');
+    assert.equal(h.name.value, 'Draft');
+    assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+  });
+
+  await runScenario(async (h, api) => {
+    api.closeForm();
+  }, (h, api) => {
+    assert.equal(api._state.id, '');
+    assert.equal(h.name.value, '');
+    assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
+  });
 });
 
 test('renderChannels builds rows and resolves direct kind for m3u8 URLs', () => {
@@ -1384,6 +1456,45 @@ test('failed reorder responses show a notice and roll back channel order', async
 
   assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['a', 'b', 'c']);
   assert.deepEqual(h.notices, [['REJECTED', 'err']]);
+});
+
+test('older reorder failure does not roll back a newer successful channel order', async () => {
+  const posts = [];
+  const h = createHarness((url, init) => {
+    const pending = deferred();
+    posts.push({ url, init, pending });
+    return pending.promise;
+  }, { fakeReorder: true });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    groups: [],
+    channels: [
+      { id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', order: 0 },
+      { id: 'b', name: 'B', url: 'https://cdn.example.com/b.m3u8', order: 1 },
+      { id: 'c', name: 'C', url: 'https://cdn.example.com/c.m3u8', order: 2 },
+    ],
+  });
+
+  const channelDrop = sortableCall(h, '.cf-channel').onDrop;
+  const [a, , c] = Array.prototype.slice.call(h.channels.children);
+  const firstDrop = channelDrop(a, c);
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['b', 'c', 'a']);
+  assert.equal(posts.length, 1);
+
+  const [b, , movedA] = Array.prototype.slice.call(h.channels.children);
+  const secondDrop = channelDrop(b, movedA);
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['c', 'a', 'b']);
+  assert.equal(posts.length, 2);
+
+  posts[1].pending.resolve(jsonResponse({ ok: true }));
+  await secondDrop;
+  posts[0].pending.resolve(jsonResponse({ ok: false, message: 'STALE' }, false));
+  await firstDrop;
+
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['c', 'a', 'b']);
 });
 
 test('group drag reorder preserves unsaved channel values and selections while refreshing dropdown order', async () => {
