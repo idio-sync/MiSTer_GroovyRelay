@@ -294,6 +294,7 @@
     row.dataset.kind = resolved;
     row._kindChip.textContent = resolved.toUpperCase();
     row._playModeWrap.hidden = resolved !== 'playlist';
+    if (resolved !== 'playlist') clearEnumChip(row);
     row._hint.textContent = 'Detected: ' + detected + '; ' + (url ? (hint.ok ? 'Host allowed' : hint.message) : 'Host unchecked');
     row._hint.classList.toggle('err', url !== '' && !hint.ok);
   }
@@ -340,6 +341,15 @@
     chip.classList.toggle('pending', status && status.state === 'pending');
     chip.classList.toggle('ok', status && status.state === 'ready');
     chip.classList.toggle('err', status && status.state === 'error');
+  }
+
+  function clearEnumChip(row) {
+    if (!row || !row._enumChip) return;
+    row._enumChip.hidden = true;
+    row._enumChip.textContent = '';
+    row._enumChip.classList.remove('pending');
+    row._enumChip.classList.remove('ok');
+    row._enumChip.classList.remove('err');
   }
 
   function applyProviderStatus(payload) {

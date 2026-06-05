@@ -398,6 +398,19 @@
     return (existing && existing.parentNode) || (drawer && drawer.parentNode) || document.body;
   }
 
+  function refreshActiveProviderView() {
+    if (!activeProviderID) {
+      railHost.replaceChildren();
+      gridHost.replaceChildren();
+      activeGroupID = '';
+      setModeLabel();
+      return;
+    }
+    const nextProvider = activeProviderID;
+    activeProviderID = '';
+    switchProvider(nextProvider);
+  }
+
   function rebuildCatalog(payload) {
     if (!payload || !Array.isArray(payload.providers)) return;
     const providers = payload.providers;
@@ -435,12 +448,7 @@
 
     if (lastPresetsPayload) applyStars(lastPresetsPayload);
     applyTuned(lastTunedRef[0], lastTunedRef[1]);
-    if (isOpen && activeProviderID) {
-      const nextProvider = activeProviderID;
-      activeProviderID = '';
-      switchProvider(nextProvider);
-      notifyCatalogGridChanged();
-    }
+    refreshActiveProviderView();
     positionIndicator();
   }
 

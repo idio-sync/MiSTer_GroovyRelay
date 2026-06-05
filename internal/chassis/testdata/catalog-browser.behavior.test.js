@@ -97,6 +97,10 @@ class FakeElement {
     return this._text;
   }
 
+  get firstChild() {
+    return this.children.length > 0 ? this.children[0] : null;
+  }
+
   set textContent(value) {
     this._text = String(value == null ? '' : value);
     this.children = [];
@@ -500,6 +504,23 @@ test('rebuild preserves the indicator, active provider, new button, and hidden t
   assert.equal(h.tabs.querySelector('.catalog-provider-tab.active').dataset.provider, 'mtv');
   assert.equal(h.document.getElementById('catalog-tree-user:keep'), null);
   assert.ok(h.document.getElementById('catalog-tree-mtv'));
+});
+
+test('closed catalog rebuild refreshes active rail and grid before browse opens', () => {
+  const h = createHarness();
+
+  h.cb.rebuild({
+    providers: [
+      provider('user:keep', [group('fresh', 'Fresh', [channel('new-list', 'New List')])]),
+    ],
+  });
+
+  assert.equal(h.rail.children.length, 1);
+  assert.equal(h.rail.children[0].dataset.group, 'fresh');
+  assert.equal(h.rail.children[0].classList.contains('active'), true);
+  assert.equal(h.grid.children.length, 1);
+  assert.equal(h.grid.children[0].dataset.provider, 'user:keep');
+  assert.equal(h.grid.children[0].dataset.channel, 'new-list');
 });
 
 test('rebuild reapplies cached preset stars and tuned state to rebuilt templates', () => {

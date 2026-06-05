@@ -710,6 +710,35 @@ test('provider-form subscribes to providerStatus and paints enum chips on matchi
   assert.equal(row._enumChip.textContent, 'ENUMERATING...');
 });
 
+test('playlist enum chips clear when a row stops being a playlist', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    badgeLabel: 'MX',
+    badgeColor: 'teal',
+    groups: [],
+    channels: [
+      { id: 'list', name: 'List', url: 'https://www.youtube.com/watch?v=abc&list=PL1', kind: 'playlist', playMode: 'sequential', groupId: '', order: 0 },
+    ],
+  });
+  h.emitEvent('providerStatus', { provider: 'user:mix', channels: [{ channel: 'list', state: 'ready', itemCount: 9 }] });
+
+  const row = h.channels.children[0];
+  assert.equal(row._enumChip.hidden, false);
+  assert.equal(row._enumChip.textContent, '9 VIDEOS');
+
+  row._override.value = 'single';
+  row._override.dispatch('change');
+
+  assert.equal(row.dataset.kind, 'single');
+  assert.equal(row._enumChip.hidden, true);
+  assert.equal(row._enumChip.textContent, '');
+  assert.equal(row._enumChip.classList.contains('ok'), false);
+});
+
 test('providerStatus for another provider or non-playlist rows does not paint enum chips', () => {
   const h = createHarness();
   const api = h.context.window.Chassis.providerForm;
