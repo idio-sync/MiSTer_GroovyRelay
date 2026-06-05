@@ -141,9 +141,18 @@ func (a *Adapter) stopReporter(refKey string) {
 	}
 	a.mu.Unlock()
 	if ok {
-		r.cancel()
-		r.ticker.Stop()
-		r.pingTicker.Stop()
+		// Guard each field: production reporters always set these via
+		// startReporter, but tests inject lightweight reporter stubs
+		// (no cancel/ticker) that Stop() must tolerate without panicking.
+		if r.cancel != nil {
+			r.cancel()
+		}
+		if r.ticker != nil {
+			r.ticker.Stop()
+		}
+		if r.pingTicker != nil {
+			r.pingTicker.Stop()
+		}
 	}
 }
 

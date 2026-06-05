@@ -290,7 +290,7 @@ func TestHandlePlay_PlayNow_CallsStartSession(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestHandlePlayRecordsCompanionHistory(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -366,7 +366,7 @@ func TestHandlePlayRecordsCompanionHistory(t *testing.T) {
 
 func TestCompanionHistorySurvivesNewAdapter(t *testing.T) {
 	dataDir := t.TempDir()
-	a := New(&fakeManager{}, dataDir, "dev-1", "", nil)
+	a := newQuiescedAdapter(t, &fakeManager{}, dataDir, "dev-1", "", nil)
 	a.recordCompanionHistory("itm-1", PlaybackInfoResult{Title: "Some Movie"}, time.Now())
 
 	fresh := New(&fakeManager{}, dataDir, "dev-1", "", nil)
@@ -425,7 +425,7 @@ func TestHandlePlay_AudioItemStartsMusicVisualizerSession(t *testing.T) {
 	jfSrv := startTestAudioPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -540,7 +540,7 @@ func TestHandlePlay_AudioItemCachesPrimaryArtworkAndCleansUp(t *testing.T) {
 	jfSrv, gotAPIKey := startTestAudioArtworkServer(t, http.StatusOK)
 
 	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -576,8 +576,7 @@ func TestHandlePlay_AudioItemArtwork404FallsBackToEmptyPath(t *testing.T) {
 	jfSrv, _ := startTestAudioArtworkServer(t, http.StatusNotFound)
 
 	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
-	t.Cleanup(func() { quiesceAdapter(a) })
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -602,7 +601,7 @@ func TestHandlePlay_AudioItemStartSessionFailureRemovesArtwork(t *testing.T) {
 	jfSrv, _ := startTestAudioArtworkServer(t, http.StatusOK)
 
 	mgr := &fakeManager{err: errors.New("reject"), mode: string(core.VisualizerModeCoverVU)}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -655,7 +654,7 @@ func TestHandlePlay_AudioItemPlaybackInfoFailureRemovesArtwork(t *testing.T) {
 
 	dataDir := t.TempDir()
 	mgr := &fakeManager{mode: string(core.VisualizerModeCoverVU)}
-	a := New(mgr, dataDir, "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, dataDir, "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -691,8 +690,7 @@ func TestHandlePlaystate_NextTrackAudioItemStartsMusicVisualizerSession(t *testi
 	jfSrv := startTestAudioPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
-	t.Cleanup(func() { quiesceAdapter(a) })
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -731,7 +729,7 @@ func TestSetAudioStreamIndex_AudioTrackSwitchKeepsMusicVisualizerSession(t *test
 		Position:   42 * time.Second,
 		AdapterRef: "song-1:ps-old",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -772,7 +770,7 @@ func TestHandlePlay_PlaybackInfoErrorCode_NoStartSession(t *testing.T) {
 	defer jfSrv.Close()
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -820,9 +818,22 @@ func quiesceAdapter(a *Adapter) {
 	a.bgStarts.Wait()
 }
 
+// newTestAdapter builds an Adapter and registers quiesceAdapter via
+// t.Cleanup, so detached start goroutines are drained before t.TempDir()'s
+// automatic RemoveAll runs (cleanups are LIFO; t.TempDir registered its
+// removal first). Routing every test construction through this helper keeps
+// the Windows-only TempDir race (see quiesceAdapter) from reappearing
+// whenever a new start-path test is added — no per-test drain to forget.
+func newQuiescedAdapter(t *testing.T, coreMgr SessionManager, dataDir, deviceID, initialModeline string, eventLog *eventlog.Log) *Adapter {
+	t.Helper()
+	a := New(coreMgr, dataDir, deviceID, initialModeline, eventLog)
+	t.Cleanup(func() { quiesceAdapter(a) })
+	return a
+}
+
 func TestHandlePlaystate_PauseCallsCorePause(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Pause"}))
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -833,7 +844,7 @@ func TestHandlePlaystate_PauseCallsCorePause(t *testing.T) {
 
 func TestHandlePlaystate_UnpauseCallsCorePlay(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Unpause"}))
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -844,7 +855,7 @@ func TestHandlePlaystate_UnpauseCallsCorePlay(t *testing.T) {
 
 func TestHandlePlaystate_StopCallsCoreStop(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "Stop"}))
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -894,7 +905,7 @@ func TestHandlePlaystate_SeekRestartsJellyfinTranscodeAtTarget(t *testing.T) {
 		Position:   12 * time.Second,
 		AdapterRef: "itm-1:ps-old",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -946,7 +957,7 @@ func TestHandlePlaystate_UnpauseRestartsJellyfinTranscodeAtPausedPosition(t *tes
 		Position:   42 * time.Second,
 		AdapterRef: "itm-1:ps-old",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -980,7 +991,7 @@ func TestHandlePlaystate_UnpauseRestartsJellyfinTranscodeAtPausedPosition(t *tes
 
 func TestHandlePlaystate_PlayPauseTogglesByState(t *testing.T) {
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StatePlaying}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandlePlaystate(mustMarshal(t, map[string]any{"Command": "PlayPause"}))
 	mgr.mu.Lock()
 	first := mgr.calls
@@ -1003,7 +1014,7 @@ func TestHandlePlaystate_PlayPauseTogglesByState(t *testing.T) {
 
 func TestHandleGeneralCommand_DisplayMessage_LogsAndDoesNothing(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name": "DisplayMessage",
 		"Arguments": map[string]string{
@@ -1023,7 +1034,7 @@ func TestHandleGeneralCommand_DisplayMessage_LogsAndDoesNothing(t *testing.T) {
 // switching only proceeds when a live cast is in progress.
 func TestHandleGeneralCommand_SetAudioStreamIndex_NoOpWhenNoLiveCast(t *testing.T) {
 	mgr := &fakeManager{} // st.State == zero == StateIdle
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetAudioStreamIndex",
 		"Arguments": map[string]string{"Index": "2"},
@@ -1040,7 +1051,7 @@ func TestHandleGeneralCommand_SetAudioStreamIndex_NoOpWhenNoLiveCast(t *testing.
 // subtitle-stream equivalent of the audio test above.
 func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testing.T) {
 	mgr := &fakeManager{} // st.State == zero == StateIdle
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandleGeneralCommand(mustMarshal(t, map[string]any{
 		"Name":      "SetSubtitleStreamIndex",
 		"Arguments": map[string]string{"Index": "-1"},
@@ -1056,7 +1067,7 @@ func TestHandleGeneralCommand_SetSubtitleStreamIndex_NoOpWhenNoLiveCast(t *testi
 func TestHandlePlay_PlayNowCapturesTailQueueFromStartIndex(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -1093,7 +1104,7 @@ func TestHandlePlay_PlayNowCapturesTailQueueFromStartIndex(t *testing.T) {
 func TestHandlePlay_PlayNowInvalidStartIndexUsesZero(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -1117,7 +1128,7 @@ func TestHandlePlay_PlayNowInvalidStartIndexUsesZero(t *testing.T) {
 }
 
 func TestHandlePlay_PlayNextMultipleItemsPreservesOrderAheadOfTail(t *testing.T) {
-	a := New(&fakeManager{}, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, &fakeManager{}, t.TempDir(), "dev-1", "", nil)
 	a.queue = []QueuedItem{{QueueEntryID: 99, ItemID: "tail-itm"}}
 	a.nextQueueEntryID = 99
 
@@ -1145,7 +1156,7 @@ func TestHandlePlay_PlayNextMultipleItemsPreservesOrderAheadOfTail(t *testing.T)
 
 func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.HandlePlay(mustMarshal(t, map[string]any{
 		"ItemIds":     []string{"itm-2", "itm-3"},
 		"PlayCommand": "PlayLast",
@@ -1161,7 +1172,7 @@ func TestHandlePlay_PlayLast_AppendsToQueue(t *testing.T) {
 }
 
 func TestHandlePlay_PlayNext_InsertsAtFront(t *testing.T) {
-	a := New(&fakeManager{}, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, &fakeManager{}, t.TempDir(), "dev-1", "", nil)
 	a.queue = []QueuedItem{{ItemID: "tail-1"}, {ItemID: "tail-2"}}
 	a.HandlePlay(mustMarshal(t, map[string]any{
 		"ItemIds":     []string{"head-x"},
@@ -1178,7 +1189,7 @@ func TestHandlePlaystate_NextTrack_PopsAndStarts(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -1229,7 +1240,7 @@ func TestAutoAdvanceEOF_StartsNextQueuedItemIfIdle(t *testing.T) {
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1259,7 +1270,7 @@ func TestAutoAdvanceEOF_StartsNextQueuedItemIfIdle(t *testing.T) {
 func TestAutoAdvanceEOF_GuardMissLeavesQueueAndRefUnchanged(t *testing.T) {
 	jfSrv := startMappedPlaybackInfoServer(t, nil)
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: false}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1286,7 +1297,7 @@ func TestAutoAdvanceEOF_GuardMissLeavesQueueAndRefUnchanged(t *testing.T) {
 func TestAutoAdvanceEOF_PlaybackInfoFailureLeavesQueueAndRefUnchanged(t *testing.T) {
 	jfSrv := startMappedPlaybackInfoServer(t, map[string]bool{"bad-itm": true})
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1323,7 +1334,7 @@ func TestAutoAdvanceEOF_StartSessionIfIdleErrorLeavesQueueAndRefUnchanged(t *tes
 		startIdleStarted: true,
 		startIdleErr:     errors.New("probe failed"),
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1355,7 +1366,7 @@ func TestAutoAdvanceEOF_ControllerStartsDuringIdleGuardStandsDown(t *testing.T) 
 		mgr.st = core.SessionStatus{State: core.StatePlaying, AdapterRef: "controller-itm:ps-controller"}
 		mgr.mu.Unlock()
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1385,7 +1396,7 @@ func TestAutoAdvanceEOF_CommitFailureStopsAutoStartedSession(t *testing.T) {
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1454,7 +1465,7 @@ func TestAutoAdvanceEOF_CorePreemptBeforeCommitDoesNotClaimStaleStart(t *testing
 			}
 		}
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1509,7 +1520,7 @@ func TestAutoAdvanceEOF_CorePreemptAfterCommitRollsBackAdapterState(t *testing.T
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1573,7 +1584,7 @@ func TestAutoAdvanceEOF_PlayNextBeforeCommitStopsStaleStart(t *testing.T) {
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1629,7 +1640,7 @@ func TestAutoAdvanceEOF_PlayNextBeforeCommitStopsStaleStart(t *testing.T) {
 func TestAutoAdvanceEOF_StaleCurrentRefDoesNotMutateQueue(t *testing.T) {
 	jfSrv := startMappedPlaybackInfoServer(t, nil)
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StateIdle}, startIdleStarted: true}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1668,7 +1679,7 @@ func TestAutoAdvanceEOF_DuplicateQueuedItemsInsertedAheadStopsStaleStart(t *test
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1733,7 +1744,7 @@ func TestAutoAdvanceEOF_PlayNowQueueReplacementBeforeCommitFailsCleanly(t *testi
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1795,8 +1806,7 @@ func TestAutoAdvanceEOF_PendingManualNextTrackBlocksAutoAdvance(t *testing.T) {
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
-	t.Cleanup(func() { quiesceAdapter(a) })
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1848,7 +1858,7 @@ func TestAutoAdvanceEOF_PendingPlayNowBlocksAutoAdvance(t *testing.T) {
 		st:               core.SessionStatus{State: core.StateIdle},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1906,7 +1916,7 @@ func TestAutoAdvanceEOF_PendingSeekRestartBlocksAutoAdvance(t *testing.T) {
 		},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -1968,7 +1978,7 @@ func TestAutoAdvanceEOF_PendingTrackSwitchBlocksAutoAdvance(t *testing.T) {
 		},
 		startIdleStarted: true,
 	}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.autoAdvanceDelay = 0
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true, AutoAdvance: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
@@ -2041,7 +2051,7 @@ func TestSetAudioStreamIndex_TrackSwitch_RestartsAtCurrentPosition(t *testing.T)
 		Position:   75 * time.Second,
 		AdapterRef: "itm-1:ps-1",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -2086,7 +2096,7 @@ func TestSetSubtitleStreamIndex_RestoresPausedAfterRestart(t *testing.T) {
 		Position:   12 * time.Second,
 		AdapterRef: "itm-1:ps-1",
 	}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -2125,7 +2135,7 @@ func TestSetAudioStreamIndex_NoOpWhenIndexUnchanged(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServer(t)
 
 	mgr := &fakeManager{st: core.SessionStatus{State: core.StatePlaying, AdapterRef: "itm-1:ps-1"}}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -2185,7 +2195,7 @@ func TestStartPlayNow_EmitsCastRequested(t *testing.T) {
 
 	log := eventlog.New(16)
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", log)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", log)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -2228,7 +2238,7 @@ func TestStartPlayNow_PopulatesTitle(t *testing.T) {
 	jfSrv := startTestPlaybackInfoServerWithTitle(t, wantTitle)
 
 	mgr := &fakeManager{}
-	a := New(mgr, t.TempDir(), "dev-1", "", nil)
+	a := newQuiescedAdapter(t, mgr, t.TempDir(), "dev-1", "", nil)
 	a.cfg = Config{ServerURL: jfSrv.URL, MaxVideoBitrateKbps: 4000, Enabled: true}
 	if err := SaveToken(a.tokenPath(), Token{AccessToken: "tok", UserID: "uid", ServerURL: jfSrv.URL}); err != nil {
 		t.Fatal(err)
