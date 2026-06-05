@@ -9,6 +9,7 @@
 *.out
 *.test
 coverage.txt
+/.gocache/
 /testdata/dumps/
 tests/integration/testdata/*.mp4
 /build/goreleaser/
