@@ -50,8 +50,25 @@ class FakeElement {
   }
 
   appendChild(child) {
+    if (child.parentElement) {
+      child.parentElement.children = child.parentElement.children.filter((item) => item !== child);
+    }
     child.parentElement = this;
     this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child, before) {
+    if (child.parentElement) {
+      child.parentElement.children = child.parentElement.children.filter((item) => item !== child);
+    }
+    child.parentElement = this;
+    const index = this.children.indexOf(before);
+    if (index < 0) {
+      this.children.push(child);
+    } else {
+      this.children.splice(index, 0, child);
+    }
     return child;
   }
 
@@ -179,7 +196,7 @@ function walkFind(root, selector, all, acc = []) {
   return all ? acc : null;
 }
 
-function createHarness(fetchImpl) {
+function createHarness(fetchImpl, opts = {}) {
   const body = new FakeElement('body');
   const drawer = new FakeElement('div', { id: 'catalog-drawer' });
   const formPanel = new FakeElement('div', { id: 'catalog-form' });
@@ -254,16 +271,27 @@ function createHarness(fetchImpl) {
   };
 
   const notices = [];
+  const reorderCalls = [];
+  const chassis = {
+    settings: {
+      showNotice(text, variant) {
+        notices.push([text, variant]);
+      },
+    },
+  };
+  if (opts.fakeReorder) {
+    chassis.reorder = {
+      makeSortable(config) {
+        reorderCalls.push(config);
+        return { cancel() {} };
+      },
+    };
+  }
+  if (opts.reorder) chassis.reorder = opts.reorder;
   const context = {
     document,
     window: {
-      Chassis: {
-        settings: {
-          showNotice(text, variant) {
-            notices.push([text, variant]);
-          },
-        },
-      },
+      Chassis: chassis,
     },
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({}) })),
     URL,
@@ -275,7 +303,7 @@ function createHarness(fetchImpl) {
 
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'provider-form.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'provider-form.js' });
-  return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, cancel, newButton, pencil, notices };
+  return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, cancel, newButton, pencil, notices, reorderCalls };
 }
 
 function jsonResponse(body, ok = true) {
@@ -283,6 +311,14 @@ function jsonResponse(body, ok = true) {
     ok,
     json: async () => body,
   };
+}
+
+function sortableCall(h, selector) {
+  return h.reorderCalls.find((call) => call.itemSelector === selector);
+}
+
+function nextTick() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 test('detectKind mirrors Go channel kind detection cases', () => {
@@ -724,4 +760,197 @@ test('add channel and add group buttons append rows and chips', () => {
   rows = Array.prototype.slice.call(h.channels.children);
   assert.equal(rows.length, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(api.collectChannelModels())).map((channel) => channel.order), [0, 1]);
+});
+
+test('_reorderListMove moves C before A and channel collection follows DOM order', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderChannels([
+    { id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', order: 0 },
+    { id: 'b', name: 'B', url: 'https://cdn.example.com/b.m3u8', order: 1 },
+    { id: 'c', name: 'C', url: 'https://cdn.example.com/c.m3u8', order: 2 },
+  ]);
+
+  const [a, , c] = Array.prototype.slice.call(h.channels.children);
+  api._reorderListMove(h.channels, c, a);
+
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['c', 'a', 'b']);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.collectChannelModels().map((channel) => ({ id: channel.id, order: channel.order })))), [
+    { id: 'c', order: 0 },
+    { id: 'a', order: 1 },
+    { id: 'b', order: 2 },
+  ]);
+});
+
+test('_reorderListMove moves A after C when dragging downward', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderChannels([
+    { id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', order: 0 },
+    { id: 'b', name: 'B', url: 'https://cdn.example.com/b.m3u8', order: 1 },
+    { id: 'c', name: 'C', url: 'https://cdn.example.com/c.m3u8', order: 2 },
+  ]);
+
+  const [a, , c] = Array.prototype.slice.call(h.channels.children);
+  api._reorderListMove(h.channels, a, c);
+
+  assert.deepEqual(Array.prototype.slice.call(h.channels.children).map((row) => row.dataset.channelId), ['b', 'c', 'a']);
+});
+
+test('group reorder syncs state from chip order', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderGroups([
+    { id: 'a', name: 'A', order: 0 },
+    { id: 'b', name: 'B', order: 1 },
+    { id: 'c', name: 'C', order: 2 },
+  ]);
+
+  const [a, , c] = Array.prototype.slice.call(h.groupChips.children);
+  api._reorderListMove(h.groupChips, c, a);
+  api._syncGroupsFromHost(h.groupChips);
+
+  assert.deepEqual(Array.prototype.slice.call(h.groupChips.children).map((chip) => chip.dataset.groupId), ['c', 'a', 'b']);
+  assert.deepEqual(JSON.parse(JSON.stringify(api._currentGroups().map((group) => ({ id: group.id, order: group.order })))), [
+    { id: 'c', order: 0 },
+    { id: 'a', order: 1 },
+    { id: 'b', order: 2 },
+  ]);
+});
+
+test('provider form wires channel and group containers to Chassis reorder', () => {
+  const h = createHarness(null, { fakeReorder: true });
+
+  assert.equal(h.reorderCalls.length, 2);
+  const channelCall = sortableCall(h, '.cf-channel');
+  const groupCall = sortableCall(h, '.cf-group-chip');
+  assert.equal(channelCall.container, h.channels);
+  assert.equal(groupCall.container, h.groupChips);
+  assert.equal(typeof channelCall.onDrop, 'function');
+  assert.equal(typeof groupCall.onDrop, 'function');
+});
+
+test('dropping channel rows for existing providers posts reorder JSON and new providers skip POST', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true });
+  }, { fakeReorder: true });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:mix/alpha',
+    displayName: 'Mix',
+    groups: [
+      { id: 'sports', name: 'Sports', order: 0 },
+      { id: 'news', name: 'News', order: 1 },
+    ],
+    channels: [
+      { id: 'a', name: 'A', url: 'https://cdn.example.com/a.m3u8', groupId: 'sports', order: 0 },
+      { id: 'b', name: 'B', url: 'https://cdn.example.com/b.m3u8', groupId: 'news', order: 1 },
+      { id: 'c', name: 'C', url: 'https://cdn.example.com/c.m3u8', groupId: '', order: 2 },
+    ],
+  });
+
+  const [a, , c] = Array.prototype.slice.call(h.channels.children);
+  sortableCall(h, '.cf-channel').onDrop(a, c);
+  await nextTick();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/ui/catalog/provider/user%3Amix%2Falpha/reorder');
+  assert.equal(requests[0][1].method, 'POST');
+  assert.equal(requests[0][1].credentials, 'same-origin');
+  assert.equal(requests[0][1].headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(requests[0][1].body), {
+    channels: [
+      { id: 'b', order: 0 },
+      { id: 'c', order: 1 },
+      { id: 'a', order: 2 },
+    ],
+    groups: [
+      { id: 'sports', order: 0 },
+      { id: 'news', order: 1 },
+    ],
+  });
+
+  const newRequests = [];
+  const next = createHarness(async (url, init) => {
+    newRequests.push([url, init]);
+    return jsonResponse({ ok: true });
+  }, { fakeReorder: true });
+  const nextAPI = next.context.window.Chassis.providerForm;
+  nextAPI.newProvider();
+  nextAPI.renderChannels([
+    { id: '', name: 'Unsaved A', url: 'https://cdn.example.com/a.m3u8', order: 0 },
+    { id: '', name: 'Unsaved B', url: 'https://cdn.example.com/b.m3u8', order: 1 },
+  ]);
+
+  const [unsavedA, unsavedB] = Array.prototype.slice.call(next.channels.children);
+  sortableCall(next, '.cf-channel').onDrop(unsavedA, unsavedB);
+  await nextTick();
+
+  assert.equal(newRequests.length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(nextAPI.collectChannelModels().map((channel) => channel.name))), ['Unsaved B', 'Unsaved A']);
+});
+
+test('group drag reorder preserves unsaved channel values and selections while refreshing dropdown order', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true });
+  }, { fakeReorder: true });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({
+    id: 'user:abc',
+    displayName: 'Mix',
+    groups: [
+      { id: 'sports', name: 'Sports', order: 0 },
+      { id: 'news', name: 'News', order: 1 },
+    ],
+    channels: [
+      {
+        id: 'live',
+        name: 'Live',
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: '',
+        playMode: '',
+        groupId: 'sports',
+        order: 0,
+      },
+    ],
+  });
+
+  const row = h.channels.children[0];
+  row._name.value = 'Unsaved live';
+  row._url.value = 'https://www.youtube.com/watch?v=abc&list=PL123';
+  row._override.value = 'playlist';
+  row._play.value = 'first_then_shuffle';
+  row._group.value = 'news';
+
+  const [sports, news] = Array.prototype.slice.call(h.groupChips.children);
+  sortableCall(h, '.cf-group-chip').onDrop(news, sports);
+  await nextTick();
+
+  const nextRow = h.channels.children[0];
+  assert.deepEqual(JSON.parse(JSON.stringify(api._currentGroups().map((group) => ({ id: group.id, order: group.order })))), [
+    { id: 'news', order: 0 },
+    { id: 'sports', order: 1 },
+  ]);
+  assert.deepEqual(Array.prototype.slice.call(nextRow._group.children).map((option) => option.value), ['', 'news', 'sports']);
+  assert.equal(nextRow._name.value, 'Unsaved live');
+  assert.equal(nextRow._url.value, 'https://www.youtube.com/watch?v=abc&list=PL123');
+  assert.equal(nextRow._override.value, 'playlist');
+  assert.equal(nextRow._play.value, 'first_then_shuffle');
+  assert.equal(nextRow._group.value, 'news');
+  assert.deepEqual(JSON.parse(requests[0][1].body), {
+    channels: [{ id: 'live', order: 0 }],
+    groups: [
+      { id: 'news', order: 0 },
+      { id: 'sports', order: 1 },
+    ],
+  });
 });

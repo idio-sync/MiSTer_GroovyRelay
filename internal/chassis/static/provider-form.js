@@ -297,6 +297,50 @@
     parent.replaceChildren(...kids(parent).filter((child) => child !== el));
   }
 
+  function insertBeforeCompat(host, child, before) {
+    if (!host || !child) return false;
+    if (typeof host.insertBefore === 'function') {
+      host.insertBefore(child, before || null);
+      return true;
+    }
+    if (typeof host.replaceChildren !== 'function') return false;
+
+    const next = kids(host).filter((item) => item !== child);
+    const index = before ? next.indexOf(before) : -1;
+    if (index < 0) {
+      next.push(child);
+    } else {
+      next.splice(index, 0, child);
+    }
+    host.replaceChildren(...next);
+    return true;
+  }
+
+  function reorderListMove(host, fromEl, toEl) {
+    if (!host || !fromEl || !toEl || fromEl === toEl) return false;
+    const children = kids(host);
+    const fromIndex = children.indexOf(fromEl);
+    const toIndex = children.indexOf(toEl);
+    if (fromIndex < 0 || toIndex < 0) return false;
+
+    if (fromIndex < toIndex) {
+      return insertBeforeCompat(host, fromEl, children[toIndex + 1] || null);
+    }
+    return insertBeforeCompat(host, fromEl, toEl);
+  }
+
+  function syncGroupsFromHost(host) {
+    const source = host || byID('cf-group-chips');
+    if (!source) return currentGroups();
+    const existing = new Map(currentGroups().map((group) => [group.id, group]));
+    state.groups = kids(source).filter((chip) => chip.dataset && Object.prototype.hasOwnProperty.call(chip.dataset, 'groupId')).map((chip, index) => {
+      const id = chip.dataset.groupId || '';
+      const prev = existing.get(id) || {};
+      return normalizeGroup({ ...prev, id, order: index }, index);
+    });
+    return state.groups;
+  }
+
   function buildChannelRow(ch, groups) {
     const model = normalizeChannel(ch, 0);
     const groupList = normalizeGroups(groups);
@@ -402,7 +446,7 @@
     if (!host) return;
 
     const chips = models.map((group) => {
-      const chip = mk('span', 'cf-chip');
+      const chip = mk('span', 'cf-chip cf-group-chip');
       chip.dataset.groupId = group.id;
       chip.textContent = group.name || group.id || 'Group';
 
@@ -487,6 +531,56 @@
     renderChannels(channels);
   }
 
+  function postReorder() {
+    if (!state.id) return Promise.resolve(false);
+    const body = {
+      channels: collectChannelModels().filter((channel) => channel.id).map((channel) => ({ id: channel.id, order: channel.order })),
+      groups: currentGroups().filter((group) => group.id).map((group, index) => ({ id: group.id, order: index })),
+    };
+    return postJSON('POST', '/ui/catalog/provider/' + encodeURIComponent(state.id) + '/reorder', body).catch(() => {
+      showNotice('Unable to reorder provider.', 'err');
+    });
+  }
+
+  function sortableItem(el, selector) {
+    return el && el.closest ? el.closest(selector) : el;
+  }
+
+  function wireChannelReorder() {
+    const host = byID('cf-channels');
+    const reorder = window.Chassis && window.Chassis.reorder;
+    if (!host || !reorder || typeof reorder.makeSortable !== 'function') return;
+    reorder.makeSortable({
+      container: host,
+      itemSelector: '.cf-channel',
+      onDrop(fromEl, toEl) {
+        const from = sortableItem(fromEl, '.cf-channel');
+        const to = sortableItem(toEl, '.cf-channel');
+        if (!reorderListMove(host, from, to)) return;
+        state.channels = collectChannelModels();
+        postReorder();
+      },
+    });
+  }
+
+  function wireGroupReorder() {
+    const host = byID('cf-group-chips');
+    const reorder = window.Chassis && window.Chassis.reorder;
+    if (!host || !reorder || typeof reorder.makeSortable !== 'function') return;
+    reorder.makeSortable({
+      container: host,
+      itemSelector: '.cf-group-chip',
+      onDrop(fromEl, toEl) {
+        const from = sortableItem(fromEl, '.cf-group-chip');
+        const to = sortableItem(toEl, '.cf-group-chip');
+        if (!reorderListMove(host, from, to)) return;
+        syncGroupsFromHost(host);
+        renderChannels(collectChannelModels());
+        postReorder();
+      },
+    });
+  }
+
   function openForm() {
     document.body.classList.add('catalog-form-open');
     const form = byID('catalog-form');
@@ -555,6 +649,9 @@
   }
 
   function wireEvents() {
+    wireChannelReorder();
+    wireGroupReorder();
+
     const drawer = byID('catalog-drawer');
     if (drawer) {
       drawer.addEventListener('click', (event) => {
@@ -627,6 +724,9 @@
     newProvider,
     editProvider,
     populate,
+    _reorderListMove: reorderListMove,
+    _syncGroupsFromHost: syncGroupsFromHost,
+    _currentGroups: currentGroups,
     _buildChannelRow: buildChannelRow,
     _setRowURL: setRowURL,
     _verifyRow: verifyRow,
