@@ -940,6 +940,41 @@ test('save failures keep the form open and show error notices', async () => {
   assert.deepEqual(jsonFail.notices, [['Name is required.', 'err']]);
 });
 
+test('save ignores duplicate submissions and stale responses after form changes', async () => {
+  const requests = [];
+  const resolvers = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return new Promise((resolve) => {
+      resolvers.push(() => resolve(jsonResponse({ ok: true, autoEnabledStreams: 'on' })));
+    });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+  h.name.value = 'Slow Save';
+  const first = api._save();
+  const second = api._save();
+
+  assert.equal(requests.length, 1);
+  assert.equal(h.save.disabled, true);
+  assert.equal(h.del.disabled, true);
+
+  api.populate({ id: 'user:later', displayName: 'Later', groups: [], channels: [] });
+  assert.equal(h.save.disabled, false);
+  assert.equal(h.del.disabled, false);
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+  assert.equal(h.id.value, 'user:later');
+
+  resolvers.forEach((resolve) => resolve());
+  assert.equal(await second, false);
+  assert.equal(await first, false);
+
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+  assert.equal(h.id.value, 'user:later');
+  assert.deepEqual(h.notices, []);
+});
+
 test('delete for a new provider closes without confirming or posting', async () => {
   const requests = [];
   const h = createHarness(async (url, init) => {
@@ -954,6 +989,41 @@ test('delete for a new provider closes without confirming or posting', async () 
   assert.equal(requests.length, 0);
   assert.equal(h.confirmMessages.length, 0);
   assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
+});
+
+test('delete ignores duplicate submissions and stale responses after form changes', async () => {
+  const requests = [];
+  const resolvers = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return new Promise((resolve) => {
+      resolvers.push(() => resolve(jsonResponse({ ok: true })));
+    });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({ id: 'user:old', displayName: 'Old', groups: [], channels: [] });
+  const first = api._delete();
+  const second = api._delete();
+
+  assert.equal(h.confirmMessages.length, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(h.save.disabled, true);
+  assert.equal(h.del.disabled, true);
+
+  api.populate({ id: 'user:later', displayName: 'Later', groups: [], channels: [] });
+  assert.equal(h.save.disabled, false);
+  assert.equal(h.del.disabled, false);
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+  assert.equal(h.id.value, 'user:later');
+
+  resolvers.forEach((resolve) => resolve());
+  assert.equal(await second, false);
+  assert.equal(await first, false);
+
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'false');
+  assert.equal(h.id.value, 'user:later');
+  assert.deepEqual(h.notices, []);
 });
 
 test('delete existing provider confirms, sends DELETE, closes, and reports cleared slots', async () => {

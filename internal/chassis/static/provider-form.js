@@ -13,6 +13,8 @@
     channels: [],
   };
   const starredPresetKeys = new Set();
+  let mutationSeq = 0;
+  let pendingMutation = 0;
 
   function byID(id) {
     return document.getElementById(id);
@@ -161,6 +163,37 @@
     if (settings && typeof settings.showNotice === 'function') {
       settings.showNotice(text, variant);
     }
+  }
+
+  function setMutationControlsDisabled(disabled) {
+    ['cf-save', 'cf-delete'].forEach((id) => {
+      const el = byID(id);
+      if (el) el.disabled = disabled;
+    });
+  }
+
+  function invalidateMutation() {
+    mutationSeq += 1;
+    pendingMutation = 0;
+    setMutationControlsDisabled(false);
+  }
+
+  function beginMutation() {
+    if (pendingMutation) return 0;
+    pendingMutation = mutationSeq + 1;
+    mutationSeq = pendingMutation;
+    setMutationControlsDisabled(true);
+    return pendingMutation;
+  }
+
+  function isCurrentMutation(token) {
+    return token !== 0 && pendingMutation === token;
+  }
+
+  function finishMutation(token) {
+    if (pendingMutation !== token) return;
+    pendingMutation = 0;
+    setMutationControlsDisabled(false);
   }
 
   function noticeText(result, fallback) {
@@ -682,6 +715,7 @@
   }
 
   function closeForm() {
+    invalidateMutation();
     document.body.classList.remove('catalog-form-open');
     const form = byID('catalog-form');
     if (form) form.setAttribute('aria-hidden', 'true');
@@ -693,6 +727,7 @@
   }
 
   function newProvider() {
+    invalidateMutation();
     state.mode = 'new';
     state.id = '';
     state.glyphTouched = false;
@@ -710,6 +745,7 @@
   }
 
   function populate(form) {
+    invalidateMutation();
     const data = form || {};
     state.mode = data.id ? 'edit' : 'new';
     state.id = data.id || '';
@@ -748,10 +784,15 @@
   }
 
   async function save() {
+    const token = beginMutation();
+    if (!token) return false;
     const creating = !state.id;
+    const url = saveURL();
+    const payload = collectPayload();
     try {
-      const resp = await postJSON(creating ? 'POST' : 'PUT', saveURL(), collectPayload());
+      const resp = await postJSON(creating ? 'POST' : 'PUT', url, payload);
       const result = await responseJSON(resp);
+      if (!isCurrentMutation(token)) return false;
       if (!resp.ok || (result && result.ok === false)) {
         showNotice(noticeText(result, 'Unable to save provider.'), 'err');
         return false;
@@ -761,8 +802,10 @@
       closeForm();
       return true;
     } catch (_) {
-      showNotice('Unable to save provider.', 'err');
+      if (isCurrentMutation(token)) showNotice('Unable to save provider.', 'err');
       return false;
+    } finally {
+      finishMutation(token);
     }
   }
 
@@ -813,12 +856,17 @@
       closeForm();
       return true;
     }
+    if (pendingMutation) return false;
     if (typeof window.confirm === 'function' && !window.confirm(deleteConfirmMessage())) {
       return false;
     }
+    const token = beginMutation();
+    if (!token) return false;
+    const id = state.id;
     try {
-      const resp = await postJSON('DELETE', '/ui/catalog/provider/' + encodeURIComponent(state.id));
+      const resp = await postJSON('DELETE', '/ui/catalog/provider/' + encodeURIComponent(id));
       const result = await responseJSON(resp);
+      if (!isCurrentMutation(token)) return false;
       if (!resp.ok || (result && result.ok === false)) {
         showNotice(noticeText(result, 'Unable to delete provider.'), 'err');
         return false;
@@ -827,8 +875,10 @@
       closeForm();
       return true;
     } catch (_) {
-      showNotice('Unable to delete provider.', 'err');
+      if (isCurrentMutation(token)) showNotice('Unable to delete provider.', 'err');
       return false;
+    } finally {
+      finishMutation(token);
     }
   }
 
