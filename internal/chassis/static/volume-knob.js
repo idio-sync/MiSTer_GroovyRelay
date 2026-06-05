@@ -18,8 +18,12 @@
 
   let root = null;
   let range = null;
+  let muteButton = null;
+  let muteLamp = null;
   let authoritative = 100;
+  let authoritativeMuted = false;
   let localValue = 100;
+  let localMuted = false;
   let inFlight = false;
   let queuedValue = null;
   let editing = false;
@@ -33,6 +37,10 @@
       return MIN;
     }
     return Math.min(MAX, Math.max(MIN, n));
+  }
+
+  function boolFrom(value) {
+    return value === true || value === 'true';
   }
 
   function angleFor(value) {
@@ -72,10 +80,38 @@
     }
   }
 
+  function setMutedVisual(muted) {
+    localMuted = Boolean(muted);
+    if (root) {
+      root.dataset.volumeMuted = String(localMuted);
+      root.classList.toggle('muted', localMuted);
+    }
+    if (muteButton) {
+      muteButton.classList.toggle('on', localMuted);
+      muteButton.setAttribute('aria-pressed', localMuted ? 'true' : 'false');
+    }
+    if (muteLamp) {
+      muteLamp.classList.toggle('on', localMuted);
+    }
+  }
+
   function postVolume(value) {
     const body = new URLSearchParams();
     body.set('output_volume', String(clamp(value)));
     return fetch('/ui/volume', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+  }
+
+  function postMute(muted) {
+    const body = new URLSearchParams();
+    body.set('muted', muted ? 'true' : 'false');
+    return fetch('/ui/volume/mute', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {
@@ -223,6 +259,10 @@
       const data = JSON.parse(ev.data);
       const next = clamp(data.outputVolume);
       authoritative = next;
+      if (data.outputMuted !== undefined) {
+        authoritativeMuted = Boolean(data.outputMuted);
+        setMutedVisual(authoritativeMuted);
+      }
       if (!editing && !inFlight && queuedValue === null) {
         setVisual(next, '');
       }
@@ -231,12 +271,32 @@
     }
   }
 
+  function toggleMute() {
+    const next = !localMuted;
+    setMutedVisual(next);
+    postMute(next).then((res) => {
+      if (res.status !== 204) {
+        setMutedVisual(authoritativeMuted);
+        res.text().then((text) => {
+          console.warn('volume-knob: mute failed', res.status, text);
+        }).catch(() => {});
+      } else {
+        authoritativeMuted = next;
+      }
+    }).catch((err) => {
+      console.warn('volume-knob: mute POST failed', err);
+      setMutedVisual(authoritativeMuted);
+    });
+  }
+
   function bind() {
     if (!root || !range) {
       return;
     }
     authoritative = clamp(root.dataset.volumeValue || range.value);
+    authoritativeMuted = boolFrom(root.dataset.volumeMuted);
     setVisual(authoritative, '');
+    setMutedVisual(authoritativeMuted);
 
     range.addEventListener('pointerdown', () => beginEdit());
     range.addEventListener('input', () => updateEdit(range.value));
@@ -266,11 +326,16 @@
       updateEdit(next);
       commitEdit(next);
     }, { passive: false });
+    if (muteButton) {
+      muteButton.addEventListener('click', toggleMute);
+    }
   }
 
   function init() {
     root = document.querySelector('[data-volume-knob]');
     range = document.querySelector('[data-volume-range]');
+    muteButton = document.querySelector('[data-volume-mute]');
+    muteLamp = document.querySelector('[data-volume-mute-lamp]');
     bind();
     window.Chassis.events.subscribe('volume', handleVolumeEvent);
   }

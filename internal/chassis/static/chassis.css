@@ -2457,6 +2457,107 @@ body.receiver [data-volume-knob] .volume-label {
   color: #a0a0a6;
 }
 
+body.receiver .level-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+body.receiver .mute-control {
+  position: relative;
+  width: 58px;
+  height: 82px;
+  display: grid;
+  place-items: center;
+  padding-top: 10px;
+}
+
+body.receiver .mute-label {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  color: #8a8a8e;
+  font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+body.receiver .mute-button {
+  position: relative;
+  width: 36px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid #050506;
+  border-radius: 3px;
+  cursor: pointer;
+  background: linear-gradient(180deg, #050506 0%, #171719 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 4px rgba(0,0,0,0.72),
+    0 2px 6px rgba(0,0,0,0.68);
+}
+
+body.receiver .mute-button-face {
+  position: absolute;
+  inset: 5px;
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0) 36%),
+    linear-gradient(180deg, #3a3a3e 0%, #171719 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.20),
+    inset 0 -2px 3px rgba(0,0,0,0.64);
+  transition: transform 120ms cubic-bezier(0.22,1,0.36,1), filter 120ms ease;
+}
+
+body.receiver .mute-button:hover .mute-button-face,
+body.receiver .mute-button:focus-visible .mute-button-face {
+  filter: brightness(1.12);
+}
+
+body.receiver .mute-button:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 4px rgba(0,0,0,0.72),
+    0 0 0 2px var(--vfd-glow-soft),
+    0 0 12px var(--vfd-glow-soft);
+}
+
+body.receiver .mute-button.on .mute-button-face {
+  transform: translateY(2px);
+  filter: brightness(0.84);
+}
+
+body.receiver .mute-lamp {
+  position: absolute;
+  right: -2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid #050506;
+  background:
+    radial-gradient(circle at 50% 20%, rgba(255,255,255,0.28), transparent 28%),
+    linear-gradient(180deg, #2a1b05, #120d05);
+  box-shadow: inset 0 1px 2px rgba(255,255,255,0.12), 0 1px 3px rgba(0,0,0,0.62);
+}
+
+body.receiver .mute-lamp.on {
+  background:
+    radial-gradient(circle at 50% 22%, rgba(255,255,255,0.70), transparent 24%),
+    repeating-linear-gradient(90deg, rgba(0,0,0,0.28) 0 1px, rgba(0,0,0,0) 1px 2px),
+    linear-gradient(180deg, var(--lock-amber) 0%, oklch(0.64 0.18 63) 100%);
+  box-shadow:
+    0 0 7px var(--lock-amber-glow),
+    0 0 15px oklch(0.82 0.18 75 / 0.38),
+    inset 0 1px 2px rgba(255,255,255,0.42);
+}
+
 body.receiver [data-volume-knob] .volume-tick {
   width: 2px;
   height: 4px;
@@ -2482,6 +2583,15 @@ body.receiver [data-volume-knob] .volume-dial {
     inset 0 -7px 10px rgba(0,0,0,0.72),
     inset 0 0 0 7px rgba(255,255,255,0.035),
     0 2px 8px rgba(0,0,0,0.78);
+}
+
+body.receiver [data-volume-knob].muted .volume-dial {
+  filter: saturate(0.55) brightness(0.72);
+}
+
+body.receiver [data-volume-knob].muted .volume-notch {
+  background: oklch(0.70 0.16 75);
+  box-shadow: 0 0 7px oklch(0.82 0.18 75 / 0.55), inset 0 1px 1px rgba(255,255,255,0.34), inset 0 -2px 2px rgba(0,0,0,0.40);
 }
 
 body.receiver [data-volume-knob] .volume-dial::before,
@@ -5761,7 +5871,7 @@ body.receiver .audio-deck .dsp-knob { width: 66px; height: 72px; }
 body.receiver .audio-deck .deck-eq { padding: 0 4px; }
 body.receiver .audio-deck .deck-level {
   align-items: center;
-  min-width: 132px;
+  min-width: 204px;
 }
 
 /* EQ graphic faders — recessed machined channel, VFD-cyan fill, metal cap. */

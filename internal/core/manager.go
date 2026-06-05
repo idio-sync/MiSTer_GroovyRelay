@@ -100,6 +100,7 @@ type Manager struct {
 	// or preview). audioDSPPersisted is true when runtime == m.bridge.Audio.DSP.
 	audioDSPRuntime   config.AudioDSP
 	audioDSPPersisted bool
+	outputMuted       bool
 
 	eventLog *eventlog.Log // nilable; nil disables event emission
 }
@@ -848,7 +849,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioRate:           audioRate,
 		AudioChans:          audioChans,
 		SuppressAudioOutput: suppressAudio,
-		OutputVolume:        m.bridge.Audio.OutputVolume,
+		OutputVolume:        m.effectiveOutputVolumeLocked(),
 		AudioDSP:            dspParamsFromConfig(m.bridge.Audio.DSP, audioRate, audioChans),
 		SeekOffsetMs:        offsetMs,
 		Generation:          generation,
@@ -1238,6 +1239,14 @@ func (m *Manager) OutputVolume() int {
 	return m.bridge.Audio.OutputVolume
 }
 
+// OutputMuted returns the current transient output mute state. Mute is runtime
+// state only: it never rewrites the persisted output volume.
+func (m *Manager) OutputMuted() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.outputMuted
+}
+
 // SetOutputVolume changes the global software gain live and stores it for
 // future session rebuilds. The dataplane applies the gain immediately before
 // each outgoing PCM AUDIO packet.
@@ -1249,9 +1258,29 @@ func (m *Manager) SetOutputVolume(volume int) error {
 	}
 	m.bridge.Audio.OutputVolume = volume
 	if m.plane != nil {
-		return m.plane.SetOutputVolume(volume)
+		return m.plane.SetOutputVolume(m.effectiveOutputVolumeLocked())
 	}
 	return nil
+}
+
+// SetOutputMuted toggles transient output mute without changing the saved
+// output volume. While muted, active and future planes receive an effective
+// output volume of 0; unmuting restores the saved output volume.
+func (m *Manager) SetOutputMuted(muted bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outputMuted = muted
+	if m.plane != nil {
+		return m.plane.SetOutputVolume(m.effectiveOutputVolumeLocked())
+	}
+	return nil
+}
+
+func (m *Manager) effectiveOutputVolumeLocked() int {
+	if m.outputMuted {
+		return 0
+	}
+	return m.bridge.Audio.OutputVolume
 }
 
 // AudioDSP returns the current runtime tone/EQ params under m.mu. On process

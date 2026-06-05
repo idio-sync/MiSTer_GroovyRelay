@@ -234,6 +234,48 @@ func TestManager_SetOutputVolumeVisibleThroughOutputVolume(t *testing.T) {
 	}
 }
 
+func TestManager_OutputMutedAppliesZeroWithoutChangingSavedVolume(t *testing.T) {
+	m := newTestManager(t)
+	vp := &volumePlane{}
+	m.mu.Lock()
+	m.bridge.Audio.OutputVolume = 64
+	m.plane = vp
+	m.mu.Unlock()
+
+	if err := m.SetOutputMuted(true); err != nil {
+		t.Fatalf("SetOutputMuted(true): %v", err)
+	}
+	if got := m.OutputMuted(); !got {
+		t.Fatalf("OutputMuted() = false, want true")
+	}
+	if got := m.OutputVolume(); got != 64 {
+		t.Fatalf("OutputVolume() = %d, want saved volume 64 while muted", got)
+	}
+	if len(vp.volumes) != 1 || vp.volumes[0] != 0 {
+		t.Fatalf("active plane volumes after mute = %v, want [0]", vp.volumes)
+	}
+
+	if err := m.SetOutputVolume(22); err != nil {
+		t.Fatalf("SetOutputVolume while muted: %v", err)
+	}
+	if got := m.OutputVolume(); got != 22 {
+		t.Fatalf("OutputVolume() after muted volume change = %d, want saved volume 22", got)
+	}
+	if len(vp.volumes) != 2 || vp.volumes[1] != 0 {
+		t.Fatalf("active plane volumes after muted volume change = %v, want second effective volume 0", vp.volumes)
+	}
+
+	if err := m.SetOutputMuted(false); err != nil {
+		t.Fatalf("SetOutputMuted(false): %v", err)
+	}
+	if got := m.OutputMuted(); got {
+		t.Fatalf("OutputMuted() = true, want false")
+	}
+	if len(vp.volumes) != 3 || vp.volumes[2] != 22 {
+		t.Fatalf("active plane volumes after unmute = %v, want final effective volume 22", vp.volumes)
+	}
+}
+
 func TestManager_InitialStatusIdle(t *testing.T) {
 	m := newTestManager(t)
 	st := m.Status()

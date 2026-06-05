@@ -756,6 +756,23 @@ func (m *mutableVolumeViewer) set(volume int) {
 	m.mu.Unlock()
 }
 
+type mutableMuteViewer struct {
+	mu    sync.Mutex
+	muted bool
+}
+
+func (m *mutableMuteViewer) OutputMuted() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.muted
+}
+
+func (m *mutableMuteViewer) set(muted bool) {
+	m.mu.Lock()
+	m.muted = muted
+	m.mu.Unlock()
+}
+
 func TestHandleEvents_EmitsStateEventOnTransition(t *testing.T) {
 	t.Parallel()
 	sv := &mutableSessionViewer{view: core.StatusHomeView{State: core.StateIdle}}
@@ -1066,8 +1083,10 @@ func TestHandleEvents_VisualizerEventOmittedWhenModeUnchanged(t *testing.T) {
 func TestHandleEvents_InitialSnapshotIncludesVolume(t *testing.T) {
 	t.Parallel()
 	vv := &mutableVolumeViewer{volume: 73}
+	mv := &mutableMuteViewer{muted: true}
 	cfg := nonZeroConfig()
 	cfg.VolumeViewer = vv
+	cfg.MuteViewer = mv
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1088,13 +1107,18 @@ func TestHandleEvents_InitialSnapshotIncludesVolume(t *testing.T) {
 	if !strings.Contains(body, `"outputVolume":73`) {
 		t.Fatalf("SSE stream missing outputVolume 73:\n%s", body)
 	}
+	if !strings.Contains(body, `"outputMuted":true`) {
+		t.Fatalf("SSE stream missing outputMuted true:\n%s", body)
+	}
 }
 
-func TestHandleEvents_EmitsVolumeWhenChanged(t *testing.T) {
+func TestHandleEvents_EmitsVolumeWhenLevelOrMuteChanged(t *testing.T) {
 	t.Parallel()
 	vv := &mutableVolumeViewer{volume: 40}
+	mv := &mutableMuteViewer{}
 	cfg := nonZeroConfig()
 	cfg.VolumeViewer = vv
+	cfg.MuteViewer = mv
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1108,17 +1132,22 @@ func TestHandleEvents_EmitsVolumeWhenChanged(t *testing.T) {
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		vv.set(41)
+		time.Sleep(150 * time.Millisecond)
+		mv.set(true)
 		time.Sleep(350 * time.Millisecond)
 		cancel()
 	}()
 	s.handleEvents(w, req)
 	body := w.Body.String()
 
-	if got := strings.Count(body, "event: volume\n"); got < 2 {
-		t.Fatalf("volume event count = %d, want initial plus changed event; body:\n%s", got, body)
+	if got := strings.Count(body, "event: volume\n"); got < 3 {
+		t.Fatalf("volume event count = %d, want initial plus level and mute changes; body:\n%s", got, body)
 	}
 	if !strings.Contains(body, `"outputVolume":40`) || !strings.Contains(body, `"outputVolume":41`) {
 		t.Fatalf("SSE stream missing initial/changed volume payloads:\n%s", body)
+	}
+	if !strings.Contains(body, `"outputMuted":true`) {
+		t.Fatalf("SSE stream missing changed mute payload:\n%s", body)
 	}
 }
 
@@ -1151,6 +1180,9 @@ func TestHandleEvents_DoesNotRepeatUnchangedVolume(t *testing.T) {
 func TestVolumeChanged_ComparesOnlyOutputVolume(t *testing.T) {
 	if !volumeChanged(TransportData{OutputVolume: 1}, TransportData{OutputVolume: 2}) {
 		t.Fatal("volumeChanged = false, want true for changed output volume")
+	}
+	if !volumeChanged(TransportData{OutputMuted: false}, TransportData{OutputMuted: true}) {
+		t.Fatal("volumeChanged = false, want true for changed mute state")
 	}
 	if volumeChanged(TransportData{OutputVolume: 2, State: "playing"}, TransportData{OutputVolume: 2, State: "paused"}) {
 		t.Fatal("volumeChanged = true, want false for transport-only changes")
