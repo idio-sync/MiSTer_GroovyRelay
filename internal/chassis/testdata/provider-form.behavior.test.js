@@ -210,6 +210,7 @@ function createHarness(fetchImpl, opts = {}) {
   const drawer = new FakeElement('div', { id: 'catalog-drawer' });
   const formPanel = new FakeElement('div', { id: 'catalog-form' });
   formPanel.setAttribute('aria-hidden', 'true');
+  const form = new FakeElement('form', { id: 'cf-form' });
   const id = new FakeElement('input', { id: 'cf-provider-id' });
   const name = new FakeElement('input', { id: 'cf-name' });
   const glyph = new FakeElement('input', { id: 'cf-glyph' });
@@ -220,6 +221,7 @@ function createHarness(fetchImpl, opts = {}) {
   const channels = new FakeElement('div', { id: 'cf-channels' });
   const addChannel = new FakeElement('button', { id: 'cf-add-channel', className: 'cf-add-channel' });
   const del = new FakeElement('button', { id: 'cf-delete', hidden: true });
+  const save = new FakeElement('button', { id: 'cf-save', className: 'cf-save' });
   const cancel = new FakeElement('button', { id: 'cf-cancel' });
   const newButton = new FakeElement('button', { id: 'catalog-provider-new' });
   const pencil = new FakeElement('button', { dataset: { editProvider: 'user:abc' } });
@@ -230,17 +232,19 @@ function createHarness(fetchImpl, opts = {}) {
     return button;
   });
 
-  formPanel.appendChild(id);
-  formPanel.appendChild(name);
-  formPanel.appendChild(glyph);
-  formPanel.appendChild(swatches);
+  form.appendChild(id);
+  form.appendChild(name);
+  form.appendChild(glyph);
+  form.appendChild(swatches);
   groups.appendChild(groupChips);
   groups.appendChild(addGroup);
-  formPanel.appendChild(groups);
-  formPanel.appendChild(channels);
-  formPanel.appendChild(addChannel);
-  formPanel.appendChild(del);
-  formPanel.appendChild(cancel);
+  form.appendChild(groups);
+  form.appendChild(channels);
+  form.appendChild(addChannel);
+  form.appendChild(del);
+  form.appendChild(save);
+  form.appendChild(cancel);
+  formPanel.appendChild(form);
   drawer.appendChild(pencil);
   drawer.appendChild(newButton);
   drawer.appendChild(formPanel);
@@ -259,6 +263,8 @@ function createHarness(fetchImpl, opts = {}) {
     ['cf-channels', channels],
     ['cf-add-channel', addChannel],
     ['cf-delete', del],
+    ['cf-save', save],
+    ['cf-form', form],
     ['cf-cancel', cancel],
     ['catalog-provider-new', newButton],
   ]);
@@ -281,10 +287,19 @@ function createHarness(fetchImpl, opts = {}) {
 
   const notices = [];
   const reorderCalls = [];
+  const eventHandlers = new Map();
+  const confirmMessages = [];
   const chassis = {
     settings: {
       showNotice(text, variant) {
         notices.push([text, variant]);
+      },
+    },
+    events: {
+      subscribe(name, fn) {
+        const list = eventHandlers.get(name) || [];
+        list.push(fn);
+        eventHandlers.set(name, list);
       },
     },
   };
@@ -301,6 +316,10 @@ function createHarness(fetchImpl, opts = {}) {
     document,
     window: {
       Chassis: chassis,
+      confirm(message) {
+        confirmMessages.push(String(message || ''));
+        return opts.confirmResult !== undefined ? opts.confirmResult : true;
+      },
     },
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({}) })),
     URL,
@@ -312,7 +331,10 @@ function createHarness(fetchImpl, opts = {}) {
 
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'provider-form.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'provider-form.js' });
-  return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, cancel, newButton, pencil, notices, reorderCalls };
+  function emitEvent(name, payload) {
+    for (const fn of eventHandlers.get(name) || []) fn({ data: JSON.stringify(payload) });
+  }
+  return { context, drawer, formPanel, form, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, save, cancel, newButton, pencil, notices, reorderCalls, eventHandlers, emitEvent, confirmMessages };
 }
 
 function jsonResponse(body, ok = true) {
@@ -328,6 +350,10 @@ function sortableCall(h, selector) {
 
 function nextTick() {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function requestBody(req) {
+  return JSON.parse(req[1].body);
 }
 
 test('detectKind mirrors Go channel kind detection cases', () => {
@@ -769,6 +795,215 @@ test('add channel and add group buttons append rows and chips', () => {
   rows = Array.prototype.slice.call(h.channels.children);
   assert.equal(rows.length, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(api.collectChannelModels())).map((channel) => channel.order), [0, 1]);
+});
+
+test('_collectPayload returns camelCase provider form payload with current rows', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+  h.name.value = 'F1 TV';
+  h.glyph.value = 'F1';
+  api.selectColor('cyan');
+  api.renderGroups([
+    { id: 'sports', name: 'Sports', order: 0 },
+    { id: 'news', name: 'News', order: 1 },
+  ]);
+  api.renderChannels([
+    { id: 'live', name: 'Live', url: 'https://cdn.example.com/live.m3u8', kind: '', playMode: '', groupId: 'sports', order: 3 },
+    { id: '', name: 'Playlist', url: 'https://www.youtube.com/watch?v=abc&list=PL123', kind: 'playlist', playMode: 'first_then_shuffle', groupId: 'news', order: 9 },
+  ]);
+
+  const payload = api._collectPayload();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    displayName: 'F1 TV',
+    badgeLabel: 'F1',
+    badgeColor: 'cyan',
+    groups: [
+      { id: 'sports', name: 'Sports', order: 0 },
+      { id: 'news', name: 'News', order: 1 },
+    ],
+    channels: [
+      {
+        id: 'live',
+        name: 'Live',
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: '',
+        playMode: '',
+        groupId: 'sports',
+        order: 0,
+      },
+      {
+        id: '',
+        name: 'Playlist',
+        url: 'https://www.youtube.com/watch?v=abc&list=PL123',
+        kind: 'playlist',
+        playMode: 'first_then_shuffle',
+        groupId: 'news',
+        order: 1,
+      },
+    ],
+  });
+});
+
+test('save create posts JSON and closes the form on ok response', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true, provider: { id: 'user:f1-tv' } });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+  h.name.value = 'F1 TV';
+  h.glyph.value = 'F1';
+  api.selectColor('teal');
+  api.renderChannels([{ id: '', name: 'Live', url: 'https://cdn.example.com/live.m3u8', kind: '', order: 0 }]);
+
+  h.save.dispatch('click');
+  await nextTick();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/ui/catalog/provider');
+  assert.equal(requests[0][1].method, 'POST');
+  assert.equal(requests[0][1].credentials, 'same-origin');
+  assert.equal(requests[0][1].headers['Content-Type'], 'application/json');
+  assert.deepEqual(requestBody(requests[0]).channels.map((channel) => channel.id), ['']);
+  assert.equal(requestBody(requests[0]).displayName, 'F1 TV');
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
+  assert.equal(h.context.document.body.classList.contains('catalog-form-open'), false);
+});
+
+test('form submit also saves the provider', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+  h.name.value = 'Submit Save';
+  h.form.dispatch('submit');
+  await nextTick();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/ui/catalog/provider');
+  assert.equal(requests[0][1].method, 'POST');
+});
+
+test('create auto-enable responses show stream activation notices', async () => {
+  const on = createHarness(async () => jsonResponse({ ok: true, autoEnabledStreams: 'on' }));
+  on.context.window.Chassis.providerForm.newProvider();
+  await on.context.window.Chassis.providerForm._save();
+  assert.match(on.notices.map((notice) => notice[0]).join(' '), /turned on|activated/i);
+
+  const restart = createHarness(async () => jsonResponse({ ok: true, autoEnabledStreams: 'restart-required' }));
+  restart.context.window.Chassis.providerForm.newProvider();
+  await restart.context.window.Chassis.providerForm._save();
+  assert.match(restart.notices.map((notice) => notice[0]).join(' '), /restart/i);
+});
+
+test('save update uses encoded PUT route and reports cleared preset slots', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true, clearedSlots: [2, 5] });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({ id: 'user:mix/alpha', displayName: 'Mix', badgeLabel: 'MX', badgeColor: 'blue', groups: [], channels: [] });
+  await api._save();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/ui/catalog/provider/user%3Amix%2Falpha');
+  assert.equal(requests[0][1].method, 'PUT');
+  assert.equal(requests[0][1].headers['Content-Type'], 'application/json');
+  assert.match(h.notices.map((notice) => notice[0]).join(' '), /2.*slot|slot.*2/i);
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
+});
+
+test('save failures keep the form open and show error notices', async () => {
+  const httpFail = createHarness(async () => jsonResponse({ ok: false, chip: 'BAD INPUT' }, false));
+  httpFail.context.window.Chassis.providerForm.newProvider();
+  await httpFail.context.window.Chassis.providerForm._save();
+
+  assert.equal(httpFail.formPanel.getAttribute('aria-hidden'), 'false');
+  assert.deepEqual(httpFail.notices, [['BAD INPUT', 'err']]);
+
+  const jsonFail = createHarness(async () => jsonResponse({ ok: false, message: 'Name is required.' }, true));
+  jsonFail.context.window.Chassis.providerForm.newProvider();
+  await jsonFail.context.window.Chassis.providerForm._save();
+
+  assert.equal(jsonFail.formPanel.getAttribute('aria-hidden'), 'false');
+  assert.deepEqual(jsonFail.notices, [['Name is required.', 'err']]);
+});
+
+test('delete for a new provider closes without confirming or posting', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+  await api._delete();
+
+  assert.equal(requests.length, 0);
+  assert.equal(h.confirmMessages.length, 0);
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
+});
+
+test('delete existing provider confirms, sends DELETE, closes, and reports cleared slots', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true, clearedSlots: [3] });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({ id: 'user:mix/alpha', displayName: 'Mix', groups: [], channels: [] });
+  h.del.dispatch('click');
+  await nextTick();
+
+  assert.equal(h.confirmMessages.length, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/ui/catalog/provider/user%3Amix%2Falpha');
+  assert.equal(requests[0][1].method, 'DELETE');
+  assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
+  assert.match(h.notices.map((notice) => notice[0]).join(' '), /1.*slot|slot.*1/i);
+});
+
+test('delete confirmation warns about starred preset cleanup only for current provider starred channels', async () => {
+  const starred = createHarness(async () => jsonResponse({ ok: true }));
+  const starredAPI = starred.context.window.Chassis.providerForm;
+  starred.emitEvent('presets', { slots: [{ slot: 1, provider: 'user:mix', channel: 'live' }] });
+  starredAPI.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    groups: [],
+    channels: [{ id: 'live', name: 'Live', url: 'https://cdn.example.com/live.m3u8', order: 0 }],
+  });
+
+  assert.equal(starredAPI._anyStarredChannel(), true);
+  await starredAPI._delete();
+  assert.match(starred.confirmMessages[0], /starred|preset/i);
+
+  const plain = createHarness(async () => jsonResponse({ ok: true }));
+  const plainAPI = plain.context.window.Chassis.providerForm;
+  plain.emitEvent('presets', { slots: [{ slot: 1, provider: 'user:other', channel: 'live' }] });
+  plainAPI.populate({
+    id: 'user:mix',
+    displayName: 'Mix',
+    groups: [],
+    channels: [{ id: 'live', name: 'Live', url: 'https://cdn.example.com/live.m3u8', order: 0 }],
+  });
+
+  assert.equal(plainAPI._anyStarredChannel(), false);
+  await plainAPI._delete();
+  assert.doesNotMatch(plain.confirmMessages[0], /starred|preset/i);
 });
 
 test('_reorderListMove moves C before A and channel collection follows DOM order', () => {

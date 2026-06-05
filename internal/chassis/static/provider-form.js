@@ -12,6 +12,7 @@
     groups: [],
     channels: [],
   };
+  const starredPresetKeys = new Set();
 
   function byID(id) {
     return document.getElementById(id);
@@ -159,6 +160,34 @@
     const settings = window.Chassis && window.Chassis.settings;
     if (settings && typeof settings.showNotice === 'function') {
       settings.showNotice(text, variant);
+    }
+  }
+
+  function noticeText(result, fallback) {
+    return (result && (result.message || result.chip || result.error)) || fallback;
+  }
+
+  function clearedSlotsCount(result) {
+    const slots = result && result.clearedSlots;
+    if (Array.isArray(slots)) return slots.length;
+    const n = Number(slots);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function showClearedSlots(result) {
+    const count = clearedSlotsCount(result);
+    if (count <= 0) return;
+    showNotice(count + ' preset slot' + (count === 1 ? '' : 's') + ' cleared.', 'warn');
+  }
+
+  function showAutoEnableNotice(result) {
+    const status = result && result.autoEnabledStreams;
+    if (status === 'on') {
+      showNotice('Streams source turned on.', 'ok');
+      return;
+    }
+    if (status === 'restart-required') {
+      showNotice('Restart the bridge to activate the Streams source.', 'warn');
     }
   }
 
@@ -524,6 +553,25 @@
     });
   }
 
+  function inputValue(id) {
+    const el = byID(id);
+    return el ? el.value : '';
+  }
+
+  function collectPayload() {
+    const groups = syncGroupsFromHost().map((group, index) => normalizeGroup({ ...group, order: index }, index));
+    const channels = collectChannelModels();
+    state.groups = cloneList(groups);
+    state.channels = cloneList(channels);
+    return {
+      displayName: inputValue('cf-name'),
+      badgeLabel: inputValue('cf-glyph'),
+      badgeColor: state.color,
+      groups,
+      channels,
+    };
+  }
+
   function setRowURL(row, value) {
     if (!row || !row._url) return;
     row._url.value = value == null ? '' : String(value);
@@ -694,7 +742,101 @@
     }
   }
 
+  function saveURL() {
+    if (!state.id) return '/ui/catalog/provider';
+    return '/ui/catalog/provider/' + encodeURIComponent(state.id);
+  }
+
+  async function save() {
+    const creating = !state.id;
+    try {
+      const resp = await postJSON(creating ? 'POST' : 'PUT', saveURL(), collectPayload());
+      const result = await responseJSON(resp);
+      if (!resp.ok || (result && result.ok === false)) {
+        showNotice(noticeText(result, 'Unable to save provider.'), 'err');
+        return false;
+      }
+      if (creating) showAutoEnableNotice(result);
+      showClearedSlots(result);
+      closeForm();
+      return true;
+    } catch (_) {
+      showNotice('Unable to save provider.', 'err');
+      return false;
+    }
+  }
+
+  function presetKey(provider, channel) {
+    return String(provider || '') + ':' + String(channel || '');
+  }
+
+  function applyPresetPayload(payload) {
+    starredPresetKeys.clear();
+    if (!payload || !Array.isArray(payload.slots)) return;
+    payload.slots.forEach((slot) => {
+      if (slot && slot.provider && slot.channel) {
+        starredPresetKeys.add(presetKey(slot.provider, slot.channel));
+      }
+    });
+  }
+
+  function onPresets(ev) {
+    let payload = ev || {};
+    if (ev && typeof ev.data === 'string') {
+      try {
+        payload = JSON.parse(ev.data);
+      } catch (_) {
+        return;
+      }
+    }
+    applyPresetPayload(payload);
+  }
+
+  function anyStarredChannel() {
+    if (!state.id) return false;
+    return collectChannelModels().some((channel) => channel.id && starredPresetKeys.has(presetKey(state.id, channel.id)));
+  }
+
+  function deleteConfirmMessage() {
+    if (anyStarredChannel()) {
+      return 'Delete this provider? Starred preset slots for its channels will be cleared.';
+    }
+    return 'Delete this provider?';
+  }
+
+  async function deleteProvider() {
+    if (!state.id) {
+      closeForm();
+      return true;
+    }
+    if (typeof window.confirm === 'function' && !window.confirm(deleteConfirmMessage())) {
+      return false;
+    }
+    try {
+      const resp = await postJSON('DELETE', '/ui/catalog/provider/' + encodeURIComponent(state.id));
+      const result = await responseJSON(resp);
+      if (!resp.ok || (result && result.ok === false)) {
+        showNotice(noticeText(result, 'Unable to delete provider.'), 'err');
+        return false;
+      }
+      showClearedSlots(result);
+      closeForm();
+      return true;
+    } catch (_) {
+      showNotice('Unable to delete provider.', 'err');
+      return false;
+    }
+  }
+
+  function wirePresetEvents() {
+    const events = window.Chassis && window.Chassis.events;
+    if (events && typeof events.subscribe === 'function') {
+      events.subscribe('presets', onPresets);
+    }
+  }
+
   function wireEvents() {
+    wirePresetEvents();
     wireChannelReorder();
     wireGroupReorder();
 
@@ -717,6 +859,27 @@
     const cancel = byID('cf-cancel');
     if (cancel) {
       cancel.addEventListener('click', closeForm);
+    }
+    const form = byID('cf-form');
+    if (form) {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        save();
+      });
+    }
+    const saveButton = byID('cf-save');
+    if (saveButton) {
+      saveButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        save();
+      });
+    }
+    const deleteButton = byID('cf-delete');
+    if (deleteButton) {
+      deleteButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        deleteProvider();
+      });
     }
     const swatches = byID('cf-swatches');
     if (swatches) {
@@ -770,6 +933,10 @@
     newProvider,
     editProvider,
     populate,
+    _collectPayload: collectPayload,
+    _save: save,
+    _delete: deleteProvider,
+    _anyStarredChannel: anyStarredChannel,
     _reorderListMove: reorderListMove,
     _syncGroupsFromHost: syncGroupsFromHost,
     _currentGroups: currentGroups,
