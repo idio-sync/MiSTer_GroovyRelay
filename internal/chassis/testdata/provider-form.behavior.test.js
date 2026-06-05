@@ -67,8 +67,14 @@ class FakeElement {
   }
 
   dispatch(type, event = {}) {
-    const evt = { type, target: this, preventDefault() {}, ...event };
-    for (const fn of this.listeners.get(type) || []) fn(evt);
+    const evt = { type, target: event.target || this, currentTarget: this, preventDefault() {}, ...event };
+    let node = this;
+    while (node) {
+      evt.currentTarget = node;
+      for (const fn of node.listeners.get(type) || []) fn(evt);
+      if (evt.bubbles === false) break;
+      node = node.parentElement;
+    }
   }
 
   setAttribute(name, value) {
@@ -156,9 +162,9 @@ function matchesSimpleSelector(node, selector) {
 }
 
 function datasetValue(node, attr) {
-  if (!attr.startsWith('data-')) return node.attributes.get(attr) || null;
+  if (!attr.startsWith('data-')) return node.attributes.has(attr) ? node.attributes.get(attr) : null;
   const key = attr.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-  return node.dataset[key] || null;
+  return Object.prototype.hasOwnProperty.call(node.dataset, key) ? node.dataset[key] : null;
 }
 
 function walkFind(root, selector, all, acc = []) {
@@ -183,7 +189,10 @@ function createHarness(fetchImpl) {
   const glyph = new FakeElement('input', { id: 'cf-glyph' });
   const swatches = new FakeElement('div', { id: 'cf-swatches' });
   const groups = new FakeElement('div', { id: 'cf-groups' });
+  const groupChips = new FakeElement('span', { id: 'cf-group-chips', className: 'cf-group-chips' });
+  const addGroup = new FakeElement('button', { id: 'cf-add-group', className: 'cf-add-group' });
   const channels = new FakeElement('div', { id: 'cf-channels' });
+  const addChannel = new FakeElement('button', { id: 'cf-add-channel', className: 'cf-add-channel' });
   const del = new FakeElement('button', { id: 'cf-delete', hidden: true });
   const cancel = new FakeElement('button', { id: 'cf-cancel' });
   const newButton = new FakeElement('button', { id: 'catalog-provider-new' });
@@ -199,8 +208,11 @@ function createHarness(fetchImpl) {
   formPanel.appendChild(name);
   formPanel.appendChild(glyph);
   formPanel.appendChild(swatches);
+  groups.appendChild(groupChips);
+  groups.appendChild(addGroup);
   formPanel.appendChild(groups);
   formPanel.appendChild(channels);
+  formPanel.appendChild(addChannel);
   formPanel.appendChild(del);
   formPanel.appendChild(cancel);
   drawer.appendChild(pencil);
@@ -216,7 +228,10 @@ function createHarness(fetchImpl) {
     ['cf-glyph', glyph],
     ['cf-swatches', swatches],
     ['cf-groups', groups],
+    ['cf-group-chips', groupChips],
+    ['cf-add-group', addGroup],
     ['cf-channels', channels],
+    ['cf-add-channel', addChannel],
     ['cf-delete', del],
     ['cf-cancel', cancel],
     ['catalog-provider-new', newButton],
@@ -260,7 +275,7 @@ function createHarness(fetchImpl) {
 
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'provider-form.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'provider-form.js' });
-  return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, del, cancel, newButton, pencil, notices };
+  return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, cancel, newButton, pencil, notices };
 }
 
 test('detectKind mirrors Go channel kind detection cases', () => {
@@ -442,4 +457,115 @@ test('drawer delegation handles sibling pencil buttons and new provider button',
   h.drawer.dispatch('click', { target: h.newButton });
   assert.equal(h.context.window.Chassis.providerForm._state.mode, 'new');
   assert.equal(h.name.value, '');
+});
+
+test('renderChannels builds rows and resolves direct kind for m3u8 URLs', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderGroups([{ id: 'races', name: 'Races', order: 0 }]);
+  api.renderChannels([
+    { id: 'live', name: 'Live', url: 'https://cdn.example.com/live.m3u8', kind: '', groupId: 'races', order: 9 },
+    { id: 'clips', name: 'Clips', url: 'https://videos.example.com/watch', kind: '', groupId: '', order: 3 },
+  ]);
+
+  const rows = Array.prototype.slice.call(h.channels.children);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].classList.contains('cf-channel'), true);
+  assert.equal(rows[0].dataset.channelId, 'live');
+  assert.equal(rows[0].dataset.kind, 'direct');
+  assert.equal(rows[0]._name.value, 'Live');
+  assert.equal(rows[0]._url.value, 'https://cdn.example.com/live.m3u8');
+  assert.equal(rows[0]._kindChip.textContent, 'DIRECT');
+  assert.equal(rows[0]._override.value, 'auto');
+  assert.equal(rows[0]._group.value, 'races');
+  assert.equal(rows[1].dataset.kind, 'single');
+});
+
+test('_buildChannelRow and _setRowURL refresh resolved kind, play mode visibility, and host hint', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  const row = api._buildChannelRow({ id: 'yt', name: 'YouTube', url: '', kind: '', playMode: 'SHUFFLE' }, []);
+
+  assert.equal(row.dataset.kind, 'single');
+  assert.equal(row._playModeWrap.hidden, true);
+  assert.match(row._hint.textContent, /Detected: single/);
+
+  api._setRowURL(row, 'https://www.youtube.com/watch?v=abc&list=PL123');
+
+  assert.equal(row.dataset.kind, 'playlist');
+  assert.equal(row._kindChip.textContent, 'PLAYLIST');
+  assert.equal(row._playModeWrap.hidden, false);
+  assert.match(row._hint.textContent, /Detected: playlist/);
+  assert.match(row._hint.textContent, /Host allowed/);
+  assert.equal(row._hint.classList.contains('err'), false);
+
+  api._setRowURL(row, 'http://127.0.0.1/live.m3u8');
+
+  assert.equal(row.dataset.kind, 'direct');
+  assert.equal(row._playModeWrap.hidden, true);
+  assert.match(row._hint.textContent, /Local-only hosts are blocked here/);
+  assert.equal(row._hint.classList.contains('err'), true);
+
+  row._override.value = 'single';
+  row._override.dispatch('change');
+
+  assert.equal(row.dataset.kind, 'single');
+  assert.equal(row._playModeWrap.hidden, true);
+});
+
+test('renderGroups builds chips and group delete updates channel dropdown options', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderGroups([
+    { id: 'sports', name: 'Sports', order: 0 },
+    { id: 'news', name: 'News', order: 1 },
+  ]);
+  api.renderChannels([
+    { id: 'daily', name: 'Daily', url: 'https://cdn.example.com/daily.m3u8', kind: '', groupId: 'news', order: 0 },
+  ]);
+
+  let chips = Array.prototype.slice.call(h.groupChips.children);
+  let row = h.channels.children[0];
+  assert.deepEqual(chips.map((chip) => chip.dataset.groupId), ['sports', 'news']);
+  assert.deepEqual(Array.prototype.slice.call(row._group.children).map((option) => option.value), ['', 'sports', 'news']);
+  assert.equal(row._group.value, 'news');
+
+  chips[1].querySelector('[data-group-delete="news"]').dispatch('click');
+
+  chips = Array.prototype.slice.call(h.groupChips.children);
+  row = h.channels.children[0];
+  assert.deepEqual(chips.map((chip) => chip.dataset.groupId), ['sports']);
+  assert.deepEqual(Array.prototype.slice.call(row._group.children).map((option) => option.value), ['', 'sports']);
+  assert.equal(row._group.value, '');
+  assert.equal(api.collectChannelModels()[0].groupId, '');
+});
+
+test('add channel and add group buttons append rows and chips', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.newProvider();
+
+  h.addChannel.dispatch('click');
+
+  let rows = Array.prototype.slice.call(h.channels.children);
+  assert.equal(rows.length, 1);
+  assert.equal(api.collectChannelModels()[0].order, 0);
+
+  h.addGroup.dispatch('click');
+
+  const chips = Array.prototype.slice.call(h.groupChips.children);
+  rows = Array.prototype.slice.call(h.channels.children);
+  assert.equal(chips.length, 1);
+  assert.equal(api._state.groups.length, 1);
+  assert.deepEqual(Array.prototype.slice.call(rows[0]._group.children).map((option) => option.value), ['', api._state.groups[0].id]);
+
+  h.addChannel.dispatch('click');
+
+  rows = Array.prototype.slice.call(h.channels.children);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.collectChannelModels())).map((channel) => channel.order), [0, 1]);
 });

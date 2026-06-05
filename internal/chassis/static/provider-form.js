@@ -17,8 +17,72 @@
     return document.getElementById(id);
   }
 
+  function mk(tag, className) {
+    const el = document.createElement(tag);
+    if (className) {
+      el.className = className;
+      if (el.classList) {
+        className.split(/\s+/).filter(Boolean).forEach((name) => el.classList.add(name));
+      }
+    }
+    return el;
+  }
+
+  function kids(host) {
+    return host && host.children ? Array.prototype.slice.call(host.children) : [];
+  }
+
   function cloneList(items) {
     return Array.isArray(items) ? items.map((item) => ({ ...item })) : [];
+  }
+
+  function orderValue(value, fallback) {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : fallback;
+  }
+
+  function normalizeGroup(group, index) {
+    const src = group || {};
+    return {
+      id: src.id == null ? '' : String(src.id),
+      name: src.name == null ? '' : String(src.name),
+      order: orderValue(src.order, index),
+    };
+  }
+
+  function normalizeGroups(groups) {
+    return Array.isArray(groups) ? groups.map(normalizeGroup) : [];
+  }
+
+  function normalizeKind(kind) {
+    const value = String(kind || '');
+    return value === 'single' || value === 'direct' || value === 'playlist' ? value : '';
+  }
+
+  function normalizePlayMode(mode) {
+    const value = String(mode || '').toUpperCase();
+    return value === 'SEQ' || value === 'SHUFFLE' ? value : '';
+  }
+
+  function normalizeChannel(channel, index) {
+    const src = channel || {};
+    return {
+      id: src.id == null ? '' : String(src.id),
+      name: src.name == null ? '' : String(src.name),
+      url: src.url == null ? '' : String(src.url),
+      kind: normalizeKind(src.kind),
+      playMode: normalizePlayMode(src.playMode),
+      groupId: src.groupId == null ? '' : String(src.groupId),
+      order: orderValue(src.order, index),
+    };
+  }
+
+  function normalizeChannels(channels) {
+    return Array.isArray(channels) ? channels.map(normalizeChannel) : [];
+  }
+
+  function currentGroups() {
+    return state.groups || [];
   }
 
   function isYouTubeHost(hostname) {
@@ -109,9 +173,226 @@
     });
   }
 
-  function renderGroups() {}
+  function addOption(select, value, label) {
+    const option = mk('option');
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+    return option;
+  }
 
-  function renderChannels() {}
+  function nextID(prefix, items) {
+    const list = items || [];
+    const used = new Set(list.map((item) => item.id));
+    let n = list.length + 1;
+    let id = prefix + '-' + n;
+    while (used.has(id)) {
+      n += 1;
+      id = prefix + '-' + n;
+    }
+    return id;
+  }
+
+  function resolvedRowKind(row) {
+    const override = row._override ? row._override.value : 'auto';
+    if (override === 'auto') {
+      return detectKind(row._url ? row._url.value : '');
+    }
+    return normalizeKind(override) || detectKind(row._url ? row._url.value : '');
+  }
+
+  function refreshChannelRow(row) {
+    const rawURL = row._url ? row._url.value : '';
+    const url = String(rawURL || '').trim();
+    const detected = detectKind(rawURL);
+    const resolved = resolvedRowKind(row);
+    const hint = hostHint(url);
+
+    row.dataset.kind = resolved;
+    row._kindChip.textContent = resolved.toUpperCase();
+    row._playModeWrap.hidden = resolved !== 'playlist';
+    row._hint.textContent = 'Detected: ' + detected + '; ' + (url ? (hint.ok ? 'Host allowed' : hint.message) : 'Host unchecked');
+    row._hint.classList.toggle('err', url !== '' && !hint.ok);
+  }
+
+  function removeElement(el) {
+    if (!el || !el.parentElement) return;
+    if (typeof el.remove === 'function') {
+      el.remove();
+      return;
+    }
+    const parent = el.parentElement;
+    parent.replaceChildren(...kids(parent).filter((child) => child !== el));
+  }
+
+  function buildChannelRow(ch, groups) {
+    const model = normalizeChannel(ch, 0);
+    const groupList = normalizeGroups(groups);
+    const row = mk('div', 'cf-channel');
+    row.dataset.channelId = model.id;
+    row._model = model;
+
+    const name = mk('input', 'cf-input');
+    name.type = 'text';
+    name.maxLength = 96;
+    name.placeholder = 'Channel name';
+    name.value = model.name;
+
+    const url = mk('input', 'cf-input');
+    url.type = 'url';
+    url.placeholder = 'https://example.com/live.m3u8';
+    url.value = model.url;
+
+    const kindChip = mk('span', 'cf-chip');
+
+    const override = mk('select', 'cf-input');
+    addOption(override, 'auto', 'Auto');
+    addOption(override, 'single', 'Single');
+    addOption(override, 'direct', 'Direct');
+    addOption(override, 'playlist', 'Playlist');
+    override.value = model.kind || 'auto';
+
+    const playModeWrap = mk('span', 'cf-play-mode');
+    const play = mk('select', 'cf-input');
+    addOption(play, '', 'Default');
+    addOption(play, 'SEQ', 'Seq');
+    addOption(play, 'SHUFFLE', 'Shuffle');
+    play.value = model.playMode;
+    playModeWrap.appendChild(play);
+
+    const group = mk('select', 'cf-input');
+    addOption(group, '', 'No group');
+    groupList.forEach((item) => addOption(group, item.id, item.name || item.id || 'Group'));
+    group.value = groupList.some((item) => item.id === model.groupId) ? model.groupId : '';
+
+    const del = mk('button', 'cf-channel-delete');
+    del.type = 'button';
+    del.textContent = 'x';
+
+    const hint = mk('div', 'cf-hint');
+
+    row.appendChild(name);
+    row.appendChild(url);
+    row.appendChild(kindChip);
+    row.appendChild(override);
+    row.appendChild(playModeWrap);
+    row.appendChild(group);
+    row.appendChild(del);
+    row.appendChild(hint);
+
+    row._name = name;
+    row._url = url;
+    row._kindChip = kindChip;
+    row._override = override;
+    row._play = play;
+    row._playModeWrap = playModeWrap;
+    row._group = group;
+    row._hint = hint;
+    row._refresh = () => refreshChannelRow(row);
+
+    url.addEventListener('input', row._refresh);
+    override.addEventListener('change', row._refresh);
+    del.addEventListener('click', (event) => {
+      event.preventDefault();
+      removeElement(row);
+      state.channels = collectChannelModels();
+    });
+
+    row._refresh();
+    return row;
+  }
+
+  function renderGroups(groups) {
+    const models = normalizeGroups(groups === undefined ? state.groups : groups);
+    state.groups = cloneList(models);
+    const host = byID('cf-group-chips');
+    if (!host) return;
+
+    const chips = models.map((group) => {
+      const chip = mk('span', 'cf-chip');
+      chip.dataset.groupId = group.id;
+      chip.textContent = group.name || group.id || 'Group';
+
+      const del = mk('button', 'cf-group-delete');
+      del.type = 'button';
+      del.dataset.groupDelete = group.id;
+      del.textContent = 'x';
+      del.addEventListener('click', (event) => {
+        event.preventDefault();
+        const channels = collectChannelModels();
+        renderGroups(currentGroups().filter((item) => item.id !== group.id));
+        renderChannels(channels);
+      });
+      chip.appendChild(del);
+      return chip;
+    });
+
+    host.replaceChildren(...chips);
+  }
+
+  function renderChannels(channels) {
+    const models = normalizeChannels(channels === undefined ? state.channels : channels);
+    if (channels !== undefined) state.channels = cloneList(models);
+    const host = byID('cf-channels');
+    if (!host) return;
+
+    host.replaceChildren(...models.map((channel) => buildChannelRow(channel, currentGroups())));
+  }
+
+  function collectChannelModels() {
+    const host = byID('cf-channels');
+    if (!host) return cloneList(state.channels);
+    return kids(host).filter((row) => row.classList && row.classList.contains('cf-channel')).map((row, index) => {
+      const resolved = resolvedRowKind(row);
+      const override = row._override ? normalizeKind(row._override.value) : '';
+      return {
+        id: row.dataset.channelId || '',
+        name: row._name ? row._name.value : '',
+        url: row._url ? row._url.value : '',
+        kind: override,
+        playMode: resolved === 'playlist' && row._play ? normalizePlayMode(row._play.value) : '',
+        groupId: row._group ? row._group.value : '',
+        order: index,
+      };
+    });
+  }
+
+  function setRowURL(row, value) {
+    if (!row || !row._url) return;
+    row._url.value = value == null ? '' : String(value);
+    if (typeof row._url.dispatchEvent === 'function' && typeof Event === 'function') {
+      row._url.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (typeof row._url.dispatch === 'function') {
+      row._url.dispatch('input');
+      return;
+    }
+    if (typeof row._refresh === 'function') row._refresh();
+  }
+
+  function addChannel() {
+    const channels = collectChannelModels();
+    channels.push({
+      id: nextID('channel', channels),
+      name: '',
+      url: '',
+      kind: '',
+      playMode: '',
+      groupId: '',
+      order: channels.length,
+    });
+    renderChannels(channels);
+  }
+
+  function addGroup() {
+    const channels = collectChannelModels();
+    const groups = cloneList(currentGroups());
+    const id = nextID('group', groups);
+    groups.push({ id, name: 'Group ' + (groups.length + 1), order: groups.length });
+    renderGroups(groups);
+    renderChannels(channels);
+  }
 
   function openForm() {
     document.body.classList.add('catalog-form-open');
@@ -224,6 +505,20 @@
         state.glyphTouched = true;
       });
     }
+    const addChannelButton = byID('cf-add-channel');
+    if (addChannelButton) {
+      addChannelButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        addChannel();
+      });
+    }
+    const addGroupButton = byID('cf-add-group');
+    if (addGroupButton) {
+      addGroupButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        addGroup();
+      });
+    }
   }
 
   window.Chassis.providerForm = {
@@ -231,11 +526,16 @@
     suggestGlyph,
     hostHint,
     selectColor,
+    renderGroups,
+    renderChannels,
+    collectChannelModels,
     openForm,
     closeForm,
     newProvider,
     editProvider,
     populate,
+    _buildChannelRow: buildChannelRow,
+    _setRowURL: setRowURL,
     _state: state,
     _palette: palette,
   };
