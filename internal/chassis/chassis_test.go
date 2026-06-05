@@ -5251,6 +5251,34 @@ func TestRender_AudioStripPresent(t *testing.T) {
 	}
 }
 
+func TestRender_AudioStripMemoryRowCentered(t *testing.T) {
+	t.Parallel()
+	cfg := nonZeroConfig()
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
+	s.handleIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="btn-row memory-row"`) {
+		t.Fatalf("audio strip memory buttons missing dedicated centered row class")
+	}
+
+	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	rule := cssRuleBlock(t, string(cssBytes), "body.receiver .audio-deck .memory-row")
+	if !strings.Contains(rule, "justify-content: center") {
+		t.Errorf("memory-row CSS should center M1-M3 buttons; rule:\n%s", rule)
+	}
+}
+
 func TestRender_VolumeNotInTransport(t *testing.T) {
 	t.Parallel()
 	cfg := nonZeroConfig()

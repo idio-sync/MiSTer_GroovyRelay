@@ -5841,6 +5841,7 @@ body.receiver .eq-band .eq-hz {
   letter-spacing: 0.08em;
 }
 body.receiver .audio-deck .btn-row { display: flex; gap: 5px; }
+body.receiver .audio-deck .memory-row { justify-content: center; }
 body.receiver .action-btn.eqbtn { padding: 5px 8px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
 body.receiver .action-btn.eqbtn.stored { color: var(--vfd); border-color: oklch(0.30 0.06 175); }
 body.receiver .sw-grid { display: grid; grid-template-columns: auto auto; gap: 7px 12px; align-items: center; }

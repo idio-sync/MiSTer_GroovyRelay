@@ -36,7 +36,7 @@
       <div class="btn-row">
         {{ range $p := .Presets }}<button class="action-btn eqbtn" type="button" data-dsp-preset="{{ $p }}">{{ $p }}</button>{{ end }}
       </div>
-      <div class="btn-row">
+      <div class="btn-row memory-row">
         {{ range $m := .Memory }}<button class="action-btn eqbtn{{ if $m.Stored }} stored{{ end }}" type="button" data-dsp-memory="{{ $m.Slot }}" title="Tap recall &middot; hold store">{{ if $m.Name }}{{ $m.Name }}{{ else }}M{{ $m.Slot }}{{ end }}</button>{{ end }}
       </div>
       <div class="sw-grid">
