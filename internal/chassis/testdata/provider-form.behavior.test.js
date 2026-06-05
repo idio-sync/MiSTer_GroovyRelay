@@ -486,7 +486,7 @@ test('_buildChannelRow and _setRowURL refresh resolved kind, play mode visibilit
   const h = createHarness();
   const api = h.context.window.Chassis.providerForm;
 
-  const row = api._buildChannelRow({ id: 'yt', name: 'YouTube', url: '', kind: '', playMode: 'SHUFFLE' }, []);
+  const row = api._buildChannelRow({ id: 'yt', name: 'YouTube', url: '', kind: '', playMode: 'shuffle' }, []);
 
   assert.equal(row.dataset.kind, 'single');
   assert.equal(row._playModeWrap.hidden, true);
@@ -513,6 +513,31 @@ test('_buildChannelRow and _setRowURL refresh resolved kind, play mode visibilit
 
   assert.equal(row.dataset.kind, 'single');
   assert.equal(row._playModeWrap.hidden, true);
+});
+
+test('playlist play mode uses authoring wire values, including first-then-shuffle', () => {
+  const h = createHarness();
+  const api = h.context.window.Chassis.providerForm;
+
+  api.renderChannels([
+    {
+      id: 'yt',
+      name: 'YouTube',
+      url: 'https://www.youtube.com/watch?v=abc&list=PL123',
+      kind: 'playlist',
+      playMode: 'first_then_shuffle',
+      groupId: '',
+      order: 0,
+    },
+  ]);
+
+  const row = h.channels.children[0];
+  assert.deepEqual(Array.prototype.slice.call(row._play.children).map((option) => option.value), ['sequential', 'shuffle', 'first_then_shuffle']);
+  assert.equal(row._play.value, 'first_then_shuffle');
+  assert.equal(api.collectChannelModels()[0].playMode, 'first_then_shuffle');
+
+  row._play.value = 'shuffle';
+  assert.equal(api.collectChannelModels()[0].playMode, 'shuffle');
 });
 
 test('renderGroups builds chips and group delete updates channel dropdown options', () => {

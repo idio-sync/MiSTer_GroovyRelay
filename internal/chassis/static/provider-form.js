@@ -60,8 +60,8 @@
   }
 
   function normalizePlayMode(mode) {
-    const value = String(mode || '').toUpperCase();
-    return value === 'SEQ' || value === 'SHUFFLE' ? value : '';
+    const value = String(mode || '');
+    return value === 'sequential' || value === 'shuffle' || value === 'first_then_shuffle' ? value : '';
   }
 
   function normalizeChannel(channel, index) {
@@ -254,10 +254,10 @@
 
     const playModeWrap = mk('span', 'cf-play-mode');
     const play = mk('select', 'cf-input');
-    addOption(play, '', 'Default');
-    addOption(play, 'SEQ', 'Seq');
-    addOption(play, 'SHUFFLE', 'Shuffle');
-    play.value = model.playMode;
+    addOption(play, 'sequential', 'Sequential');
+    addOption(play, 'shuffle', 'Shuffle');
+    addOption(play, 'first_then_shuffle', 'First then shuffle');
+    play.value = model.playMode || 'sequential';
     playModeWrap.appendChild(play);
 
     const group = mk('select', 'cf-input');
