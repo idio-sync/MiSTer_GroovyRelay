@@ -578,6 +578,7 @@ test('add channel and add group buttons append rows and chips', () => {
 
   let rows = Array.prototype.slice.call(h.channels.children);
   assert.equal(rows.length, 1);
+  assert.equal(api.collectChannelModels()[0].id, '');
   assert.equal(api.collectChannelModels()[0].order, 0);
 
   h.addGroup.dispatch('click');

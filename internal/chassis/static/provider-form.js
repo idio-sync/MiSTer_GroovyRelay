@@ -374,7 +374,7 @@
   function addChannel() {
     const channels = collectChannelModels();
     channels.push({
-      id: nextID('channel', channels),
+      id: '',
       name: '',
       url: '',
       kind: '',
