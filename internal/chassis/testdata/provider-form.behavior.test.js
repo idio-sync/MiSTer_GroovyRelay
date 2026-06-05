@@ -278,6 +278,13 @@ function createHarness(fetchImpl) {
   return { context, drawer, formPanel, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, cancel, newButton, pencil, notices };
 }
 
+function jsonResponse(body, ok = true) {
+  return {
+    ok,
+    json: async () => body,
+  };
+}
+
 test('detectKind mirrors Go channel kind detection cases', () => {
   const h = createHarness();
   const { detectKind } = h.context.window.Chassis.providerForm;
@@ -538,6 +545,96 @@ test('playlist play mode uses authoring wire values, including first-then-shuffl
 
   row._play.value = 'shuffle';
   assert.equal(api.collectChannelModels()[0].playMode, 'shuffle');
+});
+
+test('_verifyRow renders playlist count ok chip', async () => {
+  const h = createHarness(async () => jsonResponse({ ok: true, kind: 'playlist', itemCount: 47 }));
+  const api = h.context.window.Chassis.providerForm;
+  const row = api._buildChannelRow({ name: 'Playlist', url: 'https://www.youtube.com/playlist?list=PL123' }, []);
+
+  await api._verifyRow(row);
+
+  assert.equal(row._verifyChip.hidden, false);
+  assert.equal(row._verifyChip.classList.contains('ok'), true);
+  assert.equal(row._verifyChip.classList.contains('err'), false);
+  assert.equal(row._verifyChip.textContent, '✓ 47 videos');
+});
+
+test('_verifyRow renders LIVE chip for live single result', async () => {
+  const h = createHarness(async () => jsonResponse({ ok: true, kind: 'single', isLive: true }));
+  const api = h.context.window.Chassis.providerForm;
+  const row = api._buildChannelRow({ name: 'Live', url: 'https://youtube.com/watch?v=abc' }, []);
+
+  await api._verifyRow(row);
+
+  assert.equal(row._verifyChip.hidden, false);
+  assert.equal(row._verifyChip.classList.contains('ok'), true);
+  assert.equal(row._verifyChip.textContent, '✓ LIVE');
+});
+
+test('_verifyRow renders VIDEO chip for non-live single result', async () => {
+  const h = createHarness(async () => jsonResponse({ ok: true, kind: 'single', isLive: false }));
+  const api = h.context.window.Chassis.providerForm;
+  const row = api._buildChannelRow({ name: 'Video', url: 'https://youtube.com/watch?v=abc' }, []);
+
+  await api._verifyRow(row);
+
+  assert.equal(row._verifyChip.hidden, false);
+  assert.equal(row._verifyChip.classList.contains('ok'), true);
+  assert.equal(row._verifyChip.textContent, '✓ VIDEO');
+});
+
+test('_verifyRow renders DIRECT chip for direct result', async () => {
+  const h = createHarness(async () => jsonResponse({ ok: true, kind: 'direct' }));
+  const api = h.context.window.Chassis.providerForm;
+  const row = api._buildChannelRow({ name: 'Direct', url: 'https://cdn.example.com/live.m3u8' }, []);
+
+  await api._verifyRow(row);
+
+  assert.equal(row._verifyChip.hidden, false);
+  assert.equal(row._verifyChip.classList.contains('ok'), true);
+  assert.equal(row._verifyChip.textContent, '✓ DIRECT');
+});
+
+test('_verifyRow renders error chip with message on failed response', async () => {
+  const h = createHarness(async () => jsonResponse({ ok: false, message: 'Local-only hosts are blocked here.' }, false));
+  const api = h.context.window.Chassis.providerForm;
+  const row = api._buildChannelRow({ name: 'Bad', url: 'http://127.0.0.1/live.m3u8' }, []);
+
+  await api._verifyRow(row);
+
+  assert.equal(row._verifyChip.hidden, false);
+  assert.equal(row._verifyChip.classList.contains('err'), true);
+  assert.equal(row._verifyChip.classList.contains('ok'), false);
+  assert.match(row._verifyChip.textContent, /^✗ /);
+  assert.match(row._verifyChip.textContent, /Local-only hosts are blocked here/);
+});
+
+test('verify button posts channel URL with auto or manually overridden kind', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true, kind: init && JSON.parse(init.body).kind === 'direct' ? 'direct' : 'single' });
+  });
+  const api = h.context.window.Chassis.providerForm;
+  const autoRow = api._buildChannelRow({ name: 'Auto', url: 'https://cdn.example.com/live.m3u8', kind: '' }, []);
+  const manualRow = api._buildChannelRow({ name: 'Manual', url: 'https://video.example.com/watch', kind: 'direct' }, []);
+
+  assert.equal(autoRow._verify.type, 'button');
+  assert.equal(autoRow._verify.textContent, 'Verify');
+  assert.equal(autoRow._verifyChip.hidden, true);
+
+  autoRow._verify.dispatch('click');
+  manualRow._verify.dispatch('click');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0][0], '/ui/catalog/channel/verify');
+  assert.equal(requests[0][1].method, 'POST');
+  assert.equal(requests[0][1].credentials, 'same-origin');
+  assert.equal(requests[0][1].headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(requests[0][1].body), { url: 'https://cdn.example.com/live.m3u8', kind: '' });
+  assert.deepEqual(JSON.parse(requests[1][1].body), { url: 'https://video.example.com/watch', kind: 'direct' });
 });
 
 test('renderGroups builds chips and group delete updates channel dropdown options', () => {

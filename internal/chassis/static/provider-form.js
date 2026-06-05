@@ -215,6 +215,63 @@
     row._hint.classList.toggle('err', url !== '' && !hint.ok);
   }
 
+  function setVerifyChip(row, variant, text) {
+    if (!row || !row._verifyChip) return;
+    row._verifyChip.hidden = false;
+    row._verifyChip.classList.remove('pending');
+    row._verifyChip.classList.remove('ok');
+    row._verifyChip.classList.remove('err');
+    if (variant) row._verifyChip.classList.add(variant);
+    row._verifyChip.textContent = text;
+  }
+
+  async function responseJSON(resp) {
+    try {
+      return await resp.json();
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function verifySuccessText(result, row) {
+    const kind = normalizeKind(result && result.kind) || resolvedRowKind(row);
+    if (kind === 'playlist') {
+      const count = Number(result && result.itemCount);
+      return '✓ ' + (Number.isFinite(count) ? count : 0) + ' videos';
+    }
+    if (kind === 'direct') return '✓ DIRECT';
+    if (kind === 'single') return result && result.isLive ? '✓ LIVE' : '✓ VIDEO';
+    return '✓ OK';
+  }
+
+  async function verifyRow(row) {
+    if (!row) return;
+    const verify = row._verify;
+    const override = row._override ? row._override.value : 'auto';
+    const body = {
+      url: String(row._url ? row._url.value : '').trim(),
+      kind: override === 'auto' ? '' : override,
+    };
+
+    setVerifyChip(row, 'pending', 'VERIFYING');
+    if (verify) verify.disabled = true;
+    try {
+      const resp = await postJSON('POST', '/ui/catalog/channel/verify', body);
+      const result = await responseJSON(resp);
+      if (resp.ok && result && result.ok) {
+        setVerifyChip(row, 'ok', verifySuccessText(result, row));
+      } else {
+        setVerifyChip(row, 'err', '✗ ' + (result && result.message ? result.message : 'Unable to verify channel.'));
+      }
+      return result;
+    } catch (_) {
+      setVerifyChip(row, 'err', '✗ Unable to verify channel.');
+      return {};
+    } finally {
+      if (verify) verify.disabled = false;
+    }
+  }
+
   function removeElement(el) {
     if (!el || !el.parentElement) return;
     if (typeof el.remove === 'function') {
@@ -265,6 +322,13 @@
     groupList.forEach((item) => addOption(group, item.id, item.name || item.id || 'Group'));
     group.value = groupList.some((item) => item.id === model.groupId) ? model.groupId : '';
 
+    const verify = mk('button', 'cf-channel-verify');
+    verify.type = 'button';
+    verify.textContent = 'Verify';
+
+    const verifyChip = mk('span', 'cf-chip');
+    verifyChip.hidden = true;
+
     const del = mk('button', 'cf-channel-delete');
     del.type = 'button';
     del.textContent = 'x';
@@ -277,6 +341,8 @@
     row.appendChild(override);
     row.appendChild(playModeWrap);
     row.appendChild(group);
+    row.appendChild(verify);
+    row.appendChild(verifyChip);
     row.appendChild(del);
     row.appendChild(hint);
 
@@ -287,11 +353,17 @@
     row._play = play;
     row._playModeWrap = playModeWrap;
     row._group = group;
+    row._verify = verify;
+    row._verifyChip = verifyChip;
     row._hint = hint;
     row._refresh = () => refreshChannelRow(row);
 
     url.addEventListener('input', row._refresh);
     override.addEventListener('change', row._refresh);
+    verify.addEventListener('click', (event) => {
+      event.preventDefault();
+      verifyRow(row);
+    });
     del.addEventListener('click', (event) => {
       event.preventDefault();
       removeElement(row);
@@ -536,6 +608,7 @@
     populate,
     _buildChannelRow: buildChannelRow,
     _setRowURL: setRowURL,
+    _verifyRow: verifyRow,
     _state: state,
     _palette: palette,
   };
