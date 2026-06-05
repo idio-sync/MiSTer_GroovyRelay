@@ -3064,7 +3064,8 @@ body.receiver .input-panel .chip.resolving {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  body.receiver .input-panel .chip.resolving {
+  body.receiver .input-panel .chip.resolving,
+  body.receiver .catalog-form .cf-chip.pending {
     animation: none;
   }
 }
@@ -5028,7 +5029,7 @@ body.receiver .catalog-form .cf-swatch.u-slate  { background: #2a2e36; }
 
 body.receiver .catalog-form .cf-channel {
   display: grid;
-  grid-template-columns: 1fr 1fr auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto auto auto;
   gap: 6px;
   align-items: center;
   padding: 4px 0;
