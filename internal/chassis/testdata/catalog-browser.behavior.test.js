@@ -523,6 +523,25 @@ test('closed catalog rebuild refreshes active rail and grid before browse opens'
   assert.equal(h.grid.children[0].dataset.channel, 'new-list');
 });
 
+test('closed catalog rebuild treats empty group IDs as flat catalog groups', () => {
+  const h = createHarness();
+  const stale = new FakeElement('div', { className: 'ch-card', dataset: { provider: 'user:keep', channel: 'stale' } });
+  h.grid.appendChild(stale);
+
+  h.cb.rebuild({
+    providers: [
+      provider('user:keep', [group('', '', [channel('flat', 'Flat Channel')])]),
+    ],
+  });
+
+  assert.equal(h.rail.children.length, 1);
+  assert.equal(h.rail.children[0].dataset.group, '');
+  assert.equal(h.rail.children[0].classList.contains('active'), true);
+  assert.equal(h.grid.children.length, 1);
+  assert.equal(h.grid.children[0].dataset.provider, 'user:keep');
+  assert.equal(h.grid.children[0].dataset.channel, 'flat');
+});
+
 test('rebuild reapplies cached preset stars and tuned state to rebuilt templates', () => {
   const h = createHarness();
 

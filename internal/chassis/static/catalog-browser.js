@@ -115,7 +115,7 @@
   }
 
   function switchGrid(groupID) {
-    if (!groupID) return;
+    if (groupID == null) return;
     activeGroupID = groupID;
     railHost.querySelectorAll('.catalog-rail-group').forEach((b) => {
       b.classList.toggle('active', b.dataset.group === groupID);
